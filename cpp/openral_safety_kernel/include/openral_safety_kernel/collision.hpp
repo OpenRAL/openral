@@ -110,13 +110,31 @@ struct VoxelGrid {
   bool attached_contact_allow_new_shallow{false};      ///< reactive contact-phase boundary cells
 };
 
-/// First self-collision hit (and the minimum surface distance observed across
-/// all checked pairs, even when nothing collided).
+/// One collision check's outcome — and, on a hit, the E-stop evidence.
+///
+/// `link_a`, `link_b` and `min_distance` always describe **one and the same**
+/// geometry pair: on a hit they are the deepest pair that actually tripped the
+/// check's gate. They must never be sampled from different pairs — evidence
+/// that names one cell and quotes another cell's distance sends downstream
+/// diagnosis after a penetration that does not exist (an attached payload's
+/// exempt attach-time contact residue reading as if it were the fresh support
+/// contact that stopped the robot).
+///
+/// `sweep_min_distance` is the separate, sweep-wide figure: the minimum
+/// surface distance over **every** pair the check touched, including pairs
+/// that stayed clear of the margin and pairs the gate deliberately exempted.
+/// It is a diagnostic, not the reason for the stop — keep it in its own field
+/// and its own log key.
+///
+/// With no hit there is no pair to describe, so `min_distance` keeps its
+/// clearance meaning and equals `sweep_min_distance`. Both are `+inf` when the
+/// check compared nothing.
 struct CollisionHit {
   bool hit{false};
   int link_a{-1};
   int link_b{-1};
-  double min_distance{0.0};
+  double min_distance{0.0};        ///< the reported pair's surface distance (clearance if no hit)
+  double sweep_min_distance{0.0};  ///< minimum over every checked pair, gated or exempted
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -246,15 +264,18 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
                         CollisionScratch& scratch) noexcept;
 
 /// Check every non-allowed capsule pair against a `margin` clearance using the
-/// link frames in `scratch`. Returns the first hit; `min_distance` always
-/// carries the minimum surface distance seen. Allocation-free.
+/// link frames in `scratch`. On a hit the returned pair is the deepest pair
+/// within the margin and `min_distance` is that pair's distance;
+/// `sweep_min_distance` carries the minimum over every checked pair
+/// (`CollisionHit`). Allocation-free.
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                   double margin) noexcept;
 
 /// Check every robot capsule (FK'd via `scratch`) against every world obstacle
 /// in `world` (base-frame capsules) at a `margin` clearance. On a hit,
-/// `link_a` is the robot link index and `link_b` is the world obstacle index;
-/// `min_distance` carries the minimum surface distance seen. Allocation-free.
+/// `link_a` is the robot link index and `link_b` is the world obstacle index
+/// of the deepest pair within the margin, and `min_distance` is that pair's
+/// distance (`CollisionHit`). Allocation-free.
 CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const WorldModel& world, double margin) noexcept;
 
@@ -292,7 +313,9 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// a dense voxel `grid`. Only the voxels inside each capsule's inflated AABB
 /// are tested (bounded), and each occupied voxel is treated conservatively as a
 /// sphere of the voxel half-diagonal at the cell centre. On a hit, `link_a` is
-/// the robot link index and `link_b` is the linear voxel index. Allocation-free.
+/// the robot link index and `link_b` is the linear index of the deepest cell
+/// within the margin, and `min_distance` is that cell's distance
+/// (`CollisionHit`). Allocation-free.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin) noexcept;
 
@@ -319,8 +342,8 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
 /// Check every attached payload (FK'd via `scratch` through its attach link)
 /// against every world obstacle capsule at a `margin` clearance. On a hit,
 /// `link_a` is the attached-object index and `link_b` is the world obstacle
-/// index; `min_distance` carries the minimum surface distance seen.
-/// Allocation-free.
+/// index of the deepest pair within the margin, and `min_distance` is that
+/// pair's distance (`CollisionHit`). Allocation-free.
 CollisionHit check_attached_world_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch,
@@ -328,8 +351,13 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 
 /// Check every attached payload against the occupied cells of a dense voxel
 /// `grid` (same conservative per-voxel cube treatment as
-/// `check_voxel_collision`). On a hit, `link_a` is the attached-object index and
-/// `link_b` is the linear voxel index. Allocation-free.
+/// `check_voxel_collision`). On a hit, `link_a` is the attached-object index
+/// and `link_b` is the linear index of the deepest cell that actually tripped
+/// the check, and `min_distance` is that cell's distance. Cells exempted by
+/// the payload's attach-time contact baseline never supply the reported
+/// identity or distance — they reach `sweep_min_distance` only, so a payload's
+/// own uncleared occupancy residue can never be published as the contact that
+/// stopped the robot (`CollisionHit`). Allocation-free.
 CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
@@ -351,8 +379,8 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 /// (capsules + boxes), skipping each object's attach link and its explicit
 /// touch links (a grasped object legitimately contacts the fingers that hold
 /// it). On a hit, `link_a` is the attached-object index and `link_b` is the
-/// robot link index; `min_distance` carries the minimum surface distance seen.
-/// Allocation-free.
+/// robot link index of the deepest pair within the margin, and `min_distance`
+/// is that pair's distance (`CollisionHit`). Allocation-free.
 CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
                                            const CollisionScratch& scratch, double margin) noexcept;

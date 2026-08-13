@@ -125,11 +125,30 @@ carry:
 | `safety.severity` | `"info"` (pass), `"warn"` (latched / unconfigured), `"violation"` |
 | `safety.drop_reason` | `estop_latched`, `envelope_unconfigured`, `force`, `workspace`, or `controller` |
 | `safety.violation_{reason,joint,value,limit}` | populated on `violation` |
+| `safety.sweep_min_distance_m` | collision stops only — see below |
 | `rskill.id` | `ActionChunk.rskill_id` (short-prefix form the dashboard latches) |
 
 On a violation the span also fires an
 `openral.event.safety_violation` event so the dashboard's counted
 events ledger ticks.
+
+### Collision evidence: one pair, one distance
+
+A collision stop publishes `CollisionEvidence` whose `link_a`,
+`link_b_or_object` and `min_distance_m` all describe **the same** geometry
+pair — the deepest pair that actually tripped the check. `min_distance_m` is
+never the sweep-wide minimum: a collision sweep also measures pairs that stayed
+clear of the margin and pairs the gate deliberately exempted (an attached
+payload's attach-time contact baseline, including the payload's own uncleared
+occupancy residue), and quoting one of those against the cell that stopped the
+robot sends diagnosis after a penetration that never happened.
+
+The sweep-wide minimum is still useful, so it is reported **separately and
+never in the evidence payload**: `sweep_min_distance_m=` in the
+`safety.collision` log line, and the `safety.sweep_min_distance_m` span
+attribute. `sweep_min_distance_m <= min_distance_m` always. A large gap between
+the two means something deep is being tolerated on purpose — usually a grasped
+payload's own occupancy residue — not that the stop was deep.
 
 The W3C `traceparent` carried on `ActionChunk.trace_id` is extracted
 with the stock propagator and used as the parent context, so each

@@ -671,6 +671,146 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
       << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
 }
 
+namespace {
+
+// Pull a "key":"value" / "key":number field out of the kernel's evidence_json
+// (a flat CollisionEvidence object — no nesting, so no JSON parser needed;
+// nlohmann_json is an optional dependency of this package).
+std::string evidence_field(const std::string& json, const std::string& key) {
+  const std::string needle = "\"" + key + "\":";
+  const std::size_t at = json.find(needle);
+  if (at == std::string::npos) {
+    return {};
+  }
+  std::size_t begin = at + needle.size();
+  const bool quoted = begin < json.size() && json[begin] == '"';
+  if (quoted) {
+    ++begin;
+  }
+  const std::size_t end = quoted ? json.find('"', begin) : json.find_first_of(",}", begin);
+  if (end == std::string::npos) {
+    return {};
+  }
+  return json.substr(begin, end - begin);
+}
+
+}  // namespace
+
+// The E-stop evidence must describe ONE cell: the voxel named in
+// `link_b_or_object` is the voxel `min_distance_m` measures. The two used to
+// come from different cells — the identity from the first cell to trip, the
+// distance from the sweep-wide minimum — so a shallow graze could be published
+// carrying a deep cell's number (the attached-payload residue report that sent
+// diagnosis after a penetration that never existed).
+//
+// Geometry (hand-computed, single occupied row on the capsule's own axis):
+// the arm capsule sits at (0.3, 0, 0), r=0.1, half-length 0.1 along +z. The
+// grid is 4x1x1 at 0.1 m from origin (0.02, -0.05, -0.05), so cell centres run
+// x = 0.07 / 0.17 / 0.27 / 0.37 at y=z=0. Two cells are occupied:
+//   cell 1 (x=0.17): surface distance (0.13 - 0.05) - 0.1 = -0.02  ← trips first
+//   cell 2 (x=0.27): the capsule axis is inside it        = -0.10  ← deepest
+// Both trip; the evidence must name cell 2 and quote -0.10 for it.
+TEST_F(LifecycleKernelTest, CollisionEvidenceNamesTheVoxelItsDistanceDescribes) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{4096}},
+      // Link 0: base at the root. Link 1: arm, 0.3 m ahead, capsule r=0.1 hl=0.1.
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_evidence_cell", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("evidence_cell_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  std::string evidence_json;
+  rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+  failure_qos.reliable();
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", failure_qos,
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        if (evidence_json.empty()) {
+          evidence_json = msg->evidence_json;
+        }
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.resolution = 0.1;
+  vox.size_x = 4;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.02;
+  vox.origin.y = -0.05;
+  vox.origin.z = -0.05;
+  vox.occupancy.assign(4, 0);
+  vox.occupancy[1] = 1;  // grazing cell, scanned first
+  vox.occupancy[2] = 1;  // deepest cell
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j_base", "j_arm"};
+  js.position = {0.0, 0.0};
+
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY — the reactive check uses the measured seed
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(vel);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(node->fault_latched()) << "the arm capsule overlaps two occupied cells — must estop";
+  ASSERT_FALSE(evidence_json.empty()) << "a collision stop must publish CollisionEvidence";
+  EXPECT_EQ(evidence_field(evidence_json, "link_b_or_object"), "voxel_2")
+      << "evidence must name the cell that its distance describes: " << evidence_json;
+  EXPECT_NEAR(std::stod(evidence_field(evidence_json, "min_distance_m")), -0.1, 1e-6)
+      << evidence_json;
+}
+
 // Phase 3 — DETERMINISTIC proof of PREDICTIVE Cartesian look-ahead: a
 // CARTESIAN_DELTA chunk whose MEASURED start config is clear (so the reactive
 // check passes) but whose proposed EE deltas drive the arm into an obstacle must

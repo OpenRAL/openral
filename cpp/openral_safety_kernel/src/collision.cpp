@@ -477,10 +477,53 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
   return true;
 }
 
+namespace {
+
+// Fold one checked geometry pair into a sweep's evidence.
+//
+// `sweep_min` accumulates the minimum surface distance over EVERY pair a check
+// touches — pairs that never reach the margin and pairs the caller's gate
+// deliberately exempts included. `tripped` says whether this pair actually
+// tripped the check; only a tripped pair may become the reported evidence, and
+// it does so only while it is deeper than the pair already recorded. That keeps
+// `link_a` / `link_b` / `min_distance` describing one and the same (deepest)
+// tripping pair instead of pairing one cell's identity with another cell's
+// distance.
+//
+// Reporting only: `hit.hit` flips for exactly the same set of pairs as a plain
+// `if (tripped) hit.hit = true;` would.
+void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a,
+               int link_b) noexcept {
+  if (d < sweep_min) {
+    sweep_min = d;
+  }
+  if (!tripped) {
+    return;
+  }
+  if (!hit.hit || d < hit.min_distance) {
+    hit.hit = true;
+    hit.link_a = link_a;
+    hit.link_b = link_b;
+    hit.min_distance = d;
+  }
+}
+
+// Close a sweep: publish the sweep-wide minimum, and — when nothing tripped —
+// let `min_distance` keep its clearance meaning (there is no pair to describe).
+CollisionHit finish_sweep(CollisionHit hit, double sweep_min) noexcept {
+  hit.sweep_min_distance = sweep_min;
+  if (!hit.hit) {
+    hit.min_distance = sweep_min;
+  }
+  return hit;
+}
+
+}  // namespace
+
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                   double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t i = 0; i < n_caps; ++i) {
     const int li = model.capsule_link[i];
@@ -499,14 +542,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           capsule_distance(cap_i, model.capsules[i].radius, model.capsules[i].half_length, cap_j,
                            model.capsules[j].radius, model.capsules[j].half_length);
-      if (d < result.min_distance) {
-        result.min_distance = d;
-      }
-      if (d <= margin && !result.hit) {
-        result.hit = true;
-        result.link_a = li;
-        result.link_b = lj;
-      }
+      fold_pair(result, sweep_min, d, d <= margin, li, lj);
     }
   }
   // Blocky links carry an OBB instead of a capsule (issue #84):
@@ -529,14 +565,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           box_capsule_distance(box_i, model.boxes[bi].half_extents, cap_j,
                                model.capsules[cj].radius, model.capsules[cj].half_length);
-      if (d < result.min_distance) {
-        result.min_distance = d;
-      }
-      if (d <= margin && !result.hit) {
-        result.hit = true;
-        result.link_a = lb;
-        result.link_b = lc;
-      }
+      fold_pair(result, sweep_min, d, d <= margin, lb, lc);
     }
     for (std::size_t bj = bi + 1; bj < n_boxes; ++bj) {
       const int lb2 = model.box_link[bj];
@@ -547,23 +576,16 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
           compose(scratch.link_world[static_cast<std::size_t>(lb2)], model.boxes[bj].origin);
       const double d = box_box_distance(box_i, model.boxes[bi].half_extents, box_j,
                                         model.boxes[bj].half_extents);
-      if (d < result.min_distance) {
-        result.min_distance = d;
-      }
-      if (d <= margin && !result.hit) {
-        result.hit = true;
-        result.link_a = lb;
-        result.link_b = lb2;
-      }
+      fold_pair(result, sweep_min, d, d <= margin, lb, lb2);
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const WorldModel& world, double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
   const std::size_t n_world = world.capsules.size();
   for (std::size_t i = 0; i < n_caps; ++i) {
@@ -575,14 +597,8 @@ CollisionHit check_world_collision(const CollisionModel& model, const CollisionS
       const double d = capsule_distance(cap_i, model.capsules[i].radius,
                                         model.capsules[i].half_length, world.capsules[w].origin,
                                         world.capsules[w].radius, world.capsules[w].half_length);
-      if (d < result.min_distance) {
-        result.min_distance = d;
-      }
-      if (d <= margin && !result.hit) {
-        result.hit = true;
-        result.link_a = li;                   // robot link
-        result.link_b = static_cast<int>(w);  // world obstacle index
-      }
+      // link_a: robot link; link_b: world obstacle index.
+      fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(w));
     }
   }
   // Blocky links (OBB) are checked against every world obstacle too,
@@ -596,26 +612,19 @@ CollisionHit check_world_collision(const CollisionModel& model, const CollisionS
       const double d =
           box_capsule_distance(box_w, model.boxes[b].half_extents, world.capsules[w].origin,
                                world.capsules[w].radius, world.capsules[w].half_length);
-      if (d < result.min_distance) {
-        result.min_distance = d;
-      }
-      if (d <= margin && !result.hit) {
-        result.hit = true;
-        result.link_a = lb;
-        result.link_b = static_cast<int>(w);
-      }
+      fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(w));
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
       grid.resolution <= 0.0) {
-    return result;
+    return finish_sweep(result, sweep_min);
   }
   // Occupied cells are axis-aligned cubes. Use the existing exact
   // capsule-vs-box / conservative box-vs-box routines rather than replacing
@@ -661,14 +670,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           voxel.t = center;
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
-          if (d < result.min_distance) {
-            result.min_distance = d;
-          }
-          if (d <= margin && !result.hit) {
-            result.hit = true;
-            result.link_a = li;
-            result.link_b = static_cast<int>(idx);
-          }
+          fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(idx));
         }
       }
     }
@@ -708,19 +710,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           Transform voxel;
           voxel.t = center;
           const double d = box_box_distance(box_w, he, voxel, voxel_half);
-          if (d < result.min_distance) {
-            result.min_distance = d;
-          }
-          if (d <= margin && !result.hit) {
-            result.hit = true;
-            result.link_a = lb;
-            result.link_b = static_cast<int>(idx);
-          }
+          fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(idx));
         }
       }
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 namespace {
@@ -887,7 +882,7 @@ CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
                                             const CollisionScratch& scratch,
                                             const WorldModel& world, double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_world = world.capsules.size();
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
@@ -900,18 +895,13 @@ CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
         const double d = attached_primitive_capsule_distance(
             prim, prim_xf, world.capsules[w].origin, world.capsules[w].radius,
             world.capsules[w].half_length);
-        if (d < result.min_distance) {
-          result.min_distance = d;
-        }
-        if (d <= margin && !result.hit) {
-          result.hit = true;
-          result.link_a = static_cast<int>(i);  // attached object index (evidence is object-level)
-          result.link_b = static_cast<int>(w);  // world obstacle index
-        }
+        // link_a: attached object index (evidence is object-level, not
+        // per-primitive); link_b: world obstacle index.
+        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), static_cast<int>(w));
       }
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
@@ -919,10 +909,10 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
       grid.resolution <= 0.0) {
-    return result;
+    return finish_sweep(result, sweep_min);
   }
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
@@ -987,10 +977,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             } else {
               d = box_capsule_distance(voxel, voxel_half, prim_xf, prim.radius, prim.half_length);
             }
-            if (d < result.min_distance) {
-              result.min_distance = d;
-            }
-            if (d <= margin && !result.hit) {
+            // Gate (unchanged): a cell within the margin still trips unless
+            // this payload's attach-time contact baseline exempts it, or the
+            // contact phase tolerates it as a new shallow boundary cell. An
+            // exempted cell contributes to `sweep_min` only — it is not the
+            // reason for any stop and must never supply the reported distance.
+            bool tripped = false;
+            if (d <= margin) {
+              tripped = true;
               const bool has_baseline = i < 8 && grid.attached_contact_mask != nullptr &&
                                         grid.attached_contact_distance != nullptr &&
                                         grid.attached_contact_stride > idx &&
@@ -1000,22 +994,20 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                     grid.attached_contact_distance[i * grid.attached_contact_stride + idx];
                 const bool embedded_residue = baseline <= -0.5 * grid.resolution;
                 if (embedded_residue || d + grid.attached_contact_tolerance >= baseline) {
-                  continue;
+                  tripped = false;
                 }
               } else if (grid.attached_contact_allow_new_shallow &&
                          d + grid.attached_contact_tolerance >= 0.0) {
-                continue;
+                tripped = false;
               }
-              result.hit = true;
-              result.link_a = static_cast<int>(i);
-              result.link_b = static_cast<int>(idx);
             }
+            fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx));
           }
         }
       }
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,
@@ -1083,7 +1075,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const CollisionScratch& scratch,
                                            double margin) noexcept {
   CollisionHit result;
-  result.min_distance = std::numeric_limits<double>::infinity();
+  double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
   const std::size_t n_boxes = model.boxes.size();
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
@@ -1102,14 +1094,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
             compose(scratch.link_world[static_cast<std::size_t>(lc)], model.capsules[c].origin);
         const double d = attached_primitive_capsule_distance(
             prim, prim_xf, cap_j, model.capsules[c].radius, model.capsules[c].half_length);
-        if (d < result.min_distance) {
-          result.min_distance = d;
-        }
-        if (d <= margin && !result.hit) {
-          result.hit = true;
-          result.link_a = static_cast<int>(i);
-          result.link_b = lc;
-        }
+        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lc);
       }
       for (std::size_t b = 0; b < n_boxes; ++b) {
         const int lb = model.box_link[b];
@@ -1125,18 +1110,11 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
           d = box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf, prim.radius,
                                    prim.half_length);
         }
-        if (d < result.min_distance) {
-          result.min_distance = d;
-        }
-        if (d <= margin && !result.hit) {
-          result.hit = true;
-          result.link_a = static_cast<int>(i);
-          result.link_b = lb;
-        }
+        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lb);
       }
     }
   }
-  return result;
+  return finish_sweep(result, sweep_min);
 }
 
 }  // namespace openral_safety_kernel
