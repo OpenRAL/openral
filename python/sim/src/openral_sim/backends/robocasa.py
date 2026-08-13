@@ -123,6 +123,14 @@ _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "PickPlaceMicrowaveToCounter",
     "PickPlaceStoveToCounter",
     "PickPlaceCounterToBlender",
+    # Drawer-target pick-and-place. Both place into a drawer the robot
+    # must reach down into, which is the geometry the attached-object
+    # collision stack is checked against (scenes/deploy/*_drawer_*.yaml).
+    # `PickPlaceFridgeShelfToDrawer` picks and places entirely inside the
+    # fridge and declares EXCLUDE_STYLES for the side-by-side fridges that
+    # ship no drawer, so not every seed yields a constructible layout.
+    "PickPlaceCounterToDrawer",
+    "PickPlaceFridgeShelfToDrawer",
     "OpenDoor",
     "CloseDoor",
     "OpenDrawer",

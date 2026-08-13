@@ -133,6 +133,25 @@ def test_curated_tasks_register_with_panda_mobile() -> None:
         assert SCENES.fixed_robot(scene_id) == "panda_mobile"
 
 
+def test_drawer_target_tasks_are_curated() -> None:
+    """The two drawer-target PickPlace envs are registered by name.
+
+    ``test_curated_tasks_register_with_panda_mobile`` loops over the tuple,
+    so it stays green if an entry is dropped. These two back the shipped
+    ``robocasa_drawer_utensil`` / ``robocasa_fridge_drawer`` deploy scenes
+    (the attached-object collision matrix), so name them explicitly — the
+    strings are the robosuite env class names from
+    ``robocasa/environments/kitchen/atomic/kitchen_pick_place.py`` and
+    ``_resolve_env_name`` passes them through verbatim.
+    """
+    for task in ("PickPlaceCounterToDrawer", "PickPlaceFridgeShelfToDrawer"):
+        assert task in _CURATED_PREBUILT_TASKS
+        scene_id = f"robocasa/{task}"
+        assert SCENES.fixed_robot(scene_id) == "panda_mobile"
+        opts = RoboCasaBackendOptions(mode="prebuilt", prebuilt_task=task)
+        assert _resolve_env_name(opts, scene_id) == task
+
+
 def test_procedural_scene_id_registered() -> None:
     """The bare `robocasa` procedural scene id is registered with the fixed robot."""
     assert "robocasa" in SCENES
