@@ -5,11 +5,28 @@ Called by `just install-cli` (and transitively by `just quickstart`).
 Idempotent — safe to re-run after moving the repo or upgrading Python.
 
 The generated wrapper:
-  1. Sources the ROS 2 distro overlay (/opt/ros/*/setup.bash) if present.
-  2. Sources the colcon workspace overlay (<repo>/install/setup.bash) if built.
-  3. exec-replaces itself with .venv/bin/openral, forwarding all args.
+  1. Resolves which checkout to drive (see below).
+  2. Sources the ROS 2 distro overlay (/opt/ros/*/setup.bash) if present.
+  3. Sources the colcon workspace overlay (<repo>/install/setup.bash) if built.
+  4. exec-replaces itself with .venv/bin/openral, forwarding all args.
      So `openral` (no args) drops into the REPL and `openral <cmd>` is
      one-shot, matching the behaviour `just openral` used to provide.
+
+Repo-root resolution is a *provenance* control, not a convenience. The wrapper
+bakes in the checkout that generated it, so running `openral` from a second
+checkout (a git worktree used for validation) used to silently execute the
+first checkout's venv, colcon overlay and ``robots/`` manifests — a validation
+run on a DGX Spark was attributed to the wrong branch with nothing in the log
+to show it. The generated wrapper therefore:
+
+  * honours ``OPENRAL_REPO_ROOT`` as an explicit override, validating that the
+    named tree really has an executable ``.venv/bin/openral`` before exec'ing
+    it (hard error otherwise — never a silent fall back to the baked path), and
+    printing the root it settled on to stderr so every log records it;
+  * warns (non-fatally) when the cwd sits inside a *different* OpenRAL checkout
+    than the baked-in one, which is the shape of the Spark incident.
+
+The single-checkout default is unchanged and stays silent.
 """
 
 from __future__ import annotations
@@ -47,9 +64,50 @@ _PATH_SNIPPET = f'\n{_PATH_MARKER}\nexport PATH="$HOME/.local/bin:$PATH"\n'
 _WRAPPER_TEMPLATE = r"""#!/usr/bin/env bash
 # OpenRAL CLI launcher — written by `just install-cli` / `just quickstart`.
 # Re-run `just install-cli` if you move the repo.
+#
+# Which checkout does this run? In order:
+#   1. $OPENRAL_REPO_ROOT, when set — validated, announced on stderr.
+#   2. The baked-in checkout below (the one that generated this file).
+# A cwd inside a DIFFERENT OpenRAL checkout is warned about, not overridden:
+# a launcher must never quietly execute a tree the caller didn't mean.
 set -euo pipefail
 
 _OPENRAL_DIR="__REPO__"
+_OPENRAL_BAKED_DIR="$_OPENRAL_DIR"
+
+if [ -n "${OPENRAL_REPO_ROOT:-}" ]; then
+    _OPENRAL_OVERRIDE="$OPENRAL_REPO_ROOT"
+    # Normalise so the announced root is absolute and symlink-free.
+    if [ -d "$_OPENRAL_OVERRIDE" ]; then
+        _OPENRAL_OVERRIDE=$(cd "$_OPENRAL_OVERRIDE" && pwd -P)
+    fi
+    if [ ! -x "$_OPENRAL_OVERRIDE/.venv/bin/openral" ]; then
+        echo "ERROR: OPENRAL_REPO_ROOT=$OPENRAL_REPO_ROOT has no executable .venv/bin/openral." >&2
+        echo "       Run \`just sync --all-packages\` inside that checkout, or unset" >&2
+        echo "       OPENRAL_REPO_ROOT to use the installed default ($_OPENRAL_BAKED_DIR)." >&2
+        exit 1
+    fi
+    _OPENRAL_DIR="$_OPENRAL_OVERRIDE"
+    # One line, so a captured log always names the tree that actually ran.
+    echo "openral: repo root $_OPENRAL_DIR" \
+         "(OPENRAL_REPO_ROOT override; installed default $_OPENRAL_BAKED_DIR)" >&2
+else
+    # Provenance guard: is the cwd inside a different OpenRAL checkout? If so
+    # the baked-in tree still wins (unchanged behaviour) but we say so loudly,
+    # because that mismatch silently misattributes validation runs.
+    _OPENRAL_CWD_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_OPENRAL_CWD_ROOT" ] && [ -d "$_OPENRAL_CWD_ROOT" ]; then
+        _OPENRAL_CWD_ROOT=$(cd "$_OPENRAL_CWD_ROOT" && pwd -P)
+        if [ "$_OPENRAL_CWD_ROOT" != "$_OPENRAL_DIR" ] \
+           && [ -x "$_OPENRAL_CWD_ROOT/.venv/bin/openral" ]; then
+            echo "WARNING: cwd is inside the OpenRAL checkout $_OPENRAL_CWD_ROOT," >&2
+            echo "         but this launcher is baked to $_OPENRAL_DIR — running the latter's" >&2
+            echo "         venv, overlay and robots/ manifests. To run THIS checkout instead:" >&2
+            echo "           export OPENRAL_REPO_ROOT=$_OPENRAL_CWD_ROOT" >&2
+            echo "         (or re-run \`just install-cli\` from it to re-bake the default)." >&2
+        fi
+    fi
+fi
 
 # Source an ament-generated overlay that is not `set -u`/`set -e` safe.
 # Disable nounset+errexit only around the `source`, then restore them.
@@ -90,8 +148,12 @@ exec "$_VENV_BIN" "$@"
 def render_wrapper(repo: Path) -> str:
     """Return the ``openral`` launcher bash with ``repo`` baked in as the repo dir.
 
+    ``repo`` is the *default* checkout only: the rendered wrapper lets
+    ``OPENRAL_REPO_ROOT`` override it at run time (see the module docstring).
+
     Args:
-        repo: Absolute path to the OpenRAL checkout the wrapper should drive.
+        repo: Absolute path to the OpenRAL checkout the wrapper should drive
+            unless ``OPENRAL_REPO_ROOT`` says otherwise.
 
     Returns:
         The complete bash source of the wrapper, ready to write to disk.
@@ -102,6 +164,8 @@ def render_wrapper(repo: Path) -> str:
         >>> "set -euo pipefail" in script
         True
         >>> '_OPENRAL_DIR="/opt/openral"' in script
+        True
+        >>> "OPENRAL_REPO_ROOT" in script  # run-time override honoured
         True
         >>> "__REPO__" in script  # token fully substituted
         False
