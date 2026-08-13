@@ -78,6 +78,8 @@ from openral_core.schemas import (
     SafetyEnvelope,
     SceneGraph,
     SceneSpec,
+    SegmenterContract,
+    SegmenterEngine,
     SensorBundle,
     SensorFrame,
     SensorModality,
@@ -831,6 +833,22 @@ def test_fuzz_rskill_latency_budget(instance: RSkillLatencyBudget) -> None:
 def test_fuzz_rskill_manifest(instance: RSkillManifest) -> None:
     """RSkillManifest round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(RSkillManifest, instance)
+
+
+_segmenter_contract_st = st.builds(
+    SegmenterContract,
+    engine=st.sampled_from(list(SegmenterEngine)),
+    max_prompt_points=st.integers(min_value=1, max_value=64),
+    multimask=st.booleans(),
+    min_mask_area_px=st.integers(min_value=1, max_value=1 << 20),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_segmenter_contract_st)
+def test_fuzz_segmenter_contract(instance: SegmenterContract) -> None:
+    """SegmenterContract round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(SegmenterContract, instance)
 
 
 # ─── SimEnvironment strategies ───────────────────────────────────────────────

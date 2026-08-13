@@ -2079,6 +2079,12 @@ class AttachmentEvidenceKind(str, Enum):
     GRIPPER_FORCE = "gripper_force"
     PERCEPTION_TRACK = "perception_track"
     OPERATOR = "operator"
+    # A ``kind: "segmenter"`` rSkill masked the payload in a wrist RGB-D frame
+    # and the masked depth passed the producer's geometric gates (containment
+    # between the jaws, payload volume, depth validity). The mask's own model
+    # score is never part of that decision — a confidently-wrong mask covering
+    # half the frame is rejected on volume, not on confidence.
+    VISION_SEGMENTATION = "vision_segmentation"
 
 
 class PlaceRegion(BaseModel):
@@ -5403,7 +5409,15 @@ class RSkillProcessors(BaseModel):
 
 
 RSkillKind: TypeAlias = Literal[
-    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward", "playbook"
+    "vla",
+    "wam",
+    "ros_action",
+    "ros_service",
+    "detector",
+    "segmenter",
+    "vlm",
+    "reward",
+    "playbook",
 ]
 """Discriminator selecting how an rSkill is instantiated at the loader.
 
@@ -5430,6 +5444,19 @@ RSkillKind: TypeAlias = Literal[
   :class:`DetectorContract` block and :attr:`RSkillManifest.weights_uri`
   (the exported ONNX / TensorRT engine). ``model_family`` and
   ``action_contract`` / ``state_contract`` are forbidden.
+* ``"segmenter"`` — perception producer that answers a **geometric** prompt
+  (a point, or a small set of positive/negative points, in pixel coordinates)
+  with a binary mask over the current camera frame. Unlike ``"detector"`` it
+  carries no label vocabulary and no score threshold: it does not say *what*
+  the pixels are, only *which* pixels belong to the prompted thing. Its
+  consumer is the HAL's vision attachment-evidence producer, which intersects
+  the mask with the wrist depth frame to bound a grasped payload. Requires a
+  :class:`SegmenterContract` block and :attr:`RSkillManifest.weights_uri`;
+  ``model_family``, ``detector``, ``reward``, ``ros_integration``,
+  ``action_contract`` / ``state_contract``, ``processors``,
+  ``image_preprocessing``, ``n_action_steps`` and ``starting_pose`` are
+  FORBIDDEN, and ``actuators_required`` MUST be empty — a segmenter actuates
+  nothing.
 * ``"vlm"`` — vision/video-language model used as a scene-understanding
   perception component (e.g. Qwen3.5-4B NF4). Accepts RGB image or video
   frames and a natural-language query; returns a text answer. Emits no
@@ -5717,6 +5744,84 @@ class DetectorContract(BaseModel):
                 f"DetectorContract.input_size must have both dimensions > 0, got {v!r}."
             )
         return v
+
+
+class SegmenterEngine(str, Enum):
+    """Backend that executes a ``kind: "segmenter"`` rSkill.
+
+    The segmenter counterpart of :class:`DetectorEngine`. There is no legacy
+    ``runtime``-keyed fallback to preserve here, so
+    :attr:`SegmenterContract.engine` is REQUIRED — a segmenter manifest always
+    names its backend outright.
+
+    Attributes:
+        SAM2_HF: In-process Transformers ``Sam2Model`` promptable segmenter
+            (SAM 2.1 Hiera). Consumes positive/negative point prompts in pixel
+            coordinates and emits binary masks at the frame's own resolution.
+
+    Example:
+        >>> SegmenterEngine.SAM2_HF.value
+        'sam2_hf'
+    """
+
+    SAM2_HF = "sam2_hf"
+
+
+class SegmenterContract(BaseModel):
+    """Manifest contract for ``kind: "segmenter"`` rSkills.
+
+    The sibling of :class:`DetectorContract` for models that answer a
+    **geometric** prompt rather than a semantic one. A detector is asked "where
+    are the cups?" and replies with labelled, scored boxes; a segmenter is asked
+    "what is the extent of the thing under *this pixel*?" and replies with a
+    mask. It therefore carries **no** ``labels`` and **no** ``score_threshold``:
+    it never classifies, and its consumer never gates on model confidence.
+
+    That last point is a safety property, not an oversight. The mask feeds the
+    HAL's vision attachment-evidence producer, which turns masked depth into the
+    collision payload a manipulator plans around. A segmenter asked to mask a
+    grasped object against a patterned tablecloth will happily return a
+    high-confidence mask covering most of the frame; only geometry
+    (containment between the jaws, payload extent, depth validity) can reject
+    that, so only geometry is allowed to. A measured instance of exactly that
+    failure — a 59.8%-of-frame mask returned at the model's own top score of
+    0.977 — is what removed ``score_threshold`` from this contract.
+
+    Required when :attr:`RSkillManifest.kind` is ``"segmenter"``; forbidden for
+    all other kinds (enforced by
+    :meth:`RSkillManifest._check_kind_consistency`). Like ``detector`` /
+    ``vlm``, a segmenter is a pure perception producer: it emits no Action
+    chunks and requires no actuators.
+
+    Attributes:
+        engine: Backend that executes the model (:class:`SegmenterEngine`).
+            REQUIRED — there is no ``runtime``-keyed fallback for this kind.
+        max_prompt_points: Upper bound on how many prompt points one request may
+            carry (positive TCP point plus optional negative jaw-tip points).
+            Bounds the request so a caller cannot make one segmentation
+            unboundedly expensive. Default ``8``.
+        multimask: Ask the backend for its multi-hypothesis head (SAM 2 returns
+            three nested candidates per point prompt) instead of a single mask.
+            The consumer picks among candidates on **geometry**, never on the
+            model's per-candidate score. Default ``True``.
+        min_mask_area_px: Masks smaller than this many set pixels are discarded
+            as degenerate before they ever reach the depth intersection — a
+            handful of pixels cannot bound a payload. Default ``64``.
+
+    Example:
+        >>> c = SegmenterContract(engine=SegmenterEngine.SAM2_HF)
+        >>> c.engine.value
+        'sam2_hf'
+        >>> (c.max_prompt_points, c.multimask, c.min_mask_area_px)
+        (8, True, 64)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    engine: SegmenterEngine
+    max_prompt_points: int = Field(default=8, ge=1)
+    multimask: bool = True
+    min_mask_area_px: int = Field(default=64, ge=1)
 
 
 class RewardContract(BaseModel):
@@ -6341,6 +6446,13 @@ class RSkillManifest(BaseModel):
     # pure perception producer.
     detector: DetectorContract | None = None
 
+    # Promptable-segmenter contract. REQUIRED when ``kind == "segmenter"``;
+    # FORBIDDEN otherwise. Carries the backend selector and the prompt/mask
+    # bounds a geometric segmenter (SAM 2.1) needs. Like a detector it is a pure
+    # perception producer — no Action chunks, no actuators — but it answers a
+    # point prompt with a mask instead of a vocabulary with labelled boxes.
+    segmenter: SegmenterContract | None = None
+
     # Reward / progress-monitor model contract. REQUIRED when
     # ``kind == "reward"``; FORBIDDEN otherwise. Carries the rolling-window +
     # sampling-rate + progress-range config a robotic reward model (Robometer)
@@ -6467,6 +6579,11 @@ class RSkillManifest(BaseModel):
           and no VLA inference lifecycle);
           :attr:`actuators_required` MUST be empty (a detector actuates
           nothing).
+        * ``kind == "segmenter"`` → :attr:`segmenter` REQUIRED;
+          :attr:`weights_uri` REQUIRED; the same VLA-only fields the
+          ``detector`` branch forbids are forbidden here, plus
+          :attr:`detector` itself (the two contracts are alternatives, never
+          both); :attr:`actuators_required` MUST be empty.
         * ``kind == "wam"`` → schema-side this is unconstrained beyond the
           base VLA shape; the loader's resolver branch raises
           :class:`~openral_core.exceptions.ROSConfigError` at resolve time
@@ -6511,6 +6628,11 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='vla' forbids "
                     "`detector` (it is for kind='detector' perception producers only)."
                 )
+            if self.segmenter is not None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    "`segmenter` (it is for kind='segmenter' mask producers only)."
+                )
             if self.reward is not None:
                 raise ValueError(
                     f"RSkillManifest({self.name!r}): kind='vla' forbids "
@@ -6539,6 +6661,7 @@ class RSkillManifest(BaseModel):
                 "image_preprocessing": self.image_preprocessing,
                 "starting_pose": self.starting_pose,
                 "detector": self.detector,
+                "segmenter": self.segmenter,
                 "reward": self.reward,
             }
             set_fields = sorted(name for name, value in forbidden.items() if value is not None)
@@ -6576,6 +6699,7 @@ class RSkillManifest(BaseModel):
                 )
             forbidden_detector = {
                 "model_family": self.model_family,
+                "segmenter": self.segmenter,
                 "ros_integration": self.ros_integration,
                 "action_contract": self.action_contract,
                 "state_contract": self.state_contract,
@@ -6604,6 +6728,49 @@ class RSkillManifest(BaseModel):
                 )
             return self
 
+        if self.kind == "segmenter":
+            if self.segmenter is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='segmenter' requires a "
+                    "`segmenter` block (engine, max_prompt_points, multimask)."
+                )
+            if self.weights_uri is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='segmenter' requires "
+                    "`weights_uri` (the Hugging Face segmentation-model repository)."
+                )
+            forbidden_segmenter = {
+                "detector": self.detector,
+                "reward": self.reward,
+                "model_family": self.model_family,
+                "ros_integration": self.ros_integration,
+                "action_contract": self.action_contract,
+                "state_contract": self.state_contract,
+                "processors": self.processors,
+                "n_action_steps": self.n_action_steps,
+                "image_preprocessing": self.image_preprocessing,
+                "starting_pose": self.starting_pose,
+            }
+            set_segmenter_forbidden = sorted(
+                name for name, value in forbidden_segmenter.items() if value is not None
+            )
+            if set_segmenter_forbidden:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='segmenter' forbids "
+                    f"these fields: {set_segmenter_forbidden!r}. A segmenter is a "
+                    "pure perception producer — it answers a geometric point "
+                    "prompt with a mask, so it has no label vocabulary, no VLA "
+                    "policy family, no ROS wrapper, and no VLA inference "
+                    "lifecycle."
+                )
+            if self.actuators_required:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='segmenter' requires "
+                    f"`actuators_required` to be empty (got "
+                    f"{len(self.actuators_required)} entries). A segmenter actuates nothing."
+                )
+            return self
+
         if self.kind == "vlm":
             if self.weights_uri is None:
                 raise ValueError(
@@ -6612,6 +6779,7 @@ class RSkillManifest(BaseModel):
                 )
             forbidden_vlm = {
                 "detector": self.detector,
+                "segmenter": self.segmenter,
                 "reward": self.reward,
                 "ros_integration": self.ros_integration,
                 "action_contract": self.action_contract,
@@ -6653,6 +6821,7 @@ class RSkillManifest(BaseModel):
                 )
             forbidden_reward = {
                 "detector": self.detector,
+                "segmenter": self.segmenter,
                 "model_family": self.model_family,
                 "ros_integration": self.ros_integration,
                 "action_contract": self.action_contract,
@@ -6709,6 +6878,7 @@ class RSkillManifest(BaseModel):
                 "weights_uri": self.weights_uri,
                 "min_vram_gb": self.min_vram_gb,
                 "detector": self.detector,
+                "segmenter": self.segmenter,
                 "reward": self.reward,
                 "ros_integration": self.ros_integration,
                 "processors": self.processors,
@@ -6850,7 +7020,8 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "lingbot_vla2",  # family lingbot_vla2
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
-        # Non-VLA tool-model tokens (detector / vlm / reward).
+        # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).
+        "sam2_1",  # SAM 2.1 Hiera promptable segmenter
         "omdet_turbo",
         "rtdetr_coco_r18",
         "rtdetr_v2_r50vd",

@@ -42,6 +42,7 @@ _PERMISSIVE_WEIGHT_LICENSES = {"apache-2.0", "mit", "bsd-3-clause", "nvidia_open
 _KIND_NOUN = {
     "vla": "Vision-Language-Action policy",
     "detector": "object detector",
+    "segmenter": "promptable segmenter",
     "vlm": "vision-language model",
     "reward": "task-progress / reward monitor",
     "ros_action": "ROS action skill (weightless)",

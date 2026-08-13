@@ -397,7 +397,7 @@ def build_tool_palette(
     3. ``role == "s1"`` — only S1 skills are dispatchable via
        ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots are
        reserved and have separate dispatch paths) — **and**
-       ``kind != "detector"``: detector rSkills are S1-rate perception
+       ``kind not in {"detector", "segmenter"}``: both are S1-rate perception
        producers, not ExecuteRskill-dispatchable; they activate as the
        perception ROS node / GStreamer tee consumer.
     4. If ``commercial_deployment`` is ``True``, the skill's license
@@ -499,6 +499,13 @@ def build_tool_palette(
                         description=skill.description,
                     )
                 )
+            continue
+        # ``segmenter`` rSkills answer a geometric point prompt with a mask for
+        # the HAL's attachment-evidence producer. They are S1-rate perception
+        # producers with no actuation authority and no reasoner-facing tool at
+        # all — the LLM never asks for a mask, so unlike an on-demand detector
+        # they are not even surfaced as a selectable option.
+        if skill.kind == "segmenter":
             continue
         skill_tags = set(skill.embodiment_tags)
         if not (skill_tags & robot_tags):
