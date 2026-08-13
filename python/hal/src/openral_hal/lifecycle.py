@@ -985,6 +985,12 @@ if _ROS2_AVAILABLE:
             msg.velocity = list(state.velocity) if state.velocity else []
             msg.effort = list(state.effort) if state.effort else []
             self._publisher.publish(msg)
+            # The grasp trigger reads the same typed snapshot the HAL just read —
+            # no second source of truth, no extra subscription. Only wired when
+            # the vision attachment leg is enabled.
+            vision = getattr(self, "_vision_attachment", None)
+            if vision is not None:
+                vision.observe_joint_state(state)
             if self._joint_state_pub is not None:
                 self._joint_state_pub.publish(msg)
             if self._policy_state_pub is not None:
@@ -1047,15 +1053,34 @@ if _ROS2_AVAILABLE:
                 complete = self._safe_group_count == group_size
             if not complete:
                 return
-            bridge = getattr(self, "_bridge", None)
-            ack_ready = getattr(bridge, "attachment_action_ack_ready", None)
-            if callable(ack_ready) and not ack_ready():
+            if not self._attachment_perception_ready():
                 self._deferred_action_applied_tick = tick
                 self.get_logger().info(
                     f"deferring action_applied tick={tick} for attachment perception"
                 )
                 return
             self._publish_action_applied_tick(tick)
+
+        def _attachment_barrier_holders(self) -> list[Any]:
+            """Every component that can hold the attached-payload ack barrier.
+
+            Two of them exist: the simulator sensor bridge, which waits for the
+            transparent depth frames that clear the payload out of the occupancy
+            map, and the vision attachment bridge, which waits for a bounded
+            ``SegmentInView`` round trip on real hardware. They are alternatives
+            in practice, but the tick must clear whichever are present rather
+            than only the first one wired (CLAUDE.md §1.4).
+            """
+            candidates = (getattr(self, "_bridge", None), getattr(self, "_vision_attachment", None))
+            return [holder for holder in candidates if holder is not None]
+
+        def _attachment_perception_ready(self) -> bool:
+            """Whether every attachment barrier holder has settled."""
+            for holder in self._attachment_barrier_holders():
+                ack_ready = getattr(holder, "attachment_action_ack_ready", None)
+                if callable(ack_ready) and not ack_ready():
+                    return False
+            return True
 
         def _publish_action_applied_tick(self, tick: int) -> None:
             """Publish one completed tick and reset grouped-action bookkeeping."""
@@ -1072,8 +1097,13 @@ if _ROS2_AVAILABLE:
             self._deferred_action_applied_tick = 0
 
         def _on_attachment_perception_ready(self) -> None:
-            """Release the grouped tick held while attached depth clears the map."""
-            if self._deferred_action_applied_tick > 0:
+            """Release the grouped tick held while attached perception settles.
+
+            Called by whichever barrier holder finished. It re-checks *all* of
+            them before releasing, because with two holders wired one finishing
+            does not mean the tick is safe to acknowledge.
+            """
+            if self._deferred_action_applied_tick > 0 and self._attachment_perception_ready():
                 self.get_logger().info(
                     "attachment perception ready; releasing action_applied "
                     f"tick={self._deferred_action_applied_tick}"
@@ -1369,8 +1399,28 @@ if _ROS2_AVAILABLE:
             # accepted by rclpy.
             self.declare_parameter("odom_publish_rate_hz", 20.0)
             self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+            # Vision attachment-evidence leg (real hardware). OFF by default and
+            # opt-in: it publishes /openral/attachment_state, which the sim
+            # sensor bridge also drives from MuJoCo ground truth, and two
+            # authorities on one attachment topic is not a thing to arrive at by
+            # accident. Needs an active `openral_perception_ros/segmenter_node`
+            # serving SegmentInView; without one every grasp degrades (visibly)
+            # to the conservative GRIPPER_FORCE box.
+            from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
+
+            self.declare_parameter("vision_attachment_enabled", False)
+            self.declare_parameter("vision_attachment_camera", "")
+            self.declare_parameter("vision_attachment_depth_topic", "")
+            self.declare_parameter("vision_attachment_service", DEFAULT_SEGMENT_SERVICE)
+            # Seconds. A warmed SAM 2.1 call is ~53 ms on the reference GPU; the
+            # default leaves ~4x margin while staying the same order as the
+            # ~100 ms barrier it rides inside. A CPU-only host must raise it.
+            self.declare_parameter("vision_attachment_deadline_s", 0.25)
+            self.declare_parameter("vision_attachment_tcp_frame", "")
+            self.declare_parameter("vision_attachment_jaw_tip_frames", [""])
             self._bridge: Any = None
             self._mobile_base: Any = None
+            self._vision_attachment: Any = None
             # Reflective ``ResetToPose`` service (issue #191 Phase 2):
             # opened in on_configure_post_hal only when the built
             # HAL exposes ``reset_to_pose`` (every MujocoArmHAL sim arm does;
@@ -1612,7 +1662,52 @@ if _ROS2_AVAILABLE:
                     proprio=self._proprio,
                 )
                 self._mobile_base.setup()
+
+            self._setup_vision_attachment()
             return TransitionCallbackReturn.SUCCESS
+
+        def _setup_vision_attachment(self) -> None:
+            """Attach the vision attachment bridge when the operator enabled it.
+
+            Opt-in (``vision_attachment_enabled``) because it becomes a second
+            authority on ``/openral/attachment_state``. A manifest that cannot
+            support it (no gripper joints, no effort limit, no camera
+            intrinsics) is a loud configuration error at activate, not a
+            silently-disabled safety input.
+            """
+            gp = self.get_parameter
+            if not gp("vision_attachment_enabled").get_parameter_value().bool_value:
+                return
+            from openral_hal.vision_attachment_bridge import (
+                VisionAttachmentBridge,
+                VisionAttachmentConfig,
+            )
+
+            assert self._hal is not None
+            self._vision_attachment = VisionAttachmentBridge(
+                self,
+                self._hal.description,
+                on_perception_ready=self._on_attachment_perception_ready,
+                config=VisionAttachmentConfig(
+                    camera=gp("vision_attachment_camera").get_parameter_value().string_value,
+                    depth_topic=gp("vision_attachment_depth_topic")
+                    .get_parameter_value()
+                    .string_value,
+                    service_name=gp("vision_attachment_service").get_parameter_value().string_value,
+                    deadline_s=gp("vision_attachment_deadline_s")
+                    .get_parameter_value()
+                    .double_value,
+                    tcp_frame=gp("vision_attachment_tcp_frame").get_parameter_value().string_value,
+                    jaw_tip_frames=tuple(
+                        frame
+                        for frame in gp("vision_attachment_jaw_tip_frames")
+                        .get_parameter_value()
+                        .string_array_value
+                        if frame
+                    ),
+                ),
+            )
+            self._vision_attachment.setup()
 
         def on_deactivate_pre_teardown(self) -> None:
             """Tear down the sensor + mobile-base bridges' publishers / timers / viewer."""
@@ -1622,6 +1717,9 @@ if _ROS2_AVAILABLE:
             if self._mobile_base is not None:
                 self._mobile_base.teardown()
                 self._mobile_base = None
+            if self._vision_attachment is not None:
+                self._vision_attachment.teardown()
+                self._vision_attachment = None
 
         def on_cleanup_pre_disconnect(self) -> None:
             """Idempotent teardown of the sensor + mobile-base bridges + ResetToPose."""
@@ -1633,6 +1731,9 @@ if _ROS2_AVAILABLE:
             if self._mobile_base is not None:
                 self._mobile_base.teardown()
                 self._mobile_base = None
+            if self._vision_attachment is not None:
+                self._vision_attachment.teardown()
+                self._vision_attachment = None
             if self._reset_to_pose_srv is not None:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None
