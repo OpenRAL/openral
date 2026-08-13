@@ -11,13 +11,18 @@ out.
 The guard and the ``odom`` publisher therefore have to agree on what "mobile"
 means, so both call :func:`describes_mobile_base`. Validated against the real
 ``robots/*/robot.yaml`` manifests — no mocks (CLAUDE.md §1.11).
+
+These are the pure-predicate half, which needs no ROS. The bridge half — the
+guard running on a real ``SimSensorBridge`` with a real ``rclpy`` node — is
+``tests/integration/test_sim_sensor_bridge_tf_guard.py``, gated on
+``OPENRAL_TEST_ROS_LIVE=1`` and listed in ``scripts/ros_live_tests.sh``. It
+lived here behind an ``importorskip`` and so ran on no CI lane at all.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from openral_core import RobotDescription
 from openral_core.schemas import RobotCapabilities
 from openral_hal.mobile_base_bridge import describes_mobile_base
@@ -61,57 +66,21 @@ def test_fixed_base_arm_is_not_mobile() -> None:
     assert not describes_mobile_base(franka)
 
 
-def test_sim_sensor_bridge_skips_the_world_root_for_a_mobile_robot() -> None:
-    """The guard itself (not just the predicate) short-circuits for panda_mobile.
-
-    Exercised on the real bridge with a real rclpy node and the real in-process
-    ``PandaMobileHAL``. No MuJoCo handle is passed: the mobile decision must be
-    reached from the manifest alone, before the bridge reads the model — which
-    is also why no static broadcaster is ever constructed.
-    """
-    rclpy = pytest.importorskip("rclpy", reason="the bridge half of this test needs rclpy")
-
-    from openral_hal.panda_mobile import PANDA_MOBILE_DESCRIPTION, PandaMobileHAL
-    from openral_hal.sim_sensor_bridge import SimSensorBridge
-    from rclpy.node import Node
-
-    rclpy.init()
-    try:
-        node = Node("test_mobile_base_tf_guard")
-        try:
-            bridge = SimSensorBridge(
-                node,
-                PandaMobileHAL(),
-                PANDA_MOBILE_DESCRIPTION,
-                viewer_enabled=False,
-            )
-            bridge._publish_world_base_tf(None, None)
-
-            # The settled flag is the assertion that discriminates: reaching it
-            # means the guard fired. Falling through to the "no base body
-            # resolved yet" return also publishes nothing *right now*, but
-            # leaves the decision pending — so the static world->base_link goes
-            # out the moment the MuJoCo base body resolves, which is exactly
-            # what the dead guard did on RoboCasa.
-            assert bridge._world_base_published, (
-                "a mobile robot must get no static world->base_link — MobileBaseBridge "
-                "already publishes odom->base_link, and a second parent splits /tf"
-            )
-            assert bridge._static_tf_broadcaster is None
-        finally:
-            node.destroy_node()
-    finally:
-        rclpy.shutdown()
-
-
-def test_declared_footprint_radius_alone_does_not_make_a_robot_mobile() -> None:
+def test_footprint_radius_decides_nothing_in_either_direction() -> None:
     """``footprint_radius`` is a Nav2 tuning knob, not the mobile-base signal.
 
-    A mobile robot may omit it (nothing in the schema requires it), so a guard
-    keyed off it would resume publishing the second parent the day someone
-    lands a mobile manifest without Nav2 tuning.
+    Both directions matter, because a guard keyed off it fails both ways:
+
+    * A mobile robot may omit it (nothing in the schema requires it), so such a
+      guard would resume publishing the second parent the day someone lands a
+      mobile manifest without Nav2 tuning.
+    * A fixed-base arm may carry one, and such a guard would then drop the
+      static ``world -> base_frame`` root the arm needs to be placed at all.
     """
     panda_mobile = _description("panda_mobile")
     without_nav2_tuning = panda_mobile.model_copy(update={"footprint_radius": None})
-
     assert describes_mobile_base(without_nav2_tuning)
+
+    franka = _description("franka_panda")
+    with_nav2_tuning = franka.model_copy(update={"footprint_radius": 0.35})
+    assert not describes_mobile_base(with_nav2_tuning)

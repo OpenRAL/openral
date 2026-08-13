@@ -147,7 +147,8 @@ no-ops when ROS 2 is not sourced.
 #### The live-ROS suite (`OPENRAL_TEST_ROS_LIVE`)
 
 A set of integration tests — the reasoner node's dispatch, VRAM and async-LLM
-paths, plus the Tier-C critic producer — needs more than an importable `rclpy`:
+paths, the Tier-C critic producer, and the HAL sim-sensor bridge's
+mobile-base `/tf` guard — needs more than an importable `rclpy`:
 a real DDS graph and the colcon-built `openral_msgs` / `openral_reasoner_ros` /
 `openral_prompt_router` overlay. They are gated behind `OPENRAL_TEST_ROS_LIVE=1`
 so the ordinary `uv run pytest` run (where rclpy + DDS init can clash with a
@@ -165,10 +166,15 @@ No GPU is required — the free-VRAM readings are pinned at the `nvidia-smi`
 process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
-Adding a live-ROS test means adding its file to `TARGETS` in that script, and
-nowhere else. The `docker-build` workflow is the only CI surface with a real
-ROS 2 install; the `test-selective` runner has none, so anything not listed here
-silently `importorskip`s in CI.
+Adding a live-ROS test means adding its file to `TARGETS` in that script — the
+one place that decides what runs — and to the `paths:` filter in
+`.github/workflows/docker-build.yml`, so a diff touching only that test still
+triggers the build that runs it. `tests/unit/test_ros_live_targets.py` fails the
+unit suite if a gated file under `tests/integration/` is missing from `TARGETS`.
+The `docker-build` workflow is the only CI surface with a real ROS 2 install;
+the `test-selective` runner has none, so anything not listed there silently
+`importorskip`s in CI — and a live test parked under `tests/unit/` runs on no
+lane at all, which is why they live in `tests/integration/`.
 
 That workflow runs on **merge to `master`**, not on pull requests (a full image
 build is ~15-20 min of runner time). Run it yourself with `just test-ros-live`
