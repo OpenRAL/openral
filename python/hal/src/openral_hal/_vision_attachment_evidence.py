@@ -14,12 +14,15 @@ Flow
 1. A ``kind: "segmenter"`` rSkill (SAM 2.1) is prompted with a single positive
    point at the TF-projected tool center point on the wrist camera and returns
    candidate masks.
-2. Each mask is intersected with the same frame's depth channel and
+2. Each candidate mask is intersected with the same frame's depth channel and
    back-projected to a point cloud, which is transformed into the attach link's
    frame.
-3. The cloud is reduced to a PCA-oriented bounding box and split into the same
-   ``<= 16``-box primitive contract the simulator producer emits.
-4. **Geometric gates** decide whether to trust the result.
+3. **Geometric gates** decide which candidates are trustworthy, and geometry
+   also picks between them — the segmenter returns SAM 2's nested subpart /
+   part / whole hypotheses precisely because, having no depth, it cannot choose.
+   Among candidates clearing every gate the most inclusive wins.
+4. The selected cloud is reduced to a PCA-oriented bounding box and split into
+   the same ``<= 16``-box primitive contract the simulator producer emits.
 
 Why the gates are geometric, and only geometric
 -----------------------------------------------
@@ -78,6 +81,7 @@ before this producer is trusted on hardware.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -203,17 +207,27 @@ class VisionAttachmentReport:
     was accepted or rejected without re-running the model (CLAUDE.md §1.4:
     fallback must show up in logs).
 
+    The report always describes **one** candidate: the selected one when a mask
+    was accepted, or the closest-to-acceptable one when every candidate was
+    rejected. :attr:`candidate_index` / :attr:`candidate_count` say which of how
+    many, so the trace never hides that other hypotheses were considered.
+
     Attributes:
-        accepted: Whether the mask cleared every geometric gate.
+        accepted: Whether the selected mask cleared every geometric gate.
         rejections: Names of the gates that failed, empty when ``accepted``.
         depth_valid_fraction: Fraction of masked pixels with usable depth.
         point_count: Points in the back-projected cloud.
         extents_m: Fitted full extents, ascending, in metres.
         volume_m3: Fitted bounding-box volume.
         centroid_distance_m: Distance from the TCP to the fitted centroid.
-        mask_score_advisory: The segmenter's own score. Recorded only. It is
-            **never** compared against a threshold — a mask covering 59.8% of a
-            real frame scored 0.977.
+        candidate_index: Which candidate this report describes, indexing the
+            ``masks`` sequence passed to :meth:`on_grasp`. ``-1`` when no
+            candidate was supplied at all.
+        candidate_count: How many candidates were evaluated.
+        mask_score_advisory: The selected candidate's own model score. Recorded
+            only. It is **never** compared against a threshold and **never**
+            used to choose between candidates — a mask covering 59.8% of a real
+            frame scored 0.977.
     """
 
     accepted: bool
@@ -223,6 +237,8 @@ class VisionAttachmentReport:
     extents_m: tuple[float, float, float]
     volume_m3: float
     centroid_distance_m: float
+    candidate_index: int = -1
+    candidate_count: int = 0
     mask_score_advisory: float = 0.0
 
 
@@ -502,53 +518,19 @@ class VisionAttachmentEvidenceProducer:
         self._attached = False
         return []
 
-    def on_grasp(
+    def _evaluate_candidate(
         self,
         *,
         mask: NDArray[np.bool_],
         depth_m: NDArray[np.float64],
         intrinsics: IntrinsicsPinhole,
         t_link_from_cam: NDArray[np.float64],
-        tcp_in_link: tuple[float, float, float],
-        object_id: str,
-        stamp_ns: int,
-        mask_score_advisory: float = 0.0,
-    ) -> tuple[AttachedCollisionObject, VisionAttachmentReport]:
-        """Fit and gate one payload from a masked wrist RGB-D frame.
-
-        **Always returns an attachment.** If the mask fails any geometric gate,
-        the returned object is the conservative jaw-span box stamped
-        :attr:`~openral_core.AttachmentEvidenceKind.GRIPPER_FORCE` at low
-        confidence — never ``None``, never a silent skip. The accompanying
-        report names every gate that failed, so the fallback is visible in the
-        trace (CLAUDE.md §1.4).
-
-        Args:
-            mask: ``(H, W)`` boolean mask from the segmenter.
-            depth_m: ``(H, W)`` metric depth from the **same** frame.
-            intrinsics: Pinhole intrinsics at the frame's resolution.
-            t_link_from_cam: ``(4, 4)`` homogeneous transform mapping camera
-                optical-frame points into the attach link's frame. Supplied by
-                the caller from TF2 — this module never composes frames itself
-                (CLAUDE.md §2).
-            tcp_in_link: Tool center point in the attach link's frame.
-            object_id: Stable identity for the payload; also the primitives'
-                frame id.
-            stamp_ns: The attach instant, owned by the caller.
-            mask_score_advisory: The segmenter's own score. Recorded in the
-                report and **never** gated on.
-
-        Returns:
-            ``(attachment, report)``.
-
-        Raises:
-            ROSConfigError: If ``t_link_from_cam`` is not ``(4, 4)``, or the
-                mask / depth / intrinsics shapes disagree.
-        """
-        if t_link_from_cam.shape != (4, 4):
-            raise ROSConfigError(
-                f"on_grasp: t_link_from_cam must be (4, 4), got {t_link_from_cam.shape}."
-            )
+        tcp: NDArray[np.float64],
+        index: int,
+        count: int,
+        score_advisory: float,
+    ) -> tuple[VisionAttachmentReport, NDArray[np.float64]]:
+        """Gate one candidate mask, returning its report and its link-frame cloud."""
         cfg = self._config
         points_cam, depth_valid_fraction = backproject_masked_depth(
             mask,
@@ -565,9 +547,8 @@ class VisionAttachmentEvidenceProducer:
         elif depth_valid_fraction < cfg.min_depth_valid_fraction:
             rejections.append("depth_validity")
 
-        tcp = np.asarray(tcp_in_link, dtype=np.float64)
         if points_cam.shape[0] == 0:
-            report = VisionAttachmentReport(
+            empty = VisionAttachmentReport(
                 accepted=False,
                 rejections=tuple(rejections or ["no_valid_depth"]),
                 depth_valid_fraction=depth_valid_fraction,
@@ -575,17 +556,14 @@ class VisionAttachmentEvidenceProducer:
                 extents_m=(0.0, 0.0, 0.0),
                 volume_m3=0.0,
                 centroid_distance_m=float("inf"),
-                mask_score_advisory=float(mask_score_advisory),
+                candidate_index=index,
+                candidate_count=count,
+                mask_score_advisory=score_advisory,
             )
-            return self._fallback_attachment(
-                object_id=object_id, tcp_in_link=tcp_in_link, stamp_ns=stamp_ns
-            ), report
+            return empty, np.zeros((0, 3), dtype=np.float64)
 
         rotation_link_cam = t_link_from_cam[:3, :3]
         points_link = points_cam @ rotation_link_cam.T + t_link_from_cam[:3, 3]
-
-        # The view ray in link coordinates: the camera's optical +z, rotated.
-        view_ray = rotation_link_cam @ np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
 
         basis = (
             _pca_basis(points_link)
@@ -616,13 +594,137 @@ class VisionAttachmentEvidenceProducer:
             extents_m=(float(extents[0]), float(extents[1]), float(extents[2])),
             volume_m3=volume,
             centroid_distance_m=centroid_distance,
-            mask_score_advisory=float(mask_score_advisory),
+            candidate_index=index,
+            candidate_count=count,
+            mask_score_advisory=score_advisory,
         )
-        if rejections:
-            return self._fallback_attachment(
-                object_id=object_id, tcp_in_link=tcp_in_link, stamp_ns=stamp_ns
-            ), report
+        return report, points_link
 
+    def on_grasp(
+        self,
+        *,
+        masks: Sequence[NDArray[np.bool_]],
+        depth_m: NDArray[np.float64],
+        intrinsics: IntrinsicsPinhole,
+        t_link_from_cam: NDArray[np.float64],
+        tcp_in_link: tuple[float, float, float],
+        object_id: str,
+        stamp_ns: int,
+        mask_scores_advisory: Sequence[float] = (),
+    ) -> tuple[AttachedCollisionObject, VisionAttachmentReport]:
+        """Fit and gate one payload from a wrist RGB-D frame's candidate masks.
+
+        **Selection happens here, and it happens on geometry.** The segmenter
+        returns SAM 2's nested subpart / part / whole hypotheses because it has
+        no depth and therefore cannot choose between them; this producer does.
+        Every candidate is back-projected against the same depth frame and run
+        through the same gates, then:
+
+        * among candidates that clear **every** gate, the one with the largest
+          fitted volume wins — over-approximating a payload is the conservative
+          error for collision checking, so the most inclusive geometrically
+          plausible hypothesis is the safe pick;
+        * if none clear, the report describes the closest-to-acceptable
+          candidate (fewest failed gates, ties broken toward the smaller volume)
+          and the attachment degrades to the fallback box.
+
+        The per-candidate model scores are carried into the report and are
+        **never** part of that choice — a mis-aimed prompt produced this model's
+        top score of 0.977 on a mask covering 59.8% of the frame.
+
+        **Always returns an attachment.** A rejected grasp yields the
+        conservative jaw-span box stamped
+        :attr:`~openral_core.AttachmentEvidenceKind.GRIPPER_FORCE` at low
+        confidence — never ``None``, never a silent skip. The report names every
+        gate that failed, so the fallback is visible in the trace
+        (CLAUDE.md §1.4).
+
+        Args:
+            masks: Candidate ``(H, W)`` boolean masks from the segmenter, in the
+                order the ``SegmentInView`` reply carried them (area ascending).
+                A ``multimask: false`` manifest simply supplies one.
+            depth_m: ``(H, W)`` metric depth from the **same** frame.
+            intrinsics: Pinhole intrinsics at the frame's resolution.
+            t_link_from_cam: ``(4, 4)`` homogeneous transform mapping camera
+                optical-frame points into the attach link's frame. Supplied by
+                the caller from TF2 — this module never composes frames itself
+                (CLAUDE.md §2).
+            tcp_in_link: Tool center point in the attach link's frame.
+            object_id: Stable identity for the payload; also the primitives'
+                frame id.
+            stamp_ns: The attach instant, owned by the caller.
+            mask_scores_advisory: Per-candidate model scores, parallel to
+                ``masks``. Recorded in the report and **never** gated on or used
+                to select. May be empty, in which case scores default to ``0.0``.
+
+        Returns:
+            ``(attachment, report)``.
+
+        Raises:
+            ROSConfigError: If ``t_link_from_cam`` is not ``(4, 4)``, the
+                mask / depth / intrinsics shapes disagree, or
+                ``mask_scores_advisory`` is non-empty and a different length
+                from ``masks``.
+        """
+        if t_link_from_cam.shape != (4, 4):
+            raise ROSConfigError(
+                f"on_grasp: t_link_from_cam must be (4, 4), got {t_link_from_cam.shape}."
+            )
+        if mask_scores_advisory and len(mask_scores_advisory) != len(masks):
+            raise ROSConfigError(
+                f"on_grasp: mask_scores_advisory has {len(mask_scores_advisory)} entries "
+                f"for {len(masks)} masks; the arrays are parallel."
+            )
+        cfg = self._config
+        tcp = np.asarray(tcp_in_link, dtype=np.float64)
+        fallback = self._fallback_attachment(
+            object_id=object_id, tcp_in_link=tcp_in_link, stamp_ns=stamp_ns
+        )
+        if not masks:
+            # The segmenter answered with nothing at all (`ok=False`, empty
+            # `masks`). Still fail closed with geometry rather than a skip.
+            self._attached = True
+            return fallback, VisionAttachmentReport(
+                accepted=False,
+                rejections=("no_candidates",),
+                depth_valid_fraction=0.0,
+                point_count=0,
+                extents_m=(0.0, 0.0, 0.0),
+                volume_m3=0.0,
+                centroid_distance_m=float("inf"),
+                candidate_count=0,
+            )
+
+        scores = list(mask_scores_advisory) or [0.0] * len(masks)
+        evaluated = [
+            self._evaluate_candidate(
+                mask=mask,
+                depth_m=depth_m,
+                intrinsics=intrinsics,
+                t_link_from_cam=t_link_from_cam,
+                tcp=tcp,
+                index=index,
+                count=len(masks),
+                score_advisory=float(score),
+            )
+            for index, (mask, score) in enumerate(zip(masks, scores, strict=True))
+        ]
+
+        accepted = [(report, cloud) for report, cloud in evaluated if report.accepted]
+        if not accepted:
+            # Report the candidate that came closest: fewest failed gates first,
+            # then the smaller volume (nearer to a plausible payload).
+            report, _ = min(
+                evaluated, key=lambda item: (len(item[0].rejections), item[0].volume_m3)
+            )
+            self._attached = True
+            return fallback, report
+
+        # Most inclusive plausible hypothesis wins — see the docstring.
+        report, points_link = max(accepted, key=lambda item: item[0].volume_m3)
+
+        # The view ray in link coordinates: the camera's optical +z, rotated.
+        view_ray = t_link_from_cam[:3, :3] @ np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
         primitives, centre_in_link, rotation = clustered_obb_primitives(
             points_link,
             object_id=object_id,
@@ -650,7 +752,12 @@ class VisionAttachmentEvidenceProducer:
             # real-hardware equivalent.
             confidence=_VISION_CONFIDENCE,
             evidence_kind=AttachmentEvidenceKind.VISION_SEGMENTATION,
-            evidence_ref=f"segmenter_mask:{object_id}@{stamp_ns}",
+            # Which candidate of how many, so the trace can be replayed against
+            # the same SegmentInView reply.
+            evidence_ref=(
+                f"segmenter_mask:{object_id}@{stamp_ns}"
+                f"#{report.candidate_index}/{report.candidate_count}"
+            ),
             stamp_ns=stamp_ns,
         )
         return attachment, report
@@ -667,8 +774,11 @@ class VisionAttachmentEvidenceProducer:
         Never a skip: something is in the jaws, we simply do not know its shape,
         so the collision checker gets a crude box rather than an invisible
         payload.
+
+        Pure: :meth:`on_grasp` builds this before it knows the verdict (the
+        rejection path needs it for every candidate outcome), so the attached
+        flag is flipped by the caller at its return points, not here.
         """
-        self._attached = True
         return AttachedCollisionObject(
             object_id=object_id,
             attach_link=self._attach_link,

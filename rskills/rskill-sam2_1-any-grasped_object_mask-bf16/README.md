@@ -76,13 +76,16 @@ the bf16 compute dtype. The HAL stays torch-free and reaches it over the
 `openral_msgs/srv/SegmentInView` service.
 
 The prompt crosses that service boundary as a **3-D point**, not a pixel, so
-camera intrinsics stay entirely on the perception side. The mask comes back as a
-raw `mono8` `sensor_msgs/Image` — see the `.srv` header for why raw and not
+camera intrinsics stay entirely on the perception side. The masks come back as
+raw `mono8` `sensor_msgs/Image[]` — see the `.srv` header for why raw and not
 run-length encoded.
 
 `multimask: true` returns SAM 2's three nested hypotheses (subpart / part /
-whole). The backend orders them by **area ascending** and the consumer picks
-between them on geometry.
+whole), and **all** of them cross the service boundary. This skill deliberately
+does **not** pick between them: it has no depth, and only geometry — containment
+between the jaws, payload extent, depth validity — can say which hypothesis is
+the payload. The backend orders them by **area ascending** and the HAL producer,
+which holds the wrist depth frame, selects among them.
 
 ### Observation → mask contract
 
@@ -91,7 +94,7 @@ between them on geometry.
 | in | wrist RGB camera | `(H, W, 3)` BGR `uint8` | latest frame; min 320×240 |
 | in | prompt point(s) | `(u, v)` pixels | positive at the TCP; optional negatives at the jaw tips |
 | out | masks | ≤3 × `(H, W)` bool | at the source frame's own resolution, area ascending |
-| out | `mask_score_advisory` | float | recorded in the trace, **never** thresholded |
+| out | `mask_scores_advisory` | float, one per mask | recorded in the trace, **never** thresholded or used to select |
 
 ## Measured numbers
 
@@ -134,7 +137,7 @@ wrong.
 
 **Therefore every fail-closed gate in the consumer is geometric** — containment
 between the jaws, a payload extent cap, a depth-validity fraction — and **never**
-the mask score. `mask_score_advisory` is named to say so. Both frames are
+the mask score. `mask_scores_advisory` is named to say so. Both frames are
 regression-tested in `tests/unit/test_vision_attachment_evidence.py`.
 
 ## Upstream model and training

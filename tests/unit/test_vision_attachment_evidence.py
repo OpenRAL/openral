@@ -222,7 +222,7 @@ def test_on_grasp_rejects_a_malformed_transform() -> None:
     mask = _mask(_ERASER_MASK)
     with pytest.raises(ROSConfigError, match=r"\(4, 4\)"):
         producer.on_grasp(
-            mask=mask,
+            masks=[mask],
             depth_m=_plane_depth(mask.shape, distance_m=0.12),
             intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
             t_link_from_cam=np.eye(3),
@@ -240,14 +240,14 @@ def test_real_eraser_mask_produces_a_gated_vision_attachment() -> None:
     producer = VisionAttachmentEvidenceProducer(_robot())
     mask = _mask(_ERASER_MASK)
     attachment, report = producer.on_grasp(
-        mask=mask,
+        masks=[mask],
         depth_m=_plane_depth(mask.shape, distance_m=0.12),
         intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
         t_link_from_cam=_T_LINK_FROM_CAM,
         tcp_in_link=_TCP_IN_LINK,
         object_id="payload",
         stamp_ns=1_700_000_000_000_000_000,
-        mask_score_advisory=0.8416,
+        mask_scores_advisory=[0.8416],
     )
 
     assert report.accepted, report.rejections
@@ -268,6 +268,157 @@ def test_real_eraser_mask_produces_a_gated_vision_attachment() -> None:
     assert attachment.center_of_mass_m is None
     assert attachment.inertia_kg_m2 is None
     assert attachment.stamp_ns == 1_700_000_000_000_000_000
+    assert report.candidate_index == 0
+    assert report.candidate_count == 1
+
+
+# ── Candidate selection: geometry decides, never the score ─────────────────────
+
+
+def _nested_candidates() -> list[NDArray[np.bool_]]:
+    """The real eraser mask plus a strict subset of it, area ascending.
+
+    SAM 2's multimask head emits *nested* hypotheses (roughly subpart / part /
+    whole), so a real subset of the real mask reproduces that relationship
+    without inventing pixels: the "subpart" here is the committed eraser mask
+    restricted to its lower half.
+    """
+    whole = _mask(_ERASER_MASK)
+    subpart = whole.copy()
+    subpart[: whole.shape[0] // 2] = False
+    return [subpart, whole]
+
+
+def test_most_inclusive_passing_candidate_wins_not_the_highest_scoring_one() -> None:
+    """Among candidates that clear every gate, geometry picks — and picks the largest.
+
+    Over-approximating a payload is the conservative error for collision
+    checking, so the most inclusive geometrically plausible hypothesis is the
+    safe pick. The *smaller* candidate is handed the far higher model score here
+    precisely so that a score-based selection would choose differently and fail
+    this test.
+    """
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    candidates = _nested_candidates()
+    shape = candidates[0].shape
+    _, report = producer.on_grasp(
+        masks=candidates,
+        depth_m=_plane_depth(shape, distance_m=0.12),
+        intrinsics=_wrist_intrinsics(shape[1], shape[0]),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=3,
+        mask_scores_advisory=[0.99, 0.20],
+    )
+
+    assert report.accepted, report.rejections
+    assert report.candidate_count == 2
+    # Index 1 is the larger, lower-scoring candidate.
+    assert report.candidate_index == 1
+    assert report.mask_score_advisory == pytest.approx(0.20)
+    assert report.point_count == int(candidates[1].sum())
+
+
+def test_selection_skips_candidates_that_fail_the_gates() -> None:
+    """A whole-frame hypothesis alongside a plausible one does not win by being biggest.
+
+    "Largest" only ranks candidates that already cleared every gate — the
+    ordering is a tie-break among plausible payloads, never a way in.
+    """
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    eraser = _mask(_ERASER_MASK)
+    whole_frame = np.ones_like(eraser)
+    _, report = producer.on_grasp(
+        masks=[eraser, whole_frame],
+        depth_m=_plane_depth(eraser.shape, distance_m=0.12),
+        intrinsics=_wrist_intrinsics(eraser.shape[1], eraser.shape[0]),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=5,
+        mask_scores_advisory=[0.10, 0.99],
+    )
+
+    assert report.accepted, report.rejections
+    assert report.candidate_index == 0
+    assert report.candidate_count == 2
+
+
+def test_all_candidates_rejected_reports_the_closest_to_acceptable() -> None:
+    """When nothing passes, the trace still names one candidate and its gates."""
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    mask = _mask(_TABLECLOTH_MASK)
+    huge = np.ones_like(mask)
+    attachment, report = producer.on_grasp(
+        masks=[mask, huge],
+        depth_m=_plane_depth(mask.shape, distance_m=0.50, tilt=0.35),
+        intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=6,
+        mask_scores_advisory=[0.9781, 0.5],
+    )
+    assert not report.accepted
+    assert report.candidate_count == 2
+    assert 0 <= report.candidate_index < 2
+    assert report.rejections
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+
+
+def test_no_candidates_at_all_still_falls_back_conservatively() -> None:
+    """An `ok=False` reply with an empty `masks` array must not skip the attachment."""
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    attachment, report = producer.on_grasp(
+        masks=[],
+        depth_m=np.full((240, 320), 0.12),
+        intrinsics=_wrist_intrinsics(320, 240),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=8,
+    )
+    assert report.rejections == ("no_candidates",)
+    assert report.candidate_count == 0
+    assert report.candidate_index == -1
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert len(attachment.primitives) == 1
+
+
+def test_scores_must_be_parallel_to_masks() -> None:
+    """The two response arrays are parallel; a mismatch is a wire-contract error."""
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    mask = _mask(_ERASER_MASK)
+    with pytest.raises(ROSConfigError, match="parallel"):
+        producer.on_grasp(
+            masks=[mask, mask],
+            depth_m=_plane_depth(mask.shape, distance_m=0.12),
+            intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
+            t_link_from_cam=_T_LINK_FROM_CAM,
+            tcp_in_link=_TCP_IN_LINK,
+            object_id="payload",
+            stamp_ns=10,
+            mask_scores_advisory=[0.5],
+        )
+
+
+def test_accepted_evidence_ref_records_which_candidate_was_selected() -> None:
+    """The trace can be replayed against the same SegmentInView reply."""
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    candidates = _nested_candidates()
+    shape = candidates[0].shape
+    attachment, report = producer.on_grasp(
+        masks=candidates,
+        depth_m=_plane_depth(shape, distance_m=0.12),
+        intrinsics=_wrist_intrinsics(shape[1], shape[0]),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=12,
+    )
+    assert report.accepted
+    assert attachment.evidence_ref == f"segmenter_mask:payload@12#{report.candidate_index}/2"
 
 
 # ── The regression that drives the whole design ────────────────────────────────
@@ -289,14 +440,14 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     producer = VisionAttachmentEvidenceProducer(_robot())
     mask = _mask(_TABLECLOTH_MASK)
     attachment, report = producer.on_grasp(
-        mask=mask,
+        masks=[mask],
         depth_m=_plane_depth(mask.shape, distance_m=0.50, tilt=0.35),
         intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
         t_link_from_cam=_T_LINK_FROM_CAM,
         tcp_in_link=_TCP_IN_LINK,
         object_id="payload",
         stamp_ns=42,
-        mask_score_advisory=0.9781,
+        mask_scores_advisory=[0.9781],
     )
 
     assert not report.accepted
@@ -326,7 +477,7 @@ def test_insufficient_depth_falls_back_conservatively() -> None:
     depth[: int(mask.shape[0] * 0.95)] = 0.0  # sensor returns almost nothing
 
     attachment, report = producer.on_grasp(
-        mask=mask,
+        masks=[mask],
         depth_m=depth,
         intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
         t_link_from_cam=_T_LINK_FROM_CAM,
@@ -344,7 +495,7 @@ def test_empty_mask_falls_back_conservatively() -> None:
     """The segmenter returning nothing must not leave the payload invisible."""
     producer = VisionAttachmentEvidenceProducer(_robot())
     attachment, report = producer.on_grasp(
-        mask=np.zeros((240, 320), dtype=bool),
+        masks=[np.zeros((240, 320), dtype=bool)],
         depth_m=np.full((240, 320), 0.12),
         intrinsics=_wrist_intrinsics(320, 240),
         t_link_from_cam=_T_LINK_FROM_CAM,
@@ -372,7 +523,7 @@ def test_volume_backstop_fires_on_a_thick_over_large_payload() -> None:
     )
     mask = _mask(_TABLECLOTH_MASK)
     attachment, report = producer.on_grasp(
-        mask=mask,
+        masks=[mask],
         depth_m=_plane_depth(mask.shape, distance_m=0.50, tilt=0.35),
         intrinsics=_wrist_intrinsics(mask.shape[1], mask.shape[0]),
         t_link_from_cam=_T_LINK_FROM_CAM,
