@@ -83,7 +83,11 @@ is signed off.
 
 **Tip — never think about `-s` again.** `just bootstrap` installs the git hooks
 (`.githooks/`), including a `prepare-commit-msg` hook that auto-appends the
-`Signed-off-by` trailer to any commit missing one, using your Git identity. To
+`Signed-off-by` trailer to any commit missing one, using your Git identity. It
+recognises an existing sign-off by your **email**, so a rebase that replays a
+commit (`reword`, `edit`, `rebase --continue`) never adds a second trailer even
+if the recorded name is spelled differently from your `user.name`; a `---` line
+in the body is treated as prose, not as the end of the message. To
 enable them without a full bootstrap, run `just install-hooks` — it points
 `core.hooksPath` at `.githooks/` and builds the pre-commit environments, so the
 same command also wires up ruff, ruff-format, mypy, codespell, and the
