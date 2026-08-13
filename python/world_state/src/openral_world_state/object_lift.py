@@ -12,6 +12,8 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core.exceptions import ROSConfigError
+from openral_core.geometry import homogeneous_from_quat_xyz as _core_homogeneous_from_quat_xyz
 from openral_core.schemas import (
     DetectedObject,
     IntrinsicsPinhole,
@@ -30,7 +32,6 @@ __all__ = [
 ]
 
 # Numerical guards.
-_QUAT_NORM_EPS = 1e-12  # below this squared-norm a quaternion is degenerate
 _DEPTH_EPS = 1e-6  # minimum +z (metres) for a voxel/point to be "in front" of the camera
 
 
@@ -54,27 +55,18 @@ def homogeneous_from_quat_xyz(
 
     Raises:
         ObjectsLiftError: If the quaternion norm is effectively zero.
+
+    Note:
+        The math now lives in :func:`openral_core.geometry.homogeneous_from_quat_xyz`
+        — the layer-0 HAL needs the same TF→matrix step for its vision
+        attachment bridge and must not reach up to layer 2 for it. This wrapper
+        keeps the world-state-local ``ObjectsLiftError`` contract that every
+        caller here already handles.
     """
-    x, y, z, w = quat_xyzw
-    n = x * x + y * y + z * z + w * w
-    if n < _QUAT_NORM_EPS:
-        raise ObjectsLiftError(f"degenerate quaternion {quat_xyzw!r}")
-    s = 2.0 / n
-    xx, yy, zz = x * x * s, y * y * s, z * z * s
-    xy, xz, yz = x * y * s, x * z * s, y * z * s
-    wx, wy, wz = w * x * s, w * y * s, w * z * s
-    m = np.eye(4, dtype=np.float64)
-    m[0, 0] = 1.0 - (yy + zz)
-    m[0, 1] = xy - wz
-    m[0, 2] = xz + wy
-    m[1, 0] = xy + wz
-    m[1, 1] = 1.0 - (xx + zz)
-    m[1, 2] = yz - wx
-    m[2, 0] = xz - wy
-    m[2, 1] = yz + wx
-    m[2, 2] = 1.0 - (xx + yy)
-    m[0, 3], m[1, 3], m[2, 3] = translation
-    return m
+    try:
+        return _core_homogeneous_from_quat_xyz(translation, quat_xyzw)
+    except ROSConfigError as exc:
+        raise ObjectsLiftError(str(exc)) from exc
 
 
 def decode_occupied_centers(
