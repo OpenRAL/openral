@@ -14,6 +14,32 @@ float64 deadline_s         # 0 = use manifest default
 bool success
 string failure_reason      # empty on success
 string trace_id            # OTel trace id for replay
+
+# failure_kind — the *typed* cause, mirroring the CLAUDE.md §5 exception
+# hierarchy. `failure_reason` stays the human/operator string (it also quotes
+# the concrete message); this field is what a machine consumer — the reasoner's
+# replanning ladder — classifies on, so it never has to substring-match prose.
+#
+# Additive (CLAUDE.md §1.6 backward-compatible evolution): a consumer that
+# reads only `success` / `failure_reason` is untouched, and a Result built by
+# an older producer decodes as FAILURE_NONE. Consumers must therefore treat
+# `failure_kind == FAILURE_NONE` on a `success == False` result as "unknown —
+# fall back to the string", not as "succeeded".
+#
+# Every kind below has a producer in `rskill_runner_node._execute_locked`;
+# ROSSafetyViolation (other than ROSEStopRequested) is deliberately absent —
+# it is re-raised to the safety supervisor, never folded into a Result.
+uint8 FAILURE_NONE                = 0    # success
+uint8 FAILURE_CONFIG_ERROR        = 1    # ROSConfigError
+uint8 FAILURE_CAPABILITY_MISMATCH = 2    # ROSCapabilityMismatch
+uint8 FAILURE_RUNTIME_ERROR       = 3    # ROSRuntimeError (+Quantization/GPUMemory)
+uint8 FAILURE_SAFETY_ESTOP        = 4    # ROSEStopRequested
+uint8 FAILURE_PERCEPTION_STALE    = 5    # ROSPerceptionStale
+uint8 FAILURE_PLANNING_ERROR      = 6    # ROSPlanningError (MoveIt approach)
+uint8 FAILURE_DEADLINE_MISSED     = 7    # execution budget lapsed / ROSDeadlineMissed
+uint8 FAILURE_CANCELLED           = 8    # cancel honoured (no exception)
+uint8 FAILURE_UNKNOWN             = 255  # untyped non-ROSError escape
+uint8 failure_kind
 ---
 # Feedback
 float32 progress           # 0..1
