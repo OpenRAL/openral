@@ -286,6 +286,39 @@ def _omdet_runtime_present() -> bool:
     return all(importlib.util.find_spec(mod) is not None for mod in mods)
 
 
+def _cuda_arch_supported_by_torch_build() -> bool:
+    # The stock `pytorch-cu128` torch/torchvision wheels compile kernels for a
+    # fixed arch list (`sm_70` … `sm_120` for torch 2.9.1) and ship no
+    # `compute_*` PTX entry to JIT from, so on an older GPU — e.g. a Pascal
+    # GTX 1060, `sm_61` — *every* CUDA kernel launch dies with
+    # `CUDA error: no kernel image is available for execution on the device`.
+    # `torch.cuda.is_available()` is still True there, so the nms probe below
+    # would raise (as `torch.AcceleratorError`, a `RuntimeError` subclass) at
+    # *collection* time. Compare the device capability against the compiled
+    # arch list instead of discovering it by launching: a failed launch can
+    # leave the CUDA context poisoned for every later test in the session,
+    # whereas this check touches no kernel at all.
+    if importlib.util.find_spec("torch") is None:
+        return True  # handled by _omdet_runtime_present's import gate instead
+    import torch
+
+    if not torch.cuda.is_available():
+        return True  # CPU path never launches a CUDA kernel
+    major, minor = torch.cuda.get_device_capability()
+    device_arch = major * 10 + minor
+    for entry in torch.cuda.get_arch_list():
+        kind, _, num = entry.partition("_")
+        if not num.isdigit():
+            continue
+        # `sm_XX` is a cubin: it must match the device arch exactly.
+        # `compute_XX` is PTX: it JITs onto any device at or above XX.
+        if (kind == "sm" and int(num) == device_arch) or (
+            kind == "compute" and int(num) <= device_arch
+        ):
+            return True
+    return False
+
+
 def _torchvision_cuda_nms_present() -> bool:
     # pyproject.toml pins torchvision to the `pytorch-cu128` index on
     # aarch64-linux specifically because the plain PyPI aarch64 wheel is
@@ -306,12 +339,25 @@ def _torchvision_cuda_nms_present() -> bool:
 
     if not torch.cuda.is_available():
         return True  # CPU path never needs the CUDA kernel
+    if not _cuda_arch_supported_by_torch_build():
+        return True  # handled by the arch gate instead — do not launch a kernel
+    # `AcceleratorError` only exists on torch >= 2.9; on older torch the same
+    # launch failure surfaces as a plain `RuntimeError`, which it subclasses.
+    launch_error: type[BaseException] = getattr(torch, "AcceleratorError", RuntimeError)
     boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0]], device="cuda")
     scores = torch.tensor([0.9], device="cuda")
     try:
         nms(boxes, scores, 0.5)
     except NotImplementedError:
         return False
+    except launch_error:
+        # Any other missing-kernel-image / launch failure the arch gate above
+        # did not predict: skip rather than abort collection.
+        return False
+    finally:
+        # Don't hold a collection-time CUDA allocation for the whole session.
+        del boxes, scores
+        torch.cuda.empty_cache()
     return True
 
 
@@ -320,6 +366,14 @@ def _torchvision_cuda_nms_present() -> bool:
     reason="needs a local GPU + the `omdet` group (torch/transformers/timm) to "
     "load omlab/omdet-turbo-swin-tiny-hf; run `just sync --group omdet` "
     "(the legitimate CI skip path, CLAUDE.md §12).",
+)
+@pytest.mark.skipif(
+    not _cuda_arch_supported_by_torch_build(),
+    reason="the local GPU's compute capability is outside the arch list this "
+    "torch/torchvision build ships kernels for (pre-sm_70 Pascal and older "
+    "against the cu128 wheels), so OmDet-Turbo's CUDA `batched_nms` fails with "
+    "`no kernel image is available for execution on the device`; needs an "
+    "sm_70+ GPU or a torch built for this arch.",
 )
 @pytest.mark.skipif(
     not _torchvision_cuda_nms_present(),
