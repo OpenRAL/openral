@@ -793,6 +793,10 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     # Persistent e-stop publisher (set by run_dashboard). None here so tests /
     # standalone use fall back to the shell-out path in the estop endpoints.
     app.state.estop = None
+    # Latched /openral/safety_status subscriber (set by run_dashboard, ADR-0096).
+    # None without ROS; the Safety Status card then renders "waiting" rather
+    # than claiming the robot is clear.
+    app.state.safety_status = None
 
     @app.post(
         "/v1/traces",

@@ -710,6 +710,74 @@
     }
   }
 
+  // ADR-0096 — the latched /openral/safety_status. This is CURRENT STATE, not
+  // an event stream: it comes from a TRANSIENT_LOCAL topic, so the value is
+  // correct the instant this page connects, even mid-mission. The ledger below
+  // stays the per-check history.
+  //
+  // Nothing here is inferred. With no ROS workspace (or no safety node) the
+  // card reads "waiting" — it never renders "clear" from an absence of data,
+  // because "we cannot see the safety layer" and "the safety layer says all
+  // good" are different facts (CLAUDE.md §1.2).
+  //
+  // The age is load-bearing, not decoration: publishers re-stamp at 1 Hz, so
+  // an age that keeps climbing means the safety publisher is gone and the
+  // latched value below it can no longer be trusted (hazard-log HZ-0096-1).
+  const SAFETY_STATUS_LIVENESS_S = 3.0;
+
+  function renderSafetyStatus(st) {
+    const ageEl = $("safety-status-age");
+    const primary = $("safety-status-primary");
+    const attrs = $("safety-status-attrs");
+    attrs.innerHTML = "";
+    if (!st || st.ts_unix == null) {
+      ageEl.textContent = "—";
+      primary.textContent = "waiting for /openral/safety_status";
+      primary.className = "primary";
+      attrs.innerHTML = '<span class="k">source</span><span class="v muted">no safety node seen — state unknown, not clear</span>';
+      return;
+    }
+    const age = Date.now() / 1000 - st.ts_unix;
+    const stale = age > SAFETY_STATUS_LIVENESS_S;
+    ageEl.textContent = fmtAge(st.ts_unix);
+
+    const pill = document.createElement("span");
+    pill.className = "pill " + (st.latched ? "violation" : stale ? "stale" : "ok");
+    pill.textContent = st.latched ? "latched" : stale ? "stale" : "clear";
+    primary.textContent = "";
+    primary.appendChild(pill);
+    const label = document.createElement("span");
+    label.style.marginLeft = "8px";
+    // A DROP_* reason with latched=false is a fail-closed drop: actions are
+    // being suppressed even though nothing is latched. Say so plainly.
+    const reason = st.drop_reason_label || "";
+    label.textContent = st.latched
+      ? reason
+      : reason && reason !== "drop_none"
+        ? "dropping · " + reason
+        : "no drop in effect";
+    primary.appendChild(label);
+
+    const row = (k, v, cls) => {
+      if (v === undefined || v === null || v === "") return;
+      const kEl = document.createElement("span"); kEl.className = "k"; kEl.textContent = k;
+      const vEl = document.createElement("span"); vEl.className = "v" + (cls ? " " + cls : ""); vEl.textContent = v;
+      attrs.appendChild(kEl); attrs.appendChild(vEl);
+    };
+    row("detail", st.detail);
+    row("rskill", st.rskill_id, st.rskill_id ? null : "muted");
+    row("drop_reason", reason ? reason + " (" + st.drop_reason + ")" : null);
+    row("last transition", fmtAge(st.ts_unix) + " ago");
+    if (stale) {
+      row(
+        "liveness",
+        "no refresh for " + age.toFixed(1) + "s (> " + SAFETY_STATUS_LIVENESS_S.toFixed(1) +
+          "s) — treat as UNKNOWN, not safe",
+      );
+    }
+    if (st.trace_id) row("trace", st.trace_id);
+  }
+
   function renderLedger(safety) {
     $("ledger-age").textContent = fmtAge(safety && safety.latest_ts_unix);
     const el = $("ledger");
@@ -1436,6 +1504,7 @@
     renderSceneObjects(topics.scene_objects);
     renderReasoner(topics.reasoner);
     renderSystem(topics.system);
+    renderSafetyStatus(topics.safety_status);
     renderLedger(topics.safety);
     renderTrace(topics.trace);
 
@@ -1453,6 +1522,7 @@
     pulseIfNew("card-robot-state", topics.robot_state && topics.robot_state.ts_unix);
     pulseIfNew("card-world-state", topics.world_state && topics.world_state.ts_unix);
     pulseIfNew("card-system", topics.system && topics.system.ts_unix);
+    pulseIfNew("card-safety-status", topics.safety_status && topics.safety_status.ts_unix);
     pulseIfNew("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix);
     pulseIfNew("card-slam-map", topics.slam && topics.slam.ts_unix);
     pulseIfNew("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix);
@@ -1463,6 +1533,11 @@
     setDot("card-robot-state", topics.robot_state && topics.robot_state.ts_unix, false);
     setDot("card-world-state", topics.world_state && topics.world_state.ts_unix, false);
     setDot("card-system", topics.system && topics.system.ts_unix, false);
+    setDot(
+      "card-safety-status",
+      topics.safety_status && topics.safety_status.ts_unix,
+      !!(topics.safety_status && topics.safety_status.latched),
+    );
     setDot("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix, false);
     setDot("card-slam-map", topics.slam && topics.slam.ts_unix, false);
     setDot("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix, false);
