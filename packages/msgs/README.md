@@ -1,6 +1,6 @@
 # `openral_msgs`
 
-ROS 2 IDL — `.msg` and `.action` definitions for **OpenRAL**. This
+ROS 2 IDL — `.msg`, `.srv` and `.action` definitions for **OpenRAL**. This
 is the **normative** schema for everything that crosses the ROS 2
 boundary (CLAUDE.md §1 / Operating Principle 3, §6.1). Pydantic
 counterparts live in `openral_core.schemas`; the two are kept in
@@ -29,6 +29,19 @@ ros2 interface show openral_msgs/action/ExecuteRskill
 | `SafetyStatus.msg` | Current safety state on the **latched** topic `/openral/safety_status` (ADR-0096) — `latched`, `drop_reason` (uint8), `detail`, `rskill_id`, `trace_id`. QoS is `RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1` (the description/static profile, **not** the safety/e-stop one) so a late-joining subscriber sees current state without having witnessed the transition. Published by the C++ safety kernel and `SafetyPassthroughNode` on every latch / fail-closed drop / clear transition, on every lifecycle activation, and as a 1 Hz liveness refresh. Adds a topic; `/openral/estop` and `/openral/failure/safety` are unchanged. |
 | `PlaceDeclaration.msg` | Dispatch's typed statement that a place phase is active for a payload, and which target it is being placed into (ADR-0097). Published on `/openral/place_declaration` by the `ExecuteRskill` action server and consumed by the sim attachment-evidence producer in the HAL. It exempts **nothing** on its own — it only makes support contact *on the declared target* attestable as a place-phase `SupportContactWitness`, under the identical bounds, fail-closed rules and hysteresis the pick witness is under. Scoped to one goal: retracted (`active=false`) on goal end, cancel and E-stop, and expired by every consumer on its own `timeout_s` so a dead dispatcher cannot leave an exemption armed. Its optional `region_valid` / `region` pair (ADR-0097's 2026-08-14 amendment) is filled in by the *producer*, never by dispatch, and carries the bounded approach allowance described under `PlaceRegion.msg`. |
 | `PlaceRegion.msg` | The producer-measured bounded region of a declared place target (ADR-0097's 2026-08-14 amendment): an **oriented** box (`frame_id` + `pose` + `half_extents`) inside which the declared payload's world-collision margin is reduced by `min(1.5 × voxel, 40 mm)` (ADR-0097's Second Amendment, 2026-08-15; 37.5 mm at sim's 25 mm cells, 40 mm — not 75 — at a real 50 mm grid) so it can physically reach the support contact the place witness is *earned by* — round-6 measured the predictive check stopping the payload 22-30 mm short of the declared shelf, because 25 mm cells inflate a cabinet's thin opening. `frame_id` MUST be the robot base frame (the frame `OccupancyVoxels` uses); the safety kernel refuses a region declared in any other frame, any half-extent above 1.5 m, and any box above 8 m³. Sim measures it from the declared body's MuJoCo model subtree; the real-hardware producer (perception stack) is a defined seam that is **not yet implemented**, so no allowance is applied on real hardware. Absent → no allowance, i.e. exactly the pre-amendment margins. |
+
+### Services — `srv/`
+
+Request/response for **instantaneous queries** (CLAUDE.md §2 / ROS 2: actions for
+>100 ms or cancellable work, services for instantaneous queries, topics for
+streams). Every service below is read-only with respect to actuation.
+
+| File | Role |
+| --- | --- |
+| `ResetToPose.srv` | Snap a HAL-managed simulator to a manifest `starting_pose` before the skill runner's first inference tick, so a policy sees its training-distribution home pose. Called by `openral_rskill_ros.rskill_runner_node`. |
+| `LocateInView.srv` | Reasoner's read-only `locate_in_view` tool: ask an on-demand open-vocabulary locator (LocateAnything / OmDet-Turbo) whether a free-text object is in the current frame. Returns `ObjectsMetadata` as `metadata_json`. |
+| `QueryScene.srv` | Reasoner's read-only `query_scene` tool: ask a scene VLM (`kind: "vlm"`) an open-ended question about the current camera view; returns free text. |
+| `QueryTaskProgress.srv` | Reasoner's read-only `query_task_progress` tool: ask the reward monitor (`kind: "reward"`) for windowed progress/success over the co-active VLA's recent frames. Advisory only — never actuation. |
 
 ### Actions — `action/`
 
