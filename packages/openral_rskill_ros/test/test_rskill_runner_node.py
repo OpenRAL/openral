@@ -493,6 +493,136 @@ def test_execute_skill_estop_aborts_goal() -> None:
         assert "safety_estop" in result_msg.result.failure_reason
 
 
+def _make_grouped_violating_skill() -> Any:
+    """A real 2-slot rSkill whose second slot breaches the joint envelope.
+
+    Models the shape of a mobile-manipulator tick: every ``step()`` emits an
+    atomic **group** of slot actions (``tick_group_size=2``), so
+    ``ROSPublishingHAL`` applies backpressure after the last slot and blocks
+    until ``/openral/action_applied`` reports the tick. The second slot is
+    outside the supervisor's ``min_joint``/``max_joint`` envelope, so the
+    real safety node latches on it — exactly the production sequence the
+    Spark validation hit.
+    """
+    from openral_core.schemas import Action, ControlMode
+    from openral_rskill.base import rSkillBase
+
+    class _GroupedViolatingSkill(rSkillBase):
+        def __init__(self) -> None:
+            super().__init__(
+                name="openral/test-grouped-violating-skill",
+                version="0.1.0",
+                role="s1",
+                embodiment_tags=["so100_follower"],
+            )
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> list[Action]:
+            return [
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.1, 0.1, 0.1, 0.1, 0.1, 0.1]],
+                    tick_group_size=2,
+                ),
+                # Slot 2: 4.0 rad is outside the ±1.0 rad envelope the test
+                # sets on the safety node → drop + latch + /openral/estop.
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[4.0, 0.1, 0.1, 0.1, 0.1, 0.1]],
+                    tick_group_size=2,
+                ),
+            ]
+
+    skill = _GroupedViolatingSkill()
+    skill.configure()
+    skill.activate()
+    return skill
+
+
+def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
+    """A kernel latch mid-tick yields ``safety_estop``, not an apply-timeout.
+
+    The observability gap this pins (real Spark validation, RoboCasa sink
+    scene): when the safety layer latches while ``ROSPublishingHAL`` is
+    blocked waiting for an atomic action group to be applied,
+    ``/openral/action_applied`` simply goes silent — a latched supervisor
+    drops the chunk instead of republishing it on ``/openral/safe_action``.
+    The wait used to run out its full timeout and abort the goal with
+    ``ROSRuntimeError: ... was not applied within 5.0 s``, so the true cause
+    never reached the dispatcher, the reasoner's replanning ladder, or the
+    operator (CLAUDE.md §1.4).
+
+    Real components throughout: the production ``SafetyPassthroughNode``
+    decides the violation and publishes ``/openral/estop`` itself, the real
+    ``RskillRunnerNode`` latches it through its existing subscription, and
+    the real ``ROSPublishingHAL`` blocks on the real topic. Nothing
+    publishes ``/openral/action_applied`` here because nothing applies the
+    action — which is precisely what a latched safety layer looks like.
+    """
+    import rclpy
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    def _resolver(*_args: Any, **_kwargs: Any) -> Any:
+        return _make_grouped_violating_skill()
+
+    with _compose_harness(resolver=_resolver) as (executor, runtime, safety, _observed):
+        safety.set_parameters(
+            [
+                rclpy.parameter.Parameter("min_joint", value=[-1.0] * 6),
+                rclpy.parameter.Parameter("max_joint", value=[1.0] * 6),
+            ]
+        )
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/test-grouped-violating-skill"
+        goal.revision = ""
+        goal.prompt = "grouped tick that trips the joint envelope"
+        goal.prompt_metadata_json = ""
+        # Long enough that the deadline branch cannot be what ends the goal.
+        goal.deadline_s = 20.0
+
+        send_future = client.send_goal_async(goal)
+        deadline = time.monotonic() + 5.0
+        while not send_future.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send_future.result()
+        assert handle is not None and handle.accepted
+
+        t0 = time.monotonic()
+        result_msg = _await_result(handle, executor, timeout_s=15.0)
+        elapsed = time.monotonic() - t0
+
+    assert result_msg is not None
+    reason = result_msg.result.failure_reason
+    assert not result_msg.result.success
+    # The safety stop is named — not buried behind the apply-timeout.
+    assert reason.startswith("safety_estop:"), reason
+    assert "/openral/estop" in reason, reason
+    assert "was not applied within" not in reason, reason
+    # ...and it names the tick whose group was left unapplied, so an
+    # operator can line the abort up against the trace.
+    assert "action group tick 1" in reason, reason
+    # The abort is prompt: it does not sit out the 5 s apply-timeout first.
+    assert elapsed < 4.0, f"safety abort took {elapsed:.2f}s — the apply-wait ran to its timeout"
+
+
 def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:
     """Send an ExecuteRskill goal and spin until accepted; return the goal handle."""
     from openral_msgs.action import ExecuteRskill

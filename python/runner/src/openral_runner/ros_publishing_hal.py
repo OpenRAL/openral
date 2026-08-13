@@ -34,7 +34,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState, RobotDescription
 from openral_observability import propagation
 
@@ -44,6 +44,12 @@ if TYPE_CHECKING:
 __all__ = ["ROSPublishingHAL"]
 
 log = structlog.get_logger(__name__)
+
+# How often the action-applied wait re-reads ``safety_abort_getter`` while
+# blocked. The wait is also woken by every ``/openral/action_applied``
+# message, but a latched safety stop produces silence — nothing to wake on —
+# so the poll is what bounds how long a safety abort stays invisible.
+_SAFETY_ABORT_POLL_S = 0.05
 
 
 def _row_major_flatten(rows: list[list[float]] | None) -> list[float]:
@@ -131,6 +137,17 @@ class ROSPublishingHAL:
             ``read_state()``. Defaults to ``/joint_states``.
         candidate_action_topic: Topic to publish ``ActionChunk`` on.
             Defaults to ``/openral/candidate_action``.
+        safety_abort_getter: Zero-arg callable returning a short reason
+            string when the **owning node** already knows a safety stop is
+            latched, or ``None`` when it is not. The adapter opens no
+            safety subscription of its own — the owning node injects the
+            fact it already holds (``rskill_runner_node`` passes its
+            ``/openral/estop`` latch), the same injection pattern as
+            ``skill_id_getter``. Without it, a latched safety stop is
+            indistinguishable from a dead HAL: both stop
+            ``/openral/action_applied``, and the adapter reports only the
+            apply-timeout (CLAUDE.md §1.4). Must be non-blocking — it is
+            called while the adapter's applied-condition lock is held.
     """
 
     description: RobotDescription
@@ -146,6 +163,7 @@ class ROSPublishingHAL:
         joint_state_topic: str = "/joint_states",
         candidate_action_topic: str = "/openral/candidate_action",
         action_applied_topic: str = "/openral/action_applied",
+        safety_abort_getter: Callable[[], str | None] = lambda: None,
     ) -> None:
         """Store references; opens no ROS resources until :meth:`connect`."""
         self._node = node
@@ -158,6 +176,7 @@ class ROSPublishingHAL:
         self._joint_state_topic = joint_state_topic
         self._candidate_action_topic = candidate_action_topic
         self._action_applied_topic = action_applied_topic
+        self._safety_abort_getter = safety_abort_getter
         self._publisher: Any = None
         self._subscription: Any = None
         self._applied_subscription: Any = None
@@ -271,7 +290,19 @@ class ROSPublishingHAL:
         self._published_group_count = 0
 
     def _wait_for_group_applied(self, action: Action, *, tick_index: int | None = None) -> None:
-        """Apply backpressure after publishing the last slot of an atomic tick."""
+        """Apply backpressure after publishing the last slot of an atomic tick.
+
+        Raises:
+            ROSEStopRequested: When ``safety_abort_getter`` reports a
+                latched safety stop while this wait is blocked. A latched
+                kernel drops the chunk instead of republishing it on
+                ``/openral/safe_action``, so ``/openral/action_applied``
+                simply goes silent — waiting out the full timeout and
+                reporting it as one would bury the safety stop behind a
+                generic apply-timeout (CLAUDE.md §1.4).
+            ROSRuntimeError: When the group is still unapplied at the
+                deadline and no safety stop is latched.
+        """
         group_size = int(action.tick_group_size)
         if group_size <= 1:
             return
@@ -298,12 +329,24 @@ class ROSPublishingHAL:
         deadline = time.monotonic() + 5.0
         with self._applied_condition:
             while self._last_applied_tick < tick:
+                safety_reason = self._safety_abort_getter()
+                if safety_reason:
+                    log.error(
+                        "ros_publishing_hal.safety_abort",
+                        tick=tick,
+                        reason=safety_reason,
+                        action_applied_topic=self._action_applied_topic,
+                    )
+                    raise ROSEStopRequested(
+                        f"ROSPublishingHAL: safety stop latched ({safety_reason}) while "
+                        f"waiting for action group tick {tick} to be applied"
+                    )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
                     raise ROSRuntimeError(
                         f"ROSPublishingHAL: action group tick {tick} was not applied within 5.0 s"
                     )
-                self._applied_condition.wait(timeout=remaining)
+                self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
 
     def _on_action_applied(self, msg: Any) -> None:  # noqa: ANN401  # reason: ROS message untyped
         tick = int(msg.data)
@@ -320,8 +363,6 @@ class ROSPublishingHAL:
         ``/openral/estop`` (see ``rskill_runner_node.estop``) — defense
         in depth.
         """
-        from openral_core.exceptions import ROSEStopRequested
-
         raise ROSEStopRequested("ROSPublishingHAL.estop()")
 
     # ── Internals ───────────────────────────────────────────────────────────

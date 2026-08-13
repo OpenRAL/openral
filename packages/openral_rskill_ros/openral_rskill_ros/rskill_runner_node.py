@@ -280,6 +280,13 @@ if _ROS2_AVAILABLE:
                 skill_id_getter=lambda: self._active_skill_id,
                 skill_revision_getter=lambda: self._active_skill_revision,
                 tick_index_getter=lambda: self._current_tick_index,
+                # Hand the adapter the estop latch this node already keeps
+                # from its own /openral/estop subscription (below), so an
+                # atomic-group apply-wait that a latched kernel silenced
+                # aborts as a safety stop instead of an apply-timeout. No new
+                # subscription and no new layer edge: the fact is already
+                # here, it just never reached the blocking wait.
+                safety_abort_getter=self._safety_abort_reason,
             )
             try:
                 self._hal.connect()
@@ -1448,6 +1455,18 @@ if _ROS2_AVAILABLE:
                 self._current_tick_index = 0
             # Reward-gate signal: nothing executing now.
             self._publish_active_task("")
+
+        def _safety_abort_reason(self) -> str | None:
+            """Return why a safety stop is latched here, or ``None``.
+
+            Injected into :class:`~openral_runner.ROSPublishingHAL` as its
+            ``safety_abort_getter``. Reports only what this node actually
+            knows: an ``/openral/estop`` publication (``std_msgs/Empty``,
+            no reason payload), so the string names the topic rather than
+            claiming a violation kind the runner never received
+            (CLAUDE.md §1.2).
+            """
+            return "/openral/estop" if self._estop_latched else None
 
         def _on_estop(self, _msg: object) -> None:
             """``/openral/estop`` callback: latch + abort the active goal.
