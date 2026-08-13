@@ -49,6 +49,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/QueryScene.srv
   # reasoner's read-only query_task_progress against the Robometer reward monitor.
   srv/QueryTaskProgress.srv
+  # HAL's vision attachment-evidence producer asking a kind:"segmenter" rSkill
+  # (SAM 2.1) which wrist-frame pixels are the grasped payload. Raw mono8 mask.
+  srv/SegmentInView.srv
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs
 )
 
