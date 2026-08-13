@@ -29,9 +29,48 @@ fi
 
 trailer="Signed-off-by: $name <$email>"
 
-# Idempotent: only append when this exact trailer isn't already present
-# (covers `git commit -s`, amend, and re-runs).
-if ! grep -qiF "$trailer" "$msg_file"; then
-    git interpret-trailers --if-exists doNothing \
+# Idempotent, keyed on the EMAIL — the stable half of the identity. Matching on
+# the fully formatted trailer was wrong: `user.name` ("AdrianLlopart") often
+# differs in spelling from the name already recorded in the message ("Adrian
+# Llopart"), so the check missed and a *second* sign-off was appended every time
+# a rebase replayed the commit (reword/edit steps and `rebase --continue` do
+# re-run this hook, with the ORIGINAL message).
+#
+# Anchored to the start of the line so a diff hunk in a `--verbose` message
+# ("+Signed-off-by: …") can never be mistaken for an existing trailer.
+if grep -i '^[[:space:]]*Signed-off-by:' "$msg_file" | grep -qiF "<$email>"; then
+    exit 0
+fi
+
+# `git interpret-trailers` treats a lone `---` as the end of the message (the
+# start of a patch), and inserts the trailer *above* it — which splits a body
+# that legitimately contains `---` and buries the trailer mid-message. Disable
+# that with `--no-divider` (git >= 2.24); older git has no such option, so fall
+# back to appending the trailer ourselves.
+# (`-h` exits 129, so capture first — under `pipefail` that status would
+# otherwise mask grep's answer and always send us down the fallback.)
+trailers_help="$(git interpret-trailers -h 2>&1 || true)"
+if printf '%s\n' "$trailers_help" | grep -q -- '--no-divider'; then
+    git interpret-trailers --no-divider --if-exists doNothing \
         --trailer "$trailer" --in-place "$msg_file"
+else
+    # Insert before the `--verbose` scissors line if there is one (everything
+    # below it is stripped), otherwise at the end. A blank separator is added
+    # only when the message doesn't already end in a trailer block, so we never
+    # split an existing `Co-Authored-By:`/`Signed-off-by:` group.
+    sep=""
+    if [ -s "$msg_file" ]; then
+        last="$(grep -v '^#' "$msg_file" | grep -v '^[[:space:]]*$' | tail -n 1 || true)"
+        if [ -n "$last" ] && ! printf '%s\n' "$last" | grep -qE '^[A-Za-z][A-Za-z-]*:[[:space:]]'; then
+            sep="yes"
+        fi
+    fi
+    tmp_file="$msg_file.dco.$$"
+    awk -v trailer="$trailer" -v sep="$sep" '
+        function emit() { if (sep != "") print ""; print trailer; done = 1 }
+        /^#.*>8/ && !done { emit() }
+        { print }
+        END { if (!done) emit() }
+    ' "$msg_file" >"$tmp_file"
+    mv "$tmp_file" "$msg_file"
 fi
