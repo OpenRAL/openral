@@ -110,7 +110,7 @@ _SAFETY_STATUS_TOPIC = "/openral/safety_status"
 _SAFETY_STATUS_LIVENESS_S = 3.0
 
 
-def _drop_reason_label(code: int, status_cls: Any) -> str:  # noqa: ANN401  # reason: ROS message class is untyped
+def _drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
     """Name a ``SafetyStatus.drop_reason`` value from the IDL's own constants.
 
     Reverse-maps the value against the ``KIND_*`` / ``DROP_*`` constants the
