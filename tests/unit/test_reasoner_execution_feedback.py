@@ -33,6 +33,21 @@ def test_reflect_on_failure_branches() -> None:
     assert "different skill" in reflect_on_failure("failed", "grasp slipped")
 
 
+def test_reflect_on_failure_prefers_the_typed_timed_out_flag() -> None:
+    """``timed_out`` (from the typed failure_kind) overrides the prose probe.
+
+    The default ``None`` keeps the deprecated substring path for callers with no
+    typed kind; an explicit flag wins in BOTH directions, so a reason that merely
+    mentions a deadline no longer forces the timeout hint.
+    """
+    # Explicit True on prose that says nothing about time.
+    assert "timed out" in reflect_on_failure("aborted", "joint limit hit", timed_out=True)
+    # Explicit False on prose that would have tripped the substring probe.
+    hint = reflect_on_failure("aborted", "deadline for the grasp was tight", timed_out=False)
+    assert "timed out" not in hint
+    assert "infeasible" in hint
+
+
 def test_reflect_on_reward_plateau_says_change_approach_not_shorten() -> None:
     """A reward-plateau (policy ran, reward says not done) must nudge a
     DIFFERENT approach, not a shorter-horizon subdivide (the timeout hint) or a
@@ -85,34 +100,107 @@ def test_execution_section_ordered_after_world_state_before_failures() -> None:
     assert "## EXECUTION\n(none)" in out
 
 
+def _two_skill_palette() -> ToolPalette:
+    """A real two-entry palette: one skill that will break, one that won't."""
+    return ToolPalette(
+        skills=(
+            RSkillToolEntry(
+                rskill_id="broken",
+                description="broken sidecar",
+                actions=(RSkillAction.PICK,),
+            ),
+            RSkillToolEntry(
+                rskill_id="healthy",
+                description="healthy policy",
+                actions=(RSkillAction.PICK,),
+            ),
+        )
+    )
+
+
 def test_permanent_skill_failure_removes_only_that_skill() -> None:
-    """A broken sidecar is not offered again, but runtime failures remain retryable."""
+    """A broken sidecar is not offered again, but runtime failures remain retryable.
+
+    Classification is on the typed ``failure_kind`` uint8 now, not the prose.
+    """
     import pytest
 
     pytest.importorskip("rclpy")
-    pytest.importorskip("openral_msgs")
+    msgs = pytest.importorskip("openral_msgs.action")
     from openral_reasoner_ros.reasoner_node import _palette_after_rskill_failure
 
-    broken = RSkillToolEntry(
-        rskill_id="broken",
-        description="broken sidecar",
-        actions=(RSkillAction.PICK,),
-    )
-    healthy = RSkillToolEntry(
-        rskill_id="healthy",
-        description="healthy policy",
-        actions=(RSkillAction.PICK,),
-    )
-    palette = ToolPalette(skills=(broken, healthy))
+    result_cls = msgs.ExecuteRskill.Result
+    palette = _two_skill_palette()
 
-    filtered = _palette_after_rskill_failure(
-        palette,
-        "broken",
-        "ROSConfigError: sidecar dependencies cannot be installed",
-    )
-    assert filtered.execute_rskill_ids == frozenset({"healthy"})
-    assert tuple(skill.rskill_id for skill in filtered.skills) == ("healthy",)
-    assert (
-        _palette_after_rskill_failure(palette, "broken", "controller failed to make progress")
-        == palette
-    )
+    for permanent in (result_cls.FAILURE_CONFIG_ERROR, result_cls.FAILURE_CAPABILITY_MISMATCH):
+        filtered = _palette_after_rskill_failure(palette, "broken", permanent)
+        assert filtered.execute_rskill_ids == frozenset({"healthy"})
+        assert tuple(skill.rskill_id for skill in filtered.skills) == ("healthy",)
+
+    # Retryable kinds — and the "unclassified" FAILURE_NONE — leave the palette alone.
+    for retryable in (
+        result_cls.FAILURE_RUNTIME_ERROR,
+        result_cls.FAILURE_DEADLINE_MISSED,
+        result_cls.FAILURE_SAFETY_ESTOP,
+        result_cls.FAILURE_PERCEPTION_STALE,
+        result_cls.FAILURE_PLANNING_ERROR,
+        result_cls.FAILURE_CANCELLED,
+        result_cls.FAILURE_UNKNOWN,
+        result_cls.FAILURE_NONE,
+    ):
+        assert _palette_after_rskill_failure(palette, "broken", retryable) == palette
+
+
+def test_rskill_failure_kind_reads_the_typed_field() -> None:
+    """A real ``ExecuteRskill.Result`` is classified by its uint8, not its prose."""
+    import pytest
+
+    pytest.importorskip("rclpy")
+    msgs = pytest.importorskip("openral_msgs.action")
+    from openral_reasoner_ros.reasoner_node import _rskill_failure_kind
+
+    result_cls = msgs.ExecuteRskill.Result
+    result = result_cls()
+    result.success = False
+    result.failure_kind = result_cls.FAILURE_CAPABILITY_MISMATCH
+    # Prose that would have been classified differently by the old prefix match.
+    result.failure_reason = "ROSConfigError: this string must not win"
+    assert _rskill_failure_kind(result) == result_cls.FAILURE_CAPABILITY_MISMATCH
+
+
+def test_rskill_failure_kind_falls_back_to_prose_for_old_results() -> None:
+    """A pre-``failure_kind`` producer (uint8 left at 0) is still classified.
+
+    Deprecated-in-place path: a runner built against the older IDL sends
+    ``failure_kind == FAILURE_NONE`` on a failed result, so the reasoner reads
+    the typed prefix the runner has always written onto ``failure_reason``.
+    """
+    import pytest
+
+    pytest.importorskip("rclpy")
+    msgs = pytest.importorskip("openral_msgs.action")
+    from openral_reasoner_ros.reasoner_node import _rskill_failure_kind
+
+    result_cls = msgs.ExecuteRskill.Result
+    cases = {
+        "ROSConfigError: rskill.yaml missing": result_cls.FAILURE_CONFIG_ERROR,
+        "ROSCapabilityMismatch: embodiment_tags disjoint": (result_cls.FAILURE_CAPABILITY_MISMATCH),
+        "safety_estop:/openral/estop received during goal": result_cls.FAILURE_SAFETY_ESTOP,
+        "deadline_exceeded: elapsed=144.5s budget=45.0s": result_cls.FAILURE_DEADLINE_MISSED,
+        "cancelled": result_cls.FAILURE_CANCELLED,
+        "ROSPerceptionStale: policy_state is stale": result_cls.FAILURE_PERCEPTION_STALE,
+        "ROSPlanningError: MoveIt approach failed": result_cls.FAILURE_PLANNING_ERROR,
+        "ROSGPUMemoryError: CUDA out of memory": result_cls.FAILURE_RUNTIME_ERROR,
+        "ValueError: policy head returned nothing": result_cls.FAILURE_UNKNOWN,
+    }
+    for reason, expected in cases.items():
+        result = result_cls()
+        result.success = False
+        result.failure_reason = reason
+        assert _rskill_failure_kind(result) == expected, reason
+
+    # A terminal result with neither a kind nor a reason (rclpy's default abort)
+    # stays unclassified rather than being invented into a kind.
+    empty = result_cls()
+    empty.success = False
+    assert _rskill_failure_kind(empty) == result_cls.FAILURE_NONE

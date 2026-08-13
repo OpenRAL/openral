@@ -173,7 +173,12 @@ class RewardStateRecord:
     stamp_ns: int
 
 
-def reflect_on_failure(outcome_state: str, detail: str) -> str:
+def reflect_on_failure(
+    outcome_state: str,
+    detail: str,
+    *,
+    timed_out: bool | None = None,
+) -> str:
     """One-line strategy hint from a terminal skill outcome.
 
     Reflexion-style: convert a raw failure into a *next-step* hint so the
@@ -183,14 +188,25 @@ def reflect_on_failure(outcome_state: str, detail: str) -> str:
     Args:
         outcome_state: The terminal state — ``"aborted"`` / ``"canceled"`` /
             ``"failed"`` / ``"error"``.
-        detail: Free-text failure reason (matched for ``timeout`` / ``deadline``).
+        detail: Free-text failure reason, rendered into the LLM's execution
+            buffer verbatim.
+        timed_out: Whether the attempt ran out of time, decided by the caller
+            from the typed ``ExecuteRskill.Result.failure_kind``
+            (``FAILURE_DEADLINE_MISSED``). ``None`` — the default — keeps the
+            **deprecated** substring probe over ``detail`` for callers that
+            hold no typed kind (the ``FailureTrigger``/critic legs, and a
+            result from a pre-``failure_kind`` runner).
 
     Example:
         >>> "infeasible" in reflect_on_failure("aborted", "joint limit")
         True
+        >>> "timed out" in reflect_on_failure("aborted", "joint limit", timed_out=True)
+        True
     """
     state = outcome_state.lower()
-    if "timeout" in detail.lower() or "deadline" in detail.lower():
+    if timed_out is None:
+        timed_out = "timeout" in detail.lower() or "deadline" in detail.lower()
+    if timed_out:
         return (
             "the skill timed out — it may be stuck; try a shorter-horizon step "
             "or a different skill."
