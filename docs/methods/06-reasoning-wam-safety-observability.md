@@ -178,6 +178,7 @@ _Lifecycle node skeleton; reserves the supervisor node name and topic surface fo
 ### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
 _Allocation-free attached-payload contact handling._
 
+- `struct CollisionHit` — one collision check's outcome and, on a hit, the E-stop evidence. `link_a` / `link_b` / `min_distance` always describe **one** geometry pair: the deepest pair that actually tripped the gate. `sweep_min_distance` is the separate sweep-wide minimum over every checked pair — including pairs that stayed clear of the margin and pairs the gate exempted (a payload's attach-time contact baseline / its own uncleared occupancy residue) — and never supplies the evidence distance. With no hit, `min_distance == sweep_min_distance` (the clearance; `+inf` when nothing was compared). Every `check_*_collision` in this header returns it under that contract.
 - `update_attached_voxel_contacts(attached, scratch, grid, contact_mask, contact_distance, mask_capacity, distance_capacity, snapshot) -> bool` — Snapshot the occupied voxel contacts present at attachment and refresh them against the measured payload pose. Existing shallow support contact may not deepen beyond the configured tolerance; deeply embedded residue is allowed only until separation; bits are never added after the snapshot. The lifecycle kernel uses the reactive floor during contact-constrained Cartesian motion and restores predictive payload-vs-voxel checking after separation.
 
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
