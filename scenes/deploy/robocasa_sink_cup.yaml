@@ -1,0 +1,28 @@
+# RoboCasa kitchen — deterministic cup counter→sink PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but a
+# different fixture pair (sink instead of cabinet) and a different payload
+# geometry (cup: tall, hollow, small footprint vs the baguette's long thin bar).
+# Used to check that the attached-object collision stack is not overfitted to
+# the baguette scene.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_sink_cup.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToSink
+  backend: mujoco
+  # 512² for the same reason as robocasa_baguette.yaml: at 128² the open-vocab
+  # detector cannot ground the object. VLA policies downsample their own input.
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToSink
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: cup
+
+# Pin the complete kitchen layout / robot start, not only the object group.
+seed: 1

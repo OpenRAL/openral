@@ -112,6 +112,28 @@ def test_robocasa_scene_backend_options_validate(yaml_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "yaml_path",
+    _robocasa_scene_yamls(),
+    ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
+)
+def test_robocasa_scene_id_is_registered(yaml_path: Path) -> None:
+    """Each shipped RoboCasa scene's ``scene.id`` exists in ``SCENES``.
+
+    ``robocasa/<TaskName>`` ids are registered from a curated tuple in the
+    adapter, so a YAML naming a task nobody curated loads fine and then
+    fails at ``make_env`` with "unknown scene id". This pins the two sides
+    together at unit speed.
+    """
+    from openral_sim.registry import SCENES
+
+    scene = _TIER_LOADERS[_tier_of(yaml_path)].from_yaml(str(yaml_path))
+    assert scene.scene.id in SCENES, (
+        f"{yaml_path.name}: scene id {scene.scene.id!r} is not registered; "
+        "add the task to the adapter's curated tuple."
+    )
+
+
+@pytest.mark.parametrize(
+    "yaml_path",
     _yamls("sim"),
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
