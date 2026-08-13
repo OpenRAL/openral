@@ -1,0 +1,25 @@
+# RoboCasa kitchen — deterministic utensil counter→drawer PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but
+# the place target is a drawer the robot must reach down into, and the payload is
+# a thin flat utensil whose primitive decomposition is much finer than the
+# baguette's. Used to check that the attached-object collision stack is not
+# overfitted to the baguette scene.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_drawer_utensil.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToDrawer
+  backend: mujoco
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToDrawer
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: utensil
+
+seed: 1
