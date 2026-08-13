@@ -21,7 +21,21 @@ chunks to the safety boundary.
 | pub | `/openral/candidate_action` | `openral_msgs/ActionChunk` (via `ROSPublishingHAL`) |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) |
 | sub | `/openral/estop` | `std_msgs/Empty` (defense in depth alongside HAL) |
+| sub | `/openral/safety_status` | `openral_msgs/SafetyStatus` (latched; RELIABLE · TRANSIENT_LOCAL · KL=1) |
 | action | `/openral/execute_rskill` | `openral_msgs/action/ExecuteRskill` |
+
+`/openral/safety_status` (ADR-0096) is read-only and feeds the existing
+`safety_abort_getter` seam handed to `ROSPublishingHAL`: when an
+apply-wait blocks, the reported reason names the actual fault
+(`kind_collision`, `drop_envelope_unconfigured`, …) plus the publisher's
+`detail`, instead of collapsing every abort to `/openral/estop`. The
+`/openral/estop` latch is unchanged and still reported alongside it —
+belt and braces. Because the topic is latched, a runner that reconnects
+mid-mission reads the current state immediately. Once a `SafetyStatus`
+has been seen, one that goes silent for more than 3 s (three missed 1 Hz
+liveness refreshes) is reported as *unknown, not safe* — hazard-log
+HZ-0096-1 mitigation 2, failing toward "assume unsafe". No gating
+changed: this only makes an abort the runner was already taking say why.
 
 ## Composition (one shared `WorldStateAggregator`)
 
@@ -115,7 +129,8 @@ runtime via `compose_so100_runtime`, brings up a real
    `failure_kind=FAILURE_SAFETY_ESTOP`.
 4. A safety latch that lands **while the HAL is blocked** waiting for an
    atomic action group to be applied is still reported as
-   `safety_estop:…` (naming `/openral/estop` and the unapplied tick),
+   `safety_estop:…` (naming the typed fault from
+   `/openral/safety_status`, `/openral/estop`, and the unapplied tick),
    not as the `ROSPublishingHAL: action group tick N was not applied
    within 5.0 s` timeout that a silenced `/openral/action_applied`
    produces on its own. The real `SafetyPassthroughNode` decides the

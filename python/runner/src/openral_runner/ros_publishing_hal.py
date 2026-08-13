@@ -141,7 +141,9 @@ class ROSPublishingHAL:
             string when the **owning node** already knows a safety stop is
             latched, or ``None`` when it is not. The adapter opens no
             safety subscription of its own — the owning node injects the
-            fact it already holds (``rskill_runner_node`` passes its
+            fact it already holds (``rskill_runner_node`` passes the newest
+            latched ``/openral/safety_status`` — ``drop_reason`` + ``detail``,
+            so the reason names the actual fault — OR-ed with its
             ``/openral/estop`` latch), the same injection pattern as
             ``skill_id_getter``. Without it, a latched safety stop is
             indistinguishable from a dead HAL: both stop

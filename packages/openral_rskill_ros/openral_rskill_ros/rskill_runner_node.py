@@ -95,6 +95,53 @@ _MAX_APPROACH_WAYPOINTS = 100_000
 # goal runs forever and the reasoner can never re-evaluate the attempt.
 _DEFAULT_EXECUTION_DEADLINE_S = 45.0
 
+# ADR-0096 — the latched safety-state topic both the C++ kernel and
+# SafetyPassthroughNode publish on.
+_SAFETY_STATUS_TOPIC = "/openral/safety_status"
+
+# How old a ``SafetyStatus`` may be before this node stops believing it says
+# anything about *now*. Publishers re-stamp at 1 Hz, so three missed
+# heartbeats is the window (hazard-log HZ-0096-1 mitigation 2). The rule fails
+# toward "assume unsafe": a stale status is reported as an abort reason, never
+# silently downgraded to "clear". It can only ever ADD an abort — the
+# ``/openral/estop`` latch below is unchanged and still stands on its own — and
+# it only arms once a status has actually been seen, so a graph with no
+# SafetyStatus publisher at all behaves exactly as it did before ADR-0096.
+_SAFETY_STATUS_LIVENESS_S = 3.0
+
+
+def _drop_reason_label(code: int, status_cls: Any) -> str:  # noqa: ANN401  # reason: ROS message class is untyped
+    """Name a ``SafetyStatus.drop_reason`` value from the IDL's own constants.
+
+    Reverse-maps the value against the ``KIND_*`` / ``DROP_*`` constants the
+    generated message class carries, so a new constant in
+    ``SafetyStatus.msg`` is named here without a second table to keep in sync.
+
+    Args:
+        code: The ``drop_reason`` value received on the wire.
+        status_cls: The generated ``openral_msgs.msg.SafetyStatus`` class.
+
+    Returns:
+        The constant's name lower-cased (e.g. ``"kind_collision"``), or
+        ``"drop_reason_<code>"`` when the publisher is newer than this node
+        and the value is unknown here.
+
+    Example:
+        >>> class _S:
+        ...     KIND_COLLISION = 10
+        ...     DROP_NONE = 255
+        >>> _drop_reason_label(10, _S)
+        'kind_collision'
+        >>> _drop_reason_label(42, _S)
+        'drop_reason_42'
+    """
+    for name in dir(status_cls):
+        if not (name.startswith(("KIND_", "DROP_"))):
+            continue
+        if getattr(status_cls, name, None) == code:
+            return name.lower()
+    return f"drop_reason_{code}"
+
 
 def _commercial_deployment() -> bool:
     """Return whether the running deployment is commercial.
@@ -236,6 +283,12 @@ if _ROS2_AVAILABLE:
             self._action_server: Any = None
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
+            # ADR-0096 — newest /openral/safety_status. The typed, durable
+            # source behind ``_safety_abort_reason``; ``/openral/estop`` stays
+            # wired as belt-and-braces.
+            self._safety_status_sub: Any = None
+            self._safety_status: Any = None
+            self._safety_status_recv_monotonic: float = 0.0
             self._episode_pub: Any = None
             self._episode_counter: int = 0
             # 1-based inference-tick index stamped onto every
@@ -390,6 +443,25 @@ if _ROS2_AVAILABLE:
             self._estop_reset_sub = self.create_subscription(
                 Empty, "/openral/estop_cleared", self._on_estop_cleared, estop_qos
             )
+            # ADR-0096 — the latched safety-state topic. Consumed through the
+            # EXISTING ``safety_abort_getter`` seam, so a blocked apply-wait
+            # names the actual fault (envelope-unconfigured, voxel-unavailable,
+            # collision) instead of collapsing every abort to "/openral/estop".
+            # TRANSIENT_LOCAL means a runner that reconnects mid-mission reads
+            # the current state immediately instead of waiting for the next
+            # transition. Read-only: this node publishes nothing here, and the
+            # subscription changes no gating — it only makes an abort the
+            # runner was already going to take say why.
+            from openral_msgs.msg import SafetyStatus
+
+            status_qos = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            )
+            self._safety_status_sub = self.create_subscription(
+                SafetyStatus, _SAFETY_STATUS_TOPIC, self._on_safety_status, status_qos
+            )
 
             # Episode boundary markers on the bus. A dataset
             # recorder (openral_runner.DatasetRecorderBridge, attached by
@@ -540,6 +612,11 @@ if _ROS2_AVAILABLE:
             if self._estop_reset_sub is not None:
                 self.destroy_subscription(self._estop_reset_sub)
                 self._estop_reset_sub = None
+            if self._safety_status_sub is not None:
+                self.destroy_subscription(self._safety_status_sub)
+                self._safety_status_sub = None
+                self._safety_status = None
+                self._safety_status_recv_monotonic = 0.0
             if self._episode_pub is not None:
                 self.destroy_publisher(self._episode_pub)
                 self._episode_pub = None
@@ -1554,17 +1631,73 @@ if _ROS2_AVAILABLE:
             # Reward-gate signal: nothing executing now.
             self._publish_active_task("")
 
+        def _on_safety_status(self, msg: object) -> None:
+            """Cache the newest ``/openral/safety_status`` (ADR-0096).
+
+            Store-only: the runner takes no action here. The value is read by
+            :meth:`_safety_abort_reason` when an apply-wait blocks. The
+            receipt time is recorded on the monotonic clock alongside the
+            message's own ``header.stamp`` so liveness survives a node whose
+            ROS clock is sim-time.
+            """
+            self._safety_status = msg
+            self._safety_status_recv_monotonic = time.monotonic()
+
         def _safety_abort_reason(self) -> str | None:
-            """Return why a safety stop is latched here, or ``None``.
+            """Return why a safety stop is in effect here, or ``None``.
 
             Injected into :class:`~openral_runner.ROSPublishingHAL` as its
-            ``safety_abort_getter``. Reports only what this node actually
-            knows: an ``/openral/estop`` publication (``std_msgs/Empty``,
-            no reason payload), so the string names the topic rather than
-            claiming a violation kind the runner never received
-            (CLAUDE.md §1.2).
+            ``safety_abort_getter``, and called while the adapter's
+            applied-condition lock is held — so this stays non-blocking:
+            attribute reads and one clock call, no ROS I/O.
+
+            Two independent sources, OR-ed, richest first:
+
+            1. **The latched ``/openral/safety_status``** (ADR-0096). When it
+               says ``latched``, the reason names the actual fault
+               (``kind_collision``, ``drop_envelope_unconfigured``, …) plus
+               the publisher's ``detail`` — instead of collapsing every abort
+               to the topic name. A latched status is trusted regardless of
+               age: staleness may never downgrade a latch to "clear".
+            2. **The ``/openral/estop`` latch** this node already kept from
+               its own ``std_msgs/Empty`` subscription — unchanged, still
+               standing on its own as belt-and-braces, and still the answer
+               when no SafetyStatus publisher is on the graph.
+
+            Between them sits the HZ-0096-1 liveness rule: once a
+            ``SafetyStatus`` has been seen, one that has gone silent past
+            :data:`_SAFETY_STATUS_LIVENESS_S` is reported as **unknown, not
+            safe** — the publisher may have died holding a latch. This can
+            only ever add an abort to a wait that was otherwise about to fail
+            as a bare 5 s apply-timeout; it never suppresses one.
             """
-            return "/openral/estop" if self._estop_latched else None
+            status_reason: str | None = None
+            status = self._safety_status
+            if status is not None:
+                age_s = time.monotonic() - self._safety_status_recv_monotonic
+                if bool(status.latched):
+                    label = _drop_reason_label(int(status.drop_reason), type(status))
+                    detail = str(getattr(status, "detail", "") or "")
+                    status_reason = f"{_SAFETY_STATUS_TOPIC}:{label}" + (
+                        f" ({detail})" if detail else ""
+                    )
+                elif age_s > _SAFETY_STATUS_LIVENESS_S:
+                    # Fail toward "assume unsafe" (HZ-0096-1 mitigation 4):
+                    # the last thing we heard said clear, but the publisher
+                    # has stopped proving it is alive.
+                    status_reason = (
+                        f"{_SAFETY_STATUS_TOPIC}:stale "
+                        f"(last update {age_s:.1f}s ago > {_SAFETY_STATUS_LIVENESS_S:.1f}s; "
+                        "safety publisher may be gone)"
+                    )
+            estop_reason = "/openral/estop" if self._estop_latched else None
+            if status_reason is None:
+                return estop_reason
+            # Both sources firing is the normal case for a latching fault: the
+            # safety layer publishes the status AND the e-stop. Report both —
+            # dropping the topic name would lose the fact that the
+            # defense-in-depth latch is set too.
+            return status_reason if estop_reason is None else f"{status_reason} + {estop_reason}"
 
         def _on_estop(self, _msg: object) -> None:
             """``/openral/estop`` callback: latch + abort the active goal.

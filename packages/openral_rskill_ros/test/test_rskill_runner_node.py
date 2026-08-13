@@ -623,6 +623,12 @@ def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
     assert reason.startswith("safety_estop:"), reason
     assert "/openral/estop" in reason, reason
     assert "was not applied within" not in reason, reason
+    # ADR-0096 — and the fault itself is named, not just the topic: the
+    # latched /openral/safety_status carries the typed drop_reason plus the
+    # supervisor's own detail string, so the operator reads WHICH bound the
+    # chunk broke rather than "something published /openral/estop".
+    assert "/openral/safety_status:kind_workspace" in reason, reason
+    assert "joint[0]" in reason, reason
     # ...and it names the tick whose group was left unapplied, so an
     # operator can line the abort up against the trace.
     assert "action group tick 1" in reason, reason
