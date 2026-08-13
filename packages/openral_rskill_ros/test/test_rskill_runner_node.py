@@ -11,6 +11,9 @@ the ROS 2 reasoner/supervisor graph's step 1 locks:
 3. ``safety_node`` republishes on ``/openral/safe_action`` (valid
    chunks pass through).
 4. ``/diagnostics`` carries 1 Hz heartbeats from both nodes.
+5. Every terminal ``ExecuteRskill.Result`` carries the typed
+   ``failure_kind`` uint8 matching the CLAUDE.md §5 exception the
+   dispatch path actually raised (``FAILURE_NONE`` on success).
 
 Per CLAUDE.md §1.11 / §5.4: no mocks. The skill is a real
 :class:`rSkillBase` subclass (``_ConstantSkill``) that emits a constant
@@ -491,6 +494,10 @@ def test_execute_skill_estop_aborts_goal() -> None:
         assert result_msg is not None
         assert not result_msg.result.success
         assert "safety_estop" in result_msg.result.failure_reason
+        # Typed cause travels with the prose: ROSEStopRequested → FAILURE_SAFETY_ESTOP.
+        assert result_msg.result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, (
+            result_msg.result.failure_kind
+        )
 
 
 def _make_grouped_violating_skill() -> Any:
@@ -619,6 +626,10 @@ def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
     # ...and it names the tick whose group was left unapplied, so an
     # operator can line the abort up against the trace.
     assert "action group tick 1" in reason, reason
+    # The typed field agrees with the prose: the blocked apply-wait raises
+    # ROSEStopRequested, so the machine-readable cause is SAFETY_ESTOP and NOT
+    # the FAILURE_RUNTIME_ERROR the apply-timeout would have produced.
+    assert result_msg.result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP
     # The abort is prompt: it does not sit out the 5 s apply-timeout first.
     assert elapsed < 4.0, f"safety abort took {elapsed:.2f}s — the apply-wait ran to its timeout"
 
@@ -738,7 +749,257 @@ def test_goal_accept_served_while_execute_runs() -> None:
         assert result1.result.failure_reason.startswith("deadline_exceeded"), (
             result1.result.failure_reason
         )
+        assert result1.result.failure_kind == ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
         assert not result2.result.success
         assert result2.result.failure_reason.startswith("deadline_exceeded"), (
             result2.result.failure_reason
         )
+        assert result2.result.failure_kind == ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
+
+
+# ── Typed failure_kind on the dispatch path ─────────────────────────────────
+
+
+def _make_skill_raising(exc: BaseException) -> Any:
+    """A real activated so100 rSkill whose ``step`` raises ``exc``."""
+    from openral_rskill.base import rSkillBase
+
+    class _RaisingSkill(rSkillBase):
+        def __init__(self) -> None:
+            super().__init__(
+                name="openral/test-raising-skill",
+                version="0.1.0",
+                role="s1",
+                embodiment_tags=["so100_follower"],
+            )
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Any:
+            raise exc
+
+    skill = _RaisingSkill()
+    skill.configure()
+    skill.activate()
+    return skill
+
+
+def _dispatch_and_get_result(resolver: Any, *, deadline_s: float = 2.0) -> Any:
+    """Compose the real graph, dispatch one goal through ``resolver``, return the Result."""
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    with _compose_harness(resolver=resolver) as (executor, runtime, _safety, _observed):
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+        handle = _send_goal(client, executor, prompt="failure kind", deadline_s=deadline_s)
+        return _await_result(handle, executor).result
+
+
+def test_capability_mismatch_carries_failure_kind() -> None:
+    """A skill whose embodiment tags miss the robot's → FAILURE_CAPABILITY_MISMATCH.
+
+    Exercises the real embodiment gate in ``_resolve_and_check_skill`` (the
+    resolver hands back a genuinely activated rSkill; only its tags are wrong),
+    so the ``ROSCapabilityMismatch`` the runner raises is the real one.
+    """
+    from openral_msgs.action import ExecuteRskill
+
+    result = _dispatch_and_get_result(
+        lambda *_a, **_k: _make_named_skill_for_embodiment("franka_panda"),
+    )
+    assert not result.success
+    assert result.failure_reason.startswith("ROSCapabilityMismatch:"), result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CAPABILITY_MISMATCH
+
+
+def _make_named_skill_for_embodiment(tag: str) -> Any:
+    """A real configured+activated rSkill declaring a single embodiment ``tag``."""
+    from openral_core.schemas import Action, ControlMode
+    from openral_rskill.base import rSkillBase
+
+    class _OtherEmbodimentSkill(rSkillBase):
+        def __init__(self) -> None:
+            super().__init__(
+                name="openral/test-other-embodiment",
+                version="0.1.0",
+                role="s1",
+                embodiment_tags=[tag],
+            )
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 6],
+            )
+
+    skill = _OtherEmbodimentSkill()
+    skill.configure()
+    skill.activate()
+    return skill
+
+
+def test_non_active_resolver_result_carries_config_error_kind() -> None:
+    """A resolver returning a configured-but-not-activated skill → FAILURE_CONFIG_ERROR.
+
+    ``_resolve_and_check_skill`` treats a non-ACTIVE skill as a resolver contract
+    violation and raises ``ROSConfigError``; the Result must say so in the uint8.
+    """
+    from openral_msgs.action import ExecuteRskill
+
+    def _configured_only(*_a: Any, **_k: Any) -> Any:
+        from openral_core.schemas import Action, ControlMode
+        from openral_rskill.base import rSkillBase
+
+        class _ConfiguredOnlySkill(rSkillBase):
+            def __init__(self) -> None:
+                super().__init__(
+                    name="openral/test-configured-only",
+                    version="0.1.0",
+                    role="s1",
+                    embodiment_tags=["so100_follower"],
+                )
+
+            def _configure_impl(self) -> None:
+                pass
+
+            def _activate_impl(self) -> None:
+                pass
+
+            def _deactivate_impl(self) -> None:
+                pass
+
+            def _shutdown_impl(self) -> None:
+                pass
+
+            def _step_impl(self, _world_state: Any) -> Action:
+                return Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 6],
+                )
+
+        skill = _ConfiguredOnlySkill()
+        skill.configure()  # deliberately NOT activated
+        return skill
+
+    result = _dispatch_and_get_result(_configured_only)
+    assert not result.success
+    assert result.failure_reason.startswith("ROSConfigError:"), result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CONFIG_ERROR
+
+
+@pytest.mark.parametrize(
+    ("exc_name", "kind_name", "reason_prefix"),
+    [
+        ("ROSRuntimeError", "FAILURE_RUNTIME_ERROR", "ROSRuntimeError:"),
+        ("ROSGPUMemoryError", "FAILURE_RUNTIME_ERROR", "ROSGPUMemoryError:"),
+        ("ROSPerceptionStale", "FAILURE_PERCEPTION_STALE", "ROSPerceptionStale:"),
+        ("ROSPlanningError", "FAILURE_PLANNING_ERROR", "ROSPlanningError:"),
+    ],
+)
+def test_typed_step_failures_carry_matching_failure_kind(
+    exc_name: str, kind_name: str, reason_prefix: str
+) -> None:
+    """Each §5 exception raised inside ``skill.step`` maps to its own uint8 kind."""
+    import openral_core.exceptions as exc_mod
+    from openral_msgs.action import ExecuteRskill
+
+    exc = getattr(exc_mod, exc_name)("raised from the rSkill step")
+    result = _dispatch_and_get_result(lambda *_a, **_k: _make_skill_raising(exc))
+    assert not result.success
+    assert result.failure_reason.startswith(reason_prefix), result.failure_reason
+    assert result.failure_kind == getattr(ExecuteRskill.Result, kind_name)
+
+
+def test_untyped_step_failure_carries_unknown_kind() -> None:
+    """A raw non-``ROSError`` escape is FAILURE_UNKNOWN, not a typed kind.
+
+    The distinction is load-bearing for the reasoner: "typed but unclassified"
+    and "never entered the OpenRAL exception surface" want different next steps.
+    """
+    from openral_msgs.action import ExecuteRskill
+
+    result = _dispatch_and_get_result(
+        lambda *_a, **_k: _make_skill_raising(ValueError("policy head returned nothing")),
+    )
+    assert not result.success
+    assert result.failure_reason.startswith("ValueError:"), result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_UNKNOWN
+
+
+def test_successful_goal_reports_failure_kind_none() -> None:
+    """A skill that signals completion closes success=True with FAILURE_NONE."""
+    from openral_core.exceptions import ROSRskillGoalSatisfied
+    from openral_core.schemas import Action, ControlMode
+    from openral_msgs.action import ExecuteRskill
+    from openral_rskill.base import rSkillBase
+
+    class _CompletingSkill(rSkillBase):
+        """Emits two chunks, then raises the typed completion signal."""
+
+        def __init__(self) -> None:
+            super().__init__(
+                name="openral/test-completing-skill",
+                version="0.1.0",
+                role="s1",
+                embodiment_tags=["so100_follower"],
+            )
+            self._ticks = 0
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            self._ticks += 1
+            if self._ticks > 2:
+                raise ROSRskillGoalSatisfied("reached the commanded pose")
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 6],
+            )
+
+    def _resolver(*_a: Any, **_k: Any) -> Any:
+        skill = _CompletingSkill()
+        skill.configure()
+        skill.activate()
+        return skill
+
+    result = _dispatch_and_get_result(_resolver, deadline_s=5.0)
+    assert result.success, result.failure_reason
+    assert result.failure_reason == ""
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_NONE
