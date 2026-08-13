@@ -426,6 +426,21 @@ omdet = [
     "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for the processor.
     "timm>=1.0",            # reason: OmDet-Turbo's Swin backbone loads via TimmBackbone under transformers 5.3; also used to rebuild the backbone at the processor's 640² input (the pretrained checkpoint is pinned to 224² — see _fit_timm_backbone_to_processor).
 ]
+sam2 = [
+    # Opt-in SAM 2.1 in-process promptable segmenter
+    # (rskills/rskill-sam2_1-any-grasped_object_mask-bf16, engine: sam2_hf).
+    #
+    # Like OmDet-Turbo and unlike the LocateAnything sidecar, SAM 2.1 is a
+    # first-class transformers architecture (Sam2Model / Sam2Processor), so it
+    # loads under the workspace's own transformers and runs IN PROCESS — no
+    # sidecar venv, no quantization. Measured 74 MiB of weights and a ~297 MiB
+    # peak on an RTX 4070 Laptop, which co-resides trivially with a VLA. The
+    # backend (openral_runner.backends.gstreamer.sam2_segmenter) lazily imports
+    # torch + transformers; this group provides them.
+    "transformers>=5.4.0,<5.14.0",  # reason: Sam2Model / Sam2Processor. Pinned to match the omdet / sim / vla groups so a multi-group sync resolves to one transformers version.
+    "torch>=2.2",           # reason: SAM 2.1 forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts and pre-sm_70 dev boxes.
+    "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for Sam2Processor.
+]
 onnx-export = [
     "transformers>=4.45",  # reason: RTDetrForObjectDetection for ONNX export (one-time)
     "torch>=2.2",          # reason: torch.onnx.export

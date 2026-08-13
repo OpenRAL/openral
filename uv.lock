@@ -3160,6 +3160,13 @@ robotwin = [
     { name = "msgpack" },
     { name = "pyzmq" },
 ]
+sam2 = [
+    { name = "pillow" },
+    { name = "torch", version = "2.9.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_machine == 'aarch64' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa') or (sys_platform != 'linux' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
+    { name = "torch", version = "2.9.1+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa') or (sys_platform != 'linux' and extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
+    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or (extra == 'group-17-openral-workspace-libero' and extra == 'group-17-openral-workspace-robocasa')" },
+    { name = "transformers" },
+]
 sidecar-wire = [
     { name = "msgpack" },
     { name = "pyzmq" },
@@ -3304,6 +3311,12 @@ robocasa = [
 robotwin = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
+]
+sam2 = [
+    { name = "pillow", specifier = ">=10.0" },
+    { name = "torch", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = ">=2.2" },
+    { name = "torch", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 sidecar-wire = [
     { name = "msgpack", specifier = ">=1" },
