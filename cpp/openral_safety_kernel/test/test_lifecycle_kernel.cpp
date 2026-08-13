@@ -925,3 +925,145 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
          "/openral/safe_action (no false positive)";
   EXPECT_FALSE(node->fault_latched());
 }
+
+// The REACTIVE (measured-state) collision check reports `horizon_step: -1` —
+// the sentinel that says "this is the configuration the robot is in RIGHT NOW,
+// not a predicted look-ahead step". This test pins the WIRE FORMAT of that
+// evidence payload, because `openral_core.CollisionEvidence` has to accept it:
+// a Cartesian chunk (CARTESIAN_POSE/TWIST/DELTA — every attached-payload stop)
+// hits the reactive check first, so -1 is the common case on that path, and a
+// schema that rejects it silently downgrades the reasoner to raw-JSON
+// truncation. Same 2R arm + EE link as the predictive tests above, but the
+// voxel wall is placed so the MEASURED start config already collides.
+TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-3.14, -3.14}},
+      {"joint_position_max", std::vector<double>{3.14, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{8192}},
+      {"collision_n_links", std::int64_t{3}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1, 1, 0}},  // rev, rev, fixed
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1, -1}},
+      {"collision_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"l0", "l1", "ee"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "j1"}},
+      {"collision_state_deadline_ms", 2000.0},
+      {"collision_ee_link_index", std::int64_t{2}},
+      {"collision_predict_lambda", 0.02},
+      {"collision_predict_margin_growth_m", 0.02},
+      {"collision_predict_max_steps", std::int64_t{0}},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_reactive_evidence", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("reactive_evidence_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS fail_qos(rclcpp::KeepLast(50));
+  fail_qos.reliable();
+  fail_qos.durability_volatile();
+  std::string evidence;
+  auto fail_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", fail_qos,
+      [&evidence](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
+        if (m->kind == openral_msgs::msg::FailureTrigger::KIND_COLLISION && evidence.empty()) {
+          evidence = m->evidence_json;
+        }
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  // Voxel wall: every cell with centre y>=0.95 occupied. Grid x,y in [0,2],
+  // z in [-0.15,0.15] @ 0.1 m. The EE capsule (centre (1,1,0), r=0.05,
+  // half-length 0.05) sits INSIDE the wall at the measured configuration, so
+  // the reactive check fires before any look-ahead step is evaluated.
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.resolution = 0.1;
+  vox.size_x = 20;
+  vox.size_y = 20;
+  vox.size_z = 3;
+  vox.origin.x = 0.0;
+  vox.origin.y = 0.0;
+  vox.origin.z = -0.15;
+  vox.occupancy.assign(static_cast<std::size_t>(vox.size_x) * vox.size_y * vox.size_z, 0);
+  for (std::uint32_t iz = 0; iz < vox.size_z; ++iz) {
+    for (std::uint32_t iy = 0; iy < vox.size_y; ++iy) {
+      const double cy = vox.origin.y + (iy + 0.5) * vox.resolution;
+      if (cy >= 0.95) {
+        for (std::uint32_t ix = 0; ix < vox.size_x; ++ix) {
+          vox.occupancy[ix + vox.size_x * (iy + vox.size_y * iz)] = 1;
+        }
+      }
+    }
+  }
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0", "j1"};
+  js.position = {0.0, 1.57079632679};  // EE at (1,1,0) — already in the wall
+
+  openral_msgs::msg::ActionChunk cart;
+  cart.rskill_id = "reactive_evidence_skill";
+  cart.trace_id = "0af7651916cd43dd8448eb211c80319c";
+  cart.control_mode = 5;  // CARTESIAN_DELTA
+  cart.horizon = 4;
+  cart.n_dof = 6;
+  cart.flat.clear();
+  for (int s = 0; s < 4; ++s) {
+    cart.flat.insert(cart.flat.end(), {0.0, 0.01, 0.0, 0.0, 0.0, 0.0});
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (evidence.empty() && std::chrono::steady_clock::now() < deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(cart);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_FALSE(evidence.empty())
+      << "the reactive check must publish a KIND_COLLISION FailureTrigger; chunks_dropped="
+      << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
+  // The exact wire shape consumed by openral_core.CollisionEvidence. The
+  // Python-side counterpart is tests/unit/test_collision_geometry_contracts.py
+  // ::test_kernel_reactive_collision_evidence_validates.
+  EXPECT_NE(evidence.find(R"("kind":"collision")"), std::string::npos) << evidence;
+  EXPECT_NE(evidence.find(R"("collision_kind":"world")"), std::string::npos) << evidence;
+  EXPECT_NE(evidence.find(R"("link_a":"ee")"), std::string::npos) << evidence;
+  EXPECT_NE(evidence.find(R"("horizon_step":-1)"), std::string::npos)
+      << "the reactive (measured-state) check must report the -1 sentinel, not a "
+         "predicted-horizon index: "
+      << evidence;
+  // Print the captured payload so the Python-side fixture can be refreshed
+  // verbatim from a real kernel run rather than hand-written.
+  RecordProperty("reactive_collision_evidence_json", evidence);
+}

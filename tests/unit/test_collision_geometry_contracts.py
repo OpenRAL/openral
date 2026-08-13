@@ -12,6 +12,8 @@ mocks.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from openral_core import (
     CapsuleShape,
     CollisionEvidence,
@@ -28,6 +30,13 @@ from openral_core.schemas import JointState
 from pydantic import TypeAdapter, ValidationError
 
 _OPENARM_YAML = "robots/openarm/robot.yaml"
+
+#: A real ``FailureTrigger.evidence_json`` captured from the C++ safety kernel's
+#: REACTIVE (measured-state) collision check. Provenance + reproduction command
+#: in the sibling ``.SOURCE.txt``.
+_KERNEL_REACTIVE_EVIDENCE = (
+    Path(__file__).parent / "fixtures" / "kernel_reactive_collision_evidence.json"
+)
 
 
 # ── CollisionShape discriminated union ────────────────────────────────────────
@@ -72,6 +81,43 @@ def test_collision_evidence_dispatches_through_failure_union() -> None:
     assert isinstance(decoded, CollisionEvidence)
     assert decoded.collision_kind == "self"
     assert decoded.min_distance_m == -0.01
+    assert not decoded.is_reactive  # horizon_step=2 is a predicted step
+
+
+def test_kernel_reactive_collision_evidence_validates() -> None:
+    """A REAL kernel-emitted reactive payload (``horizon_step: -1``) validates.
+
+    Regression: the field used to be ``Field(ge=0)``, which rejected every
+    reactive (measured-state) hit the kernel publishes — and every Cartesian
+    control mode reaches the reactive check first, so an attached-payload stop
+    always landed there. The reasoner then silently fell back to raw-JSON
+    truncation instead of a structured summary.
+    """
+    payload = _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
+    decoded = TypeAdapter(FailureEvidence).validate_json(payload)
+    assert isinstance(decoded, CollisionEvidence)
+    assert decoded.collision_kind == "world"
+    assert decoded.link_a == "ee"
+    assert decoded.link_b_or_object == "voxel_189"
+    assert decoded.horizon_step == CollisionEvidence.REACTIVE_HORIZON_STEP == -1
+    assert decoded.is_reactive
+    assert decoded.min_distance_m == -0.05
+
+
+def test_collision_evidence_rejects_below_reactive_sentinel() -> None:
+    """``-1`` is the only negative ``horizon_step``; ``-2`` is still garbage."""
+    try:
+        CollisionEvidence(
+            collision_kind="world",
+            link_a="ee",
+            link_b_or_object="voxel_189",
+            horizon_step=-2,
+            min_distance_m=-0.05,
+        )
+    except ValidationError:
+        pass
+    else:  # pragma: no cover - the constraint must fire
+        raise AssertionError("CollisionEvidence accepted horizon_step=-2")
 
 
 # ── WorldState world surface defaults ─────────────────────────────────────────

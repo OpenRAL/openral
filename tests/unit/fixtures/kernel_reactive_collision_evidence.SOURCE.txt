@@ -1,0 +1,24 @@
+A REAL `FailureTrigger.evidence_json` captured verbatim from the C++ safety
+kernel (`cpp/openral_safety_kernel/`), not hand-written.
+
+Producer:
+    cpp/openral_safety_kernel/test/test_lifecycle_kernel.cpp
+      TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
+
+Reproduce:
+    source /opt/ros/jazzy/setup.bash
+    just safety-kernel-build
+    source install/setup.bash
+    ./build/openral_safety_kernel/test_lifecycle_kernel \
+        --gtest_filter='*ReactiveCollisionEvidence*' --gtest_output=xml:/tmp/gtest.xml
+    # the payload is the <property name="reactive_collision_evidence_json"> value
+
+Scenario: a CARTESIAN_DELTA chunk whose MEASURED configuration already sits in
+an occupied voxel. That is the REACTIVE (measured-state) check, which the
+kernel reports with the `horizon_step: -1` sentinel — see
+`check_config(q_check_.data(), -1)  // step -1 = measured state` in
+`src/lifecycle_kernel.cpp`, serialized by `publish_collision_failure()`.
+
+Kernel log line for the same event:
+    safety.collision kind=world a=ee b=voxel_189 step=-1 min_distance_m=-0.05
+    mode=5 rskill_id=reactive_evidence_skill

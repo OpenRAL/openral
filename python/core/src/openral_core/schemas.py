@@ -12,7 +12,7 @@ import binascii
 import math
 import re
 from enum import Enum
-from typing import Any, Literal, NamedTuple, Self, TypeAlias, TypeVar, get_args
+from typing import Any, ClassVar, Literal, NamedTuple, Self, TypeAlias, TypeVar, get_args
 
 from pydantic import (
     AliasChoices,
@@ -8008,17 +8008,31 @@ class CollisionEvidence(_FailureEvidenceBase):
         link_b_or_object: The other robot link (self-collision) or the world
             object / occupancy region (world-collision).
         horizon_step: Chunk step (horizon index) where the collision was first
-            detected.
+            detected, or ``REACTIVE_HORIZON_STEP`` (``-1``) when the hit is a
+            REACTIVE one — the robot's *measured* configuration already
+            collides, so no prediction step is involved. The C++ safety kernel
+            emits ``-1`` for that check (``check_config(q_meas, -1)`` in
+            ``cpp/openral_safety_kernel/src/lifecycle_kernel.cpp``); it is the
+            common case for Cartesian control modes, whose reactive
+            measured-state check is the guaranteed floor.
         min_distance_m: Signed minimum distance at detection, in metres
             (negative means interpenetration).
     """
+
+    #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
+    REACTIVE_HORIZON_STEP: ClassVar[int] = -1
 
     kind: Literal["collision"] = "collision"
     collision_kind: Literal["self", "world"]
     link_a: str
     link_b_or_object: str
-    horizon_step: int = Field(ge=0)
+    horizon_step: int = Field(ge=REACTIVE_HORIZON_STEP)
     min_distance_m: float
+
+    @property
+    def is_reactive(self) -> bool:
+        """``True`` when the hit came from the measured-state (reactive) check."""
+        return self.horizon_step == CollisionEvidence.REACTIVE_HORIZON_STEP
 
 
 class SuppressedSummaryEvidence(_FailureEvidenceBase):
