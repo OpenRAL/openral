@@ -450,7 +450,7 @@ sensors:
     range_min_m: 0.55
     range_max_m: 12.0
     vendor: "sim"
-    model: "robocasa_mj_multiray"
+    model: "robocasa_mj_ray"
   # Depth camera the panda_mobile HAL ray-casts from MuJoCo
   # (``openral_sim.backends.depth_camera.synthesize_depth_pointcloud``)
   # and publishes as ``sensor_msgs/PointCloud2`` on
