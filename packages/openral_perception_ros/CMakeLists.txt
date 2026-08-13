@@ -19,6 +19,7 @@ install(
     openral_perception_ros/scene_vlm_node.py
     openral_perception_ros/reward_monitor_node.py
     openral_perception_ros/depth_provider_node.py
+    openral_perception_ros/segmenter_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

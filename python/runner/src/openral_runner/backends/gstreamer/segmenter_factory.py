@@ -25,11 +25,17 @@ from openral_runner.backends.gstreamer.sam2_segmenter import Sam2Segmenter
 __all__ = ["build_manifest_segmenter"]
 
 
-def build_manifest_segmenter(manifest: RSkillManifest) -> Sam2Segmenter:
+def build_manifest_segmenter(manifest: RSkillManifest, *, device: str = "auto") -> Sam2Segmenter:
     """Build the segmenter backend for a ``kind: segmenter`` manifest.
 
     Args:
         manifest: A validated manifest with ``kind == "segmenter"``.
+        device: Torch device preference. ``"auto"`` picks CUDA when available,
+            else CPU. An explicit ``"cpu"`` is the honest setting on a
+            pre-sm_70 dev GPU, where the CUDA wheels ship no kernels for the
+            card and ``torch.cuda.is_available()`` alone would mislead the
+            auto path. Not a manifest field — the same weights run on either
+            device, so this is host posture rather than skill contract.
 
     Returns:
         The backend instance, which exposes
@@ -72,4 +78,5 @@ def build_manifest_segmenter(manifest: RSkillManifest) -> Sam2Segmenter:
         max_prompt_points=contract.max_prompt_points,
         multimask=contract.multimask,
         min_mask_area_px=contract.min_mask_area_px,
+        device=device,
     )

@@ -45,6 +45,7 @@ TARGETS=(
     # unchanged payload must release the deferred action_applied tick; when it
     # did not, a SUCCESSFUL place aborted its own goal 8 s later.
     tests/integration/test_hal_attachment_barrier_live.py
+    tests/integration/test_segment_in_view_service.py
     # ROS_DISTRO-gated rather than OPENRAL_TEST_ROS_LIVE-gated: the composed
     # runner/world-state/safety action-protocol suite needs the colcon
     # openral_msgs overlay, which only this image has — without this entry it
