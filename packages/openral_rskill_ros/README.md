@@ -112,6 +112,13 @@ runtime via `compose_so100_runtime`, brings up a real
    `rskill_id` / `flat` / `n_dof` fields.
 3. `/openral/estop` aborts the in-flight goal with
    `failure_reason="safety_estop:…"`.
+4. A safety latch that lands **while the HAL is blocked** waiting for an
+   atomic action group to be applied is still reported as
+   `safety_estop:…` (naming `/openral/estop` and the unapplied tick),
+   not as the `ROSPublishingHAL: action group tick N was not applied
+   within 5.0 s` timeout that a silenced `/openral/action_applied`
+   produces on its own. The real `SafetyPassthroughNode` decides the
+   violation and fires the estop itself in that test.
 
 Production deployments override the skill resolver via
 `compose_so100_runtime(skill_resolver=...)`; the default resolver
