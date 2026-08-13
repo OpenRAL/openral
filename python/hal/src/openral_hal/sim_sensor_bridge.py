@@ -15,6 +15,8 @@ import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 
+from openral_hal.mobile_base_bridge import describes_mobile_base
+
 # Throttle dashboard thumbnail emission to ~1 Hz per camera (1e9 ns).
 # The live ROS topic stays at the higher camera_rate_hz; only the OTel
 # ``sensors.read_latest`` span is rate-limited to avoid ballooning OTLP
@@ -665,13 +667,13 @@ class SimSensorBridge:
         Static (the base is fixed) + latched, so the skill_runner's tf_lookup
         gets it even joining late. Skipped for MOBILE bases — they publish a
         live ``odom -> base`` and a second parent for ``base`` would corrupt the
-        tree (detected via ``capabilities.footprint_radius``, which only mobile
-        robots declare).
+        tree (detected via
+        :func:`~openral_hal.mobile_base_bridge.describes_mobile_base`, the same
+        predicate the lifecycle node attaches the ``odom`` publisher on).
         """
         if self._world_base_published:
             return
-        caps = getattr(self._description, "capabilities", None)
-        if caps is not None and getattr(caps, "footprint_radius", None) is not None:
+        if describes_mobile_base(self._description):
             self._world_base_published = True  # mobile: odom owns base->world; nothing to do
             return
         if self._depth_base_body_id < 0:

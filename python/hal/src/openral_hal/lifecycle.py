@@ -89,6 +89,8 @@ from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
 
+from openral_hal.mobile_base_bridge import describes_mobile_base
+
 if TYPE_CHECKING:
     from openral_core import RobotDescription
 
@@ -1525,7 +1527,7 @@ if _ROS2_AVAILABLE:
             # Mobile-base streams (issue #191 Phase 3): /odom + odom->base_link TF
             # + /cmd_vel->BODY_TWIST, attached generically when the manifest
             # declares a planar base (`base_joints`). Fixed-base arms skip it.
-            if self._hal.description.base_joints:
+            if describes_mobile_base(self._hal.description):
                 from openral_hal.mobile_base_bridge import MobileBaseBridge
 
                 self._mobile_base = MobileBaseBridge(

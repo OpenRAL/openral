@@ -37,6 +37,32 @@ if TYPE_CHECKING:
     from openral_core import RobotDescription
 
 
+def describes_mobile_base(description: RobotDescription) -> bool:
+    """Whether ``description`` declares a planar mobile base.
+
+    The single predicate behind "does something already own ``odom ->
+    base_frame``?". :class:`ManifestHALLifecycleNode` attaches a
+    :class:`MobileBaseBridge` on exactly this condition, so anything that must
+    NOT publish a second parent for the base frame (the sim sensor bridge's
+    static ``world -> base_frame`` root) has to ask the same question — a
+    divergent test (e.g. reading ``footprint_radius``, a Nav2 tuning knob a
+    mobile robot may legitimately omit) splits ``/tf`` into two unconnected
+    trees and makes ``map`` unreachable.
+
+    Args:
+        description: The robot manifest.
+
+    Returns:
+        ``True`` when the manifest declares ``base_joints``.
+
+    Example:
+        >>> from openral_hal.panda_mobile import PANDA_MOBILE_DESCRIPTION
+        >>> describes_mobile_base(PANDA_MOBILE_DESCRIPTION)
+        True
+    """
+    return bool(description.base_joints)
+
+
 class MobileBaseBridge:
     """Owns ``/odom`` + ``odom->base_link`` TF + ``/cmd_vel``→BODY_TWIST for a node.
 
