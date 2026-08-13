@@ -123,6 +123,39 @@ When the env var is unset the kernel falls back to
 the validator stays allocation-free
 (`test_no_alloc.cpp` still pins the guarantee).
 
+## Frame convention (ADR-0095)
+
+The kernel applies **no transforms**. It FKs each link from the manifest's
+per-joint `origin_xyz` / `origin_rpy` starting at the robot's `base_frame`, and
+rasterizes the resulting capsules straight against `/openral/world_voxels`,
+whose `header.frame_id` and `origin` are taken at face value. Everything the
+kernel touches therefore lives in one frame, `base_frame`, and that frame is
+whatever `/tf` says it is:
+
+```
+odom -> base_link        ← MobileBaseBridge (from the HAL's base_pose_6dof)
+  ├─ base_link -> <cam>_optical_frame   ← the depth extrinsic feeding octomap
+  │     …octomap_server → openral_octomap_bridge → /openral/world_voxels
+  └─ manifest origin_xyz chain          ← this kernel's collision FK
+```
+
+The two branches must be measured against the **same body**. On robosuite /
+RoboCasa mobile manipulators `base_link` is the arm mount at the top of the
+0.70 m pedestal (`mobilebase0_support`), not the ground-level chassis root, so
+`robots/panda_mobile*/robot.yaml` carries the plain Franka `panda_joint1`
+origin `[0, 0, 0.333]`. PR #103 briefly set it to `1.033` to cancel a
+producer-side frame bug *inside* the kernel; ADR-0095 fixes the producer at
+source and reverts the root **in the same commit**, because either half alone
+leaves the kernel a full pedestal away from the obstacles it is checked against
+(hazard **HZ-0095-1**).
+
+That pairing is envelope-neutral by construction — the grid's content and the
+FK root move by the same −0.700 m, and a capsule-vs-voxel distance depends only
+on their difference. `VoxelCollision.BaseFrameAlignmentPreservesTheProtective`
+`Envelope` asserts the hit flag, the evidence cell index and `min_distance` are
+identical across the pair; `VoxelCollision.HalfAppliedFrameAlignmentMovesThe`
+`KernelByThePedestal` asserts a half-applied change blinds the kernel.
+
 ## Real-time guarantees
 
 - Validator (`validate()` in `src/validator.cpp`) is allocation-free.

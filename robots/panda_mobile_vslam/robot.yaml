@@ -137,8 +137,11 @@ joints:
     joint_type: "revolute"
     parent_link: "base_link"
     child_link: "panda_link1"
-    # Fixed parent->joint transform (from Franka URDF; joint1 absorbs the 0.7 m arm-base mount). Lets the kernel FK place the collision capsules.
-    origin_xyz: [0.0, 0.0, 1.033]
+    # ADR-0095: base_link IS the arm mount (RoboCasa's mobilebase0_support), so
+    # this is the plain Franka URDF joint-1 transform — the 0.7 m pedestal is
+    # already carried by odom->base_link and must not be added twice. Lets the
+    # kernel FK place the collision capsules.
+    origin_xyz: [0.0, 0.0, 0.333]
     origin_rpy: [0.0, 0.0, 0.0]
     position_limits: [-2.8973, 2.8973]
     velocity_limit: 2.175
