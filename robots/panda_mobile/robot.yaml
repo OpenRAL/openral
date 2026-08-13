@@ -452,7 +452,8 @@ sensors:
     vendor: "sim"
     model: "robocasa_mj_ray"
   # Depth camera the panda_mobile HAL ray-casts from MuJoCo
-  # (``openral_sim.backends.depth_camera.synthesize_depth_pointcloud``)
+  # (``openral_sim.backends.depth_camera.synthesize_depth_image``, once per
+  # frame; the cloud is that raster back-projected, not a second cast)
   # and publishes as ``sensor_msgs/PointCloud2`` on
   # ``/openral/cameras/front_depth/points`` for octomap_server → the C++
   # safety kernel's world-collision voxel check. ``metadata.mjcf_camera``
@@ -478,7 +479,7 @@ sensors:
     range_min_m: 0.3
     range_max_m: 5.0
     vendor: "sim"
-    model: "robocasa_depth_mj_multiray"
+    model: "robocasa_depth_mj_ray"
     metadata:
       mjcf_camera: "robot0_agentview_left"
 

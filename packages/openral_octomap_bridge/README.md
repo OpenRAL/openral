@@ -96,7 +96,8 @@ OctoMap publisher would itself be C++).
 3-D obstacles and an obstacle-avoidance task. The deploy-sim HAL now publishes a
 **depth `PointCloud2`** for it: the panda_mobile node ray-casts each depth
 `SensorSpec` (`robots/panda_mobile/robot.yaml` → `front_depth`) from MuJoCo via
-`openral_sim.backends.depth_camera.synthesize_depth_pointcloud` and publishes
+`openral_sim.backends.depth_camera.synthesize_depth_image` (one cast per frame,
+back-projected to a cloud by `openral_hal.depth_cloud.points_from_depth_grid`) and publishes
 `/openral/cameras/front_depth/points` (camera optical frame) + a live
 `base_link → front_depth_optical_frame` TF. This is robot-agnostic — declare a
 depth `SensorSpec` (with `metadata.mjcf_camera`) on any robot and its HAL node

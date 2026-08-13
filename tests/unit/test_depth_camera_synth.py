@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit coverage for the simulated depth-camera → point-cloud synth.
 
-`synthesize_depth_pointcloud` casts one `mj_multiRay` ray per
+`synthesize_depth_pointcloud` casts one `mj_ray` per
 (strided) pixel through a pinhole model and returns the hit points in the
 camera *optical* frame (REP-103: +x right, +y down, +z forward). It is the
 3-D analogue of `synthesize_laser_scan_2d` and is robot-agnostic: any named

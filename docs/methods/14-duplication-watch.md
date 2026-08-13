@@ -275,6 +275,15 @@ contributor should look at before adding similar code.
 
 ### Watch list (not yet a problem, but worth tracking)
 
+- **Pinhole back-projection of a `32FC1` depth raster** now exists twice:
+  `openral_hal.depth_cloud.points_from_depth_grid` (raster → `(N, 3)`
+  optical-frame cloud, the deploy-sim bridge's single-cast path) and
+  `openral_slam_bringup.depth_height_filter_node.filter_depth_by_global_height`
+  (raster → *filtered raster*, projecting only the global-z component
+  through one rotation row). Same `(u-cx)/fx` core, different outputs and
+  different packages — a third copy is the trigger to hoist a typed
+  `deproject_depth(...)` into `openral_core.geometry` and route all of
+  them through it.
 - **`_validate_action()`** appears in both `MujocoArmHAL` (L296) and
   `RosControlHAL` (L250). They validate different invariants today
   (MuJoCo: `joint_targets` rank; ros2_control: control mode). If a

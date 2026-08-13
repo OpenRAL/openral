@@ -18,10 +18,19 @@ The returned cloud is the dense, bounded input perception lowers into an
 OctoMap; the kernel never sees it directly ("perception proposes, the kernel
 disposes").
 
-Cost scales with rays x geoms, and the caller's ``stride`` is the lever: on a
-~1200-geom kitchen a 256x256 camera costs ~56 ms/frame at the deploy default
-``stride=4`` (4096 rays) and ~210 ms at ``stride=2``, so dropping the stride on
-a large scene will not hold the manifest's 5 Hz.
+Cost scales with rays x geoms, and the caller's ``stride`` is the lever.
+Measured on a synthetic 1200-geom clutter scene (RoboCasa-kitchen scale) with a
+256x256 camera: **one** cast costs ~60 ms at the deploy default ``stride=4``
+(4096 rays) and ~240 ms at ``stride=2`` (16384 rays). The deploy-sim depth timer
+runs on the single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` —
+default **10 Hz**, a 100 ms period (the manifest ``SensorSpec.rate_hz`` is not
+read by the bridge) — so ``stride=4`` already spends ~60% of the period inside
+the cast and ``stride=2`` cannot hold the rate at all.
+
+Budget one cast per camera per frame: derive every output from that single
+raster rather than calling both synths, which casts each ray twice for numbers
+that are equal by construction (``openral_hal.sim_sensor_bridge`` publishes the
+``PointCloud2`` via ``openral_hal.depth_cloud.points_from_depth_grid``).
 """
 
 from __future__ import annotations
@@ -126,9 +135,12 @@ def _cast_depth_rays(
     # a 30 mm systematic underestimate, in the unsafe direction, on the cloud
     # the world-collision voxel grid is built from. `mj_ray` runs the plain
     # linear scan over every visible geom and has no such cull, matching what
-    # the GL depth renderer draws. Costs ~6-7x the batched call; the depth
-    # stream is a strided, rate-limited sim sensor, and a wrong surface is
-    # worse than a slower one.
+    # the GL depth renderer draws. It costs more than the batched call — how
+    # much depends entirely on how often that body cull fires, i.e. on the
+    # scene (~1.9x on the 1200-geom clutter scene the module docstring's budget
+    # is measured on), so size the budget from a measurement, not a multiplier.
+    # The depth stream is a strided, rate-limited sim sensor, and a wrong
+    # surface is worse than a slower one.
     geomid_out = np.zeros(1, dtype=np.int32)
     bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
     for i in range(n_rays):
