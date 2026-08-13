@@ -1,0 +1,104 @@
+# rSkill manifest — SAM 2.1 (Hiera-small) promptable segmenter (kind: segmenter).
+#
+# The attach-time evidence producer for the attached-object collision stack.
+# The HAL's vision attachment-evidence producer asks this model, one shot per
+# attach / detach / regrasp event, "which pixels of the wrist frame belong to
+# the object in the jaws?" — prompting with a single positive point at the
+# TF-projected TCP. The producer then intersects that mask with the same
+# frame's depth channel and fits the bounded primitives of an
+# AttachedCollisionObject.
+#
+# NOT per-frame. Per-frame carry masking stays geometric containment against
+# the already-fitted attached primitive; this model runs only at the events.
+#
+# Why SAM 2.1 and not SAM 3: SAM 3's headline capability is Promptable *Concept*
+# Segmentation ("segment all instances of this text concept"), which answers a
+# different question than "the one object in these jaws"; its PVS/tracker path
+# does not load cleanly from the public checkpoint under transformers 5.5.4; and
+# its license is a custom, gated Meta "SAM License" whose full text could not be
+# verified. SAM 2.1 is plainly apache-2.0, 22x smaller, and 8x faster.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-sam2_1-any-grasped_object_mask-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "segmenter"  # Perception producer; emits masks, no Action
+
+# embodiment-agnostic: a perception rSkill needs a wrist camera, not a specific
+# robot. The rSkill<->robot gate exempts these kinds, so the wildcard tag
+# matches any robot/scene.
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard
+
+# RGB only. The segmenter itself never touches depth — the mask->depth
+# intersection happens on the HAL side, against the same frame's depth channel.
+# The minimums are deliberately low: Sam2Processor resizes every input to 1024x1024
+# internally, so latency was measured FLAT (46-52 ms) from 224px to 1024px. Wrist
+# camera resolution is neither a latency nor a VRAM lever for this model, and a
+# 320x240 SO-101 wrist stream is a first-class input.
+sensors_required:
+  - modality: "rgb"
+    min_width: 320
+    min_height: 240
+
+actuators_required: []
+
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# MEASURED on an RTX 4070 Laptop 8 GB (transformers 5.5.4, torch 2.9.1+cu128),
+# 512x512 bf16 input, torch.cuda.max_memory_allocated delta against a pre-load
+# baseline with ~3.5 GiB already resident: 74 MiB of weights, 297 MiB peak
+# allocated, 448 MiB torch-reserved. The fp32 figure below is NOT measured — it
+# is the bf16 peak doubled, a conservative placeholder for the CPU/fp32 path.
+min_vram_gb:
+  bf16: 0.45
+  fp32: 0.9
+
+weights_uri: "hf://facebook/sam2.1-hiera-small"
+
+chunk_size: 1
+# MEASURED on the same host: 53 ms warm median, 742 ms first call (weights load
+# + CUDA kernel autotune). The budget is set to 100 ms — the warm figure with
+# ~2x headroom — because that is what has to fit inside the HAL's existing
+# deferred-ack barrier, which already waits ~100 ms for a depth frame. The cold
+# call does NOT fit, which is why the backend must be warm_up()-ed at node
+# activate rather than loaded on demand.
+latency_budget:
+  per_chunk_ms: 100.0
+
+segmenter:
+  engine: "sam2_hf"
+  # One positive point at the TF-projected TCP, plus room for negative points at
+  # the jaw tips to push the mask off the gripper fingers.
+  max_prompt_points: 8
+  # SAM 2's three nested hypotheses (subpart / part / whole) are all returned;
+  # the HAL producer picks between them on GEOMETRY, never on the model's score.
+  multimask: true
+  # A handful of pixels cannot bound a payload — drop such masks before they
+  # ever reach the depth intersection.
+  min_mask_area_px: 64
+
+paper_url: "https://arxiv.org/abs/2408.00714"
+source_repo: "hf://facebook/sam2.1-hiera-small"
+
+description: >
+  SAM 2.1 Hiera-small packaged as a promptable segmenter for grasped-object
+  masking. Answers a geometric point prompt at the tool center point with a
+  binary mask over the current wrist frame, which the HAL's vision
+  attachment-evidence producer intersects with depth to bound the carried
+  payload. One shot per attach / detach / regrasp event, not per frame. Wraps
+  facebook/sam2.1-hiera-small. Emits no actions and drives no actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "grasped object"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "household"
