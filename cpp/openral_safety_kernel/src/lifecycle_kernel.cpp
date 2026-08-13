@@ -631,24 +631,33 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         return std::string("attached_") + std::to_string(idx);
       };
+      // Report one collision hit. `hit` supplies BOTH the identity and the
+      // distance, so the E-stop evidence always describes a single geometry
+      // pair: `hit.min_distance` is that pair's own surface distance, never
+      // the sweep-wide minimum. The sweep minimum — which may belong to a pair
+      // the check exempted (an attached payload's attach-time contact
+      // baseline) — is logged under its own `sweep_min_distance_m` key and its
+      // own span attribute, and deliberately stays out of the evidence
+      // payload's `min_distance_m`.
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
-                              int step, double dist) {
+                              int step, const CollisionHit& hit) {
         ++chunks_dropped_;
         last_drop_reason_ = "collision";
         fault_latch_ = true;
         last_estop_at_ = std::chrono::steady_clock::now();
-        publish_collision_failure(*msg, kind, a, b, step, dist);
+        publish_collision_failure(*msg, kind, a, b, step, hit.min_distance);
         std_msgs::msg::Empty estop_msg;
         estop_pub_->publish(estop_msg);
         RCLCPP_ERROR(this->get_logger(),
-                     "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g mode=%u "
-                     "rskill_id=%s",
-                     kind, a.c_str(), b.c_str(), step, dist,
+                     "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
+                     "sweep_min_distance_m=%g mode=%u rskill_id=%s",
+                     kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str());
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
-        span->SetAttribute("safety.violation_value", dist);
+        span->SetAttribute("safety.violation_value", hit.min_distance);
+        span->SetAttribute("safety.sweep_min_distance_m", hit.sweep_min_distance);
         span->AddEvent(otel::kSafetyViolationEventName, {{"safety.kind", kind}});
         span->End();
       };
@@ -687,7 +696,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
           if (hit.hit) {
-            report("self", link_name(hit.link_a), link_name(hit.link_b), step, hit.min_distance);
+            report("self", link_name(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
           }
         }
@@ -695,7 +704,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const auto hit = check_world_collision(collision_model_, collision_scratch_, world_model_,
                                                  world_collision_margin_m_ + extra_margin);
           if (hit.hit) {
-            report("world", link_name(hit.link_a), world_label(hit.link_b), step, hit.min_distance);
+            report("world", link_name(hit.link_a), world_label(hit.link_b), step, hit);
             return true;
           }
         }
@@ -704,7 +713,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                  world_voxel_margin_m_ + extra_margin);
           if (hit.hit) {
             report("world", link_name(hit.link_a),
-                   std::string("voxel_") + std::to_string(hit.link_b), step, hit.min_distance);
+                   std::string("voxel_") + std::to_string(hit.link_b), step, hit);
             return true;
           }
         }
@@ -719,8 +728,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             const auto hit = check_attached_world_collision(
                 collision_model_, attached_model_, collision_scratch_, world_model_, amargin);
             if (hit.hit) {
-              report("world", attached_label(hit.link_a), world_label(hit.link_b), step,
-                     hit.min_distance);
+              report("world", attached_label(hit.link_a), world_label(hit.link_b), step, hit);
               return true;
             }
           }
@@ -734,15 +742,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             voxel_grid_.attached_contact_allow_new_shallow = false;
             if (hit.hit) {
               report("world", attached_label(hit.link_a),
-                     std::string("voxel_") + std::to_string(hit.link_b), step, hit.min_distance);
+                     std::string("voxel_") + std::to_string(hit.link_b), step, hit);
               return true;
             }
           }
           const auto hit = check_attached_self_collision(collision_model_, attached_model_,
                                                          collision_scratch_, amargin);
           if (hit.hit) {
-            report("self", attached_label(hit.link_a), link_name(hit.link_b), step,
-                   hit.min_distance);
+            report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
           }
         }

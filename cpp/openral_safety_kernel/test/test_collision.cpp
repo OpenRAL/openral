@@ -1525,3 +1525,263 @@ TEST(IngestAttached, EmptyInputIsOkAndEmpty) {
   EXPECT_EQ(model.n_objects, 0U);
   EXPECT_EQ(model.n_primitives, 0U);
 }
+
+// ── Evidence coherence: the reported pair and the reported distance ────
+//
+// A `CollisionHit` is the kernel's E-stop evidence: `link_a` / `link_b` name
+// the geometry that tripped the check and `min_distance` is the number the
+// FailureTrigger and the operator log quote for it. Those three fields must
+// describe ONE pair. They used to be sampled from two different places — the
+// identity from the first pair to trip the gate, the distance from the
+// sweep-wide minimum over every pair the check touched, including pairs the
+// gate deliberately exempted (an attached payload's attach-time contact
+// baseline). A payload resting on a shelf then reported its own uncleared
+// occupancy residue's ~-40 mm as if it were the support contact's ~-0.4 mm,
+// and downstream diagnosis chased a penetration that never existed.
+//
+// The contract pinned below: on a hit the evidence describes the DEEPEST
+// pair that actually tripped the gate; the sweep-wide minimum is carried
+// separately in `sweep_min_distance`. Reporting only — the tests at the end
+// of this section pin that the stop/no-stop decision itself is untouched.
+
+namespace {
+
+// Base-frame transform of an occupied cell, recovered from the linear voxel
+// index the evidence reports (`idx = x + sx*(y + sy*z)`) — lets a test
+// recompute the distance of the cell the kernel named and compare it with the
+// distance the kernel reported.
+osk::Transform voxel_transform_at(const osk::VoxelGrid& grid, int linear_index) {
+  const int ix = linear_index % grid.sx;
+  const int iy = (linear_index / grid.sx) % grid.sy;
+  const int iz = linear_index / (grid.sx * grid.sy);
+  osk::Transform t;
+  t.t = {grid.origin.x + (ix + 0.5) * grid.resolution, grid.origin.y + (iy + 0.5) * grid.resolution,
+         grid.origin.z + (iz + 0.5) * grid.resolution};
+  return t;
+}
+
+// One box primitive (posed in its object's frame). A box payload gives the
+// voxel check an exact SAT overlap depth, so a test can place a deep
+// "payload residue" cell and a shallow support cell with hand-computed
+// distances.
+osk::AttachedPrimitive box_prim(double hx, double hy, double hz,
+                                const osk::Transform& pose_in_object = osk::Transform{}) {
+  osk::AttachedPrimitive p;
+  p.kind = osk::AttachedShapeKind::kBox;
+  p.half_extents = {hx, hy, hz};
+  p.pose_in_object = pose_in_object;
+  return p;
+}
+
+const osk::Vec3 kVoxelHalf{0.05, 0.05, 0.05};  // make_grid()'s 0.1 m cells
+
+}  // namespace
+
+TEST(CollisionEvidence, AttachedVoxelReportsTheTriggeringCellNotTheExemptResidue) {
+  // The observed field failure, to five decimals: a box payload carried into
+  // an occupancy map that still holds the payload's own cell. That residue
+  // cell is 100.4 mm "inside" the payload and is exempt (it was already
+  // embedded at attach time); the cell that actually stops the robot is the
+  // support cell it newly touches by 0.4 mm.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, translate(-0.001, 0.0, 0.0), {box_prim(0.0504, 0.0504, 0.0504)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  const int residue = voxel_index(2, 2, 2);  // the payload's own occupancy residue
+  const int support = voxel_index(3, 2, 2);  // the real, newly touched support cell
+  occ[static_cast<std::size_t>(residue)] = 1;
+  occ[static_cast<std::size_t>(support)] = 1;
+  std::vector<std::uint8_t> contact_mask(125, 0);
+  std::vector<double> contact_distance(125, std::numeric_limits<double>::infinity());
+  auto grid = make_grid(occ);
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
+  grid.attached_contact_tolerance = 0.001;
+
+  // Attach-time snapshot: only the residue cell is in contact (the support
+  // cell is still 0.6 mm clear), so only the residue cell is exempt.
+  ASSERT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                  contact_distance.data(), contact_mask.size(),
+                                                  contact_distance.size(), true));
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // 1 mm of approach: the payload now overlaps the support cell by 0.4 mm.
+  att.objects[0].pose_in_link = identity();
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0);
+  EXPECT_EQ(hit.link_b, support) << "the stop was caused by the support cell";
+  EXPECT_NEAR(hit.min_distance, -0.0004, 1e-9)
+      << "min_distance must describe the cell the evidence names, not the exempt residue";
+  EXPECT_NEAR(hit.sweep_min_distance, -0.1004, 1e-9)
+      << "the sweep-wide minimum (the exempt residue) stays available, separately";
+}
+
+TEST(CollisionEvidence, AttachedVoxelReportsTheDeepestTriggeringCell) {
+  // Three occupied cells trip at once. The evidence must name one of them and
+  // quote that one's distance; the deepest is the useful choice and the one
+  // pinned here.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, translate(0.02, 0.0, 0.0), {box_prim(0.09, 0.05, 0.05)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // scanned first, -0.02 m
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;  // deepest, -0.10 m
+  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;  // -0.06 m
+  const auto grid = make_grid(occ);
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, voxel_index(2, 2, 2));
+  // Recompute the named cell's distance: evidence must be self-consistent.
+  const osk::Transform named = voxel_transform_at(grid, hit.link_b);
+  const double named_distance = osk::box_box_distance(
+      translate(0.02, 0.0, 0.0), osk::Vec3{0.09, 0.05, 0.05}, named, kVoxelHalf);
+  EXPECT_NEAR(hit.min_distance, named_distance, 1e-9);
+  EXPECT_NEAR(hit.sweep_min_distance, named_distance, 1e-9)
+      << "no cell is exempt here, so the sweep minimum is the triggering cell";
+}
+
+TEST(CollisionEvidence, WorldVoxelDistanceDescribesTheReportedCell) {
+  // Same coherence rule on the robot-link voxel path: the shallow cell is
+  // scanned first, the deep cell second, and the evidence must not mix them.
+  const auto m = one_capsule_model();  // capsule r=0.1, half-length 0.2 at the origin
+  osk::CollisionScratch s;
+  s.link_world = {identity()};
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // -0.05 m, scanned first
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;  // -0.10 m, deepest
+  const auto grid = make_grid(occ);
+
+  const auto hit = osk::check_voxel_collision(m, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, voxel_index(2, 2, 2));
+  const osk::Transform named = voxel_transform_at(grid, hit.link_b);
+  const double named_distance = osk::box_capsule_distance(named, kVoxelHalf, identity(), 0.1, 0.2);
+  EXPECT_NEAR(hit.min_distance, named_distance, 1e-9);
+  EXPECT_NEAR(hit.sweep_min_distance, named_distance, 1e-9);
+}
+
+TEST(CollisionEvidence, SelfCollisionDistanceDescribesTheReportedLinkPair) {
+  // Link 1 grazes link 2 by 1 mm (checked first) while it overlaps link 3 by
+  // 50 mm. The evidence must not quote the 50 mm against the (1,2) pair.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 1, 0.05, 0.0, identity());
+  add_capsule(m, 2, 0.05, 0.0, identity());
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), translate(0.099, 0.0, 0.0), translate(0.0, 0.05, 0.0)};
+
+  const auto hit = osk::check_self_collision(m, s, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 1);
+  EXPECT_EQ(hit.link_b, 3) << "the deepest tripping pair is (link 1, link 3)";
+  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
+  EXPECT_NEAR(hit.sweep_min_distance, -0.05, 1e-9);
+}
+
+TEST(CollisionEvidence, AttachedWorldDistanceDescribesTheReportedObstacle) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+
+  osk::WorldModel w;
+  osk::Capsule grazing;
+  grazing.radius = 0.1;
+  grazing.half_length = 0.0;
+  grazing.origin = translate(0.199, 0.0, 0.0);  // -1 mm, checked first
+  osk::Capsule deep;
+  deep.radius = 0.1;
+  deep.half_length = 0.0;
+  deep.origin = translate(0.15, 0.0, 0.0);  // -50 mm
+  w.capsules = {grazing, deep};
+
+  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0);
+  EXPECT_EQ(hit.link_b, 1) << "the deepest tripping obstacle is the second one";
+  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
+}
+
+TEST(CollisionEvidence, SweepMinimumEqualsTheEvidenceDistanceWhenNothingTrips) {
+  // With no hit there is no pair to describe, so `min_distance` keeps its
+  // clearance meaning and both fields agree.
+  const auto m = one_capsule_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity()};
+  const auto clear = osk::check_world_collision(m, s, world_obstacle_at(1.0), 0.0);
+  EXPECT_FALSE(clear.hit);
+  EXPECT_NEAR(clear.min_distance, 0.8, 1e-9);
+  EXPECT_NEAR(clear.sweep_min_distance, clear.min_distance, 1e-12);
+
+  // An empty check reports no clearance at all (infinite), on both fields.
+  const osk::WorldModel empty;
+  const auto nothing = osk::check_world_collision(m, s, empty, 0.0);
+  EXPECT_FALSE(nothing.hit);
+  EXPECT_TRUE(std::isinf(nothing.min_distance));
+  EXPECT_TRUE(std::isinf(nothing.sweep_min_distance));
+}
+
+TEST(CollisionEvidence, GatingIsUnchangedAcrossTheAttachedContactLadder) {
+  // Reporting-only guard rail. The same inputs must produce the same
+  // stop/no-stop decision as before the evidence fix: the expectations below
+  // are the pre-fix kernel's answers, recorded here so any future change to
+  // the evidence path that moves a gate fails loudly.
+  //
+  // Fixture: a box payload attached at link 1, an occupancy residue cell it is
+  // embedded in at attach time, and a support cell 0.6 mm ahead of it.
+  const osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  struct Case {
+    double approach_m;   // payload offset along +x from the snapshot pose
+    bool allow_shallow;  // grid.attached_contact_allow_new_shallow
+    bool expect_hit;
+  };
+  // 0.000: snapshot pose — residue exempt, support 0.6 mm clear.
+  // 0.001: support newly touched by 0.4 mm — a new cell, so it stops.
+  // 0.001 + allow_shallow: the contact phase tolerates a new 0.4 mm boundary
+  //        cell (tolerance 1 mm) — no stop.
+  // 0.005: the new cell is 4.4 mm deep, past the tolerance — stops either way.
+  const std::vector<Case> cases = {
+      {0.000, false, false}, {0.000, true, false}, {0.001, false, true},
+      {0.001, true, false},  {0.005, false, true}, {0.005, true, true},
+  };
+
+  for (const Case& c : cases) {
+    osk::AttachedModel att;
+    append_object(att, 1, translate(-0.001, 0.0, 0.0), {box_prim(0.0504, 0.0504, 0.0504)});
+    std::vector<std::uint8_t> occ(125, 0);
+    occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+    occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
+    std::vector<std::uint8_t> contact_mask(125, 0);
+    std::vector<double> contact_distance(125, std::numeric_limits<double>::infinity());
+    auto grid = make_grid(occ);
+    grid.attached_contact_mask = contact_mask.data();
+    grid.attached_contact_distance = contact_distance.data();
+    grid.attached_contact_stride = occ.size();
+    grid.attached_contact_tolerance = 0.001;
+    ASSERT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                    contact_distance.data(), contact_mask.size(),
+                                                    contact_distance.size(), true));
+
+    grid.attached_contact_allow_new_shallow = c.allow_shallow;
+    att.objects[0].pose_in_link = translate(-0.001 + c.approach_m, 0.0, 0.0);
+    const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+    EXPECT_EQ(hit.hit, c.expect_hit)
+        << "gating changed at approach=" << c.approach_m << " allow_shallow=" << c.allow_shallow;
+    if (hit.hit) {
+      EXPECT_LE(hit.min_distance, 0.0) << "a reported stop is never a clearance";
+    }
+  }
+}

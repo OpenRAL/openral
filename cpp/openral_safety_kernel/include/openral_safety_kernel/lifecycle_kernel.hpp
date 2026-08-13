@@ -93,6 +93,10 @@ private:
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
   // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
   // entities (robot links, or a world obstacle for the world check).
+  // `min_distance` MUST be `CollisionHit::min_distance` — the distance of the
+  // very pair `link_a`/`link_b` names. The sweep-wide
+  // `CollisionHit::sweep_min_distance` belongs to no named pair and never
+  // enters the evidence payload (it is logged separately by the caller).
   void publish_collision_failure(const openral_msgs::msg::ActionChunk& chunk,
                                  const char* collision_kind, const std::string& link_a,
                                  const std::string& link_b, int horizon_step, double min_distance);
