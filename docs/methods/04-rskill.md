@@ -78,7 +78,7 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
   - `from_yaml(cls, path, *, local_dir=None) -> rSkill` [@classmethod] — Load locally without network. (L296)
   - `list_installed(registry_path=None) -> list[InstalledRSkillEntry]` [@staticmethod] (L331)
   - `uninstall(repo_id, registry_path=None) -> bool` [@staticmethod] — Remove from registry only. (L362)
-  - `check_embodiment_tags(manifest, robot_capabilities) -> None` [@staticmethod] — Verify embodiment tag intersection (raises on disjoint sets). Exempt for perception kinds (`detector`/`vlm`, `_EMBODIMENT_AGNOSTIC_KINDS`): they are camera-in → detections/text-out with no action contract, so they match any robot regardless of tags. (L392)
+  - `check_embodiment_tags(manifest, robot_capabilities) -> None` [@staticmethod] — Verify embodiment tag intersection (raises on disjoint sets). Exempt for perception kinds (`detector`/`segmenter`/`vlm`, `_EMBODIMENT_AGNOSTIC_KINDS`): they are camera-in → detections/text-out with no action contract, so they match any robot regardless of tags. (L392)
   - `check_capability_flags(manifest, robot_capabilities) -> None` [@staticmethod] — Verify every `manifest.capabilities_required` flag against `RobotCapabilities`. (L420)
   - `check_runtime(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.runtime` ∈ `gpu_supported_runtimes`; skipped when the legacy capability field is missing or empty (the GPU support fields moved to `ComputeSpec`, so missing means "unknown" for now). (L452)
   - `check_quantization_dtype(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.quantization.dtype` ∈ `gpu_supported_dtypes`; skipped when the legacy capability field is missing or empty. (L481)

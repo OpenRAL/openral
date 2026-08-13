@@ -12,7 +12,8 @@
         "sim_geom_distance",
         "gripper_force",
         "perception_track",
-        "operator"
+        "operator",
+        "vision_segmentation"
       ]
     },
     "EmbodimentKind": {
@@ -180,6 +181,15 @@
         "warn",
         "drop",
         "raise"
+      ]
+    },
+    "SegmenterEngine": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SegmenterEngine",
+      "description": "Backend that executes a ``kind: \"segmenter\"`` rSkill.",
+      "type": "string",
+      "enum": [
+        "sam2_hf"
       ]
     },
     "IntrinsicsPinhole": {
@@ -4816,6 +4826,48 @@
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
+    "SegmenterContract": {
+      "$defs": {
+        "SegmenterEngine": {
+          "description": "Backend that executes a ``kind: \"segmenter\"`` rSkill.\n\nThe segmenter counterpart of :class:`DetectorEngine`. There is no legacy\n``runtime``-keyed fallback to preserve here, so\n:attr:`SegmenterContract.engine` is REQUIRED \u2014 a segmenter manifest always\nnames its backend outright.\n\nAttributes:\n    SAM2_HF: In-process Transformers ``Sam2Model`` promptable segmenter\n        (SAM 2.1 Hiera). Consumes positive/negative point prompts in pixel\n        coordinates and emits binary masks at the frame's own resolution.\n\nExample:\n    >>> SegmenterEngine.SAM2_HF.value\n    'sam2_hf'",
+          "enum": [
+            "sam2_hf"
+          ],
+          "title": "SegmenterEngine",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Manifest contract for ``kind: \"segmenter\"`` rSkills.\n\nThe sibling of :class:`DetectorContract` for models that answer a\n**geometric** prompt rather than a semantic one. A detector is asked \"where\nare the cups?\" and replies with labelled, scored boxes; a segmenter is asked\n\"what is the extent of the thing under *this pixel*?\" and replies with a\nmask. It therefore carries **no** ``labels`` and **no** ``score_threshold``:\nit never classifies, and its consumer never gates on model confidence.\n\nThat last point is a safety property, not an oversight. The mask feeds the\nHAL's vision attachment-evidence producer, which turns masked depth into the\ncollision payload a manipulator plans around. A segmenter asked to mask a\ngrasped object against a patterned tablecloth will happily return a\nhigh-confidence mask covering most of the frame; only geometry\n(containment between the jaws, payload extent, depth validity) can reject\nthat, so only geometry is allowed to. A measured instance of exactly that\nfailure \u2014 a 59.8%-of-frame mask returned at the model's own top score of\n0.977 \u2014 is what removed ``score_threshold`` from this contract.\n\nRequired when :attr:`RSkillManifest.kind` is ``\"segmenter\"``; forbidden for\nall other kinds (enforced by\n:meth:`RSkillManifest._check_kind_consistency`). Like ``detector`` /\n``vlm``, a segmenter is a pure perception producer: it emits no Action\nchunks and requires no actuators.\n\nAttributes:\n    engine: Backend that executes the model (:class:`SegmenterEngine`).\n        REQUIRED \u2014 there is no ``runtime``-keyed fallback for this kind.\n    max_prompt_points: Upper bound on how many prompt points one request may\n        carry (positive TCP point plus optional negative jaw-tip points).\n        Bounds the request so a caller cannot make one segmentation\n        unboundedly expensive. Default ``8``.\n    multimask: Ask the backend for its multi-hypothesis head (SAM 2 returns\n        three nested candidates per point prompt) instead of a single mask.\n        The consumer picks among candidates on **geometry**, never on the\n        model's per-candidate score. Default ``True``.\n    min_mask_area_px: Masks smaller than this many set pixels are discarded\n        as degenerate before they ever reach the depth intersection \u2014 a\n        handful of pixels cannot bound a payload. Default ``64``.\n\nExample:\n    >>> c = SegmenterContract(engine=SegmenterEngine.SAM2_HF)\n    >>> c.engine.value\n    'sam2_hf'\n    >>> (c.max_prompt_points, c.multimask, c.min_mask_area_px)\n    (8, True, 64)",
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/SegmenterEngine"
+        },
+        "max_prompt_points": {
+          "default": 8,
+          "minimum": 1,
+          "title": "Max Prompt Points",
+          "type": "integer"
+        },
+        "multimask": {
+          "default": true,
+          "title": "Multimask",
+          "type": "boolean"
+        },
+        "min_mask_area_px": {
+          "default": 64,
+          "minimum": 1,
+          "title": "Min Mask Area Px",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "engine"
+      ],
+      "title": "SegmenterContract",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
     "ExecuteRskillTool": {
       "additionalProperties": false,
       "description": "Tool variant \u2014 invoke an installed, capability-matched rSkill.\n\nDispatch: action goal on ``/openral/execute_rskill`` (the\n``openral_msgs/action/ExecuteRskill`` action server in F1's\n``rskill_runner_node``). The chunk path that follows is\n``Skill \u2192 /openral/candidate_action \u2192 safety_node \u2192\n/openral/safe_action \u2192 HAL``.\n\nAttributes:\n    tool: Discriminator (always ``\"execute_rskill\"``).\n    rskill_id: ``RSkillManifest.name`` of an installed, capable skill.\n        Validated against the local registry by the reasoner at\n        palette-build time; an unknown id raises\n        :class:`ROSReasonerInvalidPlan`.\n    prompt: Natural-language prompt forwarded to the skill's\n        ``ExecuteRskill`` goal alongside the rskill_id. For VLA\n        skills this is the policy's task-conditioning signal\n        (SmolVLA writes it into ``observation[\"task\"]``); for\n        wrapped-ROS skills it's carried for trace / log context\n        but the actual goal is built from ``goal_params_json``\n        merged over the manifest's ``default_goal_json``.\n    goal_params_json: Serialised JSON object carrying\n        per-skill typed parameters the LLM produces against the\n        skill's :attr:`RSkillManifest.goal_params_schema`. Empty\n        string disables the merge (today's behaviour). Wrapped-ROS\n        skills (``kind: ros_action`` / ``ros_service``) deep-merge\n        it over ``ros_integration.default_goal_json`` at\n        configure-time; VLA skills accept the field and ignore it\n        (their prompt is already the structured signal).\n    deadline_s: Hard deadline in seconds for the action server to\n        complete the goal. ``0`` means \"use the skill manifest's\n        default latency budget\".\n    patience_s: Task-adaptive execution ceiling override (short for a\n        quick grab, long for a precise insertion). ``None`` \u2192 use the\n        reward model's ``default_patience_s``.\n    progress_tolerance: Override the reward model's ``plateau_tolerance``\n        when a task misbehaves (e.g. a noisy critic). ``None`` \u2192 use the\n        model default.",
@@ -6008,6 +6060,45 @@
           "title": "SafetyEnvelope",
           "type": "object"
         },
+        "SegmenterContract": {
+          "additionalProperties": false,
+          "description": "Manifest contract for ``kind: \"segmenter\"`` rSkills.\n\nThe sibling of :class:`DetectorContract` for models that answer a\n**geometric** prompt rather than a semantic one. A detector is asked \"where\nare the cups?\" and replies with labelled, scored boxes; a segmenter is asked\n\"what is the extent of the thing under *this pixel*?\" and replies with a\nmask. It therefore carries **no** ``labels`` and **no** ``score_threshold``:\nit never classifies, and its consumer never gates on model confidence.\n\nThat last point is a safety property, not an oversight. The mask feeds the\nHAL's vision attachment-evidence producer, which turns masked depth into the\ncollision payload a manipulator plans around. A segmenter asked to mask a\ngrasped object against a patterned tablecloth will happily return a\nhigh-confidence mask covering most of the frame; only geometry\n(containment between the jaws, payload extent, depth validity) can reject\nthat, so only geometry is allowed to. A measured instance of exactly that\nfailure \u2014 a 59.8%-of-frame mask returned at the model's own top score of\n0.977 \u2014 is what removed ``score_threshold`` from this contract.\n\nRequired when :attr:`RSkillManifest.kind` is ``\"segmenter\"``; forbidden for\nall other kinds (enforced by\n:meth:`RSkillManifest._check_kind_consistency`). Like ``detector`` /\n``vlm``, a segmenter is a pure perception producer: it emits no Action\nchunks and requires no actuators.\n\nAttributes:\n    engine: Backend that executes the model (:class:`SegmenterEngine`).\n        REQUIRED \u2014 there is no ``runtime``-keyed fallback for this kind.\n    max_prompt_points: Upper bound on how many prompt points one request may\n        carry (positive TCP point plus optional negative jaw-tip points).\n        Bounds the request so a caller cannot make one segmentation\n        unboundedly expensive. Default ``8``.\n    multimask: Ask the backend for its multi-hypothesis head (SAM 2 returns\n        three nested candidates per point prompt) instead of a single mask.\n        The consumer picks among candidates on **geometry**, never on the\n        model's per-candidate score. Default ``True``.\n    min_mask_area_px: Masks smaller than this many set pixels are discarded\n        as degenerate before they ever reach the depth intersection \u2014 a\n        handful of pixels cannot bound a payload. Default ``64``.\n\nExample:\n    >>> c = SegmenterContract(engine=SegmenterEngine.SAM2_HF)\n    >>> c.engine.value\n    'sam2_hf'\n    >>> (c.max_prompt_points, c.multimask, c.min_mask_area_px)\n    (8, True, 64)",
+          "properties": {
+            "engine": {
+              "$ref": "#/$defs/SegmenterEngine"
+            },
+            "max_prompt_points": {
+              "default": 8,
+              "minimum": 1,
+              "title": "Max Prompt Points",
+              "type": "integer"
+            },
+            "multimask": {
+              "default": true,
+              "title": "Multimask",
+              "type": "boolean"
+            },
+            "min_mask_area_px": {
+              "default": 64,
+              "minimum": 1,
+              "title": "Min Mask Area Px",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "engine"
+          ],
+          "title": "SegmenterContract",
+          "type": "object"
+        },
+        "SegmenterEngine": {
+          "description": "Backend that executes a ``kind: \"segmenter\"`` rSkill.\n\nThe segmenter counterpart of :class:`DetectorEngine`. There is no legacy\n``runtime``-keyed fallback to preserve here, so\n:attr:`SegmenterContract.engine` is REQUIRED \u2014 a segmenter manifest always\nnames its backend outright.\n\nAttributes:\n    SAM2_HF: In-process Transformers ``Sam2Model`` promptable segmenter\n        (SAM 2.1 Hiera). Consumes positive/negative point prompts in pixel\n        coordinates and emits binary masks at the frame's own resolution.\n\nExample:\n    >>> SegmenterEngine.SAM2_HF.value\n    'sam2_hf'",
+          "enum": [
+            "sam2_hf"
+          ],
+          "title": "SegmenterEngine",
+          "type": "string"
+        },
         "SensorModality": {
           "description": "Physical sensing modality.",
           "enum": [
@@ -6241,6 +6332,7 @@
             "ros_action",
             "ros_service",
             "detector",
+            "segmenter",
             "vlm",
             "reward",
             "playbook"
@@ -6644,6 +6736,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/DetectorContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "segmenter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SegmenterContract"
             },
             {
               "type": "null"
@@ -7632,7 +7735,8 @@
             "sim_geom_distance",
             "gripper_force",
             "perception_track",
-            "operator"
+            "operator",
+            "vision_segmentation"
           ],
           "title": "AttachmentEvidenceKind",
           "type": "string"
@@ -8189,7 +8293,8 @@
             "sim_geom_distance",
             "gripper_force",
             "perception_track",
-            "operator"
+            "operator",
+            "vision_segmentation"
           ],
           "title": "AttachmentEvidenceKind",
           "type": "string"

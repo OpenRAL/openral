@@ -71,6 +71,8 @@ from openral_core.schemas import (  # reason: path manipulation above
     RunResult,
     SafetyEnvelope,
     SceneSpec,
+    SegmenterContract,
+    SegmenterEngine,
     SensorBundle,
     SensorDeployBinding,
     SensorFrame,
@@ -102,6 +104,7 @@ _ENUM_TYPES: list[type] = [
     FrameEncoding,
     SensorReaderBackend,
     DeadlineOverrunPolicy,
+    SegmenterEngine,
 ]
 
 _MODEL_TYPES: list[type] = [
@@ -118,6 +121,7 @@ _MODEL_TYPES: list[type] = [
     RobotDescription,
     ReasonerModel,
     RewardContract,
+    SegmenterContract,
     ExecuteRskillTool,
     RSkillManifest,
     JointState,
