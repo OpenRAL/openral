@@ -51,6 +51,8 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
+from openral_perception_ros.camera_topics import resolve_camera_topics
+
 
 def _camera_label(topic: str) -> str:
     """Derive a short, human-readable camera name from a camera image topic.
@@ -255,16 +257,11 @@ def main(args: Any = None) -> None:
         def _resolve_cameras(self) -> dict[str, str]:
             """Resolve the camera-id -> topic map (camera-agnostic)."""
             gp = self.get_parameter
-            entries = [s for s in gp("cameras").get_parameter_value().string_array_value if s]
-            cameras: dict[str, str] = {}
-            for entry in entries:
-                cid, _, topic = entry.partition("=")
-                if cid and topic:
-                    cameras[cid] = topic
-            if not cameras:
-                primary = gp("primary_camera").get_parameter_value().string_value or "default"
-                cameras[primary] = gp("image_topic").get_parameter_value().string_value
-            return cameras
+            return resolve_camera_topics(
+                list(gp("cameras").get_parameter_value().string_array_value),
+                primary_camera=gp("primary_camera").get_parameter_value().string_value,
+                image_topic=gp("image_topic").get_parameter_value().string_value,
+            )
 
         def _build_monitor(self, manifest_path: str) -> tuple[Any, float, float]:
             """Build the reward backend; return (monitor, frame_window_s, target_fps)."""
