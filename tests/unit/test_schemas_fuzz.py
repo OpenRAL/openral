@@ -356,7 +356,8 @@ _collision_evidence_st = st.builds(
     collision_kind=st.sampled_from(["self", "world"]),
     link_a=_name,
     link_b_or_object=_name,
-    horizon_step=st.integers(min_value=0, max_value=64),
+    # -1 is the kernel's REACTIVE (measured-state) sentinel, not a step index.
+    horizon_step=st.integers(min_value=CollisionEvidence.REACTIVE_HORIZON_STEP, max_value=64),
     min_distance_m=_safe_float,
 )
 

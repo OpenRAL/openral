@@ -7,7 +7,11 @@ contract for the prompt buffer.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from openral_core import (
+    CollisionEvidence,
     JointState,
     ObjectDetection2D,
     ObjectsMetadata,
@@ -22,7 +26,13 @@ from openral_reasoner import (
     PerceptionEventRecord,
     PromptRecord,
 )
-from openral_reasoner.context import ExecutionEventRecord
+from openral_reasoner.context import ExecutionEventRecord, _summarise_evidence_json
+
+#: A real ``FailureTrigger.evidence_json`` captured from the C++ safety kernel's
+#: REACTIVE (measured-state) collision check — see the sibling ``.SOURCE.txt``.
+_KERNEL_REACTIVE_EVIDENCE = (
+    Path(__file__).parent / "fixtures" / "kernel_reactive_collision_evidence.json"
+)
 
 
 def _world_state() -> WorldState:
@@ -204,6 +214,46 @@ def test_failure_render_summarises_evidence() -> None:
     text = r.render(world_state=None)
     assert "skill.step" in text
     assert "deadline_s" in text
+
+
+def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
+    """A REAL kernel reactive-collision payload takes the STRUCTURED path.
+
+    ``_summarise_evidence_json`` falls back to ``evidence=<raw-json-truncated>``
+    when the payload does not decode against the ``FailureEvidence``
+    discriminator. The kernel's reactive check reports ``horizon_step: -1``,
+    which the schema used to reject — so the reasoner saw a raw-JSON dump
+    instead of the decoded fields. This pins the structured path: the summary
+    must be the sorted ``model_dump()`` (no ``kind`` key, keys unquoted-sorted)
+    rather than the verbatim publisher JSON.
+    """
+    payload = _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
+    # Sanity: the fixture really is the kernel's reactive shape.
+    assert json.loads(payload)["horizon_step"] == CollisionEvidence.REACTIVE_HORIZON_STEP
+
+    summary = _summarise_evidence_json(payload)
+    decoded = CollisionEvidence.model_validate_json(payload)
+    expected_fields = {k: v for k, v in decoded.model_dump().items() if k != "kind"}
+    assert summary == f"evidence={json.dumps(expected_fields, sort_keys=True)[:120]}"
+    # The structured path drops the discriminator; the raw fallback would keep it.
+    assert '"kind"' not in summary
+    assert '"horizon_step": -1' in summary
+
+    r = ContextRenderer()
+    r.append_failure(
+        FailureEventRecord(
+            source="safety",
+            kind=10,  # FailureTrigger.KIND_COLLISION
+            severity=3,
+            evidence_json=payload,
+            rskill_id="reactive_evidence_skill",
+            trace_id="0af7651916cd43dd8448eb211c80319c",
+            stamp_ns=0,
+        ),
+    )
+    rendered = r.render(world_state=None)
+    assert '"link_a": "ee"' in rendered
+    assert '"horizon_step": -1' in rendered
 
 
 def test_prompts_drain_once() -> None:
