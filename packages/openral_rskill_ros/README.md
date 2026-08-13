@@ -111,7 +111,8 @@ runtime via `compose_so100_runtime`, brings up a real
    `safety_node` → `/openral/safe_action` round trip with the right
    `rskill_id` / `flat` / `n_dof` fields.
 3. `/openral/estop` aborts the in-flight goal with
-   `failure_reason="safety_estop:…"`.
+   `failure_reason="safety_estop:…"` and
+   `failure_kind=FAILURE_SAFETY_ESTOP`.
 4. A safety latch that lands **while the HAL is blocked** waiting for an
    atomic action group to be applied is still reported as
    `safety_estop:…` (naming `/openral/estop` and the unapplied tick),
@@ -119,6 +120,45 @@ runtime via `compose_so100_runtime`, brings up a real
    within 5.0 s` timeout that a silenced `/openral/action_applied`
    produces on its own. The real `SafetyPassthroughNode` decides the
    violation and fires the estop itself in that test.
+5. Every other terminal branch carries the matching typed
+   `ExecuteRskill.Result.failure_kind` — capability mismatch, config
+   error, a `ROSRuntimeError` / `ROSPerceptionStale` /
+   `ROSPlanningError` out of `skill.step`, a raw non-`ROSError` escape
+   (`FAILURE_UNKNOWN`), the lapsed execution budget
+   (`FAILURE_DEADLINE_MISSED`), and `FAILURE_NONE` on success.
+
+`test/test_rskill_runner_failure_reason.py` covers the helpers directly:
+the colcon-generated `FAILURE_*` constant set, `_failure_kind_for_exception`
+(the CLAUDE.md §5 hierarchy → uint8 map every failure branch calls), and
+`_classify_runtime_failure` / `_finalize_goal`.
+
+### `failure_kind` — the typed dispatch outcome
+
+`ExecuteRskill.Result` carries `failure_kind` (uint8) alongside the
+free-text `failure_reason`. It is what a machine consumer — the
+reasoner's replanning ladder — classifies on, so it never substring-matches
+operator prose. The field is **additive** (CLAUDE.md §1.6): a consumer
+reading only `success` / `failure_reason` is untouched, and a Result from a
+producer that predates the field decodes as `FAILURE_NONE`. A consumer
+must therefore read `failure_kind == FAILURE_NONE` on a failed result as
+"unknown — fall back to the string", never as "succeeded".
+
+| Kind | Value | Raised by / set on |
+| --- | --- | --- |
+| `FAILURE_NONE` | 0 | Success (also the pre-field default) |
+| `FAILURE_CONFIG_ERROR` | 1 | `ROSConfigError` — bad manifest, non-ACTIVE resolver result, unusable MoveIt approach manifest |
+| `FAILURE_CAPABILITY_MISMATCH` | 2 | `ROSCapabilityMismatch` — embodiment-tag gate |
+| `FAILURE_RUNTIME_ERROR` | 3 | `ROSRuntimeError` (incl. `ROSQuantizationError` / `ROSGPUMemoryError`), plus a labelled torch OOM / dtype failure |
+| `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
+| `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale` |
+| `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError` — the MoveIt starting-pose approach |
+| `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed; `ROSDeadlineMissed` |
+| `FAILURE_CANCELLED` | 8 | Cancel honoured (no exception) |
+| `FAILURE_UNKNOWN` | 255 | A non-`ROSError` escaped the OpenRAL exception surface |
+
+`ROSSafetyViolation` other than `ROSEStopRequested` has no kind by design:
+it is re-raised to the safety supervisor, never folded into a Result
+(CLAUDE.md §1.1).
 
 Production deployments override the skill resolver via
 `compose_so100_runtime(skill_resolver=...)`; the default resolver

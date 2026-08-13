@@ -13,7 +13,10 @@ Action-goal lifecycle (CLAUDE.md §6.4 + the F1 design):
    gate; envelope gate against the configured ``RobotDescription``.
    Reject with :class:`ROSCapabilityMismatch` /
    :class:`ROSConfigError` (CLAUDE.md §10) surfaced as
-   ``ExecuteRskill.Result(success=False, failure_reason=<typed>)``.
+   ``ExecuteRskill.Result(success=False, failure_reason=<typed>,
+   failure_kind=<uint8>)``. Every failure branch stamps BOTH: the prose
+   for the operator, the uint8 for the reasoner's replanning ladder
+   (:func:`_failure_kind_for_exception` maps the §5 hierarchy).
 2. **execute_cb** — instantiate / reuse a
    :class:`openral_runner.DeployRunner` with the
    :class:`openral_runner.ROSPublishingHAL` sink and the shared
@@ -24,7 +27,8 @@ Action-goal lifecycle (CLAUDE.md §6.4 + the F1 design):
    the next goal.
 4. **/openral/estop subscription** — defense in depth alongside
    ``safety_node`` (CLAUDE.md §1.5). Aborts the goal with
-   ``failure_reason="safety_estop"`` and transitions to ``inactive``.
+   ``failure_reason="safety_estop"`` / ``failure_kind=FAILURE_SAFETY_ESTOP``
+   and transitions to ``inactive``.
 
 The action-goal path is the **only** way an external client triggers a
 rskill; the legacy CLI / single-process invocation continues to exist as
@@ -106,6 +110,59 @@ def _commercial_deployment() -> bool:
         "True",
         "yes",
     )
+
+
+def _failure_kind_for_exception(exc: BaseException) -> int:
+    """Map a caught exception onto an ``ExecuteRskill.Result.failure_kind``.
+
+    The uint8 constants mirror the CLAUDE.md §5 exception hierarchy one-for-one,
+    so the reasoner's replanning ladder classifies on a typed field instead of
+    substring-matching the ``failure_reason`` prose. Most-specific-first, since
+    the §5 tree is nested (``ROSEStopRequested`` is a ``ROSSafetyViolation``,
+    ``ROSGPUMemoryError`` is a ``ROSRuntimeError``, ``ROSObjectNotInMemory`` is a
+    ``ROSPerceptionStale``).
+
+    A ``ROSError`` with no dedicated kind degrades to ``FAILURE_RUNTIME_ERROR``
+    (it *was* a typed failure during execution); anything that is not a
+    ``ROSError`` at all degrades to ``FAILURE_UNKNOWN`` — the two are kept
+    distinct so a consumer can tell "typed but unclassified" from "escaped the
+    OpenRAL exception surface entirely".
+
+    Note:
+        ``ROSSafetyViolation`` other than ``ROSEStopRequested`` never reaches a
+        Result — ``_execute_locked`` re-raises it to the safety supervisor
+        (CLAUDE.md §1.1) — so it has no kind of its own by design.
+    """
+    from openral_core.exceptions import (
+        ROSCapabilityMismatch,
+        ROSConfigError,
+        ROSDeadlineMissed,
+        ROSError,
+        ROSEStopRequested,
+        ROSPerceptionStale,
+        ROSPlanningError,
+        ROSRuntimeError,
+    )
+    from openral_msgs.action import ExecuteRskill
+
+    result_cls = ExecuteRskill.Result
+    # Ordered, most-specific-first. ``ROSError`` last: a typed failure with no
+    # dedicated kind is still a runtime failure, while a non-``ROSError``
+    # falls off the end into FAILURE_UNKNOWN.
+    table: tuple[tuple[type[BaseException], int], ...] = (
+        (ROSEStopRequested, result_cls.FAILURE_SAFETY_ESTOP),
+        (ROSCapabilityMismatch, result_cls.FAILURE_CAPABILITY_MISMATCH),
+        (ROSConfigError, result_cls.FAILURE_CONFIG_ERROR),
+        (ROSPerceptionStale, result_cls.FAILURE_PERCEPTION_STALE),
+        (ROSPlanningError, result_cls.FAILURE_PLANNING_ERROR),
+        (ROSDeadlineMissed, result_cls.FAILURE_DEADLINE_MISSED),
+        (ROSRuntimeError, result_cls.FAILURE_RUNTIME_ERROR),
+        (ROSError, result_cls.FAILURE_RUNTIME_ERROR),
+    )
+    for exc_type, kind in table:
+        if isinstance(exc, exc_type):
+            return int(kind)
+    return int(result_cls.FAILURE_UNKNOWN)
 
 
 try:
@@ -677,6 +734,7 @@ if _ROS2_AVAILABLE:
                     )
                     result.success = False
                     result.failure_reason = f"{type(exc).__name__}: {exc!s}"
+                    result.failure_kind = _failure_kind_for_exception(exc)
                     self._finalize_goal(goal_handle, "abort")
                     self._reset_active_goal()
                     return result
@@ -749,6 +807,7 @@ if _ROS2_AVAILABLE:
                         span.record_exception(exc)
                         result.success = False
                         result.failure_reason = f"safety_estop:{exc!s}"
+                        result.failure_kind = _failure_kind_for_exception(exc)
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
@@ -771,6 +830,7 @@ if _ROS2_AVAILABLE:
                         )
                         result.success = False
                         result.failure_reason = f"{_kind}: {exc!s}"
+                        result.failure_kind = _failure_kind_for_exception(exc)
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
@@ -782,13 +842,14 @@ if _ROS2_AVAILABLE:
                         # workspace). Label a typed reason so the ladder can act.
                         # ROSSafetyViolation is re-raised above, so it never reaches here.
                         span.record_exception(exc)
-                        _reason = self._label_runtime_failure(exc)
+                        _reason, _failure_kind = self._classify_runtime_failure(exc)
                         self.get_logger().error(
                             f"rskill_runner.execute_failed: kind={type(exc).__name__} "
                             f"reason={exc!s}"
                         )
                         result.success = False
                         result.failure_reason = _reason
+                        result.failure_kind = _failure_kind
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
@@ -798,6 +859,7 @@ if _ROS2_AVAILABLE:
                         self._drain_and_idle_hold(skill)
                         result.success = False
                         result.failure_reason = "cancelled"
+                        result.failure_kind = ExecuteRskill.Result.FAILURE_CANCELLED
                         self._finalize_goal(goal_handle, "canceled")
                         self._reset_active_goal()
                         return result
@@ -817,12 +879,14 @@ if _ROS2_AVAILABLE:
                         result.failure_reason = (
                             f"deadline_exceeded: elapsed={_elapsed_txt}s budget={deadline_s:.1f}s"
                         )
+                        result.failure_kind = ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
                         self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
 
                     result.success = True
                     result.failure_reason = ""
+                    result.failure_kind = ExecuteRskill.Result.FAILURE_NONE
                     self._finalize_goal(goal_handle, "succeed")
                     self._reset_active_goal()
                     return result
@@ -1114,12 +1178,14 @@ if _ROS2_AVAILABLE:
             Returns ``True`` when the goal was aborted (the caller returns
             ``result`` immediately), ``False`` to proceed with execution.
             """
-            reason = self._apply_starting_pose(skill)
-            if reason is None:
+            failure = self._apply_starting_pose(skill)
+            if failure is None:
                 return False
+            failure_kind, reason = failure
             self.get_logger().error(f"rskill_runner.approach_failed: {reason}")
             result.success = False
             result.failure_reason = reason
+            result.failure_kind = failure_kind
             self._finalize_goal(goal_handle, "abort")
             self._reset_active_goal()
             return True
@@ -1144,8 +1210,8 @@ if _ROS2_AVAILABLE:
                 )
 
         @staticmethod
-        def _label_runtime_failure(exc: BaseException) -> str:
-            """Map a raw non-``ROSError`` execution failure to a typed ``failure_reason``.
+        def _classify_runtime_failure(exc: BaseException) -> tuple[str, int]:
+            """Classify a raw non-``ROSError`` execution failure.
 
             ``skill.step`` runs torch inference, so a CUDA OOM
             (``torch.cuda.OutOfMemoryError``) or a dtype/quantization mismatch surfaces
@@ -1153,14 +1219,36 @@ if _ROS2_AVAILABLE:
             escaped the callback into an empty-reason abort. Label the common cases so
             the replanning ladder (and the operator) can act on the real cause instead
             of misreading it as a workspace/infeasibility failure.
+
+            Returns:
+                ``(failure_reason, failure_kind)``. The two are derived from ONE
+                message probe so the string and the uint8 can never disagree: the
+                recognised torch failures name a ``ROSRuntimeError`` subclass and
+                therefore carry ``FAILURE_RUNTIME_ERROR``; anything unrecognised
+                keeps its concrete type name and carries ``FAILURE_UNKNOWN`` (it
+                never entered the OpenRAL exception surface at all).
             """
+            from openral_msgs.action import ExecuteRskill
+
             text = str(exc)
             low = text.lower()
             if "out of memory" in low or "outofmemory" in type(exc).__name__.lower():
-                return f"ROSGPUMemoryError: {text}"
+                return f"ROSGPUMemoryError: {text}", int(ExecuteRskill.Result.FAILURE_RUNTIME_ERROR)
             if "must have the same dtype" in low or "quantiz" in low:
-                return f"ROSQuantizationError: {text}"
-            return f"{type(exc).__name__}: {text}"
+                return f"ROSQuantizationError: {text}", int(
+                    ExecuteRskill.Result.FAILURE_RUNTIME_ERROR
+                )
+            return f"{type(exc).__name__}: {text}", int(ExecuteRskill.Result.FAILURE_UNKNOWN)
+
+        @staticmethod
+        def _label_runtime_failure(exc: BaseException) -> str:
+            """Typed ``failure_reason`` for a raw non-``ROSError`` execution failure.
+
+            Thin projection of :meth:`_classify_runtime_failure` — kept so the
+            string label has a single call site to read and the kind can never be
+            computed from a different probe than the prose.
+            """
+            return RskillRunnerNode._classify_runtime_failure(exc)[0]
 
         def _wait_for_post_reset_joint_state(
             self,
@@ -1204,14 +1292,15 @@ if _ROS2_AVAILABLE:
                 "than the reset within 1.0 s; proceeding with current cache."
             )
 
-        def _apply_starting_pose(self, skill: Any) -> str | None:
+        def _apply_starting_pose(self, skill: Any) -> tuple[int, str] | None:
             """Move the HAL to the manifest ``starting_pose``.
 
             Prefers the MoveIt approach skill (``approach_skill_id``) over the
-            legacy ``ResetToPose`` snap. Returns a failure reason **only** when a
-            fatal (approach) attempt failed — the caller then aborts the
-            ExecuteSkill goal. The best-effort reset path always returns ``None``
-            (a failure only warns), preserving the legacy behaviour.
+            legacy ``ResetToPose`` snap. Returns a ``(failure_kind, reason)`` pair
+            **only** when a fatal (approach) attempt failed — the caller then aborts
+            the ExecuteSkill goal with both fields set. The best-effort reset path
+            always returns ``None`` (a failure only warns), preserving the legacy
+            behaviour.
             """
             from openral_rskill_ros._starting_pose import resolve_starting_pose_action
 
@@ -1234,7 +1323,7 @@ if _ROS2_AVAILABLE:
                 self._maybe_reset_hal_to_starting_pose(skill)
             return None
 
-        def _dispatch_moveit_approach(self, pose: list[float]) -> str | None:
+        def _dispatch_moveit_approach(self, pose: list[float]) -> tuple[int, str] | None:
             """Run the MoveIt approach rSkill retargeted at ``pose``.
 
             Resolves the ``approach_skill_id`` rSkill (``rskill-moveit-multi-joints-none``)
@@ -1245,11 +1334,13 @@ if _ROS2_AVAILABLE:
             planning-scene/world), and each waypoint replays through
             ``/openral/candidate_action`` (the kernel checks every step).
 
-            Returns ``None`` on success; otherwise a typed failure reason the caller
-            surfaces as the aborted goal's ``failure_reason`` — the policy never
-            starts from an unreachable / colliding state.
+            Returns ``None`` on success; otherwise ``(failure_kind, reason)`` — the
+            typed uint8 the caller stamps on ``ExecuteRskill.Result.failure_kind``
+            plus the prose it stamps on ``failure_reason``. The policy never starts
+            from an unreachable / colliding state.
             """
             from openral_core.exceptions import ROSError
+            from openral_msgs.action import ExecuteRskill
             from openral_rskill.loader import load_rskill_manifest
 
             from openral_rskill_ros._starting_pose import (
@@ -1269,13 +1360,17 @@ if _ROS2_AVAILABLE:
                 integration = manifest.ros_integration
                 if integration is None:
                     return (
+                        int(ExecuteRskill.Result.FAILURE_CONFIG_ERROR),
                         f"ROSConfigError: approach skill {skill_id!r} declares no "
-                        "ros_integration (expected a kind: ros_action MoveGroup wrapper)."
+                        "ros_integration (expected a kind: ros_action MoveGroup wrapper).",
                     )
                 joint_names = joint_names_from_goal_json(integration.default_goal_json)
                 goal_params_json = moveit_joint_goal_override(joint_names, pose)
             except (ROSError, ValueError) as exc:
-                return f"ROSConfigError: cannot build MoveIt approach goal: {exc}"
+                return (
+                    int(ExecuteRskill.Result.FAILURE_CONFIG_ERROR),
+                    f"ROSConfigError: cannot build MoveIt approach goal: {exc}",
+                )
 
             approach: rSkillBase | None = None
             try:
@@ -1288,7 +1383,10 @@ if _ROS2_AVAILABLE:
                 )
                 self._run_approach_skill(approach)
             except ROSError as exc:
-                return f"ROSPlanningError: MoveIt approach failed: {type(exc).__name__}: {exc!s}"
+                return (
+                    int(ExecuteRskill.Result.FAILURE_PLANNING_ERROR),
+                    f"ROSPlanningError: MoveIt approach failed: {type(exc).__name__}: {exc!s}",
+                )
             finally:
                 if approach is not None:
                     with contextlib.suppress(Exception):

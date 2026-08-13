@@ -45,6 +45,10 @@ TARGETS=(
     # free of close-parens — the guard test parses the block with a
     # non-greedy regex.
     packages/openral_rskill_ros/test/test_rskill_runner_node.py
+    # Same reasoning: ROS_DISTRO-gated, and its ExecuteRskill.Result
+    # failure_kind assertions read the colcon-generated constants, so only
+    # this image can run them.
+    packages/openral_rskill_ros/test/test_rskill_runner_failure_reason.py
 )
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this

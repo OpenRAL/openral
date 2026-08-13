@@ -541,13 +541,104 @@ def _search_term(call: RecallObjectTool | ResolvePlaceTool) -> str:
     return call.query if isinstance(call, RecallObjectTool) else call.reference
 
 
+# ── ExecuteRskill failure classification ────────────────────────────────────
+#
+# DEPRECATED-IN-PLACE. Prose prefixes the runner stamped on `failure_reason`
+# before `ExecuteRskill.Result.failure_kind` existed. Consulted by
+# `_rskill_failure_kind` ONLY when a *failed* result carries FAILURE_NONE —
+# i.e. it came off a runner built against the pre-`failure_kind` IDL. Nothing
+# in-tree produces such a result any more; this table exists so a live graph
+# whose `rskill_runner_node` has not been restarted still classifies instead of
+# silently collapsing to FAILURE_UNKNOWN. Delete it (and the fallback branch)
+# once no pre-`failure_kind` runner can be on the bus.
+#
+# Ordered — first matching prefix wins — and matched against the SAME strings
+# `rskill_runner_node` produced then: "<ROSErrorSubclass>: <msg>",
+# "safety_estop:<msg>", "deadline_exceeded: …", "cancelled".
+_LEGACY_FAILURE_REASON_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("safety_estop", "FAILURE_SAFETY_ESTOP"),
+    ("deadline_exceeded", "FAILURE_DEADLINE_MISSED"),
+    ("cancelled", "FAILURE_CANCELLED"),
+    ("ROSCapabilityMismatch:", "FAILURE_CAPABILITY_MISMATCH"),
+    ("ROSConfigError:", "FAILURE_CONFIG_ERROR"),
+    ("ROSObjectNotInMemory:", "FAILURE_PERCEPTION_STALE"),
+    ("ROSPerceptionStale:", "FAILURE_PERCEPTION_STALE"),
+    ("ROSReasonerInvalidPlan:", "FAILURE_PLANNING_ERROR"),
+    ("ROSPlanningError:", "FAILURE_PLANNING_ERROR"),
+    ("ROSDeadlineMissed:", "FAILURE_DEADLINE_MISSED"),
+    ("ROSQuantizationError:", "FAILURE_RUNTIME_ERROR"),
+    ("ROSGPUMemoryError:", "FAILURE_RUNTIME_ERROR"),
+    ("ROSRuntimeError:", "FAILURE_RUNTIME_ERROR"),
+)
+
+# Kinds that mean "this skill is not going to work in this session" — a bad
+# manifest / missing weights / an embodiment the robot does not have. Retrying
+# or re-substituting cannot fix either, so the skill leaves the palette until
+# the registry is rebuilt. Everything else stays retryable.
+_PERMANENT_FAILURE_KIND_NAMES: frozenset[str] = frozenset(
+    {"FAILURE_CONFIG_ERROR", "FAILURE_CAPABILITY_MISMATCH"}
+)
+
+# Kinds that mean "the attempt ran out of time" rather than "the controller
+# faulted" — the Reflexion hint differs (shorten the horizon vs. reposition).
+_TIMED_OUT_FAILURE_KIND_NAMES: frozenset[str] = frozenset({"FAILURE_DEADLINE_MISSED"})
+
+
+def _failure_kind_value(name: str) -> int:
+    """Resolve an ``ExecuteRskill.Result`` uint8 constant by name.
+
+    Reads the value off the colcon-generated IDL rather than re-declaring it
+    here, so the reasoner cannot drift from ``packages/msgs``. Returns
+    ``FAILURE_NONE``'s 0 when the IDL is unavailable (no colcon overlay), which
+    is the same "unclassified" verdict the fallback path already handles.
+    """
+    if IDLExecuteRskill is None:  # pragma: no cover — no colcon overlay
+        return 0
+    return int(getattr(IDLExecuteRskill.Result, name))
+
+
+def _rskill_failure_kind(result: Any) -> int:
+    """Typed failure kind for a terminal ``ExecuteRskill`` result.
+
+    The uint8 ``failure_kind`` is authoritative: ``rskill_runner_node`` sets it
+    on every branch of ``_execute_locked`` straight from the caught exception
+    type (CLAUDE.md §5), so the replanning ladder classifies on a contract
+    instead of substring-matching operator prose.
+
+    Falls back to :data:`_LEGACY_FAILURE_REASON_PREFIXES` **only** when a failed
+    result carries ``FAILURE_NONE`` — the IDL default, which is what a runner
+    predating the field sends. That fallback is deprecated in place; see the
+    table's own note.
+
+    Args:
+        result: The ``ExecuteRskill.Result`` carried by the terminal goal.
+
+    Returns:
+        One of the ``ExecuteRskill.Result.FAILURE_*`` uint8 constants.
+    """
+    kind = int(getattr(result, "failure_kind", 0))
+    if kind != 0:
+        return kind
+    reason = str(getattr(result, "failure_reason", "") or "")
+    for prefix, name in _LEGACY_FAILURE_REASON_PREFIXES:
+        if reason.startswith(prefix):
+            return _failure_kind_value(name)
+    return _failure_kind_value("FAILURE_UNKNOWN") if reason else 0
+
+
 def _palette_after_rskill_failure(
     palette: ToolPalette,
     rskill_id: str,
-    detail: str,
+    failure_kind: int,
 ) -> ToolPalette:
-    """Drop a skill after a typed, session-persistent availability failure."""
-    if not detail.startswith(("ROSConfigError:", "ROSCapabilityMismatch:")):
+    """Drop a skill after a typed, session-persistent availability failure.
+
+    Classifies on the ``failure_kind`` uint8 (see :func:`_rskill_failure_kind`),
+    not on the ``failure_reason`` prose it used to prefix-match.
+    """
+    if failure_kind == 0:  # FAILURE_NONE — unclassified, never "permanently broken"
+        return palette
+    if failure_kind not in {_failure_kind_value(n) for n in _PERMANENT_FAILURE_KIND_NAMES}:
         return palette
     return palette.model_copy(
         update={
@@ -4923,9 +5014,14 @@ class ReasonerNode(LifecycleNode):
             )
             self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
+        # Typed classification for the replanning ladder — the uint8
+        # ``failure_kind`` the runner stamped from the caught exception type,
+        # with the prose only as a deprecated fallback for a pre-`failure_kind`
+        # producer (see ``_rskill_failure_kind``).
+        failure_kind = _rskill_failure_kind(result)
         self.get_logger().warning(
             f"execute_rskill failed rskill_id={call.rskill_id!r} status={status} "
-            f"reason={result.failure_reason!r}",
+            f"failure_kind={failure_kind} reason={result.failure_reason!r}",
         )
         outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
         detail = result.failure_reason or f"GoalStatus={status}"
@@ -4936,11 +5032,16 @@ class ReasonerNode(LifecycleNode):
                 rskill_id=call.rskill_id,
                 outcome="failed",
                 summary=detail,
-                reflection=reflect_on_failure(outcome_state, detail),
+                reflection=reflect_on_failure(
+                    outcome_state,
+                    detail,
+                    timed_out=failure_kind
+                    in {_failure_kind_value(n) for n in _TIMED_OUT_FAILURE_KIND_NAMES},
+                ),
                 stamp_ns=now_ns,
             )
         )
-        updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, detail)
+        updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, failure_kind)
         if updated_palette != self._palette:
             self._palette = updated_palette
             self.get_logger().warning(
