@@ -518,6 +518,44 @@ def test_depth_image_from_grid_packs_32fc1() -> None:
     assert np.allclose(flat, grid.ravel())
 
 
+# ── raster → cloud back-projection (pure numpy, no ROS / MuJoCo) ─────────
+
+
+def test_points_from_depth_grid_back_projects_pinhole() -> None:
+    """``(col-cx)/fx·z, (row-cy)/fy·z, z`` per non-zero pixel, row-major."""
+    from openral_hal.depth_cloud import points_from_depth_grid
+
+    # (H=2, W=3) raster; the (row 1, col 1) pixel has no measurement.
+    grid = np.array([[1.0, 2.0, 3.0], [4.0, 0.0, 6.0]], dtype=np.float32)
+    fx = fy = 4.0
+    cx, cy = 1.0, 0.5
+    points = points_from_depth_grid(grid, fx=fx, fy=fy, cx=cx, cy=cy)
+
+    assert points.dtype == np.float32
+    # 5 non-zero pixels, in row-major order, the 0.0 sentinel dropped.
+    expected = np.array(
+        [
+            [(c - cx) / fx * grid[r, c], (r - cy) / fy * grid[r, c], grid[r, c]]
+            for r in range(2)
+            for c in range(3)
+            if grid[r, c] != 0.0
+        ],
+        dtype=np.float32,
+    )
+    assert points.shape == (5, 3)
+    assert np.allclose(points, expected)
+
+
+def test_points_from_depth_grid_all_zero_is_empty() -> None:
+    """An all-sentinel raster (nothing in range) yields an empty ``(0, 3)`` cloud."""
+    from openral_hal.depth_cloud import points_from_depth_grid
+
+    grid = np.zeros((4, 5), dtype=np.float32)
+    points = points_from_depth_grid(grid, fx=8.0, fy=8.0, cx=2.5, cy=2.0)
+    assert points.shape == (0, 3)
+    assert points.dtype == np.float32
+
+
 def test_camera_info_from_intrinsics_builds_pinhole() -> None:
     pytest.importorskip("sensor_msgs")
     from openral_hal.depth_cloud import camera_info_from_intrinsics
@@ -556,19 +594,31 @@ _CHAIN_MJCF = """
 
 
 def test_sensorspec_to_pointcloud2_end_to_end() -> None:
-    """Exactly what `_publish_depth_clouds` runs, minus the rclpy node."""
+    """Exactly what `_publish_depth_clouds` runs, minus the rclpy node.
+
+    One `synthesize_depth_image` cast per frame; the `PointCloud2` is that
+    raster back-projected, not a second cast.
+    """
     mujoco = pytest.importorskip("mujoco")
     pytest.importorskip("sensor_msgs")
-    from openral_hal.depth_cloud import pointcloud2_from_points_xyz
-    from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
+    from openral_hal.depth_cloud import pointcloud2_from_points_xyz, points_from_depth_grid
+    from openral_sim.backends.depth_camera import synthesize_depth_image
 
     model = mujoco.MjModel.from_xml_string(_CHAIN_MJCF)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
     spec = _depth_spec()  # metadata.mjcf_camera == "robot0_agentview_left"
+    stride = 4
     kwargs = depth_synth_kwargs(spec, max_range_default=8.0)
-    points = synthesize_depth_pointcloud(model=model, data=data, stride=4, **kwargs)
+    depth = synthesize_depth_image(model=model, data=data, stride=stride, **kwargs)
+    points = points_from_depth_grid(
+        depth,
+        fx=kwargs["fx"] / stride,
+        fy=kwargs["fy"] / stride,
+        cx=kwargs["cx"] / stride,
+        cy=kwargs["cy"] / stride,
+    )
     cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=None)
 
     assert cloud.header.frame_id == "front_depth_optical_frame"
@@ -576,3 +626,54 @@ def test_sensorspec_to_pointcloud2_end_to_end() -> None:
     assert cloud.width == points.shape[0]
     # Wall near face at 1.4 m, within the spec's [0.2, 4.0] range.
     assert np.allclose(points[:, 2], 1.4, atol=1e-2)
+
+
+# A wall that covers only the middle of the field of view, so the raster
+# carries both real returns and 0.0 sentinels and the sparse cloud is a
+# strict subset of the dense raster.
+_PARTIAL_MJCF = """
+<mujoco model="depth_partial_cover">
+  <worldbody>
+    <camera name="robot0_agentview_left" pos="0 0 0"/>
+    <geom name="wall" type="box" pos="0 0 -1.5" size="0.35 0.35 0.1"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_cloud_from_raster_equals_a_second_cast() -> None:
+    """The published cloud needs no second ray-cast: the raster already holds it.
+
+    `_publish_depth_clouds` used to call BOTH synths, so every pixel was cast
+    twice per published frame. The bridge now casts once and back-projects.
+    This pins the equivalence that makes that legitimate — on a partially
+    covered view, so misses (`0.0` sentinels) are exercised too.
+    """
+    mujoco = pytest.importorskip("mujoco")
+    from openral_hal.depth_cloud import points_from_depth_grid
+    from openral_sim.backends.depth_camera import (
+        synthesize_depth_image,
+        synthesize_depth_pointcloud,
+    )
+
+    model = mujoco.MjModel.from_xml_string(_PARTIAL_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    spec = _depth_spec()
+    stride = 2
+    kwargs = depth_synth_kwargs(spec, max_range_default=8.0)
+    depth = synthesize_depth_image(model=model, data=data, stride=stride, **kwargs)
+    derived = points_from_depth_grid(
+        depth,
+        fx=kwargs["fx"] / stride,
+        fy=kwargs["fy"] / stride,
+        cx=kwargs["cx"] / stride,
+        cy=kwargs["cy"] / stride,
+    )
+    cast_again = synthesize_depth_pointcloud(model=model, data=data, stride=stride, **kwargs)
+
+    # The view is genuinely mixed: some pixels hit the wall, some see nothing.
+    assert 0 < derived.shape[0] < depth.size
+    assert derived.shape == cast_again.shape
+    assert np.allclose(derived, cast_again, atol=1e-5)

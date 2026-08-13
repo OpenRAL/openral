@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit coverage for the simulated depth-camera → point-cloud synth.
 
-`synthesize_depth_pointcloud` casts one `mj_multiRay` ray per
+`synthesize_depth_pointcloud` casts one `mj_ray` per
 (strided) pixel through a pinhole model and returns the hit points in the
 camera *optical* frame (REP-103: +x right, +y down, +z forward). It is the
 3-D analogue of `synthesize_laser_scan_2d` and is robot-agnostic: any named
@@ -315,3 +315,105 @@ def test_depth_image_matches_cloud_z_column() -> None:
     cloud = synthesize_depth_pointcloud(**common)  # (W*H, 3), full wall
     depth = synthesize_depth_image(**common)  # (H, W)
     assert np.allclose(depth.reshape(-1), cloud[:, 2], atol=1e-5)
+
+
+# ── Visual-only geometry must not be seen through (mj_multiRay regression) ──
+
+# A RoboCasa counter in miniature: a cabinet body whose collision carcass tops
+# out at world z 0.890, and a separate counter body carrying the countertop as
+# a VISUAL-only slab (contype=0 conaffinity=0) whose top face is at 0.920, plus
+# one small collision bracket off to the side. The bracket is what gives the
+# counter body a BVH; MuJoCo builds that BVH from collision geoms only, so the
+# body's bounding sphere hugs the bracket and excludes the slab entirely.
+#
+# `mj_multiRay` culls whole bodies against that sphere, so it used to skip the
+# counter body and report the cabinet carcass beneath it — the counter surface
+# read 30 mm too low, in the direction that makes the world-collision voxel
+# grid think there is free space where a solid countertop is. `mj_ray` (and
+# MuJoCo's own GL depth renderer, checked by hand on this scene) reports 0.920.
+_CARCASS_TOP_Z = 0.890
+_SLAB_TOP_Z = 0.920
+_COUNTER_CAM_Z = 2.0
+
+_COUNTER_MJCF = f"""
+<mujoco model="visual_countertop">
+  <worldbody>
+    <camera name="depth0" pos="0 0 {_COUNTER_CAM_Z}"/>
+    <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0"/>
+    <body name="cabinet" pos="0 0 0">
+      <geom name="carcass" type="box" size="0.5 0.5 0.445" pos="0 0 0.445"/>
+    </body>
+    <body name="counter_top" pos="0 0 0">
+      <geom name="slab" type="box" size="0.6 0.6 0.015" pos="0 0 0.905"
+            contype="0" conaffinity="0"/>
+      <geom name="bracket" type="box" size="0.03 0.03 0.03" pos="2.0 0 0.03"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _counter_model_data() -> tuple[object, object]:
+    model = mujoco.MjModel.from_xml_string(_COUNTER_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return model, data
+
+
+def test_depth_cloud_hits_a_visual_only_surface_not_the_solid_behind_it() -> None:
+    """A visual-only countertop is the surface, not the collision carcass under it."""
+    model, data = _counter_model_data()
+    # Narrow field of view so every ray lands on the slab (half-extent 0.6 m,
+    # ~1.08 m below the camera).
+    width = height = 9
+    fx = fy = 40.0
+    depth = synthesize_depth_image(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=width,
+        height=height,
+        fx=fx,
+        fy=fy,
+        cx=width / 2.0,
+        cy=height / 2.0,
+        max_range_m=10.0,
+    )
+
+    expected = _COUNTER_CAM_Z - _SLAB_TOP_Z
+    buried = _COUNTER_CAM_Z - _CARCASS_TOP_Z
+    assert np.allclose(depth, expected, atol=1e-3), (
+        f"every ray must stop on the visual countertop at optical-Z {expected:.3f} m; "
+        f"{buried:.3f} m means the cast saw through it to the carcass beneath"
+    )
+
+
+def test_depth_cloud_sees_a_visual_geom_with_nothing_behind_it() -> None:
+    """The same cull also loses the surface entirely when no solid backs it.
+
+    Aimed past the cabinet at slab-only overhang, the wrong answer is not a
+    30 mm error but the floor 0.92 m further away — a hole punched straight
+    through a solid surface in the voxel map.
+    """
+    model, data = _counter_model_data()
+    # Aim at x ≈ 0.55 m: past the carcass (half-extent 0.5) but still on the
+    # slab (half-extent 0.6). Optical +x right → shift the principal point.
+    width = height = 3
+    fx = fy = 40.0
+    depth = synthesize_depth_image(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=width,
+        height=height,
+        fx=fx,
+        fy=fy,
+        cx=width / 2.0 - 0.55 * fx / (_COUNTER_CAM_Z - _SLAB_TOP_Z),
+        cy=height / 2.0,
+        max_range_m=10.0,
+    )
+
+    assert np.allclose(depth, _COUNTER_CAM_Z - _SLAB_TOP_Z, atol=5e-3), (
+        "the overhanging countertop must still be the nearest surface; "
+        f"{_COUNTER_CAM_Z:.3f} m is the floor seen through it"
+    )

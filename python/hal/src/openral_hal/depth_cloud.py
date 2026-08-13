@@ -10,11 +10,14 @@ the pieces shared across robots so a node only has to wire publishers/timers:
   — pure SensorSpec adapters (no ROS / MuJoCo import).
 * :func:`camera_optical_tf_to_base` — the live camera-optical-frame → base
   transform, from the MuJoCo camera/body poses (so TF can place the cloud).
+* :func:`points_from_depth_grid` — back-project a metric-depth raster into an
+  ``(N, 3)`` optical-frame cloud, so one ray-cast feeds both the depth image
+  and the cloud (see :func:`openral_hal.sim_sensor_bridge`'s depth timer).
 * :func:`pointcloud2_from_points_xyz` — pack an ``(N, 3)`` array into a
   ``sensor_msgs/PointCloud2`` (``sensor_msgs`` imported lazily).
 
 The synth itself lives in
-:func:`openral_sim.backends.depth_camera.synthesize_depth_pointcloud`.
+:func:`openral_sim.backends.depth_camera.synthesize_depth_image`.
 """
 
 from __future__ import annotations
@@ -532,6 +535,66 @@ def depth_image_from_grid(
     msg.step = 4 * w
     msg.data = grid.reshape(-1).tobytes()
     return msg
+
+
+def points_from_depth_grid(
+    depth: NDArray[np.float32],
+    *,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+) -> NDArray[np.float32]:
+    """Back-project an ``(H, W)`` metric-depth raster into an ``(N, 3)`` cloud.
+
+    The inverse of the pinhole projection the depth synth casts: a pixel
+    ``(col, row)`` holding perpendicular optical-Z ``z`` becomes
+    ``((col - cx) / fx · z, (row - cy) / fy · z, z)`` in the camera optical
+    frame (REP-103). Pixels reading exactly ``0.0`` — the "no measurement"
+    sentinel — are dropped, so the result is the same sparse, hit-only cloud
+    :func:`openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
+    returns, in the same row-major ray order.
+
+    This is what lets the deploy-sim depth timer pay for **one** ray-cast per
+    camera per frame: it synthesises the dense raster once, publishes it as the
+    ``32FC1`` image nvblox integrates, and back-projects that same raster into
+    the ``PointCloud2`` octomap_server consumes. Casting a second time (once per
+    output) doubled the cost of the frame for numbers that are identical by
+    construction.
+
+    Args:
+        depth: ``(H, W)`` float32 depth raster in metres (optical-Z), ``0.0``
+            where there is no measurement — i.e. what
+            :func:`openral_sim.backends.depth_camera.synthesize_depth_image`
+            returns and :func:`depth_image_from_grid` packs.
+        fx: Focal length x **of this raster** (pixels) — for a strided synth the
+            stride-scaled value, the same one the companion ``CameraInfo``
+            advertises (see :func:`camera_info_from_intrinsics`).
+        fy: Focal length y of this raster (pixels).
+        cx: Principal point x of this raster (pixels).
+        cy: Principal point y of this raster (pixels).
+
+    Returns:
+        ``(N, 3)`` float32 XYZ in the camera optical frame, row-major in pixel
+        order; ``(0, 3)`` when every pixel reads ``0.0``.
+
+    Example:
+        >>> import numpy as np
+        >>> # (1, 2) raster: pixel (row 0, col 0) has no measurement.
+        >>> grid = np.array([[0.0, 2.0]], dtype=np.float32)
+        >>> points_from_depth_grid(grid, fx=4.0, fy=4.0, cx=1.0, cy=0.5).tolist()
+        [[0.0, -0.25, 2.0]]
+    """
+    grid = np.asarray(depth, dtype=np.float32)
+    rows, cols = np.nonzero(grid)  # row-major order: matches the ray order
+    if rows.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    z = grid[rows, cols].astype(np.float64)
+    points = np.empty((z.size, 3), dtype=np.float64)
+    points[:, 0] = (cols.astype(np.float64) - cx) / fx * z
+    points[:, 1] = (rows.astype(np.float64) - cy) / fy * z
+    points[:, 2] = z
+    return points.astype(np.float32)
 
 
 def camera_info_from_intrinsics(

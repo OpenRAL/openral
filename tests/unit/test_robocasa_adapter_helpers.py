@@ -11,8 +11,8 @@ NOT require robocasa / robosuite to be installed:
   `SCENES` with `fixed_robot="panda_mobile"`.
 * `read_panda_mobile_base_velocity` -- de-rotates qvel into the body
   frame using the OmronMobileBase joint names.
-* `synthesize_laser_scan_2d` -- ``mj_multiRay`` fan against a synthetic
-  MuJoCo XML with one known-distance box.
+* `synthesize_laser_scan_2d` -- one ``mj_ray`` per beam against a
+  synthetic MuJoCo XML with one known-distance box.
 
 CLAUDE.md §1.11 -- real schemas, real registry, real MuJoCo bindings.
 The mujoco import is gated on ``pytest.importorskip`` so this module

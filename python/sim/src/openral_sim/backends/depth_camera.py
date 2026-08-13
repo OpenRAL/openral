@@ -3,7 +3,7 @@
 
 The 3-D analogue of
 :func:`openral_sim.backends.robocasa.synthesize_laser_scan_2d`. Casts one
-``mj_multiRay`` ray per (strided) pixel through a pinhole model anchored on
+``mj_ray`` per (strided) pixel through a pinhole model anchored on
 a named MJCF camera, and returns the hit points in the camera *optical*
 frame (REP-103: ``+x`` right, ``+y`` down, ``+z`` forward — the ROS camera
 convention).
@@ -17,6 +17,20 @@ world-collision kernel check) from any robot, not just panda_mobile.
 The returned cloud is the dense, bounded input perception lowers into an
 OctoMap; the kernel never sees it directly ("perception proposes, the kernel
 disposes").
+
+Cost scales with rays x geoms, and the caller's ``stride`` is the lever.
+Measured on a synthetic 1200-geom clutter scene (RoboCasa-kitchen scale) with a
+256x256 camera: **one** cast costs ~60 ms at the deploy default ``stride=4``
+(4096 rays) and ~240 ms at ``stride=2`` (16384 rays). The deploy-sim depth timer
+runs on the single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` —
+default **10 Hz**, a 100 ms period (the manifest ``SensorSpec.rate_hz`` is not
+read by the bridge) — so ``stride=4`` already spends ~60% of the period inside
+the cast and ``stride=2`` cannot hold the rate at all.
+
+Budget one cast per camera per frame: derive every output from that single
+raster rather than calling both synths, which casts each ray twice for numbers
+that are equal by construction (``openral_hal.sim_sensor_bridge`` publishes the
+``PointCloud2`` via ``openral_hal.depth_cloud.points_from_depth_grid``).
 """
 
 from __future__ import annotations
@@ -26,7 +40,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-# A ray's "no hit" sentinel from mj_multiRay is a negative distance; a hit
+# A ray's "no hit" sentinel from mj_ray is a negative distance; a hit
 # also reports the struck geom id (>= 0). We require both to accept a point.
 
 _GEOMGROUP_ALL = np.ones(6, dtype=np.uint8)
@@ -60,7 +74,7 @@ def _cast_depth_rays(
 
         * ``dir_opt`` — ``(R, 3)`` float64 unit ray directions in the camera
           optical frame (REP-103).
-        * ``distances`` — ``(R,)`` float64 Euclidean ranges from ``mj_multiRay``
+        * ``distances`` — ``(R,)`` float64 Euclidean ranges from ``mj_ray``
           (``-1`` where no geom was struck; out-of-range values are masked by
           ``hit``, not cleared here).
         * ``hit`` — ``(R,)`` bool accept mask (genuine hit, in ``[min, max]``
@@ -90,7 +104,7 @@ def _cast_depth_rays(
     v_flat = grid_v.ravel()
 
     # Pinhole rays in the optical frame, normalised to unit length so the
-    # mj_multiRay distances come back as Euclidean ranges.
+    # mj_ray distances come back as Euclidean ranges.
     dir_opt = np.empty((u_flat.size, 3), dtype=np.float64)
     dir_opt[:, 0] = (u_flat - cx) / fx
     dir_opt[:, 1] = (v_flat - cy) / fy
@@ -111,28 +125,34 @@ def _cast_depth_rays(
     geomids = np.full(n_rays, -1, dtype=np.int32)
     distances = np.full(n_rays, -1.0, dtype=np.float64)
 
-    # Positional pybind signature: (m, d, pnt, vec, geomgroup, flg_static,
-    # bodyexclude, geomid, dist, normal, nray, cutoff). normal=None (we only
-    # need ranges).
-    mujoco.mj_multiRay(
-        model,
-        data,
-        origin,
-        dir_world.ravel(),
-        _GEOMGROUP_ALL,
-        1,
-        -1 if exclude_body_id is None else int(exclude_body_id),
-        geomids,
-        distances,
-        None,
-        n_rays,
-        float(max_range_m),
-    )
+    # One `mj_ray` per pixel, NOT the batched `mj_multiRay`. `mj_multiRay`
+    # culls whole bodies against the bounding sphere of the body's BVH root
+    # AABB (`mju_singleRay`), and MuJoCo's compiler builds that BVH from
+    # COLLISION geoms only — so a `contype=0 conaffinity=0` visual geom lying
+    # outside its body's collision extent is silently skipped and the ray
+    # reports whatever solid sits behind it. On RoboCasa that hides counter
+    # tops (world z 0.920) behind the cabinet carcasses under them (0.890):
+    # a 30 mm systematic underestimate, in the unsafe direction, on the cloud
+    # the world-collision voxel grid is built from. `mj_ray` runs the plain
+    # linear scan over every visible geom and has no such cull, matching what
+    # the GL depth renderer draws. It costs more than the batched call — how
+    # much depends entirely on how often that body cull fires, i.e. on the
+    # scene (~1.9x on the 1200-geom clutter scene the module docstring's budget
+    # is measured on), so size the budget from a measurement, not a multiplier.
+    # The depth stream is a strided, rate-limited sim sensor, and a wrong
+    # surface is worse than a slower one.
+    geomid_out = np.zeros(1, dtype=np.int32)
+    bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
+    for i in range(n_rays):
+        geomid_out[0] = -1
+        distances[i] = mujoco.mj_ray(
+            model, data, origin, dir_world[i], _GEOMGROUP_ALL, 1, bodyexclude, geomid_out
+        )
+        geomids[i] = geomid_out[0]
 
-    # Accept only genuine hits within [min_range, max_range]. mj_multiRay's
-    # cutoff is a bounding-sphere prefilter, so a geom that passes it can
-    # still report a distance > max_range — clamp explicitly (same caveat
-    # the 2-D lidar synth documents).
+    # Accept only genuine hits within [min_range, max_range]. `mj_ray` has no
+    # range cutoff at all — it always reports the true nearest visible
+    # surface — so the max-range clamp is this mask, not a caster argument.
     hit = (geomids >= 0) & (distances >= min_range_m) & (distances <= max_range_m)
     if exclude_body_ids:
         # Drop rays that struck one of the robot's own bodies (self-filter), so
@@ -186,7 +206,7 @@ def synthesize_depth_pointcloud(
         min_range_m: Rays returning nearer than this are dropped (e.g. to
             reject the robot's own gripper in view).
         stride: Pixel subsample step. ``stride=2`` casts a quarter of the rays.
-        exclude_body_id: Single MuJoCo body id passed to ``mj_multiRay``'s
+        exclude_body_id: Single MuJoCo body id passed to ``mj_ray``'s
             ``bodyexclude`` (so rays don't immediately strike the camera's own
             mount body at range ~0); ``None`` excludes nothing.
         exclude_body_ids: Body ids whose hits are dropped after casting — the
@@ -280,7 +300,7 @@ def synthesize_depth_image(
         min_range_m: Rays returning nearer than this read ``0.0``.
         stride: Pixel subsample step. ``stride=2`` rasterises a quarter of the
             pixels (the ``CameraInfo`` intrinsics scale to match).
-        exclude_body_id: ``mj_multiRay`` ``bodyexclude`` (camera's own mount).
+        exclude_body_id: ``mj_ray`` ``bodyexclude`` (camera's own mount).
         exclude_body_ids: Body ids whose hits read ``0.0`` (robot self-filter).
 
     Returns:

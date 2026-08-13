@@ -1074,19 +1074,29 @@ class SimSensorBridge:
     def _publish_depth_clouds(self) -> None:
         """Ray-cast + publish a PointCloud2 (+ depth image) per camera, and its TF.
 
-        The deploy-sim source for octomap_server. Each depth
-        ``SensorSpec`` is synthesised with
-        :func:`openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
-        (camera-optical frame), packed into ``sensor_msgs/PointCloud2``,
-        and published with a live ``base_link -> <camera>_optical_frame``
-        TF so octomap_server can lift it into the world map. A camera
-        whose MJCF name doesn't resolve is disabled after one warning
-        (sim sensor, not a safety path).
+        The deploy-sim source for octomap_server. Each depth ``SensorSpec`` is
+        ray-cast **once** per frame with
+        :func:`openral_sim.backends.depth_camera.synthesize_depth_image` into a
+        dense metric-depth raster, which is published three ways: as the
+        ``32FC1`` ``sensor_msgs/Image`` (+ ``CameraInfo``) nvblox's projective
+        integrator consumes, and — back-projected by
+        :func:`openral_hal.depth_cloud.points_from_depth_grid` — as the
+        camera-optical-frame ``sensor_msgs/PointCloud2`` octomap_server lifts
+        into the world map, alongside a live
+        ``base_link -> <camera>_optical_frame`` TF. A camera whose MJCF name
+        doesn't resolve is disabled after one warning (sim sensor, not a safety
+        path).
+
+        The cast is the whole cost of this timer (~60 ms for a 256x256 camera at
+        the default ``stride=4`` on a ~1200-geom kitchen), it runs on the single
+        ``rclpy.spin`` thread, and ``depth_publish_rate_hz`` defaults to 10 Hz —
+        a 100 ms period. So the raster is the primitive and every output is
+        derived from it; synthesising the cloud separately cast every ray twice
+        for numbers that are equal by construction.
 
         Lifted from ``openral_hal_panda_mobile.lifecycle_node._publish_depth_clouds``.
-        Logic is faithfully preserved — the ray-cast, the
-        self-body exclusion, the point filtering, and the TF broadcast are
-        unchanged so octomap_server sees bit-identical clouds.
+        The self-body exclusion, the range filtering, and the TF broadcast are
+        unchanged.
         """
         if not self._depth_pubs:
             return
@@ -1101,10 +1111,7 @@ class SimSensorBridge:
             TransformStamped,
         )
         from openral_core.exceptions import ROSConfigError
-        from openral_sim.backends.depth_camera import (
-            synthesize_depth_image,
-            synthesize_depth_pointcloud,
-        )
+        from openral_sim.backends.depth_camera import synthesize_depth_image
 
         from openral_hal.depth_cloud import (
             camera_info_from_intrinsics,
@@ -1113,6 +1120,7 @@ class SimSensorBridge:
             depth_synth_kwargs,
             is_depth_sensor,
             pointcloud2_from_points_xyz,
+            points_from_depth_grid,
         )
 
         if self._depth_base_body is None and self._depth_base_body_id < 0:
@@ -1137,19 +1145,9 @@ class SimSensorBridge:
                     max_range_default=max_range_default,
                     render_size=self._render_size(),
                 )
-                points = synthesize_depth_pointcloud(
-                    model=model,
-                    data=data,
-                    stride=stride,
-                    exclude_body_id=exclude_id,
-                    exclude_body_ids=self._depth_self_bodies or None,
-                    **kwargs,
-                )
-                cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
-                pub.publish(cloud)
-                # Dense 32FC1 depth image + CameraInfo for nvblox.
-                # Same pinhole ray-cast, but every pixel (0.0 = no return); the
-                # CameraInfo intrinsics scale by 1/stride to match the raster.
+                # The ONE ray-cast of this frame: a dense 32FC1 raster (every
+                # pixel, 0.0 = no return) at the strided resolution, so the
+                # CameraInfo intrinsics scale by 1/stride to match it.
                 depth_grid = synthesize_depth_image(
                     model=model,
                     data=data,
@@ -1159,6 +1157,13 @@ class SimSensorBridge:
                     **kwargs,
                 )
                 h_eff, w_eff = (int(depth_grid.shape[0]), int(depth_grid.shape[1]))
+                # The raster's own intrinsics: the manifest's, scaled by 1/stride.
+                intr = {k: float(kwargs[k]) / stride for k in ("fx", "fy", "cx", "cy")}
+                # octomap's cloud is that same raster back-projected through the
+                # same intrinsics — not a second cast of the same rays.
+                points = points_from_depth_grid(depth_grid, **intr)
+                cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
+                pub.publish(cloud)
                 self._depth_image_pubs[name].publish(
                     depth_image_from_grid(depth_grid, frame_id=spec.frame_id, stamp=stamp)
                 )
@@ -1166,10 +1171,7 @@ class SimSensorBridge:
                     camera_info_from_intrinsics(
                         width=w_eff,
                         height=h_eff,
-                        fx=kwargs["fx"] / stride,
-                        fy=kwargs["fy"] / stride,
-                        cx=kwargs["cx"] / stride,
-                        cy=kwargs["cy"] / stride,
+                        **intr,
                         frame_id=spec.frame_id,
                         stamp=stamp,
                     )

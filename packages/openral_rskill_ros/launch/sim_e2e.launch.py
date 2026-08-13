@@ -1373,7 +1373,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     if enable_octomap:
         # The world-collision perception leg. octomap_server
         # builds a 3-D OcTree from the HAL's depth PointCloud2
-        # (``synthesize_depth_pointcloud`` → ``octomap_cloud_topic``), and
+        # (``synthesize_depth_image`` back-projected by
+        # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and
         # the openral_octomap_bridge lowers that octree into the dense
         # ``/openral/world_voxels`` grid the kernel rasterizes capsules
         # against. Keeps the octomap dependency OUT of the real-time

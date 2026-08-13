@@ -1257,10 +1257,12 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
 ) -> NDArray[np.float32]:
     """Cast ``n_beams`` rays in a planar fan from the panda_mobile base.
 
-    Uses MuJoCo's ``mj_multiRay`` for a single-origin batched ray-cast.
-    Returns a ``(n_beams,)`` float32 array of ranges in metres, clamped
-    to ``max_range_m`` for "no hit" beams so downstream consumers
-    (sensor_msgs/LaserScan, Nav2 costmap) don't NaN-poison their grids.
+    Casts one ``mj_ray`` per beam — not the batched ``mj_multiRay`` — so
+    each beam can be re-cast past a hit on the robot's own kinematic tree
+    (see the self-exclusion note below). Returns a ``(n_beams,)`` float32
+    array of ranges in metres, clamped to ``max_range_m`` for "no hit"
+    beams so downstream consumers (sensor_msgs/LaserScan, Nav2 costmap)
+    don't NaN-poison their grids.
 
     Beam ordering: ``angle = -pi + 2*pi * i / n_beams`` for ``i in [0,
     n_beams)``, body-frame. The caller adds yaw if the wire format
