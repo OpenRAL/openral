@@ -174,6 +174,49 @@ def resolve_base_body_name(model: Any, *, description: Any = None) -> str | None
     return None
 
 
+def resolve_base_frame_body_name(model: Any, *, description: Any = None) -> str | None:
+    """Resolve the MJCF body whose pose the robot's ``base_frame`` TF carries.
+
+    This is **not** always :func:`resolve_base_body_name`. That one resolves the
+    chassis *root* — the right anchor for the depth self-filter's
+    ``mj_multiRay`` body-exclude and for the viewer's follow camera. This one
+    resolves the body ``base_frame`` actually *denotes* on ``/tf``, which is
+    what any extrinsic published as ``base_frame -> <child>`` must be measured
+    against.
+
+    They differ on robosuite/RoboCasa **mobile manipulators** (ADR-0095). The
+    OmronMobileBase stacks a geomless ground-level root (``mobilebase0_base``,
+    world z 0) under a 0.70 m pedestal whose top plate (``mobilebase0_support``)
+    carries the arm and the robot-mounted cameras. ``base_link`` on ``/tf`` is
+    the **pedestal top**: :class:`~openral_hal.mobile_base_bridge.MobileBaseBridge`
+    publishes ``odom -> base_link`` from the HAL's ``base_pose_6dof()``, i.e.
+    RoboCasa's ``robot0_base_pos``, whose z is that 0.70 m — and the pi05 / rldx
+    / XR-1 state assemblers were trained against that convention. Measuring a
+    camera extrinsic against the ground-level root instead put the whole depth
+    cloud, the OctoMap lowered from it and the kernel's world-voxel grid 0.70 m
+    out for every TF consumer (Nav2, SLAM, the dashboard).
+
+    So the arm-mount candidate ``<prefix>_support`` is tried first, then the
+    chassis candidates of :func:`resolve_base_body_name`. Fixed-base arms
+    (LIBERO franka, ur5e, …) have no ``_support`` body and resolve exactly as
+    before.
+
+    Returns ``None`` when no candidate body is present.
+    """
+    import mujoco  # reason: defer optional sim dep
+    from openral_core import extract_base_sim_joint_names
+
+    if description is not None:
+        base_names = extract_base_sim_joint_names(description)
+        if base_names:
+            first = base_names[0]
+            prefix = first.split("_joint_")[0] if "_joint_" in first else ""
+            mount = f"{prefix}_support"
+            if prefix and mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, mount) >= 0:
+                return mount
+    return resolve_base_body_name(model, description=description)
+
+
 # Substrings of a 3rd-person "workspace overview" camera, in preference order:
 # robosuite/RoboCasa ``robot0_agentview_*``, gym-aloha ``top``, then the generic
 # ``frontview`` / ``front`` 3rd-person cams. ``top`` is ranked above bare

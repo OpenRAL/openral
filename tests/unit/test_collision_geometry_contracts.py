@@ -212,14 +212,23 @@ _PANDA_SRDF_ARM_DISABLES = frozenset(
 _PANDA_CAPSULE_JUNCTION_EXTRAS = frozenset({frozenset({"panda_link5", "panda_link7"})})
 
 
-def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
-    """Both PandaMobile manifests place joint 1 above the ground-level base frame."""
+def test_panda_mobile_collision_fk_starts_at_the_arm_mount() -> None:
+    """Both PandaMobile manifests measure joint 1 from the arm-mount ``base_link``.
+
+    ADR-0095. ``base_link`` is RoboCasa's ``mobilebase0_support`` — the top of
+    the 0.70 m pedestal, the pose ``odom -> base_link`` carries and the frame
+    ``/openral/world_voxels`` is expressed in. Joint 1 is therefore the plain
+    Franka URDF transform. PR #103 briefly folded the pedestal in here as well,
+    to cancel a producer-side frame bug *inside* the kernel; the producer is
+    fixed at source now, so double-counting it would put the collision capsules
+    0.70 m above the obstacles they are checked against (hazard HZ-0095-1).
+    """
     desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     vslam_desc = RobotDescription.from_yaml("robots/panda_mobile_vslam/robot.yaml")
     joint1 = next(joint for joint in desc.joints if joint.name == "panda_joint1")
     vslam_joint1 = next(joint for joint in vslam_desc.joints if joint.name == "panda_joint1")
 
-    assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
+    assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 0.333)
 
 
 def test_panda_mobile_arms_use_matching_mesh_enclosing_obbs() -> None:

@@ -274,6 +274,12 @@ class SimSensorBridge:
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
         self._depth_base_body_id: int = -1
+        # The MJCF body ``base_frame`` DENOTES on /tf — the arm mount, which on
+        # a robosuite mobile manipulator sits a 0.70 m pedestal above the
+        # chassis root cached above. Every ``base_frame -> …`` extrinsic is
+        # measured against this one, so the published depth cloud lands where TF
+        # says it does (ADR-0095). Equals ``_depth_base_body`` on fixed bases.
+        self._base_frame_body: str | None = None
         # Robot's own MJCF body ids — dropped from the depth cloud so the
         # base-mounted camera doesn't voxelise the arm into its own world map.
         self._depth_self_bodies: frozenset[int] = frozenset()
@@ -387,6 +393,7 @@ class SimSensorBridge:
         self._depth_disabled.clear()
         self._depth_base_body = None
         self._depth_base_body_id = -1
+        self._base_frame_body = None
         self._depth_self_bodies = frozenset()
         self._camera_tf_disabled.clear()
         self._tf_broadcaster = None
@@ -641,7 +648,7 @@ class SimSensorBridge:
         model, data = handle
         if self._depth_base_body is None and self._depth_base_body_id < 0:
             self._resolve_depth_base_body(model)
-        if self._depth_base_body is None:
+        if self._base_frame_body is None:
             return
 
         # Publish the world root for a fixed-base sim arm (once).
@@ -664,7 +671,7 @@ class SimSensorBridge:
                     model=model,
                     data=data,
                     camera_name=mjcf_camera_name(spec),
-                    base_body_name=self._depth_base_body,
+                    base_body_name=self._base_frame_body,
                 )
             except ROSConfigError as exc:
                 self._camera_tf_disabled.add(name)
@@ -712,13 +719,18 @@ class SimSensorBridge:
         if describes_mobile_base(self._description):
             self._world_base_published = True  # mobile: odom owns base->world; nothing to do
             return
-        if self._depth_base_body_id < 0:
+        if self._base_frame_body is None:
             return
 
+        import mujoco  # reason: defer optional sim dep
         from geometry_msgs.msg import TransformStamped
         from tf2_ros import StaticTransformBroadcaster
 
-        bid = self._depth_base_body_id
+        # The body ``base_frame`` denotes, not the chassis root — this TF *is*
+        # the base frame's pose (ADR-0095). Identical on a fixed-base arm.
+        bid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self._base_frame_body))
+        if bid < 0:
+            return
         pos = data.xpos[bid]  # type: ignore[attr-defined]  # world position of the base body
         quat_wxyz = data.xquat[bid]  # type: ignore[attr-defined]  # MuJoCo quaternion is wxyz
         if self._static_tf_broadcaster is None:
@@ -1269,12 +1281,19 @@ class SimSensorBridge:
         )
 
     def _resolve_depth_base_body(self, model: object) -> None:
-        """Resolve + cache the MJCF base body name (TF parent + self-exclusion).
+        """Resolve + cache the MJCF base bodies (self-exclusion **and** TF parent).
 
-        Mirrors panda_mobile's ``_resolve_depth_base_body``: strips the
-        ``_joint_*`` tail off the first base joint name and appends ``_base``
-        (``mobilebase0_base`` under a composed kitchen), falling back to the
-        bare ``"base"`` for synthetic MJCFs.
+        Two distinct bodies, deliberately (ADR-0095):
+
+        * ``_depth_base_body`` — the chassis root (``mobilebase0_base`` under a
+          composed kitchen, bare ``"base"`` on synthetic MJCFs). This is the
+          ``mj_multiRay`` body-exclude anchor, so rays don't strike the camera's
+          own mount at range ~0.
+        * ``_base_frame_body`` — the body ``base_frame`` denotes on ``/tf`` (the
+          0.70 m arm mount ``mobilebase0_support`` on a robosuite mobile base).
+          Every ``base_frame -> …`` extrinsic is measured against this one, so
+          the published cloud lands where TF says it does. Identical to the
+          chassis root on fixed-base arms.
 
         Also populates ``_depth_self_bodies`` — the robot's own MJCF body ids
         for the depth self-filter, derived from the manifest's sim_joint_name
@@ -1282,7 +1301,11 @@ class SimSensorBridge:
         """
         import mujoco  # reason: defer optional sim dep
 
-        from openral_hal.depth_cloud import resolve_base_body_name, robot_self_body_ids
+        from openral_hal.depth_cloud import (
+            resolve_base_body_name,
+            resolve_base_frame_body_name,
+            robot_self_body_ids,
+        )
 
         description = getattr(self._hal, "description", None)
         base_body = resolve_base_body_name(model, description=description)
@@ -1292,6 +1315,7 @@ class SimSensorBridge:
             if base_body is not None
             else -1
         )
+        self._base_frame_body = resolve_base_frame_body_name(model, description=description)
         # Robot self-body set (arm + base + gripper) for the depth self-filter.
 
         sim_names = (
@@ -1300,7 +1324,9 @@ class SimSensorBridge:
         self._depth_self_bodies = robot_self_body_ids(model, sim_names)
         self._node.get_logger().info(
             "SimSensorBridge: depth self-filter "
-            f"base_body={self._depth_base_body!r} robot_bodies={len(self._depth_self_bodies)}"
+            f"base_body={self._depth_base_body!r} "
+            f"base_frame_body={self._base_frame_body!r} "
+            f"robot_bodies={len(self._depth_self_bodies)}"
         )
 
     def _render_size(self) -> tuple[int, int] | None:
@@ -1445,12 +1471,12 @@ class SimSensorBridge:
                         stamp=stamp,
                     )
                 )
-                if self._depth_base_body is not None and self._tf_broadcaster is not None:
+                if self._base_frame_body is not None and self._tf_broadcaster is not None:
                     xyz, quat = camera_optical_tf_to_base(
                         model=model,
                         data=data,
                         camera_name=kwargs["camera_name"],
-                        base_body_name=self._depth_base_body,
+                        base_body_name=self._base_frame_body,
                     )
                     tf = TransformStamped()
                     tf.header.stamp = stamp
