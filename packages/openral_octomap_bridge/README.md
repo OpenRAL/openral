@@ -19,8 +19,9 @@ octomap_msgs/Octomap (map frame)          openral_msgs/WorldStateStamped
    │  tf2: octomap_frame ← base_frame        │  tf2: base_frame ← attach_link
    │  crop + rasterize the local box         │
    ▼                                         ▼
-   └───────────▶ clear_attached_payload_cells (the payload leaves the map)
-   ▼
+   │                                         │  .support_contact (ADR-0092 D6)
+   └───────────▶ clear_attached_payload_cells (the payload leaves the map,
+   ▼                                          the attested support patch stays)
 openral_msgs/OccupancyVoxels (base frame, /openral/world_voxels)
    ▼
 C++ safety kernel  ──  check_voxel_collision (allocation-free)
@@ -72,6 +73,70 @@ the same one `support_contact_exempts` uses — so every cell the payload's volu
 actually intersects goes, and the over-reach is at most one cell layer.
 `attached_clear_padding_m` adds to it and is **0 by default**: padding removes
 cells the payload cannot explain, which is protection given up.
+
+### …except the attested support patch, which is the counter
+
+A payload **resting** on a counter shares its bottom cell layer with the
+counter's own top surface. A clearing that knows only the payload's volume takes
+the counter with it, and that is destructive twice over:
+
+* The kernel's support-contact witness (ADR-0092 D6) is kept alive by
+  *occupancy*: `update_support_contact_witnesses` retains a witness only while
+  some **occupied** cell it would exempt is still touching the payload. Clear
+  those cells and the witness declares separation from a payload that has not
+  moved — observed 2/2 on 2026-08-14 (baguette+counter, cup+island):
+  `support_witness_separated live=0x0 was=0x1` 2.7 s after arming, ground truth
+  +0.000 mm still touching, nearest surviving cell 21.77 mm out. The moment a
+  support cell falls back outside the clearing reach and returns to the map, the
+  unchanged physical contact E-stops with no exemption active
+  (`sweep_min == min_distance`).
+* Nav2, SLAM, and the dashboard read the same grid, and the counter is real
+  furniture they are supposed to see.
+
+So the two mechanisms **partition** the cells between them. Within the payload's
+reach a cell is either cleared here or exempted by the kernel — never neither,
+never both:
+
+| Cell | Owner | Outcome |
+|---|---|---|
+| Inside the attested patch laterally, no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth` | the **kernel's witness** | withheld from the clearing, exempted by the kernel, and still there for the latch to measure |
+| Anywhere else within a circumradius of a payload primitive — the payload's own silhouette, the residue above the support plane, the +32 mm class the acceptance round tripped on | this **clearing** | zeroed |
+
+`place_attached_object` lifts the wire `SupportContactWitness` (stated in the
+attached object's own frame) through the payload's live pose into a grid-frame
+`SupportPatch`, and `support_patch_withholds` is the kernel's own
+`support_contact_exempts` geometry with **zero slack**. That asymmetry is
+deliberate: the kernel adds `attached_contact_tolerance` (1 mm of physical
+FK/pose slack) to the same bound, so what this bridge withholds is a strict
+subset of what the kernel exempts, and no withheld cell can ever be the one that
+stops the robot. The two predicates are a deliberate cross-package mirror —
+consolidating them would make this Layer-2 node link the Layer-6 kernel's
+collision core — and must be changed in lockstep
+(`docs/methods/14-duplication-watch.md`, item 8).
+
+**Withholding only ever puts occupancy back.** It can only *skip* a clear, so
+the cells removed with the partition are a strict subset of the cells removed
+without it (`PayloadClearing.WithholdingOnlyEverPutsOccupancyBack`). Relative to
+the un-partitioned clearing this change moves cases from no-stop to stop, never
+the reverse.
+
+**No latch here.** The bridge is stateless per frame, as the rest of the
+clearing is: withholding is derived from the attestation on the wire every time
+the grid is published. Hysteresis lives in the kernel, where it belongs — a
+witness that died stays dead until World State attests a new contact, so a
+payload lifted and set back down finds its support cells in the map and
+unexempted, which is the new violation it should be. On a genuine lift the patch
+rides up with the payload (its geometry is in the object frame) and the counter
+cells are out of the payload's reach anyway, so they are neither cleared nor
+withheld: the kernel sees the separation by geometry, not by anything this
+bridge does.
+
+**No attestation, no withholding.** `support_contact_valid == false` — the
+honest default for any producer that cannot measure support contact, including
+the vision attachment producer — appends no patch, and the payload's cells clear
+exactly as they did before the witness existed. A *malformed* attestation is not
+downgraded to that: it fails the whole object closed and clears nothing at all,
+the same rule `ingest_attached_objects` applies in the kernel.
 
 **Why this is conservative.** The payload does not stop being checked — it
 remains collision-active attached geometry, and `check_attached_voxel_collision`
@@ -236,6 +301,23 @@ rather than snapshotting the attach instant; detach restores the object to the
 grid in the same frame; and a payload the bridge cannot place — unknown shape,
 short dimension list, no primitives, degenerate quaternion — clears nothing at
 all.
+
+Its second half pins the **partition** on a payload resting on a counter, on the
+lattice phase of the 2026-08-13 baguette run (the support cell's centre 3.2 mm
+above the attested face, so a ~1 mm contact reads as 15.7 mm of cube
+penetration): the 12 payload-silhouette cells clear and the 16 counter cells
+under the footprint survive; the same payload with no attestation clears all 28,
+which is the mechanism of the 2026-08-14 defect; the partitioned cleared-set is
+a strict subset of the un-partitioned one; the depth bound holds to the
+millimetre either side of `resolution/2 + attested depth` and the lateral bound
+either side of `patch_radius + circumradius`; a lift clears and withholds
+nothing at all; a payload rolled 90° carries its attested plane with it (the
+normal is rotated, the point translated); and a malformed attestation clears
+nothing at all. The kernel's half of the same partition is
+`SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence` and
+`…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
+(`cpp/openral_safety_kernel/test/test_collision.cpp`) — change either predicate
+and one of the two suites goes red.
 
 **Sim status.** The sim target is `scenes/sim/robocasa_panda_mobile_kitchen.yaml`
 — a mobile manipulator in a cluttered RoboCasa kitchen, the only scene with real

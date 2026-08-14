@@ -20,6 +20,7 @@
 // pin, on a real `octomap::OcTree` seeded through real rays with the deploy-sim
 // parameters.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -187,9 +188,122 @@ WireObject box_payload() {
   return obj;
 }
 
-std::vector<bridge::PayloadPrimitive> placed(const WireObject& obj) {
-  std::vector<bridge::PayloadPrimitive> out;
-  EXPECT_TRUE(bridge::place_attached_object(obj, base_from_attach_link(), out));
+// The bridge's placement step exactly as the node runs it: one wire object in,
+// its payload primitives AND its support-contact attestation out, both in the
+// grid frame. Keeping them together in the tests is the point — clearing with
+// the primitives but without the patches is the defect this file pins.
+struct Placed {
+  std::vector<bridge::PayloadPrimitive> primitives;
+  std::vector<bridge::SupportPatch> patches;
+};
+
+Placed placed(const WireObject& obj) {
+  Placed p;
+  EXPECT_TRUE(bridge::place_attached_object(obj, base_from_attach_link(), p.primitives, p.patches));
+  return p;
+}
+
+std::size_t clear_with(openral_msgs::msg::OccupancyVoxels& grid, const Placed& p,
+                       double padding_m = 0.0) {
+  return bridge::clear_attached_payload_cells(grid, p.primitives, p.patches, padding_m);
+}
+
+// ── the support-contact partition fixture (ADR-0092 D6) ──────────────────────
+//
+// A payload RESTING on a counter, which is the situation the two mechanisms
+// collide in. The counter's top face is at z = 0.3593 in the base frame and
+// the lattice phases the surface cell's centre 3.2 mm ABOVE it — the exact
+// phase of the 2026-08-13 baguette run, where a ~1 mm physical contact read as
+// 15.7 mm of cube penetration. The payload's bottom face sits on that face, so
+// its bottom cell layer IS the counter's top cell layer: a clearing that knows
+// only the payload's volume takes the counter with it.
+
+constexpr double kSupportFaceZ = 0.3593;
+const tf2::Vector3 kRestingHalfExtents(0.04, 0.04, 0.05);
+const tf2::Vector3 kRestingCenter(0.40, 0.0, kSupportFaceZ + kRestingHalfExtents.z());
+// What World State attests: a 60 mm patch about the contact point and the
+// deepest of the six real MuJoCo counter-payload contacts of that run.
+constexpr double kAttestedPatchRadius = 0.06;
+constexpr double kAttestedPenetration = 0.00137;
+// The bound the attestation buys at 25 mm cells: the cube's half-width
+// projected on the +z normal (12.5 mm) plus that physical depth.
+const double kWithholdCeiling = 0.5 * kResolution + kAttestedPenetration;
+
+// The four cell-centre coordinates the payload's 80 mm footprint spans on each
+// lateral axis (the next centre out is 22.5 mm clear of the box face, past the
+// circumradius, so it is never in reach).
+const std::vector<double> kFootprintX{0.3625, 0.3875, 0.4125, 0.4375};
+const std::vector<double> kFootprintY{-0.0375, -0.0125, 0.0125, 0.0375};
+// The counter's top cell layer (centre 3.2 mm above the attested face) and the
+// three payload-silhouette layers above it (+28.2, +53.2, +78.2 mm).
+constexpr double kSupportLayerZ = 0.3625;
+const std::vector<double> kResidueLayerZ{0.3875, 0.4125, 0.4375};
+
+WireObject resting_payload() {
+  WireObject obj = box_payload();
+  obj.pose_in_link.position.x = kRestingCenter.x() - kAttachLinkOrigin.x();
+  obj.pose_in_link.position.y = kRestingCenter.y() - kAttachLinkOrigin.y();
+  obj.pose_in_link.position.z = kRestingCenter.z() - kAttachLinkOrigin.z();
+  obj.primitives[0].shape_dimensions = {kRestingHalfExtents.x(), kRestingHalfExtents.y(),
+                                        kRestingHalfExtents.z()};
+  // The witness, in the ATTACHED OBJECT's own frame: the contact point is the
+  // payload's own bottom face, the normal points from the counter up into the
+  // payload.
+  obj.support_contact_valid = true;
+  obj.support_contact.support_id = "sim:counter_main";
+  obj.support_contact.contact_point_in_object.z = -kRestingHalfExtents.z();
+  obj.support_contact.contact_normal_in_object.z = 1.0;
+  obj.support_contact.patch_radius_m = kAttestedPatchRadius;
+  obj.support_contact.max_penetration_m = kAttestedPenetration;
+  obj.support_contact.evidence_kind = "sim_geom_distance";
+  return obj;
+}
+
+// The pre-grasp returns off the resting payload's near face: three rows in the
+// x = 0.3625 column, each ray reaching its own cell without crossing another
+// marked one.
+std::vector<octomap::point3d> resting_object_returns() {
+  std::vector<octomap::point3d> pts;
+  for (const double y : kFootprintY) {
+    for (const double z : kResidueLayerZ) {
+      pts.emplace_back(0.371F, static_cast<float>(y), static_cast<float>(z));
+    }
+  }
+  return pts;
+}
+
+// The counter's top surface under the payload. It is marked directly rather
+// than through rays, because while the payload rests on it NO ray can reach it
+// — that is the whole reason it is still in the map, and the reason clearing it
+// away is a loss the map has no way to recover.
+void mark_support_surface(openral_msgs::msg::OccupancyVoxels& grid) {
+  for (const double x : kFootprintX) {
+    for (const double y : kFootprintY) {
+      grid.occupancy[cell_index(grid, x, y, kSupportLayerZ)] = 1;
+    }
+  }
+}
+
+// The map as the bridge receives it: the payload's own silhouette (12 cells),
+// the counter surface beneath it (16), and one real obstacle beside it.
+openral_msgs::msg::OccupancyVoxels resting_grid() {
+  octomap::OcTree tree = deploy_sim_tree();
+  insert_confirmed(tree, resting_object_returns());
+  insert_confirmed(tree, {kObstacleReturn});
+  auto grid = lowered(tree);
+  mark_support_surface(grid);
+  return grid;
+}
+
+// The linear indices whose occupancy went from set to zero.
+std::vector<std::size_t> cleared_indices(const openral_msgs::msg::OccupancyVoxels& before,
+                                         const openral_msgs::msg::OccupancyVoxels& after) {
+  std::vector<std::size_t> out;
+  for (std::size_t i = 0; i < before.occupancy.size(); ++i) {
+    if (before.occupancy[i] != 0 && after.occupancy[i] == 0) {
+      out.push_back(i);
+    }
+  }
   return out;
 }
 
@@ -219,8 +333,7 @@ TEST(PayloadClearing, AttachClearsThePayloadsOwnCellsAndNothingElse) {
   auto grid = lowered(tree);
   ASSERT_EQ(occupied_cells(grid), 21U);
 
-  const std::size_t cleared =
-      bridge::clear_attached_payload_cells(grid, placed(box_payload()), 0.0);
+  const std::size_t cleared = clear_with(grid, placed(box_payload()));
 
   EXPECT_EQ(cleared, 20U);
   EXPECT_EQ(occupied_cells(grid), 1U) << "the obstacle beside the payload must survive";
@@ -245,7 +358,7 @@ TEST(PayloadClearing, TheStopCellJustOffThePayloadSurfaceIsCleared) {
       tf2::Transform(tf2::Quaternion::getIdentity(), center - tf2::Vector3(0.0, 0.0, kResolution));
   sphere.radius = kResolution - 0.0018;
 
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, {sphere}, 0.0), 1U);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, {sphere}, {}, 0.0), 1U);
   EXPECT_EQ(grid.occupancy[idx], 0);
 }
 
@@ -264,7 +377,7 @@ TEST(PayloadClearing, ClearingStopsAtTheCellCircumradius) {
       tf2::Transform(tf2::Quaternion::getIdentity(), center - tf2::Vector3(0.0, 0.0, kResolution));
   sphere.radius = kResolution - kCircumradius - 0.001;
 
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, {sphere}, 0.0), 0U);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, {sphere}, {}, 0.0), 0U);
   EXPECT_NE(grid.occupancy[idx], 0);
 }
 
@@ -274,7 +387,7 @@ TEST(PayloadClearing, ClearingNeverMarks) {
   auto grid = lowered(deploy_sim_tree());
   ASSERT_EQ(occupied_cells(grid), 0U);
 
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, placed(box_payload()), 0.0), 0U);
+  EXPECT_EQ(clear_with(grid, placed(box_payload())), 0U);
   EXPECT_EQ(occupied_cells(grid), 0U);
 }
 
@@ -291,7 +404,7 @@ TEST(PayloadClearing, ClearingFollowsThePayloadPoseEveryFrame) {
   insert_confirmed(tree, {kObstacleReturn});
 
   auto at_old_pose = lowered(tree);
-  EXPECT_EQ(bridge::clear_attached_payload_cells(at_old_pose, placed(box_payload()), 0.0), 20U);
+  EXPECT_EQ(clear_with(at_old_pose, placed(box_payload())), 20U);
   EXPECT_NE(at_old_pose.occupancy[cell_index(at_old_pose, kObstacleCell.x(), kObstacleCell.y(),
                                              kObstacleCell.z())],
             0);
@@ -302,7 +415,7 @@ TEST(PayloadClearing, ClearingFollowsThePayloadPoseEveryFrame) {
   moved.pose_in_link.position.y = kObstacleCell.y() - kAttachLinkOrigin.y();
   moved.pose_in_link.position.z = kObstacleCell.z() - kAttachLinkOrigin.z();
   auto at_new_pose = lowered(tree);
-  const std::size_t cleared = bridge::clear_attached_payload_cells(at_new_pose, placed(moved), 0.0);
+  const std::size_t cleared = clear_with(at_new_pose, placed(moved));
 
   EXPECT_EQ(cleared, 1U);
   EXPECT_EQ(at_new_pose.occupancy[cell_index(at_new_pose, kObstacleCell.x(), kObstacleCell.y(),
@@ -324,7 +437,7 @@ TEST(PayloadClearing, DetachReturnsThePayloadToWorldOccupancyImmediately) {
   ASSERT_EQ(occupied_cells(grid), 20U);
 
   const std::vector<bridge::PayloadPrimitive> nothing_attached;
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, nothing_attached, 0.0), 0U);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, nothing_attached, {}, 0.0), 0U);
   EXPECT_EQ(occupied_cells(grid), 20U);
 }
 
@@ -347,9 +460,9 @@ TEST(PayloadClearing, PlacementComposesTheAttachLinkObjectAndPrimitivePoses) {
   lid.pose_in_object.orientation.w = 1.0;
   obj.primitives.push_back(lid);
 
-  const auto prims = placed(obj);
-  ASSERT_EQ(prims.size(), 2U);
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, prims, 0.0), 1U);
+  const Placed p = placed(obj);
+  ASSERT_EQ(p.primitives.size(), 2U);
+  EXPECT_EQ(clear_with(grid, p), 1U);
   EXPECT_EQ(grid.occupancy[idx], 0);
 }
 
@@ -374,7 +487,7 @@ TEST(PayloadClearing, ARotatedPayloadIsPlacedByItsOrientation) {
   rod.pose_in_object.orientation.w = q.w();
   obj.primitives = {rod};
 
-  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, placed(obj), 0.0), 1U);
+  EXPECT_EQ(clear_with(grid, placed(obj)), 1U);
   EXPECT_EQ(grid.occupancy[along_x], 0) << "capsule runs along base +x";
   EXPECT_NE(grid.occupancy[along_z], 0) << "…and not along base +z";
 }
@@ -384,36 +497,42 @@ TEST(PayloadClearing, AnUnreadablePayloadClearsNothingAtAll) {
   // cannot place stays in the map. Every rejection is the kernel's own ingest
   // rule (unknown tag, too few dimensions), plus a degenerate pose quaternion.
   std::vector<bridge::PayloadPrimitive> out;
+  std::vector<bridge::SupportPatch> out_patches;
 
   WireObject unknown_shape = box_payload();
   unknown_shape.primitives[0].shape_type = 9;
-  EXPECT_FALSE(bridge::place_attached_object(unknown_shape, base_from_attach_link(), out));
+  EXPECT_FALSE(
+      bridge::place_attached_object(unknown_shape, base_from_attach_link(), out, out_patches));
   EXPECT_TRUE(out.empty());
 
   WireObject short_box = box_payload();
   short_box.primitives[0].shape_dimensions = {0.04, 0.04};
-  EXPECT_FALSE(bridge::place_attached_object(short_box, base_from_attach_link(), out));
+  EXPECT_FALSE(bridge::place_attached_object(short_box, base_from_attach_link(), out, out_patches));
   EXPECT_TRUE(out.empty());
 
   WireObject no_primitives = box_payload();
   no_primitives.primitives.clear();
-  EXPECT_FALSE(bridge::place_attached_object(no_primitives, base_from_attach_link(), out));
+  EXPECT_FALSE(
+      bridge::place_attached_object(no_primitives, base_from_attach_link(), out, out_patches));
   EXPECT_TRUE(out.empty());
 
   WireObject zero_quat = box_payload();
   zero_quat.pose_in_link.orientation.w = 0.0;
-  EXPECT_FALSE(bridge::place_attached_object(zero_quat, base_from_attach_link(), out));
+  EXPECT_FALSE(bridge::place_attached_object(zero_quat, base_from_attach_link(), out, out_patches));
   EXPECT_TRUE(out.empty());
 
   WireObject negative_radius = box_payload();
   negative_radius.primitives[0].shape_type = Primitive::SHAPE_SPHERE;
   negative_radius.primitives[0].shape_dimensions = {-0.02};
-  EXPECT_FALSE(bridge::place_attached_object(negative_radius, base_from_attach_link(), out));
+  EXPECT_FALSE(
+      bridge::place_attached_object(negative_radius, base_from_attach_link(), out, out_patches));
   EXPECT_TRUE(out.empty());
 
   // A second, valid object in the same message is still placed on its own.
-  EXPECT_TRUE(bridge::place_attached_object(box_payload(), base_from_attach_link(), out));
+  EXPECT_TRUE(
+      bridge::place_attached_object(box_payload(), base_from_attach_link(), out, out_patches));
   EXPECT_EQ(out.size(), 1U);
+  EXPECT_TRUE(out_patches.empty()) << "box_payload() attests no support contact";
 }
 
 TEST(PayloadClearing, AMalformedGridIsLeftAlone) {
@@ -423,10 +542,237 @@ TEST(PayloadClearing, AMalformedGridIsLeftAlone) {
   truncated.occupancy.pop_back();
   const auto before = truncated.occupancy;
 
-  EXPECT_EQ(bridge::clear_attached_payload_cells(truncated, placed(box_payload()), 0.0), 0U);
+  EXPECT_EQ(clear_with(truncated, placed(box_payload())), 0U);
   EXPECT_EQ(truncated.occupancy, before);
 
   auto no_resolution = grid;
   no_resolution.resolution = 0.0;
-  EXPECT_EQ(bridge::clear_attached_payload_cells(no_resolution, placed(box_payload()), 0.0), 0U);
+  EXPECT_EQ(clear_with(no_resolution, placed(box_payload())), 0U);
+}
+
+// ── the partition against the support-contact witness (ADR-0092 D6) ──────────
+//
+// The clearing above and the kernel's support-contact witness are each correct
+// on their own and destroy each other when combined. The witness stays alive
+// only while some OCCUPIED cell it would exempt is still touching the payload
+// (`update_support_contact_witnesses`), and the cells that satisfy that are the
+// counter's own top layer — which is inside the resting payload's volume and so
+// was being cleared away. Observed 2/2 on 2026-08-14 (baguette+counter,
+// cup+island): witness arms, the clearing removes the support cells,
+// `support_witness_separated live=0x0 was=0x1` fires 2.7 s later with ground
+// truth still touching at +0.000 mm, and the same contact then re-trips
+// unexempted (`sweep_min == min_distance`: nothing was exempted at all).
+//
+// The fix is a partition. Within the payload's reach every cell is either
+// cleared here or exempted by the kernel, never neither and never both: the
+// cells inside the attested support patch are the counter, and they stay.
+
+TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
+  // The defect, and the fix, in one assertion set. The payload's own silhouette
+  // goes; the counter it is resting on stays — with its cells still occupied,
+  // still describing the counter, and still available to the kernel's witness
+  // as the evidence that the payload has not left its support.
+  auto grid = resting_grid();
+  ASSERT_EQ(occupied_cells(grid), 29U) << "12 payload cells + 16 counter cells + 1 obstacle";
+
+  const std::size_t cleared = clear_with(grid, placed(resting_payload()));
+
+  EXPECT_EQ(cleared, 12U) << "the payload's own silhouette, and only that";
+  for (const double x : kFootprintX) {
+    for (const double y : kFootprintY) {
+      EXPECT_NE(grid.occupancy[cell_index(grid, x, y, kSupportLayerZ)], 0)
+          << "counter cell (" << x << ", " << y << ") must survive the clearing";
+    }
+  }
+  for (const double y : kFootprintY) {
+    for (const double z : kResidueLayerZ) {
+      EXPECT_EQ(grid.occupancy[cell_index(grid, 0.3625, y, z)], 0)
+          << "payload silhouette cell (" << y << ", " << z << ") must go";
+    }
+  }
+  EXPECT_NE(
+      grid.occupancy[cell_index(grid, kObstacleCell.x(), kObstacleCell.y(), kObstacleCell.z())], 0)
+      << "the real obstacle beside the payload still stops the kernel";
+  EXPECT_EQ(occupied_cells(grid), 17U);
+}
+
+TEST(PayloadClearing, WithoutTheAttestationTheSupportSurfaceIsClearedAway) {
+  // The counterfactual, kept as a fact: the same payload with no support
+  // attestation on the wire — the honest default of a producer that cannot
+  // measure support contact — clears the counter out from under itself. That is
+  // the pre-partition behaviour and the mechanism of the 2026-08-14 defect. It
+  // is also the correct behaviour for a payload nobody has attested support
+  // for: the kernel exempts nothing there, so leaving those cells would stop
+  // the robot against them.
+  auto grid = resting_grid();
+  WireObject unattested = resting_payload();
+  unattested.support_contact_valid = false;
+
+  const Placed p = placed(unattested);
+  EXPECT_TRUE(p.patches.empty());
+  EXPECT_EQ(clear_with(grid, p), 28U) << "12 payload cells AND the 16 counter cells beneath";
+  for (const double x : kFootprintX) {
+    for (const double y : kFootprintY) {
+      EXPECT_EQ(grid.occupancy[cell_index(grid, x, y, kSupportLayerZ)], 0);
+    }
+  }
+}
+
+TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
+  // The conservatism argument, mechanised. Withholding can only ever SKIP a
+  // clear, so the cells the partitioned clearing removes are a strict subset of
+  // the cells the un-partitioned one removed: this change hands occupancy back
+  // to the map and never takes any away, from the kernel or from Nav2.
+  const auto before = resting_grid();
+
+  auto partitioned = before;
+  clear_with(partitioned, placed(resting_payload()));
+  WireObject unattested = resting_payload();
+  unattested.support_contact_valid = false;
+  auto unpartitioned = before;
+  clear_with(unpartitioned, placed(unattested));
+
+  const auto with_patch = cleared_indices(before, partitioned);
+  const auto without_patch = cleared_indices(before, unpartitioned);
+  EXPECT_LT(with_patch.size(), without_patch.size());
+  for (const std::size_t idx : with_patch) {
+    EXPECT_NE(std::find(without_patch.begin(), without_patch.end(), idx), without_patch.end())
+        << "cell " << idx << " is cleared with the patch but not without it";
+  }
+}
+
+TEST(PayloadClearing, WithholdingStopsAtTheProjectedCubeHalfWidth) {
+  // The depth bound, to the millimetre, and it is the kernel's: the cube's
+  // half-width projected on the support normal plus the ATTESTED PHYSICAL
+  // depth. A cell centre a millimetre below that ceiling is the support face
+  // seen through the lattice and is withheld; one a millimetre above it is
+  // solid genuinely higher than the attested face — the +32 mm class the
+  // acceptance round tripped on — and clears.
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  const auto& patch = p.patches[0];
+  EXPECT_NEAR(patch.point.z(), kSupportFaceZ, 1e-12);
+  EXPECT_NEAR(patch.normal.z(), 1.0, 1e-12);
+
+  const tf2::Vector3 below(0.40, 0.0, kSupportFaceZ + kWithholdCeiling - 0.001);
+  const tf2::Vector3 above(0.40, 0.0, kSupportFaceZ + kWithholdCeiling + 0.001);
+  EXPECT_TRUE(bridge::support_patch_withholds(patch, below, kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(patch, above, kResolution));
+  // And a cell deep inside the counter body is withheld without a lower bound:
+  // that is furniture the map is supposed to carry.
+  EXPECT_TRUE(bridge::support_patch_withholds(patch, tf2::Vector3(0.40, 0.0, kSupportFaceZ - 0.20),
+                                              kResolution));
+}
+
+TEST(PayloadClearing, WithholdingIsBoundedLaterallyByTheAttestedPatch) {
+  // A witness licenses one contact, not a region. Past the attested patch
+  // radius (padded by the cell circumradius, the map's own slop) the surface is
+  // one nobody attested, and it clears exactly as any other payload cell does.
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  const double edge = kAttestedPatchRadius + kCircumradius;
+
+  EXPECT_TRUE(bridge::support_patch_withholds(
+      p.patches[0], tf2::Vector3(0.40 + edge - 0.001, 0.0, kSupportFaceZ), kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(
+      p.patches[0], tf2::Vector3(0.40 + edge + 0.001, 0.0, kSupportFaceZ), kResolution));
+}
+
+TEST(PayloadClearing, TheLiftLeavesTheCounterAloneAndWithholdsNothing) {
+  // Genuine separation. The attestation is in the object frame, so the patch
+  // rides up with the payload — and the counter cells it used to protect are
+  // now out of the payload's reach anyway. Nothing is cleared, nothing is
+  // withheld, and the counter stands in the map exactly as it did: the kernel
+  // then finds no exempt cell still touching the payload and lets the witness
+  // die, which is the separation it is supposed to detect.
+  auto grid = resting_grid();
+  WireObject lifted = resting_payload();
+  lifted.pose_in_link.position.z += 0.10;
+
+  const Placed p = placed(lifted);
+  EXPECT_EQ(clear_with(grid, p), 0U);
+  EXPECT_EQ(occupied_cells(grid), 29U);
+
+  // …and the patch had nothing to do with that: without it the result is the
+  // same, so the lift is detected by geometry, not by the withholding.
+  WireObject lifted_unattested = lifted;
+  lifted_unattested.support_contact_valid = false;
+  auto twin = resting_grid();
+  EXPECT_EQ(clear_with(twin, placed(lifted_unattested)), 0U);
+  EXPECT_EQ(twin.occupancy, grid.occupancy);
+}
+
+TEST(PayloadClearing, TheAttestedPlaneIsCarriedInTheObjectFrame) {
+  // The witness geometry is stated in the attached object's own frame and must
+  // be TRANSFORMED, not assumed to point at base +z. Rolled 90° about base x,
+  // the payload hangs off a vertical wall: the attested normal becomes base −y,
+  // the support half-space becomes y >= the contact plane, and the withheld
+  // cells move with it.
+  WireObject rolled = resting_payload();
+  rolled.pose_in_link.position.x = 0.40 - kAttachLinkOrigin.x();
+  rolled.pose_in_link.position.y = 0.0;
+  rolled.pose_in_link.position.z = 0.40 - kAttachLinkOrigin.z();
+  tf2::Quaternion q;
+  q.setRPY(1.5707963267948966, 0.0, 0.0);
+  rolled.pose_in_link.orientation.x = q.x();
+  rolled.pose_in_link.orientation.y = q.y();
+  rolled.pose_in_link.orientation.z = q.z();
+  rolled.pose_in_link.orientation.w = q.w();
+
+  const Placed p = placed(rolled);
+  ASSERT_EQ(p.patches.size(), 1U);
+  // Object +z -> base −y, so the contact point moves to +y of the object origin
+  // and the normal points down −y.
+  EXPECT_NEAR(p.patches[0].point.y(), kRestingHalfExtents.z(), 1e-12);
+  EXPECT_NEAR(p.patches[0].point.z(), 0.40, 1e-12);
+  EXPECT_NEAR(p.patches[0].normal.y(), -1.0, 1e-12);
+
+  auto grid = lowered(deploy_sim_tree());
+  const std::size_t wall_side = cell_index(grid, 0.4125, 0.0375, 0.4125);
+  const std::size_t payload_side = cell_index(grid, 0.4125, 0.0125, 0.4125);
+  grid.occupancy[wall_side] = 1;
+  grid.occupancy[payload_side] = 1;
+
+  EXPECT_EQ(clear_with(grid, p), 1U);
+  EXPECT_NE(grid.occupancy[wall_side], 0) << "inside the attested support half-space";
+  EXPECT_EQ(grid.occupancy[payload_side], 0) << "37.5 mm clear of it: the payload's own cell";
+}
+
+TEST(PayloadClearing, AMalformedAttestationClearsNothingAtAll) {
+  // Fail-closed, and closed on the WHOLE object — the kernel's own
+  // `ingest_attached_objects` rule. Downgrading a malformed witness to "no
+  // witness" would be the worst of both: the bridge would clear the support
+  // surface away while the kernel refused the attachment set outright.
+  std::vector<bridge::PayloadPrimitive> out;
+  std::vector<bridge::SupportPatch> patches;
+
+  WireObject degenerate_normal = resting_payload();
+  degenerate_normal.support_contact.contact_normal_in_object.z = 0.0;
+  EXPECT_FALSE(
+      bridge::place_attached_object(degenerate_normal, base_from_attach_link(), out, patches));
+  EXPECT_TRUE(out.empty());
+  EXPECT_TRUE(patches.empty());
+
+  WireObject no_patch = resting_payload();
+  no_patch.support_contact.patch_radius_m = 0.0;
+  EXPECT_FALSE(bridge::place_attached_object(no_patch, base_from_attach_link(), out, patches));
+  EXPECT_TRUE(out.empty());
+
+  WireObject negative_depth = resting_payload();
+  negative_depth.support_contact.max_penetration_m = -0.001;
+  EXPECT_FALSE(
+      bridge::place_attached_object(negative_depth, base_from_attach_link(), out, patches));
+  EXPECT_TRUE(out.empty());
+
+  WireObject nan_point = resting_payload();
+  nan_point.support_contact.contact_point_in_object.x = std::nan("");
+  EXPECT_FALSE(bridge::place_attached_object(nan_point, base_from_attach_link(), out, patches));
+  EXPECT_TRUE(out.empty());
+
+  // An un-normalised normal is fine — it is a direction, and it gets normalised.
+  WireObject long_normal = resting_payload();
+  long_normal.support_contact.contact_normal_in_object.z = 4.0;
+  EXPECT_TRUE(bridge::place_attached_object(long_normal, base_from_attach_link(), out, patches));
+  ASSERT_EQ(patches.size(), 1U);
+  EXPECT_NEAR(patches[0].normal.z(), 1.0, 1e-12);
 }

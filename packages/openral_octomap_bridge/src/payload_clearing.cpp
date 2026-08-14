@@ -73,8 +73,8 @@ double bounding_radius(const PayloadPrimitive& prim) {
 }  // namespace
 
 bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& object,
-                           const tf2::Transform& grid_from_link,
-                           std::vector<PayloadPrimitive>& out) {
+                           const tf2::Transform& grid_from_link, std::vector<PayloadPrimitive>& out,
+                           std::vector<SupportPatch>& out_patches) {
   if (object.primitives.empty()) {
     return false;
   }
@@ -83,6 +83,35 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
     return false;
   }
   const tf2::Transform grid_from_object = grid_from_link * link_from_object;
+
+  // The support-contact attestation, validated by the kernel's own ingest
+  // rules (`ingest_attached_objects`): a producer that cannot describe its own
+  // support contact is one whose payload volume this bridge does not trust
+  // either, so a malformed witness rejects the whole object rather than
+  // degrading to "no witness" — which would silently clear the support surface.
+  bool has_patch = false;
+  SupportPatch patch;
+  if (object.support_contact_valid) {
+    const auto& wire = object.support_contact;
+    const tf2::Vector3 normal_in(wire.contact_normal_in_object.x, wire.contact_normal_in_object.y,
+                                 wire.contact_normal_in_object.z);
+    const double norm2 = normal_in.length2();
+    if (!std::isfinite(norm2) || norm2 <= 1e-12 || !std::isfinite(wire.contact_point_in_object.x) ||
+        !std::isfinite(wire.contact_point_in_object.y) ||
+        !std::isfinite(wire.contact_point_in_object.z) || !std::isfinite(wire.patch_radius_m) ||
+        wire.patch_radius_m <= 0.0 || !std::isfinite(wire.max_penetration_m) ||
+        wire.max_penetration_m < 0.0) {
+      return false;
+    }
+    const tf2::Vector3 point_in(wire.contact_point_in_object.x, wire.contact_point_in_object.y,
+                                wire.contact_point_in_object.z);
+    patch.point = grid_from_object * point_in;
+    // The normal is a direction: rotate it, never translate it.
+    patch.normal = (grid_from_object.getBasis() * normal_in).normalized();
+    patch.patch_radius = wire.patch_radius_m;
+    patch.max_penetration = wire.max_penetration_m;
+    has_patch = true;
+  }
 
   // Staged locally so a rejection late in the list appends nothing at all.
   std::vector<PayloadPrimitive> staged;
@@ -126,11 +155,40 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
     staged.push_back(prim);
   }
   out.insert(out.end(), staged.begin(), staged.end());
+  if (has_patch) {
+    out_patches.push_back(patch);
+  }
   return true;
+}
+
+bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& center,
+                             double resolution) noexcept {
+  if (!(patch.patch_radius > 0.0) || !(resolution > 0.0)) {
+    return false;
+  }
+  const tf2::Vector3 delta = center - patch.point;
+  const double height = delta.dot(patch.normal);
+  const double lateral_sq = std::max(0.0, delta.length2() - height * height);
+  const double half = 0.5 * resolution;
+  // Both pads are exact discretisation geometry, not tuned tolerances, and are
+  // the kernel's own: the cube's half-width projected on the normal, and the
+  // cube's circumradius laterally.
+  const double normal_half_width =
+      half *
+      (std::fabs(patch.normal.x()) + std::fabs(patch.normal.y()) + std::fabs(patch.normal.z()));
+  const double lateral_pad = half * 1.7320508075688772;  // sqrt(3)
+  const double reach = patch.patch_radius + lateral_pad;
+  if (lateral_sq > reach * reach) {
+    return false;
+  }
+  // No `slack` term (the kernel's `attached_contact_tolerance`): what this
+  // withholds must stay a subset of what the kernel exempts.
+  return height <= normal_half_width + patch.max_penetration;
 }
 
 std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& grid,
                                          const std::vector<PayloadPrimitive>& primitives,
+                                         const std::vector<SupportPatch>& patches,
                                          double padding_m) {
   if (primitives.empty() || !(grid.resolution > 0.0)) {
     return 0;
@@ -191,7 +249,23 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
           const tf2::Vector3 center(grid.origin.x + (static_cast<double>(ix) + 0.5) * res,
                                     grid.origin.y + (static_cast<double>(iy) + 0.5) * res,
                                     grid.origin.z + (static_cast<double>(iz) + 0.5) * res);
-          if (surface_distance(prim, primitive_from_grid * center) <= reach) {
+          if (surface_distance(prim, primitive_from_grid * center) > reach) {
+            continue;
+          }
+          // The partition: a cell an attested support patch claims is the
+          // supporting surface, not the payload. It stays in the map for the
+          // kernel's witness to keep measuring against — and for Nav2 and SLAM,
+          // whose obstacle it also is. Every object's attestation guards every
+          // object's clearing; a second payload's volume must not erase the
+          // first one's support either.
+          bool withheld = false;
+          for (const auto& patch : patches) {
+            if (support_patch_withholds(patch, center, res)) {
+              withheld = true;
+              break;
+            }
+          }
+          if (!withheld) {
             grid.occupancy[idx] = 0;
             ++cleared;
           }

@@ -15,7 +15,11 @@
 // on /openral/world_state_fast — the same message the kernel ingests its
 // attached geometry from — names the volumes whose cells stop being the world
 // and become the robot's own payload, and `clear_attached_payload_cells`
-// removes them from every published grid.
+// removes them from every published grid. The same message carries the
+// support-contact attestation, and the clearing is partitioned against it: the
+// cells inside the attested support patch are the counter the payload rests on,
+// so they stay in the map for the kernel's witness (and for Nav2 / SLAM) while
+// everything else around the payload clears.
 
 #include <algorithm>
 #include <chrono>
@@ -181,6 +185,7 @@ private:
     }
 
     std::vector<PayloadPrimitive> primitives;
+    std::vector<SupportPatch> patches;
     for (const auto& object : state->attached_objects) {
       geometry_msgs::msg::TransformStamped tf_msg;
       try {
@@ -194,22 +199,26 @@ private:
       }
       tf2::Transform base_from_link;
       tf2::fromMsg(tf_msg.transform, base_from_link);
-      if (!place_attached_object(object, base_from_link, primitives)) {
+      if (!place_attached_object(object, base_from_link, primitives, patches)) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                             "payload %s carries geometry this bridge cannot place: clearing "
-                             "nothing",
+                             "payload %s carries geometry or a support attestation this bridge "
+                             "cannot place: clearing nothing",
                              object.object_id.c_str());
         return;
       }
     }
 
     const std::size_t cleared =
-        clear_attached_payload_cells(grid, primitives, attached_clear_padding_m_);
+        clear_attached_payload_cells(grid, primitives, patches, attached_clear_padding_m_);
     if (cleared > 0) {
+      // The attested-patch count is logged unconditionally beside the cleared
+      // count: the partition is the difference between the two numbers, and a
+      // support surface silently vanishing from the map is exactly what this
+      // line exists to make visible (CLAUDE.md §1.4).
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "attached payload: cleared %zu cell(s) of %zu object(s) from world "
-                           "occupancy",
-                           cleared, state->attached_objects.size());
+                           "occupancy, withholding %zu attested support patch(es)",
+                           cleared, state->attached_objects.size(), patches.size());
     }
   }
 
