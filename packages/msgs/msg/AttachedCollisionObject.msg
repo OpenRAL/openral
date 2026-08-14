@@ -31,3 +31,11 @@ float32 confidence
 string evidence_kind
 string evidence_ref
 int64 stamp_ns
+
+# Optional support-contact attestation (ADR-0092 D6). Attachment alone never
+# licenses payload-vs-world contact; this does, and only within the witness's
+# own bounds. False — the default for any producer that cannot measure support
+# contact, including the vision attachment producer — means the safety kernel
+# exempts nothing, which is the pre-witness behaviour.
+bool support_contact_valid
+SupportContactWitness support_contact
