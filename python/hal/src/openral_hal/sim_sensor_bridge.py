@@ -275,6 +275,118 @@ def _contact_records(
     return records
 
 
+def _pair_distance_lower_bound(model: Any, data: Any, side_geoms: Any, other_geoms: Any) -> Any:
+    """A **finite** lower bound on the true distance of every candidate pair.
+
+    The bounding-sphere bound ``|c_a - c_b| - r_a - r_b`` needs both radii, and
+    MuJoCo reports ``geom_rbound == 0`` for the geoms that have no bounding
+    sphere at all: planes and heightfields. Treating those as radius ``inf``
+    scores every pair involving one at ``-inf``, which sorts them ahead of
+    every finite pair and lets a handful of scene planes consume the whole
+    exact-distance budget (a RoboCasa kitchen ships four — the room floor and
+    its backing, each with a ``_vis`` twin).
+
+    A plane needs no sphere: its exact distance to another geom's bounding
+    sphere is ``|n · (c - p)| - r``, where ``n`` is the plane's local +z in
+    world. That is still a valid lower bound and it is finite, so a floor
+    ranks on merit against a cabinet. Heightfields keep ``-inf`` (no cheap
+    bound exists, and scenes carry at most a couple).
+
+    Returns:
+        ``(len(side_geoms), len(other_geoms))`` float64 lower bounds.
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    xpos = np.asarray(data.geom_xpos, dtype=np.float64)
+    xmat = np.asarray(data.geom_xmat, dtype=np.float64).reshape(-1, 3, 3)
+    gtype = np.asarray(model.geom_type, dtype=np.int64)
+    raw_rbound = np.asarray(model.geom_rbound, dtype=np.float64)
+    rbound = np.where(raw_rbound <= 0.0, np.inf, raw_rbound)
+    centre_gap = np.linalg.norm(
+        xpos[side_geoms][:, None, :] - xpos[other_geoms][None, :, :], axis=-1
+    )
+    gap = centre_gap - rbound[side_geoms][:, None] - rbound[other_geoms][None, :]
+
+    plane = int(mujoco.mjtGeom.mjGEOM_PLANE)
+
+    def plane_bound(plane_ids: Any, point_ids: Any) -> Any:
+        """``(len(plane_ids), len(point_ids))`` distances from planes to spheres."""
+        # Plane surface normal = the geom frame's +z (third column of xmat).
+        normals = xmat[plane_ids][:, :, 2]
+        offsets = np.einsum("pk,pk->p", normals, xpos[plane_ids])
+        signed = np.einsum("pk,ok->po", normals, xpos[point_ids]) - offsets[:, None]
+        return np.abs(signed) - rbound[point_ids][None, :]
+
+    side_planes = np.flatnonzero(gtype[side_geoms] == plane)
+    other_planes = np.flatnonzero(gtype[other_geoms] == plane)
+    if side_planes.size:
+        gap[side_planes, :] = plane_bound(side_geoms[side_planes], other_geoms)
+    if other_planes.size:
+        gap[:, other_planes] = plane_bound(other_geoms[other_planes], side_geoms).T
+    return gap
+
+
+def _round_robin_candidates(gap: Any, distmax_m: float, max_calls: int) -> tuple[Any, int]:
+    """Pick the exact-distance probe set, one side geom at a time.
+
+    ``gap`` is the ``(n_side, n_other)`` bounding-sphere lower bound on the
+    true geom distance. Ranking it *globally* and taking the first
+    ``max_calls`` entries starves whole links: an unbounded geom
+    (``geom_rbound == 0`` — every plane and heightfield in the scene) has no
+    sphere, so every pair involving one scores ``-inf`` and sorts ahead of
+    every finite pair. A RoboCasa kitchen has four such geoms (the room floor
+    and its backing, each with a ``_vis`` twin) and a robosuite mobile Panda
+    has ~70 geoms, so ~280 robot↔floor pairs monopolise a 256-call budget and
+    the arm's genuine near-misses are never probed at all. The snapshot then
+    reads "nothing was near link N" when the probe simply never looked —
+    which is how a real stop gets adjudicated *false*.
+
+    So spend the budget round-robin: every side geom contributes its own
+    closest candidate before any side geom contributes its second, with the
+    side geoms visited closest-first. Every robot geom is therefore probed at
+    least once whenever ``max_calls >= n_side``, and the cost stays bounded by
+    ``max_calls`` exactly as before.
+
+    Args:
+        gap: ``(n_side, n_other)`` float lower bounds (``-inf`` allowed).
+        distmax_m: probe window; pairs above it are not candidates.
+        max_calls: hard cap on exact ``mj_geomDistance`` calls.
+
+    Returns:
+        ``(pairs, n_candidates)`` — ``pairs`` is an ``(k, 2)`` int array of
+        ``(row, col)`` indices into ``gap`` with ``k <= max_calls``, ordered
+        by round-robin rank; ``n_candidates`` is how many pairs were within
+        ``distmax_m`` in total, so the caller can report truncation.
+    """
+    import numpy as np
+
+    valid = gap <= distmax_m
+    per_row_counts = valid.sum(axis=1)
+    n_candidates = int(per_row_counts.sum())
+    if n_candidates == 0:
+        return np.zeros((0, 2), dtype=np.int64), 0
+    # Each row's candidates, closest-first; invalid entries sort to the end.
+    row_order = np.argsort(np.where(valid, gap, np.inf), axis=1, kind="stable")
+    # Visit the side geoms closest-first so a tie on rank still reports the
+    # nearer link before the farther one.
+    best_per_row = np.where(per_row_counts > 0, gap.min(axis=1), np.inf)
+    rows = np.argsort(best_per_row, kind="stable")
+    rows = rows[per_row_counts[rows] > 0]
+    picked: list[tuple[int, int]] = []
+    budget = min(int(max_calls), n_candidates)
+    rank = 0
+    while len(picked) < budget:
+        for row in rows:
+            if rank >= int(per_row_counts[row]):
+                continue
+            picked.append((int(row), int(row_order[row, rank])))
+            if len(picked) >= budget:
+                break
+        rank += 1
+    return np.asarray(picked, dtype=np.int64).reshape(-1, 2), n_candidates
+
+
 def _nearest_pair_records(
     model: Any,
     data: Any,
@@ -285,7 +397,7 @@ def _nearest_pair_records(
     distmax_m: float,
     max_pairs: int,
     max_calls: int = _NEAREST_PROBE_MAX_CALLS,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Closest signed geom distances across the ``side`` boundary.
 
     The safety kernel stops on a *margin*, so a genuine stop usually leaves
@@ -301,24 +413,44 @@ def _nearest_pair_records(
     for payload↔robot-link self-pairs, which are not "everything else") or,
     by default, every body outside ``side`` and ``other_excluded``.
 
-    Bounded by construction: a vectorised bounding-sphere prefilter reduces
-    the O(n·m) pair set, then at most ``max_calls`` exact distance calls run
-    **in prefiltered proximity order**, so the budget truncates the far end,
-    never the close one.
+    Bounded by construction: a vectorised distance-lower-bound prefilter
+    (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
+    most ``max_calls`` exact distance calls run, shared fairly across the side
+    geoms by :func:`_round_robin_candidates` so no link can be starved out of
+    the report. Pure MuJoCo reads, no ROS.
 
-    Unbounded geoms (``geom_rbound == 0`` — planes and heightfields) are
-    always admitted, but they rank at ``0.0`` rather than at their formal
-    ``-inf`` gap. Ranking them first is what let a kitchen floor consume the
-    whole call budget in the field round, so a plane now yields to any pair
-    whose bounding spheres actually overlap — i.e. to real interpenetration.
-    Pure MuJoCo reads, no ROS.
+    The prefilter is what a scene's floors used to defeat. MuJoCo reports
+    ``geom_rbound == 0`` for the geoms that have no bounding sphere — planes
+    and heightfields — and reading that as radius ``inf`` scored every pair
+    involving one at ``-inf``, ahead of every finite pair. A plane is now
+    bounded **exactly** (``|n · (c - p)| - r``), so a floor competes on real
+    distance instead of pre-empting the queue: it is excluded from the
+    candidate set outright when it is further than ``distmax_m``, and ranks
+    on merit when it is not. Round-robin then bounds the residual: a
+    heightfield still has no cheap bound and keeps ``-inf``, but it can cost
+    each side geom only its first call, never the whole budget.
+
+    Returns:
+        ``(records, coverage)`` — ``records`` is the closest ``max_pairs``
+        pairs; ``coverage`` reports how much of the candidate set the budget
+        actually reached, so a *silent* omission can never be read as "nothing
+        was near".
     """
     import mujoco  # reason: optional sim dep
     import numpy as np
 
+    coverage: dict[str, object] = {
+        "distmax_m": float(distmax_m),
+        "candidate_pairs": 0,
+        "probed_pairs": 0,
+        "max_calls": int(max_calls),
+        "truncated": False,
+        "side_geoms": 0,
+        "side_geoms_probed": 0,
+    }
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
-        return []
+        return [], coverage
     in_side = np.isin(body_of_geom, np.fromiter(side, dtype=np.int64, count=len(side)))
     side_geoms = np.flatnonzero(in_side)
     if other_included is not None:
@@ -335,24 +467,17 @@ def _nearest_pair_records(
             np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
         )
         other_geoms = np.flatnonzero(~in_side & ~excluded)
+    coverage["side_geoms"] = int(side_geoms.size)
     if side_geoms.size == 0 or other_geoms.size == 0:
-        return []
-    xpos = np.asarray(data.geom_xpos, dtype=np.float64)
-    raw_rbound = np.asarray(model.geom_rbound, dtype=np.float64)
-    unbounded = raw_rbound <= 0.0  # planes / heightfields
-    rbound = np.where(unbounded, np.inf, raw_rbound)
-    centre_gap = np.linalg.norm(
-        xpos[side_geoms][:, None, :] - xpos[other_geoms][None, :, :], axis=-1
-    )
-    gap = centre_gap - rbound[side_geoms][:, None] - rbound[other_geoms][None, :]
-    # Admission keeps unbounded pairs (gap is -inf); ranking demotes them to
-    # 0.0 so a floor plane cannot outrank real bounding-sphere overlap.
-    rank = np.where(unbounded[side_geoms][:, None] | unbounded[other_geoms][None, :], 0.0, gap)
-    candidates = np.argwhere(gap <= distmax_m)
+        return [], coverage
+    gap = _pair_distance_lower_bound(model, data, side_geoms, other_geoms)
+    candidates, n_candidates = _round_robin_candidates(gap, distmax_m, max_calls)
+    coverage["candidate_pairs"] = n_candidates
+    coverage["probed_pairs"] = int(candidates.shape[0])
+    coverage["truncated"] = bool(n_candidates > candidates.shape[0])
+    coverage["side_geoms_probed"] = int(np.unique(candidates[:, 0]).size)
     if candidates.size == 0:
-        return []
-    order = np.argsort(rank[candidates[:, 0], candidates[:, 1]], kind="stable")
-    candidates = candidates[order][:max_calls]
+        return [], coverage
     probed: list[tuple[float, int, int]] = []
     for row, col in candidates:
         geom_side = int(side_geoms[int(row)])
@@ -364,7 +489,7 @@ def _nearest_pair_records(
             continue  # nothing within the probe window for this pair
         probed.append((distance, geom_side, geom_other))
     probed.sort(key=lambda item: item[0])
-    return [
+    records = [
         {
             "distance_m": round(distance, 6),
             "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_side),
@@ -378,6 +503,7 @@ def _nearest_pair_records(
         }
         for distance, geom_side, geom_other in probed[:max_pairs]
     ]
+    return records, coverage
 
 
 def kernel_checked_body_ids(model: Any, description: Any) -> frozenset[int]:
@@ -476,21 +602,71 @@ def estop_ground_truth_snapshot(
         distmax_m: near-miss probe window.
         max_pairs: cap on reported nearest pairs, per probe.
         max_calls: cap on exact ``mj_geomDistance`` calls per probe. The
-            prefilter ranks candidates by proximity first, so this truncates
-            the far end of each probe, never the close one.
+            prefilter ranks candidates by proximity first and spends the
+            budget round-robin across the probed geoms, so this truncates the
+            far end of each probe, never the close one, and never at the cost
+            of leaving a geom unprobed while the budget covers the geom count.
 
     Returns:
         A JSON-safe dict: ``stop_class`` (``"attached_payload"`` when a
         payload is carried, else ``"robot_world"``), ``sim_time_s``,
         ``contacts_caveat``, ``attached_bodies``, ``payload_contacts``,
         ``robot_world_contacts``, ``nearest_robot_world_pairs``,
-        ``nearest_payload_world_pairs``, ``nearest_payload_robot_pairs``,
-        ``probe_robot_scope``, ``probe_excluded_robot_bodies``,
-        ``robot_joint_state`` and ``base_frame_tf``.
+        ``nearest_probe_coverage``, ``nearest_payload_world_pairs``,
+        ``nearest_payload_world_coverage``, ``nearest_payload_robot_pairs``,
+        ``nearest_payload_robot_coverage``, ``probe_robot_scope``,
+        ``probe_excluded_robot_bodies``, ``robot_joint_state`` and
+        ``base_frame_tf``.
+
+        Each probe carries its own coverage block, and that is what makes an
+        *absent* pair readable: an empty near-miss list only means "nothing
+        was close" when ``truncated`` is false and
+        ``side_geoms_probed == side_geoms``. The payload coverage blocks are
+        ``{}`` when nothing is carried, matching their empty pair lists.
     """
     attached_bodies = sorted(attached_body_ids)
     attached = frozenset(attached_bodies)
     probe_robot = robot_body_ids if probe_body_ids is None else (probe_body_ids & robot_body_ids)
+    # World side excludes the WHOLE robot, not just the probed subset: a link
+    # the kernel does not check (the gripper, the base) is still the robot,
+    # never an obstacle it could be "near".
+    robot_world_pairs, robot_world_coverage = _nearest_pair_records(
+        model,
+        data,
+        side=probe_robot,
+        other_excluded=attached | robot_body_ids,
+        distmax_m=distmax_m,
+        max_pairs=max_pairs,
+        max_calls=max_calls,
+    )
+    # Payload↔world: the margin stop a carried object triggers, which realized
+    # contacts alone cannot adjudicate.
+    # Payload↔robot-link self-pairs: the kernel's own
+    # ``check_attached_self_collision``. A sink_cup stop at -0.62 mm against
+    # panda_link5 was unadjudicable without this.
+    payload_world_pairs: list[dict[str, object]] = []
+    payload_world_coverage: dict[str, object] = {}
+    payload_robot_pairs: list[dict[str, object]] = []
+    payload_robot_coverage: dict[str, object] = {}
+    if attached_bodies:
+        payload_world_pairs, payload_world_coverage = _nearest_pair_records(
+            model,
+            data,
+            side=attached,
+            other_excluded=robot_body_ids,
+            distmax_m=distmax_m,
+            max_pairs=max_pairs,
+            max_calls=max_calls,
+        )
+        payload_robot_pairs, payload_robot_coverage = _nearest_pair_records(
+            model,
+            data,
+            side=attached,
+            other_included=probe_robot,
+            distmax_m=distmax_m,
+            max_pairs=max_pairs,
+            max_calls=max_calls,
+        )
     snapshot: dict[str, object] = {
         "stop_class": "attached_payload" if attached_bodies else "robot_world",
         "sim_time_s": round(float(data.time), 6),
@@ -506,45 +682,12 @@ def estop_ground_truth_snapshot(
         "robot_world_contacts": _contact_records(
             model, data, side=robot_body_ids, other_excluded=attached
         ),
-        # World side excludes the WHOLE robot, not just the probed subset: a
-        # link the kernel does not check (the gripper, the base) is still the
-        # robot, never an obstacle it could be "near".
-        "nearest_robot_world_pairs": _nearest_pair_records(
-            model,
-            data,
-            side=probe_robot,
-            other_excluded=attached | robot_body_ids,
-            distmax_m=distmax_m,
-            max_pairs=max_pairs,
-            max_calls=max_calls,
-        ),
-        # Payload↔world: the margin stop a carried object triggers, which
-        # realized contacts alone cannot adjudicate.
-        "nearest_payload_world_pairs": _nearest_pair_records(
-            model,
-            data,
-            side=attached,
-            other_excluded=robot_body_ids,
-            distmax_m=distmax_m,
-            max_pairs=max_pairs,
-            max_calls=max_calls,
-        )
-        if attached_bodies
-        else [],
-        # Payload↔robot-link self-pairs: the kernel's own
-        # ``check_attached_self_collision``. A sink_cup stop at -0.62 mm
-        # against panda_link5 was unadjudicable without this.
-        "nearest_payload_robot_pairs": _nearest_pair_records(
-            model,
-            data,
-            side=attached,
-            other_included=probe_robot,
-            distmax_m=distmax_m,
-            max_pairs=max_pairs,
-            max_calls=max_calls,
-        )
-        if attached_bodies
-        else [],
+        "nearest_robot_world_pairs": robot_world_pairs,
+        "nearest_probe_coverage": robot_world_coverage,
+        "nearest_payload_world_pairs": payload_world_pairs,
+        "nearest_payload_world_coverage": payload_world_coverage,
+        "nearest_payload_robot_pairs": payload_robot_pairs,
+        "nearest_payload_robot_coverage": payload_robot_coverage,
         "robot_joint_state": None
         if joint_state is None
         else {

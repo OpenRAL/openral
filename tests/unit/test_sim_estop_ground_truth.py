@@ -267,3 +267,159 @@ def test_candidate_chunk_digest_flags_a_shape_mismatch() -> None:
     assert digest["shape_mismatch"] is True
     assert digest["flat"] == [0.0, 0.1, 0.2]
     assert "ticks" not in digest
+
+
+# ── near-miss probe coverage (the 2026-08-14 drawer_utensil adjudication) ─────
+#
+# The ``panda_link1`` −17.28 mm stop was adjudicated FALSE on the strength of a
+# silence: the snapshot's 47 near-miss pairs named ``mobilebase0_*`` and
+# ``robot0_link0`` but never ``robot0_link1``, so "nothing physical within
+# 100 mm of link1" was read straight off the report. That silence was an
+# artifact. A RoboCasa kitchen ships FOUR plane geoms (``floor_1_room_g0`` and
+# ``floor_1_backing_room_g0``, each with a ``_vis`` twin) and MuJoCo gives a
+# plane ``geom_rbound == 0``; the probe treated that as an infinite radius, so
+# every robot↔floor pair scored ``-inf`` and sorted ahead of every finite pair.
+# With ~70 geoms on a robosuite mobile Panda that is ~280 pairs against a
+# 256-call budget: the arm's real near-misses were never probed at all.
+#
+# The fixture below is that shape in miniature — planes plus a cabinet panel a
+# known 20 mm off ``robot0_link1`` — and it is a real compiled ``MjModel``.
+
+_ROOM_PLANES = ("floor_1_room_g0", "floor_1_room_g0_vis", "floor_1_backing_room_g0")
+_PANEL_GAP_M = 0.020
+
+_KITCHEN_MJCF_HEAD = """
+<mujoco model="estop_probe_coverage">
+  <option gravity="0 0 0"/>
+  <worldbody>
+"""
+_KITCHEN_MJCF_TAIL = """
+    <body name="robot0_base" pos="0 0 0.4">
+      <geom name="robot0_base_col" type="cylinder" size="0.06 0.05"/>
+{filler}
+      <body name="robot0_link1" pos="0 0 0.2">
+        <joint name="robot0_joint1" type="hinge" axis="0 0 1"/>
+        <geom name="robot0_link1_col" type="capsule" fromto="0 0 0 0 0 0.15" size="0.05"/>
+      </body>
+    </body>
+    <body name="stack_2_left_group_3_door_main" pos="{panel_x} 0 0.65">
+      <geom name="stack_2_left_group_3_door_g0" type="box" size="0.01 0.3 0.15"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _kitchen_model_data(*, n_filler_geoms: int) -> tuple[object, object]:
+    """A real ``MjModel`` with RoboCasa's plane count and a panel 20 mm off link1.
+
+    ``n_filler_geoms`` stands in for the visual geoms robosuite hangs off the
+    base (``robot0_g8_vis`` … ``mobilebase0_g7_vis``): they matter here only
+    because each one multiplies the robot↔plane pair count.
+    """
+    planes = "\n".join(
+        f'    <geom name="{name}" type="plane" size="5 5 0.1" pos="0 0 {-0.02 * i}"/>'
+        for i, name in enumerate(_ROOM_PLANES)
+    )
+    filler = "\n".join(
+        f'      <geom name="robot0_g{i}_vis" type="sphere" size="0.01" '
+        f'pos="{0.02 * i - 0.05:.3f} 0.09 0" contype="0" conaffinity="0"/>'
+        for i in range(n_filler_geoms)
+    )
+    # Panel near face at ``panel_x - 0.01``; link1's capsule radius is 0.05.
+    panel_x = 0.05 + _PANEL_GAP_M + 0.01
+    xml = (
+        _KITCHEN_MJCF_HEAD
+        + planes
+        + _KITCHEN_MJCF_TAIL.format(filler=filler, panel_x=f"{panel_x:.4f}")
+    )
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return model, data
+
+
+def _kitchen_snapshot(model: object, data: object, *, max_calls: int) -> dict[str, object]:
+    return estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=robot_self_body_ids(model, ["robot0_joint1"]),
+        base_frame_body="robot0_base",
+        max_pairs=32,
+        max_calls=max_calls,
+    )
+
+
+def test_near_miss_probe_reports_link1_when_planes_outnumber_the_budget() -> None:
+    """The arm's real near-miss survives a budget the scene's planes could eat.
+
+    Twelve robot geoms against three planes is 36 pairs that a radius-``inf``
+    ranking puts first; a 36-call budget then leaves nothing for the panel
+    20 mm off ``robot0_link1``. The probe must still report it.
+    """
+    model, data = _kitchen_model_data(n_filler_geoms=10)
+    snapshot = _kitchen_snapshot(model, data, max_calls=36)
+
+    pairs = snapshot["nearest_robot_world_pairs"]
+    assert isinstance(pairs, list)
+    link1 = [p for p in pairs if p["body_a"] == "robot0_link1"]
+    assert link1, (
+        "the near-miss probe never looked at link1 — an absent pair is being "
+        f"reported as an absent obstacle; got {[p['body_a'] for p in pairs]}"
+    )
+    assert link1[0]["body_b"] == "stack_2_left_group_3_door_main"
+    assert link1[0]["distance_m"] == pytest.approx(_PANEL_GAP_M, abs=1e-3)
+
+
+def test_near_miss_probe_reports_its_own_coverage() -> None:
+    """An empty pair list is only evidence of clearance when the probe was complete."""
+    model, data = _kitchen_model_data(n_filler_geoms=10)
+    snapshot = _kitchen_snapshot(model, data, max_calls=36)
+
+    coverage = snapshot["nearest_probe_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["max_calls"] == 36
+    assert coverage["distmax_m"] == pytest.approx(0.10)
+    assert coverage["side_geoms"] == coverage["side_geoms_probed"], (
+        "some robot geom was never probed, so its silence means nothing"
+    )
+    assert coverage["probed_pairs"] <= 36
+    assert coverage["truncated"] is (coverage["candidate_pairs"] > coverage["probed_pairs"])
+
+
+def test_scene_planes_no_longer_outrank_every_finite_pair() -> None:
+    """A plane is bounded exactly, so it competes on distance like any other geom.
+
+    ``geom_rbound == 0`` means "no bounding sphere", not "infinitely large":
+    the exact plane-to-sphere bound is ``|n·(c-p)| - r``. Without this a floor
+    5 m away outranks a cabinet 20 mm away and consumes the probe budget.
+    """
+    import numpy as np
+    from openral_hal.sim_sensor_bridge import _pair_distance_lower_bound
+
+    model, data = _kitchen_model_data(n_filler_geoms=4)
+    side = robot_self_body_ids(model, ["robot0_joint1"])
+    body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
+    in_side = np.isin(body_of_geom, np.fromiter(side, dtype=np.int64, count=len(side)))
+    side_geoms = np.flatnonzero(in_side)
+    other_geoms = np.flatnonzero(~in_side)
+
+    gap = _pair_distance_lower_bound(model, data, side_geoms, other_geoms)
+    assert np.isfinite(gap).all(), "a plane pair is still scoring -inf"
+
+    link1_geom = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "robot0_link1_col"))
+    panel_geom = int(
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "stack_2_left_group_3_door_g0")
+    )
+    row = int(np.flatnonzero(side_geoms == link1_geom)[0])
+    panel_col = int(np.flatnonzero(other_geoms == panel_geom)[0])
+    plane_cols = [
+        int(np.flatnonzero(other_geoms == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, n))[0])
+        for n in _ROOM_PLANES
+    ]
+    assert all(gap[row, panel_col] < gap[row, col] for col in plane_cols), (
+        "the panel 20 mm away must rank ahead of the floor half a metre below"
+    )
+    # And the bound stays a LOWER bound: never above the true distance.
+    truth = float(mujoco.mj_geomDistance(model, data, link1_geom, panel_geom, 1.0, None))
+    assert gap[row, panel_col] <= truth + 1e-9
