@@ -235,9 +235,15 @@ soon as a support cell returned to the map.
 So the cells are divided, exhaustively, between the two mechanisms: within the
 payload's reach a cell is either **cleared by the bridge** or **exempted here**,
 never neither and never both. The bridge's `support_patch_withholds` is this
-kernel's `support_contact_exempts` with `slack = 0`, so what it withholds is a
-subset of what this exempts and no withheld cell can be the cell that stops the
-robot; everything else around the payload — its own silhouette, its residue
+kernel's `support_contact_exempts` with `slack = 0` — the same along-normal
+bound, so the withheld region is the support half-space slab and not the patch
+cylinder — and what it withholds is therefore a subset of what this exempts
+**for the object that attested it**: no withheld cell can be the cell that stops
+the robot against that object. (This kernel exempts per object; the bridge
+withholds per message, so with two payloads attached the containment is one step
+looser — the two scope conditions are stated in
+[`packages/openral_octomap_bridge/README.md`](../../packages/openral_octomap_bridge/README.md).)
+Everything else around the payload — its own silhouette, its residue
 above the attested plane — still clears and still stops the robot if it comes
 back. The two predicates are a deliberate cross-package mirror (consolidating
 them would put `octomap` and `tf2` one link from this kernel) and must move

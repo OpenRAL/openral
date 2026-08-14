@@ -113,12 +113,21 @@ contributor should look at before adding similar code.
    one direction only and must stay that way: the bridge evaluates the
    bound with **zero slack** while the kernel adds
    `attached_contact_tolerance`, so what the bridge withholds is a
-   subset of what the kernel exempts. Changing either predicate without
-   the other breaks the partition — the failure mode is the 2026-08-14
-   witness/clearing defect. `SupportContactWitness.ThePartitionedClearing
-   LeavesTheWitnessItsEvidence` (kernel) and
-   `PayloadClearing.TheAttestedSupportSurfaceSurvivesTheClearing`
-   (bridge) pin the two halves.
+   subset of what the kernel exempts **for the object that attested it**
+   (the two scope conditions are in
+   `packages/openral_octomap_bridge/README.md`).
+   Both predicates bound the along-normal coordinate: the withheld set is
+   the support HALF-SPACE below the attested plane plus one projected
+   cube half-width of slab above it, never the whole patch cylinder.
+   Changing either predicate without the other breaks the partition — the
+   failure mode is the 2026-08-14 witness/clearing defect.
+   `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence`
+   (kernel) and `PayloadClearing.TheAttestedSupportSurfaceSurvivesThe
+   Clearing` (bridge) pin the two halves;
+   `PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`
+   pins the mirror itself, evaluating the bridge predicate against a
+   term-for-term transcription of the kernel's on the same cells, so a
+   drift on either side fails a test instead of a run.
 
 ### Already correctly DRY (do not flag)
 
