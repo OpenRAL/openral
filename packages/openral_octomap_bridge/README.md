@@ -74,6 +74,102 @@ actually intersects goes, and the over-reach is at most one cell layer.
 `attached_clear_padding_m` adds to it and is **0 by default**: padding removes
 cells the payload cannot explain, which is protection given up.
 
+### …and the attach transition reaches one voxel further than steady state
+
+The reach above is exactly right for the cells the payload's volume explains
+*now*. It is not enough for the cells that describe the payload from *before*
+the grasp. Those were marked by a sensor that saw the **real object**, while the
+clearing measures against a **fitted convex primitive**: fit error plus lattice
+quantization leaves a thin residue of pre-attach silhouette just outside one
+circumradius, and nothing else removes it either — an occluded cell gets no
+clearing ray, and `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`
+pins that it then stays for the rest of the run.
+
+The 2026-08-14 **round-5** forensics measured it: baguette r1's E-stop cell
+`voxel_91633` sat **22.13 mm** from the payload's own primitive surface at
+resolution 0.025 — **0.48 mm outside** the 21.65 mm reach, so it was never a
+clearing candidate at all. It was not the counter, not a real obstacle, and not
+support contact. It was the payload's own stale silhouette, one lattice step out
+of the clearing's hands.
+
+So the sweep is **wider while the payload is still on that silhouette, and
+unchanged once it has left it**:
+
+| Grid | Reach | Why |
+|---|---|---|
+| while the payload is within `attach_sweep_padding_m` of where its **object revision** first appeared | `resolution·√3/2 + attached_clear_padding_m + attach_sweep_padding_m` (one voxel by default → 46.65 mm at 25 mm cells) | the stale pre-attach silhouette is still under the payload, and the payload is collision-active attached geometry the kernel keeps checking — the same conservativeness argument as the clearing itself (ced8e06) |
+| once it has moved further than that | `resolution·√3/2 + attached_clear_padding_m` — unchanged | the payload has left the silhouette. Occupancy near it now is evidence about the world, and the ongoing appetite near real furniture must not grow |
+
+**Why a position and not a frame count.** This is the difference between fixing
+the field case and not. The bridge re-rasterizes the grid from the octree on
+*every* tick, so a sweep that widened its reach only on the first grid after the
+attach removes the residue from that one grid and the octree hands it straight
+back on the next — nothing retires an occluded cell. The round-5 timeline is the
+proof: the attach sweep ran at 1786710428.38 and the E-stop fired at
+1786710431.16, **2.78 s — ~28 published grids at 10 Hz — later**, with the
+payload still where it was grasped.
+`PayloadClearing.TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids` replays
+exactly that: 29 consecutive grids, the cell re-marked on each, the payload
+unmoved. Against a one-shot sweep it fails on 28 of them.
+
+**Why that particular distance.** Once the payload has translated further than
+the sweep padding, a cell that sat between the steady and padded reach at the
+attach pose is either *inside* the steady reach (the payload moved toward it —
+cleared anyway) or *outside* the padded one (it moved away — no longer its
+silhouette to clear). The widened reach has stopped doing work the steady reach
+cannot, so it shuts. `TheAttachWindowClosesOnceThePayloadHasMovedAVoxel` pins
+that to the millimetre either side of the threshold, and closing **latches** —
+`AClosedAttachWindowDoesNotReopenWhenThePayloadComesBack`, because by the time a
+payload wanders home the map around it is evidence gathered while it was
+elsewhere.
+
+Displacement is measured in the **OctoMap's frame, not the base frame**: the
+residue is world-fixed occupancy, so a payload motionless in `base_link` on a
+driving mobile base has left it behind and the window must close.
+
+`PayloadClearing.TheRoundSixFieldCellSurvivesTheSteadyReachAndGoesOnTheAttachSweep`
+pins the field number itself on a real grid cell (survives at the steady reach,
+clears at the attach reach), `…StopsOneVoxelPastTheSteadyReach` bounds the
+widened reach to the millimetre either side, and
+`TheAttachPaddingNeverShrinksTheSteadyReach` pins that no value of the new
+parameter can make the widened sweep clear *less* than an ordinary frame
+(`attach_transition_padding` floors a negative or non-finite value at 0).
+
+**What "revision" means, and the one piece of state this node keeps.**
+`WorldStateStamped.attachment_revision` is the producer's own counter, bumped
+once per atomic `openral_msgs/AttachmentState` change and never per frame, so
+`(object_id, attachment_revision)` is a payload's *attachment record identity*.
+`AttachSweepLedger` remembers only, per live object, that identity, the position
+its window is anchored at, and whether the window has shut — bounded by the
+current attachment count. It is **not a latch on cells**: nothing about which
+cells were cleared is remembered and no cell is ever held out of a later grid,
+so the "derive everything from the wire, every frame" property below is intact.
+Answering and recording are the same call (`sweep`), which is what keeps the
+window's state and the reach it licenses from disagreeing. Consequences, each
+with a test:
+
+* A re-grasp, a second payload, and a place-phase arm/disarm each open a window;
+  carrying one payload does not re-open one
+  (`ANewObjectRevisionOpensANewAttachWindow`).
+* A release sweeps the empty set, so the next grasp opens a window even under a
+  revision already seen (same test).
+* A frame that clears **nothing** — stale attachment state, missing attach-link
+  TF, a payload the bridge refuses to place — never calls `sweep`, so it cannot
+  advance or close a window
+  (`AFrameThatClearsNothingLeavesTheWindowExactlyAsItWas`). A bridge that has
+  swept nothing yet also opens a window for an already-attached payload, since
+  it has no reason to believe the silhouette is gone.
+
+**The partition still holds inside the padded reach.** The wider sweep reaches a
+voxel further into the counter, and every cell it newly reaches inside the
+attested patch is withheld exactly as the footprint is —
+`PayloadClearing.ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch`
+asserts it against a counter ring one voxel outside the payload's footprint,
+with the no-attestation counterfactual (which eats the ring) beside it. Widening
+the reach must not re-open the 2026-08-14 defect for the phase the fix was
+written against — and the widened reach is live for the whole window, not one
+frame, so the partition has to hold throughout it.
+
 ### …except the attested support patch, which is the counter
 
 A payload **resting** on a counter shares its bottom cell layer with the
@@ -166,9 +262,10 @@ without it (`PayloadClearing.WithholdingOnlyEverPutsOccupancyBack`). Relative to
 the un-partitioned clearing this change moves cases from no-stop to stop, never
 the reverse.
 
-**No latch here.** The bridge is stateless per frame, as the rest of the
-clearing is: withholding is derived from the attestation on the wire every time
-the grid is published. Hysteresis lives in the kernel, where it belongs — a
+**No latch here.** The withholding is derived from the attestation on the wire
+every time the grid is published — the bridge's only memory is the
+`AttachSweepLedger`'s per-object attach window (above), which decides how far a
+sweep reaches and never which cells it takes. Hysteresis lives in the kernel, where it belongs — a
 witness that died stays dead until World State attests a new contact, so a
 payload lifted and set back down finds its support cells in the map and
 unexempted, which is the new violation it should be. On a genuine lift the patch
@@ -201,9 +298,10 @@ primitive the kernel itself would reject (unknown shape tag, too few dimensions,
 degenerate quaternion) clears **nothing at all** and logs. The map then keeps
 occupancy it should not have, which can only stop the robot early.
 
-**Detach.** The clearing carries no state: it is derived from the attachment set
-on every published grid, so the first frame after the object leaves that set is
-already the frame that publishes it as an obstacle again. Re-*marking* a cell the
+**Detach.** Which cells clear is derived from the attachment set on every
+published grid, so the first frame after the object leaves that set is already
+the frame that publishes it as an obstacle again (the ledger's only role at
+detach is to forget the revision, so the next grasp sweeps padded again). Re-*marking* a cell the
 transparency rays cleared costs OctoMap's two-hit confirmation (~0.2 s at 10 Hz),
 which is the map's own latency and is pinned by `test_occupancy_persistence`.
 
@@ -295,7 +393,8 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = the pre-#110 behaviour (the payload stays in the map and stops the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
-| `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius, for pose uncertainty. Every millimetre here removes cells the payload cannot explain. |
+| `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. Every millimetre here removes cells the payload cannot explain. |
+| `attach_sweep_padding_m` | `resolution` (one voxel) | Extra reach **while a payload is still within this same distance of where its object revision first appeared** — the attach-transition window — for the stale pre-attach silhouette a fitted primitive leaves just outside the circumradius (the round-5 `voxel_91633`, 22.13 mm out). One parameter, two roles: it is both the extra reach and the distance the payload must travel to close the window. Adds to `attached_clear_padding_m`; `0` restores the pre-#111 single reach. Negative or non-finite contributes nothing. |
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
 
 `size_{x,y,z} = ceil(box_size / resolution)`. Keep
@@ -359,7 +458,17 @@ millimetre either side of `resolution/2 + attested depth` and the lateral bound
 either side of `patch_radius + circumradius`; a lift clears and withholds
 nothing at all; a payload rolled 90° carries its attested plane with it (the
 normal is rotated, the point translated); and a malformed attestation clears
-nothing at all. The kernel's half of the same partition is
+nothing at all. Its third part pins the **attach-transition window**: the round-5 field cell at
+22.13 mm survives the steady reach and clears at the attach reach; the field
+run's 28 grids of unmoved payload all clear it (the test a one-shot sweep fails
+27 times over); the window closes to the millimetre once the payload has moved a
+voxel, and does not re-open when it comes back; a new revision, a second
+payload, and a release-then-grasp each open one while carrying does not; a frame
+that clears nothing cannot advance one; the padded sweep still withholds
+the attested patch (with the no-attestation counterfactual that eats it beside
+it); the widened reach stops one voxel past the steady one to the millimetre;
+and no parameter value can make the transition clear less than an ordinary
+frame. The kernel's half of the same partition is
 `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence` and
 `…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
 (`cpp/openral_safety_kernel/test/test_collision.cpp`) — change either predicate
