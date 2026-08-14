@@ -2253,7 +2253,10 @@ class AttachedCollisionObject(BaseModel):
     """Collision geometry rigidly attached to a robot link.
 
     The object is removed from world occupancy only when the same geometry is
-    present here, so collision checking never loses the carried payload.
+    present here, so collision checking never loses the carried payload. The
+    removal itself is the occupancy bridge's (``openral_octomap_bridge`` clears
+    the payload's own cells out of ``/openral/world_voxels`` while it appears
+    here); the kernel keeps checking the payload as robot geometry.
 
     Attributes:
         object_id: Stable perception/world identity.
