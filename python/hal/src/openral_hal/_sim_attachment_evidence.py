@@ -24,9 +24,42 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 
-# Below this a summed contact normal carries no direction: the contacts oppose
-# each other, so there is no support plane to attest.
+# Below this a summed support normal carries no direction: the probed normals
+# oppose each other, so there is no support plane to attest.
 _DEGENERATE_NORM = 1e-9
+
+# -- Support-contact probe bounds --
+# The producer measures support with signed geom distances, not with the
+# solver's contact list. That is not a refinement, it is a correctness fix:
+# MuJoCo's ``contype``/``conaffinity`` bitmasks suppress whole geom pairs, and a
+# payload flush on a counter can produce ZERO contact records (2026-08-14
+# acceptance: a cup resting on a RoboCasa island at 0.000 mm generated none,
+# while a baguette on a counter generated six, purely because the second pair's
+# bitmasks happened to meet). ``mj_geomDistance`` sees both.
+#
+# A payload separated by more than this is not resting on anything: the number
+# is the safety kernel's own ``attached_contact_tolerance_m`` — physical slack
+# for FK and pose noise, deliberately not the occupancy resolution.
+_SUPPORT_PROBE_GAP_M = 0.001
+# The safety kernel's ``support_witness_max_penetration_m`` and
+# ``support_witness_max_patch_radius_m``. A claim past either fails the WHOLE
+# attachment message closed on the kernel side, so the producer must never
+# construct one; a payload deeper than the cap is a collision, not a support
+# contact, and attesting a clamped depth would launder it into an exemption.
+_SUPPORT_MAX_PENETRATION_M = 0.01
+_SUPPORT_MAX_PATCH_RADIUS_M = 0.5
+# Exact-distance call budget for one attestation. The payload contributes a
+# handful of geoms and this runs once per attach, so the cost is ~0.4 ms at
+# MuJoCo's ~0.8 us/call; the cap only bounds the pathological scene.
+_SUPPORT_PROBE_MAX_CALLS = 1024
+# Under this separation the probe's closest-point segment is degenerate and
+# carries no direction — which is precisely the resting case (the field cup sat
+# at 0.000 mm). The support geom's own surface normal is the primary source;
+# the segment is only ever a cross-check or a last resort.
+_SEGMENT_DIRECTION_MIN_M = 1e-5
+# A surface normal and a closest-point segment more than 60 degrees apart do not
+# describe the same plane. Rather than pick one, attest neither (fail closed).
+_NORMAL_AGREEMENT_MIN = 0.5
 
 
 class SimObjectMobility(str, Enum):
@@ -387,43 +420,339 @@ def extract_body_primitives(
     ]
 
 
-def _environment_contacts_by_support(
+def _collision_geoms(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
-    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    bodies: set[int],
+) -> list[int]:
+    """The payload's collision geoms — exactly what is published as primitives."""
+    return [
+        geom_id
+        for geom_id in range(int(model.ngeom))
+        if int(model.geom_bodyid[geom_id]) in bodies and int(model.geom_contype[geom_id]) != 0
+    ]
+
+
+def _support_candidate_geoms(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     *,
     payload_bodies: set[int],
     robot_body_ids: frozenset[int],
-) -> dict[int, list[tuple[NDArray[np.float64], NDArray[np.float64], float]]]:
-    """Group the payload's environment contacts by supporting body root.
+) -> tuple[list[int], dict[int, int]]:
+    """Every geom that could legitimately be carrying this payload.
 
     Eligible supports are non-robot and non-free: the world, a counter, a
     cabinet. The gripper holding the payload is excluded (``touch_links``
     already covers it) and so is another free-floating object, which is not
-    something the safety kernel may be told to ignore.
+    something the safety kernel may be told to ignore. Purely visual geometry
+    (no ``contype`` *and* no ``conaffinity``) is excluded too — it is not solid,
+    and a decorative shell coincident with a real surface would only add noise.
+
+    Note that a *nonzero* ``contype``/``conaffinity`` is no guarantee the pair
+    collides: the island that motivated this producer has solid bitmasks that
+    simply do not meet the cup's. Suppression is a property of the pair, which
+    is why membership here is decided per geom and adjudicated by distance.
+
+    Returns:
+        ``(geom_ids, support_root_of_geom)``.
     """
-    groups: dict[int, list[tuple[NDArray[np.float64], NDArray[np.float64], float]]] = {}
-    for index in range(int(data.ncon)):
-        contact = data.contact[index]
-        body_a = int(model.geom_bodyid[int(contact.geom1)])
-        body_b = int(model.geom_bodyid[int(contact.geom2)])
-        a_is_payload = body_a in payload_bodies
-        b_is_payload = body_b in payload_bodies
-        if a_is_payload == b_is_payload:
+    geom_ids: list[int] = []
+    support_root_of_geom: dict[int, int] = {}
+    for geom_id in range(int(model.ngeom)):
+        body_id = int(model.geom_bodyid[geom_id])
+        if body_id in payload_bodies or body_id in robot_body_ids:
             continue
-        other = body_b if a_is_payload else body_a
-        if other in robot_body_ids:
+        if int(model.geom_contype[geom_id]) == 0 and int(model.geom_conaffinity[geom_id]) == 0:
             continue
-        support_root = _root_motion_body(model, other)
+        support_root = _root_motion_body(model, body_id)
         if classify_body_mobility(model, support_root) is SimObjectMobility.FREE:
             continue
-        groups.setdefault(support_root, []).append(
-            (
-                np.asarray(contact.pos, dtype=np.float64).copy(),
-                np.asarray(contact.frame, dtype=np.float64)[:3].copy(),
-                float(contact.dist),
+        geom_ids.append(geom_id)
+        support_root_of_geom[geom_id] = support_root
+    return geom_ids, support_root_of_geom
+
+
+def _support_surface_normal(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    geom_id: int,
+    world_point: NDArray[np.float64],
+) -> NDArray[np.float64] | None:
+    """Outward world normal of a support geom at a point on its surface.
+
+    The closest-point segment ``mj_geomDistance`` returns is the obvious source
+    for a normal, and it is the wrong one for exactly the case that matters: at
+    a true resting contact the separation is ~0, the two closest points
+    coincide, and the segment has no direction at all. So the primary source is
+    the support's own analytic surface, which is well-defined however flush the
+    payload sits on it.
+
+    Returns:
+        The unit outward normal, or ``None`` for geometry with no analytic
+        surface normal (mesh, heightfield, SDF) — the caller then falls back to
+        the segment, or attests nothing.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    rotation = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+    geom_type = int(model.geom_type[geom_id])
+    if geom_type == int(mujoco.mjtGeom.mjGEOM_PLANE):
+        # A plane's surface normal is its frame's +z, everywhere.
+        return np.asarray(rotation[:, 2], dtype=np.float64)
+
+    size = np.asarray(model.geom_size[geom_id], dtype=np.float64)
+    local = rotation.T @ (world_point - np.asarray(data.geom_xpos[geom_id], dtype=np.float64))
+    local_normal: NDArray[np.float64]
+    if geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
+        # The face the point lies on is the one it is least far *inside*.
+        axis = int(np.argmax(np.abs(local[:3]) - size[:3]))
+        local_normal = np.zeros(3, dtype=np.float64)
+        local_normal[axis] = math.copysign(1.0, float(local[axis]))
+    elif geom_type == int(mujoco.mjtGeom.mjGEOM_SPHERE):
+        local_normal = local
+    elif geom_type == int(mujoco.mjtGeom.mjGEOM_ELLIPSOID):
+        local_normal = local / np.square(size[:3])
+    elif geom_type in {
+        int(mujoco.mjtGeom.mjGEOM_CAPSULE),
+        int(mujoco.mjtGeom.mjGEOM_CYLINDER),
+    }:
+        radius, half_length = float(size[0]), float(size[1])
+        radial = np.asarray([local[0], local[1], 0.0], dtype=np.float64)
+        overshoot_axial = abs(float(local[2])) - half_length
+        overshoot_radial = float(np.linalg.norm(radial)) - radius
+        if geom_type == int(mujoco.mjtGeom.mjGEOM_CYLINDER) and overshoot_axial > overshoot_radial:
+            local_normal = np.asarray(
+                [0.0, 0.0, math.copysign(1.0, float(local[2]))], dtype=np.float64
+            )
+        elif geom_type == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
+            # The capsule's normal points away from its spine, whose nearest
+            # point is the axial coordinate clamped to the cylindrical section.
+            local_normal = local - np.asarray(
+                [0.0, 0.0, float(np.clip(local[2], -half_length, half_length))],
+                dtype=np.float64,
+            )
+        else:
+            local_normal = radial
+    else:
+        return None
+
+    norm = float(np.linalg.norm(local_normal))
+    if norm < _DEGENERATE_NORM:
+        return None
+    return np.asarray(rotation @ (local_normal / norm), dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class _SupportProbeHit:
+    """One payload↔support geom pair measured by signed distance."""
+
+    support_root: int
+    contact_point: NDArray[np.float64]
+    normal: NDArray[np.float64]
+    penetration_m: float
+
+
+def _probe_support_hits(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    payload_geoms: list[int],
+    candidate_geoms: list[int],
+    support_root_of_geom: dict[int, int],
+) -> list[_SupportProbeHit]:
+    """Measure every payload↔environment pair that is within touching distance.
+
+    Bounded exactly as the E-stop near-miss probe is: the same vectorised
+    bounding-sphere prefilter and the same round-robin call budget, reused
+    rather than re-derived, so a kitchen full of geometry costs a fixed number
+    of exact calls and no payload geom can be starved out of the measurement.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    from openral_hal.sim_sensor_bridge import (  # noqa: PLC0415  # reason: bounded-probe reuse
+        _pair_distance_lower_bound,
+        _round_robin_candidates,
+    )
+
+    side = np.asarray(payload_geoms, dtype=np.int64)
+    other = np.asarray(candidate_geoms, dtype=np.int64)
+    gap = _pair_distance_lower_bound(model, data, side, other)
+    candidates, _ = _round_robin_candidates(gap, _SUPPORT_PROBE_GAP_M, _SUPPORT_PROBE_MAX_CALLS)
+
+    hits: list[_SupportProbeHit] = []
+    segment = np.zeros(6, dtype=np.float64)
+    for row, column in candidates:
+        payload_geom = int(side[int(row)])
+        support_geom = int(other[int(column)])
+        distance = float(
+            mujoco.mj_geomDistance(
+                model,
+                data,
+                payload_geom,
+                support_geom,
+                _SUPPORT_PROBE_GAP_M,
+                segment,
             )
         )
-    return groups
+        if distance >= _SUPPORT_PROBE_GAP_M:
+            continue  # not touching, and ``segment`` was left unwritten
+        payload_point = np.asarray(segment[:3], dtype=np.float64).copy()
+        support_point = np.asarray(segment[3:], dtype=np.float64).copy()
+
+        surface_normal = _support_surface_normal(
+            model,
+            data,
+            geom_id=support_geom,
+            world_point=support_point,
+        )
+        # ``(payload_point - support_point) / distance`` is the support→payload
+        # direction for both signs of ``distance``: the segment runs payload→
+        # support when they overlap and support→payload when they do not, and
+        # dividing by the signed distance folds that flip in. It is undefined at
+        # a flush contact, which is why it is the fallback and not the source.
+        segment_normal: NDArray[np.float64] | None = None
+        if abs(distance) >= _SEGMENT_DIRECTION_MIN_M:
+            segment_normal = (payload_point - support_point) / distance
+        if surface_normal is None:
+            if segment_normal is None:
+                continue  # unanalysable surface, flush contact: measure nothing
+            normal = segment_normal
+        else:
+            if segment_normal is not None and (
+                float(np.dot(surface_normal, segment_normal)) < _NORMAL_AGREEMENT_MIN
+            ):
+                continue  # the two disagree about the plane; measure nothing
+            normal = surface_normal
+
+        hits.append(
+            _SupportProbeHit(
+                support_root=support_root_of_geom[support_geom],
+                contact_point=0.5 * (payload_point + support_point),
+                normal=normal,
+                penetration_m=max(0.0, -distance),
+            )
+        )
+    return hits
+
+
+def _world_up(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+) -> NDArray[np.float64]:
+    """The direction a support must push to be carrying anything."""
+    gravity = np.asarray(model.opt.gravity, dtype=np.float64)
+    magnitude = float(np.linalg.norm(gravity))
+    if magnitude < _DEGENERATE_NORM:
+        return np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    return np.asarray(-gravity / magnitude, dtype=np.float64)
+
+
+def _dominant_support(
+    hits: list[_SupportProbeHit],
+    *,
+    up: NDArray[np.float64],
+    payload_com: NDArray[np.float64],
+) -> tuple[int, list[_SupportProbeHit], NDArray[np.float64]] | None:
+    """Pick the one surface that is actually carrying the payload.
+
+    A payload can touch several fixed surfaces at once — a counter under it, a
+    backsplash beside it, a trivet at its rim — and only one may be attested,
+    because the witness names one plane.
+
+    *Load-bearing first.* A support is what opposes gravity, so a surface whose
+    mean normal has no upward component is not support at all (a wall, the
+    underside of a shelf) and is discarded rather than ranked. Among those that
+    do carry, the most anti-gravity normal wins: a flat seat beats a slanted
+    rest, because the flat one takes the weight.
+
+    *Then whichever is under the load.* Equally horizontal surfaces are
+    separated by which one lies closest to the payload's centre of mass in the
+    support plane — the seat is under the mass, a ledge merely catches the rim.
+    Note what this deliberately does **not** use: the number of contacting geom
+    pairs, and the spread of the probed points. A distance probe reports one
+    closest point per geom pair, so both of those measure how finely a piece of
+    furniture happens to be tessellated — a monolithic island slab yields a
+    single point and a three-geom ledge yields three, whatever their real
+    contact areas. That artefact is what the old contact-count rule was hostage
+    to, and it is the reason this ranks by load path instead.
+
+    Returns:
+        ``(support_root, hits, unit mean normal)``, or ``None`` when nothing
+        touching the payload is holding it up.
+    """
+    grouped: dict[int, list[_SupportProbeHit]] = {}
+    for hit in hits:
+        grouped.setdefault(hit.support_root, []).append(hit)
+
+    ranked: list[tuple[float, float, int, int, list[_SupportProbeHit], NDArray[np.float64]]] = []
+    for support_root, group in grouped.items():
+        mean_normal = np.mean(np.asarray([hit.normal for hit in group]), axis=0)
+        norm = float(np.linalg.norm(mean_normal))
+        if norm < _DEGENERATE_NORM:
+            continue  # opposed normals: the payload is pinched, not supported
+        mean_normal = mean_normal / norm
+        alignment = float(np.dot(mean_normal, up))
+        if alignment <= 0.0:
+            continue
+        offset = np.mean(np.asarray([hit.contact_point for hit in group]), axis=0) - payload_com
+        lateral = float(np.linalg.norm(offset - float(np.dot(offset, mean_normal)) * mean_normal))
+        # Round the alignment so two equally horizontal surfaces tie here and
+        # are then separated by load path rather than by float noise.
+        ranked.append(
+            (-round(alignment, 6), lateral, -len(group), support_root, group, mean_normal)
+        )
+    if not ranked:
+        return None
+    ranked.sort(key=lambda entry: entry[:4])
+    _, _, _, support_root, group, mean_normal = ranked[0]
+    return support_root, group, mean_normal
+
+
+def _plane_basis(normal: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Two orthonormal in-plane axes for a unit normal."""
+    reference = np.zeros(3, dtype=np.float64)
+    reference[int(np.argmin(np.abs(normal)))] = 1.0
+    first = reference - float(np.dot(reference, normal)) * normal
+    first = first / float(np.linalg.norm(first))
+    return first, np.asarray(np.cross(normal, first), dtype=np.float64)
+
+
+def _centred_patch(
+    corners: NDArray[np.float64],
+    *,
+    plane_point: NDArray[np.float64],
+    normal: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], float]:
+    """Re-centre the attested point in-plane on the payload's own footprint.
+
+    A plane is fixed by any point on it, and the probe hands back whichever
+    surface point happened to be closest — an off-centre one, since a single
+    geom pair yields a single point where the solver's contact set yielded a
+    symmetric handful. Keeping that point would make the attested disc large
+    enough to reach the payload's far corners *from the rim*, licensing a patch
+    the payload does not occupy. Sliding the point along the plane to the centre
+    of the payload's own in-plane footprint changes no geometry — same plane,
+    same half-space — and shrinks the patch to the smallest disc that still
+    covers the payload. The attestation stays bounded by the payload, tightly.
+
+    Args:
+        corners: Payload collision-AABB corners in the object frame.
+        plane_point: A measured point on the support plane, object frame.
+        normal: Unit support normal, object frame.
+
+    Returns:
+        ``(contact_point, patch_radius_m)`` in the object frame.
+    """
+    first, second = _plane_basis(normal)
+    offsets = corners - plane_point
+    lateral = offsets - np.outer(offsets @ normal, normal)
+    along_first = lateral @ first
+    along_second = lateral @ second
+    centre_first = 0.5 * float(along_first.min() + along_first.max())
+    centre_second = 0.5 * float(along_second.min() + along_second.max())
+    radius = float(
+        np.hypot(along_first - centre_first, along_second - centre_second).max(),
+    )
+    return plane_point + centre_first * first + centre_second * second, radius
 
 
 def support_contact_witness(
@@ -434,7 +763,7 @@ def support_contact_witness(
     robot_body_ids: frozenset[int],
     stamp_ns: int,
 ) -> SupportContactWitness | None:
-    """Attest one payload's bounded support contact from exact MuJoCo contacts.
+    """Attest one payload's bounded support contact from exact MuJoCo distances.
 
     A grasped object is routinely still resting on the counter it was picked
     from. That contact is real, legitimate, and — once the payload is checked
@@ -442,11 +771,20 @@ def support_contact_witness(
     payload through a wall. This produces the attestation that tells the two
     apart, from ground truth the simulator already has (ADR-0092 D6).
 
+    Support is measured with ``mj_geomDistance``, **not** with the solver's
+    contact list. The contact list is not a proximity oracle: ``contype`` /
+    ``conaffinity`` suppression empties whole geom pairs, so on the 2026-08-14
+    acceptance run a cup resting on an island at 0.000 mm produced no contact
+    record at all — no attestation, no exemption, and an E-stop on the real
+    support contact — while a baguette on a counter produced six, purely
+    because that pair's bitmasks happened to meet. Signed distance sees both.
+
     Only a *non-free* environment body counts as a support: the world, a
     counter, a cabinet. Another free-floating object is not something the
     kernel may be told to ignore, and neither is the gripper holding the
-    payload (that is what ``touch_links`` covers). ``None`` — no contact, or
-    only ineligible ones — is the honest answer and yields no exemption.
+    payload (that is what ``touch_links`` covers). ``None`` — nothing within
+    touching distance, nothing load-bearing, or a claim the kernel's caps would
+    not accept — is the honest answer and yields no exemption.
 
     Args:
         model: Live ``mujoco.MjModel``.
@@ -459,66 +797,68 @@ def support_contact_witness(
         The witness, or ``None`` when no eligible support contact exists.
     """
     payload_bodies = _body_subtree(model, root_body_id)
-    groups = _environment_contacts_by_support(
+    payload_geoms = _collision_geoms(model, payload_bodies)
+    if not payload_geoms:
+        return None
+    candidate_geoms, support_root_of_geom = _support_candidate_geoms(
         model,
-        data,
         payload_bodies=payload_bodies,
         robot_body_ids=robot_body_ids,
     )
-    if not groups:
+    if not candidate_geoms:
         return None
 
-    # One witness names one support surface: the one carrying this payload.
-    support_root = max(groups, key=lambda key: len(groups[key]))
-    contacts = groups[support_root]
+    dominant = _dominant_support(
+        _probe_support_hits(
+            model,
+            data,
+            payload_geoms=payload_geoms,
+            candidate_geoms=candidate_geoms,
+            support_root_of_geom=support_root_of_geom,
+        ),
+        up=_world_up(model),
+        payload_com=np.asarray(data.xipos[root_body_id], dtype=np.float64),
+    )
+    if dominant is None:
+        return None
+    support_root, group, normal_world = dominant
+
+    penetration = max(hit.penetration_m for hit in group)
+    if penetration > _SUPPORT_MAX_PENETRATION_M:
+        # Deeper than the safety kernel will accept as support. Clamping would
+        # launder a real penetration into an exemption, so attest nothing and
+        # let the kernel stop on it.
+        return None
+
     rotation = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
     origin = np.asarray(data.xpos[root_body_id], dtype=np.float64)
-    points = np.asarray([rotation.T @ (position - origin) for position, _, _ in contacts])
-
-    # Orient every contact normal from the supporting solid toward the payload,
-    # so the attested half-space is unambiguous regardless of which geom MuJoCo
-    # happened to list first.
-    oriented = []
-    for position, normal, _ in contacts:
-        local_normal = rotation.T @ normal
-        toward_payload = rotation.T @ (origin - position)
-        if float(np.dot(toward_payload, local_normal)) < 0.0:
-            local_normal = -local_normal
-        oriented.append(local_normal)
-    normal_in_object = np.mean(np.asarray(oriented), axis=0)
-    norm = float(np.linalg.norm(normal_in_object))
-    if norm < _DEGENERATE_NORM:
-        # Opposed normals — the payload is pinched, not supported. Attesting a
-        # plane here would be inventing geometry, so attest nothing.
-        return None
-    normal_in_object = normal_in_object / norm
-    contact_point = points.mean(axis=0)
+    normal_in_object = rotation.T @ normal_world
+    normal_in_object = normal_in_object / float(np.linalg.norm(normal_in_object))
+    plane_point = np.mean(
+        np.asarray([rotation.T @ (hit.contact_point - origin) for hit in group]),
+        axis=0,
+    )
 
     # The patch spans the payload's own supported footprint: its collision
     # geometry projected onto the support plane. Bounded by the payload, and
     # nothing outside it is ever exempt.
-    subtree_geoms = [
-        geom_id
-        for geom_id in range(int(model.ngeom))
-        if int(model.geom_bodyid[geom_id]) in payload_bodies
-        and int(model.geom_contype[geom_id]) != 0
-    ]
-    if not subtree_geoms:
-        return None
     corners = np.concatenate(
         [
             _geom_corners_in_root(model, data, geom_id=geom_id, root_body_id=root_body_id)
-            for geom_id in subtree_geoms
+            for geom_id in payload_geoms
         ],
         axis=0,
     )
-    offsets = corners - contact_point
-    lateral = offsets - np.outer(offsets @ normal_in_object, normal_in_object)
-    patch_radius = float(np.linalg.norm(lateral, axis=1).max())
-    if not math.isfinite(patch_radius) or patch_radius <= 0.0:
+    contact_point, patch_radius = _centred_patch(
+        corners,
+        plane_point=plane_point,
+        normal=normal_in_object,
+    )
+    if not math.isfinite(patch_radius) or not 0.0 < patch_radius <= _SUPPORT_MAX_PATCH_RADIUS_M:
+        # Degenerate, or a payload too large to describe inside the kernel's
+        # bound. Trimming the radius would attest a patch the payload does not
+        # occupy, so attest nothing.
         return None
-
-    penetration = max(0.0, *(-distance for _, _, distance in contacts))
 
     import mujoco  # noqa: PLC0415  # reason: optional sim dependency
 
@@ -540,8 +880,8 @@ def support_contact_witness(
         patch_radius_m=patch_radius,
         max_penetration_m=penetration,
         confidence=1.0,
-        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
-        evidence_ref=f"mujoco_body:{support_name}",
+        evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
+        evidence_ref=f"mujoco_geom_distance:{support_name}",
         stamp_ns=stamp_ns,
     )
 

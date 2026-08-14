@@ -113,6 +113,25 @@ contributor should look at before adding similar code.
   each joint's `sim_joint_name`). The E-stop near-miss probe needs the
   second precisely because it is *narrower* than the first.
 
+- **Bounded `mj_geomDistance` probing** — `sim_sensor_bridge._pair_distance_lower_bound`
+  (the vectorised bounding-sphere/plane prefilter) and
+  `sim_sensor_bridge._round_robin_candidates` (the fair exact-call budget) are the
+  single source for "measure the closest geom pairs across a boundary without
+  paying O(n·m)". Two callers share them and **must keep sharing them**:
+  `sim_sensor_bridge._nearest_pair_records` (the E-stop ground-truth record) and
+  `_sim_attachment_evidence._probe_support_hits` (the support-contact witness).
+  They are *not* a duplication target for each other, because they need different
+  outputs from the same measurement: the diagnostics path wants named,
+  rounded records for a log line, while the witness needs the closest-point
+  segment (`fromto`) to reconstruct a contact point and a support plane. **Do NOT
+  reimplement the prefilter or the budget; if a third caller needs a third
+  output shape, extract the exact-call loop, not the ranking.**
+  The reason both exist at all is the same field lesson, recorded twice: MuJoCo's
+  contact list is not a proximity oracle — `contype`/`conaffinity` suppression
+  empties whole geom pairs (an arm 30 mm inside a freezer door with `ncon == 0`;
+  a cup flush on a RoboCasa island with no contact record), so signed distance is
+  the adjudicator in both the diagnostics and the evidence path.
+
 - **HAL adapters (sim)** — `FrankaPandaHAL`, `UR5eHAL`, `UR10eHAL`,
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
   `AlohaMujocoHAL`, `OpenArmMujocoHAL` all extend `MujocoArmHAL`.
