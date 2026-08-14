@@ -10,12 +10,20 @@
 //
 // This keeps the octomap dependency entirely out of the real-time safety kernel
 // ("perception proposes, the kernel disposes").
+//
+// It is also where a grasped payload leaves world occupancy: the attachment set
+// on /openral/world_state_fast — the same message the kernel ingests its
+// attached geometry from — names the volumes whose cells stop being the world
+// and become the robot's own payload, and `clear_attached_payload_cells`
+// removes them from every published grid.
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <octomap/OcTree.h>
@@ -27,9 +35,11 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include "openral_octomap_bridge/octree_to_grid.hpp"
+#include "openral_octomap_bridge/payload_clearing.hpp"
 
 namespace openral_octomap_bridge {
 
@@ -50,6 +60,18 @@ public:
         this->declare_parameter<std::string>("output_topic", "/openral/world_voxels");
     const double rate_hz = this->declare_parameter<double>("publish_rate_hz", 10.0);
 
+    // Attached-payload clearing. On by default: `AttachedCollisionObject`
+    // requires the object to be absent from world occupancy while attached, and
+    // with no attachment producer on the graph this costs one empty check.
+    attached_clear_enabled_ = this->declare_parameter<bool>("attached_clear_enabled", true);
+    // Extra reach beyond the cell-cube circumradius. 0 clears exactly the cells
+    // the payload's own volume can explain; anything more removes cells it
+    // cannot, and is protection given up for pose uncertainty.
+    attached_clear_padding_m_ = this->declare_parameter<double>("attached_clear_padding_m", 0.0);
+    attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
+    const auto world_state_topic =
+        this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
+
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -58,6 +80,16 @@ public:
         std::bind(&OctomapVoxelBridge::on_octomap, this, std::placeholders::_1));
     voxel_pub_ = this->create_publisher<openral_msgs::msg::OccupancyVoxels>(
         output_topic, rclcpp::QoS(1).reliable());
+    if (attached_clear_enabled_) {
+      // Matches the kernel's own subscription to this topic (RELIABLE,
+      // VOLATILE, KEEP_LAST=1 at 30 Hz), so bridge and kernel act on the same
+      // attachment set.
+      world_state_sub_ = this->create_subscription<openral_msgs::msg::WorldStateStamped>(
+          world_state_topic, rclcpp::QoS(1).reliable(),
+          [this](openral_msgs::msg::WorldStateStamped::SharedPtr msg) {
+            world_state_ = std::move(msg);
+          });
+    }
     timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / std::max(rate_hz, 1.0)),
                                      std::bind(&OctomapVoxelBridge::on_timer, this));
 
@@ -117,8 +149,68 @@ private:
     spec.box_min[2] = box_center_[2] - 0.5 * box_size_[2];
 
     auto grid = rasterize_octree_to_grid(*octree_, base_to_octomap, spec, base_frame_);
+    clear_attached_payload(grid);
     grid.header.stamp = this->now();
     voxel_pub_->publish(grid);
+  }
+
+  /// Remove the grasped payload's own cells from the grid about to be
+  /// published, in the payload's live pose.
+  ///
+  /// Every way of not knowing where the payload is — no attachment message, a
+  /// stale one, a missing attach-link TF, a primitive the kernel itself would
+  /// refuse — clears **nothing** and leaves the map exactly as the octree
+  /// described it. That is the conservative failure: the map keeps occupancy it
+  /// should not have (which can only stop the robot early), never loses
+  /// occupancy it should have.
+  void clear_attached_payload(openral_msgs::msg::OccupancyVoxels& grid) {
+    if (!attached_clear_enabled_) {
+      return;
+    }
+    const auto state = world_state_;
+    if (state == nullptr || state->attached_objects.empty()) {
+      return;
+    }
+    const rclcpp::Time stamp(state->header.stamp);
+    const double age_s = (this->now() - stamp).seconds();
+    if (age_s > attached_state_timeout_s_) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "attachment state is %.3f s old (> %.3f s): clearing nothing", age_s,
+                           attached_state_timeout_s_);
+      return;
+    }
+
+    std::vector<PayloadPrimitive> primitives;
+    for (const auto& object : state->attached_objects) {
+      geometry_msgs::msg::TransformStamped tf_msg;
+      try {
+        tf_msg = tf_buffer_->lookupTransform(base_frame_, object.attach_link, tf2::TimePointZero);
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "TF %s <- %s unavailable (%s): payload %s stays in the map",
+                             base_frame_.c_str(), object.attach_link.c_str(), ex.what(),
+                             object.object_id.c_str());
+        return;
+      }
+      tf2::Transform base_from_link;
+      tf2::fromMsg(tf_msg.transform, base_from_link);
+      if (!place_attached_object(object, base_from_link, primitives)) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "payload %s carries geometry this bridge cannot place: clearing "
+                             "nothing",
+                             object.object_id.c_str());
+        return;
+      }
+    }
+
+    const std::size_t cleared =
+        clear_attached_payload_cells(grid, primitives, attached_clear_padding_m_);
+    if (cleared > 0) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "attached payload: cleared %zu cell(s) of %zu object(s) from world "
+                           "occupancy",
+                           cleared, state->attached_objects.size());
+    }
   }
 
   std::string base_frame_;
@@ -126,11 +218,16 @@ private:
   double resolution_{0.05};
   double box_size_[3]{2.0, 2.0, 2.0};
   double box_center_[3]{0.0, 0.0, 0.5};
+  bool attached_clear_enabled_{true};
+  double attached_clear_padding_m_{0.0};
+  double attached_state_timeout_s_{0.5};
 
   std::unique_ptr<octomap::OcTree> octree_;
+  openral_msgs::msg::WorldStateStamped::SharedPtr world_state_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
+  rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

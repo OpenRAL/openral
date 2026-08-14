@@ -170,8 +170,10 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
 
   // Attached-payload phase — grasped objects carried on
   // /openral/world_state_fast (ADR-0092). Each object leaves world occupancy
-  // and is re-checked as collision-active robot geometry (vs world, voxels, and
-  // the robot's own links except its attach link + explicit touch links). Caps
+  // (openral_octomap_bridge clears the payload's own cells out of
+  // /openral/world_voxels off this same message — the kernel exempts nothing on
+  // its behalf) and is re-checked as collision-active robot geometry (vs world,
+  // voxels, and the robot's own links except its attach link + touch links). Caps
   // are fixed-capacity: an over-capacity, unknown-link, or malformed attachment
   // set fails closed (the next candidate action is dropped until a clean message
   // lands). Each object owns a single identity, attach link, and touch-link set

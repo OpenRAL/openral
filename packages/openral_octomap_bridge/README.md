@@ -14,15 +14,93 @@ the octree work off the real-time path and publishes a bounded dense grid the
 kernel rasterizes capsules against.
 
 ```
-octomap_msgs/Octomap (map frame)
-   │  octomap_msgs::msgToMap → octomap::OcTree
-   │  tf2 lookup: octomap_frame ← base_frame
-   │  crop a bounded local box around the robot, query the octree per voxel
+octomap_msgs/Octomap (map frame)          openral_msgs/WorldStateStamped
+   │  msgToMap → octomap::OcTree             │  .attached_objects
+   │  tf2: octomap_frame ← base_frame        │  tf2: base_frame ← attach_link
+   │  crop + rasterize the local box         │
+   ▼                                         ▼
+   └───────────▶ clear_attached_payload_cells (the payload leaves the map)
    ▼
 openral_msgs/OccupancyVoxels (base frame, /openral/world_voxels)
    ▼
 C++ safety kernel  ──  check_voxel_collision (allocation-free)
 ```
+
+## The attached payload leaves world occupancy here
+
+`openral_msgs/AttachedCollisionObject` states the contract: *"The same object
+must be absent from world occupancy while attached."* Before the grasp the
+object legitimately **is** world occupancy — its cells were marked by honest
+sensor returns. At the attach transition they stop describing the world and
+start describing the robot's own payload, which the kernel already re-checks as
+collision-active attached geometry. Until PR #110 nothing removed them, and on
+the 2026-08-14 acceptance run the arm E-stopped 1.8 mm off the surface of the
+object it was carrying (26 further cells sat *inside* the payload's primitives),
++32 mm above the attested support plane — so the ADR-0092 D6 support-contact
+witness correctly refused to exempt it. It was not support contact. It was the
+payload's own stale silhouette.
+
+**Why here.** Three places could do it:
+
+* **The kernel** could skip cells inside the payload's primitives. That is an
+  *exemption*, not a clearing: the map still carries the phantom for every other
+  consumer (Nav2, SLAM, the dashboard — issue #108), and the kernel's one
+  unconditional rule ("an occupied cell is an obstacle") acquires a per-cell
+  escape hatch on the real-time path.
+* **The HAL's depth self-filter** already makes the payload transparent to the
+  rays (`exclude_body_ids`) and emits max-range clearing rays where nothing lies
+  behind it, so OctoMap ray-clears the silhouette. That reaches exactly the
+  cells **a ray still crosses**. A cell of the payload that is occluded by real
+  geometry, outside the frustum, or simply between two rays gets no ray at all,
+  and `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`
+  pins what happens to it: nothing, for the rest of the run.
+  `tests/unit/test_depth_camera_synth.py::test_transparency_clears_only_the_payload_cells_a_ray_still_reaches`
+  measures both halves against a real `MjModel` — the visible half's rays reach
+  the wall 1.9 m away and clear everything between; the half behind a counter
+  stops 0.95 m out, half a metre short of the payload.
+* **This bridge**, which already owns the lowering, re-derives the grid every
+  frame, and sits in the same layer as the attachment state. It clears.
+
+**What it does.** The bridge subscribes `/openral/world_state_fast` — the same
+message the kernel ingests its attached geometry from, so bridge and kernel
+always act on one attachment set — places each object by
+`FK(attach_link) · pose_in_link · pose_in_object` (tf2 + the wire poses, the
+kernel's own composition), and zeroes every occupied cell whose centre lies
+within the cell cube's **circumradius** (`resolution·√3/2`, 21.7 mm at 25 mm
+cells) of a payload primitive. That bound is the map's own discretisation slop —
+the same one `support_contact_exempts` uses — so every cell the payload's volume
+actually intersects goes, and the over-reach is at most one cell layer.
+`attached_clear_padding_m` adds to it and is **0 by default**: padding removes
+cells the payload cannot explain, which is protection given up.
+
+**Why this is conservative.** The payload does not stop being checked — it
+remains collision-active attached geometry, and `check_attached_voxel_collision`
+keeps testing it against every *remaining* occupied cell, plus
+`check_attached_world_collision` and `check_attached_self_collision`. What the
+clearing removes is the robot being stopped by *itself*.
+`AttachedVoxelCollision.ClearingThePayloadsOwnCellsKeepsThePayloadVsWorldCheck`
+(`cpp/openral_safety_kernel/test/test_collision.cpp`) pins exactly that: with the
+payload's own cells cleared and a real obstacle cell 90 mm off its surface left
+in place, the kernel still stops, still names that cell, and still reports its
+true 40 mm clearance.
+
+**Failure is refusal to clear.** No attachment message, one older than
+`attached_state_timeout_s`, a missing `base_frame ← attach_link` TF, or a
+primitive the kernel itself would reject (unknown shape tag, too few dimensions,
+degenerate quaternion) clears **nothing at all** and logs. The map then keeps
+occupancy it should not have, which can only stop the robot early.
+
+**Detach.** The clearing carries no state: it is derived from the attachment set
+on every published grid, so the first frame after the object leaves that set is
+already the frame that publishes it as an obstacle again. Re-*marking* a cell the
+transparency rays cleared costs OctoMap's two-hit confirmation (~0.2 s at 10 Hz),
+which is the map's own latency and is pinned by `test_occupancy_persistence`.
+
+**What it does not do.** It clears the grid this node publishes, not
+`octomap_server`'s own octree: ROS 2's `octomap_server` exposes `~/reset` but no
+`clear_bbx` service, and resetting the whole map at every grasp would discard
+every real obstacle in it. So a consumer reading `/octomap_binary` directly still
+sees the payload's silhouette until the transparency rays retire it (issue #108).
 
 ## The frame contract (ADR-0095)
 
@@ -104,6 +182,10 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `box_size_{x,y,z}` | `2.0` | Local volume extent around the robot (m). |
 | `box_center_{x,y,z}` | `0,0,0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
+| `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = the pre-#110 behaviour (the payload stays in the map and stops the robot against itself). |
+| `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
+| `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius, for pose uncertainty. Every millimetre here removes cells the payload cannot explain. |
+| `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
 
 `size_{x,y,z} = ceil(box_size / resolution)`. Keep
 `size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 262144), or the
@@ -143,6 +225,17 @@ tunes for, on a real `OcTree` seeded with those exact parameters
 * a cleared cell still comes back when something real is there — four 10 Hz
   frames (~0.4 s) from the clamping floor, which is the measured cost of the
   clearing behaviour, not an assumption.
+
+`test_payload_clearing` pins the attached-payload half on the same real
+`OcTree`, seeded through real rays: the 20 cells a pre-grasp camera marked on
+the object reach the kernel's grid unchanged before the fix; the attach clears
+exactly those 20 and leaves the real obstacle beside them; a cell 1.8 mm off the
+payload surface (the acceptance run's tripping cell) goes, one a millimetre past
+the circumradius stays; clearing never marks; it follows the payload's live pose
+rather than snapshotting the attach instant; detach restores the object to the
+grid in the same frame; and a payload the bridge cannot place — unknown shape,
+short dimension list, no primitives, degenerate quaternion — clears nothing at
+all.
 
 **Sim status.** The sim target is `scenes/sim/robocasa_panda_mobile_kitchen.yaml`
 — a mobile manipulator in a cluttered RoboCasa kitchen, the only scene with real

@@ -1158,6 +1158,54 @@ TEST(AttachedVoxelCollision, FreeGridNeverHits) {
   EXPECT_FALSE(hit.hit);
 }
 
+TEST(AttachedVoxelCollision, ClearingThePayloadsOwnCellsKeepsThePayloadVsWorldCheck) {
+  // What the octomap bridge's payload clearing (`openral_octomap_bridge`,
+  // `clear_attached_payload_cells`) takes out of the grid, and what it must
+  // leave. The kernel is unchanged by that fix — this pins the property the fix
+  // rests on, from the kernel's side.
+  //
+  // A payload sphere of radius 0.11 m at the origin. Three occupied cells reach
+  // the kernel: (2,2,2) and (3,2,2), which lie inside the payload itself (its
+  // own pre-grasp occupancy, still in the map), and (4,2,2) at 0.09 m from the
+  // payload surface — a real obstacle, far enough out that the bridge's
+  // circumradius bound (0.0866 m at 0.1 m cells) does not reach it.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.11)});
+  constexpr double kMargin = 0.05;
+
+  std::vector<std::uint8_t> as_mapped(125, 0);
+  as_mapped[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  as_mapped[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
+  as_mapped[static_cast<std::size_t>(voxel_index(4, 2, 2))] = 1;
+  const auto uncleared =
+      osk::check_attached_voxel_collision(m, att, s, make_grid(as_mapped), kMargin);
+  ASSERT_TRUE(uncleared.hit);
+  EXPECT_EQ(uncleared.link_b, voxel_index(2, 2, 2))
+      << "uncleared, the payload stops the robot against itself";
+
+  // The grid as the bridge now publishes it: the payload's own cells gone.
+  std::vector<std::uint8_t> cleared = as_mapped;
+  cleared[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 0;
+  cleared[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 0;
+  const auto after = osk::check_attached_voxel_collision(m, att, s, make_grid(cleared), kMargin);
+  EXPECT_TRUE(after.hit) << "payload-vs-world is still checked, cell by cell";
+  EXPECT_EQ(after.link_b, voxel_index(4, 2, 2));
+  EXPECT_LE(after.min_distance, kMargin);
+  EXPECT_NEAR(after.min_distance, 0.04, 1e-9) << "and at the true clearance to that cell";
+
+  // And with nothing real beside it, the stop the clearing removes is the whole
+  // stop: the payload alone no longer trips the check it is the subject of.
+  std::vector<std::uint8_t> only_payload(125, 0);
+  only_payload[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  only_payload[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, make_grid(only_payload), kMargin).hit);
+  const std::vector<std::uint8_t> free_grid(125, 0);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, make_grid(free_grid), kMargin).hit);
+}
+
 TEST(AttachedVoxelCollision, AttachTimeContactAloneNeverExemptsAShallowCell) {
   // The index-keyed non-deepening baseline is gone: a cell merely in contact
   // at attach time (1 cm deep, well short of the embedded-residue threshold)

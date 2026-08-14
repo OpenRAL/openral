@@ -27,7 +27,7 @@ find_package(openral_msgs REQUIRED)
 
 # ── Core library (octree → grid; ROS-graph-free, unit-testable) ───────────────
 
-add_library(octree_to_grid src/octree_to_grid.cpp)
+add_library(octree_to_grid src/octree_to_grid.cpp src/payload_clearing.cpp)
 target_include_directories(octree_to_grid
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -71,6 +71,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_octree_to_grid octree_to_grid)
   ament_add_gtest(test_occupancy_persistence test/test_occupancy_persistence.cpp)
   target_link_libraries(test_occupancy_persistence octree_to_grid)
+  ament_add_gtest(test_payload_clearing test/test_payload_clearing.cpp)
+  target_link_libraries(test_payload_clearing octree_to_grid)
 endif()
 
 ament_package()
