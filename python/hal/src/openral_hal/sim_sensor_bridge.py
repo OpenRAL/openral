@@ -888,6 +888,7 @@ class SimSensorBridge:
         self._attachment_ack_sub: Any = None
         self._attachment_voxel_sub: Any = None
         self._attachment_pub: Any = None
+        self._place_declaration_sub: Any = None
         # E-stop ground truth (diagnostics only — never gates anything).
         # ``/openral/estop`` triggers the snapshot; the candidate-chunk ring
         # and the last collision evidence let an offline tool reconstruct a
@@ -1000,6 +1001,9 @@ class SimSensorBridge:
         if self._attachment_voxel_sub is not None:
             self._node.destroy_subscription(self._attachment_voxel_sub)
             self._attachment_voxel_sub = None
+        if self._place_declaration_sub is not None:
+            self._node.destroy_subscription(self._place_declaration_sub)
+            self._place_declaration_sub = None
         self._teardown_estop_ground_truth()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
@@ -1696,6 +1700,7 @@ class SimSensorBridge:
                     self._node.get_logger().info(
                         "automatic sim attachment evidence armed at the post-step boundary"
                     )
+                    self._setup_place_declaration()
                 else:
                     self._node.get_logger().warning(
                         "automatic sim attachment evidence has no post-step observer"
@@ -1704,6 +1709,72 @@ class SimSensorBridge:
                 self._node.get_logger().warning(
                     f"automatic sim attachment evidence disabled: {exc}"
                 )
+
+    def _setup_place_declaration(self) -> None:
+        """Subscribe dispatch's place-phase declarations (ADR-0097).
+
+        This is the dispatch → HAL half of the declaration's path; the World
+        State half is the attestation it licenses, which rides the existing
+        `/openral/attachment_state` snapshot. TRANSIENT_LOCAL so a producer
+        armed after the dispatcher sees the goal's declaration rather than
+        missing it, and depth 1 because only the newest declaration is ever in
+        force.
+        """
+        from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+
+        self._place_declaration_sub = self._node.create_subscription(
+            PlaceDeclarationMsg,
+            "/openral/place_declaration",
+            self._on_place_declaration,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+
+    def _on_place_declaration(self, msg: object) -> None:
+        """Hand one declaration to the attestation producer, or refuse it.
+
+        Refusal is the fail-closed direction and it is logged, never silent: a
+        declaration naming a target that does not exist in this scene must not
+        be treated as "no declaration happened", because an operator who
+        mistyped a target is owed the error (HZ-0097-2's attributability).
+        """
+        if self._attachment_tracker is None:
+            return
+        from openral_core import PlaceDeclaration
+        from openral_core.exceptions import ROSConfigError
+
+        try:
+            declaration = PlaceDeclaration.from_idl(msg)
+        except (ValueError, TypeError) as exc:
+            self._node.get_logger().error(f"place declaration rejected: {exc}")
+            return
+        try:
+            self._attachment_tracker.set_place_declaration(
+                declaration if declaration.active else None
+            )
+        except ROSConfigError as exc:
+            self._node.get_logger().error(str(exc))
+            return
+        if declaration.active:
+            self._node.get_logger().info(
+                f"place declaration armed target={declaration.target_id} "
+                f"object={declaration.object_id or '<carried>'} "
+                f"rskill={declaration.rskill_id or '<unset>'} "
+                f"trace={declaration.trace_id or '<unset>'} "
+                f"timeout_s={declaration.timeout_s:.1f}"
+            )
+        else:
+            self._node.get_logger().info(
+                f"place declaration retracted target={declaration.target_id}"
+            )
 
     def _on_attachment_state(self, msg: object) -> None:
         """Apply one complete attachment snapshot to the sim perception mask."""
