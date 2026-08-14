@@ -61,7 +61,12 @@ _CONTACTS_CAVEAT = (
     "robot_world_contacts==0 does NOT mean no interpenetration: MuJoCo "
     "contype/conaffinity exclusions can suppress contacts entirely (field-"
     "observed: arm 30mm inside a freezer door with ncon==0). Adjudicate with "
-    "the nearest_*_pairs probes, not with the contact list."
+    "the nearest_*_pairs probes, not with the contact list. Those probes "
+    "measure only against SOLID world geometry (a geom with neither contype "
+    "nor conaffinity is a marker, not an obstacle, and is excluded — see "
+    "nearest_*_coverage.noncollidable_world_geoms_excluded); a pair whose "
+    "bitmasks merely fail to meet each other is still measured, because "
+    "suppression is a property of the pair, not of the geom."
 )
 # Candidate chunks retained for predicted-horizon reconstruction. The kernel
 # checks the chunk it has just received; a small ring covers the delivery
@@ -411,7 +416,10 @@ def _nearest_pair_records(
 
     The other side is either an explicit body set (``other_included`` — used
     for payload↔robot-link self-pairs, which are not "everything else") or,
-    by default, every body outside ``side`` and ``other_excluded``.
+    by default, every body outside ``side`` and ``other_excluded``. That
+    default enumeration drops geoms with neither ``contype`` nor
+    ``conaffinity``: they are not solid, so a distance measured against one is
+    not a penetration. See the exclusion's own comment below.
 
     Bounded by construction: a vectorised distance-lower-bound prefilter
     (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
@@ -447,6 +455,7 @@ def _nearest_pair_records(
         "truncated": False,
         "side_geoms": 0,
         "side_geoms_probed": 0,
+        "noncollidable_world_geoms_excluded": 0,
     }
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
@@ -466,7 +475,25 @@ def _nearest_pair_records(
             body_of_geom,
             np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
         )
-        other_geoms = np.flatnonzero(~in_side & ~excluded)
+        # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can
+        # never generate a contact for it, and the safety kernel never checks
+        # one. Measuring against it manufactures penetrations that mean nothing
+        # physically — round 5/6 reported the payload "134 mm inside
+        # cab_1_left_group_reg_main", a RoboCasa region marker. The support
+        # producer already draws the same line for the same reason
+        # (``_sim_attachment_evidence._support_candidate_geoms``: "purely visual
+        # geometry ... is not solid, and a decorative shell coincident with a
+        # real surface would only add noise"); this is that rule applied to the
+        # world side of the diagnostic probe. Only the enumerated world side is
+        # filtered — the explicit ``other_included`` branch is the payload↔robot
+        # self-pair probe, whose other side is already the kernel-checked links.
+        collidable = (np.asarray(model.geom_contype, dtype=np.int64) != 0) | (
+            np.asarray(model.geom_conaffinity, dtype=np.int64) != 0
+        )
+        other_geoms = np.flatnonzero(~in_side & ~excluded & collidable)
+        coverage["noncollidable_world_geoms_excluded"] = int(
+            np.count_nonzero(~in_side & ~excluded & ~collidable)
+        )
     coverage["side_geoms"] = int(side_geoms.size)
     if side_geoms.size == 0 or other_geoms.size == 0:
         return [], coverage
@@ -579,6 +606,23 @@ def estop_ground_truth_snapshot(
     probes are the adjudicator, and the record carries this as
     ``contacts_caveat``.
 
+    **The probes measure only against solid world geometry.** A geom with
+    neither ``contype`` nor ``conaffinity`` cannot collide with anything and is
+    never checked by the safety kernel, so a signed distance against one is not
+    a penetration — rounds 5/6 reported the payload "134 mm inside
+    ``cab_1_left_group_reg_main``", a RoboCasa region marker, which is
+    physically meaningless. Both world-side probes (robot↔world and
+    payload↔world) now exclude those geoms, the same rule the support-contact
+    producer applies when enumerating support candidates
+    (``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
+    coverage block reports the count as
+    ``noncollidable_world_geoms_excluded``, so the omission is visible rather
+    than silent. Pairs whose bitmasks merely fail to *meet* are still measured:
+    suppression there is a property of the pair, not of the geom, and that is
+    precisely the case the probe exists to adjudicate. The payload↔robot-link
+    self-pair probe is deliberately untouched — its other side is the enumerated
+    kernel-checked link set, not the scene.
+
     Args:
         model: live ``mujoco.MjModel``.
         data: live ``mujoco.MjData`` at the stop instant.
@@ -621,8 +665,11 @@ def estop_ground_truth_snapshot(
         Each probe carries its own coverage block, and that is what makes an
         *absent* pair readable: an empty near-miss list only means "nothing
         was close" when ``truncated`` is false and
-        ``side_geoms_probed == side_geoms``. The payload coverage blocks are
-        ``{}`` when nothing is carried, matching their empty pair lists.
+        ``side_geoms_probed == side_geoms``.
+        ``noncollidable_world_geoms_excluded`` names how much non-solid world
+        geometry the probe deliberately did not measure. The payload coverage
+        blocks are ``{}`` when nothing is carried, matching their empty pair
+        lists.
     """
     attached_bodies = sorted(attached_body_ids)
     attached = frozenset(attached_bodies)
@@ -2447,8 +2494,12 @@ class SimSensorBridge:
         suppress a contact even at deep interpenetration (field-observed: an
         arm 30 mm inside a freezer door with ``ncon == 0``). Adjudicate a
         stop with the ``nearest_*_pairs`` probes; the contact list only ever
-        confirms, never refutes. The record repeats this as
-        ``contacts_caveat`` so a single grepped line stays self-explaining.
+        confirms, never refutes. Those probes measure only against SOLID world
+        geometry — a geom with neither ``contype`` nor ``conaffinity`` is a
+        marker, and measuring against one manufactured the physically
+        meaningless "payload 134 mm inside ``cab_1_left_group_reg_main``" of
+        rounds 5/6. The record repeats both facts as ``contacts_caveat`` so a
+        single grepped line stays self-explaining.
         """
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:
