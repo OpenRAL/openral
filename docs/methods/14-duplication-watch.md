@@ -98,6 +98,28 @@ contributor should look at before adding similar code.
    venvs that cannot import `openral_sim` — their copies are a deliberate
    wire-contract MIRROR: update them in lockstep with `_behavior_wire`.
 
+8. **Support-contact patch predicate — *deliberate cross-package mirror,
+   update in lockstep.*** `support_contact_exempts`
+   (`cpp/openral_safety_kernel/src/collision.cpp`) and
+   `support_patch_withholds`
+   (`packages/openral_octomap_bridge/src/payload_clearing.cpp`) evaluate
+   the same attested support plane with the same two exact
+   discretisation pads (the voxel cube's half-width projected on the
+   support normal, and its circumradius laterally). They are not
+   consolidated because consolidating them would make a Layer-2
+   perception bridge link the Layer-6 safety kernel's collision core —
+   the wrong dependency direction, and one that would put `octomap` and
+   `tf2` a link away from the real-time kernel. The mirror is safe in
+   one direction only and must stay that way: the bridge evaluates the
+   bound with **zero slack** while the kernel adds
+   `attached_contact_tolerance`, so what the bridge withholds is a
+   subset of what the kernel exempts. Changing either predicate without
+   the other breaks the partition — the failure mode is the 2026-08-14
+   witness/clearing defect. `SupportContactWitness.ThePartitionedClearing
+   LeavesTheWitnessItsEvidence` (kernel) and
+   `PayloadClearing.TheAttestedSupportSurfaceSurvivesTheClearing`
+   (bridge) pin the two halves.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer

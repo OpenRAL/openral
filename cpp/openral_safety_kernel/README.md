@@ -171,6 +171,36 @@ Layer-2 does not get unbounded trust: `support_witness_max_patch_radius_m`
 (0.5) and `support_witness_max_penetration_m` (0.01) cap what an attestation
 may claim, and a witness beyond them fails the whole attachment message closed.
 
+**The witness's evidence is occupancy, so the clearing is partitioned against
+it.** The liveness test is not kinematic: `update_support_contact_witnesses`
+keeps a bit alive only while some **occupied** cell the witness would exempt is
+still within `margin` of the payload. That is deliberate — the attested plane
+lives in the *object* frame and rides up with a lifted payload, so a purely
+geometric separation test would measure the payload against itself and never
+fire; only the map can say the support is still there. It also means the witness
+is destroyed by anything that removes the support surface from the map, and
+`openral_octomap_bridge`'s payload clearing is exactly such a thing: a resting
+payload's bottom cell layer *is* the counter's top cell layer. Clearing it took
+the witness's evidence with it — 2/2 on 2026-08-14, `support_witness_separated
+live=0x0 was=0x1` 2.7 s after arming with ground truth +0.000 mm still touching,
+then the same contact E-stopping unexempted (`sweep_min == min_distance`) as
+soon as a support cell returned to the map.
+
+So the cells are divided, exhaustively, between the two mechanisms: within the
+payload's reach a cell is either **cleared by the bridge** or **exempted here**,
+never neither and never both. The bridge's `support_patch_withholds` is this
+kernel's `support_contact_exempts` with `slack = 0`, so what it withholds is a
+subset of what this exempts and no withheld cell can be the cell that stops the
+robot; everything else around the payload — its own silhouette, its residue
+above the attested plane — still clears and still stops the robot if it comes
+back. The two predicates are a deliberate cross-package mirror (consolidating
+them would put `octomap` and `tf2` one link from this kernel) and must move
+together: `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessIts
+Evidence` and `…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
+pin this side, `PayloadClearing.TheAttestedSupportSurfaceSurvivesTheClearing`
+the other. Nothing in the kernel changed for this: the bridge stopped destroying
+the evidence.
+
 **2. Embedded attach-time residue.** The payload's own occupancy left in the
 map at attach — a cell already at least half a voxel inside the payload when
 the baseline was snapshotted. This is stale self-occupancy, a different

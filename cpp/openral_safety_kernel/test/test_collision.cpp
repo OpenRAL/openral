@@ -1933,6 +1933,88 @@ TEST(SupportContactWitness, LostOccupancyMapDropsEveryWitness) {
   EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0xFF, 0.0), 0x0);
 }
 
+// ── the partition against the Layer-2 payload clearing ──────────────────────
+//
+// The bridge that owns occupancy (`openral_octomap_bridge`) removes the
+// payload's own cells from the published grid, and the witness above proves
+// the payload is still on its support by finding an OCCUPIED cell it would
+// exempt still touching the payload. A resting payload's bottom cell layer IS
+// the counter's top cell layer, so the two mechanisms fight over the same
+// cells: whichever wins decides whether the robot can carry anything.
+//
+// The division of the cells is stated from this side here, in the kernel's own
+// terms and on the kernel's own fixture, so a change to either half has to
+// come past it: the payload's silhouette ABOVE the attested plane belongs to
+// the clearing, the cells inside the attested patch belong to the witness.
+
+TEST(SupportContactWitness, ThePartitionedClearingLeavesTheWitnessItsEvidence) {
+  // What the bridge must publish for a resting payload: the payload's own cell
+  // one layer up is gone, the attested support cell underneath is not. The
+  // witness then still measures against a real cell, stays live, and exempts
+  // exactly it.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  // The pre-clearing map, for contrast: the payload's own uncleared silhouette
+  // at +28.2 mm above the attested plane is not support contact, and stops the
+  // robot — the 2026-08-14 acceptance-run failure this clearing exists to fix.
+  std::vector<std::uint8_t> before(kSupportN * kSupportN * kSupportN, 0);
+  before[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  before[static_cast<std::size_t>(support_index(12, 12, 13))] = 1;
+  auto pre = support_grid(before);
+  pre.support_witness_live = 0x1;
+  const auto pre_hit = osk::check_attached_voxel_collision(m, att, s, pre, 0.0);
+  ASSERT_TRUE(pre_hit.hit);
+  EXPECT_EQ(pre_hit.link_b, support_index(12, 12, 13));
+
+  // After the partitioned clearing: the silhouette cell cleared, the support
+  // cell withheld.
+  std::vector<std::uint8_t> after(kSupportN * kSupportN * kSupportN, 0);
+  after[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto post = support_grid(after);
+  post.support_witness_live = 0x1;
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, post, 0x1, 0.0), 0x1)
+      << "the withheld support cell is what keeps the witness alive";
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, post, 0.0).hit);
+}
+
+TEST(SupportContactWitness, ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops) {
+  // The 2026-08-14 defect, from the kernel's side, and why the bridge must not
+  // clear the attested patch. Reproduced 2/2 on baguette+counter and
+  // cup+island: the clearing takes the counter with the payload, the witness
+  // loses the only evidence it is allowed to consult and declares separation
+  // (`support_witness_separated live=0x0 was=0x1`) while the payload has not
+  // moved a micrometre — and the moment a support cell falls back outside the
+  // clearing reach and returns to the map, the unchanged physical contact
+  // E-stops, unexempted.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  auto cleared = support_grid(occ);  // the support cell cleared away with the payload
+  cleared.support_witness_live = 0x1;
+  const std::uint8_t live = osk::update_support_contact_witnesses(att, s, cleared, 0x1, 0.0);
+  EXPECT_EQ(live, 0x0) << "no occupied cell left to attest to a contact that never ended";
+
+  // One frame later the same cell is in the map again. The latch never re-arms
+  // itself, so this is a fresh, unattested contact.
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto returned = support_grid(occ);
+  returned.support_witness_live = live;
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, returned, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(12, 12, 12));
+  EXPECT_NEAR(hit.min_distance, -0.0157, 1e-9);
+  EXPECT_EQ(hit.sweep_min_distance, hit.min_distance)
+      << "sweep == min is the field signature of a stop with no exemption active";
+}
+
 TEST(SupportContactWitness, MalformedAttestationFailsTheWholeIngestClosed) {
   const std::vector<std::string> links = {"base", "hand"};
   osk::AttachedModel out;
