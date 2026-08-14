@@ -69,6 +69,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_octree_to_grid test/test_octree_to_grid.cpp)
   target_link_libraries(test_octree_to_grid octree_to_grid)
+  ament_add_gtest(test_occupancy_persistence test/test_occupancy_persistence.cpp)
+  target_link_libraries(test_occupancy_persistence octree_to_grid)
 endif()
 
 ament_package()

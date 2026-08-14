@@ -587,6 +587,8 @@ def points_from_depth_grid(
     fy: float,
     cx: float,
     cy: float,
+    clearing: NDArray[np.bool_] | None = None,
+    max_range_m: float | None = None,
 ) -> NDArray[np.float32]:
     """Back-project an ``(H, W)`` metric-depth raster into an ``(N, 3)`` cloud.
 
@@ -594,9 +596,19 @@ def points_from_depth_grid(
     ``(col, row)`` holding perpendicular optical-Z ``z`` becomes
     ``((col - cx) / fx · z, (row - cy) / fy · z, z)`` in the camera optical
     frame (REP-103). Pixels reading exactly ``0.0`` — the "no measurement"
-    sentinel — are dropped, so the result is the same sparse, hit-only cloud
-    :func:`openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
-    returns, in the same row-major ray order.
+    sentinel — are dropped.
+
+    ``clearing`` restores the half of the self-filter the raster cannot carry.
+    A pixel whose only return was a self-filtered body (the robot's own link,
+    an acknowledged payload) has no depth, but the ray behind it is **free**:
+    the cloud synth emits a ``max_range_m`` endpoint there so OctoMap clears
+    the cells the robot occludes instead of leaving them frozen at whatever
+    they last held. Pass the mask
+    :func:`openral_sim.backends.depth_camera.synthesize_depth_frame` returns
+    alongside the raster and the result is byte-for-byte the cloud
+    :func:`~openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
+    would have cast separately — same points, same row-major ray order, one
+    cast.
 
     This is what lets the deploy-sim depth timer pay for **one** ray-cast per
     camera per frame: it synthesises the dense raster once, publishes it as the
@@ -616,10 +628,20 @@ def points_from_depth_grid(
         fy: Focal length y of this raster (pixels).
         cx: Principal point x of this raster (pixels).
         cy: Principal point y of this raster (pixels).
+        clearing: ``(H, W)`` bool mask of self-filtered rays with no farther
+            surface, from
+            :func:`openral_sim.backends.depth_camera.synthesize_depth_frame`.
+            ``None`` (the default) emits measured returns only.
+        max_range_m: Euclidean range the clearing endpoints are placed at.
+            Required when ``clearing`` marks any pixel.
 
     Returns:
         ``(N, 3)`` float32 XYZ in the camera optical frame, row-major in pixel
-        order; ``(0, 3)`` when every pixel reads ``0.0``.
+        order; ``(0, 3)`` when no pixel is measured or cleared.
+
+    Raises:
+        ROSConfigError: ``clearing`` marks a pixel but ``max_range_m`` is unset,
+            or its shape disagrees with ``depth``.
 
     Example:
         >>> import numpy as np
@@ -627,16 +649,51 @@ def points_from_depth_grid(
         >>> grid = np.array([[0.0, 2.0]], dtype=np.float32)
         >>> points_from_depth_grid(grid, fx=4.0, fy=4.0, cx=1.0, cy=0.5).tolist()
         [[0.0, -0.25, 2.0]]
+        >>> # …and now pixel (0, 0) is the robot's own arm: free to 4 m.
+        >>> free = np.array([[True, False]])
+        >>> [
+        ...     [round(v, 4) for v in p]
+        ...     for p in points_from_depth_grid(
+        ...         grid, fx=4.0, fy=4.0, cx=1.0, cy=0.5, clearing=free, max_range_m=4.0
+        ...     ).tolist()
+        ... ]
+        [[-0.9631, -0.4815, 3.8523], [0.0, -0.25, 2.0]]
     """
+    from openral_core.exceptions import ROSConfigError  # reason: defer core import
+
     grid = np.asarray(depth, dtype=np.float32)
-    rows, cols = np.nonzero(grid)  # row-major order: matches the ray order
+    measured = grid > 0.0
+    if clearing is None:
+        selected = measured
+    else:
+        free = np.asarray(clearing, dtype=np.bool_)
+        if free.shape != grid.shape:
+            raise ROSConfigError(
+                f"clearing mask {free.shape} does not match the depth raster {grid.shape}."
+            )
+        if free.any() and max_range_m is None:
+            raise ROSConfigError(
+                "points_from_depth_grid needs max_range_m to place the self-filter's "
+                "clearing endpoints; pass the same value the cast used."
+            )
+        selected = measured | free
+    rows, cols = np.nonzero(selected)  # row-major order: matches the ray order
     if rows.size == 0:
         return np.zeros((0, 3), dtype=np.float32)
+    # Pinhole ray through each selected pixel, in the camera optical frame.
+    ray = np.empty((rows.size, 3), dtype=np.float64)
+    ray[:, 0] = (cols.astype(np.float64) - cx) / fx
+    ray[:, 1] = (rows.astype(np.float64) - cy) / fy
+    ray[:, 2] = 1.0
+    # Measured pixels scale the ray by optical-Z; cleared pixels are placed at
+    # max_range along the UNIT ray, exactly as the cloud synth does.
     z = grid[rows, cols].astype(np.float64)
-    points = np.empty((z.size, 3), dtype=np.float64)
-    points[:, 0] = (cols.astype(np.float64) - cx) / fx * z
-    points[:, 1] = (rows.astype(np.float64) - cy) / fy * z
-    points[:, 2] = z
+    points = ray * z[:, None]
+    if clearing is not None:
+        free_sel = np.asarray(clearing, dtype=np.bool_)[rows, cols] & ~measured[rows, cols]
+        if np.any(free_sel):
+            unit = ray[free_sel] / np.linalg.norm(ray[free_sel], axis=1, keepdims=True)
+            points[free_sel] = unit * float(max_range_m)  # type: ignore[arg-type]  # reason: guarded above
     return points.astype(np.float32)
 
 

@@ -2024,7 +2024,7 @@ class SimSensorBridge:
             TransformStamped,
         )
         from openral_core.exceptions import ROSConfigError
-        from openral_sim.backends.depth_camera import synthesize_depth_image
+        from openral_sim.backends.depth_camera import synthesize_depth_frame
 
         from openral_hal.depth_cloud import (
             camera_info_from_intrinsics,
@@ -2061,8 +2061,11 @@ class SimSensorBridge:
                 )
                 # The ONE ray-cast of this frame: a dense 32FC1 raster (every
                 # pixel, 0.0 = no return) at the strided resolution, so the
-                # CameraInfo intrinsics scale by 1/stride to match it.
-                depth_grid = synthesize_depth_image(
+                # CameraInfo intrinsics scale by 1/stride to match it — plus
+                # the self-filter's clearing mask, which the raster's 0.0
+                # sentinel cannot express and which OctoMap needs to clear the
+                # cells the robot's own body occludes.
+                depth_grid, clearing = synthesize_depth_frame(
                     model=model,
                     data=data,
                     stride=stride,
@@ -2075,7 +2078,12 @@ class SimSensorBridge:
                 intr = {k: float(kwargs[k]) / stride for k in ("fx", "fy", "cx", "cy")}
                 # octomap's cloud is that same raster back-projected through the
                 # same intrinsics — not a second cast of the same rays.
-                points = points_from_depth_grid(depth_grid, **intr)
+                points = points_from_depth_grid(
+                    depth_grid,
+                    clearing=clearing,
+                    max_range_m=float(kwargs["max_range_m"]),
+                    **intr,
+                )
                 cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
                 pub.publish(cloud)
                 if self._attachment_depth_frames_remaining > 0:

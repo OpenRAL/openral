@@ -327,6 +327,100 @@ def synthesize_depth_pointcloud(
     return points.astype(np.float32)
 
 
+def synthesize_depth_frame(
+    *,
+    model: Any,
+    data: Any,
+    camera_name: str,
+    width: int,
+    height: int,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    max_range_m: float,
+    min_range_m: float = 0.0,
+    stride: int = 1,
+    exclude_body_id: int | None = None,
+    exclude_body_ids: frozenset[int] | None = None,
+) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
+    """One ray-cast, both of its products: the depth raster **and** its clearing mask.
+
+    :func:`synthesize_depth_image` alone cannot carry the self-filter's whole
+    result. A pixel whose only return was a self-filtered body (the robot's own
+    link, an acknowledged payload) has *no depth* — the raster must read
+    ``0.0`` there or nvblox integrates a surface that is not in the world — but
+    it does carry information: the ray is **free** all the way out, and OctoMap
+    needs that ray to clear the cells the robot is standing in front of.
+    Collapsing both onto ``0.0`` makes the robot's own silhouette a write-only
+    region of the map: cells inside it can be marked but never unmarked, so a
+    stale voxel there survives every subsequent frame and eventually stops the
+    arm against nothing.
+
+    So the two meanings travel separately. The raster is the sensor's ``0.0 =
+    no measurement`` contract, unchanged; the boolean mask marks the pixels
+    that are "free to ``max_range_m``", which
+    :func:`openral_hal.depth_cloud.points_from_depth_grid` turns back into the
+    max-range endpoints :func:`synthesize_depth_pointcloud` has always emitted.
+    Still exactly one ``mj_ray`` per pixel per frame.
+
+    Args:
+        model: Live ``mujoco.MjModel``.
+        data: Live ``mujoco.MjData`` (caller must have stepped / forwarded it).
+        camera_name: Name of the ``<camera>`` in the MJCF.
+        width: Image width in pixels (full, pre-stride).
+        height: Image height in pixels (full, pre-stride).
+        fx: Pinhole focal length in x (pixels).
+        fy: Pinhole focal length in y (pixels).
+        cx: Pinhole principal point x (pixels).
+        cy: Pinhole principal point y (pixels).
+        max_range_m: Rays returning farther than this (or no hit) read ``0.0``.
+        min_range_m: Rays returning nearer than this read ``0.0``.
+        stride: Pixel subsample step.
+        exclude_body_id: ``mj_ray`` ``bodyexclude`` (camera's own mount).
+        exclude_body_ids: Body ids made transparent to the cast.
+
+    Returns:
+        ``(depth, clearing)`` — both ``(n_rows, n_cols)``. ``depth`` is the
+        float32 optical-Z raster in metres (``0.0`` = no measurement);
+        ``clearing`` is the bool mask of pixels whose only return was a
+        self-filtered body and which found no farther surface, i.e. the rays
+        OctoMap should clear to ``max_range_m``. The two are disjoint by
+        construction.
+
+    Raises:
+        ROSConfigError: ``camera_name`` is not a camera in ``model``.
+
+    Example:
+        >>> # depth, clearing = synthesize_depth_frame(
+        >>> #     model=m, data=d, camera_name="front_depth",
+        >>> #     width=128, height=128, fx=92, fy=92, cx=64, cy=64,
+        >>> #     max_range_m=5.0, exclude_body_ids=robot_bodies)
+    """
+    dir_opt, distances, hit, clearing, n_cols, n_rows = _cast_depth_rays(
+        model=model,
+        data=data,
+        camera_name=camera_name,
+        width=width,
+        height=height,
+        fx=fx,
+        fy=fy,
+        cx=cx,
+        cy=cy,
+        max_range_m=max_range_m,
+        min_range_m=min_range_m,
+        stride=stride,
+        exclude_body_id=exclude_body_id,
+        exclude_body_ids=exclude_body_ids,
+    )
+    # Perpendicular optical-Z = Euclidean range · ẑ. dir_opt is unit-norm, so
+    # dir_opt[:, 2] is cos(angle off the optical axis): exactly the z-component
+    # of the back-projected point (``points[:, 2]`` in the cloud synth).
+    depth = np.zeros(dir_opt.shape[0], dtype=np.float32)
+    depth[hit] = (distances[hit] * dir_opt[hit, 2]).astype(np.float32)
+    return depth.reshape(n_rows, n_cols), clearing.reshape(n_rows, n_cols)
+
+
 def synthesize_depth_image(
     *,
     model: Any,
@@ -355,6 +449,14 @@ def synthesize_depth_image(
     **not** the Euclidean range), with ``0.0`` where the ray missed, fell out of
     ``[min_range_m, max_range_m]``, or struck a self-filtered body (the standard
     "no measurement" sentinel nvblox skips).
+
+    **Do not build an OctoMap cloud from this alone.** ``0.0`` is lossy: it
+    cannot distinguish "no return" from "the only return was the robot's own
+    body, so this ray is free to ``max_range_m``", and OctoMap needs the second
+    one to clear the cells the robot occludes. Use
+    :func:`synthesize_depth_frame`, which returns this same raster **plus** the
+    clearing mask, and hand both to
+    ``openral_hal.depth_cloud.points_from_depth_grid``.
 
     The raster is at the **strided** resolution: shape ``(ceil(height / stride),
     ceil(width / stride))``. The matching ``CameraInfo`` must scale the
@@ -392,7 +494,7 @@ def synthesize_depth_image(
         >>> #     width=128, height=128, fx=92, fy=92, cx=64, cy=64,
         >>> #     max_range_m=8.0)  # -> (128, 128) float32, metres
     """
-    dir_opt, distances, hit, _clearing, n_cols, n_rows = _cast_depth_rays(
+    depth, _clearing = synthesize_depth_frame(
         model=model,
         data=data,
         camera_name=camera_name,
@@ -408,9 +510,4 @@ def synthesize_depth_image(
         exclude_body_id=exclude_body_id,
         exclude_body_ids=exclude_body_ids,
     )
-    # Perpendicular optical-Z = Euclidean range · ẑ. dir_opt is unit-norm, so
-    # dir_opt[:, 2] is cos(angle off the optical axis): exactly the z-component
-    # of the back-projected point (``points[:, 2]`` in the cloud synth).
-    depth = np.zeros(dir_opt.shape[0], dtype=np.float32)
-    depth[hit] = (distances[hit] * dir_opt[hit, 2]).astype(np.float32)
-    return depth.reshape(n_rows, n_cols)
+    return depth
