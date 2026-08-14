@@ -201,15 +201,18 @@ def test_support_contact_witness_round_trips_over_the_idl() -> None:
     # does not must arrive with support_contact_valid False, because a lost
     # witness would silently re-open the false stop and an invented one would
     # silently license real penetration.
+    # The 2026-08-14 acceptance run's attested baguette, verbatim — including
+    # the evidence kind the MuJoCo producer actually emits, which is the signed
+    # distance probe and not the solver's contact list.
     witness = SupportContactWitness(
         support_id="robocasa:counter_main",
         contact_point_in_object=(0.0, 0.0, -0.025),
         contact_normal_in_object=(0.0, 0.0, 1.0),
-        patch_radius_m=0.13,
-        max_penetration_m=0.00137,
+        patch_radius_m=0.1476,
+        max_penetration_m=0.00118,
         confidence=1.0,
-        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
-        evidence_ref="mujoco_body:counter_main",
+        evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
+        evidence_ref="mujoco_geom_distance:counter_main",
         stamp_ns=99,
     )
     attachments = [
@@ -224,8 +227,9 @@ def test_support_contact_witness_round_trips_over_the_idl() -> None:
     msg = build_world_state_stamped_msg(None, _ws([], attached=attachments))
     assert msg.attached_objects[0].support_contact_valid is True
     assert msg.attached_objects[0].support_contact.support_id == "robocasa:counter_main"
-    assert msg.attached_objects[0].support_contact.max_penetration_m == pytest.approx(0.00137)
+    assert msg.attached_objects[0].support_contact.max_penetration_m == pytest.approx(0.00118)
     assert msg.attached_objects[0].support_contact.contact_normal_in_object.z == pytest.approx(1.0)
+    assert msg.attached_objects[0].support_contact.evidence_kind == "sim_geom_distance"
     assert msg.attached_objects[1].support_contact_valid is False
 
     decoded = world_state_from_idl(msg)
