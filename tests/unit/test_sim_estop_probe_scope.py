@@ -333,6 +333,12 @@ def test_payload_world_near_miss_is_probed() -> None:
     assert closest["body_a"] == "sink_cup"
     assert closest["body_b"] == "counter_main"
     assert closest["distance_m"] == pytest.approx(_CUP_PAYLOAD_WORLD_GAP_M, abs=5e-4)
+    # Every probe attests its own coverage: a payload pair is only readable as
+    # absent when the probe actually reached the whole candidate set.
+    coverage = snapshot["nearest_payload_world_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["side_geoms"] == coverage["side_geoms_probed"]
+    assert coverage["truncated"] is False
 
 
 def test_payload_robot_self_pair_is_probed() -> None:
@@ -354,6 +360,9 @@ def test_payload_robot_self_pair_is_probed() -> None:
     assert closest["distance_m"] == pytest.approx(_CUP_LINK5_PENETRATION_M, abs=2e-4)
     # The payload never appears as its own world obstacle.
     assert "sink_cup" not in _bodies_in(snapshot["nearest_robot_world_pairs"])
+    coverage = snapshot["nearest_payload_robot_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["side_geoms"] == coverage["side_geoms_probed"]
 
 
 def test_unattached_stop_emits_no_payload_probes() -> None:
@@ -369,3 +378,11 @@ def test_unattached_stop_emits_no_payload_probes() -> None:
     assert snapshot["stop_class"] == "robot_world"
     assert snapshot["nearest_payload_world_pairs"] == []
     assert snapshot["nearest_payload_robot_pairs"] == []
+    # …and no phantom coverage either: an empty block, not a zeroed probe that
+    # reads as "we looked and found nothing".
+    assert snapshot["nearest_payload_world_coverage"] == {}
+    assert snapshot["nearest_payload_robot_coverage"] == {}
+    # The robot↔world probe did run, so it attests coverage for real.
+    robot_world = snapshot["nearest_probe_coverage"]
+    assert isinstance(robot_world, dict)
+    assert robot_world["side_geoms"] == robot_world["side_geoms_probed"]
