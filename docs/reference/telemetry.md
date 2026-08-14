@@ -233,6 +233,38 @@ Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
 | `ros_image_detector_node.py:501-545` "continuous leg alive" | info | per frame | Already `throttle_duration_sec=5.0`. |
 | `dashboard/app.py` write-control audit trail | warning | per operator write | Audit-by-design; keep at WARNING. |
 | `rskill/_diagnostics.py:132,142,166` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
+| `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
+
+### The deploy-sim task-success signal
+
+`openral deploy sim` runs its backend continuously, which suppresses the
+simulator's own per-step task evaluation — so nothing in the deploy stack used
+to state whether the scene's task (e.g. "cup placed in the sink") had actually
+been completed. `SimAttachedHAL` therefore polls the backend's own predicate
+(RoboCasa's per-task `env._check_success()`; `openral_sim.rollout.SimRollout`'s
+optional `task_success` extension) once per `env.step` and reports it:
+
+| Line | Fires | Carries |
+|---|---|---|
+| `sim.task_success` | every change of the verdict, both edges | `success`, `previous`, `first_success`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
+| `sim.task_success_final` | once, at `disconnect` | `success`, `ever_succeeded`, `first_success_sim_time_ns`, `transitions`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.task_success_probe_failed` | once, if the backend predicate raises | `error`, `error_type` — polling then latches off (no flood, no crash) |
+
+Both edges are logged because RoboCasa success is **not latched**: an object
+can be knocked back out of its receptacle, and a rising-edge-only record would
+claim a success no longer held. A backend with no success predicate emits
+nothing at all — "unknown" is never reported as failure.
+
+The logger name is `openral.sim.task_success`, deliberately dotted under
+`openral.` so it propagates to the stdlib logger the OTel bridge is attached to
+and reaches the dashboard Event Log. Each line is **also** mirrored to stdout as
+`<event> <json>` (matching `sim.estop_ground_truth_snapshot`), because the
+structlog record is exported but never printed in a launched HAL subprocess —
+and a verdict that exists only inside the collector is not recoverable from a
+validation run's artifacts.
+
+Observability only: the verdict reaches the log and nothing else. It never
+feeds termination, reset, reward, or the action path (CLAUDE.md §1.4).
 
 `ROSSafetyViolation` is never caught except at the safety-supervisor boundary,
 where it triggers E-stop plus a structured incident log (CLAUDE.md §5).
