@@ -7836,6 +7836,21 @@ class DeployScene(BaseModel):
     runtime: DeployRuntime | None = None
     """Committed deploy-posture toggles (see :class:`DeployRuntime`). ``None``
     = every leg on its CLI/auto default. CLI flags override field-by-field."""
+    place_declaration: PlaceDeclaration | None = None
+    """Committed place-phase declaration for **direct** dispatch (ADR-0097).
+
+    A reasoner grounds the place target per goal and puts the declaration on
+    the ``ExecuteRskill`` goal, which wins over this. A direct dispatch has no
+    reasoner in the loop, and the scene is the only place that knows the task's
+    place target — so a counter→cabinet scene declares it here, and ``openral
+    deploy sim`` / ``deploy run`` inject it into the rSkill runner, which scopes
+    it to each goal it dispatches (armed on start, retracted on end / cancel /
+    E-stop).
+
+    ``None`` — every scene today — means no declaration, so no place witness can
+    ever arm and payload contact mid-carry stops the robot exactly as it does
+    now. The declaration licenses nothing on its own: it only makes measured
+    support contact *on the declared target* attestable."""
 
     @model_validator(mode="before")
     @classmethod

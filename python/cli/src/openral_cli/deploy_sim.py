@@ -1541,6 +1541,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ):
         argv_template.append(f"workcell_json:={deploy_scene.model_dump_json(exclude_unset=True)}")
 
+    # ADR-0097 — the scene's committed place-phase declaration, for a DIRECT
+    # dispatch (no reasoner in the loop to ground the place target per goal).
+    # Forwarded to the rSkill runner, which scopes it to each goal it
+    # dispatches. Absent — every scene today — means no place witness can arm.
+    if deploy_scene is not None and deploy_scene.place_declaration is not None:
+        argv_template.append(
+            f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
+        )
+
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
     # launch paths by convention and forward them (each to its consumer's arg).
