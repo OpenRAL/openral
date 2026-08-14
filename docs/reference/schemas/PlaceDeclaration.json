@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe pick-phase support-contact witness (ADR-0092 D6) exempts the contact a\npayload keeps with the surface it was picked from, and its anti-scope is\ndeliberate: a *new* contact against any other surface mid-carry is never\nexempt, because nothing in World State or the safety kernel distinguishes\n\"the payload arrived at its declared destination\" from \"the payload grazed\na wall.\" This declaration is that distinction (ADR-0097), and the only\nthing that supplies it \u2014 it is **never** inferred from motion and never\nfrom simulator introspection.\n\nA declaration on its own exempts nothing. It permits a producer to attest\na second, place-phase :class:`SupportContactWitness` when the payload\nactually comes into fresh bounded contact **on the declared target**; the\nkernel then exempts exactly that witness's patch, under the identical\nbounds, fail-closed rules and hysteresis the pick witness is under.\nMeasured contact with no declaration exempts nothing either \u2014 unchanged\npre-ADR-0097 behaviour.\n\nThe declaration is scoped to one goal execution and dies three ways\n(HZ-0097-3): explicit retraction (``active=False``) on goal end, goal\ncancel, and E-stop; and, independently of any retraction arriving,\n:attr:`timeout_s` after :attr:`stamp_ns` \u2014 the backstop that keeps a\ndispatcher crash from leaving an exemption armed for a later, unrelated\nskill execution. Consumers apply both; whichever fires first wins.\n\nAttributes:\n    target_id: Identity of the declared place target (e.g.\n        ``\"sim:cab_1_left_group_main\"``). A place witness may only be\n        attested for support contact on this target \u2014 the attested\n        ``support_id`` names it, or names a surface that is part of it.\n    object_id: Payload the declaration is scoped to (an\n        :attr:`AttachedCollisionObject.object_id`). Empty means \"whichever\n        payload is carried\", the direct-dispatch case where the grasped\n        object's identity is only discovered at attach time.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``. Capped\n        at :attr:`MAX_TIMEOUT_S`.\n    stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+  "properties": {
+    "target_id": {
+      "default": "",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "object_id": {
+      "default": "",
+      "title": "Object Id",
+      "type": "string"
+    },
+    "rskill_id": {
+      "default": "",
+      "title": "Rskill Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "default": "",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "timeout_s": {
+      "exclusiveMinimum": 0.0,
+      "title": "Timeout S",
+      "type": "number"
+    },
+    "stamp_ns": {
+      "minimum": 0,
+      "title": "Stamp Ns",
+      "type": "integer"
+    },
+    "active": {
+      "default": true,
+      "title": "Active",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "timeout_s",
+    "stamp_ns"
+  ],
+  "title": "PlaceDeclaration",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
