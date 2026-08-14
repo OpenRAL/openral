@@ -1968,9 +1968,14 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
     whatever the process-group topology:
 
     1. Forward SIGINT/SIGTERM to the launch's session so ``ros2 launch``
-       runs its graceful shutdown (each node's ``on_shutdown`` fires; the
-       HAL releases its MJCF env; the skill adapter's ``close()``
-       terminates the rldx sidecar).
+       runs its graceful shutdown. Each node then unwinds its own
+       ``main()``: rclpy's SIGINT handler shuts the context and raises out
+       of ``spin``, and the ``finally`` runs the teardown — for the HAL
+       that is ``shutdown_hal()``, which releases the MJCF env and emits
+       the terminal ``sim.task_success_final`` verdict; the skill adapter's
+       ``close()`` terminates the rldx sidecar. Note this is NOT the
+       lifecycle ``shutdown`` transition — rclpy requests none on a signal,
+       so ``on_shutdown`` does not fire.
     2. After ``grace_s`` escalate to SIGKILL on the launch's process
        group (``_terminate_launch_group``).
     3. Sweep by argv signature (``_kill_orphan_openral_graph_processes``).

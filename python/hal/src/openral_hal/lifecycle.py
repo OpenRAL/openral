@@ -293,6 +293,10 @@ def make_lifecycle_main(
             # idempotent `try_shutdown()` below.
             pass
         finally:
+            # SIGINT never runs a lifecycle transition, so this is the only
+            # place `HAL.disconnect` (and the terminal `sim.task_success_final`
+            # verdict it emits) is reached on a signal-driven teardown.
+            node.shutdown_hal()
             node.destroy_node()
             # Idempotent — no-op when the SIGINT handler (or whoever
             # fired ExternalShutdownException) already shut the context.
@@ -361,6 +365,10 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
             # idempotent `try_shutdown()` below.
             pass
         finally:
+            # SIGINT never runs a lifecycle transition, so this is the only
+            # place `HAL.disconnect` (and the terminal `sim.task_success_final`
+            # verdict it emits) is reached on a signal-driven teardown.
+            node.shutdown_hal()
             node.destroy_node()
             # Idempotent — no-op when the SIGINT handler (or whoever
             # fired ExternalShutdownException) already shut the context.
@@ -762,6 +770,39 @@ if _ROS2_AVAILABLE:
         def on_shutdown(self, state: object) -> TransitionCallbackReturn:
             """Force-disconnect on shutdown — mirrors :meth:`on_cleanup`."""
             return self.on_cleanup(state)
+
+        def shutdown_hal(self) -> None:
+            """Disconnect the HAL on a signal-driven process teardown.
+
+            ``rclpy`` answers SIGINT by shutting the context down and raising
+            out of :func:`rclpy.spin`; it never *requests* the lifecycle
+            ``shutdown`` transition, so :meth:`on_shutdown` / :meth:`on_cleanup`
+            — and with them ``HAL.disconnect`` — never run. Every real
+            ``openral deploy sim`` session ends exactly that way
+            (``_terminate_launch_group`` SIGINTs the launch's process group),
+            which is why the terminal ``sim.task_success_final`` verdict that
+            :meth:`SimAttachedHAL.disconnect` emits was absent from every field
+            log while the unit tests calling ``disconnect`` directly stayed
+            green: nothing on the signal path ever called it.
+
+            Called from the ``finally`` of both ``main()`` factories, before
+            ``destroy_node``. Exactly-once and idempotent both ways: the HAL
+            handle is taken before the call, so a subsequent ``on_cleanup``
+            (and a second teardown) find nothing to disconnect, and
+            ``disconnect`` is itself idempotent. Deliberately HAL-only — no
+            publisher/timer teardown here, because the rclpy context is already
+            down by this point and ``destroy_node`` owns that half.
+
+            SIGKILL remains uncatchable: the launch teardown escalates to it
+            after its grace window, and a killed process emits no verdict.
+            """
+            hal, self._hal = self._hal, None
+            if hal is None:
+                return
+            try:
+                hal.disconnect()
+            except Exception as exc:  # reason: a teardown fault must not mask process exit
+                self.get_logger().error(f"HAL disconnect failed during shutdown: {exc}")
 
         # ── Internal callbacks (do not override) ─────────────────────────
 
