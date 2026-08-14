@@ -43,6 +43,14 @@ float64 patch_radius_m
 float64 max_penetration_m
 
 float32 confidence
+
+# Source that MEASURED the support contact, from openral_core's
+# AttachmentEvidenceKind. The MuJoCo producer attests "sim_geom_distance": a
+# signed closest-distance probe, NOT the solver's contact list. That
+# distinction is load-bearing — contype/conaffinity suppression empties whole
+# geom pairs, so a payload demonstrably resting on a counter can generate no
+# contact record at all. A consumer must not read "sim_contact" as proof a
+# solver contact existed, nor "sim_geom_distance" as proof none did.
 string evidence_kind
 string evidence_ref
 int64 stamp_ns

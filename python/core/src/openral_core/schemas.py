@@ -2061,9 +2061,21 @@ class WorldCollisionPrimitive(BaseModel):
 
 
 class AttachmentEvidenceKind(str, Enum):
-    """Evidence source that confirmed a robot/object attachment."""
+    """Evidence source that confirmed a robot/object attachment or its support.
+
+    ``SIM_CONTACT`` and ``SIM_GEOM_DISTANCE`` are both simulator ground truth,
+    and the distinction is load-bearing rather than cosmetic. A simulator's
+    *contact list* is not a proximity oracle: MuJoCo's ``contype`` /
+    ``conaffinity`` bitmasks suppress whole geom pairs, so an object flush on a
+    counter can generate no contact record at all. ``SIM_GEOM_DISTANCE`` names
+    the signed closest-distance probe (``mj_geomDistance``), which sees the
+    pairs the contact list hides. A consumer reading a witness must not infer
+    from ``SIM_CONTACT`` that a solver contact existed, nor from
+    ``SIM_GEOM_DISTANCE`` that one did not.
+    """
 
     SIM_CONTACT = "sim_contact"
+    SIM_GEOM_DISTANCE = "sim_geom_distance"
     GRIPPER_FORCE = "gripper_force"
     PERCEPTION_TRACK = "perception_track"
     OPERATOR = "operator"
@@ -2100,7 +2112,11 @@ class SupportContactWitness(BaseModel):
             point. Contact outside it is never exempt.
         max_penetration_m: Attested bound on the physical penetration depth.
         confidence: Witness confidence in ``[0, 1]``.
-        evidence_kind: Source that measured the support contact.
+        evidence_kind: Source that measured the support contact. The MuJoCo
+            producer attests ``SIM_GEOM_DISTANCE`` — a signed closest-distance
+            probe, not the solver's contact list, which ``contype`` /
+            ``conaffinity`` suppression can leave empty under a payload that is
+            demonstrably resting on a surface.
         evidence_ref: Optional trace/contact reference.
         stamp_ns: Producer timestamp. With ``support_id`` this keys the safety
             kernel's re-arm check, so a witness that already died after
@@ -2112,9 +2128,9 @@ class SupportContactWitness(BaseModel):
         ...     contact_point_in_object=(0.0, 0.0, -0.025),
         ...     contact_normal_in_object=(0.0, 0.0, 1.0),
         ...     patch_radius_m=0.1,
-        ...     max_penetration_m=0.00137,
+        ...     max_penetration_m=0.00118,
         ...     confidence=1.0,
-        ...     evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        ...     evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
         ...     stamp_ns=1,
         ... )
         >>> witness.patch_radius_m
