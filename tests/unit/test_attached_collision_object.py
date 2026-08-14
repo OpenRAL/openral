@@ -11,6 +11,7 @@ from openral_core import (
     JointState,
     Pose6D,
     RobotDescription,
+    SupportContactWitness,
     WorldState,
 )
 from openral_world_state import WorldStateAggregator
@@ -62,6 +63,26 @@ def _attachment(object_id: str = "baguette_seed1") -> AttachedCollisionObject:
     )
 
 
+def _witness() -> SupportContactWitness:
+    """The counter contact the baguette run actually had at attach.
+
+    Depth is the deepest of the six real MuJoCo counter-payload contacts
+    recorded on 2026-08-13 (-0.87..-1.37 mm) — a physical figure, not the
+    -15.70 mm the 25 mm occupancy lattice reported for the same contact.
+    """
+    return SupportContactWitness(
+        support_id="robocasa:counter_main",
+        contact_point_in_object=(0.0, 0.0, -0.025),
+        contact_normal_in_object=(0.0, 0.0, 1.0),
+        patch_radius_m=0.13,
+        max_penetration_m=0.00137,
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref="mujoco_body:counter_main",
+        stamp_ns=1,
+    )
+
+
 def test_attached_collision_object_uses_real_robot_links() -> None:
     attachment = _attachment()
 
@@ -109,6 +130,44 @@ def test_attachment_rejects_more_than_sixteen_primitives() -> None:
 
     with pytest.raises(ValidationError, match="at most 16"):
         AttachedCollisionObject.model_validate(payload)
+
+
+def test_attachment_defaults_to_no_support_attestation() -> None:
+    # Fail-closed by construction: a producer that says nothing about support
+    # contact — the vision producer, an operator transition — licenses no
+    # exemption in the safety kernel at all.
+    assert _attachment().support_contact is None
+
+
+def test_support_witness_rides_on_the_attachment_and_round_trips() -> None:
+    attachment = _attachment().model_copy(update={"support_contact": _witness()})
+
+    decoded = AttachedCollisionObject.model_validate_json(attachment.model_dump_json())
+    assert decoded.support_contact is not None
+    assert decoded.support_contact.support_id == "robocasa:counter_main"
+    # The attested depth stays physical. Inflating it to cover the lattice's
+    # 15.7 mm reading would license real penetration.
+    assert decoded.support_contact.max_penetration_m == pytest.approx(0.00137)
+
+
+def test_support_witness_rejects_a_non_unit_normal() -> None:
+    payload = _witness().model_dump()
+    payload["contact_normal_in_object"] = (0.0, 0.0, 4.0)
+
+    with pytest.raises(ValidationError, match="must be a unit vector"):
+        SupportContactWitness.model_validate(payload)
+
+
+def test_support_witness_rejects_an_unbounded_patch_or_negative_depth() -> None:
+    payload = _witness().model_dump()
+    payload["patch_radius_m"] = 0.0
+    with pytest.raises(ValidationError, match="patch_radius_m"):
+        SupportContactWitness.model_validate(payload)
+
+    payload = _witness().model_dump()
+    payload["max_penetration_m"] = -0.001
+    with pytest.raises(ValidationError, match="max_penetration_m"):
+        SupportContactWitness.model_validate(payload)
 
 
 def test_world_state_carries_multiple_attachments() -> None:

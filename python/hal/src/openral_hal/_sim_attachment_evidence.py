@@ -20,8 +20,13 @@ from openral_core import (
     Pose6D,
     RobotDescription,
     SphereShape,
+    SupportContactWitness,
 )
 from openral_core.exceptions import ROSConfigError
+
+# Below this a summed contact normal carries no direction: the contacts oppose
+# each other, so there is no support plane to attest.
+_DEGENERATE_NORM = 1e-9
 
 
 class SimObjectMobility(str, Enum):
@@ -382,6 +387,165 @@ def extract_body_primitives(
     ]
 
 
+def _environment_contacts_by_support(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    payload_bodies: set[int],
+    robot_body_ids: frozenset[int],
+) -> dict[int, list[tuple[NDArray[np.float64], NDArray[np.float64], float]]]:
+    """Group the payload's environment contacts by supporting body root.
+
+    Eligible supports are non-robot and non-free: the world, a counter, a
+    cabinet. The gripper holding the payload is excluded (``touch_links``
+    already covers it) and so is another free-floating object, which is not
+    something the safety kernel may be told to ignore.
+    """
+    groups: dict[int, list[tuple[NDArray[np.float64], NDArray[np.float64], float]]] = {}
+    for index in range(int(data.ncon)):
+        contact = data.contact[index]
+        body_a = int(model.geom_bodyid[int(contact.geom1)])
+        body_b = int(model.geom_bodyid[int(contact.geom2)])
+        a_is_payload = body_a in payload_bodies
+        b_is_payload = body_b in payload_bodies
+        if a_is_payload == b_is_payload:
+            continue
+        other = body_b if a_is_payload else body_a
+        if other in robot_body_ids:
+            continue
+        support_root = _root_motion_body(model, other)
+        if classify_body_mobility(model, support_root) is SimObjectMobility.FREE:
+            continue
+        groups.setdefault(support_root, []).append(
+            (
+                np.asarray(contact.pos, dtype=np.float64).copy(),
+                np.asarray(contact.frame, dtype=np.float64)[:3].copy(),
+                float(contact.dist),
+            )
+        )
+    return groups
+
+
+def support_contact_witness(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    root_body_id: int,
+    robot_body_ids: frozenset[int],
+    stamp_ns: int,
+) -> SupportContactWitness | None:
+    """Attest one payload's bounded support contact from exact MuJoCo contacts.
+
+    A grasped object is routinely still resting on the counter it was picked
+    from. That contact is real, legitimate, and — once the payload is checked
+    as robot geometry — indistinguishable to the safety kernel from driving the
+    payload through a wall. This produces the attestation that tells the two
+    apart, from ground truth the simulator already has (ADR-0092 D6).
+
+    Only a *non-free* environment body counts as a support: the world, a
+    counter, a cabinet. Another free-floating object is not something the
+    kernel may be told to ignore, and neither is the gripper holding the
+    payload (that is what ``touch_links`` covers). ``None`` — no contact, or
+    only ineligible ones — is the honest answer and yields no exemption.
+
+    Args:
+        model: Live ``mujoco.MjModel``.
+        data: Live ``mujoco.MjData`` after a step.
+        root_body_id: Root body of the payload.
+        robot_body_ids: Every body belonging to the robot.
+        stamp_ns: Producer timestamp for the witness.
+
+    Returns:
+        The witness, or ``None`` when no eligible support contact exists.
+    """
+    payload_bodies = _body_subtree(model, root_body_id)
+    groups = _environment_contacts_by_support(
+        model,
+        data,
+        payload_bodies=payload_bodies,
+        robot_body_ids=robot_body_ids,
+    )
+    if not groups:
+        return None
+
+    # One witness names one support surface: the one carrying this payload.
+    support_root = max(groups, key=lambda key: len(groups[key]))
+    contacts = groups[support_root]
+    rotation = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
+    origin = np.asarray(data.xpos[root_body_id], dtype=np.float64)
+    points = np.asarray([rotation.T @ (position - origin) for position, _, _ in contacts])
+
+    # Orient every contact normal from the supporting solid toward the payload,
+    # so the attested half-space is unambiguous regardless of which geom MuJoCo
+    # happened to list first.
+    oriented = []
+    for position, normal, _ in contacts:
+        local_normal = rotation.T @ normal
+        toward_payload = rotation.T @ (origin - position)
+        if float(np.dot(toward_payload, local_normal)) < 0.0:
+            local_normal = -local_normal
+        oriented.append(local_normal)
+    normal_in_object = np.mean(np.asarray(oriented), axis=0)
+    norm = float(np.linalg.norm(normal_in_object))
+    if norm < _DEGENERATE_NORM:
+        # Opposed normals — the payload is pinched, not supported. Attesting a
+        # plane here would be inventing geometry, so attest nothing.
+        return None
+    normal_in_object = normal_in_object / norm
+    contact_point = points.mean(axis=0)
+
+    # The patch spans the payload's own supported footprint: its collision
+    # geometry projected onto the support plane. Bounded by the payload, and
+    # nothing outside it is ever exempt.
+    subtree_geoms = [
+        geom_id
+        for geom_id in range(int(model.ngeom))
+        if int(model.geom_bodyid[geom_id]) in payload_bodies
+        and int(model.geom_contype[geom_id]) != 0
+    ]
+    if not subtree_geoms:
+        return None
+    corners = np.concatenate(
+        [
+            _geom_corners_in_root(model, data, geom_id=geom_id, root_body_id=root_body_id)
+            for geom_id in subtree_geoms
+        ],
+        axis=0,
+    )
+    offsets = corners - contact_point
+    lateral = offsets - np.outer(offsets @ normal_in_object, normal_in_object)
+    patch_radius = float(np.linalg.norm(lateral, axis=1).max())
+    if not math.isfinite(patch_radius) or patch_radius <= 0.0:
+        return None
+
+    penetration = max(0.0, *(-distance for _, _, distance in contacts))
+
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    support_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, support_root)
+    if not support_name:
+        raise ROSConfigError(f"Supporting MuJoCo body {support_root} has no name.")
+    return SupportContactWitness(
+        support_id=f"sim:{support_name}",
+        contact_point_in_object=(
+            float(contact_point[0]),
+            float(contact_point[1]),
+            float(contact_point[2]),
+        ),
+        contact_normal_in_object=(
+            float(normal_in_object[0]),
+            float(normal_in_object[1]),
+            float(normal_in_object[2]),
+        ),
+        patch_radius_m=patch_radius,
+        max_penetration_m=penetration,
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref=f"mujoco_body:{support_name}",
+        stamp_ns=stamp_ns,
+    )
+
+
 class SimAttachmentEvidenceTracker:
     """Confirm free-object grasp/release from exact MuJoCo contacts and motion."""
 
@@ -567,6 +731,16 @@ class SimAttachmentEvidenceTracker:
                 evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
                 evidence_ref=f"mujoco_body:{body_name}",
                 stamp_ns=stamp_ns,
+                # Attested once, at attach, from the contacts that exist right
+                # now. The safety kernel latches it and kills it on separation;
+                # re-attesting mid-carry would defeat that hysteresis.
+                support_contact=support_contact_witness(
+                    self._model,
+                    data,
+                    root_body_id=root,
+                    robot_body_ids=self._robot_body_ids,
+                    stamp_ns=stamp_ns,
+                ),
             )
             self._attached_root = root
             self._attached_translation = translation.copy()
