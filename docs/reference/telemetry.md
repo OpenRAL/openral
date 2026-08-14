@@ -247,13 +247,23 @@ optional `task_success` extension) once per `env.step` and reports it:
 | Line | Fires | Carries |
 |---|---|---|
 | `sim.task_success` | every change of the verdict, both edges | `success`, `previous`, `first_success`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
-| `sim.task_success_final` | once, at `disconnect` | `success`, `ever_succeeded`, `first_success_sim_time_ns`, `transitions`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.task_success_final` | once, at `disconnect` — reached by the lifecycle cleanup/shutdown transition **and** by `HALLifecycleNodeBase.shutdown_hal` on a signal teardown | `success`, `ever_succeeded`, `first_success_sim_time_ns`, `transitions`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
 | `sim.task_success_probe_failed` | once, if the backend predicate raises | `error`, `error_type` — polling then latches off (no flood, no crash) |
 
 Both edges are logged because RoboCasa success is **not latched**: an object
 can be knocked back out of its receptacle, and a rising-edge-only record would
 claim a success no longer held. A backend with no success predicate emits
 nothing at all — "unknown" is never reported as failure.
+
+The terminal line reaches **both** teardown paths. `rclpy` answers SIGINT by
+shutting the context down and raising out of `spin` without requesting the
+lifecycle `shutdown` transition, and `openral deploy sim` ends every session
+exactly that way (`_terminate_launch_group` SIGINTs the launch's process
+group) — so while `disconnect` was reachable only from `on_cleanup` /
+`on_shutdown`, no real run ever emitted the verdict. `HALLifecycleNodeBase.shutdown_hal`,
+called from the `finally` of both HAL `main()` factories, closes that gap; it
+is idempotent with the transition path, so exactly one line is emitted either
+way. A SIGKILLed process still emits nothing — the signal is uncatchable.
 
 The logger name is `openral.sim.task_success`, deliberately dotted under
 `openral.` so it propagates to the stdlib logger the OTel bridge is attached to

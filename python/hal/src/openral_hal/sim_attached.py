@@ -43,7 +43,10 @@ Architecture
   placement. :meth:`SimAttachedHAL.task_success` reads the backend's own
   predicate and :meth:`SimAttachedHAL._observe_task_success` logs
   ``sim.task_success`` on every change, with a terminal
-  ``sim.task_success_final`` at :meth:`SimAttachedHAL.disconnect`.
+  ``sim.task_success_final`` at :meth:`SimAttachedHAL.disconnect` — which
+  a signal-driven teardown reaches through
+  :meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal`, since
+  SIGINT runs no lifecycle transition.
   Observability only (CLAUDE.md §1.4): the verdict reaches the log and
   nothing else — never termination, reset, reward, or the action path.
 
@@ -658,6 +661,14 @@ class SimAttachedHAL:
         that HAS a task-success predicate always closes with one greppable
         statement of whether the scene's task ended completed. Idempotent
         because the line only fires while still connected.
+
+        Reached on BOTH teardown paths: the lifecycle ``cleanup`` /
+        ``shutdown`` transition, and — since ``rclpy`` answers SIGINT by
+        shutting the context without running any transition —
+        :meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal` in the
+        node ``main()``'s ``finally``. The signal path is the one every real
+        ``openral deploy sim`` run takes; before it existed the verdict was
+        emitted by no field run at all.
         """
         if self._connected:
             self._emit_task_success_final()

@@ -152,3 +152,43 @@ def test_spin_wrapped_in_sigint_except() -> None:
             "a `finally:` clause must run cleanup (destroy_node / "
             f"try_shutdown) on the spin Try at line {try_node.lineno}."
         )
+
+
+def test_spin_finally_disconnects_the_hal() -> None:
+    """Every spin ``finally`` must call ``node.shutdown_hal()``.
+
+    SIGINT shuts the rclpy context and raises out of ``spin``; it never
+    *requests* the lifecycle ``shutdown`` transition, so ``on_shutdown`` /
+    ``on_cleanup`` — and with them ``HAL.disconnect`` — do not run. The
+    terminal ``sim.task_success_final`` verdict ``SimAttachedHAL.disconnect``
+    emits was therefore missing from every real ``openral deploy sim`` run
+    (the harness SIGINTs the launch's process group), while the unit tests
+    calling ``disconnect`` directly stayed green. The ``finally`` is the only
+    place on the signal path that can reach it.
+    """
+    tree = _parse()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        spins = any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "spin"
+            for stmt in node.body
+            for sub in ast.walk(stmt)
+        )
+        if not spins:
+            continue
+        teardown = any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "shutdown_hal"
+            for stmt in node.finalbody
+            for sub in ast.walk(stmt)
+        )
+        assert teardown, (
+            "the spin Try at line "
+            f"{node.lineno} must call node.shutdown_hal() in its `finally:` — "
+            "otherwise a SIGINT teardown never disconnects the HAL and the "
+            "terminal task-success verdict is never emitted."
+        )
