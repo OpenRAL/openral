@@ -435,7 +435,12 @@ class TelemetryStore:
             "robot_state": {},
             "commands": {},
             "world_state": {},
-            "perception": {},  # per-camera modality + age + thumbnail
+            # ``cameras`` — per-camera modality + age + thumbnail, from OTel
+            # ``sensors.read_latest`` spans. ``overlays`` — per-camera detector
+            # boxes / segmenter masks, fed by ``PerceptionOverlaySubscriber``
+            # (live rclpy, not OTel) and keyed by the SAME camera name, which is
+            # what lets the frontend draw one on top of the other.
+            "perception": {},
             "inference": {},
             # ``estopped`` tracks the kernel's e-stop latch so the UI shows an
             # E-STOP control while running and Reset e-stop while latched.
@@ -642,6 +647,108 @@ class TelemetryStore:
                 "stamp_unix": float(stamp_unix),
                 # When the dashboard received it, on the same clock the rest of
                 # the snapshot uses — the publisher's stamp can be sim-time.
+                "ts_unix": time.time(),
+            }
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def set_perception_detections(
+        self,
+        *,
+        camera: str,
+        detections: list[dict[str, Any]],
+        model_id: str,
+        frame_width: int,
+        frame_height: int,
+        stamp_unix: float,
+        flip_180: bool = False,
+    ) -> None:
+        """Record one `kind: detector` result as a camera overlay.
+
+        Fed by ``PerceptionOverlaySubscriber`` from the live
+        ``/openral/perception/objects`` topic, whose payload is an
+        ``openral_core.ObjectsMetadata`` JSON document. Lands under
+        ``topics["perception"]["overlays"][camera]["detections"]``, beside the
+        ``cameras`` bucket the same card already renders, so the frontend draws
+        boxes over the matching MJPEG tile with no second fetch.
+
+        ``camera`` is a ``SensorSpec`` *name* (the wire's ``sensor_id``), which
+        is the same namespace as ``openral.sensors.source`` — that shared key is
+        what binds an overlay to a camera tile.
+
+        Args:
+            camera: The camera the boxes belong to (``ObjectsMetadata.sensor_id``).
+            detections: One dict per box, each carrying ``label``,
+                ``confidence``, ``bbox_xyxy`` and ``det_id``.
+            model_id: The producing detector rSkill, shown on the tile so an
+                operator can tell *which* skill drew this.
+            frame_width: Source-frame width the boxes are expressed in. The
+                displayed thumbnail is an aspect-preserving shrink of it, so the
+                renderer scales by ratio rather than assuming a size.
+            frame_height: Source-frame height, same role.
+            stamp_unix: The SOURCE image stamp (copied through the detector from
+                the frame it ran on), as Unix seconds — this is what makes a
+                stale overlay detectable instead of a lie.
+            flip_180: Whether the dashboard's display copy of this camera is
+                rotated 180° (the ``OPENRAL_DASHBOARD_FLIP_180`` convention).
+                Detectors consume the RAW topic, so when the tile is flipped the
+                renderer must rotate the boxes to match or they land mirrored.
+        """
+        with self._lock:
+            overlays = self._topics["perception"].setdefault("overlays", {})
+            entry = overlays.setdefault(str(camera), {})
+            entry["detections"] = {
+                "boxes": [dict(d) for d in detections],
+                "model_id": str(model_id),
+                "frame_width": int(frame_width),
+                "frame_height": int(frame_height),
+                "stamp_unix": float(stamp_unix),
+                "flip_180": bool(flip_180),
+                "ts_unix": time.time(),
+            }
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def set_perception_masks(
+        self,
+        *,
+        camera: str,
+        masks: list[dict[str, Any]],
+        rskill_id: str,
+        stamp_unix: float,
+        flip_180: bool = False,
+    ) -> None:
+        """Record one `kind: segmenter` result as a camera overlay.
+
+        The segmenter contract is ``openral_msgs/srv/SegmentInView``: **plural**
+        ``sensor_msgs/Image`` mono8 masks at the source frame's own resolution,
+        ordered area-ascending, with a parallel ``mask_scores_advisory``. Each
+        entry here is one decoded mask — ``png_b64`` (an LA PNG whose alpha *is*
+        the mask, ready to tint), ``width``, ``height`` and the advisory score.
+
+        The scores are carried for display only and are deliberately never used
+        to rank or filter: the segmenter's own IoU estimate has been measured
+        scoring a whole-tablecloth mask at 0.977, so the service documents them
+        as advisory and this store keeps them that way. The masks arrive in the
+        producer's area-ascending order and are rendered in it.
+
+        Args:
+            camera: The camera id the masks belong to (the service's ``camera``
+                response field — a ``SensorSpec`` name, not a tf frame).
+            masks: One dict per mask: ``png_b64``, ``width``, ``height``, and
+                ``score_advisory`` (``None`` when the producer sent none).
+            rskill_id: The producing segmenter rSkill, shown on the tile.
+            stamp_unix: The attach instant the masks describe, as Unix seconds.
+            flip_180: As for :meth:`set_perception_detections`.
+        """
+        with self._lock:
+            overlays = self._topics["perception"].setdefault("overlays", {})
+            entry = overlays.setdefault(str(camera), {})
+            entry["masks"] = {
+                "masks": [dict(m) for m in masks],
+                "rskill_id": str(rskill_id),
+                "stamp_unix": float(stamp_unix),
+                "flip_180": bool(flip_180),
                 "ts_unix": time.time(),
             }
             payload = self._snapshot_locked()

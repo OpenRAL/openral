@@ -797,6 +797,9 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     # None without ROS; the Safety Status card then renders "waiting" rather
     # than claiming the robot is clear.
     app.state.safety_status = None
+    # /openral/perception/objects overlay subscriber (set by run_dashboard).
+    # None without ROS; the camera tiles then simply carry no overlays.
+    app.state.perception_overlay = None
 
     @app.post(
         "/v1/traces",
