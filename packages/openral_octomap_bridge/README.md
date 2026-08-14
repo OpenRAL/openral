@@ -99,8 +99,17 @@ never both:
 
 | Cell | Owner | Outcome |
 |---|---|---|
-| Inside the attested patch laterally, no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth` | the **kernel's witness** | withheld from the clearing, exempted by the kernel, and still there for the latch to measure |
+| Inside the attested patch laterally **and** in the support half-space — no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth`, unbounded below it | the **kernel's witness** | withheld from the clearing, exempted by the kernel, and still there for the latch to measure |
 | Anywhere else within a circumradius of a payload primitive — the payload's own silhouette, the residue above the support plane, the +32 mm class the acceptance round tripped on | this **clearing** | zeroed |
+
+The withheld region is that **half-space slab**, never the patch cylinder. At
+25 mm cells the slab reaches at most `21.65 mm + attested depth` above the plane
+(the pad is largest for a cube-diagonal normal), so with the kernel's own
+`support_witness_max_penetration_m` of 10 mm no attestation it would accept can
+withhold a cell more than 31.65 mm up.
+`PayloadClearing.NoAttestationTheKernelAcceptsWithholdsTheRoundFiveFieldCell` and
+`PayloadClearing.TheRoundFiveResidueCellClearsThoughItIsInsideThePatchCylinder`
+pin that bound at the field's +35.8 mm, predicate-level and on a real grid.
 
 `place_attached_object` lifts the wire `SupportContactWitness` (stated in the
 attached object's own frame) through the payload's live pose into a grid-frame
@@ -108,8 +117,31 @@ attached object's own frame) through the payload's live pose into a grid-frame
 `support_contact_exempts` geometry with **zero slack**. That asymmetry is
 deliberate: the kernel adds `attached_contact_tolerance` (1 mm of physical
 FK/pose slack) to the same bound, so what this bridge withholds is a strict
-subset of what the kernel exempts, and no withheld cell can ever be the one that
-stops the robot. The two predicates are a deliberate cross-package mirror —
+subset of what the kernel exempts for the object that attested it, and no
+withheld cell can be the one that stops the robot **against that object**.
+`PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack` mechanises
+that containment cell for cell against a transcription of the kernel predicate,
+and `PayloadClearing.WithholdingOnlyEverPutsOccupancyBack` re-checks it on every
+cell the partition actually withholds. Two scope conditions are **not** covered
+by it and are load-bearing when reading a field trace:
+
+* **Per-object.** The kernel exempts per object (`check_attached_voxel_collision`
+  tests object *i*'s cells against object *i*'s own witness); this bridge
+  withholds per message, so one payload's attestation guards a second payload's
+  clearing too — deliberately, since a second payload's volume must not erase the
+  first one's support evidence. With two payloads attached, a cell inside the
+  first's slab but reached only by the second's volume stays in the map and is
+  not exempt for the object that reaches it
+  (`PayloadClearing.OneObjectsAttestationGuardsEveryObjectsClearing`).
+* **Acceptance bounds.** The kernel's lifecycle node caps what it will accept —
+  `support_witness_max_patch_radius_m` (0.5 m) and
+  `support_witness_max_penetration_m` (10 mm) — and fails the whole attachment
+  message closed past either. This bridge applies the kernel's *geometry* but not
+  those caps, so an over-claiming producer would make it withhold a slab the
+  kernel exempts nothing in. The sim producer holds the same two numbers
+  (`openral_hal._sim_attachment_evidence`) and refuses to construct such a claim.
+
+The two predicates are a deliberate cross-package mirror —
 consolidating them would make this Layer-2 node link the Layer-6 kernel's
 collision core — and must be changed in lockstep
 (`docs/methods/14-duplication-watch.md`, item 8).

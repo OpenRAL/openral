@@ -147,6 +147,16 @@ std::size_t cell_index(const openral_msgs::msg::OccupancyVoxels& grid, double x,
   return ix + grid.size_x * (iy + grid.size_y * iz);
 }
 
+// Centre of the cell at linear index `idx` — the point both predicates measure.
+tf2::Vector3 center_of_index(const openral_msgs::msg::OccupancyVoxels& grid, std::size_t idx) {
+  const std::size_t ix = idx % grid.size_x;
+  const std::size_t iy = (idx / grid.size_x) % grid.size_y;
+  const std::size_t iz = idx / (static_cast<std::size_t>(grid.size_x) * grid.size_y);
+  return tf2::Vector3(grid.origin.x + (static_cast<double>(ix) + 0.5) * grid.resolution,
+                      grid.origin.y + (static_cast<double>(iy) + 0.5) * grid.resolution,
+                      grid.origin.z + (static_cast<double>(iz) + 0.5) * grid.resolution);
+}
+
 // Centre of the cell containing base-frame point p — the point the clearing
 // predicate (and the kernel's voxel check) actually measures against.
 tf2::Vector3 cell_center(const openral_msgs::msg::OccupancyVoxels& grid, double x, double y,
@@ -305,6 +315,88 @@ std::vector<std::size_t> cleared_indices(const openral_msgs::msg::OccupancyVoxel
     }
   }
   return out;
+}
+
+// ── the kernel's side of the mirror ──────────────────────────────────────────
+//
+// `support_contact_exempts`, transcribed TERM FOR TERM from
+// `cpp/openral_safety_kernel/src/collision.cpp` (the safety kernel is a separate
+// colcon package this one must not depend on — Layer 2 does not link Layer 6 —
+// so the mirror is deliberate and tracked as item 8 of
+// `docs/methods/14-duplication-watch.md`). It is the SPECIFICATION that
+// `support_patch_withholds` claims to implement with `slack = 0`; the tests
+// below evaluate the two on the same cells, so a drift on either side of the
+// mirror fails here instead of in the field.
+bool kernel_support_contact_exempts(const bridge::SupportPatch& patch, const tf2::Vector3& center,
+                                    double resolution, double slack) {
+  if (!(patch.patch_radius > 0.0) || resolution <= 0.0) {
+    return false;
+  }
+  const tf2::Vector3 delta = center - patch.point;
+  const double height = delta.dot(patch.normal);
+  const double lateral_sq = std::max(0.0, delta.length2() - height * height);
+  const double half = 0.5 * resolution;
+  const double normal_half_width =
+      half *
+      (std::fabs(patch.normal.x()) + std::fabs(patch.normal.y()) + std::fabs(patch.normal.z()));
+  const double lateral_pad = half * 1.7320508075688772;  // sqrt(3)
+  const double reach = patch.patch_radius + lateral_pad;
+  if (lateral_sq > reach * reach) {
+    return false;
+  }
+  return height <= normal_half_width + patch.max_penetration + slack;
+}
+
+// The kernel's `attached_contact_tolerance` — 1 mm of physical FK/pose slack,
+// the slack term the bridge drops (`lifecycle_kernel.cpp`,
+// `attached_contact_tolerance_m`).
+constexpr double kKernelContactTolerance = 0.001;
+
+// What the safety kernel's lifecycle node will ACCEPT on the wire before it
+// fails the whole attachment message closed: `support_witness_max_penetration_m`
+// (10 mm) and `support_witness_max_patch_radius_m` (0.5 m), declared in
+// `cpp/openral_safety_kernel/src/lifecycle_kernel.cpp`. The producer holds the
+// same two numbers (`openral_hal._sim_attachment_evidence`).
+constexpr double kKernelMaxPenetration = 0.01;
+constexpr double kKernelMaxPatchRadius = 0.5;
+
+// A patch stated directly in the grid frame, for probing the predicate itself.
+bridge::SupportPatch grid_frame_patch(const tf2::Vector3& point, const tf2::Vector3& normal,
+                                      double patch_radius, double penetration) {
+  bridge::SupportPatch patch;
+  patch.point = point;
+  patch.normal = normal.normalized();
+  patch.patch_radius = patch_radius;
+  patch.max_penetration = penetration;
+  return patch;
+}
+
+// ── the 2026-08-14 round-5 residue class ─────────────────────────────────────
+//
+// Field run spark:/home/allopart/openral-runs/2026-08-14-round5/baguette/: a
+// cell +35.8 mm ALONG THE OUTWARD SUPPORT NORMAL, laterally well inside the
+// attested patch — inside the patch CYLINDER — reported as withheld, while the
+// kernel correctly refused to exempt it (its bound here is the cube's projected
+// half-width, 12.5 mm, plus the 1.37 mm of attested physical depth). A withhold
+// shaped like the cylinder rather than like the support HALF-SPACE SLAB does
+// exactly that, and it resurrects the residue 21ecf82 eliminated. The offset is
+// carried as a constant so the class is pinned by its field number.
+constexpr double kFieldResidueOffset = 0.0358;
+
+// The same resting payload, lowered so that its attested support plane sits
+// `kFieldResidueOffset` BELOW an occupancy cell-centre layer: the field cell is
+// then a real cell of a real grid, inside the payload's own volume and inside
+// the patch cylinder, and the along-normal bound is the only thing that decides
+// it. Plane at 0.3625 − 0.0358 = 0.3267 m.
+const double kFieldPlaneZ = kSupportLayerZ - kFieldResidueOffset;
+const tf2::Vector3 kFieldCenter(0.40, 0.0, kFieldPlaneZ + kRestingHalfExtents.z());
+
+WireObject field_round5_payload() {
+  WireObject obj = resting_payload();
+  obj.pose_in_link.position.x = kFieldCenter.x() - kAttachLinkOrigin.x();
+  obj.pose_in_link.position.y = kFieldCenter.y() - kAttachLinkOrigin.y();
+  obj.pose_in_link.position.z = kFieldCenter.z() - kAttachLinkOrigin.z();
+  return obj;
 }
 
 }  // namespace
@@ -639,6 +731,143 @@ TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
     EXPECT_NE(std::find(without_patch.begin(), without_patch.end(), idx), without_patch.end())
         << "cell " << idx << " is cleared with the patch but not without it";
   }
+
+  // …and the other half of the same claim, which is the safety-relevant one:
+  // every cell the partition WITHHELD (cleared without the patch, kept with it)
+  // is a cell the kernel's own exemption predicate accepts at ZERO slack. A
+  // withheld cell outside that set is a cell nothing exempts and the payload
+  // still reaches — the class that tripped the E-stop on the 2026-08-14 round-5
+  // run — so the property is asserted against the kernel predicate itself
+  // rather than against the bridge's paraphrase of it.
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  std::size_t withheld = 0;
+  for (const std::size_t idx : without_patch) {
+    if (std::find(with_patch.begin(), with_patch.end(), idx) != with_patch.end()) {
+      continue;
+    }
+    ++withheld;
+    const tf2::Vector3 center = center_of_index(before, idx);
+    EXPECT_TRUE(kernel_support_contact_exempts(p.patches[0], center, before.resolution, 0.0))
+        << "withheld cell " << idx << " at (" << center.x() << ", " << center.y() << ", "
+        << center.z() << ") is not exempt in the kernel";
+    EXPECT_TRUE(kernel_support_contact_exempts(p.patches[0], center, before.resolution,
+                                               kKernelContactTolerance));
+  }
+  EXPECT_EQ(withheld, 16U) << "the counter's 16 cells under the payload, and only those";
+}
+
+TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
+  // The mirror, probed rather than asserted in prose. Across the along-normal
+  // axis (the axis the round-5 field cell lives on), across the lateral radius,
+  // and across attested geometries the kernel would accept, the bridge's
+  // withhold predicate agrees CELL FOR CELL with the kernel's exemption
+  // predicate at zero slack — and every cell it withholds is still exempt once
+  // the kernel adds its 1 mm of physical tolerance, which is the containment
+  // the partition rests on.
+  const std::vector<tf2::Vector3> normals{
+      tf2::Vector3(0.0, 0.0, 1.0),  tf2::Vector3(0.0, 0.0, -1.0), tf2::Vector3(0.0, -1.0, 0.0),
+      tf2::Vector3(1.0, 1.0, 1.0),  tf2::Vector3(0.2, -0.3, 0.9), tf2::Vector3(-0.6, 0.1, 0.8),
+      tf2::Vector3(1.0, -1.0, 0.05)};
+  const std::vector<double> penetrations{0.0, 0.00137, 0.005, kKernelMaxPenetration};
+  const std::vector<double> radii{0.01, kAttestedPatchRadius, 0.2, kKernelMaxPatchRadius};
+  const tf2::Vector3 origin(0.40, 0.0, kSupportFaceZ);
+
+  std::size_t agreed = 0;
+  std::size_t withheld = 0;
+  for (const auto& n : normals) {
+    for (const double penetration : penetrations) {
+      for (const double radius : radii) {
+        const bridge::SupportPatch patch = grid_frame_patch(origin, n, radius, penetration);
+        // Probe on the patch's own axes: `s` along the normal (the bound in
+        // question), `t` across it.
+        tf2::Vector3 across = patch.normal.cross(tf2::Vector3(0.0, 0.0, 1.0));
+        if (across.length2() < 1e-9) {
+          across = patch.normal.cross(tf2::Vector3(1.0, 0.0, 0.0));
+        }
+        across = across.normalized();
+        for (int si = -12; si <= 12; ++si) {
+          const double s = 0.005 * si;  // ±60 mm along the normal, 5 mm steps
+          for (int ti = 0; ti <= 12; ++ti) {
+            const double t = 0.05 * ti;  // 0 … 600 mm across it
+            const tf2::Vector3 center = origin + patch.normal * s + across * t;
+            const bool mine = bridge::support_patch_withholds(patch, center, kResolution);
+            const bool theirs = kernel_support_contact_exempts(patch, center, kResolution, 0.0);
+            EXPECT_EQ(mine, theirs) << "s=" << s << " t=" << t << " radius=" << radius
+                                    << " penetration=" << penetration;
+            agreed += (mine == theirs) ? 1U : 0U;
+            if (mine) {
+              ++withheld;
+              EXPECT_TRUE(kernel_support_contact_exempts(patch, center, kResolution,
+                                                         kKernelContactTolerance))
+                  << "withheld but not exempt with the kernel's own slack: s=" << s;
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(agreed, normals.size() * penetrations.size() * radii.size() * 25U * 13U);
+  EXPECT_GT(withheld, 0U) << "a probe that withholds nothing proves nothing";
+}
+
+TEST(PayloadClearing, NoAttestationTheKernelAcceptsWithholdsTheRoundFiveFieldCell) {
+  // The round-5 cell, as a bound rather than as one example: at 25 mm cells the
+  // withhold ceiling is at most half·(|n.x|+|n.y|+|n.z|) + attested depth =
+  // 21.65 mm (a cube diagonal normal) + 10 mm (the kernel's
+  // `support_witness_max_penetration_m`) = 31.65 mm above the attested plane.
+  // +35.8 mm is outside it for EVERY attestation the kernel would accept, so no
+  // wire message can make the bridge withhold that cell — which is what makes
+  // "withheld ⊂ exempt" a property of the predicate rather than of the fixture.
+  const tf2::Vector3 origin(0.40, 0.0, kSupportFaceZ);
+  const double ceiling = 0.5 * kResolution * 1.7320508075688772 + kKernelMaxPenetration;
+  ASSERT_LT(ceiling, kFieldResidueOffset) << "the field offset must be outside the widest slab";
+
+  for (const auto& n : {tf2::Vector3(0.0, 0.0, 1.0), tf2::Vector3(1.0, 1.0, 1.0),
+                        tf2::Vector3(0.3, -0.9, 0.4), tf2::Vector3(-1.0, 0.2, 0.7)}) {
+    for (const double penetration : {0.0, 0.00137, kKernelMaxPenetration}) {
+      const bridge::SupportPatch patch =
+          grid_frame_patch(origin, n, kKernelMaxPatchRadius, penetration);
+      const tf2::Vector3 field_cell = origin + patch.normal * kFieldResidueOffset;
+      EXPECT_FALSE(bridge::support_patch_withholds(patch, field_cell, kResolution))
+          << "+35.8 mm along the outward normal is payload-side solid, not support";
+      EXPECT_FALSE(
+          kernel_support_contact_exempts(patch, field_cell, kResolution, kKernelContactTolerance))
+          << "…and the kernel does not exempt it either: the partition holds";
+    }
+  }
+}
+
+TEST(PayloadClearing, TheRoundFiveResidueCellClearsThoughItIsInsideThePatchCylinder) {
+  // The same thing on a real grid, because a predicate that is right in
+  // isolation and a clearing that never asks it are indistinguishable in the
+  // field. The payload rests on its attested plane 35.8 mm below an occupancy
+  // cell-centre layer, so three cell layers of its own silhouette sit above the
+  // plane, all of them deep inside the attested patch cylinder (53 mm of lateral
+  // offset against a 60 + 21.65 mm reach). The support layer stays; everything
+  // above the slab goes.
+  auto grid = lowered(deploy_sim_tree());
+  const std::size_t support_cell = cell_index(grid, 0.40, 0.0, kFieldPlaneZ + 0.0108);
+  const std::size_t field_cell = cell_index(grid, 0.40, 0.0, kSupportLayerZ);
+  const std::size_t corner_cell = cell_index(grid, 0.4375, 0.0375, kSupportLayerZ);
+  grid.occupancy[support_cell] = 1;
+  grid.occupancy[field_cell] = 1;
+  grid.occupancy[corner_cell] = 1;
+
+  const Placed p = placed(field_round5_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  EXPECT_NEAR(p.patches[0].point.z(), kFieldPlaneZ, 1e-12);
+  const tf2::Vector3 field_center = center_of_index(grid, field_cell);
+  EXPECT_NEAR(field_center.z() - kFieldPlaneZ, kFieldResidueOffset, 1e-12);
+  // Inside the cylinder laterally — the only bound left is the along-normal one.
+  EXPECT_LT((center_of_index(grid, corner_cell) - p.patches[0].point).length(),
+            kAttestedPatchRadius + kCircumradius + kFieldResidueOffset);
+
+  EXPECT_EQ(clear_with(grid, p), 2U);
+  EXPECT_EQ(grid.occupancy[field_cell], 0)
+      << "+35.8 mm above the attested plane: payload, and the kernel exempts nothing there";
+  EXPECT_EQ(grid.occupancy[corner_cell], 0) << "…including at the edge of the patch cylinder";
+  EXPECT_NE(grid.occupancy[support_cell], 0) << "+10.8 mm: inside the slab, the counter's own cell";
 }
 
 TEST(PayloadClearing, WithholdingStopsAtTheProjectedCubeHalfWidth) {
@@ -736,6 +965,59 @@ TEST(PayloadClearing, TheAttestedPlaneIsCarriedInTheObjectFrame) {
   EXPECT_EQ(clear_with(grid, p), 1U);
   EXPECT_NE(grid.occupancy[wall_side], 0) << "inside the attested support half-space";
   EXPECT_EQ(grid.occupancy[payload_side], 0) << "37.5 mm clear of it: the payload's own cell";
+}
+
+TEST(PayloadClearing, OneObjectsAttestationGuardsEveryObjectsClearing) {
+  // The one place the withheld set is NOT a subset of what the kernel exempts,
+  // stated as a fact so it cannot be lost: withholding here is per-MESSAGE
+  // (every patch guards every object's clearing) while the kernel's exemption is
+  // per-OBJECT — `check_attached_voxel_collision` only ever tests object i's
+  // cells against object i's own witness. So with two payloads attached, a cell
+  // inside the FIRST object's attested slab but reached only by the SECOND
+  // object's volume stays in the map and is not exempt for the object that
+  // reaches it. It is deliberate (a second payload's volume must not erase the
+  // first one's support evidence) and it is conservative in the map — occupancy
+  // stays — but it is a stop the kernel can still take, so it is not covered by
+  // the "no withheld cell can be the cell that stops the robot" claim.
+  auto grid = lowered(deploy_sim_tree());
+  // 62.5 mm off the attested patch axis: inside the patch cylinder (60 + 21.65
+  // mm) and 3.2 mm above the plane, but 22.5 mm clear of the resting payload's
+  // own face, so the resting payload's clearing never reaches it.
+  const std::size_t shared = cell_index(grid, 0.4625, 0.0125, kSupportLayerZ);
+  grid.occupancy[shared] = 1;
+
+  WireObject second;
+  second.object_id = "obj_cup";
+  second.attach_link = "panda_hand";
+  second.pose_in_link.position.x = 0.4625 - kAttachLinkOrigin.x();
+  second.pose_in_link.position.y = 0.0125 - kAttachLinkOrigin.y();
+  second.pose_in_link.position.z = kSupportLayerZ - kAttachLinkOrigin.z();
+  second.pose_in_link.orientation.w = 1.0;
+  Primitive cup;
+  cup.shape_type = Primitive::SHAPE_SPHERE;
+  cup.shape_dimensions = {0.02};
+  cup.pose_in_object.orientation.w = 1.0;
+  second.primitives = {cup};
+
+  // The second payload alone clears the cell: its volume explains it.
+  auto alone = grid;
+  const Placed only_second = placed(second);
+  ASSERT_TRUE(only_second.patches.empty());
+  EXPECT_EQ(clear_with(alone, only_second), 1U);
+  EXPECT_EQ(alone.occupancy[shared], 0);
+
+  // With the resting payload's attestation on the same message, it does not.
+  std::vector<bridge::PayloadPrimitive> primitives;
+  std::vector<bridge::SupportPatch> patches;
+  ASSERT_TRUE(bridge::place_attached_object(resting_payload(), base_from_attach_link(), primitives,
+                                            patches));
+  ASSERT_TRUE(bridge::place_attached_object(second, base_from_attach_link(), primitives, patches));
+  ASSERT_EQ(patches.size(), 1U);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(grid, primitives, patches, 0.0), 0U);
+  EXPECT_NE(grid.occupancy[shared], 0);
+  EXPECT_TRUE(kernel_support_contact_exempts(patches[0], center_of_index(grid, shared),
+                                             grid.resolution, 0.0))
+      << "exempt for the object that attested it — and for that object only";
 }
 
 TEST(PayloadClearing, AMalformedAttestationClearsNothingAtAll) {

@@ -125,10 +125,22 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
 /// Dropping the kernel's slack term is what makes the partition safe rather
 /// than merely symmetric: the kernel adds `attached_contact_tolerance` (1 mm of
 /// physical FK/pose slack) to the same bound, so every cell this withholds is a
-/// cell the kernel exempts, and no cell kept by this function can be the one
-/// that stops the robot. The reverse inclusion is deliberately not claimed —
-/// the kernel may exempt a cell this bridge still clears, and a cleared cell
-/// stops nothing.
+/// cell the kernel exempts **for the object that attested it**, and no cell kept
+/// by this function can be the one that stops the robot against that object.
+/// The reverse inclusion is deliberately not claimed — the kernel may exempt a
+/// cell this bridge still clears, and a cleared cell stops nothing. Nor does the
+/// containment survive two scope conditions the caller must know about: the
+/// kernel's exemption is per-object while `clear_attached_payload_cells`
+/// withholds per message (see its docs), and the kernel's lifecycle node caps
+/// the attestation it will accept (`support_witness_max_patch_radius_m`,
+/// `support_witness_max_penetration_m`) where this predicate takes the wire
+/// values as given. Both are stated, with their tests, in the package README.
+///
+/// The withheld region is the support HALF-SPACE — the slab above the plane
+/// plus everything below it — never the patch cylinder. At 25 mm cells the slab
+/// reaches at most 21.65 mm (the pad, largest for a cube-diagonal normal) plus
+/// the attested depth above the plane, which is what keeps the payload-side
+/// residue above a support surface in the clearing's hands.
 ///
 /// A cell BELOW the plane is withheld without a lower bound: that is the body
 /// of the counter, real furniture that the map is supposed to carry and that
@@ -142,7 +154,10 @@ bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& cent
 ///
 /// A cell is cleared when its centre lies no further from a primitive's surface
 /// than the cell cube's circumradius (`resolution·√3/2`) plus `padding_m`, and
-/// no patch in `patches` withholds it (`support_patch_withholds`). Passing an
+/// no patch in `patches` withholds it (`support_patch_withholds`) — every
+/// object's attestation guards every object's clearing, which is one step wider
+/// than the kernel's per-object exemption and is the one place a withheld cell
+/// can still stop the robot (README, "Two scope conditions"). Passing an
 /// empty `patches` is the un-partitioned behaviour and clears the support
 /// surface out from under a resting payload — see the header comment. Because
 /// withholding can only ever *skip* a clear, the cells this removes are always
