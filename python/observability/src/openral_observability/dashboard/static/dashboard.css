@@ -3,9 +3,12 @@
    Matches the OpenRAL website design system: near-black Ink
    canvas, soft-white emphasis, IBM Plex Mono / Space Grotesk.
    The ONLY chroma is the functional safety-status palette
-   (--ok / --warn / --err / --err-strong). Class names below are
-   also produced by dashboard.js data-binding — do not rename
-   without updating it.
+   (--ok / --warn / --err / --err-strong), plus ONE scoped
+   exception: the perception-overlay instance colours, which live
+   in dashboard.js (OVERLAY_COLORS) because they are painted into a
+   canvas, never onto UI chrome. See `.camera .overlay` below for
+   why that exception exists. Class names below are also produced by
+   dashboard.js data-binding — do not rename without updating it.
    ============================================================ */
   :root {
   /* ---- website monochrome tokens (canonical) ---- */
@@ -504,6 +507,27 @@
     border: 1px solid var(--hair);
   }
   .camera img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* Perception overlay canvas — detector boxes + segmenter masks, drawn by
+     dashboard.js's drawOverlay(). Sits above the frame and below the corner
+     brackets / pills so the chrome stays readable. The instance colours are
+     the ONE chroma exception besides the safety palette: identity over a
+     photograph cannot be carried monochrome, and every mark is also directly
+     labelled, so colour is never the only encoding. Coordinates are mapped in
+     JS, not CSS — the <img> is `object-fit: cover`, which crops. */
+  .camera .overlay {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    z-index: 2; pointer-events: none; display: block;
+  }
+  /* Which rSkill drew the overlay. An operator must never have to guess
+     whose boxes these are. */
+  .camera .overlay-src {
+    position: absolute; right: 8px; bottom: 8px; z-index: 4;
+    max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; pointer-events: none;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em;
+    color: var(--fg-dim); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  }
+  .camera .overlay-src:empty { display: none; }
   /* scanline veil over the live feed */
   .camera .image-wrap::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;

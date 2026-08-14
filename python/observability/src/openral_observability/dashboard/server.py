@@ -143,6 +143,27 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     except Exception as exc:  # never gate the dashboard on the safety subscriber
         _LOG.warning("dashboard.safety_status_subscriber_start_failed error=%s", exc)
 
+    # Camera perception overlays — detector boxes drawn over the camera tiles.
+    # Read-only and advisory: it only decides what an operator SEES, never what
+    # the robot does. Created here for the same reason as the two above, so DDS
+    # discovery happens at launch rather than on first frame. Inert + harmless
+    # without ROS; the camera tiles then render exactly as they did before.
+    try:
+        from openral_observability.dashboard.perception_overlay_subscriber import (
+            PerceptionOverlaySubscriber,
+        )
+
+        app.state.perception_overlay = PerceptionOverlaySubscriber(app.state.store)
+        if app.state.perception_overlay.available:
+            _LOG.info("dashboard.perception_overlay_subscriber ready (detector overlays)")
+        else:
+            _LOG.warning(
+                "dashboard.perception_overlay_subscriber inert (no ROS) — "
+                "camera tiles render without perception overlays"
+            )
+    except Exception as exc:  # never gate the dashboard on the overlay subscriber
+        _LOG.warning("dashboard.perception_overlay_subscriber_start_failed error=%s", exc)
+
     discovery = None
     try:
         from openral_observability.dashboard.discovery import Discovery

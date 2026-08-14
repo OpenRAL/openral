@@ -89,6 +89,69 @@ default 30 ms ≈ 33 Hz). The endpoint returns 404 only when the source name is
 entirely unknown to the store; a known camera that has not yet emitted a frame
 opens the stream and waits.
 
+## Perception overlays on the camera tiles
+
+The camera tiles show what the robot *sees*; the overlays show what it *made of
+it*. `kind: detector` boxes and `kind: segmenter` masks are drawn on a canvas
+layered over each tile's MJPEG frame, so a mis-grasp no longer has to be
+diagnosed by reading a label list beside a picture.
+
+**Detector boxes** stream today. `PerceptionOverlaySubscriber` opens a real
+rclpy subscription to `/openral/perception/objects`
+(`openral_msgs/PromptStamped`, BEST_EFFORT + VOLATILE + KEEP_LAST=5 — the
+sensor-class profile `ros_image_detector_node` publishes with; a RELIABLE
+subscriber would never match it) and decodes the `metadata_json` payload as an
+`openral_core.ObjectsMetadata`, writing it to the store via
+`TelemetryStore.set_perception_detections`. Each box renders as a coloured rect
+with a `label 0.87` chip.
+
+**Segmenter masks** do not stream. `openral_msgs/srv/SegmentInView` is a
+*service*: it returns plural full-frame **mono8** `sensor_msgs/Image` masks
+(255 = in mask), ordered area-ascending, with a parallel
+`mask_scores_advisory`, one shot per attach/detach/regrasp event. So there is
+nothing to subscribe to, and this package deliberately does not invent a topic.
+What ships is the seam that side lands on: `mono8_mask_to_png_b64` (mono8 →
+an LA PNG whose alpha *is* the mask, tintable in one canvas composite) and
+`TelemetryStore.set_perception_masks`. The renderer already draws any
+`(camera, masks[], scores[])` tuple it is handed, so a mask publisher lights
+the overlay up with no frontend change. **Follow-up for the vision branch:** a
+small optional latest-mask debug topic on the segmenter node is the cleanest
+way to feed it — better there, next to the producer, than as unreachable code
+here.
+
+The advisory scores are displayed and **never** used to rank or filter. The
+service documents why: a mis-aimed prompt was measured returning a
+59.8%-of-frame mask at that model's *top* score of 0.977. Masks render in the
+producer's area-ascending order.
+
+Three properties worth knowing:
+
+* **Coordinates are source-image pixels**, and the tile shows an
+  aspect-preserving 320×240 thumbnail under `object-fit: cover`. The renderer
+  maps through the cover transform using the overlay's own `frame_width` /
+  `frame_height`, so boxes track the displayed size rather than sitting at a
+  constant offset from what they describe.
+* **`OPENRAL_DASHBOARD_FLIP_180` is honoured.** Detectors consume the raw
+  camera topic while that env var rotates only the dashboard's display copy;
+  the flag rides on each overlay so the renderer applies the same turn. Without
+  it the boxes would land point-mirrored on a picture that looks right.
+* **Stale overlays fade, then clear.** Freshness runs on the dashboard's own
+  receipt clock (source stamps ride sim time in a sim deploy): an overlay dims
+  after 1.5 s, is gone by 4 s, and is dropped immediately if the tile's frame
+  is more than 2 s newer than it. The producing rSkill is named in the tile's
+  bottom-right corner, so "whose boxes are these" is never a guess.
+
+Instance colours are the one chroma the dashboard allows outside the
+safety palette, and they live in `dashboard.js` (`OVERLAY_COLORS`) because they
+are painted into a canvas, never onto UI chrome. Slots are assigned in fixed
+order by a stable hash of the label, so a label keeps its colour across frames
+instead of repainting when the detection count changes — and every mark is also
+directly labelled, so identity is never colour-alone.
+
+Without rclpy or the `openral_msgs` overlay the subscriber stays inert and the
+tiles render exactly as they did before. Read-only and advisory: it decides
+only what an operator *sees*, never what the robot does.
+
 ## mDNS discovery (`mdns` extra)
 
 Install the optional `mdns` extra to let `openral dashboard` advertise itself

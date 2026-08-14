@@ -236,52 +236,285 @@
     }
   }
 
+  // ---- perception overlays -------------------------------------------------
+  // Detector boxes and segmenter masks, drawn on a canvas layered over the
+  // camera tile's MJPEG <img>. The ONLY chroma the dashboard allows outside the
+  // safety palette (see dashboard.css) — instance identity over a photograph
+  // cannot be carried by a monochrome ramp, and every mark is also directly
+  // labelled so identity is never colour-alone.
+  //
+  // Slots are assigned in fixed order by a stable hash of the instance key, so
+  // a given label keeps its colour across frames instead of repainting whenever
+  // the detection count changes.
+  const OVERLAY_COLORS = [
+    "#3987e5", "#d95926", "#199e70", "#c98500",
+    "#d55181", "#008300", "#9085e9", "#e66767",
+  ];
+  // Freshness, all on the dashboard's OWN receipt clock (`ts_unix`). The source
+  // stamps ride sim time in a sim deploy, so they cannot be compared against
+  // wall-clock; the store records receipt time for exactly this reason.
+  const OVERLAY_FADE_S = 1.5;   // past this the overlay dims — it may be lying
+  const OVERLAY_DROP_S = 4.0;   // past this it is cleared entirely
+  const OVERLAY_SKEW_S = 2.0;   // cleared when the tile's frame is this much newer
+
+  function overlayColor(key) {
+    // FNV-1a over the key: stable across renders and across reloads, which a
+    // per-frame array index is not.
+    let h = 0x811c9dc5;
+    const s = String(key);
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return OVERLAY_COLORS[h % OVERLAY_COLORS.length];
+  }
+
+  // Readable ink for a label chip filled with `hex` — the palette spans a wide
+  // lightness band, so neither white nor near-black wins for all eight.
+  function overlayInk(hex) {
+    const c = [1, 3, 5].map((i) => {
+      const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    return lum > 0.18 ? "#0e0f13" : "#ffffff";
+  }
+
+  // Map normalised source-image coords (0..1) onto the tile, reproducing the
+  // `object-fit: cover` the CSS applies to the <img>. Cover CROPS: without this
+  // the boxes would sit at a constant offset from what they describe, which is
+  // the failure mode that looks right enough to be believed.
+  function coverMap(img, w, h, fallbackAspect) {
+    const nw = img && img.naturalWidth ? img.naturalWidth : 0;
+    const nh = img && img.naturalHeight ? img.naturalHeight : 0;
+    const aspect = nw && nh ? nw / nh : (fallbackAspect || 1);
+    // Scale so the image covers the box; the overflowing axis is centred.
+    const dw = Math.max(w, h * aspect);
+    const dh = Math.max(h, w / aspect);
+    return { ox: (w - dw) / 2, oy: (h - dh) / 2, dw, dh };
+  }
+
+  // The `OPENRAL_DASHBOARD_FLIP_180` case: the tile shows a rotated copy while
+  // perception ran on the raw topic, so the coordinates need the same turn.
+  const flipU = (u, flip) => (flip ? 1 - u : u);
+
+  function drawOverlay(tile, ov, cam) {
+    const canvas = tile.canvas, img = tile.img;
+    const wrap = canvas.parentElement;
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    if (!w || !h) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!ov) return;
+
+    const now = Date.now() / 1000;
+    const camTs = cam && cam.ts_unix;
+    const producers = [];
+
+    // --- segmenter masks: translucent tinted fills, area-ascending order -----
+    const mk = ov.masks;
+    if (mk && Array.isArray(mk.masks) && mk.masks.length) {
+      const fade = overlayFade(mk, now, camTs);
+      if (fade > 0) {
+        const first = mk.masks[0] || {};
+        const map = coverMap(img, w, h, (first.width || 1) / (first.height || 1));
+        mk.masks.forEach((m, i) => {
+          const bitmap = maskImage(tile, mk, i, m);
+          if (!bitmap || !bitmap.complete || !bitmap.naturalWidth) return;
+          // Tint: draw the mask (alpha == the mask), then flood under
+          // `source-in` so the colour lands on exactly the set pixels.
+          const off = tile.scratch || (tile.scratch = document.createElement("canvas"));
+          off.width = bitmap.naturalWidth; off.height = bitmap.naturalHeight;
+          const octx = off.getContext("2d");
+          octx.clearRect(0, 0, off.width, off.height);
+          octx.drawImage(bitmap, 0, 0);
+          octx.globalCompositeOperation = "source-in";
+          octx.fillStyle = overlayColor(mk.rskill_id + "#" + i);
+          octx.fillRect(0, 0, off.width, off.height);
+          octx.globalCompositeOperation = "source-over";
+          ctx.save();
+          ctx.globalAlpha = 0.38 * fade;
+          if (mk.flip_180) {
+            ctx.translate(map.ox + map.dw / 2, map.oy + map.dh / 2);
+            ctx.rotate(Math.PI);
+            ctx.drawImage(off, -map.dw / 2, -map.dh / 2, map.dw, map.dh);
+          } else {
+            ctx.drawImage(off, map.ox, map.oy, map.dw, map.dh);
+          }
+          ctx.restore();
+        });
+        if (mk.rskill_id) producers.push(shortId(mk.rskill_id));
+      }
+    }
+
+    // --- detector boxes: stroked rects + label:score chips -------------------
+    const det = ov.detections;
+    if (det && Array.isArray(det.boxes) && det.boxes.length && det.frame_width) {
+      const fade = overlayFade(det, now, camTs);
+      if (fade > 0) {
+        const map = coverMap(img, w, h, det.frame_width / det.frame_height);
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.font = "600 10px ui-monospace, Menlo, Consolas, monospace";
+        ctx.textBaseline = "top";
+        for (const b of det.boxes) {
+          const bb = b.bbox_xyxy;
+          if (!bb || bb.length < 4) continue;
+          const u0 = flipU(bb[0] / det.frame_width, det.flip_180);
+          const v0 = flipU(bb[1] / det.frame_height, det.flip_180);
+          const u1 = flipU(bb[2] / det.frame_width, det.flip_180);
+          const v1 = flipU(bb[3] / det.frame_height, det.flip_180);
+          const x0 = map.ox + Math.min(u0, u1) * map.dw;
+          const y0 = map.oy + Math.min(v0, v1) * map.dh;
+          const x1 = map.ox + Math.max(u0, u1) * map.dw;
+          const y1 = map.oy + Math.max(v0, v1) * map.dh;
+          // Colour by LABEL, not by position in the array: a detector that
+          // reorders its output must not repaint every box.
+          const color = overlayColor(b.label);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+          const text = b.label + " " + Number(b.confidence || 0).toFixed(2);
+          const tw = ctx.measureText(text).width;
+          // Chip above the box, or inside it when the box touches the top edge.
+          const cy = y0 - 13 >= 0 ? y0 - 13 : y0 + 1;
+          ctx.fillStyle = color;
+          ctx.fillRect(x0, cy, tw + 8, 13);
+          ctx.fillStyle = overlayInk(color);
+          ctx.fillText(text, x0 + 4, cy + 2);
+        }
+        ctx.restore();
+        if (det.model_id) producers.push(shortId(det.model_id));
+      }
+    }
+    tile.producers.textContent = producers.join(" · ");
+  }
+
+  // Opacity for an overlay given its age and how far the tile's frame has moved
+  // past it. 0 means "do not draw" — a stale overlay is cleared, never left on
+  // screen describing a frame that is gone.
+  function overlayFade(lane, now, camTs) {
+    const ts = lane && lane.ts_unix;
+    if (!ts) return 0;
+    const age = now - ts;
+    if (age > OVERLAY_DROP_S) return 0;
+    if (camTs && camTs - ts > OVERLAY_SKEW_S) return 0;
+    if (age <= OVERLAY_FADE_S) return 1;
+    return 1 - (age - OVERLAY_FADE_S) / (OVERLAY_DROP_S - OVERLAY_FADE_S);
+  }
+
+  // Decoded mask bitmaps, cached per tile+index and re-decoded only when the
+  // payload actually changes (an <img> decode per SSE tick would be wasteful).
+  function maskImage(tile, mk, i, m) {
+    if (!m || !m.png_b64) return null;
+    const key = mk.stamp_unix + "#" + i;
+    let slot = tile.maskCache[i];
+    if (!slot || slot.key !== key) {
+      const el = new Image();
+      el.src = "data:image/png;base64," + m.png_b64;
+      slot = tile.maskCache[i] = { key, el };
+    }
+    return slot.el;
+  }
+
+  const shortId = (s) => { const p = String(s).split("/"); return p[p.length - 1]; };
+
+  // Live tiles, keyed by camera name. Kept across renders instead of being
+  // rebuilt: recreating the <img> would restart its MJPEG stream on every SSE
+  // tick, and the overlay needs the loaded image's natural size to map source
+  // pixels onto a `cover`-cropped tile.
+  const camTiles = new Map();
+
   function renderPerception(perc) {
     const el = $("cameras");
-    el.innerHTML = "";
-    const cams = perc && perc.cameras;
-    if (!cams || Object.keys(cams).length === 0) {
-      el.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1">waiting for sensors.read_latest</div>';
+    const cams = (perc && perc.cameras) || {};
+    const overlays = (perc && perc.overlays) || {};
+    const names = Object.keys(cams).sort((a, b) => a.localeCompare(b));
+    if (names.length === 0) {
+      if (camTiles.size || !el.firstChild) {
+        camTiles.clear();
+        el.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1">waiting for sensors.read_latest</div>';
+      }
       return;
     }
-    const entries = Object.entries(cams).sort((a, b) => a[0].localeCompare(b[0]));
-    for (const [name, cam] of entries) {
-      const isLive = cam.ts_unix && (Date.now() / 1000 - cam.ts_unix) < 2;
-      const hasFrame = cam.thumbnail_jpeg_b64 || cam.width;
-      const imgInner = hasFrame
-        ? `<img src="/api/camera/${encodeURIComponent(name)}/stream" alt="${name}"
-             onerror="this.replaceWith(Object.assign(document.createElement('div'),
-               {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
-        : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`;
-      // Frame AGE at read time — sampled at arbitrary phase against a
-      // free-running camera it legitimately sawtooths 0→frame period, so
-      // label it; the steady number is the EMA fps (bottom-right).
-      const ageMs = cam.age_ms != null ? "age " + num(cam.age_ms, 0) + " ms" : "—";
-      const label = (cam.role || cam.modality || "cam").toString();
-      const dims = `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
-      const fps = cam.fps != null ? num(cam.fps, 0) + " fps" : "";
-      const div = document.createElement("div");
-      div.className = "camera";
-      div.innerHTML = `
-        <div class="image-wrap">
-          ${imgInner}
-          <span class="corner tl"></span><span class="corner tr"></span>
-          <span class="corner bl"></span><span class="corner br"></span>
-          <div class="crosshair"></div>
-          <div class="pill-row">
-            ${isLive ? '<span class="pill">live</span>' : ''}
-            <span class="pill neutral">${label}</span>
-          </div>
-        </div>
-        <div class="footer">
-          <span class="name">${name}</span>
-          <span class="lat">${ageMs}</span>
-          <span class="meta-sub">${dims}</span>
-          <span class="meta-sub right">${fps}</span>
-        </div>
-      `;
-      el.appendChild(div);
+    // Rebuild the tile set only when the camera roster changes.
+    const roster = names.join(" ");
+    if (el.dataset.roster !== roster) {
+      el.dataset.roster = roster;
+      el.innerHTML = "";
+      camTiles.clear();
+      for (const name of names) el.appendChild(buildCameraTile(name, cams[name]));
     }
+    for (const name of names) {
+      const tile = camTiles.get(name);
+      if (tile) updateCameraTile(tile, cams[name], overlays[name]);
+    }
+  }
+
+  function buildCameraTile(name, cam) {
+    const hasFrame = cam.thumbnail_jpeg_b64 || cam.width;
+    const div = document.createElement("div");
+    div.className = "camera";
+    div.innerHTML = `
+      <div class="image-wrap">
+        ${hasFrame
+          ? `<img alt="${name}" onerror="this.replaceWith(Object.assign(document.createElement('div'),
+               {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
+          : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`}
+        <canvas class="overlay"></canvas>
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="crosshair"></div>
+        <div class="pill-row">
+          <span class="pill live-pill"></span>
+          <span class="pill neutral role-pill"></span>
+        </div>
+        <div class="overlay-src"></div>
+      </div>
+      <div class="footer">
+        <span class="name">${name}</span>
+        <span class="lat"></span>
+        <span class="meta-sub dims"></span>
+        <span class="meta-sub right fps"></span>
+      </div>
+    `;
+    const img = div.querySelector("img");
+    if (img) img.src = "/api/camera/" + encodeURIComponent(name) + "/stream";
+    camTiles.set(name, {
+      root: div,
+      img,
+      canvas: div.querySelector("canvas.overlay"),
+      producers: div.querySelector(".overlay-src"),
+      livePill: div.querySelector(".live-pill"),
+      rolePill: div.querySelector(".role-pill"),
+      lat: div.querySelector(".lat"),
+      dims: div.querySelector(".dims"),
+      fps: div.querySelector(".fps"),
+      maskCache: {},
+      scratch: null,
+    });
+    return div;
+  }
+
+  function updateCameraTile(tile, cam, ov) {
+    const isLive = cam.ts_unix && (Date.now() / 1000 - cam.ts_unix) < 2;
+    tile.livePill.textContent = isLive ? "live" : "";
+    tile.livePill.style.display = isLive ? "" : "none";
+    tile.rolePill.textContent = (cam.role || cam.modality || "cam").toString();
+    // Frame AGE at read time — sampled at arbitrary phase against a
+    // free-running camera it legitimately sawtooths 0→frame period, so
+    // label it; the steady number is the EMA fps (bottom-right).
+    tile.lat.textContent = cam.age_ms != null ? "age " + num(cam.age_ms, 0) + " ms" : "—";
+    tile.dims.textContent =
+      `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
+    tile.fps.textContent = cam.fps != null ? num(cam.fps, 0) + " fps" : "";
+    if (tile.canvas) drawOverlay(tile, ov, cam);
   }
 
   // Render the live 2D SLAM occupancy map. Mirrors the camera-card
