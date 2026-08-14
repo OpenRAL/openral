@@ -774,6 +774,110 @@ double attached_object_voxel_distance(const AttachedModel& attached, const Attac
   return minimum;
 }
 
+// Surface distance between one attached primitive (world frame `prim_xf`) and
+// an occupied voxel treated conservatively as its own cube.
+double attached_primitive_voxel_distance(const AttachedPrimitive& prim, const Transform& prim_xf,
+                                         const Transform& voxel, const Vec3& voxel_half) noexcept {
+  if (prim.kind == AttachedShapeKind::kBox) {
+    return box_box_distance(prim_xf, prim.half_extents, voxel, voxel_half);
+  }
+  return box_capsule_distance(voxel, voxel_half, prim_xf, prim.radius, prim.half_length);
+}
+
+// Inclusive voxel-index box covering one attached primitive's world AABB grown
+// by `reach`. Shared by the attached-voxel check and the witness latch so the
+// two can never scan different cell sets for the same payload pose.
+struct CellBox {
+  int x0{0};
+  int x1{-1};
+  int y0{0};
+  int y1{-1};
+  int z0{0};
+  int z1{-1};
+};
+
+CellBox primitive_cell_box(const AttachedPrimitive& prim, const Transform& prim_xf,
+                           const VoxelGrid& grid, double reach) noexcept {
+  // World-AABB half-size of the primitive (|R| * extents). For a sphere/capsule
+  // the swept radius plus the endpoint span is the conservative extent.
+  double ex;
+  double ey;
+  double ez;
+  if (prim.kind == AttachedShapeKind::kBox) {
+    const Vec3 he = prim.half_extents;
+    ex = std::fabs(prim_xf.r[0]) * he.x + std::fabs(prim_xf.r[1]) * he.y +
+         std::fabs(prim_xf.r[2]) * he.z;
+    ey = std::fabs(prim_xf.r[3]) * he.x + std::fabs(prim_xf.r[4]) * he.y +
+         std::fabs(prim_xf.r[5]) * he.z;
+    ez = std::fabs(prim_xf.r[6]) * he.x + std::fabs(prim_xf.r[7]) * he.y +
+         std::fabs(prim_xf.r[8]) * he.z;
+  } else {
+    // Capsule/sphere: axis is local +Z; half-length projects onto each axis.
+    ex = std::fabs(prim_xf.r[2]) * prim.half_length + prim.radius;
+    ey = std::fabs(prim_xf.r[5]) * prim.half_length + prim.radius;
+    ez = std::fabs(prim_xf.r[8]) * prim.half_length + prim.radius;
+  }
+  const double inv_res = 1.0 / grid.resolution;
+  const auto rng = [inv_res](double lo, double hi, double org, int dim) {
+    const int i0 = static_cast<int>(std::floor((lo - org) * inv_res));
+    const int i1 = static_cast<int>(std::floor((hi - org) * inv_res));
+    return std::pair<int, int>{clamp_index(i0, 0, dim - 1), clamp_index(i1, 0, dim - 1)};
+  };
+  const auto [x0, x1] =
+      rng(prim_xf.t.x - ex - reach, prim_xf.t.x + ex + reach, grid.origin.x, grid.sx);
+  const auto [y0, y1] =
+      rng(prim_xf.t.y - ey - reach, prim_xf.t.y + ey + reach, grid.origin.y, grid.sy);
+  const auto [z0, z1] =
+      rng(prim_xf.t.z - ez - reach, prim_xf.t.z + ez + reach, grid.origin.z, grid.sz);
+  return CellBox{x0, x1, y0, y1, z0, z1};
+}
+
+// Base-frame centre of cell (ix, iy, iz).
+Vec3 voxel_center(const VoxelGrid& grid, int ix, int iy, int iz) noexcept {
+  return Vec3{grid.origin.x + (ix + 0.5) * grid.resolution,
+              grid.origin.y + (iy + 0.5) * grid.resolution,
+              grid.origin.z + (iz + 0.5) * grid.resolution};
+}
+
+// Is object `obj`'s attested support contact still doing work — i.e. is some
+// occupied cell it would exempt still within `margin` of the payload? This is
+// the liveness predicate behind the witness latch: when it goes false the
+// payload has separated from its attested support and the exemption dies.
+// Bounded to the payload's own inflated AABB; allocation-free.
+bool support_witness_still_in_contact(const AttachedModel& attached, const AttachedObject& obj,
+                                      const Transform& obj_xf, const VoxelGrid& grid,
+                                      double margin) noexcept {
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
+  for (int p = 0; p < obj.prim_count; ++p) {
+    const AttachedPrimitive& prim =
+        attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+    const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
+    const CellBox box = primitive_cell_box(prim, prim_xf, grid, margin + half_side);
+    for (int iz = box.z0; iz <= box.z1; ++iz) {
+      for (int iy = box.y0; iy <= box.y1; ++iy) {
+        for (int ix = box.x0; ix <= box.x1; ++ix) {
+          const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+          if (grid.occupancy[idx] == 0) {
+            continue;
+          }
+          const Vec3 center = voxel_center(grid, ix, iy, iz);
+          if (!support_contact_exempts(obj, obj_xf, center, grid.resolution,
+                                       grid.attached_contact_tolerance)) {
+            continue;
+          }
+          Transform voxel;
+          voxel.t = center;
+          if (attached_primitive_voxel_distance(prim, prim_xf, voxel, voxel_half) <= margin) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
@@ -829,9 +933,34 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
       out.n_primitives = 0;
       return AttachIngestStatus::kOverflow;
     }
+    // Support-contact attestation (ADR-0092 D6). A malformed witness is not
+    // downgraded to "no witness" — it fails the whole ingest closed, because a
+    // producer that cannot describe its own support contact is a producer whose
+    // attachment set we do not trust either.
+    Vec3 support_normal{0.0, 0.0, 1.0};
+    if (in.has_support_witness) {
+      const Vec3& normal_in = in.support_normal;
+      const double norm_sq =
+          normal_in.x * normal_in.x + normal_in.y * normal_in.y + normal_in.z * normal_in.z;
+      if (!std::isfinite(norm_sq) || norm_sq <= 1e-12 || !std::isfinite(in.support_point.x) ||
+          !std::isfinite(in.support_point.y) || !std::isfinite(in.support_point.z) ||
+          !std::isfinite(in.support_patch_radius) || in.support_patch_radius <= 0.0 ||
+          !std::isfinite(in.support_max_penetration) || in.support_max_penetration < 0.0) {
+        out.n_objects = 0;
+        out.n_primitives = 0;
+        return AttachIngestStatus::kMalformed;
+      }
+      const double inv_norm = 1.0 / std::sqrt(norm_sq);
+      support_normal = Vec3{normal_in.x * inv_norm, normal_in.y * inv_norm, normal_in.z * inv_norm};
+    }
     AttachedObject& o = out.objects[i];
     o.pose_in_link = in.pose_in_link;
     o.attach_link = attach;
+    o.has_support_witness = in.has_support_witness;
+    o.support_point = in.support_point;
+    o.support_normal = support_normal;
+    o.support_patch_radius = in.has_support_witness ? in.support_patch_radius : 0.0;
+    o.support_max_penetration = in.has_support_witness ? in.support_max_penetration : 0.0;
     o.prim_first = static_cast<int>(prim_cursor);
     o.prim_count = static_cast<int>(n_prims);
     o.touch_first = static_cast<int>(touch_cursor);
@@ -916,12 +1045,6 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
   }
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
-  const double inv_res = 1.0 / grid.resolution;
-  const auto rng = [&](double lo, double hi, double org, int dim) {
-    const int i0 = static_cast<int>(std::floor((lo - org) * inv_res));
-    const int i1 = static_cast<int>(std::floor((hi - org) * inv_res));
-    return std::pair<int, int>{clamp_index(i0, 0, dim - 1), clamp_index(i1, 0, dim - 1)};
-  };
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
@@ -929,75 +1052,41 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       const AttachedPrimitive& prim =
           attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
       const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
-      // World-AABB half-size of the primitive (|R| * extents). For a
-      // sphere/capsule the swept radius plus the endpoint span is the
-      // conservative extent.
-      double ex;
-      double ey;
-      double ez;
-      if (prim.kind == AttachedShapeKind::kBox) {
-        const Vec3 he = prim.half_extents;
-        ex = std::fabs(prim_xf.r[0]) * he.x + std::fabs(prim_xf.r[1]) * he.y +
-             std::fabs(prim_xf.r[2]) * he.z;
-        ey = std::fabs(prim_xf.r[3]) * he.x + std::fabs(prim_xf.r[4]) * he.y +
-             std::fabs(prim_xf.r[5]) * he.z;
-        ez = std::fabs(prim_xf.r[6]) * he.x + std::fabs(prim_xf.r[7]) * he.y +
-             std::fabs(prim_xf.r[8]) * he.z;
-      } else {
-        // Capsule/sphere: axis is local +Z; half-length projects onto each axis.
-        const double zx = std::fabs(prim_xf.r[2]) * prim.half_length;
-        const double zy = std::fabs(prim_xf.r[5]) * prim.half_length;
-        const double zz = std::fabs(prim_xf.r[8]) * prim.half_length;
-        ex = zx + prim.radius;
-        ey = zy + prim.radius;
-        ez = zz + prim.radius;
-      }
-      const double reach = margin + half_side;
-      const auto [ix0, ix1] =
-          rng(prim_xf.t.x - ex - reach, prim_xf.t.x + ex + reach, grid.origin.x, grid.sx);
-      const auto [iy0, iy1] =
-          rng(prim_xf.t.y - ey - reach, prim_xf.t.y + ey + reach, grid.origin.y, grid.sy);
-      const auto [iz0, iz1] =
-          rng(prim_xf.t.z - ez - reach, prim_xf.t.z + ez + reach, grid.origin.z, grid.sz);
-      for (int iz = iz0; iz <= iz1; ++iz) {
-        for (int iy = iy0; iy <= iy1; ++iy) {
-          for (int ix = ix0; ix <= ix1; ++ix) {
+      const CellBox box = primitive_cell_box(prim, prim_xf, grid, margin + half_side);
+      for (int iz = box.z0; iz <= box.z1; ++iz) {
+        for (int iy = box.y0; iy <= box.y1; ++iy) {
+          for (int ix = box.x0; ix <= box.x1; ++ix) {
             const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
             if (grid.occupancy[idx] == 0) {
               continue;
             }
-            const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
-                              grid.origin.y + (iy + 0.5) * grid.resolution,
-                              grid.origin.z + (iz + 0.5) * grid.resolution};
+            const Vec3 center = voxel_center(grid, ix, iy, iz);
             Transform voxel;
             voxel.t = center;
-            double d;
-            if (prim.kind == AttachedShapeKind::kBox) {
-              d = box_box_distance(prim_xf, prim.half_extents, voxel, voxel_half);
-            } else {
-              d = box_capsule_distance(voxel, voxel_half, prim_xf, prim.radius, prim.half_length);
-            }
-            // Gate (unchanged): a cell within the margin still trips unless
-            // this payload's attach-time contact baseline exempts it, or the
-            // contact phase tolerates it as a new shallow boundary cell. An
-            // exempted cell contributes to `sweep_min` only — it is not the
-            // reason for any stop and must never supply the reported distance.
+            const double d = attached_primitive_voxel_distance(prim, prim_xf, voxel, voxel_half);
+            // Gate: a cell within the margin trips unless one of the two
+            // bounded exemptions explains it — a live support-contact witness
+            // (physical, index-free, quantisation-aware) or the payload's own
+            // embedded attach-time occupancy residue. An exempted cell
+            // contributes to `sweep_min` only — it is not the reason for any
+            // stop and must never supply the reported distance.
             bool tripped = false;
             if (d <= margin) {
               tripped = true;
-              const bool has_baseline = i < 8 && grid.attached_contact_mask != nullptr &&
-                                        grid.attached_contact_distance != nullptr &&
-                                        grid.attached_contact_stride > idx &&
-                                        (grid.attached_contact_mask[idx] & (1U << i)) != 0;
-              if (has_baseline) {
-                const double baseline =
-                    grid.attached_contact_distance[i * grid.attached_contact_stride + idx];
-                const bool embedded_residue = baseline <= -0.5 * grid.resolution;
-                if (embedded_residue || d + grid.attached_contact_tolerance >= baseline) {
-                  tripped = false;
-                }
-              } else if (grid.attached_contact_allow_new_shallow &&
-                         d + grid.attached_contact_tolerance >= 0.0) {
+              const bool witness_live =
+                  i < 8 && obj.has_support_witness && (grid.support_witness_live & (1U << i)) != 0;
+              if (witness_live && support_contact_exempts(obj, obj_xf, center, grid.resolution,
+                                                          grid.attached_contact_tolerance)) {
+                tripped = false;
+              } else if (i < 8 && grid.attached_contact_mask != nullptr &&
+                         grid.attached_contact_distance != nullptr &&
+                         grid.attached_contact_stride > idx &&
+                         (grid.attached_contact_mask[idx] & (1U << i)) != 0 &&
+                         grid.attached_contact_distance[i * grid.attached_contact_stride + idx] <=
+                             -0.5 * grid.resolution) {
+                // Embedded residue: this cell was already at least half a voxel
+                // inside the payload when the baseline was snapshotted, so it
+                // is the payload's own uncleared occupancy, not an obstacle.
                 tripped = false;
               }
             }
@@ -1008,6 +1097,65 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
     }
   }
   return finish_sweep(result, sweep_min);
+}
+
+bool support_contact_exempts(const AttachedObject& object, const Transform& object_xf,
+                             const Vec3& center, double resolution, double slack) noexcept {
+  if (!object.has_support_witness || resolution <= 0.0) {
+    return false;
+  }
+  // Lift the attested plane out of the object frame into the base frame. Doing
+  // it every call is what keeps the witness index-free: the payload moves, the
+  // base drives, the lattice re-phases, and the plane still describes the same
+  // physical support face.
+  const Vec3 plane_point = add(object_xf.t, rotate(object_xf.r, object.support_point));
+  const Vec3 normal = rotate(object_xf.r, object.support_normal);
+  const Vec3 delta = sub(center, plane_point);
+  const double height = dot(delta, normal);
+  const double lateral_sq = std::max(0.0, dot(delta, delta) - height * height);
+  const double half = 0.5 * resolution;
+  // Both pads are exact discretisation geometry, not tuned tolerances: the
+  // cube's half-width projected on the normal, and the cube's circumradius
+  // laterally.
+  const double normal_half_width =
+      half * (std::fabs(normal.x) + std::fabs(normal.y) + std::fabs(normal.z));
+  const double lateral_pad = half * 1.7320508075688772;  // sqrt(3)
+  const double patch = object.support_patch_radius + lateral_pad;
+  if (lateral_sq > patch * patch) {
+    return false;
+  }
+  return height <= normal_half_width + object.support_max_penetration + slack;
+}
+
+std::uint8_t update_support_contact_witnesses(const AttachedModel& attached,
+                                              const CollisionScratch& scratch,
+                                              const VoxelGrid& grid, std::uint8_t live_mask,
+                                              double margin) noexcept {
+  // No usable map means no way to confirm the payload is still on its support:
+  // fail closed and drop every witness rather than carry a stale exemption.
+  if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
+      grid.resolution <= 0.0) {
+    return 0;
+  }
+  const std::size_t objects = std::min<std::size_t>(attached.n_objects, 8);
+  std::uint8_t live = live_mask;
+  for (std::size_t i = 0; i < 8; ++i) {
+    const auto bit = static_cast<std::uint8_t>(1U << i);
+    if ((live & bit) == 0) {
+      continue;
+    }
+    // The witness survives only while it is still doing work. The moment the
+    // payload lifts clear of its attested support, the exemption dies — and
+    // only a fresh attestation can bring it back.
+    const AttachedObject& obj = attached.objects[i];
+    const bool keep = i < objects && obj.has_support_witness &&
+                      support_witness_still_in_contact(
+                          attached, obj, attached_object_transform(obj, scratch), grid, margin);
+    if (!keep) {
+      live = static_cast<std::uint8_t>(live & ~bit);
+    }
+  }
+  return live;
 }
 
 bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,

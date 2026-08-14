@@ -180,7 +180,15 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("attached_collision_enabled", false);
   this->declare_parameter<double>("attached_collision_margin_m", 0.0);
   this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
+  // Physical slack added to an ATTESTED support-contact depth (ADR-0092 D6) —
+  // FK and pose noise, not voxel quantisation, which the witness predicate
+  // accounts for geometrically. 1 mm is the honest physical figure; there is no
+  // longer any reason to raise it to the voxel size in simulation.
   this->declare_parameter<double>("attached_contact_tolerance_m", 0.001);
+  // Bounds on what a layer-2 attestation may claim. A witness beyond these
+  // fails the whole attachment message closed.
+  this->declare_parameter<double>("support_witness_max_patch_radius_m", 0.5);
+  this->declare_parameter<double>("support_witness_max_penetration_m", 0.01);
   this->declare_parameter<std::int64_t>("attached_max_objects", 8);
   this->declare_parameter<std::int64_t>("attached_max_primitives", 16);
   this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
@@ -678,14 +686,29 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         forward_kinematics(collision_model_, q_fk_.data(), robot_ndof, collision_scratch_);
       };
-      if (attached_contact_snapshot_pending_ || attached_contact_active_) {
+      if (attached_contact_snapshot_pending_ || attached_contact_active_ ||
+          support_witness_live_ != 0) {
         fk_config(q_meas_.data());
-        attached_contact_active_ = update_attached_voxel_contacts(
-            attached_model_, collision_scratch_, voxel_grid_, attached_contact_mask_.data(),
-            attached_contact_distance_.data(), attached_contact_mask_.size(),
-            attached_contact_distance_.size(), attached_contact_snapshot_pending_);
-        attached_contact_snapshot_pending_ = false;
+        if (attached_contact_snapshot_pending_ || attached_contact_active_) {
+          attached_contact_active_ = update_attached_voxel_contacts(
+              attached_model_, collision_scratch_, voxel_grid_, attached_contact_mask_.data(),
+              attached_contact_distance_.data(), attached_contact_mask_.size(),
+              attached_contact_distance_.size(), attached_contact_snapshot_pending_);
+          attached_contact_snapshot_pending_ = false;
+        }
+        // Refresh the witness latch against the MEASURED configuration only —
+        // a predicted pose must never keep an exemption alive. Separation kills
+        // it here, permanently, until World State attests a new contact.
+        const std::uint8_t before = support_witness_live_;
+        support_witness_live_ =
+            update_support_contact_witnesses(attached_model_, collision_scratch_, voxel_grid_,
+                                             support_witness_live_, attached_collision_margin_m_);
+        if (support_witness_live_ != before) {
+          RCLCPP_INFO(this->get_logger(), "safety.support_witness_separated live=0x%x was=0x%x",
+                      static_cast<unsigned>(support_witness_live_), static_cast<unsigned>(before));
+        }
       }
+      voxel_grid_.support_witness_live = support_witness_live_;
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -732,14 +755,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               return true;
             }
           }
+          // Legacy contact phase: without an attestation the kernel still can
+          // not tell a legitimate support contact from a real one, so it keeps
+          // skipping the predicted Cartesian steps. With a live witness it does
+          // not need to — the exemption is pose-dependent and bounded — so the
+          // predicted steps are checked too. That is strictly more checking.
           const bool contact_constrained_prediction =
-              is_cartesian && attached_contact_active_ && step >= 0;
+              is_cartesian && attached_contact_active_ && step >= 0 && support_witness_live_ == 0;
           if (world_voxel_enabled_ && !contact_constrained_prediction) {
-            voxel_grid_.attached_contact_allow_new_shallow =
-                is_cartesian && attached_contact_active_ && step < 0;
             const auto hit = check_attached_voxel_collision(
                 collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin);
-            voxel_grid_.attached_contact_allow_new_shallow = false;
             if (hit.hit) {
               report("world", attached_label(hit.link_a),
                      std::string("voxel_") + std::to_string(hit.link_b), step, hit);
@@ -1134,6 +1159,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_revision_ = 0;
   attached_contact_snapshot_pending_ = false;
   attached_contact_active_ = false;
+  support_witness_live_ = 0;
+  support_witness_keys_.assign(std::min<std::size_t>(attached_max_objects_, 8),
+                               SupportWitnessKey{});
+  support_witness_max_patch_radius_m_ =
+      this->get_parameter("support_witness_max_patch_radius_m").as_double();
+  support_witness_max_penetration_m_ =
+      this->get_parameter("support_witness_max_penetration_m").as_double();
   attached_contact_mask_.assign(world_voxel_max_cells_, 0);
   attached_contact_distance_.assign(attached_max_objects_ * world_voxel_max_cells_,
                                     std::numeric_limits<double>::infinity());
@@ -1142,6 +1174,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   voxel_grid_.attached_contact_stride = world_voxel_max_cells_;
   voxel_grid_.attached_contact_tolerance =
       this->get_parameter("attached_contact_tolerance_m").as_double();
+  voxel_grid_.support_witness_live = 0;
   attached_model_ = AttachedModel{};
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
   attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
@@ -1347,6 +1380,8 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_stamp_ = producer_stamp;
     attached_contact_snapshot_pending_ = false;
     attached_contact_active_ = false;
+    support_witness_live_ = 0;
+    std::fill(support_witness_keys_.begin(), support_witness_keys_.end(), SupportWitnessKey{});
     std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
   };
 
@@ -1380,6 +1415,30 @@ void SafetyKernelLifecycleNode::on_world_state(
         obj.pose_in_link.orientation.z, obj.pose_in_link.orientation.w);
     in.attach_link = obj.attach_link;
     in.touch_links.assign(obj.touch_links.begin(), obj.touch_links.end());
+    // Support-contact attestation (ADR-0092 D6). World State may attest that
+    // this payload rests on a named surface; the kernel bounds what it will
+    // accept. An attestation outside those bounds is not silently downgraded to
+    // "no witness" — it fails the whole message closed, because a producer that
+    // over-claims here is not one to trust with the rest of the payload model.
+    in.has_support_witness = obj.support_contact_valid;
+    if (in.has_support_witness) {
+      const auto& witness = obj.support_contact;
+      if (witness.patch_radius_m > support_witness_max_patch_radius_m_ ||
+          witness.max_penetration_m > support_witness_max_penetration_m_) {
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.support_witness_rejected object=%s patch_m=%g penetration_m=%g",
+                    obj.object_id.c_str(), witness.patch_radius_m, witness.max_penetration_m);
+        fail_closed();
+        return;
+      }
+      in.support_point = Vec3{witness.contact_point_in_object.x, witness.contact_point_in_object.y,
+                              witness.contact_point_in_object.z};
+      in.support_normal =
+          Vec3{witness.contact_normal_in_object.x, witness.contact_normal_in_object.y,
+               witness.contact_normal_in_object.z};
+      in.support_patch_radius = witness.patch_radius_m;
+      in.support_max_penetration = witness.max_penetration_m;
+    }
     in.primitives.clear();
     in.primitives.reserve(obj.primitives.size());
     for (const auto& prim : obj.primitives) {
@@ -1443,6 +1502,31 @@ void SafetyKernelLifecycleNode::on_world_state(
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     attached_labels_[i] = wire[i].object_id;
   }
+  // Arm a support-contact witness only when World State attests a genuinely NEW
+  // one. The attachment set is heartbeated, so keying off message arrival would
+  // silently resurrect an exemption the kernel had already killed on
+  // separation. The key is (object id, support id, producer stamp): a regrasp
+  // or a re-contact produces a fresh stamp and re-arms honestly; a republished
+  // snapshot does not.
+  for (std::size_t i = 0; i < support_witness_keys_.size(); ++i) {
+    const auto bit = static_cast<std::uint8_t>(1U << i);
+    if (i >= attached_model_.n_objects || !attached_model_.objects[i].has_support_witness) {
+      support_witness_keys_[i] = SupportWitnessKey{};
+      support_witness_live_ = static_cast<std::uint8_t>(support_witness_live_ & ~bit);
+      continue;
+    }
+    SupportWitnessKey key;
+    key.object_id = wire[i].object_id;
+    key.support_id = wire[i].support_contact.support_id;
+    key.stamp_ns = wire[i].support_contact.stamp_ns;
+    key.valid = true;
+    if (!(key == support_witness_keys_[i])) {
+      support_witness_keys_[i] = key;
+      support_witness_live_ = static_cast<std::uint8_t>(support_witness_live_ | bit);
+      RCLCPP_INFO(this->get_logger(), "safety.support_witness_armed object=%s support=%s",
+                  key.object_id.c_str(), key.support_id.c_str());
+    }
+  }
   attached_overflow_ = false;
   attached_received_ = true;
   attached_stamp_ = producer_stamp;
@@ -1451,6 +1535,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     if (attached_model_.n_objects == 0) {
       attached_contact_snapshot_pending_ = false;
       attached_contact_active_ = false;
+      // Detach: every exemption dies with the payload it belonged to.
+      support_witness_live_ = 0;
+      std::fill(support_witness_keys_.begin(), support_witness_keys_.end(), SupportWitnessKey{});
       std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
       std::fill(attached_contact_distance_.begin(), attached_contact_distance_.end(),
                 std::numeric_limits<double>::infinity());
