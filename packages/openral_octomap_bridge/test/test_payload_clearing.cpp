@@ -710,6 +710,45 @@ TEST(PayloadClearing, WithoutTheAttestationTheSupportSurfaceIsClearedAway) {
   }
 }
 
+TEST(PayloadClearing, APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs) {
+  // ADR-0097 rollout item 4, verified rather than assumed. The place-phase
+  // witness rides the SAME `AttachedCollisionObject.support_contact` field as
+  // the pick witness, and `place_attached_object` / `support_patch_withholds`
+  // read only the geometry on that field — never `support_id`, never
+  // `evidence_kind`, never anything that could tell the two phases apart.
+  //
+  // So the claim to prove is an identity, not an approximation: the same
+  // payload, the same pose, the same map, attested against the cabinet shelf it
+  // is being PLACED on instead of the counter it was PICKED from, must produce
+  // a bit-identical partition. If it did not, the place witness would arrive at
+  // the kernel with its supporting occupancy cleared out from under it — the
+  // exact 2026-08-14 defect this partition exists to fix, re-opened for the
+  // phase the fix was not written against.
+  WireObject place = resting_payload();
+  place.support_contact.support_id = "sim:cab_1_left_group_main";
+
+  const auto before = resting_grid();
+  auto pick_cleared = before;
+  clear_with(pick_cleared, placed(resting_payload()));
+  auto place_cleared = before;
+  const std::size_t cleared = clear_with(place_cleared, placed(place));
+
+  EXPECT_EQ(cleared, 12U) << "the payload's own silhouette, and only that";
+  EXPECT_EQ(place_cleared.occupancy, pick_cleared.occupancy)
+      << "the partition must not be able to tell a place witness from a pick witness";
+  for (const double x : kFootprintX) {
+    for (const double y : kFootprintY) {
+      EXPECT_NE(place_cleared.occupancy[cell_index(place_cleared, x, y, kSupportLayerZ)], 0)
+          << "the declared place surface must survive for the kernel to exempt it";
+    }
+  }
+  // And the obstacle beside the payload — the cabinet wall the payload is NOT
+  // attested against — is untouched by either phase, so it still stops.
+  EXPECT_NE(place_cleared.occupancy[cell_index(place_cleared, kObstacleCell.x(), kObstacleCell.y(),
+                                               kObstacleCell.z())],
+            0);
+}
+
 TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
   // The conservatism argument, mechanised. Withholding can only ever SKIP a
   // clear, so the cells the partitioned clearing removes are a strict subset of

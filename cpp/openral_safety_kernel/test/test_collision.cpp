@@ -2055,6 +2055,205 @@ TEST(SupportContactWitness, MalformedAttestationFailsTheWholeIngestClosed) {
   EXPECT_NEAR(out.objects[0].support_patch_radius, 0.1, 1e-12);
 }
 
+// ── Place-phase witness (ADR-0097) ──────────────────────────────────────────
+//
+// The kernel gains NOTHING for the place phase, and these tests exist to prove
+// that rather than to assume it. `support_contact_exempts` is producer-blind:
+// it does not branch on `evidence_kind`, it does not know what a declaration
+// is, and it cannot — the declaration gates the PRODUCER, which is what keeps
+// the kernel's own predicate evidence-based. A place witness is therefore
+// exactly what a pick witness is: an attestation on
+// `AttachedCollisionObject.support_contact`, exempting exactly the patch it
+// describes.
+//
+// The scenario is round-5's
+// (`spark:~/openral-runs/2026-08-14-round5/baguette/seed1_run2`), reproduced as
+// a geometry class: a payload inserted into a mapped container region, resting
+// on the shelf inside it. What made that run stop at -1.78 mm is that World
+// State attested nothing for the shelf contact — there was no place phase to
+// attest for — so the shelf read as an ordinary obstacle. In kernel terms the
+// declared and undeclared cases differ in one bit, `has_support_witness`, and
+// both directions are pinned below.
+
+namespace {
+
+// The cabinet's own occupancy, on the same 24^3 / 25 mm lattice: three shelf
+// cells directly under the inserted payload, and one back-panel cell 150 mm
+// along +x — inside the container, on the payload, and NOT on the attested
+// support plane.
+constexpr int kShelfCellsX[] = {11, 12, 13};
+constexpr int kCabinetBackX = 18;
+constexpr int kCabinetBackZ = 13;
+
+void fill_cabinet(std::vector<std::uint8_t>& occ, bool with_back_panel) {
+  for (const int ix : kShelfCellsX) {
+    occ[static_cast<std::size_t>(support_index(ix, 12, 12))] = 1;
+  }
+  if (with_back_panel) {
+    occ[static_cast<std::size_t>(support_index(kCabinetBackX, 12, kCabinetBackZ))] = 1;
+  }
+}
+
+}  // namespace
+
+TEST(SupportContactWitness, DeclaredPlaceContactRidesTheSameExemptionAsThePick) {
+  // The declared insertion. The payload is down on the cabinet's shelf, World
+  // State has attested that contact, and the kernel does not stop on it.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);  // the place attestation: same shape, same caps
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet(occ, /*with_back_panel=*/false);
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1)
+      << "the payload is resting on the surface it attested; the witness stays live";
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "the flagship counter->cabinet insertion completes";
+}
+
+TEST(SupportContactWitness, TheSameInsertionWithNoDeclarationStillStops) {
+  // Round-5 itself. Identical geometry, identical cells, identical payload
+  // pose — the ONLY difference is that nothing was attested, because no place
+  // phase was declared. The kernel sees an ordinary obstacle and stops on it,
+  // at the quantisation-inflated depth the run reported.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // no attestation => has_support_witness == false
+  ASSERT_FALSE(att.objects[0].has_support_witness);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet(occ, /*with_back_panel=*/false);
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;  // even wrongly set, it exempts nothing
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit) << "an undeclared insertion must keep stopping the robot";
+  EXPECT_NEAR(hit.min_distance, -0.0157, 1e-9);
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x0);
+}
+
+TEST(SupportContactWitness, TheDeclaredShelfIsExemptButTheCabinetAroundItIsNot) {
+  // The anti-scope, inside the declared target itself. The shelf the payload
+  // was attested against is exempt; the cabinet's back panel — same container,
+  // same goal, 150 mm out and therefore outside the attested patch — is not.
+  // A declaration buys the attested patch and nothing else.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet(occ, /*with_back_panel=*/true);
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(kCabinetBackX, 12, kCabinetBackZ))
+      << "the stop must name the back panel, never the attested shelf";
+}
+
+TEST(SupportContactWitness, DeepeningIntoTheDeclaredPlaceSurfaceStillStops) {
+  // Symmetric with DeepeningIntoTheSupportStillStops. A declaration does not
+  // license driving the payload THROUGH the shelf it declared.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet(occ, /*with_back_panel=*/false);
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(SupportContactWitness, PickAndPlaceShareOneSlotSequentially) {
+  // The concurrency question ADR-0097 left to implementation time, answered:
+  // one witness per payload, reused. The pick witness dies on separation from
+  // the counter; the place witness is a NEW attestation written into the same
+  // slot, and it exempts its own plane only.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;  // the counter
+  auto grid = support_grid(occ);
+
+  std::uint8_t live = 0x1;
+  grid.support_witness_live = live;
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // Carry away. The pick witness dies and the kernel never revives it.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, 0.30);
+  live = osk::update_support_contact_witnesses(att, s, grid, live, 0.0);
+  ASSERT_EQ(live, 0x0);
+
+  // The place attestation lands: the payload is now over the cabinet shelf,
+  // and World State has attested THAT contact. The kernel re-arms only because
+  // a new attestation arrived (the lifecycle node's (support_id, stamp_ns) key
+  // rule), and the exemption follows the new plane.
+  std::fill(occ.begin(), occ.end(), static_cast<std::uint8_t>(0));
+  fill_cabinet(occ, /*with_back_panel=*/true);
+  att.objects[0].pose_in_link = identity();
+  live = 0x1;  // stands in for the fresh-attestation re-arm
+  grid.support_witness_live = live;
+
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, live, 0.0), 0x1);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(kCabinetBackX, 12, kCabinetBackZ))
+      << "the place witness exempts the shelf it describes and nothing else";
+}
+
+TEST(SupportContactWitness, AWrongDeclaredTargetChangesWhichContactNeverHowMuch) {
+  // HZ-0097-2 mitigation 3. Give the attestation BOTH kernel caps at once —
+  // the largest patch (0.5 m) and the deepest penetration (10 mm) a witness
+  // may claim — i.e. the most any declaration, right or wrong, could ever buy.
+  // The exemption is still bounded: the total a cell may sit above the attested
+  // plane is 12.5 mm of cube half-width + 10 mm of attested depth + 1 mm of
+  // pose-noise slack = 23.5 mm, and that arithmetic does not know or care what
+  // was declared.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.50);                     // the maximum patch
+  att.objects[0].support_max_penetration = 0.01;  // the maximum depth
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  // The plane rides in the payload's own frame, so sinking the payload sinks
+  // it too. At 20 mm of sink the cell is 23.2 mm above the plane — inside the
+  // 23.5 mm bound, and still exempt.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // At 30 mm it is 33.2 mm above, and the caps do not stretch for it.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.03);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_TRUE(hit.hit) << "the caps bound a wrong declaration; they do not stretch for it";
+  EXPECT_EQ(hit.link_b, support_index(12, 12, 12));
+}
+
 TEST(CollisionEvidence, AttachedVoxelReportsTheTriggeringCellNotTheExemptResidue) {
   // The observed field failure, to five decimals: a box payload carried into
   // an occupancy map that still holds the payload's own cell. That residue

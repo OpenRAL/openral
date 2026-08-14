@@ -141,6 +141,20 @@ by it and are load-bearing when reading a field trace:
   kernel exempts nothing in. The sim producer holds the same two numbers
   (`openral_hal._sim_attachment_evidence`) and refuses to construct such a claim.
 
+**The partition is phase-blind, which is what makes ADR-0097 free here.**
+`place_attached_object` and `support_patch_withholds` read only the geometry on
+`AttachedCollisionObject.support_contact` — never `support_id`, never
+`evidence_kind` — so a place-phase witness (the second, declaration-gated
+attestation ADR-0097 adds, for the surface a payload is being placed *onto*)
+rides this partition unchanged and its support surface is withheld from the
+clearing exactly as a pick witness's is. That is not an assumption:
+`PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs` asserts
+the two produce a bit-identical grid. It matters because the failure mode would
+be the 2026-08-14 defect re-opened for the phase the fix was not written
+against — the place witness arriving at the kernel with the shelf it attests to
+already cleared out from under it, and dying on its own liveness test while the
+payload had not moved.
+
 The two predicates are a deliberate cross-package mirror —
 consolidating them would make this Layer-2 node link the Layer-6 kernel's
 collision core — and must be changed in lockstep

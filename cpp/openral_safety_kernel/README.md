@@ -207,6 +207,41 @@ pin this side, `PayloadClearing.TheAttestedSupportSurfaceSurvivesTheClearing`
 the other. Nothing in the kernel changed for this: the bridge stopped destroying
 the evidence.
 
+**Pick and place are the same witness, on the same slot, sequentially
+(ADR-0097).** Entry 012's anti-scope — a *new* contact mid-carry is never
+exempt — is correct for an accidental wall-brush and wrong for the intentional
+contact that ends a place: round-5
+(`spark:~/openral-runs/2026-08-14-round5/baguette/seed1_run2`) stopped the
+flagship counter→cabinet insertion at `-1.78 mm` with the payload 66–67 mm
+inside the target cabinet, because nothing distinguished "the payload arrived
+at its declared destination" from "the payload grazed a wall."
+
+ADR-0097 supplies that distinction **outside this kernel**, and deliberately so.
+A typed place-phase declaration (`openral_msgs/PlaceDeclaration`, carried
+dispatch → HAL → World State) gates the *producer*: while it is in force, and
+only for measured support contact **on the declared target**, World State
+attests a second `SupportContactWitness`. This kernel gains nothing — no
+declaration input, no place-specific predicate, no second witness slot.
+`support_contact_exempts` does not branch on `evidence_kind` and cannot tell the
+two phases apart, which is exactly what keeps its own rule evidence-based:
+a declaration with no measured contact exempts nothing, and measured contact
+with no attestation exempts nothing.
+
+The single per-object slot is reused sequentially, which is the common case and
+the one the producer enforces: the pick witness dies at separation from the
+counter, and the place witness arrives later as a genuinely new attestation
+under the same `(object_id, support_id, stamp_ns)` re-arm rule. Everything else
+is unchanged and symmetric — the same caps, the same fail-closed ingest, the
+same hysteresis, and the same anti-scope *inside the declared target*: the
+cabinet's back panel is not the shelf the payload attested against, so it still
+stops the robot. `SupportContactWitness.DeclaredPlaceContactRidesTheSame
+ExemptionAsThePick`, `…TheSameInsertionWithNoDeclarationStillStops`,
+`…TheDeclaredShelfIsExemptButTheCabinetAroundItIsNot`,
+`…DeepeningIntoTheDeclaredPlaceSurfaceStillStops`,
+`…PickAndPlaceShareOneSlotSequentially` and
+`…AWrongDeclaredTargetChangesWhichContactNeverHowMuch` pin all of it, and
+`…NewContactOutsideThePatchStillStopsMidCarry` is untouched.
+
 **2. Embedded attach-time residue.** The payload's own occupancy left in the
 map at attach — a cell already at least half a voxel inside the payload when
 the baseline was snapshotted. This is stale self-occupancy, a different
