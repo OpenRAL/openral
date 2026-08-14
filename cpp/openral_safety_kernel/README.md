@@ -288,6 +288,70 @@ ExemptionAsThePick`, `…TheSameInsertionWithNoDeclarationStillStops`,
 `…AWrongDeclaredTargetChangesWhichContactNeverHowMuch` pin all of it, and
 `…NewContactOutsideThePatchStillStopsMidCarry` is untouched.
 
+**The declaration-scoped approach allowance is a *margin* change, not a third
+exemption (ADR-0097's 2026-08-14 amendment).** Round-6
+(`spark:~/openral-runs/2026-08-14-round6/baguette/seed1_carry_*`) showed the
+place witness above cannot arm for an enclosed target even with a correct
+declaration and a payload genuinely headed for it: the E-stop fired at
+`horizon_step 0` on `attached:sim:obj_main` vs `voxel_178099` at
+`min_distance = -4.9 mm`, with the payload still 22–30 mm from real shelf
+contact. Nothing was wrong with the declaration — inserting through a cabinet
+opening means passing within margin distance of voxel-quantised walls, and at
+25 mm cells that quantisation closes the opening's predicted clearance before
+the payload arrives. A witness *earned by touching* can never arm if the payload
+is stopped before it can touch. Open-top targets never hit this; enclosed ones
+cannot clear it structurally.
+
+So the kernel does gain one input for the amendment, and exactly one:
+`VoxelGrid::place_region`, a bounded oriented box supplied by the declaration's
+producer (`openral_msgs/PlaceRegion`, riding the same
+dispatch → HAL → World State path as the attestation, on
+`WorldStateStamped.place_declaration`). While it is live, cells whose **centre**
+lies inside that box are gated for the declared payload at
+`margin - min(resolution, 25 mm)` instead of `margin`. That is the whole delta.
+In particular:
+
+* **It is not an exemption.** A cell deeper than the reduced margin still stops
+  the robot, and the reported `min_distance` is the pair's true distance —
+  `CollisionHit::place_allowance_active` and the `place_allowance_active=` log
+  key say the margin had been reduced, without changing the number quoted for it
+  (CLAUDE.md §1.4). `…DeepeningPastTheAllowanceInsideTheRegionStillStops`.
+* **`min(one voxel, 25 mm)` is an absolute cap, never purely
+  resolution-scaled** (`kMaxPlaceApproachAllowanceM`). This is a maintainer-set
+  binding condition, not an implementation choice: at real hardware's 5 cm grid
+  a resolution-relative allowance would silently be 50 mm, which is HZ-0095-2's
+  episode in a new form. `…ACoarserGridNeverWidensTheAllowance` runs the whole
+  thing on a 50 mm lattice to prove the cap holds.
+* **Arm-vs-world is untouched**, as is payload-vs-world outside the box, and any
+  payload the declaration does not name (`…ArmVsWorldIsUntouchedByALiveRegion`,
+  `…OutsideTheDeclaredRegionTheMarginIsUnchanged`,
+  `…TheAllowanceFollowsTheDeclaredPayloadOnly`).
+* **The kernel stays producer-agnostic.** Sim measures the box from the declared
+  body's MuJoCo subtree; real hardware will measure it from the perception stack
+  through a seam that does not exist yet, so no allowance is applied on real
+  hardware today. The kernel does not derive a region and does not branch on who
+  measured one. It does re-check the bounds it will accept
+  (`ingest_place_region`: finite, positive, ≤ 1.5 m per side, ≤ 8 m³) and refuses
+  a region whose `frame_id` does not match the occupancy grid's.
+* **Refusal means "no allowance", not "drop the message"** — the opposite
+  fail-closed direction from a malformed attestation, and for a reason: a bad
+  region can only ever make the kernel *more* permissive, so ignoring it restores
+  exactly the pre-amendment margin (`…DegenerateAndOversizedRegionsGrantNothing`,
+  `…AMapWithNoResolutionGrantsNothing`).
+* **It dies with the declaration.** Retraction, the declaration's own timeout
+  backstop (re-evaluated per candidate action, not only at ingest), detach, a
+  failed attachment ingest, and a re-framed grid all clear it
+  (HZ-0097-3/HZ-0097-4 mitigation 4).
+
+The honest cost, accepted and recorded as HZ-0097-4: an object already sitting
+inside the declared region when the declaration goes live — a jar on the shelf —
+receives the same allowance for the declared window, whether or not the payload
+ever reaches it. It is bounded by the cap, the region and the declaration's
+lifetime; `…AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap` pins the bound at
+exactly 25 mm. `…TheRound6ApproachReachesTheDeclaredShelf` and
+`…TheSameApproachUndeclaredStopsExactlyAsRound6Did` are the field case in both
+directions.
+
 **2. Embedded attach-time residue.** The payload's own occupancy left in the
 map at attach — a cell already at least half a voxel inside the payload when
 the baseline was snapshotted. This is stale self-occupancy, a different

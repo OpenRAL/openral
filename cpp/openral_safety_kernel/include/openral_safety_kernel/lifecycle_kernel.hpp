@@ -142,6 +142,21 @@ private:
   // executor → direct write, no lock.
   void on_world_state(const openral_msgs::msg::WorldStateStamped::SharedPtr msg);
 
+  // Place-phase declaration (ADR-0097 + its 2026-08-14 amendment) — resolve the
+  // declaration riding the world state into the payload-scoped approach region
+  // the attached-voxel check reduces its margin inside. Every refusal path
+  // yields NO region, i.e. exactly the pre-amendment margins: a bad region can
+  // only ever make the kernel more permissive, so dropping it is the
+  // conservative direction (unlike a malformed support witness, which fails the
+  // whole message closed). Called from on_world_state, never on the hot path.
+  void ingest_place_declaration(const openral_msgs::msg::WorldStateStamped& msg);
+
+  // Is the ingested declaration still in force at `now`? Retraction, the
+  // dispatcher's own timeout backstop, and a stamp from the future all read as
+  // dead (HZ-0097-3/4). Re-evaluated per candidate action, so an allowance
+  // cannot outlive its declaration between world-state messages.
+  bool place_declaration_live() const noexcept;
+
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint
   // name) so a velocity chunk can be reconstructed into the configurations FK
@@ -205,6 +220,10 @@ private:
   bool voxel_received_{false};
   bool voxel_overflow_{false};
   rclcpp::Time voxel_stamp_{};
+  /// Frame the occupancy grid is published in. A place region declared in any
+  /// other frame is refused: a region measured in one frame and applied in
+  /// another is a relaxation aimed at the wrong volume.
+  std::string voxel_frame_id_;
 
   // Attached-payload phase — grasped objects moved out of world occupancy and
   // re-checked as collision-active robot geometry (ADR-0092). Fixed-capacity
@@ -241,6 +260,17 @@ private:
   std::vector<SupportWitnessKey> support_witness_keys_;
   double support_witness_max_patch_radius_m_{0.0};
   double support_witness_max_penetration_m_{0.0};
+  /// Place-phase declaration state (ADR-0097 + its 2026-08-14 amendment).
+  /// `place_region_` is the resolved, validated region; the stamp/timeout pair
+  /// is the liveness key the kernel re-evaluates itself rather than trusting the
+  /// producer to stop publishing (HZ-0097-3 mitigation 2's backstop, which
+  /// HZ-0097-4 inherits). `place_declaration_target_` exists only so a stop at a
+  /// reduced margin can name the declaration that reduced it (HZ-0097-2
+  /// mitigation 1); nothing branches on it.
+  PlaceApproachRegion place_region_{};
+  std::int64_t place_declaration_stamp_ns_{0};
+  double place_declaration_timeout_s_{0.0};
+  std::string place_declaration_target_;
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages

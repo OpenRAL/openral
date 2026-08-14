@@ -70,6 +70,7 @@ from openral_core.schemas import (
     AttachedCollisionObject,
     DetectedObject,
     JointState,
+    PlaceDeclaration,
     Pose6D,
     RobotDescription,
     SensorFrame,
@@ -220,6 +221,14 @@ class WorldStateAggregator:
         self._attached_objects: dict[str, AttachedCollisionObject] = {}
         self._attachment_revision: int = 0
         self._attachment_stamp_ns: int = 0
+        # The place-phase declaration the evidence producer resolved for the
+        # carried payload (ADR-0097 + its 2026-08-14 amendment). It travels with
+        # the attachment snapshot because the approach allowance it carries is
+        # scoped to that payload, and its liveness is re-checked on every
+        # snapshot: HZ-0097-3 makes expiry World State's responsibility, not the
+        # dispatcher's alone, so a dispatcher that dies mid-goal cannot leave a
+        # region armed.
+        self._place_declaration: PlaceDeclaration | None = None
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
         # Stale components from the previous snapshot — used by snapshot() to
@@ -398,6 +407,7 @@ class WorldStateAggregator:
         *,
         revision: int = 0,
         stamp_ns: int | None = None,
+        place_declaration: PlaceDeclaration | None = None,
     ) -> None:
         """Atomically replace the attached-payload set.
 
@@ -405,6 +415,13 @@ class WorldStateAggregator:
             objects: Complete current attachment set. Object ids must be unique.
             revision: Monotonic producer revision.
             stamp_ns: Producer confirmation time; arrival time when omitted.
+            place_declaration: The place-phase declaration the evidence producer
+                resolved for this payload, with its measured region (ADR-0097's
+                2026-08-14 amendment), or ``None`` for no place phase. Replaced
+                atomically with the attachment set it is scoped to, so the
+                kernel can never apply a region and an attachment snapshot that
+                disagree. A declaration that is already retracted or expired is
+                stored as ``None``.
 
         Raises:
             ValueError: If ids duplicate or the revision moves backwards.
@@ -412,6 +429,12 @@ class WorldStateAggregator:
         by_id = {obj.object_id: obj for obj in objects}
         if len(by_id) != len(objects):
             raise ValueError("Attached collision object ids must be unique.")
+        applied_stamp_ns = self._clock_fn() if stamp_ns is None else stamp_ns
+        live_declaration = (
+            place_declaration
+            if place_declaration is not None and place_declaration.is_live(now_ns=applied_stamp_ns)
+            else None
+        )
         with self._lock:
             if revision < self._attachment_revision:
                 raise ValueError(
@@ -420,8 +443,14 @@ class WorldStateAggregator:
                 )
             self._attached_objects = by_id
             self._attachment_revision = revision
-            self._attachment_stamp_ns = self._clock_fn() if stamp_ns is None else stamp_ns
-        log.info("world_state.attached_objects.updated", count=len(objects))
+            self._attachment_stamp_ns = applied_stamp_ns
+            self._place_declaration = live_declaration
+        log.info(
+            "world_state.attached_objects.updated",
+            count=len(objects),
+            place_target=live_declaration.target_id if live_declaration is not None else None,
+            place_region=live_declaration is not None and live_declaration.region is not None,
+        )
 
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
@@ -579,6 +608,16 @@ class WorldStateAggregator:
                 ],
                 attachment_revision=self._attachment_revision,
                 attachment_stamp_ns=self._attachment_stamp_ns,
+                # Re-checked every snapshot, not only at ingest: the timeout
+                # backstop is what keeps a dispatcher crash from leaving an
+                # approach allowance armed for a later, unrelated goal
+                # (HZ-0097-3 mitigation 2, which HZ-0097-4 inherits verbatim).
+                place_declaration=(
+                    self._place_declaration
+                    if self._place_declaration is not None
+                    and self._place_declaration.is_live(now_ns=now_ns)
+                    else None
+                ),
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
             )

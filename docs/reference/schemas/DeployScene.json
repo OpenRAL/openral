@@ -460,7 +460,7 @@
     },
     "PlaceDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe pick-phase support-contact witness (ADR-0092 D6) exempts the contact a\npayload keeps with the surface it was picked from, and its anti-scope is\ndeliberate: a *new* contact against any other surface mid-carry is never\nexempt, because nothing in World State or the safety kernel distinguishes\n\"the payload arrived at its declared destination\" from \"the payload grazed\na wall.\" This declaration is that distinction (ADR-0097), and the only\nthing that supplies it \u2014 it is **never** inferred from motion and never\nfrom simulator introspection.\n\nA declaration on its own exempts nothing. It permits a producer to attest\na second, place-phase :class:`SupportContactWitness` when the payload\nactually comes into fresh bounded contact **on the declared target**; the\nkernel then exempts exactly that witness's patch, under the identical\nbounds, fail-closed rules and hysteresis the pick witness is under.\nMeasured contact with no declaration exempts nothing either \u2014 unchanged\npre-ADR-0097 behaviour.\n\nThe declaration is scoped to one goal execution and dies three ways\n(HZ-0097-3): explicit retraction (``active=False``) on goal end, goal\ncancel, and E-stop; and, independently of any retraction arriving,\n:attr:`timeout_s` after :attr:`stamp_ns` \u2014 the backstop that keeps a\ndispatcher crash from leaving an exemption armed for a later, unrelated\nskill execution. Consumers apply both; whichever fires first wins.\n\nAttributes:\n    target_id: Identity of the declared place target (e.g.\n        ``\"sim:cab_1_left_group_main\"``). A place witness may only be\n        attested for support contact on this target \u2014 the attested\n        ``support_id`` names it, or names a surface that is part of it.\n    object_id: Payload the declaration is scoped to (an\n        :attr:`AttachedCollisionObject.object_id`). Empty means \"whichever\n        payload is carried\", the direct-dispatch case where the grasped\n        object's identity is only discovered at attach time.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``. Capped\n        at :attr:`MAX_TIMEOUT_S`.\n    stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe pick-phase support-contact witness (ADR-0092 D6) exempts the contact a\npayload keeps with the surface it was picked from, and its anti-scope is\ndeliberate: a *new* contact against any other surface mid-carry is never\nexempt, because nothing in World State or the safety kernel distinguishes\n\"the payload arrived at its declared destination\" from \"the payload grazed\na wall.\" This declaration is that distinction (ADR-0097), and the only\nthing that supplies it \u2014 it is **never** inferred from motion and never\nfrom simulator introspection.\n\nA declaration on its own exempts nothing. It permits a producer to attest\na second, place-phase :class:`SupportContactWitness` when the payload\nactually comes into fresh bounded contact **on the declared target**; the\nkernel then exempts exactly that witness's patch, under the identical\nbounds, fail-closed rules and hysteresis the pick witness is under.\nMeasured contact with no declaration exempts nothing either \u2014 unchanged\npre-ADR-0097 behaviour.\n\nThe declaration is scoped to one goal execution and dies three ways\n(HZ-0097-3): explicit retraction (``active=False``) on goal end, goal\ncancel, and E-stop; and, independently of any retraction arriving,\n:attr:`timeout_s` after :attr:`stamp_ns` \u2014 the backstop that keeps a\ndispatcher crash from leaving an exemption armed for a later, unrelated\nskill execution. Consumers apply both; whichever fires first wins.\n\nAttributes:\n    target_id: Identity of the declared place target (e.g.\n        ``\"sim:cab_1_left_group_main\"``). A place witness may only be\n        attested for support contact on this target \u2014 the attested\n        ``support_id`` names it, or names a surface that is part of it.\n    object_id: Payload the declaration is scoped to (an\n        :attr:`AttachedCollisionObject.object_id`). Empty means \"whichever\n        payload is carried\", the direct-dispatch case where the grasped\n        object's identity is only discovered at attach time.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``. Capped\n        at :attr:`MAX_TIMEOUT_S`.\n    stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured bounded region of the declared target\n        (ADR-0097's 2026-08-14 amendment), or ``None``. Dispatch always\n        publishes ``None`` \u2014 it names a target, it cannot measure where that\n        target *is* \u2014 and the evidence producer fills it in when it resolves\n        the target. ``None`` means **no approach allowance**: exactly the\n        margins the kernel used before the amendment. The allowance lives and\n        dies inside the declaration, so retraction, timeout, goal end/cancel\n        and E-stop all take the region with them.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -496,6 +496,17 @@
           "default": true,
           "title": "Active",
           "type": "boolean"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -503,6 +514,55 @@
         "stamp_ns"
       ],
       "title": "PlaceDeclaration",
+      "type": "object"
+    },
+    "PlaceRegion": {
+      "additionalProperties": false,
+      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(one voxel, 25 mm)`` so it can physically reach the support\ncontact the place witness is *earned by*. Round-6 validation showed that\nwithout it the flagship counter\u2192cabinet insertion cannot complete even with\na correct declaration: inserting through an enclosed target's opening means\npassing within margin distance of voxel-quantised walls, and at 25 mm cells\nthat quantisation closes the opening's predicted clearance 22-30 mm before\nthe payload arrives. A witness earned by touching can never arm if the\npayload is stopped before it can touch.\n\n**Producer-supplied, and producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware obtains it from the\nperception stack through a seam that is **not yet implemented**, so no\nallowance is applied on real hardware today \u2014 the same posture real-hardware\nplace-witness attestation is already under. The safety kernel is\nproducer-agnostic: it consumes this box identically whoever measured it, and\nnever derives one itself.\n\nThe box is **oriented**, not axis-aligned: a receptacle has an orientation,\nand the axis-aligned hull of a rotated one is strictly larger, i.e. strictly\nmore permissive. Absent (``PlaceDeclaration.region is None``) means no\nallowance at all \u2014 the pre-amendment margins, unchanged. A degenerate or\nover-large region is rejected here and again in the kernel, both times\ntoward \"no allowance\".\n\nAttributes:\n    frame_id: Frame :attr:`pose` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in :attr:`frame_id`.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+      "properties": {
+        "frame_id": {
+          "minLength": 1,
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "half_extents": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Half Extents",
+          "type": "array"
+        },
+        "evidence_ref": {
+          "default": "",
+          "title": "Evidence Ref",
+          "type": "string"
+        },
+        "stamp_ns": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "frame_id",
+        "pose",
+        "half_extents"
+      ],
+      "title": "PlaceRegion",
       "type": "object"
     },
     "Pose6D": {

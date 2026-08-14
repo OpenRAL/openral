@@ -91,6 +91,50 @@ struct WorldModel {
   std::vector<Capsule> capsules;
 };
 
+/// Binding absolute ceiling on the declaration-scoped place approach allowance
+/// (ADR-0097's 2026-08-14 amendment, Condition 1; hazard log HZ-0097-4
+/// mitigation 1). The allowance is `min(one voxel, this)`, so a coarser map can
+/// only ever *shrink* it — never widen it. This is a maintainer-set condition,
+/// not an implementation choice: Entry 010's HZ-0095-2 is the precedent it
+/// exists to prevent from recurring (a 25 mm sim-resolution parameter silently
+/// becoming 50 mm at real hardware's 5 cm resolution under a purely
+/// resolution-relative formula). Raising it needs a new recorded decision.
+inline constexpr double kMaxPlaceApproachAllowanceM = 0.025;
+
+/// Sanity bound on one side of a declared place region. A declaration names ONE
+/// receptacle, not a room, so a half-extent past this is a producer error and
+/// buys no allowance at all (fail-closed toward the unchanged margin).
+inline constexpr double kMaxPlaceRegionHalfExtentM = 1.5;
+
+/// Sanity bound on a declared place region's volume (m³) — a 2 m cube. Same
+/// fail-closed direction as `kMaxPlaceRegionHalfExtentM`.
+inline constexpr double kMaxPlaceRegionVolumeM3 = 8.0;
+
+/// The producer-supplied region of a live place declaration (ADR-0097's
+/// 2026-08-14 amendment), lowered into the kernel's own frame convention: an
+/// oriented box whose `pose` is expressed in the **robot base frame** — the same
+/// frame the occupancy grid is in, which is why the node only accepts a region
+/// whose declared `frame_id` matches the grid's.
+///
+/// While it is valid, payload-vs-world voxel checks for the objects named in
+/// `object_mask` run at a margin reduced by `min(resolution,
+/// kMaxPlaceApproachAllowanceM)` against cells whose **centre** lies inside the
+/// box. Everything else is untouched: arm-vs-world, payload-vs-world outside the
+/// box, the support-contact witness, and the reported evidence. The region is a
+/// license to *approach* the contact the declaration already licenses — the hard
+/// stop behind the reduced margin is unchanged, so deepening past the allowance
+/// still stops (HZ-0097-4 mitigation 3).
+///
+/// `valid == false` — no declaration, a retracted or expired one, a region the
+/// producer never supplied, or one that failed `ingest_place_region` — means no
+/// allowance anywhere, i.e. behaviour identical to before the amendment.
+struct PlaceApproachRegion {
+  bool valid{false};            ///< a live, validated region is in force
+  std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
+  Transform pose{};             ///< region box centre pose, robot base frame
+  Vec3 half_extents{};          ///< region box half-extents (m, all > 0)
+};
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -108,6 +152,7 @@ struct VoxelGrid {
   std::size_t attached_contact_stride{0};              ///< cells per object in baseline buffer
   double attached_contact_tolerance{0.0};              ///< physical slack on an attested depth (m)
   std::uint8_t support_witness_live{0};                ///< bit i: object i's witness is still live
+  PlaceApproachRegion place_region{};                  ///< live place declaration's region, if any
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -129,12 +174,18 @@ struct VoxelGrid {
 /// With no hit there is no pair to describe, so `min_distance` keeps its
 /// clearance meaning and equals `sweep_min_distance`. Both are `+inf` when the
 /// check compared nothing.
+/// `place_allowance_active` is disclosure, never a decision (CLAUDE.md §1.4):
+/// it is true when the reported pair tripped a margin that the declaration-
+/// scoped place approach allowance had *reduced*, so an operator reading the
+/// evidence knows the stop happened inside a declared region at a reduced
+/// margin. `min_distance` stays the pair's true surface distance either way.
 struct CollisionHit {
   bool hit{false};
   int link_a{-1};
   int link_b{-1};
   double min_distance{0.0};        ///< the reported pair's surface distance (clearance if no hit)
   double sweep_min_distance{0.0};  ///< minimum over every checked pair, gated or exempted
+  bool place_allowance_active{false};  ///< the reported pair's margin was reduced by the allowance
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -375,7 +426,15 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 /// and `link_b` is the linear index of the deepest cell that actually tripped
 /// the check, and `min_distance` is that cell's distance.
 ///
-/// Two — and only two — exemptions can spare a cell, both bounded:
+/// While a place declaration's region is live for this payload
+/// (`grid.place_region`), the *margin* each cell inside that region is gated
+/// against is first reduced by `place_approach_allowance` — the bounded license
+/// to reach the contact the declaration already permits (ADR-0097's 2026-08-14
+/// amendment). That is a margin change, not an exemption: a cell deeper than the
+/// reduced margin still stops the robot, and the reported distance is the cell's
+/// true distance.
+///
+/// Two — and only two — exemptions can spare a cell outright, both bounded:
 ///
 /// 1. **Support-contact witness** (ADR-0092 D6): object `i` carries a World
 ///    State attestation, its bit is live in `grid.support_witness_live`, and
@@ -399,6 +458,45 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin) noexcept;
+
+/// Margin reduction the live place declaration grants object `object_index`
+/// against an occupied cell centred at `center` — `0.0` whenever it grants none.
+///
+/// The whole predicate, and every way it fails closed:
+///
+/// * No valid region, or a grid with no usable resolution → `0.0`.
+/// * `object_index` outside the declaration's `object_mask` (or past the
+///   eight-object schema cap) → `0.0`. The allowance follows the *declared*
+///   payload, never a second object the robot happens to be carrying.
+/// * A degenerate or non-finite region box → `0.0`. Validation belongs to
+///   `ingest_place_region`; this re-checks because a permissive allowance is
+///   never the safe default.
+/// * The cell centre outside the region box (an exact point-in-OBB test in the
+///   box's own frame) → `0.0`.
+///
+/// Otherwise the reduction is `min(grid.resolution, kMaxPlaceApproachAllowanceM)`
+/// — the amendment's binding Condition 1, computed here against the *live*
+/// resolution so it can never desynchronise from the map actually being checked.
+/// Allocation-free.
+double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
+                                const Vec3& center) noexcept;
+
+/// Validate a producer-supplied place region and lower it into `out`.
+///
+/// Fail-closed means *no allowance* here, not a dropped message: unlike a
+/// malformed support-contact attestation (which fails the whole attachment
+/// closed because a producer over-claiming measured contact is not one to trust
+/// with the payload model), a bad region can only ever make the kernel *more*
+/// permissive, so refusing it restores exactly the pre-amendment margin. The
+/// caller logs the refusal; nothing else changes.
+///
+/// Rejects a non-finite pose or half-extent, a non-positive half-extent, a
+/// half-extent past `kMaxPlaceRegionHalfExtentM`, a box past
+/// `kMaxPlaceRegionVolumeM3`, and an empty `object_mask` (a declaration whose
+/// payload is not among the carried objects). Returns whether `out.valid` was
+/// set. Not on the hot path (once per world-state message).
+bool ingest_place_region(const Transform& pose, const Vec3& half_extents, std::uint8_t object_mask,
+                         PlaceApproachRegion& out) noexcept;
 
 /// Does object `i`'s attested support contact explain occupied cell `center`?
 ///

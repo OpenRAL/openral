@@ -251,6 +251,15 @@ against — the place witness arriving at the kernel with the shelf it attests t
 already cleared out from under it, and dying on its own liveness test while the
 payload had not moved.
 
+The **approach allowance** of ADR-0097's 2026-08-14 amendment leaves this node
+untouched for the same reason, one level up: it is a margin the *kernel* applies
+to cells inside the declared target's `PlaceRegion`, not a change to which cells
+exist. This bridge decides occupancy, never margins, and it never reads
+`AttachmentState.place_declaration` — so the declared region cannot shrink or
+grow the grid, and the clearing partition above is the only thing standing
+between a payload and its own occupancy either way. The bridge's 45 tests are
+unchanged by the amendment, which is the assertion, not an assumption.
+
 The two predicates are a deliberate cross-package mirror —
 consolidating them would make this Layer-2 node link the Layer-6 kernel's
 collision core — and must be changed in lockstep

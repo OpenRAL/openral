@@ -49,3 +49,15 @@ int64 stamp_ns
 # False retracts the declaration. Retraction is explicit and additive to the
 # timeout: whichever comes first wins.
 bool active
+
+# Producer-supplied bounded region of the declared target (ADR-0097's
+# 2026-08-14 amendment). Additive and backward compatible: region_valid false —
+# the default, and what dispatch itself always publishes, since dispatch cannot
+# measure geometry — means NO approach allowance, i.e. exactly the margins the
+# kernel used before the amendment. The evidence producer that resolves the
+# target (in sim, the MuJoCo attachment tracker) fills it in and re-publishes the
+# declaration on the attachment path the kernel already ingests. The allowance
+# dies with the declaration: retraction, timeout, goal end/cancel and E-stop all
+# take the region with them, because the region only ever travels inside it.
+bool region_valid
+PlaceRegion region
