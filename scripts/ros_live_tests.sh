@@ -37,6 +37,10 @@ TARGETS=(
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     tests/integration/test_safety_status_latched_topic.py
     tests/integration/test_perception_overlay_live_topic.py
+    # ADR-0097 place-witness attachment barrier. A bumped revision on an
+    # unchanged payload must release the deferred action_applied tick; when it
+    # did not, a SUCCESSFUL place aborted its own goal 8 s later.
+    tests/integration/test_hal_attachment_barrier_live.py
     # ROS_DISTRO-gated rather than OPENRAL_TEST_ROS_LIVE-gated: the composed
     # runner/world-state/safety action-protocol suite needs the colcon
     # openral_msgs overlay, which only this image has — without this entry it

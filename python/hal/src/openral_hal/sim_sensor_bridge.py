@@ -1820,7 +1820,32 @@ class SimSensorBridge:
         self._attachment_revision = revision
 
     def _on_attachment_state_applied(self, msg: object) -> None:
-        """Mask newly attached bodies only after the kernel accepts the revision."""
+        """Mask newly attached bodies only after the kernel accepts the revision.
+
+        The barrier this releases exists for exactly one reason: a body that
+        has just entered the perception mask is still baked into the world map,
+        so motion must wait until a transparent depth frame (and the voxel
+        raster behind it) has cleared it. Its trigger is therefore *new masked
+        geometry*, and the mask is resolved from each object's
+        ``evidence_ref`` (``SimAttachedHAL.update_attached_objects`` expands
+        that body and its subtree into ``read_attached_body_ids``) — so
+        comparing ``(object_id, evidence_ref)`` against the currently masked
+        set decides it exactly, not approximately.
+
+        The previous membership test was ``object_id`` *addition* only, which
+        deadlocked the ADR-0097 place witness: attesting support contact
+        re-publishes the SAME payload under a bumped revision, so nothing was
+        "added", nothing released the barrier, and a tick the lifecycle node
+        had deferred on ``attachment_action_ack_ready()`` was never
+        acknowledged — the goal aborted 8 s later on a place that had in fact
+        succeeded. A partial detach (2 payloads → 1) had the same shape.
+
+        A revision that masks nothing new — an attestation-only re-publish, a
+        partial detach — changes no perception geometry, so there is nothing to
+        settle and the barrier releases immediately. The release is still
+        guarded by :meth:`attachment_action_ack_ready` so an earlier revision's
+        outstanding depth/voxel frames are never skipped.
+        """
         revision = int(msg.data)  # type: ignore[attr-defined]
         if revision != self._attachment_revision or self._attachment_pending is None:
             return
@@ -1830,14 +1855,17 @@ class SimSensorBridge:
         from openral_core.exceptions import ROSConfigError
 
         try:
-            current_ids = {
-                obj.object_id for obj in getattr(self._hal, "read_attached_objects", lambda: [])()
+            masked = {
+                (obj.object_id, obj.evidence_ref)
+                for obj in getattr(self._hal, "read_attached_objects", lambda: [])()
             }
-            added = any(obj.object_id not in current_ids for obj in self._attachment_pending)
+            masks_new_geometry = any(
+                (obj.object_id, obj.evidence_ref) not in masked for obj in self._attachment_pending
+            )
             update(self._attachment_pending)
             self._attachment_applied_revision = revision
             self._attachment_pending = None
-            if added:
+            if masks_new_geometry:
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
                     self._node.count_publishers("/openral/world_voxels") > 0
@@ -1848,6 +1876,12 @@ class SimSensorBridge:
                 )
                 if self._attachment_depth_frames_remaining == 0:
                     self._notify_attachment_perception_ready()
+            elif self.attachment_action_ack_ready():
+                self._node.get_logger().info(
+                    f"attachment revision {revision} masks no new geometry; "
+                    "releasing the attachment perception barrier"
+                )
+                self._notify_attachment_perception_ready()
         except ROSConfigError as exc:
             self._node.get_logger().error(
                 f"kernel accepted attachment revision {revision}, but sim mask update failed: {exc}"
