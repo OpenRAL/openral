@@ -391,6 +391,59 @@ constexpr double kFieldResidueOffset = 0.0358;
 const double kFieldPlaneZ = kSupportLayerZ - kFieldResidueOffset;
 const tf2::Vector3 kFieldCenter(0.40, 0.0, kFieldPlaneZ + kRestingHalfExtents.z());
 
+// ── the 2026-08-14 round-6 attach-transition residue ─────────────────────────
+//
+// Round-5 forensics, verified: baguette r1's E-stop cell `voxel_91633` sat
+// 22.13 mm from the payload's own primitive surface at resolution 0.025 — 0.48
+// mm OUTSIDE the clearing's reach (0.5·res·√3 = 21.65 mm), so it was never a
+// clearing candidate at all. It is stale PRE-ATTACH silhouette: the object was
+// legitimately mapped before the grasp, by a sensor that saw the real object,
+// and the clearing measures against a fitted convex primitive — the fit error
+// plus lattice quantization leaves a thin residue past one circumradius. The
+// fix widens the reach of the ONE sweep that runs at the attach transition, and
+// leaves the steady-state reach exactly where it was.
+constexpr double kFieldRound6Distance = 0.02213;
+// One voxel, the `attach_sweep_padding_m` default.
+constexpr double kAttachSweepPadding = kResolution;
+
+// A payload whose surface is exactly `distance` from the centre of the cell at
+// (0.40, 0.0, 0.35): a sphere directly below it, offset by `distance` plus its
+// own radius, so the field number is reproduced to the micron on a real cell of
+// a real grid. Same construction the 1.8 mm stop-cell test above uses.
+bridge::PayloadPrimitive payload_at_distance(const openral_msgs::msg::OccupancyVoxels& grid,
+                                             double distance) {
+  bridge::PayloadPrimitive sphere;
+  sphere.shape_type = Primitive::SHAPE_SPHERE;
+  sphere.radius = 0.02;
+  const tf2::Vector3 center = cell_center(grid, 0.40, 0.0, 0.35);
+  sphere.pose = tf2::Transform(tf2::Quaternion::getIdentity(),
+                               center - tf2::Vector3(0.0, 0.0, distance + sphere.radius));
+  return sphere;
+}
+
+// The field run's own timeline: the E-stop fired at 1786710431.16, 2.78 s after
+// the attach sweep at 1786710428.38 — ~28 published grids at the bridge's 10 Hz
+// — with the payload still sitting on its stale silhouette. A one-shot sweep
+// clears the residue from ONE grid and the octree hands it straight back on the
+// next, so the window has to outlive that.
+constexpr int kFieldGridsBeforeEstop = 28;
+
+// The single object the window tests carry, and the node's own per-object
+// decision in the one call the node spends on it: the ledger answers and
+// records in one step, and `attach_transition_padding` turns the answer into a
+// reach. `position` is in the OctoMap frame, which is where the node measures.
+const bridge::AttachedObjectRevision kCarried{"sim:obj_baguette", 7};
+
+double padding_for(bridge::AttachSweepLedger& ledger, const bridge::AttachedObjectRevision& key,
+                   const tf2::Vector3& position) {
+  const std::vector<std::uint8_t> open =
+      ledger.sweep({bridge::AttachSweepObservation{key, position}}, kAttachSweepPadding);
+  return open.at(0) != 0 ? bridge::attach_transition_padding(0.0, kAttachSweepPadding) : 0.0;
+}
+
+// Where the payload sits in the OctoMap frame while it has not moved.
+const tf2::Vector3 kAttachPose(1.20, 0.35, 0.90);
+
 WireObject field_round5_payload() {
   WireObject obj = resting_payload();
   obj.pose_in_link.position.x = kFieldCenter.x() - kAttachLinkOrigin.x();
@@ -1096,4 +1149,258 @@ TEST(PayloadClearing, AMalformedAttestationClearsNothingAtAll) {
   EXPECT_TRUE(bridge::place_attached_object(long_normal, base_from_attach_link(), out, patches));
   ASSERT_EQ(patches.size(), 1U);
   EXPECT_NEAR(patches[0].normal.z(), 1.0, 1e-12);
+}
+
+// ── the attach-transition sweep (2026-08-14 round 6) ─────────────────────────
+//
+// The partition above decides WHICH cells within the reach are the payload's.
+// This decides how far the reach goes, and it is not the same answer at the
+// attach transition as it is while carrying. Before the grasp the object's
+// cells were marked by a sensor that saw the REAL object; the clearing measures
+// against a fitted convex primitive. Fit error plus lattice quantization leaves
+// a thin residue of that pre-attach silhouette just outside one circumradius —
+// `voxel_91633`, 22.13 mm out at 25 mm cells — and nothing ever removes it,
+// because no ray reaches an occluded cell either
+// (`OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`).
+//
+// So a payload sweeps one voxel wider for as long as it is still ON that
+// silhouette, and at exactly the reach it always did afterwards. "Still on it"
+// is a POSITION and not a frame count, because the grid is re-rasterized from
+// the octree every tick: a one-shot sweep clears the residue from one published
+// grid and the octree hands it straight back. The field E-stop fired 28 grids
+// after the attach.
+
+TEST(PayloadClearing, TheRoundSixFieldCellSurvivesTheSteadyReachAndGoesOnTheAttachSweep) {
+  // The field geometry, as a fact about the reach rather than about a fixture:
+  // 22.13 mm is 0.48 mm past the 21.65 mm circumradius, so the steady-state
+  // clearing never even considered it — and it is the payload's own stale
+  // silhouette, which is why widening the transition's reach is the fix.
+  EXPECT_GT(kFieldRound6Distance, kCircumradius);
+  EXPECT_NEAR(kFieldRound6Distance - kCircumradius, 0.00048, 1e-5);
+
+  auto grid = lowered(deploy_sim_tree());
+  const std::size_t idx = cell_index(grid, 0.40, 0.0, 0.35);
+  grid.occupancy[idx] = 1;
+  const bridge::PayloadPrimitive payload = payload_at_distance(grid, kFieldRound6Distance);
+
+  auto steady = grid;
+  EXPECT_EQ(bridge::clear_attached_payload_cells(steady, {payload}, {}, 0.0), 0U);
+  EXPECT_NE(steady.occupancy[idx], 0) << "0.48 mm past the circumradius: never a candidate";
+
+  auto attach = grid;
+  EXPECT_EQ(bridge::clear_attached_payload_cells(
+                attach, {payload}, {}, bridge::attach_transition_padding(0.0, kAttachSweepPadding)),
+            1U);
+  EXPECT_EQ(attach.occupancy[idx], 0) << "the attach transition reaches one voxel further";
+}
+
+TEST(PayloadClearing, TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids) {
+  // The field timeline, as a test. The E-stop fired 2.78 s after the attach
+  // sweep — ~28 published grids at 10 Hz — with the payload still on its stale
+  // silhouette. The bridge re-rasterizes the grid from the octree every tick and
+  // nothing retires an occluded cell, so the residue is re-supplied on EVERY one
+  // of those grids: a sweep that widened its reach only on the first would have
+  // published 27 grids carrying the cell that stopped the robot.
+  bridge::AttachSweepLedger ledger;
+  const bridge::PayloadPrimitive payload =
+      payload_at_distance(lowered(deploy_sim_tree()), kFieldRound6Distance);
+
+  for (int frame = 0; frame <= kFieldGridsBeforeEstop; ++frame) {
+    auto grid = lowered(deploy_sim_tree());
+    const std::size_t idx = cell_index(grid, 0.40, 0.0, 0.35);
+    grid.occupancy[idx] = 1;  // the octree hands the same cell back every tick
+
+    // The payload has not moved: a 1 mm tremor, well inside the 25 mm window.
+    const tf2::Vector3 pose = kAttachPose + tf2::Vector3(0.001 * (frame % 2), 0.0, 0.0);
+    EXPECT_EQ(bridge::clear_attached_payload_cells(grid, {payload}, {},
+                                                   padding_for(ledger, kCarried, pose)),
+              1U)
+        << "grid " << frame << " after the attach still publishes the residue";
+    EXPECT_EQ(grid.occupancy[idx], 0);
+  }
+  EXPECT_EQ(ledger.size(), 1U) << "the memory is the live attachment set, not a growing log";
+}
+
+TEST(PayloadClearing, TheAttachWindowClosesOnceThePayloadHasMovedAVoxel) {
+  // …and it does close. Once the payload has translated further than the sweep
+  // padding, every cell the padding covered is either inside the steady reach
+  // (the payload moved toward it) or outside the padded one (it moved away), so
+  // the widened reach is no longer doing work the steady reach cannot — and a
+  // cell 22.13 mm from where the payload USED to be is the world's again.
+  bridge::AttachSweepLedger ledger;
+  const bridge::PayloadPrimitive at_attach_pose =
+      payload_at_distance(lowered(deploy_sim_tree()), kFieldRound6Distance);
+
+  auto opening = lowered(deploy_sim_tree());
+  opening.occupancy[cell_index(opening, 0.40, 0.0, 0.35)] = 1;
+  ASSERT_EQ(bridge::clear_attached_payload_cells(opening, {at_attach_pose}, {},
+                                                 padding_for(ledger, kCarried, kAttachPose)),
+            1U);
+
+  // A millimetre inside the window: still open.
+  auto still_open = lowered(deploy_sim_tree());
+  still_open.occupancy[cell_index(still_open, 0.40, 0.0, 0.35)] = 1;
+  const tf2::Vector3 nearly = kAttachPose + tf2::Vector3(0.0, kAttachSweepPadding - 0.001, 0.0);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(still_open, {at_attach_pose}, {},
+                                                 padding_for(ledger, kCarried, nearly)),
+            1U);
+
+  // A millimetre past it: shut, and the steady reach cannot explain the cell.
+  auto closed = lowered(deploy_sim_tree());
+  const std::size_t idx = cell_index(closed, 0.40, 0.0, 0.35);
+  closed.occupancy[idx] = 1;
+  const tf2::Vector3 gone = kAttachPose + tf2::Vector3(0.0, kAttachSweepPadding + 0.001, 0.0);
+  EXPECT_EQ(bridge::clear_attached_payload_cells(closed, {at_attach_pose}, {},
+                                                 padding_for(ledger, kCarried, gone)),
+            0U);
+  EXPECT_NE(closed.occupancy[idx], 0) << "22.13 mm from where the payload WAS: the world's cell";
+}
+
+TEST(PayloadClearing, AClosedAttachWindowDoesNotReopenWhenThePayloadComesBack) {
+  // Closing latches. A payload carried away and brought back does not get the
+  // widened reach a second time: the map around its old pose is by then evidence
+  // gathered while the payload was somewhere else, and re-widening would clear
+  // it on the strength of a silhouette that is long gone.
+  bridge::AttachSweepLedger ledger;
+  const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
+
+  EXPECT_EQ(padding_for(ledger, kCarried, kAttachPose), open_reach);
+  EXPECT_EQ(padding_for(ledger, kCarried, kAttachPose + tf2::Vector3(0.30, 0.0, 0.0)), 0.0);
+  EXPECT_EQ(padding_for(ledger, kCarried, kAttachPose), 0.0) << "back home, and still shut";
+}
+
+TEST(PayloadClearing, ANewObjectRevisionOpensANewAttachWindow) {
+  // `attachment_revision` is the producer's own counter, bumped once per atomic
+  // attachment-set change and never per frame, so it is exactly the identity
+  // this ledger needs: a re-grasp, a second payload, and a release-then-grasp
+  // each open a window, while carrying one payload does not re-open one.
+  bridge::AttachSweepLedger ledger;
+  const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
+  const tf2::Vector3 moved = kAttachPose + tf2::Vector3(0.30, 0.0, 0.0);
+
+  ASSERT_EQ(padding_for(ledger, kCarried, kAttachPose), open_reach);
+  ASSERT_EQ(padding_for(ledger, kCarried, moved), 0.0) << "carried away: the window shut";
+
+  // The producer publishes a new attachment record for the same payload.
+  EXPECT_EQ(padding_for(ledger, {kCarried.object_id, 8}, moved), open_reach);
+  // A second payload under the same revision has its own stale silhouette.
+  EXPECT_EQ(padding_for(ledger, {"sim:obj_cup", 8}, moved), open_reach);
+
+  // Release: the node sweeps an empty set, so the next grasp opens a window
+  // even under a revision that has been seen before.
+  EXPECT_TRUE(ledger.sweep({}, kAttachSweepPadding).empty());
+  EXPECT_EQ(ledger.size(), 0U);
+  EXPECT_EQ(padding_for(ledger, kCarried, moved), open_reach);
+}
+
+TEST(PayloadClearing, AFrameThatClearsNothingLeavesTheWindowExactlyAsItWas) {
+  // The ledger is swept only on a frame that actually cleared. A stale
+  // attachment state, a missing attach-link TF, or a payload the bridge refuses
+  // to place all clear NOTHING, and none of them may advance the window —
+  // otherwise the fix would evaporate on exactly the runs where perception is
+  // already having a bad time. The refused frames are simply absent here,
+  // because the node never calls `sweep` on them.
+  bridge::AttachSweepLedger ledger;
+  const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
+
+  // 30 grids' worth of refusals: the ledger never learns the payload exists.
+  EXPECT_EQ(ledger.size(), 0U);
+
+  // The first frame that does clear is still the attach transition, and the
+  // payload having drifted during the outage does not close a window that was
+  // never anchored — it anchors HERE.
+  const tf2::Vector3 drifted = kAttachPose + tf2::Vector3(0.30, 0.0, 0.0);
+  EXPECT_EQ(padding_for(ledger, kCarried, drifted), open_reach);
+  EXPECT_EQ(padding_for(ledger, kCarried, drifted), open_reach) << "still at its anchor";
+}
+
+TEST(PayloadClearing, ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch) {
+  // The partition is not weakened by the wider reach. The attach sweep reaches
+  // a voxel further into the counter the payload is resting on, and every cell
+  // it newly reaches inside the attested patch is withheld exactly as the
+  // footprint is — so the kernel's witness keeps its evidence and the
+  // 2026-08-14 defect is not re-opened by the round-6 fix. What the padding
+  // buys is the payload-SIDE residue, and only that.
+  const double padding = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
+
+  auto grid = resting_grid();
+  // One counter cell a voxel outside the payload's footprint: 22.5 mm from the
+  // payload's face (out of the steady reach, inside the padded one) and inside
+  // the attested patch, laterally and in the slab.
+  const std::size_t ring = cell_index(grid, 0.4625, 0.0125, kSupportLayerZ);
+  // …and one payload-side cell at a comparable distance but 128 mm above the
+  // attested plane: nothing exempts it, and it is what the padding is for.
+  const std::size_t residue = cell_index(grid, 0.4625, 0.0125, 0.4875);
+  grid.occupancy[ring] = 1;
+  grid.occupancy[residue] = 1;
+  ASSERT_EQ(occupied_cells(grid), 31U);
+
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+
+  auto steady = grid;
+  EXPECT_EQ(clear_with(steady, p, 0.0), 12U) << "the steady reach explains neither extra cell";
+  EXPECT_NE(steady.occupancy[ring], 0);
+  EXPECT_NE(steady.occupancy[residue], 0);
+
+  auto attach = grid;
+  EXPECT_EQ(clear_with(attach, p, padding), 13U);
+  EXPECT_NE(attach.occupancy[ring], 0) << "attested support, withheld from the padded sweep too";
+  EXPECT_EQ(attach.occupancy[residue], 0) << "payload-side residue, which is what the padding buys";
+  for (const double x : kFootprintX) {
+    for (const double y : kFootprintY) {
+      EXPECT_NE(attach.occupancy[cell_index(attach, x, y, kSupportLayerZ)], 0)
+          << "counter cell (" << x << ", " << y << ") must survive the padded sweep";
+    }
+  }
+  EXPECT_NE(
+      attach.occupancy[cell_index(attach, kObstacleCell.x(), kObstacleCell.y(), kObstacleCell.z())],
+      0)
+      << "the real obstacle beside the payload is still 75.9 mm out, padded reach or not";
+
+  // The counterfactual that makes the withholding load-bearing rather than
+  // incidental: with no attestation on the wire, the padded sweep eats the
+  // counter, the ring, and the residue alike.
+  WireObject unattested = resting_payload();
+  unattested.support_contact_valid = false;
+  auto unpartitioned = grid;
+  EXPECT_EQ(clear_with(unpartitioned, placed(unattested), padding), 30U);
+  EXPECT_EQ(unpartitioned.occupancy[ring], 0);
+}
+
+TEST(PayloadClearing, TheAttachSweepStopsOneVoxelPastTheSteadyReach) {
+  // The widened reach is bounded, and bounded by the lattice rather than by a
+  // fudge factor: circumradius + one voxel, to the millimetre either side.
+  const double padding = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
+  const double reach = kCircumradius + kAttachSweepPadding;
+  auto grid = lowered(deploy_sim_tree());
+  const std::size_t idx = cell_index(grid, 0.40, 0.0, 0.35);
+  grid.occupancy[idx] = 1;
+
+  auto inside = grid;
+  EXPECT_EQ(bridge::clear_attached_payload_cells(
+                inside, {payload_at_distance(inside, reach - 0.001)}, {}, padding),
+            1U);
+
+  auto outside = grid;
+  EXPECT_EQ(bridge::clear_attached_payload_cells(
+                outside, {payload_at_distance(outside, reach + 0.001)}, {}, padding),
+            0U);
+  EXPECT_NE(outside.occupancy[idx], 0);
+}
+
+TEST(PayloadClearing, TheAttachPaddingNeverShrinksTheSteadyReach) {
+  // The attach transition is the steady reach PLUS the sweep padding, so no
+  // value of the new parameter can make the transition clear less than an
+  // ordinary frame would — a parameter must not be a way to narrow the clearing
+  // below what the payload's own volume explains.
+  EXPECT_NEAR(bridge::attach_transition_padding(0.0, kAttachSweepPadding), kAttachSweepPadding,
+              1e-12);
+  EXPECT_NEAR(bridge::attach_transition_padding(0.004, kAttachSweepPadding),
+              0.004 + kAttachSweepPadding, 1e-12);
+  EXPECT_NEAR(bridge::attach_transition_padding(0.004, 0.0), 0.004, 1e-12);
+  EXPECT_NEAR(bridge::attach_transition_padding(0.004, -0.01), 0.004, 1e-12);
+  EXPECT_NEAR(bridge::attach_transition_padding(0.004, std::nan("")), 0.004, 1e-12);
+  EXPECT_NEAR(bridge::attach_transition_padding(-1.0, kAttachSweepPadding), kAttachSweepPadding,
+              1e-12);
 }

@@ -20,6 +20,13 @@
 // cells inside the attested support patch are the counter the payload rests on,
 // so they stay in the map for the kernel's witness (and for Nav2 / SLAM) while
 // everything else around the payload clears.
+//
+// The message also carries `attachment_revision`, and that is what opens the
+// attach-transition WINDOW: while a payload is still within one sweep padding
+// of where its revision first appeared, it sweeps with `attach_sweep_padding_m`
+// of extra reach, for the stale pre-attach silhouette that primitive-fit error
+// leaves just outside the steady-state reach. Once it has moved further than
+// that, the window latches shut and the reach is the steady one again.
 
 #include <algorithm>
 #include <chrono>
@@ -27,6 +34,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -72,6 +80,15 @@ public:
     // the payload's own volume can explain; anything more removes cells it
     // cannot, and is protection given up for pose uncertainty.
     attached_clear_padding_m_ = this->declare_parameter<double>("attached_clear_padding_m", 0.0);
+    // Extra reach on the ONE grid that first sees an object revision — the
+    // attach transition. One voxel by default, because the residue it exists
+    // for is a quantization/primitive-fit artefact of exactly that scale (the
+    // 2026-08-14 round-5 cell sat 0.48 mm past the circumradius). Declared
+    // against `resolution` so the default is one voxel of whatever lattice this
+    // node is actually publishing, and it shows up as a real number in
+    // `ros2 param get`.
+    attach_sweep_padding_m_ =
+        this->declare_parameter<double>("attach_sweep_padding_m", resolution_);
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
@@ -153,7 +170,7 @@ private:
     spec.box_min[2] = box_center_[2] - 0.5 * box_size_[2];
 
     auto grid = rasterize_octree_to_grid(*octree_, base_to_octomap, spec, base_frame_);
-    clear_attached_payload(grid);
+    clear_attached_payload(grid, base_to_octomap);
     grid.header.stamp = this->now();
     voxel_pub_->publish(grid);
   }
@@ -167,12 +184,33 @@ private:
   /// described it. That is the conservative failure: the map keeps occupancy it
   /// should not have (which can only stop the robot early), never loses
   /// occupancy it should have.
-  void clear_attached_payload(openral_msgs::msg::OccupancyVoxels& grid) {
+  ///
+  /// Objects are split into two clearing passes by the ONE piece of state this
+  /// node keeps (`AttachSweepLedger`): a payload whose attach-transition window
+  /// is still open sweeps at the padded reach, one whose window has closed at
+  /// the unchanged steady-state reach. Both passes see the full patch list, so
+  /// a padded sweep withholds the attested support patch exactly as an ordinary
+  /// one does.
+  ///
+  /// `base_to_octomap` is `lookupTransform(octomap_frame, base_frame)`, already
+  /// looked up for the rasterization. The window measures the payload's
+  /// displacement in the OctoMap's frame, not the base frame, because the stale
+  /// silhouette it is chasing is world-fixed occupancy: a payload motionless in
+  /// `base_link` on a driving mobile base has left its silhouette behind, and
+  /// the window must close.
+  void clear_attached_payload(openral_msgs::msg::OccupancyVoxels& grid,
+                              const tf2::Transform& base_to_octomap) {
     if (!attached_clear_enabled_) {
       return;
     }
     const auto state = world_state_;
-    if (state == nullptr || state->attached_objects.empty()) {
+    if (state == nullptr) {
+      return;
+    }
+    if (state->attached_objects.empty()) {
+      // Nothing attached: nothing to sweep and no window to keep, so the next
+      // grasp — of this object or any other — opens a fresh one.
+      attach_sweep_ledger_.sweep({}, attach_sweep_padding_m_);
       return;
     }
     const rclcpp::Time stamp(state->header.stamp);
@@ -184,8 +222,12 @@ private:
       return;
     }
 
-    std::vector<PayloadPrimitive> primitives;
     std::vector<SupportPatch> patches;
+    // Staged per object, because the window is decided per object.
+    std::vector<std::vector<PayloadPrimitive>> staged;
+    std::vector<AttachSweepObservation> present;
+    staged.reserve(state->attached_objects.size());
+    present.reserve(state->attached_objects.size());
     for (const auto& object : state->attached_objects) {
       geometry_msgs::msg::TransformStamped tf_msg;
       try {
@@ -199,26 +241,58 @@ private:
       }
       tf2::Transform base_from_link;
       tf2::fromMsg(tf_msg.transform, base_from_link);
-      if (!place_attached_object(object, base_from_link, primitives, patches)) {
+      std::vector<PayloadPrimitive> object_primitives;
+      if (!place_attached_object(object, base_from_link, object_primitives, patches)) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                              "payload %s carries geometry or a support attestation this bridge "
                              "cannot place: clearing nothing",
                              object.object_id.c_str());
         return;
       }
+      // The window's reference point is the first primitive's origin lifted
+      // into the OctoMap frame — a material point of the payload, which is all
+      // "has this payload moved away from its silhouette?" needs. A successful
+      // placement always yields at least one primitive.
+      present.push_back(AttachSweepObservation{
+          AttachedObjectRevision{object.object_id, state->attachment_revision},
+          base_to_octomap * object_primitives.front().pose.getOrigin()});
+      staged.push_back(std::move(object_primitives));
     }
 
+    // Answering and recording in one call is what keeps the window's state and
+    // the reach it licenses from disagreeing. Every early return above skips it,
+    // so a frame that clears nothing leaves the padded sweep owed.
+    const std::vector<std::uint8_t> window_open =
+        attach_sweep_ledger_.sweep(present, attach_sweep_padding_m_);
+    std::vector<PayloadPrimitive> steady_primitives;
+    std::vector<PayloadPrimitive> attach_sweep_primitives;
+    std::size_t attach_sweep_objects = 0;
+    for (std::size_t i = 0; i < staged.size(); ++i) {
+      auto& group = window_open[i] != 0 ? attach_sweep_primitives : steady_primitives;
+      group.insert(group.end(), staged[i].begin(), staged[i].end());
+      attach_sweep_objects += window_open[i] != 0 ? 1U : 0U;
+    }
+
+    const double attach_padding =
+        attach_transition_padding(attached_clear_padding_m_, attach_sweep_padding_m_);
     const std::size_t cleared =
-        clear_attached_payload_cells(grid, primitives, patches, attached_clear_padding_m_);
+        clear_attached_payload_cells(grid, steady_primitives, patches, attached_clear_padding_m_) +
+        clear_attached_payload_cells(grid, attach_sweep_primitives, patches, attach_padding);
     if (cleared > 0) {
       // The attested-patch count is logged unconditionally beside the cleared
       // count: the partition is the difference between the two numbers, and a
       // support surface silently vanishing from the map is exactly what this
-      // line exists to make visible (CLAUDE.md §1.4).
+      // line exists to make visible (CLAUDE.md §1.4). The open-window count is
+      // beside them for the same reason — a window that never closes is a
+      // widened reach that has quietly become the steady state, and a field
+      // trace has to be able to show when it shut.
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "attached payload: cleared %zu cell(s) of %zu object(s) from world "
-                           "occupancy, withholding %zu attested support patch(es)",
-                           cleared, state->attached_objects.size(), patches.size());
+                           "occupancy, withholding %zu attested support patch(es); %zu object(s) "
+                           "inside the attach window (+%.4f m, revision %lu)",
+                           cleared, state->attached_objects.size(), patches.size(),
+                           attach_sweep_objects, attach_padding,
+                           static_cast<unsigned long>(state->attachment_revision));
     }
   }
 
@@ -229,7 +303,9 @@ private:
   double box_center_[3]{0.0, 0.0, 0.5};
   bool attached_clear_enabled_{true};
   double attached_clear_padding_m_{0.0};
+  double attach_sweep_padding_m_{0.05};
   double attached_state_timeout_s_{0.5};
+  AttachSweepLedger attach_sweep_ledger_;
 
   std::unique_ptr<octomap::OcTree> octree_;
   openral_msgs::msg::WorldStateStamped::SharedPtr world_state_;
