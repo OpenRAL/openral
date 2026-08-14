@@ -45,6 +45,11 @@ TARGETS=(
     # free of close-parens — the guard test parses the block with a
     # non-greedy regex.
     packages/openral_rskill_ros/test/test_rskill_runner_node.py
+    # ADR-0097 place-declaration goal lifecycle. Same overlay requirement,
+    # and the transitions it pins - retract on end / cancel / E-stop /
+    # executor-escape - are safety-relevant, so they must run on a CI
+    # surface rather than only on a dev host.
+    packages/openral_rskill_ros/test/test_place_declaration_lifecycle.py
 )
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this

@@ -172,6 +172,14 @@ if _ROS2_AVAILABLE:
             # set it to ``rskills/rskill-moveit-joints``. Empty = legacy snap.
             self.declare_parameter("approach_skill_id", "")
             self.declare_parameter("approach_skill_revision", "main")
+            # ADR-0097 place-phase declaration for DIRECT dispatch — the
+            # deploy scene's own `place_declaration`, serialised, injected by
+            # `openral deploy sim` / `deploy run`. A reasoner puts the same
+            # declaration on the ExecuteRskill goal instead, and the goal wins;
+            # this exists because a direct dispatch has no reasoner in the loop
+            # and the scene is the only place the place target is known.
+            # Empty = no declaration, i.e. no place witness can ever arm.
+            self.declare_parameter("place_declaration_json", "")
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -199,6 +207,10 @@ if _ROS2_AVAILABLE:
             self._active_skill: Any = None
             self._active_skill_id: str = ""
             self._active_skill_revision: str = ""
+            # ADR-0097 — the place-phase declaration currently on the wire, or
+            # ``None``. Held so the terminal transitions can retract exactly
+            # what they armed rather than guessing.
+            self._active_place_declaration: Any = None
             # True elapsed time when the execution budget last lapsed, so an
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_elapsed_s: float | None = None
@@ -366,6 +378,25 @@ if _ROS2_AVAILABLE:
                 QoSProfile(
                     reliability=QoSReliabilityPolicy.RELIABLE,
                     durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
+            )
+
+            # ADR-0097 — the place-phase declaration. This node is the goal
+            # lifecycle authority (accept / succeed / abort / cancel / E-stop),
+            # so it is the one place that can honestly scope a declaration to a
+            # goal. TRANSIENT_LOCAL + depth 1: a producer that comes up after
+            # the goal started still sees the declaration in force, and only
+            # the newest one ever is.
+            from openral_msgs.msg import PlaceDeclaration as _PlaceDeclarationMsg
+
+            self._place_declaration_msg_cls: Any = _PlaceDeclarationMsg
+            self._place_declaration_pub = self.create_publisher(
+                _PlaceDeclarationMsg,
+                "/openral/place_declaration",
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                     depth=1,
                 ),
             )
@@ -623,7 +654,18 @@ if _ROS2_AVAILABLE:
             ever touches the resident skill at a time.
             """
             with self._execute_serial:
-                return self._execute_locked(goal_handle)
+                try:
+                    return self._execute_locked(goal_handle)
+                finally:
+                    # HZ-0097-3 — the place declaration dies with the goal on
+                    # EVERY exit, including one that never reaches
+                    # `_reset_active_goal`: an exception escaping the execute
+                    # callback (a skill resolver blowing up, say) makes rclpy
+                    # abort the goal without unwinding the node's own per-goal
+                    # state, and a declaration surviving that would arm an
+                    # exemption for whatever runs next. Idempotent, so the
+                    # normal path's retraction is not doubled.
+                    self._retract_place_declaration()
 
         def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
@@ -660,6 +702,12 @@ if _ROS2_AVAILABLE:
                 from openral_observability import propagation
 
                 result.trace_id = propagation.current_traceparent() or ""
+
+                # ADR-0097 — arm this goal's place declaration once the trace
+                # exists, so the declaration carries the id an incident review
+                # would look it up by. Every terminal path below runs through
+                # `_reset_active_goal`, which retracts it.
+                self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
 
                 try:
                     # Single GPU-resident skill: evict-on-switch,
@@ -1448,8 +1496,102 @@ if _ROS2_AVAILABLE:
                 msg.data = text
                 self._active_task_pub.publish(msg)
 
+        def _resolve_place_declaration(self, request: Any) -> Any:
+            """The declaration in force for this goal, or ``None``.
+
+            Precedence: the ``ExecuteRskill`` goal's own typed declaration (a
+            reasoner grounding the place target per goal) over the node's
+            ``place_declaration_json`` parameter (the deploy scene's committed
+            declaration, which is how a direct dispatch declares at all — there
+            is no reasoner in that loop). Neither present means no declaration,
+            i.e. no place witness can arm and the mid-carry anti-scope stands
+            exactly as it does today.
+            """
+            from openral_core import PlaceDeclaration
+
+            if bool(getattr(request, "place_declaration_valid", False)):
+                return PlaceDeclaration.from_idl(request.place_declaration)
+            raw = self.get_parameter("place_declaration_json").get_parameter_value().string_value
+            if not raw:
+                return None
+            return PlaceDeclaration.model_validate_json(raw)
+
+        def _arm_place_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
+            """Publish this goal's place declaration, stamped and attributable.
+
+            The stamp is taken here, at goal start, so the declaration's own
+            backstop window measures from the goal it belongs to rather than
+            from whenever the scene file was written. ``rskill_id`` and
+            ``trace_id`` are overwritten from the live dispatch rather than
+            trusted from the source, which is what makes a wrong declaration
+            reconstructible from the trace alone (HZ-0097-2 mitigation 1).
+
+            A malformed declaration is refused and logged; the goal still runs,
+            with no declaration, which is the fail-closed direction (the kernel
+            keeps stopping on place contact).
+            """
+            from openral_core.exceptions import ROSConfigError
+
+            try:
+                declaration = self._resolve_place_declaration(request)
+            except (ValueError, TypeError, ROSConfigError) as exc:
+                self.get_logger().error(f"rskill_runner.place_declaration_rejected: {exc!s}")
+                return
+            if declaration is None:
+                return
+            declaration = declaration.model_copy(
+                update={
+                    "rskill_id": rskill_id,
+                    "trace_id": trace_id,
+                    "stamp_ns": int(self.get_clock().now().nanoseconds),
+                    "active": True,
+                }
+            )
+            self._publish_place_declaration(declaration)
+            self.get_logger().info(
+                f"rskill_runner.place_declaration_armed target={declaration.target_id} "
+                f"object={declaration.object_id or '<carried>'} rskill={rskill_id} "
+                f"trace={trace_id or '<unset>'} timeout_s={declaration.timeout_s:.1f}"
+            )
+
+        def _retract_place_declaration(self) -> None:
+            """Retract the declaration in force, if any (HZ-0097-3).
+
+            Called on every terminal goal transition — success, failure, abort,
+            cancel — and on ``/openral/estop``. Idempotent: retracting nothing
+            is a no-op, so the repeated E-stop publications the deadman emits by
+            design do not spam the bus.
+            """
+            declaration = self._active_place_declaration
+            if declaration is None:
+                return
+            self._publish_place_declaration(declaration.model_copy(update={"active": False}))
+            self.get_logger().info(
+                f"rskill_runner.place_declaration_retracted target={declaration.target_id}"
+            )
+
+        def _publish_place_declaration(self, declaration: Any) -> None:
+            """Put one declaration on the wire and remember what is in force.
+
+            A publish failure must never disturb the skill — but it must also
+            never leave this node believing a declaration is armed that no
+            consumer received, so the in-force record is only updated once the
+            publish returned.
+            """
+            msg = self._place_declaration_msg_cls()
+            declaration.fill_idl(msg)
+            try:
+                self._place_declaration_pub.publish(msg)
+            except Exception as exc:  # reason: transport failure is advisory here
+                self.get_logger().error(f"rskill_runner.place_declaration_publish_failed: {exc!s}")
+                return
+            self._active_place_declaration = declaration if declaration.active else None
+
         def _reset_active_goal(self) -> None:
             """Clear the per-goal state under the lock."""
+            # The declaration is scoped to this goal and dies with it — success,
+            # failure, abort, or cancel, all of which land here (HZ-0097-3).
+            self._retract_place_declaration()
             with self._goal_lock:
                 self._active_goal = None
                 self._active_skill = None
@@ -1488,6 +1630,10 @@ if _ROS2_AVAILABLE:
                 "rskill_runner.estop_received; "
                 f"aborting in-flight goal (rskill_id={self._active_skill_id!r})"
             )
+            # An E-stop ends the place phase immediately, ahead of the goal's
+            # own teardown (HZ-0097-3): a latched stop is exactly when a
+            # lingering exemption would be least defensible.
+            self._retract_place_declaration()
 
         def _on_estop_cleared(self, _msg: object) -> None:
             """Clear the runner latch on /openral/estop_cleared so a new goal runs.
