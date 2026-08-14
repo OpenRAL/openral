@@ -7,6 +7,13 @@ Republishes whatever a ``SimAttachedHAL`` exposes — RGB camera frames
 deploy-sim scene+camera+viewer parity without per-package wiring. Phase 2
 adds ``/scan`` + depth ``PointCloud2``. rclpy is imported lazily so the
 module stays import-safe in pure-Python CI.
+
+It also owns the E-stop ground-truth record: one
+``sim.estop_ground_truth_snapshot`` line per kernel stop — MuJoCo contacts,
+near-miss distances, joint state, base TF, and the candidate chunk the
+kernel was checking — so a stop can be adjudicated real-vs-false after the
+fact. Diagnostics only: nothing on that path gates, delays, or alters
+actuation.
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from openral_hal.mobile_base_bridge import describes_mobile_base
@@ -26,10 +34,36 @@ _THUMB_INTERVAL_NS = 1_000_000_000
 _IMAGE_DIM = 3  # HWC ndarray
 _RGB_CHANNELS = 3
 
+# -- E-stop ground-truth snapshot bounds --
+# Near-miss probe: the kernel stops on a *margin* (a few mm to a few cm), so
+# at the stop instant MuJoCo's contact list is usually EMPTY — the honest
+# ground truth of "how close was it really" is the signed geom distance.
+# Probed only for robot-geom↔world-geom pairs whose bounding spheres are
+# within this gap, ranked, and truncated to the closest few.
+_NEAREST_PROBE_DISTMAX_M = 0.10
+_NEAREST_PROBE_MAX_CALLS = 256
+_NEAREST_PROBE_MAX_PAIRS = 8
+# Candidate chunks retained for predicted-horizon reconstruction. The kernel
+# checks the chunk it has just received; a small ring covers the delivery
+# race between ``/openral/candidate_action`` and ``/openral/estop`` without
+# unbounded growth.
+_CANDIDATE_CHUNK_HISTORY = 3
+# A collision evidence older than this is not attributed to the stop being
+# snapshotted (0.5 s ≫ the kernel's publish-then-estop gap, ≪ a rollout).
+_ESTOP_EVIDENCE_WINDOW_NS = 500_000_000
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from openral_core import RobotDescription
 
-__all__ = ["SimSensorBridge", "constant_scan_no_hit_ranges", "should_idle_step"]
+__all__ = [
+    "SimSensorBridge",
+    "candidate_chunk_digest",
+    "constant_scan_no_hit_ranges",
+    "estop_ground_truth_snapshot",
+    "should_idle_step",
+]
 
 
 def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[float]:
@@ -147,6 +181,298 @@ def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
     ]
 
 
+def _body_record(model: Any, data: Any, body_id: int) -> dict[str, object]:
+    """MJCF body id → ``{id, name, world_xyz}`` (world pose at this instant)."""
+    import mujoco  # reason: optional sim dep
+
+    return {
+        "id": int(body_id),
+        "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(body_id)),
+        "world_xyz": [round(float(value), 6) for value in data.xpos[int(body_id)]],
+    }
+
+
+def _contact_records(
+    model: Any,
+    data: Any,
+    *,
+    side: frozenset[int],
+    other_excluded: frozenset[int],
+) -> list[dict[str, object]]:
+    """Live MuJoCo contacts crossing the ``side`` boundary, as JSON records.
+
+    A contact is kept when exactly one of its two geoms sits on a body in
+    ``side`` and the other body is not in ``other_excluded`` — i.e. the
+    boundary the caller wants adjudicated (payload↔everything, or
+    robot↔world once the payload bodies are excluded). Each record carries
+    both geom names, both body names, both body world positions, the signed
+    contact distance (negative = interpenetration, MuJoCo's own sign
+    convention) and the contact point, so an offline tool can compare the
+    kernel's evidence against the simulator's ground truth without the scene.
+
+    The ``_a`` side is always the ``side`` member (MuJoCo orders a contact's
+    geoms by id, which would otherwise put the payload / robot on either
+    side depending on the scene's geom numbering).
+    """
+    import mujoco  # reason: optional sim dep
+
+    records: list[dict[str, object]] = []
+    for index in range(int(data.ncon)):
+        contact = data.contact[index]
+        geom_a, geom_b = int(contact.geom1), int(contact.geom2)
+        body_a = int(model.geom_bodyid[geom_a])
+        body_b = int(model.geom_bodyid[geom_b])
+        if (body_a in side) == (body_b in side):
+            continue
+        if body_b in side:  # normalise: ``side`` member first
+            geom_a, geom_b = geom_b, geom_a
+            body_a, body_b = body_b, body_a
+        if body_b in other_excluded:
+            continue
+        records.append(
+            {
+                "distance_m": round(float(contact.dist), 6),
+                "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_a),
+                "geom_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_b),
+                "body_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_a),
+                "body_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_b),
+                "body_a_world_xyz": [round(float(v), 6) for v in data.xpos[body_a]],
+                "body_b_world_xyz": [round(float(v), 6) for v in data.xpos[body_b]],
+                "position_xyz": [round(float(v), 6) for v in contact.pos],
+            }
+        )
+    return records
+
+
+def _nearest_pair_records(
+    model: Any,
+    data: Any,
+    *,
+    side: frozenset[int],
+    other_excluded: frozenset[int],
+    distmax_m: float,
+    max_pairs: int,
+) -> list[dict[str, object]]:
+    """Closest signed geom distances across the ``side`` boundary.
+
+    The safety kernel stops on a *margin*, so a genuine stop usually leaves
+    NO MuJoCo contact at the measured configuration — ``ncon`` alone cannot
+    say whether a ``-15 mm`` predicted hit was real. This probes
+    ``mujoco.mj_geomDistance`` (signed; negative = interpenetration) for the
+    ``side``↔outside geom pairs whose bounding spheres are within
+    ``distmax_m``, ranked closest-first and truncated to ``max_pairs``.
+
+    Bounded by construction: a vectorised bounding-sphere prefilter
+    (``geom_rbound``; ``0`` means unbounded — planes/heightfields — and is
+    treated as always-a-candidate) reduces the O(n·m) pair set, then at most
+    ``_NEAREST_PROBE_MAX_CALLS`` exact distance calls run. Pure MuJoCo
+    reads, no ROS.
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
+    if body_of_geom.size == 0:
+        return []
+    in_side = np.isin(body_of_geom, np.fromiter(side, dtype=np.int64, count=len(side)))
+    excluded = np.isin(
+        body_of_geom,
+        np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
+    )
+    side_geoms = np.flatnonzero(in_side)
+    other_geoms = np.flatnonzero(~in_side & ~excluded)
+    if side_geoms.size == 0 or other_geoms.size == 0:
+        return []
+    xpos = np.asarray(data.geom_xpos, dtype=np.float64)
+    rbound = np.asarray(model.geom_rbound, dtype=np.float64)
+    rbound = np.where(rbound <= 0.0, np.inf, rbound)  # 0 = unbounded (plane/hfield)
+    centre_gap = np.linalg.norm(
+        xpos[side_geoms][:, None, :] - xpos[other_geoms][None, :, :], axis=-1
+    )
+    gap = centre_gap - rbound[side_geoms][:, None] - rbound[other_geoms][None, :]
+    candidates = np.argwhere(gap <= distmax_m)
+    if candidates.size == 0:
+        return []
+    order = np.argsort(gap[candidates[:, 0], candidates[:, 1]], kind="stable")
+    candidates = candidates[order][:_NEAREST_PROBE_MAX_CALLS]
+    probed: list[tuple[float, int, int]] = []
+    for row, col in candidates:
+        geom_side = int(side_geoms[int(row)])
+        geom_other = int(other_geoms[int(col)])
+        distance = float(
+            mujoco.mj_geomDistance(model, data, geom_side, geom_other, float(distmax_m), None)
+        )
+        if distance >= distmax_m:
+            continue  # nothing within the probe window for this pair
+        probed.append((distance, geom_side, geom_other))
+    probed.sort(key=lambda item: item[0])
+    return [
+        {
+            "distance_m": round(distance, 6),
+            "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_side),
+            "geom_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_other),
+            "body_a": mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_side])
+            ),
+            "body_b": mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_other])
+            ),
+        }
+        for distance, geom_side, geom_other in probed[:max_pairs]
+    ]
+
+
+def estop_ground_truth_snapshot(
+    model: Any,
+    data: Any,
+    *,
+    robot_body_ids: frozenset[int],
+    attached_body_ids: frozenset[int] = frozenset(),
+    base_frame_body: str | None = None,
+    joint_state: Any = None,
+    distmax_m: float = _NEAREST_PROBE_DISTMAX_M,
+    max_pairs: int = _NEAREST_PROBE_MAX_PAIRS,
+) -> dict[str, object]:
+    """MuJoCo ground truth for one safety stop, attached payload or not.
+
+    Every kernel E-stop gets one of these (CLAUDE.md §1.4): without it a stop
+    cannot be adjudicated real-vs-false after the fact. The payload sections
+    are populated only when something is carried; the robot↔world sections
+    are always populated, which is what a PRE-GRASP arm↔world stop needs (the
+    2026-08-13 post-fix matrix had 3 of 4 stops in that class and zero ground
+    truth for them).
+
+    Args:
+        model: live ``mujoco.MjModel``.
+        data: live ``mujoco.MjData`` at the stop instant.
+        robot_body_ids: the robot's own MJCF body ids (the depth self-filter
+            set — derived from the manifest joint prefixes).
+        attached_body_ids: currently carried payload body ids (empty when
+            nothing is attached).
+        base_frame_body: MJCF body that ``base_frame`` denotes on ``/tf``.
+            The kernel's collision FK is base-relative, so its world pose is
+            what maps a reconstructed configuration back into MuJoCo world
+            coordinates.
+        joint_state: the HAL's :class:`~openral_core.JointState` at the stop
+            (the same vector the kernel seeded ``q_meas`` from), or ``None``.
+        distmax_m: near-miss probe window.
+        max_pairs: cap on reported nearest pairs.
+
+    Returns:
+        A JSON-safe dict: ``stop_class`` (``"attached_payload"`` when a
+        payload is carried, else ``"robot_world"``), ``sim_time_s``,
+        ``attached_bodies``, ``payload_contacts``, ``robot_world_contacts``,
+        ``nearest_robot_world_pairs``, ``robot_joint_state`` and
+        ``base_frame_tf``.
+    """
+    attached_bodies = sorted(attached_body_ids)
+    snapshot: dict[str, object] = {
+        "stop_class": "attached_payload" if attached_bodies else "robot_world",
+        "sim_time_s": round(float(data.time), 6),
+        "attached_bodies": [_body_record(model, data, body_id) for body_id in attached_bodies],
+        "payload_contacts": _contact_records(
+            model, data, side=frozenset(attached_bodies), other_excluded=frozenset()
+        )
+        if attached_bodies
+        else [],
+        "robot_world_contacts": _contact_records(
+            model, data, side=robot_body_ids, other_excluded=attached_body_ids
+        ),
+        "nearest_robot_world_pairs": _nearest_pair_records(
+            model,
+            data,
+            side=robot_body_ids,
+            other_excluded=attached_body_ids,
+            distmax_m=distmax_m,
+            max_pairs=max_pairs,
+        ),
+        "robot_joint_state": None
+        if joint_state is None
+        else {
+            "name": list(joint_state.name),
+            "position": [round(float(value), 6) for value in joint_state.position],
+            "velocity": [round(float(value), 6) for value in joint_state.velocity],
+            "stamp_ns": int(joint_state.stamp_ns),
+        },
+        "base_frame_tf": None,
+    }
+    if base_frame_body is not None:
+        import mujoco  # reason: optional sim dep
+
+        body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_frame_body))
+        if body_id >= 0:
+            snapshot["base_frame_tf"] = {
+                "body": base_frame_body,
+                "world_xyz": [round(float(v), 6) for v in data.xpos[body_id]],
+                "world_quat_wxyz": [round(float(v), 6) for v in data.xquat[body_id]],
+            }
+    return snapshot
+
+
+def candidate_chunk_digest(
+    *,
+    stamp_ns: int,
+    control_mode: int,
+    horizon: int,
+    n_dof: int,
+    flat: Sequence[float],
+    cartesian_delta_scale: Sequence[float] = (),
+    ee_name: str = "",
+    frame_id: str = "",
+    rskill_id: str = "",
+    trace_id: str = "",
+    tick_index: int = 0,
+) -> dict[str, object]:
+    """One ``openral_msgs/ActionChunk``'s fields as a JSON-safe FK input.
+
+    A predicted-horizon stop (``CollisionEvidence.horizon_step >= 0``) was
+    evaluated at a configuration that exists nowhere in the simulator: the
+    kernel integrated this chunk forward from the measured state (rows are
+    joint configurations for JOINT_POSITION, joint velocity increments for
+    JOINT_VELOCITY, or EE twists driven through the damped-least-squares
+    Jacobian for CARTESIAN_DELTA — see
+    ``cpp/openral_safety_kernel/src/lifecycle_kernel.cpp``). TF cannot
+    reproduce it, so the snapshot logs the chunk itself: with the measured
+    joint state, ``horizon_step`` and the kernel's own params, an offline
+    tool can re-run that FK exactly.
+
+    ``flat`` is reshaped into ``horizon`` rows of ``n_dof``; a length that
+    disagrees with ``horizon * n_dof`` is reported as-is under
+    ``flat`` with ``shape_mismatch: true`` rather than silently truncated.
+
+    Example:
+        >>> digest = candidate_chunk_digest(
+        ...     stamp_ns=1, control_mode=5, horizon=2, n_dof=3, flat=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+        ... )
+        >>> digest["control_mode"], digest["ticks"]
+        ('cartesian_delta', [[0.0, 0.1, 0.2], [0.3, 0.4, 0.5]])
+    """
+    from openral_core.schemas import UINT8_TO_CONTROL_MODE
+
+    mode = UINT8_TO_CONTROL_MODE.get(int(control_mode))
+    values = [round(float(value), 6) for value in flat]
+    digest: dict[str, object] = {
+        "stamp_ns": int(stamp_ns),
+        "control_mode": mode.value if mode is not None else int(control_mode),
+        "control_mode_uint8": int(control_mode),
+        "horizon": int(horizon),
+        "n_dof": int(n_dof),
+        "cartesian_delta_scale": [round(float(v), 6) for v in cartesian_delta_scale],
+        "ee_name": str(ee_name),
+        "frame_id": str(frame_id),
+        "rskill_id": str(rskill_id),
+        "trace_id": str(trace_id),
+        "tick_index": int(tick_index),
+    }
+    if int(horizon) > 0 and int(n_dof) > 0 and len(values) == int(horizon) * int(n_dof):
+        width = int(n_dof)
+        digest["ticks"] = [values[i : i + width] for i in range(0, len(values), width)]
+    else:
+        digest["flat"] = values
+        digest["shape_mismatch"] = True
+    return digest
+
+
 class SimSensorBridge:
     """Wire + tear down sim-sensor publishers and the viewer on a lifecycle node.
 
@@ -259,8 +585,20 @@ class SimSensorBridge:
         self._attachment_sub: Any = None
         self._attachment_ack_sub: Any = None
         self._attachment_voxel_sub: Any = None
-        self._attachment_estop_sub: Any = None
         self._attachment_pub: Any = None
+        # E-stop ground truth (diagnostics only — never gates anything).
+        # ``/openral/estop`` triggers the snapshot; the candidate-chunk ring
+        # and the last collision evidence let an offline tool reconstruct a
+        # PREDICTED-horizon stop, whose configuration TF cannot reproduce.
+        self._estop_sub: Any = None
+        self._candidate_action_sub: Any = None
+        self._safety_failure_sub: Any = None
+        self._candidate_chunks: deque[dict[str, object]] = deque(maxlen=_CANDIDATE_CHUNK_HISTORY)
+        self._last_collision_evidence: dict[str, object] | None = None
+        self._last_collision_evidence_ns: int = 0
+        self._collision_evidence_warned: bool = False
+        self._estop_seq: int = 0
+        self._estop_awaiting_evidence: bool = False
         self._attachment_timer: Any = None
         self._attachment_revision: int = 0
         self._attachment_applied_revision: int = -1
@@ -330,6 +668,7 @@ class SimSensorBridge:
         self._setup_viewer()
         self._setup_scan()
         self._setup_attachment_state()
+        self._setup_estop_ground_truth()
         self._setup_depth()
 
     def teardown(self) -> None:  # noqa: PLR0915  # reason: one symmetric resource cleanup
@@ -359,9 +698,7 @@ class SimSensorBridge:
         if self._attachment_voxel_sub is not None:
             self._node.destroy_subscription(self._attachment_voxel_sub)
             self._attachment_voxel_sub = None
-        if self._attachment_estop_sub is not None:
-            self._node.destroy_subscription(self._attachment_estop_sub)
-            self._attachment_estop_sub = None
+        self._teardown_estop_ground_truth()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
             self._attachment_pub = None
@@ -1008,24 +1345,13 @@ class SimSensorBridge:
             self._on_attachment_state,
             qos,
         )
-        from std_msgs.msg import Empty, UInt64
+        from std_msgs.msg import UInt64
 
         self._attachment_ack_sub = self._node.create_subscription(
             UInt64,
             "/openral/attachment_state_applied",
             self._on_attachment_state_applied,
             qos,
-        )
-        estop_qos = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10,
-        )
-        self._attachment_estop_sub = self._node.create_subscription(
-            Empty,
-            "/openral/estop",
-            self._on_attachment_estop,
-            estop_qos,
         )
         from openral_msgs.msg import OccupancyVoxels
 
@@ -1543,53 +1869,218 @@ class SimSensorBridge:
             self._attachment_transparent_depth_stamp_ns = None
             self._notify_attachment_perception_ready()
 
-    def _on_attachment_estop(self, _msg: object) -> None:
-        """Log exact sim payload contact evidence at a safety stop."""
+    # -- E-stop ground truth (diagnostics only) --
+    def _setup_estop_ground_truth(self) -> None:
+        """Subscribe the three topics one adjudicable stop record needs.
+
+        Gate: live MuJoCo handles (there is no ground truth without a
+        simulator). Deliberately NOT gated on attachment support — the
+        pre-grasp arm↔world stop is the class this closes.
+
+        * ``/openral/estop`` — fires the snapshot at the stop instant.
+        * ``/openral/candidate_action`` — the chunk the kernel was checking
+          (the only reconstruction input for a PREDICTED-horizon stop).
+        * ``/openral/failure/safety`` — the kernel's own
+          :class:`~openral_core.CollisionEvidence`, which carries
+          ``horizon_step`` / ``link_a`` / ``min_distance_m``.
+
+        Diagnostics only: nothing here gates, delays, or alters actuation.
+        """
+        if getattr(self._hal, "mujoco_handles", lambda: None)() is None:
+            return
+        from openral_msgs.msg import ActionChunk, FailureTrigger
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+        from std_msgs.msg import Empty
+
+        estop_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self._estop_sub = self._node.create_subscription(
+            Empty,
+            "/openral/estop",
+            self._on_estop_ground_truth,
+            estop_qos,
+        )
+        # Depth 50 matches the kernel's chunk/failure QoS (and the node's own
+        # ``/openral/safe_action`` subscription) so a multi-slot tick cannot
+        # silently drop the very chunk that was checked. ``/openral/safe_action``
+        # cannot serve here: a REJECTED chunk is never republished on it, so
+        # the candidate bus is the only place the stopped motion exists.
+        bus_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=50,
+        )
+        self._candidate_action_sub = self._node.create_subscription(
+            ActionChunk,
+            "/openral/candidate_action",
+            self._on_candidate_action,
+            bus_qos,
+        )
+        self._safety_failure_sub = self._node.create_subscription(
+            FailureTrigger,
+            "/openral/failure/safety",
+            self._on_safety_failure,
+            bus_qos,
+        )
+        self._node.get_logger().info(
+            "SimSensorBridge: e-stop ground truth armed (MuJoCo contacts + near-miss "
+            f"distances + last {_CANDIDATE_CHUNK_HISTORY} candidate chunks)."
+        )
+
+    def _teardown_estop_ground_truth(self) -> None:
+        """Destroy the stop-record subscriptions and drop their caches."""
+        for sub in (self._estop_sub, self._candidate_action_sub, self._safety_failure_sub):
+            if sub is not None:
+                self._node.destroy_subscription(sub)
+        self._estop_sub = None
+        self._candidate_action_sub = None
+        self._safety_failure_sub = None
+        self._candidate_chunks.clear()
+        self._last_collision_evidence = None
+        self._last_collision_evidence_ns = 0
+        self._collision_evidence_warned = False
+        self._estop_awaiting_evidence = False
+
+    def _on_candidate_action(self, msg: object) -> None:
+        """Cache one candidate chunk digest for predicted-horizon reconstruction."""
+        header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
+        self._candidate_chunks.append(
+            candidate_chunk_digest(
+                stamp_ns=int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec),
+                control_mode=int(msg.control_mode),  # type: ignore[attr-defined]
+                horizon=int(msg.horizon),  # type: ignore[attr-defined]
+                n_dof=int(msg.n_dof),  # type: ignore[attr-defined]
+                flat=list(msg.flat),  # type: ignore[attr-defined]
+                cartesian_delta_scale=list(msg.cartesian_delta_scale),  # type: ignore[attr-defined]
+                ee_name=str(msg.ee_name),  # type: ignore[attr-defined]
+                frame_id=str(msg.frame_id),  # type: ignore[attr-defined]
+                rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
+                trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+                tick_index=int(msg.tick_index),  # type: ignore[attr-defined]
+            )
+        )
+
+    def _on_safety_failure(self, msg: object) -> None:
+        """Cache the kernel's collision evidence; emit it late if it lost the race.
+
+        The kernel publishes the failure trigger and then the E-stop, but
+        cross-topic delivery order is not guaranteed. The snapshot is never
+        delayed for the evidence (the sim state must be captured at the stop
+        instant); when it arrives afterwards it is emitted as its own line,
+        joined to the snapshot by ``stop_seq``.
+        """
+        from openral_msgs.msg import FailureTrigger
+
+        if int(msg.kind) != FailureTrigger.KIND_COLLISION:  # type: ignore[attr-defined]
+            return
+        from openral_core import CollisionEvidence
+        from pydantic import ValidationError
+
+        try:
+            evidence = CollisionEvidence.model_validate_json(
+                str(msg.evidence_json)  # type: ignore[attr-defined]
+            )
+        except ValidationError as exc:
+            if not self._collision_evidence_warned:
+                self._collision_evidence_warned = True
+                self._node.get_logger().warning(
+                    f"collision evidence not decodable as CollisionEvidence: {exc}"
+                )
+            return
+        header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
+        stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+        self._last_collision_evidence_ns = stamp_ns
+        self._last_collision_evidence = {
+            "stamp_ns": stamp_ns,
+            "rskill_id": str(msg.rskill_id),  # type: ignore[attr-defined]
+            "trace_id": str(msg.trace_id),  # type: ignore[attr-defined]
+            **evidence.model_dump(mode="json"),
+        }
+        if self._estop_awaiting_evidence:
+            self._estop_awaiting_evidence = False
+            self._node.get_logger().error(
+                "sim.estop_ground_truth_evidence "
+                + json.dumps(
+                    {
+                        "stop_seq": self._estop_seq,
+                        "collision_evidence": self._last_collision_evidence,
+                    },
+                    sort_keys=True,
+                )
+            )
+
+    def _on_estop_ground_truth(self, _msg: object) -> None:
+        """Log MuJoCo ground truth for EVERY kernel stop, attached or not.
+
+        Supersedes the attached-payload-only ``sim.attached_payload_estop_snapshot``
+        line (no in-tree consumer keyed on that name), which early-returned
+        whenever nothing was carried — so the pre-grasp arm↔world stops that
+        dominate real runs produced no ground truth at all and could not be
+        adjudicated real-vs-false.
+
+        Emits one ``sim.estop_ground_truth_snapshot`` JSON line:
+        :func:`estop_ground_truth_snapshot` (contacts, near-miss distances,
+        joint state, base TF) plus the cached candidate chunks and the
+        kernel's collision evidence when it has already landed. Diagnostics
+        only — no gating, no actuation effect.
+        """
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:
             return
-        body_ids = sorted(self._depth_excluded_body_ids() - self._depth_self_bodies)
-        if not body_ids:
-            return
-
-        import mujoco
-
         model, data = handles
-        body_set = set(body_ids)
-        bodies = [
-            {
-                "id": body_id,
-                "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id),
-                "world_xyz": [round(float(value), 6) for value in data.xpos[body_id]],
-            }
-            for body_id in body_ids
-        ]
-        contacts: list[dict[str, object]] = []
-        for index in range(int(data.ncon)):
-            contact = data.contact[index]
-            geom_a, geom_b = int(contact.geom1), int(contact.geom2)
-            body_a = int(model.geom_bodyid[geom_a])
-            body_b = int(model.geom_bodyid[geom_b])
-            if (body_a in body_set) == (body_b in body_set):
-                continue
-            contacts.append(
-                {
-                    "distance_m": round(float(contact.dist), 6),
-                    "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_a),
-                    "geom_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_b),
-                }
-            )
+        if not self._depth_self_bodies:
+            # Cameras/depth may never have run (they own the lazy resolve).
+            self._resolve_depth_base_body(model)
+        attached = self._depth_excluded_body_ids() - self._depth_self_bodies
+        snapshot = estop_ground_truth_snapshot(
+            model,
+            data,
+            robot_body_ids=self._depth_self_bodies,
+            attached_body_ids=attached,
+            base_frame_body=self._base_frame_body,
+            joint_state=self._read_joint_state(),
+        )
+        now_ns = int(self._node.get_clock().now().nanoseconds)
+        evidence = self._last_collision_evidence
+        age_ns = now_ns - self._last_collision_evidence_ns
+        fresh = evidence is not None and 0 <= age_ns <= _ESTOP_EVIDENCE_WINDOW_NS
+        self._estop_seq += 1
+        self._estop_awaiting_evidence = not fresh
         self._node.get_logger().error(
-            "sim.attached_payload_estop_snapshot "
+            "sim.estop_ground_truth_snapshot "
             + json.dumps(
                 {
+                    "stop_seq": self._estop_seq,
+                    "stamp_ns": now_ns,
                     "attachment_revision": self._attachment_revision,
-                    "attached_bodies": bodies,
-                    "payload_contacts": contacts,
+                    **snapshot,
+                    "candidate_action_chunks": list(self._candidate_chunks),
+                    "collision_evidence": evidence if fresh else None,
                 },
                 sort_keys=True,
             )
         )
+
+    def _read_joint_state(self) -> Any:
+        """The HAL's joint state at the stop, or ``None`` if it cannot be read.
+
+        This is the same vector the kernel seeded ``q_meas`` from (the HAL
+        publishes it on ``/joint_states``), so it is the FK seed an offline
+        reconstruction of a predicted-horizon stop needs.
+        """
+        from openral_core.exceptions import ROSError
+
+        read_state = getattr(self._hal, "read_state", None)
+        if not callable(read_state):
+            return None
+        try:
+            return read_state()
+        except ROSError as exc:  # reason: a stop record must survive a HAL read fault
+            self._node.get_logger().warning(f"e-stop snapshot has no joint state: {exc}")
+            return None
 
     def _depth_excluded_body_ids(self) -> frozenset[int]:
         """Robot and attached-payload bodies excluded from world perception."""
