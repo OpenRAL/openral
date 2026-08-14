@@ -19,6 +19,7 @@ from openral_core.schemas import (
     Pose6D,
     RobotDescription,
     SphereShape,
+    SupportContactWitness,
     WorldState,
 )
 from openral_msgs.msg import AttachmentState
@@ -61,6 +62,8 @@ def _obj() -> DetectedObject:
 def _attached(
     object_id: str,
     shape: BoxShape | CapsuleShape | SphereShape,
+    *,
+    support_contact: SupportContactWitness | None = None,
 ) -> AttachedCollisionObject:
     return AttachedCollisionObject(
         object_id=object_id,
@@ -86,6 +89,7 @@ def _attached(
         evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
         evidence_ref=f"robocasa:{object_id}",
         stamp_ns=1,
+        support_contact=support_contact,
     )
 
 
@@ -189,3 +193,41 @@ def test_attachment_state_callback_applies_multiple_objects_atomically() -> None
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def test_support_contact_witness_round_trips_over_the_idl() -> None:
+    # The wire half of ADR-0092 D6. An attachment that attests support contact
+    # must arrive at the safety kernel with the attestation intact; one that
+    # does not must arrive with support_contact_valid False, because a lost
+    # witness would silently re-open the false stop and an invented one would
+    # silently license real penetration.
+    witness = SupportContactWitness(
+        support_id="robocasa:counter_main",
+        contact_point_in_object=(0.0, 0.0, -0.025),
+        contact_normal_in_object=(0.0, 0.0, 1.0),
+        patch_radius_m=0.13,
+        max_penetration_m=0.00137,
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref="mujoco_body:counter_main",
+        stamp_ns=99,
+    )
+    attachments = [
+        _attached(
+            "baguette_seed1",
+            BoxShape(half_extents_m=(0.12, 0.025, 0.025)),
+            support_contact=witness,
+        ),
+        _attached("cabinet_handle_tool", SphereShape(radius_m=0.03)),
+    ]
+
+    msg = build_world_state_stamped_msg(None, _ws([], attached=attachments))
+    assert msg.attached_objects[0].support_contact_valid is True
+    assert msg.attached_objects[0].support_contact.support_id == "robocasa:counter_main"
+    assert msg.attached_objects[0].support_contact.max_penetration_m == pytest.approx(0.00137)
+    assert msg.attached_objects[0].support_contact.contact_normal_in_object.z == pytest.approx(1.0)
+    assert msg.attached_objects[1].support_contact_valid is False
+
+    decoded = world_state_from_idl(msg)
+    assert decoded.attached_objects[0].support_contact == witness
+    assert decoded.attached_objects[1].support_contact is None
