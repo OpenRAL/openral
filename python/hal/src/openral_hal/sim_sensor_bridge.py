@@ -38,11 +38,31 @@ _RGB_CHANNELS = 3
 # Near-miss probe: the kernel stops on a *margin* (a few mm to a few cm), so
 # at the stop instant MuJoCo's contact list is usually EMPTY — the honest
 # ground truth of "how close was it really" is the signed geom distance.
-# Probed only for robot-geom↔world-geom pairs whose bounding spheres are
-# within this gap, ranked, and truncated to the closest few.
+# Probed only for geom pairs whose bounding spheres are within this gap,
+# ranked closest-first, and truncated to the closest few.
+#
+# The caps were 256/8 in the first field round and produced a nearly WRONG
+# verdict: on a mobile manipulator all 8 slots saturated on
+# mobilebase↔floor pairs at 0-2 mm (the robot merely standing on the
+# ground) and hid an arm that was 17-30 mm inside a freezer door. The
+# structural fix is scoping the probe to the links the kernel actually
+# checks (:func:`kernel_checked_body_ids`); these wider caps are the belt to
+# that braces. The cost is bounded and small: 4096 ``mj_geomDistance`` calls
+# measure ~3.3 ms (0.8 us/call, mujoco 3.8, RTX 4070 laptop host) — three
+# probes at ~10 ms total, once, at a terminal event.
 _NEAREST_PROBE_DISTMAX_M = 0.10
-_NEAREST_PROBE_MAX_CALLS = 256
-_NEAREST_PROBE_MAX_PAIRS = 8
+_NEAREST_PROBE_MAX_CALLS = 4096
+_NEAREST_PROBE_MAX_PAIRS = 32
+# Emitted verbatim on every stop line. ``ncon`` is NOT a penetration oracle:
+# MuJoCo contype/conaffinity exclusions can suppress contacts entirely
+# (observed in the field — an arm 30 mm inside a freezer door with
+# ``ncon == 0``), so the near-miss probe is the adjudicator.
+_CONTACTS_CAVEAT = (
+    "robot_world_contacts==0 does NOT mean no interpenetration: MuJoCo "
+    "contype/conaffinity exclusions can suppress contacts entirely (field-"
+    "observed: arm 30mm inside a freezer door with ncon==0). Adjudicate with "
+    "the nearest_*_pairs probes, not with the contact list."
+)
 # Candidate chunks retained for predicted-horizon reconstruction. The kernel
 # checks the chunk it has just received; a small ring covers the delivery
 # race between ``/openral/candidate_action`` and ``/openral/estop`` without
@@ -62,6 +82,7 @@ __all__ = [
     "candidate_chunk_digest",
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
+    "kernel_checked_body_ids",
     "should_idle_step",
 ]
 
@@ -192,6 +213,16 @@ def _body_record(model: Any, data: Any, body_id: int) -> dict[str, object]:
     }
 
 
+def _body_names(model: Any, body_ids: frozenset[int]) -> list[str]:
+    """Sorted MJCF names for ``body_ids`` (unnamed bodies dropped)."""
+    import mujoco  # reason: optional sim dep
+
+    names = (
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(body_id)) for body_id in body_ids
+    )
+    return sorted(str(name) for name in names if name)
+
+
 def _contact_records(
     model: Any,
     data: Any,
@@ -249,24 +280,38 @@ def _nearest_pair_records(
     data: Any,
     *,
     side: frozenset[int],
-    other_excluded: frozenset[int],
+    other_excluded: frozenset[int] = frozenset(),
+    other_included: frozenset[int] | None = None,
     distmax_m: float,
     max_pairs: int,
+    max_calls: int = _NEAREST_PROBE_MAX_CALLS,
 ) -> list[dict[str, object]]:
     """Closest signed geom distances across the ``side`` boundary.
 
     The safety kernel stops on a *margin*, so a genuine stop usually leaves
     NO MuJoCo contact at the measured configuration — ``ncon`` alone cannot
-    say whether a ``-15 mm`` predicted hit was real. This probes
-    ``mujoco.mj_geomDistance`` (signed; negative = interpenetration) for the
-    ``side``↔outside geom pairs whose bounding spheres are within
-    ``distmax_m``, ranked closest-first and truncated to ``max_pairs``.
+    say whether a ``-15 mm`` predicted hit was real (and contype/conaffinity
+    exclusions can suppress the contact even at 30 mm of interpenetration).
+    This probes ``mujoco.mj_geomDistance`` (signed; negative =
+    interpenetration) for the ``side``↔other geom pairs whose bounding
+    spheres are within ``distmax_m``, ranked closest-first and truncated to
+    ``max_pairs``.
 
-    Bounded by construction: a vectorised bounding-sphere prefilter
-    (``geom_rbound``; ``0`` means unbounded — planes/heightfields — and is
-    treated as always-a-candidate) reduces the O(n·m) pair set, then at most
-    ``_NEAREST_PROBE_MAX_CALLS`` exact distance calls run. Pure MuJoCo
-    reads, no ROS.
+    The other side is either an explicit body set (``other_included`` — used
+    for payload↔robot-link self-pairs, which are not "everything else") or,
+    by default, every body outside ``side`` and ``other_excluded``.
+
+    Bounded by construction: a vectorised bounding-sphere prefilter reduces
+    the O(n·m) pair set, then at most ``max_calls`` exact distance calls run
+    **in prefiltered proximity order**, so the budget truncates the far end,
+    never the close one.
+
+    Unbounded geoms (``geom_rbound == 0`` — planes and heightfields) are
+    always admitted, but they rank at ``0.0`` rather than at their formal
+    ``-inf`` gap. Ranking them first is what let a kitchen floor consume the
+    whole call budget in the field round, so a plane now yields to any pair
+    whose bounding spheres actually overlap — i.e. to real interpenetration.
+    Pure MuJoCo reads, no ROS.
     """
     import mujoco  # reason: optional sim dep
     import numpy as np
@@ -275,26 +320,39 @@ def _nearest_pair_records(
     if body_of_geom.size == 0:
         return []
     in_side = np.isin(body_of_geom, np.fromiter(side, dtype=np.int64, count=len(side)))
-    excluded = np.isin(
-        body_of_geom,
-        np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
-    )
     side_geoms = np.flatnonzero(in_side)
-    other_geoms = np.flatnonzero(~in_side & ~excluded)
+    if other_included is not None:
+        other_geoms = np.flatnonzero(
+            np.isin(
+                body_of_geom,
+                np.fromiter(other_included, dtype=np.int64, count=len(other_included)),
+            )
+            & ~in_side
+        )
+    else:
+        excluded = np.isin(
+            body_of_geom,
+            np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
+        )
+        other_geoms = np.flatnonzero(~in_side & ~excluded)
     if side_geoms.size == 0 or other_geoms.size == 0:
         return []
     xpos = np.asarray(data.geom_xpos, dtype=np.float64)
-    rbound = np.asarray(model.geom_rbound, dtype=np.float64)
-    rbound = np.where(rbound <= 0.0, np.inf, rbound)  # 0 = unbounded (plane/hfield)
+    raw_rbound = np.asarray(model.geom_rbound, dtype=np.float64)
+    unbounded = raw_rbound <= 0.0  # planes / heightfields
+    rbound = np.where(unbounded, np.inf, raw_rbound)
     centre_gap = np.linalg.norm(
         xpos[side_geoms][:, None, :] - xpos[other_geoms][None, :, :], axis=-1
     )
     gap = centre_gap - rbound[side_geoms][:, None] - rbound[other_geoms][None, :]
+    # Admission keeps unbounded pairs (gap is -inf); ranking demotes them to
+    # 0.0 so a floor plane cannot outrank real bounding-sphere overlap.
+    rank = np.where(unbounded[side_geoms][:, None] | unbounded[other_geoms][None, :], 0.0, gap)
     candidates = np.argwhere(gap <= distmax_m)
     if candidates.size == 0:
         return []
-    order = np.argsort(gap[candidates[:, 0], candidates[:, 1]], kind="stable")
-    candidates = candidates[order][:_NEAREST_PROBE_MAX_CALLS]
+    order = np.argsort(rank[candidates[:, 0], candidates[:, 1]], kind="stable")
+    candidates = candidates[order][:max_calls]
     probed: list[tuple[float, int, int]] = []
     for row, col in candidates:
         geom_side = int(side_geoms[int(row)])
@@ -322,16 +380,61 @@ def _nearest_pair_records(
     ]
 
 
+def kernel_checked_body_ids(model: Any, description: Any) -> frozenset[int]:
+    """MJCF bodies for exactly the links the safety kernel collision-checks.
+
+    The manifest's ``collision_geometry`` **is** the kernel's collision model:
+    a link with no entry is deliberately invisible to the check. On
+    ``panda_mobile`` that exempts ``base_link`` (the base parks ~1 cm from
+    cabinets; base-vs-world is Nav2's costmap job) and ``panda_finger_pair``
+    (the gripper is the intended-contact part).
+
+    Scoping the near-miss probe to this set is what makes a stop record
+    readable on a mobile manipulator: probing the *whole* robot ranks the
+    wheels' 0-2 mm floor contact above everything and buries the arm — which
+    in the field very nearly produced a wrong verdict on a stop where the arm
+    was 17-30 mm inside a freezer door.
+
+    Resolution is exact, not name-mangled: a link is the MJCF body carrying
+    the joint whose ``child_link`` names it, looked up through that joint's
+    ``sim_joint_name`` (robosuite's ``robot0_joint7`` for ``panda_link7``),
+    falling back to a body of the link's own name for jointless links.
+    Returns an empty set when the manifest declares no collision geometry —
+    the caller then has no kernel scope to honour and must say so.
+    """
+    import mujoco  # reason: optional sim dep
+
+    links = {g.link_name for g in getattr(description, "collision_geometry", [])}
+    if not links:
+        return frozenset()
+    out: set[int] = set()
+    for joint in getattr(description, "joints", []):
+        if joint.child_link not in links:
+            continue
+        jid = int(
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name or joint.name)
+        )
+        if jid >= 0:
+            out.add(int(model.jnt_bodyid[jid]))
+    for link in links:  # jointless (welded) links, if the MJCF names them directly
+        bid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, link))
+        if bid >= 0:
+            out.add(bid)
+    return frozenset(out)
+
+
 def estop_ground_truth_snapshot(
     model: Any,
     data: Any,
     *,
     robot_body_ids: frozenset[int],
     attached_body_ids: frozenset[int] = frozenset(),
+    probe_body_ids: frozenset[int] | None = None,
     base_frame_body: str | None = None,
     joint_state: Any = None,
     distmax_m: float = _NEAREST_PROBE_DISTMAX_M,
     max_pairs: int = _NEAREST_PROBE_MAX_PAIRS,
+    max_calls: int = _NEAREST_PROBE_MAX_CALLS,
 ) -> dict[str, object]:
     """MuJoCo ground truth for one safety stop, attached payload or not.
 
@@ -342,13 +445,28 @@ def estop_ground_truth_snapshot(
     2026-08-13 post-fix matrix had 3 of 4 stops in that class and zero ground
     truth for them).
 
+    **The contact lists are not a penetration oracle.** MuJoCo
+    contype/conaffinity exclusions can suppress a contact entirely — the
+    field round saw an arm 30 mm inside a freezer door with ``ncon == 0``.
+    An empty ``robot_world_contacts`` therefore means "MuJoCo reported no
+    contact", never "nothing is interpenetrating"; the ``nearest_*_pairs``
+    probes are the adjudicator, and the record carries this as
+    ``contacts_caveat``.
+
     Args:
         model: live ``mujoco.MjModel``.
         data: live ``mujoco.MjData`` at the stop instant.
         robot_body_ids: the robot's own MJCF body ids (the depth self-filter
-            set — derived from the manifest joint prefixes).
+            set — derived from the manifest joint prefixes). Scopes the
+            contact lists and the payload↔world exclusion.
         attached_body_ids: currently carried payload body ids (empty when
             nothing is attached).
+        probe_body_ids: robot bodies the near-miss probes may rank — the
+            kernel-checked links from :func:`kernel_checked_body_ids`.
+            ``None`` falls back to ``robot_body_ids`` and is reported as
+            ``probe_robot_scope: "all_robot_bodies"``, which on a mobile base
+            lets wheel↔floor pairs (0-2 mm, and deliberately unchecked by the
+            kernel) crowd out the arm.
         base_frame_body: MJCF body that ``base_frame`` denotes on ``/tf``.
             The kernel's collision FK is base-relative, so its world pose is
             what maps a reconstructed configuration back into MuJoCo world
@@ -356,36 +474,77 @@ def estop_ground_truth_snapshot(
         joint_state: the HAL's :class:`~openral_core.JointState` at the stop
             (the same vector the kernel seeded ``q_meas`` from), or ``None``.
         distmax_m: near-miss probe window.
-        max_pairs: cap on reported nearest pairs.
+        max_pairs: cap on reported nearest pairs, per probe.
+        max_calls: cap on exact ``mj_geomDistance`` calls per probe. The
+            prefilter ranks candidates by proximity first, so this truncates
+            the far end of each probe, never the close one.
 
     Returns:
         A JSON-safe dict: ``stop_class`` (``"attached_payload"`` when a
         payload is carried, else ``"robot_world"``), ``sim_time_s``,
-        ``attached_bodies``, ``payload_contacts``, ``robot_world_contacts``,
-        ``nearest_robot_world_pairs``, ``robot_joint_state`` and
-        ``base_frame_tf``.
+        ``contacts_caveat``, ``attached_bodies``, ``payload_contacts``,
+        ``robot_world_contacts``, ``nearest_robot_world_pairs``,
+        ``nearest_payload_world_pairs``, ``nearest_payload_robot_pairs``,
+        ``probe_robot_scope``, ``probe_excluded_robot_bodies``,
+        ``robot_joint_state`` and ``base_frame_tf``.
     """
     attached_bodies = sorted(attached_body_ids)
+    attached = frozenset(attached_bodies)
+    probe_robot = robot_body_ids if probe_body_ids is None else (probe_body_ids & robot_body_ids)
     snapshot: dict[str, object] = {
         "stop_class": "attached_payload" if attached_bodies else "robot_world",
         "sim_time_s": round(float(data.time), 6),
+        "contacts_caveat": _CONTACTS_CAVEAT,
+        "probe_robot_scope": "all_robot_bodies"
+        if probe_body_ids is None
+        else "kernel_checked_links",
+        "probe_excluded_robot_bodies": _body_names(model, robot_body_ids - probe_robot),
         "attached_bodies": [_body_record(model, data, body_id) for body_id in attached_bodies],
-        "payload_contacts": _contact_records(
-            model, data, side=frozenset(attached_bodies), other_excluded=frozenset()
-        )
+        "payload_contacts": _contact_records(model, data, side=attached, other_excluded=frozenset())
         if attached_bodies
         else [],
         "robot_world_contacts": _contact_records(
-            model, data, side=robot_body_ids, other_excluded=attached_body_ids
+            model, data, side=robot_body_ids, other_excluded=attached
         ),
+        # World side excludes the WHOLE robot, not just the probed subset: a
+        # link the kernel does not check (the gripper, the base) is still the
+        # robot, never an obstacle it could be "near".
         "nearest_robot_world_pairs": _nearest_pair_records(
             model,
             data,
-            side=robot_body_ids,
-            other_excluded=attached_body_ids,
+            side=probe_robot,
+            other_excluded=attached | robot_body_ids,
             distmax_m=distmax_m,
             max_pairs=max_pairs,
+            max_calls=max_calls,
         ),
+        # Payload↔world: the margin stop a carried object triggers, which
+        # realized contacts alone cannot adjudicate.
+        "nearest_payload_world_pairs": _nearest_pair_records(
+            model,
+            data,
+            side=attached,
+            other_excluded=robot_body_ids,
+            distmax_m=distmax_m,
+            max_pairs=max_pairs,
+            max_calls=max_calls,
+        )
+        if attached_bodies
+        else [],
+        # Payload↔robot-link self-pairs: the kernel's own
+        # ``check_attached_self_collision``. A sink_cup stop at -0.62 mm
+        # against panda_link5 was unadjudicable without this.
+        "nearest_payload_robot_pairs": _nearest_pair_records(
+            model,
+            data,
+            side=attached,
+            other_included=probe_robot,
+            distmax_m=distmax_m,
+            max_pairs=max_pairs,
+            max_calls=max_calls,
+        )
+        if attached_bodies
+        else [],
         "robot_joint_state": None
         if joint_state is None
         else {
@@ -2026,6 +2185,14 @@ class SimSensorBridge:
         joint state, base TF) plus the cached candidate chunks and the
         kernel's collision evidence when it has already landed. Diagnostics
         only — no gating, no actuation effect.
+
+        READING THE RECORD: an empty ``robot_world_contacts`` is NOT
+        "nothing was touching". MuJoCo's contype/conaffinity exclusions can
+        suppress a contact even at deep interpenetration (field-observed: an
+        arm 30 mm inside a freezer door with ``ncon == 0``). Adjudicate a
+        stop with the ``nearest_*_pairs`` probes; the contact list only ever
+        confirms, never refutes. The record repeats this as
+        ``contacts_caveat`` so a single grepped line stays self-explaining.
         """
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:
@@ -2035,11 +2202,17 @@ class SimSensorBridge:
             # Cameras/depth may never have run (they own the lazy resolve).
             self._resolve_depth_base_body(model)
         attached = self._depth_excluded_body_ids() - self._depth_self_bodies
+        # Rank the near-miss probes over the links the KERNEL checks. Probing
+        # the whole robot buries the arm under the base's 0-2 mm floor
+        # contact — geometry the manifest deliberately leaves out of
+        # collision_geometry — which nearly produced a wrong field verdict.
+        probe_bodies = kernel_checked_body_ids(model, self._description) or None
         snapshot = estop_ground_truth_snapshot(
             model,
             data,
             robot_body_ids=self._depth_self_bodies,
             attached_body_ids=attached,
+            probe_body_ids=probe_bodies,
             base_frame_body=self._base_frame_body,
             joint_state=self._read_joint_state(),
         )

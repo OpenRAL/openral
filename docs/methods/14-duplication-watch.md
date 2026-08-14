@@ -105,6 +105,13 @@ contributor should look at before adding similar code.
   via `_ManifestHALLifecycleNode`. The `panda_mobile` package retains its own wiring until
   the planned dedup refactor lands. **Do NOT add per-arm camera or viewer
   timers in lifecycle subclasses; extend `SimSensorBridge` instead.**
+  Its two MJCF body-set resolvers answer different questions and are ***not
+  a duplication target***: `depth_cloud.robot_self_body_ids` is "what is the
+  robot" (prefix-derived, includes descendants — the depth self-filter),
+  while `sim_sensor_bridge.kernel_checked_body_ids` is "what does the safety
+  kernel check" (the manifest's `collision_geometry` links, resolved through
+  each joint's `sim_joint_name`). The E-stop near-miss probe needs the
+  second precisely because it is *narrower* than the first.
 
 - **HAL adapters (sim)** — `FrankaPandaHAL`, `UR5eHAL`, `UR10eHAL`,
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
