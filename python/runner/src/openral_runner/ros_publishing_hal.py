@@ -304,6 +304,17 @@ class ROSPublishingHAL:
                 generic apply-timeout (CLAUDE.md §1.4).
             ROSRuntimeError: When the group is still unapplied at the
                 deadline and no safety stop is latched.
+
+        Note:
+            This is a **grouped-dispatch** wait: an action with
+            ``tick_group_size <= 1`` returns below without blocking, so a
+            single-surface policy never reaches the safety check here at all.
+            Reading the seam on the ungrouped path is the owning node's job —
+            ``rskill_runner_node`` polls the same
+            :meth:`~RskillRunnerNode._safety_abort_reason` before each
+            inference tick. Do not add a check to the early return: this
+            adapter must stay a sink, and a per-publish safety gate here would
+            duplicate the kernel's own decision.
         """
         group_size = int(action.tick_group_size)
         if group_size <= 1:
