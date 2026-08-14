@@ -25,10 +25,15 @@ Action-goal lifecycle (CLAUDE.md §6.4 + the F1 design):
 3. **cancel_cb** — drain the in-flight chunk (≤100 ms), then idle-hold
    the last commanded joint state. Runner stays ``active``, ready for
    the next goal.
-4. **/openral/estop subscription** — defense in depth alongside
-   ``safety_node`` (CLAUDE.md §1.5). Aborts the goal with
+4. **/openral/estop + /openral/safety_status subscriptions** — defense in
+   depth alongside ``safety_node`` (CLAUDE.md §1.5). Aborts the goal with
    ``failure_reason="safety_estop"`` / ``failure_kind=FAILURE_SAFETY_ESTOP``
-   and transitions to ``inactive``.
+   and transitions to ``inactive``. The two are OR-ed into one seam,
+   :meth:`RskillRunnerNode._safety_abort_reason`, which is read both by the
+   ``ROSPublishingHAL`` apply-wait (via its injected ``safety_abort_getter``)
+   and — through :meth:`RskillRunnerNode._raise_if_safety_aborted` — by every
+   other blocking wait on the dispatch path, so a latched safety layer is
+   never reported as a generic timeout.
 
 The action-goal path is the **only** way an external client triggers a
 rskill; the legacy CLI / single-process invocation continues to exist as
@@ -860,9 +865,10 @@ if _ROS2_AVAILABLE:
                 # stamped at/after this instant.
                 reset_wall_ns = time.time_ns()
                 self._hal.begin_goal()
-                if self._apply_starting_pose_or_abort(skill, goal_handle, result):
+                if self._apply_starting_pose_or_abort(
+                    skill, goal_handle, result, span=span, reset_wall_ns=reset_wall_ns
+                ):
                     return result
-                self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
 
                 # Frame the episode on the bus so a dataset
                 # recorder (DatasetRecorderBridge) / `openral record` can
@@ -1135,7 +1141,7 @@ if _ROS2_AVAILABLE:
             the lightweight loop here is sufficient to publish chunks on
             ``/openral/candidate_action``.
             """
-            from openral_core.exceptions import ROSEStopRequested, ROSRskillGoalSatisfied
+            from openral_core.exceptions import ROSRskillGoalSatisfied
             from openral_msgs.action import ExecuteRskill
             from openral_observability import inference_span
 
@@ -1156,8 +1162,16 @@ if _ROS2_AVAILABLE:
                 self._resolve_inference_labels(skill)
             )
             while True:
-                if self._estop_latched:
-                    raise ROSEStopRequested("/openral/estop received during goal")
+                # The safety seam, not just the ``/openral/estop`` latch. A
+                # single-slot policy publishes one chunk per tick, so
+                # ``ROSPublishingHAL`` never enters its atomic-group apply-wait
+                # and the check added there never runs: a latched kernel drops
+                # every chunk in silence while this loop happily ticks on to the
+                # execution budget, and the goal aborted as
+                # ``deadline_exceeded`` / FAILURE_DEADLINE_MISSED. Same seam,
+                # checked one layer up, so the safety stop is named on the
+                # grouped AND the ungrouped dispatch path.
+                self._raise_if_safety_aborted(f"about to dispatch inference tick {chunk_index + 1}")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return "cancelled"
                 if self._deadline_lapsed(start, deadline_s, chunk_index):
@@ -1249,15 +1263,57 @@ if _ROS2_AVAILABLE:
 
                 next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
 
-        def _apply_starting_pose_or_abort(self, skill: Any, goal_handle: Any, result: Any) -> bool:
-            """Move to ``starting_pose``; abort the goal on a fatal failure.
+        def _apply_starting_pose_or_abort(
+            self,
+            skill: Any,
+            goal_handle: Any,
+            result: Any,
+            *,
+            span: Any,
+            reset_wall_ns: int,
+        ) -> bool:
+            """Run the whole starting-pose preamble; abort the goal on failure.
 
-            Returns ``True`` when the goal was aborted (the caller returns
-            ``result`` immediately), ``False`` to proceed with execution.
+            Moves the HAL to the manifest ``starting_pose``, then waits for the
+            first ``/joint_states`` frame published after ``reset_wall_ns`` so
+            the policy's first observation is not the pre-reset pose.
+
+            Args:
+                skill: The resolved rSkill whose manifest carries ``starting_pose``.
+                goal_handle: The in-flight goal, finalized here on abort.
+                result: The ``ExecuteRskill.Result`` to stamp on abort.
+                span: The active ``rskill.execute`` span; a safety abort is
+                    recorded on it so the trace shows the cause.
+                reset_wall_ns: ``time.time_ns()`` sampled immediately before the
+                    reset, the freshness cut-off for the post-reset joint state.
+
+            Returns:
+                ``True`` when the goal was aborted (the caller returns
+                ``result`` immediately), ``False`` to proceed with execution.
             """
-            failure = self._apply_starting_pose(skill)
-            if failure is None:
-                return False
+            from openral_core.exceptions import ROSEStopRequested
+
+            try:
+                failure = self._apply_starting_pose(skill)
+                if failure is None:
+                    self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
+                    return False
+            except ROSEStopRequested as exc:
+                # A safety stop latched while the preamble was blocked — inside
+                # the MoveIt approach replay or the post-reset joint-state wait.
+                # Same Result shape as the in-rollout handler in
+                # ``_execute_locked``, so the reasoner reads one contract
+                # however far into the goal the stop landed. Without this the
+                # raise escaped the execute callback and rclpy aborted the goal
+                # with a DEFAULT (empty) Result: ``status=6 reason=''``.
+                span.record_exception(exc)
+                self.get_logger().error(f"rskill_runner.starting_pose_safety_abort: {exc!s}")
+                result.success = False
+                result.failure_reason = f"safety_estop:{exc!s}"
+                result.failure_kind = _failure_kind_for_exception(exc)
+                self._finalize_goal(goal_handle, "abort")
+                self._reset_active_goal()
+                return True
             failure_kind, reason = failure
             self.get_logger().error(f"rskill_runner.approach_failed: {reason}")
             result.success = False
@@ -1345,6 +1401,19 @@ if _ROS2_AVAILABLE:
             published from the reset snapshot. No-op unless a ``starting_pose``
             reset actually fired; bounded by a short deadline → best-effort
             (mirrors the reset's own posture; never wedges the goal).
+
+            Best-effort about *freshness* only — never about safety. A latched
+            HAL stops publishing ``/joint_states`` altogether (see
+            ``openral_hal.lifecycle._publish_joint_state``, which skips the
+            timer while ``self._estopped`` unless a sim proprio snapshot backs
+            it), so this wait is one of the waits a latched safety layer
+            starves. It used to sit out its full second, log
+            ``post_reset_joint_state_timeout``, and then start the policy
+            anyway — the safety stop invisible.
+
+            Raises:
+                ROSEStopRequested: When a safety stop is in effect while this
+                    wait is parked (:meth:`_raise_if_safety_aborted`).
             """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
@@ -1356,6 +1425,7 @@ if _ROS2_AVAILABLE:
                 return
             deadline = time.monotonic() + 1.0
             while time.monotonic() < deadline:
+                self._raise_if_safety_aborted("waiting for a post-starting-pose-reset joint state")
                 js = self._aggregator.snapshot().joint_state
                 if js is not None and int(js.stamp_ns) >= reset_wall_ns:
                     self.get_logger().info(
@@ -1416,7 +1486,7 @@ if _ROS2_AVAILABLE:
             plus the prose it stamps on ``failure_reason``. The policy never starts
             from an unreachable / colliding state.
             """
-            from openral_core.exceptions import ROSError
+            from openral_core.exceptions import ROSError, ROSEStopRequested
             from openral_msgs.action import ExecuteRskill
             from openral_rskill.loader import load_rskill_manifest
 
@@ -1459,6 +1529,15 @@ if _ROS2_AVAILABLE:
                     goal_params_json=goal_params_json,
                 )
                 self._run_approach_skill(approach)
+            except ROSEStopRequested:
+                # A safety stop is not a planning failure. ``ROSEStopRequested``
+                # is a ``ROSError``, so without this it fell into the branch
+                # below and the goal reported FAILURE_PLANNING_ERROR — the
+                # reasoner's ladder would have replanned a route around an
+                # "unreachable" pose while the kernel was in fact latched.
+                # Let it reach ``_execute_locked``, which stamps
+                # FAILURE_SAFETY_ESTOP.
+                raise
             except ROSError as exc:
                 return (
                     int(ExecuteRskill.Result.FAILURE_PLANNING_ERROR),
@@ -1484,7 +1563,17 @@ if _ROS2_AVAILABLE:
             raises ``ROSRskillGoalSatisfied`` once the planned trajectory is
             exhausted.
 
+            Each waypoint is gated on the safety seam first. The replay is a
+            plain publish loop — a ``JOINT_POSITION`` waypoint carries no
+            ``tick_group_size``, so ``ROSPublishingHAL`` never blocks on an
+            apply-ack and nothing here ever noticed a latched kernel: the whole
+            planned trajectory was replayed into a supervisor that dropped every
+            step, and the approach then reported success and started the policy
+            from a pose the arm never reached.
+
             Raises:
+                ROSEStopRequested: When a safety stop is in effect between
+                    waypoints (:meth:`_raise_if_safety_aborted`).
                 ROSRuntimeError: If the trajectory exceeds ``_MAX_APPROACH_WAYPOINTS``
                     (a runaway guard; real MoveIt trajectories are far smaller).
             """
@@ -1494,6 +1583,7 @@ if _ROS2_AVAILABLE:
             assert self._aggregator is not None
             try:
                 for _ in range(_MAX_APPROACH_WAYPOINTS):
+                    self._raise_if_safety_aborted("replaying the MoveIt approach to starting_pose")
                     snapshot = self._aggregator.snapshot()
                     step_result = approach.step(snapshot)
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
@@ -1698,6 +1788,49 @@ if _ROS2_AVAILABLE:
             # dropping the topic name would lose the fact that the
             # defense-in-depth latch is set too.
             return status_reason if estop_reason is None else f"{status_reason} + {estop_reason}"
+
+        def _raise_if_safety_aborted(self, where: str) -> None:
+            """Abort the goal as a safety stop if one is in effect right now.
+
+            The single guard every blocking wait on the dispatch path calls, so
+            all of them name the safety layer the same way. Reads exactly the
+            same seam :class:`~openral_runner.ROSPublishingHAL` polls through its
+            ``safety_abort_getter`` (:meth:`_safety_abort_reason`) — the point of
+            this helper is that the seam is now consulted from *every* wait a
+            latched safety layer can starve, not only from the HAL's
+            atomic-group apply-wait.
+
+            Every such wait is waiting on something the safety layer feeds:
+            ``/openral/action_applied`` (silent once the kernel drops instead of
+            republishing), a post-reset ``/joint_states`` frame (a latched HAL
+            stops publishing — ``openral_hal.lifecycle`` skips the timer while
+            ``self._estopped``), or simply the next tick of a policy whose
+            chunks are all being dropped. None of them can distinguish "the
+            safety layer stopped me" from "the stack is dead" on their own, so
+            each used to report its own generic timeout — an apply-timeout, a
+            best-effort warning, or (for a single-slot policy, which has no
+            apply-wait at all) nothing until the execution budget lapsed and the
+            goal aborted with ``deadline_exceeded``. That buried the real cause
+            from the operator, the trace, and the reasoner's replanning ladder
+            (CLAUDE.md §1.4).
+
+            Args:
+                where: What the caller was doing, in a form that reads after
+                    "while " — it becomes the tail of the raised message.
+
+            Raises:
+                ROSEStopRequested: When :meth:`_safety_abort_reason` names a
+                    reason. Callers must let it propagate to ``_execute_locked``,
+                    which stamps ``failure_reason="safety_estop:…"`` +
+                    ``failure_kind=FAILURE_SAFETY_ESTOP``.
+            """
+            from openral_core.exceptions import ROSEStopRequested
+
+            reason = self._safety_abort_reason()
+            if reason is None:
+                return
+            self.get_logger().error(f"rskill_runner.safety_abort: {where} ({reason})")
+            raise ROSEStopRequested(f"safety stop latched ({reason}) while {where}")
 
         def _on_estop(self, _msg: object) -> None:
             """``/openral/estop`` callback: latch + abort the active goal.
