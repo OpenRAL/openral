@@ -73,3 +73,12 @@ string                detected_object_frame
 AttachedCollisionObject[] attached_objects
 uint64 attachment_revision
 int64 attachment_stamp_ns
+
+# The place declaration World State is relaying from the evidence producer
+# (ADR-0097 + its 2026-08-14 amendment), including the producer-measured region
+# of the declared target. This is the kernel's only source for the region: it
+# consumes it here, alongside the attachment set the region is scoped to, so the
+# two can never be applied out of step. False means no declaration is in force —
+# no place witness and no approach allowance.
+bool place_declaration_valid
+PlaceDeclaration place_declaration

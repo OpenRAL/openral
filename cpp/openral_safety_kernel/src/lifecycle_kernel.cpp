@@ -658,16 +658,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         publish_collision_failure(*msg, kind, a, b, step, hit.min_distance);
         std_msgs::msg::Empty estop_msg;
         estop_pub_->publish(estop_msg);
+        // `place_allowance_active` is disclosure, never justification: the stop
+        // happened, and the distance quoted is the pair's true one. It says the
+        // margin that pair was gated against had been reduced by a live place
+        // declaration, so an incident review can tell that case apart from an
+        // ordinary stop without re-deriving it (CLAUDE.md §1.4).
         RCLCPP_ERROR(this->get_logger(),
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
-                     "sweep_min_distance_m=%g mode=%u rskill_id=%s",
+                     "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
+                     "place_target=%s",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
-                     static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str());
+                     static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
+                     static_cast<int>(hit.place_allowance_active),
+                     hit.place_allowance_active ? place_declaration_target_.c_str() : "");
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
         span->SetAttribute("safety.violation_value", hit.min_distance);
         span->SetAttribute("safety.sweep_min_distance_m", hit.sweep_min_distance);
+        span->SetAttribute("safety.place_allowance_active", hit.place_allowance_active);
         span->AddEvent(otel::kSafetyViolationEventName, {{"safety.kind", kind}});
         span->End();
       };
@@ -711,6 +720,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
       }
       voxel_grid_.support_witness_live = support_witness_live_;
+      // Re-evaluated per candidate action, not only when a world state lands:
+      // the declaration's own backstop is what stops an allowance outliving the
+      // goal that justified it if the producer stalls (HZ-0097-3/4).
+      voxel_grid_.place_region = place_declaration_live() ? place_region_ : PlaceApproachRegion{};
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -1177,6 +1190,12 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   voxel_grid_.attached_contact_tolerance =
       this->get_parameter("attached_contact_tolerance_m").as_double();
   voxel_grid_.support_witness_live = 0;
+  voxel_grid_.place_region = PlaceApproachRegion{};
+  place_region_ = PlaceApproachRegion{};
+  place_declaration_stamp_ns_ = 0;
+  place_declaration_timeout_s_ = 0.0;
+  place_declaration_target_.clear();
+  voxel_frame_id_.clear();
   attached_model_ = AttachedModel{};
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
   attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
@@ -1358,6 +1377,17 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
   voxel_grid_.sz = static_cast<int>(msg->size_z);
+  // A grid that re-frames invalidates any region declared against the old frame
+  // — the allowance would otherwise apply to a volume in the wrong place.
+  if (msg->header.frame_id != voxel_frame_id_) {
+    if (place_region_.valid) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.place_region_dropped reason=grid_frame_changed grid_frame=%s",
+                  msg->header.frame_id.c_str());
+    }
+    voxel_frame_id_ = msg->header.frame_id;
+    place_region_ = PlaceApproachRegion{};
+  }
   voxel_received_ = true;
   voxel_stamp_ = this->now();
 }
@@ -1385,6 +1415,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     support_witness_live_ = 0;
     std::fill(support_witness_keys_.begin(), support_witness_keys_.end(), SupportWitnessKey{});
     std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
+    // A message we do not trust for the payload model is not one to trust for
+    // the region scoped to that payload either.
+    place_region_ = PlaceApproachRegion{};
   };
 
   const auto& wire = msg->attached_objects;
@@ -1498,6 +1531,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_stamp_ = producer_stamp;
     RCLCPP_WARN(this->get_logger(), "safety.attached_ingest_rejected status=%d n=%zu",
                 static_cast<int>(status), wire.size());
+    // A rejected payload model takes the region scoped to it: the object mask
+    // the region was resolved against no longer describes anything.
+    place_region_ = PlaceApproachRegion{};
     return;
   }
   // Labels parallel the accepted objects (object_id for evidence).
@@ -1529,6 +1565,9 @@ void SafetyKernelLifecycleNode::on_world_state(
                   key.object_id.c_str(), key.support_id.c_str());
     }
   }
+  // The place declaration rides the same snapshot as the payload it is scoped
+  // to, so it is resolved here, against the objects that were just accepted.
+  ingest_place_declaration(*msg);
   attached_overflow_ = false;
   attached_received_ = true;
   attached_stamp_ = producer_stamp;
@@ -1543,6 +1582,9 @@ void SafetyKernelLifecycleNode::on_world_state(
       std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
       std::fill(attached_contact_distance_.begin(), attached_contact_distance_.end(),
                 std::numeric_limits<double>::infinity());
+      // Detach: the approach allowance dies with the payload it was scoped to,
+      // exactly as the witness does.
+      place_region_ = PlaceApproachRegion{};
     } else {
       attached_contact_snapshot_pending_ = true;
       attached_contact_active_ = false;
@@ -1553,6 +1595,96 @@ void SafetyKernelLifecycleNode::on_world_state(
     applied.data = msg->attachment_revision;
     attachment_applied_pub_->publish(applied);
   }
+}
+
+void SafetyKernelLifecycleNode::ingest_place_declaration(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  const bool was_valid = place_region_.valid;
+  const std::string previous_target = place_declaration_target_;
+  place_region_ = PlaceApproachRegion{};
+  place_declaration_stamp_ns_ = 0;
+  place_declaration_timeout_s_ = 0.0;
+  place_declaration_target_.clear();
+
+  const auto announce_dropped = [&](const char* reason) {
+    if (was_valid) {
+      RCLCPP_INFO(this->get_logger(), "safety.place_region_dropped reason=%s target=%s", reason,
+                  previous_target.c_str());
+    }
+  };
+  if (!msg.place_declaration_valid) {
+    announce_dropped("no_declaration");
+    return;
+  }
+  const auto& declaration = msg.place_declaration;
+  // Attributability first (HZ-0097-2 mitigation 1): a wrong declaration must be
+  // reconstructible from the trace whether or not it ends up arming anything.
+  place_declaration_target_ = declaration.target_id;
+  place_declaration_stamp_ns_ = declaration.stamp_ns;
+  place_declaration_timeout_s_ = declaration.timeout_s;
+  if (!declaration.active) {
+    announce_dropped("retracted");
+    return;
+  }
+  if (!declaration.region_valid) {
+    // The common, correct case for dispatch's own publication and for every real
+    // deployment today: a declaration with no producer-measured region. It still
+    // gates the place witness; it buys no approach allowance.
+    announce_dropped("no_region");
+    return;
+  }
+  const auto& region = declaration.region;
+  if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
+    RCLCPP_WARN(this->get_logger(),
+                "safety.place_region_rejected reason=frame_mismatch region_frame=%s grid_frame=%s "
+                "target=%s",
+                region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.target_id.c_str());
+    return;
+  }
+  // Which carried payload the allowance follows. An empty object_id is the
+  // direct-dispatch case ("whichever payload is carried"), which the producer
+  // resolves at attach time; the kernel maps it onto every accepted object.
+  std::uint8_t object_mask = 0;
+  const std::size_t objects = std::min<std::size_t>(attached_model_.n_objects, 8);
+  for (std::size_t i = 0; i < objects; ++i) {
+    if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
+      object_mask = static_cast<std::uint8_t>(object_mask | (1U << i));
+    }
+  }
+  const Transform pose = transform_from_translation_quat(
+      region.pose.position.x, region.pose.position.y, region.pose.position.z,
+      region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
+      region.pose.orientation.w);
+  const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
+  if (!ingest_place_region(pose, half, object_mask, place_region_)) {
+    RCLCPP_WARN(this->get_logger(),
+                "safety.place_region_rejected reason=bounds target=%s object=%s half_m=%g,%g,%g "
+                "rskill=%s trace=%s",
+                declaration.target_id.c_str(), declaration.object_id.c_str(), half.x, half.y,
+                half.z, declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+    return;
+  }
+  if (!was_valid) {
+    RCLCPP_INFO(this->get_logger(),
+                "safety.place_region_armed target=%s object_mask=0x%x half_m=%g,%g,%g "
+                "allowance_m=%g rskill=%s trace=%s",
+                declaration.target_id.c_str(), static_cast<unsigned>(object_mask), half.x, half.y,
+                half.z, std::min(voxel_grid_.resolution, kMaxPlaceApproachAllowanceM),
+                declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+  }
+}
+
+bool SafetyKernelLifecycleNode::place_declaration_live() const noexcept {
+  if (!place_region_.valid || place_declaration_timeout_s_ <= 0.0) {
+    return false;
+  }
+  // Fails toward dead, the same three ways PlaceDeclaration::is_live does: past
+  // the backstop, and stamped in the future (a clock that jumped is not evidence
+  // of anything). The producer stopping publication is covered separately by the
+  // attachment freshness deadline.
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - place_declaration_stamp_ns_;
+  return elapsed_ns >= 0 &&
+         elapsed_ns <= static_cast<std::int64_t>(place_declaration_timeout_s_ * 1e9);
 }
 
 }  // namespace openral_safety_kernel

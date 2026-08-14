@@ -17,20 +17,20 @@ _Layout adapter registry. Assembles per-checkpoint state vectors from manifest-d
 ### `python/world_state/src/openral_world_state/aggregator.py`
 _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
-- `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L115)
-  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — camera and policy-state streams have independent staleness windows. `image_staleness_limit_s` defaults to the general window; deploy sim passes 5.0 s for slow rendered frames while real deploys keep 0.5 s. `policy_state` defaults to 5.0 s because it is step-locked and heavy sidecar sims legitimately step at ~1 s wall. (L173)
-  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L262)
+- `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L116)
+  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — camera and policy-state streams have independent staleness windows. `image_staleness_limit_s` defaults to the general window; deploy sim passes 5.0 s for slow rendered frames while real deploys keep 0.5 s. `policy_state` defaults to 5.0 s because it is step-locked and heavy sidecar sims legitimately step at ~1 s wall. (L174)
+  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L271)
   - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`.
-  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L273)
-  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L340)
-  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L354)
-  - `update_battery(pct) -> None` — Record battery %. (L371)
-  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None) -> None` — Atomically replace the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. Snapshots emit attachments deterministically and preserve the producer timestamp so a dead evidence source cannot be made fresh by 30 Hz WorldState republishing.
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L426)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L442)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition (`staleness_latched` only for a component that has had data — a never-received one is `"stale"` in `diag` and counted in `components_stale`, but has not *latched*, so bringup no longer emits a WARN before the HAL's first publish), records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L453)
-  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L380)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L586)
+  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L282)
+  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L349)
+  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L363)
+  - `update_battery(pct) -> None` — Record battery %. (L380)
+  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replace the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. Snapshots emit attachments deterministically and preserve the producer timestamp so a dead evidence source cannot be made fresh by 30 Hz WorldState republishing. `place_declaration` (ADR-0097 + its 2026-08-14 amendment) is replaced in the same atomic step as the payload it is scoped to, so the kernel can never apply a region and an attachment snapshot that disagree; a declaration that is already retracted or past its backstop is stored as `None`, and every snapshot re-checks liveness — HZ-0097-3 makes expiry World State's responsibility, not the dispatcher's alone.
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L455)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L471)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition (`staleness_latched` only for a component that has had data — a never-received one is `"stale"` in `diag` and counted in `components_stale`, but has not *latched*, so bringup no longer emits a WARN before the HAL's first publish), records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L482)
+  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L389)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L625)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._

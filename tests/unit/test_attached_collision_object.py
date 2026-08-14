@@ -9,6 +9,8 @@ from openral_core import (
     AttachmentEvidenceKind,
     BoxShape,
     JointState,
+    PlaceDeclaration,
+    PlaceRegion,
     Pose6D,
     RobotDescription,
     SupportContactWitness,
@@ -222,3 +224,151 @@ def test_aggregator_preserves_producer_revision_and_timestamp() -> None:
     with pytest.raises(ValueError, match="moved backwards"):
         aggregator.update_attached_objects([], revision=3, stamp_ns=124_000_000)
     assert aggregator.snapshot().attached_objects == [attachment]
+
+
+# -- Place declaration + its region, at the World State authority (ADR-0097) --
+#
+# HZ-0097-3 mitigation 2 makes expiry World State's responsibility rather than
+# the dispatcher's alone: a dispatcher that dies after issuing a declaration but
+# before retracting it must not leave one live. HZ-0097-4 mitigation 4 inherits
+# that verbatim for the approach allowance the declaration's region carries — the
+# allowance is live only while the declaration is.
+
+
+def _region(now_ns: int) -> PlaceRegion:
+    return PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(
+            xyz=(0.62, 0.0, 1.05),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id="base_link",
+        ),
+        half_extents=(0.18, 0.25, 0.45),
+        evidence_ref="mujoco_body_subtree:cab_1_left_group_main",
+        stamp_ns=now_ns,
+    )
+
+
+def _place_declaration(now_ns: int, *, timeout_s: float = 60.0, region: bool = True) -> object:
+    return PlaceDeclaration(
+        target_id="sim:cab_1_left_group_main",
+        object_id="baguette_seed1",
+        rskill_id="openral/pi05-robocasa",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=timeout_s,
+        stamp_ns=now_ns,
+        region=_region(now_ns) if region else None,
+    )
+
+
+def test_aggregator_publishes_the_declared_regions_alongside_its_payload() -> None:
+    """The region and the payload it is scoped to replace atomically.
+
+    The safety kernel resolves the region's object mask against the attachment
+    set in the same snapshot, so a region that could arrive out of step with its
+    payload would scope an allowance to the wrong object.
+    """
+    clock = {"ns": 1_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    attachment = _attachment()
+    aggregator.update_attached_objects(
+        [attachment],
+        revision=1,
+        stamp_ns=clock["ns"],
+        place_declaration=_place_declaration(clock["ns"]),
+    )
+
+    snapshot = aggregator.snapshot()
+    assert snapshot.attached_objects == [attachment]
+    declaration = snapshot.place_declaration
+    assert declaration is not None
+    assert declaration.target_id == "sim:cab_1_left_group_main"
+    assert declaration.region is not None
+    assert declaration.region.frame_id == "base_link"
+    assert declaration.region.half_extents == (0.18, 0.25, 0.45)
+
+
+def test_aggregator_drops_a_declaration_that_is_already_dead_on_arrival() -> None:
+    """A retracted or already-expired declaration is stored as no declaration."""
+    clock = {"ns": 40_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    retracted = _place_declaration(clock["ns"]).model_copy(update={"active": False})
+    aggregator.update_attached_objects(
+        [_attachment()], revision=1, stamp_ns=clock["ns"], place_declaration=retracted
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+    stale = _place_declaration(clock["ns"] - 30_000_000_000, timeout_s=1.0)
+    aggregator.update_attached_objects(
+        [_attachment()], revision=2, stamp_ns=clock["ns"], place_declaration=stale
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+
+def test_the_declaration_expires_on_the_backstop_with_no_retraction() -> None:
+    """The crash path: no retraction ever arrives, and the region still dies.
+
+    Nothing re-publishes — the dispatcher is gone — so the only thing that can
+    end the allowance is the aggregator re-checking liveness on every snapshot.
+    """
+    clock = {"ns": 1_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=clock["ns"],
+        place_declaration=_place_declaration(clock["ns"], timeout_s=5.0),
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    clock["ns"] += 4_000_000_000
+    assert aggregator.snapshot().place_declaration is not None
+    clock["ns"] += 2_000_000_000  # past the 5 s backstop
+    assert aggregator.snapshot().place_declaration is None
+
+
+def test_a_declaration_without_a_region_carries_no_allowance() -> None:
+    """Dispatch's own publication: it names a target, it measures no geometry.
+
+    The declaration still gates the place witness; the approach allowance needs a
+    producer-measured region, and its absence is the pre-amendment behaviour.
+    """
+    clock = {"ns": 1_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=clock["ns"],
+        place_declaration=_place_declaration(clock["ns"], region=False),
+    )
+    declaration = aggregator.snapshot().place_declaration
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_detaching_takes_the_declaration_with_it() -> None:
+    """No payload, no declaration: the allowance cannot outlive what it was for."""
+    clock = {"ns": 1_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=clock["ns"],
+        place_declaration=_place_declaration(clock["ns"]),
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    aggregator.update_attached_objects([], revision=2, stamp_ns=clock["ns"])
+    snapshot = aggregator.snapshot()
+    assert snapshot.attached_objects == []
+    assert snapshot.place_declaration is None

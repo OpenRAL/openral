@@ -731,6 +731,7 @@ if _ROS2_AVAILABLE:
                     objects,
                     revision=int(msg.revision),  # type: ignore[attr-defined]
                     stamp_ns=stamp_ns,
+                    place_declaration=_place_declaration_from_idl(msg),
                 )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
@@ -1068,6 +1069,7 @@ def world_state_from_idl(msg: object) -> object:
         attached_objects=attached_objects,
         attachment_revision=int(msg.attachment_revision),  # type: ignore[attr-defined]
         attachment_stamp_ns=int(msg.attachment_stamp_ns),  # type: ignore[attr-defined]
+        place_declaration=_place_declaration_from_idl(msg),
     )
 
 
@@ -1096,6 +1098,20 @@ def _attached_object_from_idl(msg: object) -> object:
     from openral_core.schemas import AttachedCollisionObject
 
     return AttachedCollisionObject.from_idl(msg)
+
+
+def _place_declaration_from_idl(msg: object) -> object | None:
+    """Decode the place declaration riding an ``AttachmentState``, if any.
+
+    ``None`` for an absent or retracted declaration, which is the pre-ADR-0097
+    behaviour: no place witness, and no approach allowance.
+    """
+    from openral_core.schemas import PlaceDeclaration
+
+    if not bool(getattr(msg, "place_declaration_valid", False)):
+        return None
+    declaration = PlaceDeclaration.from_idl(msg.place_declaration)  # type: ignore[attr-defined]
+    return declaration if declaration.active else None
 
 
 def build_world_state_stamped_msg(node: object, world_state: object) -> object:
@@ -1150,6 +1166,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     _fill_battery(msg, world_state)
     _fill_detected_objects(msg, world_state)
     _fill_attached_objects(msg, world_state)
+    _fill_place_declaration(msg, world_state)
 
     return msg
 
@@ -1287,6 +1304,19 @@ def _fill_attached_objects(msg: object, world_state: object) -> None:
         if obj.attach_link not in msg.frame_ids:  # type: ignore[attr-defined]
             msg.frame_ids.append(obj.attach_link)  # type: ignore[attr-defined]
     msg.attached_objects = attached  # type: ignore[attr-defined]
+
+
+def _fill_place_declaration(msg: object, world_state: object) -> None:
+    """Relay the live place declaration (and its region) to the safety kernel.
+
+    This is the kernel's only source for the declared target's region, so an
+    absent declaration must publish as ``place_declaration_valid = False`` rather
+    than as a stale leftover — that flag is what turns the approach allowance off.
+    """
+    declaration = getattr(world_state, "place_declaration", None)
+    msg.place_declaration_valid = declaration is not None  # type: ignore[attr-defined]
+    if declaration is not None:
+        declaration.fill_idl(msg.place_declaration)  # type: ignore[attr-defined]
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:

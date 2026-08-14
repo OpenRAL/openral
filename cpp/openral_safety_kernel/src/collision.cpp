@@ -492,8 +492,11 @@ namespace {
 //
 // Reporting only: `hit.hit` flips for exactly the same set of pairs as a plain
 // `if (tripped) hit.hit = true;` would.
-void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a,
-               int link_b) noexcept {
+// `allowance_active` is carried alongside the pair it belongs to for the same
+// reason the distance is: the flag must describe the pair that is reported, not
+// whichever pair happened to be checked last.
+void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
+               bool allowance_active = false) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -505,6 +508,7 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
     hit.link_a = link_a;
     hit.link_b = link_b;
     hit.min_distance = d;
+    hit.place_allowance_active = allowance_active;
   }
 }
 
@@ -1064,14 +1068,23 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             Transform voxel;
             voxel.t = center;
             const double d = attached_primitive_voxel_distance(prim, prim_xf, voxel, voxel_half);
-            // Gate: a cell within the margin trips unless one of the two
-            // bounded exemptions explains it — a live support-contact witness
-            // (physical, index-free, quantisation-aware) or the payload's own
-            // embedded attach-time occupancy residue. An exempted cell
+            // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
+            // amendment): inside the declared target's region this payload's
+            // margin — and only this payload's, and only for cells in that
+            // region — is reduced by min(one voxel, 25 mm), enough to pass the
+            // voxel inflation of a thin opening and actually reach the support
+            // contact the place witness is earned by. The hard stop behind the
+            // reduced margin is untouched.
+            const double allowance = place_approach_allowance(grid, i, center);
+            const double cell_margin = margin - allowance;
+            // Gate: a cell within the (possibly reduced) margin trips unless one
+            // of the two bounded exemptions explains it — a live support-contact
+            // witness (physical, index-free, quantisation-aware) or the payload's
+            // own embedded attach-time occupancy residue. An exempted cell
             // contributes to `sweep_min` only — it is not the reason for any
             // stop and must never supply the reported distance.
             bool tripped = false;
-            if (d <= margin) {
+            if (d <= cell_margin) {
               tripped = true;
               const bool witness_live =
                   i < 8 && obj.has_support_witness && (grid.support_witness_live & (1U << i)) != 0;
@@ -1090,13 +1103,82 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 tripped = false;
               }
             }
-            fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx));
+            fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx),
+                      allowance > 0.0);
           }
         }
       }
     }
   }
   return finish_sweep(result, sweep_min);
+}
+
+double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
+                                const Vec3& center) noexcept {
+  const PlaceApproachRegion& region = grid.place_region;
+  if (!region.valid || grid.resolution <= 0.0 || object_index >= 8) {
+    return 0.0;
+  }
+  if ((region.object_mask & (1U << object_index)) == 0) {
+    return 0.0;
+  }
+  const Vec3& half = region.half_extents;
+  if (!(half.x > 0.0) || !(half.y > 0.0) || !(half.z > 0.0) || !std::isfinite(half.x) ||
+      !std::isfinite(half.y) || !std::isfinite(half.z)) {
+    return 0.0;
+  }
+  // Exact point-in-OBB: express the cell centre in the region box's own frame
+  // (Rᵀ·(centre - box origin)) and compare against the half-extents. An oriented
+  // box is what the producer can actually measure — the axis-aligned hull of a
+  // rotated receptacle would be strictly larger, i.e. strictly more permissive.
+  const Vec3 d = sub(center, region.pose.t);
+  const double* r = region.pose.r;
+  const double lx = r[0] * d.x + r[3] * d.y + r[6] * d.z;
+  const double ly = r[1] * d.x + r[4] * d.y + r[7] * d.z;
+  const double lz = r[2] * d.x + r[5] * d.y + r[8] * d.z;
+  if (std::fabs(lx) > half.x || std::fabs(ly) > half.y || std::fabs(lz) > half.z) {
+    return 0.0;
+  }
+  // Condition 1 of the amendment, evaluated against the LIVE resolution so a map
+  // that coarsens mid-run can only shrink the allowance toward the ceiling.
+  return std::min(grid.resolution, kMaxPlaceApproachAllowanceM);
+}
+
+bool ingest_place_region(const Transform& pose, const Vec3& half_extents, std::uint8_t object_mask,
+                         PlaceApproachRegion& out) noexcept {
+  out = PlaceApproachRegion{};
+  if (object_mask == 0) {
+    return false;  // the declared payload is not among the carried objects
+  }
+  if (!std::isfinite(pose.t.x) || !std::isfinite(pose.t.y) || !std::isfinite(pose.t.z)) {
+    return false;
+  }
+  for (std::size_t k = 0; k < 9; ++k) {
+    if (!std::isfinite(pose.r[k])) {
+      return false;
+    }
+  }
+  const double hx = half_extents.x;
+  const double hy = half_extents.y;
+  const double hz = half_extents.z;
+  if (!std::isfinite(hx) || !std::isfinite(hy) || !std::isfinite(hz)) {
+    return false;
+  }
+  if (hx <= 0.0 || hy <= 0.0 || hz <= 0.0) {
+    return false;  // degenerate: a region with no interior licenses nothing
+  }
+  if (hx > kMaxPlaceRegionHalfExtentM || hy > kMaxPlaceRegionHalfExtentM ||
+      hz > kMaxPlaceRegionHalfExtentM) {
+    return false;
+  }
+  if (8.0 * hx * hy * hz > kMaxPlaceRegionVolumeM3) {
+    return false;
+  }
+  out.valid = true;
+  out.object_mask = object_mask;
+  out.pose = pose;
+  out.half_extents = half_extents;
+  return true;
 }
 
 bool support_contact_exempts(const AttachedObject& object, const Transform& object_xf,

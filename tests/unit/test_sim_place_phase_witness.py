@@ -61,10 +61,22 @@ _PLACE_Z = _SHELF_TOP_Z + _CUP_RADIUS_M - _PENETRATION_M
 # places on it differs from the cabinet test in the DECLARATION alone.
 _SIDEBOARD_X = -0.6
 
+# The body the robot's ``base_frame`` denotes. Deliberately NOT at the world
+# origin: the declared target's region is published in the base frame (the frame
+# the occupancy grid the allowance applies to lives in), so a base at the origin
+# would let a world-frame region pass every assertion by accident.
+_BASE_X = 0.1
+_BASE_Z = 0.05
+
 _MJCF = f"""
 <mujoco model="place_phase_witness">
   <option gravity="0 0 -9.81"/>
   <worldbody>
+    <body name="base" pos="{_BASE_X} 0 {_BASE_Z}"/>
+    <body name="empty_shelf" pos="1.2 0 0.3"/>
+    <body name="warehouse" pos="0 0 -6">
+      <geom name="warehouse_floor" type="box" size="5 5 0.05" contype="4" conaffinity="4"/>
+    </body>
     <body name="counter" pos="0 0 {_COUNTER_TOP_Z - 0.02}">
       <geom name="counter_top" type="box" size="0.3 0.25 0.02" contype="4" conaffinity="4"/>
     </body>
@@ -460,3 +472,159 @@ def test_releasing_the_payload_ends_the_place_phase() -> None:
     assert released == []
     # The place phase is over: a fresh grasp would have to declare its own.
     assert rig.tracker._place_attested_stamp_ns is None
+
+
+# -- The declared target's region (ADR-0097's 2026-08-14 amendment) ----------
+#
+# Round-6 (`spark:~/openral-runs/2026-08-14-round6/baguette/seed1_carry_*`)
+# showed the witness above cannot arm for an ENCLOSED target even with a correct
+# declaration: the kernel's predictive check stops the payload 22-30 mm short of
+# the shelf, because 25 mm voxels inflate the cabinet's thin opening. A witness
+# earned by touching can never arm if the payload is stopped before it touches.
+# The amendment's answer is a bounded approach allowance inside the declared
+# target's region — and this is the half of it the producer owns: measuring that
+# region. The absolute cap and the margin arithmetic are the kernel's, pinned in
+# `cpp/openral_safety_kernel/test/test_collision.cpp`.
+#
+# Geometry, from the MJCF above. The cabinet subtree is its back panel
+# (x in [0.16, 0.20], z in [0, 0.90] in the cabinet's frame) and its shelf
+# (x in [-0.16, 0.16], z in [0.2608, 0.3008]), each padded by MuJoCo's own 0.1 mm
+# geom-AABB slop. Their union in the cabinet frame is centred at (0.02, 0, 0.45)
+# with half-extents (0.1801, 0.2501, 0.4501); the cabinet sits at x = 0.6 and the
+# base frame at (0.1, 0, 0.05), so in the BASE frame the centre is (0.52, 0,
+# 0.40).
+_REGION_CENTRE_IN_BASE = (_CABINET_X + 0.02 - _BASE_X, 0.0, 0.45 - _BASE_Z)
+_REGION_HALF_EXTENTS = (0.1801, 0.2501, 0.4501)
+
+
+def test_the_declared_targets_region_is_measured_from_its_model_subtree() -> None:
+    """The region covers the declared body AND every body that is part of it.
+
+    Same subtree the witness may be attested against — the shelf inside the
+    cabinet is where the payload actually comes to rest, so a region that stopped
+    at the cabinet's own geom would exclude the surface the whole declaration
+    exists to reach.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    region = declaration.region
+    assert region is not None
+    assert region.frame_id == "base_link", "the region must be posed in the occupancy grid's frame"
+    assert region.pose.frame_id == "base_link"
+    assert region.evidence_ref == "mujoco_body_subtree:cabinet"
+    assert region.stamp_ns == rig.tick
+    np.testing.assert_allclose(region.pose.xyz, _REGION_CENTRE_IN_BASE, atol=1e-6)
+    np.testing.assert_allclose(region.half_extents, _REGION_HALF_EXTENTS, atol=1e-6)
+    np.testing.assert_allclose(region.pose.quat_xyzw, (0.0, 0.0, 0.0, 1.0), atol=1e-9)
+    # A receptacle, comfortably inside the schema's own "one receptacle, not a
+    # room" bounds.
+    assert region.volume_m3() < 0.2
+
+
+def test_the_region_is_measured_in_the_base_frame_not_the_world_frame() -> None:
+    """The allowance is applied against a base-frame occupancy grid.
+
+    A region measured in the world frame would be applied to a volume displaced
+    by the base's own pose, so this pins the conversion rather than the numbers:
+    the cabinet's world x is 0.6 and the base's is 0.1, and the region must
+    report the difference.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+
+    assert region is not None
+    assert region.pose.xyz[0] == pytest.approx(_CABINET_X + 0.02 - _BASE_X, abs=1e-6)
+    assert region.pose.xyz[0] != pytest.approx(_CABINET_X + 0.02, abs=1e-3)
+
+
+def test_no_declaration_means_no_region_and_no_allowance() -> None:
+    """The regression that keeps the allowance declaration-scoped."""
+    rig = _Rig()
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_retracted_declaration_takes_its_region_with_it() -> None:
+    """HZ-0097-4 mitigation 4: the allowance is time-limited by the declaration."""
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is not None
+
+    rig.tracker.set_place_declaration(None)
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_timed_out_declaration_takes_its_region_with_it() -> None:
+    """The crash backstop: no retraction ever arrives, and the region still dies."""
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick, timeout_s=1.0))
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is not None
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick + 5_000_000_000) is None
+
+
+def test_a_target_with_no_collision_geometry_yields_no_region() -> None:
+    """Degenerate in, nothing out.
+
+    A body that resolves but bounds nothing cannot describe a receptacle, and
+    guessing one would be inventing permissiveness. The declaration survives (it
+    still gates the witness); only the allowance is withheld.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(target_id="sim:empty_shelf", stamp_ns=rig.tick))
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    assert declaration.target_id == "sim:empty_shelf"
+    assert declaration.region is None
+
+
+def test_an_oversized_target_yields_no_region() -> None:
+    """The "one receptacle, not a room" bound, at the producer.
+
+    A 10 x 10 m warehouse floor resolves as a body and bounds a real volume, so
+    nothing upstream rejects it — the schema's own cap does, and the refusal
+    restores exactly the pre-amendment margin.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(target_id="sim:warehouse", stamp_ns=rig.tick))
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_an_unresolvable_target_leaves_no_region_behind() -> None:
+    """A refused declaration must not leave the previous one's region armed."""
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region is not None
+
+    with pytest.raises(ROSConfigError):
+        rig.tracker.set_place_declaration(_declaration(target_id="sim:nope", stamp_ns=rig.tick))
+    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_the_region_rides_the_wire_unchanged() -> None:
+    """IDL round-trip through the colcon-built messages.
+
+    The kernel reads the region off ``WorldStateStamped``, so a field that
+    survives the Pydantic model but not the wire would leave the allowance
+    silently off — or, worse, on with the wrong box.
+    """
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import AttachmentState, WorldStateStamped
+
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None and declaration.region is not None
+
+    for msg in (AttachmentState(), WorldStateStamped()):
+        assert msg.place_declaration_valid is False, "absent by default is no allowance"
+        msg.place_declaration_valid = True
+        declaration.fill_idl(msg.place_declaration)
+        assert msg.place_declaration.region_valid is True
+        assert PlaceDeclaration.from_idl(msg.place_declaration) == declaration

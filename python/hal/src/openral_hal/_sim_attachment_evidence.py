@@ -18,6 +18,7 @@ from openral_core import (
     CollisionShape,
     JointSpec,
     PlaceDeclaration,
+    PlaceRegion,
     Pose6D,
     RobotDescription,
     SphereShape,
@@ -135,6 +136,53 @@ def _relative_pose(
         - np.asarray(data.xpos[parent_body_id], dtype=np.float64)
     )
     return translation, parent_rotation.T @ child_rotation
+
+
+def subtree_region_box(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    root_body_id: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """Bound one body's whole collision subtree by a box in that body's frame.
+
+    The sim producer for a declared place target's region (ADR-0097's
+    2026-08-14 amendment). A cabinet's declared identity covers the shelf, the
+    walls and the door inside it, so the region is measured over the same
+    subtree the place witness is allowed to attest against — computed once at
+    declaration time from the model, never inferred from where the payload
+    happens to be.
+
+    The box is axis-aligned **in the declared body's own frame**, which makes it
+    an oriented box once posed in the robot base frame. That is deliberately
+    tighter than an axis-aligned world hull would be: a rotated cabinet's world
+    AABB is strictly larger, i.e. strictly more permissive.
+
+    Args:
+        model: Live ``mujoco.MjModel``.
+        data: Live ``mujoco.MjData`` (geom world poses are read from it).
+        root_body_id: The declared target body.
+
+    Returns:
+        ``(centre_in_body_frame, half_extents)``, or ``None`` when the subtree
+        has no collision geometry or the hull is degenerate — both of which mean
+        no region, and therefore no allowance.
+    """
+    geom_ids = _collision_geoms(model, _body_subtree(model, root_body_id))
+    if not geom_ids:
+        return None
+    corners = np.concatenate(
+        [
+            _geom_corners_in_root(model, data, geom_id=geom_id, root_body_id=root_body_id)
+            for geom_id in geom_ids
+        ]
+    )
+    lower = corners.min(axis=0)
+    upper = corners.max(axis=0)
+    half_extents = 0.5 * (upper - lower)
+    if not np.all(np.isfinite(half_extents)) or float(half_extents.min()) <= 0.0:
+        return None
+    return 0.5 * (lower + upper), half_extents
 
 
 def _root_motion_body(
@@ -938,6 +986,14 @@ class SimAttachmentEvidenceTracker:
         self._place_declaration: PlaceDeclaration | None = None
         self._place_target_bodies: frozenset[int] = frozenset()
         self._place_attested_stamp_ns: int | None = None
+        # The declared target's body and its model-measured region box, in that
+        # body's own frame (ADR-0097's 2026-08-14 amendment). Measured once at
+        # declaration time; posed into the robot base frame on every
+        # publication, because the base frame is the frame the occupancy grid —
+        # and therefore the allowance — lives in.
+        self._place_target_body_id: int | None = None
+        self._place_target_body_name: str = ""
+        self._place_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -976,6 +1032,23 @@ class SimAttachmentEvidenceTracker:
         robot_bodies = _resolve_robot_bodies(model, description.joints)
         robot_bodies.update(self._gripper_body_groups)
         self._robot_body_ids = frozenset(robot_bodies)
+
+        # The body the robot's ``base_frame`` TF denotes (ADR-0095), which is the
+        # frame the octomap bridge publishes the occupancy grid in and therefore
+        # the only frame a place region may be expressed in. Unresolvable → no
+        # region is ever produced, which is the fail-closed direction.
+        from openral_hal.depth_cloud import (  # noqa: PLC0415  # reason: optional sim dependency
+            resolve_base_frame_body_name,
+        )
+
+        self._base_frame_id = str(getattr(description, "base_frame", "") or "base_link")
+        base_body_name = resolve_base_frame_body_name(model, description=description)
+        self._base_body_id: int | None = None
+        if base_body_name:
+            import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+            resolved = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body_name))
+            self._base_body_id = resolved if resolved >= 0 else None
 
     def _contacts(
         self,
@@ -1192,15 +1265,13 @@ class SimAttachmentEvidenceTracker:
         import mujoco  # noqa: PLC0415  # reason: optional sim dependency
 
         if declaration is None or not declaration.active:
-            self._place_declaration = None
-            self._place_target_bodies = frozenset()
+            self._clear_place_declaration()
             return
         target_id = declaration.target_id
         body_name = target_id.removeprefix("sim:")
         body_id = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name))
         if body_id < 0:
-            self._place_declaration = None
-            self._place_target_bodies = frozenset()
+            self._clear_place_declaration()
             raise ROSConfigError(
                 f"Place declaration target {target_id!r} names no MuJoCo body; refused."
             )
@@ -1210,6 +1281,113 @@ class SimAttachmentEvidenceTracker:
         # can be attested while the declaration is live.
         self._place_declaration = declaration
         self._place_target_bodies = frozenset(_body_subtree(self._model, body_id))
+        # The same subtree, measured (ADR-0097's 2026-08-14 amendment). The box
+        # is computed here, once, from the model — never from the payload's
+        # position and never per tick — so an unmeasurable target is a decided,
+        # logged "no region" rather than a silently varying one. Only its POSE is
+        # refreshed later, because the base frame moves and the region does not.
+        self._place_target_body_id = body_id
+        self._place_target_body_name = body_name
+        self._place_region_local = None
+
+    def _clear_place_declaration(self) -> None:
+        """Drop the declaration and everything scoped to it.
+
+        One method so retraction, refusal and expiry can never diverge: the
+        region is part of the declaration's lifetime (HZ-0097-4 mitigation 4), so
+        anything that kills the declaration must kill the allowance with it.
+        """
+        self._place_declaration = None
+        self._place_target_bodies = frozenset()
+        self._place_target_body_id = None
+        self._place_target_body_name = ""
+        self._place_region_local = None
+
+    def place_declaration(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> PlaceDeclaration | None:
+        """The live declaration, with its region posed in the robot base frame.
+
+        This is the producer half of the amendment's Condition 2: sim measures
+        the declared body's model subtree, and the safety kernel consumes the
+        resulting box without knowing or caring which producer measured it. Real
+        hardware will fill the same field from the perception stack through a
+        seam that does not exist yet, which is why no allowance is applied on
+        real hardware today.
+
+        Every path that yields no region — a dead declaration, an unresolved
+        target, a subtree with no collision geometry, a degenerate hull, an
+        unresolvable base frame, or a region the schema's own bounds reject —
+        returns a declaration with ``region=None``, i.e. exactly the margins the
+        kernel used before the amendment.
+
+        Args:
+            data: Live ``mujoco.MjData``.
+            stamp_ns: Consumer's current time, same clock as the declaration's.
+
+        Returns:
+            The live declaration (region attached when measurable), or ``None``
+            when no declaration is in force at ``stamp_ns``.
+        """
+        declaration = self._place_declaration
+        if declaration is None or not declaration.is_live(now_ns=stamp_ns):
+            return None
+        region = self._place_region(data, stamp_ns=stamp_ns)
+        return declaration if region is None else declaration.model_copy(update={"region": region})
+
+    def _place_region(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> PlaceRegion | None:
+        """Pose the declared target's measured box in the robot base frame."""
+        if self._place_target_body_id is None or self._base_body_id is None:
+            return None
+        if self._place_region_local is None:
+            self._place_region_local = subtree_region_box(
+                self._model,
+                data,
+                root_body_id=self._place_target_body_id,
+            )
+            if self._place_region_local is None:
+                return None
+        centre_in_body, half_extents = self._place_region_local
+        translation, rotation = _relative_pose(
+            data,
+            parent_body_id=self._base_body_id,
+            child_body_id=self._place_target_body_id,
+        )
+        centre_in_base = translation + rotation @ centre_in_body
+        try:
+            return PlaceRegion(
+                frame_id=self._base_frame_id,
+                pose=Pose6D(
+                    xyz=(
+                        float(centre_in_base[0]),
+                        float(centre_in_base[1]),
+                        float(centre_in_base[2]),
+                    ),
+                    quat_xyzw=_matrix_to_quat_xyzw(rotation),
+                    frame_id=self._base_frame_id,
+                ),
+                half_extents=(
+                    float(half_extents[0]),
+                    float(half_extents[1]),
+                    float(half_extents[2]),
+                ),
+                evidence_ref=f"mujoco_body_subtree:{self._place_target_body_name}",
+                stamp_ns=stamp_ns,
+            )
+        except ValueError:
+            # A degenerate or over-large hull. Refusing it restores the
+            # pre-amendment margin, which is the fail-closed direction here —
+            # unlike a malformed witness, a bad region can only ever make the
+            # kernel more permissive.
+            return None
 
     def _place_witness(
         self,
