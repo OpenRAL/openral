@@ -35,6 +35,18 @@ Architecture
   env's flat action vector is delegated to a small per-robot
   ``ActionPacker`` (see :func:`pack_action_for_env`).
 
+* It also carries the **task-success signal**. ``deploy sim`` runs the
+  backend continuously, which suppresses the simulator's own per-step
+  task evaluation — so nothing in the deploy stack stated whether the
+  scene's task (e.g. "cup placed in the sink") had actually been
+  completed, and a validation run could prove attach/detach but not
+  placement. :meth:`SimAttachedHAL.task_success` reads the backend's own
+  predicate and :meth:`SimAttachedHAL._observe_task_success` logs
+  ``sim.task_success`` on every change, with a terminal
+  ``sim.task_success_final`` at :meth:`SimAttachedHAL.disconnect`.
+  Observability only (CLAUDE.md §1.4): the verdict reaches the log and
+  nothing else — never termination, reset, reward, or the action path.
+
 CLAUDE.md §1.5 / §3
 -------------------
 The hot path (``read_state`` / ``send_action``) must complete within
@@ -49,6 +61,7 @@ clamped by the C++ kernel.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -56,6 +69,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core import (
     BODY_TWIST_DIM,
@@ -72,8 +86,44 @@ from openral_core.schemas import Action, ControlMode, JointState
 # inside a ROS node, otherwise just stdlib logging.
 _log = logging.getLogger(__name__)
 
+# Logger name for the task-success signal. Deliberately dotted under
+# ``openral.`` rather than this module's ``openral_hal.sim_attached``:
+# ``openral_observability.logging.install_structlog_bridge`` attaches the
+# OTel ``LoggingHandler`` to ``logging.getLogger("openral")``, and stdlib
+# logger ancestry is DOTTED — ``openral_hal.sim_attached`` is a sibling of
+# ``openral``, not a descendant, so records logged under the module name
+# never propagate to the handler and never reach the dashboard's event
+# ring. ``openral.sim.task_success`` does propagate, so the transition
+# lines show up in `openral monitor` as well as on stdout, and the
+# dashboard's event ``kind`` reads as the signal's own name.
+_TASK_SUCCESS_LOGGER = "openral.sim.task_success"
+
+# structlog event keys for the task-success signal. Grep targets: a
+# validation run's artifacts are searched for these exact strings to
+# decide whether the scene's task was actually completed.
+_EVENT_TASK_SUCCESS = "sim.task_success"
+_EVENT_TASK_SUCCESS_FINAL = "sim.task_success_final"
+_EVENT_TASK_SUCCESS_PROBE_FAILED = "sim.task_success_probe_failed"
+
 if TYPE_CHECKING:
     from openral_sim.rollout import SimRollout
+
+
+def _task_success_logger() -> Any:  # noqa: ANN401  # reason: structlog's BoundLogger is untyped
+    """Bind the task-success structlog logger.
+
+    Bound per call rather than once at import: the unit suite reconfigures
+    structlog's global processor pipeline per test, and a logger cached at
+    import time would keep emitting through the pipeline that existed then.
+    """
+    return structlog.get_logger(_TASK_SUCCESS_LOGGER)
+
+
+def _spec_id(spec: object) -> str | None:
+    """Read ``.id`` off a SceneSpec / TaskSpec, or ``None`` when absent."""
+    value = getattr(spec, "id", None)
+    return None if value is None else str(value)
+
 
 # The sim packers below (``pack_action_for_env`` and
 # ``SimAttachedHAL._pack_with_composite_split``) collectively implement
@@ -497,6 +547,23 @@ class SimAttachedHAL:
         # clock-less wrapped rollout (whose every read is ``None``, so
         # :meth:`sim_time_ns` returns ``None`` and the offset is never used).
         self._sim_time_offset_ns: int = 0
+        # ── Task-success witness (observability only) ────────────────────
+        # ``deploy sim`` suppresses the backend's own per-step task
+        # evaluation (``enable_continuous`` above), so nothing in the deploy
+        # stack used to say whether the scene's task (e.g. "cup in the sink")
+        # was ever completed — a validation run could prove the arm moved and
+        # the object attached, but not that it was PLACED. These four slots
+        # are the whole witness: last observed verdict, when it first read
+        # True, how many times it flipped, and a latch that disables polling
+        # after a backend's predicate raises. They gate logging only: nothing
+        # here feeds termination, reset, reward, or the action path.
+        self._task_success: bool | None = None
+        self._task_success_first_ns: int | None = None
+        self._task_success_transitions: int = 0
+        self._task_success_probe_failed: bool = False
+        # Count of ``env.step`` calls since ``connect`` — the step ordinal
+        # reported alongside each task-success transition.
+        self._step_count: int = 0
 
     # ── HAL Protocol surface ────────────────────────────────────────────
 
@@ -524,6 +591,15 @@ class SimAttachedHAL:
         self._pending_actions.clear()
         self._last_committed_tick = 0
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
+        # A reset re-randomises the scene, so the previous episode's success
+        # verdict no longer describes anything live. Re-seed the witness from
+        # the freshly reset env (normally False) WITHOUT logging a transition:
+        # the drop from a finished episode's True back to the new episode's
+        # False is not a task being undone.
+        self._task_success = self._probe_task_success()
+        self._task_success_first_ns = None
+        self._task_success_transitions = 0
+        self._step_count = 0
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
 
@@ -575,7 +651,16 @@ class SimAttachedHAL:
         )
 
     def disconnect(self) -> None:
-        """Idempotent — release the env handle (we don't own its lifetime)."""
+        """Idempotent — release the env handle (we don't own its lifetime).
+
+        Emits the terminal ``sim.task_success_final`` line first (see
+        :meth:`task_success`), so a deploy-sim session against a backend
+        that HAS a task-success predicate always closes with one greppable
+        statement of whether the scene's task ended completed. Idempotent
+        because the line only fires while still connected.
+        """
+        if self._connected:
+            self._emit_task_success_final()
         self._connected = False
 
     def read_state(self) -> JointState:
@@ -972,6 +1057,11 @@ class SimAttachedHAL:
         startup. Backends that refuse post-terminal commands surface their
         error explicitly instead of silently starting a new episode.
 
+        The backend's task-success predicate IS read here, once per step,
+        and logged on every change (:meth:`_observe_task_success`). That is
+        an observation, not an interpretation: the verdict reaches the log
+        and nothing else — not termination, not reset, not the action path.
+
         Args:
             env_action: The flat env-frame action vector to step with.
             source: Caller tag (``"send_action"`` / ``"idle_step"``) used in
@@ -995,6 +1085,8 @@ class SimAttachedHAL:
         # ``getattr(..., 'observation', None)`` is enough because every
         # in-tree backend returns a ``StepResult`` with this attribute.
         self._cache_step_result(step_result)
+        self._step_count += 1
+        self._observe_task_success()
         for observer in self._post_step_observers:
             observer()
         return True
@@ -1004,6 +1096,164 @@ class SimAttachedHAL:
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
+
+    # ── Task-success signal (observability only) ────────────────────────
+
+    def task_success(self) -> bool | None:
+        """Return the wrapped backend's own task-success verdict, or ``None``.
+
+        Introspection accessor, same shape as :meth:`mujoco_handles`: the
+        ``task_success`` extension is optional on
+        :class:`~openral_sim.rollout.SimRollout`, so this forwards when the
+        backend defines it and returns ``None`` otherwise.
+
+        The value is the simulator's ground truth — for RoboCasa, the task
+        class's own ``_check_success()`` against live MuJoCo state ("is the
+        cup inside the sink basin") — not an estimate and not the reward
+        monitor's opinion. It is a live read, NOT a latch: a task that
+        succeeds and is then undone reads ``False`` again. Use the
+        ``sim.task_success`` log lines (which carry ``first_success``) to
+        recover "did it ever succeed".
+
+        ``None`` means "this backend exposes no task-success predicate", or
+        that a previous read raised and polling latched off. It must never
+        be read as failure.
+
+        Returns:
+            The backend's verdict, or ``None`` when unavailable.
+        """
+        return self._probe_task_success()
+
+    def _probe_task_success(self) -> bool | None:
+        """Read the backend predicate defensively, latching off on failure.
+
+        A backend's ``_check_success`` runs task-specific geometry against
+        live MuJoCo state; if it raises (an env mid-reset, a task whose
+        predicate assumes an object the scene did not spawn) that must not
+        take down the actuation path this is polled from. So the first
+        failure is reported once at WARNING and disables further polling
+        for the life of this HAL — never a silent swallow, never a repeated
+        per-step log flood.
+        """
+        if self._task_success_probe_failed:
+            return None
+        read = getattr(self._env, "task_success", None)
+        if not callable(read):
+            return None
+        try:
+            value = read()
+        except Exception as exc:  # reason: an observability read must never break actuation
+            self._task_success_probe_failed = True
+            # Mirrored to stdout for the same reason the signal itself is
+            # (see :meth:`_emit_task_success`): "the signal is missing" and
+            # "the signal says no" must never look alike in a run's log.
+            self._emit_task_success(
+                _EVENT_TASK_SUCCESS_PROBE_FAILED,
+                level="warning",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return None
+        return None if value is None else bool(value)
+
+    def _observe_task_success(self) -> None:
+        """Poll the predicate once and log ``sim.task_success`` on any change.
+
+        Called once per ``env.step``. Emits on BOTH edges, not just
+        ``False -> True``: RoboCasa success is not latched (an object can be
+        knocked back out of the sink), so a run that logged only the rising
+        edge would read as a success it no longer holds. Each line carries
+        ``success`` (the new verdict) and ``first_success`` (whether this is
+        the first ``True`` of the session), so "did it ever complete" and
+        "was it complete at the end" are both answerable from the log.
+        """
+        value = self._probe_task_success()
+        if value is None or value == self._task_success:
+            return
+        previous = self._task_success
+        self._task_success = value
+        self._task_success_transitions += 1
+        first_success = value and self._task_success_first_ns is None
+        sim_time_ns = self.sim_time_ns()
+        if first_success:
+            self._task_success_first_ns = sim_time_ns if sim_time_ns is not None else -1
+        self._emit_task_success(
+            _EVENT_TASK_SUCCESS,
+            success=value,
+            previous=previous,
+            first_success=bool(first_success),
+            sim_time_ns=sim_time_ns,
+            sim_time_s=None if sim_time_ns is None else round(sim_time_ns / 1e9, 3),
+            step=self._step_count,
+        )
+
+    def _emit_task_success_final(self) -> None:
+        """Log the terminal ``sim.task_success_final`` verdict for the session.
+
+        Re-reads the predicate rather than trusting the last polled value:
+        the MuJoCo ``BODY_TWIST`` path advances the sim by writing base qpos
+        directly instead of through ``_step_and_cache``, so the verdict can
+        move without a poll. Falls back to the last observed value when the
+        live read is unavailable (probe latched off, env already torn down).
+
+        No-op when neither is available — a line claiming ``success=False``
+        for an env that never had a success criterion would be a fabricated
+        verdict, not an observation.
+        """
+        live = self._probe_task_success()
+        final = self._task_success if live is None else live
+        if final is None:
+            return
+        first_ns = self._task_success_first_ns
+        self._emit_task_success(
+            _EVENT_TASK_SUCCESS_FINAL,
+            success=final,
+            ever_succeeded=first_ns is not None,
+            first_success_sim_time_ns=None if first_ns is None or first_ns < 0 else first_ns,
+            transitions=self._task_success_transitions,
+            sim_time_ns=self.sim_time_ns(),
+            steps=self._step_count,
+        )
+
+    def _emit_task_success(self, event: str, *, level: str = "info", **fields: object) -> None:
+        """Emit one task-success line on both paths a deploy run is read from.
+
+        1. ``structlog`` under ``openral.sim.task_success`` — the structured
+           record, which ``install_structlog_bridge`` ships as OTLP so the
+           line lands in the monitor dashboard's event log.
+        2. ``print`` — because that structlog record does NOT reach the
+           ``ros2 launch`` console. The bridge attaches its OTel handler to
+           the ``openral`` stdlib logger and nothing in a launched HAL
+           subprocess configures a stdout handler, so an INFO record is
+           exported and never printed. The same reasoning already forces the
+           ``send_action`` diagnostic above onto ``print``. A verdict that
+           only exists inside the collector is not recoverable from a
+           validation run's artifacts, which is the entire point of this
+           signal — so it is mirrored as ``<event> <json>``, matching the
+           ``sim.estop_ground_truth_snapshot`` line the sibling
+           :mod:`openral_hal.sim_sensor_bridge` writes into the same log.
+        """
+        payload: dict[str, object] = {
+            "scene_id": self._scene_id(),
+            "task_id": self._task_id(),
+            **fields,
+        }
+        getattr(_task_success_logger(), level)(event, **payload)
+        print(f"{event} {json.dumps(payload, sort_keys=True)}", flush=True)
+
+    def _scene_id(self) -> str | None:
+        """The wrapped rollout's scene id (``robocasa/PickPlaceCounterToSink``)."""
+        return _spec_id(getattr(self._env, "scene", None))
+
+    def _task_id(self) -> str | None:
+        """The wrapped rollout's task id.
+
+        On the ``deploy sim`` path this is the synthesised
+        ``<scene_id>/_hal_deploy_noop`` (see
+        :func:`openral_hal.sim_bringup.build_sim_env_from_yaml`) — the scene
+        id is the identifying half there, which is why both are logged.
+        """
+        return _spec_id(getattr(self._env, "task", None))
 
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.

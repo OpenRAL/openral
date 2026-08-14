@@ -16,6 +16,10 @@ The fake implements the **subset** of SimRollout that
 * ``mujoco_handles() -> tuple | None`` — pluggable so tests can
   exercise both the "MJCF reachable" and "MJCF unreachable" branches
   of :meth:`SimAttachedHAL.read_state`.
+* ``task_success() -> bool | None`` — the optional SimRollout
+  task-success extension, driven by :attr:`FakeSimEnv.task_success_value`
+  (``None`` models a backend with no success predicate, which is what
+  the HAL must treat as "unknown", never as failure).
 
 The real :class:`openral_sim.rollout.SimRollout` Protocol carries
 additional methods (``render``, ``close``, ``task``, metrics
@@ -31,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from openral_core import SceneSpec, TaskSpec
 
 __all__ = ["FakeSimEnv", "FakeStepResult"]
 
@@ -94,6 +99,26 @@ class FakeSimEnv:
     sim_time_from_mujoco: bool = False
     sim_dt_ns: int = 20_000_000  # 20 ms — a typical robosuite control step
     _sim_time_ns: int = 0
+    # Optional SimRollout ``task_success`` extension. ``None`` (default)
+    # models a backend with NO success predicate — the HAL must then log
+    # nothing rather than assert failure. Tests flip this between steps to
+    # drive the false→true / true→false transitions the HAL logs.
+    task_success_value: bool | None = None
+    # When set, ``task_success`` raises instead of returning — models a
+    # backend predicate that blows up mid-episode (e.g. geometry against an
+    # object the scene did not spawn). The HAL must latch polling off, not
+    # take down the actuation path.
+    task_success_error: Exception | None = None
+    # Counter of :meth:`task_success` reads, so a test can assert the HAL
+    # stops polling after a raise instead of re-raising every step.
+    task_success_calls: int = 0
+    # The SimRollout Protocol's ``scene`` / ``task`` attributes. Real
+    # openral_core schemas (never placeholders) so a consumer that reports
+    # them — e.g. the HAL's ``sim.task_success`` lines — is exercised
+    # against the shapes the deploy path actually carries. ``None`` models
+    # a rollout the test doesn't care to identify.
+    scene: SceneSpec | None = None
+    task: TaskSpec | None = None
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         """Reset stub — returns an empty Observation-shaped dict."""
@@ -169,3 +194,15 @@ class FakeSimEnv:
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Return whatever was configured on the dataclass field."""
         return self.handles
+
+    def task_success(self) -> bool | None:
+        """Return the configured task-success verdict (SimRollout extension).
+
+        Side-effect free apart from the read counter, mirroring the real
+        adapter's contract: reading the predicate must never step physics
+        or latch a terminal.
+        """
+        self.task_success_calls += 1
+        if self.task_success_error is not None:
+            raise self.task_success_error
+        return self.task_success_value

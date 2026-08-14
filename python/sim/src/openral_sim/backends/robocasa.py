@@ -379,16 +379,48 @@ class _RoboCasaSim:
             info=step_info,
         )
 
+    def task_success(self) -> bool | None:
+        """Return the env's own task-success predicate, or ``None``.
+
+        This is RoboCasa/robosuite ground truth, not an estimate: every
+        ``robocasa.environments.kitchen`` task (and every GR1 tabletop
+        task in the fork) implements ``_check_success()`` against the
+        live MuJoCo state — "is the cup inside the sink basin", "is the
+        drawer closed" — and that predicate is what the benchmark scores.
+        Unlike the reward monitor's ``reward.score`` span (a VLM's
+        opinion), this cannot be wrong about the physics.
+
+        Two lookup paths, mirroring :meth:`mujoco_handles`:
+
+        * raw robosuite envs expose ``_check_success`` directly;
+        * the gymnasium-wrapped GR1 path hides it one level down at
+          ``env.unwrapped.env``.
+
+        Returns:
+            ``True`` / ``False`` from the env's predicate, or ``None``
+            when the backend exposes no ``_check_success`` at all
+            (the caller must NOT read ``None`` as failure — it means
+            "this env has no task-success predicate to read").
+
+        Note:
+            Deliberately NOT consulted by :meth:`step`. ``deploy sim``
+            runs with :meth:`enable_continuous` set, where reading a
+            success flag must never influence termination; callers poll
+            this for observability only.
+        """
+        for candidate in (
+            self._env,
+            getattr(getattr(self._env, "unwrapped", self._env), "env", None),
+        ):
+            check = getattr(candidate, "_check_success", None)
+            if callable(check):
+                return bool(check())
+        return None
+
     def _check_success_fallback(self, terminated: bool) -> bool:
         """Read task success from raw RoboCasa envs and gymnasium-wrapped GR1 envs."""
-        check = getattr(self._env, "_check_success", None)
-        if callable(check):
-            return bool(check())
-        inner = getattr(getattr(self._env, "unwrapped", self._env), "env", None)
-        check = getattr(inner, "_check_success", None)
-        if callable(check):
-            return bool(check())
-        return bool(terminated)
+        success = self.task_success()
+        return bool(terminated) if success is None else success
 
     def _split_gr1_action(
         self, action_arr: NDArray[np.float32]

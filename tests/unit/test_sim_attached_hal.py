@@ -19,10 +19,14 @@ The robocasa-attached end-to-end exercise lives in
 
 from __future__ import annotations
 
+import json
+import logging
 from itertools import pairwise
+from typing import Any
 
 import numpy as np
 import pytest
+import structlog
 from openral_core import (
     Action,
     AttachedCollisionObject,
@@ -37,8 +41,11 @@ from openral_core import (
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
+    SceneSpec,
+    TaskSpec,
 )
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_hal import sim_attached
 from openral_hal.sim_attached import (
     SimAttachedHAL,
     pack_action_for_env,
@@ -136,7 +143,12 @@ def test_deploy_sim_ignores_success_and_terminal_without_resetting() -> None:
         )
     assert env.step_calls == 2
     assert env.reset_calls == [None]
-    assert not hasattr(hal, "task_success")
+    # The HAL READS the backend's success predicate (for the
+    # ``sim.task_success`` signal) but never ACTS on it: no reset, no
+    # terminal synthesis, no effect on the step count. ``step_info``'s
+    # ``is_success`` is likewise carried, never interpreted.
+    assert env.task_success_value is None
+    assert hal.task_success() is None
 
 
 def test_pack_action_joint_position_arm_only_fills_arm_slots() -> None:
@@ -845,3 +857,318 @@ def test_sim_time_ns_monotonic_across_reconnect() -> None:
     # episode starts at 0, so the published value is unchanged (no rewind).
     assert after_reconnect >= before_reconnect
     assert after_reconnect == 20_000_000 * 3
+
+
+# ── Task-success signal (observability only) ─────────────────────────────
+#
+# `deploy sim` suppresses the backend's own per-step task evaluation, so
+# until this signal existed nothing in the deploy stack said whether the
+# scene's task (e.g. "cup placed in the sink") had actually been completed
+# — a validation run could prove attach/detach but not placement. These
+# tests pin the emitted lines' shape and, critically, that reading the
+# predicate changes no control flow.
+
+
+class _CaptureProcessor:
+    """Real ``structlog`` processor that buffers events for assertion.
+
+    Same pattern as `tests/unit/test_diagnostics_phase_timer.py`: a real
+    processor in the real pipeline (not a mock logger), dropping the event
+    at the end so test logs don't pollute pytest output.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(
+        self, logger: object, method: str, event_dict: dict[str, object]
+    ) -> dict[str, object]:
+        del logger, method
+        name = str(event_dict.pop("event", ""))
+        self.events.append((name, dict(event_dict)))
+        raise structlog.DropEvent
+
+    def named(self, event: str) -> list[dict[str, object]]:
+        """Every captured payload logged under ``event``."""
+        return [payload for name, payload in self.events if name == event]
+
+
+@pytest.fixture
+def cap() -> Any:
+    """Install a fresh capture processor; restore structlog defaults after."""
+    proc = _CaptureProcessor()
+    structlog.reset_defaults()
+    structlog.configure(processors=[proc])
+    try:
+        yield proc
+    finally:
+        structlog.reset_defaults()
+
+
+def _success_env(**kwargs: Any) -> FakeSimEnv:
+    """A FakeSimEnv carrying a real SceneSpec/TaskSpec + a sim clock.
+
+    Real ``openral_core`` schemas and a real scene id from the shipped
+    RoboCasa catalogue; the task id is the synthesised deploy-sim noop
+    suffix ``openral_hal.sim_bringup`` builds (CLAUDE.md §1.11 — no
+    ``"foo"`` placeholders).
+    """
+    return FakeSimEnv(
+        action_dim=11,
+        has_sim_clock=True,
+        sim_dt_ns=20_000_000,
+        scene=SceneSpec(id="robocasa/PickPlaceCounterToSink", backend="mujoco"),
+        task=TaskSpec(
+            id="robocasa/PickPlaceCounterToSink/_hal_deploy_noop",
+            scene_id="robocasa/PickPlaceCounterToSink",
+        ),
+        **kwargs,
+    )
+
+
+def test_task_success_accessor_forwards_backend_verdict() -> None:
+    """`task_success()` forwards the wrapped rollout's predicate verbatim."""
+    env = _success_env()
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    assert hal.task_success() is None  # backend reports "no verdict"
+    env.task_success_value = False
+    assert hal.task_success() is False
+    env.task_success_value = True
+    assert hal.task_success() is True
+
+
+def test_task_success_logs_the_false_to_true_transition(cap: _CaptureProcessor) -> None:
+    """One `sim.task_success` line at the rising edge, with sim time + ids."""
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_joint_position_chunk())
+    assert cap.named("sim.task_success") == []  # still False → silent
+
+    env.task_success_value = True
+    hal.send_action(_joint_position_chunk())
+
+    lines = cap.named("sim.task_success")
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["success"] is True
+    assert line["previous"] is False
+    assert line["first_success"] is True
+    assert line["scene_id"] == "robocasa/PickPlaceCounterToSink"
+    assert line["task_id"] == "robocasa/PickPlaceCounterToSink/_hal_deploy_noop"
+    assert line["sim_time_ns"] == 20_000_000 * 2
+    assert line["sim_time_s"] == 0.04
+    assert line["step"] == 2
+
+
+def test_task_success_logs_both_edges_and_marks_only_the_first_success(
+    cap: _CaptureProcessor,
+) -> None:
+    """RoboCasa success is not latched — a task undone must be visible too."""
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for value in (True, False, True):
+        env.task_success_value = value
+        hal.send_action(_joint_position_chunk())
+
+    lines = cap.named("sim.task_success")
+    assert [bool(line["success"]) for line in lines] == [True, False, True]
+    # `first_success` marks the first rising edge only, so "did it ever
+    # complete" stays answerable after a later regression.
+    assert [bool(line["first_success"]) for line in lines] == [True, False, False]
+
+
+def test_task_success_repeated_true_reads_log_once(cap: _CaptureProcessor) -> None:
+    """A held-True predicate logs on the edge, not once per 20 Hz step."""
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    env.task_success_value = True
+    for _ in range(10):
+        hal.send_action(_joint_position_chunk())
+    assert len(cap.named("sim.task_success")) == 1
+
+
+def test_task_success_already_true_at_connect_is_the_baseline_not_a_transition(
+    cap: _CaptureProcessor,
+) -> None:
+    """A scene that starts satisfied logs no rising edge, but still a final verdict."""
+    env = _success_env(task_success_value=True)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_joint_position_chunk())
+    assert cap.named("sim.task_success") == []
+    hal.disconnect()
+    final = cap.named("sim.task_success_final")[0]
+    assert final["success"] is True
+    # It was never OBSERVED to complete — the scene was handed over that
+    # way — so the signal does not claim a first-success moment it never saw.
+    assert final["ever_succeeded"] is False
+    assert final["transitions"] == 0
+
+
+def test_task_success_final_line_states_the_terminal_verdict(cap: _CaptureProcessor) -> None:
+    """`disconnect` closes the session with one terminal success statement."""
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    env.task_success_value = True
+    hal.send_action(_joint_position_chunk())
+    env.task_success_value = False
+    hal.send_action(_joint_position_chunk())
+    hal.disconnect()
+
+    finals = cap.named("sim.task_success_final")
+    assert len(finals) == 1
+    final = finals[0]
+    # Ended NOT successful, but did succeed once — both facts survive.
+    assert final["success"] is False
+    assert final["ever_succeeded"] is True
+    assert final["first_success_sim_time_ns"] == 20_000_000
+    assert final["transitions"] == 2
+    assert final["steps"] == 2
+    assert final["scene_id"] == "robocasa/PickPlaceCounterToSink"
+
+    hal.disconnect()  # idempotent — no second terminal line
+    assert len(cap.named("sim.task_success_final")) == 1
+
+
+def test_task_success_silent_for_a_backend_without_a_predicate(cap: _CaptureProcessor) -> None:
+    """No predicate → no lines at all. `None` is never reported as failure."""
+    env = _success_env()  # task_success_value stays None
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for _ in range(3):
+        hal.send_action(_joint_position_chunk())
+    hal.disconnect()
+    assert cap.named("sim.task_success") == []
+    assert cap.named("sim.task_success_final") == []
+
+
+def test_task_success_probe_failure_latches_off_without_breaking_actuation(
+    cap: _CaptureProcessor,
+) -> None:
+    """A raising predicate warns once, stops being polled, and steps go on."""
+    env = _success_env(task_success_error=RuntimeError("no target object in scene"))
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()  # the connect-time seed read is the one that raises
+    calls_after_connect = env.task_success_calls
+    for _ in range(3):
+        hal.send_action(_joint_position_chunk())
+
+    assert env.step_calls == 3  # actuation unaffected
+    assert env.task_success_calls == calls_after_connect  # polling latched off
+    warnings = cap.named("sim.task_success_probe_failed")
+    assert len(warnings) == 1
+    assert warnings[0]["error_type"] == "RuntimeError"
+    assert hal.task_success() is None
+
+
+def test_task_success_reset_reseeds_without_logging_a_regression(cap: _CaptureProcessor) -> None:
+    """A reconnect re-seeds the witness; the new episode's False is not a flip."""
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    env.task_success_value = True
+    hal.send_action(_joint_position_chunk())
+    assert len(cap.named("sim.task_success")) == 1
+
+    env.task_success_value = False  # the reset re-randomises the scene
+    hal.connect()
+    assert len(cap.named("sim.task_success")) == 1  # no true→false line
+    # …and the fresh episode's own rising edge is once again a first success.
+    env.task_success_value = True
+    hal.send_action(_joint_position_chunk())
+    lines = cap.named("sim.task_success")
+    assert len(lines) == 2
+    assert lines[-1]["first_success"] is True
+    assert lines[-1]["step"] == 1
+
+
+def test_task_success_logger_reaches_the_openral_otel_bridge_namespace() -> None:
+    """The signal's logger is a stdlib DESCENDANT of the bridged ``openral``.
+
+    `openral_observability.logging.install_structlog_bridge` attaches the
+    OTel `LoggingHandler` to `logging.getLogger("openral")`, and stdlib
+    ancestry is dotted — a record logged under this module's own
+    `openral_hal.sim_attached` name would never propagate there, so the
+    dashboard's event log would never see the signal. Asserted against real
+    stdlib propagation, with a real handler.
+    """
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    bridged = logging.getLogger("openral")
+    handler = _Collector()
+    previous_level = bridged.level
+    bridged.addHandler(handler)
+    bridged.setLevel(logging.INFO)
+    try:
+        logging.getLogger(sim_attached._TASK_SUCCESS_LOGGER).info("sim.task_success")
+    finally:
+        bridged.removeHandler(handler)
+        bridged.setLevel(previous_level)
+
+    assert [r.getMessage() for r in records] == ["sim.task_success"]
+
+
+def test_task_success_line_is_mirrored_to_stdout_as_json(
+    cap: _CaptureProcessor, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The verdict also lands on stdout, where `ros2 launch` captures it.
+
+    The structlog record is exported to the collector but never printed
+    (nothing configures a stdout handler in a launched HAL subprocess), so
+    the line would be absent from exactly the artifact a validation run
+    greps. The mirror is `<event> <json>`, matching the
+    `sim.estop_ground_truth_snapshot` line the sibling sensor bridge writes.
+    """
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    env.task_success_value = True
+    hal.send_action(_joint_position_chunk())
+    hal.disconnect()
+
+    printed = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("sim.task_success")
+    ]
+    assert len(printed) == 2
+    event, _, blob = printed[0].partition(" ")
+    assert event == "sim.task_success"
+    payload = json.loads(blob)
+    assert payload["success"] is True
+    assert payload["first_success"] is True
+    assert payload["scene_id"] == "robocasa/PickPlaceCounterToSink"
+
+    final_event, _, final_blob = printed[1].partition(" ")
+    assert final_event == "sim.task_success_final"
+    assert json.loads(final_blob)["ever_succeeded"] is True
+
+
+def test_task_success_final_re_reads_the_predicate_at_disconnect(
+    cap: _CaptureProcessor,
+) -> None:
+    """The terminal verdict is a fresh read, not the last polled value.
+
+    The MuJoCo BODY_TWIST path advances the sim by writing base qpos
+    directly rather than through `_step_and_cache`, so the predicate can
+    move without a poll; the closing statement must reflect the env, not a
+    stale cache.
+    """
+    env = _success_env(task_success_value=False)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_joint_position_chunk())
+    # Flip WITHOUT stepping — nothing polled this transition.
+    env.task_success_value = True
+    assert cap.named("sim.task_success") == []
+
+    hal.disconnect()
+    final = cap.named("sim.task_success_final")[0]
+    assert final["success"] is True
