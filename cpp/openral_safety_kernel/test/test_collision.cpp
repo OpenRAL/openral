@@ -710,6 +710,13 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   att.primitives[0].kind = osk::AttachedShapeKind::kSphere;
   att.primitives[0].radius = 0.08;
   att.primitives[0].pose_in_object = identity();
+  // Attested support contact, so the witness latch actually walks its cell
+  // scan inside the counted window instead of short-circuiting.
+  att.objects[0].has_support_witness = true;
+  att.objects[0].support_point = {0.0, 0.0, 0.0};
+  att.objects[0].support_normal = {0.0, 0.0, 1.0};
+  att.objects[0].support_patch_radius = 0.2;
+  att.objects[0].support_max_penetration = 0.001;
   att.n_objects = 1;
   att.n_primitives = 1;
 
@@ -734,6 +741,7 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   grid.attached_contact_mask = contact_mask.data();
   grid.attached_contact_distance = contact_distance.data();
   grid.attached_contact_stride = occ.size();
+  grid.support_witness_live = 0x1;
 
   const std::vector<double> qpos = {0.3};
 
@@ -747,10 +755,12 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
     const bool contacts_active = osk::update_attached_voxel_contacts(
         att, scratch, grid, contact_mask.data(), contact_distance.data(), contact_mask.size(),
         contact_distance.size(), false);
+    const std::uint8_t live = osk::update_support_contact_witnesses(att, scratch, grid, 0x1, 0.0);
     (void)self_hit;
     (void)world_hit;
     (void)voxel_hit;
     (void)contacts_active;
+    (void)live;
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
@@ -1148,7 +1158,11 @@ TEST(AttachedVoxelCollision, FreeGridNeverHits) {
   EXPECT_FALSE(hit.hit);
 }
 
-TEST(AttachedVoxelCollision, ExistingContactAllowsOnlyNonDeepeningMotionUntilSeparation) {
+TEST(AttachedVoxelCollision, AttachTimeContactAloneNeverExemptsAShallowCell) {
+  // The index-keyed non-deepening baseline is gone: a cell merely in contact
+  // at attach time (1 cm deep, well short of the embedded-residue threshold)
+  // buys the payload nothing. Only a support-contact witness can exempt this,
+  // and there is none here — fail-closed.
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
   s.link_world = {identity(), identity(), identity(), identity()};
@@ -1168,20 +1182,9 @@ TEST(AttachedVoxelCollision, ExistingContactAllowsOnlyNonDeepeningMotionUntilSep
   EXPECT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
                                                   contact_distance.data(), contact_mask.size(),
                                                   contact_distance.size(), true));
-  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
-
-  // Move 2 cm deeper into the pre-existing support voxel: the allowance is
-  // bounded by the recorded penetration and must reject this action.
-  att.objects[0].pose_in_link = translate(0.02, 0.0, 0.0);
-  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
-
-  // Once the payload separates, the original voxel is permanently re-armed.
-  att.objects[0].pose_in_link = translate(-0.2, 0.0, 0.0);
-  EXPECT_FALSE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
-                                                   contact_distance.data(), contact_mask.size(),
-                                                   contact_distance.size(), false));
-  att.objects[0].pose_in_link = identity();
-  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, -0.01, 1e-9);
 }
 
 TEST(AttachedVoxelCollision, EmbeddedResidueIsAllowedOnlyUntilSeparation) {
@@ -1212,27 +1215,6 @@ TEST(AttachedVoxelCollision, EmbeddedResidueIsAllowedOnlyUntilSeparation) {
                                                    contact_distance.data(), contact_mask.size(),
                                                    contact_distance.size(), false));
   att.objects[0].pose_in_link = identity();
-  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
-}
-
-TEST(AttachedVoxelCollision, ContactPhaseAllowsOnlyShallowNewBoundaryCells) {
-  osk::CollisionModel m = hand_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity(), identity(), identity(), identity()};
-  osk::AttachedModel att;
-  append_object(att, 1, identity(), {sphere_prim(0.06)});
-
-  std::vector<std::uint8_t> occ(125, 0);
-  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
-  auto grid = make_grid(occ);
-  grid.attached_contact_tolerance = 0.025;
-  grid.attached_contact_allow_new_shallow = true;
-  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
-
-  grid.attached_contact_allow_new_shallow = false;
-  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
-  att.objects[0].pose_in_link = translate(0.04, 0.0, 0.0);
-  grid.attached_contact_allow_new_shallow = true;
   EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 }
 
@@ -1677,7 +1659,271 @@ osk::AttachedPrimitive box_prim(double hx, double hy, double hz,
 
 const osk::Vec3 kVoxelHalf{0.05, 0.05, 0.05};  // make_grid()'s 0.1 m cells
 
+// ── Support-contact witness fixture (ADR-0092 D6) ───────────────────────────
+//
+// The 2026-08-13 baguette run, to the tenth of a millimetre. A 300x50x50 mm
+// payload rests on a counter with its bottom face at z = 0. The counter is
+// mapped at 25 mm resolution and the lattice phase puts the surface cell's
+// centre 3.2 mm ABOVE that face, so the cell cube's top face is 15.7 mm above
+// it: the check reads -15.70 mm of penetration for a contact MuJoCo measured
+// at -0.87..-1.37 mm. That inflation is pure discretisation, and the witness
+// exists to tolerate exactly it — and nothing else.
+
+constexpr int kSupportN = 24;
+constexpr double kSupportRes = 0.025;
+// Attested physical depth: the deepest of the six real MuJoCo counter-payload
+// contacts in that run.
+constexpr double kAttestedPenetration = 0.00137;
+
+int support_index(int x, int y, int z) { return x + kSupportN * (y + kSupportN * z); }
+
+osk::VoxelGrid support_grid(const std::vector<std::uint8_t>& occ) {
+  osk::VoxelGrid g;
+  // Phased so cell (12, 12, 12) is centred at (0, 0, +0.0032).
+  g.origin = {-0.3125, -0.3125, -0.3093};
+  g.resolution = kSupportRes;
+  g.sx = kSupportN;
+  g.sy = kSupportN;
+  g.sz = kSupportN;
+  g.occupancy = occ.data();
+  g.attached_contact_tolerance = 0.001;  // physical slack, not a quantisation fudge
+  return g;
+}
+
+// The carried baguette: one box spanning z in [0, 0.05], attached at link 1.
+void append_baguette(osk::AttachedModel& att, double patch_radius_m) {
+  append_object(att, 1, identity(), {box_prim(0.15, 0.025, 0.025, translate(0.0, 0.0, 0.025))});
+  osk::AttachedObject& o = att.objects.back();
+  o.has_support_witness = patch_radius_m > 0.0;
+  o.support_point = {0.0, 0.0, 0.0};   // the payload's own support face
+  o.support_normal = {0.0, 0.0, 1.0};  // counter -> payload
+  o.support_patch_radius = patch_radius_m;
+  o.support_max_penetration = kAttestedPenetration;
+}
+
 }  // namespace
+
+TEST(SupportContactWitness, QuantisationInflatedSupportContactDoesNotStopTheRobot) {
+  // The exact false stop this witness exists to remove.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+
+  // First: what the kernel actually sees without any attestation — a 15.70 mm
+  // penetration, which is exactly what E-stopped the baguette run.
+  const auto unattested = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(unattested.hit) << "no witness is live yet, so this must still stop";
+  EXPECT_NEAR(unattested.min_distance, -0.0157, 1e-9);
+
+  // Now arm the witness. Same geometry, same cell, same -15.70 mm reading —
+  // but the depth that decides is measured against the attested support plane,
+  // where it is 3.2 mm, inside the 12.5 mm cube half-width the lattice can
+  // legitimately produce.
+  grid.support_witness_live = 0x1;
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1)
+      << "the payload is still on its attested support, so the witness stays live";
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(SupportContactWitness, NoAttestationMeansNoExemption) {
+  // Fail-closed: a payload with no witness behaves exactly as it does today.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // patch 0 => has_support_witness == false
+  ASSERT_FALSE(att.objects[0].has_support_witness);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+  // Even with the live bit wrongly set, an object that attests nothing is
+  // exempt from nothing, and the latch drops the bit on the next refresh.
+  grid.support_witness_live = 0x1;
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x0);
+}
+
+TEST(SupportContactWitness, DeepeningIntoTheSupportStillStops) {
+  // The payload drives 20 mm further into the counter. The cell's height above
+  // the attested support face rises millimetre for millimetre with the sink,
+  // and past the lattice envelope it stops the robot.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(12, 12, 12));
+  EXPECT_LT(hit.min_distance, 0.0);
+}
+
+TEST(SupportContactWitness, SeparationKillsTheExemptionAndRecontactIsANewViolation) {
+  // Hysteresis. Lift the payload clear, and the attestation dies with the
+  // contact it described; lowering back onto the same cell is a fresh contact
+  // that only a fresh attestation could ever exempt.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+
+  std::uint8_t live = 0x1;
+  grid.support_witness_live = live;
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // Lift 10 cm: nothing the witness would exempt is in contact any more.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, 0.10);
+  live = osk::update_support_contact_witnesses(att, s, grid, live, 0.0);
+  EXPECT_EQ(live, 0x0);
+
+  // Come back down onto the very same cell. The latch never re-arms itself.
+  att.objects[0].pose_in_link = identity();
+  live = osk::update_support_contact_witnesses(att, s, grid, live, 0.0);
+  EXPECT_EQ(live, 0x0) << "only a fresh World State attestation may re-arm the witness";
+  grid.support_witness_live = live;
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(SupportContactWitness, NewContactOutsideThePatchStillStopsMidCarry) {
+  // A live support witness must not license a contact against anything else.
+  // The wall cell sits 150 mm out — past the 100 mm attested patch plus the
+  // cube's circumradius — while the support cell underneath stays exempt.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  occ[static_cast<std::size_t>(support_index(18, 12, 12))] = 1;  // 150 mm along +x
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(18, 12, 12))
+      << "the stop must name the unattested cell, never the exempt support cell";
+}
+
+TEST(SupportContactWitness, ProtrusionInsideThePatchStillStops) {
+  // Inside the patch, but genuinely higher than the attested support face: an
+  // object standing on the counter under the payload. 25 mm of solid above the
+  // support plane is not discretisation, and it stops the robot.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  occ[static_cast<std::size_t>(support_index(12, 12, 13))] = 1;  // stacked one cell up
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(12, 12, 13));
+}
+
+TEST(SupportContactWitness, ExemptCellsStayOutOfTheReportedDistance) {
+  // Evidence coherence, unchanged by the new exemption: the exempt support
+  // cell reaches sweep_min_distance only, never min_distance.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  occ[static_cast<std::size_t>(support_index(18, 12, 12))] = 1;
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, -0.0125, 1e-9) << "the wall cell's own 12.5 mm overlap";
+  EXPECT_NEAR(hit.sweep_min_distance, -0.0157, 1e-9)
+      << "the exempt support cell's 15.7 mm stays available as a diagnostic only";
+}
+
+TEST(SupportContactWitness, LostOccupancyMapDropsEveryWitness) {
+  // Fail-closed: with no map there is no way to confirm the payload is still on
+  // its support, so no exemption may survive the refresh.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);
+  (void)m;
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  auto grid = support_grid(occ);
+  grid.occupancy = nullptr;
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0xFF, 0.0), 0x0);
+}
+
+TEST(SupportContactWitness, MalformedAttestationFailsTheWholeIngestClosed) {
+  const std::vector<std::string> links = {"base", "hand"};
+  osk::AttachedModel out;
+  out.objects.assign(2, osk::AttachedObject{});
+  out.primitives.assign(4, osk::AttachedPrimitive{});
+  out.touch_links.assign(4, 0);
+
+  osk::AttachedObjectInput in;
+  in.attach_link = "hand";
+  osk::AttachedPrimitiveInput prim;
+  prim.kind = osk::AttachedShapeKind::kSphere;
+  prim.radius = 0.05;
+  in.primitives = {prim};
+  in.has_support_witness = true;
+  in.support_point = {0.0, 0.0, 0.0};
+  in.support_normal = {0.0, 0.0, 0.0};  // degenerate
+  in.support_patch_radius = 0.1;
+  in.support_max_penetration = 0.001;
+  EXPECT_EQ(osk::ingest_attached_objects({in}, links, 2, 4, 4, out),
+            osk::AttachIngestStatus::kMalformed);
+  EXPECT_EQ(out.n_objects, 0U);
+
+  in.support_normal = {0.0, 0.0, 4.0};  // un-normalised is fine; it gets normalised
+  in.support_patch_radius = -1.0;       // but a non-positive patch is not
+  EXPECT_EQ(osk::ingest_attached_objects({in}, links, 2, 4, 4, out),
+            osk::AttachIngestStatus::kMalformed);
+
+  in.support_patch_radius = 0.1;
+  in.support_max_penetration = -0.001;  // nor is a negative depth
+  EXPECT_EQ(osk::ingest_attached_objects({in}, links, 2, 4, 4, out),
+            osk::AttachIngestStatus::kMalformed);
+
+  in.support_max_penetration = 0.001;
+  EXPECT_EQ(osk::ingest_attached_objects({in}, links, 2, 4, 4, out), osk::AttachIngestStatus::kOk);
+  ASSERT_EQ(out.n_objects, 1U);
+  EXPECT_TRUE(out.objects[0].has_support_witness);
+  EXPECT_NEAR(out.objects[0].support_normal.z, 1.0, 1e-12) << "the normal is normalised at ingest";
+  EXPECT_NEAR(out.objects[0].support_patch_radius, 0.1, 1e-12);
+}
 
 TEST(CollisionEvidence, AttachedVoxelReportsTheTriggeringCellNotTheExemptResidue) {
   // The observed field failure, to five decimals: a box payload carried into
@@ -1846,19 +2092,19 @@ TEST(CollisionEvidence, GatingIsUnchangedAcrossTheAttachedContactLadder) {
   s.link_world = {identity(), identity(), identity(), identity()};
 
   struct Case {
-    double approach_m;   // payload offset along +x from the snapshot pose
-    bool allow_shallow;  // grid.attached_contact_allow_new_shallow
+    double approach_m;  // payload offset along +x from the snapshot pose
     bool expect_hit;
   };
   // 0.000: snapshot pose — residue exempt, support 0.6 mm clear.
   // 0.001: support newly touched by 0.4 mm — a new cell, so it stops.
-  // 0.001 + allow_shallow: the contact phase tolerates a new 0.4 mm boundary
-  //        cell (tolerance 1 mm) — no stop.
-  // 0.005: the new cell is 4.4 mm deep, past the tolerance — stops either way.
-  const std::vector<Case> cases = {
-      {0.000, false, false}, {0.000, true, false}, {0.001, false, true},
-      {0.001, true, false},  {0.005, false, true}, {0.005, true, true},
-  };
+  // 0.005: the new cell is 4.4 mm deep — stops.
+  //
+  // The `allow_new_shallow` column this ladder used to carry is gone with the
+  // mechanism: a blanket "any new cell shallower than the tolerance is fine"
+  // is not something the support-contact witness needs, and it exempted cells
+  // no one had attested. Its removal moves every one of those rows from
+  // no-stop to stop, i.e. strictly toward the conservative side.
+  const std::vector<Case> cases = {{0.000, false}, {0.001, true}, {0.005, true}};
 
   for (const Case& c : cases) {
     osk::AttachedModel att;
@@ -1877,11 +2123,9 @@ TEST(CollisionEvidence, GatingIsUnchangedAcrossTheAttachedContactLadder) {
                                                     contact_distance.data(), contact_mask.size(),
                                                     contact_distance.size(), true));
 
-    grid.attached_contact_allow_new_shallow = c.allow_shallow;
     att.objects[0].pose_in_link = translate(-0.001 + c.approach_m, 0.0, 0.0);
     const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
-    EXPECT_EQ(hit.hit, c.expect_hit)
-        << "gating changed at approach=" << c.approach_m << " allow_shallow=" << c.allow_shallow;
+    EXPECT_EQ(hit.hit, c.expect_hit) << "gating changed at approach=" << c.approach_m;
     if (hit.hit) {
       EXPECT_LE(hit.min_distance, 0.0) << "a reported stop is never a clearance";
     }

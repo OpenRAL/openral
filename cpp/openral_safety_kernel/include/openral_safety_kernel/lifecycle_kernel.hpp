@@ -223,6 +223,24 @@ private:
   std::uint64_t attached_revision_{0};
   bool attached_contact_snapshot_pending_{false};
   bool attached_contact_active_{false};
+  /// Identity of the support-contact attestation currently armed for one
+  /// payload slot. The attachment set is heartbeated, so the kernel re-arms a
+  /// witness only when this key changes — otherwise a republished snapshot
+  /// would resurrect an exemption that separation had already killed.
+  struct SupportWitnessKey {
+    std::string object_id;
+    std::string support_id;
+    std::int64_t stamp_ns{0};
+    bool valid{false};
+    bool operator==(const SupportWitnessKey& other) const noexcept {
+      return valid == other.valid && stamp_ns == other.stamp_ns && object_id == other.object_id &&
+             support_id == other.support_id;
+    }
+  };
+  std::uint8_t support_witness_live_{0};  ///< bit i: object i's witness is still live
+  std::vector<SupportWitnessKey> support_witness_keys_;
+  double support_witness_max_patch_radius_m_{0.0};
+  double support_witness_max_penetration_m_{0.0};
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages

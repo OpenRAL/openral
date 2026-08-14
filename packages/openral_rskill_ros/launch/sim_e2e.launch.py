@@ -801,7 +801,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "attached_collision_enabled": True,
             "attached_collision_margin_m": 0.0,
             "attached_collision_deadline_ms": 5000.0,
-            "attached_contact_tolerance_m": _octomap_resolution(hal_mode),
+            # No tolerance override (HZ-0095-2). This used to be raised to the
+            # octomap resolution because a legitimate support contact read as
+            # ~one voxel of penetration and there was nothing else to absorb it.
+            # The support-contact witness (ADR-0092 D6) accounts for that
+            # discretisation geometrically against the attested support plane,
+            # so the parameter goes back to being what its name says — physical
+            # slack — and keeps the honest 1 mm kernel default.
             "attached_max_objects": 8,
             "attached_max_primitives": 16,
             "attached_max_touch_links": 32,

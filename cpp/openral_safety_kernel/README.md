@@ -138,9 +138,8 @@ A collision stop publishes `CollisionEvidence` whose `link_a`,
 `link_b_or_object` and `min_distance_m` all describe **the same** geometry
 pair — the deepest pair that actually tripped the check. `min_distance_m` is
 never the sweep-wide minimum: a collision sweep also measures pairs that stayed
-clear of the margin and pairs the gate deliberately exempted (an attached
-payload's attach-time contact baseline, including the payload's own uncleared
-occupancy residue), and quoting one of those against the cell that stopped the
+clear of the margin and pairs the gate deliberately exempted (see the exemption
+ladder below), and quoting one of those against the cell that stopped the
 robot sends diagnosis after a penetration that never happened.
 
 The sweep-wide minimum is still useful, so it is reported **separately and
@@ -168,6 +167,82 @@ When the env var is unset the kernel falls back to
 `BatchSpanProcessor` ferries spans off the chunk-callback thread, so
 the validator stays allocation-free
 (`test_no_alloc.cpp` still pins the guarantee).
+
+## Attached-payload exemption ladder (ADR-0092)
+
+A grasped payload is checked as robot geometry against the occupancy map. That
+is the point — the carried object must still collide with cabinets and people.
+But two contacts are legitimate and neither is distinguishable from a real
+penetration by depth alone, so the kernel grants exactly two bounded
+exemptions inside `check_attached_voxel_collision`, and nothing else. An
+exempted cell reaches `sweep_min_distance` only; it can never be the cell an
+E-stop names.
+
+**1. Support-contact witness (ADR-0092 D6).** Attachment says what the robot is
+carrying, not that the payload is free of its environment: a grasped baguette
+is still lying on the counter. World State attests that one contact at attach
+time on the existing `attached_objects` path — a support identity, a contact
+point and outward normal in the **attached object's own frame**, a patch
+radius, and the **physical** contact depth. The kernel exempts a cell only when
+it is inside the patch laterally *and* no higher above the attested support
+plane than
+
+```
+half_resolution · (|n.x| + |n.y| + |n.z|)   +   attested depth   +   slack
+└─ exact half-width of the voxel cube ──┘       └─ physical ─┘       └ 1 mm ┘
+      projected on the support normal
+```
+
+That first term is what makes the witness work under coarse maps. A surface
+cell's cube overshoots the true surface it discretises, so a 1 mm physical
+contact reads as up to ~15 mm of cube penetration at 25 mm resolution — the
+2026-08-13 baguette run E-stopped on exactly that, `-15.70 mm` reported against
+six real MuJoCo contacts of `-0.87..-1.37 mm`. Measuring depth against the
+attested plane instead of the cell cube accounts for the inflation *exactly*,
+by geometry, rather than absorbing it into a widened tolerance that would also
+license real penetration. A cell whose solid sits genuinely above the attested
+support face still stops the robot, and a payload driving into its support
+raises that height millimetre for millimetre until it does.
+
+The witness is **latched, and it dies on separation**: once nothing it would
+exempt is still in contact, its bit clears and the kernel never sets it again.
+Only a genuinely new attestation — keyed on `(object_id, support_id,
+stamp_ns)`, so the heartbeated attachment snapshot cannot resurrect it —
+re-arms it. Lift and re-contact is a new violation; so is a regrasp; so is any
+contact against a surface the witness does not name. No attestation at all —
+which is what the vision attachment producer emits, honestly — means no
+exemption.
+
+Layer-2 does not get unbounded trust: `support_witness_max_patch_radius_m`
+(0.5) and `support_witness_max_penetration_m` (0.01) cap what an attestation
+may claim, and a witness beyond them fails the whole attachment message closed.
+
+**2. Embedded attach-time residue.** The payload's own occupancy left in the
+map at attach — a cell already at least half a voxel inside the payload when
+the baseline was snapshotted. This is stale self-occupancy, a different
+phenomenon from support contact, and the witness deliberately does not cover
+it; the attach-time baseline snapshot is retained solely for this.
+
+**What this replaced.** The non-deepening index-keyed baseline (a per-cell
+attach-time distance, with any penetration no deeper than it allowed) and the
+`attached_contact_allow_new_shallow` contact-phase allowance are both **gone**.
+The index-keyed baseline decorrelated in exactly the situation it was meant to
+cover: voxel indices shift as the base drives and the lattice re-phases, while
+the physical contact persists, so the recorded cells stop matching the cells
+actually touched. `allow_new_shallow` was worse — it exempted new cells no one
+had attested, up to a tolerance that had been raised to the voxel size to make
+supported motion pass. Both removals move cases from no-stop to stop.
+
+`attached_contact_tolerance_m` survives with its name's meaning restored:
+physical slack for FK and pose noise, defaulting to 1 mm. It is no longer
+overridden to the octomap resolution in `sim_e2e.launch.py` (hazard
+**HZ-0095-2**), because the quantisation it was standing in for is now handled
+geometrically by the witness predicate.
+
+With a live witness the predicted Cartesian steps are checked too — the old
+path skipped them whenever attach-time contact was active, because it had no
+pose-dependent way to tell the support contact apart. The skip remains only for
+the unattested legacy case.
 
 ## Frame convention (ADR-0095)
 
