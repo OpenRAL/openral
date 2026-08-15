@@ -398,6 +398,32 @@ delta. In particular:
   ages out in the kernel's own clock while the stream stays fresh, and the very
   next candidate stops on the cell the allowance had been clearing).
 
+**The allowance's effect on a live verdict is pinned end-to-end, not only in
+gtest.** Through nine validation rounds the allowance armed correctly in every
+declared run yet `place_allowance_active=1` was observed exactly once — XR-1's
+stochastic trajectories almost never put the payload in the band between the
+reduced and the unreduced margin, so outside the gtests the allowance's effect on
+an accept rested on counterfactual arithmetic.
+`tests/integration/test_safety_kernel_place_allowance_band.py` removes the policy
+and drives the band directly against this node: a 1-DoF prismatic carriage
+carrying a 20 mm sphere at a single occupied 25 mm cell, so the commanded joint
+value *is* the payload's distance. One chunk at `d = 20 mm` is refused
+undeclared and **accepted** with a live declaration (the verdict flip that had
+never been observed); a second at `d = 5 mm` is refused either way and emits the
+disclosure verbatim:
+
+```
+safety.collision kind=world a=attached:sim:cup b=voxel_368 step=0 min_distance_m=0.005
+sweep_min_distance_m=0.005 mode=0 rskill_id=openral/place-approach-band
+place_allowance_active=1 place_target=sim:cabinet
+```
+
+`d = 20 mm` is deliberately below the 25 mm the pre-Second-Amendment cap would
+have left, so reverting either `kPlaceApproachAllowanceVoxels` or
+`kMaxPlaceApproachAllowanceM` turns that accept back into a refusal (verified by
+actually reverting both, together and separately). It runs on the `docker-build`
+live-ROS lane via `scripts/ros_live_tests.sh`; no GPU, no simulator.
+
 ### What the region's log lines say
 
 Three events, and the reason is always the real one:

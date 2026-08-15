@@ -67,6 +67,10 @@ on:
       - tests/integration/test_critic_producer_node.py
       - tests/integration/test_sim_sensor_bridge_tf_guard.py
       - tests/integration/test_safety_status_latched_topic.py
+      - tests/integration/test_safety_kernel_place_allowance_band.py
+      # It spawns the real kernel through the tests/sim/safety helpers, so a
+      # change to those must rebuild + re-run it too.
+      - tests/sim/safety/_kernel_subprocess.py
 
 permissions:
   contents: read

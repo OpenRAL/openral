@@ -34,6 +34,10 @@ TARGETS=(
     tests/integration/test_reasoner_vram_eviction.py
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_critic_producer_node.py
+    # The declaration-scoped place-approach allowance, fired deterministically
+    # against the real safety_kernel_node. Needs the colcon-built kernel binary
+    # + openral_msgs overlay, which only this image has.
+    tests/integration/test_safety_kernel_place_allowance_band.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     tests/integration/test_safety_status_latched_topic.py
     tests/integration/test_perception_overlay_live_topic.py
