@@ -211,7 +211,9 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // predictive Cartesian disabled (reactive measured-config check only). The
   // launch derives the index from the robot's end-effector frame; lambda damps
   // the DLS solve near singularities; margin_growth inflates the collision
-  // margin per look-ahead step to bound the linearization/DLS residual;
+  // margin after each additional look-ahead step to bound accumulated
+  // linearization/DLS residual (the first predicted step uses the configured
+  // collision margin);
   // max_steps caps the look-ahead (0 = every row, last step always included).
   this->declare_parameter<std::int64_t>("collision_ee_link_index", -1);
   this->declare_parameter<double>("collision_predict_lambda", 0.05);
@@ -782,7 +784,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // Always check the final step; earlier steps up to the budget.
             const bool last = (static_cast<std::size_t>(s) + 1 == view.horizon);
             if (s < cap || last) {
-              const double extra = collision_predict_margin_growth_m_ * static_cast<double>(s + 1);
+              const double extra = collision_predict_margin_growth_m_ * static_cast<double>(s);
               if (check_config(q_predict_.data(), static_cast<int>(s), extra)) {
                 return;
               }

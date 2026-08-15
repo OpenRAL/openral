@@ -214,7 +214,7 @@ private:
   int collision_ee_link_{-1};              ///< EE collision-link index; <0 disables predict
   double collision_predict_lambda_{0.05};  ///< DLS damping (rad/m near singularities)
   double collision_predict_margin_growth_m_{
-      0.01};                                    ///< per-step margin inflation (bounds DLS residual)
+      0.01};  ///< margin growth after first step (bounds accumulated DLS residual)
   std::size_t collision_predict_max_steps_{0};  ///< cap on look-ahead steps; 0 → all rows
   std::vector<double> q_predict_;               ///< predictive-IK accumulator (no alloc)
   std::vector<double> dq_;                      ///< per-step joint increment (no alloc)

@@ -810,12 +810,10 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictiveCatchesChunkDrivingEeIntoWal
       << "the colliding Cartesian chunk must never reach /openral/safe_action";
 }
 
-// Phase 3 — the predictive Cartesian look-ahead must NOT reject a chunk
-// whose whole predicted trajectory stays clear (no false positive from the
-// margin inflation). Same arm + EE-link as above, but the wall is far (y>=1.9)
-// and the +y chunk only reaches ~y=1.5, so every predicted step is clear and the
-// chunk must reach /openral/safe_action.
-TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysClear) {
+// The first predicted step uses the configured collision margin. Margin growth
+// applies only to additional look-ahead depth: a horizon-1 command must not gain
+// a full extra uncertainty margin and false-stop.
+TEST_F(LifecycleKernelTest, CartesianDeltaFirstStepUsesConfiguredMargin) {
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
       {"n_dof", std::int64_t{2}},
@@ -846,7 +844,9 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
       {"collision_state_deadline_ms", 2000.0},
       {"collision_ee_link_index", std::int64_t{2}},
       {"collision_predict_lambda", 0.02},
-      {"collision_predict_margin_growth_m", 0.02},
+      // Deliberately huge: the old `(step + 1)` formula inflated this one-step
+      // check by 2 m and rejected an otherwise clear command.
+      {"collision_predict_margin_growth_m", 2.0},
       {"collision_predict_max_steps", std::int64_t{0}},
   });
   auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_cart_predict_clear", opts);
@@ -905,13 +905,11 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
 
   openral_msgs::msg::ActionChunk cart;
   cart.control_mode = 5;
-  cart.horizon = 8;
+  cart.horizon = 1;
   cart.n_dof = 6;
   cart.cartesian_delta_scale = {0.1, 0.1, 0.1, 1.0, 1.0, 1.0};
   cart.flat.clear();
-  for (int s = 0; s < 8; ++s) {
-    cart.flat.insert(cart.flat.end(), {0.0, 5.0, 0.0, 0.0, 0.0, 0.0});
-  }
+  cart.flat = {0.0, 5.0, 0.0, 0.0, 0.0, 0.0};
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
@@ -922,8 +920,8 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
     exec.spin_some(std::chrono::milliseconds(10));
   }
   EXPECT_GT(safe_count.load(), 0)
-      << "a Cartesian chunk whose whole predicted trajectory stays clear must pass to "
-         "/openral/safe_action (no false positive)";
+      << "a one-step Cartesian command must use the configured collision margin, "
+         "not one full increment of predictive margin growth";
   EXPECT_FALSE(node->fault_latched());
 }
 

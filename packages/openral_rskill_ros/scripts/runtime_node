@@ -122,6 +122,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     bootstrap.declare_parameter("robot_yaml", "")
     bootstrap.declare_parameter("rskill_search_paths", [""])
     bootstrap.declare_parameter("camera_names", [""])
+    bootstrap.declare_parameter("image_staleness_limit_s", 0.5)
     # Forwarded to the composed RskillRunnerNode's
     # ``reset_to_pose_service`` parameter so the runner calls the
     # HAL's ResetToPose service with the manifest's starting_pose
@@ -181,6 +182,9 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         for c in bootstrap.get_parameter("camera_names").get_parameter_value().string_array_value
         if c
     ]
+    image_staleness_limit_s: float = (
+        bootstrap.get_parameter("image_staleness_limit_s").get_parameter_value().double_value
+    )
     reset_to_pose_service: str = (
         bootstrap.get_parameter("reset_to_pose_service").get_parameter_value().string_value
     )
@@ -276,6 +280,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             dataset_out=dataset_out or None,
             dataset_repo_id=dataset_repo_id or None,
             dataset_license=dataset_license or "CC-BY-4.0",
+            image_staleness_limit_s=image_staleness_limit_s,
         )
     except Exception as exc:  # surface as exit code, not stack trace
         print(f"runtime_node: compose_runtime failed: {exc!s}", file=sys.stderr)

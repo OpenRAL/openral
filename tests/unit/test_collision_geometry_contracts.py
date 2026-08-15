@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openral_core import (
+    BoxShape,
     CapsuleShape,
     CollisionEvidence,
     FailureEvidence,
@@ -211,14 +212,37 @@ _PANDA_SRDF_ARM_DISABLES = frozenset(
 _PANDA_CAPSULE_JUNCTION_EXTRAS = frozenset({frozenset({"panda_link5", "panda_link7"})})
 
 
-def test_panda_mobile_collision_fk_starts_at_the_arm_mount() -> None:
-    """The safety FK must not add the mobile-base height above ``base_link`` twice."""
+def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
+    """Both PandaMobile manifests place joint 1 above the ground-level base frame."""
     desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    vslam_desc = RobotDescription.from_yaml("robots/panda_mobile_vslam/robot.yaml")
     joint1 = next(joint for joint in desc.joints if joint.name == "panda_joint1")
+    vslam_joint1 = next(joint for joint in vslam_desc.joints if joint.name == "panda_joint1")
 
-    assert desc.assets.urdf is not None
-    assert desc.assets.urdf.base_to_root_xyz_rpy == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    assert joint1.origin_xyz == (0.0, 0.0, 0.333)
+    assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
+
+
+def test_panda_mobile_arms_use_matching_mesh_enclosing_obbs() -> None:
+    """Both mobile Panda manifests use the same measured arm mesh bounds."""
+    descriptions = [
+        RobotDescription.from_yaml(path)
+        for path in (
+            "robots/panda_mobile/robot.yaml",
+            "robots/panda_mobile_vslam/robot.yaml",
+        )
+    ]
+    arm_geometry = [
+        {
+            geometry.link_name: geometry
+            for geometry in desc.collision_geometry
+            if geometry.link_name.startswith("panda_link")
+        }
+        for desc in descriptions
+    ]
+
+    assert arm_geometry[1] == arm_geometry[0]
+    assert set(arm_geometry[0]) == {f"panda_link{i}" for i in range(1, 8)}
+    assert all(isinstance(geometry.shape, BoxShape) for geometry in arm_geometry[0].values())
 
 
 def test_panda_mobile_acm_matches_franka_srdf() -> None:

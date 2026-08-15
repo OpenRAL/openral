@@ -124,8 +124,9 @@ class WorldStateAggregator:
             Used to initialise diagnostic keys for all declared sensor bundles
             and end-effectors.
         staleness_limit_s: Maximum age (seconds) for a component reading
-            before it is classified as ``"stale"``.  Default ``0.1 s``
-            (3 frames at 30 Hz).
+            before it is classified as ``"stale"``. Default ``0.5 s``.
+        image_staleness_limit_s: Camera-specific age threshold. Defaults to
+            ``staleness_limit_s``; deploy sim raises it for slow rendered frames.
         policy_state_staleness_limit_s: Separate window for the step-locked
             ``policy_state`` component, published once per simulator step
             rather than at a fixed rate. Default ``5.0 s`` — see
@@ -173,12 +174,17 @@ class WorldStateAggregator:
         description: RobotDescription,
         *,
         staleness_limit_s: float = DEFAULT_STALENESS_S,
+        image_staleness_limit_s: float | None = None,
         policy_state_staleness_limit_s: float = DEFAULT_POLICY_STATE_STALENESS_S,
         clock_fn: Callable[[], int] | None = None,
     ) -> None:
         """Initialise the aggregator; does not open any connection."""
         self.description = description
         self._staleness_limit_ns: int = int(staleness_limit_s * 1e9)
+        self._image_staleness_limit_ns: int = int(
+            (staleness_limit_s if image_staleness_limit_s is None else image_staleness_limit_s)
+            * 1e9
+        )
         self._policy_state_staleness_limit_ns: int = int(policy_state_staleness_limit_s * 1e9)
         self._clock_fn: Callable[[], int] = clock_fn or time.time_ns
         self._lock = threading.RLock()
@@ -241,6 +247,7 @@ class WorldStateAggregator:
             "world_state.aggregator.init",
             robot=description.name,
             staleness_limit_s=staleness_limit_s,
+            image_staleness_limit_s=self._image_staleness_limit_ns / 1e9,
             sensor_count=len(self._sensor_names),
             ee_count=len(self._declared_ee_names),
         )
@@ -470,7 +477,9 @@ class WorldStateAggregator:
                 if sensor_name in self._images:
                     topic, stamp = self._images[sensor_name]
                     age_ns = now_ns - stamp
-                    diag[sensor_name] = "ok" if age_ns <= self._staleness_limit_ns else "stale"
+                    diag[sensor_name] = (
+                        "ok" if age_ns <= self._image_staleness_limit_ns else "stale"
+                    )
                     images[sensor_name] = topic
                     ages_ms[sensor_name] = age_ns / 1e6
                 else:
@@ -558,11 +567,15 @@ class WorldStateAggregator:
         # components contribute to ``components_stale`` but not to the
         # histogram (they have no age to record).
         staleness_hist = ral_metrics.get_world_state_staleness_ms()
-        # The staleness deadline rides along as a per-data-point threshold so the
-        # dashboard draws a deadline line + breach coloring on each component's
-        # staleness sparkline. Constant per aggregator, so no extra cardinality.
-        staleness_deadline_ms = self._staleness_limit_ns / 1e6
+        # The deadline rides along per component so camera and policy-state
+        # windows render accurately without changing metric cardinality.
         for component, age_ms in ages_ms.items():
+            if component in self._sensor_names:
+                staleness_deadline_ms = self._image_staleness_limit_ns / 1e6
+            elif component == "policy_state":
+                staleness_deadline_ms = self._policy_state_staleness_limit_ns / 1e6
+            else:
+                staleness_deadline_ms = self._staleness_limit_ns / 1e6
             ral_metrics.record_histogram_ms(
                 staleness_hist,
                 age_ms,

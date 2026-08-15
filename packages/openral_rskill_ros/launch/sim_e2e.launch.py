@@ -118,6 +118,16 @@ def _run_resource_attrs(hal_mode: str) -> str:
     return ",".join(f"{k}={v}" for k, v in attrs.items())
 
 
+def _world_voxel_margin_m(hal_mode: str) -> float:
+    """Return the calibrated world-voxel clearance for this boundary."""
+    return 0.0 if hal_mode == "sim" else 0.02
+
+
+def _octomap_occupancy_threshold(hal_mode: str) -> float:
+    """Require repeated simulated hits while preserving real-map behavior."""
+    return 0.8 if hal_mode == "sim" else 0.6
+
+
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
@@ -768,12 +778,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         kernel_params = {
             **kernel_params,
             "world_voxel_enabled": True,
-            # 2 cm buffer on top of the already-conservative capsule radii.
-            # 5 cm was too eager for a cluttered kitchen (vetoed close work);
-            # 2 cm lets the arm approach surfaces while still catching imminent
-            # contact. The gripper + base are exempt from the model (see
-            # robots/panda_mobile/robot.yaml), so the gripper can reach targets.
-            "world_voxel_margin_m": 0.02,
+            # Sim uses exact digital-twin OBBs plus conservative occupied cubes;
+            # No additional sim margin avoids vetoing trained close-contact
+            # manipulation; exact OBB-vs-cube overlap still E-stops. Real
+            # deploy keeps 2 cm.
+            "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
             "world_voxel_max_cells": 262144,
             "world_voxel_deadline_ms": 1000.0,
         }
@@ -977,6 +986,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             {
                 "robot_yaml": robot_yaml,
                 "camera_names": rgb_camera_names,
+                # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
+                # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
+                # cameras enough room for one slow frame without stale flapping.
+                "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
@@ -1400,7 +1413,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # occupancy threshold + speckle filter clears transient /
                     # isolated noise voxels faster so they don't linger as
                     # phantom obstacles in front of the arm.
-                    "occupancy_thres": 0.6,
+                    # One default 0.7-probability hit exceeds a 0.6 threshold;
+                    # sim uses 0.8 so a transient self/floating point cannot
+                    # become a safety voxel until a second frame confirms it.
+                    "occupancy_thres": _octomap_occupancy_threshold(hal_mode),
                     "sensor_model.miss": 0.4,
                     "filter_speckles": True,
                     # Graph-wide clock domain (see _resolve_clock_origin). With no
