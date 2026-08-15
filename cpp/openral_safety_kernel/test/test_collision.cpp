@@ -1950,6 +1950,22 @@ constexpr double kBatteryEnvelope = 0.0435;    // 12.5 + 5 + 1 + 25 mm
 constexpr double kR2CoplanarHeight = 0.0429;   // round-8 r2's measured excess
 constexpr double kR2LateralOffset = 0.085;     // inside the run's 84-86 mm band
 
+// The kernel node's own physical FK/pose slack — `attached_contact_tolerance_m`,
+// declared and defaulted to 1 mm in `src/lifecycle_kernel.cpp`. It is the third
+// term of the envelope, so it is named here rather than spelled `0.001` at each
+// call site.
+constexpr double kBatteryContactTolerance = 0.001;
+
+// The SAME round-8 r2 cell to the micrometre, as the final battery recorded it
+// (`spark:~/openral-runs/2026-08-15-final-battery/`): +42.893 mm above the
+// attested support plane, 85.7 mm out. `kR2CoplanarHeight` / `kR2LateralOffset`
+// above carry the same cell rounded to the tenth of a millimetre, and the
+// rounding went UP, so the rounded fixture is the STRICTER of the two probes —
+// 0.600 mm of headroom against the field cell's own 0.607 mm. Both are pinned
+// below; neither is allowed to drift.
+constexpr double kR2FieldHeight = 0.042893;
+constexpr double kR2FieldLateral = 0.0857;
+
 // The battery lattice, phased so cell layer `iz = 14` centres exactly
 // `top_height` above the attested plane (z = 0, the payload's own support face)
 // and column `ix = 15` centres exactly `kR2LateralOffset` out along +x. The
@@ -1963,7 +1979,7 @@ osk::VoxelGrid battery_grid(const std::vector<std::uint8_t>& occ, double top_hei
   g.sy = kSupportN;
   g.sz = kSupportN;
   g.occupancy = occ.data();
-  g.attached_contact_tolerance = 0.001;
+  g.attached_contact_tolerance = kBatteryContactTolerance;
   return g;
 }
 
@@ -2021,6 +2037,91 @@ TEST(SupportContactWitness, TheRound8CoplanarCellIsInsideTheWidenedEnvelope) {
   EXPECT_FALSE(osk::support_contact_exempts(
       obj, identity(), osk::Vec3{kR2LateralOffset, 0.0, kBatteryEnvelope + 1e-9}, kSupportRes,
       slack));
+}
+
+TEST(SupportContactWitness, TheWidenedEnvelopeIsExactlyItsFourNamedTerms) {
+  // The envelope DERIVED rather than transcribed, at the exact geometry the
+  // field flew. `kBatteryEnvelope` above is a literal: easy to read, but a
+  // literal cannot notice when one of the four terms it summarises moves
+  // underneath it, and the two probes that lean on it would then be probing a
+  // number the kernel no longer computes. This rebuilds the same figure out of
+  // the constants the kernel actually reads — the live resolution, the attested
+  // depth, the node's `attached_contact_tolerance_m`, and the calibration's one
+  // voxel — and pins the derivation and the literal to each other, so BOTH a
+  // changed constant AND a changed formula fail here.
+  //
+  // Provenance. This is the thinnest safety-relevant margin in the stack. The
+  // final battery (`spark:~/openral-runs/2026-08-15-final-battery/`, round 8
+  // r2; hazard-log Entry 012, "Calibration 2026-08-15") put the real co-planar
+  // cell at +42.893 mm above the attested support plane, 85.7 mm out, against
+  // an envelope of 43.500 mm: 0.607 mm of headroom, and the run's whole outcome
+  // turns on it. Half a millimetre off any one of these four constants and the
+  // flagship run stops again — or, in the other direction, a genuine protrusion
+  // stops being one.
+  osk::AttachedModel att;
+  append_battery_baguette(att);
+  const osk::AttachedObject& obj = att.objects[0];
+
+  // The four terms, in the order the bound adds them. The support normal is
+  // axis-aligned (+z, counter -> payload), so the first term is exactly half a
+  // voxel: 0.5 x 25 mm x (|0| + |0| + |1|).
+  const osk::Vec3& n = obj.support_normal;
+  ASSERT_NEAR(std::fabs(n.x) + std::fabs(n.y) + std::fabs(n.z), 1.0, 1e-15)
+      << "the run's support face is axis-aligned; the first term is half a voxel";
+  const double normal_half_width =
+      0.5 * kSupportRes * (std::fabs(n.x) + std::fabs(n.y) + std::fabs(n.z));
+  const double derived =
+      normal_half_width + kBatteryPenetration + kBatteryContactTolerance + kSupportRes;
+
+  EXPECT_DOUBLE_EQ(normal_half_width, 0.0125);
+  EXPECT_DOUBLE_EQ(kBatteryPenetration, 0.005) << "r2's attested physical contact depth";
+  EXPECT_DOUBLE_EQ(kBatteryContactTolerance, 0.001) << "the node's attached_contact_tolerance_m";
+  EXPECT_DOUBLE_EQ(kSupportRes, 0.025) << "the 2026-08-15 co-planar voxel, and the map's own cell";
+  EXPECT_DOUBLE_EQ(derived, 0.0435) << "12.5 + 5 + 1 + 25 mm = 43.500 mm, exactly";
+  EXPECT_DOUBLE_EQ(derived, kBatteryEnvelope) << "the literal above must be this derivation";
+
+  // 43.500 mm is the FLOOR of the envelope at this resolution and depth, not a
+  // midpoint: (|n.x| + |n.y| + |n.z|) >= 1 for every unit normal, with equality
+  // only when the support face is axis-aligned. No attitude of the support face
+  // can make the bound narrower than the number derived above — so an envelope
+  // reported BELOW 43.500 mm here is arithmetically unreachable, whichever way
+  // the counter is tilted.
+  constexpr double kInvSqrt3 = 0.5773502691896258;
+  for (const osk::Vec3& tilt : {osk::Vec3{0.0, 0.0, -1.0}, osk::Vec3{0.0, -1.0, 0.0},
+                                osk::Vec3{kInvSqrt3, kInvSqrt3, kInvSqrt3},
+                                osk::Vec3{0.6, 0.0, 0.8}, osk::Vec3{-0.28, 0.96, 0.0}}) {
+    const double tilted =
+        0.5 * kSupportRes * (std::fabs(tilt.x) + std::fabs(tilt.y) + std::fabs(tilt.z)) +
+        kBatteryPenetration + kBatteryContactTolerance + kSupportRes;
+    EXPECT_GE(tilted, derived) << "a tilted support face only ever widens the height envelope";
+  }
+
+  // The field cell, to the micrometre, against the derived bound — exempt, by
+  // 0.607 mm. The rounded fixture the other tests fly (+42.9 mm) is the
+  // stricter probe of the two at 0.600 mm; both are inside, and the gap between
+  // them is the rounding, not a tolerance.
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, kR2FieldHeight},
+                                           kSupportRes, kBatteryContactTolerance))
+      << "round-8 r2's co-planar cell is inside the calibrated envelope";
+  EXPECT_NEAR(derived - kR2FieldHeight, 0.000607, 1e-12) << "the field margin: 0.607 mm";
+  EXPECT_NEAR(derived - kR2CoplanarHeight, 0.000600, 1e-12) << "the rounded fixture's 0.600 mm";
+  EXPECT_LT(kR2FieldLateral, kBatteryPatchRadius + 0.5 * kSupportRes * 1.7320508075688772)
+      << "85.7 mm is well inside the run's 135.65 mm lateral gate; height is the only bound left";
+
+  // And the closed side of the bound, on the derived number rather than the
+  // literal: the last micrometre is exempt, the first one past it is not.
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, derived - 1e-6},
+                                           kSupportRes, kBatteryContactTolerance));
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, derived}, kSupportRes,
+                                           kBatteryContactTolerance))
+      << "the bound is closed: a cell exactly on the envelope is still support";
+  EXPECT_FALSE(osk::support_contact_exempts(obj, identity(),
+                                            osk::Vec3{kR2FieldLateral, 0.0, derived + 1e-6},
+                                            kSupportRes, kBatteryContactTolerance))
+      << "one micrometre past 43.500 mm is a protrusion, and it stops the robot";
 }
 
 TEST(SupportContactWitness, SolidAboveTheCoplanarBandStillStops) {
