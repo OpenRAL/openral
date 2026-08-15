@@ -105,7 +105,9 @@ contributor should look at before adding similar code.
    (`packages/openral_octomap_bridge/src/payload_clearing.cpp`) evaluate
    the same attested support plane with the same two exact
    discretisation pads (the voxel cube's half-width projected on the
-   support normal, and its circumradius laterally). They are not
+   support normal, and its circumradius laterally) and the same one voxel
+   of co-planar headroom on the along-normal bound (added to both sides
+   on 2026-08-15, hazard log Entry 012's "Calibration 2026-08-15"). They are not
    consolidated because consolidating them would make a Layer-2
    perception bridge link the Layer-6 safety kernel's collision core —
    the wrong dependency direction, and one that would put `octomap` and

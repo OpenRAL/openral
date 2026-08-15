@@ -1071,7 +1071,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
             // amendment): inside the declared target's region this payload's
             // margin — and only this payload's, and only for cells in that
-            // region — is reduced by min(one voxel, 25 mm), enough to pass the
+            // region — is reduced by min(1.5 x voxel, 40 mm), enough to pass the
             // voxel inflation of a thin opening and actually reach the support
             // contact the place witness is earned by. The hard stop behind the
             // reduced margin is untouched.
@@ -1139,9 +1139,11 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
   if (std::fabs(lx) > half.x || std::fabs(ly) > half.y || std::fabs(lz) > half.z) {
     return 0.0;
   }
-  // Condition 1 of the amendment, evaluated against the LIVE resolution so a map
-  // that coarsens mid-run can only shrink the allowance toward the ceiling.
-  return std::min(grid.resolution, kMaxPlaceApproachAllowanceM);
+  // Condition 1 of the amendment (as calibrated by its Second Amendment,
+  // 2026-08-15: min(1.5 x voxel, 4 cm)), evaluated against the LIVE resolution
+  // so a map that coarsens mid-run can only shrink the allowance toward the
+  // ceiling.
+  return place_approach_allowance_cap(grid.resolution);
 }
 
 PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_extents,
@@ -1226,7 +1228,16 @@ bool support_contact_exempts(const AttachedObject& object, const Transform& obje
   if (lateral_sq > patch * patch) {
     return false;
   }
-  return height <= normal_half_width + object.support_max_penetration + slack;
+  // Fourth term: ONE VOXEL of co-planar headroom (hazard log Entry 012,
+  // "Calibration 2026-08-15", the 5-run baguette battery; approved by the
+  // maintainer alongside ADR-0097's Second Amendment). Cells of adjacent
+  // co-planar structure — a raised edge, a neighbouring stack on the same
+  // support surface — sit about one voxel above the attested plane while the
+  // payload is in genuine, continuing contact; round-8 r2 measured +42.9 mm
+  // against a ~15-19 mm envelope, an excess of one 25 mm voxel. This widens
+  // HEIGHT only, and only inside the lateral patch bound above, which is
+  // unchanged. Deepening past the widened bound still stops.
+  return height <= normal_half_width + object.support_max_penetration + slack + resolution;
 }
 
 std::uint8_t update_support_contact_witnesses(const AttachedModel& attached,

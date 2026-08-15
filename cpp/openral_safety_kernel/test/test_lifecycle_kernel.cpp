@@ -1238,7 +1238,13 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
 //   occupancy    one 25 mm cell, cube x in [0.140, 0.165], y/z in +/-12.5 mm
 //   true surface distance payload -> cell                       = 0.020 m
 //   attached margin                                    0.030 m  -> STOP
-//   attached margin - min(resolution, 25 mm)           0.005 m  -> CLEAR
+//   attached margin - min(1.5 x resolution, 40 mm)   -0.0075 m  -> CLEAR
+//
+// The reduced margin was 0.005 m until ADR-0097's Second Amendment raised the
+// allowance from min(one voxel, 2.5 cm) to min(1.5 x voxel, 4 cm) on
+// 2026-08-15; both values sit on the CLEAR side of the same 0.020 m clearance,
+// so what these two tests observe — allowance in force or withdrawn — is
+// unchanged by the calibration.
 namespace {
 
 std::vector<rclcpp::Parameter> place_declaration_params() {

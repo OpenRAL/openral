@@ -2085,8 +2085,11 @@ class PlaceRegion(BaseModel):
     """The bounded region of a declared place target (ADR-0097 amendment).
 
     The volume inside which the declared payload's world-collision margin is
-    reduced by ``min(one voxel, 25 mm)`` so it can physically reach the support
-    contact the place witness is *earned by*. Round-6 validation showed that
+    reduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,
+    2026-08-15 — 37.5 mm at sim's 25 mm cells, and 40 mm rather than 75 mm at a
+    real 50 mm grid, because the absolute ceiling still binds) so it can
+    physically reach the support contact the place witness is *earned by*.
+    Round-6 validation showed that
     without it the flagship counter→cabinet insertion cannot complete even with
     a correct declaration: inserting through an enclosed target's opening means
     passing within margin distance of voxel-quantised walls, and at 25 mm cells
