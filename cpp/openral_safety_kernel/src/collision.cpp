@@ -1144,41 +1144,61 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
   return std::min(grid.resolution, kMaxPlaceApproachAllowanceM);
 }
 
-bool ingest_place_region(const Transform& pose, const Vec3& half_extents, std::uint8_t object_mask,
-                         PlaceApproachRegion& out) noexcept {
+PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_extents,
+                                      std::uint8_t object_mask, PlaceApproachRegion& out) noexcept {
   out = PlaceApproachRegion{};
   if (object_mask == 0) {
-    return false;  // the declared payload is not among the carried objects
+    return PlaceRegionStatus::kNoObject;  // the declared payload is not carried
   }
   if (!std::isfinite(pose.t.x) || !std::isfinite(pose.t.y) || !std::isfinite(pose.t.z)) {
-    return false;
+    return PlaceRegionStatus::kBadPose;
   }
   for (std::size_t k = 0; k < 9; ++k) {
     if (!std::isfinite(pose.r[k])) {
-      return false;
+      return PlaceRegionStatus::kBadPose;
     }
   }
   const double hx = half_extents.x;
   const double hy = half_extents.y;
   const double hz = half_extents.z;
   if (!std::isfinite(hx) || !std::isfinite(hy) || !std::isfinite(hz)) {
-    return false;
+    return PlaceRegionStatus::kBadExtents;
   }
   if (hx <= 0.0 || hy <= 0.0 || hz <= 0.0) {
-    return false;  // degenerate: a region with no interior licenses nothing
+    return PlaceRegionStatus::kDegenerate;  // no interior licenses nothing
   }
   if (hx > kMaxPlaceRegionHalfExtentM || hy > kMaxPlaceRegionHalfExtentM ||
       hz > kMaxPlaceRegionHalfExtentM) {
-    return false;
+    return PlaceRegionStatus::kOversize;
   }
   if (8.0 * hx * hy * hz > kMaxPlaceRegionVolumeM3) {
-    return false;
+    return PlaceRegionStatus::kOversizeVolume;
   }
   out.valid = true;
   out.object_mask = object_mask;
   out.pose = pose;
   out.half_extents = half_extents;
-  return true;
+  return PlaceRegionStatus::kOk;
+}
+
+const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
+  switch (status) {
+  case PlaceRegionStatus::kOk:
+    return "ok";
+  case PlaceRegionStatus::kNoObject:
+    return "no_object";
+  case PlaceRegionStatus::kBadPose:
+    return "bad_pose";
+  case PlaceRegionStatus::kBadExtents:
+    return "bad_extents";
+  case PlaceRegionStatus::kDegenerate:
+    return "degenerate";
+  case PlaceRegionStatus::kOversize:
+    return "oversize";
+  case PlaceRegionStatus::kOversizeVolume:
+    return "oversize_volume";
+  }
+  return "unknown";
 }
 
 bool support_contact_exempts(const AttachedObject& object, const Transform& object_xf,

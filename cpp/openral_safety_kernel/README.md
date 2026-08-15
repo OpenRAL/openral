@@ -341,7 +341,38 @@ In particular:
 * **It dies with the declaration.** Retraction, the declaration's own timeout
   backstop (re-evaluated per candidate action, not only at ingest), detach, a
   failed attachment ingest, and a re-framed grid all clear it
-  (HZ-0097-3/HZ-0097-4 mitigation 4).
+  (HZ-0097-3/HZ-0097-4 mitigation 4). Two tests pin the two clock-domain gates
+  the 2026-08-14 fix leans on:
+  `…StalledAttachmentStreamRefusesEveryCandidateEvenWithAnArmedRegion` (a stale
+  attachment stream refuses every candidate action outright, so an armed region
+  cannot outlive the freshness gate that vouches for the payload) and
+  `…PlaceDeclarationBackstopExpiresTheAllowancePerCandidate` (the declaration
+  ages out in the kernel's own clock while the stream stays fresh, and the very
+  next candidate stops on the cell the allowance had been clearing).
+
+### What the region's log lines say
+
+Three events, and the reason is always the real one:
+
+| Line | Severity | When |
+| --- | --- | --- |
+| `safety.place_region_armed` | INFO | a validated region goes live (on the transition) |
+| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed` |
+| `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume` |
+
+Two rules keep them honest. **The reason is the branch that fired**
+(`place_region_status_reason`), not a category: `reason=bounds` used to label
+every refusal, including the empty-object-mask one that fires on every heartbeat
+before the grasp. And **a refusal is announced on its (reason, target)
+transition**, not per message — the attachment set is heartbeated at 30 Hz and a
+refusal is normally a standing state, which round-8 recorded as 672–811 identical
+warnings per run. The standing state is instead readable on the 1 Hz
+`/diagnostics` `place_region` key (`live:<target>`, `expired:<target>`,
+`<reason>:<target>`, or `-`). A pre-grasp declaration is *not* a fault — the
+margins in force are exactly the undeclared ones — so it is INFO, and it is still
+logged once, because an allowance that never armed has to be reconstructible from
+the trace (HZ-0097-2 mitigation 1).
 
 The honest cost, accepted and recorded as HZ-0097-4: an object already sitting
 inside the declared region when the declaration goes live — a jar on the shelf —

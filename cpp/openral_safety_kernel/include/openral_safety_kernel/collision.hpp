@@ -135,6 +135,28 @@ struct PlaceApproachRegion {
   Vec3 half_extents{};          ///< region box half-extents (m, all > 0)
 };
 
+/// Outcome of a place-region ingest attempt (`ingest_place_region`).
+///
+/// Every value other than `kOk` means exactly one thing to the geometry — *no
+/// allowance*, i.e. the unchanged pre-amendment margin — and something quite
+/// different to whoever reads the log, which is why the outcome is not a bool.
+/// `kNoObject` is the ordinary pre-grasp state: dispatch declares the place
+/// phase before the payload is attached, so the declaration resolves to no
+/// carried object on every attachment heartbeat until the grasp lands. The
+/// remaining values are producer errors in a message that reached the kernel.
+/// Collapsing the two into one `reason=bounds` label is what round-8
+/// (`spark:~/openral-runs/2026-08-15-round8/`) reported as 672-811 identical
+/// bounds warnings per run, none of which described a bound.
+enum class PlaceRegionStatus : std::uint8_t {
+  kOk = 0,
+  kNoObject = 1,        ///< empty object_mask — the declared payload is not carried
+  kBadPose = 2,         ///< non-finite region pose
+  kBadExtents = 3,      ///< non-finite half-extent
+  kDegenerate = 4,      ///< half-extent <= 0: a box with no interior licenses nothing
+  kOversize = 5,        ///< a side past kMaxPlaceRegionHalfExtentM
+  kOversizeVolume = 6,  ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
+};
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -493,10 +515,15 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
 /// Rejects a non-finite pose or half-extent, a non-positive half-extent, a
 /// half-extent past `kMaxPlaceRegionHalfExtentM`, a box past
 /// `kMaxPlaceRegionVolumeM3`, and an empty `object_mask` (a declaration whose
-/// payload is not among the carried objects). Returns whether `out.valid` was
-/// set. Not on the hot path (once per world-state message).
-bool ingest_place_region(const Transform& pose, const Vec3& half_extents, std::uint8_t object_mask,
-                         PlaceApproachRegion& out) noexcept;
+/// payload is not among the carried objects). Returns `PlaceRegionStatus::kOk`
+/// iff `out.valid` was set; every other value leaves `out` inert. Not on the
+/// hot path (once per world-state message).
+PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_extents,
+                                      std::uint8_t object_mask, PlaceApproachRegion& out) noexcept;
+
+/// Stable snake_case token naming `status`, for the `reason=` key of the
+/// kernel's place-region log lines. Never null; unknown values read `unknown`.
+const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
 
 /// Does object `i`'s attested support contact explain occupied cell `center`?
 ///

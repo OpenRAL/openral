@@ -1113,6 +1113,17 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   add_kv("last_drop_reason", last_drop_reason_.empty() ? "-" : last_drop_reason_);
   add_kv("envelope_loaded", envelope_loaded_ ? "true" : "false");
   add_kv("n_dof", std::to_string(envelope_.n_dof));
+  // Standing place-declaration state. The refusal logs are transition-gated, so
+  // this heartbeat is what makes a persistent refusal (or a live allowance)
+  // observable without re-warning at the attachment rate.
+  std::string place_region_state{"-"};
+  if (place_region_.valid) {
+    place_region_state =
+        (place_declaration_live() ? "live:" : "expired:") + place_declaration_target_;
+  } else if (!place_region_refusal_reason_.empty()) {
+    place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
+  }
+  add_kv("place_region", place_region_state);
   arr.status.push_back(status);
   diagnostics_pub_->publish(arr);
   // ADR-0096 / HZ-0096-1 mitigation 2 — refresh the latched status at the
@@ -1687,12 +1698,13 @@ void SafetyKernelLifecycleNode::on_world_state(
                   key.object_id.c_str(), key.support_id.c_str());
     }
   }
-  // The place declaration rides the same snapshot as the payload it is scoped
-  // to, so it is resolved here, against the objects that were just accepted.
-  ingest_place_declaration(*msg);
-  attached_overflow_ = false;
-  attached_received_ = true;
-  attached_stamp_ = producer_stamp;
+  // Attachment-revision edge FIRST, and specifically before the declaration is
+  // re-ingested: a detach retires the payload the region is scoped to, and a
+  // region ingested against a payload that is already gone resolves to an empty
+  // object mask — which the ingest can only report as a refusal. Round-8
+  // (`spark:~/openral-runs/2026-08-15-round8/`) logged every clean release that
+  // way, as `place_region_rejected`, when what happened was an ordinary disarm.
+  // Announcing the drop here keeps a detach one `place_region_dropped` line.
   if (msg->attachment_revision != attached_revision_) {
     attached_revision_ = msg->attachment_revision;
     if (attached_model_.n_objects == 0) {
@@ -1706,12 +1718,24 @@ void SafetyKernelLifecycleNode::on_world_state(
                 std::numeric_limits<double>::infinity());
       // Detach: the approach allowance dies with the payload it was scoped to,
       // exactly as the witness does.
+      if (place_region_.valid) {
+        RCLCPP_INFO(this->get_logger(), "safety.place_region_dropped reason=detached target=%s",
+                    place_declaration_target_.c_str());
+      }
       place_region_ = PlaceApproachRegion{};
+      place_region_refusal_reason_.clear();
+      place_region_refusal_target_.clear();
     } else {
       attached_contact_snapshot_pending_ = true;
       attached_contact_active_ = false;
     }
   }
+  // The place declaration rides the same snapshot as the payload it is scoped
+  // to, so it is resolved here, against the objects that were just accepted.
+  ingest_place_declaration(*msg);
+  attached_overflow_ = false;
+  attached_received_ = true;
+  attached_stamp_ = producer_stamp;
   if (attachment_applied_pub_ != nullptr) {
     std_msgs::msg::UInt64 applied;
     applied.data = msg->attachment_revision;
@@ -1729,10 +1753,29 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   place_declaration_target_.clear();
 
   const auto announce_dropped = [&](const char* reason) {
+    // A declaration that is gone is not a declaration being refused: the next
+    // refusal, whatever it is, is news again.
+    place_region_refusal_reason_.clear();
+    place_region_refusal_target_.clear();
     if (was_valid) {
       RCLCPP_INFO(this->get_logger(), "safety.place_region_dropped reason=%s target=%s", reason,
                   previous_target.c_str());
     }
+  };
+  // The attachment set is heartbeated at 30 Hz and a refusal almost always
+  // describes a STANDING state, not an event: a declaration published before the
+  // grasp lands resolves to no carried payload on every beat of the approach.
+  // Round-8 logged 672-811 such lines per run. Emit on the (reason, target)
+  // transition only — the same discipline the support-contact witness logs are
+  // under — and leave the standing state to the 1 Hz diagnostics heartbeat's
+  // `place_region` key, which is where a state that persists belongs.
+  const auto refusal_is_new = [this](const char* reason, const std::string& target) {
+    if (place_region_refusal_reason_ == reason && place_region_refusal_target_ == target) {
+      return false;
+    }
+    place_region_refusal_reason_ = reason;
+    place_region_refusal_target_ = target;
+    return true;
   };
   if (!msg.place_declaration_valid) {
     announce_dropped("no_declaration");
@@ -1757,10 +1800,13 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   }
   const auto& region = declaration.region;
   if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
-    RCLCPP_WARN(this->get_logger(),
-                "safety.place_region_rejected reason=frame_mismatch region_frame=%s grid_frame=%s "
-                "target=%s",
-                region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.target_id.c_str());
+    if (refusal_is_new("frame_mismatch", declaration.target_id)) {
+      RCLCPP_WARN(
+          this->get_logger(),
+          "safety.place_region_rejected reason=frame_mismatch region_frame=%s grid_frame=%s "
+          "target=%s",
+          region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.target_id.c_str());
+    }
     return;
   }
   // Which carried payload the allowance follows. An empty object_id is the
@@ -1778,14 +1824,39 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
       region.pose.orientation.w);
   const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
-  if (!ingest_place_region(pose, half, object_mask, place_region_)) {
-    RCLCPP_WARN(this->get_logger(),
-                "safety.place_region_rejected reason=bounds target=%s object=%s half_m=%g,%g,%g "
-                "rskill=%s trace=%s",
-                declaration.target_id.c_str(), declaration.object_id.c_str(), half.x, half.y,
-                half.z, declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+  const PlaceRegionStatus status = ingest_place_region(pose, half, object_mask, place_region_);
+  if (status != PlaceRegionStatus::kOk) {
+    const char* reason = place_region_status_reason(status);
+    if (refusal_is_new(reason, declaration.target_id)) {
+      if (status == PlaceRegionStatus::kNoObject) {
+        // Not a fault, and not the producer's: dispatch declares the place phase
+        // for the whole goal, and the goal starts before the grasp — so until
+        // the payload is attached the declaration names an object the kernel is
+        // not carrying. Nothing is refused that would otherwise have been
+        // granted, and the margins in force are exactly the undeclared ones, so
+        // this is a state note at INFO rather than a warning. It is still
+        // logged: an allowance that never armed has to be reconstructible from
+        // the trace (HZ-0097-2 mitigation 1, CLAUDE.md §1.4).
+        RCLCPP_INFO(this->get_logger(),
+                    "safety.place_region_not_armed reason=no_object target=%s object=%s "
+                    "attached=%zu rskill=%s trace=%s",
+                    declaration.target_id.c_str(), declaration.object_id.c_str(),
+                    attached_model_.n_objects, declaration.rskill_id.c_str(),
+                    declaration.trace_id.c_str());
+      } else {
+        // Everything else is a malformed region in a message that reached the
+        // kernel: a producer error, warned once per (reason, target) transition.
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.place_region_rejected reason=%s target=%s object=%s half_m=%g,%g,%g "
+                    "rskill=%s trace=%s",
+                    reason, declaration.target_id.c_str(), declaration.object_id.c_str(), half.x,
+                    half.y, half.z, declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+      }
+    }
     return;
   }
+  place_region_refusal_reason_.clear();
+  place_region_refusal_target_.clear();
   if (!was_valid) {
     RCLCPP_INFO(this->get_logger(),
                 "safety.place_region_armed target=%s object_mask=0x%x half_m=%g,%g,%g "
