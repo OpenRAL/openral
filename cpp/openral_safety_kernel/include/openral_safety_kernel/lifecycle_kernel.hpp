@@ -244,6 +244,14 @@ private:
   std::int64_t place_declaration_stamp_ns_{0};
   double place_declaration_timeout_s_{0.0};
   std::string place_declaration_target_;
+  /// Last announced place-region refusal, as (reason token, target). The
+  /// attachment set is heartbeated, so a refusal is normally a standing state
+  /// rather than an event — the pre-grasp `no_object` case holds for the entire
+  /// approach — and re-announcing it per message buries the transitions that do
+  /// matter. Refusals are logged on a change of this pair only; the standing
+  /// state stays readable on the 1 Hz `/diagnostics` `place_region` key.
+  std::string place_region_refusal_reason_;
+  std::string place_region_refusal_target_;
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages

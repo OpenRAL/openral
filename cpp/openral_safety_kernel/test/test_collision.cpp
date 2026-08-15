@@ -24,7 +24,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <iterator>
 #include <new>
+#include <set>
+#include <string>
 #include <vector>
 #pragma GCC diagnostic pop
 
@@ -2512,8 +2515,9 @@ void fill_cabinet_opening(std::vector<std::uint8_t>& occ, bool with_outside_obst
 // columns, and NOT the ix=18 obstacle 150 mm away.
 osk::PlaceApproachRegion declared_cabinet_region(std::uint8_t mask = 0x1) {
   osk::PlaceApproachRegion region;
-  EXPECT_TRUE(osk::ingest_place_region(translate(0.0, 0.0, 0.0157), osk::Vec3{0.10, 0.06, 0.06},
-                                       mask, region));
+  EXPECT_EQ(osk::ingest_place_region(translate(0.0, 0.0, 0.0157), osk::Vec3{0.10, 0.06, 0.06}, mask,
+                                     region),
+            osk::PlaceRegionStatus::kOk);
   return region;
 }
 
@@ -2641,7 +2645,8 @@ TEST(PlaceApproachAllowance, ACoarserGridNeverWidensTheAllowance) {
   occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;
   auto grid = coarse_grid(occ);
   osk::PlaceApproachRegion region;
-  ASSERT_TRUE(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region));
+  ASSERT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
   grid.place_region = region;
 
   EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, 0.0}), 0.025, 1e-12)
@@ -2676,7 +2681,8 @@ TEST(PlaceApproachAllowance, AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap) {
   occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;  // the jar
   auto grid = coarse_grid(occ);
   osk::PlaceApproachRegion region;
-  ASSERT_TRUE(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region));
+  ASSERT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
   grid.place_region = region;
 
   struct Case {
@@ -2804,9 +2810,10 @@ TEST(PlaceApproachAllowance, TheRegionIsAnOrientedBoxNotItsAxisAlignedHull) {
   std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
   auto grid = support_grid(occ);
   osk::PlaceApproachRegion region;
-  ASSERT_TRUE(
+  ASSERT_EQ(
       osk::ingest_place_region(osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, 0.0, 0.0, kPi / 4.0),
-                               osk::Vec3{0.20, 0.02, 0.10}, 0x1, region));
+                               osk::Vec3{0.20, 0.02, 0.10}, 0x1, region),
+      osk::PlaceRegionStatus::kOk);
   grid.place_region = region;
 
   // On the rotated long axis: inside.
@@ -2825,19 +2832,33 @@ TEST(PlaceApproachAllowance, DegenerateAndOversizedRegionsGrantNothing) {
   const osk::Vec3 sane{0.10, 0.06, 0.06};
   const double nan_value = std::numeric_limits<double>::quiet_NaN();
 
-  EXPECT_FALSE(osk::ingest_place_region(identity(), sane, 0x0, region))
+  // Each refusal reports WHICH way the region failed, and they are not
+  // interchangeable: `kNoObject` is the ordinary pre-grasp state the node logs at
+  // INFO, the rest are producer errors it warns about. Round-8 labelled all of
+  // them `bounds`, which made the noisiest line in the run the one that described
+  // its cause least.
+  EXPECT_EQ(osk::ingest_place_region(identity(), sane, 0x0, region),
+            osk::PlaceRegionStatus::kNoObject)
       << "a declaration whose payload is not carried arms nothing";
-  EXPECT_FALSE(osk::ingest_place_region(identity(), osk::Vec3{0.0, 0.06, 0.06}, 0x1, region))
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.0, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kDegenerate)
       << "a region with no interior";
-  EXPECT_FALSE(osk::ingest_place_region(identity(), osk::Vec3{-0.1, 0.06, 0.06}, 0x1, region));
-  EXPECT_FALSE(osk::ingest_place_region(identity(), osk::Vec3{nan_value, 0.06, 0.06}, 0x1, region));
-  EXPECT_FALSE(osk::ingest_place_region(
-      identity(), osk::Vec3{std::numeric_limits<double>::infinity(), 0.06, 0.06}, 0x1, region));
-  EXPECT_FALSE(osk::ingest_place_region(identity(), osk::Vec3{2.0, 0.06, 0.06}, 0x1, region))
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{-0.1, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kDegenerate);
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{nan_value, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_place_region(identity(),
+                                     osk::Vec3{std::numeric_limits<double>::infinity(), 0.06, 0.06},
+                                     0x1, region),
+            osk::PlaceRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{2.0, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kOversize)
       << "a half-extent past 1.5 m is a producer error, not a receptacle";
-  EXPECT_FALSE(osk::ingest_place_region(identity(), osk::Vec3{1.4, 1.4, 1.4}, 0x1, region))
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{1.4, 1.4, 1.4}, 0x1, region),
+            osk::PlaceRegionStatus::kOversizeVolume)
       << "22 m^3 is a room, and a declaration names ONE receptacle";
-  EXPECT_FALSE(osk::ingest_place_region(translate(nan_value, 0.0, 0.0), sane, 0x1, region));
+  EXPECT_EQ(osk::ingest_place_region(translate(nan_value, 0.0, 0.0), sane, 0x1, region),
+            osk::PlaceRegionStatus::kBadPose);
 
   // Every rejection leaves the struct inert, so a caller that ignores the return
   // value still gets no allowance.
@@ -2848,8 +2869,39 @@ TEST(PlaceApproachAllowance, DegenerateAndOversizedRegionsGrantNothing) {
   EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12);
 
   // The largest region the caps do admit is still admitted.
-  EXPECT_TRUE(osk::ingest_place_region(identity(), osk::Vec3{1.0, 1.0, 1.0}, 0x1, region));
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{1.0, 1.0, 1.0}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
   EXPECT_TRUE(region.valid);
+}
+
+TEST(PlaceApproachAllowance, EveryRefusalHasItsOwnReasonToken) {
+  // The tokens are the `reason=` key of the kernel's place-region log lines, so
+  // they are a contract with whoever reads a run: distinct per failure, stable,
+  // and never null. Round-8's single `bounds` label for all of them is what made
+  // the pre-grasp no-payload state indistinguishable from a malformed region.
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOk), "ok");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kNoObject), "no_object");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kBadPose), "bad_pose");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kBadExtents), "bad_extents");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kDegenerate), "degenerate");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversize), "oversize");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversizeVolume),
+               "oversize_volume");
+
+  const osk::PlaceRegionStatus all[] = {osk::PlaceRegionStatus::kOk,
+                                        osk::PlaceRegionStatus::kNoObject,
+                                        osk::PlaceRegionStatus::kBadPose,
+                                        osk::PlaceRegionStatus::kBadExtents,
+                                        osk::PlaceRegionStatus::kDegenerate,
+                                        osk::PlaceRegionStatus::kOversize,
+                                        osk::PlaceRegionStatus::kOversizeVolume};
+  std::set<std::string> tokens;
+  for (const auto status : all) {
+    const char* reason = osk::place_region_status_reason(status);
+    ASSERT_NE(reason, nullptr);
+    tokens.insert(reason);
+  }
+  EXPECT_EQ(tokens.size(), std::size(all)) << "two outcomes sharing one token is the round-8 bug";
 }
 
 TEST(PlaceApproachAllowance, AMapWithNoResolutionGrantsNothing) {

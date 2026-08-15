@@ -6,16 +6,22 @@
 
 #include "openral_safety_kernel/lifecycle_kernel.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include <lifecycle_msgs/msg/state.hpp>
@@ -1349,6 +1355,82 @@ openral_msgs::msg::ActionChunk declared_carry_chunk() {
   return chunk;
 }
 
+// ── Log capture ─────────────────────────────────────────────────────────────
+//
+// The kernel's own rcutils sink, redirected — not a logging double. What is
+// under test here IS the emitted line: which reason it names, at what severity,
+// and how many times a standing state produces it.
+std::mutex g_log_mutex;
+std::vector<std::pair<int, std::string>> g_log_lines;
+
+void capture_log_handler(const rcutils_log_location_t* /*location*/, int severity,
+                         const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
+                         const char* format, va_list* args) {
+  char buffer[1024];
+  va_list copy;
+  va_copy(copy, *args);
+  const int written = std::vsnprintf(buffer, sizeof(buffer), format, copy);
+  va_end(copy);
+  if (written < 0) {
+    return;
+  }
+  const std::lock_guard<std::mutex> lock(g_log_mutex);
+  g_log_lines.emplace_back(severity, std::string(buffer));
+}
+
+// Installs the capture sink for one test and always puts the previous one back
+// (an ASSERT_* returns early, and a leaked sink would follow into the next
+// test).
+class LogCapture {
+public:
+  LogCapture() : previous_(rcutils_logging_get_output_handler()) {
+    const std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_lines.clear();
+    rcutils_logging_set_output_handler(capture_log_handler);
+  }
+  ~LogCapture() { rcutils_logging_set_output_handler(previous_); }
+  LogCapture(const LogCapture&) = delete;
+  LogCapture& operator=(const LogCapture&) = delete;
+  LogCapture(LogCapture&&) = delete;
+  LogCapture& operator=(LogCapture&&) = delete;
+
+  std::size_t count(const std::string& needle) const {
+    const std::lock_guard<std::mutex> lock(g_log_mutex);
+    std::size_t n = 0;
+    for (const auto& line : g_log_lines) {
+      if (line.second.find(needle) != std::string::npos) {
+        ++n;
+      }
+    }
+    return n;
+  }
+
+  // Highest severity any captured line mentioning `needle` was emitted at.
+  int max_severity(const std::string& needle) const {
+    const std::lock_guard<std::mutex> lock(g_log_mutex);
+    int worst = 0;
+    for (const auto& line : g_log_lines) {
+      if (line.second.find(needle) != std::string::npos) {
+        worst = std::max(worst, line.first);
+      }
+    }
+    return worst;
+  }
+
+  std::string joined() const {
+    const std::lock_guard<std::mutex> lock(g_log_mutex);
+    std::string out;
+    for (const auto& line : g_log_lines) {
+      out += line.second;
+      out += "\n";
+    }
+    return out;
+  }
+
+private:
+  rcutils_logging_output_handler_t previous_;
+};
+
 }  // namespace
 
 // A stalled attachment stream refuses EVERY candidate action, and an armed place
@@ -1623,4 +1705,137 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
       << "the reported distance is the pair's true one — only the margin it was gated against "
          "moved: "
       << evidence_json;
+}
+
+// ── What the place-region refusals say, and how often they say it ────────────
+
+// A declaration published before the grasp lands is the NORMAL state, and the
+// kernel says so once.
+//
+// Round-8 (`spark:~/openral-runs/2026-08-15-round8/`) logged this as
+// `safety.place_region_rejected reason=bounds`, at WARN, on every attachment
+// heartbeat — 672-811 lines per run. Three things were wrong with that and all
+// three are pinned here: the reason was not a bound (the object mask was empty
+// because no payload was attached yet), the severity claimed a fault where there
+// is none, and a standing state was re-announced at the heartbeat rate instead
+// of on its transition.
+TEST_F(LifecycleKernelTest, PreGraspDeclarationIsAnnouncedOnceAndNotAsARejection) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_pregrasp", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_pregrasp_helper");
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  // The grid frame first, so the region is judged against a frame the kernel
+  // knows (a frame mismatch is a different refusal with its own reason).
+  for (int i = 0; i < 5; ++i) {
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+
+  const LogCapture logs;
+  // 40 heartbeats of the pre-grasp state: an active declaration with a valid
+  // region, and no payload attached yet.
+  for (int i = 0; i < 40; ++i) {
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0, /*carrying=*/false));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+
+  EXPECT_EQ(logs.count("safety.place_region_rejected"), 0U)
+      << "a declaration whose payload is not attached yet is not a refused region:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_not_armed reason=no_object"), 1U)
+      << "the pre-grasp state is announced once, on its transition, not once per heartbeat:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.max_severity("safety.place_region_not_armed"),
+            static_cast<int>(RCUTILS_LOG_SEVERITY_INFO))
+      << "no fault occurred: the margins in force are exactly the undeclared ones";
+}
+
+// A clean release logs the disarm once, as a drop.
+//
+// The declaration outlives the payload by design — it is retracted when the GOAL
+// ends, not when the gripper opens — so the first heartbeat after a release
+// carries a live declaration with nothing to scope it to. Ingesting that before
+// the detach edge is handled turned every release into
+// `place_region_rejected`, which is a producer-error report for something the
+// kernel did on purpose.
+TEST_F(LifecycleKernelTest, CleanDetachDropsTheRegionOnceInsteadOfRejectingIt) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_detach", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_detach_helper");
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  for (int i = 0; i < 5; ++i) {
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  // Carry, with the region armed.
+  for (int i = 0; i < 10; ++i) {
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+
+  const LogCapture logs;
+  // Release: a new attachment revision carrying no objects, with the goal's
+  // declaration still live, heartbeated 30 times.
+  for (int i = 0; i < 30; ++i) {
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0, /*carrying=*/false,
+                                         /*revision=*/2));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+
+  EXPECT_EQ(logs.count("safety.place_region_rejected"), 0U)
+      << "a clean detach is not a refused region:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_dropped reason=detached"), 1U)
+      << "the disarm is announced exactly once, naming the payload that took the region with "
+         "it:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.count("target=sim:cab_1_left_group_main"),
+            logs.count("safety.place_region_dropped reason=detached") +
+                logs.count("safety.place_region_not_armed reason=no_object"))
+      << "every announced line stays attributable to the declaration (HZ-0097-2):\n"
+      << logs.joined();
+  EXPECT_LE(logs.count("safety.place_region_not_armed reason=no_object"), 1U)
+      << "the standing post-release state is a transition, not a heartbeat:\n"
+      << logs.joined();
 }
