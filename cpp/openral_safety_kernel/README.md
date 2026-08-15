@@ -188,9 +188,9 @@ it is inside the patch laterally *and* no higher above the attested support
 plane than
 
 ```
-half_resolution · (|n.x| + |n.y| + |n.z|)   +   attested depth   +   slack
-└─ exact half-width of the voxel cube ──┘       └─ physical ─┘       └ 1 mm ┘
-      projected on the support normal
+half_resolution · (|n.x|+|n.y|+|n.z|)  +  attested depth  +  slack  +  resolution
+└─ exact half-width of the voxel cube ┘    └─ physical ─┘    └1 mm┘   └ co-planar ┘
+      projected on the support normal                                    headroom
 ```
 
 That first term is what makes the witness work under coarse maps. A surface
@@ -200,9 +200,34 @@ contact reads as up to ~15 mm of cube penetration at 25 mm resolution — the
 six real MuJoCo contacts of `-0.87..-1.37 mm`. Measuring depth against the
 attested plane instead of the cell cube accounts for the inflation *exactly*,
 by geometry, rather than absorbing it into a widened tolerance that would also
-license real penetration. A cell whose solid sits genuinely above the attested
+license real penetration.
+
+The fourth term is the **2026-08-15 co-planar headroom calibration** (hazard log
+Entry 012, "Calibration 2026-08-15", from the 5-run baguette battery
+`spark:~/openral-runs/2026-08-15-baguette-battery`). The battery refuted the
+suspected "sliding" class outright — run 4 moved the payload 10.2 mm during the
+stop, and the lateral patch gate (135.7 mm) never came near the 84–86 mm actual
+offset — and named the real one: cells of **adjacent co-planar structure**, a
+raised edge or a neighbouring stack on the same support surface, sit about one
+voxel above the attested plane while the payload is in genuine, continuing
+support contact. Round-8 r2 measured `+42.9 mm` against a ~15–19 mm envelope: an
+excess of `+24.4 mm`, one 25 mm voxel. The bound therefore gains one full voxel,
+**inside the existing lateral patch** — this is height, never reach, and the
+patch radius bound is untouched. At sim's 25 mm cells with a 5 mm attested depth
+the envelope is `12.5 + 5 + 1 + 25 = 43.5 mm`, so r2's `+42.9 mm` clears it by
+0.6 mm and a `+55 mm` protrusion does not
+(`…TheRound8CoplanarCellIsInsideTheWidenedEnvelope`,
+`…SolidAboveTheCoplanarBandStillStops`, `…TheWidenedEnvelopeIsHeightOnlyNotReach`).
+
+Past *that* bound a cell whose solid sits genuinely above the attested
 support face still stops the robot, and a payload driving into its support
-raises that height millimetre for millimetre until it does.
+raises that height millimetre for millimetre until it does
+(`…DeepeningIntoTheSupportStillStops`, now at 40 mm of sink;
+`…ProtrusionInsideThePatchStillStops`, now two cells up). The cost is recorded
+and accepted with the calibration: within the attested patch, one voxel more of
+whatever the kernel cannot tell apart from support contact is exempt — the same
+accepted-trade class as HZ-0092-1's identity-blindness-within-patch, at one
+voxel more of height.
 
 The witness is **latched, and it dies on separation**: once nothing it would
 exempt is still in contact, its bit clears and the kernel never sets it again.
@@ -244,8 +269,11 @@ withholds per message, so with two payloads attached the containment is one step
 looser — the two scope conditions are stated in
 [`packages/openral_octomap_bridge/README.md`](../../packages/openral_octomap_bridge/README.md).)
 Everything else around the payload — its own silhouette, its residue
-above the attested plane — still clears and still stops the robot if it comes
-back. The two predicates are a deliberate cross-package mirror (consolidating
+above the widened slab — still clears and still stops the robot if it comes
+back. The 2026-08-15 height calibration moved that line by one voxel on both
+sides at once: the bridge's `+ resolution` term is added in the same commit, so
+the co-planar band is withheld here rather than cleared there, and
+`withheld ⊆ exempt` stays true by construction rather than by luck. The two predicates are a deliberate cross-package mirror (consolidating
 them would put `octomap` and `tf2` one link from this kernel) and must move
 together: `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessIts
 Evidence` and `…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
@@ -308,20 +336,40 @@ producer (`openral_msgs/PlaceRegion`, riding the same
 dispatch → HAL → World State path as the attestation, on
 `WorldStateStamped.place_declaration`). While it is live, cells whose **centre**
 lies inside that box are gated for the declared payload at
-`margin - min(resolution, 25 mm)` instead of `margin`. That is the whole delta.
-In particular:
+`margin - min(1.5 × resolution, 40 mm)` instead of `margin`. That is the whole
+delta. In particular:
 
 * **It is not an exemption.** A cell deeper than the reduced margin still stops
   the robot, and the reported `min_distance` is the pair's true distance —
   `CollisionHit::place_allowance_active` and the `place_allowance_active=` log
   key say the margin had been reduced, without changing the number quoted for it
   (CLAUDE.md §1.4). `…DeepeningPastTheAllowanceInsideTheRegionStillStops`.
-* **`min(one voxel, 25 mm)` is an absolute cap, never purely
-  resolution-scaled** (`kMaxPlaceApproachAllowanceM`). This is a maintainer-set
-  binding condition, not an implementation choice: at real hardware's 5 cm grid
-  a resolution-relative allowance would silently be 50 mm, which is HZ-0095-2's
-  episode in a new form. `…ACoarserGridNeverWidensTheAllowance` runs the whole
-  thing on a 50 mm lattice to prove the cap holds.
+* **`min(1.5 × voxel, 40 mm)` is an absolute cap, never purely
+  resolution-scaled** (`kMaxPlaceApproachAllowanceM`,
+  `kPlaceApproachAllowanceVoxels`, both read through
+  `place_approach_allowance_cap` so the geometry and the
+  `safety.place_region_armed` log line cannot quote different numbers). Both are
+  maintainer-set binding conditions, not implementation choices: at real
+  hardware's 5 cm grid the voxel-relative half alone would be 75 mm, which is
+  HZ-0095-2's episode in a new form; the ceiling caps it at 40 mm.
+  `…ACoarserGridNeverWidensTheAllowance` runs the whole thing on a 50 mm lattice
+  to prove that, and pins the amendment's own worked example (40 mm, not 75).
+
+  The cap was `min(one voxel, 25 mm)` until **ADR-0097's Second Amendment
+  (2026-08-15)**, hazard log HZ-0097-4's "Calibration 2026-08-15". Run 1 of the
+  battery (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) was the
+  allowance's first in-vivo firing: `26.48 mm` of predictive-check penetration at
+  a ground-truth `-2.43 mm` contact — `1.48 mm` short. Since the map-vs-truth
+  error at a placement pose is itself about one voxel, a one-voxel allowance is
+  sized to absorb exactly the discretization and leaves nothing for the contact
+  the witness is earned by making: structurally marginal, not occasionally short.
+  At 25 mm cells the cap is now `37.5 mm`, ~11 mm of headroom over that reading
+  (`…TheRun1FieldPenetrationNowReachesContact`). One footnote worth keeping: a
+  50 mm-tall payload passing a 25 mm cell saturates at exactly 37.5 mm of overlap
+  on every axis, so the flagship baguette's own geometry cannot reach past the
+  calibrated cap — `…DeepeningPastTheAllowanceInsideTheRegionStillStops` carries a
+  deeper payload to prove the hard stop behind the reduced margin at 38.2 mm and
+  40 mm.
 * **Arm-vs-world is untouched**, as is payload-vs-world outside the box, and any
   payload the declaration does not name (`…ArmVsWorldIsUntouchedByALiveRegion`,
   `…OutsideTheDeclaredRegionTheMarginIsUnchanged`,
@@ -378,8 +426,9 @@ The honest cost, accepted and recorded as HZ-0097-4: an object already sitting
 inside the declared region when the declaration goes live — a jar on the shelf —
 receives the same allowance for the declared window, whether or not the payload
 ever reaches it. It is bounded by the cap, the region and the declaration's
-lifetime; `…AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap` pins the bound at
-exactly 25 mm. `…TheRound6ApproachReachesTheDeclaredShelf` and
+lifetime; `…AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap` pins the bound on a
+50 mm lattice at exactly the 40 mm ceiling. The Second Amendment re-accepted that
+cost unchanged in shape and at the same severity, at the raised cap. `…TheRound6ApproachReachesTheDeclaredShelf` and
 `…TheSameApproachUndeclaredStopsExactlyAsRound6Did` are the field case in both
 directions.
 

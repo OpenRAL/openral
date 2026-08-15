@@ -1862,7 +1862,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
                 "safety.place_region_armed target=%s object_mask=0x%x half_m=%g,%g,%g "
                 "allowance_m=%g rskill=%s trace=%s",
                 declaration.target_id.c_str(), static_cast<unsigned>(object_mask), half.x, half.y,
-                half.z, std::min(voxel_grid_.resolution, kMaxPlaceApproachAllowanceM),
+                half.z, place_approach_allowance_cap(voxel_grid_.resolution),
                 declaration.rskill_id.c_str(), declaration.trace_id.c_str());
   }
 }

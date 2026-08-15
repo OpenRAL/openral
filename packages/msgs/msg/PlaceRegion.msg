@@ -1,6 +1,6 @@
 # The bounded region of a declared place target (ADR-0097's 2026-08-14
 # amendment) — the volume inside which the declared payload's world-collision
-# margin is reduced by min(one voxel, 25 mm) so it can physically reach the
+# margin is reduced by min(1.5 x voxel, 40 mm) so it can physically reach the
 # support contact the place witness is earned by.
 #
 # Why a region is needed at all: a payload inserted into an ENCLOSED target

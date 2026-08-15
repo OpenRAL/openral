@@ -92,14 +92,43 @@ struct WorldModel {
 };
 
 /// Binding absolute ceiling on the declaration-scoped place approach allowance
-/// (ADR-0097's 2026-08-14 amendment, Condition 1; hazard log HZ-0097-4
-/// mitigation 1). The allowance is `min(one voxel, this)`, so a coarser map can
-/// only ever *shrink* it — never widen it. This is a maintainer-set condition,
-/// not an implementation choice: Entry 010's HZ-0095-2 is the precedent it
-/// exists to prevent from recurring (a 25 mm sim-resolution parameter silently
-/// becoming 50 mm at real hardware's 5 cm resolution under a purely
-/// resolution-relative formula). Raising it needs a new recorded decision.
-inline constexpr double kMaxPlaceApproachAllowanceM = 0.025;
+/// (ADR-0097's 2026-08-14 amendment, Condition 1, as calibrated by its
+/// **Second Amendment 2026-08-15**; hazard log HZ-0097-4 mitigation 1 and its
+/// "Calibration 2026-08-15" subsection). The allowance is
+/// `min(kPlaceApproachAllowanceVoxels × one voxel, this)`, so a coarser map can
+/// only ever *shrink* it — never widen it. Both numbers are maintainer-set
+/// conditions, not implementation choices: Entry 010's HZ-0095-2 is the
+/// precedent the ceiling exists to prevent from recurring (a 25 mm
+/// sim-resolution parameter silently becoming 50 mm at real hardware's 5 cm
+/// resolution under a purely resolution-relative formula). Changing either
+/// needs a new recorded decision.
+///
+/// The ceiling was `0.025` until 2026-08-15, when the 5-run battery
+/// (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) showed a one-voxel
+/// allowance is *structurally* marginal rather than occasionally short: it is
+/// sized to absorb exactly the ~one-voxel map-vs-truth error at a placement
+/// pose, leaving nothing for the real contact the place witness is earned by
+/// making (run 1 read 26.48 mm of penetration at a −2.43 mm ground-truth
+/// contact, 1.48 mm past the old cap).
+inline constexpr double kMaxPlaceApproachAllowanceM = 0.04;
+
+/// Voxel multiple in the same allowance (ADR-0097's Second Amendment). 37.5 mm
+/// at sim's 25 mm grid; at a real 50 mm grid `1.5 × 50 = 75 mm` is capped by
+/// `kMaxPlaceApproachAllowanceM` to 40 mm, which is the whole point of having
+/// two numbers.
+inline constexpr double kPlaceApproachAllowanceVoxels = 1.5;
+
+/// The allowance cap at a given live voxel `resolution` — `min(1.5 × voxel,
+/// 4 cm)`, and `0.0` for an unusable resolution. One definition, so the geometry
+/// and the `safety.place_region_armed` log line can never quote different
+/// numbers for the same map.
+inline constexpr double place_approach_allowance_cap(double resolution) noexcept {
+  if (!(resolution > 0.0)) {
+    return 0.0;
+  }
+  const double scaled = kPlaceApproachAllowanceVoxels * resolution;
+  return scaled < kMaxPlaceApproachAllowanceM ? scaled : kMaxPlaceApproachAllowanceM;
+}
 
 /// Sanity bound on one side of a declared place region. A declaration names ONE
 /// receptacle, not a room, so a half-extent past this is a producer error and
@@ -117,9 +146,9 @@ inline constexpr double kMaxPlaceRegionVolumeM3 = 8.0;
 /// whose declared `frame_id` matches the grid's.
 ///
 /// While it is valid, payload-vs-world voxel checks for the objects named in
-/// `object_mask` run at a margin reduced by `min(resolution,
-/// kMaxPlaceApproachAllowanceM)` against cells whose **centre** lies inside the
-/// box. Everything else is untouched: arm-vs-world, payload-vs-world outside the
+/// `object_mask` run at a margin reduced by
+/// `place_approach_allowance_cap(resolution)` against cells whose **centre** lies
+/// inside the box. Everything else is untouched: arm-vs-world, payload-vs-world outside the
 /// box, the support-contact witness, and the reported evidence. The region is a
 /// license to *approach* the contact the declaration already licenses — the hard
 /// stop behind the reduced margin is unchanged, so deepening past the allowance
@@ -452,9 +481,9 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 /// (`grid.place_region`), the *margin* each cell inside that region is gated
 /// against is first reduced by `place_approach_allowance` — the bounded license
 /// to reach the contact the declaration already permits (ADR-0097's 2026-08-14
-/// amendment). That is a margin change, not an exemption: a cell deeper than the
-/// reduced margin still stops the robot, and the reported distance is the cell's
-/// true distance.
+/// amendment, capped per its Second Amendment at `min(1.5 × voxel, 4 cm)`). That is a margin
+/// change, not an exemption: a cell deeper than the reduced margin still stops the robot, and the
+/// reported distance is the cell's true distance.
 ///
 /// Two — and only two — exemptions can spare a cell outright, both bounded:
 ///
@@ -463,10 +492,11 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 ///    the cell satisfies `support_contact_exempts` — inside the attested patch
 ///    laterally, and no higher above the attested support plane than the voxel
 ///    cube's own projected half-width plus the attested physical depth plus
-///    `grid.attached_contact_tolerance`. This is what lets a ~1 mm physical
-///    support contact survive 25 mm voxels: the depth is measured against the
-///    attested plane, so the cell-cube inflation is accounted for exactly
-///    instead of being absorbed by a widened tolerance.
+///    `grid.attached_contact_tolerance` plus one voxel of co-planar headroom.
+///    This is what lets a ~1 mm physical support contact survive 25 mm voxels:
+///    the depth is measured against the attested plane, so the cell-cube
+///    inflation is accounted for exactly instead of being absorbed by a widened
+///    tolerance.
 /// 2. **Embedded attach-time residue**: the payload's own uncleared occupancy
 ///    left in the map at attach (a cell already at least half a voxel inside
 ///    the payload when the baseline was snapshotted). This is stale
@@ -496,8 +526,9 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
 /// * The cell centre outside the region box (an exact point-in-OBB test in the
 ///   box's own frame) → `0.0`.
 ///
-/// Otherwise the reduction is `min(grid.resolution, kMaxPlaceApproachAllowanceM)`
-/// — the amendment's binding Condition 1, computed here against the *live*
+/// Otherwise the reduction is `place_approach_allowance_cap(grid.resolution)` —
+/// `min(1.5 × voxel, 4 cm)`, the amendment's binding Condition 1 as calibrated
+/// by its Second Amendment (2026-08-15), computed here against the *live*
 /// resolution so it can never desynchronise from the map actually being checked.
 /// Allocation-free.
 double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
@@ -536,14 +567,20 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
 ///   of the contact point (padded by the voxel cube's circumradius, which is
 ///   the exact discretisation slop). A new contact against a wall or a fixture
 ///   elsewhere is outside the patch and still stops the robot.
-/// * **Bounded in depth** — `s <= w + support_max_penetration + slack`, where
-///   `w = half_resolution · (|n.x| + |n.y| + |n.z|)` is the *exact* half-width
-///   of the voxel cube projected on the support normal. A surface cell of a
-///   support flush with the attested plane has `|s| <= w` by construction, so
-///   this admits the full quantisation envelope and nothing beyond it: solid
-///   sitting genuinely higher than the attested support face trips the check,
-///   and a payload driving deeper into its support raises `s` at the physical
-///   rate (1 mm of sink = 1 mm of `s`) until it trips.
+/// * **Bounded in height** — `s <= w + support_max_penetration + slack +
+///   resolution`, where `w = half_resolution · (|n.x| + |n.y| + |n.z|)` is the
+///   *exact* half-width of the voxel cube projected on the support normal. A
+///   surface cell of a support flush with the attested plane has `|s| <= w` by
+///   construction; the fourth term is **one voxel of co-planar headroom**
+///   (hazard log Entry 012, "Calibration 2026-08-15"), because cells of adjacent
+///   co-planar structure — a raised edge, a neighbouring stack on the same
+///   surface — sit about one voxel above the attested plane while the payload is
+///   in genuine, continuing support contact (round-8 r2: +42.9 mm against a
+///   ~15–19 mm envelope). Past *that* bound, solid sitting genuinely higher than
+///   the support face still trips the check, and a payload driving deeper into
+///   its support raises `s` at the physical rate (1 mm of sink = 1 mm of `s`)
+///   until it trips. The lateral patch bound above is untouched by that
+///   calibration: it widens height, never reach.
 ///
 /// The caller must have already established that the witness is live; this
 /// function does not consult `grid.support_witness_live`. Allocation-free.
