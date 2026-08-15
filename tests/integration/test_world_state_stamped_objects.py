@@ -16,6 +16,8 @@ from openral_core.schemas import (
     CapsuleShape,
     DetectedObject,
     JointState,
+    PlaceDeclaration,
+    PlaceRegion,
     Pose6D,
     RobotDescription,
     SphereShape,
@@ -190,6 +192,81 @@ def test_attachment_state_callback_applies_multiple_objects_atomically() -> None
         assert aggregator.snapshot().attached_objects == attachments
         assert aggregator.snapshot().attachment_revision == 7
         assert aggregator.snapshot().attachment_stamp_ns > 0
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
+    # The round-7 clock-domain regression, end to end over the real IDL:
+    # AttachmentState stamped in SIMULATOR time (~1.2e9 ns) carrying a
+    # sim-stamped declaration -> the node callback -> an aggregator on its
+    # PRODUCTION clock (wall `time.time_ns`, exactly how `on_configure` builds
+    # it) -> snapshot -> WorldStateStamped. The kernel only ever sees the last
+    # hop, so a declaration dropped anywhere along it is a region the kernel
+    # never receives and an approach allowance that can never arm.
+    sim_arm_ns = 1_240_000_000
+    declaration = PlaceDeclaration(
+        target_id="sim:cab_1_left_group_main",
+        object_id="baguette_seed1",
+        rskill_id="openral/pi05-robocasa",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=60.0,
+        stamp_ns=sim_arm_ns,
+        region=PlaceRegion(
+            frame_id="base_link",
+            pose=Pose6D(
+                xyz=(0.62, 0.0, 1.05),
+                quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                frame_id="base_link",
+            ),
+            half_extents=(0.18, 0.25, 0.45),
+            evidence_ref="mujoco_body_subtree:cab_1_left_group_main",
+            stamp_ns=sim_arm_ns,
+        ),
+    )
+    attachments = [_attached("baguette_seed1", BoxShape(half_extents_m=(0.12, 0.025, 0.025)))]
+    state_msg = AttachmentState()
+    state_msg.header.stamp.sec = sim_arm_ns // 1_000_000_000
+    state_msg.header.stamp.nanosec = sim_arm_ns % 1_000_000_000
+    state_msg.revision = 3
+    state_msg.objects = list(
+        build_world_state_stamped_msg(None, _ws([], attachments)).attached_objects
+    )
+    state_msg.place_declaration_valid = True
+    declaration.fill_idl(state_msg.place_declaration)
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        node._on_attachment_state(state_msg)
+        snapshot = aggregator.snapshot()
+        assert snapshot.attachment_stamp_ns == sim_arm_ns
+        # Wall vs sim: the aggregator's own clock is ~9 orders of magnitude
+        # ahead of the stream it is aggregating, and the declaration lives
+        # anyway because liveness is judged in the stream's clock.
+        assert snapshot.stamp_ns > sim_arm_ns * 1_000_000
+        assert snapshot.place_declaration is not None
+
+        msg = build_world_state_stamped_msg(node, snapshot)
+        assert msg.place_declaration_valid is True
+        assert msg.place_declaration.target_id == "sim:cab_1_left_group_main"
+        assert msg.place_declaration.stamp_ns == sim_arm_ns
+        assert msg.place_declaration.region_valid is True
+        assert msg.place_declaration.region.frame_id == "base_link"
+        assert msg.place_declaration.region.half_extents.x == pytest.approx(0.18)
+        assert msg.place_declaration.region.half_extents.z == pytest.approx(0.45)
+
+        # And the backstop still bites, driven by the stream's clock: a
+        # heartbeat 61 s of simulator time later carries the same declaration
+        # past its 60 s timeout, and World State drops it with no retraction.
+        state_msg.revision = 4
+        state_msg.header.stamp.sec = (sim_arm_ns + 61_000_000_000) // 1_000_000_000
+        node._on_attachment_state(state_msg)
+        assert aggregator.snapshot().place_declaration is None
+        expired = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert expired.place_declaration_valid is False
     finally:
         node.destroy_node()
         rclpy.shutdown()
