@@ -2318,8 +2318,21 @@ class PlaceDeclaration(BaseModel):
         of anything) are all dead. A dead declaration permits no place-witness
         attestation, which is the pre-ADR-0097 behaviour.
 
+        **Clock-domain contract.** ``now_ns`` and :attr:`stamp_ns` must be
+        readings of the *same* clock, and that clock is the publishing graph's
+        ROS clock: the dispatching rSkill runner stamps the declaration from
+        ``node.get_clock().now()``, the evidence producer re-stamps its
+        publications from the same clock, and the safety kernel compares against
+        its own. Under ``use_sim_time`` that domain is **simulator** time, whose
+        readings are small (order 1e9 ns) where wall time is order 1.79e18 ns.
+        A consumer that has no such reading of its own must use the newest stamp
+        observed on the message stream carrying the declaration — never
+        ``time.time_ns``, which reports a wall epoch that puts every sim-stamped
+        declaration ~57 years past its backstop and silently kills it.
+
         Args:
-            now_ns: Consumer's current time, same clock as ``stamp_ns``.
+            now_ns: Consumer's current time, same clock as ``stamp_ns`` — see
+                the clock-domain contract above.
 
         Returns:
             ``True`` only while the declaration is active and inside its
