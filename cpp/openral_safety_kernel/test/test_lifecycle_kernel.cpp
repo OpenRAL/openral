@@ -6,7 +6,9 @@
 
 #include "openral_safety_kernel/lifecycle_kernel.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <string>
@@ -18,9 +20,12 @@
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <openral_msgs/msg/action_chunk.hpp>
+#include <openral_msgs/msg/attached_collision_object.hpp>
+#include <openral_msgs/msg/attached_collision_primitive.hpp>
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
+#include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -1579,4 +1584,418 @@ TEST_F(LifecycleKernelTest, LateSubscriberReceivesTheLatchedSafetyStatus) {
   EXPECT_TRUE(spy.all().front().latched)
       << "the FIRST sample a late joiner gets must already say the kernel is latched";
   EXPECT_EQ(spy.all().front().drop_reason, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP);
+}
+
+// ── Declaration liveness in the kernel's own clock domain ────────────────────
+//
+// The 2026-08-14 clock-domain fix moved declaration-expiry-on-a-dead-stream off
+// World State and onto two kernel-side gates that were already there: the
+// attachment freshness deadline (`attached_collision_deadline_s`, which refuses
+// every candidate action while the payload model is stale) and the per-candidate
+// `place_declaration_live()` backstop (which drops the allowance once the
+// declaration's own timeout passes without a retraction). Both were argued in
+// comments and neither was tested. The two tests below are that test.
+//
+// Fixture geometry, hand-computed so the amendment's two margins land on either
+// side of one true clearance — which is what makes "is the allowance in force?"
+// directly observable on /openral/safe_action:
+//
+//   link0        revolute about +z at the origin, capsule r = 10 mm (never near
+//                the wall: 130 mm of clearance in every configuration tested)
+//   payload      box, half-extents 20 mm, attached to link0 at (0.10, 0, 0),
+//                so its +x face sits at x = 0.120 m
+//   occupancy    one 25 mm cell, cube x in [0.140, 0.165], y/z in +/-12.5 mm
+//   true surface distance payload -> cell                       = 0.020 m
+//   attached margin                                    0.030 m  -> STOP
+//   attached margin - min(resolution, 25 mm)           0.005 m  -> CLEAR
+namespace {
+
+std::vector<rclcpp::Parameter> place_declaration_params() {
+  return {
+      {"n_dof", std::int64_t{1}},
+      {"joint_position_min", std::vector<double>{-3.14}},
+      {"joint_position_max", std::vector<double>{3.14}},
+      {"joint_velocity_max", std::vector<double>{3.15}},
+      {"joint_torque_max", std::vector<double>{5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 5000.0},
+      {"world_voxel_max_cells", std::int64_t{64}},
+      {"attached_collision_enabled", true},
+      {"attached_collision_margin_m", 0.03},
+      {"attached_collision_deadline_ms", 200.0},
+      {"attached_max_objects", std::int64_t{1}},
+      {"attached_max_primitives", std::int64_t{1}},
+      {"attached_max_touch_links", std::int64_t{1}},
+      {"attached_contact_tolerance_m", 0.001},
+      {"collision_n_links", std::int64_t{1}},
+      {"collision_parent", std::vector<std::int64_t>{-1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1}},  // revolute
+      {"collision_dof_index", std::vector<std::int64_t>{0}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0}},
+      {"collision_capsule_radius", std::vector<double>{0.01}},
+      {"collision_capsule_half_length", std::vector<double>{0.0}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"link0"}},
+      {"collision_joint_names", std::vector<std::string>{"j0"}},
+      {"collision_state_deadline_ms", 5000.0},
+  };
+}
+
+// The single 25 mm occupied cell the declared payload approaches, published in
+// the base frame the region is declared in.
+openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.header.frame_id = "base_link";
+  vox.resolution = 0.025;
+  vox.size_x = 1;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.140;
+  vox.origin.y = -0.0125;
+  vox.origin.z = -0.0125;
+  vox.occupancy.assign(1, 1);
+  return vox;
+}
+
+// One carried payload plus the live place declaration scoped to it.
+// `attachment_stamp_ns` is the *stream's* stamp (what the freshness deadline
+// measures) and `declaration_stamp_ns` is the *declaration's* (what the backstop
+// measures) — that they are separate clocks' business is the whole fix.
+// `carrying == false` is the pre-grasp / post-release beat: the declaration is
+// published for the whole goal, so it rides every heartbeat whether or not a
+// payload is attached yet.
+openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachment_stamp_ns,
+                                                          std::int64_t declaration_stamp_ns,
+                                                          double timeout_s, bool carrying = true,
+                                                          std::uint64_t revision = 1) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = attachment_stamp_ns;
+  msg.attachment_revision = revision;
+
+  if (carrying) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = "sim:obj_main";
+    obj.attach_link = "link0";
+    obj.pose_in_link.position.x = 0.10;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.02, 0.02, 0.02};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    msg.attached_objects.push_back(obj);
+  }
+
+  msg.place_declaration_valid = true;
+  msg.place_declaration.target_id = "sim:cab_1_left_group_main";
+  msg.place_declaration.object_id = "sim:obj_main";
+  msg.place_declaration.rskill_id = "place_in_cabinet";
+  msg.place_declaration.trace_id = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  msg.place_declaration.active = true;
+  msg.place_declaration.stamp_ns = declaration_stamp_ns;
+  msg.place_declaration.timeout_s = timeout_s;
+  msg.place_declaration.region_valid = true;
+  msg.place_declaration.region.frame_id = "base_link";
+  msg.place_declaration.region.pose.position.x = 0.15;
+  msg.place_declaration.region.pose.orientation.w = 1.0;
+  msg.place_declaration.region.half_extents.x = 0.05;
+  msg.place_declaration.region.half_extents.y = 0.05;
+  msg.place_declaration.region.half_extents.z = 0.05;
+  msg.place_declaration.region.evidence_ref = "mujoco_body_subtree:cab_1_left_group_main";
+  msg.place_declaration.region.stamp_ns = declaration_stamp_ns;
+  return msg;
+}
+
+// The reactive JOINT_POSITION candidate the tests replay: one row at the
+// measured configuration, so the geometry never moves and the only thing that
+// can change the verdict is which margin the payload is gated against.
+openral_msgs::msg::ActionChunk declared_carry_chunk() {
+  openral_msgs::msg::ActionChunk chunk;
+  chunk.control_mode = 0;  // JOINT_POSITION
+  chunk.horizon = 1;
+  chunk.n_dof = 1;
+  chunk.flat = {0.0};
+  chunk.rskill_id = "place_in_cabinet";
+  return chunk;
+}
+
+}  // namespace
+
+// A stalled attachment stream refuses EVERY candidate action, and an armed place
+// region does not survive that gate.
+//
+// The clock-domain fix made this deadline the backstop for a producer that stops
+// publishing: World State cannot expire a declaration it is no longer being told
+// about, because a stream that has stopped cannot advance the stream clock. The
+// property that has to hold is stronger than "the allowance stops" — while the
+// payload model is stale the kernel does not know what it is carrying, so it
+// must refuse the whole action (`attached_unavailable`), region or no region.
+TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWithAnArmedRegion) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_stalled", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_stalled_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  std::string evidence_json;
+  rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+  failure_qos.reliable();
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", failure_qos,
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        evidence_json = msg->evidence_json;
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto chunk = declared_carry_chunk();
+
+  // Warm-up, before any candidate action is offered. The grid frame has to land
+  // before the declaration that names it (a region declared against a frame the
+  // kernel has not seen is refused, correctly, as a frame mismatch), and the
+  // region has to be armed before the first chunk — otherwise the payload is
+  // stopped for the right reason at the wrong time and the fault latches.
+  const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < warm_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+
+  // Phase 1 — a live stream with a live declaration. The chunk passes ONLY
+  // because the declared allowance is in force (0.020 m of true clearance
+  // against a 0.030 m margin reduced to 0.005 m), which is what makes this an
+  // observation of the armed region and not just of a clear scene.
+  const auto pass_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (safe_count.load() == 0 && std::chrono::steady_clock::now() < pass_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(safe_count.load(), 0)
+      << "the declared approach must pass while the stream and the declaration are both live; "
+         "chunks_dropped="
+      << node->chunks_dropped();
+  ASSERT_FALSE(node->fault_latched());
+
+  // Phase 2 — the attachment stream dies. Everything else stays alive: voxels,
+  // measured state, and the region the kernel already ingested and armed. Spin
+  // the settling window rather than sleeping through it, so phase 1's in-flight
+  // approvals are delivered and counted BEFORE the baseline is taken; anything
+  // that arrives after it really is a chunk the stale gate let through.
+  const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+  while (std::chrono::steady_clock::now() < settle_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  const int passed_before = safe_count.load();
+  const std::uint64_t dropped_before = node->chunks_dropped();
+  for (std::uint64_t i = 0; i < 3; ++i) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(chunk);
+    const auto drop_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (node->chunks_dropped() == dropped_before + i &&
+           std::chrono::steady_clock::now() < drop_deadline) {
+      exec.spin_some(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(node->chunks_dropped(), dropped_before + i + 1)
+        << "candidate " << i << " must be refused while the payload model is stale";
+  }
+  EXPECT_EQ(safe_count.load(), passed_before)
+      << "not one candidate may reach /openral/safe_action on a stalled attachment stream — an "
+         "armed place region must not outlive the freshness gate that vouches for the payload";
+  ASSERT_FALSE(evidence_json.empty()) << "a fail-closed drop must publish a FailureTrigger";
+  EXPECT_NE(evidence_field(evidence_json, "detail").find("field=attached_unavailable"),
+            std::string::npos)
+      << "the refusal must name the stale attachment stream, not something downstream of it: "
+      << evidence_json;
+  EXPECT_FALSE(node->fault_latched())
+      << "a stale input is fail-closed, not a latched fault: motion resumes when the stream does";
+}
+
+// The declaration's own backstop expires the allowance per candidate action, in
+// the kernel's clock, while the attachment stream stays perfectly fresh.
+//
+// This is the other half of the clock-domain fix: liveness is judged where the
+// stamp is read. The stream heartbeats at a fresh stamp on every beat (so the
+// freshness gate above never fires) while the declaration keeps its original
+// stamp, and the ingested region stays valid — only `place_declaration_live()`
+// changes its answer. The same chunk that passed under the allowance must stop
+// once the backstop lapses, which is the allowance being withdrawn and nothing
+// else.
+TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandidate) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_expiry", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_expiry_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  std::string evidence_json;
+  rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+  failure_qos.reliable();
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", failure_qos,
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        if (evidence_json.empty()) {
+          evidence_json = msg->evidence_json;
+        }
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto chunk = declared_carry_chunk();
+  // Stamped once, in the kernel's clock, and never re-stamped: the declaration
+  // belongs to the dispatching runner, and a heartbeat republishing it does not
+  // make it younger.
+  const std::int64_t declaration_stamp_ns = node->now().nanoseconds();
+  const double timeout_s = 1.5;
+
+  // Warm-up (see the stalled-stream test): grid frame first, then the
+  // declaration, and no candidate action until the region is armed.
+  const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < warm_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(
+        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+
+  const auto pass_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+  while (safe_count.load() == 0 && std::chrono::steady_clock::now() < pass_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(
+        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(safe_count.load(), 0)
+      << "while the declaration is live the payload must be allowed to approach the declared "
+         "target; chunks_dropped="
+      << node->chunks_dropped();
+  ASSERT_FALSE(node->fault_latched());
+
+  // Past the backstop. The stream keeps heartbeating at a fresh stamp — so the
+  // attachment gate stays satisfied and the region is re-ingested on every beat
+  // — but the declaration is now older than its own timeout, so the allowance is
+  // gone and the identical chunk stops on the identical cell. The window is
+  // spun, not slept, so the stream stays fresh across it (this test is about the
+  // declaration's clock, not the stream's) and phase 1's in-flight approvals are
+  // delivered before the baseline is taken.
+  const auto expiry_deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(1600);  // > the 1.5 s backstop
+  while (std::chrono::steady_clock::now() < expiry_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(
+        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    exec.spin_some(std::chrono::milliseconds(5));
+  }
+  const int passed_before = safe_count.load();
+  const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!node->fault_latched() && std::chrono::steady_clock::now() < stop_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(
+        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  // Let the stop's evidence arrive: the latch flips inside the kernel before the
+  // FailureTrigger reaches this process.
+  const auto evidence_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (evidence_json.empty() && std::chrono::steady_clock::now() < evidence_deadline) {
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(node->fault_latched())
+      << "an expired declaration must stop granting the allowance on the very next candidate "
+         "action, not at the next world-state message; passes since expiry="
+      << (safe_count.load() - passed_before);
+  EXPECT_EQ(safe_count.load(), passed_before) << "no candidate may pass on an expired declaration";
+  ASSERT_FALSE(evidence_json.empty());
+  EXPECT_EQ(evidence_field(evidence_json, "link_a"), "attached:sim:obj_main")
+      << "the stop must name the payload the withdrawn allowance belonged to: " << evidence_json;
+  EXPECT_NEAR(std::stod(evidence_field(evidence_json, "min_distance_m")), 0.02, 1e-6)
+      << "the reported distance is the pair's true one — only the margin it was gated against "
+         "moved: "
+      << evidence_json;
 }
