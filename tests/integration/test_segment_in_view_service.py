@@ -24,6 +24,13 @@ The three failure branches are covered too, because each one is what the HAL
 turns into a GRIPPER_FORCE attachment rather than a stall: an un-published
 camera, a prompt that does not project into the frame, and a deactivated node.
 
+A second test covers the node's **diagnostic** mask topic
+(``openral_msgs/SegmentMasks`` on ``/openral/perception/masks``): that it is off
+by default — no publisher on the graph at all — and that when an operator turns
+it on, real SAM 2.1 masks reach the dashboard's real
+``PerceptionOverlaySubscriber`` and land in a real ``/api/state`` snapshot.
+Nothing on the robot reads that topic; it only decides what a human sees.
+
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the sibling reasoner integration
 tests, and listed in the live-ROS suite (``scripts/ros_live_tests.sh``). CI runs
 it inside ``openral:x86`` (the ``docker-build`` workflow). Locally::
@@ -55,6 +62,7 @@ _MANIFEST = "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
 _WRIST_FRAME = Path("rskills/rskill-smolvla-so101-eraser_place-bf16/media/wrist_mid.png")
 _IMAGE_TOPIC = "/openral/cameras/wrist/image"
 _SERVICE = "/openral/perception/segment_in_view_itest"
+_SEGMENTER_ID = "OpenRAL/rskill-sam2_1-any-grasped_object_mask-bf16"
 
 # The attach link the SO-101's gripper joint hangs off, and the camera's own
 # optical frame — both read from the manifest, not invented here.
@@ -70,6 +78,16 @@ def _spin(executor: object, stop: threading.Event) -> None:
     """Spin an executor until the test says stop."""
     while not stop.is_set():
         executor.spin_once(timeout_sec=0.1)  # type: ignore[attr-defined]
+
+
+def _wait_until(predicate: object, *, timeout_s: float = 10.0) -> bool:
+    """Poll a live-graph predicate; the executors run on their own threads."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():  # type: ignore[operator]  # reason: a plain callable, typed loosely for a test helper
+            return True
+        time.sleep(0.02)
+    return bool(predicate())  # type: ignore[operator]  # reason: as above
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
@@ -251,6 +269,204 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
         assert inactive.failure_reason.startswith("ROSRuntimeError:")
     finally:
         stop.set()
+        if spinner is not None:
+            spinner.join(timeout=5.0)
+        if node is not None:
+            node.destroy_node()
+        if helper is not None:
+            helper.destroy_node()
+        rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -> None:
+    """The debug mask topic costs nothing off, and lights the overlay on.
+
+    PR #122 taught the dashboard to render
+    ``topics.perception.overlays[camera].masks`` — an LA-PNG-per-mask overlay
+    drawn on the camera tile — but the segmenter's contract is a *service*, so
+    that renderer had no producer and never drew anything. This is the producer:
+    ``openral_msgs/SegmentMasks`` on ``/openral/perception/masks``, behind
+    ``publish_debug_masks`` (default false).
+
+    Two properties, both only provable on a real graph:
+
+    1. **Off by default is really off.** Not "publishes nothing" — *no publisher
+       exists on the topic at all*, which is what makes it free.
+    2. **On, it feeds the real consumer.** Real SAM 2.1 masks → the real
+       ``SegmentMasks`` message → the real ``PerceptionOverlaySubscriber`` (its
+       own node, its own spin thread, matching sensor-class QoS) → the real
+       ``TelemetryStore`` → a real ``/api/state`` snapshot. A QoS drift on
+       either side leaves the overlay blank with nothing to explain it, and only
+       a live graph catches that.
+
+    Strictly diagnostic: nothing asserted here is read by the HAL, the kernel or
+    the attachment path. The HAL takes its masks from its own service reply.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.srv")
+    pytest.importorskip("transformers")
+    import numpy as np
+    from builtin_interfaces.msg import Time
+    from geometry_msgs.msg import Point, TransformStamped
+    from openral_msgs.srv import SegmentInView
+    from openral_observability.dashboard import TelemetryStore
+    from openral_observability.dashboard.perception_overlay_subscriber import (
+        PERCEPTION_MASKS_TOPIC,
+        PerceptionOverlaySubscriber,
+    )
+    from openral_perception_ros.segmenter_node import (
+        DEFAULT_DEBUG_MASKS_TOPIC,
+        make_segmenter_node,
+    )
+    from PIL import Image as PilImage
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+    from sensor_msgs.msg import Image
+    from tf2_ros import StaticTransformBroadcaster
+
+    # The producer and the consumer must name the SAME topic; they are in
+    # different packages and neither imports the other, so pin it here.
+    assert DEFAULT_DEBUG_MASKS_TOPIC == PERCEPTION_MASKS_TOPIC
+
+    rgb = np.asarray(PilImage.open(_WRIST_FRAME).convert("RGB"))
+    height, width, _ = rgb.shape
+
+    rclpy.init()
+    stop = threading.Event()
+    spinner: threading.Thread | None = None
+    node = None
+    helper = None
+    overlay = None
+    try:
+        node = make_segmenter_node("openral_segmenter_masks_itest")
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
+                Parameter("manifest_path", Parameter.Type.STRING, _MANIFEST),
+                Parameter("cameras", Parameter.Type.STRING_ARRAY, [f"wrist={_IMAGE_TOPIC}"]),
+                Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
+                Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE),
+                Parameter("device", Parameter.Type.STRING, "cpu"),
+            ]
+        )
+        helper = Node("segment_in_view_masks_itest_client")
+        broadcaster = StaticTransformBroadcaster(helper)
+        tf = TransformStamped()
+        tf.header.frame_id = _CAMERA_FRAME
+        tf.child_frame_id = _ATTACH_LINK
+        tf.transform.translation.y = -0.03
+        tf.transform.translation.z = 0.06
+        tf.transform.rotation.w = 1.0
+        broadcaster.sendTransform(tf)
+
+        img_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        image_pub = helper.create_publisher(Image, _IMAGE_TOPIC, img_qos)
+
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(node)
+        executor.add_node(helper)
+        spinner = threading.Thread(target=_spin, args=(executor, stop), daemon=True)
+        spinner.start()
+
+        # ── 1. Default: no publisher, on the real graph ───────────────────────
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node._masks_pub is None, "publish_debug_masks must default to off"
+        assert helper.count_publishers(PERCEPTION_MASKS_TOPIC) == 0, (
+            "an off debug topic must have no publisher at all — that is what "
+            "makes it free when nobody enabled it"
+        )
+
+        # ── 2. Operator turns it on ───────────────────────────────────────────
+        assert node.trigger_cleanup() == TransitionCallbackReturn.SUCCESS
+        node.set_parameters([Parameter("publish_debug_masks", Parameter.Type.BOOL, True)])
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node._masks_pub is not None
+
+        overlay = PerceptionOverlaySubscriber(TelemetryStore())
+        assert overlay.available, "the dashboard subscriber must come up on a live host"
+        assert overlay.masks_available, (
+            "openral_msgs/SegmentMasks is built, so the mask leg must be live — "
+            "an inert one would make every assertion below vacuous"
+        )
+        assert _wait_until(lambda: node._masks_pub.get_subscription_count() >= 1), (
+            "the dashboard subscriber never matched the segmenter's BEST_EFFORT "
+            "mask publisher — check the QoS on both sides"
+        )
+
+        # Loads AND warms SAM 2.1 on CPU (real inference, sm_61 has no kernels).
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+
+        frame = Image()
+        frame.header.frame_id = _CAMERA_FRAME
+        frame.height, frame.width = height, width
+        frame.encoding = "rgb8"
+        frame.step = width * 3
+        frame.data = np.ascontiguousarray(rgb).tobytes()
+
+        client = helper.create_client(SegmentInView, _SERVICE)
+        assert client.wait_for_service(timeout_sec=30.0), "segmenter never offered the service"
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and "wrist" not in node._frames:
+            image_pub.publish(frame)
+            time.sleep(0.1)
+        assert "wrist" in node._frames
+
+        request = SegmentInView.Request()
+        request.stamp = Time(sec=17, nanosec=42)
+        request.camera = "wrist"
+        request.frame_id = _ATTACH_LINK
+        request.tcp_point = Point(x=0.0, y=0.05, z=0.06)
+        future = client.call_async(request)
+        end = time.monotonic() + _CALL_TIMEOUT_S
+        while not future.done() and time.monotonic() < end:
+            time.sleep(0.05)
+        assert future.done(), "SegmentInView never answered"
+        response = future.result()
+        assert response.ok is True, response.failure_reason
+
+        # ── 3. …and the same masks reach the dashboard's overlay ──────────────
+        store = overlay._store
+        assert _wait_until(
+            lambda: "wrist" in (store.snapshot()["topics"]["perception"].get("overlays") or {}),
+            timeout_s=15.0,
+        ), "the diagnostic mask set never reached the dashboard store"
+
+        lane = store.snapshot()["topics"]["perception"]["overlays"]["wrist"]["masks"]
+        assert lane["rskill_id"] == _SEGMENTER_ID, "whose masks these are must not be a guess"
+        # The CALLER's attach stamp, copied through the topic — a stale overlay
+        # has to be detectable rather than plausible.
+        assert lane["stamp_unix"] == pytest.approx(17 + 42e-9)
+        assert len(lane["masks"]) == len(response.masks) > 1
+        for drawn, served in zip(lane["masks"], response.masks, strict=True):
+            assert (drawn["width"], drawn["height"]) == (served.width, served.height)
+            assert drawn["png_b64"].startswith("iVBOR")
+        assert [m["score_advisory"] for m in lane["masks"]] == pytest.approx(
+            list(response.mask_scores_advisory)
+        )
+        # The service's area-ascending order survives to the renderer, and the
+        # advisory scores are carried without being used to reorder anything.
+        areas = [
+            int((np.frombuffer(bytes(m.data), dtype=np.uint8) != 0).sum()) for m in response.masks
+        ]
+        assert areas == sorted(areas)
+    finally:
+        stop.set()
+        if overlay is not None:
+            overlay.close()
         if spinner is not None:
             spinner.join(timeout=5.0)
         if node is not None:

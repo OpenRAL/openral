@@ -36,6 +36,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # bounded approach allowance of the 2026-08-14 amendment.
   msg/PlaceRegion.msg
   msg/PlaceDeclaration.msg
+  # DIAGNOSTIC-only mirror of the latest SegmentInView reply, so the dashboard's
+  # mask overlay has a producer. Off by default on the segmenter node; nothing
+  # in the safety or attachment path reads it.
+  msg/SegmentMasks.msg
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg
   msg/Episode.msg

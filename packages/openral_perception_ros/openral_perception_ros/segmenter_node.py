@@ -57,9 +57,26 @@ Parameters:
     manifest_path (str): rSkill manifest path (``kind: "segmenter"``). Required.
     segment_in_view_service (str): service name. Default
         ``/openral/perception/segment_in_view``.
+    publish_debug_masks (bool): **Default false.** Publish each successful reply
+        again on ``debug_masks_topic`` as an ``openral_msgs/SegmentMasks``, so
+        the dashboard's camera tiles can draw what was masked. Strictly
+        diagnostic (see below). Off costs nothing: no publisher is created and
+        no message is packed.
+    debug_masks_topic (str): topic for the above. Default
+        ``/openral/perception/masks``.
     device (str): ``auto`` (CUDA when available), ``cpu``, ``cuda``, ``cuda:N``.
         ``cpu`` is the honest setting on a pre-sm_70 dev GPU, where the CUDA
         wheels have no kernels for the card.
+
+**The debug mask topic is not a second contract.** The HAL's producer takes its
+masks from *its own* service reply and gates them on geometry; this topic exists
+only so an operator can see the same masks on the dashboard, which has rendered
+``topics.perception.overlays[camera].masks`` since PR #122 and had no producer
+to render. Publishing happens *after* the response is fully built, and a failure
+to publish is logged and swallowed — a display path must never be able to
+degrade a grasp. Sensor-class QoS (``BEST_EFFORT`` / ``VOLATILE`` /
+``KEEP_LAST=1``): only the newest mask set is worth drawing, and a dropped one
+changes nothing.
 """
 
 from __future__ import annotations
@@ -83,6 +100,12 @@ __all__ = [
 
 #: Service name the HAL's vision attachment bridge calls by default.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
+
+#: Diagnostic topic the latest mask set is re-published on when
+#: ``publish_debug_masks`` is enabled. Mirrors the detector leg's
+#: ``/openral/perception/objects``, and is the topic the dashboard's
+#: ``PerceptionOverlaySubscriber`` reads to paint mask overlays.
+DEFAULT_DEBUG_MASKS_TOPIC = "/openral/perception/masks"
 
 
 def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec | None:
@@ -167,6 +190,11 @@ def _node_class() -> type:
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("manifest_path", "")
             self.declare_parameter("segment_in_view_service", DEFAULT_SEGMENT_SERVICE)
+            # Diagnostic only, and OFF by default: enabling it puts a few
+            # hundred kB of mask on the wire per attach event purely so a human
+            # can look at it (see the module docstring).
+            self.declare_parameter("publish_debug_masks", False)
+            self.declare_parameter("debug_masks_topic", DEFAULT_DEBUG_MASKS_TOPIC)
             self.declare_parameter("device", "auto")
 
             self._frames: dict[str, tuple[bytes, int, int]] = {}
@@ -174,8 +202,10 @@ def _node_class() -> type:
             self._primary_id = ""
             self._description: Any = None
             self._segmenter: Any = None
+            self._model_name = ""
             self._subs: list[Any] = []
             self._srv: Any = None
+            self._masks_pub: Any = None
             self._tf_buffer: Any = None
             self._tf_listener: Any = None
 
@@ -232,11 +262,44 @@ def _node_class() -> type:
                 self.get_logger().warning(
                     "openral_msgs/srv/SegmentInView not built; segment_in_view service disabled"
                 )
+            self._open_debug_masks_publisher()
             self.get_logger().info(
                 f"segmenter configured: cameras={self._cameras} primary={self._primary_id!r} "
-                f"segment_in_view={'on' if self._srv else 'off'}"
+                f"segment_in_view={'on' if self._srv else 'off'} "
+                f"debug_masks={'on' if self._masks_pub else 'off'}"
             )
             return TransitionCallbackReturn.SUCCESS
+
+        def _open_debug_masks_publisher(self) -> None:
+            """Open the diagnostic mask publisher, but only when asked to.
+
+            Default-off is the whole point: an operator who has not enabled it
+            pays for no publisher, no serialization and no DDS traffic. The
+            profile is sensor-class (``BEST_EFFORT`` / ``VOLATILE`` /
+            ``KEEP_LAST=1``) and must MATCH the dashboard's subscriber — a
+            RELIABLE publisher here would still match, but the reverse would
+            not, and the overlay would sit blank with nothing to explain it.
+            """
+            gp = self.get_parameter
+            if not gp("publish_debug_masks").get_parameter_value().bool_value:
+                return
+            try:
+                from openral_msgs.msg import SegmentMasks
+            except ImportError:
+                self.get_logger().warning(
+                    "openral_msgs/msg/SegmentMasks not built; debug mask topic disabled"
+                )
+                return
+            self._masks_pub = self.create_publisher(
+                SegmentMasks,
+                gp("debug_masks_topic").get_parameter_value().string_value,
+                QoSProfile(
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                ),
+            )
 
         def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
             """Build the segmenter backend and burn the cold forward pass."""
@@ -265,6 +328,9 @@ def _node_class() -> type:
             if self._srv is not None:
                 self.destroy_service(self._srv)
                 self._srv = None
+            if self._masks_pub is not None:
+                self.destroy_publisher(self._masks_pub)
+                self._masks_pub = None
             self._tf_listener = None
             self._tf_buffer = None
             return TransitionCallbackReturn.SUCCESS
@@ -299,6 +365,9 @@ def _node_class() -> type:
             device = gp("device").get_parameter_value().string_value or "auto"
             with phase_timer("build", prefix="segmenter", gpu_mb=True, model=str(manifest.name)):
                 segmenter = build_manifest_segmenter(manifest, device=device)
+            # Named on every diagnostic mask set, so "whose masks are these" is
+            # answerable from the topic alone.
+            self._model_name = str(manifest.name)
             self.get_logger().info(f"segmenter model={manifest.name} device={device}")
             return segmenter
 
@@ -415,7 +484,39 @@ def _node_class() -> type:
                 f"segment_in_view: camera={camera!r} candidates={len(candidates)} "
                 f"areas={[c.area_px for c in candidates]}"
             )
+            # LAST, and only after the reply is complete: the caller is holding
+            # an action-acknowledgement barrier open on this call.
+            self._publish_debug_masks(response, spec.frame_id)
             return response
+
+        def _publish_debug_masks(self, response: Any, frame_id: str) -> None:
+            """Re-publish a successful reply on the diagnostic mask topic.
+
+            No-op unless ``publish_debug_masks`` opened the publisher. The
+            message reuses the reply's own ``sensor_msgs/Image`` objects rather
+            than re-encoding them, so enabling this costs one serialization and
+            no second mask representation.
+
+            Never raises: this is a display path, and a grasp must not degrade
+            because a dashboard could not be fed (CLAUDE.md §1.1).
+            """
+            if self._masks_pub is None:
+                return
+            try:
+                from openral_msgs.msg import SegmentMasks
+
+                msg = SegmentMasks()
+                # The CALLER's attach stamp, copied through — a mask that
+                # describes a frame that is gone must be detectable as stale.
+                msg.header.stamp = response.masks[0].header.stamp
+                msg.header.frame_id = frame_id
+                msg.camera = response.camera
+                msg.rskill_id = self._model_name
+                msg.masks = list(response.masks)
+                msg.mask_scores_advisory = list(response.mask_scores_advisory)
+                self._masks_pub.publish(msg)
+            except Exception as exc:  # reason: a diagnostic topic must never degrade a grasp
+                self.get_logger().warning(f"debug mask publish failed: {exc}")
 
         def _prompt_transform(self, request: Any, camera_frame: str) -> Any:
             """``camera_optical <- request.frame_id`` as a 4x4, or ``None``.

@@ -140,6 +140,29 @@ configured→cleanup span; the model is built **and warmed** on `on_activate`
 (the first forward pass is ~742 ms against ~53 ms warmed, and only the warmed
 figure fits inside the HAL's ~100 ms barrier) and released on `on_deactivate`.
 
+### The diagnostic mask topic
+
+Because the contract above is a *service*, there is nothing for an operator to
+watch: `ros2 topic echo` cannot introspect a reply that already happened, and
+the dashboard's camera tiles have been able to render segmentation masks since
+PR #122 with no producer to render.
+
+So `publish_debug_masks` (**default false**) re-publishes each successful reply
+as an `openral_msgs/SegmentMasks` on `debug_masks_topic`
+(`/openral/perception/masks`), at sensor-class QoS — `BEST_EFFORT` / `VOLATILE`
+/ `KEEP_LAST=1`, because only the newest mask set is worth drawing. Off means
+*no publisher is created at all*, so it costs nothing when nobody asked for it.
+`openral_observability.dashboard.perception_overlay_subscriber` is the consumer.
+
+It is **strictly diagnostic**, and that is a property to preserve:
+
+- nothing in the safety or attachment path reads it — the HAL producer takes its
+  masks from its own service reply and gates them geometrically;
+- it is published *after* the response is complete, so it cannot delay a caller
+  that is holding an action-acknowledgement barrier open;
+- a publish failure is logged and swallowed: a display path must never be able
+  to degrade a grasp.
+
 ### Segmenter parameters
 
 | Name | Type | Default | Notes |
@@ -150,6 +173,8 @@ figure fits inside the HAL's ~100 ms barrier) and released on `on_deactivate`.
 | `robot_yaml` | string | — (required) | `RobotDescription` path, for camera intrinsics + optical frame. |
 | `manifest_path` | string | — (required) | `kind: segmenter` rSkill manifest. |
 | `segment_in_view_service` | string | `/openral/perception/segment_in_view` | Service name. |
+| `publish_debug_masks` | bool | `false` | Re-publish each successful reply on `debug_masks_topic` for the dashboard's mask overlay. Diagnostic only; off creates no publisher. |
+| `debug_masks_topic` | string | `/openral/perception/masks` | Topic for the above (`openral_msgs/SegmentMasks`). |
 | `device` | string | `auto` | `auto` picks CUDA when available; set `cpu` on a pre-sm_70 GPU, where the CUDA wheels ship no kernels for the card. |
 
 ## Tests
@@ -160,7 +185,10 @@ figure fits inside the HAL's ~100 ms barrier) and released on `on_deactivate`.
   in-tree wrist frame: plural `mono8` masks at the source resolution, area
   ascending, parallel advisory scores, the caller's stamp echoed, plus the
   three typed failure branches (un-published camera, un-projectable prompt,
-  deactivated node). Listed in `scripts/ros_live_tests.sh`.
+  deactivated node). A second test covers the diagnostic mask topic: off by
+  default means *no publisher on the graph*, and on means real SAM 2.1 masks
+  reach the dashboard's real `PerceptionOverlaySubscriber` and a real
+  `/api/state` snapshot. Listed in `scripts/ros_live_tests.sh`.
 - `tests/unit/test_perception_camera_topics.py` — the shared camera-id → topic
   resolution, including the `[""]`-for-unset rclpy quirk.
 - `tests/unit/test_image_convert.py` — `rgb8`/`bgr8` → BGR byte

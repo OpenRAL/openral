@@ -19,10 +19,12 @@ unit tests already cover:
    do not.
 
 The segmenter half is covered here too, from a real `sensor_msgs/Image` mono8
-mask built exactly as `openral_msgs/srv/SegmentInView` returns them. That
-service does not stream, so there is no topic to subscribe to yet — but the
-decode + store seam it will land on is real, and this pins it to the real ROS
-message rather than to a bytes literal.
+mask built exactly as `openral_msgs/srv/SegmentInView` returns them, driven
+straight into the decode + store seam. Its live producer path — the segmenter
+node's diagnostic `openral_msgs/SegmentMasks` topic through the real
+subscription — is exercised in `tests/integration/test_segment_in_view_service.py`,
+next to the producer; what this pins is that the decode + store half is written
+against the real ROS message rather than a bytes literal.
 
 Real components throughout (CLAUDE.md §1.11): the production subscriber, the
 production store, the production ASGI app, real generated messages. No mocks.
@@ -252,10 +254,10 @@ def test_a_real_mono8_image_mask_renders_through_to_api_state() -> None:
 
     `SegmentInView` returns masks as full-frame mono8 `sensor_msgs/Image`s —
     255 where the pixel belongs to the prompted object — plural and ordered
-    area-ascending, with a parallel advisory score array. The service does not
-    stream, so the dashboard has nothing to subscribe to yet; what this pins is
-    that the decode + store path is written against the real message, so a mask
-    publisher lands on a working renderer rather than on a guess.
+    area-ascending, with a parallel advisory score array. What this pins is that
+    the decode + store path is written against the real message; the live wire
+    from the segmenter node's diagnostic mask topic into this same store is
+    covered beside the producer, in `test_segment_in_view_service.py`.
     """
     from openral_observability.dashboard.perception_overlay_subscriber import (
         mono8_mask_to_png_b64,
