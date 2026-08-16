@@ -27,6 +27,69 @@ openral_msgs/OccupancyVoxels (base frame, /openral/world_voxels)
 C++ safety kernel  ──  check_voxel_collision (allocation-free)
 ```
 
+## How a cell becomes occupied: overlap, not sampling
+
+A base cell is marked occupied when **its cube shares volume with an occupied
+octree leaf's cube**. Not when its centre point-queries occupied — that was the
+rule until 2026-08-16, and it is a sampling rule applied across two independent
+lattices:
+
+* the octree's lattice is fixed in the OctoMap's frame (`map` / `odom`);
+* the grid's is fixed in `base_frame` and rides the robot.
+
+Their relative phase is therefore whatever the robot's pose makes it, and a
+single sample per cell snaps every surface onto whichever lattice the centre
+happened to land on. On the `robocasa_drawer_utensil` field run — 25 mm cells,
+a measured phase of ~12.1 mm, almost exactly half a cell — a cabinet door
+panel whose true front face is at base x = +0.0614 came out with its outermost
+occupied column at x ∈ [0.025, 0.050), **a full voxel closer to the robot**, and
+**zero cells where the panel actually is**. The best rigid shift between the
+recorded map and a ground-truth rasterization of the same camera at the same
+pose was exactly (−1, 0, 0) cells. The z axis was benign on that run only by
+luck of its own phase.
+
+Overlap has no phase. Every cell the occupied volume enters is marked, for every
+relative phase and (on a mobile base) every relative yaw — the cell-vs-leaf test
+is an exact separating-axis test between the two cubes, so a yawed lattice is
+not bounded by its axis-aligned box either.
+
+**It only ever adds cells.** A cell centre inside a leaf is a cube overlapping
+that leaf, by at least half a cell on every axis, so nothing centre sampling
+marked can fall out. `OctreeToGrid.EveryPhaseAndYawKeepsEveryCellTheCentreSample
+WouldHaveMarked` sweeps phases and yaws over a real kitchen octree and asserts
+exactly that containment, against the old predicate transcribed into the test.
+
+**And it does not dilate.** Overlap is *strict*: cubes that merely touch share
+no volume and do not mark each other, so a grid whose lattice is in phase with
+the octree's rasterizes bit-for-bit as it did before
+(`APhaseAlignedGridRasterizesExactlyAsCentreSamplingDid`). What it costs is half
+a grid cell of extra forward reach: the frontmost marked cell's centre can now
+sit up to `tree resolution + half a grid cell` in front of a surface, where the
+centre rule's bound was one tree resolution.
+
+Cost went **down**, because the work is now proportional to the occupied leaves
+in the box rather than to its cell count: on the reference host, a 2 m box over
+a kitchen octree fell from 2.3 ms to 0.26 ms at 50 mm cells, and from 15.2 ms to
+0.30 ms at 25 mm (64000 / 512000 cells, 6036 occupied leaves).
+`RasterizingTheKitchenStaysInsideThePublishBudget` holds it to a quarter of the
+10 Hz publish period.
+
+### The ≤1-resolution inflation toward the sensor is octomap's, and stays
+
+The grid inherits one more source of forward error that this node does **not**
+correct: `insertPointCloud` marks the cell **containing the ray endpoint**, and
+that cell already reaches up to one tree resolution in front of the true
+surface. It is inherent to storing a surface in a voxel lattice at all, it is
+upstream of this bridge (`octomap_server`'s octree, which Nav2 / SLAM / the
+dashboard read directly too), and correcting it here would mean second-guessing
+the map with sensor geometry this node does not have.
+
+So: a published grid can report a surface up to one tree resolution + half a
+grid cell nearer than it is, and that is the map's discretisation, not a bug in
+the lowering. Chasing it belongs upstream, in how the octree is built. The
+direction is the safe one — the robot stops early, never late — and the payload
+clearing's reaches (below) are measured against the same lattice slop.
+
 ## The attached payload leaves world occupancy here
 
 `openral_msgs/AttachedCollisionObject` states the contract: *"The same object
@@ -445,6 +508,26 @@ against a real `octomap::OcTree` — no ROS graph needed. A full
 octomap → bridge → kernel chain needs a live OctoMap producer and is a
 HIL / on-robot test (the `octomap` Python bindings aren't in CI, so a synthetic
 OctoMap publisher would itself be C++).
+
+Its second half pins the **lattice phase** (above), on trees seeded through real
+`insertPointCloud` rays with the deploy-sim parameters:
+`TheFieldPanelKeepsTheColumnItActuallyOccupies` replays the
+`robocasa_drawer_utensil` geometry — the panel face at base x = +0.0614 at 25 mm
+with the run's 12.1 mm phase — and asserts both halves of it: the old rule
+marked exactly one column, a voxel in front of the panel, and the new one marks
+the panel's own column as its outermost;
+`ASlabIsNeverMissedAndNeverFurtherForwardThanTheLatticesExplain` sweeps all 25
+phases of a 25 mm lattice for the same two properties (the face's column always
+marked, nothing further forward than one tree resolution + half a grid cell);
+`EveryPhaseAndYawKeepsEveryCellTheCentreSampleWouldHaveMarked` is the
+conservativeness proof over phases *and* yaws;
+`APhaseAlignedGridRasterizesExactlyAsCentreSamplingDid` is the no-dilation half;
+`ACoarseLeafMarksEveryCellUnderIt` pins the pruned multi-resolution leaf;
+`AnObliqueLeafMarksTheCellsItEntersAndNotTheirDiagonals` pins that a yawed leaf
+is tested exactly rather than by its axis-aligned box;
+`AGridOutsideTheOctreesKeyRangeStillSeesEveryLeaf` pins that an unusable bbx
+falls back to walking the tree instead of iterating nothing; and
+`RasterizingTheKitchenStaysInsideThePublishBudget` holds the cost.
 
 `test_occupancy_persistence` pins the occupancy semantics the deploy-sim launch
 tunes for, on a real `OcTree` seeded with those exact parameters
