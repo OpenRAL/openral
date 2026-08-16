@@ -587,3 +587,91 @@ def test_points_from_depth_grid_refuses_a_clearing_mask_it_cannot_place() -> Non
             clearing=np.array([[True], [False]]),
             max_range_m=4.0,
         )
+
+
+# ── what payload transparency can and cannot clear ───────────────────────────
+#
+# A grasped payload is made transparent to the depth rays (8149344) and the rays
+# that find nothing behind it are marked "clearing" (f02fe7d), so OctoMap
+# retires the cells the payload's silhouette covers. That mechanism reaches
+# exactly the cells a ray still crosses. It is why the attached object's own
+# occupancy has to be removed at the bridge as well: the cells the camera can no
+# longer reach are never touched by any ray, and
+# `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`
+# (packages/openral_octomap_bridge/test/test_occupancy_persistence.cpp) pins
+# what becomes of them — nothing, for as long as the run lasts.
+#
+# Camera at the origin looking down -Z. The payload slab sits at z = -1.5 and is
+# excluded; a counter (x in [0.05, 0.65], NOT excluded) crosses in front of its
+# right-hand half at z = -1.0; a wall closes the scene at z = -2.
+_OCCLUDED_PAYLOAD_MJCF = """
+<mujoco model="depth_payload_behind_counter">
+  <worldbody>
+    <camera name="depth0" pos="0 0 0"/>
+    <body name="counter" pos="0.35 0 -1.0">
+      <geom name="counter_top" type="box" size="0.3 1.0 0.05"/>
+    </body>
+    <body name="payload" pos="0 0 -1.5">
+      <geom name="baguette" type="box" size="0.5 0.5 0.05"/>
+    </body>
+    <geom name="wall" type="box" pos="0 0 -2.0" size="5 5 0.1"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_transparency_clears_only_the_payload_cells_a_ray_still_reaches() -> None:
+    """Half the payload's silhouette gets a clearing ray; the occluded half gets none.
+
+    Both halves are payload. The unoccluded half's rays pass through it to the
+    wall at 1.9 m, so every cell along them — the payload's own included — is
+    ray-cleared. The occluded half's rays stop dead on the counter at 0.95 m,
+    0.5 m short of the payload's near face: no ray enters that part of the
+    payload's volume at all, in this frame or any other while the counter is in
+    the way, so nothing there can be cleared by transparency.
+    """
+    from openral_sim.backends.depth_camera import synthesize_depth_frame
+
+    model = mujoco.MjModel.from_xml_string(_OCCLUDED_PAYLOAD_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    payload_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "payload")
+
+    depth, clearing = synthesize_depth_frame(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=10.0,
+        exclude_body_ids=frozenset({int(payload_body)}),
+    )
+
+    # Pixel u maps to world x = (u - cx) / fx per metre of depth, so at the
+    # payload's plane (1.5 m) the silhouette is |u - cx| <= 0.5 / 1.5 * fx.
+    # Columns are taken strictly inside the counter (u - cx >= 0.10 * fx) and
+    # strictly clear of it (u - cx <= -0.05 * fx); the two columns between graze
+    # its edge and belong to neither band. Rows are bounded the same way in v.
+    us = np.arange(_W) - _CX
+    vs = np.arange(_H) - _CY
+    silhouette_u = np.abs(us) <= 0.5 / 1.5 * _FX
+    silhouette_v = np.abs(vs) <= 0.5 / 1.5 * _FY
+    silhouette = silhouette_v[:, None] & silhouette_u[None, :]
+    occluded = silhouette & ((us >= 0.10 * _FX) & (us <= 0.60 * _FX))[None, :]
+    visible = silhouette & (us <= -0.05 * _FX)[None, :]
+    assert occluded.any() and visible.any(), "fixture must exercise both halves"
+
+    # The half the camera still sees through: the ray reached the wall, so
+    # OctoMap clears every cell between — the payload's own cells included.
+    assert np.all(depth[visible] == pytest.approx(1.9, abs=0.05))
+
+    # The occluded half: every ray stops on the counter, half a metre short of
+    # the payload. Not a clearing ray (it has a real return), and its cleared
+    # span ends at 0.95 m, so no cell of the payload is on it.
+    assert np.all(depth[occluded] == pytest.approx(0.95, abs=0.05))
+    assert not clearing[occluded].any()
+    assert float(depth[occluded].max()) < 1.45, "no ray reaches the payload's near face"

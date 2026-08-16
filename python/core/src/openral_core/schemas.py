@@ -2061,12 +2061,136 @@ class WorldCollisionPrimitive(BaseModel):
 
 
 class AttachmentEvidenceKind(str, Enum):
-    """Evidence source that confirmed a robot/object attachment."""
+    """Evidence source that confirmed a robot/object attachment or its support.
+
+    ``SIM_CONTACT`` and ``SIM_GEOM_DISTANCE`` are both simulator ground truth,
+    and the distinction is load-bearing rather than cosmetic. A simulator's
+    *contact list* is not a proximity oracle: MuJoCo's ``contype`` /
+    ``conaffinity`` bitmasks suppress whole geom pairs, so an object flush on a
+    counter can generate no contact record at all. ``SIM_GEOM_DISTANCE`` names
+    the signed closest-distance probe (``mj_geomDistance``), which sees the
+    pairs the contact list hides. A consumer reading a witness must not infer
+    from ``SIM_CONTACT`` that a solver contact existed, nor from
+    ``SIM_GEOM_DISTANCE`` that one did not.
+    """
 
     SIM_CONTACT = "sim_contact"
+    SIM_GEOM_DISTANCE = "sim_geom_distance"
     GRIPPER_FORCE = "gripper_force"
     PERCEPTION_TRACK = "perception_track"
     OPERATOR = "operator"
+
+
+class SupportContactWitness(BaseModel):
+    """Bounded attestation that a payload rests on a named support surface.
+
+    Attachment says what the robot is carrying; it does not say the payload is
+    free of its environment (ADR-0092 D6). A grasped baguette still lies on the
+    counter while the gripper closes, and the safety kernel correctly sees that
+    as a payload-vs-world penetration. This witness is World State's statement
+    that one specific contact is legitimate — and the safety kernel exempts
+    nothing else. Absent witness, absent exemption: the kernel stops.
+
+    Geometry is expressed in the **attached object's own frame**, deliberately
+    not in the base frame and not as voxel indices. Indices decorrelate as a
+    mobile base drives and the occupancy lattice re-phases underneath the
+    robot, while the physical contact persists; the object frame moves with the
+    payload, so the attested plane keeps naming the same physical support face.
+
+    ``max_penetration_m`` is a **physical** depth. A 25 mm occupancy lattice
+    reads a 1 mm physical contact as up to ~15 mm of penetration because the
+    surface cell's cube overshoots the true surface; the kernel accounts for
+    that discretisation separately and geometrically, so inflating this field
+    to cover it would license real penetration.
+
+    Attributes:
+        support_id: Identity of the supporting environment surface.
+        contact_point_in_object: A point on the support plane, object frame.
+        contact_normal_in_object: Unit outward support normal in the object
+            frame, pointing from the supporting solid toward the payload.
+        patch_radius_m: Lateral radius of the supported patch about the contact
+            point. Contact outside it is never exempt.
+        max_penetration_m: Attested bound on the physical penetration depth.
+        confidence: Witness confidence in ``[0, 1]``.
+        evidence_kind: Source that measured the support contact. The MuJoCo
+            producer attests ``SIM_GEOM_DISTANCE`` — a signed closest-distance
+            probe, not the solver's contact list, which ``contype`` /
+            ``conaffinity`` suppression can leave empty under a payload that is
+            demonstrably resting on a surface.
+        evidence_ref: Optional trace/contact reference.
+        stamp_ns: Producer timestamp. With ``support_id`` this keys the safety
+            kernel's re-arm check, so a witness that already died after
+            separation stays dead until a genuinely new one is attested.
+
+    Example:
+        >>> witness = SupportContactWitness(
+        ...     support_id="sim:counter_main",
+        ...     contact_point_in_object=(0.0, 0.0, -0.025),
+        ...     contact_normal_in_object=(0.0, 0.0, 1.0),
+        ...     patch_radius_m=0.1,
+        ...     max_penetration_m=0.00118,
+        ...     confidence=1.0,
+        ...     evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
+        ...     stamp_ns=1,
+        ... )
+        >>> witness.patch_radius_m
+        0.1
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    support_id: str = Field(min_length=1)
+    contact_point_in_object: tuple[float, float, float]
+    contact_normal_in_object: tuple[float, float, float]
+    patch_radius_m: float = Field(gt=0.0)
+    max_penetration_m: float = Field(ge=0.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_kind: AttachmentEvidenceKind
+    evidence_ref: str | None = None
+    stamp_ns: int = Field(ge=0)
+
+    _UNIT_NORMAL_TOLERANCE: ClassVar[float] = 1e-6
+
+    @model_validator(mode="after")
+    def _validate_witness(self) -> SupportContactWitness:
+        norm = math.sqrt(sum(component * component for component in self.contact_normal_in_object))
+        if not math.isfinite(norm) or abs(norm - 1.0) > self._UNIT_NORMAL_TOLERANCE:
+            raise ValueError(
+                "SupportContactWitness.contact_normal_in_object must be a unit vector "
+                f"(norm {norm!r})."
+            )
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        point = msg.contact_point_in_object  # type: ignore[attr-defined]
+        normal = msg.contact_normal_in_object  # type: ignore[attr-defined]
+        return cls(
+            support_id=str(msg.support_id),  # type: ignore[attr-defined]
+            contact_point_in_object=(float(point.x), float(point.y), float(point.z)),
+            contact_normal_in_object=(float(normal.x), float(normal.y), float(normal.z)),
+            patch_radius_m=float(msg.patch_radius_m),  # type: ignore[attr-defined]
+            max_penetration_m=float(msg.max_penetration_m),  # type: ignore[attr-defined]
+            confidence=float(msg.confidence),  # type: ignore[attr-defined]
+            evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
+            evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+        msg.support_id = self.support_id  # type: ignore[attr-defined]
+        point = msg.contact_point_in_object  # type: ignore[attr-defined]
+        point.x, point.y, point.z = self.contact_point_in_object
+        normal = msg.contact_normal_in_object  # type: ignore[attr-defined]
+        normal.x, normal.y, normal.z = self.contact_normal_in_object
+        msg.patch_radius_m = float(self.patch_radius_m)  # type: ignore[attr-defined]
+        msg.max_penetration_m = float(self.max_penetration_m)  # type: ignore[attr-defined]
+        msg.confidence = float(self.confidence)  # type: ignore[attr-defined]
+        msg.evidence_kind = self.evidence_kind.value  # type: ignore[attr-defined]
+        msg.evidence_ref = self.evidence_ref or ""  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
 
 
 class AttachedCollisionPrimitive(BaseModel):
@@ -2145,7 +2269,10 @@ class AttachedCollisionObject(BaseModel):
     """Collision geometry rigidly attached to a robot link.
 
     The object is removed from world occupancy only when the same geometry is
-    present here, so collision checking never loses the carried payload.
+    present here, so collision checking never loses the carried payload. The
+    removal itself is the occupancy bridge's (``openral_octomap_bridge`` clears
+    the payload's own cells out of ``/openral/world_voxels`` while it appears
+    here); the kernel keeps checking the payload as robot geometry.
 
     Attributes:
         object_id: Stable perception/world identity.
@@ -2160,6 +2287,11 @@ class AttachedCollisionObject(BaseModel):
         evidence_kind: Source that confirmed the attachment.
         evidence_ref: Optional trace/contact/track reference.
         stamp_ns: Confirmation timestamp.
+        support_contact: Optional attestation that this payload is in bounded
+            support contact with a named environment surface (ADR-0092 D6).
+            ``None`` — the honest value for any producer that cannot measure
+            support contact, including the vision attachment producer — means
+            the safety kernel exempts no payload-vs-world contact at all.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2176,6 +2308,7 @@ class AttachedCollisionObject(BaseModel):
     evidence_kind: AttachmentEvidenceKind
     evidence_ref: str | None = None
     stamp_ns: int = Field(ge=0)
+    support_contact: SupportContactWitness | None = None
 
     @model_validator(mode="after")
     def _validate_attachment(self) -> AttachedCollisionObject:
@@ -2245,6 +2378,11 @@ class AttachedCollisionObject(BaseModel):
             evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
             evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            support_contact=(
+                SupportContactWitness.from_idl(msg.support_contact)  # type: ignore[attr-defined]
+                if bool(msg.support_contact_valid)  # type: ignore[attr-defined]
+                else None
+            ),
         )
 
     def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
@@ -2281,6 +2419,9 @@ class AttachedCollisionObject(BaseModel):
         msg.evidence_kind = self.evidence_kind.value  # type: ignore[attr-defined]
         msg.evidence_ref = self.evidence_ref or ""  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.support_contact_valid = self.support_contact is not None  # type: ignore[attr-defined]
+        if self.support_contact is not None:
+            self.support_contact.fill_idl(msg.support_contact)  # type: ignore[attr-defined]
 
 
 class OccupancyGridRef(BaseModel):

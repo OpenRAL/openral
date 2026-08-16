@@ -98,6 +98,37 @@ contributor should look at before adding similar code.
    venvs that cannot import `openral_sim` — their copies are a deliberate
    wire-contract MIRROR: update them in lockstep with `_behavior_wire`.
 
+8. **Support-contact patch predicate — *deliberate cross-package mirror,
+   update in lockstep.*** `support_contact_exempts`
+   (`cpp/openral_safety_kernel/src/collision.cpp`) and
+   `support_patch_withholds`
+   (`packages/openral_octomap_bridge/src/payload_clearing.cpp`) evaluate
+   the same attested support plane with the same two exact
+   discretisation pads (the voxel cube's half-width projected on the
+   support normal, and its circumradius laterally). They are not
+   consolidated because consolidating them would make a Layer-2
+   perception bridge link the Layer-6 safety kernel's collision core —
+   the wrong dependency direction, and one that would put `octomap` and
+   `tf2` a link away from the real-time kernel. The mirror is safe in
+   one direction only and must stay that way: the bridge evaluates the
+   bound with **zero slack** while the kernel adds
+   `attached_contact_tolerance`, so what the bridge withholds is a
+   subset of what the kernel exempts **for the object that attested it**
+   (the two scope conditions are in
+   `packages/openral_octomap_bridge/README.md`).
+   Both predicates bound the along-normal coordinate: the withheld set is
+   the support HALF-SPACE below the attested plane plus one projected
+   cube half-width of slab above it, never the whole patch cylinder.
+   Changing either predicate without the other breaks the partition — the
+   failure mode is the 2026-08-14 witness/clearing defect.
+   `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence`
+   (kernel) and `PayloadClearing.TheAttestedSupportSurfaceSurvivesThe
+   Clearing` (bridge) pin the two halves;
+   `PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`
+   pins the mirror itself, evaluating the bridge predicate against a
+   term-for-term transcription of the kernel's on the same cells, so a
+   drift on either side fails a test instead of a run.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer
@@ -112,6 +143,25 @@ contributor should look at before adding similar code.
   kernel check" (the manifest's `collision_geometry` links, resolved through
   each joint's `sim_joint_name`). The E-stop near-miss probe needs the
   second precisely because it is *narrower* than the first.
+
+- **Bounded `mj_geomDistance` probing** — `sim_sensor_bridge._pair_distance_lower_bound`
+  (the vectorised bounding-sphere/plane prefilter) and
+  `sim_sensor_bridge._round_robin_candidates` (the fair exact-call budget) are the
+  single source for "measure the closest geom pairs across a boundary without
+  paying O(n·m)". Two callers share them and **must keep sharing them**:
+  `sim_sensor_bridge._nearest_pair_records` (the E-stop ground-truth record) and
+  `_sim_attachment_evidence._probe_support_hits` (the support-contact witness).
+  They are *not* a duplication target for each other, because they need different
+  outputs from the same measurement: the diagnostics path wants named,
+  rounded records for a log line, while the witness needs the closest-point
+  segment (`fromto`) to reconstruct a contact point and a support plane. **Do NOT
+  reimplement the prefilter or the budget; if a third caller needs a third
+  output shape, extract the exact-call loop, not the ranking.**
+  The reason both exist at all is the same field lesson, recorded twice: MuJoCo's
+  contact list is not a proximity oracle — `contype`/`conaffinity` suppression
+  empties whole geom pairs (an arm 30 mm inside a freezer door with `ncon == 0`;
+  a cup flush on a RoboCasa island with no contact record), so signed distance is
+  the adjudicator in both the diagnostics and the evidence path.
 
 - **HAL adapters (sim)** — `FrankaPandaHAL`, `UR5eHAL`, `UR10eHAL`,
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
