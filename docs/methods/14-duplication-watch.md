@@ -128,6 +128,12 @@ contributor should look at before adding similar code.
    pins the mirror itself, evaluating the bridge predicate against a
    term-for-term transcription of the kernel's on the same cells, so a
    drift on either side fails a test instead of a run.
+   Both predicates are also **phase-blind** (ADR-0097): neither reads
+   `support_id` or `evidence_kind`, so the place-phase witness reuses
+   both unchanged and neither side gained a place-specific branch.
+   `PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs`
+   pins that identity — keep it that way, because a phase-aware branch on
+   one side only is exactly how this mirror would drift.
 
 ### Already correctly DRY (do not flag)
 

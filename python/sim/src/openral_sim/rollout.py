@@ -126,6 +126,27 @@ class SimRollout(Protocol):
             attribute and a ``None`` return as "no sim clock" (fall back to
             wall time).
 
+        ``task_success(self) -> bool | None``
+            — the backend's OWN task-success predicate, read on demand
+            and independent of ``step``. Robosuite/RoboCasa envs
+            implement ``_check_success()`` per task ("is the cup in the
+            sink"); the adapter forwards it. Contract:
+
+            * ``True`` / ``False`` — the env's live verdict at this
+              instant. It is NOT latched: a task that succeeds and is
+              then undone reads ``False`` again.
+            * ``None`` — this backend has no task-success predicate.
+              A caller must never read ``None`` as failure.
+            * Reading it is side-effect free: it must not step physics,
+              latch a terminal, or influence ``StepResult``.
+
+            The ``sim run`` / benchmark path does NOT use this — it reads
+            ``StepResult.info[task.success_key]`` (see :class:`StepResult`).
+            This extension exists for ``deploy sim``, whose continuous
+            twin suppresses per-step task evaluation entirely, so the
+            HAL polls the predicate for observability
+            (:meth:`openral_hal.sim_attached.SimAttachedHAL.task_success`).
+
         ``viewer_render(self) -> None``
             — Adapters whose underlying engine owns the live viewer
             and needs per-step pumping (e.g. SAPIEN / ManiSkill3 envs
@@ -143,10 +164,11 @@ class SimRollout(Protocol):
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
 
-        All three extensions are intentionally *not* part of the Protocol
+        Every extension above is intentionally *not* part of the Protocol
         so adapters do not need to stub a method they cannot honour;
         callers MUST use ``getattr(env, "<name>", None)`` and treat both
-        a missing attribute and a ``None`` return as "viewer unsupported".
+        a missing attribute and a ``None`` return as "unsupported"
+        (for the viewer hooks: "viewer unsupported").
     """
 
     scene: SceneSpec

@@ -1541,6 +1541,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     ):
         argv_template.append(f"workcell_json:={deploy_scene.model_dump_json(exclude_unset=True)}")
 
+    # ADR-0097 — the scene's committed place-phase declaration, for a DIRECT
+    # dispatch (no reasoner in the loop to ground the place target per goal).
+    # Forwarded to the rSkill runner, which scopes it to each goal it
+    # dispatches. Absent — every scene today — means no place witness can arm.
+    if deploy_scene is not None and deploy_scene.place_declaration is not None:
+        argv_template.append(
+            f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
+        )
+
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
     # launch paths by convention and forward them (each to its consumer's arg).
@@ -1959,9 +1968,14 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
     whatever the process-group topology:
 
     1. Forward SIGINT/SIGTERM to the launch's session so ``ros2 launch``
-       runs its graceful shutdown (each node's ``on_shutdown`` fires; the
-       HAL releases its MJCF env; the skill adapter's ``close()``
-       terminates the rldx sidecar).
+       runs its graceful shutdown. Each node then unwinds its own
+       ``main()``: rclpy's SIGINT handler shuts the context and raises out
+       of ``spin``, and the ``finally`` runs the teardown — for the HAL
+       that is ``shutdown_hal()``, which releases the MJCF env and emits
+       the terminal ``sim.task_success_final`` verdict; the skill adapter's
+       ``close()`` terminates the rldx sidecar. Note this is NOT the
+       lifecycle ``shutdown`` transition — rclpy requests none on a signal,
+       so ``on_shutdown`` does not fire.
     2. After ``grace_s`` escalate to SIGKILL on the launch's process
        group (``_terminate_launch_group``).
     3. Sweep by argv signature (``_kill_orphan_openral_graph_processes``).

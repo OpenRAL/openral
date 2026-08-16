@@ -9,6 +9,17 @@ string goal_params_json    # per-skill structured parameters
                             #   ros_integration.default_goal_json at
                             #   configure-time; VLAs ignore.
 float64 deadline_s         # 0 = use manifest default
+
+# Optional place-phase declaration (ADR-0097), additive and defaulted off.
+# False — every pre-ADR-0097 caller — means no place witness may ever arm for
+# this goal, which is exactly today's behaviour. True declares that this goal
+# places its payload into place_declaration.target_id, permitting (never
+# causing) a place-phase SupportContactWitness for measured contact ON that
+# target. The runner scopes the declaration to this goal's lifetime: it
+# publishes it on accept and retracts it on success, failure, cancel, and
+# E-stop, and the declaration's own timeout_s expires it if the runner dies.
+bool place_declaration_valid
+PlaceDeclaration place_declaration
 ---
 # Result
 bool success

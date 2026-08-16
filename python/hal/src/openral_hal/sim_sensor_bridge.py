@@ -61,7 +61,12 @@ _CONTACTS_CAVEAT = (
     "robot_world_contacts==0 does NOT mean no interpenetration: MuJoCo "
     "contype/conaffinity exclusions can suppress contacts entirely (field-"
     "observed: arm 30mm inside a freezer door with ncon==0). Adjudicate with "
-    "the nearest_*_pairs probes, not with the contact list."
+    "the nearest_*_pairs probes, not with the contact list. Those probes "
+    "measure only against SOLID world geometry (a geom with neither contype "
+    "nor conaffinity is a marker, not an obstacle, and is excluded — see "
+    "nearest_*_coverage.noncollidable_world_geoms_excluded); a pair whose "
+    "bitmasks merely fail to meet each other is still measured, because "
+    "suppression is a property of the pair, not of the geom."
 )
 # Candidate chunks retained for predicted-horizon reconstruction. The kernel
 # checks the chunk it has just received; a small ring covers the delivery
@@ -411,7 +416,10 @@ def _nearest_pair_records(
 
     The other side is either an explicit body set (``other_included`` — used
     for payload↔robot-link self-pairs, which are not "everything else") or,
-    by default, every body outside ``side`` and ``other_excluded``.
+    by default, every body outside ``side`` and ``other_excluded``. That
+    default enumeration drops geoms with neither ``contype`` nor
+    ``conaffinity``: they are not solid, so a distance measured against one is
+    not a penetration. See the exclusion's own comment below.
 
     Bounded by construction: a vectorised distance-lower-bound prefilter
     (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
@@ -447,6 +455,7 @@ def _nearest_pair_records(
         "truncated": False,
         "side_geoms": 0,
         "side_geoms_probed": 0,
+        "noncollidable_world_geoms_excluded": 0,
     }
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
@@ -466,7 +475,25 @@ def _nearest_pair_records(
             body_of_geom,
             np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
         )
-        other_geoms = np.flatnonzero(~in_side & ~excluded)
+        # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can
+        # never generate a contact for it, and the safety kernel never checks
+        # one. Measuring against it manufactures penetrations that mean nothing
+        # physically — round 5/6 reported the payload "134 mm inside
+        # cab_1_left_group_reg_main", a RoboCasa region marker. The support
+        # producer already draws the same line for the same reason
+        # (``_sim_attachment_evidence._support_candidate_geoms``: "purely visual
+        # geometry ... is not solid, and a decorative shell coincident with a
+        # real surface would only add noise"); this is that rule applied to the
+        # world side of the diagnostic probe. Only the enumerated world side is
+        # filtered — the explicit ``other_included`` branch is the payload↔robot
+        # self-pair probe, whose other side is already the kernel-checked links.
+        collidable = (np.asarray(model.geom_contype, dtype=np.int64) != 0) | (
+            np.asarray(model.geom_conaffinity, dtype=np.int64) != 0
+        )
+        other_geoms = np.flatnonzero(~in_side & ~excluded & collidable)
+        coverage["noncollidable_world_geoms_excluded"] = int(
+            np.count_nonzero(~in_side & ~excluded & ~collidable)
+        )
     coverage["side_geoms"] = int(side_geoms.size)
     if side_geoms.size == 0 or other_geoms.size == 0:
         return [], coverage
@@ -579,6 +606,23 @@ def estop_ground_truth_snapshot(
     probes are the adjudicator, and the record carries this as
     ``contacts_caveat``.
 
+    **The probes measure only against solid world geometry.** A geom with
+    neither ``contype`` nor ``conaffinity`` cannot collide with anything and is
+    never checked by the safety kernel, so a signed distance against one is not
+    a penetration — rounds 5/6 reported the payload "134 mm inside
+    ``cab_1_left_group_reg_main``", a RoboCasa region marker, which is
+    physically meaningless. Both world-side probes (robot↔world and
+    payload↔world) now exclude those geoms, the same rule the support-contact
+    producer applies when enumerating support candidates
+    (``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
+    coverage block reports the count as
+    ``noncollidable_world_geoms_excluded``, so the omission is visible rather
+    than silent. Pairs whose bitmasks merely fail to *meet* are still measured:
+    suppression there is a property of the pair, not of the geom, and that is
+    precisely the case the probe exists to adjudicate. The payload↔robot-link
+    self-pair probe is deliberately untouched — its other side is the enumerated
+    kernel-checked link set, not the scene.
+
     Args:
         model: live ``mujoco.MjModel``.
         data: live ``mujoco.MjData`` at the stop instant.
@@ -621,8 +665,11 @@ def estop_ground_truth_snapshot(
         Each probe carries its own coverage block, and that is what makes an
         *absent* pair readable: an empty near-miss list only means "nothing
         was close" when ``truncated`` is false and
-        ``side_geoms_probed == side_geoms``. The payload coverage blocks are
-        ``{}`` when nothing is carried, matching their empty pair lists.
+        ``side_geoms_probed == side_geoms``.
+        ``noncollidable_world_geoms_excluded`` names how much non-solid world
+        geometry the probe deliberately did not measure. The payload coverage
+        blocks are ``{}`` when nothing is carried, matching their empty pair
+        lists.
     """
     attached_bodies = sorted(attached_body_ids)
     attached = frozenset(attached_bodies)
@@ -888,6 +935,7 @@ class SimSensorBridge:
         self._attachment_ack_sub: Any = None
         self._attachment_voxel_sub: Any = None
         self._attachment_pub: Any = None
+        self._place_declaration_sub: Any = None
         # E-stop ground truth (diagnostics only — never gates anything).
         # ``/openral/estop`` triggers the snapshot; the candidate-chunk ring
         # and the last collision evidence let an offline tool reconstruct a
@@ -1000,6 +1048,9 @@ class SimSensorBridge:
         if self._attachment_voxel_sub is not None:
             self._node.destroy_subscription(self._attachment_voxel_sub)
             self._attachment_voxel_sub = None
+        if self._place_declaration_sub is not None:
+            self._node.destroy_subscription(self._place_declaration_sub)
+            self._place_declaration_sub = None
         self._teardown_estop_ground_truth()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
@@ -1696,6 +1747,7 @@ class SimSensorBridge:
                     self._node.get_logger().info(
                         "automatic sim attachment evidence armed at the post-step boundary"
                     )
+                    self._setup_place_declaration()
                 else:
                     self._node.get_logger().warning(
                         "automatic sim attachment evidence has no post-step observer"
@@ -1704,6 +1756,72 @@ class SimSensorBridge:
                 self._node.get_logger().warning(
                     f"automatic sim attachment evidence disabled: {exc}"
                 )
+
+    def _setup_place_declaration(self) -> None:
+        """Subscribe dispatch's place-phase declarations (ADR-0097).
+
+        This is the dispatch → HAL half of the declaration's path; the World
+        State half is the attestation it licenses, which rides the existing
+        `/openral/attachment_state` snapshot. TRANSIENT_LOCAL so a producer
+        armed after the dispatcher sees the goal's declaration rather than
+        missing it, and depth 1 because only the newest declaration is ever in
+        force.
+        """
+        from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+
+        self._place_declaration_sub = self._node.create_subscription(
+            PlaceDeclarationMsg,
+            "/openral/place_declaration",
+            self._on_place_declaration,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+
+    def _on_place_declaration(self, msg: object) -> None:
+        """Hand one declaration to the attestation producer, or refuse it.
+
+        Refusal is the fail-closed direction and it is logged, never silent: a
+        declaration naming a target that does not exist in this scene must not
+        be treated as "no declaration happened", because an operator who
+        mistyped a target is owed the error (HZ-0097-2's attributability).
+        """
+        if self._attachment_tracker is None:
+            return
+        from openral_core import PlaceDeclaration
+        from openral_core.exceptions import ROSConfigError
+
+        try:
+            declaration = PlaceDeclaration.from_idl(msg)
+        except (ValueError, TypeError) as exc:
+            self._node.get_logger().error(f"place declaration rejected: {exc}")
+            return
+        try:
+            self._attachment_tracker.set_place_declaration(
+                declaration if declaration.active else None
+            )
+        except ROSConfigError as exc:
+            self._node.get_logger().error(str(exc))
+            return
+        if declaration.active:
+            self._node.get_logger().info(
+                f"place declaration armed target={declaration.target_id} "
+                f"object={declaration.object_id or '<carried>'} "
+                f"rskill={declaration.rskill_id or '<unset>'} "
+                f"trace={declaration.trace_id or '<unset>'} "
+                f"timeout_s={declaration.timeout_s:.1f}"
+            )
+        else:
+            self._node.get_logger().info(
+                f"place declaration retracted target={declaration.target_id}"
+            )
 
     def _on_attachment_state(self, msg: object) -> None:
         """Apply one complete attachment snapshot to the sim perception mask."""
@@ -1749,7 +1867,32 @@ class SimSensorBridge:
         self._attachment_revision = revision
 
     def _on_attachment_state_applied(self, msg: object) -> None:
-        """Mask newly attached bodies only after the kernel accepts the revision."""
+        """Mask newly attached bodies only after the kernel accepts the revision.
+
+        The barrier this releases exists for exactly one reason: a body that
+        has just entered the perception mask is still baked into the world map,
+        so motion must wait until a transparent depth frame (and the voxel
+        raster behind it) has cleared it. Its trigger is therefore *new masked
+        geometry*, and the mask is resolved from each object's
+        ``evidence_ref`` (``SimAttachedHAL.update_attached_objects`` expands
+        that body and its subtree into ``read_attached_body_ids``) — so
+        comparing ``(object_id, evidence_ref)`` against the currently masked
+        set decides it exactly, not approximately.
+
+        The previous membership test was ``object_id`` *addition* only, which
+        deadlocked the ADR-0097 place witness: attesting support contact
+        re-publishes the SAME payload under a bumped revision, so nothing was
+        "added", nothing released the barrier, and a tick the lifecycle node
+        had deferred on ``attachment_action_ack_ready()`` was never
+        acknowledged — the goal aborted 8 s later on a place that had in fact
+        succeeded. A partial detach (2 payloads → 1) had the same shape.
+
+        A revision that masks nothing new — an attestation-only re-publish, a
+        partial detach — changes no perception geometry, so there is nothing to
+        settle and the barrier releases immediately. The release is still
+        guarded by :meth:`attachment_action_ack_ready` so an earlier revision's
+        outstanding depth/voxel frames are never skipped.
+        """
         revision = int(msg.data)  # type: ignore[attr-defined]
         if revision != self._attachment_revision or self._attachment_pending is None:
             return
@@ -1759,14 +1902,17 @@ class SimSensorBridge:
         from openral_core.exceptions import ROSConfigError
 
         try:
-            current_ids = {
-                obj.object_id for obj in getattr(self._hal, "read_attached_objects", lambda: [])()
+            masked = {
+                (obj.object_id, obj.evidence_ref)
+                for obj in getattr(self._hal, "read_attached_objects", lambda: [])()
             }
-            added = any(obj.object_id not in current_ids for obj in self._attachment_pending)
+            masks_new_geometry = any(
+                (obj.object_id, obj.evidence_ref) not in masked for obj in self._attachment_pending
+            )
             update(self._attachment_pending)
             self._attachment_applied_revision = revision
             self._attachment_pending = None
-            if added:
+            if masks_new_geometry:
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
                     self._node.count_publishers("/openral/world_voxels") > 0
@@ -1777,6 +1923,12 @@ class SimSensorBridge:
                 )
                 if self._attachment_depth_frames_remaining == 0:
                     self._notify_attachment_perception_ready()
+            elif self.attachment_action_ack_ready():
+                self._node.get_logger().info(
+                    f"attachment revision {revision} masks no new geometry; "
+                    "releasing the attachment perception barrier"
+                )
+                self._notify_attachment_perception_ready()
         except ROSConfigError as exc:
             self._node.get_logger().error(
                 f"kernel accepted attachment revision {revision}, but sim mask update failed: {exc}"
@@ -2342,8 +2494,12 @@ class SimSensorBridge:
         suppress a contact even at deep interpenetration (field-observed: an
         arm 30 mm inside a freezer door with ``ncon == 0``). Adjudicate a
         stop with the ``nearest_*_pairs`` probes; the contact list only ever
-        confirms, never refutes. The record repeats this as
-        ``contacts_caveat`` so a single grepped line stays self-explaining.
+        confirms, never refutes. Those probes measure only against SOLID world
+        geometry — a geom with neither ``contype`` nor ``conaffinity`` is a
+        marker, and measuring against one manufactured the physically
+        meaningless "payload 134 mm inside ``cab_1_left_group_reg_main``" of
+        rounds 5/6. The record repeats both facts as ``contacts_caveat`` so a
+        single grepped line stays self-explaining.
         """
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:

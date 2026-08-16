@@ -190,12 +190,17 @@ def test_idle_stepper_yields_under_active_action_stream(
 
     bridge, hal = wired_bridge_and_hal
 
-    # Count idle steps that actually fired (idle_step() -> True).
+    # Count idle steps that actually fired (idle_step() -> True). The spy must
+    # mirror the real signature — the bridge calls
+    # ``idle_step(wall_dt_s=1/camera_rate_hz)``, and a spy that rejected the
+    # keyword made the bridge log "idle stepper disabled after error" and
+    # latch the stepper OFF, so the resume assertion below failed for a reason
+    # that had nothing to do with the hold predicate under test.
     fired: dict[str, int] = {"n": 0}
     real_idle_step = hal.idle_step
 
-    def _counting_idle_step() -> bool:
-        stepped = bool(real_idle_step())
+    def _counting_idle_step(wall_dt_s: float | None = None) -> bool:
+        stepped = bool(real_idle_step(wall_dt_s))
         if stepped:
             fired["n"] += 1
         return stepped

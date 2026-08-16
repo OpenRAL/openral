@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include <openral_msgs/msg/attached_collision_primitive.hpp>
 
@@ -274,6 +275,50 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
     }
   }
   return cleared;
+}
+
+std::vector<std::uint8_t>
+AttachSweepLedger::sweep(const std::vector<AttachSweepObservation>& present, double window_m) {
+  const double window = (std::isfinite(window_m) && window_m > 0.0) ? window_m : 0.0;
+  std::vector<Window> next;
+  next.reserve(present.size());
+  std::vector<std::uint8_t> open;
+  open.reserve(present.size());
+
+  for (const auto& observation : present) {
+    // A key seen for the first time anchors HERE, so its displacement is 0 and
+    // its window is open: that grid is the attach transition itself.
+    Window window_state{observation.key, observation.payload_position, false};
+    for (const auto& prior : windows_) {
+      if (prior.key.attachment_revision == observation.key.attachment_revision &&
+          prior.key.object_id == observation.key.object_id) {
+        window_state = prior;
+        break;
+      }
+    }
+    // Closing latches: a payload that wanders back to where it was grasped does
+    // not get the widened reach again, because the map around it by then is
+    // evidence gathered while the payload was somewhere else.
+    if (!window_state.closed &&
+        (observation.payload_position - window_state.anchor).length() > window) {
+      window_state.closed = true;
+    }
+    open.push_back(window_state.closed ? 0U : 1U);
+    next.push_back(window_state);
+  }
+
+  windows_ = std::move(next);
+  return open;
+}
+
+std::size_t AttachSweepLedger::size() const noexcept { return windows_.size(); }
+
+double attach_transition_padding(double steady_padding_m, double attach_sweep_padding_m) noexcept {
+  const double extra = (std::isfinite(attach_sweep_padding_m) && attach_sweep_padding_m > 0.0)
+                           ? attach_sweep_padding_m
+                           : 0.0;
+  return (std::isfinite(steady_padding_m) && steady_padding_m > 0.0 ? steady_padding_m : 0.0) +
+         extra;
 }
 
 }  // namespace openral_octomap_bridge

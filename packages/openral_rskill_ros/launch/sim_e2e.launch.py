@@ -497,6 +497,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
     dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
@@ -1036,6 +1037,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
+                # ADR-0097 — the scene's committed place-phase declaration for a
+                # direct dispatch. Empty (every scene today) = no declaration, so
+                # no place witness can arm and payload contact mid-carry stops.
+                "place_declaration_json": place_declaration_json,
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
@@ -1918,6 +1923,16 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Service the skill_runner calls before the first inference "
                 "tick to snap the HAL's qpos to the rSkill starting pose."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "place_declaration_json",
+            default_value="",
+            description=(
+                "Serialized openral_core.PlaceDeclaration (ADR-0097) the "
+                "skill_runner scopes to each goal it dispatches, for a direct "
+                "dispatch with no reasoner in the loop. Empty = no "
+                "declaration; no place-phase support-contact witness can arm."
             ),
         ),
         DeclareLaunchArgument(

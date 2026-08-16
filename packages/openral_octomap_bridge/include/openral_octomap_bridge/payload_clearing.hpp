@@ -27,6 +27,30 @@
 // 2/2 on baguette+counter and cup+island, with the nearest surviving cell
 // measured 21.77 mm from the payload (one circumradius out).
 //
+// The clearing also distinguishes the ATTACH TRANSITION from steady state.
+// The cells that describe the object before the grasp were marked by a sensor
+// that saw the real object, while the clearing measures against a fitted
+// convex primitive: primitive-fit error plus lattice quantization leaves a thin
+// residue of pre-attach silhouette just past one circumradius, which the
+// steady-state reach can never explain. On the 2026-08-14 round-5 baguette run
+// that residue was one cell — `voxel_91633`, 22.13 mm from the payload's
+// primitive surface at resolution 0.025, i.e. 0.48 mm outside the 21.65 mm
+// reach — and it E-stopped the arm against the thing it was carrying. So a
+// payload clears with `attach_sweep_padding_m` of extra reach (one voxel by
+// default) for as long as it is still ON that silhouette, and with the
+// steady-state reach unchanged afterwards.
+//
+// "Still on it" is a POSITION, not a frame count. The grid is re-rasterized
+// from the octree every tick, so clearing the residue once removes it from one
+// published grid and the octree hands it straight back — nothing retires an
+// occluded cell. The field E-stop fired 2.78 s (~28 grids at 10 Hz) after the
+// attach sweep, with the payload still where it was grasped. So the widened
+// reach stays open until the payload has translated more than the sweep padding
+// away from its attach pose (`AttachSweepLedger`), at which point every cell
+// the padding covered is either inside the steady reach or beyond the payload
+// entirely. It is deliberately not spent on occupancy the payload has moved
+// away from, which is evidence about the world and stops the robot as it should.
+//
 // So the two mechanisms divide the cells between them, and the division is
 // exhaustive: within the payload's reach a cell is either CLEARED by this
 // bridge or EXEMPTED by the kernel's witness, never neither, never both.
@@ -41,6 +65,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <tf2/LinearMath/Transform.h>
@@ -172,7 +197,9 @@ bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& cent
 /// kernel. `padding_m` (default 0 at the call site) buys pose uncertainty on a
 /// real robot and does remove cells the payload cannot explain: it is
 /// protection given up, so keep it at 0 unless a measured pose error demands
-/// otherwise.
+/// otherwise. The one caller that passes more is the attach transition
+/// (`AttachSweepLedger` + `attach_transition_padding`), which spends it on one
+/// grid, on the stale pre-attach silhouette.
 ///
 /// Only cells inside each primitive's inflated AABB are visited, so the cost is
 /// the payload's volume, not the grid's. Clearing never *marks*: the function
@@ -183,5 +210,103 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
                                          const std::vector<PayloadPrimitive>& primitives,
                                          const std::vector<SupportPatch>& patches,
                                          double padding_m);
+
+/// One attached object's identity for the attach-transition sweep.
+///
+/// `object_id` is the wire identity; `attachment_revision` is
+/// `WorldStateStamped.attachment_revision`, the producer's own counter, bumped
+/// once per atomic attachment-set change (`openral_msgs/AttachmentState`) and
+/// never per frame. The pair is therefore an object REVISION: it is stable for
+/// as long as a payload is carried under one attachment record and changes the
+/// moment the producer publishes a new one — a grasp, a release, or a
+/// place-phase arm/disarm.
+struct AttachedObjectRevision {
+  std::string object_id;
+  std::uint64_t attachment_revision{0};
+};
+
+/// One object's identity and where its payload is, on one published grid.
+///
+/// `payload_position` must be stated in a frame the stale silhouette does NOT
+/// move in — the OctoMap's own frame, not the base frame. The residue is world
+/// -fixed occupancy; what the window measures is the payload moving away from
+/// it, and on a mobile base a payload that is motionless in `base_link` may be
+/// travelling through the map at walking pace.
+struct AttachSweepObservation {
+  AttachedObjectRevision key;
+  tf2::Vector3 payload_position{0.0, 0.0, 0.0};
+};
+
+/// The open attach-transition windows: which payloads are still close enough to
+/// where they were grasped that the residue of their pre-attach silhouette is
+/// still within the widened reach.
+///
+/// This is the bridge's ONLY memory. It is not a latch on cells — nothing about
+/// which cells were cleared is remembered, and no cell is ever held out of a
+/// later grid — so the per-frame, derive-everything-from-the-wire property the
+/// rest of the clearing has is unchanged. What it buys is the one distinction
+/// the steady-state reach cannot make on its own: stale pre-attach silhouette
+/// versus occupancy that describes the world.
+///
+/// The window is POSITION-based, not frame-count-based, and that is not a
+/// refinement — it is the difference between fixing the field case and not.
+/// The grid is re-rasterized from the octree on every tick, so a one-shot sweep
+/// removes the residue from exactly one published grid and the octree re-supplies
+/// it on the next: an occluded cell gets no clearing ray, ever. On the 2026-08-14
+/// round-5 baguette run the E-stop fired 2.78 s — ~28 published grids at 10 Hz —
+/// after the attach, with the payload still on its stale silhouette. So the
+/// widened reach stays open until the payload has actually LEFT the residue.
+///
+/// The closing test is displacement > `window_m` (the sweep padding itself),
+/// because that is exactly when the widened reach stops doing work the steady
+/// reach cannot: a cell that sat between the steady and padded reach at the
+/// attach pose is, once the payload has moved by more than the padding, either
+/// inside the steady reach (the payload moved toward it — cleared anyway) or
+/// outside the padded reach (the payload moved away — no longer the payload's
+/// silhouette to clear). Closing LATCHES: a payload that wanders back does not
+/// re-open a window, because by then the map around it is evidence gathered
+/// while it was elsewhere.
+class AttachSweepLedger {
+public:
+  /// Which of `present` are still inside their attach-transition window, in
+  /// order — and record this grid.
+  ///
+  /// Calling this IS the commit, which is what makes the answer and the record
+  /// impossible to disagree. An object absent from `present` is forgotten, so a
+  /// detach — and the next grasp — restarts the window; an object whose
+  /// revision the producer has bumped is a new key and starts a new window; a
+  /// key seen for the first time is inside its window by construction (its
+  /// anchor is the position observed now), which is the attach transition
+  /// itself. Not calling it at all — a frame that clears NOTHING (stale
+  /// attachment state, missing TF, a payload the bridge will not place) —
+  /// leaves every window exactly as it was, so the padded sweep stays owed
+  /// rather than being consumed by a frame that swept nothing.
+  std::vector<std::uint8_t> sweep(const std::vector<AttachSweepObservation>& present,
+                                  double window_m);
+
+  /// How many windows the last swept grid carried (open and closed alike).
+  std::size_t size() const noexcept;
+
+private:
+  struct Window {
+    AttachedObjectRevision key;
+    /// Where the payload was when this revision first appeared.
+    tf2::Vector3 anchor{0.0, 0.0, 0.0};
+    bool closed{false};
+  };
+
+  std::vector<Window> windows_;
+};
+
+/// The clearing padding one object's cells get on ONE published grid.
+///
+/// `steady_padding_m` (the `attached_clear_padding_m` parameter, 0 by default)
+/// once the object's attach-transition window has closed;
+/// `steady_padding_m + attach_sweep_padding_m` while it is open. The attach reach is
+/// therefore never TIGHTER than the steady-state reach, and a non-finite or
+/// negative `attach_sweep_padding_m` contributes nothing rather than shrinking
+/// it — a parameter cannot be used to narrow the clearing below what the
+/// payload's own volume explains.
+double attach_transition_padding(double steady_padding_m, double attach_sweep_padding_m) noexcept;
 
 }  // namespace openral_octomap_bridge

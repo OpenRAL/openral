@@ -16,6 +16,20 @@ verdicts and found four ways it could mislead:
 4. ``robot_world_contacts == []`` reads as "nothing was touching", which is
    false: MuJoCo contype/conaffinity exclusions suppress contacts entirely.
 
+Round 5/6 added a fifth: the probe measured against **non-collidable marker
+geometry** and reported "payload −134 mm inside ``cab_1_left_group_reg_main``"
+— a RoboCasa region marker, physically meaningless. Solidity and suppression
+are different things, and this fixture now models both separately:
+
+* ``freezer_door`` is SOLID but its bitmasks are disjoint from the robot's
+  (``contype=2 conaffinity=2`` vs the default ``1``/``1``), so MuJoCo generates
+  no contact however deep the arm goes — the real shape of the field's "arm
+  30 mm inside a door with ``ncon == 0``", and the exact case the near-miss
+  probe exists to adjudicate. It must keep being measured.
+* ``cab_1_left_group_reg_main`` carries neither ``contype`` nor
+  ``conaffinity``: it is not solid at all, cannot collide with anything, and is
+  never checked by the kernel. It must never be measured.
+
 These drive the real ``robots/panda_mobile/robot.yaml`` manifest (whose
 ``collision_geometry`` covers ``panda_link1..7`` and deliberately omits
 ``base_link`` and ``panda_finger_pair``) against a real compiled MuJoCo model
@@ -39,8 +53,13 @@ mujoco = pytest.importorskip("mujoco")
 # `sim_joint_name`s panda_mobile's manifest declares, so both the self-filter
 # (prefix-derived) and the kernel scope (child_link-derived) resolve for real.
 #
-# `freezer_door` carries contype=0 conaffinity=0 — the field pathology: MuJoCo
-# generates NO contact for it however deep the arm goes.
+# `freezer_door` is solid with bitmasks disjoint from the robot's
+# (2/2 vs the default 1/1) — the field pathology: MuJoCo generates NO contact
+# for it however deep the arm goes, yet it is a real obstacle and must be
+# measured. `cab_1_left_group_reg_main` is the opposite: a RoboCasa region
+# marker with neither contype nor conaffinity, overlapping both the arm and the
+# payload's parking spot. It is not solid, so measuring against it invents the
+# "-134 mm inside" phantom of rounds 5/6.
 _MJCF = """
 <mujoco model="estop_probe_scope">
   <option gravity="0 0 0"/>
@@ -114,7 +133,11 @@ _MJCF = """
       </body>
     </body>
     <body name="freezer_door" pos="{door_x} 0 0.98">
-      <geom name="door_panel" type="box" size="0.02 0.4 0.3" contype="0" conaffinity="0"/>
+      <geom name="door_panel" type="box" size="0.02 0.4 0.3" contype="2" conaffinity="2"/>
+    </body>
+    <body name="cab_1_left_group_reg_main" pos="0 0.25 0.8">
+      <geom name="cab_1_left_group_reg_main_g0" type="box" size="0.5 0.5 0.4"
+            contype="0" conaffinity="0"/>
     </body>
     <body name="counter_main" pos="0 {counter_y} 0.6">
       <geom name="counter_top" type="box" size="0.4 0.02 0.3"/>
@@ -299,8 +322,8 @@ def test_contact_list_is_empty_while_the_arm_is_deep_inside_the_door() -> None:
         probe_body_ids=scope,
     )
 
-    # The door is contype=0/conaffinity=0 — MuJoCo reports no contact at all,
-    # yet the arm is 17 mm inside it.
+    # The door's bitmasks don't meet the robot's — MuJoCo reports no contact at
+    # all, yet the arm is 17 mm inside a solid door.
     assert not [
         c
         for c in snapshot["robot_world_contacts"]  # type: ignore[union-attr]
@@ -363,6 +386,61 @@ def test_payload_robot_self_pair_is_probed() -> None:
     coverage = snapshot["nearest_payload_robot_coverage"]
     assert isinstance(coverage, dict)
     assert coverage["side_geoms"] == coverage["side_geoms_probed"]
+
+
+def test_region_marker_never_reports_a_phantom_robot_world_penetration() -> None:
+    """A non-collidable marker swallowing the arm is not an obstacle it is inside.
+
+    ``cab_1_left_group_reg_main`` overlaps ``robot0_link7`` by ~0.3 m here.
+    With neither ``contype`` nor ``conaffinity`` it cannot collide with
+    anything and the kernel never checks it, so a signed distance against it is
+    not a penetration — it is the round 5/6 phantom that read "payload −134 mm
+    inside cab_1_left_group_reg_main". The real door 5 mm away must still rank.
+    """
+    model, data = _model_data(door_x=_ARM_NEAR_DOOR_X)
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+    )
+
+    pairs = snapshot["nearest_robot_world_pairs"]
+    assert isinstance(pairs, list) and pairs
+    assert "cab_1_left_group_reg_main" not in _bodies_in(pairs), (
+        "the probe measured against a non-collidable marker — a phantom "
+        f"penetration; got {[(p['body_a'], p['body_b'], p['distance_m']) for p in pairs]}"
+    )
+    assert pairs[0]["body_b"] == "freezer_door", (
+        "a solid obstacle whose bitmasks merely fail to meet the robot's must "
+        "still be measured — that is the case the probe exists for"
+    )
+    # The omission is reported, not silent (CLAUDE.md §1.4).
+    coverage = snapshot["nearest_probe_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["noncollidable_world_geoms_excluded"] == 1
+
+
+def test_region_marker_never_reports_a_phantom_payload_penetration() -> None:
+    """Same rule on the payload↔world probe: the counter ranks, the marker is gone."""
+    model, data = _model_data(counter_y=_COUNTER_NEAR_Y, cup_pos=_CUP_NEAR_COUNTER)
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        attached_body_ids=_cup_ids(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+    )
+
+    pairs = snapshot["nearest_payload_world_pairs"]
+    assert isinstance(pairs, list) and pairs
+    assert "cab_1_left_group_reg_main" not in _bodies_in(pairs), (
+        "the carried payload was reported deep inside a marker it cannot touch"
+    )
+    assert pairs[0]["body_b"] == "counter_main"
+    coverage = snapshot["nearest_payload_world_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["noncollidable_world_geoms_excluded"] == 1
 
 
 def test_unattached_stop_emits_no_payload_probes() -> None:

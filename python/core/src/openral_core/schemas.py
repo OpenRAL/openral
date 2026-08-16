@@ -2081,6 +2081,137 @@ class AttachmentEvidenceKind(str, Enum):
     OPERATOR = "operator"
 
 
+class PlaceDeclaration(BaseModel):
+    """Dispatch's typed statement that a place phase is active for a payload.
+
+    The pick-phase support-contact witness (ADR-0092 D6) exempts the contact a
+    payload keeps with the surface it was picked from, and its anti-scope is
+    deliberate: a *new* contact against any other surface mid-carry is never
+    exempt, because nothing in World State or the safety kernel distinguishes
+    "the payload arrived at its declared destination" from "the payload grazed
+    a wall." This declaration is that distinction (ADR-0097), and the only
+    thing that supplies it — it is **never** inferred from motion and never
+    from simulator introspection.
+
+    A declaration on its own exempts nothing. It permits a producer to attest
+    a second, place-phase :class:`SupportContactWitness` when the payload
+    actually comes into fresh bounded contact **on the declared target**; the
+    kernel then exempts exactly that witness's patch, under the identical
+    bounds, fail-closed rules and hysteresis the pick witness is under.
+    Measured contact with no declaration exempts nothing either — unchanged
+    pre-ADR-0097 behaviour.
+
+    The declaration is scoped to one goal execution and dies three ways
+    (HZ-0097-3): explicit retraction (``active=False``) on goal end, goal
+    cancel, and E-stop; and, independently of any retraction arriving,
+    :attr:`timeout_s` after :attr:`stamp_ns` — the backstop that keeps a
+    dispatcher crash from leaving an exemption armed for a later, unrelated
+    skill execution. Consumers apply both; whichever fires first wins.
+
+    Attributes:
+        target_id: Identity of the declared place target (e.g.
+            ``"sim:cab_1_left_group_main"``). A place witness may only be
+            attested for support contact on this target — the attested
+            ``support_id`` names it, or names a surface that is part of it.
+        object_id: Payload the declaration is scoped to (an
+            :attr:`AttachedCollisionObject.object_id`). Empty means "whichever
+            payload is carried", the direct-dispatch case where the grasped
+            object's identity is only discovered at attach time.
+        rskill_id: Dispatching skill, for attributability (HZ-0097-2).
+        trace_id: OTel trace id, for attributability (HZ-0097-2).
+        timeout_s: Backstop expiry window in seconds after ``stamp_ns``. Capped
+            at :attr:`MAX_TIMEOUT_S`.
+        stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole
+            liveness key.
+        active: ``False`` retracts the declaration.
+
+    Example:
+        >>> declaration = PlaceDeclaration(
+        ...     target_id="sim:cab_1_left_group_main",
+        ...     rskill_id="openral/pi05-robocasa",
+        ...     timeout_s=60.0,
+        ...     stamp_ns=1_000_000_000,
+        ... )
+        >>> declaration.is_live(now_ns=31_000_000_000)
+        True
+        >>> declaration.is_live(now_ns=91_000_000_000)
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Ceiling on ``timeout_s``. The hazard the backstop bounds is a
+    #: declaration outliving *its own goal execution*, so the ceiling is set at
+    #: goal scale, not mission scale: strictly above the largest
+    #: ``latency_budget.max_execution_s`` any in-tree rSkill manifest declares
+    #: (420 s, ``rskills/lingbot-va-galaxea-a1-fruit-placement``), so no
+    #: legitimate goal can have its declaration expired early by the cap, and
+    #: far below anything that would span a mission.
+    MAX_TIMEOUT_S: ClassVar[float] = 600.0
+
+    target_id: str = ""
+    object_id: str = ""
+    rskill_id: str = ""
+    trace_id: str = ""
+    timeout_s: float = Field(gt=0.0)
+    stamp_ns: int = Field(ge=0)
+    active: bool = True
+
+    @model_validator(mode="after")
+    def _validate_declaration(self) -> PlaceDeclaration:
+        if self.timeout_s > self.MAX_TIMEOUT_S:
+            raise ValueError(
+                f"PlaceDeclaration.timeout_s {self.timeout_s!r} exceeds the "
+                f"{self.MAX_TIMEOUT_S} s backstop ceiling."
+            )
+        if self.active and not self.target_id:
+            raise ValueError("An active PlaceDeclaration must name a target_id.")
+        return self
+
+    def is_live(self, *, now_ns: int) -> bool:
+        """Is this declaration still in force at ``now_ns``?
+
+        Fails toward dead: a retracted declaration, one past its backstop, and
+        one stamped in the future (a clock that jumped, which is not evidence
+        of anything) are all dead. A dead declaration permits no place-witness
+        attestation, which is the pre-ADR-0097 behaviour.
+
+        Args:
+            now_ns: Consumer's current time, same clock as ``stamp_ns``.
+
+        Returns:
+            ``True`` only while the declaration is active and inside its
+            backstop window.
+        """
+        if not self.active:
+            return False
+        elapsed_ns = now_ns - self.stamp_ns
+        return 0 <= elapsed_ns <= int(self.timeout_s * 1e9)
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        return cls(
+            target_id=str(msg.target_id),  # type: ignore[attr-defined]
+            object_id=str(msg.object_id),  # type: ignore[attr-defined]
+            rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
+            trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+            timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            active=bool(msg.active),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+        msg.target_id = self.target_id  # type: ignore[attr-defined]
+        msg.object_id = self.object_id  # type: ignore[attr-defined]
+        msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
+        msg.trace_id = self.trace_id  # type: ignore[attr-defined]
+        msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.active = bool(self.active)  # type: ignore[attr-defined]
+
+
 class SupportContactWitness(BaseModel):
     """Bounded attestation that a payload rests on a named support surface.
 
@@ -7705,6 +7836,21 @@ class DeployScene(BaseModel):
     runtime: DeployRuntime | None = None
     """Committed deploy-posture toggles (see :class:`DeployRuntime`). ``None``
     = every leg on its CLI/auto default. CLI flags override field-by-field."""
+    place_declaration: PlaceDeclaration | None = None
+    """Committed place-phase declaration for **direct** dispatch (ADR-0097).
+
+    A reasoner grounds the place target per goal and puts the declaration on
+    the ``ExecuteRskill`` goal, which wins over this. A direct dispatch has no
+    reasoner in the loop, and the scene is the only place that knows the task's
+    place target — so a counter→cabinet scene declares it here, and ``openral
+    deploy sim`` / ``deploy run`` inject it into the rSkill runner, which scopes
+    it to each goal it dispatches (armed on start, retracted on end / cancel /
+    E-stop).
+
+    ``None`` — every scene today — means no declaration, so no place witness can
+    ever arm and payload contact mid-carry stops the robot exactly as it does
+    now. The declaration licenses nothing on its own: it only makes measured
+    support contact *on the declared target* attestable."""
 
     @model_validator(mode="before")
     @classmethod

@@ -17,6 +17,7 @@ from openral_core import (
     CapsuleShape,
     CollisionShape,
     JointSpec,
+    PlaceDeclaration,
     Pose6D,
     RobotDescription,
     SphereShape,
@@ -437,6 +438,7 @@ def _support_candidate_geoms(
     *,
     payload_bodies: set[int],
     robot_body_ids: frozenset[int],
+    support_roots: frozenset[int] | None = None,
 ) -> tuple[list[int], dict[int, int]]:
     """Every geom that could legitimately be carrying this payload.
 
@@ -452,6 +454,15 @@ def _support_candidate_geoms(
     simply do not meet the cup's. Suppression is a property of the pair, which
     is why membership here is decided per geom and adjudicated by distance.
 
+    Args:
+        model: Live ``mujoco.MjModel``.
+        payload_bodies: Bodies belonging to the payload itself.
+        robot_body_ids: Bodies belonging to the robot.
+        support_roots: When given, the ONLY support roots eligible at all — the
+            place-phase declaration's declared target and the bodies that are
+            part of it (ADR-0097). ``None`` is the pick-phase case: any
+            eligible environment surface may be attested.
+
     Returns:
         ``(geom_ids, support_root_of_geom)``.
     """
@@ -465,6 +476,8 @@ def _support_candidate_geoms(
             continue
         support_root = _root_motion_body(model, body_id)
         if classify_body_mobility(model, support_root) is SimObjectMobility.FREE:
+            continue
+        if support_roots is not None and support_root not in support_roots:
             continue
         geom_ids.append(geom_id)
         support_root_of_geom[geom_id] = support_root
@@ -762,6 +775,7 @@ def support_contact_witness(
     root_body_id: int,
     robot_body_ids: frozenset[int],
     stamp_ns: int,
+    support_roots: frozenset[int] | None = None,
 ) -> SupportContactWitness | None:
     """Attest one payload's bounded support contact from exact MuJoCo distances.
 
@@ -792,6 +806,12 @@ def support_contact_witness(
         root_body_id: Root body of the payload.
         robot_body_ids: Every body belonging to the robot.
         stamp_ns: Producer timestamp for the witness.
+        support_roots: Restrict eligible supports to these roots. ``None`` (the
+            pick-phase default) admits any eligible environment surface; the
+            place phase passes the declared target's own body subtree, so the
+            only contact that can ever be attested under a place declaration is
+            contact **on the declared target** (ADR-0097). Contact with
+            anything else measures the same and attests nothing.
 
     Returns:
         The witness, or ``None`` when no eligible support contact exists.
@@ -804,6 +824,7 @@ def support_contact_witness(
         model,
         payload_bodies=payload_bodies,
         robot_body_ids=robot_body_ids,
+        support_roots=support_roots,
     )
     if not candidate_geoms:
         return None
@@ -908,6 +929,15 @@ class SimAttachmentEvidenceTracker:
         self._attached_root: int | None = None
         self._attached_translation: NDArray[np.float64] | None = None
         self._attached_rotation: NDArray[np.float64] | None = None
+        # -- Place-phase declaration state (ADR-0097) --
+        # The declaration itself, the bodies its target resolves to, and the
+        # stamp of the declaration a place witness has already been attested
+        # for. That last one is the hysteresis: one declaration licenses ONE
+        # attestation, so a payload that separates from its place surface and
+        # touches it again is a fresh violation, never silently re-forgiven.
+        self._place_declaration: PlaceDeclaration | None = None
+        self._place_target_bodies: frozenset[int] = frozenset()
+        self._place_attested_stamp_ns: int | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -970,7 +1000,13 @@ class SimAttachmentEvidenceTracker:
         *,
         stamp_ns: int,
     ) -> list[AttachedCollisionObject] | None:
-        """Return a new complete attachment set only when attach/detach changes."""
+        """Return a new complete attachment set only when the attachment changes.
+
+        "Changes" is attach, detach, and — while a place-phase declaration is
+        active (ADR-0097) — the arming or disarming of the payload's place
+        witness. Nothing else re-publishes; a heartbeat of the same attachment
+        would re-arm an exemption the kernel had deliberately killed.
+        """
         contacts = self._contacts(data)
         if self._attached_root is not None:
             candidate = self._candidates.setdefault(self._attached_root, _ContactCandidate())
@@ -981,7 +1017,11 @@ class SimAttachmentEvidenceTracker:
                     parent_body_id=self._attach_body_id,
                     child_body_id=self._attached_root,
                 )
-                return None
+                return self._place_phase_transition(
+                    data,
+                    root=self._attached_root,
+                    stamp_ns=stamp_ns,
+                )
             translation, rotation = _relative_pose(
                 data,
                 parent_body_id=self._attach_body_id,
@@ -998,7 +1038,14 @@ class SimAttachmentEvidenceTracker:
                     and angle_error <= self._rotation_tolerance_rad
                 ):
                     candidate.missed_ticks = 0
-                    return None
+                    # Still carried — the jaws lost their solver contact
+                    # records but the payload is rigidly following the
+                    # gripper. The place phase is live here too.
+                    return self._place_phase_transition(
+                        data,
+                        root=self._attached_root,
+                        stamp_ns=stamp_ns,
+                    )
             candidate.missed_ticks += 1
             if candidate.missed_ticks < self._release_ticks:
                 return None
@@ -1006,6 +1053,9 @@ class SimAttachmentEvidenceTracker:
             self._attached_translation = None
             self._attached_rotation = None
             self._candidates.clear()
+            # Release ends the place phase for this payload: a subsequent grasp
+            # starts a new one, and the declaration alone never carries over.
+            self._place_attested_stamp_ns = None
             return []
 
         for root, contact_bodies in contacts.items():
@@ -1049,32 +1099,16 @@ class SimAttachmentEvidenceTracker:
             )
             if not body_name:
                 raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
-            object_id = f"sim:{body_name}"
-            object_bodies = _body_subtree(self._model, root)
-            attachment = AttachedCollisionObject(
-                object_id=object_id,
-                attach_link=self._attach_link,
-                touch_links=self._touch_links,
-                primitives=extract_body_primitives(
-                    self._model,
-                    data,
-                    root_body_id=root,
-                    object_id=object_id,
-                ),
-                pose_in_link=Pose6D(
-                    xyz=tuple(float(value) for value in translation),
-                    quat_xyzw=_matrix_to_quat_xyzw(rotation),
-                    frame_id=self._attach_link,
-                ),
-                mass_kg=sum(float(self._model.body_mass[body_id]) for body_id in object_bodies),
-                confidence=1.0,
-                evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
-                evidence_ref=f"mujoco_body:{body_name}",
+            attachment = self._build_attachment(
+                data,
+                root=root,
+                translation=translation,
+                rotation=rotation,
                 stamp_ns=stamp_ns,
                 # Attested once, at attach, from the contacts that exist right
                 # now. The safety kernel latches it and kills it on separation;
                 # re-attesting mid-carry would defeat that hysteresis.
-                support_contact=support_contact_witness(
+                witness=support_contact_witness(
                     self._model,
                     data,
                     root_body_id=root,
@@ -1085,5 +1119,190 @@ class SimAttachmentEvidenceTracker:
             self._attached_root = root
             self._attached_translation = translation.copy()
             self._attached_rotation = rotation.copy()
+            # A newly grasped payload is a new place-phase subject: whatever a
+            # still-live declaration already licensed for the previous payload
+            # does not carry over.
+            self._place_attested_stamp_ns = None
             return [attachment]
         return None
+
+    def _build_attachment(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        root: int,
+        translation: NDArray[np.float64],
+        rotation: NDArray[np.float64],
+        stamp_ns: int,
+        witness: SupportContactWitness | None,
+    ) -> AttachedCollisionObject:
+        """Lower one live MuJoCo payload into a complete attachment record."""
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        body_name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_BODY, root)
+        if not body_name:
+            raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
+        object_id = f"sim:{body_name}"
+        object_bodies = _body_subtree(self._model, root)
+        return AttachedCollisionObject(
+            object_id=object_id,
+            attach_link=self._attach_link,
+            touch_links=self._touch_links,
+            primitives=extract_body_primitives(
+                self._model,
+                data,
+                root_body_id=root,
+                object_id=object_id,
+            ),
+            pose_in_link=Pose6D(
+                xyz=(float(translation[0]), float(translation[1]), float(translation[2])),
+                quat_xyzw=_matrix_to_quat_xyzw(rotation),
+                frame_id=self._attach_link,
+            ),
+            mass_kg=sum(float(self._model.body_mass[body_id]) for body_id in object_bodies),
+            confidence=1.0,
+            evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+            evidence_ref=f"mujoco_body:{body_name}",
+            stamp_ns=stamp_ns,
+            support_contact=witness,
+        )
+
+    # -- Place-phase declaration (ADR-0097) ----------------------------------
+
+    def set_place_declaration(self, declaration: PlaceDeclaration | None) -> None:
+        """Install, replace, or retract the active place-phase declaration.
+
+        The declaration is dispatch's typed statement that this goal is placing
+        its payload into a named target. It licenses nothing on its own: it
+        only makes contact **on that target** attestable, and only once.
+
+        Resolution is done here, at install time, rather than per tick, so an
+        unresolvable target is an explicit, logged refusal at the dispatch
+        boundary instead of a silent per-tick no-op.
+
+        Args:
+            declaration: The declaration to install. ``None``, or one that is
+                already retracted or expired, clears the tracker's place state.
+
+        Raises:
+            ROSConfigError: The declared ``target_id`` does not name a body in
+                this simulation. The declaration is refused (no place witness
+                can arm), which is the fail-closed direction.
+        """
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        if declaration is None or not declaration.active:
+            self._place_declaration = None
+            self._place_target_bodies = frozenset()
+            return
+        target_id = declaration.target_id
+        body_name = target_id.removeprefix("sim:")
+        body_id = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+        if body_id < 0:
+            self._place_declaration = None
+            self._place_target_bodies = frozenset()
+            raise ROSConfigError(
+                f"Place declaration target {target_id!r} names no MuJoCo body; refused."
+            )
+        # The declared target *and every body that is part of it*: a cabinet's
+        # declared identity covers the shelf inside it, which is the surface
+        # the payload actually comes to rest on. Nothing outside this subtree
+        # can be attested while the declaration is live.
+        self._place_declaration = declaration
+        self._place_target_bodies = frozenset(_body_subtree(self._model, body_id))
+
+    def _place_witness(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        root: int,
+        object_id: str,
+        stamp_ns: int,
+    ) -> SupportContactWitness | None:
+        """Attest place-phase support contact, or explain why there is none.
+
+        Every gate here fails toward *no attestation*, which is the pre-ADR-0097
+        behaviour (the kernel stops on the contact).
+        """
+        declaration = self._place_declaration
+        if declaration is None or not declaration.is_live(now_ns=stamp_ns):
+            return None
+        if declaration.object_id and declaration.object_id != object_id:
+            return None
+        if self._place_attested_stamp_ns == declaration.stamp_ns:
+            return None  # one declaration, one attestation — the hysteresis
+        return support_contact_witness(
+            self._model,
+            data,
+            root_body_id=root,
+            robot_body_ids=self._robot_body_ids,
+            stamp_ns=stamp_ns,
+            support_roots=self._place_target_bodies,
+        )
+
+    def _place_phase_transition(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        root: int,
+        stamp_ns: int,
+    ) -> list[AttachedCollisionObject] | None:
+        """Arm or disarm the place witness for the carried payload.
+
+        Two transitions, both mid-carry, both re-publishing the whole
+        attachment set (the atomic snapshot contract World State ingests):
+
+        1. **Arm.** A live declaration, fresh bounded contact on the declared
+           target, and no attestation yet for this declaration — attest.
+        2. **Disarm.** A declaration this tracker already attested under has
+           been retracted or has timed out — re-publish with no witness at
+           all, which is what makes the kernel drop the exemption rather than
+           carry it past the goal that justified it (HZ-0097-3).
+
+        Returns:
+            The new attachment set, or ``None`` when nothing changed.
+        """
+        if self._place_declaration is None and self._place_attested_stamp_ns is None:
+            return None  # no place phase has ever been declared for this carry
+
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        body_name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_BODY, root)
+        if not body_name:
+            raise ROSConfigError(f"Attached MuJoCo body {root} has no name.")
+        object_id = f"sim:{body_name}"
+
+        declaration = self._place_declaration
+        attested_stamp_ns = self._place_attested_stamp_ns
+        witness = self._place_witness(
+            data,
+            root=root,
+            object_id=object_id,
+            stamp_ns=stamp_ns,
+        )
+        if witness is not None and declaration is not None:
+            self._place_attested_stamp_ns = declaration.stamp_ns
+        elif attested_stamp_ns is not None and (
+            declaration is None
+            or declaration.stamp_ns != attested_stamp_ns
+            or not declaration.is_live(now_ns=stamp_ns)
+        ):
+            self._place_attested_stamp_ns = None
+        else:
+            return None
+
+        translation, rotation = _relative_pose(
+            data,
+            parent_body_id=self._attach_body_id,
+            child_body_id=root,
+        )
+        return [
+            self._build_attachment(
+                data,
+                root=root,
+                translation=translation,
+                rotation=rotation,
+                stamp_ns=stamp_ns,
+                witness=witness,
+            )
+        ]
