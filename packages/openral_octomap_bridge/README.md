@@ -24,6 +24,44 @@ openral_msgs/OccupancyVoxels (base frame, /openral/world_voxels)
 C++ safety kernel  ──  check_voxel_collision (allocation-free)
 ```
 
+## The frame contract (ADR-0095)
+
+`OccupancyVoxels` carries **no TF of its own**. `header.frame_id` names the
+frame `origin` is measured in, and the kernel rasterizes its FK'd link capsules
+against the grid *directly* — no transform is applied on the way in. So the
+grid's **content** and the kernel's **collision FK root** must be expressed in
+one and the same frame, and that frame must be the one `base_frame` denotes on
+`/tf`. Three parties have to agree:
+
+| Party | What it must use |
+|---|---|
+| whatever feeds `octomap_server` (the sim HAL's depth cloud, a real RGB-D driver) | an extrinsic measured against the body `base_frame` denotes |
+| this bridge | `base_frame` as `header.frame_id`, with `origin` in that frame |
+| the kernel | per-link `origin_xyz` measured from that same `base_frame` |
+
+On robosuite/RoboCasa mobile manipulators that is not the MJCF chassis root.
+The OmronMobileBase stacks a ground-level root (`mobilebase0_base`, world z 0)
+under a 0.70 m pedestal whose top plate (`mobilebase0_support`) carries the arm
+and the robot-mounted cameras — and `base_link` on `/tf` is the **pedestal
+top**, because `MobileBaseBridge` publishes `odom -> base_link` from the HAL's
+`base_pose_6dof()` (robosuite's `robot0_base_pos`). Measuring the sim camera
+extrinsic against the chassis root instead made the grid's *content*
+world-referenced while its *label* said `base_link`, so every TF consumer (Nav2,
+SLAM, the dashboard) saw obstacles a pedestal too high. The kernel agreed with
+the grid only because PR #103 had pushed the same 0.70 m into its FK root, which
+cancelled the error for the kernel alone.
+
+ADR-0095 fixes it at the source: `openral_hal.depth_cloud.resolve_base_frame_body_name`
+resolves the arm-mount body for every `base_frame -> …` extrinsic, and the
+`panda_mobile` manifests' `panda_joint1` origin is the plain Franka 0.333 m
+again. **Both halves must land together** — a half-applied change leaves the
+kernel a full pedestal away from the obstacles it is checked against (hazard
+HZ-0095-1). `VoxelCollision.BaseFrameAlignmentPreservesTheProtectiveEnvelope`
+and `VoxelCollision.HalfAppliedFrameAlignmentMovesTheKernelByThePedestal`
+(`cpp/openral_safety_kernel/test/test_collision.cpp`) pin both facts, and
+`tests/unit/test_voxel_grid_frame_alignment.py` pins the producer side against a
+real `MjModel`.
+
 ## Run
 
 ### Integrated (recommended) — via `openral deploy sim`
@@ -117,4 +155,7 @@ GPU render); the synth, packing, and TF are unit-tested
 (`tests/unit/test_depth_camera_synth.py`, `tests/unit/test_depth_cloud_helpers.py`)
 and the kernel-side voxel check by
 `tests/sim/safety/test_kernel_voxel_collision_synthetic.py` (feeds
-`OccupancyVoxels` directly).
+`OccupancyVoxels` directly). The frame this chain is expressed in is pinned by
+`tests/unit/test_voxel_grid_frame_alignment.py` and, against the live kitchen,
+by `tests/sim/safety/test_panda_mobile_robocasa_collision_fk.py` — see *The
+frame contract* above.

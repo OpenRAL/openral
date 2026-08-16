@@ -394,6 +394,108 @@ TEST(VoxelCollision, NullGridNeverHits) {
   EXPECT_FALSE(hit.hit);
 }
 
+// ── ADR-0095: base-frame alignment leaves the envelope untouched ──────────────
+
+namespace {
+
+// A PandaMobile-shaped arm root: a fixed base link plus one link carrying the
+// arm's first capsule, mounted `root_z` above `base_link` — the manifest's
+// `panda_joint1` origin. RoboCasa's pedestal makes that either 1.033 (the
+// pre-ADR-0095 root, which absorbed the 0.700 m pedestal inside the kernel) or
+// 0.333 (the Franka URDF value, once `base_link` itself is the arm mount).
+osk::CollisionModel arm_root_model(double root_z) {
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {identity(), translate(0.0, 0.0, root_z)};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  osk::Capsule c;
+  c.radius = 0.05;
+  c.half_length = 0.1;
+  c.origin = identity();
+  m.capsule_link = {1};
+  m.capsules = {c};
+  return m;
+}
+
+// One occupied row of counter cells, `origin_z` metres up the base frame.
+osk::VoxelGrid counter_grid(const std::vector<std::uint8_t>& occ, double origin_z) {
+  osk::VoxelGrid g;
+  g.origin = {-0.1, -0.1, origin_z};
+  g.resolution = 0.025;
+  g.sx = 8;
+  g.sy = 8;
+  g.sz = 8;
+  g.occupancy = occ.data();
+  return g;
+}
+
+}  // namespace
+
+TEST(VoxelCollision, BaseFrameAlignmentPreservesTheProtectiveEnvelope) {
+  // ADR-0095 lands two equal-and-opposite 0.700 m shifts in ONE commit: the
+  // grid's *content* drops by the RoboCasa pedestal height (it stops being
+  // world-referenced and becomes genuinely `base_link`-referenced), and the
+  // collision FK root drops by the same 0.700 m (1.033 -> 0.333). A
+  // capsule-vs-voxel distance depends only on their difference, so the
+  // kernel's decision — hit, evidence cell, and penetration depth — is
+  // bit-identical across the pair. The fix is a change of *origin*, never a
+  // relaxation: nothing here shrinks the envelope. Landing only one half
+  // would put the kernel 0.700 m out (hazard HZ-0095-1), which is exactly
+  // what the two configurations below would show if they disagreed.
+  constexpr double kPedestal = 0.700;
+  std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
+  for (int iy = 0; iy < 8; ++iy) {
+    for (int ix = 0; ix < 8; ++ix) {
+      occ[static_cast<std::size_t>(ix + 8 * (iy + 8 * 2))] = 1;  // one counter row
+    }
+  }
+
+  osk::CollisionScratch before_scratch;
+  before_scratch.link_world.resize(2);
+  const auto before_model = arm_root_model(1.033);
+  const std::vector<double> qpos;
+  osk::forward_kinematics(before_model, qpos.data(), qpos.size(), before_scratch);
+  const auto before = osk::check_voxel_collision(before_model, before_scratch,
+                                                 counter_grid(occ, 0.15 + kPedestal), 0.01);
+
+  osk::CollisionScratch after_scratch;
+  after_scratch.link_world.resize(2);
+  const auto after_model = arm_root_model(0.333);
+  osk::forward_kinematics(after_model, qpos.data(), qpos.size(), after_scratch);
+  const auto after =
+      osk::check_voxel_collision(after_model, after_scratch, counter_grid(occ, 0.15), 0.01);
+
+  EXPECT_TRUE(before.hit) << "fixture must actually exercise a hit";
+  EXPECT_EQ(before.hit, after.hit);
+  EXPECT_EQ(before.link_a, after.link_a);
+  EXPECT_EQ(before.link_b, after.link_b) << "same evidence cell index";
+  EXPECT_NEAR(before.min_distance, after.min_distance, 1e-12);
+  EXPECT_NEAR(before.sweep_min_distance, after.sweep_min_distance, 1e-12);
+}
+
+TEST(VoxelCollision, HalfAppliedFrameAlignmentMovesTheKernelByThePedestal) {
+  // The atomicity requirement, stated as a test: keeping the pre-ADR-0095 FK
+  // root while the producer has already been fixed (or vice versa) leaves the
+  // arm a full pedestal height away from the obstacles it is checked against,
+  // so the counter row it should be 0.01 m from is not seen at all.
+  std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
+  for (int iy = 0; iy < 8; ++iy) {
+    for (int ix = 0; ix < 8; ++ix) {
+      occ[static_cast<std::size_t>(ix + 8 * (iy + 8 * 2))] = 1;
+    }
+  }
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(2);
+  const auto stale_model = arm_root_model(1.033);  // producer fixed, kernel not
+  const std::vector<double> qpos;
+  osk::forward_kinematics(stale_model, qpos.data(), qpos.size(), scratch);
+  const auto hit = osk::check_voxel_collision(stale_model, scratch, counter_grid(occ, 0.15), 0.01);
+  EXPECT_FALSE(hit.hit) << "a half-applied ADR-0095 blinds the kernel to the counter";
+}
+
 // ── jacobian_dls_step (predictive Cartesian) ─────────────────────────
 
 namespace {

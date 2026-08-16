@@ -137,9 +137,12 @@ joints:
     joint_type: "revolute"
     parent_link: "base_link"
     child_link: "panda_link1"
-    # RoboCasa base_link is mobilebase0_base at ground level: 0.7 m pedestal
-    # plus the Franka URDF's 0.333 m joint-1 transform.
-    origin_xyz: [0.0, 0.0, 1.033]
+    # ADR-0095: base_link IS the arm mount (RoboCasa's mobilebase0_support,
+    # 0.7 m up the pedestal) — that is the frame odom->base_link carries and
+    # the frame /openral/world_voxels is now genuinely expressed in. So this is
+    # the plain Franka URDF joint-1 transform; the pedestal must NOT be added
+    # here as well (PR #103 did, cancelling a producer bug inside the kernel).
+    origin_xyz: [0.0, 0.0, 0.333]
     origin_rpy: [0.0, 0.0, 0.0]
     position_limits: [-2.8973, 2.8973]
     velocity_limit: 2.175
