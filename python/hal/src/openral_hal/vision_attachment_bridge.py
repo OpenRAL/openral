@@ -327,8 +327,12 @@ class VisionAttachmentBridge:
         self._tf_buffer = None
         self._inflight = None
         # A bridge torn down mid-flight must not leave the node deferring an
-        # acknowledgement forever.
-        self._pending = False
+        # acknowledgement forever. Clearing the flag is not enough now that the
+        # node re-checks every barrier holder before releasing: a swallowed
+        # notify is only safe because each holder re-issues one when it settles,
+        # so the holder that goes away has to issue its last one here.
+        if self._pending:
+            self._release_barrier()
 
     # ── barrier ──────────────────────────────────────────────────────────────
 
@@ -444,6 +448,20 @@ class VisionAttachmentBridge:
                 tcp_in_link=tcp_in_link,
             )
             return
+        if response is None:
+            # A cancelled future resolves to None without raising. Belt and
+            # braces behind the in-flight guard above: an AttributeError escaping
+            # here would be swallowed by rclpy's callback wrapper and leave the
+            # barrier held with no explanation anywhere.
+            self._finish(
+                stamp_ns=stamp_ns,
+                masks=[],
+                scores=[],
+                reason="ROSDispatchUnavailable: SegmentInView future resolved with no response",
+                t_link_from_cam=t_link_from_cam,
+                tcp_in_link=tcp_in_link,
+            )
+            return
         outcome = resolve_segment_outcome(
             timed_out=False,
             ok=bool(response.ok),
@@ -476,10 +494,15 @@ class VisionAttachmentBridge:
     ) -> None:
         """Resolve conservatively when the segmenter overran its budget."""
         self._cancel_deadline()
-        if self._inflight is None:
+        inflight = self._inflight
+        if inflight is None:
             return
-        self._inflight.cancel()
+        # Drop the handle BEFORE cancelling. ``rclpy.Future.cancel`` completes
+        # the future, which synchronously runs the done callback we registered —
+        # and that callback's "is this still the in-flight one?" guard is the
+        # only thing keeping it from resolving a reply that never arrived.
         self._inflight = None
+        inflight.cancel()
         outcome = resolve_segment_outcome(timed_out=True, ok=False, failure_reason="", mask_count=0)
         self._finish(
             stamp_ns=stamp_ns,

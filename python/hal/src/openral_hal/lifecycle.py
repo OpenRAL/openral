@@ -1070,6 +1070,19 @@ if _ROS2_AVAILABLE:
             ``SegmentInView`` round trip on real hardware. They are alternatives
             in practice, but the tick must clear whichever are present rather
             than only the first one wired (CLAUDE.md §1.4).
+
+            **The invariant this imposes on a holder.** Because
+            :meth:`_on_attachment_perception_ready` re-checks all of them, one
+            holder's notify can be *swallowed* while another is still busy. That
+            is only safe because every holder issues its own notify whenever it
+            settles, so the last one to settle re-issues the release. Both do:
+            the sim bridge notifies from its depth/voxel counters **and** from
+            the ``(object_id, evidence_ref)``-keyed "this revision masks no new
+            geometry" path (which is what stops an ADR-0097 attestation-only
+            re-publish deadlocking a successful place), and the vision bridge
+            notifies from every terminal path of its bounded round trip,
+            including its own teardown. A holder that clears its hold silently
+            would strand a deferred tick here.
             """
             candidates = (getattr(self, "_bridge", None), getattr(self, "_vision_attachment", None))
             return [holder for holder in candidates if holder is not None]
