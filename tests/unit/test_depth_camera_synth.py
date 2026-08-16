@@ -455,3 +455,135 @@ def test_depth_cloud_sees_a_visual_geom_with_nothing_behind_it() -> None:
         "the overhanging countertop must still be the nearest surface; "
         f"{_COUNTER_CAM_Z:.3f} m is the floor seen through it"
     )
+
+
+# ── the raster path must carry the self-filter's clearing rays too ────────────
+#
+# Since the one-cast refactor the deploy-sim bridge builds octomap_server's
+# cloud from the RASTER (`synthesize_depth_image` → `points_from_depth_grid`),
+# not from `synthesize_depth_pointcloud`. The raster's `0.0` sentinel cannot
+# distinguish "no return" from "the only return was the robot's own body", so
+# every clearing ray the self-filter produces vanished on the path that feeds
+# the safety kernel: OctoMap got NO ray at all for the pixels covering the
+# arm, and any cell in the robot's own silhouette kept whatever occupancy it
+# held, forever. `synthesize_depth_frame` returns the mask alongside the
+# raster so both outputs stay correct off one cast.
+
+
+def _clearing_frame_kwargs(model: object, data: object) -> dict[str, object]:
+    arm_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "robot_arm")
+    return dict(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=5.0,
+        exclude_body_ids=frozenset({int(arm_body)}),
+    )
+
+
+def test_depth_frame_marks_the_self_filtered_rays_the_raster_cannot_express() -> None:
+    """The mask is exactly the pixels that read 0.0 *because* they hit the robot."""
+    from openral_sim.backends.depth_camera import synthesize_depth_frame
+
+    model = mujoco.MjModel.from_xml_string(_SELF_FILTER_NO_BACKGROUND_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    depth, clearing = synthesize_depth_frame(**_clearing_frame_kwargs(model, data))
+
+    assert depth.shape == clearing.shape == (_H, _W)
+    assert clearing.any(), "the arm fills part of the view; those rays are clearing rays"
+    # Disjoint by construction: a cleared pixel never also carries a depth.
+    assert not np.any((depth > 0.0) & clearing)
+    # …and the raster itself is unchanged, so nvblox still sees "no measurement".
+    assert np.array_equal(depth, synthesize_depth_image(**_clearing_frame_kwargs(model, data)))
+
+
+def test_bridge_cloud_from_the_raster_equals_the_cloud_synth() -> None:
+    """One cast, two outputs, zero drift: the published cloud loses nothing.
+
+    This is the regression that let a stale voxel sit inside the arm's own
+    silhouette and never be cleared — the bridge's cloud silently dropped
+    every clearing ray the cloud synth emits.
+    """
+    from openral_hal.depth_cloud import points_from_depth_grid
+    from openral_sim.backends.depth_camera import synthesize_depth_frame
+
+    model = mujoco.MjModel.from_xml_string(_SELF_FILTER_NO_BACKGROUND_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    expected = synthesize_depth_pointcloud(**_clearing_frame_kwargs(model, data))
+    depth, clearing = synthesize_depth_frame(**_clearing_frame_kwargs(model, data))
+
+    published = points_from_depth_grid(
+        depth, fx=_FX, fy=_FY, cx=_CX, cy=_CY, clearing=clearing, max_range_m=5.0
+    )
+    # Without the mask — the pre-fix bridge — every clearing endpoint is lost.
+    lossy = points_from_depth_grid(depth, fx=_FX, fy=_FY, cx=_CX, cy=_CY)
+    assert len(lossy) < len(expected), "fixture no longer exercises the clearing rays"
+
+    assert published.shape == expected.shape
+    assert np.allclose(published, expected, atol=1e-5)
+    assert np.linalg.norm(published, axis=1).max() == pytest.approx(5.0, abs=1e-5)
+
+
+def test_bridge_cloud_keeps_clearing_rays_alongside_real_returns() -> None:
+    """A scene with a wall behind the arm keeps both kinds of ray in ray order."""
+    from openral_hal.depth_cloud import points_from_depth_grid
+    from openral_sim.backends.depth_camera import synthesize_depth_frame
+
+    # Arm in front, wall only across the LEFT half of the view, so some rays
+    # through the arm find a surface behind and some find nothing.
+    xml = """
+    <mujoco model="depth_self_filter_partial_background">
+      <worldbody>
+        <camera name="depth0" pos="0 0 0"/>
+        <body name="robot_arm" pos="0 0 -1.0">
+          <geom name="arm" type="box" size="0.3 0.3 0.05"/>
+        </body>
+        <geom name="wall" type="box" pos="-1.0 0 -2.0" size="0.6 5 0.1"/>
+      </worldbody>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    expected = synthesize_depth_pointcloud(**_clearing_frame_kwargs(model, data))
+    depth, clearing = synthesize_depth_frame(**_clearing_frame_kwargs(model, data))
+    assert (depth > 0.0).any() and clearing.any(), "fixture must exercise both kinds"
+
+    published = points_from_depth_grid(
+        depth, fx=_FX, fy=_FY, cx=_CX, cy=_CY, clearing=clearing, max_range_m=5.0
+    )
+    assert published.shape == expected.shape
+    assert np.allclose(published, expected, atol=1e-5)
+
+
+def test_points_from_depth_grid_refuses_a_clearing_mask_it_cannot_place() -> None:
+    """A clearing ray with no range is a silent hole; fail loudly instead."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.depth_cloud import points_from_depth_grid
+
+    grid = np.array([[0.0, 2.0]], dtype=np.float32)
+    with pytest.raises(ROSConfigError, match="max_range_m"):
+        points_from_depth_grid(
+            grid, fx=4.0, fy=4.0, cx=1.0, cy=0.5, clearing=np.array([[True, False]])
+        )
+    with pytest.raises(ROSConfigError, match="does not match"):
+        points_from_depth_grid(
+            grid,
+            fx=4.0,
+            fy=4.0,
+            cx=1.0,
+            cy=0.5,
+            clearing=np.array([[True], [False]]),
+            max_range_m=4.0,
+        )

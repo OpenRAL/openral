@@ -129,13 +129,29 @@ octomap → bridge → kernel chain needs a live OctoMap producer and is a
 HIL / on-robot test (the `octomap` Python bindings aren't in CI, so a synthetic
 OctoMap publisher would itself be C++).
 
+`test_occupancy_persistence` pins the occupancy semantics the deploy-sim launch
+tunes for, on a real `OcTree` seeded with those exact parameters
+(`occupancy_thres 0.8`, `sensor_model.max 0.85`, `hit 0.7`, `miss 0.4`):
+
+* one hit is **not** a safety voxel (the transient rejection the raised
+  threshold exists for) and two hits are;
+* a confirmed voxel survives indefinitely when **no ray ever crosses it** — the
+  failure mode a lost self-filter clearing ray creates, since the robot's own
+  silhouette then contributes no ray at all and the phantom reaches the kernel's
+  grid;
+* one clearing ray retires it, and a clearing ray never *marks*;
+* a cleared cell still comes back when something real is there — four 10 Hz
+  frames (~0.4 s) from the clamping floor, which is the measured cost of the
+  clearing behaviour, not an assumption.
+
 **Sim status.** The sim target is `scenes/sim/robocasa_panda_mobile_kitchen.yaml`
 — a mobile manipulator in a cluttered RoboCasa kitchen, the only scene with real
 3-D obstacles and an obstacle-avoidance task. The deploy-sim HAL now publishes a
 **depth `PointCloud2`** for it: the panda_mobile node ray-casts each depth
 `SensorSpec` (`robots/panda_mobile/robot.yaml` → `front_depth`) from MuJoCo via
-`openral_sim.backends.depth_camera.synthesize_depth_image` (one cast per frame,
-back-projected to a cloud by `openral_hal.depth_cloud.points_from_depth_grid`) and publishes
+`openral_sim.backends.depth_camera.synthesize_depth_frame` (one cast per frame,
+back-projected to a cloud — raster **and** self-filter clearing mask — by
+`openral_hal.depth_cloud.points_from_depth_grid`) and publishes
 `/openral/cameras/front_depth/points` (camera optical frame) + a live
 `base_link → front_depth_optical_frame` TF. This is robot-agnostic — declare a
 depth `SensorSpec` (with `metadata.mjcf_camera`) on any robot and its HAL node
