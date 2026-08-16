@@ -176,7 +176,8 @@
         "sim_geom_distance",
         "gripper_force",
         "perception_track",
-        "operator"
+        "operator",
+        "vision_segmentation"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"

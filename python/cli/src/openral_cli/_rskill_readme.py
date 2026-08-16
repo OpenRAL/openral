@@ -54,6 +54,20 @@ _LICENSE_MAP: dict[RSkillLicensePosture, tuple[str, str | None]] = {
 
 _NON_QUANTIZED_DTYPES = frozenset({"fp32", "bf16", "fp16", "float32", "float16"})
 
+# rSkill kind → HF ``pipeline_tag`` / extra model-card tags. Table-driven so a new
+# perception kind is one row, not another ``elif`` in the front-matter builder.
+# Kinds absent from ``_KIND_PIPELINE_TAG`` fall back to ``robotics``; the ROS
+# wrapper kinds are handled separately (their tags depend on the skill name).
+_KIND_PIPELINE_TAG: dict[str, str] = {
+    "detector": "object-detection",
+    "segmenter": "mask-generation",
+}
+_KIND_EXTRA_TAGS: dict[str, list[str]] = {
+    "vla": ["vision-language-action"],
+    "detector": ["detector", "object-detection"],
+    "segmenter": ["segmenter", "mask-generation", "promptable-segmentation"],
+}
+
 
 def _hf_repo(uri: str | None) -> str | None:
     """``hf://org/repo@sha`` → ``org/repo``; ``None``/non-hf → ``None``."""
@@ -105,7 +119,6 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
     kind = str(getattr(manifest.kind, "value", manifest.kind) or "")
     family = manifest.model_family
     family_s = str(getattr(family, "value", family)) if family else None
-    is_detector = kind == "detector"
     is_lerobot = family_s in _LEROBOT_FAMILIES
 
     fm: dict[str, Any] = {"language": ["en"]}
@@ -117,19 +130,17 @@ def build_rskill_frontmatter(manifest: RSkillManifest) -> dict[str, Any]:
 
     if is_lerobot:
         fm["library_name"] = "lerobot"
-    fm["pipeline_tag"] = "object-detection" if is_detector else "robotics"
+    fm["pipeline_tag"] = _KIND_PIPELINE_TAG.get(kind, "robotics")
 
     tags = ["OpenRAL", "rskill"]
     if family_s:
         tags.append(family_s)
     if is_lerobot:
         tags.append("lerobot")
-    if kind == "vla":
-        tags.append("vision-language-action")
-    elif kind in {"ros_action", "ros_service"}:
+    if kind in {"ros_action", "ros_service"}:
         tags += ["ros2", "moveit"] if "moveit" in manifest.name else ["ros2"]
-    elif is_detector:
-        tags += ["detector", "object-detection"]
+    else:
+        tags += _KIND_EXTRA_TAGS.get(kind, [])
     q = manifest.quantization
     if q is not None:
         dt = str(getattr(q.dtype, "value", q.dtype))

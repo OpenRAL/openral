@@ -1,0 +1,100 @@
+# Ask a promptable segmenter (kind: "segmenter", e.g. SAM 2.1 hiera-small)
+# which pixels of the CURRENT wrist frame belong to the object in the jaws.
+#
+# Called by the HAL's vision attachment-evidence producer
+# (openral_hal._vision_attachment_evidence.VisionAttachmentEvidenceProducer) at
+# attach / detach / regrasp events — one shot per event, NOT per frame. The
+# perception node (openral_perception_ros) captures the latest frame of the
+# requested camera, projects the prompt point through that camera's manifest
+# intrinsics, runs the segmenter, and returns its candidate binary masks. The
+# producer then intersects each candidate with the same frame's depth channel,
+# selects between them on geometry, and fits the bounded primitives of an
+# AttachedCollisionObject.
+#
+# The prompt is GEOMETRIC, never semantic: unlike LocateInView (which takes a
+# free-text query and returns labelled, scored boxes), this takes a 3-D point
+# and returns "which pixels belong to the thing under it". The segmenter never
+# classifies, and — see mask_scores_advisory below — the caller never gates on
+# the model's confidence, nor picks between candidates by it.
+#
+# Request:
+#   stamp            — the attach instant the caller is asking about. The CALLER
+#                      owns it, not the server: if the server stamped the reply
+#                      the mask could be computed against a frame captured after
+#                      the object had already moved in the jaws, and the trace
+#                      would no longer replay (CLAUDE.md §1.8).
+#   camera           — camera selector. Empty = the perception node's
+#                      primary/default camera; otherwise one of its configured
+#                      camera ids. NOT a hardcoded name.
+#   frame_id         — tf2 frame that tcp_point / negative_points are expressed
+#                      in (e.g. the gripper's attach link). The server transforms
+#                      into the camera optical frame itself; TF2 stays the only
+#                      source of coordinate frames (CLAUDE.md §2).
+#   tcp_point        — the positive prompt: the Tool Center Point, in 3-D, in
+#                      frame_id. Sent as a POINT rather than a pixel so the
+#                      camera intrinsics stay entirely on the perception side of
+#                      this boundary instead of leaking into the torch-free HAL.
+#   negative_points  — optional negative prompts in the same frame (typically the
+#                      jaw tips), used to push the mask off the gripper fingers.
+#                      Bounded by the manifest's segmenter.max_prompt_points.
+#
+# Response:
+#   ok                    — true iff a frame was available and at least one mask
+#                           cleared the manifest's segmenter.min_mask_area_px.
+#                           False otherwise; `masks` is then empty and the caller
+#                           MUST fall back conservatively (jaw-span box,
+#                           evidence_kind GRIPPER_FORCE) rather than leave the
+#                           payload invisible to collision checking.
+#   camera                — the camera id actually queried (echoes the resolved
+#                           default).
+#   masks                 — the candidate binary masks, each a sensor_msgs/Image
+#                           with encoding "mono8" at the source frame's own
+#                           resolution: 255 where the pixel belongs to the
+#                           prompted object, 0 elsewhere.
+#
+#                           PLURAL, deliberately. With segmenter.multimask the
+#                           model emits three NESTED hypotheses per point prompt
+#                           (roughly subpart / part / whole) and only geometry
+#                           can say which one is the payload — containment
+#                           between the jaws, payload extent, depth validity.
+#                           The segmenter node has no depth, so it MUST NOT pick;
+#                           it returns every candidate that cleared
+#                           min_mask_area_px, ordered by area ascending, and the
+#                           HAL producer selects among them against the wrist
+#                           depth frame it already holds. A manifest with
+#                           multimask false simply yields a one-element array.
+#
+#                           RAW mono8, deliberately NOT run-length encoded. This
+#                           is a one-shot event call (attach / detach / regrasp),
+#                           not a 30 Hz stream, so a 640x480 mask is a single
+#                           ~307 kB image and at most three of them — well inside
+#                           the ~100 ms deferred-ack barrier the HAL already
+#                           holds for depth. An RLE codec would buy a few hundred
+#                           bytes in exchange for a bespoke encoder/decoder pair
+#                           that both the perception node and the safety-adjacent
+#                           HAL producer would have to agree on exactly, forever.
+#                           sensor_msgs/Image is already normative, already
+#                           introspectable with `ros2 topic echo`, and needs no
+#                           codec in the safety-adjacent path.
+#   mask_scores_advisory  — the model's own IoU/confidence per candidate,
+#                           PARALLEL to `masks` and always the same length.
+#                           ADVISORY ONLY, and named to say so. Recorded in the
+#                           trace and MUST NOT be thresholded, nor used to pick
+#                           between candidates: a mis-aimed point prompt was
+#                           measured returning a 59.8%-of-frame mask (essentially
+#                           the whole tablecloth) at this model's TOP score of
+#                           0.977. Every fail-closed gate on the caller's side is
+#                           geometric — never this.
+#   failure_reason        — typed string ('ROSPerceptionStale: …', empty on ok).
+
+builtin_interfaces/Time stamp
+string camera
+string frame_id
+geometry_msgs/Point tcp_point
+geometry_msgs/Point[] negative_points
+---
+bool ok
+string camera
+sensor_msgs/Image[] masks
+float32[] mask_scores_advisory
+string failure_reason

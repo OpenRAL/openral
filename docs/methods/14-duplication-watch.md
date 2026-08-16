@@ -406,6 +406,29 @@ contributor should look at before adding similar code.
     `openral_core.geometry` and is only worth it once a *second* caller
     appears. Add that set (and route new code through it) at that point.
 
+## Resolved by the SAM 2.1 vision-attachment work
+
+- **`_resolve_cameras` (perception nodes)** — `ros_image_detector_node`,
+  `scene_vlm_node` and `reward_monitor_node` each carried a byte-identical
+  eight-line copy of the `"id=topic"` → map resolution. All three (and the new
+  `segmenter_node`) now delegate to
+  `openral_perception_ros.camera_topics.resolve_camera_topics`, which is pure,
+  ROS-free and unit-tested (`tests/unit/test_perception_camera_topics.py`).
+- **`homogeneous_from_quat_xyz`** — was the TF→4x4 step private to
+  `openral_world_state.object_lift` (layer 2). The layer-0 HAL's vision
+  attachment bridge needs the same step and must not depend on layer 2, so the
+  math moved to `openral_core.geometry` and the world-state name became a thin
+  wrapper preserving its `ObjectsLiftError` contract. This is the "second
+  caller appears" trigger the quat→matrix note above anticipated, for the
+  `xyzw`-quaternion-plus-translation shape specifically; the remaining
+  `_quat_to_matrix` / `_rpy_to_*` cases listed there are unchanged.
+- **Still duplicated, deliberately**: the `SensorSpec`-by-name search exists as
+  a private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` and as
+  `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two ROS
+  packages, one of them already private; promoting it means adding public
+  surface to `openral_core.schemas`, which is worth doing when a third caller
+  appears and not before.
+
 ---
 
 *Generated and curated 2026-05-08 from a single AST pass over

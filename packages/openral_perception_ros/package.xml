@@ -19,6 +19,11 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>openral_msgs</depend>
+  <!-- segmenter_node: the SegmentInView prompt arrives as a geometry_msgs/Point
+       in an arbitrary tf2 frame, which the node transforms into the camera's
+       optical frame before applying the manifest intrinsics. -->
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
 
   <!-- Python runtime: the OpenRAL Python workspace (openral_runner,
        providing ObjectsDetector) must be on PYTHONPATH. -->

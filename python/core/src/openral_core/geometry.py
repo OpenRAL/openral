@@ -35,6 +35,7 @@ from openral_core.schemas import Pose6D
 __all__ = [
     "ViewAxis",
     "compute_gaze_pose",
+    "homogeneous_from_quat_xyz",
     "look_at_quat_wxyz",
     "quat_xyzw_to_yaw",
     "rotation_to_quat_wxyz",
@@ -46,6 +47,63 @@ ViewAxis = Literal["-z", "+z", "+x"]
 
 _ZERO_NORM = 1e-9
 _PARALLEL = 0.999
+_QUAT_NORM_EPS = 1e-12  # below this squared-norm a quaternion is degenerate
+
+
+def homogeneous_from_quat_xyz(
+    translation: tuple[float, float, float],
+    quat_xyzw: tuple[float, float, float, float],
+) -> NDArray[np.float64]:
+    """Build a ``(4, 4)`` homogeneous transform from a translation + xyzw quaternion.
+
+    The canonical "TF2 ``TransformStamped`` → 4x4 matrix" step. It lives here,
+    beside the rest of the shared rotation math, because every layer that reads
+    TF needs it: the layer-0 HAL's vision attachment bridge composes
+    ``attach_link <- camera_optical`` this way, and layer 2's object lift has
+    done the same since it was written.
+    :func:`openral_world_state.object_lift.homogeneous_from_quat_xyz` now
+    delegates here, so there is one implementation rather than one per layer
+    (CLAUDE.md §1.13).
+
+    Args:
+        translation: ``(x, y, z)`` translation in metres.
+        quat_xyzw: Rotation quaternion as ``(x, y, z, w)``; need not be unit
+            length (it is normalised internally).
+
+    Returns:
+        A ``(4, 4)`` float64 homogeneous transform matrix.
+
+    Raises:
+        ROSConfigError: If the quaternion norm is effectively zero — a
+            degenerate rotation is a malformed input, not something to guess a
+            fallback for.
+
+    Example:
+        >>> homogeneous_from_quat_xyz((1.0, 2.0, 3.0), (0.0, 0.0, 0.0, 1.0)).tolist()
+        [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 2.0], [0.0, 0.0, 1.0, 3.0], [0.0, 0.0, 0.0, 1.0]]
+    """
+    from openral_core.exceptions import ROSConfigError  # noqa: PLC0415 — avoids an import cycle
+
+    x, y, z, w = quat_xyzw
+    n = x * x + y * y + z * z + w * w
+    if n < _QUAT_NORM_EPS:
+        raise ROSConfigError(f"degenerate quaternion {quat_xyzw!r}")
+    s = 2.0 / n
+    xx, yy, zz = x * x * s, y * y * s, z * z * s
+    xy, xz, yz = x * y * s, x * z * s, y * z * s
+    wx, wy, wz = w * x * s, w * y * s, w * z * s
+    m = np.eye(4, dtype=np.float64)
+    m[0, 0] = 1.0 - (yy + zz)
+    m[0, 1] = xy - wz
+    m[0, 2] = xz + wy
+    m[1, 0] = xy + wz
+    m[1, 1] = 1.0 - (xx + zz)
+    m[1, 2] = yz - wx
+    m[2, 0] = xz - wy
+    m[2, 1] = yz + wx
+    m[2, 2] = 1.0 - (xx + yy)
+    m[0, 3], m[1, 3], m[2, 3] = translation
+    return m
 
 
 def yaw_to_quat_xyzw(yaw: float) -> tuple[float, float, float, float]:

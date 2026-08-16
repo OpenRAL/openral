@@ -1,0 +1,31 @@
+sam2_wrist_eraser_mask.png / sam2_front_tablecloth_mask.png
+
+Real output of facebook/sam2.1-hiera-small (Apache-2.0, transformers 5.5.4,
+Sam2Model + Sam2Processor, CPU float32), not hand-drawn and not synthetic.
+
+Produced by prompting a single positive point at (0.52*W, 0.68*H) — a stand-in
+for the TF-projected tool center point — on two real in-tree frames, taking the
+model's own highest-scoring candidate of the three multimask hypotheses, and
+saving it as a 1-bit PNG:
+
+  sam2_wrist_eraser_mask.png     240x320
+    source frame: rskills/rskill-smolvla-so101-eraser_place-bf16/media/wrist_mid.png
+    SO-101 wrist view holding an eraser
+    model iou_score 0.8416, mask covers 5.45% of the frame
+    GOOD CASE — cleanly isolates the eraser and excludes the jaws.
+
+  sam2_front_tablecloth_mask.png 480x640
+    source frame: rskills/gr00t-n17-so101-fruit/assets/so101_fruit_ep100_front.png
+    SO-101 third-person view of a fruit scene (NOT a wrist view, so the
+    "grasp point" projection is meaningless here — a deliberately mis-aimed prompt)
+    model iou_score 0.9781, mask covers 59.85% of the frame
+    FAILURE CASE — returns essentially the entire tablecloth, at the model's
+    HIGHEST confidence of the three candidates.
+
+The second mask is the load-bearing regression fixture for the whole vision
+attachment-evidence design: it proves the segmenter's own score cannot detect a
+mis-aimed prompt, which is why every fail-closed gate in
+openral_hal._vision_attachment_evidence is geometric and never the mask score.
+
+Both source frames are in-tree rSkill media; both are captures of OpenRAL's own
+SO-101 hardware, no third-party licensing applies.

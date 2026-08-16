@@ -105,19 +105,23 @@ subscriber would never match it) and decodes the `metadata_json` payload as an
 `TelemetryStore.set_perception_detections`. Each box renders as a coloured rect
 with a `label 0.87` chip.
 
-**Segmenter masks** do not stream. `openral_msgs/srv/SegmentInView` is a
-*service*: it returns plural full-frame **mono8** `sensor_msgs/Image` masks
+**Segmenter masks** are not a stream by nature. `openral_msgs/srv/SegmentInView`
+is a *service*: it returns plural full-frame **mono8** `sensor_msgs/Image` masks
 (255 = in mask), ordered area-ascending, with a parallel
-`mask_scores_advisory`, one shot per attach/detach/regrasp event. So there is
-nothing to subscribe to, and this package deliberately does not invent a topic.
-What ships is the seam that side lands on: `mono8_mask_to_png_b64` (mono8 →
-an LA PNG whose alpha *is* the mask, tintable in one canvas composite) and
-`TelemetryStore.set_perception_masks`. The renderer already draws any
-`(camera, masks[], scores[])` tuple it is handed, so a mask publisher lights
-the overlay up with no frontend change. **Follow-up for the vision branch:** a
-small optional latest-mask debug topic on the segmenter node is the cleanest
-way to feed it — better there, next to the producer, than as unreachable code
-here.
+`mask_scores_advisory`, one shot per attach/detach/regrasp event. So the
+producer is a **diagnostic** re-publication of that reply, and it lives next to
+the producer rather than as unreachable code here:
+`openral_perception_ros.segmenter_node` publishes `openral_msgs/SegmentMasks`
+on `/openral/perception/masks` when its `publish_debug_masks` parameter is set
+(**default false** — off, no publisher exists at all). `PerceptionOverlaySubscriber`
+subscribes it at the matching sensor-class QoS (BEST_EFFORT + VOLATILE +
+KEEP_LAST=1) and decodes each mask with `mono8_mask_to_png_b64` (mono8 → an LA
+PNG whose alpha *is* the mask, tintable in one canvas composite) into
+`TelemetryStore.set_perception_masks`.
+
+Nothing on the robot reads that topic: the HAL's attachment producer takes its
+masks from its own service reply and gates them on geometry. Dropping every
+message here changes only what an operator sees.
 
 The advisory scores are displayed and **never** used to rank or filter. The
 service documents why: a mis-aimed prompt was measured returning a

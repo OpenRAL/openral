@@ -697,6 +697,53 @@ def points_from_depth_grid(
     return points.astype(np.float32)
 
 
+def depth_grid_from_image(msg: Any) -> NDArray[np.float64]:
+    """Decode a ``sensor_msgs/Image`` depth frame into an ``(H, W)`` metre raster.
+
+    The inverse of :func:`depth_image_from_grid`, and the reader half the HAL's
+    vision attachment bridge needs: on real hardware the wrist depth arrives
+    from a camera driver, not from the simulator that produced it here. Both
+    REP-118 depth encodings are accepted, because both are shipped by drivers
+    OpenRAL already supports (``openral_sensors.realsense`` /
+    ``openral_sensors.luxonis`` publish ``16UC1``; the sim bridge and
+    ``depth_provider_node`` publish ``32FC1``).
+
+    Args:
+        msg: A ``sensor_msgs/Image`` with encoding ``32FC1`` (metres) or
+            ``16UC1`` (millimetres, the RealSense/OAK-D convention).
+
+    Returns:
+        An ``(H, W)`` float64 raster in **metres**. ``0`` stays ``0`` — the
+        REP-118 "no measurement" value, which every consumer here treats as
+        invalid depth rather than as a surface at the optical centre.
+
+    Raises:
+        ROSConfigError: On an unsupported encoding, or a payload whose length
+            does not match ``height * width``.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    height, width = int(msg.height), int(msg.width)
+    encoding = str(msg.encoding)
+    if encoding == "32FC1":
+        dtype: str = "<f4"
+        scale = 1.0
+    elif encoding == "16UC1":
+        dtype, scale = "<u2", 1e-3
+    else:
+        raise ROSConfigError(
+            f"depth_grid_from_image: unsupported depth encoding {encoding!r}; "
+            "expected '32FC1' (metres) or '16UC1' (millimetres)."
+        )
+    flat = np.frombuffer(bytes(msg.data), dtype=dtype)
+    if flat.size != height * width:
+        raise ROSConfigError(
+            f"depth_grid_from_image: {encoding} payload has {flat.size} samples "
+            f"for a {height}x{width} frame."
+        )
+    return np.asarray(flat, dtype=np.float64).reshape(height, width) * scale
+
+
 def camera_info_from_intrinsics(
     *,
     width: int,

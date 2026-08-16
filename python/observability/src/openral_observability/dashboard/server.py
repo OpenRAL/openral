@@ -155,7 +155,12 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
 
         app.state.perception_overlay = PerceptionOverlaySubscriber(app.state.store)
         if app.state.perception_overlay.available:
-            _LOG.info("dashboard.perception_overlay_subscriber ready (detector overlays)")
+            legs = (
+                "detector boxes + segmenter masks"
+                if app.state.perception_overlay.masks_available
+                else "detector boxes only (openral_msgs/SegmentMasks not in the overlay)"
+            )
+            _LOG.info("dashboard.perception_overlay_subscriber ready (%s)", legs)
         else:
             _LOG.warning(
                 "dashboard.perception_overlay_subscriber inert (no ROS) — "

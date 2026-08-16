@@ -100,6 +100,10 @@ def test_every_modern_intree_manifest_declares_processors() -> None:
       producers with an exported ONNX/TensorRT engine and no lerobot
       ``PolicyProcessorPipeline`` — ``RSkillManifest._check_kind_consistency``
       FORBIDS ``processors`` for this kind.
+    * Segmenter rSkills (``kind: segmenter``) are the same story for a
+      promptable mask model (SAM 2.1): a ``transformers`` processor, not a
+      lerobot ``PolicyProcessorPipeline``, and ``processors`` is likewise
+      FORBIDDEN by the schema.
     """
     manifests = list(discover_intree_rskills())
     assert manifests, "no in-tree rskills/*/rskill.yaml manifests discovered"
@@ -110,12 +114,13 @@ def test_every_modern_intree_manifest_declares_processors() -> None:
     for name, manifest in manifests:
         # Non-VLA kinds don't carry a lerobot policy; `processors` is
         # `None` by construction and the manifest-level validator forbids
-        # it from being set (wrapped-ROS, detector, scene VLM, reward
-        # monitor, playbook kinds).
+        # it from being set (wrapped-ROS, detector, segmenter, scene VLM,
+        # reward monitor, playbook kinds).
         if manifest.kind in {
             "ros_action",
             "ros_service",
             "detector",
+            "segmenter",
             "vlm",
             "reward",
             "playbook",

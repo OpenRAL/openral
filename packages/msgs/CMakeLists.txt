@@ -36,6 +36,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # bounded approach allowance of the 2026-08-14 amendment.
   msg/PlaceRegion.msg
   msg/PlaceDeclaration.msg
+  # DIAGNOSTIC-only mirror of the latest SegmentInView reply, so the dashboard's
+  # mask overlay has a producer. Off by default on the segmenter node; nothing
+  # in the safety or attachment path reads it.
+  msg/SegmentMasks.msg
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg
   msg/Episode.msg
@@ -49,6 +53,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/QueryScene.srv
   # reasoner's read-only query_task_progress against the Robometer reward monitor.
   srv/QueryTaskProgress.srv
+  # HAL's vision attachment-evidence producer asking a kind:"segmenter" rSkill
+  # (SAM 2.1) which wrist-frame pixels are the grasped payload. Raw mono8 mask.
+  srv/SegmentInView.srv
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs
 )
 
