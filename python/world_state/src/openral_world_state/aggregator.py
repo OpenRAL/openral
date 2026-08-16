@@ -70,6 +70,7 @@ from openral_core.schemas import (
     AttachedCollisionObject,
     DetectedObject,
     JointState,
+    PlaceDeclaration,
     Pose6D,
     RobotDescription,
     SensorFrame,
@@ -134,6 +135,13 @@ class WorldStateAggregator:
             :data:`DEFAULT_POLICY_STATE_STALENESS_S`.
         clock_fn: Callable returning the current time in nanoseconds.
             Defaults to ``time.time_ns``.  Override in tests to control time.
+            It stamps arrivals and drives the staleness diagnostics only. It is
+            **not** used to judge the place declaration's liveness: that is
+            evaluated in the attachment stream's own clock domain (see
+            :meth:`update_attached_objects`), because the declaration's
+            ``stamp_ns`` comes from the publishing graph's ROS clock — simulator
+            time under ``use_sim_time`` — which ``time.time_ns`` cannot be
+            compared against.
 
     Example:
         >>> from openral_core.schemas import JointState
@@ -220,6 +228,44 @@ class WorldStateAggregator:
         self._attached_objects: dict[str, AttachedCollisionObject] = {}
         self._attachment_revision: int = 0
         self._attachment_stamp_ns: int = 0
+        # The place-phase declaration the evidence producer resolved for the
+        # carried payload (ADR-0097 + its 2026-08-14 amendment). It travels with
+        # the attachment snapshot because the approach allowance it carries is
+        # scoped to that payload, and its liveness is re-evaluated on every
+        # attachment message: HZ-0097-3 makes expiry World State's
+        # responsibility, not the dispatcher's alone, so a dispatcher that dies
+        # mid-goal cannot leave a region armed.
+        #
+        # Liveness is evaluated in the ATTACHMENT STREAM'S OWN CLOCK — the stamp
+        # riding the message that carried the declaration, i.e. the same value
+        # stored in `_attachment_stamp_ns` — never `_clock_fn`. The declaration
+        # is stamped by the dispatching rSkill runner's ROS clock, the producer
+        # re-stamps its publications from the same ROS clock, and the safety
+        # kernel compares against its own ROS clock; under `use_sim_time` that
+        # domain is simulator time. `_clock_fn` defaults to wall `time.time_ns`,
+        # so comparing a sim-stamped declaration against it made every
+        # declaration look ~1.79e18 ns past its backstop and published
+        # `place_declaration=None` on every snapshot. See `snapshot`.
+        #
+        # What that leaves covering HZ-0097-3 mitigation 2 (and HZ-0097-4
+        # mitigation 4, which inherits it):
+        #   1. The producer heartbeats the attachment set, so every heartbeat
+        #      re-runs the backstop against a fresh stream stamp; a declaration
+        #      that outlives its goal is dropped on the next message, and the
+        #      producer drops it on its own side first.
+        #   2. A stream that STOPS (producer or dispatcher crash) advances no
+        #      stream clock here, so the stored declaration cannot expire from
+        #      World State — but it also means no fresh attachment evidence
+        #      reaches the kernel, whose `attached_collision_deadline_s`
+        #      freshness gate then refuses EVERY candidate action
+        #      (`attached_unavailable`), not merely the allowance. That is
+        #      strictly more conservative than expiring the region.
+        #   3. The kernel re-evaluates `place_declaration_live()` per candidate
+        #      action against its own ROS clock — the declaration's domain —
+        #      so the backstop is enforced where the margin is actually applied.
+        # Inventing a second, wall-clock timeout here would only re-create the
+        # cross-domain bug this comment exists to prevent.
+        self._place_declaration: PlaceDeclaration | None = None
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
         # Stale components from the previous snapshot — used by snapshot() to
@@ -398,6 +444,7 @@ class WorldStateAggregator:
         *,
         revision: int = 0,
         stamp_ns: int | None = None,
+        place_declaration: PlaceDeclaration | None = None,
     ) -> None:
         """Atomically replace the attached-payload set.
 
@@ -405,6 +452,19 @@ class WorldStateAggregator:
             objects: Complete current attachment set. Object ids must be unique.
             revision: Monotonic producer revision.
             stamp_ns: Producer confirmation time; arrival time when omitted.
+            place_declaration: The place-phase declaration the evidence producer
+                resolved for this payload, with its measured region (ADR-0097's
+                2026-08-14 amendment), or ``None`` for no place phase. Replaced
+                atomically with the attachment set it is scoped to, so the
+                kernel can never apply a region and an attachment snapshot that
+                disagree. A declaration that is already retracted or expired is
+                stored as ``None``.
+
+                Liveness is evaluated against ``stamp_ns`` — this message's own
+                stamp, in the stream's clock domain, which is the only clock the
+                declaration's ``stamp_ns`` is comparable with. This is the single
+                evaluation point; :meth:`snapshot` publishes what is stored here
+                rather than re-checking against a second clock.
 
         Raises:
             ValueError: If ids duplicate or the revision moves backwards.
@@ -412,6 +472,14 @@ class WorldStateAggregator:
         by_id = {obj.object_id: obj for obj in objects}
         if len(by_id) != len(objects):
             raise ValueError("Attached collision object ids must be unique.")
+        # With no producer stamp the arrival moment IS the stream's clock reading,
+        # so `_clock_fn` is the right "now" for that case and only that case.
+        applied_stamp_ns = self._clock_fn() if stamp_ns is None else stamp_ns
+        live_declaration = (
+            place_declaration
+            if place_declaration is not None and place_declaration.is_live(now_ns=applied_stamp_ns)
+            else None
+        )
         with self._lock:
             if revision < self._attachment_revision:
                 raise ValueError(
@@ -420,8 +488,14 @@ class WorldStateAggregator:
                 )
             self._attached_objects = by_id
             self._attachment_revision = revision
-            self._attachment_stamp_ns = self._clock_fn() if stamp_ns is None else stamp_ns
-        log.info("world_state.attached_objects.updated", count=len(objects))
+            self._attachment_stamp_ns = applied_stamp_ns
+            self._place_declaration = live_declaration
+        log.info(
+            "world_state.attached_objects.updated",
+            count=len(objects),
+            place_target=live_declaration.target_id if live_declaration is not None else None,
+            place_region=live_declaration is not None and live_declaration.region is not None,
+        )
 
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
@@ -579,6 +653,15 @@ class WorldStateAggregator:
                 ],
                 attachment_revision=self._attachment_revision,
                 attachment_stamp_ns=self._attachment_stamp_ns,
+                # Published verbatim: liveness was decided in
+                # `update_attached_objects`, against this stream's own clock.
+                # `now_ns` is `_clock_fn` — a DIFFERENT clock — and re-checking
+                # here against it is what silently killed every sim-time
+                # declaration. Between attachment messages World State holds no
+                # reading of the stream's clock, so it cannot expire a stored
+                # declaration on its own and does not pretend to; see the
+                # HZ-0097-3 note in `__init__` for what does.
+                place_declaration=self._place_declaration,
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
             )

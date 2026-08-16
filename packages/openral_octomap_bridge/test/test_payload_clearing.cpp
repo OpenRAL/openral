@@ -236,8 +236,11 @@ const tf2::Vector3 kRestingCenter(0.40, 0.0, kSupportFaceZ + kRestingHalfExtents
 constexpr double kAttestedPatchRadius = 0.06;
 constexpr double kAttestedPenetration = 0.00137;
 // The bound the attestation buys at 25 mm cells: the cube's half-width
-// projected on the +z normal (12.5 mm) plus that physical depth.
-const double kWithholdCeiling = 0.5 * kResolution + kAttestedPenetration;
+// projected on the +z normal (12.5 mm), plus that physical depth, plus the one
+// voxel of co-planar headroom the kernel's `support_contact_exempts` gained on
+// 2026-08-15 (hazard log Entry 012, "Calibration 2026-08-15") and this
+// predicate mirrors in lockstep — 38.87 mm.
+const double kWithholdCeiling = 0.5 * kResolution + kAttestedPenetration + kResolution;
 
 // The four cell-centre coordinates the payload's 80 mm footprint spans on each
 // lateral axis (the next centre out is 22.5 mm clear of the box face, past the
@@ -245,9 +248,16 @@ const double kWithholdCeiling = 0.5 * kResolution + kAttestedPenetration;
 const std::vector<double> kFootprintX{0.3625, 0.3875, 0.4125, 0.4375};
 const std::vector<double> kFootprintY{-0.0375, -0.0125, 0.0125, 0.0375};
 // The counter's top cell layer (centre 3.2 mm above the attested face) and the
-// three payload-silhouette layers above it (+28.2, +53.2, +78.2 mm).
+// three payload-silhouette layers above it (+28.2, +53.2, +78.2 mm). Since the
+// 2026-08-15 height calibration the +28.2 mm layer is INSIDE the withhold slab
+// (ceiling 38.87 mm) — it is the co-planar band the calibration exists for — so
+// only the top two layers are the clearing's.
 constexpr double kSupportLayerZ = 0.3625;
 const std::vector<double> kResidueLayerZ{0.3875, 0.4125, 0.4375};
+// The silhouette layers that still clear, and the one now withheld with the
+// counter.
+const std::vector<double> kClearedResidueLayerZ{0.4125, 0.4375};
+constexpr double kCoplanarBandLayerZ = 0.3875;
 
 WireObject resting_payload() {
   WireObject obj = box_payload();
@@ -344,7 +354,11 @@ bool kernel_support_contact_exempts(const bridge::SupportPatch& patch, const tf2
   if (lateral_sq > reach * reach) {
     return false;
   }
-  return height <= normal_half_width + patch.max_penetration + slack;
+  // The fourth term is the kernel's one voxel of co-planar headroom (hazard log
+  // Entry 012, "Calibration 2026-08-15"). It is transcribed here for the same
+  // reason the rest of the predicate is: this function is the SPECIFICATION the
+  // bridge is checked against, so it has to move when the kernel moves.
+  return height <= normal_half_width + patch.max_penetration + slack + resolution;
 }
 
 // The kernel's `attached_contact_tolerance` — 1 mm of physical FK/pose slack,
@@ -382,6 +396,12 @@ bridge::SupportPatch grid_frame_patch(const tf2::Vector3& point, const tf2::Vect
 // exactly that, and it resurrects the residue 21ecf82 eliminated. The offset is
 // carried as a constant so the class is pinned by its field number.
 constexpr double kFieldResidueOffset = 0.0358;
+
+// A cell above the WIDENED slab (21.65 + 10 + 25 = 56.65 mm for the widest
+// attestation the kernel would accept). +60 mm is the offset that plays the role
+// +35.8 mm played before the 2026-08-15 co-planar-headroom calibration: outside
+// the slab for every wire message the kernel would take.
+constexpr double kAboveWidenedSlabOffset = 0.060;
 
 // The same resting payload, lowered so that its attested support plane sits
 // `kFieldResidueOffset` BELOW an occupancy cell-centre layer: the field cell is
@@ -722,7 +742,7 @@ TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
 
   const std::size_t cleared = clear_with(grid, placed(resting_payload()));
 
-  EXPECT_EQ(cleared, 12U) << "the payload's own silhouette, and only that";
+  EXPECT_EQ(cleared, 8U) << "the payload's silhouette above the widened slab, and only that";
   for (const double x : kFootprintX) {
     for (const double y : kFootprintY) {
       EXPECT_NE(grid.occupancy[cell_index(grid, x, y, kSupportLayerZ)], 0)
@@ -730,15 +750,22 @@ TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
     }
   }
   for (const double y : kFootprintY) {
-    for (const double z : kResidueLayerZ) {
+    for (const double z : kClearedResidueLayerZ) {
       EXPECT_EQ(grid.occupancy[cell_index(grid, 0.3625, y, z)], 0)
           << "payload silhouette cell (" << y << ", " << z << ") must go";
     }
+    // The +28.2 mm layer is the co-planar band the 2026-08-15 calibration
+    // widened the kernel's envelope to cover, so the mirror withholds it here:
+    // it stays in the map, and the kernel exempts it for the object that
+    // attested the patch. `withheld` grew; `cleared` shrank; nothing moved from
+    // withheld to neither.
+    EXPECT_NE(grid.occupancy[cell_index(grid, 0.3625, y, kCoplanarBandLayerZ)], 0)
+        << "co-planar band cell (" << y << ") is withheld, not cleared";
   }
   EXPECT_NE(
       grid.occupancy[cell_index(grid, kObstacleCell.x(), kObstacleCell.y(), kObstacleCell.z())], 0)
       << "the real obstacle beside the payload still stops the kernel";
-  EXPECT_EQ(occupied_cells(grid), 17U);
+  EXPECT_EQ(occupied_cells(grid), 21U);
 }
 
 TEST(PayloadClearing, WithoutTheAttestationTheSupportSurfaceIsClearedAway) {
@@ -786,7 +813,7 @@ TEST(PayloadClearing, APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs) {
   auto place_cleared = before;
   const std::size_t cleared = clear_with(place_cleared, placed(place));
 
-  EXPECT_EQ(cleared, 12U) << "the payload's own silhouette, and only that";
+  EXPECT_EQ(cleared, 8U) << "the payload's silhouette above the widened slab, and only that";
   EXPECT_EQ(place_cleared.occupancy, pick_cleared.occupancy)
       << "the partition must not be able to tell a place witness from a pick witness";
   for (const double x : kFootprintX) {
@@ -846,7 +873,8 @@ TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
     EXPECT_TRUE(kernel_support_contact_exempts(p.patches[0], center, before.resolution,
                                                kKernelContactTolerance));
   }
-  EXPECT_EQ(withheld, 16U) << "the counter's 16 cells under the payload, and only those";
+  EXPECT_EQ(withheld, 20U) << "the counter's 16 cells, plus the 4 co-planar-band cells the "
+                              "2026-08-15 calibration moved from cleared to withheld";
 }
 
 TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
@@ -857,6 +885,13 @@ TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
   // predicate at zero slack — and every cell it withholds is still exempt once
   // the kernel adds its 1 mm of physical tolerance, which is the containment
   // the partition rests on.
+  //
+  // The along-normal probe reaches ±90 mm rather than ±60 since the 2026-08-15
+  // height calibration (hazard log Entry 012): the widest slab the kernel would
+  // accept now reaches 21.65 + 10 + 25 = 56.65 mm above the plane, so a ±60 mm
+  // sweep would barely straddle the new ceiling and would prove agreement mostly
+  // where both predicates trivially withhold. The band the calibration opened is
+  // probed on both sides of its edge.
   const std::vector<tf2::Vector3> normals{
       tf2::Vector3(0.0, 0.0, 1.0),  tf2::Vector3(0.0, 0.0, -1.0), tf2::Vector3(0.0, -1.0, 0.0),
       tf2::Vector3(1.0, 1.0, 1.0),  tf2::Vector3(0.2, -0.3, 0.9), tf2::Vector3(-0.6, 0.1, 0.8),
@@ -878,8 +913,8 @@ TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
           across = patch.normal.cross(tf2::Vector3(1.0, 0.0, 0.0));
         }
         across = across.normalized();
-        for (int si = -12; si <= 12; ++si) {
-          const double s = 0.005 * si;  // ±60 mm along the normal, 5 mm steps
+        for (int si = -18; si <= 18; ++si) {
+          const double s = 0.005 * si;  // ±90 mm along the normal, 5 mm steps
           for (int ti = 0; ti <= 12; ++ti) {
             const double t = 0.05 * ti;  // 0 … 600 mm across it
             const tf2::Vector3 center = origin + patch.normal * s + across * t;
@@ -899,52 +934,70 @@ TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
       }
     }
   }
-  EXPECT_EQ(agreed, normals.size() * penetrations.size() * radii.size() * 25U * 13U);
+  EXPECT_EQ(agreed, normals.size() * penetrations.size() * radii.size() * 37U * 13U);
   EXPECT_GT(withheld, 0U) << "a probe that withholds nothing proves nothing";
 }
 
-TEST(PayloadClearing, NoAttestationTheKernelAcceptsWithholdsTheRoundFiveFieldCell) {
-  // The round-5 cell, as a bound rather than as one example: at 25 mm cells the
-  // withhold ceiling is at most half·(|n.x|+|n.y|+|n.z|) + attested depth =
-  // 21.65 mm (a cube diagonal normal) + 10 mm (the kernel's
-  // `support_witness_max_penetration_m`) = 31.65 mm above the attested plane.
-  // +35.8 mm is outside it for EVERY attestation the kernel would accept, so no
-  // wire message can make the bridge withhold that cell — which is what makes
+TEST(PayloadClearing, NoAttestationTheKernelAcceptsWithholdsACellAboveTheWidenedSlab) {
+  // The ceiling as a bound rather than as one example: at 25 mm cells the
+  // withhold ceiling is at most half·(|n.x|+|n.y|+|n.z|) + attested depth + one
+  // voxel = 21.65 mm (a cube diagonal normal) + 10 mm (the kernel's
+  // `support_witness_max_penetration_m`) + 25 mm (the 2026-08-15 co-planar
+  // headroom) = 56.65 mm above the attested plane. `kAboveWidenedSlabOffset` is
+  // outside it for EVERY attestation the kernel would accept, so no wire message
+  // can make the bridge withhold that cell — which is what makes
   // "withheld ⊂ exempt" a property of the predicate rather than of the fixture.
+  //
+  // Before the calibration the ceiling was 31.65 mm and the field offset the
+  // round-5 run reported (+35.8 mm) was the cell outside it. That cell is now
+  // INSIDE the band, by decision, and
+  // `TheRoundFiveResidueCellIsWithheldInTheCoplanarBand` is where it moved to.
   const tf2::Vector3 origin(0.40, 0.0, kSupportFaceZ);
-  const double ceiling = 0.5 * kResolution * 1.7320508075688772 + kKernelMaxPenetration;
-  ASSERT_LT(ceiling, kFieldResidueOffset) << "the field offset must be outside the widest slab";
+  const double ceiling =
+      0.5 * kResolution * 1.7320508075688772 + kKernelMaxPenetration + kResolution;
+  ASSERT_NEAR(ceiling, 0.05665, 1e-5);
+  ASSERT_LT(ceiling, kAboveWidenedSlabOffset) << "the probe must be outside the widest slab";
+  ASSERT_GT(ceiling, kFieldResidueOffset) << "…and the round-5 cell must be inside it now";
 
   for (const auto& n : {tf2::Vector3(0.0, 0.0, 1.0), tf2::Vector3(1.0, 1.0, 1.0),
                         tf2::Vector3(0.3, -0.9, 0.4), tf2::Vector3(-1.0, 0.2, 0.7)}) {
     for (const double penetration : {0.0, 0.00137, kKernelMaxPenetration}) {
       const bridge::SupportPatch patch =
           grid_frame_patch(origin, n, kKernelMaxPatchRadius, penetration);
-      const tf2::Vector3 field_cell = origin + patch.normal * kFieldResidueOffset;
-      EXPECT_FALSE(bridge::support_patch_withholds(patch, field_cell, kResolution))
-          << "+35.8 mm along the outward normal is payload-side solid, not support";
+      const tf2::Vector3 above = origin + patch.normal * kAboveWidenedSlabOffset;
+      EXPECT_FALSE(bridge::support_patch_withholds(patch, above, kResolution))
+          << "+60 mm along the outward normal is payload-side solid, not support";
       EXPECT_FALSE(
-          kernel_support_contact_exempts(patch, field_cell, kResolution, kKernelContactTolerance))
+          kernel_support_contact_exempts(patch, above, kResolution, kKernelContactTolerance))
           << "…and the kernel does not exempt it either: the partition holds";
     }
   }
 }
 
-TEST(PayloadClearing, TheRoundFiveResidueCellClearsThoughItIsInsideThePatchCylinder) {
+TEST(PayloadClearing, TheRoundFiveResidueCellIsWithheldInTheCoplanarBand) {
   // The same thing on a real grid, because a predicate that is right in
   // isolation and a clearing that never asks it are indistinguishable in the
   // field. The payload rests on its attested plane 35.8 mm below an occupancy
   // cell-centre layer, so three cell layers of its own silhouette sit above the
   // plane, all of them deep inside the attested patch cylinder (53 mm of lateral
-  // offset against a 60 + 21.65 mm reach). The support layer stays; everything
-  // above the slab goes.
+  // offset against a 60 + 21.65 mm reach).
+  //
+  // Since the 2026-08-15 calibration the slab ceiling for this attestation is
+  // 12.5 + 1.37 + 25 = 38.87 mm, so the +35.8 mm layer the round-5 run reported
+  // is INSIDE the band and is withheld rather than cleared — the deliberate,
+  // recorded consequence of widening the kernel's envelope by one voxel, mirrored
+  // here so `withheld ⊆ exempt` still holds by construction. What still clears is
+  // the layer above it, at +60.8 mm. Withholding only ever puts occupancy back,
+  // so this direction is the conservative one for Nav2 and the arm alike.
   auto grid = lowered(deploy_sim_tree());
   const std::size_t support_cell = cell_index(grid, 0.40, 0.0, kFieldPlaneZ + 0.0108);
   const std::size_t field_cell = cell_index(grid, 0.40, 0.0, kSupportLayerZ);
   const std::size_t corner_cell = cell_index(grid, 0.4375, 0.0375, kSupportLayerZ);
+  const std::size_t above_cell = cell_index(grid, 0.40, 0.0, kSupportLayerZ + kResolution);
   grid.occupancy[support_cell] = 1;
   grid.occupancy[field_cell] = 1;
   grid.occupancy[corner_cell] = 1;
+  grid.occupancy[above_cell] = 1;
 
   const Placed p = placed(field_round5_payload());
   ASSERT_EQ(p.patches.size(), 1U);
@@ -954,21 +1007,34 @@ TEST(PayloadClearing, TheRoundFiveResidueCellClearsThoughItIsInsideThePatchCylin
   // Inside the cylinder laterally — the only bound left is the along-normal one.
   EXPECT_LT((center_of_index(grid, corner_cell) - p.patches[0].point).length(),
             kAttestedPatchRadius + kCircumradius + kFieldResidueOffset);
+  ASSERT_LT(kFieldResidueOffset, kWithholdCeiling) << "+35.8 mm is inside the calibrated slab";
+  ASSERT_GT(kFieldResidueOffset + kResolution, kWithholdCeiling) << "+60.8 mm is not";
 
-  EXPECT_EQ(clear_with(grid, p), 2U);
-  EXPECT_EQ(grid.occupancy[field_cell], 0)
-      << "+35.8 mm above the attested plane: payload, and the kernel exempts nothing there";
-  EXPECT_EQ(grid.occupancy[corner_cell], 0) << "…including at the edge of the patch cylinder";
+  EXPECT_EQ(clear_with(grid, p), 1U);
+  EXPECT_NE(grid.occupancy[field_cell], 0)
+      << "+35.8 mm above the attested plane: the co-planar band, withheld and kernel-exempt";
+  EXPECT_NE(grid.occupancy[corner_cell], 0) << "…including at the edge of the patch cylinder";
+  EXPECT_EQ(grid.occupancy[above_cell], 0)
+      << "+60.8 mm: past the calibrated slab, payload-side, and the clearing's";
   EXPECT_NE(grid.occupancy[support_cell], 0) << "+10.8 mm: inside the slab, the counter's own cell";
+
+  // The containment the mirror exists for, on the two cells that moved.
+  for (const std::size_t idx : {field_cell, corner_cell}) {
+    const tf2::Vector3 center = center_of_index(grid, idx);
+    EXPECT_TRUE(bridge::support_patch_withholds(p.patches[0], center, kResolution));
+    EXPECT_TRUE(
+        kernel_support_contact_exempts(p.patches[0], center, kResolution, kKernelContactTolerance));
+  }
 }
 
 TEST(PayloadClearing, WithholdingStopsAtTheProjectedCubeHalfWidth) {
-  // The depth bound, to the millimetre, and it is the kernel's: the cube's
-  // half-width projected on the support normal plus the ATTESTED PHYSICAL
-  // depth. A cell centre a millimetre below that ceiling is the support face
-  // seen through the lattice and is withheld; one a millimetre above it is
-  // solid genuinely higher than the attested face — the +32 mm class the
-  // acceptance round tripped on — and clears.
+  // The height bound, to the millimetre, and it is the kernel's: the cube's
+  // half-width projected on the support normal, plus the ATTESTED PHYSICAL
+  // depth, plus the one voxel of co-planar headroom the kernel gained on
+  // 2026-08-15 and this predicate mirrors. A cell centre a millimetre below that
+  // ceiling is support face or co-planar band seen through the lattice and is
+  // withheld; one a millimetre above it is solid genuinely higher than the
+  // attested face and clears.
   const Placed p = placed(resting_payload());
   ASSERT_EQ(p.patches.size(), 1U);
   const auto& patch = p.patches[0];
@@ -1050,13 +1116,16 @@ TEST(PayloadClearing, TheAttestedPlaneIsCarriedInTheObjectFrame) {
 
   auto grid = lowered(deploy_sim_tree());
   const std::size_t wall_side = cell_index(grid, 0.4125, 0.0375, 0.4125);
-  const std::size_t payload_side = cell_index(grid, 0.4125, 0.0125, 0.4125);
+  // 62.5 mm off the plane along the rolled normal, not 37.5: since the
+  // 2026-08-15 calibration the slab reaches 38.87 mm, so the next cell out is
+  // the first one that is unambiguously the payload's.
+  const std::size_t payload_side = cell_index(grid, 0.4125, -0.0125, 0.4125);
   grid.occupancy[wall_side] = 1;
   grid.occupancy[payload_side] = 1;
 
   EXPECT_EQ(clear_with(grid, p), 1U);
   EXPECT_NE(grid.occupancy[wall_side], 0) << "inside the attested support half-space";
-  EXPECT_EQ(grid.occupancy[payload_side], 0) << "37.5 mm clear of it: the payload's own cell";
+  EXPECT_EQ(grid.occupancy[payload_side], 0) << "62.5 mm clear of it: the payload's own cell";
 }
 
 TEST(PayloadClearing, OneObjectsAttestationGuardsEveryObjectsClearing) {
@@ -1339,12 +1408,12 @@ TEST(PayloadClearing, ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch)
   ASSERT_EQ(p.patches.size(), 1U);
 
   auto steady = grid;
-  EXPECT_EQ(clear_with(steady, p, 0.0), 12U) << "the steady reach explains neither extra cell";
+  EXPECT_EQ(clear_with(steady, p, 0.0), 8U) << "the steady reach explains neither extra cell";
   EXPECT_NE(steady.occupancy[ring], 0);
   EXPECT_NE(steady.occupancy[residue], 0);
 
   auto attach = grid;
-  EXPECT_EQ(clear_with(attach, p, padding), 13U);
+  EXPECT_EQ(clear_with(attach, p, padding), 9U);
   EXPECT_NE(attach.occupancy[ring], 0) << "attested support, withheld from the padded sweep too";
   EXPECT_EQ(attach.occupancy[residue], 0) << "payload-side residue, which is what the padding buys";
   for (const double x : kFootprintX) {

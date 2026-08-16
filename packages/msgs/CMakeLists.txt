@@ -32,7 +32,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/AttachmentState.msg
   msg/WorldStateStamped.msg
   # dispatch's typed place-phase declaration (ADR-0097). Gates the place
-  # witness; exempts nothing on its own.
+  # witness; exempts nothing on its own. Its producer-measured region carries the
+  # bounded approach allowance of the 2026-08-14 amendment.
+  msg/PlaceRegion.msg
   msg/PlaceDeclaration.msg
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg

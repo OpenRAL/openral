@@ -91,6 +91,101 @@ struct WorldModel {
   std::vector<Capsule> capsules;
 };
 
+/// Binding absolute ceiling on the declaration-scoped place approach allowance
+/// (ADR-0097's 2026-08-14 amendment, Condition 1, as calibrated by its
+/// **Second Amendment 2026-08-15**; hazard log HZ-0097-4 mitigation 1 and its
+/// "Calibration 2026-08-15" subsection). The allowance is
+/// `min(kPlaceApproachAllowanceVoxels × one voxel, this)`, so a coarser map can
+/// only ever *shrink* it — never widen it. Both numbers are maintainer-set
+/// conditions, not implementation choices: Entry 010's HZ-0095-2 is the
+/// precedent the ceiling exists to prevent from recurring (a 25 mm
+/// sim-resolution parameter silently becoming 50 mm at real hardware's 5 cm
+/// resolution under a purely resolution-relative formula). Changing either
+/// needs a new recorded decision.
+///
+/// The ceiling was `0.025` until 2026-08-15, when the 5-run battery
+/// (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) showed a one-voxel
+/// allowance is *structurally* marginal rather than occasionally short: it is
+/// sized to absorb exactly the ~one-voxel map-vs-truth error at a placement
+/// pose, leaving nothing for the real contact the place witness is earned by
+/// making (run 1 read 26.48 mm of penetration at a −2.43 mm ground-truth
+/// contact, 1.48 mm past the old cap).
+inline constexpr double kMaxPlaceApproachAllowanceM = 0.04;
+
+/// Voxel multiple in the same allowance (ADR-0097's Second Amendment). 37.5 mm
+/// at sim's 25 mm grid; at a real 50 mm grid `1.5 × 50 = 75 mm` is capped by
+/// `kMaxPlaceApproachAllowanceM` to 40 mm, which is the whole point of having
+/// two numbers.
+inline constexpr double kPlaceApproachAllowanceVoxels = 1.5;
+
+/// The allowance cap at a given live voxel `resolution` — `min(1.5 × voxel,
+/// 4 cm)`, and `0.0` for an unusable resolution. One definition, so the geometry
+/// and the `safety.place_region_armed` log line can never quote different
+/// numbers for the same map.
+inline constexpr double place_approach_allowance_cap(double resolution) noexcept {
+  if (!(resolution > 0.0)) {
+    return 0.0;
+  }
+  const double scaled = kPlaceApproachAllowanceVoxels * resolution;
+  return scaled < kMaxPlaceApproachAllowanceM ? scaled : kMaxPlaceApproachAllowanceM;
+}
+
+/// Sanity bound on one side of a declared place region. A declaration names ONE
+/// receptacle, not a room, so a half-extent past this is a producer error and
+/// buys no allowance at all (fail-closed toward the unchanged margin).
+inline constexpr double kMaxPlaceRegionHalfExtentM = 1.5;
+
+/// Sanity bound on a declared place region's volume (m³) — a 2 m cube. Same
+/// fail-closed direction as `kMaxPlaceRegionHalfExtentM`.
+inline constexpr double kMaxPlaceRegionVolumeM3 = 8.0;
+
+/// The producer-supplied region of a live place declaration (ADR-0097's
+/// 2026-08-14 amendment), lowered into the kernel's own frame convention: an
+/// oriented box whose `pose` is expressed in the **robot base frame** — the same
+/// frame the occupancy grid is in, which is why the node only accepts a region
+/// whose declared `frame_id` matches the grid's.
+///
+/// While it is valid, payload-vs-world voxel checks for the objects named in
+/// `object_mask` run at a margin reduced by
+/// `place_approach_allowance_cap(resolution)` against cells whose **centre** lies
+/// inside the box. Everything else is untouched: arm-vs-world, payload-vs-world outside the
+/// box, the support-contact witness, and the reported evidence. The region is a
+/// license to *approach* the contact the declaration already licenses — the hard
+/// stop behind the reduced margin is unchanged, so deepening past the allowance
+/// still stops (HZ-0097-4 mitigation 3).
+///
+/// `valid == false` — no declaration, a retracted or expired one, a region the
+/// producer never supplied, or one that failed `ingest_place_region` — means no
+/// allowance anywhere, i.e. behaviour identical to before the amendment.
+struct PlaceApproachRegion {
+  bool valid{false};            ///< a live, validated region is in force
+  std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
+  Transform pose{};             ///< region box centre pose, robot base frame
+  Vec3 half_extents{};          ///< region box half-extents (m, all > 0)
+};
+
+/// Outcome of a place-region ingest attempt (`ingest_place_region`).
+///
+/// Every value other than `kOk` means exactly one thing to the geometry — *no
+/// allowance*, i.e. the unchanged pre-amendment margin — and something quite
+/// different to whoever reads the log, which is why the outcome is not a bool.
+/// `kNoObject` is the ordinary pre-grasp state: dispatch declares the place
+/// phase before the payload is attached, so the declaration resolves to no
+/// carried object on every attachment heartbeat until the grasp lands. The
+/// remaining values are producer errors in a message that reached the kernel.
+/// Collapsing the two into one `reason=bounds` label is what round-8
+/// (`spark:~/openral-runs/2026-08-15-round8/`) reported as 672-811 identical
+/// bounds warnings per run, none of which described a bound.
+enum class PlaceRegionStatus : std::uint8_t {
+  kOk = 0,
+  kNoObject = 1,        ///< empty object_mask — the declared payload is not carried
+  kBadPose = 2,         ///< non-finite region pose
+  kBadExtents = 3,      ///< non-finite half-extent
+  kDegenerate = 4,      ///< half-extent <= 0: a box with no interior licenses nothing
+  kOversize = 5,        ///< a side past kMaxPlaceRegionHalfExtentM
+  kOversizeVolume = 6,  ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
+};
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -108,6 +203,7 @@ struct VoxelGrid {
   std::size_t attached_contact_stride{0};              ///< cells per object in baseline buffer
   double attached_contact_tolerance{0.0};              ///< physical slack on an attested depth (m)
   std::uint8_t support_witness_live{0};                ///< bit i: object i's witness is still live
+  PlaceApproachRegion place_region{};                  ///< live place declaration's region, if any
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -129,12 +225,18 @@ struct VoxelGrid {
 /// With no hit there is no pair to describe, so `min_distance` keeps its
 /// clearance meaning and equals `sweep_min_distance`. Both are `+inf` when the
 /// check compared nothing.
+/// `place_allowance_active` is disclosure, never a decision (CLAUDE.md §1.4):
+/// it is true when the reported pair tripped a margin that the declaration-
+/// scoped place approach allowance had *reduced*, so an operator reading the
+/// evidence knows the stop happened inside a declared region at a reduced
+/// margin. `min_distance` stays the pair's true surface distance either way.
 struct CollisionHit {
   bool hit{false};
   int link_a{-1};
   int link_b{-1};
   double min_distance{0.0};        ///< the reported pair's surface distance (clearance if no hit)
   double sweep_min_distance{0.0};  ///< minimum over every checked pair, gated or exempted
+  bool place_allowance_active{false};  ///< the reported pair's margin was reduced by the allowance
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -375,17 +477,26 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 /// and `link_b` is the linear index of the deepest cell that actually tripped
 /// the check, and `min_distance` is that cell's distance.
 ///
-/// Two — and only two — exemptions can spare a cell, both bounded:
+/// While a place declaration's region is live for this payload
+/// (`grid.place_region`), the *margin* each cell inside that region is gated
+/// against is first reduced by `place_approach_allowance` — the bounded license
+/// to reach the contact the declaration already permits (ADR-0097's 2026-08-14
+/// amendment, capped per its Second Amendment at `min(1.5 × voxel, 4 cm)`). That is a margin
+/// change, not an exemption: a cell deeper than the reduced margin still stops the robot, and the
+/// reported distance is the cell's true distance.
+///
+/// Two — and only two — exemptions can spare a cell outright, both bounded:
 ///
 /// 1. **Support-contact witness** (ADR-0092 D6): object `i` carries a World
 ///    State attestation, its bit is live in `grid.support_witness_live`, and
 ///    the cell satisfies `support_contact_exempts` — inside the attested patch
 ///    laterally, and no higher above the attested support plane than the voxel
 ///    cube's own projected half-width plus the attested physical depth plus
-///    `grid.attached_contact_tolerance`. This is what lets a ~1 mm physical
-///    support contact survive 25 mm voxels: the depth is measured against the
-///    attested plane, so the cell-cube inflation is accounted for exactly
-///    instead of being absorbed by a widened tolerance.
+///    `grid.attached_contact_tolerance` plus one voxel of co-planar headroom.
+///    This is what lets a ~1 mm physical support contact survive 25 mm voxels:
+///    the depth is measured against the attested plane, so the cell-cube
+///    inflation is accounted for exactly instead of being absorbed by a widened
+///    tolerance.
 /// 2. **Embedded attach-time residue**: the payload's own uncleared occupancy
 ///    left in the map at attach (a cell already at least half a voxel inside
 ///    the payload when the baseline was snapshotted). This is stale
@@ -400,6 +511,51 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin) noexcept;
 
+/// Margin reduction the live place declaration grants object `object_index`
+/// against an occupied cell centred at `center` — `0.0` whenever it grants none.
+///
+/// The whole predicate, and every way it fails closed:
+///
+/// * No valid region, or a grid with no usable resolution → `0.0`.
+/// * `object_index` outside the declaration's `object_mask` (or past the
+///   eight-object schema cap) → `0.0`. The allowance follows the *declared*
+///   payload, never a second object the robot happens to be carrying.
+/// * A degenerate or non-finite region box → `0.0`. Validation belongs to
+///   `ingest_place_region`; this re-checks because a permissive allowance is
+///   never the safe default.
+/// * The cell centre outside the region box (an exact point-in-OBB test in the
+///   box's own frame) → `0.0`.
+///
+/// Otherwise the reduction is `place_approach_allowance_cap(grid.resolution)` —
+/// `min(1.5 × voxel, 4 cm)`, the amendment's binding Condition 1 as calibrated
+/// by its Second Amendment (2026-08-15), computed here against the *live*
+/// resolution so it can never desynchronise from the map actually being checked.
+/// Allocation-free.
+double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
+                                const Vec3& center) noexcept;
+
+/// Validate a producer-supplied place region and lower it into `out`.
+///
+/// Fail-closed means *no allowance* here, not a dropped message: unlike a
+/// malformed support-contact attestation (which fails the whole attachment
+/// closed because a producer over-claiming measured contact is not one to trust
+/// with the payload model), a bad region can only ever make the kernel *more*
+/// permissive, so refusing it restores exactly the pre-amendment margin. The
+/// caller logs the refusal; nothing else changes.
+///
+/// Rejects a non-finite pose or half-extent, a non-positive half-extent, a
+/// half-extent past `kMaxPlaceRegionHalfExtentM`, a box past
+/// `kMaxPlaceRegionVolumeM3`, and an empty `object_mask` (a declaration whose
+/// payload is not among the carried objects). Returns `PlaceRegionStatus::kOk`
+/// iff `out.valid` was set; every other value leaves `out` inert. Not on the
+/// hot path (once per world-state message).
+PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_extents,
+                                      std::uint8_t object_mask, PlaceApproachRegion& out) noexcept;
+
+/// Stable snake_case token naming `status`, for the `reason=` key of the
+/// kernel's place-region log lines. Never null; unknown values read `unknown`.
+const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
+
 /// Does object `i`'s attested support contact explain occupied cell `center`?
 ///
 /// The predicate is purely geometric and index-free, so it does not decorrelate
@@ -411,14 +567,20 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
 ///   of the contact point (padded by the voxel cube's circumradius, which is
 ///   the exact discretisation slop). A new contact against a wall or a fixture
 ///   elsewhere is outside the patch and still stops the robot.
-/// * **Bounded in depth** — `s <= w + support_max_penetration + slack`, where
-///   `w = half_resolution · (|n.x| + |n.y| + |n.z|)` is the *exact* half-width
-///   of the voxel cube projected on the support normal. A surface cell of a
-///   support flush with the attested plane has `|s| <= w` by construction, so
-///   this admits the full quantisation envelope and nothing beyond it: solid
-///   sitting genuinely higher than the attested support face trips the check,
-///   and a payload driving deeper into its support raises `s` at the physical
-///   rate (1 mm of sink = 1 mm of `s`) until it trips.
+/// * **Bounded in height** — `s <= w + support_max_penetration + slack +
+///   resolution`, where `w = half_resolution · (|n.x| + |n.y| + |n.z|)` is the
+///   *exact* half-width of the voxel cube projected on the support normal. A
+///   surface cell of a support flush with the attested plane has `|s| <= w` by
+///   construction; the fourth term is **one voxel of co-planar headroom**
+///   (hazard log Entry 012, "Calibration 2026-08-15"), because cells of adjacent
+///   co-planar structure — a raised edge, a neighbouring stack on the same
+///   surface — sit about one voxel above the attested plane while the payload is
+///   in genuine, continuing support contact (round-8 r2: +42.9 mm against a
+///   ~15–19 mm envelope). Past *that* bound, solid sitting genuinely higher than
+///   the support face still trips the check, and a payload driving deeper into
+///   its support raises `s` at the physical rate (1 mm of sink = 1 mm of `s`)
+///   until it trips. The lateral patch bound above is untouched by that
+///   calibration: it widens height, never reach.
 ///
 /// The caller must have already established that the witness is live; this
 /// function does not consult `grid.support_witness_live`. Allocation-free.

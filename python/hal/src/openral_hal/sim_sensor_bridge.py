@@ -1985,7 +1985,41 @@ class SimSensorBridge:
             item = AttachedCollisionObject()
             obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)
             msg.objects.append(item)
+        self._fill_place_declaration(msg)
         self._attachment_pub.publish(msg)
+
+    def _fill_place_declaration(self, msg: Any) -> None:
+        """Attach the live place declaration, region and all (ADR-0097).
+
+        Refreshed on every publication rather than snapshotted with the object
+        records, because the region is expressed in the robot **base** frame —
+        the frame the occupancy grid the allowance applies to lives in — and that
+        frame moves under a driving base while the object records do not. Its
+        accuracy is therefore bounded by this publication period; a sim place
+        phase parks the base, and the kernel additionally refuses a region whose
+        frame does not match the grid's.
+
+        It rides the envelope rather than each ``AttachedCollisionObject`` for a
+        second reason: this node subscribes its own topic to stage revisions, and
+        that staging compares the decoded object list against the desired one. A
+        per-object field refreshed every publication would make that comparison
+        churn a revision on every heartbeat.
+        """
+        msg.place_declaration_valid = False
+        if self._attachment_tracker is None:
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return
+        _model, data = handles
+        declaration = self._attachment_tracker.place_declaration(
+            data,
+            stamp_ns=int(self._node.get_clock().now().nanoseconds),
+        )
+        if declaration is None:
+            return
+        msg.place_declaration_valid = True
+        declaration.fill_idl(msg.place_declaration)
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.

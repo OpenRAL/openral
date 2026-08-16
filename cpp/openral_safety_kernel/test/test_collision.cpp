@@ -24,7 +24,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <iterator>
 #include <new>
+#include <set>
+#include <string>
 #include <vector>
 #pragma GCC diagnostic pop
 
@@ -1799,9 +1802,15 @@ TEST(SupportContactWitness, NoAttestationMeansNoExemption) {
 }
 
 TEST(SupportContactWitness, DeepeningIntoTheSupportStillStops) {
-  // The payload drives 20 mm further into the counter. The cell's height above
+  // The payload drives 40 mm further into the counter. The cell's height above
   // the attested support face rises millimetre for millimetre with the sink,
   // and past the lattice envelope it stops the robot.
+  //
+  // 40 mm rather than the 20 mm this test used before ADR-0097's Second
+  // Amendment (hazard log Entry 012, "Calibration 2026-08-15"): the envelope
+  // gained one voxel, so it is now 12.5 + 1.37 + 1 + 25 = 39.87 mm and the sink
+  // has to put the cell past THAT to prove deepening still stops. At 40 mm of
+  // sink the cell sits 43.2 mm above the attested plane.
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
   s.link_world = {identity(), identity(), identity(), identity()};
@@ -1814,7 +1823,12 @@ TEST(SupportContactWitness, DeepeningIntoTheSupportStillStops) {
   grid.support_witness_live = 0x1;
   ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 
+  // 20 mm of sink is 23.2 mm above the plane — inside the widened envelope, and
+  // that is the calibration doing exactly what it was approved to do.
   att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.04);
   const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
   EXPECT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_b, support_index(12, 12, 12));
@@ -1876,8 +1890,16 @@ TEST(SupportContactWitness, NewContactOutsideThePatchStillStopsMidCarry) {
 
 TEST(SupportContactWitness, ProtrusionInsideThePatchStillStops) {
   // Inside the patch, but genuinely higher than the attested support face: an
-  // object standing on the counter under the payload. 25 mm of solid above the
+  // object standing on the counter under the payload. 50 mm of solid above the
   // support plane is not discretisation, and it stops the robot.
+  //
+  // Two cells up rather than one, since ADR-0097's Second Amendment (hazard log
+  // Entry 012, "Calibration 2026-08-15"): the height envelope gained one voxel
+  // precisely so that ADJACENT CO-PLANAR structure one voxel up — a raised edge
+  // or a neighbouring stack on the same surface — stops reading as a protrusion.
+  // That one-voxel band is now exempt by decision (see
+  // `…TheRound8CoplanarCellIsInsideTheWidenedEnvelope`), so what proves the
+  // bound still bites is solid a further voxel above it.
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
   s.link_world = {identity(), identity(), identity(), identity()};
@@ -1886,13 +1908,266 @@ TEST(SupportContactWitness, ProtrusionInsideThePatchStillStops) {
 
   std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
   occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
-  occ[static_cast<std::size_t>(support_index(12, 12, 13))] = 1;  // stacked one cell up
+  occ[static_cast<std::size_t>(support_index(12, 12, 14))] = 1;  // stacked two cells up
   auto grid = support_grid(occ);
   grid.support_witness_live = 0x1;
 
   const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
   ASSERT_TRUE(hit.hit);
-  EXPECT_EQ(hit.link_b, support_index(12, 12, 13));
+  EXPECT_EQ(hit.link_b, support_index(12, 12, 14));
+}
+
+// ── the 2026-08-15 battery's height-envelope calibration ────────────────────
+//
+// `spark:~/openral-runs/2026-08-15-baguette-battery`, recorded as
+// "Calibration 2026-08-15" on hazard-log Entry 012 (HZ-0092-1) and approved by
+// the maintainer alongside ADR-0097's Second Amendment. The battery refuted the
+// suspected "sliding" class outright — run 4 moved the payload 10.2 mm during
+// the stop and the lateral patch gate (135.7 mm) never came near the 84-86 mm
+// actual offset — and named the real one: cells of ADJACENT CO-PLANAR STRUCTURE
+// (a raised edge, a neighbouring stack on the same support surface) sit
+// approximately ONE VOXEL above the attested plane while the payload is still
+// in genuine, continuing support contact. Round-8 r2 measured +42.9 mm against
+// a ~15-19 mm envelope: an excess of +24.4 mm, one 25 mm voxel.
+//
+// The bound therefore gains a fourth additive term, one full voxel, INSIDE the
+// existing lateral patch (the patch radius is untouched — this is height, not
+// reach):
+//
+//   half_resolution·(|n.x|+|n.y|+|n.z|) + attested depth + slack + resolution
+//
+// Fixture: the same 24³ / 25 mm lattice, re-phased so a chosen cell layer lands
+// at a chosen height above the attested plane, and the attested depth set to
+// the run's own 5 mm. The envelope is then
+//   12.5 + 5.0 + 1.0 + 25.0 = 43.5 mm exactly,
+// so r2's +42.9 mm clears it by 0.6 mm — and nothing rounder would.
+
+namespace {
+
+constexpr double kBatteryPenetration = 0.005;  // r2's attested physical depth
+constexpr double kBatteryPatchRadius = 0.114;  // the run's patch: 135.65 mm gate
+constexpr double kBatteryEnvelope = 0.0435;    // 12.5 + 5 + 1 + 25 mm
+constexpr double kR2CoplanarHeight = 0.0429;   // round-8 r2's measured excess
+constexpr double kR2LateralOffset = 0.085;     // inside the run's 84-86 mm band
+
+// The kernel node's own physical FK/pose slack — `attached_contact_tolerance_m`,
+// declared and defaulted to 1 mm in `src/lifecycle_kernel.cpp`. It is the third
+// term of the envelope, so it is named here rather than spelled `0.001` at each
+// call site.
+constexpr double kBatteryContactTolerance = 0.001;
+
+// The SAME round-8 r2 cell to the micrometre, as the final battery recorded it
+// (`spark:~/openral-runs/2026-08-15-final-battery/`): +42.893 mm above the
+// attested support plane, 85.7 mm out. `kR2CoplanarHeight` / `kR2LateralOffset`
+// above carry the same cell rounded to the tenth of a millimetre, and the
+// rounding went UP, so the rounded fixture is the STRICTER of the two probes —
+// 0.600 mm of headroom against the field cell's own 0.607 mm. Both are pinned
+// below; neither is allowed to drift.
+constexpr double kR2FieldHeight = 0.042893;
+constexpr double kR2FieldLateral = 0.0857;
+
+// The battery lattice, phased so cell layer `iz = 14` centres exactly
+// `top_height` above the attested plane (z = 0, the payload's own support face)
+// and column `ix = 15` centres exactly `kR2LateralOffset` out along +x. The
+// support cell the witness measures against is then layer 12, two voxels (50 mm)
+// below the probed layer, in column 12.
+osk::VoxelGrid battery_grid(const std::vector<std::uint8_t>& occ, double top_height) {
+  osk::VoxelGrid g;
+  g.origin = {kR2LateralOffset - 15.5 * kSupportRes, -0.3125, top_height - 14.5 * kSupportRes};
+  g.resolution = kSupportRes;
+  g.sx = kSupportN;
+  g.sy = kSupportN;
+  g.sz = kSupportN;
+  g.occupancy = occ.data();
+  g.attached_contact_tolerance = kBatteryContactTolerance;
+  return g;
+}
+
+void append_battery_baguette(osk::AttachedModel& att) {
+  append_baguette(att, kBatteryPatchRadius);
+  att.objects.back().support_max_penetration = kBatteryPenetration;
+}
+
+// Base-frame centre of cell (ix, iy, iz) on a battery lattice.
+osk::Vec3 battery_center(const osk::VoxelGrid& g, int ix, int iy, int iz) {
+  return osk::Vec3{g.origin.x + (ix + 0.5) * g.resolution, g.origin.y + (iy + 0.5) * g.resolution,
+                   g.origin.z + (iz + 0.5) * g.resolution};
+}
+
+}  // namespace
+
+TEST(SupportContactWitness, TheRound8CoplanarCellIsInsideTheWidenedEnvelope) {
+  // Round-8 r2, to the tenth of a millimetre. The payload is in continuing
+  // support contact (the cell two layers down is occupied, exempt, and keeps the
+  // latch alive) and the co-planar cell 85 mm out sits +42.9 mm above the
+  // attested plane — one voxel over the pre-calibration envelope, 0.6 mm inside
+  // the calibrated one. Before the calibration this stopped the flagship run.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_battery_baguette(att);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;  // the support surface
+  occ[static_cast<std::size_t>(support_index(15, 12, 14))] = 1;  // the co-planar cell
+  auto grid = battery_grid(occ, kR2CoplanarHeight);
+  grid.support_witness_live = 0x1;
+
+  // The fixture is the arithmetic, so state it before leaning on it: the cell is
+  // where the run said it was, laterally and vertically.
+  const osk::Vec3 coplanar = battery_center(grid, 15, 12, 14);
+  ASSERT_NEAR(coplanar.z, kR2CoplanarHeight, 1e-12);
+  ASSERT_NEAR(coplanar.x, kR2LateralOffset, 1e-12);
+  ASSERT_LT(kR2CoplanarHeight, kBatteryEnvelope) << "0.6 mm of headroom, and not a millimetre more";
+  ASSERT_LT(kBatteryEnvelope - kR2CoplanarHeight, 0.001);
+
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1)
+      << "support contact persists; the witness is live throughout";
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "the co-planar cell one voxel up is inside the calibrated envelope";
+
+  // The bound itself, probed directly on either side of 43.5 mm — the fixture
+  // passes because the arithmetic says so, not because it was rounded into
+  // passing.
+  const osk::AttachedObject& obj = att.objects[0];
+  const double slack = grid.attached_contact_tolerance;
+  EXPECT_TRUE(osk::support_contact_exempts(
+      obj, identity(), osk::Vec3{kR2LateralOffset, 0.0, kBatteryEnvelope}, kSupportRes, slack));
+  EXPECT_FALSE(osk::support_contact_exempts(
+      obj, identity(), osk::Vec3{kR2LateralOffset, 0.0, kBatteryEnvelope + 1e-9}, kSupportRes,
+      slack));
+}
+
+TEST(SupportContactWitness, TheWidenedEnvelopeIsExactlyItsFourNamedTerms) {
+  // The envelope DERIVED rather than transcribed, at the exact geometry the
+  // field flew. `kBatteryEnvelope` above is a literal: easy to read, but a
+  // literal cannot notice when one of the four terms it summarises moves
+  // underneath it, and the two probes that lean on it would then be probing a
+  // number the kernel no longer computes. This rebuilds the same figure out of
+  // the constants the kernel actually reads — the live resolution, the attested
+  // depth, the node's `attached_contact_tolerance_m`, and the calibration's one
+  // voxel — and pins the derivation and the literal to each other, so BOTH a
+  // changed constant AND a changed formula fail here.
+  //
+  // Provenance. This is the thinnest safety-relevant margin in the stack. The
+  // final battery (`spark:~/openral-runs/2026-08-15-final-battery/`, round 8
+  // r2; hazard-log Entry 012, "Calibration 2026-08-15") put the real co-planar
+  // cell at +42.893 mm above the attested support plane, 85.7 mm out, against
+  // an envelope of 43.500 mm: 0.607 mm of headroom, and the run's whole outcome
+  // turns on it. Half a millimetre off any one of these four constants and the
+  // flagship run stops again — or, in the other direction, a genuine protrusion
+  // stops being one.
+  osk::AttachedModel att;
+  append_battery_baguette(att);
+  const osk::AttachedObject& obj = att.objects[0];
+
+  // The four terms, in the order the bound adds them. The support normal is
+  // axis-aligned (+z, counter -> payload), so the first term is exactly half a
+  // voxel: 0.5 x 25 mm x (|0| + |0| + |1|).
+  const osk::Vec3& n = obj.support_normal;
+  ASSERT_NEAR(std::fabs(n.x) + std::fabs(n.y) + std::fabs(n.z), 1.0, 1e-15)
+      << "the run's support face is axis-aligned; the first term is half a voxel";
+  const double normal_half_width =
+      0.5 * kSupportRes * (std::fabs(n.x) + std::fabs(n.y) + std::fabs(n.z));
+  const double derived =
+      normal_half_width + kBatteryPenetration + kBatteryContactTolerance + kSupportRes;
+
+  EXPECT_DOUBLE_EQ(normal_half_width, 0.0125);
+  EXPECT_DOUBLE_EQ(kBatteryPenetration, 0.005) << "r2's attested physical contact depth";
+  EXPECT_DOUBLE_EQ(kBatteryContactTolerance, 0.001) << "the node's attached_contact_tolerance_m";
+  EXPECT_DOUBLE_EQ(kSupportRes, 0.025) << "the 2026-08-15 co-planar voxel, and the map's own cell";
+  EXPECT_DOUBLE_EQ(derived, 0.0435) << "12.5 + 5 + 1 + 25 mm = 43.500 mm, exactly";
+  EXPECT_DOUBLE_EQ(derived, kBatteryEnvelope) << "the literal above must be this derivation";
+
+  // 43.500 mm is the FLOOR of the envelope at this resolution and depth, not a
+  // midpoint: (|n.x| + |n.y| + |n.z|) >= 1 for every unit normal, with equality
+  // only when the support face is axis-aligned. No attitude of the support face
+  // can make the bound narrower than the number derived above — so an envelope
+  // reported BELOW 43.500 mm here is arithmetically unreachable, whichever way
+  // the counter is tilted.
+  constexpr double kInvSqrt3 = 0.5773502691896258;
+  for (const osk::Vec3& tilt : {osk::Vec3{0.0, 0.0, -1.0}, osk::Vec3{0.0, -1.0, 0.0},
+                                osk::Vec3{kInvSqrt3, kInvSqrt3, kInvSqrt3},
+                                osk::Vec3{0.6, 0.0, 0.8}, osk::Vec3{-0.28, 0.96, 0.0}}) {
+    const double tilted =
+        0.5 * kSupportRes * (std::fabs(tilt.x) + std::fabs(tilt.y) + std::fabs(tilt.z)) +
+        kBatteryPenetration + kBatteryContactTolerance + kSupportRes;
+    EXPECT_GE(tilted, derived) << "a tilted support face only ever widens the height envelope";
+  }
+
+  // The field cell, to the micrometre, against the derived bound — exempt, by
+  // 0.607 mm. The rounded fixture the other tests fly (+42.9 mm) is the
+  // stricter probe of the two at 0.600 mm; both are inside, and the gap between
+  // them is the rounding, not a tolerance.
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, kR2FieldHeight},
+                                           kSupportRes, kBatteryContactTolerance))
+      << "round-8 r2's co-planar cell is inside the calibrated envelope";
+  EXPECT_NEAR(derived - kR2FieldHeight, 0.000607, 1e-12) << "the field margin: 0.607 mm";
+  EXPECT_NEAR(derived - kR2CoplanarHeight, 0.000600, 1e-12) << "the rounded fixture's 0.600 mm";
+  EXPECT_LT(kR2FieldLateral, kBatteryPatchRadius + 0.5 * kSupportRes * 1.7320508075688772)
+      << "85.7 mm is well inside the run's 135.65 mm lateral gate; height is the only bound left";
+
+  // And the closed side of the bound, on the derived number rather than the
+  // literal: the last micrometre is exempt, the first one past it is not.
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, derived - 1e-6},
+                                           kSupportRes, kBatteryContactTolerance));
+  EXPECT_TRUE(osk::support_contact_exempts(obj, identity(),
+                                           osk::Vec3{kR2FieldLateral, 0.0, derived}, kSupportRes,
+                                           kBatteryContactTolerance))
+      << "the bound is closed: a cell exactly on the envelope is still support";
+  EXPECT_FALSE(osk::support_contact_exempts(obj, identity(),
+                                            osk::Vec3{kR2FieldLateral, 0.0, derived + 1e-6},
+                                            kSupportRes, kBatteryContactTolerance))
+      << "one micrometre past 43.500 mm is a protrusion, and it stops the robot";
+}
+
+TEST(SupportContactWitness, SolidAboveTheCoplanarBandStillStops) {
+  // The other side of the same calibration. +55 mm is 11.5 mm past the
+  // calibrated envelope — a genuine protrusion standing on the support surface,
+  // not the one-voxel co-planar band the battery measured — and it stops the
+  // robot with the witness live and support contact unbroken.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_battery_baguette(att);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  occ[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
+  occ[static_cast<std::size_t>(support_index(15, 12, 14))] = 1;
+  auto grid = battery_grid(occ, 0.055);
+  grid.support_witness_live = 0x1;
+  ASSERT_NEAR(battery_center(grid, 15, 12, 14).z, 0.055, 1e-12);
+  ASSERT_GT(0.055, kBatteryEnvelope);
+
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit) << "the calibration widened the envelope; it did not remove it";
+  EXPECT_EQ(hit.link_b, support_index(15, 12, 14))
+      << "the stop must name the protrusion, never the exempt support cell";
+  EXPECT_FALSE(osk::support_contact_exempts(
+      att.objects[0], identity(), osk::Vec3{kR2LateralOffset, 0.0, 0.055}, kSupportRes, 0.001));
+}
+
+TEST(SupportContactWitness, TheWidenedEnvelopeIsHeightOnlyNotReach) {
+  // The half of the calibration that did NOT move. The extra voxel applies only
+  // within the already-bounded lateral patch: a cell at the same +42.9 mm but
+  // past the attested patch (padded by the cube circumradius) is a contact
+  // nobody attested and still stops, exactly as
+  // `NewContactOutsideThePatchStillStopsMidCarry` requires mid-carry.
+  osk::AttachedModel att;
+  append_battery_baguette(att);
+  const osk::AttachedObject& obj = att.objects[0];
+  const double reach = kBatteryPatchRadius + 0.5 * kSupportRes * 1.7320508075688772;
+  ASSERT_NEAR(reach, 0.13565, 1e-5) << "the run's own 135.7 mm lateral gate";
+
+  EXPECT_TRUE(osk::support_contact_exempts(
+      obj, identity(), osk::Vec3{reach - 0.001, 0.0, kR2CoplanarHeight}, kSupportRes, 0.001));
+  EXPECT_FALSE(osk::support_contact_exempts(
+      obj, identity(), osk::Vec3{reach + 0.001, 0.0, kR2CoplanarHeight}, kSupportRes, 0.001));
 }
 
 TEST(SupportContactWitness, ExemptCellsStayOutOfTheReportedDistance) {
@@ -1959,16 +2234,19 @@ TEST(SupportContactWitness, ThePartitionedClearingLeavesTheWitnessItsEvidence) {
   append_baguette(att, 0.10);
 
   // The pre-clearing map, for contrast: the payload's own uncleared silhouette
-  // at +28.2 mm above the attested plane is not support contact, and stops the
+  // at +53.2 mm above the attested plane is not support contact, and stops the
   // robot — the 2026-08-14 acceptance-run failure this clearing exists to fix.
+  // Two layers up rather than one since the 2026-08-15 height calibration
+  // (hazard log Entry 012): the +28.2 mm layer is now inside the widened
+  // envelope, so it is the layer above it that still makes the contrast.
   std::vector<std::uint8_t> before(kSupportN * kSupportN * kSupportN, 0);
   before[static_cast<std::size_t>(support_index(12, 12, 12))] = 1;
-  before[static_cast<std::size_t>(support_index(12, 12, 13))] = 1;
+  before[static_cast<std::size_t>(support_index(12, 12, 14))] = 1;
   auto pre = support_grid(before);
   pre.support_witness_live = 0x1;
   const auto pre_hit = osk::check_attached_voxel_collision(m, att, s, pre, 0.0);
   ASSERT_TRUE(pre_hit.hit);
-  EXPECT_EQ(pre_hit.link_b, support_index(12, 12, 13));
+  EXPECT_EQ(pre_hit.link_b, support_index(12, 12, 14));
 
   // After the partitioned clearing: the silhouette cell cleared, the support
   // cell withheld.
@@ -2176,7 +2454,10 @@ TEST(SupportContactWitness, DeepeningIntoTheDeclaredPlaceSurfaceStillStops) {
   grid.support_witness_live = 0x1;
   ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 
-  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  // 40 mm of sink, for the same reason `DeepeningIntoTheSupportStillStops`
+  // moved from 20: the envelope gained one voxel on 2026-08-15 and the pick and
+  // place witnesses share the one predicate, so they share the new bound too.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.04);
   EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 }
 
@@ -2227,8 +2508,9 @@ TEST(SupportContactWitness, AWrongDeclaredTargetChangesWhichContactNeverHowMuch)
   // may claim — i.e. the most any declaration, right or wrong, could ever buy.
   // The exemption is still bounded: the total a cell may sit above the attested
   // plane is 12.5 mm of cube half-width + 10 mm of attested depth + 1 mm of
-  // pose-noise slack = 23.5 mm, and that arithmetic does not know or care what
-  // was declared.
+  // pose-noise slack + 25 mm of co-planar headroom (ADR-0097's Second
+  // Amendment, hazard log Entry 012 "Calibration 2026-08-15") = 48.5 mm, and
+  // that arithmetic does not know or care what was declared.
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
   s.link_world = {identity(), identity(), identity(), identity()};
@@ -2242,13 +2524,13 @@ TEST(SupportContactWitness, AWrongDeclaredTargetChangesWhichContactNeverHowMuch)
   grid.support_witness_live = 0x1;
 
   // The plane rides in the payload's own frame, so sinking the payload sinks
-  // it too. At 20 mm of sink the cell is 23.2 mm above the plane — inside the
-  // 23.5 mm bound, and still exempt.
-  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.02);
+  // it too. At 45 mm of sink the cell is 48.2 mm above the plane — inside the
+  // 48.5 mm bound, and still exempt.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.045);
   EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
 
-  // At 30 mm it is 33.2 mm above, and the caps do not stretch for it.
-  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.03);
+  // At 50 mm it is 53.2 mm above, and the caps do not stretch for it.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.05);
   const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
   EXPECT_TRUE(hit.hit) << "the caps bound a wrong declaration; they do not stretch for it";
   EXPECT_EQ(hit.link_b, support_index(12, 12, 12));
@@ -2459,4 +2741,558 @@ TEST(CollisionEvidence, GatingIsUnchangedAcrossTheAttachedContactLadder) {
       EXPECT_LE(hit.min_distance, 0.0) << "a reported stop is never a clearance";
     }
   }
+}
+
+// ── Declaration-scoped approach allowance (ADR-0097's 2026-08-14 amendment) ──
+//
+// Round-6 (`spark:~/openral-runs/2026-08-14-round6/baguette/seed1_carry_*`) is
+// the failure this section pins closed. With a correct place declaration and a
+// payload genuinely headed for the declared cabinet, the kernel E-stopped at
+// `horizon_step 0` on `attached:sim:obj_main` vs `voxel_178099` at a
+// `min_distance` of `-4.9 mm`, while the payload was still `22-30 mm` from real
+// shelf contact. Nothing was wrong with the declaration or the trajectory: the
+// place witness is EARNED by measured contact, and the predictive check —
+// unchanged and unrelated to the witness — stops the payload before it can make
+// that contact, because 25 mm cells inflate the cabinet's thin opening geometry
+// by up to one whole voxel. A witness earned by touching can never arm if the
+// payload is stopped before it can touch.
+//
+// The amendment's answer is a margin allowance of `min(1.5 × voxel, 40 mm)`,
+// applied ONLY to the declared payload, ONLY to cells whose centre is inside the
+// producer-supplied region of the declared target, and ONLY while that
+// declaration is live. It is not an exemption: the reported distance is the
+// cell's true distance, and the hard stop behind the reduced margin is
+// untouched.
+//
+// The cap was `min(one voxel, 25 mm)` until ADR-0097's SECOND AMENDMENT
+// (2026-08-15, hazard log HZ-0097-4's "Calibration 2026-08-15"). The 5-run
+// battery's run 1 (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) was
+// the allowance's first in-vivo firing: 26.48 mm of predictive-check
+// penetration read at a ground-truth −2.43 mm contact, i.e. 1.48 mm short. Since
+// the map-vs-truth error at a placement pose is itself about one voxel, a
+// one-voxel allowance is sized to absorb exactly the discretization and leaves
+// nothing for the contact the witness is earned by making — structurally
+// marginal, not occasionally short. At 25 mm cells the cap is now 37.5 mm; at a
+// real 50 mm grid it is 40 mm, not 75 mm, because the absolute ceiling still
+// binds and only its value moved (2.5 cm → 4 cm).
+//
+// Fixture: the same 24^3 / 25 mm lattice as the witness tests, with the cabinet
+// modelled as what it physically is — a shelf below and a lip above, separated
+// by an opening the payload must pass through. The lattice phase puts the shelf
+// cells' cube top face at z = -9.3 mm and the lip cells' cube bottom face at
+// z = +40.7 mm: a QUANTISED opening of exactly 50 mm for a 50 mm-tall baguette,
+// i.e. zero predicted clearance where the real cabinet has centimetres.
+
+namespace {
+
+constexpr int kApproachShelfZ = 11;    // cube z in [-0.0343, -0.0093]
+constexpr int kApproachLipZ = 14;      // cube z in [ 0.0407,  0.0657]
+constexpr int kApproachOutsideX = 18;  // a shelf cell OUTSIDE the declared region
+constexpr int kApproachCabinetX[] = {11, 12, 13};
+
+void fill_cabinet_opening(std::vector<std::uint8_t>& occ, bool with_outside_obstacle) {
+  for (const int ix : kApproachCabinetX) {
+    occ[static_cast<std::size_t>(support_index(ix, 12, kApproachShelfZ))] = 1;
+    occ[static_cast<std::size_t>(support_index(ix, 12, kApproachLipZ))] = 1;
+  }
+  if (with_outside_obstacle) {
+    occ[static_cast<std::size_t>(support_index(kApproachOutsideX, 12, kApproachShelfZ))] = 1;
+  }
+}
+
+// The region the sim producer computes from the declared body's model subtree:
+// the cabinet's interior, 200 x 120 x 120 mm about the opening. It contains the
+// shelf and lip cell centres (z = -21.8 mm and +53.2 mm) and the three cabinet
+// columns, and NOT the ix=18 obstacle 150 mm away.
+osk::PlaceApproachRegion declared_cabinet_region(std::uint8_t mask = 0x1) {
+  osk::PlaceApproachRegion region;
+  EXPECT_EQ(osk::ingest_place_region(translate(0.0, 0.0, 0.0157), osk::Vec3{0.10, 0.06, 0.06}, mask,
+                                     region),
+            osk::PlaceRegionStatus::kOk);
+  return region;
+}
+
+// ── A coarse 50 mm lattice, for the absolute-cap tests ──────────────────────
+//
+// HZ-0095-2's episode in a new form: at real hardware's 5 cm resolution a purely
+// resolution-relative allowance would be 50 mm, double sim's. The cap makes that
+// impossible, and these helpers are what proves it.
+constexpr int kCoarseN = 13;
+constexpr double kCoarseRes = 0.05;
+
+int coarse_index(int x, int y, int z) { return x + kCoarseN * (y + kCoarseN * z); }
+
+osk::VoxelGrid coarse_grid(const std::vector<std::uint8_t>& occ) {
+  osk::VoxelGrid g;
+  // Phased so cell (6, 6, 6) is centred on the origin; its cube spans +/-25 mm.
+  g.origin = {-0.325, -0.325, -0.325};
+  g.resolution = kCoarseRes;
+  g.sx = kCoarseN;
+  g.sy = kCoarseN;
+  g.sz = kCoarseN;
+  g.occupancy = occ.data();
+  g.attached_contact_tolerance = 0.001;
+  return g;
+}
+
+}  // namespace
+
+TEST(PlaceApproachAllowance, TheRound6ApproachReachesTheDeclaredShelf) {
+  // The exact field stop, and its removal. The payload is inserted through the
+  // quantised opening: 4.9 mm into the shelf cells' inflated cube, 4.9 mm clear
+  // of the lip's. Undeclared that is round 6, to the tenth of a millimetre.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // no witness yet — it is EARNED at contact
+  ASSERT_FALSE(att.objects[0].has_support_witness);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0142);
+
+  const auto round6 = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(round6.hit) << "with no declaration this is exactly what stopped the run";
+  EXPECT_NEAR(round6.min_distance, -0.0049, 1e-9);
+  EXPECT_FALSE(round6.place_allowance_active);
+
+  // The declaration's region goes live. Same geometry, same cell, same true
+  // -4.9 mm reading — the margin it is gated against is what moved.
+  grid.place_region = declared_cabinet_region();
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "the declared approach must be able to continue through the opening";
+
+  // And it continues all the way down to real shelf contact 19.1 mm lower, where
+  // the true distance is -24.0 mm — inside the 37.5 mm cap, with the 13.5 mm of
+  // headroom past the maximum inflation a 25 mm surface cell can produce that
+  // the Second Amendment bought. At that pose the place witness arms and its
+  // bounded, non-deepening exemption takes over.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0333);
+  const auto at_contact = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_FALSE(at_contact.hit);
+  EXPECT_NEAR(at_contact.sweep_min_distance, -0.024, 1e-9)
+      << "the sweep still reports the true distance; only the gate moved";
+}
+
+TEST(PlaceApproachAllowance, TheRun1FieldPenetrationNowReachesContact) {
+  // ADR-0097's Second Amendment, on its own field evidence. Run 1 of the
+  // 2026-08-15 battery tripped at 26.48 mm of predictive-check penetration on a
+  // cell inside the declared region, 1.48 mm past the 25 mm allowance then in
+  // force, at a ground-truth contact of -2.43 mm. The calibrated cap is 37.5 mm
+  // at sim's 25 mm cells, so that reading is now 11.02 mm inside the allowance
+  // and the insertion continues to the contact the witness is earned by.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // no witness: the allowance is what is under test
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  grid.place_region = declared_cabinet_region();
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, -0.0218}), 0.0375, 1e-12)
+      << "min(1.5 x 25 mm voxel, 40 mm absolute) is 37.5 mm";
+
+  // The run-1 reading itself, reproduced to the hundredth of a millimetre.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.03578);
+  const auto run1 = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_NEAR(run1.sweep_min_distance, -0.02648, 1e-9) << "the field penetration, unchanged";
+  EXPECT_FALSE(run1.hit) << "1.48 mm short under the old cap; 11.02 mm inside the calibrated one";
+
+  // The cap still bites past that, at 38.2 mm and at 40 mm — but not against
+  // THIS payload: a 50 mm-tall baguette passing a 25 mm cell saturates at
+  // exactly 37.5 mm of overlap on every axis (25 mm of half-extent + 12.5 mm of
+  // cell half-width), so the calibrated cap is precisely the deepest reading the
+  // flagship geometry can produce. `…DeepeningPastTheAllowanceInsideTheRegion
+  // StillStops` carries the deeper payload that can, and pins both stops.
+
+  // Undeclared, run 1 is still a stop at the same true distance: the calibration
+  // moved a declaration-scoped margin, nothing else.
+  grid.place_region = osk::PlaceApproachRegion{};
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.03578);
+  const auto undeclared = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(undeclared.hit);
+  EXPECT_NEAR(undeclared.min_distance, -0.02648, 1e-9);
+  EXPECT_FALSE(undeclared.place_allowance_active);
+}
+
+TEST(PlaceApproachAllowance, TheSameApproachUndeclaredStopsExactlyAsRound6Did) {
+  // The regression that keeps the relaxation declaration-scoped. Byte-identical
+  // inputs, no live region: the pre-amendment kernel's answer, unchanged.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  ASSERT_FALSE(grid.place_region.valid) << "a default VoxelGrid carries no allowance";
+
+  for (const double dz : {-0.0142, -0.0333, -0.0500}) {
+    att.objects[0].pose_in_link = translate(0.0, 0.0, dz);
+    const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+    EXPECT_TRUE(hit.hit) << "undeclared insertion must keep stopping at dz=" << dz;
+    EXPECT_FALSE(hit.place_allowance_active);
+  }
+}
+
+TEST(PlaceApproachAllowance, TheAllowanceAppliesToThePredictedHorizonToo) {
+  // Round 6 stopped at horizon_step 0, not on the measured configuration. The
+  // predictive path is the same function called with an inflated margin, so the
+  // allowance has to hold there — otherwise the fix would not touch the failure
+  // it exists for.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0142);
+
+  // collision_predict_margin_growth_m's default look-ahead inflation.
+  constexpr double kPredictiveMargin = 0.01;
+  ASSERT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, kPredictiveMargin).hit);
+  grid.place_region = declared_cabinet_region();
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, kPredictiveMargin).hit);
+}
+
+TEST(PlaceApproachAllowance, ACoarserGridNeverWidensTheAllowance) {
+  // HZ-0097-4 mitigation 1 as calibrated 2026-08-15, and the HZ-0095-2 lesson it
+  // descends from. At 50 mm resolution the voxel-relative half of the formula
+  // would be 1.5 x 50 = 75 mm — nearly twice sim's 37.5 mm, a permissiveness
+  // increase arriving as a side effect of map coarseness and reviewed by nobody.
+  // The absolute ceiling makes it 40 mm (the amendment's own worked example), so
+  // 45 mm of penetration inside the declared region still stops.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);
+
+  std::vector<std::uint8_t> occ(kCoarseN * kCoarseN * kCoarseN, 0);
+  occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;
+  auto grid = coarse_grid(occ);
+  osk::PlaceApproachRegion region;
+  ASSERT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
+  grid.place_region = region;
+
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, 0.0}), 0.040, 1e-12)
+      << "min(1.5 x 50 mm voxel, 40 mm absolute) is 40 mm, never 75";
+
+  // 30 mm of penetration: inside the cap, forgiven.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.005);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // 45 mm: past the cap, and it stops — which a resolution-relative allowance
+  // would not have done.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.020);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, -0.045, 1e-9) << "the reported distance is the true one";
+  EXPECT_TRUE(hit.place_allowance_active) << "a stop at a reduced margin must say so";
+}
+
+TEST(PlaceApproachAllowance, AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap) {
+  // HZ-0097-4's accepted cost, and its bound. A jar already sitting on the
+  // declared shelf when the declaration goes live receives the same allowance as
+  // the shelf, for the declared window, whether or not the payload ever touches
+  // it. That is a real reduction in the predictive check's conservatism —
+  // accepted, bounded, and pinned here: on this 50 mm lattice the forgiveness
+  // stops dead at the 40 mm absolute ceiling (ADR-0097's Second Amendment; the
+  // accepted cost is unchanged in shape and re-accepted at the same severity).
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);
+
+  std::vector<std::uint8_t> occ(kCoarseN * kCoarseN * kCoarseN, 0);
+  occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;  // the jar
+  auto grid = coarse_grid(occ);
+  osk::PlaceApproachRegion region;
+  ASSERT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
+  grid.place_region = region;
+
+  struct Case {
+    double dz;
+    double distance;
+    bool expect_hit;
+  };
+  const std::vector<Case> cases = {{0.020, -0.005, false},
+                                   {0.005, -0.020, false},
+                                   {-0.005, -0.030, false},
+                                   {-0.015, -0.040, true},  // exactly the ceiling: it trips
+                                   {-0.020, -0.045, true}};
+  for (const Case& c : cases) {
+    att.objects[0].pose_in_link = translate(0.0, 0.0, c.dz);
+    const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+    EXPECT_EQ(hit.hit, c.expect_hit) << "jar penetration " << c.distance;
+    EXPECT_NEAR(hit.hit ? hit.min_distance : hit.sweep_min_distance, c.distance, 1e-9);
+  }
+}
+
+TEST(PlaceApproachAllowance, DeepeningPastTheAllowanceInsideTheRegionStillStops) {
+  // HZ-0097-4 mitigation 3, at sim's own resolution, on the cap as calibrated
+  // 2026-08-15. The allowance shrinks the predictive margin; it does not remove
+  // the hard stop behind it. A payload driven THROUGH the declared shelf rather
+  // than onto it still E-stops, and the declaration cannot stretch the bound —
+  // 0.7 mm past the 37.5 mm cap is still a stop, and so is the 40 mm the
+  // amendment's own headroom arithmetic quotes.
+  //
+  // The payload here is a 300x100x100 mm tote rather than the 50 mm-tall
+  // baguette, and deliberately: against a 25 mm cell a 50 mm-tall box saturates
+  // at exactly 37.5 mm of SAT overlap (25 mm of half-extent + 12.5 mm of cell
+  // half-width) on every axis, so the flagship payload's own geometry cannot
+  // reach past the calibrated cap at all. Proving the hard stop behind the
+  // reduced margin therefore needs a payload deep enough to try.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {box_prim(0.15, 0.05, 0.05, translate(0.0, 0.0, 0.05))});
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  grid.place_region = declared_cabinet_region();
+
+  // At real shelf contact: -24.0 mm, inside the cap, allowed.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0333);
+  ASSERT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // 14.2 mm further, through the shelf: -38.2 mm, past the cap, stopped.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0475);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit) << "a declaration never licenses driving THROUGH the declared shelf";
+  EXPECT_EQ(hit.link_a, 0);
+  EXPECT_NEAR(hit.min_distance, -0.0382, 1e-9) << "the reported distance is the true one";
+  EXPECT_TRUE(hit.place_allowance_active) << "a stop at a reduced margin must say so";
+
+  // And 40 mm — the reading run 1 would have had to produce for the OLD cap to
+  // be the right one — stops too.
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0493);
+  const auto forty = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(forty.hit);
+  EXPECT_NEAR(forty.min_distance, -0.0400, 1e-9);
+}
+
+TEST(PlaceApproachAllowance, OutsideTheDeclaredRegionTheMarginIsUnchanged) {
+  // The scope that makes this a place allowance rather than a global one. A shelf
+  // cell 150 mm out — same height, same map, same payload, outside the declared
+  // receptacle — stops the robot at the full margin, and it is the cell the
+  // evidence names.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/true);
+  auto grid = support_grid(occ);
+  grid.place_region = declared_cabinet_region();
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0142);
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, support_index(kApproachOutsideX, 12, kApproachShelfZ))
+      << "the stop must name the cell outside the declared region";
+  EXPECT_FALSE(hit.place_allowance_active)
+      << "that cell's margin was never reduced, and the evidence must not claim it was";
+}
+
+TEST(PlaceApproachAllowance, TheAllowanceFollowsTheDeclaredPayloadOnly) {
+  // The declaration names one payload. A second object the robot happens to be
+  // carrying is not in the mask and gets nothing, even inside the same region.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // object 0 — the declared payload
+  append_object(att, 1, translate(0.0, 0.0, -0.0142),
+                {box_prim(0.15, 0.025, 0.025, translate(0.0, 0.0, 0.025))});
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  grid.place_region = declared_cabinet_region(0x1);  // object 0 only
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0142);
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit) << "the undeclared second payload still stops on the same cells";
+  EXPECT_EQ(hit.link_a, 1);
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 1, osk::Vec3{0.0, 0.0, -0.0218}), 0.0, 1e-12);
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, -0.0218}), 0.0375, 1e-12);
+}
+
+TEST(PlaceApproachAllowance, ArmVsWorldIsUntouchedByALiveRegion) {
+  // The amendment's own words: "Arm-vs-world collision checks are unchanged."
+  // The robot's own links may not enter the declared receptacle any more freely
+  // than before, and the region is not an input to that check at all.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 1, 0.02, 0.0, translate(0.0, 0.0, -0.0218));
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+
+  const auto before = osk::check_voxel_collision(m, s, grid, 0.0);
+  ASSERT_TRUE(before.hit) << "the arm capsule is inside the shelf cells";
+  grid.place_region = declared_cabinet_region();
+  const auto after = osk::check_voxel_collision(m, s, grid, 0.0);
+  EXPECT_EQ(after.hit, before.hit);
+  EXPECT_EQ(after.link_b, before.link_b);
+  EXPECT_NEAR(after.min_distance, before.min_distance, 1e-15);
+  EXPECT_FALSE(after.place_allowance_active);
+}
+
+TEST(PlaceApproachAllowance, TheRegionIsAnOrientedBoxNotItsAxisAlignedHull) {
+  // The producer measures a receptacle, and a receptacle has an orientation. The
+  // axis-aligned hull of a rotated one is strictly larger, i.e. strictly more
+  // permissive, so the predicate tests the box itself.
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  auto grid = support_grid(occ);
+  osk::PlaceApproachRegion region;
+  ASSERT_EQ(
+      osk::ingest_place_region(osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, 0.0, 0.0, kPi / 4.0),
+                               osk::Vec3{0.20, 0.02, 0.10}, 0x1, region),
+      osk::PlaceRegionStatus::kOk);
+  grid.place_region = region;
+
+  // On the rotated long axis: inside.
+  const double d = 0.15 / std::sqrt(2.0);
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{d, d, 0.0}), 0.0375, 1e-12);
+  // The same distance along +x — inside the AABB of the rotated box, outside the
+  // box.
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.15, 0.0, 0.0}), 0.0, 1e-12);
+}
+
+TEST(PlaceApproachAllowance, DegenerateAndOversizedRegionsGrantNothing) {
+  // Fail-closed means "no allowance", not "a dropped message": unlike a malformed
+  // support attestation, a bad region can only ever make the kernel more
+  // permissive, so refusing it restores exactly the pre-amendment margin.
+  osk::PlaceApproachRegion region;
+  const osk::Vec3 sane{0.10, 0.06, 0.06};
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+
+  // Each refusal reports WHICH way the region failed, and they are not
+  // interchangeable: `kNoObject` is the ordinary pre-grasp state the node logs at
+  // INFO, the rest are producer errors it warns about. Round-8 labelled all of
+  // them `bounds`, which made the noisiest line in the run the one that described
+  // its cause least.
+  EXPECT_EQ(osk::ingest_place_region(identity(), sane, 0x0, region),
+            osk::PlaceRegionStatus::kNoObject)
+      << "a declaration whose payload is not carried arms nothing";
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.0, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kDegenerate)
+      << "a region with no interior";
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{-0.1, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kDegenerate);
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{nan_value, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_place_region(identity(),
+                                     osk::Vec3{std::numeric_limits<double>::infinity(), 0.06, 0.06},
+                                     0x1, region),
+            osk::PlaceRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{2.0, 0.06, 0.06}, 0x1, region),
+            osk::PlaceRegionStatus::kOversize)
+      << "a half-extent past 1.5 m is a producer error, not a receptacle";
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{1.4, 1.4, 1.4}, 0x1, region),
+            osk::PlaceRegionStatus::kOversizeVolume)
+      << "22 m^3 is a room, and a declaration names ONE receptacle";
+  EXPECT_EQ(osk::ingest_place_region(translate(nan_value, 0.0, 0.0), sane, 0x1, region),
+            osk::PlaceRegionStatus::kBadPose);
+
+  // Every rejection leaves the struct inert, so a caller that ignores the return
+  // value still gets no allowance.
+  EXPECT_FALSE(region.valid);
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  auto grid = support_grid(occ);
+  grid.place_region = region;
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12);
+
+  // The largest region the caps do admit is still admitted.
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{1.0, 1.0, 1.0}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
+  EXPECT_TRUE(region.valid);
+}
+
+TEST(PlaceApproachAllowance, EveryRefusalHasItsOwnReasonToken) {
+  // The tokens are the `reason=` key of the kernel's place-region log lines, so
+  // they are a contract with whoever reads a run: distinct per failure, stable,
+  // and never null. Round-8's single `bounds` label for all of them is what made
+  // the pre-grasp no-payload state indistinguishable from a malformed region.
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOk), "ok");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kNoObject), "no_object");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kBadPose), "bad_pose");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kBadExtents), "bad_extents");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kDegenerate), "degenerate");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversize), "oversize");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversizeVolume),
+               "oversize_volume");
+
+  const osk::PlaceRegionStatus all[] = {osk::PlaceRegionStatus::kOk,
+                                        osk::PlaceRegionStatus::kNoObject,
+                                        osk::PlaceRegionStatus::kBadPose,
+                                        osk::PlaceRegionStatus::kBadExtents,
+                                        osk::PlaceRegionStatus::kDegenerate,
+                                        osk::PlaceRegionStatus::kOversize,
+                                        osk::PlaceRegionStatus::kOversizeVolume};
+  std::set<std::string> tokens;
+  for (const auto status : all) {
+    const char* reason = osk::place_region_status_reason(status);
+    ASSERT_NE(reason, nullptr);
+    tokens.insert(reason);
+  }
+  EXPECT_EQ(tokens.size(), std::size(all)) << "two outcomes sharing one token is the round-8 bug";
+}
+
+TEST(PlaceApproachAllowance, AMapWithNoResolutionGrantsNothing) {
+  // Same fail-closed direction as update_support_contact_witnesses: no usable map
+  // means no allowance, not an unbounded one.
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  auto grid = support_grid(occ);
+  grid.place_region = declared_cabinet_region();
+  grid.resolution = 0.0;
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 0, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12);
+  grid.resolution = kSupportRes;
+  EXPECT_NEAR(osk::place_approach_allowance(grid, 8, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12)
+      << "past the eight-object schema cap there is no mask bit to consult";
+}
+
+TEST(PlaceApproachAllowance, TheWitnessTakesOverWhereTheAllowanceStops) {
+  // The two mechanisms in sequence, which is the whole point of the amendment:
+  // the allowance buys the approach, the witness buys the contact. With the
+  // witness armed at the shelf the payload is exempt on that plane whether or not
+  // the region is live, and the latch is still measured against the map.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.10);  // the place attestation, earned at contact
+  att.objects[0].support_point = {0.0, 0.0, 0.0};
+
+  std::vector<std::uint8_t> occ(kSupportN * kSupportN * kSupportN, 0);
+  fill_cabinet_opening(occ, /*with_outside_obstacle=*/false);
+  auto grid = support_grid(occ);
+  grid.support_witness_live = 0x1;
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.0333);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  grid.place_region = declared_cabinet_region();
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+  EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1)
+      << "the witness latch is measured against the map, not against the allowance";
 }

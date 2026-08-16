@@ -9,6 +9,8 @@ from openral_core import (
     AttachmentEvidenceKind,
     BoxShape,
     JointState,
+    PlaceDeclaration,
+    PlaceRegion,
     Pose6D,
     RobotDescription,
     SupportContactWitness,
@@ -222,3 +224,238 @@ def test_aggregator_preserves_producer_revision_and_timestamp() -> None:
     with pytest.raises(ValueError, match="moved backwards"):
         aggregator.update_attached_objects([], revision=3, stamp_ns=124_000_000)
     assert aggregator.snapshot().attached_objects == [attachment]
+
+
+# -- Place declaration + its region, at the World State authority (ADR-0097) --
+#
+# HZ-0097-3 mitigation 2 makes expiry World State's responsibility rather than
+# the dispatcher's alone: a dispatcher that dies after issuing a declaration but
+# before retracting it must not leave one live. HZ-0097-4 mitigation 4 inherits
+# that verbatim for the approach allowance the declaration's region carries — the
+# allowance is live only while the declaration is.
+#
+# These tests run the aggregator on its PRODUCTION default clock (no `clock_fn`,
+# i.e. wall `time.time_ns`) and stamp the stream in simulator time, because that
+# is the round-7 field configuration and the only one that can see a clock-domain
+# mismatch. An earlier revision injected `clock_fn` AND stamped from the same
+# injected clock, which made the two domains identical by construction and let a
+# wall-vs-sim comparison ship: the aggregator re-checked liveness against
+# `time.time_ns` (~1.79e18) while the declaration was stamped in sim time
+# (~1.2e9), so every published `WorldStateStamped` carried
+# `place_declaration=None` and the approach allowance could never arm.
+
+# 1.24 s of simulator time — the domain the sim producer, the rSkill runner and
+# the safety kernel all stamp in under `use_sim_time`.
+_SIM_ARM_NS = 1_240_000_000
+
+
+def _region(now_ns: int) -> PlaceRegion:
+    return PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(
+            xyz=(0.62, 0.0, 1.05),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id="base_link",
+        ),
+        half_extents=(0.18, 0.25, 0.45),
+        evidence_ref="mujoco_body_subtree:cab_1_left_group_main",
+        stamp_ns=now_ns,
+    )
+
+
+def _place_declaration(now_ns: int, *, timeout_s: float = 60.0, region: bool = True) -> object:
+    return PlaceDeclaration(
+        target_id="sim:cab_1_left_group_main",
+        object_id="baguette_seed1",
+        rskill_id="openral/pi05-robocasa",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=timeout_s,
+        stamp_ns=now_ns,
+        region=_region(now_ns) if region else None,
+    )
+
+
+def test_a_sim_stamped_declaration_survives_the_production_wall_clock() -> None:
+    """The round-7 regression: sim-stamped stream, production wall-clock aggregator.
+
+    The aggregator is built exactly as ``lifecycle_node`` builds it — no
+    ``clock_fn``, so ``time.time_ns`` — while the producer stamps the attachment
+    stream and the declaration in simulator time. Liveness must be judged in the
+    stream's clock, so the declaration reaches the published snapshot; judging it
+    against the aggregator's own wall clock made every declaration ~57 years past
+    its backstop and dropped it, which is why the kernel never received the
+    region and the approach allowance never armed.
+    """
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    attachment = _attachment()
+    aggregator.update_attached_objects(
+        [attachment],
+        revision=1,
+        stamp_ns=_SIM_ARM_NS,
+        place_declaration=_place_declaration(_SIM_ARM_NS, timeout_s=60.0),
+    )
+
+    snapshot = aggregator.snapshot()
+    # The two domains really are different here — this is what the old test's
+    # injected clock hid. The snapshot's own stamp is wall time; the attachment
+    # stream's is simulator time, ~9 orders of magnitude apart.
+    assert snapshot.stamp_ns > _SIM_ARM_NS * 1_000_000
+    assert snapshot.attachment_stamp_ns == _SIM_ARM_NS
+    assert snapshot.attached_objects == [attachment]
+    declaration = snapshot.place_declaration
+    assert declaration is not None
+    assert declaration.target_id == "sim:cab_1_left_group_main"
+    assert declaration.region is not None
+    assert declaration.region.frame_id == "base_link"
+    assert declaration.region.half_extents == (0.18, 0.25, 0.45)
+
+
+def test_aggregator_publishes_the_declared_regions_alongside_its_payload() -> None:
+    """The region and the payload it is scoped to replace atomically.
+
+    The safety kernel resolves the region's object mask against the attachment
+    set in the same snapshot, so a region that could arrive out of step with its
+    payload would scope an allowance to the wrong object.
+    """
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    first = _attachment()
+    aggregator.update_attached_objects(
+        [first],
+        revision=1,
+        stamp_ns=_SIM_ARM_NS,
+        place_declaration=_place_declaration(_SIM_ARM_NS),
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    # A later revision that carries a payload but no declaration takes the
+    # region with it, in the same atomic replacement.
+    second = _attachment("spatula_payload")
+    aggregator.update_attached_objects(
+        [second],
+        revision=2,
+        stamp_ns=_SIM_ARM_NS + 500_000_000,
+    )
+    snapshot = aggregator.snapshot()
+    assert snapshot.attached_objects == [second]
+    assert snapshot.place_declaration is None
+
+
+def test_aggregator_drops_a_declaration_that_is_already_dead_on_arrival() -> None:
+    """A retracted or already-expired declaration is stored as no declaration."""
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    now_ns = _SIM_ARM_NS + 40_000_000_000
+    retracted = _place_declaration(now_ns).model_copy(update={"active": False})
+    aggregator.update_attached_objects(
+        [_attachment()], revision=1, stamp_ns=now_ns, place_declaration=retracted
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+    stale = _place_declaration(now_ns - 30_000_000_000, timeout_s=1.0)
+    aggregator.update_attached_objects(
+        [_attachment()], revision=2, stamp_ns=now_ns, place_declaration=stale
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+
+def test_the_declaration_expires_on_the_backstop_with_no_retraction() -> None:
+    """The crash path: no retraction ever arrives, and the region still dies.
+
+    The dispatcher is gone, so nothing retracts — but the evidence producer
+    heartbeats the attachment set, and each heartbeat re-runs the backstop
+    against its own stream stamp. Expiry is therefore driven by the stream
+    clock advancing past ``timeout_s``, never by the aggregator's wall clock,
+    which is in a different domain entirely (HZ-0097-3 mitigation 2).
+    """
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    declaration = _place_declaration(_SIM_ARM_NS, timeout_s=5.0)
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=_SIM_ARM_NS,
+        place_declaration=declaration,
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    # Heartbeat 4 s of simulator time later — still inside the 5 s backstop.
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=2,
+        stamp_ns=_SIM_ARM_NS + 4_000_000_000,
+        place_declaration=declaration,
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    # Heartbeat past the backstop: dropped, with no retraction and no republish
+    # of a fresher declaration.
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=3,
+        stamp_ns=_SIM_ARM_NS + 6_000_000_000,
+        place_declaration=declaration,
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+
+def test_an_unstamped_attachment_expires_the_declaration_on_arrival_time() -> None:
+    """The one path where the aggregator's own clock IS the stream's clock.
+
+    ``stamp_ns=None`` means "no producer stamp, use arrival time", so ``clock_fn``
+    is the stream's only clock reading and the declaration must be stamped from
+    the same one. Injecting the clock here tests that fallback for real rather
+    than hiding a domain mismatch.
+    """
+    clock = {"ns": 1_700_000_000_000_000_000}
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml(_ROBOT_YAML), clock_fn=lambda: clock["ns"]
+    )
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        place_declaration=_place_declaration(clock["ns"], timeout_s=5.0),
+    )
+    snapshot = aggregator.snapshot()
+    assert snapshot.attachment_stamp_ns == clock["ns"]
+    assert snapshot.place_declaration is not None
+
+    clock["ns"] += 6_000_000_000  # past the 5 s backstop
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=2,
+        place_declaration=_place_declaration(clock["ns"] - 6_000_000_000, timeout_s=5.0),
+    )
+    assert aggregator.snapshot().place_declaration is None
+
+
+def test_a_declaration_without_a_region_carries_no_allowance() -> None:
+    """Dispatch's own publication: it names a target, it measures no geometry.
+
+    The declaration still gates the place witness; the approach allowance needs a
+    producer-measured region, and its absence is the pre-amendment behaviour.
+    """
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=_SIM_ARM_NS,
+        place_declaration=_place_declaration(_SIM_ARM_NS, region=False),
+    )
+    declaration = aggregator.snapshot().place_declaration
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_detaching_takes_the_declaration_with_it() -> None:
+    """No payload, no declaration: the allowance cannot outlive what it was for."""
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    aggregator.update_attached_objects(
+        [_attachment()],
+        revision=1,
+        stamp_ns=_SIM_ARM_NS,
+        place_declaration=_place_declaration(_SIM_ARM_NS),
+    )
+    assert aggregator.snapshot().place_declaration is not None
+
+    aggregator.update_attached_objects([], revision=2, stamp_ns=_SIM_ARM_NS + 100_000_000)
+    snapshot = aggregator.snapshot()
+    assert snapshot.attached_objects == []
+    assert snapshot.place_declaration is None

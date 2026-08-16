@@ -195,17 +195,30 @@ never both:
 
 | Cell | Owner | Outcome |
 |---|---|---|
-| Inside the attested patch laterally **and** in the support half-space — no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth`, unbounded below it | the **kernel's witness** | withheld from the clearing, exempted by the kernel, and still there for the latch to measure |
-| Anywhere else within a circumradius of a payload primitive — the payload's own silhouette, the residue above the support plane, the +32 mm class the acceptance round tripped on | this **clearing** | zeroed |
+| Inside the attested patch laterally **and** in the support half-space — no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth + resolution`, unbounded below it | the **kernel's witness** | withheld from the clearing, exempted by the kernel, and still there for the latch to measure |
+| Anywhere else within a circumradius of a payload primitive — the payload's own silhouette, the residue above the widened slab | this **clearing** | zeroed |
+
+The third term in that bound is the kernel's **one voxel of co-planar headroom**
+(hazard log Entry 012, "Calibration 2026-08-15"), and it is mirrored here **in
+lockstep with the kernel by obligation of that same entry**: `withheld ⊆ exempt`
+is true because the two sides are the same inequality with a strictly tighter
+(zero-slack) bound on this one, and a height term present in one and absent from
+the other would break the containment by construction.
 
 The withheld region is that **half-space slab**, never the patch cylinder. At
-25 mm cells the slab reaches at most `21.65 mm + attested depth` above the plane
-(the pad is largest for a cube-diagonal normal), so with the kernel's own
-`support_witness_max_penetration_m` of 10 mm no attestation it would accept can
-withhold a cell more than 31.65 mm up.
-`PayloadClearing.NoAttestationTheKernelAcceptsWithholdsTheRoundFiveFieldCell` and
-`PayloadClearing.TheRoundFiveResidueCellClearsThoughItIsInsideThePatchCylinder`
-pin that bound at the field's +35.8 mm, predicate-level and on a real grid.
+25 mm cells the slab reaches at most `21.65 mm + attested depth + 25 mm` above
+the plane (the pad is largest for a cube-diagonal normal), so with the kernel's
+own `support_witness_max_penetration_m` of 10 mm no attestation it would accept
+can withhold a cell more than 56.65 mm up.
+`PayloadClearing.NoAttestationTheKernelAcceptsWithholdsACellAboveTheWidenedSlab`
+pins that bound predicate-level at +60 mm, and
+`PayloadClearing.TheRoundFiveResidueCellIsWithheldInTheCoplanarBand` pins the
+other side of it on a real grid: the field's +35.8 mm cell, which cleared before
+the calibration, is now inside the band and is **withheld, not cleared**, with
+the kernel exempting it for the object that attested the patch. That is the
+recorded, deliberate consequence of the calibration on this side of the mirror —
+and it is the conservative direction, because withholding only ever puts
+occupancy back into the published map.
 
 `place_attached_object` lifts the wire `SupportContactWitness` (stated in the
 attached object's own frame) through the payload's live pose into a grid-frame
@@ -250,6 +263,18 @@ be the 2026-08-14 defect re-opened for the phase the fix was not written
 against — the place witness arriving at the kernel with the shelf it attests to
 already cleared out from under it, and dying on its own liveness test while the
 payload had not moved.
+
+The **approach allowance** of ADR-0097's 2026-08-14 amendment — and its Second
+Amendment's raised cap (2026-08-15, `min(1.5 × voxel, 4 cm)`) — leaves this node
+untouched, for the same reason, one level up: it is a margin the *kernel* applies
+to cells inside the declared target's `PlaceRegion`, not a change to which cells
+exist. This bridge decides occupancy, never margins, and it never reads
+`AttachmentState.place_declaration` — so the declared region cannot shrink or
+grow the grid, and the clearing partition above is the only thing standing
+between a payload and its own occupancy either way. The bridge's tests are
+unchanged by *that* half of the 2026-08-15 decision, which is the assertion, not
+an assumption. Its other half — the witness height envelope — is a predicate the
+bridge mirrors, so it lands here too, as the `+ resolution` term above.
 
 The two predicates are a deliberate cross-package mirror —
 consolidating them would make this Layer-2 node link the Layer-6 kernel's

@@ -55,10 +55,10 @@
 // exhaustive: within the payload's reach a cell is either CLEARED by this
 // bridge or EXEMPTED by the kernel's witness, never neither, never both.
 // `support_patch_withholds` is this side of that line — the same geometry the
-// kernel's `support_contact_exempts` uses, with zero slack, so what this bridge
-// keeps is a subset of what the kernel exempts and no withheld cell can stop
-// the robot. Everything else around the payload clears exactly as before:
-// withholding only ever puts occupancy BACK into the published map, which is
+// kernel's `support_contact_exempts` uses (including its one voxel of co-planar
+// headroom), with zero slack, so what this bridge keeps is a subset of what the
+// kernel exempts and no withheld cell can stop the robot. Everything else around the payload clears
+// exactly as before: withholding only ever puts occupancy BACK into the published map, which is
 // also what Nav2 and SLAM need, because those cells are the counter.
 
 #pragma once
@@ -143,9 +143,16 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
 /// evaluated on the same lifted plane: with `s = (center - point)·normal` the
 /// cell centre's height above the attested support face, the cell is withheld
 /// when it is inside the patch laterally (padded by the cell cube's
-/// circumradius, `resolution·√3/2`) **and** `s <= w + max_penetration`, where
+/// circumradius, `resolution·√3/2`) **and**
+/// `s <= w + max_penetration + resolution`, where
 /// `w = half_resolution·(|n.x| + |n.y| + |n.z|)` is the exact half-width of the
-/// cell cube projected on the support normal.
+/// cell cube projected on the support normal and the third term is the kernel's
+/// one voxel of co-planar headroom (hazard log Entry 012, "Calibration
+/// 2026-08-15"). That term is mirrored here **in lockstep** with the kernel, by
+/// obligation of the same hazard entry: `withheld ⊆ exempt` is true because the
+/// two are the same inequality with a strictly tighter bound on this side, and a
+/// height term present in one and absent from the other would break it by
+/// construction.
 ///
 /// Dropping the kernel's slack term is what makes the partition safe rather
 /// than merely symmetric: the kernel adds `attached_contact_tolerance` (1 mm of
@@ -164,8 +171,9 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
 /// The withheld region is the support HALF-SPACE — the slab above the plane
 /// plus everything below it — never the patch cylinder. At 25 mm cells the slab
 /// reaches at most 21.65 mm (the pad, largest for a cube-diagonal normal) plus
-/// the attested depth above the plane, which is what keeps the payload-side
-/// residue above a support surface in the clearing's hands.
+/// the attested depth plus one voxel above the plane — 56.65 mm for the widest
+/// attestation the kernel would accept — which is what keeps the payload-side
+/// residue further above a support surface in the clearing's hands.
 ///
 /// A cell BELOW the plane is withheld without a lower bound: that is the body
 /// of the counter, real furniture that the map is supposed to carry and that

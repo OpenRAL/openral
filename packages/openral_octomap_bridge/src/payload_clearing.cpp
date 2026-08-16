@@ -182,9 +182,16 @@ bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& cent
   if (lateral_sq > reach * reach) {
     return false;
   }
+  // One voxel of co-planar headroom, mirroring the kernel's 2026-08-15
+  // calibration (hazard log Entry 012, "Calibration 2026-08-15") term for term.
+  // It is added HERE as well, and in lockstep, because `withheld ⊆ exempt` is a
+  // property of the two predicates being the same inequality — the moment the
+  // kernel's bound moves and this one does not, the containment stops holding by
+  // construction and starts holding by luck.
+  //
   // No `slack` term (the kernel's `attached_contact_tolerance`): what this
   // withholds must stay a subset of what the kernel exempts.
-  return height <= normal_half_width + patch.max_penetration;
+  return height <= normal_half_width + patch.max_penetration + resolution;
 }
 
 std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& grid,

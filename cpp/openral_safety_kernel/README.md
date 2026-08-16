@@ -188,9 +188,9 @@ it is inside the patch laterally *and* no higher above the attested support
 plane than
 
 ```
-half_resolution · (|n.x| + |n.y| + |n.z|)   +   attested depth   +   slack
-└─ exact half-width of the voxel cube ──┘       └─ physical ─┘       └ 1 mm ┘
-      projected on the support normal
+half_resolution · (|n.x|+|n.y|+|n.z|)  +  attested depth  +  slack  +  resolution
+└─ exact half-width of the voxel cube ┘    └─ physical ─┘    └1 mm┘   └ co-planar ┘
+      projected on the support normal                                    headroom
 ```
 
 That first term is what makes the witness work under coarse maps. A surface
@@ -200,9 +200,34 @@ contact reads as up to ~15 mm of cube penetration at 25 mm resolution — the
 six real MuJoCo contacts of `-0.87..-1.37 mm`. Measuring depth against the
 attested plane instead of the cell cube accounts for the inflation *exactly*,
 by geometry, rather than absorbing it into a widened tolerance that would also
-license real penetration. A cell whose solid sits genuinely above the attested
+license real penetration.
+
+The fourth term is the **2026-08-15 co-planar headroom calibration** (hazard log
+Entry 012, "Calibration 2026-08-15", from the 5-run baguette battery
+`spark:~/openral-runs/2026-08-15-baguette-battery`). The battery refuted the
+suspected "sliding" class outright — run 4 moved the payload 10.2 mm during the
+stop, and the lateral patch gate (135.7 mm) never came near the 84–86 mm actual
+offset — and named the real one: cells of **adjacent co-planar structure**, a
+raised edge or a neighbouring stack on the same support surface, sit about one
+voxel above the attested plane while the payload is in genuine, continuing
+support contact. Round-8 r2 measured `+42.9 mm` against a ~15–19 mm envelope: an
+excess of `+24.4 mm`, one 25 mm voxel. The bound therefore gains one full voxel,
+**inside the existing lateral patch** — this is height, never reach, and the
+patch radius bound is untouched. At sim's 25 mm cells with a 5 mm attested depth
+the envelope is `12.5 + 5 + 1 + 25 = 43.5 mm`, so r2's `+42.9 mm` clears it by
+0.6 mm and a `+55 mm` protrusion does not
+(`…TheRound8CoplanarCellIsInsideTheWidenedEnvelope`,
+`…SolidAboveTheCoplanarBandStillStops`, `…TheWidenedEnvelopeIsHeightOnlyNotReach`).
+
+Past *that* bound a cell whose solid sits genuinely above the attested
 support face still stops the robot, and a payload driving into its support
-raises that height millimetre for millimetre until it does.
+raises that height millimetre for millimetre until it does
+(`…DeepeningIntoTheSupportStillStops`, now at 40 mm of sink;
+`…ProtrusionInsideThePatchStillStops`, now two cells up). The cost is recorded
+and accepted with the calibration: within the attested patch, one voxel more of
+whatever the kernel cannot tell apart from support contact is exempt — the same
+accepted-trade class as HZ-0092-1's identity-blindness-within-patch, at one
+voxel more of height.
 
 The witness is **latched, and it dies on separation**: once nothing it would
 exempt is still in contact, its bit clears and the kernel never sets it again.
@@ -244,8 +269,11 @@ withholds per message, so with two payloads attached the containment is one step
 looser — the two scope conditions are stated in
 [`packages/openral_octomap_bridge/README.md`](../../packages/openral_octomap_bridge/README.md).)
 Everything else around the payload — its own silhouette, its residue
-above the attested plane — still clears and still stops the robot if it comes
-back. The two predicates are a deliberate cross-package mirror (consolidating
+above the widened slab — still clears and still stops the robot if it comes
+back. The 2026-08-15 height calibration moved that line by one voxel on both
+sides at once: the bridge's `+ resolution` term is added in the same commit, so
+the co-planar band is withheld here rather than cleared there, and
+`withheld ⊆ exempt` stays true by construction rather than by luck. The two predicates are a deliberate cross-package mirror (consolidating
 them would put `octomap` and `tf2` one link from this kernel) and must move
 together: `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessIts
 Evidence` and `…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
@@ -287,6 +315,148 @@ ExemptionAsThePick`, `…TheSameInsertionWithNoDeclarationStillStops`,
 `…PickAndPlaceShareOneSlotSequentially` and
 `…AWrongDeclaredTargetChangesWhichContactNeverHowMuch` pin all of it, and
 `…NewContactOutsideThePatchStillStopsMidCarry` is untouched.
+
+**The declaration-scoped approach allowance is a *margin* change, not a third
+exemption (ADR-0097's 2026-08-14 amendment).** Round-6
+(`spark:~/openral-runs/2026-08-14-round6/baguette/seed1_carry_*`) showed the
+place witness above cannot arm for an enclosed target even with a correct
+declaration and a payload genuinely headed for it: the E-stop fired at
+`horizon_step 0` on `attached:sim:obj_main` vs `voxel_178099` at
+`min_distance = -4.9 mm`, with the payload still 22–30 mm from real shelf
+contact. Nothing was wrong with the declaration — inserting through a cabinet
+opening means passing within margin distance of voxel-quantised walls, and at
+25 mm cells that quantisation closes the opening's predicted clearance before
+the payload arrives. A witness *earned by touching* can never arm if the payload
+is stopped before it can touch. Open-top targets never hit this; enclosed ones
+cannot clear it structurally.
+
+So the kernel does gain one input for the amendment, and exactly one:
+`VoxelGrid::place_region`, a bounded oriented box supplied by the declaration's
+producer (`openral_msgs/PlaceRegion`, riding the same
+dispatch → HAL → World State path as the attestation, on
+`WorldStateStamped.place_declaration`). While it is live, cells whose **centre**
+lies inside that box are gated for the declared payload at
+`margin - min(1.5 × resolution, 40 mm)` instead of `margin`. That is the whole
+delta. In particular:
+
+* **It is not an exemption.** A cell deeper than the reduced margin still stops
+  the robot, and the reported `min_distance` is the pair's true distance —
+  `CollisionHit::place_allowance_active` and the `place_allowance_active=` log
+  key say the margin had been reduced, without changing the number quoted for it
+  (CLAUDE.md §1.4). `…DeepeningPastTheAllowanceInsideTheRegionStillStops`.
+* **`min(1.5 × voxel, 40 mm)` is an absolute cap, never purely
+  resolution-scaled** (`kMaxPlaceApproachAllowanceM`,
+  `kPlaceApproachAllowanceVoxels`, both read through
+  `place_approach_allowance_cap` so the geometry and the
+  `safety.place_region_armed` log line cannot quote different numbers). Both are
+  maintainer-set binding conditions, not implementation choices: at real
+  hardware's 5 cm grid the voxel-relative half alone would be 75 mm, which is
+  HZ-0095-2's episode in a new form; the ceiling caps it at 40 mm.
+  `…ACoarserGridNeverWidensTheAllowance` runs the whole thing on a 50 mm lattice
+  to prove that, and pins the amendment's own worked example (40 mm, not 75).
+
+  The cap was `min(one voxel, 25 mm)` until **ADR-0097's Second Amendment
+  (2026-08-15)**, hazard log HZ-0097-4's "Calibration 2026-08-15". Run 1 of the
+  battery (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) was the
+  allowance's first in-vivo firing: `26.48 mm` of predictive-check penetration at
+  a ground-truth `-2.43 mm` contact — `1.48 mm` short. Since the map-vs-truth
+  error at a placement pose is itself about one voxel, a one-voxel allowance is
+  sized to absorb exactly the discretization and leaves nothing for the contact
+  the witness is earned by making: structurally marginal, not occasionally short.
+  At 25 mm cells the cap is now `37.5 mm`, ~11 mm of headroom over that reading
+  (`…TheRun1FieldPenetrationNowReachesContact`). One footnote worth keeping: a
+  50 mm-tall payload passing a 25 mm cell saturates at exactly 37.5 mm of overlap
+  on every axis, so the flagship baguette's own geometry cannot reach past the
+  calibrated cap — `…DeepeningPastTheAllowanceInsideTheRegionStillStops` carries a
+  deeper payload to prove the hard stop behind the reduced margin at 38.2 mm and
+  40 mm.
+* **Arm-vs-world is untouched**, as is payload-vs-world outside the box, and any
+  payload the declaration does not name (`…ArmVsWorldIsUntouchedByALiveRegion`,
+  `…OutsideTheDeclaredRegionTheMarginIsUnchanged`,
+  `…TheAllowanceFollowsTheDeclaredPayloadOnly`).
+* **The kernel stays producer-agnostic.** Sim measures the box from the declared
+  body's MuJoCo subtree; real hardware will measure it from the perception stack
+  through a seam that does not exist yet, so no allowance is applied on real
+  hardware today. The kernel does not derive a region and does not branch on who
+  measured one. It does re-check the bounds it will accept
+  (`ingest_place_region`: finite, positive, ≤ 1.5 m per side, ≤ 8 m³) and refuses
+  a region whose `frame_id` does not match the occupancy grid's.
+* **Refusal means "no allowance", not "drop the message"** — the opposite
+  fail-closed direction from a malformed attestation, and for a reason: a bad
+  region can only ever make the kernel *more* permissive, so ignoring it restores
+  exactly the pre-amendment margin (`…DegenerateAndOversizedRegionsGrantNothing`,
+  `…AMapWithNoResolutionGrantsNothing`).
+* **It dies with the declaration.** Retraction, the declaration's own timeout
+  backstop (re-evaluated per candidate action, not only at ingest), detach, a
+  failed attachment ingest, and a re-framed grid all clear it
+  (HZ-0097-3/HZ-0097-4 mitigation 4). Two tests pin the two clock-domain gates
+  the 2026-08-14 fix leans on:
+  `…StalledAttachmentStreamRefusesEveryCandidateEvenWithAnArmedRegion` (a stale
+  attachment stream refuses every candidate action outright, so an armed region
+  cannot outlive the freshness gate that vouches for the payload) and
+  `…PlaceDeclarationBackstopExpiresTheAllowancePerCandidate` (the declaration
+  ages out in the kernel's own clock while the stream stays fresh, and the very
+  next candidate stops on the cell the allowance had been clearing).
+
+**The allowance's effect on a live verdict is pinned end-to-end, not only in
+gtest.** Through nine validation rounds the allowance armed correctly in every
+declared run yet `place_allowance_active=1` was observed exactly once — XR-1's
+stochastic trajectories almost never put the payload in the band between the
+reduced and the unreduced margin, so outside the gtests the allowance's effect on
+an accept rested on counterfactual arithmetic.
+`tests/integration/test_safety_kernel_place_allowance_band.py` removes the policy
+and drives the band directly against this node: a 1-DoF prismatic carriage
+carrying a 20 mm sphere at a single occupied 25 mm cell, so the commanded joint
+value *is* the payload's distance. One chunk at `d = 20 mm` is refused
+undeclared and **accepted** with a live declaration (the verdict flip that had
+never been observed); a second at `d = 5 mm` is refused either way and emits the
+disclosure verbatim:
+
+```
+safety.collision kind=world a=attached:sim:cup b=voxel_368 step=0 min_distance_m=0.005
+sweep_min_distance_m=0.005 mode=0 rskill_id=openral/place-approach-band
+place_allowance_active=1 place_target=sim:cabinet
+```
+
+`d = 20 mm` is deliberately below the 25 mm the pre-Second-Amendment cap would
+have left, so reverting either `kPlaceApproachAllowanceVoxels` or
+`kMaxPlaceApproachAllowanceM` turns that accept back into a refusal (verified by
+actually reverting both, together and separately). It runs on the `docker-build`
+live-ROS lane via `scripts/ros_live_tests.sh`; no GPU, no simulator.
+
+### What the region's log lines say
+
+Three events, and the reason is always the real one:
+
+| Line | Severity | When |
+| --- | --- | --- |
+| `safety.place_region_armed` | INFO | a validated region goes live (on the transition) |
+| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed` |
+| `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume` |
+
+Two rules keep them honest. **The reason is the branch that fired**
+(`place_region_status_reason`), not a category: `reason=bounds` used to label
+every refusal, including the empty-object-mask one that fires on every heartbeat
+before the grasp. And **a refusal is announced on its (reason, target)
+transition**, not per message — the attachment set is heartbeated at 30 Hz and a
+refusal is normally a standing state, which round-8 recorded as 672–811 identical
+warnings per run. The standing state is instead readable on the 1 Hz
+`/diagnostics` `place_region` key (`live:<target>`, `expired:<target>`,
+`<reason>:<target>`, or `-`). A pre-grasp declaration is *not* a fault — the
+margins in force are exactly the undeclared ones — so it is INFO, and it is still
+logged once, because an allowance that never armed has to be reconstructible from
+the trace (HZ-0097-2 mitigation 1).
+
+The honest cost, accepted and recorded as HZ-0097-4: an object already sitting
+inside the declared region when the declaration goes live — a jar on the shelf —
+receives the same allowance for the declared window, whether or not the payload
+ever reaches it. It is bounded by the cap, the region and the declaration's
+lifetime; `…AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap` pins the bound on a
+50 mm lattice at exactly the 40 mm ceiling. The Second Amendment re-accepted that
+cost unchanged in shape and at the same severity, at the raised cap. `…TheRound6ApproachReachesTheDeclaredShelf` and
+`…TheSameApproachUndeclaredStopsExactlyAsRound6Did` are the field case in both
+directions.
 
 **2. Embedded attach-time residue.** The payload's own occupancy left in the
 map at attach — a cell already at least half a voxel inside the payload when

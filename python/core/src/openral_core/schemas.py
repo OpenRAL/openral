@@ -2081,6 +2081,142 @@ class AttachmentEvidenceKind(str, Enum):
     OPERATOR = "operator"
 
 
+class PlaceRegion(BaseModel):
+    """The bounded region of a declared place target (ADR-0097 amendment).
+
+    The volume inside which the declared payload's world-collision margin is
+    reduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,
+    2026-08-15 — 37.5 mm at sim's 25 mm cells, and 40 mm rather than 75 mm at a
+    real 50 mm grid, because the absolute ceiling still binds) so it can
+    physically reach the support contact the place witness is *earned by*.
+    Round-6 validation showed that
+    without it the flagship counter→cabinet insertion cannot complete even with
+    a correct declaration: inserting through an enclosed target's opening means
+    passing within margin distance of voxel-quantised walls, and at 25 mm cells
+    that quantisation closes the opening's predicted clearance 22-30 mm before
+    the payload arrives. A witness earned by touching can never arm if the
+    payload is stopped before it can touch.
+
+    **Producer-supplied, and producer-specific.** Sim computes it from the
+    declared body's MuJoCo model subtree; real hardware obtains it from the
+    perception stack through a seam that is **not yet implemented**, so no
+    allowance is applied on real hardware today — the same posture real-hardware
+    place-witness attestation is already under. The safety kernel is
+    producer-agnostic: it consumes this box identically whoever measured it, and
+    never derives one itself.
+
+    The box is **oriented**, not axis-aligned: a receptacle has an orientation,
+    and the axis-aligned hull of a rotated one is strictly larger, i.e. strictly
+    more permissive. Absent (``PlaceDeclaration.region is None``) means no
+    allowance at all — the pre-amendment margins, unchanged. A degenerate or
+    over-large region is rejected here and again in the kernel, both times
+    toward "no allowance".
+
+    Attributes:
+        frame_id: Frame :attr:`pose` is expressed in. Must be the robot base
+            frame — the frame ``OccupancyVoxels`` is published in. The kernel
+            refuses a region whose frame does not match the occupancy grid's,
+            because a region measured in one frame and applied in another is a
+            relaxation aimed at the wrong volume.
+        pose: Region box centre pose in :attr:`frame_id`.
+        half_extents: Box half-extents along its own axes (m), each in
+            ``(0, MAX_HALF_EXTENT_M]``.
+        evidence_ref: What the producer measured the box from, for
+            attributability (HZ-0097-2/4). Free text, never parsed.
+        stamp_ns: Producer timestamp.
+
+    Example:
+        >>> region = PlaceRegion(
+        ...     frame_id="base_link",
+        ...     pose=Pose6D(
+        ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"
+        ...     ),
+        ...     half_extents=(0.20, 0.18, 0.12),
+        ...     evidence_ref="mujoco_body_subtree:cab_1_left_group_main",
+        ... )
+        >>> round(region.volume_m3(), 5)
+        0.03456
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Ceiling on one half-extent. A declaration names ONE receptacle, so a
+    #: 3 m box is a producer error, not a target.
+    MAX_HALF_EXTENT_M: ClassVar[float] = 1.5
+    #: Ceiling on the box's volume — a 2 m cube. Same reasoning, applied to the
+    #: product rather than to any single side.
+    MAX_VOLUME_M3: ClassVar[float] = 8.0
+
+    frame_id: str = Field(min_length=1)
+    pose: Pose6D
+    half_extents: tuple[float, float, float]
+    evidence_ref: str = ""
+    stamp_ns: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_region(self) -> PlaceRegion:
+        for axis, value in zip("xyz", self.half_extents, strict=True):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"PlaceRegion half-extent {axis}={value!r} must be finite and positive; "
+                    "a region with no interior licenses nothing."
+                )
+            if value > self.MAX_HALF_EXTENT_M:
+                raise ValueError(
+                    f"PlaceRegion half-extent {axis}={value!r} exceeds the "
+                    f"{self.MAX_HALF_EXTENT_M} m bound; a declaration names one receptacle."
+                )
+        if self.volume_m3() > self.MAX_VOLUME_M3:
+            raise ValueError(
+                f"PlaceRegion volume {self.volume_m3()!r} m^3 exceeds the "
+                f"{self.MAX_VOLUME_M3} m^3 bound; a declaration names one receptacle, not a room."
+            )
+        return self
+
+    def volume_m3(self) -> float:
+        """Volume of the region box in cubic metres."""
+        hx, hy, hz = self.half_extents
+        return 8.0 * hx * hy * hz
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        pose = msg.pose  # type: ignore[attr-defined]
+        half = msg.half_extents  # type: ignore[attr-defined]
+        return cls(
+            frame_id=str(msg.frame_id),  # type: ignore[attr-defined]
+            pose=Pose6D(
+                xyz=(float(pose.position.x), float(pose.position.y), float(pose.position.z)),
+                quat_xyzw=(
+                    float(pose.orientation.x),
+                    float(pose.orientation.y),
+                    float(pose.orientation.z),
+                    float(pose.orientation.w),
+                ),
+                frame_id=str(msg.frame_id),  # type: ignore[attr-defined]
+            ),
+            half_extents=(float(half.x), float(half.y), float(half.z)),
+            evidence_ref=str(msg.evidence_ref),  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+        msg.frame_id = self.frame_id  # type: ignore[attr-defined]
+        msg.pose.position.x = float(self.pose.xyz[0])  # type: ignore[attr-defined]
+        msg.pose.position.y = float(self.pose.xyz[1])  # type: ignore[attr-defined]
+        msg.pose.position.z = float(self.pose.xyz[2])  # type: ignore[attr-defined]
+        msg.pose.orientation.x = float(self.pose.quat_xyzw[0])  # type: ignore[attr-defined]
+        msg.pose.orientation.y = float(self.pose.quat_xyzw[1])  # type: ignore[attr-defined]
+        msg.pose.orientation.z = float(self.pose.quat_xyzw[2])  # type: ignore[attr-defined]
+        msg.pose.orientation.w = float(self.pose.quat_xyzw[3])  # type: ignore[attr-defined]
+        msg.half_extents.x = float(self.half_extents[0])  # type: ignore[attr-defined]
+        msg.half_extents.y = float(self.half_extents[1])  # type: ignore[attr-defined]
+        msg.half_extents.z = float(self.half_extents[2])  # type: ignore[attr-defined]
+        msg.evidence_ref = self.evidence_ref  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+
+
 class PlaceDeclaration(BaseModel):
     """Dispatch's typed statement that a place phase is active for a payload.
 
@@ -2124,6 +2260,14 @@ class PlaceDeclaration(BaseModel):
         stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole
             liveness key.
         active: ``False`` retracts the declaration.
+        region: Producer-measured bounded region of the declared target
+            (ADR-0097's 2026-08-14 amendment), or ``None``. Dispatch always
+            publishes ``None`` — it names a target, it cannot measure where that
+            target *is* — and the evidence producer fills it in when it resolves
+            the target. ``None`` means **no approach allowance**: exactly the
+            margins the kernel used before the amendment. The allowance lives and
+            dies inside the declaration, so retraction, timeout, goal end/cancel
+            and E-stop all take the region with them.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -2156,6 +2300,7 @@ class PlaceDeclaration(BaseModel):
     timeout_s: float = Field(gt=0.0)
     stamp_ns: int = Field(ge=0)
     active: bool = True
+    region: PlaceRegion | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> PlaceDeclaration:
@@ -2176,8 +2321,21 @@ class PlaceDeclaration(BaseModel):
         of anything) are all dead. A dead declaration permits no place-witness
         attestation, which is the pre-ADR-0097 behaviour.
 
+        **Clock-domain contract.** ``now_ns`` and :attr:`stamp_ns` must be
+        readings of the *same* clock, and that clock is the publishing graph's
+        ROS clock: the dispatching rSkill runner stamps the declaration from
+        ``node.get_clock().now()``, the evidence producer re-stamps its
+        publications from the same clock, and the safety kernel compares against
+        its own. Under ``use_sim_time`` that domain is **simulator** time, whose
+        readings are small (order 1e9 ns) where wall time is order 1.79e18 ns.
+        A consumer that has no such reading of its own must use the newest stamp
+        observed on the message stream carrying the declaration — never
+        ``time.time_ns``, which reports a wall epoch that puts every sim-stamped
+        declaration ~57 years past its backstop and silently kills it.
+
         Args:
-            now_ns: Consumer's current time, same clock as ``stamp_ns``.
+            now_ns: Consumer's current time, same clock as ``stamp_ns`` — see
+                the clock-domain contract above.
 
         Returns:
             ``True`` only while the declaration is active and inside its
@@ -2199,6 +2357,11 @@ class PlaceDeclaration(BaseModel):
             timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
             active=bool(msg.active),  # type: ignore[attr-defined]
+            region=(
+                PlaceRegion.from_idl(msg.region)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "region_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -2210,6 +2373,9 @@ class PlaceDeclaration(BaseModel):
         msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
         msg.active = bool(self.active)  # type: ignore[attr-defined]
+        msg.region_valid = self.region is not None  # type: ignore[attr-defined]
+        if self.region is not None:
+            self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
 
 
 class SupportContactWitness(BaseModel):
@@ -2729,6 +2895,15 @@ class WorldState(BaseModel):
             absent from world occupancy and remain collision-active as payloads.
         attachment_revision: Monotonic producer revision for atomic snapshots.
         attachment_stamp_ns: Timestamp of the last accepted attachment update.
+        place_declaration: The place-phase declaration in force for the carried
+            payload as the evidence producer resolved it (ADR-0097 and its
+            2026-08-14 amendment), including the producer-measured
+            :class:`PlaceRegion`. ``None`` means no place phase is declared,
+            which is no place witness and no approach allowance. It rides here
+            rather than on a channel of its own because the amendment extends the
+            payload already crossing the dispatch → HAL → World State boundary,
+            and because the kernel must apply the region and the attachment set
+            it is scoped to from one and the same snapshot.
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
@@ -2753,6 +2928,7 @@ class WorldState(BaseModel):
     attached_objects: list[AttachedCollisionObject] = Field(default_factory=list)
     attachment_revision: int = Field(default=0, ge=0)
     attachment_stamp_ns: int = Field(default=0, ge=0)
+    place_declaration: PlaceDeclaration | None = None
     occupancy_grid: OccupancyGridRef | None = None
 
 
