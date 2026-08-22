@@ -45,6 +45,11 @@ TARGETS=(
     # unchanged payload must release the deferred action_applied tick; when it
     # did not, a SUCCESSFUL place aborted its own goal 8 s later.
     tests/integration/test_hal_attachment_barrier_live.py
+    # A world-voxel stop names its cell only as an index, and the grid that
+    # index addresses arrives on a different topic. Until they are joined the
+    # record cannot look at the map at all — which is how the 2026-08-22 round
+    # adjudicated two stops on ground truth that never examined the cell.
+    tests/integration/test_estop_voxel_backing_live.py
     tests/integration/test_segment_in_view_service.py
     # Lives under tests/unit/ because it is a pure constant contract with no
     # graph, but it reads the numbers off the colcon-generated openral_msgs,

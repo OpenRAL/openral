@@ -419,10 +419,28 @@ sensors:
   # safety kernel's world-collision voxel check. ``metadata.mjcf_camera``
   # names the underlying robosuite ``<camera>`` (distinct from this ROS
   # sensor name); ``frame_id`` is the REP-103 optical frame the HAL
-  # broadcasts a live ``base_link ->`` TF for. ``range_min_m`` rejects
-  # near-field self-hits on the arm; ``range_max_m`` bounds the octree
-  # working volume. Reuses the forward agentview-left viewpoint so the
+  # broadcasts a live ``base_link ->`` TF for. ``range_max_m`` bounds the
+  # octree working volume. Reuses the forward agentview-left viewpoint so the
   # cloud covers the arm's reach + the obstacles in front of the base.
+  #
+  # ``range_min_m`` is NOT the self-filter, despite how it used to read here.
+  # The robot leaves the cloud by IDENTITY, not by distance: the depth synth
+  # makes every body in ``openral_hal.depth_cloud.robot_self_body_ids`` — the
+  # whole kinematic tree, arm and base and mount and gripper — transparent to
+  # the ray-cast, and emits a max-range CLEARING endpoint on any ray that hit
+  # nothing but the robot, so the robot's silhouette is cleared out of the
+  # OctoMap instead of mapped into it. That runs BEFORE this gate.
+  # ``range_min_m`` is then a blanket cutoff applied to whatever the
+  # transparent cast returned: ANY return closer than it — self or WORLD —
+  # fails the accept mask and collapses onto the raster's ``0.0`` "no
+  # measurement", and it becomes a clearing ray only if that ray had struck the
+  # robot (which is what arms the clearing endpoint), never merely by being
+  # near. Accepted consequence: an obstacle closer than 0.3 m to this camera is
+  # neither marked nor cleared while it stays that close, so the map neither
+  # learns it nor retires a stale cell standing where it is.
+  # The value is retained deliberately at 0.3 — tested, behaving as intended
+  # (management hazard log Entry 012, 2026-08-22). Only the description was
+  # wrong.
   - name: "front_depth"
     modality: "depth"
     frame_id: "front_depth_optical_frame"
