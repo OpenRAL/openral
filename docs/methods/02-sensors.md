@@ -51,6 +51,12 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 - `oak_d_pro_bundle(name='oak', parent_frame='base_link', mxid='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0, rgb_width=1920, rgb_height=1080, depth_width=1280, depth_height=800) -> SensorBundle` — Luxonis OAK-D Pro RGB + global-shutter stereo depth (0.20–19 m, 71.86°×56°) + BNO086 IMU bundle, with nominal IMX378 / OV9282 intrinsics from the datasheet, linearly rescaled to non-default stream resolutions. Registered in the catalog as `luxonis/oak_d_pro`; recommended overhead RGB-D for the `so101_box` scene. (L82)
 - `_scale_intrinsics(base, width, height) -> IntrinsicsPinhole` — Thin wrapper delegating to `openral_core.scale_intrinsics_to`; lets a caller pick a non-default stream resolution and still get a self-consistent (fx, fy, cx, cy). (L194)
 
+#### `python/sensors/src/openral_sensors/stereolabs.py`
+- `zed_mini_bundle(name='zed', parent_frame='base_link', serial='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0, width=1280, height=720) -> SensorBundle` — StereoLabs ZED Mini: left + right rectified RGB, host-computed stereo depth (0.10–15 m, 90°×60°), integrated 6-DoF IMU. Passive stereo — no IR pattern, so it degrades on untextured surfaces but never interferes with an active depth camera aimed at the same workspace. Over USB the camera is a **single** UVC node streaming both eyes side-by-side in one YUYV frame (2560×720 at HD720); rectification and depth run on the host GPU via the ZED SDK, recorded as `metadata.sdk_required`. Registered as `stereolabs/zed_mini`. (L76)
+
+#### `python/sensors/src/openral_sensors/arducam.py`
+- `arducam_b0495_spec(name='arducam', parent_frame='base_link', rate_hz=30.0, width=1920, height=1200, hfov_deg=None, serial='') -> SensorSpec` — Arducam B0495: 2.3 MP AR0234 **global-shutter** colour over USB 3.0 UVC (Cypress FX3); 1920×1200 @ 50 fps, 960×600 @ 80 fps, YUYV — read off the device with `VIDIOC_ENUM_*`, not a datasheet. Global shutter is why this is not a `usb_uvc` entry: a rolling-shutter webcam smears the frame during arm motion, corrupting exactly the wrist views a VLA conditions on. `intrinsics` is left **unset** unless the caller supplies `hfov_deg` — the board ships with an M12 mount, so optics belong to the integrator and a default pinhole model would be a fabricated number. Registered as `arducam/b0495`. (L62)
+
 ### `python/sensors/src/openral_sensors/ros_publisher.py`
 _Generalised sensor → ROS 2 image publisher; non-GStreamer fallback to `RosImagePublisher`._
 

@@ -17,6 +17,19 @@ container and proves a measured hold across the real C++ kernel, ROS 2 HAL,
 and staged ROS 1 command relay. Both are environment-gated, time-bounded, and
 end by stopping the sidecar through the downstream e-stop path.
 
+The OpenArm has no `ros2_control` HIL bridge yet — its gate
+(`tests/hil/test_openarm_can_live.py`) runs one layer lower, on the CAN
+transport itself, and is gated on the two udev-pinned interfaces
+(`openarm_left` / `openarm_right`) being up. It splits in two: transport
+checks (CAN FD at 1 Mbit/s nominal / 5 Mbit/s data, `openral detect`
+identifying the arm from the bus alone, `OpenArmRealHAL`'s preflight
+passing) run whenever the links are up, while the motor round-trip
+additionally requires a bus in `ERROR-ACTIVE` — an unpowered arm leaves
+the links up but `ERROR-PASSIVE`, which is a skip, not a failure, because
+it is a fact about the bench and not about the code. The round-trip is
+read-only by construction: it queries motor state and never calls
+`enable_all()`, so it cannot energise or move the arm.
+
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 

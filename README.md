@@ -207,7 +207,8 @@ The `openral` CLI lives in `.venv/bin/openral`. Run via `uv run openral ...` or 
 ## Set up your robot
 
 Turn a physical rig into a typed manifest with the interactive `openral detect`
-wizard — probe USB / cameras / GPU, name the rig, and bind each detected camera:
+wizard — probe USB / CAN / cameras / GPU, name the rig, and bind each detected
+camera:
 
 ```bash
 uv run openral detect --deployment scenes/deploy/my_bench.yaml
@@ -225,6 +226,14 @@ deployment*:
 > in the scene's `calibration/` dir before `deploy run` — the wizard reminds you.
 
 Inspect the host without writing anything: `openral detect --no-write`.
+
+CAN-attached arms (the Enactic OpenArm and anything else on a Damiao/CAN FD
+bus) are found through their SocketCAN interfaces, not USB — a CAN adapter
+registers a *network* device, so there is no `/dev/tty*` node to enumerate.
+Name the links after the robot with a udev rule (`openarm_left`,
+`openarm_right`) and detection is independent of the kernel's `canN`
+enumeration order. If the report shows a bus that is up but `ERROR-PASSIVE`,
+the adapter is transmitting into silence: the motors are unpowered.
 
 → **Full wizard, depth cameras & calibration:** [python/detect/README.md](python/detect/README.md)
 

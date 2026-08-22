@@ -255,6 +255,25 @@ contributor should look at before adding similar code.
   a cup flush on a RoboCasa island with no contact record), so signed distance is
   the adjudicator in both the diagnostics and the evidence path.
 
+- **Bimanual real-HW fan-out** — `AlohaHAL.send_action` (14-DoF, 4
+  controllers) and `OpenArmRealHAL.send_action` (16-DoF, 4 controllers)
+  both split one action across a per-side arm + gripper controller set and
+  publish four `joint_trajectory` messages. The shapes rhyme but the
+  bases differ: `AlohaHAL` is a `HALBase` subclass owning its own
+  transport, `OpenArmRealHAL` extends `RosControlHAL`. **Look here before
+  adding a third bimanual real-HW adapter** — at three, the
+  `(topic, slice, joint_names)` table `OpenArmRealHAL` uses is worth
+  lifting into a shared mixin.
+
+  Two differences are deliberate, not drift, and any consolidation should
+  keep the OpenArm behaviour: it builds all four messages *before*
+  publishing any (so a rejected action cannot leave one arm on a new chunk
+  and the other on a stale setpoint), and it puts `joint_names` in each
+  message rather than relying on positional agreement with the
+  controller's configured joint list. The same reasoning applies to
+  `tests/hil/_aloha_ros_transport.py`, which is the 4-way HIL bridge a
+  future OpenArm HIL bridge would rhyme with.
+
 - **HAL adapters (sim)** — `FrankaPandaHAL`, `UR5eHAL`, `UR10eHAL`,
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
   `AlohaMujocoHAL`, `OpenArmMujocoHAL` all extend `MujocoArmHAL`.
