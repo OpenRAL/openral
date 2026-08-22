@@ -78,7 +78,7 @@ _CANDIDATE_CHUNK_HISTORY = 3
 _ESTOP_EVIDENCE_WINDOW_NS = 500_000_000
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from openral_core import RobotDescription
 
@@ -87,6 +87,7 @@ __all__ = [
     "candidate_chunk_digest",
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
+    "initial_configuration_stop_record",
     "kernel_checked_body_ids",
     "should_idle_step",
 ]
@@ -820,6 +821,89 @@ def candidate_chunk_digest(
         digest["flat"] = values
         digest["shape_mismatch"] = True
     return digest
+
+
+def initial_configuration_stop_record(
+    snapshot: Mapping[str, object],
+    *,
+    stop_seq: int,
+    last_action_ns: int,
+    candidate_chunks_seen: int,
+) -> dict[str, object] | None:
+    """Classify a kernel stop that landed before the robot was ever commanded.
+
+    A stop with ``last_action_ns == 0`` is categorically different from the
+    mid-task stop the ``sim.estop_ground_truth_snapshot`` line reads like: no
+    action has reached ``SimAttachedHAL.send_action`` yet — the single choke
+    point every real action passes, stamped *before* any early return — so the
+    configuration the kernel refused is the one the **scene reset produced**,
+    not one a policy drove into. The robot is not doing something unsafe; it
+    was **spawned** somewhere unsafe, and no policy, chunk, or margin tweak can
+    clear it. The remedy is a scene-config change (a different seed, or pinned
+    ``layout_ids`` / ``style_ids`` in ``backend_options``), not a safety one.
+
+    This is observability only (CLAUDE.md §1.4). The stop itself is correct and
+    is neither suppressed, delayed, nor altered — an initial pose that
+    interpenetrates the scene is exactly what the kernel exists to refuse. All
+    this does is name it, so an operator reading a run's artifacts does not
+    spend a round debugging a policy that never got to act.
+
+    ``candidate_chunks_seen`` is reported but deliberately does **not** gate:
+    a chunk the kernel *rejected* is a candidate that was never applied, and
+    that stop is still at the initial configuration.
+
+    Args:
+        snapshot: The :func:`estop_ground_truth_snapshot` record for this stop.
+            Read for ``sim_time_s`` and the closest ``nearest_robot_world_pairs``
+            entry; any missing key is simply omitted from the result.
+        stop_seq: The bridge's monotonic stop counter, joining this line to the
+            ``sim.estop_ground_truth_snapshot`` line for the same stop.
+        last_action_ns: ``SimAttachedHAL.last_action_ns`` — ``0`` until the
+            first ``send_action``.
+        candidate_chunks_seen: How many chunks the kernel had been offered on
+            ``/openral/candidate_action`` when the stop fired.
+
+    Returns:
+        A JSON-safe record, or ``None`` when at least one action has already
+        been applied (an ordinary mid-task stop, already fully covered by
+        ``sim.estop_ground_truth_snapshot``).
+
+    Example:
+        >>> pairs = [{"body_a": "robot0_link7", "body_b": "fridge_door", "distance_m": 0.0025}]
+        >>> record = initial_configuration_stop_record(
+        ...     {"sim_time_s": 4.85, "nearest_robot_world_pairs": pairs},
+        ...     stop_seq=1,
+        ...     last_action_ns=0,
+        ...     candidate_chunks_seen=0,
+        ... )
+        >>> record["violation"], record["nearest_robot_world_pair"]["body_b"]
+        ('initial_configuration', 'fridge_door')
+        >>> initial_configuration_stop_record(
+        ...     {}, stop_seq=2, last_action_ns=17, candidate_chunks_seen=3
+        ... ) is None
+        True
+    """
+    if int(last_action_ns) != 0:
+        return None
+    record: dict[str, object] = {
+        "violation": "initial_configuration",
+        "stop_seq": int(stop_seq),
+        "candidate_chunks_seen": int(candidate_chunks_seen),
+        "detail": (
+            "the safety kernel stopped before any action reached the HAL, so "
+            "the refused configuration is the one the scene reset produced. "
+            "This is a scene-initialization defect, not a policy or margin "
+            "one: re-seed the scene or pin backend_options.layout_ids / "
+            "style_ids to a combination whose initial pose is clear."
+        ),
+    }
+    sim_time_s = snapshot.get("sim_time_s")
+    if isinstance(sim_time_s, (int, float)):
+        record["sim_time_s"] = float(sim_time_s)
+    pairs = snapshot.get("nearest_robot_world_pairs")
+    if isinstance(pairs, list) and pairs and isinstance(pairs[0], dict):
+        record["nearest_robot_world_pair"] = dict(pairs[0])
+    return record
 
 
 class SimSensorBridge:
@@ -2576,6 +2660,33 @@ class SimSensorBridge:
                 },
                 sort_keys=True,
             )
+        )
+        self._log_initial_configuration_stop(snapshot)
+
+    def _log_initial_configuration_stop(self, snapshot: dict[str, object]) -> None:
+        """Name a stop that fired before the robot was ever commanded.
+
+        The snapshot line above records *what* the kernel refused; without this
+        one it reads exactly like a mid-task stop, and the 2026-08-22
+        ``PickPlaceFridgeShelfToDrawer`` round cost a debugging cycle on a
+        policy that had not yet applied a single chunk — the arm was already
+        24.7 mm inside the fridge's freezer door at the reset pose. Emitting
+        ``sim.estop_initial_configuration`` puts "the scene spawned the robot
+        in collision" in the artifacts as its own grep-able line.
+
+        Diagnostics only (CLAUDE.md §1.4): nothing here gates, delays, or
+        alters the stop, which is correct and must stand.
+        """
+        record = initial_configuration_stop_record(
+            snapshot,
+            stop_seq=self._estop_seq,
+            last_action_ns=int(getattr(self._hal, "last_action_ns", 0)),
+            candidate_chunks_seen=len(self._candidate_chunks),
+        )
+        if record is None:
+            return
+        self._node.get_logger().error(
+            "sim.estop_initial_configuration " + json.dumps(record, sort_keys=True)
         )
 
     def _read_joint_state(self) -> Any:
