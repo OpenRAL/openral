@@ -165,9 +165,7 @@ class TestCameraEnrichment:
         # One V4L2 node, four streams — the stereo head must not be flattened.
         assembled = assemble_robot_description(_openarm_cell_report(), enrich_cameras=True)
         zed = next(
-            b
-            for b in assembled.sensor_bundles
-            if any(s.model == "ZED Mini" for s in b.sensors)
+            b for b in assembled.sensor_bundles if any(s.model == "ZED Mini" for s in b.sensors)
         )
         assert isinstance(zed, SensorBundle)
         assert [s.modality for s in zed.sensors] == ["rgb", "rgb", "depth", "imu"]
@@ -175,7 +173,8 @@ class TestCameraEnrichment:
 
     def test_detected_cameras_do_not_collide_with_manifest_sensors(self) -> None:
         assembled = assemble_robot_description(_openarm_cell_report(), enrich_cameras=True)
-        names = [s.name for s in assembled.sensors] + [b.bundle_name for b in assembled.sensor_bundles]
+        names = [s.name for s in assembled.sensors]
+        names += [b.bundle_name for b in assembled.sensor_bundles]
         assert len(names) == len(set(names))
 
     def test_vision_capability_is_promoted(self) -> None:

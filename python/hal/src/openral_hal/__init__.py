@@ -50,6 +50,10 @@ Public surface:
   let the HAL just write target → ctrl and step.  The v2 MJCF is
   fetched lazily by ``openral_hal._openarm_v2_assets``; will simplify
   back to ``robot_descriptions`` once upstream bumps its pin.
+- ``OpenArmRealHAL`` / ``OPENARM_REAL_DESCRIPTION``: real-hardware adapter
+  for the same arm.  Commands the four ``openarm_bringup`` ros2_control
+  controllers (per-side arm + gripper) that drive the Damiao CAN FD motor
+  buses from C++ at 400 Hz; ``connect()`` refuses a bus that is not up.
 - ``AnvilOpenArmV2MujocoHAL`` / ``ANVIL_OPENARM_V2_DESCRIPTION``: MuJoCo-backed
   digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured
   variant of the standard OpenArm v2 (same 16-DoF surface).  Differs
@@ -91,6 +95,7 @@ from openral_hal.g1 import G1_DESCRIPTION, G1MujocoHAL
 from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
 from openral_hal.h1 import H1_DESCRIPTION, H1MujocoHAL
 from openral_hal.openarm import OPENARM_DESCRIPTION, OpenArmMujocoHAL
+from openral_hal.openarm_real import OPENARM_REAL_DESCRIPTION, OpenArmRealHAL
 from openral_hal.panda_mobile import (
     PANDA_MOBILE_BASE_JOINT_NAMES,
     PANDA_MOBILE_JOINT_NAMES,
@@ -145,6 +150,7 @@ __all__ = [
     "H1_DESCRIPTION",
     "HAL",
     "OPENARM_DESCRIPTION",
+    "OPENARM_REAL_DESCRIPTION",
     "PANDA_MOBILE_BASE_JOINT_NAMES",
     "PANDA_MOBILE_JOINT_NAMES",
     "RIZON4_DESCRIPTION",
@@ -164,6 +170,7 @@ __all__ = [
     "HALHealthReport",
     "LifecycleEStopHAL",
     "OpenArmMujocoHAL",
+    "OpenArmRealHAL",
     "PandaMobileHAL",
     "ResettableLifecycleEStopHAL",
     "Rizon4MujocoHAL",

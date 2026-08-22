@@ -23,11 +23,12 @@ What this is — and what it isn't
 Like the SO-100 / ALOHA / G1 / H1 / Rizon-4 twins, this HAL is a
 **digital-twin contract validator** (CLAUDE.md §1.11): if the sim
 tests pass, the 16-DoF action layout, lifecycle, joint indexing,
-and ``RobotDescription`` round-trip are guaranteed to match what a
-future ``OpenArmRealHAL`` (most likely wrapping lerobot's upstream
-OpenArm driver — see ``huggingface.co/docs/lerobot/openarm``) will
-see when the physical arm arrives.  The only remaining failure
-surfaces are at the lerobot / CAN-FD driver layer (HIL territory).
+and ``RobotDescription`` round-trip are guaranteed to match what
+:class:`openral_hal.openarm_real.OpenArmRealHAL` sees on the
+physical arm — the two share this module's
+:data:`OPENARM_DESCRIPTION`.  The remaining failure surfaces are
+below the adapter, in the ``openarm_hardware`` ros2_control plugin
+and the CAN FD bus itself (HIL territory).
 
 Action layout
 -------------
@@ -55,6 +56,11 @@ Example:
     >>> len(state.position) == len(OPENARM_DESCRIPTION.joints) == 16  # doctest: +SKIP
     True
     >>> hal.disconnect()  # doctest: +SKIP
+
+.. seealso::
+
+   :mod:`openral_hal.openarm_real` — the real-hardware adapter for
+   this arm.
 
 .. note::
 
@@ -325,11 +331,31 @@ OPENARM_DESCRIPTION = RobotDescription(
     sdk_kind="open",
     hal=HalEntrypoints(
         sim="openral_hal.openarm:OpenArmMujocoHAL",
-        real=None,
+        # Real hardware goes through `openarm_bringup`'s ros2_control stack,
+        # never through Python-side CAN — the loop runs at 400 Hz and
+        # CLAUDE.md §1.5 keeps anything above 100 Hz in C++.
+        real="openral_hal.openarm_real:OpenArmRealHAL",
         # issue #191 Phase 3b — kept in sync with robots/openarm/robot.yaml so the
-        # manifest-driven node threads these OpenArmMujocoHAL kwargs via build_hal.
+        # manifest-driven node threads these kwargs via build_hal.  One flat
+        # block serves both entrypoints: build_hal drops every key the target
+        # constructor does not accept, so the sim HAL never sees the CAN
+        # interface names and the real HAL never sees `settle_steps`.
         parameters=HalParameters(
-            defaults={"settle_steps": 4, "gravity_enabled": False, "staleness_limit_s": 0.5}
+            defaults={
+                # sim (OpenArmMujocoHAL)
+                "settle_steps": 4,
+                "gravity_enabled": False,
+                # both
+                "staleness_limit_s": 0.5,
+                # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
+                # four bimanual controllers openarm_bringup spawns.
+                "left_can_interface": "openarm_left",
+                "right_can_interface": "openarm_right",
+                "left_arm_controller": "left_joint_trajectory_controller",
+                "left_gripper_controller": "left_gripper_controller",
+                "right_arm_controller": "right_joint_trajectory_controller",
+                "right_gripper_controller": "right_gripper_controller",
+            }
         ),
     ),
     # MuJoCo wiring — v2 bimanual MJCF fetched by ``ensure_openarm_v2_mjcf``.

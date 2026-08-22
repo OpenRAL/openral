@@ -146,8 +146,17 @@ class TestMatching:
     def test_a_down_link_does_not_match(self) -> None:
         # The kernel knowing about a controller is not evidence of a robot.
         down = CanInterface(
-            "openarm_left", False, True, 1000000, 5000000, "STOPPED", "pcan_usb_pro_fd", 72,
-            0x0C72, 0x0011, "PCAN-USB Pro FD",
+            "openarm_left",
+            False,
+            True,
+            1000000,
+            5000000,
+            "STOPPED",
+            "pcan_usb_pro_fd",
+            72,
+            0x0C72,
+            0x0011,
+            "PCAN-USB Pro FD",
         )
         assert match_can_interfaces([down]) == []
 
@@ -172,6 +181,7 @@ class TestProbeContract:
         result = probe_can(warnings=warnings)
         assert result.interfaces and not result.matches
         assert any("udev" in w for w in warnings)
+
 
 class TestDiagnosis:
     """`diagnose_can_matches` is the operator-facing reading of `state`."""

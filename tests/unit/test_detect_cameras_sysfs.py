@@ -68,13 +68,19 @@ def cell_sysfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     sysfs = tmp_path / "sys"
     _make_camera(
-        sysfs, "usb2-3.1.3", [0, 1],
-        name="Arducam B0495 (USB3 2.3MP)", usb=("04b4", "4950", "CELL1_CAM_LEFT"),
+        sysfs,
+        "usb2-3.1.3",
+        [0, 1],
+        name="Arducam B0495 (USB3 2.3MP)",
+        usb=("04b4", "4950", "CELL1_CAM_LEFT"),
     )
     _make_camera(sysfs, "usb2-1", [2, 3], name="ZED-M: ZED-M", usb=("2b03", "f682", ""))
     _make_camera(
-        sysfs, "usb2-3.2", [4, 5],
-        name="Arducam B0495 (USB3 2.3MP)", usb=("04b4", "4950", "CELL1_CAM_RIGHT"),
+        sysfs,
+        "usb2-3.2",
+        [4, 5],
+        name="Arducam B0495 (USB3 2.3MP)",
+        usb=("04b4", "4950", "CELL1_CAM_RIGHT"),
     )
     monkeypatch.setattr(cameras_module, "_SYSFS_V4L2", str(sysfs / "class" / "video4linux"))
     return sysfs

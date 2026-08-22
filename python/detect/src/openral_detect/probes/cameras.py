@@ -96,7 +96,7 @@ def _usb_ancestor(node: str) -> str:
         if _read(f"{current}/idVendor") and _read(f"{current}/idProduct"):
             return current
         parent = os.path.dirname(current)
-        if parent == current or parent == "/sys":
+        if parent in (current, "/sys"):
             break
         current = parent
     return ""

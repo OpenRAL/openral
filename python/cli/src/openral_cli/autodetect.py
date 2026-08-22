@@ -576,6 +576,10 @@ _ARPHRD_CAN = 280
 # tests can point the enumeration at a real fixture tree on disk.
 _SYSFS_NET = "/sys/class/net"
 
+# Classic CAN frames cap at 8 data bytes (16-byte MTU); CAN FD's 64-byte
+# payload needs 72. MTU is therefore the FD indicator on hosts without `ip`.
+_CLASSIC_CAN_MTU = 16
+
 
 def _read_sysfs(path: str) -> str:
     """Read one sysfs attribute, returning ``""`` when it is absent."""
@@ -612,7 +616,7 @@ def _usb_parent_ids(ifname: str) -> tuple[int, int, str]:
             except ValueError:
                 return (0, 0, "")
         parent = os.path.dirname(node)
-        if parent == node or parent == "/sys":
+        if parent in (node, "/sys"):
             break
         node = parent
     return (0, 0, "")
@@ -741,7 +745,7 @@ def enumerate_can_interfaces() -> list[CanInterface]:
         fd_enabled, bitrate, data_bitrate, state, driver = _can_info_from_ip(record)
         # Without `ip`, MTU still separates classic CAN (16) from CAN FD (72).
         if not record:
-            fd_enabled = mtu > 16
+            fd_enabled = mtu > _CLASSIC_CAN_MTU
         vid, pid, product = _usb_parent_ids(name)
         out.append(
             CanInterface(
@@ -775,8 +779,17 @@ def can_adapter_name(iface: CanInterface) -> str:
     Example:
         >>> from openral_cli.autodetect import CanInterface, can_adapter_name
         >>> iface = CanInterface(
-        ...     "openarm_left", True, True, 1000000, 5000000,
-        ...     "ERROR-ACTIVE", "pcan_usb_pro_fd", 72, 0x0C72, 0x0011, "PCAN-USB Pro FD",
+        ...     "openarm_left",
+        ...     True,
+        ...     True,
+        ...     1000000,
+        ...     5000000,
+        ...     "ERROR-ACTIVE",
+        ...     "pcan_usb_pro_fd",
+        ...     72,
+        ...     0x0C72,
+        ...     0x0011,
+        ...     "PCAN-USB Pro FD",
         ... )
         >>> can_adapter_name(iface)
         'PEAK PCAN-USB Pro FD'
@@ -848,8 +861,17 @@ def infer_robot_from_can(interfaces: list[CanInterface]) -> str | None:
     Example:
         >>> from openral_cli.autodetect import CanInterface, infer_robot_from_can
         >>> iface = CanInterface(
-        ...     "openarm_left", True, True, 1000000, 5000000,
-        ...     "ERROR-ACTIVE", "pcan_usb_pro_fd", 72, 0x0C72, 0x0011, "PCAN-USB Pro FD",
+        ...     "openarm_left",
+        ...     True,
+        ...     True,
+        ...     1000000,
+        ...     5000000,
+        ...     "ERROR-ACTIVE",
+        ...     "pcan_usb_pro_fd",
+        ...     72,
+        ...     0x0C72,
+        ...     0x0011,
+        ...     "PCAN-USB Pro FD",
         ... )
         >>> infer_robot_from_can([iface])
         'openarm'

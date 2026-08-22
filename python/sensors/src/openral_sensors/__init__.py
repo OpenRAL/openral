@@ -28,13 +28,13 @@ from openral_sensors import (  # reason: side-effect import populates CATALOG
     stereolabs,
     usb_uvc,
 )
+from openral_sensors.arducam import arducam_b0495_spec
 from openral_sensors.catalog import (
     CATALOG,
     SensorCatalog,
     SensorCatalogEntry,
     SensorSignature,
 )
-from openral_sensors.arducam import arducam_b0495_spec
 from openral_sensors.luxonis import oak_d_pro_bundle
 from openral_sensors.realsense import (
     bundle_to_node_params,
