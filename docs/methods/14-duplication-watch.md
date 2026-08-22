@@ -186,7 +186,7 @@ contributor should look at before adding similar code.
     is the kernel-side refusal to grep for.
 
 11. **`FailureTrigger` / `SafetyStatus` `KIND_*` numbers — *three-way
-    mirror, and one leg is currently drifted.*** The numbers are declared in
+    mirror, now pinned on every leg.*** The numbers are declared in
     `packages/msgs/msg/FailureTrigger.msg`, **redeclared** in
     `packages/msgs/msg/SafetyStatus.msg` (ROS IDL has no cross-message
     constant reuse), and mirrored a third time as plain Python ints in
@@ -194,21 +194,32 @@ contributor should look at before adding similar code.
     callers can publish typed failure events without a sourced ROS install.
     The C++ `ViolationKind` enum
     (`cpp/openral_safety_kernel/include/openral_safety_kernel/validator.hpp`)
-    is a fourth partial copy of the same numbering.
+    is a fourth partial copy of the same numbering, and `reasoner_node.py`
+    keeps a fifth, private two-kind copy (`_KIND_TIMEOUT` / `_KIND_CONTROLLER`)
+    of the kinds it emits itself.
     `tests/unit/test_safety_status_msg.py` pins the two IDL blocks against
     each other and pins `DROP_*` disjoint from `KIND_*`; a kernel gtest
     (`ViolationKindMapping.EnumValuesMatchFailureTriggerConstants`) pins the
-    enum. **Nothing pins the `failure_bus.py` leg, and it has drifted:** it
-    stops at `KIND_REASONER_TIMEOUT = 9` (plus
-    `KIND_SUPPRESSED_SUMMARY = 254`) and is missing `KIND_COLLISION = 10`,
+    enum. The `failure_bus.py` leg was the unpinned one, and it *had* drifted:
+    it stopped at `KIND_REASONER_TIMEOUT = 9` (plus
+    `KIND_SUPPRESSED_SUMMARY = 254`) and never grew `KIND_COLLISION = 10`,
     which the IDL, the kernel enum and the kernel's
-    `publish_collision_failure` all carry. The consequence is scoped but
-    real: any non-ROS caller that reaches for a symbolic collision kind
-    finds none and must hard-code `10`. Fixing it is a code change and is
-    deliberately **not** made in this docs pass — it is recorded here so the
-    next PR touching `failure_bus.py` closes it and adds the missing
-    contract test rather than re-deriving the discovery. **When a `KIND_*`
-    number is added, all four sites move together.**
+    `publish_collision_failure` all carry — so the whole collision stack
+    produced the one kind no ROS-free caller could name, and the callers that
+    needed it hard-coded the literal `10`
+    (`tests/unit/test_reasoner_context.py` did exactly that).
+    **Closed 2026-08-22**: the constant is mirrored, and
+    `tests/unit/test_failure_bus_idl_mirror.py` now pins that leg the way the
+    other two are pinned — it scrapes every `KIND_*` / `SEVERITY_*` off the
+    colcon-generated `FailureTrigger` and asserts the Python mirror matches
+    name-for-name and value-for-value **in both directions** (an IDL constant
+    with no mirror fails; a mirrored name with no IDL counterpart fails; an
+    unexported one fails). Both it and `test_safety_status_msg.py` are in
+    `scripts/ros_live_tests.sh`, because the docker image is the only CI
+    surface with the overlay these contracts read.
+    **When a `KIND_*` number is added, all four sites still move together** —
+    the difference is that three of them now say so with a red test rather
+    than an audit.
 
 ### Already correctly DRY (do not flag)
 

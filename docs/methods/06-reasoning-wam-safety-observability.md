@@ -394,12 +394,12 @@ _W3C TraceContext inject / extract for cross-process trace correlation._
 ### `python/observability/src/openral_observability/failure_bus.py`
 _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{...}` bus._
 
-- `class FailureSource(str, Enum)` (L118) — `HAL | SENSOR | SKILL | SAFETY | WAM | CRITIC`; the string value is the topic suffix.
-- `topic_for(source: FailureSource) -> str` (L133) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
-- `KIND_*` / `SEVERITY_*` `int` module constants (L94–L109) — Mirror `openral_msgs/msg/FailureTrigger`; bump both when the IDL changes.
-- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L150) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited). `DEFAULT_SUMMARY_PERIOD_S = 1.0` (L154).
-- `class _TokenBucket` (L164) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
-- `class FailureBusPublisher` (L213) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Methods: `create_publisher()` (opens RELIABLE+VOLATILE+KL=50 publisher on `topic_for(source)`), `start()` (boots 1 Hz suppressed-summary timer), `stop()`, `destroy()`, `publish(*, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (False when rate-limited). Properties: `topic`, `source`.
+- `class FailureSource(str, Enum)` (L126) — `HAL | SENSOR | SKILL | SAFETY | WAM | CRITIC`; the string value is the topic suffix.
+- `topic_for(source: FailureSource) -> str` (L141) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
+- `KIND_*` / `SEVERITY_*` `int` module constants (L105–L121) — Mirror `openral_msgs/msg/FailureTrigger` (incl. `KIND_COLLISION = 10`, the kind the safety kernel's `publish_collision_failure` stamps on every collision stop); bump both when the IDL changes. `tests/unit/test_failure_bus_idl_mirror.py` pins the two sides against each other name-for-name and value-for-value, reading the colcon-generated constants — so a `.msg` constant that never reaches this block fails a test.
+- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L150) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited). `DEFAULT_SUMMARY_PERIOD_S = 1.0` (L162).
+- `class _TokenBucket` (L172) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
+- `class FailureBusPublisher` (L221) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Methods: `create_publisher()` (opens RELIABLE+VOLATILE+KL=50 publisher on `topic_for(source)`), `start()` (boots 1 Hz suppressed-summary timer), `stop()`, `destroy()`, `publish(*, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (False when rate-limited). Properties: `topic`, `source`.
 
 ### `python/observability/src/openral_observability/logging.py`
 - `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L63)

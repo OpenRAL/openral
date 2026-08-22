@@ -69,6 +69,10 @@ on:
       - tests/integration/test_safety_status_latched_topic.py
       - tests/integration/test_safety_kernel_place_allowance_band.py
       - tests/integration/test_segment_in_view_service.py
+      # An IDL-constant contract: it reads the colcon-generated openral_msgs,
+      # so this image is its only CI surface even though it lives in tests/unit.
+      - tests/unit/test_safety_status_msg.py
+      - tests/unit/test_failure_bus_idl_mirror.py
       # It spawns the real kernel through the tests/sim/safety helpers, so a
       # change to those must rebuild + re-run it too.
       - tests/sim/safety/_kernel_subprocess.py
