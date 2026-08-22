@@ -19,9 +19,10 @@ metadata:
   action_dim: 16
   runtime: pytorch
   quantization: bf16/pytorch
+  min_vram_gb: {bf16: 9.2}
   chunk_size: 35
   n_action_steps: 35
-  latency_budget: {per_chunk_ms: 400.0}
+  latency_budget: {per_chunk_ms: 600.0}
   license_code: Apache-2.0
   license_weights: permissive_research   # NOT permissive — see License section
   weights_uri: hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16

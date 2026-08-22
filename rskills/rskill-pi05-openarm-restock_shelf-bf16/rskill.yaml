@@ -99,8 +99,23 @@ sensors_required:
 #
 # NOTE: `control_mode_semantics` is a *declaration*, not an implementation —
 # nothing in the OpenRAL runner integrates deltas into absolute targets today.
-# Whoever drives this policy owns that reconstruction (the q-research openpi
-# bridge does it server-side).
+# Whoever drives this policy owns that reconstruction. lerobot's PI05 does it
+# natively via `use_relative_actions`, so the published `config.json` sets it;
+# the q-research openpi bridge does it server-side.
+#
+# ⚠ If you drive this through lerobot, `config.json` MUST also carry
+# `action_feature_names` — the 16 training feature names, with the word
+# "gripper" in dims 7 and 15. lerobot resolves `relative_exclude_joints:
+# ["gripper"]` by substring-matching those names, and with them absent it
+# cannot identify the gripper dims, so it relativizes all 16 and adds the
+# current state onto the two absolute gripper channels.
+#
+# That failure is quiet, and it was measured on this checkpoint: with the
+# names absent, gripper dim 7 came out in [0.4738, 0.9445] against its trained
+# [0.0000, 0.7852] — the state mean (0.4707) added straight on. With them
+# present: [-0.0023, 0.4673]. The arm dims look identical either way, so
+# nothing in the chunk announces the problem. openpi derives the same mask by
+# the same rule (`"gripper" not in name.lower()`).
 actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
@@ -115,13 +130,12 @@ runtime: "pytorch"
 quantization:
   dtype: "bf16"
   backend: "pytorch"
-# `min_vram_gb` is deliberately absent. It is a *measured peak-device-memory*
-# field elsewhere in this catalog, and this checkpoint has not been loaded on
-# a GPU under OpenRAL to measure it. The hard floor is the parameter
-# footprint: 3.617 B parameters, all BF16 = 6.74 GiB resident before any
-# activation or KV-cache headroom. Populate this block from a real
-# `torch.max_memory_reserved()` reading rather than from the sibling
-# `pi05-libero-int8` numbers, which describe a different checkpoint.
+# MEASURED, not inherited: peak `torch.max_memory_reserved()` for a real
+# forward pass on a Jetson AGX Thor — three live camera frames in, a 35x16
+# action chunk out. The parameter footprint alone is 6.74 GiB (3.617 B BF16);
+# the rest is activations and the KV cache.
+min_vram_gb:
+  bf16: 9.2
 weights_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
@@ -161,12 +175,16 @@ state_contract:
 chunk_size: 35
 n_action_steps: 35
 latency_budget:
-  # Measured end-to-end GPU time for the accepted TensorRT engine built from
-  # this checkpoint on the lab Jetson AGX Thor: 59.68 ms/chunk
-  # (fp8+llm-nvfp4, 96 language tokens). The unquantized PyTorch path this
-  # manifest declares is slower than that engine, not faster, so this budget
-  # is a ceiling with headroom rather than a measured PyTorch figure.
-  per_chunk_ms: 400.0
+  # MEASURED for this manifest's own runtime (bf16 PyTorch) on a Jetson AGX
+  # Thor: 423 ms warm per chunk, 880 ms on the first call. A 35-step chunk at
+  # 30 fps covers 1167 ms of motion, so one warm chunk costs ~36% of its own
+  # horizon — closed-loop replanning at n_action_steps=35 fits, but only just,
+  # and there is no room to replan more often on this runtime.
+  #
+  # For scale: the TensorRT fp8+llm-nvfp4 engine built from this same
+  # checkpoint runs 59.68 ms/chunk on the same host — 7x faster. If replan
+  # cadence matters, that is the path, not this one.
+  per_chunk_ms: 600.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2410.24164"
