@@ -172,13 +172,31 @@ controller_server:
         # IsPathValid) already reads the published polygon; MPPI is the one
         # that needs this flag.
         #
-        # It is the expensive option upstream documents as such: SE2 footprint
-        # cost per sampled trajectory point instead of one lookup, here
-        # batch_size 2000 x time_steps 56 / trajectory_point_step 2 per cycle
-        # at 20 Hz. That cost has NOT been measured on the reference host under
-        # a live scene — no RoboCasa atomic task drives the base far enough
-        # while carrying to exercise it (issue #108). If the controller misses
-        # its rate, `trajectory_point_step` is the knob, not this flag.
+        # It is the expensive option upstream documents as such, and the cost
+        # is now MEASURED rather than assumed — see
+        # `benchmark/cost_critic_footprint_bench.cpp`, which times upstream's
+        # own `FootprintCollisionChecker::footprintCostAtPose` against the real
+        # Jazzy `libnav2_costmap_2d_core` at these exact polygons and this exact
+        # grid. On an i5-8600K, batch_size 2000 x time_steps 56 /
+        # trajectory_point_step 2 = 56000 calls per iteration:
+        #
+        #   base only   150 ns/call -> 8.4 ms/iteration, +8.2 ms vs `false`
+        #   carrying    178 ns/call -> 10.0 ms/iteration, +9.8 ms vs `false`
+        #
+        # i.e. 17-20% of the 50 ms cycle, on this host. NOT a fraction of the
+        # points — ALL of them: `CostCritic::findCircumscribedCost` returns 0.0
+        # whenever `inflation_radius` is below the footprint's CIRCUMSCRIBED
+        # radius, and `inCollision`'s guard is
+        # `cost >= possible_collision_cost_ || possible_collision_cost_ < 1.0f`,
+        # so a 0.0 makes the full footprint check unconditional. Both polygons
+        # are in that regime here (0.444 m and 0.863 m circumscribed vs a
+        # 0.40 m inflation_radius), so the worst case IS the normal case.
+        # Raising inflation_radius could restore the gate for the bare chassis;
+        # nothing can restore it while carrying, because the payload's
+        # circumscribed radius is most of the 3 m local costmap. What has NOT
+        # been measured is the rest of the MPPI loop around it — that still
+        # needs a live scene (issue #108). If the controller misses its rate,
+        # `trajectory_point_step` is the knob, not this flag.
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -242,11 +260,22 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # 0.40 m ≥ the chassis circumscribed radius (~0.364 m, from
-        # robot_radius 0.35). Below the inscribed radius (0.353) Nav2
-        # can't use the costmap potential field and logs an error +
-        # falls back to full-footprint collision checks every cycle
-        # (the prior 0.10 m did exactly that). cost_scaling_factor keeps
+        # CORRECTION, measured: 0.40 m is BELOW this costmap's circumscribed
+        # radius, not above it. The ~0.364 m figure came from `robot_radius
+        # 0.35` + padding, but this costmap is configured with the `footprint`
+        # POLYGON above, and Nav2 derives the circumscribed radius from the
+        # polygon's farthest padded vertex — hypot(0.36, 0.26) = 0.444 m
+        # (`nav2_costmap_2d::calculateMinAndMaxDistances`, run against the real
+        # Jazzy library in `benchmark/cost_critic_footprint_bench.cpp`). The
+        # consequence is priced in the CostCritic comment above: MPPI's
+        # `findCircumscribedCost` returns 0.0 and the full-footprint check runs
+        # on every sampled point, at a measured 8.4 ms of the 50 ms cycle.
+        # Raising this above 0.444 m would restore the cheap gate for the bare
+        # chassis but not while carrying (0.863 m circumscribed), so it is left
+        # at 0.40 m as a navigation-behaviour value rather than changed blind.
+        # Below the INSCRIBED radius (0.26 m for this polygon) Nav2 also cannot
+        # use the costmap potential field at all and logs an error; the prior
+        # 0.10 m did exactly that. cost_scaling_factor keeps
         # this a soft gradient — LETHAL only within the inscribed radius
         # — so the base still threads tight kitchen aisles, it just
         # prefers the centreline. Local matches global so the
@@ -360,9 +389,9 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # 0.40 m ≥ the chassis circumscribed radius (~0.364 m). Matches
-        # local_costmap — see that comment for the inscribed-radius /
-        # optimized-collision-checking rationale.
+        # Matches local_costmap, including its measured correction: 0.40 m is
+        # BELOW the polygon's 0.444 m circumscribed radius, above its 0.26 m
+        # inscribed one. See that comment for the full rationale.
         inflation_radius: 0.40
       always_send_full_costmap: True
 
