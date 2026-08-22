@@ -5,13 +5,36 @@ Decision Records (ADRs). As of 2026-07-08 the ADR log itself lives in the
 private [`OpenRAL/management`](https://github.com/OpenRAL/management) repo,
 under `adr/` — not in this public repo.
 
-This public repo no longer cites individual decisions by number. Code
-comments, docstrings, and docs describe *why* in prose instead — what a
-piece of behavior does and the concept behind it — without a citation a
-reader here can't follow. Contributors without access to
-`OpenRAL/management` who want the full rationale, alternatives considered,
-or history behind a specific piece of behavior can ask by opening an issue
-in this repo.
+This public repo **does** cite individual decisions by number. Code
+comments, docstrings, tests, and docs carry bare `ADR-NNNN` identifiers as
+shorthand for the decision that fixed a contract — as of `2edcf67` there
+are 398 such citations on 334 lines across 98 files, spanning 14 distinct
+numbers (most cited: `ADR-0097`, `ADR-0096`, `ADR-0092`, `ADR-0088`,
+`ADR-0095`). Those identifiers are deliberately **not links**: the record
+they name lives in the private repo, and a dead link would be worse than a
+bare id. Prose around a citation is written to stand on its own, so a
+reader without access can follow *what* the behavior is even when they
+cannot read *why it was chosen*.
+
+Two consequences worth stating plainly rather than leaving a reader to
+discover:
+
+- **The number is a handle, not a coordinate.** The ADR log is append-only
+  but not gap-free, and cross-references inside it use filenames rather
+  than integers. Do not infer an ordering, a date, or a dependency from a
+  number's neighbours.
+- **Some cited numbers are not on the private repo's `main` either.** The
+  collision-stack citations `ADR-0092`, `ADR-0094` and `ADR-0095` live on
+  an unmerged draft branch (`safety/xr1-deploy-sim`) of
+  `OpenRAL/management`, and `ADR-0093` on `adr/0093-quantization-dtype-fp8`;
+  the implementations they describe are merged here on `master` while the
+  decision records that name them are not yet merged there. `ADR-0096` and
+  `ADR-0097` are on `main`. So a maintainer resolving one of those four
+  numbers has to look on the branch, not just the default branch.
+
+Contributors without access to `OpenRAL/management` who want the full
+rationale, alternatives considered, or history behind a specific piece of
+behavior can ask by opening an issue in this repo, quoting the identifier.
 
 The decision discipline is unchanged: adding, removing, renaming, or moving
 a responsibility between the eight architecture layers (§3 of
