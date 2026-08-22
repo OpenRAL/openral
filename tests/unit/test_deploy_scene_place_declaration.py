@@ -42,7 +42,7 @@ def _declaration_dict() -> dict[str, Any]:
     return {
         "target_id": "sim:cab_1_left_group_main",
         "object_id": "",
-        "timeout_s": 120.0,
+        "timeout_s": 300.0,
         "stamp_ns": 0,
     }
 
@@ -102,11 +102,22 @@ def test_no_declaration_at_all_is_still_valid() -> None:
 # very likely resolve to a different real receptacle instead of failing closed.
 # That reasoning lives in the scene file; `test_the_drawer_scene_declares_nothing`
 # pins the decision so it cannot be undone by accident.
+# Every name here is one a live seed-1 env answered to. `robocasa_baguette` was
+# read off the rounds 5/6 artifacts and confirmed by the 2026-08-22 Spark run
+# (region measured, allowance published); the other two were #142 guesses that
+# the HAL refused fail-closed (`... names no MuJoCo body; refused`) and were
+# replaced with the names that run's MuJoCo body table actually carries.
 _DECLARING_SCENES = {
     "robocasa_baguette.yaml": "sim:cab_1_left_group_main",
-    "robocasa_sink_cup.yaml": "sim:sink_main_group_1_main",
-    "robocasa_fridge_drawer.yaml": "sim:fridge_right_group_main",
+    "robocasa_sink_cup.yaml": "sim:sink_island_group_main",
+    "robocasa_fridge_drawer.yaml": "sim:fridge_main_group_fridge_drawer0",
 }
+
+#: Arm→grasp latency measured on `robocasa_baguette` at seed 1 (Spark,
+#: 2026-08-22), in the SIMULATOR clock domain the declaration is stamped in.
+#: The declaration arms at goal start, so this much of the backstop is spent
+#: before the place phase can begin at all.
+_MEASURED_ARM_TO_GRASP_S = 92.0
 
 
 @pytest.mark.parametrize("scene_file", sorted(_DECLARING_SCENES))
@@ -131,6 +142,31 @@ def test_the_place_scenes_declare_their_target(scene_file: str) -> None:
     assert not declaration.is_live(now_ns=int(declaration.timeout_s * 1e9) + 1)
 
 
+@pytest.mark.parametrize("scene_file", sorted(_DECLARING_SCENES))
+def test_the_backstop_outlives_the_transport_phase(scene_file: str) -> None:
+    """The backstop must not expire before the phase it exists to scope.
+
+    #142 sized `timeout_s` at 120 s from the 500-step / 20 Hz benchmark horizon,
+    but a `deploy sim` goal is continuous stepping and is not bounded by that
+    horizon. The live baguette run then spent 92 s of simulator time between
+    arming and the grasp, leaving ~28 s for the entire place phase — a window
+    that expires before the allowance it carries can ever be used, which is
+    indistinguishable from shipping no declaration at all.
+    """
+    scene = DeployScene.from_yaml(str(_REPO_ROOT / "scenes" / "deploy" / scene_file))
+    declaration = scene.place_declaration
+    assert declaration is not None
+
+    # Still live at the measured grasp, with the place phase itself yet to run.
+    assert declaration.is_live(now_ns=int(_MEASURED_ARM_TO_GRASP_S * 1e9))
+    # And with more window left afterwards than was consumed getting there.
+    remaining_s = declaration.timeout_s - _MEASURED_ARM_TO_GRASP_S
+    assert remaining_s > _MEASURED_ARM_TO_GRASP_S, (
+        f"{scene_file}: only {remaining_s:.1f} s of place window after a "
+        f"{_MEASURED_ARM_TO_GRASP_S:.0f} s transport"
+    )
+
+
 def test_the_drawer_scene_declares_nothing_until_its_target_is_read_off_a_run() -> None:
     """`PickPlaceCounterToDrawer`'s target is one of many stack levels.
 
@@ -138,6 +174,14 @@ def test_the_drawer_scene_declares_nothing_until_its_target_is_read_off_a_run() 
     at a different drawer each time, so a guess would not fail closed — it would
     arm the witness and its approach allowance at whichever real receptacle
     happened to answer to that name (HZ-0097-2).
+
+    The 2026-08-22 live run sharpened this rather than resolving it: at seed 1
+    the only bodies whose names match `drawer` are the FRIDGE's freezer drawers,
+    while the counter drawer this task places into is `stack_2_left_group_3_*`.
+    A reader who greps the body table for `drawer` therefore gets a name that
+    resolves — to a receptacle across the kitchen — and a resolving name cannot
+    fail closed. The scene stays undeclared until a run establishes which stack
+    level `register_fixture_ref("drawer", ...)` actually returned.
     """
     scene = DeployScene.from_yaml(
         str(_REPO_ROOT / "scenes" / "deploy" / "robocasa_drawer_utensil.yaml")

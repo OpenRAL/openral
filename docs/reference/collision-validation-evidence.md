@@ -312,6 +312,37 @@ declaration, **no** place witness and **no** approach allowance. A fix is in
 flight; until it lands, the ADR-0097 place path is exercised only by
 hand-authored scenes.
 
+**Update (#142 + the follow-up correction).** The three RoboCasa place scenes
+now carry a declaration, and the live seed-1 introspection that validated them
+is worth recording because two of the three shipped names were wrong:
+
+- `robocasa_baguette` → `sim:cab_1_left_group_main` **confirmed**. The name
+  resolves, the evidence producer measures the declared subtree at half-extents
+  0.5001 / 0.439962 / 0.3001 m, and the region is published with the 0.0375 m
+  approach allowance. This is the first shipped scene on which the ADR-0097
+  place path arms end to end.
+- `robocasa_sink_cup` → shipped `sim:sink_main_group_1_main`, **refused**;
+  the live body table names the sink `sink_island_group_main` (body 319,
+  parent `world`).
+- `robocasa_fridge_drawer` → shipped `sim:fridge_right_group_main`,
+  **refused**; the live fridge is `fridge_main_group`, and the correct target
+  is the drawer itself (`fridge_main_group_fridge_drawer0`, body 98) rather
+  than the fixture root (body 91), whose subtree would also exempt contact
+  with the fridge and freezer doors.
+
+Both wrong names failed exactly as designed — `Place declaration target ...
+names no MuJoCo body; refused`, nothing armed, run unchanged — which is what
+made the defect a bookkeeping cost rather than a collision. The names were
+guessed from the layout corpus because #142's stated procedure, "read it off
+`env.fixture_refs[...].name`", is unexecutable: in a live env those values are
+tuples with no `.name`, carrying `fixture_name: None`. The scenes now carry the
+MuJoCo body-table recipe instead.
+
+The same run also showed the 120 s backstop was mis-sized: on the baguette
+scene the declaration armed at goal start and the payload was grasped 92 s of
+simulator time later, leaving ~28 s for the whole place phase. The declaring
+scenes now use 300 s.
+
 Note also that XR-1 is stochastic across runs even at a pinned scene seed
 (`first_chunk_s` 90.96 vs 34.23, 1285 vs 632 steps for the same scene and tip),
 so per-run trajectories are not comparable between rounds — **only failure
@@ -331,8 +362,10 @@ themselves rather than inferred:
 3. **The n=15 A/B that was supposed to settle that never had its outcome
    written down.** Both arms are 0/15; the comparison was not made.
 4. **As of 2026-08-22 the stack completes no scene.** Carry-phase machinery
-   behaves; two link-class false positives are open; the place path is unarmed
-   in every shipped scene.
+   behaves; two link-class false positives are open. The place path was unarmed
+   in every shipped scene at the time of this round; #142 and its follow-up
+   correction arm it on the three RoboCasa place scenes, with `robocasa_baguette`
+   the only one observed arming end to end so far (see the update above).
 5. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
    `round7`, `round8`, `defect-ab`). Their findings survive only as constants
    and comments in this repo. Treat a citation to one of those rounds as a
