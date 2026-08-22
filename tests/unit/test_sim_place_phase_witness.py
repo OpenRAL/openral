@@ -28,6 +28,8 @@ from openral_core import (
     JointSpec,
     JointType,
     PlaceDeclaration,
+    PlaceRegion,
+    Pose6D,
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
@@ -605,6 +607,63 @@ def test_an_unresolvable_target_leaves_no_region_behind() -> None:
     with pytest.raises(ROSConfigError):
         rig.tracker.set_place_declaration(_declaration(target_id="sim:nope", stamp_ns=rig.tick))
     assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_dispatch_supplied_region_is_replaced_by_the_measured_one() -> None:
+    """Only the producer's own measurement ever leaves this producer.
+
+    The region is what buys a reduced world-collision margin, and it is sound
+    only because someone measured the declared target. Dispatch cannot: it names
+    a target, in a base frame that moves under it. The rSkill runner strips the
+    field before publishing, and this is the same rule at the boundary where it
+    is load-bearing — the attachment publication the kernel reads.
+    """
+    rig = _Rig()
+    claimed = PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"),
+        half_extents=(0.9, 0.9, 0.9),
+        evidence_ref="dispatch_claim:not_a_measurement",
+    )
+    rig.tracker.set_place_declaration(
+        _declaration(stamp_ns=rig.tick).model_copy(update={"region": claimed})
+    )
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    region = declaration.region
+    assert region is not None
+    assert region.evidence_ref == "mujoco_body_subtree:cabinet"
+    np.testing.assert_allclose(region.half_extents, _REGION_HALF_EXTENTS, atol=1e-6)
+    np.testing.assert_allclose(region.pose.xyz, _REGION_CENTRE_IN_BASE, atol=1e-6)
+
+
+def test_a_dispatch_supplied_region_is_dropped_when_nothing_can_be_measured() -> None:
+    """The leak, closed: unmeasurable target, no region — not the claimed one.
+
+    ``sim:empty_shelf`` resolves as a body but bounds no collision geometry, so
+    the producer measures nothing. Relaying the incoming region here would arm
+    the allowance around a 1.8 m box nobody observed while the trace still said
+    the region was producer-supplied (HZ-0097-2/4). Dropping it restores exactly
+    the pre-amendment margin.
+    """
+    rig = _Rig()
+    claimed = PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"),
+        half_extents=(0.9, 0.9, 0.9),
+        evidence_ref="dispatch_claim:not_a_measurement",
+    )
+    rig.tracker.set_place_declaration(
+        _declaration(target_id="sim:empty_shelf", stamp_ns=rig.tick).model_copy(
+            update={"region": claimed}
+        )
+    )
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    assert declaration.target_id == "sim:empty_shelf"
+    assert declaration.region is None
 
 
 def test_the_region_rides_the_wire_unchanged() -> None:

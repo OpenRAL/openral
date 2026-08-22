@@ -1791,6 +1791,17 @@ if _ROS2_AVAILABLE:
             trusted from the source, which is what makes a wrong declaration
             reconstructible from the trace alone (HZ-0097-2 mitigation 1).
 
+            Any ``region`` on the incoming declaration is **dropped** here. The
+            region is producer-supplied by contract (ADR-0097's 2026-08-14
+            amendment): it buys the payload a reduced world-collision margin,
+            and it is only sound because a producer measured the declared target
+            in the frame the occupancy grid uses. This node is dispatch — it
+            names a target, it never measures one — so a region arriving on a
+            goal or in the scene's ``place_declaration_json`` describes a volume
+            nobody observed (HZ-0097-2/4). Dropping it costs nothing on the
+            legitimate path: the evidence producer attaches the measured region
+            downstream, on the attachment publication the kernel reads.
+
             A malformed declaration is refused and logged; the goal still runs,
             with no declaration, which is the fail-closed direction (the kernel
             keeps stopping on place contact).
@@ -1810,6 +1821,8 @@ if _ROS2_AVAILABLE:
                     "trace_id": trace_id,
                     "stamp_ns": int(self.get_clock().now().nanoseconds),
                     "active": True,
+                    # Dispatch never publishes a region; the producer measures it.
+                    "region": None,
                 }
             )
             self._publish_place_declaration(declaration)

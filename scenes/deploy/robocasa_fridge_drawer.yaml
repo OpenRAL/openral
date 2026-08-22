@@ -97,3 +97,31 @@ scene:
 # Pin `layout_ids` / `style_ids` in backend_options when a specific kitchen
 # matters — see the KNOWN DEFECT block above.
 seed: 1
+
+# ADR-0097 place-phase declaration — see scenes/deploy/robocasa_baguette.yaml for
+# the full field-by-field rationale (goal scoping, clock domain, why no region).
+# This is the scene the allowance matters most for: both surfaces are inside the
+# fridge, so the payload passes voxel-quantised geometry on five sides.
+#
+# target_id — NOT YET VERIFIED AGAINST A LIVE RUN.
+#   `PickPlaceFridgeShelfToDrawer` resolves `register_fixture_ref("fridge",
+#   FixtureType.FRIDGE)` and places into that fridge's OWN drawer compartment, so
+#   the fridge fixture is the correct declaration: the declared body's whole
+#   subtree is what the witness may be attested against, and the drawer is part
+#   of that subtree. Every one of RoboCasa's 60 layouts declares exactly ONE
+#   fridge, so the choice is forced and only the layout's name for it varies;
+#   which layout seed 1 samples is knowable only by running the env (RoboCasa is
+#   not installable on the authoring host). `fridge_right_group` is the most
+#   frequent name in the layout corpus (9/60; next `fridge_main_group` 7,
+#   `fridge_left_group` 6, `fridgefrenchdoor_main_group_1` 6), and the body is
+#   `<fixture>_main` per robosuite's naming. A WRONG name cannot silently name a
+#   different fridge — there is only one — so it fails the safe way: the HAL logs
+#   `Place declaration target ... names no MuJoCo body; refused`, no witness can
+#   arm, and the run behaves exactly as it does with no declaration. To fix it
+#   after a live run, read the fixture off that log line (or off
+#   `env.fixture_refs["fridge"].name`) and replace the name below.
+place_declaration:
+  target_id: "sim:fridge_right_group_main"
+  object_id: ""
+  timeout_s: 120.0
+  stamp_ns: 0

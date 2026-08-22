@@ -3296,3 +3296,201 @@ TEST(PlaceApproachAllowance, TheWitnessTakesOverWhereTheAllowanceStops) {
   EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0x1, 0.0), 0x1)
       << "the witness latch is measured against the map, not against the allowance";
 }
+
+// ── issue #102: the nominal PandaMobile pose vs a real fixture ────────────────
+//
+// Issue #102's third acceptance bullet: "Add a regression for the nominal valid
+// pose and a nearby genuinely colliding fixture pose." The report is a
+// `deploy sim` run of `scenes/deploy/robocasa_baguette.yaml` at seed 1 in which
+// the world-voxel gate refused the arm's own reset configuration before any
+// motion, naming `panda_link4` against `voxel_39263` — a cell whose centre the
+// run logged at `[0.175, 0.075, 0.725]` in `base_link`, at
+// `min_distance_m ~= -0.0526` — and in which moving the base ~16 cm away cleared
+// the check at the cost of taking the policy out of distribution.
+//
+// This is the kernel half of that acceptance, driven from geometry that is
+// either in-tree or quoted from the run:
+//
+//   * the chain and the collision boxes are `robots/panda_mobile/robot.yaml`
+//     verbatim (joint origins / rpy, per-link OBB half-extents + origins), with
+//     `base_link` as the FK root — the post-ADR-0095 frame contract, in which
+//     `base_link` IS the arm mount and the 0.7 m RoboCasa pedestal is NOT added
+//     a second time inside the kernel;
+//   * the configuration is robosuite's `PandaOmron.init_qpos` (what RoboCasa
+//     builds for `robots: ["PandaMobile"]`), i.e. the reset pose the run was
+//     refused at;
+//   * the lattice is the deploy-sim one — 25 mm cells
+//     (`_octomap_resolution("sim")`) checked at `world_voxel_margin_m = 0.0`
+//     (`_world_voxel_margin_m("sim")`), phased so the run's logged cell centre
+//     is exactly a cell centre;
+//   * the "nearby genuinely colliding fixture" is that same cabinet face moved
+//     150 mm toward the robot — the same order as the ~16 cm base shift the
+//     issue reports as clearing the check, in the opposite direction.
+//
+// The joint state at the logged −52.6 mm is NOT in the repository (the run logs
+// live on the validation host), so this pins the recorded CELL against the
+// recorded LINK at the recorded pose rather than re-deriving that number.
+namespace {
+
+constexpr double kIssue102Res = 0.025;
+// Phased so the run's logged cell centre (0.175, 0.075, 0.725) is a cell centre.
+constexpr double kIssue102OriginX = -0.0125;
+constexpr double kIssue102OriginY = -0.3125;
+constexpr double kIssue102OriginZ = 0.0875;
+constexpr int kIssue102Sx = 26;
+constexpr int kIssue102Sy = 26;
+constexpr int kIssue102Sz = 30;
+
+// robots/panda_mobile/robot.yaml — `joints` (origin_xyz + origin_rpy, axis
+// defaulting to local +Z) and `collision_geometry` (box half-extents +
+// origin_xyz_rpy), links 1..7. The gripper is absent there and so here: it is
+// the intended-contact part, deliberately left out of the world check.
+osk::CollisionModel panda_mobile_arm_model() {
+  osk::CollisionModel m;
+  m.n_links = 7;
+  m.parent = {-1, 0, 1, 2, 3, 4, 5};
+  m.joint_kind = {osk::JointKind::kRevolute, osk::JointKind::kRevolute, osk::JointKind::kRevolute,
+                  osk::JointKind::kRevolute, osk::JointKind::kRevolute, osk::JointKind::kRevolute,
+                  osk::JointKind::kRevolute};
+  m.dof_index = {0, 1, 2, 3, 4, 5, 6};
+  m.origin = {
+      osk::transform_from_xyz_rpy(0.0, 0.0, 0.333, 0.0, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, -1.5708, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(0.0, -0.316, 0.0, 1.5708, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(0.0825, 0.0, 0.0, 1.5708, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(-0.0825, 0.384, 0.0, -1.5708, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, 1.5708, 0.0, 0.0),
+      osk::transform_from_xyz_rpy(0.088, 0.0, 0.0, 1.5708, 0.0, 0.0),
+  };
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  m.box_link = {0, 1, 2, 3, 4, 5, 6};
+  m.boxes = {
+      osk::Obb{{0.0552, 0.0724, 0.1410},
+               osk::transform_from_xyz_rpy(0.0, -0.0267, -0.0731, 0.3834, 0.0001, -0.0004)},
+      osk::Obb{{0.0552, 0.0719, 0.1407},
+               osk::transform_from_xyz_rpy(-0.0001, -0.0751, 0.0298, 1.9168, 0.0, -0.0002)},
+      osk::Obb{{0.0655, 0.0673, 0.1264},
+               osk::transform_from_xyz_rpy(0.0401, 0.0213, -0.0444, 0.6264, -0.6489, 2.7888)},
+      osk::Obb{{0.0658, 0.0684, 0.1272},
+               osk::transform_from_xyz_rpy(-0.0423, 0.0457, 0.0210, 1.1575, 0.3623, 0.6286)},
+      osk::Obb{{0.0552, 0.0672, 0.1705},
+               osk::transform_from_xyz_rpy(0.0003, 0.0416, -0.1090, -0.2720, 0.0021, 0.0011)},
+      osk::Obb{{0.0467, 0.0706, 0.0921},
+               osk::transform_from_xyz_rpy(0.0424, 0.0082, 0.0083, -3.0616, -1.4278, 0.0485)},
+      osk::Obb{{0.0295, 0.0440, 0.0711},
+               osk::transform_from_xyz_rpy(0.0123, 0.0123, 0.0800, 3.1380, -1.5171, -2.3520)},
+  };
+  return m;
+}
+
+// robosuite `PandaOmron.init_qpos` (robosuite @ 5ce6643, the pin in
+// pyproject.toml) — what `robots: ["PandaMobile"]` resets the arm to, and so the
+// "nominal valid pose" the issue's stop was reported at.
+std::vector<double> panda_omron_reset_qpos() {
+  return {0.0, kPi / 16.0 - 0.2, 0.0, -kPi / 2.0 - kPi / 3.0, 0.0, kPi - 0.4, kPi / 4.0};
+}
+
+std::size_t issue_102_cell(int ix, int iy, int iz) {
+  return static_cast<std::size_t>(ix + kIssue102Sx * (iy + kIssue102Sy * iz));
+}
+
+// The cell the run named: centre (0.175, 0.075, 0.725) in `base_link`.
+void mark_reported_voxel(std::vector<std::uint8_t>& occ) { occ[issue_102_cell(7, 15, 25)] = 1; }
+
+// A cabinet face: every cell from `first_ix` outward, full height and width.
+void mark_cabinet_face(std::vector<std::uint8_t>& occ, int first_ix) {
+  for (int iz = 0; iz < kIssue102Sz; ++iz) {
+    for (int iy = 0; iy < kIssue102Sy; ++iy) {
+      for (int ix = first_ix; ix < kIssue102Sx; ++ix) {
+        occ[issue_102_cell(ix, iy, iz)] = 1;
+      }
+    }
+  }
+}
+
+osk::VoxelGrid issue_102_grid(const std::vector<std::uint8_t>& occ) {
+  osk::VoxelGrid g;
+  g.origin = {kIssue102OriginX, kIssue102OriginY, kIssue102OriginZ};
+  g.resolution = kIssue102Res;
+  g.sx = kIssue102Sx;
+  g.sy = kIssue102Sy;
+  g.sz = kIssue102Sz;
+  g.occupancy = occ.data();
+  return g;
+}
+
+std::vector<std::uint8_t> issue_102_empty_occupancy() {
+  return std::vector<std::uint8_t>(
+      static_cast<std::size_t>(kIssue102Sx) * kIssue102Sy * kIssue102Sz, 0);
+}
+
+}  // namespace
+
+TEST(Issue102NominalPose, ReportedVoxelDoesNotRejectTheResetConfiguration) {
+  // The acceptance bullet's first half. At the manifest's chain and the reset
+  // configuration, a cell at the position the run logged is clear of every arm
+  // link — `panda_link4`, the link the stop named, included — so the kernel
+  // accepts. Not a near miss either: it still accepts at the 20 mm margin the
+  // REAL boundary uses (`_world_voxel_margin_m("real")`), which is what
+  // separates "the geometry is right" from "the margin happens to hide it".
+  const auto model = panda_mobile_arm_model();
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = panda_omron_reset_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+
+  auto occ = issue_102_empty_occupancy();
+  mark_reported_voxel(occ);
+  const auto grid = issue_102_grid(occ);
+
+  const auto sim = osk::check_voxel_collision(model, scratch, grid, 0.0);
+  EXPECT_FALSE(sim.hit) << "the nominal reset pose is rejected by the reported cell";
+  EXPECT_GT(sim.min_distance, 0.02) << "clearance, not a near miss";
+
+  const auto real = osk::check_voxel_collision(model, scratch, grid, 0.02);
+  EXPECT_FALSE(real.hit) << "still clear at the real boundary's 20 mm margin";
+}
+
+TEST(Issue102NominalPose, ParkedAtTheCabinetTheResetConfigurationIsAccepted) {
+  // The same pose against a real fixture rather than a single cell: a cabinet
+  // face at base-frame x = 0.5375, where a parked mobile base puts it. The arm's
+  // forward extent at this configuration is x = 0.4994 (its wrist), so the check
+  // has 38 mm of real clearance and no reason to stop.
+  const auto model = panda_mobile_arm_model();
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = panda_omron_reset_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+
+  auto occ = issue_102_empty_occupancy();
+  mark_reported_voxel(occ);
+  mark_cabinet_face(occ, 22);  // cell min x = 0.5375
+  const auto grid = issue_102_grid(occ);
+
+  const auto hit = osk::check_voxel_collision(model, scratch, grid, 0.0);
+  EXPECT_FALSE(hit.hit) << "a valid parked pose must not be refused";
+  EXPECT_GT(hit.min_distance, 0.02);
+}
+
+TEST(Issue102NominalPose, TheSameFixture150mmCloserStillStops) {
+  // The acceptance bullet's second half, and the reason the first half is not
+  // "the margin was relaxed": move that cabinet face 150 mm toward the robot —
+  // the same order as the ~16 cm base shift the issue reports as clearing the
+  // check — and the identical configuration is refused, with the evidence naming
+  // a real penetration on one of the forward links.
+  const auto model = panda_mobile_arm_model();
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = panda_omron_reset_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+
+  auto occ = issue_102_empty_occupancy();
+  mark_cabinet_face(occ, 16);  // cell min x = 0.3875, i.e. 150 mm closer
+  const auto grid = issue_102_grid(occ);
+
+  const auto hit = osk::check_voxel_collision(model, scratch, grid, 0.0);
+  ASSERT_TRUE(hit.hit) << "a genuinely colliding fixture pose must stop";
+  EXPECT_LT(hit.min_distance, 0.0) << "the reported pair really interpenetrates";
+  EXPECT_GE(hit.link_a, 4) << "the forward links are what reach the face";
+  EXPECT_GE(hit.link_b, 0) << "the evidence must name the cell it stopped on";
+}

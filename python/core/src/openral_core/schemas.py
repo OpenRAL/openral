@@ -8194,10 +8194,17 @@ class DeployScene(BaseModel):
     it to each goal it dispatches (armed on start, retracted on end / cancel /
     E-stop).
 
-    ``None`` — every scene today — means no declaration, so no place witness can
-    ever arm and payload contact mid-carry stops the robot exactly as it does
-    now. The declaration licenses nothing on its own: it only makes measured
-    support contact *on the declared target* attestable."""
+    ``None`` means no declaration, so no place witness can ever arm and payload
+    contact mid-carry stops the robot exactly as it does now. The declaration
+    licenses nothing on its own: it only makes measured support contact *on the
+    declared target* attestable.
+
+    A scene declares a target, never a **region**: a scene file cannot measure
+    geometry, and :attr:`PlaceRegion.frame_id` is the robot base frame, which on
+    a mobile base moves under any box a file could name. The producer that
+    resolves the target measures it (in sim, from the declared body's MuJoCo
+    subtree), so ``place_declaration.region`` is rejected here rather than
+    carried to the kernel — see :meth:`_reject_scene_supplied_place_region`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -8207,6 +8214,29 @@ class DeployScene(BaseModel):
                 "'vla:' block is not accepted in scene configs. Pass --rskill on the CLI instead."
             )
         return v
+
+    @model_validator(mode="after")
+    def _reject_scene_supplied_place_region(self) -> Self:
+        """A scene may declare a place *target*; it may never supply its region.
+
+        ADR-0097's amendment makes :class:`PlaceRegion` producer-supplied: the
+        region is what buys the payload a reduced world-collision margin, and it
+        is only sound because a producer *measured* the declared target. A
+        committed scene is dispatch — it names a target it cannot measure, in a
+        base frame that moves — so a region here would arm a margin relaxation
+        around a volume nobody observed (hazard log HZ-0097-2/4). Rejecting it
+        leaves exactly the pre-amendment margins, which is the fail-closed
+        direction.
+        """
+        if self.place_declaration is not None and self.place_declaration.region is not None:
+            raise ValueError(
+                "place_declaration.region is producer-supplied (ADR-0097's 2026-08-14 "
+                "amendment): a scene file cannot measure the declared target's geometry, "
+                "and the region is expressed in the robot base frame, which moves. Declare "
+                "the target only — the evidence producer that resolves it attaches the "
+                "measured region."
+            )
+        return self
 
     @classmethod
     def from_yaml(cls, path: str) -> Self:

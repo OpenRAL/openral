@@ -1322,7 +1322,14 @@ class SimAttachmentEvidenceTracker:
         target, a subtree with no collision geometry, a degenerate hull, an
         unresolvable base frame, or a region the schema's own bounds reject —
         returns a declaration with ``region=None``, i.e. exactly the margins the
-        kernel used before the amendment.
+        kernel used before the amendment. That includes the case where the
+        *incoming* declaration already carried a region: dispatch cannot measure
+        geometry, so a region it supplied is overwritten when this producer can
+        measure one and dropped when it cannot. The region the kernel reads is
+        therefore always this producer's own measurement, never a relayed claim
+        (HZ-0097-2/4). Dispatch is stripped upstream too — the rSkill runner
+        drops the field before publishing — and this is the same rule enforced
+        where it is load-bearing, on the message the kernel actually consumes.
 
         Args:
             data: Live ``mujoco.MjData``.
@@ -1336,7 +1343,9 @@ class SimAttachmentEvidenceTracker:
         if declaration is None or not declaration.is_live(now_ns=stamp_ns):
             return None
         region = self._place_region(data, stamp_ns=stamp_ns)
-        return declaration if region is None else declaration.model_copy(update={"region": region})
+        if region is None and declaration.region is None:
+            return declaration
+        return declaration.model_copy(update={"region": region})
 
     def _place_region(
         self,
