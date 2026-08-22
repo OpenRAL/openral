@@ -151,7 +151,7 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        consider_footprint: false
+        consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2
@@ -190,6 +190,7 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.35
+      footprint: '[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]'
       plugins:
       - static_layer
       - inflation_layer
@@ -210,6 +211,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       robot_radius: 0.35
+      footprint: '[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]'
       resolution: 0.05
       track_unknown_space: false
       rolling_window: true
@@ -372,7 +374,7 @@ collision_monitor:
     - scan
     scan:
       type: scan
-      topic: scan
+      topic: /openral/nav2/scan
       min_height: 0.15
       max_height: 2.0
       enabled: false

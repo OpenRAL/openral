@@ -69,6 +69,7 @@ on:
       - tests/integration/test_safety_status_latched_topic.py
       - tests/integration/test_safety_kernel_place_allowance_band.py
       - tests/integration/test_segment_in_view_service.py
+      - tests/integration/test_nav2_payload_footprint_live.py
       # An IDL-constant contract: it reads the colcon-generated openral_msgs,
       # so this image is its only CI surface even though it lives in tests/unit.
       - tests/unit/test_safety_status_msg.py

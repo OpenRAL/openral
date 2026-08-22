@@ -1,0 +1,528 @@
+"""Live proof that Nav2's costmap adopts the payload-inclusive footprint.
+
+The unit suite
+(``packages/openral_nav2_bringup/test/test_payload_footprint.py``) pins the
+polygon the publisher computes. It cannot pin the part that actually matters:
+that a **real** ``nav2_costmap_2d`` takes the polygon, on the topic and message
+type Nav2 Jazzy really uses, and re-publishes it as the footprint every
+downstream Nav2 consumer reads. That claim is about Nav2's parameter and topic
+contract, so only Nav2's own binary can settle it — and it has bitten before
+(``geometry_msgs/Polygon`` inbound vs ``PolygonStamped`` outbound; the
+subscription is the costmap's *relative* ``footprint``, not ``~/footprint`` on
+the parent server).
+
+Real components throughout (CLAUDE.md §1.11): the upstream ``nav2_costmap_2d``
+node from ``ros-${ROS_DISTRO}-nav2-bringup``, the production
+``payload_footprint_node`` run as its own process through its real ``main()``,
+and the real ``robots/panda_mobile/robot.yaml`` for the nominal outline. The one
+constructed input is the ``WorldStateStamped`` carrying the attachment — the
+same seam ``tests/sim/safety/test_kernel_voxel_collision_synthetic.py`` feeds
+``OccupancyVoxels`` at, and for the same reason: the real producer is a MuJoCo
+RoboCasa kitchen.
+
+What this test does **not** cover, and #108 still tracks: a base that actually
+drives while carrying. No RoboCasa atomic task moves the base meaningfully
+mid-carry, so the end-to-end acceptance needs a composite or custom scene.
+
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` and listed in
+``scripts/ros_live_tests.sh``. Locally::
+
+    source /opt/ros/jazzy/setup.bash && just ros2-build
+    source install/setup.bash
+    just test-ros-live            # `-k payload_footprint` narrows it
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+_LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
+_LIVE_ROS_REASON = (
+    "live rclpy + a real nav2_costmap_2d — set OPENRAL_TEST_ROS_LIVE=1 in a clean shell "
+    "and source install/setup.bash first."
+)
+
+pytestmark = pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ROBOT_YAML = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
+_NODE_DIR = _REPO_ROOT / "packages" / "openral_nav2_bringup" / "openral_nav2_bringup"
+_FOOTPRINT_NODE = _NODE_DIR / "payload_footprint_node.py"
+_SCAN_FILTER_NODE = _NODE_DIR / "payload_scan_filter_node.py"
+
+# The standalone `nav2_costmap_2d` executable runs one `Costmap2DROS` named
+# `costmap`, whose footprint topics are RELATIVE — so launching it under
+# `__ns:=/local_costmap` reproduces the exact topic names the production
+# `nav2_bringup` graph uses, which is the half of the contract the shipped
+# `config/nav2_panda_mobile.yaml` and `DEFAULT_FOOTPRINT_TOPICS` depend on.
+# Verified against the Jazzy binary, not assumed: `ros2 node info` on the
+# namespaced node lists `/local_costmap/footprint` inbound
+# (`geometry_msgs/Polygon`) and `/local_costmap/published_footprint` outbound
+# (`geometry_msgs/PolygonStamped`).
+_COSTMAP_NAMESPACE = "/local_costmap"
+_COSTMAP_NODE = "/local_costmap/costmap"
+_FOOTPRINT_IN = "/local_costmap/footprint"
+_FOOTPRINT_OUT = "/local_costmap/published_footprint"
+
+#: ``openral_nav2_bringup.payload_scan_filter_node.DEFAULT_OUTPUT_TOPIC``,
+#: repeated rather than imported so collecting this module never needs the
+#: colcon overlay. The unit suite pins that this string, the node's default and
+#: every source in ``config/nav2_panda_mobile.yaml`` still agree.
+_FILTERED_SCAN_TOPIC = "/openral/nav2/scan"
+
+_ATTACH_LINK = "panda_link7"
+_SCAN_FRAME = "base_scan"
+_SCAN_Z_IN_BASE = 0.35
+_LINK_X_IN_BASE = 0.55
+_PAYLOAD_X_IN_LINK = 0.20
+_PAYLOAD_HALF_X = 0.10
+#: Where the payload's centre lands in ``base_link`` / ``odom`` — 0.75 m ahead,
+#: well clear of the 0.35 m chassis, so the costmap's own
+#: ``footprint_clearing_enabled`` cannot be what removes it.
+_PAYLOAD_X_IN_BASE = _LINK_X_IN_BASE + _PAYLOAD_X_IN_LINK
+# nav2_costmap_2d's `footprint_padding` default, verified live: the published
+# polygon is the received one grown by this on every axis.
+_FOOTPRINT_PADDING_M = 0.01
+_NOMINAL_REACH_M = 0.35 + _FOOTPRINT_PADDING_M
+_CARRYING_REACH_M = _LINK_X_IN_BASE + _PAYLOAD_X_IN_LINK + _PAYLOAD_HALF_X + _FOOTPRINT_PADDING_M
+
+_COSTMAP_PARAMS = """\
+/**:
+  ros__parameters:
+    update_frequency: 5.0
+    publish_frequency: 5.0
+    global_frame: odom
+    robot_base_frame: base_link
+    rolling_window: true
+    width: 4
+    height: 4
+    resolution: 0.05
+    robot_radius: 0.35
+    footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
+    plugins: ["inflation_layer"]
+    inflation_layer:
+      plugin: "nav2_costmap_2d::InflationLayer"
+      cost_scaling_factor: 3.0
+      inflation_radius: 0.40
+    always_send_full_costmap: True
+"""
+
+# Same costmap, plus the obstacle layer reading the FILTERED scan topic the
+# shipped `config/nav2_panda_mobile.yaml` points every source at.
+_COSTMAP_PARAMS_WITH_OBSTACLES = f"""\
+/**:
+  ros__parameters:
+    update_frequency: 5.0
+    publish_frequency: 5.0
+    global_frame: odom
+    robot_base_frame: base_link
+    rolling_window: true
+    width: 4
+    height: 4
+    resolution: 0.05
+    footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
+    plugins: ["obstacle_layer"]
+    obstacle_layer:
+      plugin: "nav2_costmap_2d::ObstacleLayer"
+      enabled: True
+      observation_sources: scan
+      scan:
+        topic: {_FILTERED_SCAN_TOPIC}
+        data_type: "LaserScan"
+        clearing: True
+        marking: True
+        max_obstacle_height: 2.0
+        raytrace_max_range: 3.0
+        obstacle_max_range: 2.5
+    always_send_full_costmap: True
+"""
+
+
+def _spin_until(
+    executor: Any, predicate: Any, *, timeout_s: float = 20.0, each: Any = None
+) -> bool:
+    """Spin until ``predicate()`` holds, running ``each()`` on every pass.
+
+    ``each`` re-publishes the world state on every iteration rather than in one
+    burst: ``/openral/world_state_fast`` is VOLATILE and 30 Hz on a real robot,
+    so a single publish that lands before DDS discovery matches is simply lost
+    and the test would fail on the transport, not on the behaviour.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if each is not None:
+            each()
+        executor.spin_once(timeout_sec=0.05)
+        if predicate():
+            return True
+    return predicate()
+
+
+@contextmanager
+def _process(argv: list[str], log_path: Path) -> Iterator[subprocess.Popen[bytes]]:
+    """Run a node as its own process, teeing its log where a failure can quote it."""
+    with log_path.open("wb") as log:
+        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            yield proc
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - shutdown hardening
+                proc.kill()
+                proc.wait(timeout=10)
+
+
+def _lifecycle(transition: str, *, timeout_s: float = 45.0) -> None:
+    """Drive the costmap through ``transition``, waiting for it to be ready.
+
+    Retried rather than one-shot: the node needs a moment to advertise
+    ``change_state`` after ``Popen`` returns, and ``activate`` fails until the
+    ``base_link -> odom`` TF it checks has been discovered. Both are startup
+    races, not behaviour, and a one-shot call makes the test flaky on a loaded
+    host. Stops on the first success, so it can never re-drive a transition
+    that already happened.
+    """
+    deadline = time.monotonic() + timeout_s
+    last = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["ros2", "lifecycle", "set", _COSTMAP_NODE, transition],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            return
+        last = (result.stdout + result.stderr).decode(errors="replace").strip()
+        time.sleep(0.5)
+    raise AssertionError(f"costmap never accepted `{transition}` within {timeout_s}s: {last}")
+
+
+def _static_transforms(node: Any) -> Any:
+    """``odom -> base_link -> {panda_link7, base_scan}``, the frames the nodes need.
+
+    The costmap refuses to activate without ``base_link -> odom``; the footprint
+    publisher needs the attach link to place the payload; the scan filter needs
+    ``base_scan -> panda_link7`` to place it in the sensor's frame. The lidar
+    sits at the attach link's height here so the scan plane cuts through the
+    carried object — the case where a payload becomes a costmap obstacle at all.
+    A static broadcaster is TRANSIENT_LOCAL, so the subprocesses get these
+    however late they join.
+    """
+    from geometry_msgs.msg import TransformStamped
+    from tf2_ros import StaticTransformBroadcaster
+
+    broadcaster = StaticTransformBroadcaster(node)
+    transforms = []
+    for parent, child, x, z in (
+        ("odom", "base_link", 0.0, 0.0),
+        ("base_link", _ATTACH_LINK, _LINK_X_IN_BASE, _SCAN_Z_IN_BASE),
+        ("base_link", _SCAN_FRAME, 0.0, _SCAN_Z_IN_BASE),
+    ):
+        t = TransformStamped()
+        t.header.stamp = node.get_clock().now().to_msg()
+        t.header.frame_id = parent
+        t.child_frame_id = child
+        t.transform.translation.x = x
+        t.transform.translation.z = z
+        t.transform.rotation.w = 1.0
+        transforms.append(t)
+    broadcaster.sendTransform(transforms)
+    return broadcaster
+
+
+def _world_state(*, carrying: bool, revision: int) -> Any:
+    """A ``WorldStateStamped`` with (or without) one boxed payload attached."""
+    from openral_msgs.msg import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        WorldStateStamped,
+    )
+
+    msg = WorldStateStamped()
+    msg.attachment_revision = revision
+    if not carrying:
+        return msg
+
+    primitive = AttachedCollisionPrimitive()
+    primitive.shape_type = AttachedCollisionPrimitive.SHAPE_BOX
+    primitive.shape_dimensions = [_PAYLOAD_HALF_X, 0.06, 0.06]
+    primitive.pose_in_object.orientation.w = 1.0
+
+    obj = AttachedCollisionObject()
+    obj.object_id = "baguette"
+    obj.attach_link = _ATTACH_LINK
+    obj.pose_in_link.position.x = _PAYLOAD_X_IN_LINK
+    obj.pose_in_link.orientation.w = 1.0
+    obj.primitives = [primitive]
+    msg.attached_objects = [obj]
+    return msg
+
+
+def test_a_real_costmap_adopts_and_releases_the_payload_footprint(tmp_path: Path) -> None:
+    """Attach grows Nav2's own footprint; detach puts it back to the chassis."""
+    import rclpy
+    from geometry_msgs.msg import PolygonStamped
+    from openral_msgs.msg import WorldStateStamped
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    params_file = tmp_path / "costmap.yaml"
+    params_file.write_text(_COSTMAP_PARAMS)
+
+    rclpy.init()
+    node = Node("test_nav2_payload_footprint")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    reach: list[float] = []
+
+    def _on_footprint(msg: PolygonStamped) -> None:
+        if msg.polygon.points:
+            reach.append(max(float(p.x) for p in msg.polygon.points))
+
+    try:
+        broadcaster = _static_transforms(node)
+        assert broadcaster is not None
+        node.create_subscription(PolygonStamped, _FOOTPRINT_OUT, _on_footprint, 10)
+        state_pub = node.create_publisher(
+            WorldStateStamped,
+            "/openral/world_state_fast",
+            QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+            ),
+        )
+
+        footprint_argv = [
+            sys.executable,
+            str(_FOOTPRINT_NODE),
+            "--ros-args",
+            "-p",
+            f"robot_yaml:={_ROBOT_YAML}",
+            "-p",
+            f"footprint_topics:=['{_FOOTPRINT_IN}']",
+            "-p",
+            "publish_rate_hz:=5.0",
+        ]
+        costmap_argv = [
+            "ros2",
+            "run",
+            "nav2_costmap_2d",
+            "nav2_costmap_2d",
+            "--ros-args",
+            "-r",
+            f"__ns:={_COSTMAP_NAMESPACE}",
+            "--params-file",
+            str(params_file),
+        ]
+
+        publisher_log = tmp_path / "payload_footprint.log"
+
+        def _publisher_log() -> str:
+            return publisher_log.read_text(errors="replace")[-2000:]
+
+        with (
+            _process(footprint_argv, publisher_log),
+            _process(costmap_argv, tmp_path / "costmap.log"),
+        ):
+            _lifecycle("configure")
+            _lifecycle("activate")
+
+            # 1. Nothing attached: Nav2 publishes the manifest's chassis.
+            assert _spin_until(executor, lambda: bool(reach), timeout_s=20.0), (
+                "no footprint published by the costmap at all"
+            )
+            assert reach[-1] == pytest.approx(_NOMINAL_REACH_M, abs=0.02)
+
+            # 2. Attach: Nav2's own footprint grows to cover the payload.
+            carrying = _world_state(carrying=True, revision=1)
+            assert _spin_until(
+                executor,
+                lambda: reach[-1] > _NOMINAL_REACH_M + 0.10,
+                timeout_s=20.0,
+                each=lambda: state_pub.publish(carrying),
+            ), (
+                f"costmap never adopted the grown footprint (last reach {reach[-1]:.3f} m); "
+                f"publisher said:\n{_publisher_log()}"
+            )
+            assert reach[-1] == pytest.approx(_CARRYING_REACH_M, abs=0.02)
+
+            # 3. Detach: back to the chassis, in Nav2, not just in our node.
+            released = _world_state(carrying=False, revision=2)
+            assert _spin_until(
+                executor,
+                lambda: reach[-1] < _NOMINAL_REACH_M + 0.05,
+                timeout_s=20.0,
+                each=lambda: state_pub.publish(released),
+            ), f"costmap kept the grown footprint after detach (reach {reach[-1]:.3f} m)"
+            assert reach[-1] == pytest.approx(_NOMINAL_REACH_M, abs=0.02)
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def _payload_scan() -> Any:
+    """A 360-beam fan that sees a wall at 3 m, except where the payload is.
+
+    The forward beams stop on the carried object at its true distance. This is
+    the sensor picture a lidar mounted at the payload's height actually
+    produces, and the one that made the payload a costmap obstacle.
+    """
+    import math
+
+    from sensor_msgs.msg import LaserScan
+
+    n_beams = 360
+    scan = LaserScan()
+    scan.header.frame_id = _SCAN_FRAME
+    scan.angle_min = -math.pi
+    scan.angle_max = math.pi
+    scan.angle_increment = 2.0 * math.pi / n_beams
+    scan.range_min = 0.05
+    scan.range_max = 12.0
+    ranges = [3.0] * n_beams
+    for angle in (-0.06, -0.03, 0.0, 0.03, 0.06):
+        index = round((angle - scan.angle_min) / scan.angle_increment) % n_beams
+        ranges[index] = _PAYLOAD_X_IN_BASE
+    scan.ranges = ranges
+    return scan
+
+
+def _cost_at(costmap: Any, x_m: float, y_m: float) -> int:
+    """The costmap cell covering ``(x, y)`` in its own global frame."""
+    meta = costmap.metadata
+    mx = int((x_m - meta.origin.position.x) / meta.resolution)
+    my = int((y_m - meta.origin.position.y) / meta.resolution)
+    return int(costmap.data[my * meta.size_x + mx])
+
+
+def test_the_carried_object_never_becomes_a_costmap_obstacle(tmp_path: Path) -> None:
+    """The scan filter's real claim, measured in a real costmap's cost grid.
+
+    One unchanging sensor picture, two attachment states. While the object is
+    attached its returns must not mark the costmap at all; the moment World
+    State says it is released, the very same returns must mark it — otherwise
+    the filter is not removing a payload, it is blinding Nav2.
+
+    The payload sits 0.75 m ahead, well outside the 0.35 m chassis, so Nav2's
+    own ``footprint_clearing_enabled`` (default ``True``, verified live) cannot
+    be what keeps the cell free.
+    """
+    import rclpy
+    from nav2_msgs.msg import Costmap
+    from openral_msgs.msg import WorldStateStamped
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+    from sensor_msgs.msg import LaserScan
+
+    lethal_threshold = 253
+
+    params_file = tmp_path / "costmap_obstacles.yaml"
+    params_file.write_text(_COSTMAP_PARAMS_WITH_OBSTACLES)
+
+    rclpy.init()
+    node = Node("test_nav2_payload_scan_filter")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    costs: list[int] = []
+
+    def _on_costmap(msg: Costmap) -> None:
+        costs.append(_cost_at(msg, _PAYLOAD_X_IN_BASE, 0.0))
+
+    try:
+        broadcaster = _static_transforms(node)
+        assert broadcaster is not None
+        sensor_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        state_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        node.create_subscription(Costmap, f"{_COSTMAP_NAMESPACE}/costmap_raw", _on_costmap, 1)
+        scan_pub = node.create_publisher(LaserScan, "/scan", sensor_qos)
+        state_pub = node.create_publisher(WorldStateStamped, "/openral/world_state_fast", state_qos)
+        scan = _payload_scan()
+
+        filter_log = tmp_path / "payload_scan_filter.log"
+        filter_argv = [sys.executable, str(_SCAN_FILTER_NODE)]
+        costmap_argv = [
+            "ros2",
+            "run",
+            "nav2_costmap_2d",
+            "nav2_costmap_2d",
+            "--ros-args",
+            "-r",
+            f"__ns:={_COSTMAP_NAMESPACE}",
+            "--params-file",
+            str(params_file),
+        ]
+
+        with (
+            _process(filter_argv, filter_log),
+            _process(costmap_argv, tmp_path / "costmap_obstacles.log"),
+        ):
+            _lifecycle("configure")
+            _lifecycle("activate")
+
+            def _tick(carrying: bool, revision: int) -> Any:
+                state = _world_state(carrying=carrying, revision=revision)
+
+                def _publish() -> None:
+                    state_pub.publish(state)
+                    scan.header.stamp = node.get_clock().now().to_msg()
+                    scan_pub.publish(scan)
+
+                return _publish
+
+            # 1. Carrying: the payload's own returns must never mark the map.
+            carrying = _tick(carrying=True, revision=1)
+            assert _spin_until(executor, lambda: len(costs) > 40, timeout_s=25.0, each=carrying), (
+                f"the costmap never published; filter said:\n"
+                f"{filter_log.read_text(errors='replace')[-2000:]}"
+            )
+            assert max(costs) < lethal_threshold, (
+                f"the carried object marked the costmap (peak cost {max(costs)}); filter said:\n"
+                f"{filter_log.read_text(errors='replace')[-2000:]}"
+            )
+
+            # 2. Released: the identical scan must mark it again, or the filter
+            #    is not removing a payload — it is blinding Nav2.
+            costs.clear()
+            released = _tick(carrying=False, revision=2)
+            assert _spin_until(
+                executor,
+                lambda: bool(costs) and costs[-1] >= lethal_threshold,
+                timeout_s=25.0,
+                each=released,
+            ), f"the released object never marked the costmap (last cost {costs[-1:]})"
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()

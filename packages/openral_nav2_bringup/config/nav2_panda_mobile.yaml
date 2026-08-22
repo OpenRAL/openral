@@ -162,7 +162,24 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        consider_footprint: false
+        # `true` is what makes a carried payload reach the CONTROLLER. With
+        # `false`, CostCritic scores the robot's centre cell only, so the
+        # payload-inclusive footprint changes nothing here: a forward-reaching
+        # payload grows the circumscribed radius but not the inscribed one,
+        # and the inflation layer keys its cost cache off the inscribed radius
+        # alone. Every other footprint consumer (behavior_server's collision
+        # checker, opennav_docking, the collision monitor's approach polygon,
+        # IsPathValid) already reads the published polygon; MPPI is the one
+        # that needs this flag.
+        #
+        # It is the expensive option upstream documents as such: SE2 footprint
+        # cost per sampled trajectory point instead of one lookup, here
+        # batch_size 2000 x time_steps 56 / trajectory_point_step 2 per cycle
+        # at 20 Hz. That cost has NOT been measured on the reference host under
+        # a live scene — no RoboCasa atomic task drives the base far enough
+        # while carrying to exercise it (issue #108). If the controller misses
+        # its rate, `trajectory_point_step` is the knob, not this flag.
+        consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2
@@ -209,7 +226,18 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.35  # panda_mobile chassis envelope
+      robot_radius: 0.35  # panda_mobile chassis envelope; unused while `footprint` parses
+      # Polygon, not `robot_radius`, because only a polygon can express a
+      # carried payload: `openral_nav2_payload_footprint` republishes this
+      # outline unioned with the attached object's ground projection on
+      # `/local_costmap/footprint` while something is attached, and Nav2
+      # re-derives the layered costmap's inscribed/circumscribed radii from
+      # whatever polygon arrives. Nav2 treats `""` and `"[]"` as "use
+      # robot_radius", so a robot without a `footprint_polygon` in its
+      # manifest gets `"[]"` here from `RobotDescription.nav2_param_overrides()`
+      # rather than inheriting panda's shape. This value IS panda's
+      # `footprint_polygon`, so the rewrite is a no-op for panda.
+      footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -246,7 +274,13 @@ local_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: /scan
+          # NOT the raw `/scan`. `openral_nav2_payload_scan_filter` republishes
+          # it with the attached payload's own returns dropped, so the object
+          # the robot is carrying is an obstacle in exactly one place — the
+          # footprint — instead of two. The filter passes the scan through
+          # unchanged whenever it cannot place the payload, so this topic never
+          # goes quiet on it. Raw `/scan` still reaches SLAM and the dashboard.
+          topic: /openral/nav2/scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -267,7 +301,11 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.35  # panda_mobile chassis envelope
+      robot_radius: 0.35  # panda_mobile chassis envelope; unused while `footprint` parses
+      # Same polygon as the local costmap — see that comment. The payload
+      # footprint publisher writes both costmaps so planner and controller
+      # agree on what the robot currently is.
+      footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
       resolution: 0.05
       # ``track_unknown_space: false`` is REQUIRED
       # for SLAM-from-scratch deployments. With ``true`` (Nav2 default
@@ -306,7 +344,8 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          # Payload-filtered scan — see the local costmap's source comment.
+          topic: /openral/nav2/scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -492,7 +531,11 @@ collision_monitor:
     observation_sources: ["scan"]
     scan:
       type: "scan"
-      topic: "scan"
+      # The collision monitor reads the scan directly, with no costmap in
+      # between — so it is the one consumer `footprint_clearing_enabled`
+      # cannot help, and the reason the payload has to leave the sensor
+      # stream rather than only the costmap.
+      topic: "/openral/nav2/scan"
       min_height: 0.15
       max_height: 2.0
       enabled: True

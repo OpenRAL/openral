@@ -124,6 +124,21 @@ def generate_launch_description() -> LaunchDescription:
                 "base. Empty string uses params_file verbatim."
             ),
         ),
+        DeclareLaunchArgument(
+            "payload_footprint",
+            default_value="true",
+            description=(
+                "Run the payload footprint publisher + payload scan filter "
+                "alongside Nav2. The publisher grows the costmaps' footprint "
+                "polygon to cover a carried object; the filter takes that same "
+                "object's returns out of the scan the costmaps and the "
+                "collision monitor read. Needs `robot_yaml` for the publisher "
+                "(the nominal outline is the manifest's). The scan filter runs "
+                "on the lidar backend only — the base params point every "
+                "observation source at its output, so turning this off means "
+                "re-pointing them at `/scan`."
+            ),
+        ),
     ]
 
     # ``OpaqueFunction`` (upstream ``launch.actions``) defers the callback
@@ -133,7 +148,50 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([*args, OpaqueFunction(function=_nav2_include_with_robot_overrides)])
 
 
-def _nav2_include_with_robot_overrides(context: object) -> list[IncludeLaunchDescription]:
+def _payload_footprint_nodes(
+    *, robot_yaml: str, slam_backend: str, use_sim_time: object
+) -> list[object]:
+    """The dynamic-footprint pair that rides with Nav2.
+
+    ``openral_nav2_payload_footprint`` publishes the costmaps' ``footprint``
+    polygon (chassis outline unioned with the ground projection of whatever is
+    attached); ``openral_nav2_payload_scan_filter`` removes that same object's
+    returns from the scan the costmaps and the collision monitor consume. Both
+    read the attachment set off ``/openral/world_state_fast`` — the safety
+    kernel's own source — so no consumer can act on a stale one.
+
+    The publisher is skipped without a ``robot_yaml`` (there is no manifest to
+    take the nominal outline from, and inventing one would put a made-up robot
+    shape on Nav2's collision surface). The scan filter is skipped on the
+    ``visual`` backend, which has no ``/scan`` at all.
+    """
+    from launch_ros.actions import Node  # reason: launch-time only
+
+    nodes: list[object] = []
+    if robot_yaml:
+        nodes.append(
+            Node(
+                package="openral_nav2_bringup",
+                executable="payload_footprint_node.py",
+                name="openral_nav2_payload_footprint",
+                output="screen",
+                parameters=[{"robot_yaml": robot_yaml, "use_sim_time": use_sim_time}],
+            )
+        )
+    if slam_backend.strip().lower() != "visual":
+        nodes.append(
+            Node(
+                package="openral_nav2_bringup",
+                executable="payload_scan_filter_node.py",
+                name="openral_nav2_payload_scan_filter",
+                output="screen",
+                parameters=[{"use_sim_time": use_sim_time}],
+            )
+        )
+    return nodes
+
+
+def _nav2_include_with_robot_overrides(context: object) -> list[object]:
     """Rewrite the base Nav2 params with per-robot overrides, then include.
 
     Runs at launch time (via ``OpaqueFunction``) so it can read the
@@ -171,7 +229,7 @@ def _nav2_include_with_robot_overrides(context: object) -> list[IncludeLaunchDes
         param_rewrites=rewrites,
         convert_types=True,
     )
-    return [
+    actions: list[object] = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(_upstream_navigation_launch()),
             launch_arguments={
@@ -182,6 +240,17 @@ def _nav2_include_with_robot_overrides(context: object) -> list[IncludeLaunchDes
             }.items(),
         )
     ]
+    payload_footprint = LaunchConfiguration("payload_footprint").perform(context)  # type: ignore[attr-defined]
+    if payload_footprint.strip().lower() in ("true", "1", "yes"):
+        use_sim_time = LaunchConfiguration("use_sim_time").perform(context)  # type: ignore[attr-defined]
+        actions.extend(
+            _payload_footprint_nodes(
+                robot_yaml=robot_yaml,
+                slam_backend=slam_backend,
+                use_sim_time=use_sim_time.strip().lower() in ("true", "1", "yes"),
+            )
+        )
+    return actions
 
 
 # Used by ``test/test_nav2_launch.py`` for hermetic argument validation

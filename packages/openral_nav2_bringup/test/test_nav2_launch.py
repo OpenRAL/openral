@@ -133,3 +133,74 @@ def test_visual_profile_consumes_map_not_scan() -> None:
     assert cm["scan"]["enabled"] is False, cm["scan"]
     # geometry/planner still mirror the base (planner threads unknown space).
     assert data["planner_server"]["ros__parameters"]["GridBased"]["allow_unknown"] is True
+
+
+def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
+    """A circle cannot express a carried payload.
+
+    `nav2_costmap_2d` only takes runtime footprint updates seriously as a
+    polygon: `robot_radius` alone leaves the costmap on its circular path with
+    nothing for the payload publisher to grow. Both profiles must ship one.
+    """
+    for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
+        data = yaml.safe_load(path.read_text())
+        for scope in ("global_costmap", "local_costmap"):
+            footprint = data[scope][scope]["ros__parameters"].get("footprint", "")
+            assert footprint not in ("", "[]"), (
+                f"{path.name}:{scope} has no polygon footprint — Nav2 reads "
+                f'"" and "[]" as "use robot_radius", which no payload can grow.'
+            )
+
+
+def test_mppi_considers_the_footprint_so_a_payload_reaches_the_controller() -> None:
+    """With `consider_footprint: false` the dynamic footprint is decorative.
+
+    CostCritic then scores the robot's centre cell only. A forward-reaching
+    payload grows the circumscribed radius but not the inscribed one, and the
+    inflation layer keys its cost cache off the inscribed radius — so nothing
+    the footprint publisher does would reach MPPI.
+    """
+    for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
+        data = yaml.safe_load(path.read_text())
+        cost_critic = data["controller_server"]["ros__parameters"]["FollowPath"]["CostCritic"]
+        assert cost_critic["consider_footprint"] is True, path.name
+
+
+def test_payload_nodes_ride_with_nav2_on_the_right_backends() -> None:
+    """The footprint publisher needs a manifest; the scan filter needs a `/scan`.
+
+    Without a `robot_yaml` there is no measured outline to publish and inventing
+    one would put a made-up robot shape on Nav2's collision surface; on the
+    `visual` backend there is no scan to filter at all.
+    """
+    mod = _import_launch_module()
+
+    both = mod._payload_footprint_nodes(
+        robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="lidar", use_sim_time=True
+    )
+    visual_only = mod._payload_footprint_nodes(
+        robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="visual", use_sim_time=True
+    )
+    no_manifest = mod._payload_footprint_nodes(
+        robot_yaml="", slam_backend="lidar", use_sim_time=True
+    )
+
+    assert len(both) == 2, both
+    assert len(visual_only) == 1, "visual has no /scan to filter"
+    assert len(no_manifest) == 1, "no manifest means no nominal footprint to publish"
+
+
+def test_the_payload_footprint_leg_can_be_turned_off() -> None:
+    """`payload_footprint` is a declared launch arg, not a hardcoded leg."""
+    mod = _import_launch_module()
+    from ament_index_python.packages import PackageNotFoundError
+    from launch.actions import DeclareLaunchArgument
+
+    try:
+        desc = mod.generate_launch_description()
+    except PackageNotFoundError as exc:
+        pytest.skip(f"ament package missing (overlay not sourced?): {exc}")
+    arg_names = {
+        a.name for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)
+    }
+    assert "payload_footprint" in arg_names, arg_names
