@@ -75,7 +75,7 @@ jobs:
             echo "::warning::RELEASE_PLEASE_TOKEN is unset; falling back to GITHUB_TOKEN. The v*.*.* tag will NOT trigger release-pypi.yml — dispatch it manually (target=pypi, confirm=YES) after merging the release PR."
           fi
 
-      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4.4.1
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
         id: release
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
