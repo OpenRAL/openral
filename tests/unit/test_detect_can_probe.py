@@ -1,7 +1,7 @@
 """SocketCAN discovery — the transport that finds a CAN-attached arm.
 
 Per CLAUDE.md §1.11 there are no mocks here.  The enumeration reads a real
-directory tree in the shapes the kernel produces; ``_SYSFS_NET`` is
+directory tree in the shapes the kernel produces; ``openral_core.can.SYSFS_NET`` is
 redirected at that tree with ``monkeypatch.setattr`` so the code under test
 is the production code, reading real files.
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import openral_core.can as core_can
 import pytest
-from openral_cli import autodetect
 from openral_cli.autodetect import (
     CanInterface,
     can_adapter_name,
@@ -89,7 +89,7 @@ def openarm_sysfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _make_link(sysfs, "can0", operstate="down", mtu=16)
     # An Ethernet link must never be reported as a CAN bus.
     _make_link(sysfs, "eth0", arphrd=_ARPHRD_ETHER, mtu=1500)
-    monkeypatch.setattr(autodetect, "_SYSFS_NET", str(sysfs / "class" / "net"))
+    monkeypatch.setattr(core_can, "SYSFS_NET", str(sysfs / "class" / "net"))
     return sysfs
 
 
@@ -121,7 +121,7 @@ class TestEnumeration:
     def test_missing_sysfs_root_yields_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(autodetect, "_SYSFS_NET", str(tmp_path / "absent"))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(tmp_path / "absent"))
         assert enumerate_can_interfaces() == []
 
 
@@ -176,7 +176,7 @@ class TestProbeContract:
     ) -> None:
         sysfs = tmp_path / "sys"
         _make_link(sysfs, "can0", mtu=16)
-        monkeypatch.setattr(autodetect, "_SYSFS_NET", str(sysfs / "class" / "net"))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(sysfs / "class" / "net"))
         warnings: list[str] = []
         result = probe_can(warnings=warnings)
         assert result.interfaces and not result.matches

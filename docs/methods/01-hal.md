@@ -462,7 +462,7 @@ _Real-hardware adapter for the Enactic OpenArm v2.  Commands `openarm_bringup`'s
   - `ros2_control_joint_names() -> list[str]` — 16 URDF names in action-vector order.
   - `command_topics() -> list[str]` — The four `/…/joint_trajectory` topics.
   - `health() -> HALHealthReport` — Cached per-bus state from `connect()`; performs no I/O (lifecycle diagnostics heartbeat).
-- `_can_link_state(interface) -> tuple[bool, str]` — "Is this an existing, up CAN link", with a reason string for the failure. Deliberately narrower than `openral_detect.probes.can`, which is the richer read (bitrates, controller state) behind `openral detect`.
+- The bus preflight itself is **not** implemented here — `connect()` delegates to `openral_core.can.preflight_can_links`, passing its two interfaces and the OpenArm-specific remedy text. Link checking is mechanism every CAN robot needs, so it lives in layer 0 where the next CAN robot's HAL can reach it; what stays in this module is the fact that an OpenArm has exactly two buses and that they are named by udev at 1 Mbit/s nominal / 5 Mbit/s data. Deliberately narrower than `openral_detect.probes.can`, which is the richer read (bitrates, controller state) behind `openral detect`.
 - const `OPENARM_REAL_DESCRIPTION = make_real_description(OPENARM_DESCRIPTION, sdk_kind="open")` — shares kinematics, safety envelope and HAL entrypoints with the sim baseline.
 
 ### `python/hal/src/openral_hal/anvil_openarm_v2.py`

@@ -4,7 +4,7 @@ Per CLAUDE.md §1.11 the only doubles here are at the transport boundary:
 ``publish_fn`` / ``state_fn`` are the injection points the adapter already
 exposes for exactly this purpose, and every schema, manifest and joint name
 is the real one.  The CAN preflight reads a real sysfs-shaped directory
-tree with ``_SYSFS_NET`` redirected at it.
+tree with ``openral_core.can.SYSFS_NET`` redirected at it.
 
 What these pin down:
 
@@ -23,13 +23,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import openral_core.can as core_can
 import pytest
 
 pytest.importorskip("lerobot", reason="openral_hal imports lerobot at package import")
 
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, RobotDescription
-from openral_hal import openarm_real
 from openral_hal.openarm_real import OPENARM_REAL_DESCRIPTION, OpenArmRealHAL
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,7 +69,7 @@ def both_buses_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "net"
     _make_can_link(root, "openarm_left")
     _make_can_link(root, "openarm_right")
-    monkeypatch.setattr(openarm_real, "_SYSFS_NET", str(root))
+    monkeypatch.setattr(core_can, "SYSFS_NET", str(root))
     return root
 
 
@@ -156,7 +156,7 @@ class TestBusPreflight:
         root = tmp_path / "net"
         _make_can_link(root, "openarm_left")
         _make_can_link(root, "openarm_right", up=False)
-        monkeypatch.setattr(openarm_real, "_SYSFS_NET", str(root))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(root))
         with pytest.raises(ROSConfigError, match="openarm_right"):
             OpenArmRealHAL().connect()
 
@@ -165,7 +165,7 @@ class TestBusPreflight:
     ) -> None:
         root = tmp_path / "net"
         _make_can_link(root, "openarm_left")
-        monkeypatch.setattr(openarm_real, "_SYSFS_NET", str(root))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(root))
         with pytest.raises(ROSConfigError, match="no network interface"):
             OpenArmRealHAL().connect()
 
@@ -176,7 +176,7 @@ class TestBusPreflight:
         root = tmp_path / "net"
         _make_can_link(root, "openarm_left")
         _make_can_link(root, "openarm_right", arphrd="1")
-        monkeypatch.setattr(openarm_real, "_SYSFS_NET", str(root))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(root))
         with pytest.raises(ROSConfigError, match="not a CAN link"):
             OpenArmRealHAL().connect()
 
@@ -184,7 +184,7 @@ class TestBusPreflight:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "net"
-        monkeypatch.setattr(openarm_real, "_SYSFS_NET", str(root))
+        monkeypatch.setattr(core_can, "SYSFS_NET", str(root))
         hal = OpenArmRealHAL()
         with pytest.raises(ROSConfigError):
             hal.connect()

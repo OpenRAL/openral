@@ -7,11 +7,14 @@ This module provides three independent probes:
    Linux it uses ``pyudev`` (no root required); on macOS it falls back to
    ``system_profiler``; everywhere it also falls back to ``/dev/tty*`` globs.
 
-2. **SocketCAN enumeration** — lists CAN / CAN FD network interfaces from
-   ``/sys/class/net`` and maps deliberately-named ones (``openarm_left``, …)
-   to known robot types.  This is the transport that USB-serial enumeration
-   structurally cannot see: a CAN adapter registers a *network* device, so a
-   CAN-attached arm has no ``/dev/tty*`` node to find.
+2. **SocketCAN matching** — maps deliberately-named CAN / CAN FD interfaces
+   (``openarm_left``, …) to known robot types.  The enumeration itself is
+   robot-agnostic and lives in :mod:`openral_core.can`, so a HAL's
+   connect-time bus preflight and this probe read the kernel through the same
+   code; what is here is the robot-identification half.  This is the transport
+   that USB-serial enumeration structurally cannot see: a CAN adapter
+   registers a *network* device, so a CAN-attached arm has no ``/dev/tty*``
+   node to find.
 
 3. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
    maps observed topic name prefixes to known robot types (Unitree, ALOHA, …).
@@ -29,11 +32,16 @@ Example:
 from __future__ import annotations
 
 import json
-import os
 import platform
 import subprocess
 from glob import glob
 from typing import NamedTuple
+
+# reason: SocketCAN link enumeration is transport mechanism, not a matching
+# concern — it lives in openral_core so a HAL's connect-time preflight and
+# this probe read the kernel through the same code.  Re-exported below so
+# `from openral_cli.autodetect import CanInterface` keeps working.
+from openral_core.can import CanInterface, enumerate_can_interfaces
 
 __all__ = [
     "CanInterface",
@@ -485,40 +493,6 @@ def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
 # what `openral detect` runs *before*.
 
 
-class CanInterface(NamedTuple):
-    """One SocketCAN network interface discovered on the host.
-
-    Attributes:
-        name: Interface name, e.g. ``"openarm_left"`` or ``"can0"``.
-        is_up: ``True`` when the link is administratively up.
-        fd_enabled: ``True`` when the controller runs in CAN FD mode.
-        bitrate: Nominal (arbitration-phase) bitrate in bit/s; ``0`` if unset.
-        data_bitrate: CAN FD data-phase bitrate in bit/s; ``0`` when not FD.
-        state: Controller state as reported by the kernel — ``"ERROR-ACTIVE"``,
-            ``"ERROR-PASSIVE"``, ``"BUS-OFF"``, ``"STOPPED"``, or ``""`` when
-            ``ip`` is unavailable.  ``"ERROR-PASSIVE"`` on an otherwise healthy
-            link is the signature of a bus whose peers are unpowered: frames
-            leave the adapter but nothing ACKs them.
-        driver: Kernel bittiming-const name, e.g. ``"pcan_usb_pro_fd"``.
-        mtu: Link MTU — ``16`` for classic CAN, ``72`` for CAN FD.
-        vid: USB vendor ID of the parent adapter (0 for on-SoC controllers).
-        pid: USB product ID of the parent adapter (0 for on-SoC controllers).
-        description: USB product string of the parent adapter, if any.
-    """
-
-    name: str
-    is_up: bool
-    fd_enabled: bool
-    bitrate: int
-    data_bitrate: int
-    state: str
-    driver: str
-    mtu: int
-    vid: int
-    pid: int
-    description: str
-
-
 class CanMatch(NamedTuple):
     """A group of CAN interfaces that together identify one known robot.
 
@@ -567,202 +541,6 @@ _CAN_ADAPTER_TABLE: dict[tuple[int, int], str] = {
 _CAN_VENDOR_TABLE: dict[int, str] = {
     0x0C72: "PEAK-System",
 }
-
-# ARPHRD_CAN — the `/sys/class/net/<if>/type` value that marks a CAN link.
-# From the kernel's `include/uapi/linux/if_arp.h`.
-_ARPHRD_CAN = 280
-
-# Sysfs root for network devices.  A module constant rather than a literal so
-# tests can point the enumeration at a real fixture tree on disk.
-_SYSFS_NET = "/sys/class/net"
-
-# Classic CAN frames cap at 8 data bytes (16-byte MTU); CAN FD's 64-byte
-# payload needs 72. MTU is therefore the FD indicator on hosts without `ip`.
-_CLASSIC_CAN_MTU = 16
-
-
-def _read_sysfs(path: str) -> str:
-    """Read one sysfs attribute, returning ``""`` when it is absent."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
-
-
-def _usb_parent_ids(ifname: str) -> tuple[int, int, str]:
-    """Walk up from a net device to its USB parent and read its descriptor.
-
-    Args:
-        ifname: Network interface name.
-
-    Returns:
-        ``(vid, pid, product)``.  All-zero / empty when the interface has no
-        USB ancestor (an on-SoC CAN controller, a vcan, …).
-    """
-    try:
-        node = os.path.realpath(f"{_SYSFS_NET}/{ifname}/device")
-    except OSError:  # pragma: no cover  # reason: realpath on Linux does not raise here
-        return (0, 0, "")
-    # A USB-attached CAN adapter sits a handful of levels below the USB device
-    # node that carries the descriptor; bound the walk so a malformed tree
-    # cannot spin.
-    for _ in range(6):
-        vid_raw = _read_sysfs(f"{node}/idVendor")
-        pid_raw = _read_sysfs(f"{node}/idProduct")
-        if vid_raw and pid_raw:
-            try:
-                return (int(vid_raw, 16), int(pid_raw, 16), _read_sysfs(f"{node}/product"))
-            except ValueError:
-                return (0, 0, "")
-        parent = os.path.dirname(node)
-        if parent in (node, "/sys"):
-            break
-        node = parent
-    return (0, 0, "")
-
-
-def _ip_link_details() -> dict[str, dict[str, object]]:
-    """Snapshot ``ip -details -json link show``, keyed by interface name.
-
-    Returns:
-        Mapping of interface name to its raw ``ip`` record.  Empty when
-        ``ip`` is not installed or returns something unparseable — callers
-        degrade to the sysfs-only view rather than failing.
-    """
-    import shutil  # noqa: PLC0415  # reason: keep top-level imports minimal
-
-    exe = shutil.which("ip")
-    if not exe:
-        return {}
-    try:
-        raw = subprocess.check_output(
-            [exe, "-details", "-json", "link", "show"],
-            text=True,
-            timeout=3,
-            stderr=subprocess.DEVNULL,
-        )
-        parsed = json.loads(raw)
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-        json.JSONDecodeError,
-    ):
-        return {}
-    if not isinstance(parsed, list):
-        return {}
-    out: dict[str, dict[str, object]] = {}
-    for record in parsed:
-        if isinstance(record, dict):
-            name = record.get("ifname")
-            if isinstance(name, str):
-                out[name] = record
-    return out
-
-
-def _can_info_from_ip(record: dict[str, object]) -> tuple[bool, int, int, str, str]:
-    """Extract the CAN-specific fields from one ``ip -details -json`` record.
-
-    Returns:
-        ``(fd_enabled, bitrate, data_bitrate, state, driver)`` — every field
-        defaulted when the record does not carry a ``linkinfo.info_data``
-        block (a non-CAN link, or an ``ip`` too old to emit one).
-    """
-    linkinfo = record.get("linkinfo")
-    if not isinstance(linkinfo, dict):
-        return (False, 0, 0, "", "")
-    info = linkinfo.get("info_data")
-    if not isinstance(info, dict):
-        return (False, 0, 0, "", "")
-
-    ctrlmode = info.get("ctrlmode")
-    fd_enabled = isinstance(ctrlmode, list) and "FD" in ctrlmode
-
-    def _bitrate(key: str) -> int:
-        block = info.get(key)
-        if isinstance(block, dict):
-            value = block.get("bitrate")
-            if isinstance(value, int):
-                return value
-        return 0
-
-    state = info.get("state")
-    const = info.get("bittiming_const")
-    driver = ""
-    if isinstance(const, dict):
-        name = const.get("name")
-        if isinstance(name, str):
-            driver = name
-
-    return (
-        fd_enabled,
-        _bitrate("bittiming"),
-        _bitrate("data_bittiming"),
-        state if isinstance(state, str) else "",
-        driver,
-    )
-
-
-def enumerate_can_interfaces() -> list[CanInterface]:
-    """Enumerate every SocketCAN interface on the host.
-
-    Linux-only and dependency-free: the interface list comes from
-    ``/sys/class/net`` (an interface whose ``type`` is ``280`` /
-    ``ARPHRD_CAN``), and ``ip -details -json link show`` — when present —
-    enriches each row with bitrates, FD mode, and controller state.  Neither
-    step needs root, and neither opens the bus, so calling this never
-    perturbs a robot that is already running.
-
-    Returns:
-        Interfaces sorted by name.  Empty on non-Linux hosts and on Linux
-        hosts with no CAN controller.
-
-    Example:
-        >>> from openral_cli.autodetect import enumerate_can_interfaces
-        >>> ifaces = enumerate_can_interfaces()  # [] on hosts with no CAN bus
-        >>> isinstance(ifaces, list)
-        True
-    """
-    if platform.system() != "Linux":
-        return []
-    try:
-        names = sorted(os.listdir(_SYSFS_NET))
-    except OSError:
-        return []
-
-    details = _ip_link_details()
-    out: list[CanInterface] = []
-    for name in names:
-        if _read_sysfs(f"{_SYSFS_NET}/{name}/type") != str(_ARPHRD_CAN):
-            continue
-        mtu_raw = _read_sysfs(f"{_SYSFS_NET}/{name}/mtu")
-        try:
-            mtu = int(mtu_raw)
-        except ValueError:
-            mtu = 0
-        record = details.get(name, {})
-        fd_enabled, bitrate, data_bitrate, state, driver = _can_info_from_ip(record)
-        # Without `ip`, MTU still separates classic CAN (16) from CAN FD (72).
-        if not record:
-            fd_enabled = mtu > _CLASSIC_CAN_MTU
-        vid, pid, product = _usb_parent_ids(name)
-        out.append(
-            CanInterface(
-                name=name,
-                is_up=_read_sysfs(f"{_SYSFS_NET}/{name}/operstate").lower() == "up",
-                fd_enabled=fd_enabled,
-                bitrate=bitrate,
-                data_bitrate=data_bitrate,
-                state=state,
-                driver=driver,
-                mtu=mtu,
-                vid=vid,
-                pid=pid,
-                description=product,
-            )
-        )
-    return out
 
 
 def can_adapter_name(iface: CanInterface) -> str:

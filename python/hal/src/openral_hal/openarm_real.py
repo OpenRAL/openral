@@ -83,6 +83,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import structlog
+from openral_core.can import preflight_can_links
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, JointState, RobotDescription
 
@@ -123,45 +124,12 @@ _RIGHT_GRIPPER_SLICE = slice(15, 16)
 # the same constant drives `openral_detect.probes.can`, which is the richer
 # read (bitrates, controller state) used by `openral detect`. This one stays
 # deliberately minimal: the HAL needs "is this link an up CAN bus", nothing more.
-_SYSFS_NET = "/sys/class/net"
-_ARPHRD_CAN = "280"
 
 
 # ── Real-HW RobotDescription ──────────────────────────────────────────────────
 # `sdk_kind: open` — both `openarm_can` and `openarm_ros2` are Apache-2.0, so
 # unlike the UR / Franka adapters there is no closed vendor runtime in the path.
 OPENARM_REAL_DESCRIPTION = make_real_description(OPENARM_DESCRIPTION, sdk_kind="open")
-
-
-def _read_sysfs(path: str) -> str:
-    """Read one sysfs attribute, returning ``""`` when it is absent."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
-
-
-def _can_link_state(interface: str) -> tuple[bool, str]:
-    """Report whether ``interface`` is an existing, up CAN link.
-
-    Args:
-        interface: SocketCAN interface name, e.g. ``"openarm_left"``.
-
-    Returns:
-        ``(is_up, reason)``.  ``reason`` is empty when the link is usable and
-        otherwise names the specific problem, so ``connect()`` can put it in
-        the exception rather than making the operator go look.
-    """
-    arphrd = _read_sysfs(f"{_SYSFS_NET}/{interface}/type")
-    if not arphrd:
-        return (False, f"no network interface named {interface!r}")
-    if arphrd != _ARPHRD_CAN:
-        return (False, f"{interface!r} exists but is not a CAN link (type={arphrd})")
-    operstate = _read_sysfs(f"{_SYSFS_NET}/{interface}/operstate").lower()
-    if operstate != "up":
-        return (False, f"{interface!r} is a CAN link but is {operstate or 'in an unknown state'}")
-    return (True, "")
 
 
 class OpenArmRealHAL(RosControlHAL):
@@ -336,25 +304,16 @@ class OpenArmRealHAL(RosControlHAL):
         Raises:
             ROSConfigError: Naming every interface that failed and why.
         """
-        problems: list[str] = []
-        health: dict[str, str] = {}
-        for side, interface in (
-            ("left", self._left_can_interface),
-            ("right", self._right_can_interface),
-        ):
-            is_up, reason = _can_link_state(interface)
-            health[f"{side}_can"] = interface if is_up else f"{interface} (DOWN)"
-            if not is_up:
-                problems.append(reason)
-        self._can_health = health
-        if problems:
-            raise ROSConfigError(
-                f"OpenArmRealHAL cannot connect: {'; '.join(problems)}. "
+        self._can_health = preflight_can_links(
+            {"left": self._left_can_interface, "right": self._right_can_interface},
+            hal_label="OpenArmRealHAL",
+            remedy=(
                 "Bring the arm buses up before connecting — the OpenArm "
                 "provisioning names them via udev and configures CAN FD at "
                 "1 Mbit/s nominal / 5 Mbit/s data. Run `openral detect` for "
                 "the full bus report."
-            )
+            ),
+        )
 
     # ── Hot path ──────────────────────────────────────────────────────────────
 
