@@ -30,22 +30,30 @@ seed: 1
 # ADR-0097 place-phase declaration — see scenes/deploy/robocasa_baguette.yaml for
 # the full field-by-field rationale (goal scoping, clock domain, why no region).
 #
-# target_id — NOT YET VERIFIED AGAINST A LIVE RUN. `PickPlaceCounterToSink`
-#   resolves its place target as `register_fixture_ref("sink",
-#   FixtureType.SINK)`, and every one of RoboCasa's 60 kitchen layouts declares
-#   exactly ONE sink, so the fixture choice is forced — only the layout's own
-#   name for it varies, and which layout seed 1 samples is knowable only by
-#   running the env (RoboCasa is not installable on the authoring host).
-#   `sink_main_group_1` is the most frequent name in the layout corpus (12/60;
-#   next `sink_island_group_1` and `sink_right_group_1`, 7 each), and the body is
-#   `<fixture>_main` per robosuite's naming. A WRONG name here cannot silently
-#   name a different sink — there is only one — so it fails the safe way: the HAL
-#   logs `Place declaration target ... names no MuJoCo body; refused`, no witness
-#   can arm, and the run behaves exactly as it does with no declaration at all.
-#   To fix it after a live run, read the fixture off that log line (or off
-#   `env.fixture_refs["sink"].name`) and replace the name below.
+# target_id — CORRECTED AGAINST A LIVE RUN (Spark, seed 1). #142 shipped
+#   `sim:sink_main_group_1_main`, the modal name in the layout corpus (12/60),
+#   as its best guess. It was WRONG, and the fail-closed design is what caught
+#   it: the HAL refused the declaration with `Place declaration target
+#   'sim:sink_main_group_1_main' names no MuJoCo body; refused`, nothing armed,
+#   and the run behaved exactly as it does with no declaration — which is why
+#   the wrong name cost a validation round and not a collision.
+#
+#   The seed-1 body table names the sink `sink_island_group_main` (body 319),
+#   parent `world`, with `_handle` and `_spout` as its children. That is the
+#   fixture root, so its subtree is the whole sink and nothing else — the
+#   correct, tightest target here.
+#
+#   Read off the MuJoCo body table, NOT off `env.fixture_refs["sink"]`: in the
+#   live env that value is a TUPLE with no `.name` attribute and a `None`
+#   fixture name, so #142's advice to read it there could not be executed at
+#   all. Recipe (filter token `"sink"`): see the canonical block in
+#   scenes/deploy/robocasa_baguette.yaml.
+# timeout_s — 300 s, raised from #142's 120 s. Full reasoning and the stated
+#   cost are in scenes/deploy/robocasa_baguette.yaml; the short version is that
+#   120 s was derived from a benchmark horizon that does not bound a `deploy sim`
+#   goal, and the live baguette run consumed 92 s of it before the grasp.
 place_declaration:
-  target_id: "sim:sink_main_group_1_main"
+  target_id: "sim:sink_island_group_main"
   object_id: ""
-  timeout_s: 120.0
+  timeout_s: 300.0
   stamp_ns: 0

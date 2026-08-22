@@ -43,11 +43,38 @@ seed: 1
 # (hazard HZ-0097-2). No declaration keeps the pre-ADR-0097 behaviour, which is
 # the fail-closed direction.
 #
-# To fill it in: run this scene once and read the target off
-# `env.fixture_refs["drawer"].name`, then add
+# The 2026-08-22 live run on the Spark confirmed the decision to leave this
+# scene undeclared, and invalidated the procedure #142 wrote for filling it in.
+#
+# `env.fixture_refs["drawer"].name` DOES NOT EXIST. In the live seed-1 env the
+# `fixture_refs` values are TUPLES with no `.name` attribute, and the fixture
+# name they carry is `None` for the drawer as it is for the sink, the counter
+# and the fridge. That advice is not merely unreliable, it is unexecutable — and
+# following it is literally how the sink and fridge scenes shipped wrong names
+# in #142 (both refused fail-closed by the HAL, both corrected here).
+#
+# Nor is the obvious substitute — grep the MuJoCo body table for `drawer` —
+# enough on this scene. At seed 1 the only bodies matching `drawer` in
+# `PickPlaceCounterToDrawer` belong to the FRIDGE's freezer drawers. The counter
+# drawer this task places into is a `stack` level named `stack_2_left_group_3_*`,
+# which the substring `drawer` does not match at all. So a reader who greps
+# `drawer` and declares the first hit would arm the witness and its approach
+# allowance at a fridge freezer drawer on the other side of the kitchen —
+# exactly HZ-0097-2, and worse than the sink / fridge failure mode, because a
+# name that RESOLVES cannot fail closed.
+#
+# So this scene STAYS UNDECLARED. Filling it in honestly needs a live run to
+# establish which `stack_<n>_<side>_group_<level>` body the task's
+# `register_fixture_ref("drawer", ...)` actually resolved to on this seed — the
+# fixture object's identity, not a name match — and that evidence does not
+# exist yet. Until it does, no declaration is the fail-closed direction and the
+# correct call.
+#
+# When that evidence exists, the shape to add (recipe and the timeout rationale
+# are in scenes/deploy/robocasa_baguette.yaml) is:
 #
 #   place_declaration:
 #     target_id: "sim:<that fixture>_main"
 #     object_id: ""
-#     timeout_s: 120.0
+#     timeout_s: 300.0
 #     stamp_ns: 0

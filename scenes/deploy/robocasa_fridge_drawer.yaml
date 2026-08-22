@@ -103,25 +103,42 @@ seed: 1
 # This is the scene the allowance matters most for: both surfaces are inside the
 # fridge, so the payload passes voxel-quantised geometry on five sides.
 #
-# target_id — NOT YET VERIFIED AGAINST A LIVE RUN.
-#   `PickPlaceFridgeShelfToDrawer` resolves `register_fixture_ref("fridge",
-#   FixtureType.FRIDGE)` and places into that fridge's OWN drawer compartment, so
-#   the fridge fixture is the correct declaration: the declared body's whole
-#   subtree is what the witness may be attested against, and the drawer is part
-#   of that subtree. Every one of RoboCasa's 60 layouts declares exactly ONE
-#   fridge, so the choice is forced and only the layout's name for it varies;
-#   which layout seed 1 samples is knowable only by running the env (RoboCasa is
-#   not installable on the authoring host). `fridge_right_group` is the most
-#   frequent name in the layout corpus (9/60; next `fridge_main_group` 7,
-#   `fridge_left_group` 6, `fridgefrenchdoor_main_group_1` 6), and the body is
-#   `<fixture>_main` per robosuite's naming. A WRONG name cannot silently name a
-#   different fridge — there is only one — so it fails the safe way: the HAL logs
-#   `Place declaration target ... names no MuJoCo body; refused`, no witness can
-#   arm, and the run behaves exactly as it does with no declaration. To fix it
-#   after a live run, read the fixture off that log line (or off
-#   `env.fixture_refs["fridge"].name`) and replace the name below.
+# target_id — CORRECTED AGAINST A LIVE RUN (Spark, seed 1). #142 shipped
+#   `sim:fridge_right_group_main`, the modal fridge name in the layout corpus
+#   (9/60), as its best guess. It was WRONG, and the fail-closed design is what
+#   caught it: the HAL refused the declaration with `Place declaration target
+#   'sim:fridge_right_group_main' names no MuJoCo body; refused`, nothing armed,
+#   and the run behaved exactly as it does with no declaration at all.
+#
+#   Seed 1's fridge is `fridge_main_group`. That leaves a real CHOICE of target,
+#   and #142's reasoning ("declare the fridge; the drawer is in its subtree")
+#   picks the wrong side of it:
+#     * `fridge_main_group_main` (body 91) is the fixture root and its subtree
+#       covers everything — the fridge door, the freezer door and the freezer
+#       drawers included. Declaring it would make contact with the FRIDGE DOOR
+#       attestable as a place-phase witness and buy the payload the approach
+#       allowance against it. The door is not the receptacle, and on seed 1 it
+#       is precisely the geometry the arm is already crowding (see the KNOWN
+#       DEFECT block above).
+#     * `fridge_main_group_fridge_drawer0` (body 98) is the drawer the task
+#       actually places into. Its subtree is the drawer and nothing else, so
+#       it is the tighter and correct target: it licenses exactly the surface
+#       the vegetable comes to rest on.
+#   The declared body's whole subtree is what a witness may be attested against,
+#   so the rule is "smallest body that still contains the resting surface" — a
+#   parent chosen for convenience exempts its siblings too.
+#
+#   Read off the MuJoCo body table, NOT off `env.fixture_refs["fridge"]`: in the
+#   live env that value is a TUPLE with no `.name` attribute and a `None`
+#   fixture name, so #142's advice to read it there could not be executed at
+#   all. Recipe (filter token `"fridge"`): see the canonical block in
+#   scenes/deploy/robocasa_baguette.yaml.
+# timeout_s — 300 s, raised from #142's 120 s. Full reasoning and the stated
+#   cost are in scenes/deploy/robocasa_baguette.yaml; the short version is that
+#   120 s was derived from a benchmark horizon that does not bound a `deploy sim`
+#   goal, and the live baguette run consumed 92 s of it before the grasp.
 place_declaration:
-  target_id: "sim:fridge_right_group_main"
+  target_id: "sim:fridge_main_group_fridge_drawer0"
   object_id: ""
-  timeout_s: 120.0
+  timeout_s: 300.0
   stamp_ns: 0
