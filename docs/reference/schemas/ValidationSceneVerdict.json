@@ -1,0 +1,447 @@
+{
+  "$defs": {
+    "ValidationGroundTruthAdjudication": {
+      "additionalProperties": true,
+      "description": "What the simulator's own probe says about a kernel stop.\n\nDerived from the ``sim.estop_ground_truth_snapshot`` line the sim HAL emits\nper stop. The probe measures against solid world geometry only and carries\nits own caveat that a zero contact count is *not* an emptiness test, so the\nadjudication is driven by the distance probes rather than the contact list.\n\nAttributes:\n    verdict: The adjudication.\n    stop_class: The probe's own class for the stop (``\"robot_world\"``,\n        ``\"attached_payload\"``).\n    sim_time_s: Simulator time at the stop.\n    grid_resolution_m: Occupancy-grid edge length, read from the monitor's\n        ``world_voxels`` records. Sets the quantization budget.\n    quantization_budget_m: Half the grid cell's body diagonal \u2014 the largest\n        discrepancy a correctly-behaving voxel grid can produce.\n    nearest_any_m: Distance of the closest probed pair of any kind.\n        ``None`` when nothing was within ``distmax_m``.\n    nearest_tripping_party_m: Distance of the closest pair whose subject is\n        the party the kernel named. ``None`` when nothing was in range.\n    nearest_pair: Bodies/geoms of the closest probed pair, verbatim.\n    discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's\n        ``min_distance_m`` \u2014 how much clearance the kernel did not see.\n    probed_pairs: Pairs the probe actually measured.\n    probe_truncated: Whether the probe hit its call budget. A truncated\n        probe can never support ``false-positive``.\n    distmax_m: The probe's cutoff distance; an untruncated probe that\n        returns no pair proves the nearest geometry is beyond it.\n    payload_contacts: MuJoCo contact count involving the payload.\n\nExample:\n    >>> adj = ValidationGroundTruthAdjudication(\n    ...     verdict=\"real-contact\", stop_class=\"attached_payload\", sim_time_s=17.5\n    ... )\n    >>> adj.verdict\n    'real-contact'",
+      "properties": {
+        "verdict": {
+          "enum": [
+            "real-contact",
+            "false-positive",
+            "within-quantization",
+            "unadjudicated"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "stop_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Class"
+        },
+        "sim_time_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim Time S"
+        },
+        "grid_resolution_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grid Resolution M"
+        },
+        "quantization_budget_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quantization Budget M"
+        },
+        "nearest_any_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nearest Any M"
+        },
+        "nearest_tripping_party_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nearest Tripping Party M"
+        },
+        "nearest_pair": {
+          "additionalProperties": true,
+          "title": "Nearest Pair",
+          "type": "object"
+        },
+        "discrepancy_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Discrepancy M"
+        },
+        "probed_pairs": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probed Pairs"
+        },
+        "probe_truncated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Truncated"
+        },
+        "distmax_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distmax M"
+        },
+        "payload_contacts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Contacts"
+        }
+      },
+      "required": [
+        "verdict"
+      ],
+      "title": "ValidationGroundTruthAdjudication",
+      "type": "object"
+    },
+    "ValidationStopEvidence": {
+      "additionalProperties": true,
+      "description": "The kernel's ``safety.collision`` verdict for one scene, transcribed.\n\nEvery field is read verbatim out of the ``safety.collision`` log line the\nC++ kernel emits; nothing is recomputed. ``min_distance_m`` is the depth of\nthe cell the kernel *reported*, ``sweep_min_distance_m`` the depth of the\ndeepest cell its sweep found \u2014 they differ only when a support-contact\nwitness exempted a deeper cell, which makes their inequality the\nauthoritative \"was an exemption live at the trip\" evidence.\n\nAttributes:\n    kind: The kernel's collision kind (``\"world\"``, ``\"self\"``).\n    party_a: First party \u2014 a robot link, or ``attached:<object_id>`` when\n        the declared payload is the subject.\n    party_b: Second party \u2014 usually ``voxel_<index>`` for a world stop.\n    horizon_step: Predicted-horizon index the verdict was evaluated at.\n        ``-1`` is the reactive (measured-state) check.\n    min_distance_m: Reported penetration depth, negative when inside.\n    sweep_min_distance_m: Deepest cell the sweep found, negative when\n        inside. ``None`` when the kernel build did not report it.\n    place_allowance_active: Whether the ADR-0097 place-approach allowance\n        was applied on the trip itself.\n    place_target: Declared place target at the trip, empty when none.\n    exemption_active: ``True`` when ``sweep_min_distance_m`` is strictly\n        deeper than ``min_distance_m`` \u2014 a deeper cell was exempted.\n        ``None`` when the sweep depth was not reported.\n\nExample:\n    >>> ev = ValidationStopEvidence(\n    ...     kind=\"world\",\n    ...     party_a=\"panda_link5\",\n    ...     party_b=\"voxel_170781\",\n    ...     horizon_step=0,\n    ...     min_distance_m=-0.0209178,\n    ...     sweep_min_distance_m=-0.0209178,\n    ... )\n    >>> ev.exemption_active\n    False",
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "party_a": {
+          "title": "Party A",
+          "type": "string"
+        },
+        "party_b": {
+          "title": "Party B",
+          "type": "string"
+        },
+        "horizon_step": {
+          "title": "Horizon Step",
+          "type": "integer"
+        },
+        "min_distance_m": {
+          "title": "Min Distance M",
+          "type": "number"
+        },
+        "sweep_min_distance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sweep Min Distance M"
+        },
+        "place_allowance_active": {
+          "default": false,
+          "title": "Place Allowance Active",
+          "type": "boolean"
+        },
+        "place_target": {
+          "default": "",
+          "title": "Place Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "party_a",
+        "party_b",
+        "horizon_step",
+        "min_distance_m"
+      ],
+      "title": "ValidationStopEvidence",
+      "type": "object"
+    },
+    "ValidationWitnessTimeline": {
+      "additionalProperties": true,
+      "description": "The attach / witness / place-declaration lifecycle of one scene.\n\nReconstructed from the run's monitor JSONL (producer side) and the kernel's\nown ``safety.support_witness_*`` / ``safety.place_region_*`` log lines\n(consumer side). Both are recorded because a disagreement between them is\nitself a finding.\n\nAttributes:\n    attach_t_s: Monitor time of the first payload attach, ``None`` if the\n        run never grasped.\n    detach_t_s: Monitor time of the payload detach, if any.\n    support_id: The support body the witness last attested against.\n    kernel_witness_armed: ``safety.support_witness_armed`` line count.\n    kernel_witness_separated: ``safety.support_witness_separated`` count.\n    place_declaration_seen: Whether a place declaration with a\n        producer-measured region reached the monitor.\n    place_region_armed: Whether the kernel armed the declared place region.\n    place_allowance_active_lines: How many lines disclosed\n        ``place_allowance_active=1``. ``0`` means the approach allowance\n        never applied anywhere in the run.\n\nExample:\n    >>> ValidationWitnessTimeline(attach_t_s=176.32).place_allowance_active_lines\n    0",
+      "properties": {
+        "attach_t_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attach T S"
+        },
+        "detach_t_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detach T S"
+        },
+        "support_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Support Id"
+        },
+        "kernel_witness_armed": {
+          "default": 0,
+          "title": "Kernel Witness Armed",
+          "type": "integer"
+        },
+        "kernel_witness_separated": {
+          "default": 0,
+          "title": "Kernel Witness Separated",
+          "type": "integer"
+        },
+        "place_declaration_seen": {
+          "default": false,
+          "title": "Place Declaration Seen",
+          "type": "boolean"
+        },
+        "place_region_armed": {
+          "default": false,
+          "title": "Place Region Armed",
+          "type": "boolean"
+        },
+        "place_allowance_active_lines": {
+          "default": 0,
+          "title": "Place Allowance Active Lines",
+          "type": "integer"
+        }
+      },
+      "title": "ValidationWitnessTimeline",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
+  "properties": {
+    "scene": {
+      "title": "Scene",
+      "type": "string"
+    },
+    "config_path": {
+      "title": "Config Path",
+      "type": "string"
+    },
+    "config_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Config Sha256"
+    },
+    "seed": {
+      "title": "Seed",
+      "type": "integer"
+    },
+    "prompt": {
+      "default": "",
+      "title": "Prompt",
+      "type": "string"
+    },
+    "rskill_id": {
+      "default": "",
+      "title": "Rskill Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "completed",
+        "estop-collision-real",
+        "estop-collision-false-positive",
+        "estop-collision-within-quantization",
+        "estop-collision-unadjudicated",
+        "estop-initial-configuration",
+        "deadline-after-grasp",
+        "deadline-no-grasp",
+        "harness-error"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "task_success_final": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Success Final"
+    },
+    "task_success_ever": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Success Ever"
+    },
+    "task_success_steps": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Success Steps"
+    },
+    "task_success_transitions": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Success Transitions"
+    },
+    "stop": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ValidationStopEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "ground_truth": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ValidationGroundTruthAdjudication"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "witness": {
+      "$ref": "#/$defs/ValidationWitnessTimeline"
+    },
+    "dispatch_failure_reason": {
+      "default": "",
+      "title": "Dispatch Failure Reason",
+      "type": "string"
+    },
+    "wall_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wall S"
+    },
+    "artifacts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Artifacts",
+      "type": "object"
+    }
+  },
+  "required": [
+    "scene",
+    "config_path",
+    "seed",
+    "outcome"
+  ],
+  "title": "ValidationSceneVerdict",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

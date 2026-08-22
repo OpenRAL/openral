@@ -21,6 +21,16 @@ This page is the in-tree ledger. It records **what each round measured and
 concluded**, with the artifact path, and it is deliberate about the difference
 between a number a file states and an inference drawn from several.
 
+Every round **from 2026-08-22 onward** is produced by the in-tree harness —
+[`just validation-matrix`](../contributing/validation-matrix.md) — which writes
+a machine-readable `verdicts.json` (`openral_core.ValidationRoundVerdicts`)
+alongside its notes. Entries below that point should cite that file rather than
+prose, and `just validation-matrix-diff` answers "what changed since the last
+round" without anyone re-reading a log. The rounds already listed here predate
+the harness and are recorded as they were found; the 2026-08-22 and 2026-08-16
+rounds' artifacts are also checked in, trimmed, as the harness's own test
+fixtures (`tests/unit/fixtures/validation_matrix/`).
+
 ## Reading the citations
 
 - **Artifact paths** are of the form `spark:/home/allopart/openral-runs/<round>/`.
@@ -341,6 +351,9 @@ themselves rather than inferred:
 
 ## Related
 
+- [The validation matrix](../contributing/validation-matrix.md) — how to run a
+  round, what each verdict means, where the artifacts land, and the Spark
+  etiquette. The harness that feeds this page from 2026-08-22 onward.
 - `cpp/openral_safety_kernel/README.md` — the witness, the partition, the
   allowance, and the geometry each calibration changed.
 - `packages/openral_octomap_bridge/README.md` — payload clearing, the attach

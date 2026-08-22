@@ -1,0 +1,125 @@
+{
+  "additionalProperties": true,
+  "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
+  "properties": {
+    "round_id": {
+      "title": "Round Id",
+      "type": "string"
+    },
+    "started_at": {
+      "title": "Started At",
+      "type": "string"
+    },
+    "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+    },
+    "executed_sha": {
+      "title": "Executed Sha",
+      "type": "string"
+    },
+    "worktree_clean": {
+      "title": "Worktree Clean",
+      "type": "boolean"
+    },
+    "overlay_built_at_ns": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Overlay Built At Ns"
+    },
+    "launcher_path": {
+      "default": "",
+      "title": "Launcher Path",
+      "type": "string"
+    },
+    "repo_root": {
+      "default": "",
+      "title": "Repo Root",
+      "type": "string"
+    },
+    "robot_manifest_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Robot Manifest Path"
+    },
+    "robot_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Robot Id"
+    },
+    "sync_groups": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sync Groups",
+      "type": "array"
+    },
+    "stack_argv": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Stack Argv",
+      "type": "array"
+    },
+    "safety_overrides_absent": {
+      "default": true,
+      "title": "Safety Overrides Absent",
+      "type": "boolean"
+    },
+    "gpu_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gpu Name"
+    },
+    "notes_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notes Path"
+    }
+  },
+  "required": [
+    "round_id",
+    "started_at",
+    "executed_sha",
+    "worktree_clean"
+  ],
+  "title": "ValidationRoundMetadata",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

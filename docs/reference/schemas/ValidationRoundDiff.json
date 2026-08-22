@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "ValidationSceneDelta": {
+      "additionalProperties": true,
+      "description": "How one scene's verdict moved between two rounds.\n\nAttributes:\n    scene: The scene key.\n    baseline_outcome: Outcome in the baseline round, ``None`` if the scene\n        is new.\n    outcome: Outcome in the current round, ``None`` if the scene was\n        dropped.\n    changed: Whether the outcome differs.\n    changed_fields: Field-by-field deltas, as\n        ``{field: {\"from\": ..., \"to\": ...}}``, for the comparable subset\n        (outcome, task success, tripping pair, distances, allowance).\n\nExample:\n    >>> d = ValidationSceneDelta(\n    ...     scene=\"baguette\",\n    ...     baseline_outcome=\"estop-collision-real\",\n    ...     outcome=\"estop-collision-false-positive\",\n    ...     changed=True,\n    ... )\n    >>> d.changed\n    True",
+      "properties": {
+        "scene": {
+          "title": "Scene",
+          "type": "string"
+        },
+        "baseline_outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "estop-collision-real",
+                "estop-collision-false-positive",
+                "estop-collision-within-quantization",
+                "estop-collision-unadjudicated",
+                "estop-initial-configuration",
+                "deadline-after-grasp",
+                "deadline-no-grasp",
+                "harness-error"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Outcome"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "estop-collision-real",
+                "estop-collision-false-positive",
+                "estop-collision-within-quantization",
+                "estop-collision-unadjudicated",
+                "estop-initial-configuration",
+                "deadline-after-grasp",
+                "deadline-no-grasp",
+                "harness-error"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "changed": {
+          "default": false,
+          "title": "Changed",
+          "type": "boolean"
+        },
+        "changed_fields": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Changed Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "title": "ValidationSceneDelta",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Round-over-round comparison \u2014 the \"what changed\" artifact.\n\nAttributes:\n    schema_version: On-disk format version.\n    round_id: The newer round.\n    baseline_round_id: The round it is compared against.\n    executed_sha: SHA the newer round ran.\n    baseline_executed_sha: SHA the baseline ran. When the two SHAs are\n        equal the diff is a pure reproducibility comparison; when they\n        differ it is a before/after.\n    scenes: Per-scene deltas, in the newer round's order.\n\nExample:\n    >>> ValidationRoundDiff(\n    ...     round_id=\"b\",\n    ...     baseline_round_id=\"a\",\n    ...     executed_sha=\"0\" * 40,\n    ...     baseline_executed_sha=\"0\" * 40,\n    ... ).same_sha\n    True",
+  "properties": {
+    "schema_version": {
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "round_id": {
+      "title": "Round Id",
+      "type": "string"
+    },
+    "baseline_round_id": {
+      "title": "Baseline Round Id",
+      "type": "string"
+    },
+    "executed_sha": {
+      "title": "Executed Sha",
+      "type": "string"
+    },
+    "baseline_executed_sha": {
+      "title": "Baseline Executed Sha",
+      "type": "string"
+    },
+    "scenes": {
+      "items": {
+        "$ref": "#/$defs/ValidationSceneDelta"
+      },
+      "title": "Scenes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "round_id",
+    "baseline_round_id",
+    "executed_sha",
+    "baseline_executed_sha"
+  ],
+  "title": "ValidationRoundDiff",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

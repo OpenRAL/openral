@@ -1,0 +1,87 @@
+REAL artifacts from two collision-stack validation rounds on the project's DGX
+Spark, captured verbatim. Nothing here is hand-written or synthesized except
+the two `metadata.json` files, whose provenance is spelled out at the bottom.
+
+Producer:
+    spark:/home/allopart/openral-runs/2026-08-22-master-1/{bag1,sink1,fridge1,utensil1}/
+    spark:/home/allopart/openral-runs/2026-08-16-master-1/bag1/
+
+Both rounds ran stack tip 2edcf67c3b087958d475813fe19234c12e90698c (`2edcf67`,
+"fix(world-state): rasterize the octree by cube overlap, not centre sampling"),
+verified equal to origin/master at run time, with the reasoner off and
+SLAM + Nav2 + octomap + octomap-kernel-check on, seed 1 pinned, on an NVIDIA
+GB10. No safety knob was touched in either. They are summarised in
+`docs/reference/collision-validation-evidence.md` under
+"2026-08-22 — `master-1`, four scenes at `2edcf67`" and
+"2026-08-16 — the paired n=15 A/B, and `master-1`".
+
+The two rounds are kept together on purpose: same code, same scene, same seed,
+*different* outcome — the 08-16 baguette run tripped during carry on the
+attached payload with an exemption live (min_distance_m -0.00418456 vs
+sweep_min_distance_m -0.0355338), while the 08-22 one carried cleanly and
+tripped later on an arm link with nothing exempted. That makes them a real
+round-over-round diff rather than an invented one.
+
+FILES, and how each was produced
+--------------------------------
+
+`<round>/<scene>/run_deploy_excerpt.log`
+    Verbatim line subset of the round's `seed1_deploy.log` (1.7 MB), selected
+    with, and only with:
+
+        grep -E "safety\.|sim\.task_success_final|sim\.estop_ground_truth|\
+sim\.estop_initial_configuration|place_allowance_active=1" seed1_deploy.log
+
+    Every retained line is byte-for-byte the original, ROS launch prefix and
+    all. The full logs are not in the repo because they are ~1.7 MB each.
+
+`<round>/<scene>/run_monitor.jsonl`
+    Verbatim line subset of the round's `seed1_monitor.jsonl`, produced by
+    `attach_monitor4.py` (now `tools/_validation_matrix_monitor.py`). Kept:
+    `monitor_started`, the FIRST `world_voxels` record (it carries the grid
+    resolution the quantization budget is computed from), every
+    `place_declaration`, every `world_state_attached`, each
+    `attachment_state` at which the attached-object set changed plus the first
+    one carrying a support witness, `failure_safety`, `estop` and
+    `monitor_stopped`. The dropped records are the ~1200 `attachment_applied`
+    acks and the periodic `world_voxels`/`snapshot` lines, which no verdict
+    field reads.
+
+`<round>/<scene>/run_goal.log`
+    The dispatcher's single JSON line, complete and unmodified, from
+    `run_xr1_full.py` (now `tools/_validation_matrix_dispatch.py`).
+
+`<round>/metadata.json`
+    THE ONE HAND-WRITTEN FILE. These rounds predate the harness, so they never
+    wrote the metadata block `tools/validation_matrix.py` now emits; this
+    restates what the round's own `NOTES.md`, runner script and artifacts say,
+    in the harness's format. Field origins:
+
+      executed_sha        — `git rev-parse 2edcf67`, the tip both NOTES.md
+                            files name.
+      started_at          — the ROS timestamp on the round's first
+                            `safety.*` log line, converted to UTC.
+      host / gpu_name     — `hostname` and `nvidia-smi --query-gpu=name` on the
+                            validation host.
+      launcher_path,
+      repo_root           — the absolute launcher and `OPENRAL_REPO_ROOT` the
+                            round's `run_matrix.sh` exported.
+      stack_argv          — the stack the round pinned. The round expressed it
+                            through a per-round scene copy's `runtime:` block;
+                            the harness pins the same stack through the deploy
+                            CLI's flags, which is what is written here.
+      sync_groups         — the group set the round's NOTES.md records
+                            (`--group robocasa --group sidecar-wire`).
+      seed, rskill_id,
+      scene_configs       — from the round's runner invocation.
+
+    `overlay_built_at_ns` is deliberately ABSENT: these rounds did not record
+    it, and the field is optional. Do not fill it in with a guess.
+
+Reproduce (needs the run store, which is not public):
+    ssh spark
+    ls ~/openral-runs/2026-08-22-master-1/
+    cat ~/openral-runs/2026-08-22-master-1/NOTES.md
+
+Consumed by:
+    tests/unit/test_validation_matrix.py

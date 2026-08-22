@@ -1,0 +1,159 @@
+{
+  "additionalProperties": true,
+  "description": "What the simulator's own probe says about a kernel stop.\n\nDerived from the ``sim.estop_ground_truth_snapshot`` line the sim HAL emits\nper stop. The probe measures against solid world geometry only and carries\nits own caveat that a zero contact count is *not* an emptiness test, so the\nadjudication is driven by the distance probes rather than the contact list.\n\nAttributes:\n    verdict: The adjudication.\n    stop_class: The probe's own class for the stop (``\"robot_world\"``,\n        ``\"attached_payload\"``).\n    sim_time_s: Simulator time at the stop.\n    grid_resolution_m: Occupancy-grid edge length, read from the monitor's\n        ``world_voxels`` records. Sets the quantization budget.\n    quantization_budget_m: Half the grid cell's body diagonal \u2014 the largest\n        discrepancy a correctly-behaving voxel grid can produce.\n    nearest_any_m: Distance of the closest probed pair of any kind.\n        ``None`` when nothing was within ``distmax_m``.\n    nearest_tripping_party_m: Distance of the closest pair whose subject is\n        the party the kernel named. ``None`` when nothing was in range.\n    nearest_pair: Bodies/geoms of the closest probed pair, verbatim.\n    discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's\n        ``min_distance_m`` \u2014 how much clearance the kernel did not see.\n    probed_pairs: Pairs the probe actually measured.\n    probe_truncated: Whether the probe hit its call budget. A truncated\n        probe can never support ``false-positive``.\n    distmax_m: The probe's cutoff distance; an untruncated probe that\n        returns no pair proves the nearest geometry is beyond it.\n    payload_contacts: MuJoCo contact count involving the payload.\n\nExample:\n    >>> adj = ValidationGroundTruthAdjudication(\n    ...     verdict=\"real-contact\", stop_class=\"attached_payload\", sim_time_s=17.5\n    ... )\n    >>> adj.verdict\n    'real-contact'",
+  "properties": {
+    "verdict": {
+      "enum": [
+        "real-contact",
+        "false-positive",
+        "within-quantization",
+        "unadjudicated"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "stop_class": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Class"
+    },
+    "sim_time_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sim Time S"
+    },
+    "grid_resolution_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Grid Resolution M"
+    },
+    "quantization_budget_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quantization Budget M"
+    },
+    "nearest_any_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Nearest Any M"
+    },
+    "nearest_tripping_party_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Nearest Tripping Party M"
+    },
+    "nearest_pair": {
+      "additionalProperties": true,
+      "title": "Nearest Pair",
+      "type": "object"
+    },
+    "discrepancy_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Discrepancy M"
+    },
+    "probed_pairs": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Probed Pairs"
+    },
+    "probe_truncated": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Probe Truncated"
+    },
+    "distmax_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Distmax M"
+    },
+    "payload_contacts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Payload Contacts"
+    }
+  },
+  "required": [
+    "verdict"
+  ],
+  "title": "ValidationGroundTruthAdjudication",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,35 @@
+{
+  "executed_sha": "2edcf67c3b087958d475813fe19234c12e90698c",
+  "gpu_name": "NVIDIA GB10",
+  "host": "nvidia",
+  "launcher_path": "/home/allopart/workspace/openral-matrix-baseline/.venv/bin/openral",
+  "notes_path": "NOTES.md",
+  "repo_root": "/home/allopart/workspace/openral-matrix-baseline",
+  "robot_id": "panda_mobile",
+  "robot_manifest_path": "robots/panda_mobile/robot.yaml",
+  "round_id": "2026-08-16-master-1",
+  "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4",
+  "safety_overrides_absent": true,
+  "scene_configs": {
+    "baguette": "scenes/deploy/robocasa_baguette.yaml"
+  },
+  "seed": 1,
+  "stack_argv": [
+    "--no-enable-reasoner",
+    "--enable-slam",
+    "--enable-nav2",
+    "--enable-octomap",
+    "--enable-octomap-kernel-check",
+    "--no-object-detector",
+    "--no-enable-scene-vlm",
+    "--no-dashboard",
+    "--hal",
+    "viewer_enabled=false"
+  ],
+  "started_at": "2026-08-16T15:32:20+00:00",
+  "sync_groups": [
+    "robocasa",
+    "sidecar-wire"
+  ],
+  "worktree_clean": true
+}

@@ -1,0 +1,8 @@
+{"event": "monitor_started", "t": 0.006}
+{"event": "world_state_attached", "n": 0, "object_ids": [], "t": 3.315}
+{"declaration": null, "event": "place_declaration", "source": "world_state", "t": 3.315}
+{"declaration": null, "event": "place_declaration", "revision": 0, "source": "attachment_state", "t": 3.523}
+{"attached_ws": "", "count": 4178, "dims": [64, 64, 64], "event": "world_voxels", "frame_id": "base_link", "n_x33": 63, "origin": [-0.8, -0.8, -0.3], "resolution": 0.025, "set_sha1": "254ede340f66d8fe", "t": 4.035}
+{"event": "estop", "t": 37.004, "voxel_count": 4178}
+{"event": "failure_safety", "evidence": {"collision_kind": "world", "horizon_step": -1, "kind": "collision", "link_a": "panda_link1", "link_b_or_object": "voxel_76001", "min_distance_m": -0.0172764}, "kind": 10, "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4", "severity": 3, "t": 37.007}
+{"event": "monitor_stopped", "t": 42.396}

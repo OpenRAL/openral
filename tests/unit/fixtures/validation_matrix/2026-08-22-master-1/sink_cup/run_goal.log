@@ -1,0 +1,1 @@
+{"failure_reason": "safety_estop:ROSPublishingHAL: safety stop latched (/openral/safety_status:kind_collision (world) + /openral/estop) while waiting for action group tick 130 to be applied", "first_chunk_s": 31.57, "latest_chunk": 129, "status": 6, "success": false, "wall_s": 128.5}

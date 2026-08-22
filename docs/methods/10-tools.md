@@ -27,9 +27,9 @@ _Overlays a robot's **kernel** collision primitives (the box/capsule geometry th
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L161)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L173)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L225)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L177)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L189)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L241)
 
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a pytest test); 1 episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table. See `just sim-audit`. Two modes: default (full rollout for sim/benchmark, Tier-2 launch + SIGINT for deploy) and `--check-compatibility` (cheap in-process scene+rSkill+HAL gate, no subprocess / no GPU)._
@@ -47,6 +47,43 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a p
 - `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L665) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
 - `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L710) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
 - `main(argv) -> int` (L848) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
+
+### `tools/validation_matrix.py`
+_The four-scene collision-stack validation matrix as one versioned command. Recovers the tooling that lived only in `spark:~/openral-runs/<round>/scripts/` (`run_matrix.sh`, `drive_round.sh`, `attach_monitor4.py`, `postprocess.sh`, `adjudicate.py`, `verdict_table.py`) and emits both `NOTES.md` and a machine-readable `verdicts.json` (`openral_core.ValidationRoundVerdicts`) per round. Backs `just validation-matrix` / `-verdicts` / `-diff`. See [`docs/contributing/validation-matrix.md`](../contributing/validation-matrix.md) and the ledger it feeds, [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._
+
+- `@dataclass(frozen=True) class SceneSpec(key, config, prompt, deadline_s)` — One matrix row. `config` is the **tracked** DeployScene YAML, used verbatim; the stack is pinned by CLI flags, not by a per-round YAML copy. (L83)
+- `MATRIX: tuple[SceneSpec, ...]` — The four scenes: `baguette`, `sink_cup`, `fridge`, `utensil`. (L99)
+- `SYNC_GROUPS = ("robocasa", "sidecar-wire")` — Both, always: `--group robocasa` alone strips `pyzmq` and breaks the XR-1 adapter. (L126)
+- `STACK_ARGV: tuple[str, ...]` — Reasoner off, SLAM/Nav2/octomap/kernel-check on, detector + scene VLM off, headless. (L130)
+- `quantization_budget_m(grid_resolution_m: float) -> float` — Half the voxel's body diagonal; the largest kernel-vs-ground-truth discrepancy a correct grid can produce. (L174)
+- `parse_kernel_collision(lines) -> ValidationStopEvidence | None` — Transcribe the first `safety.collision` line verbatim. (L194)
+- `parse_json_log_line(lines, event) -> dict[str, Any] | None` — Payload of the first `<event> {...}` line (`sim.task_success_final`, `sim.estop_ground_truth_snapshot`, `sim.estop_initial_configuration`). (L251)
+- `read_monitor(path) -> list[dict[str, Any]]` — Load a monitor JSONL, skipping non-object lines. (L285)
+- `grid_resolution_from_monitor(records) -> float | None` — Cell size from the first `world_voxels` record; the budget is read from the run, never assumed. (L309)
+- `build_witness_timeline(records, deploy_lines) -> ValidationWitnessTimeline` — Producer side from the monitor, consumer side from the kernel's own `safety.support_witness_*` / `safety.place_region_*` lines. (L325)
+- `adjudicate_ground_truth(snapshot, stop, grid_resolution_m) -> ValidationGroundTruthAdjudication | None` — Distance-probe adjudication (the contact list is not an emptiness test): any pair ≤ 0 m → `real-contact`; discrepancy beyond the quantization budget → `false-positive`; otherwise `within-quantization`; truncated/absent probe → `unadjudicated`. (L405)
+- `classify_outcome(*, task_success_ever, stop, ground_truth, initial_configuration, grasped, artifacts_complete) -> str` — Buckets one scene. Ordering is load-bearing: success wins outright, and `estop-initial-configuration` outranks the ground-truth adjudication. (L501)
+- `scene_verdict_from_artifacts(run_dir, *, scene, config_path, seed, prompt, rskill_id, stem) -> ValidationSceneVerdict` — Derive one scene's verdict from recorded artifacts only. (L555)
+- `diff_rounds(current, baseline) -> ValidationRoundDiff` — Field-by-field round comparison over `_DIFF_FIELDS`. (L696)
+- `class GuardrailError(RuntimeError)` — A precondition is not met; raised, never warned. (L753)
+- `assert_worktree_clean() -> None` — Refuse a dirty worktree: its recorded SHA would be a lie. (L766)
+- `assert_sha(expected: str | None) -> str` — Return `HEAD`, refusing when it is not the requested checkout. (L779)
+- `assert_overlay_fresh(install_dir: Path) -> int` — Refuse an `install/` older than any tracked `.cpp/.hpp/.h/.msg/.idl` under `cpp/` or `packages/`. (L800)
+- `resolve_launcher() -> Path` — This checkout's `.venv/bin/openral`, by absolute path; the `~/.local/bin` wrapper execs the **parent** checkout. (L842)
+- `assert_sidecar_wire() -> None` — Refuse when `pyzmq` is absent. (L866)
+- `assert_no_safety_overrides(argv) -> None` — Refuse any argv token matching `_SAFETY_KNOB_PATTERNS` (normalised lowercase, `-`→`_`). (L883)
+- `gpu_status() -> tuple[str | None, list[str]]` — GPU name + resident compute processes; the host is shared. (L915)
+- `render_notes(verdicts) -> str` — The round's Markdown summary, written as a by-product of running. (L1130)
+- `cmd_verdicts(round_dir, *, stem) -> int` / `cmd_diff(round_dir, baseline_dir, out_path) -> int` / `cmd_run(args) -> int` — Subcommand bodies. (L1200, L1239, L1257)
+- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff`. Returns 3 on a guardrail refusal. (L1322)
+
+### `tools/_validation_matrix_monitor.py`
+_Private helper of `validation_matrix.py`, spawned alongside each scene's ROS graph. Recovered verbatim from `attach_monitor4.py`. Records the attachment stream, the kernel's `FailureTrigger.evidence_json`, the occupied-cell **set** hash (a frozen map keeps an identical set, which a count cannot detect), the `PlaceDeclaration` + producer-measured region, and an `.npz` snapshot at every E-stop **and** periodically while a payload is carried (an E-stop-only monitor records nothing on a run that passes). Needs ROS 2 sourced._
+
+### `tools/_validation_matrix_dispatch.py`
+_Private helper of `validation_matrix.py`. Recovered from `run_xr1_full.py` and parameterised over the rSkill and prompt the original hardcoded per round. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off, so nothing else would) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
+
+- `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L29)
 
 ### `tools/select_tests.py`
 _Selective test execution — maps a git diff to the minimal pytest targets that can observe it. Backs `just test-changed` / the `test-selective` workflow. See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
