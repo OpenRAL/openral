@@ -16,13 +16,56 @@ all take ``sensor_msgs/LaserScan`` on ``/scan``
 geometry must not reach the costmap" is the scan topic, and this node sits on
 it: ``/scan`` in, ``/scan`` minus the payload out, Nav2 pointed at the output.
 
-**The robot's own geometry is already gone before this node sees it**, which is
-why this node only removes the payload. ``openral_sim.backends.robocasa.
-synthesize_laser_scan_2d`` skips every hit whose body shares the robot's
-kinematic-tree root and re-casts past it, so a chassis or arm return never
-enters ``/scan``; a real 2-D lidar's own structure is masked in the driver.
-The carried object is a different MJCF body with a different tree root, so it
-is exactly the geometry that survives that filter and needs this one.
+**Two things get removed, for two different reasons.**
+
+*The payload*, by its exact collision primitives — the geometry the kernel is
+already tracking, placed by the kernel's own composition.
+
+*The robot's own body*, by the chassis footprint polygon. In sim this half is
+redundant: ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` skips
+every hit whose body shares the robot's kinematic-tree root and re-casts past
+it, so a chassis return never enters ``/scan`` at all. That mechanism is
+``mujoco.mj_ray`` with a MuJoCo ``body_rootid`` comparison — it has no
+real-hardware counterpart, and this repo has no lidar driver, no lidar launch
+file and no manifest field that could carry one. On real hardware a 2-D lidar
+mounted on the base *does* see the chassis, the mast and the arm, and an
+unfiltered self-return becomes a costmap obstacle that never clears: the base
+ends up believing it is surrounded by itself. The only knob in the repo today
+is ``panda_mobile``'s ``range_min_m: 0.55``, a blunt radial cutoff that also
+deletes every real obstacle inside 0.55 m in every direction. This node
+replaces it with a shaped one.
+
+**The two halves fail in opposite-looking directions, and that is the point.**
+For the payload, the dangerous mistake is *not removing* — a payload left in
+the costmap only makes Nav2 more cautious, so bad input keeps it. For a
+self-return the dangerous mistake is the other one: dropping a real obstacle
+because we mistook it for the robot. So the self-filter removes only returns it
+can *prove* are the robot, and on a missing TF, an unreadable manifest or a
+degenerate polygon it removes **nothing**.
+
+Both statements are the same invariant seen from two sides: **every failure
+mode in this node leaves more obstacles in the scan, never fewer.**
+
+**Why the chassis polygon is a proof and the arm's link boxes would not be.**
+A return whose endpoint lies inside the chassis outline is either the chassis
+itself or an object standing where the chassis already is — which is not a
+place an object can be. Nav2 agrees: that polygon is precisely what this
+package publishes as *the robot*, ``obstacle_layer``'s
+``footprint_clearing_enabled`` (default ``True``, verified against the Jazzy
+binary) frees those cells on every update, and ``collision_monitor`` reads the
+same polygon. So removing those returns takes away nothing Nav2 could have
+acted on — it only stops ``collision_monitor``, which reads the raw scan with
+no costmap in between, from braking for the robot's own chassis. The kernel's
+per-link OBBs in ``link_collision`` are the opposite case: they are documented
+as *conservative* bounds, i.e. deliberate over-approximations, and the air
+between a link and its box is air a real obstacle can occupy. Over-bounding is
+the right direction for a collision check and the wrong one for deleting sensor
+returns, so this node does not use them.
+
+The region is the **bare chassis** polygon, never the payload-grown one the
+footprint publisher emits: the convex hull that joins chassis to payload spans
+free air in between, and the payload's own primitives already cover the payload
+exactly.
 
 **And Nav2 clears its own footprint too** — ``obstacle_layer``'s
 ``footprint_clearing_enabled`` defaults to ``True`` (verified against the Jazzy
@@ -49,6 +92,7 @@ from openral_nav2_bringup.payload_footprint_node import (
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_SPHERE,
+    base_footprint_polygon,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -58,6 +102,7 @@ __all__ = [
     "DEFAULT_OUTPUT_TOPIC",
     "filter_scan_ranges",
     "main",
+    "points_in_convex_polygon",
     "points_in_primitive",
 ]
 
@@ -137,6 +182,84 @@ def points_in_primitive(
     raise ValueError(f"unknown attached-primitive shape_type {shape_type!r}")
 
 
+_MIN_POLYGON_VERTICES = 3
+
+
+def points_in_convex_polygon(
+    points_xy: Any,
+    polygon: Sequence[tuple[float, float]],
+    *,
+    margin_m: float = 0.0,
+) -> Any:
+    """Boolean mask of which ``points_xy`` lie inside a CCW convex polygon.
+
+    Half-plane test: for a counter-clockwise convex polygon a point is inside
+    exactly when it is left of (or on) every directed edge. ``margin_m`` offsets
+    each edge's half-plane outward by that distance, which mitres the corners
+    rather than rounding them — the resulting region is a *superset* of the true
+    offset polygon, i.e. it removes slightly more than asked near a corner. That
+    is the dangerous direction for a self-filter, which is why the node's
+    default margin is zero.
+
+    Convexity and winding are **verified, not assumed**: the caller's polygon
+    comes from :func:`~openral_nav2_bringup.payload_footprint_node.convex_hull_2d`
+    and so is always CCW convex, but a hand-supplied concave outline would make
+    the half-plane test claim the concavities are robot. Anything that fails the
+    check raises, and the node's self-filter then removes nothing.
+
+    Args:
+        points_xy: ``(N, 2)`` array of points in the polygon's own frame.
+        polygon: Counter-clockwise convex vertices, first not repeated at the
+            end.
+        margin_m: Outward offset applied to every edge, metres. Non-negative.
+
+    Returns:
+        ``(N,)`` boolean array, ``True`` where the point is inside or on the
+        boundary.
+
+    Raises:
+        ValueError: If the polygon has fewer than three vertices, is not
+            finite, is not counter-clockwise convex, or the margin is negative.
+
+    Example:
+        >>> import numpy as np
+        >>> chassis = [(0.35, 0.25), (-0.35, 0.25), (-0.35, -0.25), (0.35, -0.25)]
+        >>> probes = np.array([[0.20, 0.0], [0.60, 0.0]])
+        >>> [bool(v) for v in points_in_convex_polygon(probes, chassis)]
+        [True, False]
+    """
+    import numpy as np
+
+    if margin_m < 0.0 or not math.isfinite(margin_m):
+        raise ValueError(f"margin_m must be finite and non-negative; got {margin_m}")
+    verts = np.asarray([(float(x), float(y)) for x, y in polygon], dtype=np.float64)
+    if verts.ndim != 2 or verts.shape[0] < _MIN_POLYGON_VERTICES or verts.shape[1] != 2:
+        raise ValueError(f"polygon needs >= 3 (x, y) vertices; got shape {verts.shape}")
+    if not np.all(np.isfinite(verts)):
+        raise ValueError("polygon has a non-finite vertex")
+    pts = np.asarray(points_xy, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError(f"points_xy must be (N, 2); got shape {pts.shape}")
+
+    edges = np.roll(verts, -1, axis=0) - verts
+    lengths = np.linalg.norm(edges, axis=1)
+    if not np.all(lengths > 0.0):
+        raise ValueError("polygon has a zero-length edge")
+    # CCW convex <=> every consecutive edge turns left.
+    turns = edges[:, 0] * np.roll(edges, -1, axis=0)[:, 1] - (
+        edges[:, 1] * np.roll(edges, -1, axis=0)[:, 0]
+    )
+    if not np.all(turns >= 0.0):
+        raise ValueError("polygon is not counter-clockwise convex")
+
+    # Signed distance left of each directed edge, for every point at once:
+    # cross(edge, point - vertex) / |edge|, positive inside a CCW polygon.
+    rel = pts[:, None, :] - verts[None, :, :]
+    cross = edges[None, :, 0] * rel[:, :, 1] - edges[None, :, 1] * rel[:, :, 0]
+    signed = cross / lengths[None, :]
+    return np.all(signed >= -float(margin_m), axis=1)
+
+
 def filter_scan_ranges(
     ranges: Sequence[float],
     *,
@@ -146,6 +269,9 @@ def filter_scan_ranges(
     range_max: float,
     placements: Sequence[tuple[int, Sequence[float], Any]],
     margin_m: float = 0.0,
+    self_polygon: Sequence[tuple[float, float]] | None = None,
+    base_from_scan: Any = None,
+    self_margin_m: float = 0.0,
 ) -> list[float]:
     """Replace payload-explained scan returns with ``inf``.
 
@@ -165,15 +291,29 @@ def filter_scan_ranges(
         range_min: ``LaserScan.range_min``, metres.
         range_max: ``LaserScan.range_max``, metres.
         placements: ``(shape_type, shape_dimensions, transform)`` per attached
-            primitive, each transform placing it in the **scan** frame.
+            primitive, each transform placing it in the **scan** frame. Empty
+            disables the payload half.
         margin_m: Containment margin passed to :func:`points_in_primitive`.
+        self_polygon: The robot's **bare chassis** outline, CCW convex, in the
+            frame ``base_from_scan`` maps the scan into. ``None`` disables the
+            self half, which is what the node passes on any failure to resolve
+            it — a self-return the node cannot prove is the robot stays in the
+            scan as an obstacle.
+        base_from_scan: ``(4, 4)`` homogeneous transform placing the scan frame
+            in ``self_polygon``'s frame. Required with ``self_polygon``.
+        self_margin_m: Outward offset on the chassis polygon. Defaults to
+            ``0.0`` and should stay there: the polygon is already the outline
+            Nav2 treats as robot, so every millimetre past it deletes returns
+            Nav2 *would* have acted on. It exists for a real lidar with
+            characterised range noise, as a deliberate, measured choice.
 
     Returns:
-        A new range list, same length, with payload beams set to ``inf``.
+        A new range list, same length, with removed beams set to ``inf``.
 
     Raises:
-        ValueError: If a placement is malformed (the caller must then publish
-            the scan unfiltered rather than guess).
+        ValueError: If a placement is malformed, or ``self_polygon`` is given
+            without a usable ``base_from_scan`` / is not CCW convex. The caller
+            must then drop the affected half rather than guess.
 
     Example:
         >>> import numpy as np
@@ -192,7 +332,7 @@ def filter_scan_ranges(
     import numpy as np
 
     out = np.asarray(ranges, dtype=np.float64).copy()
-    if out.size == 0 or not placements:
+    if out.size == 0 or (not placements and self_polygon is None):
         return [float(v) for v in out]
     angles = float(angle_min) + float(angle_increment) * np.arange(out.size, dtype=np.float64)
     usable = np.isfinite(out) & (out >= float(range_min)) & (out <= float(range_max))
@@ -205,6 +345,18 @@ def filter_scan_ranges(
     drop = np.zeros(out.size, dtype=bool)
     for shape_type, dims, transform in placements:
         drop |= points_in_primitive(pts, int(shape_type), dims, transform, margin_m=margin_m)
+
+    if self_polygon is not None:
+        base_m = np.asarray(base_from_scan, dtype=np.float64)
+        if base_m.shape != (4, 4) or not np.all(np.isfinite(base_m)):
+            raise ValueError(
+                f"self_polygon needs a finite (4, 4) base_from_scan; got shape {base_m.shape}"
+            )
+        in_base = pts @ base_m[:3, :3].T + base_m[:3, 3]
+        drop |= points_in_convex_polygon(
+            in_base[:, :2], self_polygon, margin_m=float(self_margin_m)
+        )
+
     out[drop & usable] = math.inf
     return [float(v) for v in out]
 
@@ -229,7 +381,7 @@ def main(args: Any = None) -> None:
         )
 
     class PayloadScanFilterNode(Node):  # type: ignore[misc]
-        """Republishes ``/scan`` with the attached payload's returns removed."""
+        """Republishes ``/scan`` with the payload's and the robot's returns removed."""
 
         def __init__(self) -> None:
             super().__init__("openral_nav2_payload_scan_filter")
@@ -239,9 +391,14 @@ def main(args: Any = None) -> None:
             self.declare_parameter("attached_state_timeout_s", 0.5)
             self.declare_parameter("payload_margin_m", 0.0)
             self.declare_parameter("tf_timeout_ms", 50)
+            self.declare_parameter("robot_yaml", "")
+            self.declare_parameter("base_frame", "")
+            self.declare_parameter("self_margin_m", 0.0)
+            self.declare_parameter("circle_samples", 12)
 
             gp = self.get_parameter
             self._margin_m = gp("payload_margin_m").get_parameter_value().double_value
+            self._self_margin_m = gp("self_margin_m").get_parameter_value().double_value
             self._timeout_ns = int(
                 gp("attached_state_timeout_s").get_parameter_value().double_value * 1e9
             )
@@ -251,6 +408,32 @@ def main(args: Any = None) -> None:
             self._state: WorldStateStamped | None = None
             self._state_ns: int | None = None
             self._warned_passthrough = False
+            self._warned_no_self_filter = False
+
+            # The self-filter's region is the manifest's BARE chassis outline.
+            # Without a manifest there is no outline to prove a return is the
+            # robot, so the self half simply does not run — the payload half
+            # still does. Inventing a shape here would delete returns off a
+            # made-up robot.
+            self._self_polygon: list[tuple[float, float]] | None = None
+            self._base_frame = gp("base_frame").get_parameter_value().string_value
+            robot_yaml = gp("robot_yaml").get_parameter_value().string_value
+            if robot_yaml:
+                from openral_core import RobotDescription
+
+                description = RobotDescription.from_yaml(robot_yaml)
+                self._self_polygon = base_footprint_polygon(
+                    description,
+                    circle_samples=gp("circle_samples").get_parameter_value().integer_value,
+                )
+                self._base_frame = self._base_frame or description.base_frame
+            else:
+                self.get_logger().warning(
+                    "no `robot_yaml`: the robot's OWN returns are not filtered. In sim the "
+                    "MuJoCo ray-cast already skips the robot's kinematic tree, so this is "
+                    "harmless there; on real hardware every chassis/mast/arm return reaches "
+                    "the costmap and the collision monitor as a permanent obstacle."
+                )
 
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -279,7 +462,13 @@ def main(args: Any = None) -> None:
             self._scan_sub = self.create_subscription(
                 LaserScan, in_topic, self._on_scan, sensor_qos
             )
-            self.get_logger().info(f"payload_scan_filter: {in_topic} -> {out_topic}")
+            self_desc = (
+                f"self-filter on {len(self._self_polygon)}-vertex chassis in "
+                f"{self._base_frame} (margin {self._self_margin_m * 1000:.0f} mm)"
+                if self._self_polygon is not None
+                else "self-filter OFF"
+            )
+            self.get_logger().info(f"payload_scan_filter: {in_topic} -> {out_topic}, {self_desc}")
 
         def _on_world_state(self, msg: WorldStateStamped) -> None:
             self._state = msg
@@ -311,31 +500,82 @@ def main(args: Any = None) -> None:
                     )
             return out
 
+        def _base_from_scan(self, scan_frame: str) -> Any:
+            """``(4, 4)`` placing the scan frame in ``base_frame``.
+
+            Raises:
+                TransformException: the chain is unavailable, in which case the
+                    caller runs no self-filter at all.
+            """
+            tf = self._tf_buffer.lookup_transform(
+                self._base_frame, scan_frame, Time(), timeout=self._tf_timeout
+            )
+            t, q = tf.transform.translation, tf.transform.rotation
+            return homogeneous_from_quat_xyz(
+                (float(t.x), float(t.y), float(t.z)),
+                (float(q.x), float(q.y), float(q.z), float(q.w)),
+            )
+
         def _on_scan(self, msg: LaserScan) -> None:
+            # The two halves are resolved independently, because their unsafe
+            # directions are opposite. A payload we cannot place must stay in
+            # the scan (dropping it would make Nav2 less cautious); a robot
+            # return we cannot prove is the robot must also stay in the scan
+            # (dropping it could delete a real obstacle). Both failures
+            # therefore ADD obstacles, and neither is allowed to suppress the
+            # other half's filtering.
+            scan_frame = msg.header.frame_id
             try:
-                placements = self._placements(msg.header.frame_id)
-                ranges = (
-                    filter_scan_ranges(
-                        list(msg.ranges),
-                        angle_min=float(msg.angle_min),
-                        angle_increment=float(msg.angle_increment),
-                        range_min=float(msg.range_min),
-                        range_max=float(msg.range_max),
-                        placements=placements,
-                        margin_m=self._margin_m,
-                    )
-                    if placements
-                    else list(msg.ranges)
-                )
+                placements: list[tuple[int, list[float], Any]] = self._placements(scan_frame)
+                self._warned_passthrough = False
             except (TransformException, ValueError) as exc:
+                placements = []
                 if not self._warned_passthrough:
-                    self.get_logger().warning(
-                        f"republishing /scan unfiltered: cannot place attached geometry ({exc})"
-                    )
                     self._warned_passthrough = True
+                    self.get_logger().warning(
+                        f"payload returns left in /scan: cannot place attached geometry ({exc})"
+                    )
+
+            self_polygon: list[tuple[float, float]] | None = None
+            base_from_scan: Any = None
+            if self._self_polygon is not None:
+                try:
+                    base_from_scan = self._base_from_scan(scan_frame)
+                    self_polygon = self._self_polygon
+                    self._warned_no_self_filter = False
+                except (TransformException, ValueError) as exc:
+                    if not self._warned_no_self_filter:
+                        self._warned_no_self_filter = True
+                        self.get_logger().warning(
+                            f"self-returns left in /scan: cannot place {scan_frame!r} in "
+                            f"{self._base_frame!r} ({exc})"
+                        )
+
+            if not placements and self_polygon is None:
                 self._pub.publish(msg)
                 return
-            self._warned_passthrough = False
+
+            try:
+                ranges = filter_scan_ranges(
+                    list(msg.ranges),
+                    angle_min=float(msg.angle_min),
+                    angle_increment=float(msg.angle_increment),
+                    range_min=float(msg.range_min),
+                    range_max=float(msg.range_max),
+                    placements=placements,
+                    margin_m=self._margin_m,
+                    self_polygon=self_polygon,
+                    base_from_scan=base_from_scan,
+                    self_margin_m=self._self_margin_m,
+                )
+            except ValueError as exc:
+                # Neither half could be applied safely; the whole scan passes
+                # through, which is the more-obstacles direction for both.
+                if not self._warned_passthrough:
+                    self._warned_passthrough = True
+                    self.get_logger().warning(f"republishing /scan unfiltered: {exc}")
+                self._pub.publish(msg)
+                return
             msg.ranges = [float(r) for r in ranges]
             self._pub.publish(msg)
 

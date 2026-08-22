@@ -1,10 +1,17 @@
-"""The payload half of the scan Nav2's costmaps read.
+"""Both halves of the scan Nav2's costmaps read: the payload, and the robot.
 
-The containment predicate here is the kernel's own (``surface_distance`` in
-``openral_octomap_bridge/src/payload_clearing.cpp``) at zero slack, so these
-tests double as the assertion that the two have not drifted: a capsule whose
-segment ran along local +X instead of +Z, or a box read as full extents instead
-of half-extents, would fail here before it reached a robot.
+The payload containment predicate here is the kernel's own
+(``surface_distance`` in ``openral_octomap_bridge/src/payload_clearing.cpp``) at
+zero slack, so these tests double as the assertion that the two have not
+drifted: a capsule whose segment ran along local +X instead of +Z, or a box read
+as full extents instead of half-extents, would fail here before it reached a
+robot.
+
+The self half is the opposite risk and is tested for the opposite property. The
+payload half's job is to remove enough; the self half's job is to remove *only*
+what it can prove is the robot, and to remove nothing at all when it cannot
+place the chassis. Both directions leave more obstacles in the scan, which is
+the single invariant this suite pins.
 """
 
 from __future__ import annotations
@@ -19,10 +26,12 @@ from openral_nav2_bringup.payload_footprint_node import (
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_SPHERE,
+    base_footprint_polygon,
 )
 from openral_nav2_bringup.payload_scan_filter_node import (
     DEFAULT_OUTPUT_TOPIC,
     filter_scan_ranges,
+    points_in_convex_polygon,
     points_in_primitive,
 )
 
@@ -30,6 +39,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _NAV2_CONFIG = (
     _REPO_ROOT / "packages" / "openral_nav2_bringup" / "config" / "nav2_panda_mobile.yaml"
 )
+_PANDA_MOBILE_YAML = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 
 # A 360-beam RPLIDAR-style fan, the panda_mobile HAL's own scan geometry
 # (`robots/panda_mobile/robot.yaml` -> lidar_2d; `synthesize_laser_scan_2d`
@@ -182,3 +192,192 @@ def test_a_primitive_the_kernel_would_reject_raises(
 
     with pytest.raises(ValueError, match=r"shape_type|radius|length|half-extent"):
         _filter(ranges, [(shape_type, dims, _translation(0.6, 0.0, 0.0))])
+
+
+# --------------------------------------------------------------------------
+# The robot half: self-returns.
+#
+# `panda_mobile`'s manifest declares a 0.70 x 0.50 m chassis rectangle, so the
+# chassis reaches 0.35 m forward and 0.25 m sideways. Every case below is
+# anchored to that real outline rather than to a hand-written polygon.
+# --------------------------------------------------------------------------
+
+
+def _chassis() -> list[tuple[float, float]]:
+    """The real ``robots/panda_mobile/robot.yaml`` outline, CCW convex."""
+    from openral_core import RobotDescription
+
+    return base_footprint_polygon(RobotDescription.from_yaml(str(_PANDA_MOBILE_YAML)))
+
+
+def _self_filter(ranges: list[float], **kwargs: object) -> list[float]:
+    """Run only the self half, with the scan frame at the base origin."""
+    return filter_scan_ranges(
+        ranges,
+        angle_min=_ANGLE_MIN,
+        angle_increment=_ANGLE_INCREMENT,
+        range_min=_RANGE_MIN,
+        range_max=_RANGE_MAX,
+        placements=[],
+        self_polygon=kwargs.pop("self_polygon", _chassis()),  # type: ignore[arg-type]
+        base_from_scan=kwargs.pop("base_from_scan", np.eye(4)),
+        **kwargs,  # type: ignore[arg-type] # reason: only self_margin_m is forwarded.
+    )
+
+
+def test_the_manifests_chassis_is_the_polygon_the_self_filter_uses() -> None:
+    """Pinned against the real manifest, so a re-measured chassis reaches here."""
+    chassis = _chassis()
+
+    assert sorted(chassis) == sorted([(0.35, 0.25), (-0.35, 0.25), (-0.35, -0.25), (0.35, -0.25)])
+    # `base_footprint_polygon` hulls, so the half-plane test is always valid.
+    probes = np.array([[0.0, 0.0], [0.34, 0.24], [0.36, 0.0], [0.0, 0.26]])
+    assert [bool(v) for v in points_in_convex_polygon(probes, chassis)] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_self_return_goes_and_a_real_obstacle_at_the_same_bearing_stays() -> None:
+    """The discriminating case, at one bearing, in the two scans it takes.
+
+    A single beam reports one range, so a self-return and a real obstacle
+    cannot occupy the same beam of the same scan — the honest construction is
+    the same *bearing* across two scans. Forward, the chassis reaches 0.35 m:
+    a 0.20 m return there is the robot and must go; a 0.60 m return on the
+    identical beam is something real just past the chassis and must survive.
+    """
+    ahead = _beam_index(0.0)
+
+    self_hit = _fan(wall_m=3.0)
+    self_hit[ahead] = 0.20
+    obstacle = _fan(wall_m=3.0)
+    obstacle[ahead] = 0.60
+
+    assert math.isinf(_self_filter(self_hit)[ahead]), "the chassis return survived"
+    assert _self_filter(obstacle)[ahead] == pytest.approx(0.60), (
+        "a real obstacle 0.25 m past the chassis was deleted as self"
+    )
+    # And nothing else moved in either scan.
+    assert sum(1 for r in _self_filter(self_hit) if math.isinf(r)) == 1
+    assert _self_filter(obstacle) == obstacle
+
+
+def test_the_self_filter_removes_nothing_without_a_placed_chassis() -> None:
+    """No manifest, or no TF, is `remove nothing` — never `remove everything`.
+
+    This is the whole fail-closed direction of the robot half. The node passes
+    ``self_polygon=None`` on a missing manifest and on a failed
+    ``base_frame <- scan_frame`` lookup, and both must be bit-for-bit
+    pass-through of the returns that are *inside* the chassis.
+    """
+    ranges = _fan(wall_m=3.0)
+    for angle in (-0.3, 0.0, 0.3, math.pi / 2):
+        ranges[_beam_index(angle)] = 0.20
+
+    unplaced = filter_scan_ranges(
+        ranges,
+        angle_min=_ANGLE_MIN,
+        angle_increment=_ANGLE_INCREMENT,
+        range_min=_RANGE_MIN,
+        range_max=_RANGE_MAX,
+        placements=[],
+        self_polygon=None,
+    )
+
+    assert unplaced == ranges
+
+
+def test_a_chassis_polygon_that_cannot_be_placed_raises_rather_than_guessing() -> None:
+    """A bad transform must reach the node as an error, not a silent identity."""
+    with pytest.raises(ValueError, match=r"base_from_scan"):
+        _self_filter(_fan(wall_m=3.0), base_from_scan=np.eye(3))
+
+
+@pytest.mark.parametrize(
+    ("name", "outline"),
+    [
+        # CCW but notched: the half-plane test would call the notch `robot`
+        # and delete real returns out of it.
+        (
+            "ccw-concave",
+            [(0.35, -0.25), (0.15, 0.0), (0.35, 0.25), (-0.35, 0.25), (-0.35, -0.25)],
+        ),
+        # Convex but wound the other way: every half-plane inverts, so the
+        # test would call the whole world `robot` and empty the scan.
+        (
+            "clockwise",
+            [(0.35, -0.25), (-0.35, -0.25), (-0.35, 0.25), (0.35, 0.25)],
+        ),
+    ],
+)
+def test_an_outline_the_half_plane_test_cannot_read_is_refused(
+    name: str, outline: list[tuple[float, float]]
+) -> None:
+    """Both failure modes empty or over-eat the scan, so both must raise.
+
+    ``base_footprint_polygon`` always hulls, so neither can arise in-tree —
+    this pins that a future hand-supplied outline cannot slip past either.
+    """
+    assert name
+    with pytest.raises(ValueError, match=r"counter-clockwise convex"):
+        _self_filter(_fan(wall_m=3.0), self_polygon=outline)
+
+
+def test_the_self_filter_follows_the_sensor_off_the_base_origin() -> None:
+    """The chassis is in ``base_frame``; the beams are in the sensor's.
+
+    A lidar mounted 0.20 m forward of ``base_link`` sees the chassis's rear
+    edge 0.55 m behind it, not 0.35 m. Getting the transform direction wrong
+    would delete a band of real space behind the robot, so it is pinned.
+    """
+    behind = _beam_index(math.pi)
+    ranges = _fan(wall_m=3.0)
+    ranges[behind] = 0.50  # still inside the chassis, from a forward sensor
+    mounted_forward = _translation(0.20, 0.0, 0.0)
+
+    assert math.isinf(_self_filter(ranges, base_from_scan=mounted_forward)[behind])
+
+    just_outside = _fan(wall_m=3.0)
+    just_outside[behind] = 0.60  # 0.05 m past the chassis's rear edge
+    assert _self_filter(just_outside, base_from_scan=mounted_forward)[behind] == pytest.approx(0.60)
+
+
+def test_both_halves_run_together_and_neither_suppresses_the_other() -> None:
+    """One scan, a chassis return and a payload return, both gone; wall stays."""
+    ranges = _fan(wall_m=3.0)
+    chassis_beam, payload_beam = _beam_index(0.0), _beam_index(0.30)
+    ranges[chassis_beam] = 0.20
+    ranges[payload_beam] = 0.90
+    payload_xy = (0.90 * math.cos(0.30), 0.90 * math.sin(0.30))
+    payload = (SHAPE_SPHERE, (0.06,), _translation(payload_xy[0], payload_xy[1], 0.0))
+
+    filtered = filter_scan_ranges(
+        ranges,
+        angle_min=_ANGLE_MIN,
+        angle_increment=_ANGLE_INCREMENT,
+        range_min=_RANGE_MIN,
+        range_max=_RANGE_MAX,
+        placements=[payload],
+        self_polygon=_chassis(),
+        base_from_scan=np.eye(4),
+    )
+
+    assert math.isinf(filtered[chassis_beam])
+    assert math.isinf(filtered[payload_beam])
+    assert sum(1 for r in filtered if math.isinf(r)) == 2
+
+
+def test_the_self_margin_defaults_to_zero_and_only_ever_removes_more() -> None:
+    """The margin is the dangerous direction, so it must be opt-in and explicit."""
+    ranges = _fan(wall_m=3.0)
+    just_outside = _beam_index(0.0)
+    ranges[just_outside] = 0.36  # 10 mm past the chassis's 0.35 m front edge
+
+    assert _self_filter(ranges)[just_outside] == pytest.approx(0.36)
+    assert math.isinf(_self_filter(ranges, self_margin_m=0.02)[just_outside])
+
+    with pytest.raises(ValueError, match=r"margin_m must be finite and non-negative"):
+        _self_filter(ranges, self_margin_m=-0.01)

@@ -146,6 +146,22 @@ _COSTMAP_PARAMS_WITH_OBSTACLES = f"""\
     always_send_full_costmap: True
 """
 
+# The self-filter's costmap. Identical to the payload one except that
+# `footprint_clearing_enabled` is turned OFF.
+#
+# That is not a convenience — it is what makes the test mean anything. A
+# self-return lands *inside* the chassis polygon by definition, and with the
+# upstream default (`True`, verified live) the obstacle layer frees every cell
+# under the footprint on each update, so the cell would read clear whether or
+# not the filter did its job and the degraded control below could never fail.
+# Turning it off isolates the filter — and reproduces the one consumer that has
+# no costmap-side clearing at all: `collision_monitor`, which reads the scan raw
+# and is exactly what brakes for the robot's own chassis today.
+_COSTMAP_PARAMS_SELF_RETURNS = _COSTMAP_PARAMS_WITH_OBSTACLES.replace(
+    "      enabled: True\n",
+    "      enabled: True\n      footprint_clearing_enabled: False\n",
+)
+
 
 def _spin_until(
     executor: Any, predicate: Any, *, timeout_s: float = 20.0, each: Any = None
@@ -526,3 +542,234 @@ def test_the_carried_object_never_becomes_a_costmap_obstacle(tmp_path: Path) -> 
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+#: Forward beams at this range land 0.20 m ahead of ``base_link`` — inside the
+#: manifest's 0.35 m chassis, so the robot is the only thing that can be there.
+_SELF_RETURN_M = 0.20
+#: The same forward beams, moved 0.25 m past the chassis edge. Nothing about
+#: the robot explains this one, so it must survive to the cost grid.
+_OBSTACLE_AT_SAME_BEARING_M = 0.60
+#: A ``base_frame`` no broadcaster ever publishes. The self-filter's
+#: ``base_frame <- base_scan`` lookup then fails on every scan while the scan's
+#: own frame stays valid, so the costmap still consumes it — which is what makes
+#: this a *control* rather than a blackout.
+_UNRESOLVABLE_BASE_FRAME = "no_such_base_frame"
+
+_FORWARD_BEAM_ANGLES = (-0.06, -0.03, 0.0, 0.03, 0.06)
+
+
+def _forward_scan(range_m: float) -> Any:
+    """A 360-beam fan seeing a wall at 3 m, with the forward beams at ``range_m``."""
+    import math
+
+    from sensor_msgs.msg import LaserScan
+
+    n_beams = 360
+    scan = LaserScan()
+    scan.header.frame_id = _SCAN_FRAME
+    scan.angle_min = -math.pi
+    scan.angle_max = math.pi
+    scan.angle_increment = 2.0 * math.pi / n_beams
+    # Below the manifest's own 0.55 m `range_min_m`, deliberately: that radial
+    # cutoff is the blunt instrument this filter replaces, and gating it here
+    # would hide the very returns under test.
+    scan.range_min = 0.05
+    scan.range_max = 12.0
+    ranges = [3.0] * n_beams
+    for angle in _FORWARD_BEAM_ANGLES:
+        index = round((angle - scan.angle_min) / scan.angle_increment) % n_beams
+        ranges[index] = range_m
+    scan.ranges = ranges
+    return scan
+
+
+@contextmanager
+def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str]) -> Iterator[Any]:
+    """A live costmap on the filtered topic, plus the filter process under test.
+
+    Yields ``(executor, publish, costs)``: ``costs[i]`` is sampled at the probe
+    point on every costmap update, and ``publish(scan)`` returns a callable that
+    re-publishes that scan (and an empty world state, so the payload half is
+    provably not what is doing the removing).
+    """
+    import rclpy
+    from nav2_msgs.msg import Costmap
+    from openral_msgs.msg import WorldStateStamped
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import LaserScan
+
+    params_file = tmp_path / "costmap_self.yaml"
+    params_file.write_text(_COSTMAP_PARAMS_SELF_RETURNS)
+
+    rclpy.init()
+    node = Node("test_nav2_self_return_filter")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        broadcaster = _static_transforms(node)
+        assert broadcaster is not None
+        sensor_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        state_qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        samples: dict[float, list[int]] = {}
+        probes: list[float] = [_SELF_RETURN_M, _OBSTACLE_AT_SAME_BEARING_M]
+        for probe in probes:
+            samples[probe] = []
+
+        def _on_costmap(msg: Costmap) -> None:
+            for probe in probes:
+                samples[probe].append(_cost_at(msg, probe, 0.0))
+
+        node.create_subscription(Costmap, f"{_COSTMAP_NAMESPACE}/costmap_raw", _on_costmap, 1)
+        scan_pub = node.create_publisher(LaserScan, "/scan", sensor_qos)
+        state_pub = node.create_publisher(WorldStateStamped, "/openral/world_state_fast", state_qos)
+
+        def _publish_of(scan: Any) -> Any:
+            def _publish() -> None:
+                state_pub.publish(WorldStateStamped())
+                scan.header.stamp = node.get_clock().now().to_msg()
+                scan_pub.publish(scan)
+
+            return _publish
+
+        costmap_argv = [
+            "ros2",
+            "run",
+            "nav2_costmap_2d",
+            "nav2_costmap_2d",
+            "--ros-args",
+            "-r",
+            f"__ns:={_COSTMAP_NAMESPACE}",
+            "--params-file",
+            str(params_file),
+        ]
+        filter_log = tmp_path / "self_scan_filter.log"
+        with (
+            _process(filter_argv, filter_log),
+            _process(costmap_argv, tmp_path / "costmap_self.log"),
+        ):
+            _lifecycle("configure")
+            _lifecycle("activate")
+            yield executor, _publish_of, samples, filter_log
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_a_self_return_is_removed_and_a_real_obstacle_at_the_same_bearing_is_not(
+    tmp_path: Path,
+) -> None:
+    """The robot half of the filter, measured in a real costmap's cost grid.
+
+    A 2-D lidar on a real base sees the base. Unfiltered, those returns become
+    permanent costmap obstacles and the robot concludes it is surrounded by
+    itself — the failure sim hides completely, because
+    ``synthesize_laser_scan_2d`` re-casts through the robot's own MuJoCo
+    kinematic tree and never emits a self-return in the first place.
+
+    One beam carries one range, so a self-return and a real obstacle cannot
+    share a beam of a single scan. The discriminating construction is therefore
+    the same *bearing*, twice: forward beams at 0.20 m are inside the chassis
+    and must vanish; the identical beams at 0.60 m are 0.25 m past it and must
+    reach the cost grid untouched. Both phases run with an empty attachment set,
+    so the payload half is provably not what is acting.
+    """
+    lethal_threshold = 253
+    filter_argv = [
+        sys.executable,
+        str(_SCAN_FILTER_NODE),
+        "--ros-args",
+        "-p",
+        f"robot_yaml:={_ROBOT_YAML}",
+    ]
+
+    with _self_filter_rig(tmp_path, filter_argv=filter_argv) as (
+        executor,
+        publish_of,
+        samples,
+        filter_log,
+    ):
+        # 1. The chassis return must never mark the grid.
+        self_hit = publish_of(_forward_scan(_SELF_RETURN_M))
+        seen = samples[_SELF_RETURN_M]
+        assert _spin_until(executor, lambda: len(seen) > 40, timeout_s=25.0, each=self_hit), (
+            f"the costmap never published; filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+        assert max(seen) < lethal_threshold, (
+            f"the robot's own chassis marked the costmap (peak cost {max(seen)}); "
+            f"filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+        # 2. The same bearing, 0.25 m further out, is not the robot — and the
+        #    filter must not have learned to eat that bearing.
+        beyond = samples[_OBSTACLE_AT_SAME_BEARING_M]
+        beyond.clear()
+        obstacle = publish_of(_forward_scan(_OBSTACLE_AT_SAME_BEARING_M))
+        assert _spin_until(
+            executor,
+            lambda: bool(beyond) and beyond[-1] >= lethal_threshold,
+            timeout_s=25.0,
+            each=obstacle,
+        ), (
+            f"a real obstacle 0.25 m past the chassis was deleted as self "
+            f"(last cost {beyond[-1:]}); filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+
+def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: Path) -> None:
+    """The fail-closed direction, and the control for the test above.
+
+    Same node, same scan, same costmap — only the ``base_frame`` is one nobody
+    broadcasts, so every ``base_frame <- base_scan`` lookup fails. Dropping a
+    real obstacle because we mistook it for the robot is the dangerous error
+    here, so a self-filter that cannot place the chassis must remove *nothing*,
+    and the 0.20 m return must arrive in the cost grid exactly as the raw
+    sensor reported it.
+
+    This doubles as the proof that the sibling test measured the filter: if
+    something else (footprint clearing, the range gate, the rolling window)
+    were keeping that cell free, this assertion would fail too.
+    """
+    lethal_threshold = 253
+    filter_argv = [
+        sys.executable,
+        str(_SCAN_FILTER_NODE),
+        "--ros-args",
+        "-p",
+        f"robot_yaml:={_ROBOT_YAML}",
+        "-p",
+        f"base_frame:={_UNRESOLVABLE_BASE_FRAME}",
+    ]
+
+    with _self_filter_rig(tmp_path, filter_argv=filter_argv) as (
+        executor,
+        publish_of,
+        samples,
+        filter_log,
+    ):
+        seen = samples[_SELF_RETURN_M]
+        self_hit = publish_of(_forward_scan(_SELF_RETURN_M))
+        assert _spin_until(
+            executor,
+            lambda: bool(seen) and seen[-1] >= lethal_threshold,
+            timeout_s=25.0,
+            each=self_hit,
+        ), (
+            f"a degraded self-filter still removed the return (last cost {seen[-1:]}); "
+            f"filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+        )

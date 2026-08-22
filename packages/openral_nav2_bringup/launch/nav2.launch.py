@@ -156,14 +156,17 @@ def _payload_footprint_nodes(
     ``openral_nav2_payload_footprint`` publishes the costmaps' ``footprint``
     polygon (chassis outline unioned with the ground projection of whatever is
     attached); ``openral_nav2_payload_scan_filter`` removes that same object's
-    returns from the scan the costmaps and the collision monitor consume. Both
-    read the attachment set off ``/openral/world_state_fast`` — the safety
-    kernel's own source — so no consumer can act on a stale one.
+    returns — **and the robot's own** — from the scan the costmaps and the
+    collision monitor consume. Both read the attachment set off
+    ``/openral/world_state_fast`` — the safety kernel's own source — so no
+    consumer can act on a stale one, and both take the nominal chassis outline
+    from the same ``robot_yaml``.
 
     The publisher is skipped without a ``robot_yaml`` (there is no manifest to
     take the nominal outline from, and inventing one would put a made-up robot
-    shape on Nav2's collision surface). The scan filter is skipped on the
-    ``visual`` backend, which has no ``/scan`` at all.
+    shape on Nav2's collision surface). The scan filter still runs without one,
+    with its self half disabled. The scan filter is skipped on the ``visual``
+    backend, which has no ``/scan`` at all.
     """
     from launch_ros.actions import Node  # reason: launch-time only
 
@@ -179,13 +182,21 @@ def _payload_footprint_nodes(
             )
         )
     if slam_backend.strip().lower() != "visual":
+        # `robot_yaml` is optional here, unlike for the publisher: without it
+        # the payload half still runs and only the *self* half goes dark (the
+        # node warns). With it, returns inside the manifest's bare chassis
+        # outline are dropped too — the half a real lidar needs and a MuJoCo
+        # ray-cast provides for free.
+        params: dict[str, object] = {"use_sim_time": use_sim_time}
+        if robot_yaml:
+            params["robot_yaml"] = robot_yaml
         nodes.append(
             Node(
                 package="openral_nav2_bringup",
                 executable="payload_scan_filter_node.py",
                 name="openral_nav2_payload_scan_filter",
                 output="screen",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[params],
             )
         )
     return nodes
