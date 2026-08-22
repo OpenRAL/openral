@@ -4,6 +4,10 @@
 > chunk-rate boundary. Replaces F5's Python pass-through
 > (`packages/openral_safety/SafetyPassthroughNode`) behind the same
 > topic contract. **Python proposes, C++ disposes.** (CLAUDE.md §1.5).
+>
+> The `spark:~/openral-runs/…` validation rounds cited throughout this file are
+> catalogued — with what each concluded and what is still open — in
+> [`docs/reference/collision-validation-evidence.md`](../../docs/reference/collision-validation-evidence.md).
 
 ## Topic contract
 

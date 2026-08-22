@@ -4,6 +4,11 @@ Lowers a **3-D OctoMap** into the safety kernel's dense, base-frame
 `openral_msgs/OccupancyVoxels` grid for the kernel's allocation-free
 capsule-vs-voxel world-collision check.
 
+The field runs this file cites by round (round-5's grid timeline, the 2026-08-13
+lattice phase, the `robocasa_drawer_utensil` rasterization measurement) are
+catalogued in
+[`docs/reference/collision-validation-evidence.md`](../../docs/reference/collision-validation-evidence.md).
+
 ## Why a bridge (and not the kernel)
 
 The C++ safety kernel must stay small, auditable, and allocation-free on its
