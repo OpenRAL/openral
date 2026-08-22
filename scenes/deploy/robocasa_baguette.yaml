@@ -30,3 +30,45 @@ scene:
 # Pin the complete kitchen layout / robot start, not only the object group.
 # This is the real episode XR-1 completes in direct sim (197 steps).
 seed: 1
+
+# ADR-0097 place-phase declaration, for DIRECT dispatch (no reasoner in the loop
+# to ground the place target per goal). `openral deploy sim` hands it to the
+# rSkill runner, which scopes it to each goal it dispatches: armed at goal start,
+# retracted on goal end / cancel / E-stop, and expired by every consumer on
+# `timeout_s` regardless.
+#
+# It licenses NOTHING on its own. It only makes measured support contact ON the
+# declared target attestable as a place-phase witness, and (through the region
+# the evidence producer measures for it) buys the payload the bounded approach
+# allowance without which this task cannot finish: round 6 measured the
+# predictive check stopping the baguette 22-30 mm short of the shelf, because
+# 25 mm voxels inflate the cabinet's thin opening.
+#
+# target_id — `PickPlaceCounterToCabinet` resolves its place target at reset
+#   (`register_fixture_ref("cab", FixtureType.CABINET)` -> `Kitchen.get_fixture`
+#   -> `rng.choice` over the sampled layout's cabinets), so the concrete body
+#   name is a property of this scene's pinned seed, not of the task class. This
+#   one is READ OFF THE RUN, not guessed: rounds 5/6 on this scene at seed 1
+#   measured the payload against `cab_1_left_group_reg_main`, that fixture's own
+#   placement-region marker, so the fixture is `cab_1_left_group` and its
+#   robosuite root body is `<fixture>_main`. Its whole subtree is declared with
+#   it, which is what covers the shelf the baguette comes to rest on.
+# object_id — empty means "whichever payload is carried", the direct-dispatch
+#   case where the grasped object's identity is only known at attach time.
+# timeout_s — the backstop, in the graph's own clock domain, which for a
+#   `deploy sim` run is SIMULATOR time (`clock_origin: simulation`). 120 s of sim
+#   time is ~5x the 500-step / 20 Hz horizon `benchmarks/robocasa_pnp.yaml`
+#   gives this task, and far below the 600 s ceiling `PlaceDeclaration` caps at.
+# stamp_ns — placeholder. The runner re-stamps at goal start from its own clock,
+#   so the backstop measures from the goal, never from when this file was
+#   written.
+#
+# No `region` here, deliberately: a region is producer-measured (the sim
+# attachment tracker measures it from the declared body's MuJoCo subtree) and is
+# expressed in the robot base frame, which on this mobile base moves. A
+# scene-supplied region is refused by `DeployScene` for exactly that reason.
+place_declaration:
+  target_id: "sim:cab_1_left_group_main"
+  object_id: ""
+  timeout_s: 120.0
+  stamp_ns: 0

@@ -93,3 +93,53 @@ def test_no_declaration_at_all_is_still_valid() -> None:
     """Absent declaration = pre-ADR-0097 behaviour, which most scenes keep."""
     scene = DeployScene.model_validate(_baguette_dict() | {"place_declaration": None})
     assert scene.place_declaration is None
+
+
+# -- The committed scenes themselves ------------------------------------------
+#
+# `scenes/deploy/robocasa_drawer_utensil.yaml` is deliberately NOT here: its
+# target is a `stack` level chosen from many per layout, so a guessed name would
+# very likely resolve to a different real receptacle instead of failing closed.
+# That reasoning lives in the scene file; `test_the_drawer_scene_declares_nothing`
+# pins the decision so it cannot be undone by accident.
+_DECLARING_SCENES = {
+    "robocasa_baguette.yaml": "sim:cab_1_left_group_main",
+    "robocasa_sink_cup.yaml": "sim:sink_main_group_1_main",
+    "robocasa_fridge_drawer.yaml": "sim:fridge_right_group_main",
+}
+
+
+@pytest.mark.parametrize("scene_file", sorted(_DECLARING_SCENES))
+def test_the_place_scenes_declare_their_target(scene_file: str) -> None:
+    """Each RoboCasa place scene commits a declaration the runner can arm."""
+    scene = DeployScene.from_yaml(str(_REPO_ROOT / "scenes" / "deploy" / scene_file))
+    declaration = scene.place_declaration
+
+    assert declaration is not None, f"{scene_file} declares no place target"
+    assert declaration.target_id == _DECLARING_SCENES[scene_file]
+    # The sim producer resolves the body by stripping this prefix, so a target
+    # without it names no MuJoCo body and is refused.
+    assert declaration.target_id.startswith("sim:")
+    # Direct dispatch discovers the payload at attach time.
+    assert declaration.object_id == ""
+    # Producer-measured, never scene-supplied.
+    assert declaration.region is None
+    # Live at goal start (the runner re-stamps), and inside the backstop ceiling.
+    assert declaration.active
+    assert 0.0 < declaration.timeout_s <= PlaceDeclaration.MAX_TIMEOUT_S
+    assert declaration.is_live(now_ns=int(declaration.timeout_s * 1e9))
+    assert not declaration.is_live(now_ns=int(declaration.timeout_s * 1e9) + 1)
+
+
+def test_the_drawer_scene_declares_nothing_until_its_target_is_read_off_a_run() -> None:
+    """`PickPlaceCounterToDrawer`'s target is one of many stack levels.
+
+    Its generated name (`<stack>_<group>_<level>`) recurs across layouts pointing
+    at a different drawer each time, so a guess would not fail closed — it would
+    arm the witness and its approach allowance at whichever real receptacle
+    happened to answer to that name (HZ-0097-2).
+    """
+    scene = DeployScene.from_yaml(
+        str(_REPO_ROOT / "scenes" / "deploy" / "robocasa_drawer_utensil.yaml")
+    )
+    assert scene.place_declaration is None
