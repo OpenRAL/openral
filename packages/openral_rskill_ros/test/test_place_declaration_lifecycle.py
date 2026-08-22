@@ -266,6 +266,49 @@ def test_the_goals_own_declaration_wins_over_the_scenes() -> None:
     assert active[-1].timeout_s == pytest.approx(30.0)
 
 
+def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
+    """Dispatch names a target; it never measures one (HZ-0097-2/4).
+
+    The region buys the payload a reduced world-collision margin, so it is only
+    sound as a *producer measurement* in the frame the occupancy grid uses. This
+    node is dispatch: whatever region arrives — on the goal, or in the scene's
+    ``place_declaration_json``, which is parsed as a bare ``PlaceDeclaration``
+    and so is not covered by ``DeployScene``'s own refusal — is dropped before
+    publication. The legitimate region is attached downstream by the evidence
+    producer that resolves the target, on the attachment snapshot the kernel
+    actually reads (``tests/unit/test_sim_place_phase_witness.py``).
+    """
+    from openral_core import PlaceDeclaration, PlaceRegion, Pose6D
+    from openral_msgs.action import ExecuteRskill
+
+    claimed = PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(xyz=(0.5, 0.0, 0.4), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"),
+        half_extents=(0.20, 0.25, 0.45),
+        evidence_ref="dispatch_claim:not_a_measurement",
+    )
+    with _harness("") as (executor, runtime, seen):
+        _spin_for(executor, 0.2)
+        request = ExecuteRskill.Goal()
+        request.place_declaration_valid = True
+        PlaceDeclaration(
+            target_id=_TARGET,
+            timeout_s=30.0,
+            stamp_ns=0,
+            region=claimed,
+        ).fill_idl(request.place_declaration)
+        assert request.place_declaration.region_valid, "the goal must really carry a region"
+        runtime.skill_runner_node._arm_place_declaration(
+            request, rskill_id="openral/z", trace_id="t3"
+        )
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert active, "no declaration was armed"
+    assert active[-1].target_id == _TARGET, "the target itself must survive"
+    assert not active[-1].region_valid, "a dispatch-supplied region reached the kernel's path"
+
+
 def test_an_exception_escaping_the_executor_still_retracts() -> None:
     """A goal that dies without unwinding the node's per-goal state.
 
