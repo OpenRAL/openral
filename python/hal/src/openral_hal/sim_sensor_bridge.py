@@ -53,6 +53,22 @@ _RGB_CHANNELS = 3
 _NEAREST_PROBE_DISTMAX_M = 0.10
 _NEAREST_PROBE_MAX_CALLS = 4096
 _NEAREST_PROBE_MAX_PAIRS = 32
+# Voxel-backing probe: rays per cube axis, per side. The cube is sampled by
+# three orthogonal `rays_per_axis**2` ray fans (one per base-frame axis), so
+# the cost is `3 * n**2` `mj_ray` calls — 27 at the default, once, at a
+# terminal event. A depth-derived occupancy cell is always backed by a
+# *surface*, so surface sampling is the right test (see
+# :func:`voxel_backing_record`).
+_VOXEL_BACKING_RAYS_PER_AXIS = 3
+# Ray start stand-off outside the cube face, as a fraction of the cell size.
+# Large enough that a surface lying exactly on the face is still struck,
+# small enough that geometry outside the cell is never attributed to it.
+_VOXEL_BACKING_EPS_FRACTION = 0.01
+# Cap on backing geoms reported per cell; a cell is 25 mm across and cannot
+# plausibly be backed by more distinct geoms than this.
+_VOXEL_BACKING_MAX_GEOMS = 8
+# Cartesian dimensions — a grid size, an origin and a half-extent triple.
+_XYZ = 3
 # Emitted verbatim on every stop line. ``ncon`` is NOT a penetration oracle:
 # MuJoCo contype/conaffinity exclusions can suppress contacts entirely
 # (observed in the field — an arm 30 mm inside a freezer door with
@@ -85,11 +101,13 @@ if TYPE_CHECKING:
 __all__ = [
     "SimSensorBridge",
     "candidate_chunk_digest",
+    "collision_model_mesh_slop",
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
     "initial_configuration_stop_record",
     "kernel_checked_body_ids",
     "should_idle_step",
+    "voxel_backing_record",
 ]
 
 
@@ -556,25 +574,432 @@ def kernel_checked_body_ids(model: Any, description: Any) -> frozenset[int]:
     Returns an empty set when the manifest declares no collision geometry —
     the caller then has no kernel scope to honour and must say so.
     """
+    return frozenset(kernel_checked_link_bodies(model, description).values())
+
+
+def kernel_checked_link_bodies(model: Any, description: Any) -> dict[str, int]:
+    """Map each kernel-checked link name to its MJCF body id.
+
+    The name-keyed form of :func:`kernel_checked_body_ids` — needed wherever a
+    diagnostic has to line a manifest ``collision_geometry`` entry up with the
+    MuJoCo geometry it is supposed to enclose (see
+    :func:`collision_model_mesh_slop`). Links the model does not carry are
+    simply absent, so the caller can report the shortfall rather than guess.
+    """
     import mujoco  # reason: optional sim dep
 
     links = {g.link_name for g in getattr(description, "collision_geometry", [])}
     if not links:
-        return frozenset()
-    out: set[int] = set()
+        return {}
+    out: dict[str, int] = {}
     for joint in getattr(description, "joints", []):
-        if joint.child_link not in links:
+        if joint.child_link not in links or joint.child_link in out:
             continue
         jid = int(
             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name or joint.name)
         )
         if jid >= 0:
-            out.add(int(model.jnt_bodyid[jid]))
+            out[joint.child_link] = int(model.jnt_bodyid[jid])
     for link in links:  # jointless (welded) links, if the MJCF names them directly
+        if link in out:
+            continue
         bid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, link))
         if bid >= 0:
-            out.add(bid)
-    return frozenset(out)
+            out[link] = bid
+    return out
+
+
+def _body_collision_points(model: Any, body_id: int) -> Any:
+    """Sampled points on a body's SOLID geometry, in body-local coordinates.
+
+    Mesh geoms contribute their vertices; primitives contribute their bounding
+    box corners, which *overstate* the primitive's extent and therefore
+    understate the slop computed from them — the safe direction for a budget
+    (see :func:`collision_model_mesh_slop`). Visual-only geoms (neither
+    ``contype`` nor ``conaffinity``) are skipped: the kernel's OBB is
+    documented as enclosing the *collision* mesh.
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    chunks: list[Any] = []
+    for geom in range(int(model.ngeom)):
+        if int(model.geom_bodyid[geom]) != body_id:
+            continue
+        if int(model.geom_contype[geom]) == 0 and int(model.geom_conaffinity[geom]) == 0:
+            continue
+        flat = np.zeros(9)
+        mujoco.mju_quat2Mat(flat, model.geom_quat[geom])
+        rot = flat.reshape(3, 3)
+        pos = np.asarray(model.geom_pos[geom], dtype=np.float64)
+        if int(model.geom_type[geom]) == int(mujoco.mjtGeom.mjGEOM_MESH):
+            mesh = int(model.geom_dataid[geom])
+            start = int(model.mesh_vertadr[mesh])
+            count = int(model.mesh_vertnum[mesh])
+            verts = np.asarray(model.mesh_vert[start : start + count], dtype=np.float64)
+            chunks.append((verts.reshape(-1, 3) @ rot.T) + pos)
+        else:
+            size = np.asarray(model.geom_size[geom], dtype=np.float64)
+            reach = float(np.max(size)) if size.size else 0.0
+            corners = np.array(
+                [
+                    [sx, sy, sz]
+                    for sx in (-reach, reach)
+                    for sy in (-reach, reach)
+                    for sz in (-reach, reach)
+                ],
+                dtype=np.float64,
+            )
+            chunks.append((corners @ rot.T) + pos)
+    return np.vstack(chunks) if chunks else np.zeros((0, 3))
+
+
+def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]:
+    """How far the kernel's collision model reaches beyond the real meshes.
+
+    **The number every world-voxel adjudication needs, and the one the
+    2026-08-22 round did not have.** The safety kernel checks manifest
+    ``collision_geometry`` OBBs against occupancy voxels; the near-miss probe
+    (:func:`estop_ground_truth_snapshot`) measures MuJoCo *mesh* against MuJoCo
+    *mesh*. Those are different quantities, and subtracting one from the other
+    without this term makes a legitimate conservative stop look like a false
+    positive.
+
+    A box around a rounded link is tight on its **faces** and loose at its
+    **corners** — necessarily, not by sloppy authoring. Measured against
+    ``panda_mj_description`` under mujoco 3.8.0, ``panda_mobile``'s OBBs are
+    sub-millimetre on every face and 23-88 mm out at the corners. That
+    completes, rather than contradicts, the mesh verification that withdrew
+    the "OBBs are too big" hypothesis: both are true, of different questions.
+
+    The admissible gap between a kernel distance and a probe distance is
+    therefore ``corner_slop(link) + voxel_half_diagonal``; only a gap wider
+    than that is unexplained by the collision model's own conservatism.
+
+    Args:
+        model: live ``mujoco.MjModel``.
+        description: the ``RobotDescription`` whose ``collision_geometry`` is
+            the kernel's collision model.
+
+    Returns:
+        ``{"links": {<link>: {...}}, "max_corner_slop_m": float,
+        "unresolved_links": [...], "method": str}``. Each link entry carries
+        ``obb_half_extents_m``, ``face_slop_m`` (per axis) and
+        ``corner_slop_m`` — the largest distance from an OBB corner to the
+        nearest sampled collision point. ``{}`` when the manifest declares no
+        collision geometry, so the caller reports "no budget" rather than
+        assuming zero.
+
+    Example:
+        >>> # slop = collision_model_mesh_slop(model, description)
+        >>> # slop["max_corner_slop_m"]  # e.g. 0.0559 on panda_mobile
+    """
+    import numpy as np
+
+    entries = list(getattr(description, "collision_geometry", []) or [])
+    if not entries:
+        return {}
+    bodies = kernel_checked_link_bodies(model, description)
+    links: dict[str, object] = {}
+    unresolved: list[str] = []
+    worst = 0.0
+    for entry in entries:
+        name = str(entry.link_name)
+        body_id = bodies.get(name)
+        half = np.asarray(entry.shape.half_extents_m, dtype=np.float64)
+        if body_id is None or half.size != _XYZ:
+            unresolved.append(name)
+            continue
+        points = _body_collision_points(model, int(body_id))
+        if points.shape[0] == 0:
+            unresolved.append(name)
+            continue
+        origin = np.asarray(entry.origin_xyz_rpy, dtype=np.float64)
+        rot = _rpy_to_matrix(float(origin[3]), float(origin[4]), float(origin[5]))
+        local = (points - origin[:3]) @ rot  # collision points in the OBB frame
+        extent = np.abs(local).max(axis=0)
+        corners = np.array(
+            [
+                [sx * half[0], sy * half[1], sz * half[2]]
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ],
+            dtype=np.float64,
+        )
+        corner_slop = float(
+            max(float(np.min(np.linalg.norm(local - corner, axis=1))) for corner in corners)
+        )
+        worst = max(worst, corner_slop)
+        links[name] = {
+            "obb_half_extents_m": [round(float(v), 6) for v in half],
+            "face_slop_m": [round(float(v), 6) for v in (half - extent)],
+            "corner_slop_m": round(corner_slop, 6),
+            "collision_points_sampled": int(points.shape[0]),
+        }
+    return {
+        "links": links,
+        "max_corner_slop_m": round(worst, 6),
+        "unresolved_links": sorted(unresolved),
+        "method": (
+            "OBB corner -> nearest sampled collision point (mesh vertices; "
+            "primitives sampled at their bounding-box corners, which understates "
+            "the slop). An upper bound on corner-to-surface distance, so a gap "
+            "WIDER than corner_slop + voxel half-diagonal is unexplained by "
+            "collision-model conservatism."
+        ),
+    }
+
+
+def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> Any:
+    """Fixed-axis roll-pitch-yaw to a 3x3 rotation matrix (``R = Rz Ry Rx``)."""
+    import numpy as np
+
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    return np.array(
+        [
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ]
+    )
+
+
+def _voxel_cube_hits(
+    model: Any,
+    data: Any,
+    *,
+    centre_world: Any,
+    rot: Any,
+    resolution: float,
+    rays_per_axis: int,
+) -> tuple[list[int], int, int]:
+    """Geoms whose surface passes through one cell cube, by ray sampling.
+
+    Three orthogonal fans, one per cube axis, each ``rays_per_axis**2`` rays
+    started one stand-off outside a face. A strike counts only while it lies
+    inside the cube, so geometry merely *behind* the cell is never attributed
+    to it. Returns ``(geom_ids, rays_cast, rays_hit)`` — the counts are the
+    coverage attestation that keeps "nothing found" distinct from "did not
+    look".
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    half = resolution / 2.0
+    eps = resolution * _VOXEL_BACKING_EPS_FRACTION
+    span = 2.0 * half + eps  # strikes past the far face are not this cell's
+    n = max(int(rays_per_axis), 1)
+    taps = [(k + 0.5) / n * 2.0 * half - half for k in range(n)]
+    geomid = np.zeros(1, dtype=np.int32)
+    hits: dict[int, None] = {}
+    cast = 0
+    hit_count = 0
+    for axis in range(3):
+        direction = np.ascontiguousarray(rot[:, axis])
+        u = rot[:, (axis + 1) % 3]
+        v = rot[:, (axis + 2) % 3]
+        for du in taps:
+            for dv in taps:
+                start = np.ascontiguousarray(
+                    centre_world - direction * (half + eps) + u * du + v * dv
+                )
+                geomid[0] = -1
+                distance = float(mujoco.mj_ray(model, data, start, direction, None, 1, -1, geomid))
+                cast += 1
+                if geomid[0] >= 0 and 0.0 <= distance <= span:
+                    hit_count += 1
+                    hits.setdefault(int(geomid[0]), None)
+    return sorted(hits), cast, hit_count
+
+
+def _classify_voxel_hits(
+    model: Any,
+    geom_ids: list[int],
+    *,
+    robot_body_ids: frozenset[int],
+    attached_body_ids: frozenset[int],
+) -> list[dict[str, object]]:
+    """Name each backing geom and say which side of the map/world line it sits on."""
+    import mujoco  # reason: optional sim dep
+
+    out: list[dict[str, object]] = []
+    for geom in geom_ids[:_VOXEL_BACKING_MAX_GEOMS]:
+        body = int(model.geom_bodyid[geom])
+        collidable = int(model.geom_contype[geom]) != 0 or int(model.geom_conaffinity[geom]) != 0
+        if body in attached_body_ids:
+            kind = "attached_payload"
+        elif body in robot_body_ids:
+            kind = "self_occupancy_suspect"
+        elif collidable:
+            kind = "solid_world"
+        else:
+            kind = "noncollidable_world"
+        out.append(
+            {
+                "class": kind,
+                "geom": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom),
+                "body": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body),
+                "collidable": bool(collidable),
+            }
+        )
+    return out
+
+
+def voxel_backing_record(
+    model: Any,
+    data: Any,
+    *,
+    voxel_index: int,
+    grid_origin: Sequence[float],
+    grid_resolution: float,
+    grid_size: Sequence[int],
+    robot_body_ids: frozenset[int],
+    attached_body_ids: frozenset[int] = frozenset(),
+    base_frame_body: str | None = None,
+    rays_per_axis: int = _VOXEL_BACKING_RAYS_PER_AXIS,
+) -> dict[str, object]:
+    """What MuJoCo geometry, if any, backs one occupancy voxel.
+
+    **The question a world-voxel stop turns on, and the one nothing in the
+    stack could answer.** The kernel stops on a cell in
+    ``/openral/world_voxels``; the near-miss probes measure MuJoCo against
+    MuJoCo and never look at the map at all. So a stop could be adjudicated
+    "nothing was there" when the truth was "the map and the world disagree" —
+    and the probe's two deliberate blind spots (it excludes every robot body
+    from its world side, and every non-collidable geom) are exactly where such
+    a disagreement hides.
+
+    This locates the cell and asks MuJoCo directly, with no exclusions:
+
+    * ``solid_world`` — a collidable world geom passes through the cell. The
+      stop is explained by real geometry.
+    * ``attached_payload`` — the carried object; it should have been cleared
+      from world occupancy by the bridge.
+    * ``self_occupancy_suspect`` — **the robot's own body**, base and mount
+      included. The depth self-filter is supposed to make these transparent,
+      so a hit here means the robot is in its own world map.
+    * ``noncollidable_world`` — a marker/visual geom. ``mj_ray`` strikes these
+      and so does the depth synth, so they *can* become occupancy; the
+      near-miss probe deliberately never measures them.
+    * ``unbacked`` — nothing at all. A phantom or stale cell.
+
+    Method: three orthogonal ray fans, one per base-frame cube axis, each
+    ``rays_per_axis**2`` rays started just outside one face and accepted only
+    where the strike lies inside the cube. A depth-derived occupancy cell is
+    created by a *surface* return, so surface sampling is the matching test —
+    a cell buried strictly inside a solid could not have been written by the
+    depth path and is not sought. ``rays_cast``/``rays_hit`` are reported so
+    ``unbacked`` reads as "looked and found nothing", never "did not look".
+
+    Args:
+        model: live ``mujoco.MjModel``.
+        data: live ``mujoco.MjData`` at the stop instant.
+        voxel_index: the kernel's world-obstacle index — the integer in a
+            ``safety.collision`` line's ``b=voxel_<n>``. Row-major with x
+            fastest, matching ``OccupancyVoxels``.
+        grid_origin: base-frame position of voxel ``(0,0,0)``'s minimum corner.
+        grid_resolution: cell size in metres.
+        grid_size: ``(size_x, size_y, size_z)``.
+        robot_body_ids: the robot's own MJCF bodies (the depth self-filter
+            set), which is what makes ``self_occupancy_suspect`` cover the base
+            and mount the world-side probe excludes.
+        attached_body_ids: currently carried payload bodies.
+        base_frame_body: MJCF body the grid frame denotes. ``None`` treats the
+            grid as already world-aligned (synthetic/world-frame grids).
+        rays_per_axis: rays per side of each face fan.
+
+    Returns:
+        A JSON-safe dict with ``voxel_index``, ``voxel_ijk``, ``base_xyz``,
+        ``world_xyz``, ``resolution_m``, ``half_diagonal_m``, ``verdict``,
+        ``classes``, ``backing`` (geom/body/class records), ``rays_cast``,
+        ``rays_hit`` and ``method``. ``verdict`` is ``"out_of_range"`` when the
+        index does not address a cell of this grid.
+
+    Example:
+        >>> # voxel_backing_record(model, data, voxel_index=76001,
+        >>> #     grid_origin=(-0.8, -0.8, -0.3), grid_resolution=0.025,
+        >>> #     grid_size=(64, 64, 64), robot_body_ids=self_bodies)
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    size = [int(v) for v in grid_size]
+    resolution = float(grid_resolution)
+    record: dict[str, object] = {
+        "voxel_index": int(voxel_index),
+        "resolution_m": round(resolution, 6),
+        "half_diagonal_m": round(resolution * float(np.sqrt(3.0)) / 2.0, 6),
+        "rays_cast": 0,
+        "rays_hit": 0,
+        "backing": [],
+        "classes": [],
+        "method": (
+            "three orthogonal ray fans across the cell cube; a strike is "
+            "attributed only when it lies inside the cube. No geom class is "
+            "excluded: robot bodies and non-collidable markers are reported, "
+            "not filtered."
+        ),
+    }
+    total = size[0] * size[1] * size[2] if len(size) == _XYZ else 0
+    if total <= 0 or resolution <= 0.0 or not 0 <= int(voxel_index) < total:
+        record["verdict"] = "out_of_range"
+        return record
+    index = int(voxel_index)
+    ix = index % size[0]
+    iy = (index // size[0]) % size[1]
+    iz = index // (size[0] * size[1])
+    origin = np.asarray(list(grid_origin), dtype=np.float64)
+    centre_base = origin + (np.array([ix, iy, iz], dtype=np.float64) + 0.5) * resolution
+    rot = np.eye(3, dtype=np.float64)
+    offset: Any = np.zeros(3, dtype=np.float64)
+    if base_frame_body is not None:
+        body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_frame_body))
+        if body_id >= 0:
+            rot = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+            offset = np.asarray(data.xpos[body_id], dtype=np.float64)
+    centre_world = rot @ centre_base + offset
+    record["voxel_ijk"] = [int(ix), int(iy), int(iz)]
+    record["base_xyz"] = [round(float(v), 6) for v in centre_base]
+    record["world_xyz"] = [round(float(v), 6) for v in centre_world]
+
+    hits, cast, hit_count = _voxel_cube_hits(
+        model,
+        data,
+        centre_world=centre_world,
+        rot=rot,
+        resolution=resolution,
+        rays_per_axis=rays_per_axis,
+    )
+    record["rays_cast"] = cast
+    record["rays_hit"] = hit_count
+
+    backing = _classify_voxel_hits(
+        model,
+        hits,
+        robot_body_ids=robot_body_ids,
+        attached_body_ids=attached_body_ids,
+    )
+    classes = {str(entry["class"]) for entry in backing}
+    record["backing"] = backing
+    record["classes"] = sorted(classes)
+    # Precedence is adjudication order, not severity: real geometry EXPLAINS the
+    # stop and outranks everything; only when nothing solid backs the cell does
+    # the map's disagreement with the world become the headline.
+    for kind in (
+        "solid_world",
+        "attached_payload",
+        "self_occupancy_suspect",
+        "noncollidable_world",
+    ):
+        if kind in classes:
+            record["verdict"] = kind
+            break
+    else:
+        record["verdict"] = "unbacked"
+    return record
 
 
 def estop_ground_truth_snapshot(
@@ -586,6 +1011,8 @@ def estop_ground_truth_snapshot(
     probe_body_ids: frozenset[int] | None = None,
     base_frame_body: str | None = None,
     joint_state: Any = None,
+    description: Any = None,
+    evidence_voxel: Any = None,
     distmax_m: float = _NEAREST_PROBE_DISTMAX_M,
     max_pairs: int = _NEAREST_PROBE_MAX_PAIRS,
     max_calls: int = _NEAREST_PROBE_MAX_CALLS,
@@ -644,7 +1071,19 @@ def estop_ground_truth_snapshot(
             coordinates.
         joint_state: the HAL's :class:`~openral_core.JointState` at the stop
             (the same vector the kernel seeded ``q_meas`` from), or ``None``.
-        distmax_m: near-miss probe window.
+        description: the ``RobotDescription`` whose ``collision_geometry`` is
+            the kernel's collision model. Supplying it turns on
+            ``adjudication_budget`` (:func:`collision_model_mesh_slop`) and
+            widens the probe window to that budget.
+        evidence_voxel: the world-voxel cell the kernel stopped on, as
+            ``{"index": int, "origin": (x, y, z), "resolution": float,
+            "size": (nx, ny, nz)}`` (optionally ``"frame_body"``). Supplying it
+            turns on ``evidence_voxel_backing``
+            (:func:`voxel_backing_record`) — the only part of this record that
+            looks at the MAP rather than at MuJoCo alone.
+        distmax_m: near-miss probe window *floor*. The window actually used is
+            ``max(distmax_m, admissible_gap_m)`` and is reported as
+            ``adjudication_budget.probe_distmax_used_m``.
         max_pairs: cap on reported nearest pairs, per probe.
         max_calls: cap on exact ``mj_geomDistance`` calls per probe. The
             prefilter ranks candidates by proximity first and spends the
@@ -660,8 +1099,20 @@ def estop_ground_truth_snapshot(
         ``nearest_probe_coverage``, ``nearest_payload_world_pairs``,
         ``nearest_payload_world_coverage``, ``nearest_payload_robot_pairs``,
         ``nearest_payload_robot_coverage``, ``probe_robot_scope``,
-        ``probe_excluded_robot_bodies``, ``robot_joint_state`` and
-        ``base_frame_tf``.
+        ``probe_excluded_robot_bodies``, ``robot_joint_state``,
+        ``base_frame_tf``, ``adjudication_budget`` and
+        ``evidence_voxel_backing``.
+
+        ``adjudication_budget`` is what makes a kernel number and a probe
+        number comparable at all: the kernel measures OBB-to-voxel, the probes
+        measure mesh-to-mesh, and the admissible gap between them is
+        ``corner_slop(link) + voxel_half_diagonal``. The 2026-08-22 round
+        subtracted the two directly with only the quantization term and called
+        a conservative, correct ``panda_link1`` stop a false positive.
+
+        ``evidence_voxel_backing`` is the map-side half of the record — what
+        MuJoCo actually has at the cell the kernel stopped on, with no geom
+        class excluded. It is ``None`` when no evidence voxel was supplied.
 
         Each probe carries its own coverage block, and that is what makes an
         *absent* pair readable: an empty near-miss list only means "nothing
@@ -675,6 +1126,21 @@ def estop_ground_truth_snapshot(
     attached_bodies = sorted(attached_body_ids)
     attached = frozenset(attached_bodies)
     probe_robot = robot_body_ids if probe_body_ids is None else (probe_body_ids & robot_body_ids)
+    # The probe measures MESH-to-mesh; the kernel measures OBB-to-voxel. Widen
+    # the window to the gap the collision model's own conservatism can already
+    # account for, so the backing geometry of a stop cannot fall outside the
+    # probe purely because the OBB corner reached further than the mesh. Widen
+    # only: a derived window narrower than the default would recreate
+    # silence-as-evidence from the other side.
+    slop = collision_model_mesh_slop(model, description) if description is not None else {}
+    voxel_half_diagonal = 0.0
+    if isinstance(evidence_voxel, dict):
+        cell_m: Any = evidence_voxel.get("resolution", 0.0)
+        voxel_half_diagonal = float(cell_m) * 3.0**0.5 / 2.0
+    max_slop: Any = slop.get("max_corner_slop_m", 0.0)
+    budget = float(max_slop or 0.0) + voxel_half_diagonal
+    distmax_used = max(float(distmax_m), budget)
+    distmax_m = distmax_used
     # World side excludes the WHOLE robot, not just the probed subset: a link
     # the kernel does not check (the gripper, the base) is still the robot,
     # never an obstacle it could be "near".
@@ -715,6 +1181,19 @@ def estop_ground_truth_snapshot(
             max_pairs=max_pairs,
             max_calls=max_calls,
         )
+    voxel_backing: dict[str, object] | None = None
+    if isinstance(evidence_voxel, dict) and evidence_voxel.get("index") is not None:
+        voxel_backing = voxel_backing_record(
+            model,
+            data,
+            voxel_index=int(evidence_voxel["index"]),
+            grid_origin=list(evidence_voxel.get("origin", (0.0, 0.0, 0.0))),
+            grid_resolution=float(evidence_voxel.get("resolution", 0.0)),
+            grid_size=list(evidence_voxel.get("size", (0, 0, 0))),
+            robot_body_ids=robot_body_ids,
+            attached_body_ids=attached,
+            base_frame_body=evidence_voxel.get("frame_body", base_frame_body),
+        )
     snapshot: dict[str, object] = {
         "stop_class": "attached_payload" if attached_bodies else "robot_world",
         "sim_time_s": round(float(data.time), 6),
@@ -736,6 +1215,22 @@ def estop_ground_truth_snapshot(
         "nearest_payload_world_coverage": payload_world_coverage,
         "nearest_payload_robot_pairs": payload_robot_pairs,
         "nearest_payload_robot_coverage": payload_robot_coverage,
+        # The budget every kernel-vs-probe comparison needs, carried with the
+        # verdict so no future round has to reconstruct it.
+        "adjudication_budget": {
+            "rule": (
+                "kernel distances are OBB-to-voxel; ground-truth probes are "
+                "mesh-to-mesh. The admissible gap is "
+                "corner_slop(link) + voxel_half_diagonal."
+            ),
+            "max_corner_slop_m": slop.get("max_corner_slop_m"),
+            "voxel_half_diagonal_m": round(voxel_half_diagonal, 6),
+            "admissible_gap_m": round(budget, 6),
+            "probe_distmax_default_m": round(float(_NEAREST_PROBE_DISTMAX_M), 6),
+            "probe_distmax_used_m": round(distmax_used, 6),
+            "collision_model_slop": slop or None,
+        },
+        "evidence_voxel_backing": voxel_backing,
         "robot_joint_state": None
         if joint_state is None
         else {
@@ -1029,6 +1524,9 @@ class SimSensorBridge:
         self._safety_failure_sub: Any = None
         self._candidate_chunks: deque[dict[str, object]] = deque(maxlen=_CANDIDATE_CHUNK_HISTORY)
         self._last_collision_evidence: dict[str, object] | None = None
+        # Geometry (not occupancy) of the last /openral/world_voxels grid, so a
+        # `b=voxel_<n>` evidence line can be located in space at the stop.
+        self._last_voxel_grid: dict[str, object] | None = None
         self._last_collision_evidence_ns: int = 0
         self._collision_evidence_warned: bool = False
         self._estop_seq: int = 0
@@ -2435,7 +2933,25 @@ class SimSensorBridge:
                 self._notify_attachment_perception_ready()
 
     def _on_attachment_world_voxels(self, msg: object) -> None:
-        """Wait for post-depth OctoMap rasterizations before releasing motion."""
+        """Wait for post-depth OctoMap rasterizations before releasing motion.
+
+        Also retains the grid's *geometry* (never its occupancy bytes), which
+        is what turns a ``b=voxel_<n>`` evidence line into a position the
+        ground-truth record can interrogate — see :meth:`_evidence_voxel`.
+        """
+        self._last_voxel_grid = {
+            "origin": (
+                float(msg.origin.x),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                float(msg.origin.y),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                float(msg.origin.z),  # type: ignore[attr-defined]  # reason: ROS subscription type
+            ),
+            "resolution": float(msg.resolution),  # type: ignore[attr-defined]  # reason: ROS subscription type
+            "size": (
+                int(msg.size_x),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                int(msg.size_y),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                int(msg.size_z),  # type: ignore[attr-defined]  # reason: ROS subscription type
+            ),
+        }
         if self._attachment_voxel_updates_remaining <= 0:
             return
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
@@ -2451,7 +2967,7 @@ class SimSensorBridge:
 
     # -- E-stop ground truth (diagnostics only) --
     def _setup_estop_ground_truth(self) -> None:
-        """Subscribe the three topics one adjudicable stop record needs.
+        """Subscribe the topics one adjudicable stop record needs.
 
         Gate: live MuJoCo handles (there is no ground truth without a
         simulator). Deliberately NOT gated on attachment support — the
@@ -2463,6 +2979,10 @@ class SimSensorBridge:
         * ``/openral/failure/safety`` — the kernel's own
           :class:`~openral_core.CollisionEvidence`, which carries
           ``horizon_step`` / ``link_a`` / ``min_distance_m``.
+        * ``/openral/world_voxels`` — the grid geometry that turns that
+          evidence's ``b=voxel_<n>`` index into a position, so the record can
+          report what backs the cell (subscribed here only when the attachment
+          bridge has not already claimed it).
 
         Diagnostics only: nothing here gates, delays, or alters actuation.
         """
@@ -2505,9 +3025,29 @@ class SimSensorBridge:
             self._on_safety_failure,
             bus_qos,
         )
+        if self._attachment_voxel_sub is None:
+            # A world-voxel stop names its cell as an INDEX; without the grid's
+            # geometry that index cannot be turned into a position, and the
+            # record is left unable to say what backs the cell. The attachment
+            # bridge owns this subscription when the HAL supports attachment;
+            # this covers the HALs that do not, so the pre-grasp arm↔world
+            # stop this method exists for is never the one missing it.
+            from openral_msgs.msg import OccupancyVoxels
+
+            self._attachment_voxel_sub = self._node.create_subscription(
+                OccupancyVoxels,
+                "/openral/world_voxels",
+                self._on_attachment_world_voxels,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
+            )
         self._node.get_logger().info(
             "SimSensorBridge: e-stop ground truth armed (MuJoCo contacts + near-miss "
-            f"distances + last {_CANDIDATE_CHUNK_HISTORY} candidate chunks)."
+            f"distances + last {_CANDIDATE_CHUNK_HISTORY} candidate chunks + "
+            "world-voxel backing)."
         )
 
     def _teardown_estop_ground_truth(self) -> None:
@@ -2518,6 +3058,7 @@ class SimSensorBridge:
         self._estop_sub = None
         self._candidate_action_sub = None
         self._safety_failure_sub = None
+        self._last_voxel_grid = None
         self._candidate_chunks.clear()
         self._last_collision_evidence = None
         self._last_collision_evidence_ns = 0
@@ -2640,6 +3181,8 @@ class SimSensorBridge:
             probe_body_ids=probe_bodies,
             base_frame_body=self._base_frame_body,
             joint_state=self._read_joint_state(),
+            description=self._description,
+            evidence_voxel=self._evidence_voxel(),
         )
         now_ns = int(self._node.get_clock().now().nanoseconds)
         evidence = self._last_collision_evidence
@@ -2688,6 +3231,28 @@ class SimSensorBridge:
         self._node.get_logger().error(
             "sim.estop_initial_configuration " + json.dumps(record, sort_keys=True)
         )
+
+    def _evidence_voxel(self) -> dict[str, object] | None:
+        """The world-voxel cell of the pending stop, located in the live grid.
+
+        A ``safety.collision`` line names the cell only as ``voxel_<n>`` — an
+        index into a grid the kernel does not republish. Pairing that index
+        with the geometry of the last ``/openral/world_voxels`` message is what
+        lets :func:`voxel_backing_record` ask MuJoCo what is actually there.
+        Returns ``None`` when the stop was not a world-voxel stop, when no grid
+        has been seen, or when the evidence is too old to attribute.
+        """
+        evidence = self._last_collision_evidence
+        grid = self._last_voxel_grid
+        if evidence is None or grid is None:
+            return None
+        name = evidence.get("link_b_or_object")
+        if not isinstance(name, str) or not name.startswith("voxel_"):
+            return None
+        index = name.removeprefix("voxel_")
+        if not index.isdigit():
+            return None
+        return {"index": int(index), **grid}
 
     def _read_joint_state(self) -> Any:
         """The HAL's joint state at the stop, or ``None`` if it cannot be read.
