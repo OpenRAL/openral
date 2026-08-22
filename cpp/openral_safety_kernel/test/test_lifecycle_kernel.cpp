@@ -1079,6 +1079,226 @@ TEST_F(LifecycleKernelTest, CartesianDeltaFirstStepUsesConfiguredMargin) {
   EXPECT_FALSE(node->fault_latched());
 }
 
+namespace {
+
+/// What one run of `run_multistep_cartesian_predict` observed.
+struct MultiStepPredictiveRun {
+  int safe_count{0};       ///< chunks that reached /openral/safe_action
+  bool latched{false};     ///< the kernel fault-latched (collision stop)
+  std::string evidence{};  ///< first CollisionEvidence JSON, if any
+};
+
+/// Drive a MULTI-STEP CARTESIAN_DELTA chunk at the planar 2R arm the predictive
+/// tests above use, against a voxel wall whose near face sits at `wall_face_y`.
+/// Everything except that face is identical between the two cases below, so the
+/// pair isolates one variable: how far the predicted trajectory stays from the
+/// obstacle.
+///
+/// Geometry, hand-computed (metres, base frame; the arm is 1 m + 1 m, the EE is
+/// the fixed link at the tip):
+///   start EE      y = 1.00        (q = [0, +90°])
+///   EE capsule    r = 0.05
+///   per step      Δy = +0.05      (no cartesian_delta_scale → raw = physical)
+///   horizon       6 steps         → predicted y_s = 1.00 + 0.05·(s+1)
+///   voxel margin  0.00
+///   growth        0.05 per look-ahead step, so the step-s check runs at
+///                 margin + growth·s = 0.05·s — step 0 gets NO inflation
+///                 (the horizon-1 case pinned by the test above).
+/// The capsule-to-cell distance at step s is d_s = wall_face_y − y_s − 0.05, and
+/// the kernel stops when d_s ≤ 0.05·s, i.e. when wall_face_y ≤ 1.10 + 0.10·s.
+void run_multistep_cartesian_predict(const std::string& node_name, double wall_face_y,
+                                     MultiStepPredictiveRun* out) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-3.14, -3.14}},
+      {"joint_position_max", std::vector<double>{3.14, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{8192}},
+      {"collision_n_links", std::int64_t{3}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1, 1, 0}},  // rev, rev, fixed
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1, -1}},
+      {"collision_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"l0", "l1", "ee"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "j1"}},
+      {"collision_state_deadline_ms", 2000.0},
+      {"collision_ee_link_index", std::int64_t{2}},
+      {"collision_predict_lambda", 0.02},
+      // 0.05 m/step keeps the per-step arithmetic in the comments exact and
+      // leaves a whole voxel of separation between the two cases' verdicts.
+      {"collision_predict_margin_growth_m", 0.05},
+      {"collision_predict_max_steps", std::int64_t{0}},  // check every step
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(node_name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper(node_name + "_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  std::string evidence_json;
+  rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+  failure_qos.reliable();
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", failure_qos,
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        if (evidence_json.empty()) {
+          evidence_json = msg->evidence_json;
+        }
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  // Voxel wall at 0.05 m resolution: every cell whose centre is at or beyond
+  // `wall_face_y` is occupied, so the wall's near face lands exactly on
+  // `wall_face_y` (origin 0.9 + k·0.05 hits both faces the tests ask for). The
+  // grid spans x∈[0.5,1.5], y∈[0.9,2.0], z∈[-0.15,0.15] = 2640 cells: the whole
+  // predicted EE path is inside it.
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.resolution = 0.05;
+  vox.size_x = 20;
+  vox.size_y = 22;
+  vox.size_z = 6;
+  vox.origin.x = 0.5;
+  vox.origin.y = 0.9;
+  vox.origin.z = -0.15;
+  vox.occupancy.assign(static_cast<std::size_t>(vox.size_x) * vox.size_y * vox.size_z, 0);
+  for (std::uint32_t iz = 0; iz < vox.size_z; ++iz) {
+    for (std::uint32_t iy = 0; iy < vox.size_y; ++iy) {
+      const double cy = vox.origin.y + (iy + 0.5) * vox.resolution;
+      if (cy >= wall_face_y) {
+        for (std::uint32_t ix = 0; ix < vox.size_x; ++ix) {
+          vox.occupancy[ix + vox.size_x * (iy + vox.size_y * iz)] = 1;
+        }
+      }
+    }
+  }
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0", "j1"};
+  js.position = {0.0, 1.57079632679};  // EE at (1, 1, 0)
+
+  openral_msgs::msg::ActionChunk cart;
+  cart.control_mode = 5;  // CARTESIAN_DELTA
+  cart.horizon = 6;
+  cart.n_dof = 6;  // [vx,vy,vz, wx,wy,wz] per step
+  cart.flat.clear();
+  for (int s = 0; s < 6; ++s) {
+    cart.flat.insert(cart.flat.end(), {0.0, 0.05, 0.0, 0.0, 0.0, 0.0});
+  }
+
+  // Seed a fresh joint state + grid before any chunk, and confirm the MEASURED
+  // config is clear — otherwise the reactive floor, not the look-ahead, decides.
+  auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_FALSE(node->fault_latched()) << "start config must be clear (reactive must not fire)";
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!node->fault_latched() && safe_count.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(cart);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  // The latch flips inside the kernel's own callback, so on a stop the
+  // FailureTrigger carrying the evidence only lands a spin or two later.
+  const auto drain = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (node->fault_latched() && evidence_json.empty() &&
+         std::chrono::steady_clock::now() < drain) {
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  out->safe_count = safe_count.load();
+  out->latched = node->fault_latched();
+  out->evidence = evidence_json;
+}
+
+}  // namespace
+
+// The predictive Cartesian look-ahead must NOT reject a MULTI-STEP chunk whose
+// whole predicted horizon stays clear — the false-positive direction. 0884101
+// repurposed the original test for this case into the horizon-1 margin test
+// above, leaving the multi-step accept uncovered; this restores it.
+//
+// Wall face at y = 1.75, so the tightest step is the last one, s=5:
+//   d_5 = 1.75 − (1.00 + 0.05·6) − 0.05 = 0.40  vs a threshold of 0.05·5 = 0.25
+// → clear by 0.15 m, and every earlier step is clearer still (the slack
+// d_s − 0.05·s = 0.65 − 0.10·s only shrinks with s). That 0.15 m is far more
+// than the DLS reconstruction's residual over six steps of a well-conditioned
+// 2R arm (the elbow sits at 90°, nowhere near a singularity), so an accept here
+// means the trajectory really is clear, not that the fixture got lucky.
+TEST_F(LifecycleKernelTest, CartesianDeltaMultiStepPredictivePassesWhenTrajectoryStaysClear) {
+  MultiStepPredictiveRun run;
+  run_multistep_cartesian_predict("kernel_cart_predict_multistep_clear", 1.75, &run);
+  EXPECT_GT(run.safe_count, 0)
+      << "a multi-step CARTESIAN_DELTA chunk whose whole predicted trajectory clears every "
+         "occupied cell by more than margin + growth·step must reach /openral/safe_action";
+  EXPECT_FALSE(run.latched) << "no step of a clear trajectory may estop: " << run.evidence;
+}
+
+// The guard for the accept above: the SAME six-step trajectory, with the wall
+// moved 0.40 m nearer (face at y = 1.35), must stop — and at the step the
+// arithmetic predicts, not merely somewhere. Threshold 0.05·s vs
+// d_s = 1.35 − (1.00 + 0.05·(s+1)) − 0.05:
+//   s=2 → d = 0.15 vs 0.10 → still clear (by 0.05)
+//   s=3 → d = 0.10 vs 0.15 → STOP
+// The ±0.05 m either side of step 3 is what makes the step number, and not just
+// the verdict, worth asserting.
+TEST_F(LifecycleKernelTest, CartesianDeltaMultiStepPredictiveStopsAtThePredictedStep) {
+  MultiStepPredictiveRun run;
+  run_multistep_cartesian_predict("kernel_cart_predict_multistep_stop", 1.35, &run);
+  EXPECT_TRUE(run.latched) << "the same trajectory 0.40 m nearer the wall must estop";
+  EXPECT_EQ(run.safe_count, 0) << "the colliding chunk must never reach /openral/safe_action";
+  ASSERT_FALSE(run.evidence.empty()) << "a collision stop must publish CollisionEvidence";
+  EXPECT_EQ(evidence_field(run.evidence, "horizon_step"), "3")
+      << "the look-ahead must trip on the first step whose clearance falls inside "
+         "margin + growth·step, which is step 3: "
+      << run.evidence;
+  // The reported clearance is the d_3 = 0.10 above. The tolerance is the DLS
+  // reconstruction's residual after four integrated steps — measured at 1.5 mm
+  // on this arm, so 5 mm bounds it with room to spare while still failing loudly
+  // if the reconstruction ever drifts by a voxel.
+  EXPECT_NEAR(std::stod(evidence_field(run.evidence, "min_distance_m")), 0.10, 5e-3)
+      << run.evidence;
+}
+
 // The REACTIVE (measured-state) collision check reports `horizon_step: -1` —
 // the sentinel that says "this is the configuration the robot is in RIGHT NOW,
 // not a predicted look-ahead step". This test pins the WIRE FORMAT of that
