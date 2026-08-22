@@ -129,6 +129,18 @@ _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     # `PickPlaceFridgeShelfToDrawer` picks and places entirely inside the
     # fridge and declares EXCLUDE_STYLES for the side-by-side fridges that
     # ship no drawer, so not every seed yields a constructible layout.
+    # It also has a KNOWN, UNFIXED initial-pose defect on some kitchens: the
+    # task opens the fridge door but leaves the FREEZER door closed and flush
+    # on the front face, while `init_robot_base_ref` parks the base ~0.30 m
+    # off that face with a fixed arm `init_qpos`. On a side-by-side fridge the
+    # full-height closed freezer half then sits at arm height. RoboCasa's own
+    # `set_robot_base` resample only clears MuJoCo *contacts*, and it does:
+    # the links end up a few mm clear, which is below the kernel's occupancy
+    # grid resolution, so the kernel legitimately refuses the reset pose. Pin
+    # `layout_ids` / `style_ids` (forwarded verbatim below) to choose a fridge
+    # whose arm-height geometry is the OPEN fridge door — see the KNOWN DEFECT
+    # block in `scenes/deploy/robocasa_fridge_drawer.yaml` for the layout map,
+    # the candidate fix, and the run that would confirm it.
     "PickPlaceCounterToDrawer",
     "PickPlaceFridgeShelfToDrawer",
     "OpenDoor",

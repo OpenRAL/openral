@@ -279,6 +279,40 @@ feeds termination, reset, reward, or the action path (CLAUDE.md §1.4).
 `ROSSafetyViolation` is never caught except at the safety-supervisor boundary,
 where it triggers E-stop plus a structured incident log (CLAUDE.md §5).
 
+### The E-stop ground-truth signals
+
+`SimSensorBridge` records every kernel stop, carried payload or not. Three lines,
+all joined by `stop_seq`, all `error`-level, all emitted through the node logger
+(so they land in a launched HAL subprocess's own stdout):
+
+| Line | Fires | Carries |
+|---|---|---|
+| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s |
+| `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
+| `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
+
+The third line exists because the first one, read alone, is indistinguishable
+from an ordinary mid-task stop. `SimAttachedHAL.last_action_ns` is `0` until the
+first `send_action` — the single choke point every real action passes, stamped
+*before* any early return — so `last_action_ns == 0` at a stop means the
+configuration the kernel refused is the one the **scene reset produced**. The
+robot is not doing something unsafe; it was *spawned* somewhere unsafe, and no
+policy, chunk, or margin change can clear it: the remedy is a scene-config one
+(a different seed, or pinned `backend_options.layout_ids` / `style_ids`).
+
+The 2026-08-22 `robocasa/PickPlaceFridgeShelfToDrawer` seed-1 round is the case
+that motivated it — an E-stop at sim `t=4.85 s` with zero chunks applied and
+`robot0_link6` 0.000 m from `fridge_main_group_freezer_door`, which read as a
+policy failure for a full debugging round.
+
+`candidate_chunks_seen` is reported but deliberately does **not** gate the
+classification: a chunk the kernel *rejected* never reached `send_action`, so
+that stop is still at the initial configuration.
+
+Diagnostics only (CLAUDE.md §1.4). The stop itself is correct and is neither
+suppressed, delayed, nor altered — an initial pose that interpenetrates the
+scene is exactly what the kernel exists to refuse. All the line does is name it.
+
 ---
 
 ## Load-phase instrumentation
