@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -36,6 +37,48 @@ log = structlog.get_logger(__name__)
 # Number of dimensions for a colour frame returned by ``cv2.VideoCapture``:
 # ``(H, W, C)``. Mono frames are ``(H, W)``.
 _COLOR_NDIM = 3
+#: A crop is (x, y, width, height).
+_CROP_LEN = 4
+
+
+def _validated_crop(
+    sensor_id: str, crop: tuple[int, int, int, int] | Sequence[int] | None
+) -> tuple[int, int, int, int] | None:
+    """Normalise and bounds-check a ``(x, y, width, height)`` crop.
+
+    Args:
+        sensor_id: Sensor name, for the error message.
+        crop: The requested region, or ``None``.
+
+    Returns:
+        The crop as a 4-tuple of ints, or ``None``.
+
+    Raises:
+        ValueError: If the tuple is the wrong length, or any value is
+            negative, or the width/height is zero. A crop that is invalid on
+            its face is caught here, at construction, rather than silently
+            producing empty frames once the device is streaming.
+    """
+    if crop is None:
+        return None
+    values = tuple(int(v) for v in crop)
+    if len(values) != _CROP_LEN:
+        raise ValueError(
+            f"OpenCVThreadSensorReader({sensor_id!r}).crop must be "
+            f"(x, y, width, height); got {len(values)} value(s): {values}"
+        )
+    x, y, width, height = values
+    if x < 0 or y < 0:
+        raise ValueError(
+            f"OpenCVThreadSensorReader({sensor_id!r}).crop origin must be "
+            f"non-negative; got (x={x}, y={y})"
+        )
+    if width <= 0 or height <= 0:
+        raise ValueError(
+            f"OpenCVThreadSensorReader({sensor_id!r}).crop must have positive "
+            f"width and height; got ({width}, {height})"
+        )
+    return (x, y, width, height)
 
 
 class OpenCVThreadSensorReader:
@@ -57,6 +100,16 @@ class OpenCVThreadSensorReader:
         encoding: Pixel encoding of the captured frames. OpenCV decodes to
             BGR8 by default; choose another value when the backend post-
             processes frames before they reach this reader.
+        crop: Optional ``(x, y, width, height)`` region kept from each frame,
+            applied in the capture thread before the frame reaches
+            :meth:`read_latest`. ``None`` (the default) keeps the full frame.
+
+            This exists for side-by-side stereo cameras. A ZED Mini streams
+            both lenses in one 1344x376 UVC frame, but a policy trained on the
+            left lens expects 672x376 — handing it the doubled-width frame is
+            silently out-of-distribution rather than an error, because the
+            shape is still a valid image. Declaring the crop in the sensor
+            binding keeps that slice next to the device it belongs to.
         default_max_age_ms: Default staleness budget applied when
             :meth:`read_latest` is called with ``max_age_ms=None``.
             Defaults to ~3 frames at 30 Hz.
@@ -74,6 +127,7 @@ class OpenCVThreadSensorReader:
         width: int | None = None,
         height: int | None = None,
         encoding: FrameEncoding = FrameEncoding.BGR8,
+        crop: tuple[int, int, int, int] | Sequence[int] | None = None,
         default_max_age_ms: int = 100,
     ) -> None:
         """Stash configuration; no I/O until :meth:`open`."""
@@ -89,6 +143,7 @@ class OpenCVThreadSensorReader:
         self._req_width = width
         self._req_height = height
         self._encoding = encoding
+        self._crop = _validated_crop(sensor_id, crop)
         self._default_max_age_ms = default_max_age_ms
 
         # Populated by open().
@@ -124,6 +179,25 @@ class OpenCVThreadSensorReader:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._req_width)
         if self._req_height is not None:
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._req_height)
+        # Validate the crop against the mode the device ACTUALLY negotiated,
+        # not the one requested: `cap.set` is best-effort and a camera is free
+        # to hand back a different resolution. Failing here means a deploy
+        # refuses to start; failing per-frame would mean it starts and then
+        # silently never produces a frame.
+        if self._crop is not None:
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            x, y, width, height = self._crop
+            if actual_w and actual_h and (x + width > actual_w or y + height > actual_h):
+                cap.release()
+                raise ValueError(
+                    f"OpenCVThreadSensorReader({self.sensor_id!r}): crop "
+                    f"(x={x}, y={y}, w={width}, h={height}) does not fit the "
+                    f"{actual_w}x{actual_h} mode the device negotiated "
+                    f"(requested {self._req_width}x{self._req_height}). Either "
+                    f"the camera does not support that mode, or the binding's "
+                    f"crop is wrong."
+                )
         self._cap = cap
 
         self._stop_event.clear()
@@ -225,6 +299,34 @@ class OpenCVThreadSensorReader:
 
     # ── Internal ────────────────────────────────────────────────────────────
 
+    def _apply_crop(self, frame: Any) -> Any:
+        """Return the configured sub-rectangle of ``frame``, or ``None``.
+
+        :meth:`open` already validated the crop against the negotiated mode, so
+        a mismatch here means the device changed resolution mid-stream. That is
+        reported and the frame dropped rather than raised: killing the capture
+        thread would leave the reader permanently stale with the reason only on
+        stderr, where dropping frames surfaces as ``ROSPerceptionStale`` on the
+        foreground side *and* keeps the thread alive to recover.
+
+        Returns:
+            The cropped view, or ``None`` when the crop no longer fits.
+        """
+        if self._crop is None:
+            return frame
+        x, y, width, height = self._crop
+        frame_h, frame_w = frame.shape[:2]
+        if x + width > frame_w or y + height > frame_h:
+            log.error(
+                "opencv_thread_reader.crop_does_not_fit",
+                sensor_id=self.sensor_id,
+                crop=self._crop,
+                frame_width=frame_w,
+                frame_height=frame_h,
+            )
+            return None
+        return frame[y : y + height, x : x + width]
+
     def _read_loop(self) -> None:
         """Background thread: read frames as fast as the device allows."""
         assert self._cap is not None  # invariant: thread only runs while open
@@ -240,6 +342,14 @@ class OpenCVThreadSensorReader:
                 continue
             mono_ns = time.monotonic_ns()
             wall_ns = time.time_ns()
+            # Crop in the capture thread, not in read_latest: the hot path is
+            # called at the control rate and should not pay for a slice the
+            # binding already fixed. `np` slicing returns a view, so the copy
+            # only happens at tobytes() time in read_latest.
+            frame = self._apply_crop(frame)
+            if frame is None:
+                time.sleep(1.0 / self._fps)
+                continue
             with self._frame_lock:
                 self._latest_frame = frame
                 self._latest_stamp_monotonic_ns = mono_ns

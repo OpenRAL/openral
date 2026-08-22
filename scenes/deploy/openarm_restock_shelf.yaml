@@ -1,0 +1,200 @@
+# OpenArm v2 bimanual restocking cell — REAL-HARDWARE deploy environment.
+#
+# Boots the full OpenRAL stack against the physical station: the ros2_control
+# HAL over two Damiao CAN FD buses, the three rig cameras, and the
+# shelf-restocking π0.5 policy.
+#
+#     openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml
+#
+# Host-specific by nature. Every device path below is a udev symlink the
+# OpenArm provisioning installs, never a raw /dev/videoN or canN — those are
+# assigned in enumeration order and silently renumber on replug. Re-derive per
+# host with `openral detect --deployment` and `ls -l /dev/v4l/by-id`.
+#
+# ── Verified on the lab Jetson AGX Thor (qthor), 2026-08-22 ────────────────
+#   openarm_left / openarm_right   up, CAN FD 1 Mbit/s + 5 Mbit/s data
+#   /dev/camera_head_stereo        ZED-M     -> 672x376 after the left-lens crop
+#   /dev/camera_wrist_left         Arducam   -> 960x600
+#   /dev/camera_wrist_right        Arducam   -> 960x600
+# The arms were UNPOWERED at that check (both buses ERROR-PASSIVE), so the
+# actuation leg is unverified — see the README's "Not verified" section.
+
+scene:
+  id: openarm_restock_shelf
+
+robot_id: openarm
+
+# The HAL binding. `robots/openarm/robot.yaml` already carries these as
+# `hal.parameters.defaults`, so this block is a no-op on a standard cell and
+# exists as the documented override point (precedence: --hal > scene > robot.yaml).
+# Spelled out because a second cell wired to different CAN channels is the
+# expected reason to copy this file.
+hal:
+  defaults:
+    left_can_interface: "openarm_left"
+    right_can_interface: "openarm_right"
+    left_arm_controller: "left_joint_trajectory_controller"
+    left_gripper_controller: "left_gripper_controller"
+    right_arm_controller: "right_joint_trajectory_controller"
+    right_gripper_controller: "right_gripper_controller"
+
+sensors:
+  # ── context — ZED Mini head camera ──────────────────────────────────────
+  # The ZED streams BOTH lenses in one UVC frame: 1344x376 YUYV side by side,
+  # left lens then right. The policy was trained on the LEFT LENS ONLY — the
+  # training dataset's observation.images.context is [376, 672, 3]. Hence the
+  # crop below.
+  #
+  # This is the binding most worth getting right, because getting it wrong is
+  # silent: without the crop the reader delivers a valid, correctly-typed
+  # 1344x376 image containing two half-width views of the scene. Nothing
+  # downstream can tell that apart from a legitimate frame; the policy just
+  # sees an observation unlike anything in its training set and acts on it.
+  #
+  # `top` in the robot manifest is the SIM overhead camera
+  # (observation.images.base) and is deliberately left alone — this is a
+  # different physical camera with a different feature key, so it is a new
+  # scene-level entry rather than an override.
+  - name: context
+    modality: rgb
+    frame_id: openarm_head_camera_optical_frame
+    parent_frame: openarm_base
+    rate_hz: 30.0
+    encoding: bgr8
+    vla_feature_key: "observation.images.context"
+    # width/height are MEASURED — this is what the device delivered on qthor
+    # after the crop. fx/fy follow from StereoLabs' published 90 deg horizontal
+    # FOV; cx/cy are the image centre. See the calibration note at the bottom
+    # of this file before using these for anything geometric.
+    intrinsics:
+      width: 672
+      height: 376
+      fx: 336.0
+      fy: 336.0
+      cx: 336.0
+      cy: 188.0
+    catalog_id: "stereolabs/zed_mini"
+    vendor: StereoLabs
+    model: ZED Mini
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/camera_head_stereo
+        width: 1344
+        height: 376
+        fps: 30
+        # (x, y, width, height) — the left lens.
+        crop: [0, 0, 672, 376]
+
+  # ── wrist_left / wrist_right — Arducam B0495 global shutter ─────────────
+  # Names match the robot manifest's sim wrist cameras, so these entries are
+  # deploy-time BINDINGS for them: the manifest stays authoritative for the
+  # frame ids, and the feature keys already match what the policy wants.
+  #
+  # Global shutter is why these are B0495s and not webcams: a rolling shutter
+  # smears the frame during arm motion, corrupting exactly the wrist view the
+  # policy conditions on. 960x600 is one of the sensor's two native modes and
+  # is what training used; the other is 1920x1200.
+  - name: wrist_left
+    modality: rgb
+    frame_id: openarm_left_ee_base_link
+    parent_frame: openarm_base
+    rate_hz: 30.0
+    encoding: bgr8
+    vla_feature_key: "observation.images.wrist_left"
+    # width/height MEASURED on qthor. fx/fy are a PLACEHOLDER from an assumed
+    # 70 deg horizontal FOV — the B0495 is a bare board with an M12 mount, so
+    # its optics belong to whoever chose the lens and are not a property of the
+    # part. See the calibration note at the bottom of this file.
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 685.5
+      fy: 685.5
+      cx: 480.0
+      cy: 300.0
+    catalog_id: "arducam/b0495"
+    vendor: Arducam
+    model: B0495
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/camera_wrist_left
+        width: 960
+        height: 600
+        fps: 30
+
+  - name: wrist_right
+    modality: rgb
+    frame_id: openarm_right_ee_base_link
+    parent_frame: openarm_base
+    rate_hz: 30.0
+    encoding: bgr8
+    vla_feature_key: "observation.images.wrist_right"
+    # width/height MEASURED on qthor. fx/fy are a PLACEHOLDER from an assumed
+    # 70 deg horizontal FOV — the B0495 is a bare board with an M12 mount, so
+    # its optics belong to whoever chose the lens and are not a property of the
+    # part. See the calibration note at the bottom of this file.
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 685.5
+      fy: 685.5
+      cx: 480.0
+      cy: 300.0
+    catalog_id: "arducam/b0495"
+    vendor: Arducam
+    model: B0495
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/camera_wrist_right
+        width: 960
+        height: 600
+        fps: 30
+
+# Committed deploy posture. Fixed-base bimanual arm, three RGB cameras, no
+# lidar and no depth consumed by this policy (the ZED's depth needs the ZED SDK
+# and nothing here asks for it) -> SLAM / Nav2 / octomap off.
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  # Off for the first bring-up. Thor has headroom for more GPU tenants than the
+  # 8 GB benches do, but the restocking policy is 6.74 GiB of BF16 weights on
+  # its own and the first real run should contend with nothing. Turn on once
+  # the actuation leg is verified.
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: true
+  # Null deliberately. openarm_bimanual_moveit_config exists upstream but no
+  # move_group is spawned in this graph, so setting an approach skill would
+  # abort every ExecuteRskill goal at the pre-inference approach step.
+  approach_skill_id: null
+
+# ── Calibration note ───────────────────────────────────────────────────────
+# The `intrinsics` blocks above carry MEASURED width/height and UNCALIBRATED
+# fx / fy / cx / cy. They are declared because the rSkill's sensor contract
+# states a minimum resolution and the compatibility checker reads it from
+# `intrinsics`, which is the right check to keep.
+#
+# Nothing in THIS deploy consumes the focal lengths: a VLA conditions on
+# image pixels, not on a projection model, and the legs that would project
+# (SLAM, Nav2, octomap, the object detector) are all disabled in `runtime`
+# above. So the placeholders are inert here.
+#
+# They are NOT inert if you enable any of those legs, or reuse this scene for
+# anything geometric. Calibrate first:
+#
+#     openral calibrate camera --sensor wrist_left --config scenes/deploy/openarm_restock_shelf.yaml
+#
+# The ZED figures at least derive from a published 90 deg horizontal FOV. The
+# Arducam figures assume a 70 deg lens that nobody has verified on this cell.
