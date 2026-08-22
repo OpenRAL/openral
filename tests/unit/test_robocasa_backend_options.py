@@ -155,3 +155,53 @@ def test_xr1_state_layout_is_supported() -> None:
         state_layout="xr1_8d",
     )
     assert opts.state_layout == "xr1_8d"
+
+
+def test_fridge_scene_accepts_the_documented_layout_pin() -> None:
+    """The remedy the fridge scene documents must actually validate in prebuilt mode.
+
+    ``scenes/deploy/robocasa_fridge_drawer.yaml`` carries a KNOWN DEFECT block
+    telling the next operator to pin ``layout_ids`` (and a ``style_ids`` outside
+    the task's ``EXCLUDE_STYLES``) to escape an initial pose the safety kernel
+    refuses. That advice is only actionable if the scene-pool restrictors
+    survive the prebuilt/procedural XOR — they are deliberately independent of
+    ``mode``, unlike the procedural-only singular ``layout_id``.
+
+    Driven off the real scene fixture (CLAUDE.md §1.11), so this breaks if the
+    shipped YAML and the documented remedy ever drift apart.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    raw = yaml.safe_load(Path("scenes/deploy/robocasa_fridge_drawer.yaml").read_text())
+    payload = dict(raw["scene"]["backend_options"])
+    assert payload["prebuilt_task"] == "PickPlaceFridgeShelfToDrawer"
+
+    # As shipped: no pin, so the Kitchen ctor keeps its own sampling.
+    as_shipped = RoboCasaBackendOptions.model_validate(payload)
+    assert as_shipped.layout_ids is None
+    assert as_shipped.style_ids is None
+
+    # With the documented pin applied — layout 3 is a bottom-freezer kitchen and
+    # style 1 is outside EXCLUDE_STYLES, so the Kitchen pool is non-empty.
+    pinned = RoboCasaBackendOptions.model_validate({**payload, "layout_ids": 3, "style_ids": 1})
+    assert pinned.layout_ids == 3
+    assert pinned.style_ids == 1
+    assert pinned.prebuilt_task == "PickPlaceFridgeShelfToDrawer"
+
+
+def test_singular_layout_id_is_not_the_prebuilt_pin() -> None:
+    """The trap the fridge remedy has to avoid: ``layout_id`` is not ``layout_ids``.
+
+    ``layout_id`` (singular) is a procedural-authoring key and is rejected under
+    ``mode="prebuilt"``. Anyone applying the fridge fix by analogy with the
+    procedural docs would hit this, so pin the distinction.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        RoboCasaBackendOptions(
+            mode="prebuilt",
+            prebuilt_task="PickPlaceFridgeShelfToDrawer",
+            layout_id=3,
+        )
+    assert "procedural keys" in str(excinfo.value)
