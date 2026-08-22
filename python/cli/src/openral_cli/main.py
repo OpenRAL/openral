@@ -962,7 +962,7 @@ def detect(
         None,
         "--include",
         help="Comma-separated probe names to run (default: all). "
-        "Choices: usb, dds, gpu, cameras_v4l2, cameras_realsense, network.",
+        "Choices: usb, can, dds, gpu, cameras_v4l2, cameras_realsense, network.",
     ),
     no_write: bool = typer.Option(
         False, "--no-write", help="Print summary and skip writing robot.yaml"
@@ -982,8 +982,9 @@ def detect(
 
     Runs the auto-provisioning flow from ``openral_detect``:
 
-    1. Probe USB / DDS / GPU / V4L2 / RealSense / network.
-    2. Identify the rig (USB VID/PID match or DDS topology).  If a
+    1. Probe USB / CAN / DDS / GPU / V4L2 / RealSense / network.
+    2. Identify the rig (DDS topology, SocketCAN interface names, or USB
+       VID/PID match — in that order).  If a
        known robot is detected, load the canonical
        ``robots/<name>/robot.yaml`` directly; otherwise synthesize a
        minimal scaffold.
@@ -1061,9 +1062,13 @@ def detect(
 
     from openral_detect.registry import canonical_robot_path
 
+    # Mirrors `openral_detect.assemble._infer_bh_robot_type` — DDS, then CAN,
+    # then USB — so the asset-relocation base matches the manifest that was
+    # actually loaded.
     inferred = (
         robot_type
         or detection.ros2.inferred_robot_type
+        or next((m.bh_robot_type for m in detection.can.matches if m.bh_robot_type), None)
         or next((m.bh_robot_type for m in detection.usb.matches if m.bh_robot_type), None)
     )
     canon_path = canonical_robot_path(inferred) if inferred else None
@@ -1481,6 +1486,27 @@ def _render_detection_summary(detection: object) -> None:
     table.add_row(
         "usb", f"{len(detection.usb.devices)} device(s), {len(detection.usb.matches)} matched"
     )
+    if detection.can.interfaces:
+        up = [i for i in detection.can.interfaces if i.is_up]
+        table.add_row(
+            "can",
+            f"{len(detection.can.interfaces)} interface(s), {len(up)} up, "
+            f"{len(detection.can.matches)} matched",
+        )
+        for match in detection.can.matches:
+            # State is what separates "wired up" from "actually answering",
+            # so it is worth a row of its own per matched bus.
+            for iface in match.interfaces:
+                healthy = iface.state in ("ERROR-ACTIVE", "")
+                colour = "green" if healthy else "yellow"
+                rate = f"{iface.bitrate // 1000}k"
+                if iface.fd_enabled and iface.data_bitrate:
+                    rate += f"/{iface.data_bitrate // 1000}k FD"
+                table.add_row(
+                    f"  {iface.name}",
+                    f"{match.bh_robot_type} · {iface.adapter} · {rate} · "
+                    f"[{colour}]{iface.state or 'unknown'}[/{colour}]",
+                )
     if detection.gpu.nvidia:
         table.add_row(
             "gpu (nvidia)",

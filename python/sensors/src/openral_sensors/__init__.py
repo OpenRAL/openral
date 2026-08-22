@@ -6,9 +6,11 @@ Public surface:
   ``SensorSpec.catalog_id`` provenance on robot-mounted sensors.
 - ``SensorCatalog``, ``SensorCatalogEntry``: the registry types.
 - Per-vendor factories — see each ``<vendor>.py`` module:
-    * ``realsense``: D415 / D435 / D435i bundles.
-    * ``luxonis``:   OAK-D Pro bundle.
-    * ``usb_uvc``:   generic USB UVC RGB, Logitech C920.
+    * ``realsense``:  D415 / D435 / D435i bundles.
+    * ``luxonis``:    OAK-D Pro bundle.
+    * ``stereolabs``: ZED Mini bundle.
+    * ``arducam``:    B0495 USB3 global-shutter RGB.
+    * ``usb_uvc``:    generic USB UVC RGB, Logitech C920.
     * ``force_torque``: Robotiq FT 300-S 6-axis F/T sensor.
 - Launch helpers (RealSense): ``bundle_to_node_params``, ``generate_launch_py``,
   ``calibrate_camera_cmd``.
@@ -20,8 +22,10 @@ Public surface:
 from importlib.metadata import version as _pkg_version
 
 from openral_sensors import (  # reason: side-effect import populates CATALOG
+    arducam,
     force_torque,
     luxonis,
+    stereolabs,
     usb_uvc,
 )
 from openral_sensors.catalog import (
@@ -30,6 +34,7 @@ from openral_sensors.catalog import (
     SensorCatalogEntry,
     SensorSignature,
 )
+from openral_sensors.arducam import arducam_b0495_spec
 from openral_sensors.luxonis import oak_d_pro_bundle
 from openral_sensors.realsense import (
     bundle_to_node_params,
@@ -39,6 +44,7 @@ from openral_sensors.realsense import (
     realsense_d435_bundle,
     realsense_d435i_bundle,
 )
+from openral_sensors.stereolabs import zed_mini_bundle
 from openral_sensors.usb_uvc import generic_uvc_rgb_spec
 
 __all__ = [
@@ -46,6 +52,7 @@ __all__ = [
     "SensorCatalog",
     "SensorCatalogEntry",
     "SensorSignature",
+    "arducam_b0495_spec",
     "bundle_to_node_params",
     "calibrate_camera_cmd",
     "generate_launch_py",
@@ -54,5 +61,6 @@ __all__ = [
     "realsense_d415_bundle",
     "realsense_d435_bundle",
     "realsense_d435i_bundle",
+    "zed_mini_bundle",
 ]
 __version__ = _pkg_version("openral-sensors")

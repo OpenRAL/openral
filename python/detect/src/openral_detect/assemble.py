@@ -196,8 +196,18 @@ def _pick_base(
 
 
 def _infer_bh_robot_type(detection: DetectionReport) -> str | None:
+    """Pick the robot type, most-specific evidence first.
+
+    Order: DDS topology (a running robot naming itself), then SocketCAN
+    (interface names pinned by a udev rule, i.e. deliberate provisioning),
+    then USB VID/PID (a controller chip, which is often shared across
+    several arms and is therefore the weakest signal).
+    """
     if detection.ros2.inferred_robot_type:
         return detection.ros2.inferred_robot_type
+    for can_match in detection.can.matches:
+        if can_match.bh_robot_type:
+            return can_match.bh_robot_type
     for match in detection.usb.matches:
         if match.bh_robot_type:
             return match.bh_robot_type
@@ -254,17 +264,21 @@ def _enrich_sensors(description: RobotDescription, detection: DetectionReport) -
         # Skip RealSense devices that also surfaced via V4L2 to avoid dupes.
         if any(rs_name in cam.name for rs_name in rs_names):
             continue
-        spec_name = _unique_name(f"camera_{i}", v4l2_seen)
-        new_sensors.append(
-            _build_v4l2_camera(
-                cam,
-                detection_usb=detection.usb.devices,
-                spec_name=spec_name,
-                parent_frame=description.base_frame,
-                detect_warnings=detect_warnings,
-            )
+        built = _build_v4l2_camera(
+            cam,
+            detection_usb=detection.usb.devices,
+            spec_name=_unique_name(f"camera_{i}", v4l2_seen | realsense_seen),
+            parent_frame=description.base_frame,
+            detect_warnings=detect_warnings,
         )
-        v4l2_seen.add(spec_name)
+        # A stereo head (ZED Mini) presents one V4L2 node but resolves to a
+        # multi-stream bundle; a webcam resolves to a single spec.
+        if isinstance(built, SensorBundle):
+            new_bundles.append(built)
+            realsense_seen.add(built.bundle_name)
+        else:
+            new_sensors.append(built)
+            v4l2_seen.add(built.name)
 
     onboard = dict(description.onboard_compute)
     if detect_warnings:
@@ -335,38 +349,62 @@ def _build_v4l2_camera(
     spec_name: str,
     parent_frame: str,
     detect_warnings: list[str],
-) -> SensorSpec:
-    # Try V4L2 product-name signature first.
+) -> SensorSpec | SensorBundle:
+    """Resolve one probed V4L2 camera to a catalog-built spec or bundle.
+
+    Signature resolution, strongest evidence first:
+
+    1. The camera's **own** USB VID/PID, when the probe read it out of sysfs.
+       This is exact — two different models never share a descriptor.
+    2. The V4L2 product name, token by token (``"ZED-M: ZED-M"`` → ``ZED-M``).
+    3. The VID/PID of any *other* USB device on the host.  This is a last
+       resort and deliberately last: it can only ever be a coincidence match,
+       and before the probe read per-camera descriptors it was the only USB
+       path available.
+
+    Returns:
+        A :class:`SensorSpec` for a single-stream camera, or a
+        :class:`SensorBundle` when the catalog entry describes a multi-stream
+        device (a stereo head resolves to left/right/depth/IMU from one node).
+    """
     entry = None
-    for token in cam.name.split():
-        sig = signature_for_v4l2(token)
-        entry = CATALOG.find_by_signature(sig)
-        if entry is not None:
-            break
+    # 1. The camera's own USB descriptor.
+    if cam.vid and cam.pid:
+        entry = CATALOG.find_by_signature(signature_for_usb_uvc(cam.vid, cam.pid))
+    # 2. V4L2 product name, token by token.
     if entry is None:
-        # Try USB VID/PID matching against any device on the same bus.
+        for token in cam.name.replace(":", " ").split():
+            entry = CATALOG.find_by_signature(signature_for_v4l2(token))
+            if entry is not None:
+                break
+    # 3. Any other USB device on the host — coincidence-prone, so last.
+    if entry is None:
         for usb in detection_usb:
             if usb.vid and usb.pid:
-                sig = signature_for_usb_uvc(usb.vid, usb.pid)
-                entry = CATALOG.find_by_signature(sig)
+                entry = CATALOG.find_by_signature(signature_for_usb_uvc(usb.vid, usb.pid))
                 if entry is not None:
                     break
     if entry is not None:
-        spec = CATALOG.build(entry.id, name=spec_name, parent_frame=parent_frame)
-        assert isinstance(spec, SensorSpec)
-        meta = dict(spec.metadata)
-        meta.update(
-            {
-                "detected_by": "openral detect",
-                "needs_calibration": True,
-                "device_path": cam.device_path,
-                "v4l2_name": cam.name,
-                "bus_info": cam.bus_info,
-                "catalog_id": entry.id,
-            }
-        )
-        spec.metadata = meta
-        return spec
+        built = CATALOG.build(entry.id, name=spec_name, parent_frame=parent_frame)
+        meta_update: dict[str, Any] = {
+            "detected_by": "openral detect",
+            "device_path": cam.device_path,
+            "v4l2_name": cam.name,
+            "bus_info": cam.bus_info,
+            "catalog_id": entry.id,
+        }
+        if cam.serial:
+            meta_update["serial_no"] = cam.serial
+        specs = built.sensors if isinstance(built, SensorBundle) else [built]
+        for spec in specs:
+            meta = dict(spec.metadata)
+            # A catalog factory that already materialised real intrinsics has
+            # nothing to flag; one that left them unset (lens-dependent optics)
+            # keeps its own needs_calibration=True.
+            meta.setdefault("needs_calibration", spec.intrinsics is None)
+            meta.update(meta_update)
+            spec.metadata = meta  # reason: same-package mutation
+        return built
 
     detect_warnings.append(
         f"v4l2 camera {cam.name!r} ({cam.device_path}): no catalog entry; "

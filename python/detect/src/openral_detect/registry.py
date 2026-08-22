@@ -3,8 +3,9 @@
 Two small registries:
 
 - :func:`canonical_robot_path` — given a ``bh_robot_type`` produced by
-  ``openral_cli.autodetect`` (USB VID/PID match or DDS topic-prefix
-  inference), return the path to the canonical ``robots/<name>/robot.yaml``.
+  ``openral_cli.autodetect`` (USB VID/PID match, SocketCAN interface-name
+  match, or DDS topic-prefix inference), return the path to the canonical
+  ``robots/<name>/robot.yaml``.
   Used by the assembler so that **standard rigs** (SO-100, ALOHA, Unitree
   G1, …) get their canonical ``RobotDescription`` directly via
   ``RobotDescription.from_yaml(...)``, with detected sensors and compute
@@ -51,6 +52,11 @@ _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
     "so101": "so101_follower",
     "so100": "so100_follower",
     "aloha": "aloha_bimanual",
+    # The CAN probe reports the bare family slug `openarm` (the interface-name
+    # prefix a udev rule pins); the committed manifest directory is `openarm`
+    # and its `RobotDescription.name` is `openarm_v2`. Alias the versioned name
+    # so `openral detect --robot openarm_v2` resolves the same manifest.
+    "openarm_v2": "openarm",
     # Future entries land here as new HAL adapters publish a canonical
     # `robots/<name>/robot.yaml`:
     # "unitree_g1": "unitree_g1",
@@ -72,8 +78,9 @@ def canonical_robot_path(bh_robot_type: str) -> Path | None:
 
     Args:
         bh_robot_type: Slug as produced by
-            ``openral_cli.autodetect.match_known_devices`` (USB VID/PID)
-            or ``infer_robot_from_topics`` (DDS topic-prefix), or a canonical
+            ``openral_cli.autodetect.match_known_devices`` (USB VID/PID),
+            ``match_can_interfaces`` (SocketCAN interface name), or
+            ``infer_robot_from_topics`` (DDS topic-prefix), or a canonical
             ``robots/<name>`` directory name passed via an operator override.
 
     Returns:

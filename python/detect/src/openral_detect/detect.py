@@ -16,6 +16,7 @@ import datetime
 import platform
 
 from openral_detect.probes import (
+    probe_can,
     probe_dds,
     probe_gpus,
     probe_network,
@@ -31,7 +32,7 @@ from openral_detect.report import (
 __all__ = ["PROBE_NAMES", "detect_hardware"]
 
 PROBE_NAMES: frozenset[str] = frozenset(
-    {"usb", "dds", "gpu", "cameras_v4l2", "cameras_realsense", "network"}
+    {"usb", "can", "dds", "gpu", "cameras_v4l2", "cameras_realsense", "network"}
 )
 
 
@@ -48,9 +49,9 @@ def detect_hardware(
             ``0`` to skip the DDS probe entirely (handy for hosts with no
             ROS 2 sourced).
         include: Optional set of probe names to run; default is "all".
-            Recognized names: ``usb``, ``dds``, ``gpu``, ``cameras_v4l2``,
-            ``cameras_realsense``, ``network``.  Unknown names append a
-            warning but do not raise.
+            Recognized names: ``usb``, ``can``, ``dds``, ``gpu``,
+            ``cameras_v4l2``, ``cameras_realsense``, ``network``.  Unknown
+            names append a warning but do not raise.
         exclude: Probe names to skip even when ``include`` covers them.
 
     Returns:
@@ -84,6 +85,10 @@ def detect_hardware(
     if "usb" in requested:
         with safety_span(name="detect.probe.usb", check_name="usb_enumeration"):
             report_kwargs["usb"] = probe_usb(warnings=warnings)
+
+    if "can" in requested:
+        with safety_span(name="detect.probe.can", check_name="can_enumeration"):
+            report_kwargs["can"] = probe_can(warnings=warnings)
 
     if "dds" in requested and dds_timeout_s > 0.0:
         with safety_span(name="detect.probe.dds", check_name="dds_topology"):

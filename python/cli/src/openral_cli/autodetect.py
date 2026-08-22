@@ -1,17 +1,23 @@
-"""USB VID/PID enumeration and DDS topic discovery for ``openral detect``.
+"""USB, SocketCAN, and DDS transport discovery for ``openral detect``.
 
-This module provides two independent probes:
+This module provides three independent probes:
 
 1. **USB enumeration** — finds USB serial adapters attached to the host and
    matches their VID/PID against a table of known robot controllers.  On
    Linux it uses ``pyudev`` (no root required); on macOS it falls back to
    ``system_profiler``; everywhere it also falls back to ``/dev/tty*`` globs.
 
-2. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
+2. **SocketCAN enumeration** — lists CAN / CAN FD network interfaces from
+   ``/sys/class/net`` and maps deliberately-named ones (``openarm_left``, …)
+   to known robot types.  This is the transport that USB-serial enumeration
+   structurally cannot see: a CAN adapter registers a *network* device, so a
+   CAN-attached arm has no ``/dev/tty*`` node to find.
+
+3. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
    maps observed topic name prefixes to known robot types (Unitree, ALOHA, …).
 
-Both probes are pure functions with no global state and can be called from
-tests without hardware.
+All three probes are pure functions with no global state, never open a bus or
+a device, and can be called from tests without hardware.
 
 Example:
     >>> from openral_cli.autodetect import enumerate_usb_devices
@@ -23,18 +29,25 @@ Example:
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 from glob import glob
 from typing import NamedTuple
 
 __all__ = [
+    "CanInterface",
+    "CanMatch",
     "DdsTopic",
     "KnownDevice",
     "UsbDevice",
     "UsbMatch",
+    "can_adapter_name",
+    "enumerate_can_interfaces",
     "enumerate_usb_devices",
+    "infer_robot_from_can",
     "infer_robot_from_topics",
+    "match_can_interfaces",
     "match_known_devices",
     "scan_dds_topics",
 ]
@@ -462,3 +475,388 @@ def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
             if name_lower.startswith(prefix.lower()):
                 return robot_type
     return None
+
+
+# ── SocketCAN discovery ───────────────────────────────────────────────────────
+# The third transport family. USB-serial and DDS both miss CAN-attached arms:
+# a Damiao/CAN-FD robot such as the Enactic OpenArm exposes no `/dev/tty*` node
+# (the USB adapter registers a *network* device, not a serial one) and publishes
+# no DDS topics until its ROS 2 bringup is already running — which is precisely
+# what `openral detect` runs *before*.
+
+
+class CanInterface(NamedTuple):
+    """One SocketCAN network interface discovered on the host.
+
+    Attributes:
+        name: Interface name, e.g. ``"openarm_left"`` or ``"can0"``.
+        is_up: ``True`` when the link is administratively up.
+        fd_enabled: ``True`` when the controller runs in CAN FD mode.
+        bitrate: Nominal (arbitration-phase) bitrate in bit/s; ``0`` if unset.
+        data_bitrate: CAN FD data-phase bitrate in bit/s; ``0`` when not FD.
+        state: Controller state as reported by the kernel — ``"ERROR-ACTIVE"``,
+            ``"ERROR-PASSIVE"``, ``"BUS-OFF"``, ``"STOPPED"``, or ``""`` when
+            ``ip`` is unavailable.  ``"ERROR-PASSIVE"`` on an otherwise healthy
+            link is the signature of a bus whose peers are unpowered: frames
+            leave the adapter but nothing ACKs them.
+        driver: Kernel bittiming-const name, e.g. ``"pcan_usb_pro_fd"``.
+        mtu: Link MTU — ``16`` for classic CAN, ``72`` for CAN FD.
+        vid: USB vendor ID of the parent adapter (0 for on-SoC controllers).
+        pid: USB product ID of the parent adapter (0 for on-SoC controllers).
+        description: USB product string of the parent adapter, if any.
+    """
+
+    name: str
+    is_up: bool
+    fd_enabled: bool
+    bitrate: int
+    data_bitrate: int
+    state: str
+    driver: str
+    mtu: int
+    vid: int
+    pid: int
+    description: str
+
+
+class CanMatch(NamedTuple):
+    """A group of CAN interfaces that together identify one known robot.
+
+    Attributes:
+        interfaces: The interfaces that matched, in name order.  A bimanual
+            robot contributes one interface per arm.
+        known: The matching entry describing what drives that bus.
+    """
+
+    interfaces: tuple[CanInterface, ...]
+    known: KnownDevice
+
+
+# ── CAN interface-name → robot type map ───────────────────────────────────────
+# Keyed on interface-name *prefix*, lower-cased.
+#
+# Unlike USB, a CAN bus carries no vendor descriptor: the adapter identifies
+# itself (PEAK, Kvaser, …) but the motors on the far side do not announce what
+# machine they are bolted into.  The one durable signal is the interface name,
+# which on a provisioned robot is pinned by a udev rule rather than left as the
+# kernel's `canN` enumeration order.  So this table matches *deliberate* names
+# only — a bare `can0` stays unmatched, because `can0` means nothing.
+#
+# The OpenArm's documented Jetson provisioning names its two PCAN-USB Pro FD
+# channels `openarm_left` (motor `dev_id 0x1`) and `openarm_right` (`dev_id
+# 0x0`) exactly so that the ROS 2 bringup does not depend on enumeration order.
+_CAN_NAME_ROBOT_TABLE: dict[str, KnownDevice] = {
+    "openarm": KnownDevice(
+        "SocketCAN",
+        "Damiao CAN FD motor bus — Enactic OpenArm (one interface per arm)",
+        "openarm",
+        "openarm",
+    ),
+}
+
+# ── CAN adapter VID/PID table ─────────────────────────────────────────────────
+# Purely descriptive: names the dongle in the report so an operator can tell a
+# missing adapter from a missing robot.  Never used to infer a robot type — the
+# same adapter drives any CAN machine.  Entries are added only when the
+# VID/PID has been read off real hardware.
+_CAN_ADAPTER_TABLE: dict[tuple[int, int], str] = {
+    (0x0C72, 0x0011): "PEAK PCAN-USB Pro FD",
+}
+
+# Vendor-level fallback for an unlisted product ID from a known CAN vendor.
+_CAN_VENDOR_TABLE: dict[int, str] = {
+    0x0C72: "PEAK-System",
+}
+
+# ARPHRD_CAN — the `/sys/class/net/<if>/type` value that marks a CAN link.
+# From the kernel's `include/uapi/linux/if_arp.h`.
+_ARPHRD_CAN = 280
+
+# Sysfs root for network devices.  A module constant rather than a literal so
+# tests can point the enumeration at a real fixture tree on disk.
+_SYSFS_NET = "/sys/class/net"
+
+
+def _read_sysfs(path: str) -> str:
+    """Read one sysfs attribute, returning ``""`` when it is absent."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _usb_parent_ids(ifname: str) -> tuple[int, int, str]:
+    """Walk up from a net device to its USB parent and read its descriptor.
+
+    Args:
+        ifname: Network interface name.
+
+    Returns:
+        ``(vid, pid, product)``.  All-zero / empty when the interface has no
+        USB ancestor (an on-SoC CAN controller, a vcan, …).
+    """
+    try:
+        node = os.path.realpath(f"{_SYSFS_NET}/{ifname}/device")
+    except OSError:  # pragma: no cover  # reason: realpath on Linux does not raise here
+        return (0, 0, "")
+    # A USB-attached CAN adapter sits a handful of levels below the USB device
+    # node that carries the descriptor; bound the walk so a malformed tree
+    # cannot spin.
+    for _ in range(6):
+        vid_raw = _read_sysfs(f"{node}/idVendor")
+        pid_raw = _read_sysfs(f"{node}/idProduct")
+        if vid_raw and pid_raw:
+            try:
+                return (int(vid_raw, 16), int(pid_raw, 16), _read_sysfs(f"{node}/product"))
+            except ValueError:
+                return (0, 0, "")
+        parent = os.path.dirname(node)
+        if parent == node or parent == "/sys":
+            break
+        node = parent
+    return (0, 0, "")
+
+
+def _ip_link_details() -> dict[str, dict[str, object]]:
+    """Snapshot ``ip -details -json link show``, keyed by interface name.
+
+    Returns:
+        Mapping of interface name to its raw ``ip`` record.  Empty when
+        ``ip`` is not installed or returns something unparseable — callers
+        degrade to the sysfs-only view rather than failing.
+    """
+    import shutil  # noqa: PLC0415  # reason: keep top-level imports minimal
+
+    exe = shutil.which("ip")
+    if not exe:
+        return {}
+    try:
+        raw = subprocess.check_output(
+            [exe, "-details", "-json", "link", "show"],
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        )
+        parsed = json.loads(raw)
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+        json.JSONDecodeError,
+    ):
+        return {}
+    if not isinstance(parsed, list):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for record in parsed:
+        if isinstance(record, dict):
+            name = record.get("ifname")
+            if isinstance(name, str):
+                out[name] = record
+    return out
+
+
+def _can_info_from_ip(record: dict[str, object]) -> tuple[bool, int, int, str, str]:
+    """Extract the CAN-specific fields from one ``ip -details -json`` record.
+
+    Returns:
+        ``(fd_enabled, bitrate, data_bitrate, state, driver)`` — every field
+        defaulted when the record does not carry a ``linkinfo.info_data``
+        block (a non-CAN link, or an ``ip`` too old to emit one).
+    """
+    linkinfo = record.get("linkinfo")
+    if not isinstance(linkinfo, dict):
+        return (False, 0, 0, "", "")
+    info = linkinfo.get("info_data")
+    if not isinstance(info, dict):
+        return (False, 0, 0, "", "")
+
+    ctrlmode = info.get("ctrlmode")
+    fd_enabled = isinstance(ctrlmode, list) and "FD" in ctrlmode
+
+    def _bitrate(key: str) -> int:
+        block = info.get(key)
+        if isinstance(block, dict):
+            value = block.get("bitrate")
+            if isinstance(value, int):
+                return value
+        return 0
+
+    state = info.get("state")
+    const = info.get("bittiming_const")
+    driver = ""
+    if isinstance(const, dict):
+        name = const.get("name")
+        if isinstance(name, str):
+            driver = name
+
+    return (
+        fd_enabled,
+        _bitrate("bittiming"),
+        _bitrate("data_bittiming"),
+        state if isinstance(state, str) else "",
+        driver,
+    )
+
+
+def enumerate_can_interfaces() -> list[CanInterface]:
+    """Enumerate every SocketCAN interface on the host.
+
+    Linux-only and dependency-free: the interface list comes from
+    ``/sys/class/net`` (an interface whose ``type`` is ``280`` /
+    ``ARPHRD_CAN``), and ``ip -details -json link show`` — when present —
+    enriches each row with bitrates, FD mode, and controller state.  Neither
+    step needs root, and neither opens the bus, so calling this never
+    perturbs a robot that is already running.
+
+    Returns:
+        Interfaces sorted by name.  Empty on non-Linux hosts and on Linux
+        hosts with no CAN controller.
+
+    Example:
+        >>> from openral_cli.autodetect import enumerate_can_interfaces
+        >>> ifaces = enumerate_can_interfaces()  # [] on hosts with no CAN bus
+        >>> isinstance(ifaces, list)
+        True
+    """
+    if platform.system() != "Linux":
+        return []
+    try:
+        names = sorted(os.listdir(_SYSFS_NET))
+    except OSError:
+        return []
+
+    details = _ip_link_details()
+    out: list[CanInterface] = []
+    for name in names:
+        if _read_sysfs(f"{_SYSFS_NET}/{name}/type") != str(_ARPHRD_CAN):
+            continue
+        mtu_raw = _read_sysfs(f"{_SYSFS_NET}/{name}/mtu")
+        try:
+            mtu = int(mtu_raw)
+        except ValueError:
+            mtu = 0
+        record = details.get(name, {})
+        fd_enabled, bitrate, data_bitrate, state, driver = _can_info_from_ip(record)
+        # Without `ip`, MTU still separates classic CAN (16) from CAN FD (72).
+        if not record:
+            fd_enabled = mtu > 16
+        vid, pid, product = _usb_parent_ids(name)
+        out.append(
+            CanInterface(
+                name=name,
+                is_up=_read_sysfs(f"{_SYSFS_NET}/{name}/operstate").lower() == "up",
+                fd_enabled=fd_enabled,
+                bitrate=bitrate,
+                data_bitrate=data_bitrate,
+                state=state,
+                driver=driver,
+                mtu=mtu,
+                vid=vid,
+                pid=pid,
+                description=product,
+            )
+        )
+    return out
+
+
+def can_adapter_name(iface: CanInterface) -> str:
+    """Human-readable name for the USB adapter behind a CAN interface.
+
+    Args:
+        iface: One row from :func:`enumerate_can_interfaces`.
+
+    Returns:
+        The catalogued adapter name (``"PEAK PCAN-USB Pro FD"``), else the
+        USB product string, else a vendor-only label, else ``"SocketCAN"``
+        for an on-SoC controller with no USB ancestor.
+
+    Example:
+        >>> from openral_cli.autodetect import CanInterface, can_adapter_name
+        >>> iface = CanInterface(
+        ...     "openarm_left", True, True, 1000000, 5000000,
+        ...     "ERROR-ACTIVE", "pcan_usb_pro_fd", 72, 0x0C72, 0x0011, "PCAN-USB Pro FD",
+        ... )
+        >>> can_adapter_name(iface)
+        'PEAK PCAN-USB Pro FD'
+    """
+    catalogued = _CAN_ADAPTER_TABLE.get((iface.vid, iface.pid))
+    if catalogued is not None:
+        return catalogued
+    if iface.description:
+        return iface.description
+    vendor = _CAN_VENDOR_TABLE.get(iface.vid)
+    if vendor is not None:
+        return f"{vendor} (unlisted 0x{iface.pid:04x})"
+    return "SocketCAN"
+
+
+def match_can_interfaces(interfaces: list[CanInterface]) -> list[CanMatch]:
+    """Group CAN interfaces by the robot their names declare.
+
+    Only interfaces that are **up** are considered: a down link proves the
+    kernel knows about a controller, not that a robot is wired to it.
+
+    Args:
+        interfaces: Output of :func:`enumerate_can_interfaces`.
+
+    Returns:
+        One :class:`CanMatch` per matched robot type, in robot-type order,
+        each carrying every interface that matched it.  Empty when no
+        interface name matches :data:`_CAN_NAME_ROBOT_TABLE`.
+
+    Example:
+        >>> from openral_cli.autodetect import match_can_interfaces
+        >>> match_can_interfaces([])
+        []
+    """
+    grouped: dict[str, list[CanInterface]] = {}
+    for iface in interfaces:
+        if not iface.is_up:
+            continue
+        lowered = iface.name.lower()
+        for prefix in _CAN_NAME_ROBOT_TABLE:
+            if lowered.startswith(prefix):
+                grouped.setdefault(prefix, []).append(iface)
+                break
+
+    matches: list[CanMatch] = []
+    for prefix in sorted(grouped):
+        known = _CAN_NAME_ROBOT_TABLE[prefix]
+        members = tuple(sorted(grouped[prefix], key=lambda i: i.name))
+        # Name the actual adapter rather than the generic "SocketCAN" default.
+        matches.append(
+            CanMatch(
+                interfaces=members,
+                known=known._replace(chip=can_adapter_name(members[0])),
+            )
+        )
+    return matches
+
+
+def infer_robot_from_can(interfaces: list[CanInterface]) -> str | None:
+    """Infer a robot type from SocketCAN interface names.
+
+    Args:
+        interfaces: Output of :func:`enumerate_can_interfaces`.
+
+    Returns:
+        A robot type string (e.g. ``"openarm"``) when an up interface's name
+        matches a known prefix, otherwise ``None``.
+
+    Example:
+        >>> from openral_cli.autodetect import CanInterface, infer_robot_from_can
+        >>> iface = CanInterface(
+        ...     "openarm_left", True, True, 1000000, 5000000,
+        ...     "ERROR-ACTIVE", "pcan_usb_pro_fd", 72, 0x0C72, 0x0011, "PCAN-USB Pro FD",
+        ... )
+        >>> infer_robot_from_can([iface])
+        'openarm'
+        >>> infer_robot_from_can([]) is None
+        True
+    """
+    matches = match_can_interfaces(interfaces)
+    if not matches:
+        return None
+    return matches[0].known.bh_robot_type or None
