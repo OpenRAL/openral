@@ -19,6 +19,7 @@ from openral_core import (
     TimeoutEvidence,
     WorldState,
 )
+from openral_observability.failure_bus import KIND_COLLISION
 from openral_reasoner import (
     ContextRenderer,
     FailureEventRecord,
@@ -243,7 +244,7 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     r.append_failure(
         FailureEventRecord(
             source="safety",
-            kind=10,  # FailureTrigger.KIND_COLLISION
+            kind=KIND_COLLISION,
             severity=3,
             evidence_json=payload,
             rskill_id="reactive_evidence_skill",

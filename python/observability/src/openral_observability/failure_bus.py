@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_RATE_LIMIT_HZ",
     "DEFAULT_SUMMARY_PERIOD_S",
+    "KIND_COLLISION",
     "KIND_CONTROLLER",
     "KIND_CRITIC",
     "KIND_FORCE",
@@ -93,7 +94,13 @@ __all__ = [
 # useful for unit tests and for code paths that may run without a
 # sourced ROS install (``openral`` CLI, sim runner, fakes).
 #
-# When the IDL changes, **bump both**.
+# When the IDL changes, **bump both**. This block is no longer trusted to
+# stay in step by review alone: ``tests/unit/test_failure_bus_idl_mirror.py``
+# reads the colcon-generated ``FailureTrigger`` and asserts the two sides
+# match name-for-name and value-for-value in BOTH directions, so the next
+# constant added to the ``.msg`` fails a test rather than an audit. (The
+# audit is how ``KIND_COLLISION`` was found missing for the whole life of
+# the collision stack — see docs/methods/14-duplication-watch.md item 11.)
 
 KIND_TIMEOUT: int = 0
 KIND_FORCE: int = 1
@@ -105,6 +112,7 @@ KIND_SELFVERIFY: int = 6
 KIND_HUMAN: int = 7
 KIND_WAM: int = 8
 KIND_REASONER_TIMEOUT: int = 9
+KIND_COLLISION: int = 10
 KIND_SUPPRESSED_SUMMARY: int = 254
 
 SEVERITY_INFO: int = 0

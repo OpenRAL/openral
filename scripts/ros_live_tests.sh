@@ -53,6 +53,12 @@ TARGETS=(
     # which fault a dashboard renders for a real safety stop - is pinned by a
     # test that runs on NO CI surface.
     tests/unit/test_safety_status_msg.py
+    # Same shape, third leg of the same mirror: it reads the generated
+    # FailureTrigger constants and pins the plain-int copy in
+    # openral_observability.failure_bus against them, both directions. That leg
+    # is what a ROS-free caller reads, and it silently missed KIND_COLLISION for
+    # the whole life of the collision stack.
+    tests/unit/test_failure_bus_idl_mirror.py
     # ROS_DISTRO-gated rather than OPENRAL_TEST_ROS_LIVE-gated: the composed
     # runner/world-state/safety action-protocol suite needs the colcon
     # openral_msgs overlay, which only this image has — without this entry it
