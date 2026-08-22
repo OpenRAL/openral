@@ -113,9 +113,9 @@ payload's own stale silhouette.
 
 * **The kernel** could skip cells inside the payload's primitives. That is an
   *exemption*, not a clearing: the map still carries the phantom for every other
-  consumer (Nav2, SLAM, the dashboard — issue #108), and the kernel's one
-  unconditional rule ("an occupied cell is an obstacle") acquires a per-cell
-  escape hatch on the real-time path.
+  consumer (SLAM, the dashboard), and the kernel's one unconditional rule ("an
+  occupied cell is an obstacle") acquires a per-cell escape hatch on the
+  real-time path.
 * **The HAL's depth self-filter** already makes the payload transparent to the
   rays (`exclude_body_ids`) and emits max-range clearing rays where nothing lies
   behind it, so OctoMap ray-clears the silhouette. That reaches exactly the
@@ -254,7 +254,7 @@ the counter with it, and that is destructive twice over:
   support cell falls back outside the clearing reach and returns to the map, the
   unchanged physical contact E-stops with no exemption active
   (`sweep_min == min_distance`).
-* Nav2, SLAM, and the dashboard read the same grid, and the counter is real
+* SLAM and the dashboard read the same octree, and the counter is real
   furniture they are supposed to see.
 
 So the two mechanisms **partition** the cells between them. Within the payload's
@@ -402,7 +402,18 @@ which is the map's own latency and is pinned by `test_occupancy_persistence`.
 `octomap_server`'s own octree: ROS 2's `octomap_server` exposes `~/reset` but no
 `clear_bbx` service, and resetting the whole map at every grasp would discard
 every real obstacle in it. So a consumer reading `/octomap_binary` directly still
-sees the payload's silhouette until the transparency rays retire it (issue #108).
+sees the payload's silhouette until the transparency rays retire it.
+
+**Who that residual reaches — and who it does not.** Issue #108 was filed
+expecting Nav2 to be one of those consumers. It is not: Nav2's costmaps take a
+`sensor_msgs/LaserScan` on the lidar profile and an `OccupancyGrid` on `/map`
+on the visual one (`packages/openral_nav2_bringup/config/nav2_panda_mobile.yaml`)
+— nothing in the Nav2 graph subscribes `/octomap_binary`. The payload is kept
+out of Nav2's world at *its* source instead, by
+`openral_nav2_bringup`'s `payload_scan_filter_node`, and put into Nav2's robot
+by the footprint publisher beside it. What remains on this octree is the
+dashboard and any future direct octomap consumer, which is a display concern
+rather than a collision one.
 
 ## The frame contract (ADR-0095)
 
