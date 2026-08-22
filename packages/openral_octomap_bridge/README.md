@@ -567,9 +567,9 @@ either side of `patch_radius + circumradius`; a lift clears and withholds
 nothing at all; a payload rolled 90° carries its attested plane with it (the
 normal is rotated, the point translated); and a malformed attestation clears
 nothing at all. Its third part pins the **attach-transition window**: the round-5 field cell at
-22.13 mm survives the steady reach and clears at the attach reach; the field
-run's 28 grids of unmoved payload all clear it (the test a one-shot sweep fails
-27 times over); the window closes to the millimetre once the payload has moved a
+22.13 mm survives the steady reach and clears at the attach reach; the 29 grids
+that replay the field run's ~28-grid gap all clear it (the test a one-shot sweep
+fails 28 times over); the window closes to the millimetre once the payload has moved a
 voxel, and does not re-open when it comes back; a new revision, a second
 payload, and a release-then-grasp each open one while carrying does not; a frame
 that clears nothing cannot advance one; the padded sweep still withholds
