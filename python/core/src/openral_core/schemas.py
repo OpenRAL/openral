@@ -1778,6 +1778,32 @@ class RobotDescription(BaseModel):
             None,
         )
 
+    def nav2_footprint_param(self) -> str:
+        """This base's Nav2 ``footprint`` parameter string.
+
+        ``nav2_costmap_2d`` reads ``footprint`` as a string of
+        ``[[x, y], ...]`` vertices and treats **both** ``""`` and ``"[]"``
+        as "no polygon — use ``robot_radius``". So a robot that declares
+        :attr:`footprint_polygon` gets its measured outline, and one that
+        declares only :attr:`footprint_radius` gets ``"[]"``, which keeps
+        Nav2 on its cheaper circular path rather than silently inheriting
+        the base param file's polygon (some other robot's shape).
+
+        A polygon matters beyond accuracy: only a polygon footprint can
+        express a carried payload, which is what
+        ``openral_nav2_bringup``'s footprint publisher pushes onto the
+        costmaps' ``footprint`` topic while an object is attached.
+
+        Example:
+            >>> from openral_core import RobotDescription
+            >>> RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").nav2_footprint_param()
+            '[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]'
+        """
+        if not self.footprint_polygon:
+            return "[]"
+        inner = ", ".join(f"[{x:g}, {y:g}]" for x, y in self.footprint_polygon)
+        return f"[{inner}]"
+
     def nav2_param_overrides(self) -> dict[str, str]:
         """Nav2 param substitutions derived from this robot's base props.
 
@@ -1789,12 +1815,19 @@ class RobotDescription(BaseModel):
         (``footprint_radius`` + :data:`NAV2_INFLATION_CLEARANCE_M`, so it
         stays ≥ the inscribed/circumscribed radius Nav2 derives from the
         footprint — otherwise Nav2 errors and falls back to slow
-        full-footprint collision checks), and :attr:`base_kinematics` →
+        full-footprint collision checks), :attr:`footprint_polygon` →
+        the costmap ``footprint`` polygon (see
+        :meth:`nav2_footprint_param`), and :attr:`base_kinematics` →
         the MPPI ``motion_model``. Returns an empty dict for fixed-base
         arms (no mobile base → no Nav2). Velocity bounds remain Nav2
         tuning in the base param file, not robot identity.
         """
         overrides: dict[str, str] = {}
+        if self.footprint_radius is not None or self.footprint_polygon:
+            # Emitted even for a radius-only robot, as Nav2's "[]" sentinel:
+            # leaving the key unrewritten would hand that robot whatever
+            # polygon the shared base file happens to ship.
+            overrides["footprint"] = self.nav2_footprint_param()
         if self.footprint_radius is not None:
             overrides["robot_radius"] = str(self.footprint_radius)
             overrides["inflation_radius"] = (

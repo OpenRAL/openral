@@ -1836,9 +1836,10 @@ def test_scan_params_empty_for_robot_without_lidar() -> None:
 
 
 def test_nav2_param_overrides_from_robot_yaml() -> None:
-    """Nav2 robot_radius + inflation_radius + motion_model derive
-    from the panda_mobile robot.yaml (footprint_radius + base_kinematics) so
-    the Nav2 bringup needs no hand-vendored per-robot param values."""
+    """Nav2 footprint + robot_radius + inflation_radius + motion_model derive
+    from the panda_mobile robot.yaml (footprint_polygon + footprint_radius +
+    base_kinematics) so the Nav2 bringup needs no hand-vendored per-robot param
+    values."""
     description = RobotDescription.from_yaml(
         str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
     )
@@ -1847,10 +1848,30 @@ def test_nav2_param_overrides_from_robot_yaml() -> None:
     # inflation_radius = footprint_radius (0.35) + NAV2_INFLATION_CLEARANCE_M
     # (0.05) = 0.40, kept >= the costmap-discretised circumscribed radius.
     assert description.nav2_param_overrides() == {
+        # The measured outline, not the circle: only a polygon can be grown to
+        # cover a carried payload, which is what openral_nav2_bringup's
+        # footprint publisher pushes onto the costmaps at runtime.
+        "footprint": "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]",
         "robot_radius": "0.35",
         "inflation_radius": "0.400",
         "motion_model": "Omni",
     }
+
+
+def test_nav2_param_overrides_emit_the_use_the_radius_sentinel_without_a_polygon() -> None:
+    """A radius-only mobile base must not inherit the base file's polygon.
+
+    Nav2 reads both ``""`` and ``"[]"`` as "no polygon, use robot_radius". Were
+    the key left unrewritten, a robot with no ``footprint_polygon`` would take
+    whatever outline the shared ``nav2_panda_mobile.yaml`` happens to ship —
+    panda's — onto its own collision surface.
+    """
+    description = RobotDescription.from_yaml(
+        str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
+    ).model_copy(update={"footprint_polygon": None})
+
+    assert description.nav2_footprint_param() == "[]"
+    assert description.nav2_param_overrides()["footprint"] == "[]"
 
 
 def test_nav2_param_overrides_empty_for_fixed_base_arm() -> None:
