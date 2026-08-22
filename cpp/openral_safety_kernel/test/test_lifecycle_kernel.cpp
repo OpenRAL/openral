@@ -277,9 +277,12 @@ TEST_F(LifecycleKernelTest, ResetServiceRespectsCooldown) {
 
 // The ViolationKind enum must stay 1:1 with the IDL KIND_*
 // constants so the lifecycle node can publish a FailureTrigger without
-// translation (validator.hpp documents this contract). kCollision is added
-// for the geometric-safety check; the value must equal KIND_COLLISION even
-// though the kernel does not yet *emit* it.
+// translation (validator.hpp documents this contract). kCollision carries the
+// geometric-safety check's number, and the node does emit it:
+// `publish_collision_failure` stamps `FailureTrigger::KIND_COLLISION` and the
+// collision report path publishes `SafetyStatus::KIND_COLLISION` with the
+// E-stop. This test pins the number, not the emission — the emission itself is
+// covered by the collision tests below and in test_collision.cpp.
 TEST(ViolationKindMapping, EnumValuesMatchFailureTriggerConstants) {
   using openral_msgs::msg::FailureTrigger;
   EXPECT_EQ(static_cast<std::uint8_t>(osk::ViolationKind::kForce), FailureTrigger::KIND_FORCE);

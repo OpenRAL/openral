@@ -23,9 +23,14 @@ enum class ViolationKind : std::uint8_t {
   kForce = 1,       ///< openral_msgs::FailureTrigger::KIND_FORCE
   kWorkspace = 2,   ///< openral_msgs::FailureTrigger::KIND_WORKSPACE
   kController = 5,  ///< openral_msgs::FailureTrigger::KIND_CONTROLLER
-  // Geometric self/world collision. The value must exist so the
-  // enum stays 1:1 with the IDL; the geometric check that *emits* it lands
-  // in a follow-up PR (this kernel does not yet produce kCollision).
+  // Geometric self/world collision. The value must exist so the enum stays
+  // 1:1 with the IDL. It is no longer only a reservation: the lifecycle node
+  // does emit it — `SafetyKernelLifecycleNode::publish_collision_failure`
+  // stamps `FailureTrigger::KIND_COLLISION`, and the collision report path
+  // latches the fault and publishes `SafetyStatus::KIND_COLLISION` alongside
+  // the E-stop. `validate()` itself still never returns this kind: the
+  // allocation-free bound checks in this file are per-joint/per-mode, while
+  // the geometric check runs against the world/voxel model on the node.
   kCollision = 10,  ///< openral_msgs::FailureTrigger::KIND_COLLISION
 };
 

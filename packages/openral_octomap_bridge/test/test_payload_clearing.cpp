@@ -1268,8 +1268,10 @@ TEST(PayloadClearing, TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids) {
   // sweep — ~28 published grids at 10 Hz — with the payload still on its stale
   // silhouette. The bridge re-rasterizes the grid from the octree every tick and
   // nothing retires an occluded cell, so the residue is re-supplied on EVERY one
-  // of those grids: a sweep that widened its reach only on the first would have
-  // published 27 grids carrying the cell that stopped the robot.
+  // of those grids. The loop below is inclusive of both ends — 29 grids, the
+  // attach frame plus the 28 that elapsed before the stop — so a sweep that
+  // widened its reach only on the first would have published the remaining 28
+  // carrying the cell that stopped the robot.
   bridge::AttachSweepLedger ledger;
   const bridge::PayloadPrimitive payload =
       payload_at_distance(lowered(deploy_sim_tree()), kFieldRound6Distance);
