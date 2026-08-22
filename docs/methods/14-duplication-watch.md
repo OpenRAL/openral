@@ -137,6 +137,79 @@ contributor should look at before adding similar code.
    pins that identity — keep it that way, because a phase-aware branch on
    one side only is exactly how this mirror would drift.
 
+9. **Support-witness acceptance caps — *deliberate C++/Python mirror, update
+   in lockstep.*** The kernel's two ingest caps on what a
+   `SupportContactWitness` may claim are ROS parameters declared with their
+   defaults in
+   `cpp/openral_safety_kernel/src/lifecycle_kernel.cpp` —
+   `support_witness_max_patch_radius_m` (`0.5`) and
+   `support_witness_max_penetration_m` (`0.01`) — and the *producer* refuses
+   at the same two numbers, written independently as
+   `_SUPPORT_MAX_PATCH_RADIUS_M = 0.5` and
+   `_SUPPORT_MAX_PENETRATION_M = 0.01` in
+   `python/hal/src/openral_hal/_sim_attachment_evidence.py:51-52`. They are
+   not consolidated because the kernel must not trust a producer-supplied
+   bound — the cap is exactly the thing the kernel applies to a message it
+   did not author, and a shared constant would make the check circular.
+   **The drift consequence is asymmetric and both directions are bad.**
+   Loosen the producer past the kernel and the kernel fails the whole
+   attachment message closed (`ROSSafetyViolation`-class drop, not a
+   silent one) — noisy, but conservative. Tighten the producer below the
+   kernel and the shortfall is invisible: legitimate contact is never
+   attested, the witness never arms, and the robot stops on ordinary
+   support contact with nothing in the logs naming a cap as the reason.
+   **When either number moves, move both in the same PR** and re-run the
+   kernel's ingest gtests together with the producer's refusal tests.
+
+10. **Place-region bounds — *deliberate C++/Pydantic mirror, update in
+    lockstep.*** `kMaxPlaceRegionHalfExtentM = 1.5` and
+    `kMaxPlaceRegionVolumeM3 = 8.0`
+    (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
+    are the kernel's bounds on the ADR-0097 approach region, and
+    `PlaceRegion.MAX_HALF_EXTENT_M = 1.5` / `PlaceRegion.MAX_VOLUME_M3 = 8.0`
+    (`python/core/src/openral_core/schemas.py`, enforced in
+    `_validate_region`) are the schema's. The double check is deliberate and
+    is named in `PlaceRegion`'s own docstring: an over-large region is
+    "rejected here and again in the kernel, both times toward *no
+    allowance*". Since this bound gates a **margin reduction**, both sides
+    fail closed and neither may be deleted in favour of the other — the
+    kernel cannot assume the Pydantic validator ran (the message may reach
+    it from a producer that never constructed the model), and the schema
+    must still refuse locally so a bad region is a producer-side error
+    rather than a kernel-side refusal log. **The drift consequence:** raise
+    the Pydantic ceiling without the kernel's and every oversize region is
+    accepted by the producer and then silently discarded by the kernel, so
+    the place phase runs with **no** allowance while every log line says the
+    declaration is live — the exact failure the ADR-0097 amendment's
+    clock-domain bug already produced once. Raise the kernel's without the
+    schema's and the extra room is unreachable. `PlaceRegionStatus::kOversize`
+    is the kernel-side refusal to grep for.
+
+11. **`FailureTrigger` / `SafetyStatus` `KIND_*` numbers — *three-way
+    mirror, and one leg is currently drifted.*** The numbers are declared in
+    `packages/msgs/msg/FailureTrigger.msg`, **redeclared** in
+    `packages/msgs/msg/SafetyStatus.msg` (ROS IDL has no cross-message
+    constant reuse), and mirrored a third time as plain Python ints in
+    `python/observability/src/openral_observability/failure_bus.py` so
+    callers can publish typed failure events without a sourced ROS install.
+    The C++ `ViolationKind` enum
+    (`cpp/openral_safety_kernel/include/openral_safety_kernel/validator.hpp`)
+    is a fourth partial copy of the same numbering.
+    `tests/unit/test_safety_status_msg.py` pins the two IDL blocks against
+    each other and pins `DROP_*` disjoint from `KIND_*`; a kernel gtest
+    (`ViolationKindMapping.EnumValuesMatchFailureTriggerConstants`) pins the
+    enum. **Nothing pins the `failure_bus.py` leg, and it has drifted:** it
+    stops at `KIND_REASONER_TIMEOUT = 9` (plus
+    `KIND_SUPPRESSED_SUMMARY = 254`) and is missing `KIND_COLLISION = 10`,
+    which the IDL, the kernel enum and the kernel's
+    `publish_collision_failure` all carry. The consequence is scoped but
+    real: any non-ROS caller that reaches for a symbolic collision kind
+    finds none and must hard-code `10`. Fixing it is a code change and is
+    deliberately **not** made in this docs pass — it is recorded here so the
+    next PR touching `failure_bus.py` closes it and adds the missing
+    contract test rather than re-deriving the discovery. **When a `KIND_*`
+    number is added, all four sites move together.**
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer
