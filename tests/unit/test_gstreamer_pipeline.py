@@ -21,6 +21,7 @@ from openral_runner.backends.gstreamer import (
     PipelineSpec,
     Platform,
     Source,
+    bgr_convert_chain,
     build_pipeline_string,
     detect_platform,
     ensure_appsink_name,
@@ -326,6 +327,98 @@ def test_build_pipeline_string_is_parseable_by_gst_parse_launch_smoke() -> None:
     Gst.init(None)
     spec = PipelineSpec(source=Source.TESTSRC, width=320, height=240, fps=30)
     pipeline_str = build_pipeline_string(spec, platform=Platform.CPU_ONLY)
+    pipeline = Gst.parse_launch(pipeline_str)
+    assert pipeline is not None
+    assert pipeline.get_by_name("bh_sink") is not None
+
+
+# ── BGR caps negotiation: nvvidconv vs nvvideoconvert ─────────────────────────
+
+
+def test_bgr_convert_chain_bridges_nvvidconv_through_bgrx() -> None:
+    """``nvvidconv`` advertises no packed ``BGR`` — the chain must go via ``BGRx``.
+
+    The L4T ``nvvidconv`` src template lists ``BGRx`` but not ``BGR``
+    (``gst-inspect-1.0 nvvidconv``), so ``nvvidconv ! video/x-raw,format=BGR``
+    fails to link at parse time. A stock ``videoconvert`` drops the padding
+    byte. Pinning this here keeps a future refactor from reintroducing
+    direct-to-BGR on Tegra.
+    """
+    assert bgr_convert_chain("nvvidconv") == ("nvvidconv ! video/x-raw,format=BGRx ! videoconvert")
+
+
+def test_bgr_convert_chain_leaves_bgr_capable_elements_untouched() -> None:
+    """DeepStream's ``nvvideoconvert`` emits ``BGR`` directly — no extra CPU copy."""
+    assert bgr_convert_chain("nvvideoconvert") == "nvvideoconvert"
+    assert bgr_convert_chain("videoconvert") == "videoconvert"
+
+
+def test_build_pipeline_string_tegra_system_memory_bridges_bgr_via_bgrx() -> None:
+    """Tegra policy leg in system memory: nvvidconv → BGRx → videoconvert → BGR."""
+    spec = PipelineSpec(source=Source.TESTSRC, width=320, height=240, fps=30, enable_nvmm=False)
+    result = build_pipeline_string(spec, platform=Platform.TEGRA)
+    assert "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! " in result, result
+    assert "nvvidconv ! video/x-raw,format=BGR," not in result, result
+
+
+def test_build_pipeline_string_tegra_tee_legs_bridge_bgr_via_bgrx() -> None:
+    """Both Tegra tee legs lift NVMM → BGRx → BGR, never straight to BGR."""
+    spec = PipelineSpec(
+        source=Source.TESTSRC,
+        width=320,
+        height=240,
+        fps=30,
+        enable_ros_tee=True,
+        enable_event_tee=True,
+    )
+    result = build_pipeline_string(spec, platform=Platform.TEGRA)
+    # ROS leg.
+    assert (
+        "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
+        "video/x-raw,format=BGR ! appsink name=ros_sink" in result
+    ), result
+    # Event leg (videorate sits between the lift and the rate-capped BGR caps).
+    assert (
+        "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! videorate ! "
+        "video/x-raw,format=BGR,framerate=" in result
+    ), result
+    # The NVMM policy leg keeps the single-element converter (no CPU copy).
+    assert "nvvidconv ! video/x-raw(memory:NVMM),format=NV12" in result, result
+
+
+def test_build_pipeline_string_deepstream_keeps_direct_bgr_on_tee_legs() -> None:
+    """The DeepStream tier must not gain a needless CPU ``videoconvert``."""
+    spec = PipelineSpec(
+        source=Source.TESTSRC,
+        width=320,
+        height=240,
+        fps=30,
+        enable_ros_tee=True,
+        enable_event_tee=True,
+    )
+    result = build_pipeline_string(spec, platform=Platform.NVIDIA_DEEPSTREAM)
+    assert "nvvideoconvert ! video/x-raw,format=BGR ! appsink name=ros_sink" in result, result
+    assert "BGRx" not in result, result
+    assert "videoconvert" not in result.replace("nvvideoconvert", ""), result
+
+
+def test_tegra_system_memory_pipeline_links_on_a_real_nvvidconv_host() -> None:
+    """The Tegra system-memory string really links where ``nvvidconv`` is registered.
+
+    This is the regression that a string assertion alone cannot catch:
+    ``Gst.parse_launch`` resolves caps between elements, so a converter that
+    cannot produce the pinned format raises here. Skipped on hosts without
+    PyGObject or without the L4T ``nvvidconv`` element.
+    """
+    gi = pytest.importorskip("gi", reason="PyGObject not installed (openral-runner[gstreamer])")
+    if not inspect_element_present("nvvidconv"):
+        pytest.skip("nvvidconv is not registered on this host (not a Tegra/L4T image)")
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+
+    Gst.init(None)
+    spec = PipelineSpec(source=Source.TESTSRC, width=320, height=240, fps=30, enable_nvmm=False)
+    pipeline_str = build_pipeline_string(spec, platform=Platform.TEGRA)
     pipeline = Gst.parse_launch(pipeline_str)
     assert pipeline is not None
     assert pipeline.get_by_name("bh_sink") is not None
