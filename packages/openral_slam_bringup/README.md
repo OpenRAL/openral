@@ -40,6 +40,23 @@ ros2 launch openral_slam_bringup cuvslam.launch.py
 ros2 launch openral_slam_bringup nvblox.launch.py robot_yaml:=/abs/path/to/robots/<id>/robot.yaml
 ```
 
+Every collision volume the manifest declares must be placeable relative to
+`base_frame` — through the `joints` chain, or through the
+`assets.urdf.root_frame` + `base_to_root_xyz_rpy` bridge that
+`sim_e2e.launch.py` publishes as a static TF (this is how UR manifests reach
+their upstream `base_link` root, which no movable joint has as a child).
+A manifest that declares a volume on a link neither of those reaches makes
+the node **refuse at startup** with `ROSConfigError` naming the links, rather
+than measure the subset it can reach: a band covering an arbitrary part of the
+robot still reports `collision_geometry` as its source, so nothing downstream
+could tell it apart from a real measurement, and `/map` would claim free space
+at the heights the omitted links occupy.
+
+A manifest that declares **no** collision geometry is not that case — it falls
+back to `min_body_height_m` (0.30 m) as documented. If a robot's placement gap
+cannot be fixed in the manifest, set the explicit `min_height_m` /
+`max_height_m` override pair instead.
+
 ### Installing the NVIDIA Isaac ROS stack (visual backend only)
 
 cuVSLAM + nvblox are **not bundled** (closed NVIDIA binaries, license
