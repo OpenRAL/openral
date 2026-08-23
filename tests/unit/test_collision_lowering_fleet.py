@@ -36,7 +36,9 @@ def test_manifest_matches_lowering_tool(manifest: Path) -> None:
     (panda_mobile, panda_mobile_vslam, so101_follower) are checked ACM-only so
     their hand-fitted **boxes** are not flagged — #103 converted panda_mobile's
     capsules to boxes, and those boxes are deliberately tighter than the tool
-    would emit.
+    would emit. That tightness is pinned by
+    ``tests/unit/test_collision_geometry_no_loosening.py`` — this guard alone
+    would not notice a re-lower replacing them.
     """
     # Tool-generated GEOMETRY = a `# GENERATED` comment immediately above
     # `collision_geometry:` (panda_mobile's hand geometry has a hand comment there;
@@ -47,7 +49,9 @@ def test_manifest_matches_lowering_tool(manifest: Path) -> None:
         geo_idx is not None and geo_idx > 0 and lines[geo_idx - 1].startswith("# GENERATED")
     )
     try:
-        current, spliced = _lowered_text(manifest, acm_only=not tool_generated, geometry_only=False)
+        current, spliced, _loosening = _lowered_text(
+            manifest, acm_only=not tool_generated, geometry_only=False
+        )
     except (ValueError, FileNotFoundError) as exc:
         pytest.skip(f"{manifest.parent.name}: {exc}")
     except ImportError as exc:  # MJCF robots (openarm) need mujoco + openral_hal
