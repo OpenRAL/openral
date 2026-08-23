@@ -152,18 +152,31 @@ def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
             )
 
 
-def test_mppi_considers_the_footprint_so_a_payload_reaches_the_controller() -> None:
-    """With `consider_footprint: false` the dynamic footprint is decorative.
+def test_mppi_does_not_yet_consider_the_footprint() -> None:
+    """`consider_footprint` is deliberately `false`, and pinned so it stays a decision.
 
-    CostCritic then scores the robot's centre cell only. A forward-reaching
-    payload grows the circumscribed radius but not the inscribed one, and the
-    inflation layer keys its cost cache off the inscribed radius — so nothing
-    the footprint publisher does would reach MPPI.
+    Flipping it is a navigation-behaviour change, not a tuning nudge, and only
+    half its price is known. The flag's OWN cost is measured against the real
+    Jazzy ``libnav2_costmap_2d_core`` in
+    ``benchmark/cost_critic_footprint_bench.cpp``: on an i5-8600K, 56000
+    ``footprintCostAtPose`` calls per 20 Hz iteration cost **+8.1 ms** with the
+    bare chassis and **+9.7 ms** while carrying — 17-20 % of the 50 ms budget,
+    and unconditional rather than data-dependent, because ``inflation_radius``
+    0.40 m sits below both polygons' circumscribed radii (0.444 m / 0.863 m) so
+    ``findCircumscribedCost`` returns 0.0. What is NOT measured is the rest of
+    the MPPI loop around CostCritic, which needs the composite scene issue #108
+    still lacks — nothing in the repo drives the base at 20 Hz mid-carry.
+
+    So the value is asserted rather than left incidental: the dynamic footprint
+    reaches every other consumer today (behaviours, docking, the collision
+    monitor's approach polygon, ``IsPathValid``), and MPPI's own scoring waits
+    for a measurement of the whole loop. Flip this test and
+    ``config/nav2_panda_mobile.yaml``'s comment together, never separately.
     """
     for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
         data = yaml.safe_load(path.read_text())
         cost_critic = data["controller_server"]["ros__parameters"]["FollowPath"]["CostCritic"]
-        assert cost_critic["consider_footprint"] is True, path.name
+        assert cost_critic["consider_footprint"] is False, path.name
 
 
 def test_payload_nodes_ride_with_nav2_on_the_right_backends() -> None:

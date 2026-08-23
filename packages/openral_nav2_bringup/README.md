@@ -123,7 +123,9 @@ the parent server), calls `setRobotFootprintPolygon` on every message, and
 republishes the oriented result as a `PolygonStamped` on `published_footprint`,
 padded by `footprint_padding` (default 0.01 m). `nav2_collision_monitor`,
 `nav2_behaviors`, `opennav_docking` and `IsPathValid` all read that republished
-polygon, so writing the two costmaps reaches every consumer.
+polygon, so writing the two costmaps reaches every consumer — with one
+deliberate exception today, MPPI's own scoring, which needs
+`CostCritic.consider_footprint` and is left off pending measurement (below).
 
 Config consequences, both in `config/nav2_panda_mobile.yaml`:
 
@@ -132,11 +134,17 @@ Config consequences, both in `config/nav2_panda_mobile.yaml`:
   "use `robot_radius`", so `RobotDescription.nav2_param_overrides()` emits
   `"[]"` for a robot whose manifest has no `footprint_polygon` rather than
   letting it inherit panda's outline.
-* `CostCritic.consider_footprint` is **`true`**. With `false`, MPPI scores the
-  centre cell only and the payload-inclusive polygon changes nothing for the
-  controller — a forward-reaching payload grows the circumscribed radius, but
-  the inflation layer keys its cost cache off the *inscribed* one, which the
-  payload does not move. Its cost is measured, below.
+* `CostCritic.consider_footprint` is left at **`false`**, deliberately. With
+  `false`, MPPI scores the centre cell only and the payload-inclusive polygon
+  changes nothing *for the controller* — a forward-reaching payload grows the
+  circumscribed radius, but the inflation layer keys its cost cache off the
+  *inscribed* one, which the payload does not move. Turning it on is a real
+  navigation-behaviour change costing a measured **+8.1 ms** bare / **+9.7 ms**
+  carrying per 20 Hz iteration, 17–20 % of the 50 ms budget, while the rest of
+  the MPPI loop around CostCritic is still unmeasured. See
+  [below](#measured-what-consider_footprint-true-would-cost-and-why-it-is-false).
+  The value is pinned by
+  `test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint`.
 
 **Failure directions are opposite on purpose.** The footprint publisher refuses
 to narrow: a missing attach-link TF, a primitive the kernel would itself reject,
@@ -204,7 +212,7 @@ Why the chassis polygon is a proof:
 the chassis deletes returns Nav2 *would* have acted on. Without `robot_yaml`
 the self half simply does not run and the node warns once.
 
-## Measured: what `consider_footprint: true` costs
+## Measured: what `consider_footprint: true` would cost, and why it is `false`
 
 `benchmark/cost_critic_footprint_bench.cpp` times upstream's own
 `FootprintCollisionChecker::footprintCostAtPose` against the real Jazzy
@@ -213,12 +221,13 @@ local costmap. It is out of the CMake build on purpose (a measurement, not an
 artifact); the build line is in its header comment.
 
 On an i5-8600K, at `batch_size 2000 × time_steps 56 / trajectory_point_step 2`
-= **56 000 calls per controller iteration**:
+= **56 000 calls per controller iteration** (four runs; the ms/iteration spread
+is in brackets):
 
 | | circumscribed radius | ns/call | ms/iteration | Δ vs `false` | of the 50 ms cycle |
 |---|---|---|---|---|---|
-| base only | 0.444 m | 150 | 8.4 | +8.2 | 17 % |
-| carrying (0.860 m reach) | 0.863 m | 178 | 10.0 | +9.8 | 20 % |
+| base only | 0.444 m | 149 | 8.3 [8.28–8.32] | **+8.1** | **17 %** |
+| carrying (0.860 m reach) | 0.863 m | 178 | 9.9 [9.87–9.94] | **+9.7** | **20 %** |
 
 The point-only path (`consider_footprint: false`) is 0.15 ms — the flag is
 essentially the whole cost.
@@ -232,15 +241,38 @@ regime against the shipped `inflation_radius: 0.40`, so the worst case is the
 normal case and the number above is not data-dependent. This also corrects a
 comment this PR shipped: the ~0.364 m circumscribed radius quoted there came
 from `robot_radius`, but the costmaps are configured with the *polygon*, whose
-padded farthest vertex is 0.444 m.
+padded farthest vertex is 0.444 m. **That correction is independent of the
+flag** — it is a property of the polygon, and it stands whether
+`consider_footprint` is on or off.
 
 Raising `inflation_radius` above 0.444 m would restore the cheap gate for the
 bare chassis. Nothing restores it while carrying — the payload's circumscribed
 radius is most of the 3 m local costmap — so it is left at 0.40 m rather than
-changed blind, and the flag stays on with a known price.
+changed blind.
 
-What this does **not** settle is the rest of the MPPI loop around CostCritic,
-which needs a live scene. See below.
+### Why the flag is deferred, not forgotten
+
+Knowing the flag's own price is not the same as knowing the loop fits. What
+this measurement does **not** settle is the rest of the MPPI loop *around*
+CostCritic, and that genuinely needs the live scene below: no RoboCasa atomic
+task drives the base at 20 Hz while an object is attached, so the surrounding
+cycle time under a grown footprint has never been observed. Committing 17–20 %
+of a 50 ms budget against an unmeasured remainder is a navigation-behaviour
+change made blind, so the flag stays `false` for now.
+
+The precondition to flip it is explicit: run the composite scene specified
+below with the **whole** MPPI loop timed against the 50 ms budget, and show the
+full cycle still fits with the flag on. Then `config/nav2_panda_mobile.yaml`,
+its CostCritic comment, and
+`test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint` flip
+together. If the remainder turns out too tight, `trajectory_point_step` is the
+knob that buys the flag room — not the flag itself.
+
+Until then the dynamic footprint is still load-bearing everywhere else: the
+published polygon reaches the behaviour server's collision checker,
+`opennav_docking`, the collision monitor's approach polygon and `IsPathValid`,
+and the payload is out of the scan both costmaps read. MPPI's own scoring is
+the single consumer waiting on the measurement.
 
 ### What is still open (issue #108)
 
@@ -270,5 +302,6 @@ which needs a live scene. See below.
   `scenes/` entry built to the four points above. The second is more work and
   strictly more controllable; the first is free if the task turns out to
   qualify. Either way the same run also settles the MPPI-loop headroom question
-  above, since it is the first thing that drives the controller at 20 Hz with a
-  grown footprint.
+  above — it is the first thing that drives the controller at 20 Hz with a
+  grown footprint — and so it is also what unblocks
+  `CostCritic.consider_footprint`.

@@ -162,42 +162,64 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        # `true` is what makes a carried payload reach the CONTROLLER. With
-        # `false`, CostCritic scores the robot's centre cell only, so the
-        # payload-inclusive footprint changes nothing here: a forward-reaching
-        # payload grows the circumscribed radius but not the inscribed one,
-        # and the inflation layer keys its cost cache off the inscribed radius
-        # alone. Every other footprint consumer (behavior_server's collision
-        # checker, opennav_docking, the collision monitor's approach polygon,
-        # IsPathValid) already reads the published polygon; MPPI is the one
-        # that needs this flag.
+        # DELIBERATELY `false`, and pinned by
+        # `test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint`.
         #
-        # It is the expensive option upstream documents as such, and the cost
-        # is now MEASURED rather than assumed — see
+        # WHY FALSE. Flipping it is a real navigation-behaviour change, not a
+        # tuning nudge, and its price against the 50 ms budget is only HALF
+        # known: the flag's own cost is measured (below), but the rest of the
+        # MPPI loop AROUND CostCritic is not, and cannot be — nothing in the
+        # repo yet drives the base at 20 Hz while an object is attached. Every
+        # RoboCasa atomic PickPlace task pins `init_robot_base_ref` next to
+        # both source and destination, so `NavigateToPose` never runs mid-carry.
+        # Spending a known 17-20% of the cycle against an unknown remainder is
+        # not a decision this config can make on its own.
+        #
+        # WHAT IT COSTS WHEN ENABLED — measured, not assumed. See
         # `benchmark/cost_critic_footprint_bench.cpp`, which times upstream's
         # own `FootprintCollisionChecker::footprintCostAtPose` against the real
         # Jazzy `libnav2_costmap_2d_core` at these exact polygons and this exact
         # grid. On an i5-8600K, batch_size 2000 x time_steps 56 /
-        # trajectory_point_step 2 = 56000 calls per iteration:
+        # trajectory_point_step 2 = 56000 calls per iteration (4 runs, spread
+        # in brackets):
         #
-        #   base only   150 ns/call -> 8.4 ms/iteration, +8.2 ms vs `false`
-        #   carrying    178 ns/call -> 10.0 ms/iteration, +9.8 ms vs `false`
+        #   base only   149 ns/call -> 8.3 ms/iteration [8.28-8.32],
+        #                              +8.1 ms vs `false` = 17% of the cycle
+        #   carrying    178 ns/call -> 9.9 ms/iteration [9.87-9.94],
+        #                              +9.7 ms vs `false` = 20% of the cycle
         #
-        # i.e. 17-20% of the 50 ms cycle, on this host. NOT a fraction of the
-        # points — ALL of them: `CostCritic::findCircumscribedCost` returns 0.0
-        # whenever `inflation_radius` is below the footprint's CIRCUMSCRIBED
-        # radius, and `inCollision`'s guard is
+        # NOT a fraction of the sampled points — ALL of them:
+        # `CostCritic::findCircumscribedCost` returns 0.0 whenever
+        # `inflation_radius` is below the footprint's CIRCUMSCRIBED radius, and
+        # `inCollision`'s guard is
         # `cost >= possible_collision_cost_ || possible_collision_cost_ < 1.0f`,
         # so a 0.0 makes the full footprint check unconditional. Both polygons
         # are in that regime here (0.444 m and 0.863 m circumscribed vs a
-        # 0.40 m inflation_radius), so the worst case IS the normal case.
-        # Raising inflation_radius could restore the gate for the bare chassis;
-        # nothing can restore it while carrying, because the payload's
-        # circumscribed radius is most of the 3 m local costmap. What has NOT
-        # been measured is the rest of the MPPI loop around it — that still
-        # needs a live scene (issue #108). If the controller misses its rate,
-        # `trajectory_point_step` is the knob, not this flag.
-        consider_footprint: true
+        # 0.40 m inflation_radius), so the worst case IS the normal case and
+        # the number is not data-dependent. Raising inflation_radius could
+        # restore the cheap gate for the bare chassis; nothing can restore it
+        # while carrying, because the payload's circumscribed radius is most of
+        # the 3 m local costmap.
+        #
+        # PRECONDITION TO FLIP IT: the composite scene issue #108 still needs —
+        # a carry path long enough to require base translation, an aperture the
+        # payload-grown polygon decides, lidar-visible obstacles at the
+        # payload's height, and a fixed seed — run with the WHOLE MPPI loop
+        # timed against the 50 ms budget, showing the full cycle still fits
+        # with the flag on. Then flip this, and this comment, together. If the
+        # remainder turns out too tight, `trajectory_point_step` is the knob
+        # that buys the flag room.
+        #
+        # WHAT `false` COSTS MEANWHILE: MPPI scores the robot's centre cell
+        # only, so the payload-inclusive polygon does not reach the CONTROLLER
+        # — a forward-reaching payload grows the circumscribed radius but not
+        # the inscribed one, and the inflation layer keys its cost cache off
+        # the inscribed radius alone. The polygon still reaches every OTHER
+        # consumer (behavior_server's collision checker, opennav_docking, the
+        # collision monitor's approach polygon, IsPathValid), and the payload
+        # is still out of the scan the costmaps read, so the dynamic footprint
+        # is load-bearing everywhere except MPPI's own scoring.
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2
@@ -267,13 +289,16 @@ local_costmap:
         # polygon's farthest padded vertex — hypot(0.36, 0.26) = 0.444 m
         # (`nav2_costmap_2d::calculateMinAndMaxDistances`, run against the real
         # Jazzy library in `benchmark/cost_critic_footprint_bench.cpp`). The
-        # consequence is priced in the CostCritic comment above: MPPI's
+        # correction holds whatever `CostCritic.consider_footprint` is set to —
+        # it is a property of this polygon, not of that flag. What it WOULD
+        # cost is why that flag is currently `false`: with it on, MPPI's
         # `findCircumscribedCost` returns 0.0 and the full-footprint check runs
-        # on every sampled point, at a measured 8.4 ms of the 50 ms cycle.
-        # Raising this above 0.444 m would restore the cheap gate for the bare
-        # chassis but not while carrying (0.863 m circumscribed), so it is left
-        # at 0.40 m as a navigation-behaviour value rather than changed blind.
-        # Below the INSCRIBED radius (0.26 m for this polygon) Nav2 also cannot
+        # on every sampled point rather than a fraction of them (see the
+        # CostCritic comment above for the measured price). Raising this above
+        # 0.444 m would restore that cheap gate for the bare chassis but not
+        # while carrying (0.863 m circumscribed), so it is left at 0.40 m as a
+        # navigation-behaviour value rather than changed blind.
+        # Below the INSCRIBED radius (0.26 m for this polygon) Nav2 cannot
         # use the costmap potential field at all and logs an error; the prior
         # 0.10 m did exactly that. cost_scaling_factor keeps
         # this a soft gradient — LETHAL only within the inscribed radius
