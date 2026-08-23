@@ -1,0 +1,42 @@
+{
+  "artifact_stem": "run",
+  "executed_sha": "d82664309cd99da72e105c65e90229f667b95144",
+  "gpu_name": "NVIDIA GB10",
+  "host": "nvidia",
+  "launcher_path": "/home/allopart/workspace/openral-matrix-baseline/.venv/bin/openral",
+  "notes_path": "NOTES.md",
+  "overlay_built_at_ns": 1787468471546717399,
+  "repo_root": "/home/allopart/workspace/openral-matrix-baseline",
+  "robot_id": null,
+  "robot_manifest_path": null,
+  "round_id": "2026-08-23-master-s1",
+  "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4",
+  "safety_overrides_absent": true,
+  "scene_configs": {
+    "baguette": "outputs/validation-matrix/2026-08-23-master-s1/baguette/robocasa_baguette_seed1.yaml",
+    "fridge": "outputs/validation-matrix/2026-08-23-master-s1/fridge/robocasa_fridge_drawer_seed1.yaml",
+    "sink_cup": "outputs/validation-matrix/2026-08-23-master-s1/sink_cup/robocasa_sink_cup_seed1.yaml",
+    "utensil": "outputs/validation-matrix/2026-08-23-master-s1/utensil/robocasa_drawer_utensil_seed1.yaml"
+  },
+  "scene_pins": {
+    "enable_reasoner": false
+  },
+  "seed": 1,
+  "stack_argv": [
+    "--enable-slam",
+    "--enable-nav2",
+    "--enable-octomap",
+    "--enable-octomap-kernel-check",
+    "--no-object-detector",
+    "--no-enable-scene-vlm",
+    "--no-dashboard",
+    "--hal",
+    "viewer_enabled=false"
+  ],
+  "started_at": "2026-08-23T07:16:53.702923+00:00",
+  "sync_groups": [
+    "robocasa",
+    "sidecar-wire"
+  ],
+  "worktree_clean": true
+}

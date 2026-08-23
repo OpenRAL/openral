@@ -144,10 +144,10 @@ Per scene, one `outcome`:
 | Outcome | Meaning |
 | --- | --- |
 | `completed` | `sim.task_success_final` reported success. The only success. |
-| `estop-collision-real` | The kernel stopped the run and the simulator's distance probe found geometry at or below 0 m. The stop was correct. |
-| `estop-collision-false-positive` | The kernel stopped the run and the nearest true geometry is further from the tripping party than the occupancy grid's quantization budget can explain. |
-| `estop-collision-within-quantization` | The kernel was conservative by an amount the voxel size accounts for. Correct behaviour, not a defect. |
-| `estop-collision-unadjudicated` | The ground-truth probe was truncated, absent, or the grid resolution unknown. **Not** a synonym for "fine". |
+| `estop-collision-real` | The kernel stopped the run and the simulator's distance probe found **solid** geometry at or below 0 m. The stop was correct. |
+| `estop-collision-false-positive` | The kernel stopped the run and the nearest true geometry is further from the tripping party than the admissible kernel-vs-probe gap can explain. |
+| `estop-collision-within-quantization` | The kernel was conservative by an amount that gap accounts for. Correct behaviour, not a defect. |
+| `estop-collision-unadjudicated` | The ground-truth probe was truncated or absent, no budget was known, or the probe does not attest that both of its sides were collidability-filtered. **Not** a synonym for "fine"; `ground_truth.unadjudicated_reason` says which. |
 | `estop-initial-configuration` | The stop landed before any action reached the HAL, so the refused configuration is the one the scene reset produced. A scene-config defect; no margin change can clear it. Outranks the ground-truth adjudication. |
 | `deadline-after-grasp` / `deadline-no-grasp` | No stop and no success — the run ran out of deadline, with or without a grasp. |
 | `harness-error` | The run produced no usable artifact set. Never read as a clean deadline. |
@@ -160,39 +160,92 @@ reported as `deadline-no-grasp` with exit 0. A scene is a `harness-error` when
 
 1. the runner wrote `<stem>_launch_failed.txt` — `/openral/execute_rskill` never
    appeared, so nothing was ever dispatched;
-2. the deploy log's first line is a `Usage: openral …` banner — the CLI rejected
-   its own argv before the graph started; or
-3. there is no deploy log at all.
+2. the deploy log carries `[ERROR] [launch]: Caught exception in launch` —
+   `ros2 launch` threw and unwound. This is the one with **no marker file and no
+   usage banner**: the nodes launch had already spawned keep running and keep
+   logging, so the log is long and looks like a run. At `87dcda1` a missing
+   `payload_footprint_node.py` produced exactly that and the scene was bucketed
+   `deadline-no-grasp` with `harness_error_reason` and
+   `dispatch_failure_reason` both empty;
+3. the deploy log's first line is a `Usage: openral …` banner — the CLI rejected
+   its own argv before the graph started;
+4. `<stem>_goal.log` has output but no JSON status line — the dispatcher raised
+   before any goal reached a terminal state. Every raising path in
+   `_validation_matrix_dispatch.py` is a harness failure; a genuine deadline
+   overrun still prints `{"status": -1, …}`, and stays a deadline; or
+5. there is no deploy log at all.
 
 The reason is recorded in the verdict's `harness_error_reason`, named in
 `NOTES.md`, and the round exits **4**.
 
 ### How adjudication works
 
-The quantization budget is **half the voxel's body diagonal**, read from the
-run's own monitor records rather than assumed — at the 25 mm grid the rounds
-use, 21.7 mm. Then, in order:
+The kernel measures **OBB-to-voxel**; the ground-truth probe measures
+**mesh-to-mesh**. Subtracting the two directly is only meaningful against the
+gap that difference of representation can already produce, and the sim HAL
+computes that gap per run and publishes it as
+`adjudication_budget.admissible_gap_m` — the collision model's corner slop plus
+the voxel half-diagonal, **88.2 mm** on the 2026-08-23 rounds. The harness uses
+it whenever the snapshot carries one. The voxel term alone is 21.7 mm at the
+25 mm grid these rounds use; applying that on its own is roughly a factor of
+four too narrow and turned conservative, correct stops into false positives
+(the 2026-08-23 `utensil` stop: `robot0_link1` 43.3 mm clear against a −17.3 mm
+read). It survives as `quantization_budget_m`, and as the fallback for a
+snapshot recorded before the HAL published a budget; `budget_source` says which
+was applied. Then, in order:
 
 1. Any probed pair at or below 0 m → `real-contact`. Note this is deliberately
    *not* keyed to the body the kernel named: if the kernel says `panda_link7`
    and the probe finds `robot0_link6` at 0.000 m, the configuration really is
-   unsafe and the stop stands.
+   unsafe and the stop stands. It **is** keyed to the pair being solid on both
+   sides — see below.
 2. Otherwise the tripping party's clearance is compared against the kernel's
-   reported depth. Beyond the budget → `false-positive`; within it →
+   reported depth. Beyond the gap → `false-positive`; within it →
    `within-quantization`.
-3. A truncated probe, a missing snapshot or an unknown resolution →
-   `unadjudicated`.
+3. A truncated probe, a missing snapshot, an unknown budget or an unattested
+   probe → `unadjudicated`, with `ground_truth.unadjudicated_reason` naming
+   which.
 
-**A very early stop can be unadjudicable, and the notes say so.** The grid
-resolution is read from the monitor's first `world_voxels` record, so a scene
-whose initial configuration trips the kernel before the monitor has seen a grid
-has no quantization budget to judge the stop by. The monitor therefore attaches
-as soon as the graph is launched — not, as it did originally, five seconds
-before dispatch, which is minutes later and after the sim clock has already run.
-The 2026-08-22 utensil scene tripped at sim t≈4.7 s and recorded zero snapshots,
-a null resolution and `unadjudicated`. Every round's `NOTES.md` now lists the
-scenes that stopped before the monitor saw a grid, so `unadjudicated` never
-reads as "nothing to see".
+**A 0 m pair is only evidence when both geoms are solid.** A geom with neither
+`contype` nor `conaffinity` cannot collide with anything and the safety kernel
+never checks it, so a distance to one is not a penetration. The HAL's probe
+filters every side to solid geoms and discloses the counts as
+`noncollidable_{world,side,other}_geoms_excluded`; the harness promotes a
+`<= 0 m` pair to `real-contact` only when that attestation is present. Snapshots
+recorded before it are `unadjudicated` rather than trusted, because they really
+did rank visual geometry first: the 2026-08-23 fridge stop was adjudicated
+`real-contact` off `robot0_g42_vis` at 0.000 m while the same link's collision
+geom was 2.5 mm clear, and the 2026-08-22 `sink_cup` stop off `obj_reg_bbox`,
+the payload's own region marker.
+
+**A very early stop can be unadjudicable, and the notes say so — but so can a
+deaf monitor, and the notes say that separately.** The grid resolution is read
+from the monitor's first `world_voxels` record, so a scene whose initial
+configuration trips the kernel before the monitor has seen a grid has no voxel
+term to fall back on. The monitor therefore attaches as soon as the graph is
+launched — not, as it did originally, five seconds before dispatch, which is
+minutes later and after the sim clock has already run. The 2026-08-22 utensil
+scene tripped at sim t≈4.7 s and recorded zero snapshots, a null resolution and
+`unadjudicated`.
+
+But **not** before the deploy's DDS purge. `openral deploy sim` unlinks every
+`/dev/shm/fastrtps_*` this user owns immediately before spawning `ros2 launch`;
+a participant created earlier loses its segments silently and then receives
+nothing for the whole scene. The 2026-08-23 round attached ~6 ms in and all 24
+of its `run_monitor.jsonl` files contain exactly `monitor_started` and
+`monitor_stopped`. The monitor is now gated on the deploy CLI's own
+`dds_transport_ready:` line, which is printed after the purge and before
+`ros2 launch` is spawned — so it is up tens of seconds before the sim clock
+starts, and the early-stop coverage is kept in full. The gate's outcome is
+recorded per scene in `<stem>_monitor_gate.txt`.
+
+The two causes read identically in `verdicts.json` — `grid_resolution_m: null`
+— so `monitor_records` counts what the monitor actually received (its own
+start/stop pair excluded) and `NOTES.md` lists them under **separate**
+headings: "Monitor received nothing" (a harness fault; the scene's evidence is
+missing) and "Stopped before the monitor saw a voxel grid" (a fact about the
+run). `unadjudicated` never reads as "nothing to see", and never as the wrong
+reason.
 
 Two things the snapshot itself insists on, and the harness honours:
 
@@ -226,8 +279,11 @@ $ just validation-matrix-diff outputs/validation-matrix/<new> outputs/validation
            stop.sweep_min_distance_m: -0.0355338 -> -0.0209178
 ```
 
-Equal `executed_sha` on both sides makes it a **reproducibility** comparison;
-differing SHAs a **before/after**. The distinction matters: the policy is
+Equal `executed_sha` **and** equal `seed` on both sides makes it a
+**reproducibility** comparison; anything else is a **before/after**. The seed is
+part of the test because it decides the scene's initial configuration — a
+seed-1-vs-seed-2 pair at one SHA compares two different scenes, and was once
+labelled `reproducibility` on the SHA alone. The distinction matters: the policy is
 stochastic across runs even at a pinned scene seed (`first_chunk_s` 90.96 vs
 34.23, 1285 vs 632 steps, same scene and tip), so per-run trajectories are not
 comparable between rounds — **only failure classes are.** Diff outcomes and
@@ -246,6 +302,7 @@ NOTES.md                   the human-readable summary
   run_deploy.log           the full deploy log
   run_monitor.jsonl        the monitor stream
   run_goal.log             the dispatcher's one JSON line
+  run_monitor_gate.txt     whether the monitor started after the DDS purge
   run_launch_failed.txt    written only when the graph never came up
   run_snapshots/           .npz at every E-stop and while carrying
   run_cinecam/             frames

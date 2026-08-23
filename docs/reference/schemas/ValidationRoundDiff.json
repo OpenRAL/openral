@@ -76,7 +76,7 @@
     }
   },
   "additionalProperties": true,
-  "description": "Round-over-round comparison \u2014 the \"what changed\" artifact.\n\nAttributes:\n    schema_version: On-disk format version.\n    round_id: The newer round.\n    baseline_round_id: The round it is compared against.\n    executed_sha: SHA the newer round ran.\n    baseline_executed_sha: SHA the baseline ran. When the two SHAs are\n        equal the diff is a pure reproducibility comparison; when they\n        differ it is a before/after.\n    scenes: Per-scene deltas, in the newer round's order.\n\nExample:\n    >>> ValidationRoundDiff(\n    ...     round_id=\"b\",\n    ...     baseline_round_id=\"a\",\n    ...     executed_sha=\"0\" * 40,\n    ...     baseline_executed_sha=\"0\" * 40,\n    ... ).same_sha\n    True",
+  "description": "Round-over-round comparison \u2014 the \"what changed\" artifact.\n\nAttributes:\n    schema_version: On-disk format version.\n    round_id: The newer round.\n    baseline_round_id: The round it is compared against.\n    executed_sha: SHA the newer round ran.\n    baseline_executed_sha: SHA the baseline ran.\n    seed: Scene seed the newer round pinned.\n    baseline_seed: Scene seed the baseline pinned. The SHA alone does not\n        make a comparison a reproducibility one: the scene seed decides the\n        initial configuration, so two rounds at one SHA on different seeds\n        are a before/after of two different scenes. A seed-1-vs-seed-2 diff\n        was labelled ``reproducibility`` for exactly that reason.\n    scenes: Per-scene deltas, in the newer round's order.\n\nExample:\n    >>> d = ValidationRoundDiff(\n    ...     round_id=\"b\",\n    ...     baseline_round_id=\"a\",\n    ...     executed_sha=\"0\" * 40,\n    ...     baseline_executed_sha=\"0\" * 40,\n    ...     seed=1,\n    ...     baseline_seed=2,\n    ... )\n    >>> d.same_sha, d.is_reproducibility\n    (True, False)",
   "properties": {
     "schema_version": {
       "default": "0.1",
@@ -98,6 +98,30 @@
     "baseline_executed_sha": {
       "title": "Baseline Executed Sha",
       "type": "string"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Seed"
+    },
+    "baseline_seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Baseline Seed"
     },
     "scenes": {
       "items": {

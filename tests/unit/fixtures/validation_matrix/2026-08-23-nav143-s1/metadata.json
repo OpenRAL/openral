@@ -1,0 +1,46 @@
+{
+  "artifact_stem": "run",
+  "executed_sha": "87dcda174d947cf75d4650abb875f63b3d81895b",
+  "gpu_name": "NVIDIA GB10",
+  "host": "nvidia",
+  "imported_from": "/home/allopart/workspace/openral-matrix-baseline/outputs/validation-matrix/2026-08-23-nav143-s1",
+  "launcher_path": "",
+  "notes_path": "NOTES.md",
+  "repo_root": "/home/allopart/workspace/openral-matrix-baseline",
+  "robot_id": "panda_mobile",
+  "robot_manifest_path": "robots/panda_mobile/robot.yaml",
+  "round_id": "2026-08-23-nav143-s1",
+  "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4",
+  "safety_overrides_absent": true,
+  "scene_configs": {
+    "baguette": "baguette/robocasa_baguette_seed1.yaml",
+    "sink_cup": "sink_cup/robocasa_sink_cup_seed1.yaml"
+  },
+  "scene_dirs": {
+    "baguette": "baguette",
+    "sink_cup": "sink_cup"
+  },
+  "seed": 1,
+  "stack_argv": [
+    "clock_origin:=simulation",
+    "enable_critic:=false",
+    "enable_dashboard:=false",
+    "enable_foxglove:=false",
+    "enable_nav2:=true",
+    "enable_object_detector:=false",
+    "enable_octomap:=true",
+    "enable_octomap_kernel_check:=true",
+    "enable_reasoner:=false",
+    "enable_reward_monitor:=false",
+    "enable_scene_vlm:=false",
+    "enable_slam:=true",
+    "hal_mode:=sim",
+    "spatial_memory_ingest:=false"
+  ],
+  "started_at": "2026-08-23T07:34:33.924786+00:00",
+  "sync_groups": [
+    "robocasa",
+    "sidecar-wire"
+  ],
+  "worktree_clean": null
+}

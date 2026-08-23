@@ -2,7 +2,7 @@
   "$defs": {
     "ValidationGroundTruthAdjudication": {
       "additionalProperties": true,
-      "description": "What the simulator's own probe says about a kernel stop.\n\nDerived from the ``sim.estop_ground_truth_snapshot`` line the sim HAL emits\nper stop. The probe measures against solid world geometry only and carries\nits own caveat that a zero contact count is *not* an emptiness test, so the\nadjudication is driven by the distance probes rather than the contact list.\n\nAttributes:\n    verdict: The adjudication.\n    stop_class: The probe's own class for the stop (``\"robot_world\"``,\n        ``\"attached_payload\"``).\n    sim_time_s: Simulator time at the stop.\n    grid_resolution_m: Occupancy-grid edge length, read from the monitor's\n        ``world_voxels`` records. Sets the quantization budget.\n    quantization_budget_m: Half the grid cell's body diagonal \u2014 the largest\n        discrepancy a correctly-behaving voxel grid can produce.\n    nearest_any_m: Distance of the closest probed pair of any kind.\n        ``None`` when nothing was within ``distmax_m``.\n    nearest_tripping_party_m: Distance of the closest pair whose subject is\n        the party the kernel named. ``None`` when nothing was in range.\n    nearest_pair: Bodies/geoms of the closest probed pair, verbatim.\n    discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's\n        ``min_distance_m`` \u2014 how much clearance the kernel did not see.\n    probed_pairs: Pairs the probe actually measured.\n    probe_truncated: Whether the probe hit its call budget. A truncated\n        probe can never support ``false-positive``.\n    distmax_m: The probe's cutoff distance; an untruncated probe that\n        returns no pair proves the nearest geometry is beyond it.\n    payload_contacts: MuJoCo contact count involving the payload.\n\nExample:\n    >>> adj = ValidationGroundTruthAdjudication(\n    ...     verdict=\"real-contact\", stop_class=\"attached_payload\", sim_time_s=17.5\n    ... )\n    >>> adj.verdict\n    'real-contact'",
+      "description": "What the simulator's own probe says about a kernel stop.\n\nDerived from the ``sim.estop_ground_truth_snapshot`` line the sim HAL emits\nper stop. The probe measures against solid world geometry only and carries\nits own caveat that a zero contact count is *not* an emptiness test, so the\nadjudication is driven by the distance probes rather than the contact list.\n\nAttributes:\n    verdict: The adjudication.\n    stop_class: The probe's own class for the stop (``\"robot_world\"``,\n        ``\"attached_payload\"``).\n    sim_time_s: Simulator time at the stop.\n    grid_resolution_m: Occupancy-grid edge length, read from the monitor's\n        ``world_voxels`` records. Sets the quantization budget.\n    quantization_budget_m: Half the grid cell's body diagonal \u2014 the largest\n        discrepancy a correctly-behaving voxel grid can produce. This is\n        only the *voxel* term; it is not the whole admissible gap.\n    admissible_gap_m: The budget actually applied to ``discrepancy_m``.\n        Preferred source is the HAL's own\n        ``adjudication_budget.admissible_gap_m``, which adds the collision\n        model's corner slop (the kernel measures OBB-to-voxel, the probe\n        measures mesh-to-mesh) to the voxel term \u2014 88.2 mm against a\n        25 mm grid's 21.7 mm on the 2026-08-23 rounds. Falls back to\n        ``quantization_budget_m`` for a snapshot recorded before the HAL\n        published a budget.\n    budget_source: Where ``admissible_gap_m`` came from \u2014\n        ``\"hal-adjudication-budget\"``, ``\"grid-quantization\"``, or ``\"\"``\n        when no budget was available at all.\n    probe_collidability_filtered: Whether the recorded probe attests that\n        **both** of its sides were restricted to solid geoms\n        (``contype``/``conaffinity`` non-zero). ``False`` on a snapshot\n        recorded before that filter existed, where a 0 m pair may be a\n        purely visual mesh and therefore cannot support ``real-contact``.\n    unadjudicated_reason: Why the verdict is ``unadjudicated``, in words.\n        Empty for every other verdict. A missing grid resolution because\n        the monitor received nothing reads differently from one because the\n        run stopped early, and the difference is a harness fault versus a\n        run fact.\n    nearest_any_m: Distance of the closest probed pair of any kind.\n        ``None`` when nothing was within ``distmax_m``.\n    nearest_tripping_party_m: Distance of the closest pair whose subject is\n        the party the kernel named. ``None`` when nothing was in range.\n    nearest_pair: Bodies/geoms of the closest probed pair, verbatim.\n    discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's\n        ``min_distance_m`` \u2014 how much clearance the kernel did not see.\n    probed_pairs: Pairs the probe actually measured.\n    probe_truncated: Whether the probe hit its call budget. A truncated\n        probe can never support ``false-positive``.\n    distmax_m: The probe's cutoff distance; an untruncated probe that\n        returns no pair proves the nearest geometry is beyond it.\n    payload_contacts: MuJoCo contact count involving the payload.\n\nExample:\n    >>> adj = ValidationGroundTruthAdjudication(\n    ...     verdict=\"real-contact\", stop_class=\"attached_payload\", sim_time_s=17.5\n    ... )\n    >>> adj.verdict\n    'real-contact'",
       "properties": {
         "verdict": {
           "enum": [
@@ -61,6 +61,40 @@
           ],
           "default": null,
           "title": "Quantization Budget M"
+        },
+        "admissible_gap_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Admissible Gap M"
+        },
+        "budget_source": {
+          "default": "",
+          "title": "Budget Source",
+          "type": "string"
+        },
+        "probe_collidability_filtered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Collidability Filtered"
+        },
+        "unadjudicated_reason": {
+          "default": "",
+          "title": "Unadjudicated Reason",
+          "type": "string"
         },
         "nearest_any_m": {
           "anyOf": [
@@ -160,7 +194,7 @@
     },
     "ValidationRoundMetadata": {
       "additionalProperties": true,
-      "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty. ``None``\n        only for a round imported from before the harness recorded it \u2014\n        ``run`` refuses to start on a dirty worktree, so a round it produced\n        is always ``True``.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n    scene_dirs: Scene key \u2192 the round-relative directory holding that\n        scene's artifacts. Empty means \"same name as the scene key\", which\n        is what the harness itself writes; a round imported from the\n        pre-harness layout carries the alias it was found under\n        (``{\"baguette\": \"bag1\"}``).\n    artifact_stem: Filename stem of every per-scene artifact\n        (``run_deploy.log`` \u2192 ``\"run\"``). Pre-harness rounds used\n        ``\"seed1\"``.\n    imported_from: Absolute path of the pre-harness round directory this\n        round was imported from, when it was not produced by ``run``.\n    scene_pins: Scene ``runtime:`` keys the round pinned into its resolved\n        scene copies, because they have no CLI flag to pin them with \u2014\n        ``{\"enable_reasoner\": False}`` for every round to date. Read with\n        ``stack_argv``: together they are the whole executed stack.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
+      "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty. ``None``\n        only for a round imported from before the harness recorded it \u2014\n        ``run`` refuses to start on a dirty worktree, so a round it produced\n        is always ``True``.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n    scene_dirs: Scene key \u2192 the round-relative directory holding that\n        scene's artifacts. Empty means \"same name as the scene key\", which\n        is what the harness itself writes; a round imported from the\n        pre-harness layout carries the alias it was found under\n        (``{\"baguette\": \"bag1\"}``).\n    seed: The scene seed the whole round pinned. Read with\n        ``executed_sha``: two rounds are a *reproducibility* pair only when\n        both match \u2014 a seed-1-vs-seed-2 comparison at one SHA is a\n        before/after, and was once mislabelled as reproducibility.\n    artifact_stem: Filename stem of every per-scene artifact\n        (``run_deploy.log`` \u2192 ``\"run\"``). Pre-harness rounds used\n        ``\"seed1\"``.\n    imported_from: Absolute path of the pre-harness round directory this\n        round was imported from, when it was not produced by ``run``.\n    scene_pins: Scene ``runtime:`` keys the round pinned into its resolved\n        scene copies, because they have no CLI flag to pin them with \u2014\n        ``{\"enable_reasoner\": False}`` for every round to date. Read with\n        ``stack_argv``: together they are the whole executed stack.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
       "properties": {
         "round_id": {
           "title": "Round Id",
@@ -286,6 +320,11 @@
           "title": "Scene Dirs",
           "type": "object"
         },
+        "seed": {
+          "default": 1,
+          "title": "Seed",
+          "type": "integer"
+        },
         "artifact_stem": {
           "default": "run",
           "title": "Artifact Stem",
@@ -322,7 +361,7 @@
     },
     "ValidationSceneVerdict": {
       "additionalProperties": true,
-      "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n    harness_error_reason: Why the run produced no usable artifact set \u2014\n        the graph never came up, or the deploy CLI rejected its own argv.\n        Non-empty exactly when ``outcome`` is ``harness-error``, so a\n        failed launch can never be read as a clean deadline.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
+      "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    monitor_records: How many records the run's monitor wrote from a ROS\n        subscription \u2014 every line except its own ``monitor_started`` /\n        ``monitor_stopped`` pair. ``None`` when no monitor JSONL exists.\n        **Zero means the monitor received nothing**, which is a harness\n        fault (its DDS participant never saw the graph) and must not be\n        read as \"the run stopped before there was anything to see\".\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim \u2014 or, when the dispatcher died before writing a\n        status line at all, why it did.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n    harness_error_reason: Why the run produced no usable artifact set \u2014\n        the graph never came up, or the deploy CLI rejected its own argv.\n        Non-empty exactly when ``outcome`` is ``harness-error``, so a\n        failed launch can never be read as a clean deadline.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
       "properties": {
         "scene": {
           "title": "Scene",
@@ -445,6 +484,18 @@
         },
         "witness": {
           "$ref": "#/$defs/ValidationWitnessTimeline"
+        },
+        "monitor_records": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Monitor Records"
         },
         "dispatch_failure_reason": {
           "default": "",

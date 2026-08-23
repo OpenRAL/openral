@@ -54,7 +54,7 @@ import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import typer
 import yaml
@@ -2017,6 +2017,19 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
     return proc.returncode if proc.returncode is not None else 0
 
 
+DDS_TRANSPORT_READY_MARKER: Final[str] = "dds_transport_ready:"
+"""Printed once the DDS transport is settled and safe to join.
+
+Everything destructive to an existing Fast-DDS participant — the orphan reap
+and the ``/dev/shm/fastrtps_*`` purge — has run by the time this line appears,
+and ``ros2 launch`` has not been spawned yet. A co-process that wants to
+observe the graph (the validation matrix's evidence monitor) waits for this
+line in the deploy log before creating its own participant; starting earlier
+gets its shared-memory segments unlinked underneath it, after which it runs
+happily and receives nothing at all.
+"""
+
+
 def _apply_rmw_default(env: dict[str, str]) -> None:
     """Clean stale Fast-DDS SHM lockfiles before spawning ``ros2 launch``.
 
@@ -2038,31 +2051,55 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     unlinked — other users' SHM segments are silently skipped.
     Operators that explicitly opt into Cyclone or Zenoh via
     ``RMW_IMPLEMENTATION`` keep theirs untouched.
+
+    **The purge is destructive to participants that already exist.**
+    It unlinks *every* ``/dev/shm/fastrtps_*`` this user owns, not
+    only the stale ones, so any Fast-DDS participant already running
+    on this host loses its shared-memory segments and goes silent
+    without erroring. The validation matrix lost a 24-run round to
+    exactly that: its evidence monitor attached ~6 ms after the
+    deploy started, and every one of the 24 ``run_monitor.jsonl``
+    files contains two lines. The purge is therefore *announced*:
+    :data:`DDS_TRANSPORT_READY_MARKER` is printed on the line after
+    it, so a co-process can wait for it and create its participant on
+    the far side. It is printed on the Cyclone/Zenoh paths too, where
+    nothing was purged — a waiter needs the signal either way.
     """
-    if "rmw_cyclonedds" in env.get("RMW_IMPLEMENTATION", ""):
-        return  # operator opted into Cyclone; nothing to clean
-    if "rmw_zenoh" in env.get("RMW_IMPLEMENTATION", ""):
-        return
-    _clean_stale_fastrtps_shm()
+    rmw = env.get("RMW_IMPLEMENTATION", "")
+    # -1 = the operator opted out of Fast-DDS, so nothing was cleaned.
+    opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
+    purged = -1 if opted_out else _clean_stale_fastrtps_shm()
+    _console.print(
+        f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} "
+        f"shm_purged={'n/a' if purged < 0 else purged}"
+    )
+    # A waiter reads this line out of a redirected stdout, so it must not sit
+    # in a block buffer while the graph comes up around it.
+    sys.stdout.flush()
 
 
-def _clean_stale_fastrtps_shm() -> None:
+def _clean_stale_fastrtps_shm() -> int:
     """Best-effort: remove stale Fast-DDS SHM lock files in ``/dev/shm``.
 
     Fast-DDS lock files are owned by the user that created them — we
     silently skip anything we can't unlink (another user's file) so
     this never escalates to ``sudo``-required cleanup. Cyclone-DDS
-    deployments never call this path. Only fires when the operator
-    explicitly opts back into Fast-DDS via ``RMW_IMPLEMENTATION``.
+    deployments never call this path.
+
+    Returns:
+        How many entries were unlinked, for the readiness line.
     """
     shm = Path("/dev/shm")
     if not shm.is_dir():
-        return
+        return 0
+    purged = 0
     for entry in shm.iterdir():
         if not entry.name.startswith("fastrtps_"):
             continue
         with contextlib.suppress(OSError, PermissionError):
             entry.unlink()
+            purged += 1
+    return purged
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:

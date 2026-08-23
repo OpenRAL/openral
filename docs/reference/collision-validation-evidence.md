@@ -272,9 +272,35 @@ and one `estop_ground_truth_snapshot` per run.
 | scene | grasped | E-stop pair | kernel min / sweep (m) | ground-truth verdict |
 |---|---|---|---|---|
 | baguette | yes | `panda_link5` vs `voxel_170781` (step 0) | −0.0209178 / −0.0209178 | **false positive** |
-| sink_cup | yes | `attached:sim:obj_main` vs `voxel_87084` (step −1) | −0.0133754 / −0.0133754 | legitimate |
-| fridge | no | `panda_link7` vs `voxel_169769` (step −1) | −0.0247489 / −0.0247489 | legitimate (scene-init) |
+| sink_cup | yes | `attached:sim:obj_main` vs `voxel_87084` (step −1) | −0.0133754 / −0.0133754 | ~~legitimate~~ → **unadjudicated** (see below) |
+| fridge | no | `panda_link7` vs `voxel_169769` (step −1) | −0.0247489 / −0.0247489 | ~~legitimate (scene-init)~~ → **unadjudicated** (see below) |
 | utensil | no | `panda_link1` vs `voxel_76001` (step −1) | −0.0172764 / −0.0172764 | **false positive** |
+
+**Correction (2026-08-23): the two "legitimate" verdicts are withdrawn.** Both
+rested on a probed pair that should never have been measured. The near-miss
+probe excluded non-solid geometry on its *world* side only, so a geom with
+neither `contype` nor `conaffinity` — a visual shell, a region marker — could
+still be ranked first from the robot or payload side, and any distance to one is
+not a penetration:
+
+- `sink_cup` — the −1.759 mm pair is `obj_reg_bbox ↔ island_island_group_top_right_0`.
+  `obj_reg_bbox` is the payload's own **region bounding box**, the same class of
+  marker rounds 5/6 already excluded on the world side.
+- `fridge` — the 0.000 m pair is `robot0_g25_vis ↔ fridge_main_group_freezer_door_main`.
+  `robot0_g25_vis` is a **visual** geom on `robot0_link6`; that link's collision
+  geom is 16.1 mm clear, and the nearest solid pair anywhere on the arm is
+  `robot0_link7_collision` at 2.5 mm.
+
+The producer now filters every probe side and discloses the counts
+(`openral_hal.sim_sensor_bridge._nearest_pair_records`), and the harness
+promotes a `<= 0 m` pair to `real-contact` only on a snapshot that attests it.
+These artifacts carry no such attestation, so both stops re-derive as
+`estop-collision-unadjudicated` — the recorded evidence does not support
+`real-contact` and never did. Neither becomes a *false positive*: nothing here
+shows the kernel was wrong, only that this probe cannot say it was right. The
+round's artifacts are checked in at
+`tests/unit/fixtures/validation_matrix/2026-08-22-master-1/` and the correction
+is pinned by `tests/unit/test_validation_matrix.py`.
 
 `min_distance_m == sweep_min_distance_m` in all four → **no exemption active
 anywhere this round**; `place_allowance_active=1` occurrences: 0.
@@ -405,9 +431,63 @@ record, so the round had no grid resolution and therefore no quantization budget
 to judge the stop by. The monitor now attaches when the graph launches, and a
 round's notes name any scene that stopped before it saw a grid.
 
+The `real contact` calls in the table above are subject to the same 2026-08-23
+correction as `master-1`: this build's probe filtered its world side only.
+
+### 2026-08-23 — `master-s1/2/3`, `nav143fix-s1/2/3`, `nav143-s1`
+
+`spark:~/workspace/openral-matrix-baseline/outputs/validation-matrix/2026-08-23-*/`
+— a 24-run round (four scenes × six rounds) at `d826643` and `87dcda1`. **Cite
+it as evidence about the harness, not about the collision stack**, because its
+per-run evidence stream is missing.
+
+**Every one of the 24 `run_monitor.jsonl` files contains exactly two lines**,
+`monitor_started` and `monitor_stopped`. The cause is mechanical and confirmed:
+PR #145 moved the monitor's spawn ahead of the wait for the action server (to
+catch stops at sim t≈4.7 s, which it does), so the monitor created its DDS
+participant ~6 ms after the deploy started — and `openral deploy sim` then
+unlinked every `/dev/shm/fastrtps_*` this user owns
+(`_clean_stale_fastrtps_shm`, reached because `RMW_IMPLEMENTATION` is unset on
+that host and Fast-DDS is therefore in force). The monitor lost its shared
+memory, did not error, and received nothing for the rest of the scene. A monitor
+left running across a scene boundary recorded normally until the instant the
+next scene's deploy started, then went permanently silent.
+
+Consequences, all now fixed and pinned by
+`tests/unit/fixtures/validation_matrix/2026-08-23-master-s1/`:
+
+- `grid_resolution_m` is `null` in every scene of every round, so the round's
+  own `NOTES.md` listed all four scenes under "stopped before the monitor saw a
+  voxel grid" — which is **not** what happened. The harness now counts what the
+  monitor received (`monitor_records`) and reports a deaf monitor separately
+  from an early stop.
+- The `real-contact` verdicts in these rounds have the same defect as
+  `master-1` above: the fridge stop was adjudicated off
+  `robot0_g42_vis ↔ fridge_main_group_g43` at 0.000 m, a visual shell, while
+  `robot0_link7_collision` was 2.5 mm clear.
+- The `utensil` stop (`robot0_link1` 43.3 mm clear against a kernel −17.3 mm,
+  a 60.5 mm discrepancy) was adjudicated against the 21.7 mm quantization term
+  while the **same snapshot** reports `adjudication_budget.admissible_gap_m =
+  88.2 mm`. Against the HAL's own budget it is `within-quantization` — the
+  kernel behaving correctly — not a false positive. The harness now consumes the
+  published budget.
+
+**`nav143-s1` never ran at all.** At `87dcda1` `ros2 launch` threw —
+`executable 'payload_footprint_node.py' not found on the libexec directory
+.../openral_nav2_bringup` — and unwound, but the nodes it had already spawned
+kept running and kept logging, so there was no marker file, no usage banner and
+a 476-line deploy log. The dispatcher then raised
+`RuntimeError: /openral/execute_rskill unavailable`, and the scene was bucketed
+`deadline-no-grasp` with `harness_error_reason` and `dispatch_failure_reason`
+both empty. Both are now `harness-error`; its artifacts are the fixture at
+`tests/unit/fixtures/validation_matrix/2026-08-23-nav143-s1/`.
+
+**The round produced no citable collision-stack finding.** Rerun it on a build
+carrying the fixes before drawing any conclusion from these six rounds.
+
 ## Standing caveats
 
-Five things a reader should carry away, all of them stated by the artifacts
+Six things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -423,7 +503,13 @@ themselves rather than inferred:
    in every shipped scene at the time of this round; #142 and its follow-up
    correction arm it on the three RoboCasa place scenes, with `robocasa_baguette`
    the only one observed arming end to end so far (see the update above).
-5. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
+5. **No `real-contact` verdict recorded before 2026-08-23 is safe to cite.**
+   Every ground-truth probe up to that date filtered non-solid geometry on its
+   world side only, so a visual shell or a region marker on the robot or payload
+   side could be — and was — ranked first at 0.000 m. Those stops re-derive as
+   `unadjudicated`. This withdraws a conclusion; it does not reverse one: no
+   such stop is thereby shown to be a false positive.
+6. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
    `round7`, `round8`, `defect-ab`). Their findings survive only as constants
    and comments in this repo. Treat a citation to one of those rounds as a
    citation to the in-tree comment that carries it, not to a retrievable
