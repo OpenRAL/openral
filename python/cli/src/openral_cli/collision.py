@@ -10,12 +10,27 @@ blocks, leaving every other line (and its comments) byte-for-byte intact.
 ``lower`` prints a unified diff by default and mutates only with ``--write``; a
 regenerated ACM never changes silently (a safety input — CLAUDE.md §3). ``check``
 fails (exit 1) when any manifest drifts from its lowered model.
+
+**A re-lower may not silently loosen a hand-tightened collision model.**
+``urdf_lowering.lower_link_geometry`` emits a PCA bounding capsule for any mesh
+collision — correct and conservative for onboarding, but strictly looser than a
+hand-fitted oriented box. ``panda_mobile`` carries boxes (#103); re-lowering it
+from ``rd:panda_description`` today would replace all seven with capsules of
+**1.9-3.7x the volume** and **1.4-1.5x the circumradius**, undoing that work in a
+block the writer stamps ``# GENERATED``. So ``lower`` measures the new geometry
+against what the manifest already carries (:func:`geometry_loosening`) and
+**refuses to write** a looser one. There is deliberately no override flag
+(CLAUDE.md §3, "never add a flag that disables safety"): abandoning tighter
+geometry means deleting it from the manifest first, which is a reviewable diff
+rather than a switch.
 """
 
 from __future__ import annotations
 
 import difflib
+import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,11 +39,14 @@ from openral_core.exceptions import ROSError
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription
+    from openral_core import CollisionShape, LinkCollisionGeometry, RobotDescription
     from openral_safety.urdf_lowering import LoweredCollisionModel
 
 __all__ = [
+    "GeometryLoosening",
     "collision_app",
+    "collision_primitive_envelope",
+    "geometry_loosening",
     "inject_joint_fk",
     "render_blocks",
     "splice_collision_blocks",
@@ -93,6 +111,220 @@ def splice_collision_blocks(
     if acm_block is not None:
         text = _replace_block(text, "allowed_collision_pairs", acm_block)
     return text
+
+
+# ── Loosening guard: a re-lower must not quietly widen a hand-fitted primitive ─
+
+
+@dataclass(frozen=True)
+class GeometryLoosening:
+    """One link whose newly lowered primitive claims more space than the shipped one.
+
+    A CLI report record, not a schema: it is never persisted, published or parsed,
+    so a frozen dataclass is the right weight (CLAUDE.md §2 — Pydantic is for
+    schemas and external interfaces).
+
+    Attributes:
+        link_name: the manifest ``collision_geometry`` entry's link.
+        shipped: the committed primitive rendered with its measured envelope,
+            e.g. ``"box h=[0.0552, 0.0724, 0.1410] (vol 4508.0 cm³, circ
+            167.8 mm)"``.
+        lowered: the same for what the tool would write. Empty when the tool
+            emits nothing for this link, i.e. the link would lose its geometry
+            entirely.
+        volume_ratio: lowered ÷ shipped enclosed volume. ``inf`` when a link
+            would be dropped.
+        circumradius_ratio: lowered ÷ shipped circumradius; ``inf`` likewise.
+    """
+
+    link_name: str
+    shipped: str
+    lowered: str
+    volume_ratio: float
+    circumradius_ratio: float
+
+
+def collision_primitive_envelope(shape: CollisionShape) -> tuple[float, float]:
+    """``(volume_m³, circumradius_m)`` — how much space one collision primitive claims.
+
+    The two numbers a "did this get looser?" comparison needs, and the only two
+    that are exact in closed form for every member of the ``CollisionShape``
+    union. **Volume** is total claimed space — the term that drives how often the
+    kernel flags a link against occupancy it is not really touching.
+    **Circumradius** (the primitive's own bounding-sphere radius, about its own
+    centre) is maximum extent — the term volume alone can hide, since a long thin
+    primitive can reach further on less volume. Both are independent of where
+    ``origin_xyz_rpy`` places the primitive and of how it is rotated, so the
+    comparison is about the primitive and never about its placement.
+
+    Args:
+        shape: a ``BoxShape``, ``CapsuleShape`` or ``SphereShape``.
+
+    Returns:
+        ``(volume_m3, circumradius_m)``.
+
+    Raises:
+        ROSConfigError: the shape is none of the three known primitives — a new
+            one must be measured here before it can be compared, never silently
+            scored zero.
+
+    Example:
+        >>> from openral_core import BoxShape
+        >>> v, c = collision_primitive_envelope(BoxShape(half_extents_m=(0.5, 0.5, 0.5)))
+        >>> round(v, 3), round(c, 3)
+        (1.0, 0.866)
+    """
+    from openral_core import BoxShape, CapsuleShape, SphereShape
+    from openral_core.exceptions import ROSConfigError
+
+    if isinstance(shape, BoxShape):
+        hx, hy, hz = (float(v) for v in shape.half_extents_m)
+        return 8.0 * hx * hy * hz, math.sqrt(hx * hx + hy * hy + hz * hz)
+    if isinstance(shape, SphereShape):
+        r = float(shape.radius_m)
+        return 4.0 / 3.0 * math.pi * r**3, r
+    if isinstance(shape, CapsuleShape):
+        r, length = float(shape.radius_m), float(shape.length_m)
+        return math.pi * r * r * length + 4.0 / 3.0 * math.pi * r**3, length / 2.0 + r
+    raise ROSConfigError(
+        f"cannot measure collision primitive of kind {shape.shape!r}: add it to "
+        "openral_cli.collision.collision_primitive_envelope before comparing it."
+    )
+
+
+# `render_blocks` writes every primitive scalar with `:.4f`. A committed manifest
+# therefore carries QUANTIZED values while a fresh lowering carries full-precision
+# ones, so comparing the two directly makes every tool-generated manifest look
+# 1.000x looser than itself. The comparison is between what is written and what
+# WOULD be written, so both sides are quantized the same way first.
+_BLOCK_FLOAT_DP = 4
+
+
+def _writer_quantized(shape: CollisionShape) -> CollisionShape:
+    """One primitive rounded to the precision ``render_blocks`` writes it at."""
+    from openral_core import BoxShape, SphereShape
+
+    if isinstance(shape, BoxShape):
+        return shape.model_copy(
+            update={
+                "half_extents_m": tuple(
+                    round(float(v), _BLOCK_FLOAT_DP) for v in shape.half_extents_m
+                )
+            }
+        )
+    if isinstance(shape, SphereShape):
+        return shape.model_copy(update={"radius_m": round(float(shape.radius_m), _BLOCK_FLOAT_DP)})
+    return shape.model_copy(
+        update={
+            "radius_m": round(float(shape.radius_m), _BLOCK_FLOAT_DP),
+            "length_m": round(float(shape.length_m), _BLOCK_FLOAT_DP),
+        }
+    )
+
+
+def _render_primitive(shape: CollisionShape) -> str:
+    """One primitive as a short human string, with its measured envelope."""
+    from openral_core import BoxShape, SphereShape
+
+    volume, circ = collision_primitive_envelope(shape)
+    if isinstance(shape, BoxShape):
+        body = "box h=[" + ", ".join(f"{float(v):.4f}" for v in shape.half_extents_m) + "]"
+    elif isinstance(shape, SphereShape):
+        body = f"sphere r={float(shape.radius_m):.4f}"
+    else:
+        body = f"capsule r={float(shape.radius_m):.4f} L={float(shape.length_m):.4f}"
+    return f"{body} (vol {volume * 1e6:.1f} cm³, circ {circ * 1e3:.1f} mm)"
+
+
+def geometry_loosening(
+    shipped: list[LinkCollisionGeometry],
+    lowered: list[LinkCollisionGeometry],
+) -> list[GeometryLoosening]:
+    """Links where re-lowering would claim more space than the committed manifest.
+
+    The guard behind ``lower``'s refusal. A link is reported when the lowered
+    primitive's volume **or** circumradius exceeds the shipped one's — either is
+    enough, because they fail in different directions (a capsule that swallows a
+    box has more volume; one fitted to a long link reaches further). Equality is
+    not a regression, so a manifest already equal to the tool's output — every
+    ``# GENERATED`` manifest in ``robots/`` — reports nothing.
+
+    A shipped link the tool emits *no* primitive for is reported with infinite
+    ratios: losing a link's geometry outright removes it from the kernel's
+    collision model, which is the worst version of the same failure.
+
+    A link the tool adds and the manifest lacks is **not** reported: new coverage
+    is not a loosening.
+
+    Args:
+        shipped: the manifest's committed ``collision_geometry``.
+        lowered: what ``openral collision lower`` would write in its place.
+
+    Returns:
+        One :class:`GeometryLoosening` per affected link, worst volume ratio
+        first. Empty when nothing would get looser.
+
+    Example:
+        >>> geometry_loosening([], [])
+        []
+    """
+    by_link = {g.link_name: g for g in lowered}
+    out: list[GeometryLoosening] = []
+    for entry in shipped:
+        old_volume, old_circ = collision_primitive_envelope(_writer_quantized(entry.shape))
+        new = by_link.get(entry.link_name)
+        if new is None:
+            out.append(
+                GeometryLoosening(
+                    link_name=entry.link_name,
+                    shipped=_render_primitive(entry.shape),
+                    lowered="",
+                    volume_ratio=math.inf,
+                    circumradius_ratio=math.inf,
+                )
+            )
+            continue
+        new_volume, new_circ = collision_primitive_envelope(_writer_quantized(new.shape))
+        if new_volume <= old_volume and new_circ <= old_circ:
+            continue
+        out.append(
+            GeometryLoosening(
+                link_name=entry.link_name,
+                shipped=_render_primitive(entry.shape),
+                lowered=_render_primitive(new.shape),
+                volume_ratio=new_volume / old_volume if old_volume > 0.0 else math.inf,
+                circumradius_ratio=new_circ / old_circ if old_circ > 0.0 else math.inf,
+            )
+        )
+    out.sort(key=lambda r: (-r.volume_ratio, r.link_name))
+    return out
+
+
+def _report_loosening(robot_path: Path, findings: list[GeometryLoosening]) -> None:
+    """Print the loosening table. Says what was measured, not merely that it failed."""
+    _console.print(
+        f"[red]Refusing to loosen {robot_path}[/red] — the lowered geometry claims more "
+        f"space than the committed manifest on {len(findings)} link(s):"
+    )
+    for f in findings:
+        _console.print(f"  [bold]{f.link_name}[/bold]", markup=True)
+        _console.print(f"      shipped: {f.shipped}", markup=False, highlight=False)
+        _console.print(
+            f"      lowered: {f.lowered or '(no primitive — the link would lose its geometry)'}",
+            markup=False,
+            highlight=False,
+        )
+        _console.print(
+            f"      volume x{f.volume_ratio:.2f}, circumradius x{f.circumradius_ratio:.2f}",
+            markup=False,
+            highlight=False,
+        )
+    _console.print(
+        "[yellow]`lower_link_geometry` PCA-fits a bounding capsule to any mesh collision; "
+        "that is conservative for onboarding but looser than hand-fitted boxes. To adopt "
+        "the lowered geometry anyway, delete the affected `collision_geometry` entries "
+        "from the manifest first — there is no override flag (CLAUDE.md §3).[/yellow]"
+    )
 
 
 _JOINT_NAME_RE = re.compile(r'^(\s*)-\s*name:\s*["\']?([^"\'\s]+)')
@@ -228,19 +460,34 @@ def _lower(
     return robot, model
 
 
-def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> tuple[str, str]:
-    """Return ``(current_manifest_text, spliced_manifest_text)`` for a manifest.
+def _lowered_text(
+    robot_path: Path, *, acm_only: bool, geometry_only: bool
+) -> tuple[str, str, list[GeometryLoosening]]:
+    """``(current_manifest_text, spliced_manifest_text, loosening)`` for a manifest.
 
     Shared by ``lower`` and ``check`` (and the regression tests). Loads the robot,
     lowers its collision model, renders the affected block(s), and splices them
     into the on-disk text — touching only the requested block(s).
+
+    The third element is the geometry-loosening report
+    (:func:`geometry_loosening`), computed here because this is the one place
+    that holds the committed manifest and the tool's replacement for it at the
+    same time. It is empty whenever the geometry block would not be rewritten at
+    all (``--acm-only``, or an MJCF-sourced robot whose hand geometry the tool
+    reuses rather than regenerates), so a caller cannot mistake "not compared"
+    for "compared and clean".
     """
-    _robot, model = _lower(robot_path, acm_only=acm_only, geometry_only=geometry_only)
+    robot, model = _lower(robot_path, acm_only=acm_only, geometry_only=geometry_only)
     geo_block, acm_block = render_blocks(model)
     current = robot_path.read_text(encoding="utf-8")
     # MJCF-sourced robots keep their hand-authored geometry (the tool reuses it,
     # doesn't regenerate it), so never rewrite the geometry block for them.
     write_geometry = not acm_only and model.acm_source != "mjcf"
+    loosening = (
+        geometry_loosening(list(robot.collision_geometry or []), list(model.collision_geometry))
+        if write_geometry
+        else []
+    )
     spliced = splice_collision_blocks(
         current,
         geometry_block=geo_block if write_geometry else None,
@@ -250,7 +497,7 @@ def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> t
     # FK; inject it into the joints block.
     if not acm_only:
         spliced = inject_joint_fk(spliced, model.joint_fk)
-    return current, spliced
+    return current, spliced, loosening
 
 
 @collision_app.command("lower")
@@ -297,7 +544,9 @@ def lower(
                 f"[yellow]Dry run.[/yellow] Re-run with [bold]--write[/bold] to write "
                 f"{emit_cumotion}."
             )
-    current, spliced = _lowered_text(robot, acm_only=acm_only, geometry_only=geometry_only)
+    current, spliced, loosening = _lowered_text(
+        robot, acm_only=acm_only, geometry_only=geometry_only
+    )
     if current == spliced:
         _console.print("[green]No change — manifest already matches the lowered model.[/green]")
         return
@@ -310,7 +559,14 @@ def lower(
     # markup=False / highlight=False: the diff body contains "[a, b]" ACM rows that
     # rich would otherwise parse as console-markup tags and drop.
     _console.print("".join(diff), markup=False, highlight=False)
+    if loosening:
+        # Reported on a dry run too: a reader comparing the diff by eye cannot see
+        # that a capsule swallows the box it replaces, which is the whole trap.
+        _report_loosening(robot, loosening)
     if write:
+        if loosening:
+            _console.print(f"[red]Not written.[/red] {robot} is unchanged.")
+            raise typer.Exit(code=3)
         robot.write_text(spliced, encoding="utf-8")
         _console.print(
             f"[green]Wrote[/green] {robot} — review the ACM diff with the safety WG (CLAUDE.md §3)."
@@ -351,7 +607,9 @@ def check(
     drift: list[Path] = []
     for t in targets:
         try:
-            current, spliced = _lowered_text(t, acm_only=acm_only, geometry_only=geometry_only)
+            current, spliced, loosening = _lowered_text(
+                t, acm_only=acm_only, geometry_only=geometry_only
+            )
         except (ValueError, FileNotFoundError, ROSError) as exc:
             # ROSError covers ROSConfigError, now raised by lower_robot when a
             # manifest declares no URDF/MJCF asset or an asset ref won't resolve.
@@ -360,6 +618,17 @@ def check(
         if current != spliced:
             drift.append(t)
             _console.print(f"[red]drift[/red] {t} differs from its lowered model")
+            if loosening:
+                # The remedy line below tells the reader to re-lower. On these
+                # manifests that would make the model LOOSER, and `lower --write`
+                # will refuse — say so here rather than sending them into it.
+                _console.print(
+                    f"       …but the lowered geometry is looser on "
+                    f"{len(loosening)} link(s) "
+                    f"({', '.join(f.link_name for f in loosening)}); "
+                    "`lower --write` will refuse. This manifest's geometry is "
+                    "hand-tightened on purpose."
+                )
     if drift:
         _console.print(
             f"[red]{len(drift)} manifest(s) drifted — run "

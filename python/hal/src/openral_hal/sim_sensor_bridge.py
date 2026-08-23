@@ -1135,8 +1135,14 @@ def voxel_backing_record(
     * ``attached_payload`` — the carried object; it should have been cleared
       from world occupancy by the bridge.
     * ``self_occupancy_suspect`` — **the robot's own body**, base and mount
-      included. The depth self-filter is supposed to make these transparent,
-      so a hit here means the robot is in its own world map.
+      included. ``suspect`` is the whole of the claim: this says a robot body
+      is in the cell *now*, which is equally the signature of a correct stop on
+      a link that has reached real geometry. It cannot distinguish "the robot
+      wrote this cell" from "the robot has since moved into it" — on the
+      2026-08-23 fridge reconstruction the backing body was ``robot0_link7``,
+      the stopping link, 1.9 mm inside a freezer door. Read it as a prompt to
+      check the near-miss pairs, never as a finding on its own. What a hit does
+      rule out is that the stop was on nothing at all.
     * ``noncollidable_world`` — a marker/visual geom. ``mj_ray`` strikes these
       and so does the depth synth, so they *can* become occupancy; the
       near-miss probe deliberately never measures them.
