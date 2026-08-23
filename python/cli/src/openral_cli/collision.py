@@ -126,8 +126,9 @@ class GeometryLoosening:
 
     Attributes:
         link_name: the manifest ``collision_geometry`` entry's link.
-        shipped: ``"<kind> vol=<m³> circ=<m>"`` for the committed primitive, or
-            ``"box"``/``"capsule"``/``"sphere"`` rendering of it.
+        shipped: the committed primitive rendered with its measured envelope,
+            e.g. ``"box h=[0.0552, 0.0724, 0.1410] (vol 4508.0 cm³, circ
+            167.8 mm)"``.
         lowered: the same for what the tool would write. Empty when the tool
             emits nothing for this link, i.e. the link would lose its geometry
             entirely.

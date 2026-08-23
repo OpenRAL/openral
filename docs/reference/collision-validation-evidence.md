@@ -406,7 +406,7 @@ then **verified** against the `base_frame_tf` in the same record.
 | stop | kernel | evidence-voxel verdict | what backs the cell |
 |---|---|---|---|
 | utensil | `panda_link1` vs `voxel_76001`, −17.3 mm | **`unbacked`** (0 of 243 rays) | nothing — nearest solid is `stack_2_left_group_3_door_g2` at 43.3 mm, reproducing the round's own probe to 6 dp |
-| fridge | `panda_link7` vs `voxel_169769`, −24.7 mm | `self_occupancy_suspect` → **`robot0_link7`, the stopping link itself** | `robot0_link7_collision` is −1.9 mm *inside* `fridge_main_group_freezer_door_main`, with 2 realized MuJoCo contacts |
+| fridge | `panda_link7` vs `voxel_169769`, −24.7 mm | `self_occupancy_suspect` → **`robot0_link7`, the stopping link itself** | `robot0_link7_collision` against `fridge_main_group_freezer_door_main`: **+2.5 mm** in the round's own snapshot, **−1.9 mm with 2 realized contacts** in the reconstruction (see caveat 2 — the door has not settled at t = 0). Either way the link is on the door, and −24.7 mm is inside the 109.9 mm budget |
 | baguette | `panda_link5` vs `voxel_170781`, −20.9 mm | **`unbacked`** (0 of 243 rays) | nothing — nearest solid to `link5` is `cab_1_left_group_left_door_g2` at 106.5 mm |
 | sink_cup | `attached:sim:obj_main` vs `voxel_87084`, −13.4 mm | **`noncollidable_world`** | `island_island_group_top_right_visual`, a **visual-only** counter top |
 
@@ -452,7 +452,7 @@ geometry to `panda_link5` is **106.5 mm** (`cab_1_left_group_left_door_g2`,
 confirmed analytically vertex-by-vertex against the door's OBB), so the
 discrepancy is **127.4 mm** against an `admissible_gap_m` of 109.9 mm
 (88.2 mm max corner slop + 21.7 mm voxel half-diagonal) — 17.5 mm beyond the
-budget, and far beyond `panda_link5`'s own per-link gap of 65.4 mm. The cell has
+budget, and beyond `panda_link5`'s own per-link gap of 67.0 mm (45.3 + 21.7). The cell has
 no geometry in it at all, and its 26 neighbours contain solid
 `cab_1_left_group_left_door_main` one cell away, so the shape of it is a
 **stale or one-cell-displaced map cell**, not a body in the map. Naming the
@@ -476,15 +476,19 @@ not the answer.
    they agree with the round's own finding (nothing within 100 mm), which is the
    cross-check that makes them usable.
 
-**A latent hazard found while measuring, not a live defect.**
-`mj_geomDistance` returned exactly `0.000000` for two mesh↔box pairs that are
-analytically **361 mm** and **239 mm** apart — but only at a `distmax` of
-0.6 m and 0.3 m respectively. At every window ≤ 0.2 m both saturate correctly,
-and genuinely-close pairs are exact at every window. `estop_ground_truth_snapshot`
-widens its probe window to `admissible_gap_m` (109.9 mm on `panda_mobile`), which
-is well clear — but the widening is unbounded by construction, and the harness
-promotes a `<= 0 m` pair to `real-contact`. A budget that ever grows past ~0.3 m
-would let the probe manufacture the verdict.
+**`mj_geomDistance` returned a spurious `0.000000` here too — see PR #159 for
+the characterisation.** Widening the probe window to 0.6 m / 0.3 m made
+`mj_geomDistance` report exactly `0.000000` for two mesh↔box pairs that are
+analytically **361 mm** and **239 mm** apart (`robot0_link5_collision` vs
+`wall_front_2_backing_room_g0` and vs `fridge_main_group_fridge_door_main`).
+At every window ≤ 0.2 m both saturate correctly and genuinely-close pairs are
+exact at every window, so nothing in the numbers above rests on it. PR #159
+audits the same failure properly — two distinct modes, the native-CCD path, and
+0 of 4515 pairs affected at the repo's default `distmax = 0.1 m` — and records
+it as a standing caveat. Note only the standing consequence:
+`estop_ground_truth_snapshot` **widens** its window to `admissible_gap_m`
+(109.9 mm on `panda_mobile`), the widening is unbounded by construction, and the
+harness promotes a `<= 0 m` pair to `real-contact`.
 
 **The place machinery was unarmed in the shipped scenes.** `place_declaration`
 appears in **zero** files under `scenes/` in this repo. The 08-22 round armed
