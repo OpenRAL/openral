@@ -30,6 +30,7 @@ from openral_sim.backends.robocasa import (
     _CURATED_PREBUILT_TASKS,
     _fit_panda_mobile_action,
     _resolve_env_name,
+    _single_scene_pin,
     _validate_backend_options,
     _xr1_robocasa_state,
     read_panda_mobile_base_velocity,
@@ -621,3 +622,41 @@ def test_read_panda_mobile_base_velocity_with_caller_supplied_names() -> None:
     assert twist.shape == (3,)
     np.testing.assert_allclose(twist[:2], np.array([0.0, -1.0], dtype=np.float32), atol=1e-6)
     assert float(twist[2]) == 0.0
+
+
+def test_out_of_range_layout_pin_surfaces_as_ros_config_error() -> None:
+    """A bad ``layout_ids`` reaches the operator as a typed ROSConfigError.
+
+    The schema validator rejects it, and `_validate_backend_options` is what
+    converts Pydantic's ValidationError into the repo's exception family. This
+    is the whole point of validating at the scene boundary: without it the same
+    mistake surfaces as `KeyError: 99` from inside RoboCasa's arena builder.
+    """
+    scene = _make_scene(
+        "robocasa/PickPlaceFridgeShelfToDrawer",
+        {
+            "mode": "prebuilt",
+            "prebuilt_task": "PickPlaceFridgeShelfToDrawer",
+            "layout_ids": [99],
+        },
+    )
+    with pytest.raises(ROSConfigError) as excinfo:
+        _validate_backend_options(scene)
+    assert "layout_ids" in str(excinfo.value)
+    assert "99" in str(excinfo.value)
+
+
+def test_single_scene_pin_distinguishes_a_pin_from_a_pool() -> None:
+    """Only a single non-negative id names one kitchen; everything else is a draw.
+
+    The distinction is load-bearing: `_RoboCasaSim.reset` enforces equality
+    against a pin, and enforcing it against a pool would refuse legitimate
+    multi-layout sampling (e.g. the `layout_ids=[-2]` training split).
+    """
+    assert _single_scene_pin([30]) == 30
+    assert _single_scene_pin(3) == 3
+    assert _single_scene_pin(None) is None
+    assert _single_scene_pin([]) is None
+    assert _single_scene_pin([1, 2]) is None
+    assert _single_scene_pin(-2) is None
+    assert _single_scene_pin([-2]) is None

@@ -305,6 +305,12 @@ class _RoboCasaSim:
     _head_render_model: Any = None
     # Cached (height_m, forward_offset_m) from the robot.yaml `head` sensor.
     _head_geom: tuple[float, float] | None = None
+    # The scene composition the YAML pinned, when it pinned exactly ONE
+    # kitchen — see `_single_scene_pin`. `None` means "the YAML left the
+    # pool open", and the layout/style are then a draw from `env.rng`,
+    # which is legitimate but must not be mistaken for a pin.
+    _pinned_layout_id: int | None = None
+    _pinned_style_id: int | None = None
 
     def enable_continuous(self) -> None:
         """Disable task evaluation/terminal synthesis for ``deploy sim``."""
@@ -326,8 +332,81 @@ class _RoboCasaSim:
             else result
         )
         self._debug_step = 0
+        self._assert_and_log_scene_composition()
         self._log_eef_distance(raw, step=0, action=None)
         return self._wrap_obs(raw)
+
+    def _assert_and_log_scene_composition(self) -> None:
+        """Record the kitchen this episode actually got, and enforce the pin.
+
+        RoboCasa redraws ``(layout_id, style_id)`` from ``env.rng`` inside
+        ``Kitchen._load_model`` on EVERY reset, so the composition is a
+        property of the episode, not of the built env — which is why this
+        runs here rather than at factory time.
+
+        Two things happen, in this order:
+
+        1. ``robocasa_scene_composition`` goes into the run artifacts naming
+           the effective layout and style. Without it a round's log never
+           states which of RoboCasa's 60 kitchens it ran, and a later reader
+           has no way to tell a layout-pinned round from an unpinned one.
+           Several conclusions in this repo were overturned for exactly that
+           reason.
+        2. When the scene YAML pinned exactly one layout / style, the
+           effective value is checked against it and a mismatch is a typed
+           ``ROSConfigError``. The pin can be silently overridden two ways
+           upstream — a task's ``EXCLUDE_LAYOUTS`` / ``EXCLUDE_STYLES`` filters
+           the pinned id out of the pool, or a replayed ``_ep_meta`` carries
+           its own ``layout_id`` / ``style_id`` and wins outright
+           (``Kitchen._load_model``). Both would otherwise run a DIFFERENT
+           kitchen than the YAML declares while every artifact still shows
+           the declared one.
+
+        Raises:
+            ROSConfigError: when a pinned layout / style is not what the env
+                composed.
+        """
+        env = getattr(self._env, "unwrapped", self._env)
+        effective_layout = getattr(env, "layout_id", None)
+        effective_style = getattr(env, "style_id", None)
+        if effective_layout is None:
+            # Non-kitchen robocasa env (the GR1 tabletop fork has no layout
+            # axis at all). Nothing to record and nothing to enforce.
+            return
+
+        import structlog
+
+        # `Kitchen._load_model` assigns these from `rng.choice`, so they are
+        # numpy scalars, NOT `int` — an `isinstance(x, int)` comparison here
+        # rejects a correctly honoured pin. `_scene_id_as_int` normalises;
+        # `None` from it means "not an integral id" (a custom style dict),
+        # which a pin can never match.
+        style_field: object = _scene_id_as_int(effective_style)
+        if style_field is None:
+            style_field = "custom" if effective_style is not None else None
+        structlog.get_logger(__name__).info(
+            "robocasa_scene_composition",
+            scene_id=self.scene.id,
+            effective_layout_id=_scene_id_as_int(effective_layout),
+            effective_style_id=style_field,
+            pinned_layout_id=self._pinned_layout_id,
+            pinned_style_id=self._pinned_style_id,
+        )
+
+        for axis, pinned, effective in (
+            ("layout", self._pinned_layout_id, effective_layout),
+            ("style", self._pinned_style_id, effective_style),
+        ):
+            if pinned is None or _scene_id_as_int(effective) == pinned:
+                continue
+            raise ROSConfigError(
+                f"{self.scene.id}: scene.backend_options pinned {axis}_ids="
+                f"[{pinned}] but RoboCasa composed {axis}_id={effective!r}. "
+                f"The pin was overridden — either the task's EXCLUDE_"
+                f"{axis.upper()}S drops it from the pool, or a replayed "
+                f"_ep_meta carries its own {axis}_id. Refusing rather than "
+                f"running a kitchen the scene file does not describe."
+            )
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
         action_arr: NDArray[np.float32] = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -1487,6 +1566,58 @@ def _validate_backend_options(scene: SceneSpec) -> RoboCasaBackendOptions:
         ) from exc
 
 
+def _scene_id_as_int(value: Any) -> int | None:
+    """Normalise a live RoboCasa ``layout_id`` / ``style_id`` to a plain ``int``.
+
+    ``Kitchen._load_model`` sets both from ``self.rng.choice(...)``, so what
+    lands on the env is a **numpy** scalar, not a Python ``int`` — and
+    ``isinstance(np.int64(3), int)`` is ``False``. Comparing a pin against the
+    raw value therefore reports every correctly honoured pin as a violation.
+
+    Args:
+        value: The env attribute, straight off the live RoboCasa env.
+
+    Returns:
+        The id as an ``int``, or ``None`` when it is not an integral id at all
+        — a custom style is a ``dict`` upstream, and no numeric pin matches one.
+
+    Example:
+        >>> _scene_id_as_int(3), _scene_id_as_int({"cab": "x"}), _scene_id_as_int(None)
+        (3, None, None)
+    """
+    if isinstance(value, (bool, dict)) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _single_scene_pin(ids: list[int] | int | None) -> int | None:
+    """The one concrete scene id ``ids`` denotes, or ``None`` if it denotes many.
+
+    ``layout_ids`` / ``style_ids`` accept a scalar, a list, and RoboCasa's
+    negative group shorthands. Only a single non-negative id names ONE kitchen;
+    everything else leaves a pool for ``env.rng`` to draw from, which is
+    legitimate but is not a pin and must not be enforced as one.
+
+    Args:
+        ids: The field value straight off :class:`RoboCasaBackendOptions`.
+
+    Returns:
+        The pinned id, or ``None`` when the value denotes a pool.
+
+    Example:
+        >>> _single_scene_pin([30]), _single_scene_pin([1, 2]), _single_scene_pin(-2)
+        (30, None, None)
+    """
+    if isinstance(ids, int):
+        return ids if ids >= 0 else None
+    if isinstance(ids, list) and len(ids) == 1 and ids[0] >= 0:
+        return ids[0]
+    return None
+
+
 def _resolve_env_name(opts: RoboCasaBackendOptions, scene_id: str) -> str:
     """Map (scene_id, opts) to the robosuite env_name string."""
     if scene_id == _PROCEDURAL_SCENE_ID:
@@ -1838,6 +1969,8 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         _state_layout=opts.state_layout,
         _is_gymnasium_wrapped=is_gymnasium_wrapped,
         _robots=tuple(opts.robots),
+        _pinned_layout_id=_single_scene_pin(opts.layout_ids),
+        _pinned_style_id=_single_scene_pin(opts.style_ids),
     )
 
 

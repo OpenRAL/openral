@@ -48,12 +48,41 @@ conditions that lost the rounds above.
 
 Four RoboCasa scenes, one seed, one policy, one stack:
 
-| Scene key | Config | Task |
-| --- | --- | --- |
-| `baguette` | `scenes/deploy/robocasa_baguette.yaml` | counter → cabinet |
-| `sink_cup` | `scenes/deploy/robocasa_sink_cup.yaml` | counter → sink |
-| `fridge` | `scenes/deploy/robocasa_fridge_drawer.yaml` | fridge shelf → fridge drawer |
-| `utensil` | `scenes/deploy/robocasa_drawer_utensil.yaml` | counter → drawer |
+| Scene key | Config | Task | Kitchen |
+| --- | --- | --- | --- |
+| `baguette` | `scenes/deploy/robocasa_baguette.yaml` | counter → cabinet | drawn |
+| `sink_cup` | `scenes/deploy/robocasa_sink_cup.yaml` | counter → sink | drawn |
+| `fridge` | `scenes/deploy/robocasa_fridge_drawer.yaml` | fridge shelf → fridge drawer | `layout_ids: [30]` |
+| `utensil` | `scenes/deploy/robocasa_drawer_utensil.yaml` | counter → drawer | `layout_ids: [3]` |
+
+### Why two scenes pin their kitchen
+
+`seed: 1` does not identify a kitchen. RoboCasa draws layout, style, fixtures,
+which drawer the task resolves, the door-open amounts and the robot spawn
+deviation from one shared `env.rng` inside `Kitchen._load_model`, **on every
+reset** — so any upstream change to the draw order silently reshuffles the scene
+at the same seed.
+
+For `fridge` that is not merely a reproducibility problem, it is a broken round.
+Unpinned at seed 1 the scene draws layout 29, a side-by-side fridge, and spawns
+`robot0_link7_collision` at 0.000 m from the closed freezer door: the arm starts
+inside the kernel's world model and the run E-stops before applying a single
+action chunk. Sweeping 40 of the 60 layouts, only six start clear of the 25 mm
+occupancy grid (18, 20, 21, 22, 30, 36), so ~85% of this task's kitchens have
+the same defect. Layout 30 starts 37.0 mm clear.
+
+For `utensil` the pin is reproducibility only — that scene starts 43.3 mm clear
+unpinned and has **no** initial-configuration defect. Its 2026-08-23 stop was a
+false positive of the *adjudication* (a −17.3 mm read against a genuinely
+43.3 mm-clear pose, fixed in #144 by publishing `adjudication_budget`), not a
+scene problem. Layout 3 starts 77.5 mm clear.
+
+Both scenes carry the full measurement tables and method in their own header
+comments. Every reset now records the kitchen it actually composed as
+`robocasa_scene_composition` in the run artifacts
+([telemetry.md](../reference/telemetry.md)), and a pin the env cannot honour is
+a `ROSConfigError` rather than a silent substitution — so a round can no longer
+report a layout it did not run.
 
 ### The two control surfaces the stack is pinned on
 

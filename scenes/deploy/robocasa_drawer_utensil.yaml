@@ -7,6 +7,31 @@
 # baguette's. Used to check that the attached-object collision stack is not
 # overfitted to the baguette scene.
 #
+# ── This scene has NO initial-configuration defect ─────────────────────────────
+#
+# Recorded here because it has twice been assumed to have one, by analogy with
+# the fridge scene. It does not. Measured on 2026-08-23 by resetting this file
+# through the registered adapter and adjudicating the reset pose with
+# `openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` against
+# `robots/panda_mobile/robot.yaml`'s real collision model:
+#
+#   unpinned, seed 1 -> layout 29 / style 24
+#   nearest solid kernel-checked pair: robot0_link1 43.3 mm from
+#   stack_2_left_group_3_door_g2, 0 MuJoCo contacts, payload resting on the
+#   counter, end effector 0.63 m from it.
+#
+# 43.3 mm clears the 25 mm occupancy grid, so the arm does NOT start inside the
+# kernel's world model. That 43.3 mm is the same number the evidence ledger
+# already carries for the 2026-08-23 `utensil` stop — and that stop was a
+# false positive of the ADJUDICATION, not a scene defect: the kernel read
+# -17.3 mm because the comparison applied the 21.7 mm voxel term alone instead
+# of the full 88.2 mm admissible gap. #144 fixed that by publishing
+# `adjudication_budget`. See docs/contributing/validation-matrix.md §"the
+# kernel measures OBB-to-voxel".
+#
+# So the pin below is for REPRODUCIBILITY, not for a defect. Do not describe
+# this scene as having a broken starting state.
+#
 # Run: openral deploy sim --config scenes/deploy/robocasa_drawer_utensil.yaml
 # Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
 
@@ -21,6 +46,28 @@ scene:
     robots: ["PandaMobile"]
     controller: OSC_POSE
     obj_groups: utensil
+    # DO NOT REMOVE — this pin makes the round reproducible from this file
+    # alone (CLAUDE.md §1.8). The seed does not pin the kitchen: layout, style,
+    # fixtures, which of the layout's 2-31 qualifying TOP_DRAWERs the task
+    # resolves, the door-open amounts and the robot spawn deviation are all
+    # drawn from one shared `env.rng`, so any upstream change to the draw order
+    # silently reshuffles the scene at seed 1 and two rounds stop being
+    # comparable even though both say `seed: 1`.
+    #
+    # Layout 3 measured (2026-08-23, reset pose, method in the header block):
+    # nearest solid kernel-checked pair robot0_link1 77.5 mm from
+    # stack_1_right_group_2_door_g1, 0 contacts, payload on the counter, end
+    # effector 0.47 m from it. That is 3x the 25 mm occupancy grid and more
+    # headroom than the unpinned draw's 43.3 mm.
+    #
+    # Note pinning is NOT a no-op even when it names the layout already drawn:
+    # it changes the draw ORDER, so `layout_ids: [29]` yields a different
+    # kitchen instance (style 29, 80.4 mm) than the unpinned draw of layout 29
+    # (style 24, 43.3 mm). Layout 30 — correct for the fridge scene — is WRONG
+    # here: it puts robot0_link1 at 0.000 m against stack_4_left_group_3_door_g1.
+    # The two scenes park the base against different fixtures, so a layout that
+    # is good for one says nothing about the other.
+    layout_ids: [3]
 
 seed: 1
 

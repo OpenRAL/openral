@@ -12,10 +12,12 @@
 #
 # ── KNOWN DEFECT: seed 1 spawns the arm inside the kernel's world model ────────
 #
-# Status: DIAGNOSED, NOT FIXED. Seed 1 E-stops at sim t=4.85 s having applied
-# zero action chunks — an initial-configuration violation, now named in the
-# artifacts by the `sim.estop_initial_configuration` line (telemetry.md). Do not
-# read a seed-1 run as a policy or margin failure.
+# Status: DIAGNOSED, and FIXED by the `layout_ids: [30]` pin below — do not
+# remove it without reading the measurements at the end of this block. Unpinned,
+# seed 1 E-stops at sim t=4.85 s having applied zero action chunks — an
+# initial-configuration violation, named in the artifacts by the
+# `sim.estop_initial_configuration` line (telemetry.md). Do not read an unpinned
+# seed-1 run as a policy or margin failure.
 #
 # What actually happens (upstream sources read at robocasa-kitchen
 # `robocasa/environments/kitchen/atomic/kitchen_pick_place.py:1300-1380`,
@@ -54,26 +56,83 @@
 # Its freezer door is full height, so the closed half stands right where the arm
 # hangs. The opened fridge half is fine: `robot0_link5` clears it by 90.7 mm.
 #
-# CANDIDATE FIX (unverified — needs a live env, so it is NOT applied here).
-# Pin a layout whose fridge is a BOTTOM-FREEZER: its freezer door is below arm
-# height and its fridge door — the one at arm height — is swung 100% open by
-# the task. From `robocasa/models/assets/scenes/kitchen_layouts/`:
-#   bottom_freezer: 3, 5, 11, 14, 17, 19, 23, 27, 28, 31, 52, 55, 60
-#   side_by_side:   2, 7, 9, 18, 21, 24, 29, 32, 38, 41, 43, 44, 45, 47, 57
-#   french_door:    the remainder (both doors open toward the robot — try last)
-# e.g. add to backend_options:  layout_ids: 3   (and a style_id outside the
-# task's EXCLUDE_STYLES = [23,24,25,27,28,37,38,40,44,47,56], or the pool
-# empties and `rng.choice` raises). `layout_ids` / `style_ids` /
-# `layout_and_style_ids` are already forwarded to the Kitchen ctor by the
-# RoboCasa scene adapter.
+# THE FIX, AND THE MEASUREMENTS BEHIND IT (2026-08-23, this dev host).
 #
-# CONFIRMING RUN (Spark — RoboCasa is not installable on the dev host):
-#   openral deploy sim --config scenes/deploy/robocasa_fridge_drawer.yaml
-# with `layout_ids` pinned as above. It is fixed iff the run reaches the first
-# applied chunk WITHOUT a `sim.estop_initial_configuration` line, and the
-# `sim.estop_ground_truth_snapshot` `nearest_robot_world_pairs` head clears the
-# grid resolution (> 0.025 m) at the reset pose. Until that run exists, do not
-# claim a seed or layout works.
+# RoboCasa is installable here after all — `openral_sim._deps` provisions the
+# kitchen fork and the ~11 GB CC-BY-4.0 asset bundle without a GPU, because
+# building and resetting a scene is geometry, not inference. The earlier
+# "needs the Spark" note was wrong, and every number below was measured
+# locally by resetting THIS scene file through the registered adapter and
+# adjudicating the reset pose with the repo's own
+# `openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` against
+# `robots/panda_mobile/robot.yaml`'s real collision model. The reported
+# distance is the nearest SOLID kernel-checked robot<->world pair; visual
+# shells are filtered out (PR #139's `robot0_g25_vis`).
+#
+# Unpinned, seed 1 draws layout 29 / style 20 — a side-by-side fridge, exactly
+# what the diagnosis above deduced from the geometry names — and
+# `robot0_link7_collision` sits at 0.000 m from
+# `fridge_main_group_freezer_door_main` with 0 MuJoCo contacts. That is the
+# initial-configuration violation, reproduced.
+#
+# THE BOTTOM-FREEZER HYPOTHESIS IS FALSIFIED. The earlier candidate fix in this
+# block reasoned that a bottom-freezer kitchen puts the closed freezer door
+# below arm height and so must be safe, and named layout 3. Measured at seed 1,
+# every bottom-freezer layout fails, and the one that works is a FRENCH-DOOR
+# kitchen — the type the old note said to "try last":
+#
+#   layout   fridge type      nearest solid kernel-checked pair
+#   ------   --------------   ---------------------------------
+#      3     bottom_freezer   0.000 m   robot0_link2 ~ fridge_right_group_g73
+#      5     bottom_freezer   0.000 m   robot0_link1 ~ fridge_left_group_g69
+#     11     bottom_freezer   0.016 m   robot0_link1 ~ fridge_right_group_g72
+#     13     french_door      0.000 m   robot0_link1 ~ fridge_1_right_group_1_g44
+#     14     bottom_freezer   0.000 m   robot0_link1 ~ fridge_left_group_1_g69
+#     17     bottom_freezer   0.000 m   robot0_link1 ~ fridge_1_left_group_1_g69
+#     19     bottom_freezer   0.000 m   robot0_link7 ~ fridge_1_main_group_3_g25
+#     23     bottom_freezer   0.000 m   robot0_link2 ~ fridge_right_group_g73
+#     27     bottom_freezer   0.000 m   robot0_link2 ~ fridge_left_group_g70
+#     28     bottom_freezer   0.000 m   robot0_link2 ~ fridge_right_group_g72
+#  >> 30     french_door      0.037 m   robot0_link2 ~ fridge_left_group_g44  <<
+#     31     bottom_freezer   0.000 m   robot0_link2 ~ fridgebottomfreezer_...
+#
+# Why the hypothesis missed: the interfering link on most of these is link1 or
+# link2, not link7. Those sit at the SHOULDER, not at door height, so what they
+# hit is the fridge HOUSING and the adjacent cabinet run the base is parked
+# against — geometry the freezer-door reasoning never considered. Fridge type
+# alone does not predict the reset pose; the base placement does, and it is a
+# whole-kitchen property.
+#
+# Layout 30 clears the 25 mm occupancy grid the matrix rounds run at
+# (seed1_residue.txt) by 37.0 mm, with 0 contacts, the payload resting on its
+# shelf (-0.06 mm, contact tolerance) and the end effector 0.41 m from it.
+#
+# A CLEAN START IS RARE, WHICH IS WHY THIS PIN EXISTS. Sweeping 40 of the 60
+# layouts at seed 1, only SIX clear the 25 mm grid:
+#
+#   18 -> 63.1 mm    20 -> 36.1 mm    21 -> 37.1 mm
+#   22 -> 41.0 mm    30 -> 37.0 mm    36 -> 34.2 mm
+#
+# The other 34 sit at or below the grid resolution, 22 of them at exactly
+# 0.000 m. So ~85% of this task's kitchens spawn the arm inside the kernel's
+# world model at seed 1 — an unpinned run is far more likely to be testing the
+# spawn than the collision stack. Layout 18 has the most headroom of the six and
+# is the obvious fallback if 30 ever regresses upstream; 30 is pinned because it
+# is the value that was independently reported as known-good and it verified.
+#
+# Two caveats a future reader needs:
+#   * Pinning `layout_ids` CHANGES THE DRAW ORDER. Layout, style, fixtures,
+#     `rack_index`, door-open amounts and the robot spawn deviation all come off
+#     one shared `env.rng`, so pinning the layout a seed already drew still
+#     yields a different kitchen instance. A pin is not a no-op even when it
+#     names the value that was already being drawn.
+#   * These are RESET-POSE measurements, not full rollouts. They establish that
+#     the run starts legal — which is what an initial-configuration defect is —
+#     not that the task is solvable end to end.
+#
+# The effective layout now appears in the run artifacts on every reset as
+# `robocasa_scene_composition` (docs/reference/telemetry.md), and a pin the env
+# cannot honour is a `ROSConfigError` rather than a silent substitution.
 #
 # Run: openral deploy sim --config scenes/deploy/robocasa_fridge_drawer.yaml
 # Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
@@ -89,13 +148,24 @@ scene:
     robots: ["PandaMobile"]
     controller: OSC_POSE
     obj_groups: vegetable
+    # DO NOT REMOVE — this is not tidy-up, it is the fix for an
+    # initial-configuration defect. Unpinned, seed 1 draws layout 29 (a
+    # side-by-side fridge) and spawns `robot0_link7_collision` at 0.000 m from
+    # the closed freezer door: the arm starts inside the safety kernel's world
+    # model, the run E-stops before applying a single action chunk, and the
+    # round tells you nothing about the collision stack. Layout 30 starts
+    # 37.0 mm clear of the nearest solid kernel-checked geometry, comfortably
+    # outside the 25 mm occupancy grid. The full measurement table, and why the
+    # bottom-freezer layouts this block used to recommend are all WORSE, are in
+    # the KNOWN DEFECT block at the top of this file.
+    layout_ids: [30]
 
-# Pin the complete kitchen layout / robot start, not only the object group.
 # The seed alone does NOT pin the scene: RoboCasa draws layout/style, fixtures,
 # rack_index, door-open amounts and the robot spawn deviation from one shared
 # `env.rng`, so anything that changes a draw upstream reshuffles the kitchen.
-# Pin `layout_ids` / `style_ids` in backend_options when a specific kitchen
-# matters — see the KNOWN DEFECT block above.
+# `layout_ids` above pins the floor plan; `style_ids` is deliberately left open
+# (the draw lands on style 29, outside the task's EXCLUDE_STYLES) so the round
+# keeps one axis of visual variation. Pin it too if a specific style matters.
 seed: 1
 
 # ADR-0097 place-phase declaration — see scenes/deploy/robocasa_baguette.yaml for
