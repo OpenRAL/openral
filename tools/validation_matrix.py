@@ -591,6 +591,18 @@ def adjudicate_ground_truth(
        gap comes from the HAL's own ``adjudication_budget`` when the snapshot
        carries one (:func:`hal_admissible_gap_m`) and falls back to
        :func:`quantization_budget_m` only when it does not.
+
+       **That fallback is asymmetric, and deliberately so.** The voxel term is
+       a strict *lower bound* on the admissible gap — the real gap adds the
+       collision model's corner slop, which is the larger term on every panda
+       link (45-88 mm against 21.7 mm). So on a snapshot with no published
+       budget, ``discrepancy <= budget`` still proves ``within-quantization``
+       (it is within the smaller bound, hence within the true one), while
+       ``discrepancy > budget`` proves nothing at all and yields
+       ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone
+       is what produced two "false positives", one of which re-derives as
+       ``within-quantization`` the moment a real budget exists for the same
+       stop.
     3. A truncated probe, a missing snapshot or an unknown budget →
        ``unadjudicated``, with ``unadjudicated_reason`` saying which. An
        *untruncated* probe that returned no pair is not missing data: it proves
@@ -683,7 +695,16 @@ def adjudicate_ground_truth(
             "so its clearance is unknown"
         )
     elif discrepancy > budget:
-        verdict = "false-positive"
+        if budget_source == "hal-adjudication-budget":
+            verdict = "false-positive"
+        else:
+            # The voxel term is a LOWER BOUND on the admissible gap: the true
+            # gap is corner_slop(link) + voxel_half_diagonal, and the slop term
+            # is the larger of the two on every panda link. A discrepancy
+            # beyond a lower bound therefore establishes nothing. Within it
+            # still does — see `within-quantization` below.
+            verdict = "unadjudicated"
+            reason = _lower_bound_only_reason(discrepancy, budget)
     else:
         verdict = "within-quantization"
 
@@ -705,6 +726,26 @@ def adjudicate_ground_truth(
         probe_truncated=truncated,
         distmax_m=distmax,
         payload_contacts=len(snapshot.get("payload_contacts") or []),
+    )
+
+
+def _lower_bound_only_reason(discrepancy_m: float, budget_m: float) -> str:
+    """Why a discrepancy past the voxel term alone is not a false positive.
+
+    The admissible gap is ``corner_slop(link) + voxel_half_diagonal``, and on
+    every panda link the slop term is the larger of the two (45-88 mm against
+    21.7 mm). A snapshot recorded before the HAL published ``adjudication_budget``
+    (#144, ``ea1b7e8``) supplies only the voxel term, which is a strict lower
+    bound on the real gap — so ``discrepancy > budget`` proves nothing, while
+    ``discrepancy <= budget`` still proves ``within-quantization``.
+    """
+    return (
+        f"the discrepancy of {discrepancy_m:.6g} m exceeds the {budget_m:.6g} m voxel "
+        "term, but this snapshot publishes no adjudication_budget, and the voxel term "
+        "alone is a LOWER BOUND on the admissible kernel-vs-probe gap — it omits the "
+        "collision model's corner slop, which is the larger term. Exceeding a lower "
+        "bound does not establish a false positive; the stop cannot be adjudicated "
+        "from these artifacts"
     )
 
 
@@ -1864,6 +1905,20 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
             "- Probe not collidability-filtered on the robot/payload side, so a 0 m"
             " pair may be a purely visual mesh and cannot support `real-contact`:"
             f" {', '.join(unfiltered)}."
+        )
+    # The other half of the same epistemics: a budget that is only the voxel
+    # term is a lower bound, so it can clear a stop but never convict one.
+    lower_bound_only = [
+        s.scene
+        for s in verdicts.scenes
+        if s.ground_truth is not None and s.ground_truth.budget_source == "grid-quantization"
+    ]
+    if lower_bound_only:
+        out.append(
+            "- No `adjudication_budget` published (pre-#144 artifacts), so only the voxel"
+            " term was available. It is a lower bound on the admissible gap: it can"
+            " establish `within-quantization`, never `false-positive`:"
+            f" {', '.join(lower_bound_only)}."
         )
     if broken:
         out += [

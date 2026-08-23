@@ -320,16 +320,59 @@ interior at zero throughout and the nearest cell receding to +281 mm — **no
 E-stop during transport**. The prior round at the same tip tripped *during*
 carry on the payload itself. Witness, clearing and the partition behaved.
 
-**Two link-class false positives are open, and the hypothesis is not proven.**
-Both are robot-link-vs-voxel, both adjudicated against the ground-truth probe:
+**~~Two link-class false positives are open~~ → one is open, and the
+hypothesis is not proven.** Both were robot-link-vs-voxel, both adjudicated
+against the ground-truth probe — and both against the **21.7 mm voxel
+half-diagonal alone**, which is where the correction bites:
 
 - baguette: 431/431 candidate pairs probed, untruncated, **zero pairs within
-  100 mm**, against a kernel reading of −20.9 mm. A >120 mm discrepancy, far
-  outside the 25 mm-voxel quantization budget (~21.7 mm half-diagonal).
+  100 mm**, against a kernel reading of −20.9 mm. A >120 mm discrepancy.
+  **Still open.**
 - utensil: nearest true world geometry `robot0_link1` ↔
   `stack_2_left_group_3_door_g2` at **+43.3 mm** against a kernel −17.3 mm — a
-  60.6 mm discrepancy, again beyond quantization. 489 pairs probed,
-  untruncated.
+  60.5 mm discrepancy. 489 pairs probed, untruncated. **Withdrawn** — see
+  below.
+
+**Correction (2026-08-23): the quantization term alone was the wrong basis.**
+Kernel distances are OBB↔voxel and probe distances are mesh↔mesh, so the
+admissible gap is `corner_slop(link) + voxel_half_diagonal` — and the slop is
+the *larger* term on every panda link (45–88 mm against 21.7 mm). Judging these
+two stops against the voxel term alone compares a discrepancy to a strict lower
+bound on the gap it should be compared to, which can only over-convict.
+
+The utensil stop settles it, because the **same stop ran again**. On
+2026-08-23 the kernel reported `panda_link1` vs `voxel_76001`, reactive step
+−1, `min_distance_m` −0.0172764 and a 60.5 mm discrepancy — identical to seven
+significant figures. That round's snapshot publishes
+`adjudication_budget.admissible_gap_m` = **88.2 mm**, and against it the stop is
+`within-quantization`: **the kernel behaving correctly.** Per-link it is tighter
+still and reaches the same answer — `panda_link1`'s measured `corner_slop_m` is
+**53.4 mm**, so its own gap is 53.4 + 21.7 = **75.1 mm**, and 60.5 mm is inside
+it. The two rounds ran the same `collision_geometry` (the `robot.yaml` diff
+between `2edcf67` and `d826643` touches only the `sensors:` block), so this is
+the same stop and the same collision model, not two similar ones.
+
+**Why it cannot simply be re-derived here.** `adjudication_budget` landed in
+**#144 (`ea1b7e8`, 2026-08-22)**, *after* this round; the checked-in fixture
+carries no such key, and no budget can be recovered from artifacts that never
+recorded one. So the 08-22 utensil verdict is **withdrawn to `unadjudicated`,
+not reversed to `within-quantization`**: the later rerun is what shows the
+kernel was probably right, and this round's own evidence shows nothing either
+way.
+
+**baguette survives the same reconciliation, and is the stronger finding for
+it.** Its 120.9 mm discrepancy clears 88.2 mm by 32.7 mm, and `panda_link5`'s
+per-link gap (45.3 + 21.7 = 67.0 mm) by more. Note what carries it: an
+*untruncated* probe that returned **no pair at all** proves the nearest solid
+geometry is beyond `distmax_m`, so 120.9 mm is itself a lower bound. It is the
+one link-class stop in the corpus that survives every basis available.
+
+That comparison is a **cross-round inference** — the 88.2 mm comes from a later
+round of the same robot, not from these artifacts — so the harness deliberately
+does not make it: `tools/validation_matrix.py` re-derives this scene as
+`estop-collision-unadjudicated`, because a budget belongs to the round that
+measured it. The open question is recorded here, by hand, with its provenance
+attached.
 
 The leading hypothesis, recorded as a hypothesis: the utensil evidence voxel
 sits at `base_link [0.0375, 0.0875, 0.1625]`, 195 mm from the link-1 origin at
@@ -339,6 +382,15 @@ exactly those bodies (`mobilebase0_*`, `robot0_base`, `robot0_link0`,
 `manipulator_mount`), so such self-occupancy would be invisible to it. The arm
 links themselves *are* correctly carved out — every `panda_link*` origin sits
 in a free cell in the baguette snapshot. **Not proven; under investigation.**
+
+**The 2026-08-23 correction weakens this hypothesis at its source.** It was
+raised to explain the *utensil* stop, and that stop is no longer evidence of
+anything wrong — against a real budget it is the kernel being correctly
+conservative. The observation about where the evidence voxel sits still stands
+as an observation, but it now has no anomaly to explain on that scene. It
+survives, if at all, on baguette alone, whose evidence voxel was never
+characterised this way. Treat it as an open question about baguette, not as a
+two-scene pattern.
 
 **The place machinery was unarmed in the shipped scenes.** `place_declaration`
 appears in **zero** files under `scenes/` in this repo. The 08-22 round armed
@@ -470,7 +522,10 @@ Consequences, all now fixed and pinned by
   while the **same snapshot** reports `adjudication_budget.admissible_gap_m =
   88.2 mm`. Against the HAL's own budget it is `within-quantization` — the
   kernel behaving correctly — not a false positive. The harness now consumes the
-  published budget.
+  published budget. **This is byte-for-byte the same stop the 2026-08-22
+  `master-1` round called a false positive** (same link, same voxel, same
+  reactive step, `min_distance_m` −0.0172764 in both), which is what withdraws
+  that verdict — see the correction in that round's section above.
 
 **`nav143-s1` never ran at all.** At `87dcda1` `ros2 launch` threw —
 `executable 'payload_footprint_node.py' not found on the libexec directory
@@ -487,7 +542,7 @@ carrying the fixes before drawing any conclusion from these six rounds.
 
 ## Standing caveats
 
-Six things a reader should carry away, all of them stated by the artifacts
+Seven things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -499,7 +554,8 @@ themselves rather than inferred:
 3. **The n=15 A/B that was supposed to settle that never had its outcome
    written down.** Both arms are 0/15; the comparison was not made.
 4. **As of 2026-08-22 the stack completes no scene.** Carry-phase machinery
-   behaves; two link-class false positives are open. The place path was unarmed
+   behaves; **one** link-class false positive is open (baguette; the utensil one
+   is withdrawn — see the correction in that round's section). The place path was unarmed
    in every shipped scene at the time of this round; #142 and its follow-up
    correction arm it on the three RoboCasa place scenes, with `robocasa_baguette`
    the only one observed arming end to end so far (see the update above).
@@ -509,7 +565,21 @@ themselves rather than inferred:
    side could be — and was — ranked first at 0.000 m. Those stops re-derive as
    `unadjudicated`. This withdraws a conclusion; it does not reverse one: no
    such stop is thereby shown to be a false positive.
-6. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
+6. **No `false-positive` verdict recorded before #144 is safe to cite either,
+   and it cannot be re-derived from its own round.** `adjudication_budget`
+   landed in #144 (`ea1b7e8`, 2026-08-22); every round before it was judged
+   against the voxel half-diagonal alone (21.7 mm at a 25 mm grid). That term is
+   a strict *lower bound* on the admissible kernel-vs-probe gap — the real gap
+   adds `corner_slop(link)`, which is the larger term on every panda link — so
+   exceeding it establishes nothing, and those rounds recorded no slop from
+   which the real gap could be reconstructed. This is a **second, independent**
+   reason older link-class verdicts are not citable, and it bites in the
+   opposite direction from caveat 5: that one withdraws stops called *real*,
+   this one withdraws stops called *false*. Asymmetry worth keeping straight:
+   a discrepancy **within** the voxel term is still sound (within a lower bound
+   implies within the true gap), so `within-quantization` from an old round
+   stands.
+7. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
    `round7`, `round8`, `defect-ab`). Their findings survive only as constants
    and comments in this repo. Treat a citation to one of those rounds as a
    citation to the in-tree comment that carries it, not to a retrievable

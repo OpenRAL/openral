@@ -79,23 +79,35 @@ def _derived(round_dir: Path, tmp_path: Path) -> object:
 
 
 def test_round_derives_the_four_ledger_outcomes(tmp_path: Path) -> None:
-    """The 2026-08-22 round buckets as the ledger records it, bar the correction.
+    """All four 2026-08-22 verdicts are withdrawn, for two independent reasons.
 
-    ``sink_cup`` and ``fridge`` were published as ``estop-collision-real``. Both
-    of those verdicts rest on a pair the probe should never have measured — the
-    payload's ``obj_reg_bbox`` region marker at −1.8 mm, and ``robot0_g25_vis``,
-    a visual shell, at 0.000 m — because the probe filtered only its *world*
-    side for collidability. The producer now filters every side, and this
-    snapshot carries no attestation that it did, so the two stops are
-    ``unadjudicated``: the recorded evidence does not support ``real-contact``
-    and never did. See ``docs/reference/collision-validation-evidence.md``.
+    None of them is *reversed*: nothing here shows the kernel was wrong. The
+    point is that these artifacts never established what was published.
+
+    ``sink_cup`` and ``fridge`` were ``estop-collision-real``, and both rest on
+    a pair the probe should never have measured — the payload's
+    ``obj_reg_bbox`` region marker at −1.8 mm, and ``robot0_g25_vis``, a visual
+    shell, at 0.000 m — because the probe filtered only its *world* side for
+    collidability, and this snapshot carries no attestation otherwise.
+
+    ``baguette`` and ``utensil`` were ``estop-collision-false-positive``, judged
+    against the 21.7 mm voxel term alone. That term is a strict *lower bound* on
+    the admissible kernel-vs-probe gap: the real gap adds the collision model's
+    corner slop, the larger of the two on every panda link. Exceeding a lower
+    bound establishes nothing. The round predates ``adjudication_budget`` (#144,
+    ``ea1b7e8``), so no real gap can be recovered from its own artifacts.
+
+    See ``docs/reference/collision-validation-evidence.md`` — which records that
+    ``baguette`` alone survives when the budget the *same robot* publishes on a
+    later round is applied by hand, and that this is a cross-round inference the
+    harness deliberately does not make.
     """
     verdicts = _derived(ROUND_0822, tmp_path)
     assert {s.scene: s.outcome for s in verdicts.scenes} == {
-        "baguette": "estop-collision-false-positive",
+        "baguette": "estop-collision-unadjudicated",
         "sink_cup": "estop-collision-unadjudicated",
         "fridge": "estop-collision-unadjudicated",
-        "utensil": "estop-collision-false-positive",
+        "utensil": "estop-collision-unadjudicated",
     }
     # "sim.task_success_final = False on all four scenes" — ledger, 2026-08-22.
     assert all(s.task_success_final is False for s in verdicts.scenes)
@@ -150,29 +162,115 @@ def test_fridge_and_utensil_never_grasped(tmp_path: Path) -> None:
         assert verdicts.scene(scene).witness.attach_t_s is None
 
 
-def test_baguette_false_positive_exceeds_the_quantization_budget(tmp_path: Path) -> None:
-    """431/431 pairs probed, untruncated, nothing within 100 mm vs a −20.9 mm read."""
+def test_baguette_discrepancy_survives_the_measurement_but_not_the_budget(
+    tmp_path: Path,
+) -> None:
+    """431/431 pairs probed, untruncated, nothing within 100 mm vs a −20.9 mm read.
+
+    The *measurement* is intact and is the strongest link-class evidence in the
+    corpus: an untruncated probe that returned no pair at all proves the nearest
+    solid geometry is beyond ``distmax_m``, so 120.9 mm is a strict lower bound
+    on the discrepancy. What it cannot be compared against is a real budget —
+    this round predates ``adjudication_budget``, leaving only the 21.7 mm voxel
+    term, itself a lower bound. Two lower bounds do not make a verdict.
+
+    That it *would* survive against the 88.2 mm the same robot publishes on a
+    later round is recorded in the ledger as a cross-round inference. The
+    harness does not make it: a budget belongs to the round that measured it.
+    """
     ground_truth = _derived(ROUND_0822, tmp_path).scene("baguette").ground_truth
     assert ground_truth is not None
-    assert ground_truth.verdict == "false-positive"
+    assert ground_truth.verdict == "unadjudicated"
+    assert ground_truth.budget_source == "grid-quantization"
+    assert "lower bound" in ground_truth.unadjudicated_reason.lower()
     assert ground_truth.probed_pairs == 431
     assert ground_truth.probe_truncated is False
     assert ground_truth.nearest_any_m is None  # nothing within distmax at all
     assert ground_truth.distmax_m == 0.1
-    # >120 mm of discrepancy against a ~21.7 mm budget (25 mm voxel).
     assert ground_truth.grid_resolution_m == 0.025
     assert ground_truth.quantization_budget_m == pytest.approx(0.021651, abs=1e-6)
     assert ground_truth.discrepancy_m == pytest.approx(0.1209178, abs=1e-6)
+    # It clears 88.2 mm by 32.7 mm, which is why the ledger keeps it open.
+    assert ground_truth.discrepancy_m > 0.08822
 
 
-def test_utensil_false_positive_is_a_60mm_discrepancy(tmp_path: Path) -> None:
-    """robot0_link1 clear by +43.3 mm against a kernel −17.3 mm."""
-    ground_truth = _derived(ROUND_0822, tmp_path).scene("utensil").ground_truth
-    assert ground_truth is not None
-    assert ground_truth.verdict == "false-positive"
-    assert ground_truth.nearest_tripping_party_m == pytest.approx(0.043256, abs=1e-6)
-    assert ground_truth.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
-    assert ground_truth.nearest_pair["body_b"] == "stack_2_left_group_3_door_main"
+def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
+    tmp_path: Path,
+) -> None:
+    """The same stop, twice, with opposite verdicts — and the budget is the difference.
+
+    ``panda_link1`` vs ``voxel_76001``, reactive step −1, ``min_distance_m``
+    −0.0172764 and a 60.5 mm discrepancy: identical to seven significant figures
+    on 2026-08-22 and on 2026-08-23. The 08-22 artifacts carry no budget and the
+    stop was called a **false positive** against the 21.7 mm voxel term; the
+    08-23 artifacts publish 88.2 mm and the identical stop is
+    ``within-quantization`` — the kernel being correctly conservative.
+
+    So the 08-22 verdict is withdrawn rather than affirmed. Both rounds ran the
+    same ``collision_geometry`` (the manifest diff between the two tips touches
+    only the ``sensors:`` block), which is what makes them the same stop rather
+    than two similar ones.
+    """
+    old = _derived(ROUND_0822, tmp_path / "old")
+    new = _derived(ROUND_0823, tmp_path / "new")
+
+    old_stop, new_stop = old.scene("utensil").stop, new.scene("utensil").stop
+    assert old_stop is not None and new_stop is not None
+    assert (old_stop.party_a, old_stop.party_b, old_stop.horizon_step) == (
+        new_stop.party_a,
+        new_stop.party_b,
+        new_stop.horizon_step,
+    )
+    assert old_stop.min_distance_m == new_stop.min_distance_m == -0.0172764
+
+    old_gt, new_gt = old.scene("utensil").ground_truth, new.scene("utensil").ground_truth
+    assert old_gt is not None and new_gt is not None
+    assert old_gt.discrepancy_m == new_gt.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
+    assert old_gt.nearest_tripping_party_m == pytest.approx(0.043256, abs=1e-6)
+    assert old_gt.nearest_pair["body_b"] == "stack_2_left_group_3_door_main"
+
+    assert old_gt.budget_source == "grid-quantization"
+    assert old_gt.verdict == "unadjudicated"
+    assert new_gt.budget_source == "hal-adjudication-budget"
+    assert new_gt.admissible_gap_m == pytest.approx(0.08822, abs=1e-6)
+    assert new_gt.verdict == "within-quantization"
+
+
+def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
+    """The asymmetry, stated directly: the voxel term is a lower bound.
+
+    The admissible gap is ``corner_slop(link) + voxel_half_diagonal``, so the
+    voxel term alone under-states it. A discrepancy *within* that term is
+    therefore within the true gap too and stays ``within-quantization``; a
+    discrepancy beyond it proves nothing. Driven through the real 2026-08-22
+    utensil snapshot, whose only variable here is the kernel's reported depth.
+    """
+    from openral_core import ValidationStopEvidence
+
+    lines = (
+        (ROUND_0822 / "utensil1" / "seed1_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+
+    def _verdict(min_distance_m: float) -> str:
+        stop = ValidationStopEvidence(
+            kind="world",
+            party_a="panda_link1",
+            party_b="voxel_76001",
+            horizon_step=-1,
+            min_distance_m=min_distance_m,
+        )
+        adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
+        assert adjudication is not None
+        return adjudication.verdict
+
+    # nearest_tripping_party_m is +43.256 mm, so the discrepancy is
+    # 0.043256 - min_distance_m against a 21.651 mm voxel term.
+    assert _verdict(0.03) == "within-quantization"  # 13.3 mm, inside the bound
+    assert _verdict(-0.0172764) == "unadjudicated"  # 60.5 mm, beyond it: unknown
 
 
 def test_sink_cup_payload_contact_rests_on_a_region_marker(tmp_path: Path) -> None:
@@ -262,12 +360,19 @@ def test_verdicts_refuses_a_round_without_metadata(tmp_path: Path) -> None:
 
 
 def test_diff_two_real_rounds_at_the_same_sha(tmp_path: Path) -> None:
-    """Same code, same scene, same seed — the baguette outcome still moved.
+    """Same code, same scene, same seed — two different runs, one bucket.
 
     The 08-16 run tripped during carry on the attached payload with a deeper
     cell exempted; the 08-22 run carried cleanly and tripped later on an arm
     link with nothing exempted. That is a reproducibility finding, and the diff
     has to surface it without anyone re-reading a log.
+
+    Both now bucket ``unadjudicated`` — neither round's artifacts can judge its
+    own stop — so ``changed`` is ``False`` and ``changed_scenes`` omits
+    baguette. **That is the honest reading and also the limitation worth
+    knowing**: the flag is outcome-keyed, so a scene whose evidence moved
+    completely can still read "same". ``changed_fields`` is the part that shows
+    it, and it does.
     """
     current = _derived(ROUND_0822, tmp_path / "cur")
     baseline = _derived(ROUND_0816, tmp_path / "base")
@@ -275,17 +380,19 @@ def test_diff_two_real_rounds_at_the_same_sha(tmp_path: Path) -> None:
 
     assert diff.same_sha is True
     assert diff.baseline_round_id == "2026-08-16-master-1"
-    assert "baguette" in diff.changed_scenes
-
     assert diff.is_reproducibility is True  # same sha AND same seed
 
     baguette = next(s for s in diff.scenes if s.scene == "baguette")
-    assert baguette.baseline_outcome == "estop-collision-unadjudicated"
-    assert baguette.outcome == "estop-collision-false-positive"
+    assert baguette.baseline_outcome == baguette.outcome == "estop-collision-unadjudicated"
+    assert baguette.changed is False
+    assert "baguette" not in diff.changed_scenes
+
+    # ...while the run underneath it changed almost entirely.
     moves = baguette.changed_fields
     assert moves["stop.party_a"] == {"from": "attached:sim:obj_main", "to": "panda_link5"}
     assert moves["stop.min_distance_m"]["to"] == -0.0209178
     assert moves["stop.sweep_min_distance_m"]["from"] == -0.0355338
+    assert moves["witness.kernel_witness_separated"] == {"from": 0, "to": 1}
 
 
 def test_prior_round_records_a_live_exemption(tmp_path: Path) -> None:
@@ -668,7 +775,7 @@ def test_import_maps_the_historical_scene_directories(tmp_path: Path) -> None:
     }
     assert metadata["artifact_stem"] == "seed1"
     verdicts = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
-    assert verdicts.scene("baguette").outcome == "estop-collision-false-positive"
+    assert verdicts.scene("baguette").outcome == "estop-collision-unadjudicated"
 
 
 def test_import_reads_the_stack_out_of_the_rounds_own_log() -> None:

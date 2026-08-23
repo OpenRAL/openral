@@ -192,7 +192,23 @@ four too narrow and turned conservative, correct stops into false positives
 (the 2026-08-23 `utensil` stop: `robot0_link1` 43.3 mm clear against a −17.3 mm
 read). It survives as `quantization_budget_m`, and as the fallback for a
 snapshot recorded before the HAL published a budget; `budget_source` says which
-was applied. Then, in order:
+was applied.
+
+**That fallback is asymmetric, and deliberately so.** The voxel term is a strict
+*lower bound* on the admissible gap — the real gap adds `corner_slop(link)`,
+which is the larger of the two on every panda link (45–88 mm against 21.7 mm).
+So on a snapshot with no published budget:
+
+| | sound? | verdict |
+|---|---|---|
+| `discrepancy <= voxel term` | yes — within the smaller bound implies within the true one | `within-quantization` |
+| `discrepancy > voxel term` | **no** — proves nothing about the true gap | `unadjudicated` |
+
+`adjudication_budget` landed in #144 (`ea1b7e8`), so every round before it sits
+in the second row and none of its `false-positive` calls can be re-derived from
+its own artifacts. The 2026-08-22 `utensil` stop is the proof: byte-identical to
+a 2026-08-23 rerun that publishes an 88.2 mm gap and comes out
+`within-quantization`. Then, in order:
 
 1. Any probed pair at or below 0 m → `real-contact`. Note this is deliberately
    *not* keyed to the body the kernel named: if the kernel says `panda_link7`
@@ -201,7 +217,8 @@ was applied. Then, in order:
    sides — see below.
 2. Otherwise the tripping party's clearance is compared against the kernel's
    reported depth. Beyond the gap → `false-positive`; within it →
-   `within-quantization`.
+   `within-quantization`. **Beyond a `grid-quantization` gap → `unadjudicated`,
+   not `false-positive`** — see the asymmetry above.
 3. A truncated probe, a missing snapshot, an unknown budget or an unattested
    probe → `unadjudicated`, with `ground_truth.unadjudicated_reason` naming
    which.

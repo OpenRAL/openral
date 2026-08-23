@@ -7626,7 +7626,9 @@ GroundTruthAdjudication: TypeAlias = Literal[
 ``real-contact`` — some probed pair of **solid** geoms is at or below 0 m, so
 geometry really is touching. ``false-positive`` — the nearest true geometry is
 further from the tripping party than the admissible kernel-vs-probe gap can
-explain. ``within-quantization`` — the kernel was conservative by an amount that
+explain; this requires a *published* gap, since the voxel term alone is a lower
+bound on it and exceeding a lower bound establishes nothing.
+``within-quantization`` — the kernel was conservative by an amount that
 gap accounts for, which is correct behaviour. ``unadjudicated`` — the probe did
 not cover the stop (truncated, no snapshot recorded, no budget known, or the
 recorded probe does not attest that both of its sides were collidability
@@ -7727,7 +7729,12 @@ class ValidationGroundTruthAdjudication(BaseModel):
             published a budget.
         budget_source: Where ``admissible_gap_m`` came from —
             ``"hal-adjudication-budget"``, ``"grid-quantization"``, or ``""``
-            when no budget was available at all.
+            when no budget was available at all. The distinction is
+            load-bearing, not informational: ``"grid-quantization"`` is only a
+            *lower bound* on the real gap (it omits ``corner_slop(link)``, the
+            larger term), so it can establish ``within-quantization`` but never
+            ``false-positive``. Rounds before #144 published no budget, and two
+            of their verdicts were over-convicted on that term alone.
         probe_collidability_filtered: Whether the recorded probe attests that
             **both** of its sides were restricted to solid geoms
             (``contype``/``conaffinity`` non-zero). ``False`` on a snapshot
