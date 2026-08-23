@@ -345,6 +345,9 @@ hal:
       # `dev_id` (0x1 → left, 0x0 → right) so they survive replug and do
       # not depend on the kernel's `canN` enumeration order. Override per
       # rig if wired differently.
+      # Defaults only. `openral detect` overwrites both from the host via
+      # the can_bus_bindings below, because an interface name is a fact about
+      # the machine the arm is plugged into, not about the arm.
       left_can_interface: "openarm_left"
       right_can_interface: "openarm_right"
       # Controller names from openarm_bringup's bimanual controller config.
@@ -354,6 +357,16 @@ hal:
       left_gripper_controller: "left_gripper_controller"
       right_arm_controller: "right_joint_trajectory_controller"
       right_gripper_controller: "right_gripper_controller"
+    # Which physical bus fills which parameter, and how to recognise it.
+    # This is the only robot-specific half — `openral detect` supplies the
+    # values. The tokens match the OpenArm's documented udev naming
+    # (`openarm_left` = motor dev_id 0x1, `openarm_right` = 0x0); a host that
+    # names them differently still resolves as long as the role is in the
+    # name. Ambiguous or unmatched roles warn and leave the defaults alone
+    # rather than guessing which arm is which.
+    can_bus_bindings:
+      left_can_interface: "left"
+      right_can_interface: "right"
 
 # Cameras declared by the openarm_tabletop_pnp MJCF scene. The HAL's
 # offscreen renderer publishes each to /openral/cameras/<name>/image

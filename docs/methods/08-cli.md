@@ -195,25 +195,25 @@ _Per-family scaffold defaults + HF Hub config introspection for `openral rskill 
 ### `python/cli/src/openral_cli/autodetect.py`
 _USB VID/PID enumeration and DDS topic discovery for `openral detect`._
 
-- `class UsbDevice(NamedTuple)` — A USB serial device on the host. (L58)
+- `class UsbDevice(NamedTuple)` — A USB serial device on the host. (L66)
   fields: `port, vid, pid, description`
-- `class KnownDevice(NamedTuple)` — A known USB adapter/controller from the VID/PID table. (L74)
+- `class KnownDevice(NamedTuple)` — A known USB adapter/controller from the VID/PID table. (L82)
   fields: `chip, driver_hint, embodiment_tag, bh_robot_type`
-- `class UsbMatch(NamedTuple)` — A detected device matched against the table. (L92)
+- `class UsbMatch(NamedTuple)` — A detected device matched against the table. (L100)
   fields: `device, known`
-- `class DdsTopic(NamedTuple)` — A ROS 2 topic observed during DDS scan. (L104)
+- `class DdsTopic(NamedTuple)` — A ROS 2 topic observed during DDS scan. (L112)
   fields: `name, type_name`
 - `class CanInterface(NamedTuple)` — One SocketCAN interface on the host. Defined in `openral_core.can` and re-exported here; the enumeration is transport mechanism shared with the HAL layer's bus preflight, while the robot *matching* below is this module's own concern.
   fields: `name, is_up, fd_enabled, bitrate, data_bitrate, state, driver, mtu, vid, pid, description`
 - `class CanMatch(NamedTuple)` — CAN interfaces that together identify one robot; a bimanual arm contributes one per side.
   fields: `interfaces, known`
-- `_enumerate_linux_pyudev() -> list[UsbDevice]` (L241)
-- `_enumerate_macos_system_profiler() -> list[UsbDevice]` (L277)
-- `_enumerate_glob_fallback() -> list[UsbDevice]` — `/dev/tty*` glob. (L322)
-- `enumerate_usb_devices() -> list[UsbDevice]` — OS-routed enumerator. (L345)
-- `match_known_devices(devices) -> list[UsbMatch]` (L377)
-- `scan_dds_topics(timeout_s=5.0) -> list[DdsTopic]` — `ros2 topic list -t`. (L404)
-- `infer_robot_from_topics(topics) -> str | None` (L452)
+- `_enumerate_linux_pyudev() -> list[UsbDevice]` (L249)
+- `_enumerate_macos_system_profiler() -> list[UsbDevice]` (L285)
+- `_enumerate_glob_fallback() -> list[UsbDevice]` — `/dev/tty*` glob. (L330)
+- `enumerate_usb_devices() -> list[UsbDevice]` — OS-routed enumerator. (L353)
+- `match_known_devices(devices) -> list[UsbMatch]` (L385)
+- `scan_dds_topics(timeout_s=5.0) -> list[DdsTopic]` — `ros2 topic list -t`. (L412)
+- `infer_robot_from_topics(topics) -> str | None` (L460)
 - `enumerate_can_interfaces(*, sysfs_net=None) -> list[CanInterface]` — Re-exported from `openral_core.can`; see [Layer 0](00-core-schemas.md). Linux-only, dependency-free SocketCAN enumeration: `/sys/class/net` for the interface list (`type == 280` / ARPHRD_CAN), `ip -details -json link show` to enrich with bitrates, FD mode and controller state. Needs no root and opens no socket, so calling it never perturbs a running robot.
 - `match_can_interfaces(interfaces) -> list[CanMatch]` — Group *up* interfaces by the robot their names declare (`_CAN_NAME_ROBOT_TABLE`). A CAN bus carries no vendor descriptor — the adapter identifies itself, the motors do not — so the only durable signal is a udev-pinned interface name. A bare `can0` therefore stays unmatched by design: `can0` is a kernel enumeration artefact, not a declaration of intent.
 - `infer_robot_from_can(interfaces) -> str | None` — First matched robot slug, else `None`.

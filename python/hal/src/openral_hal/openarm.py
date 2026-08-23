@@ -348,14 +348,20 @@ OPENARM_DESCRIPTION = RobotDescription(
                 # both
                 "staleness_limit_s": 0.5,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
-                # four bimanual controllers openarm_bringup spawns.
+                # four bimanual controllers openarm_bringup spawns. The two
+                # interface names are defaults only: `openral detect`
+                # overwrites them per host via ``can_bus_bindings`` below.
                 "left_can_interface": "openarm_left",
                 "right_can_interface": "openarm_right",
                 "left_arm_controller": "left_joint_trajectory_controller",
                 "left_gripper_controller": "left_gripper_controller",
                 "right_arm_controller": "right_joint_trajectory_controller",
                 "right_gripper_controller": "right_gripper_controller",
-            }
+            },
+            can_bus_bindings={
+                "left_can_interface": "left",
+                "right_can_interface": "right",
+            },
         ),
     ),
     # MuJoCo wiring — v2 bimanual MJCF fetched by ``ensure_openarm_v2_mjcf``.

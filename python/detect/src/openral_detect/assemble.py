@@ -157,6 +157,13 @@ def assemble_robot_description(
         A fully-populated :class:`RobotDescription` ready to be written to
         disk and consumed by :func:`openral_detect.check_installed_rskills`.
 
+        When the base manifest declares ``hal.parameters.can_bus_bindings``,
+        the CAN interface names in ``hal.parameters.defaults`` are replaced
+        with the ones actually found on this host — see
+        :func:`_enrich_can_buses`. Any binding that cannot be resolved
+        unambiguously appends to :attr:`DetectionReport.warnings` and leaves
+        the manifest value alone.
+
     Raises:
         ROSConfigError: When ``force_robot_type`` is set but does not resolve
             to a committed ``robots/<name>/robot.yaml`` — surfaced loudly
@@ -167,6 +174,7 @@ def assemble_robot_description(
         base = _enrich_sensors(base, detection)
     base = _enrich_compute(base, detection)
     base = _enrich_ros2(base, detection)
+    base = _enrich_can_buses(base, detection)
     return base
 
 
@@ -536,6 +544,77 @@ def _first_non_empty(values: list[str | None]) -> str | None:
 
 
 # ── 4. ROS 2 metadata ────────────────────────────────────────────────────────
+
+
+def _enrich_can_buses(
+    description: RobotDescription, detection: DetectionReport
+) -> RobotDescription:
+    """Replace declared CAN interface defaults with the host's actual names.
+
+    A CAN interface name belongs to the *host*, not to the robot. The same
+    bimanual arm is ``openarm_left`` / ``openarm_right`` on a machine whose
+    udev rules pin it and ``can1`` / ``can0`` on one without, so a canonical
+    manifest cannot know it — it can only declare which HAL parameter each
+    bus fills. Without this step ``openral detect`` infers the robot *from*
+    the CAN bus and then emits a config naming whichever interfaces the
+    manifest author happened to have, which is the more dangerous failure: it
+    looks host-derived and is not.
+
+    Robot-specific knowledge lives entirely in the manifest's
+    ``hal.parameters.can_bus_bindings`` (parameter name to role token). What
+    is here is the mechanism, so a new CAN robot is a manifest entry rather
+    than a change to this function.
+
+    Args:
+        description: Base description, whose ``hal.parameters.can_bus_bindings``
+            decides whether anything happens at all.
+        detection: Probed host; supplies the matched CAN interfaces and
+            receives a warning for every binding that cannot be resolved.
+
+    Returns:
+        The description with resolved bus names written into
+        ``hal.parameters.defaults``, or unchanged when the robot declares no
+        bindings, has no CAN bus, or no binding resolves.
+    """
+    bindings = description.hal.parameters.can_bus_bindings
+    if not bindings:
+        return description
+
+    # Only interfaces the CAN probe attributed to a robot are candidates: a
+    # host may also carry unrelated buses (a vehicle gateway, a test rig), and
+    # binding one of those to an arm would be worse than leaving the default.
+    candidates = [iface.name for match in detection.can.matches for iface in match.interfaces]
+    if not candidates:
+        detection.warnings.append(
+            f"can.bind: '{description.name}' declares can_bus_bindings "
+            f"{sorted(bindings)} but no CAN interface was matched to a robot — "
+            "leaving the manifest defaults in place."
+        )
+        return description
+
+    resolved: dict[str, object] = {}
+    for parameter, role in sorted(bindings.items()):
+        hits = [name for name in candidates if role.lower() in name.lower()]
+        if len(hits) == 1:
+            resolved[parameter] = hits[0]
+            continue
+        # Never guess. Picking the wrong bus here would drive one limb with
+        # another limb's trajectory, and it would look like it worked.
+        detail = f"matched {sorted(hits)}" if hits else "matched nothing"
+        detection.warnings.append(
+            f"can.bind: role {role!r} for '{parameter}' {detail} among "
+            f"{sorted(candidates)} — need exactly one. Leaving the manifest "
+            f"default in place."
+        )
+
+    if not resolved:
+        return description
+
+    parameters = description.hal.parameters.model_copy(
+        update={"defaults": {**description.hal.parameters.defaults, **resolved}}
+    )
+    hal = description.hal.model_copy(update={"parameters": parameters})
+    return description.model_copy(update={"hal": hal})
 
 
 def _enrich_ros2(description: RobotDescription, detection: DetectionReport) -> RobotDescription:
