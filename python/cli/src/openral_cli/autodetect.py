@@ -1,17 +1,26 @@
-"""USB VID/PID enumeration and DDS topic discovery for ``openral detect``.
+"""USB, SocketCAN, and DDS transport discovery for ``openral detect``.
 
-This module provides two independent probes:
+This module provides three independent probes:
 
 1. **USB enumeration** — finds USB serial adapters attached to the host and
    matches their VID/PID against a table of known robot controllers.  On
    Linux it uses ``pyudev`` (no root required); on macOS it falls back to
    ``system_profiler``; everywhere it also falls back to ``/dev/tty*`` globs.
 
-2. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
+2. **SocketCAN matching** — maps deliberately-named CAN / CAN FD interfaces
+   (``openarm_left``, …) to known robot types.  The enumeration itself is
+   robot-agnostic and lives in :mod:`openral_core.can`, so a HAL's
+   connect-time bus preflight and this probe read the kernel through the same
+   code; what is here is the robot-identification half.  This is the transport
+   that USB-serial enumeration structurally cannot see: a CAN adapter
+   registers a *network* device, so a CAN-attached arm has no ``/dev/tty*``
+   node to find.
+
+3. **DDS discovery** — runs ``ros2 topic list`` for a bounded timeout and
    maps observed topic name prefixes to known robot types (Unitree, ALOHA, …).
 
-Both probes are pure functions with no global state and can be called from
-tests without hardware.
+All three probes are pure functions with no global state, never open a bus or
+a device, and can be called from tests without hardware.
 
 Example:
     >>> from openral_cli.autodetect import enumerate_usb_devices
@@ -28,13 +37,25 @@ import subprocess
 from glob import glob
 from typing import NamedTuple
 
+# reason: SocketCAN link enumeration is transport mechanism, not a matching
+# concern — it lives in openral_core so a HAL's connect-time preflight and
+# this probe read the kernel through the same code.  Re-exported below so
+# `from openral_cli.autodetect import CanInterface` keeps working.
+from openral_core.can import CanInterface, enumerate_can_interfaces
+
 __all__ = [
+    "CanInterface",
+    "CanMatch",
     "DdsTopic",
     "KnownDevice",
     "UsbDevice",
     "UsbMatch",
+    "can_adapter_name",
+    "enumerate_can_interfaces",
     "enumerate_usb_devices",
+    "infer_robot_from_can",
     "infer_robot_from_topics",
+    "match_can_interfaces",
     "match_known_devices",
     "scan_dds_topics",
 ]
@@ -462,3 +483,180 @@ def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
             if name_lower.startswith(prefix.lower()):
                 return robot_type
     return None
+
+
+# ── SocketCAN discovery ───────────────────────────────────────────────────────
+# The third transport family. USB-serial and DDS both miss CAN-attached arms:
+# a Damiao/CAN-FD robot such as the Enactic OpenArm exposes no `/dev/tty*` node
+# (the USB adapter registers a *network* device, not a serial one) and publishes
+# no DDS topics until its ROS 2 bringup is already running — which is precisely
+# what `openral detect` runs *before*.
+
+
+class CanMatch(NamedTuple):
+    """A group of CAN interfaces that together identify one known robot.
+
+    Attributes:
+        interfaces: The interfaces that matched, in name order.  A bimanual
+            robot contributes one interface per arm.
+        known: The matching entry describing what drives that bus.
+    """
+
+    interfaces: tuple[CanInterface, ...]
+    known: KnownDevice
+
+
+# ── CAN interface-name → robot type map ───────────────────────────────────────
+# Keyed on interface-name *prefix*, lower-cased.
+#
+# Unlike USB, a CAN bus carries no vendor descriptor: the adapter identifies
+# itself (PEAK, Kvaser, …) but the motors on the far side do not announce what
+# machine they are bolted into.  The one durable signal is the interface name,
+# which on a provisioned robot is pinned by a udev rule rather than left as the
+# kernel's `canN` enumeration order.  So this table matches *deliberate* names
+# only — a bare `can0` stays unmatched, because `can0` means nothing.
+#
+# The OpenArm's documented Jetson provisioning names its two PCAN-USB Pro FD
+# channels `openarm_left` (motor `dev_id 0x1`) and `openarm_right` (`dev_id
+# 0x0`) exactly so that the ROS 2 bringup does not depend on enumeration order.
+_CAN_NAME_ROBOT_TABLE: dict[str, KnownDevice] = {
+    "openarm": KnownDevice(
+        "SocketCAN",
+        "Damiao CAN FD motor bus — Enactic OpenArm (one interface per arm)",
+        "openarm",
+        "openarm",
+    ),
+}
+
+# ── CAN adapter VID/PID table ─────────────────────────────────────────────────
+# Purely descriptive: names the dongle in the report so an operator can tell a
+# missing adapter from a missing robot.  Never used to infer a robot type — the
+# same adapter drives any CAN machine.  Entries are added only when the
+# VID/PID has been read off real hardware.
+_CAN_ADAPTER_TABLE: dict[tuple[int, int], str] = {
+    (0x0C72, 0x0011): "PEAK PCAN-USB Pro FD",
+}
+
+# Vendor-level fallback for an unlisted product ID from a known CAN vendor.
+_CAN_VENDOR_TABLE: dict[int, str] = {
+    0x0C72: "PEAK-System",
+}
+
+
+def can_adapter_name(iface: CanInterface) -> str:
+    """Human-readable name for the USB adapter behind a CAN interface.
+
+    Args:
+        iface: One row from :func:`enumerate_can_interfaces`.
+
+    Returns:
+        The catalogued adapter name (``"PEAK PCAN-USB Pro FD"``), else the
+        USB product string, else a vendor-only label, else ``"SocketCAN"``
+        for an on-SoC controller with no USB ancestor.
+
+    Example:
+        >>> from openral_cli.autodetect import CanInterface, can_adapter_name
+        >>> iface = CanInterface(
+        ...     "openarm_left",
+        ...     True,
+        ...     True,
+        ...     1000000,
+        ...     5000000,
+        ...     "ERROR-ACTIVE",
+        ...     "pcan_usb_pro_fd",
+        ...     72,
+        ...     0x0C72,
+        ...     0x0011,
+        ...     "PCAN-USB Pro FD",
+        ... )
+        >>> can_adapter_name(iface)
+        'PEAK PCAN-USB Pro FD'
+    """
+    catalogued = _CAN_ADAPTER_TABLE.get((iface.vid, iface.pid))
+    if catalogued is not None:
+        return catalogued
+    if iface.description:
+        return iface.description
+    vendor = _CAN_VENDOR_TABLE.get(iface.vid)
+    if vendor is not None:
+        return f"{vendor} (unlisted 0x{iface.pid:04x})"
+    return "SocketCAN"
+
+
+def match_can_interfaces(interfaces: list[CanInterface]) -> list[CanMatch]:
+    """Group CAN interfaces by the robot their names declare.
+
+    Only interfaces that are **up** are considered: a down link proves the
+    kernel knows about a controller, not that a robot is wired to it.
+
+    Args:
+        interfaces: Output of :func:`enumerate_can_interfaces`.
+
+    Returns:
+        One :class:`CanMatch` per matched robot type, in robot-type order,
+        each carrying every interface that matched it.  Empty when no
+        interface name matches :data:`_CAN_NAME_ROBOT_TABLE`.
+
+    Example:
+        >>> from openral_cli.autodetect import match_can_interfaces
+        >>> match_can_interfaces([])
+        []
+    """
+    grouped: dict[str, list[CanInterface]] = {}
+    for iface in interfaces:
+        if not iface.is_up:
+            continue
+        lowered = iface.name.lower()
+        for prefix in _CAN_NAME_ROBOT_TABLE:
+            if lowered.startswith(prefix):
+                grouped.setdefault(prefix, []).append(iface)
+                break
+
+    matches: list[CanMatch] = []
+    for prefix in sorted(grouped):
+        known = _CAN_NAME_ROBOT_TABLE[prefix]
+        members = tuple(sorted(grouped[prefix], key=lambda i: i.name))
+        # Name the actual adapter rather than the generic "SocketCAN" default.
+        matches.append(
+            CanMatch(
+                interfaces=members,
+                known=known._replace(chip=can_adapter_name(members[0])),
+            )
+        )
+    return matches
+
+
+def infer_robot_from_can(interfaces: list[CanInterface]) -> str | None:
+    """Infer a robot type from SocketCAN interface names.
+
+    Args:
+        interfaces: Output of :func:`enumerate_can_interfaces`.
+
+    Returns:
+        A robot type string (e.g. ``"openarm"``) when an up interface's name
+        matches a known prefix, otherwise ``None``.
+
+    Example:
+        >>> from openral_cli.autodetect import CanInterface, infer_robot_from_can
+        >>> iface = CanInterface(
+        ...     "openarm_left",
+        ...     True,
+        ...     True,
+        ...     1000000,
+        ...     5000000,
+        ...     "ERROR-ACTIVE",
+        ...     "pcan_usb_pro_fd",
+        ...     72,
+        ...     0x0C72,
+        ...     0x0011,
+        ...     "PCAN-USB Pro FD",
+        ... )
+        >>> infer_robot_from_can([iface])
+        'openarm'
+        >>> infer_robot_from_can([]) is None
+        True
+    """
+    matches = match_can_interfaces(interfaces)
+    if not matches:
+        return None
+    return matches[0].known.bh_robot_type or None

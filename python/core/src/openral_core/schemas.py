@@ -1521,15 +1521,40 @@ class HalParameters(BaseModel):
         defaults: HAL constructor / transport keyword defaults, e.g.
             ``{"port": "/dev/ttyACM0", "baud": 1_000_000}`` for the SO-100 or
             ``{"robot_ip": "192.168.1.10"}`` for a real UR arm.
+        can_bus_bindings: Maps a key of :attr:`defaults` to the **role token**
+            that identifies which physical CAN bus fills it, e.g.
+            ``{"left_can_interface": "left", "right_can_interface": "right"}``.
+            Declaring this opts the robot into having ``openral detect``
+            overwrite those defaults with the interface names actually found
+            on the host, instead of shipping one lab's names to every user.
+
+            A CAN interface name is a property of the *host*, not of the
+            robot: the same arm is ``openarm_left`` on a machine with a udev
+            rule and ``can1`` on one without. The manifest therefore declares
+            only which parameter each bus fills and how to recognise it; the
+            value is discovered. Robots with no CAN bus leave this empty and
+            are untouched.
+
+            The token is matched case-insensitively as a substring of the
+            interface name, so it works for any bus count — one entry for a
+            single-bus arm, two for a bimanual station, N for an N-limb
+            machine. Matching is never positional: alphabetical order is a
+            coincidence, and binding the left arm's trajectory to the right
+            arm's bus is exactly the failure this avoids. An entry that
+            matches no interface, or more than one, is reported as a warning
+            and leaves the manifest value untouched (CLAUDE.md §1.4).
 
     Example:
         >>> HalParameters(defaults={"port": "/dev/ttyACM0"}).defaults["port"]
         '/dev/ttyACM0'
+        >>> HalParameters(can_bus_bindings={"left_can_interface": "left"}).can_bus_bindings
+        {'left_can_interface': 'left'}
     """
 
     model_config = ConfigDict(extra="forbid")
 
     defaults: dict[str, object] = Field(default_factory=dict)
+    can_bus_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class HalEntrypoints(BaseModel):

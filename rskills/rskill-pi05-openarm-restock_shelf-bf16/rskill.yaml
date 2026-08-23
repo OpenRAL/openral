@@ -1,0 +1,252 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Wraps: a π0.5 SFT fine-tune for the Enactic OpenArm v2 bimanual station,
+# trained to restock boxes onto a shelf. 16-DoF (7 arm + 1 gripper per side),
+# three RGB views, 30 fps.
+#
+# ── Where these weights come from, and what cannot be verified ─────────────
+#
+# The upstream JAX/orbax checkpoint was `qualiadev/pi05-openarm-restock-sequences`
+# at revision 7f96e610b6cb446e55301928f3d118b6591cded0, and its training dataset
+# was `qualiadev/openarm-restock-sequences-canonical-30fps` at revision
+# f3415357965c8b97a4f99c4fffe4f4b90080c68a. **Neither repo resolves on the Hub
+# any more** — both return 404 to an authenticated read. So unlike every other
+# manifest in this directory, `source_repo` below is a provenance record, not a
+# fetchable location, and the run config / episode count / step count that a
+# model card would normally supply could not be read. They are therefore absent
+# here rather than guessed (CLAUDE.md §1.2).
+#
+# What *is* first-hand: the revision ids, the observation/action contract, the
+# converted-model hashes and the TensorRT fidelity/latency gates all come from
+# the conversion provenance records written on the lab Thor at conversion time
+# (`~/engines/openarm-restock-sequences/*.engine.provenance.json`), and the
+# 16-D normalization statistics ship inside the checkpoint itself.
+#
+# ── The one tensor that differs between conversion runs ────────────────────
+#
+# openpi's Stage-1 JAX→PyTorch conversion is **not** byte-deterministic, which
+# is why the same source revision produced three different
+# `converted_model_sha256` values across three runs on this host. That looks
+# alarming and is not: comparing the three 6.74 GiB artifacts tensor by tensor,
+# 811 of 812 tensors are byte-identical, and the sole difference is
+# `paligemma_with_expert.gemma_expert.lm_head.weight` [257152, 1024], where
+# ~99.91% of elements differ. Its statistics in every copy are mean ≈ 0,
+# std = 0.020, symmetric range ±0.115 — a freshly random-initialized tensor.
+# The action expert never does token prediction (actions leave through
+# `action_out_proj`), so the JAX checkpoint carries no trained lm_head and the
+# converter initializes one that inference never reads. It is 0.263 B of the
+# 3.617 B total (7.3%, 0.49 GiB) and is retained only so loaders that expect
+# the key still work.
+#
+# LICENSE WARNING (CLAUDE.md §7.4):
+#   Code: Apache-2.0.
+#   Weights: derived from Physical Intelligence π0.5 (`pi05_base`) under PI's
+#   "permissive research" terms — NOT Apache-2.0. Commercial deployment is
+#   prohibited without a separate agreement with Physical Intelligence. The
+#   loader derives is_commercial_use_allowed=False from
+#   license=permissive_research; activating commercially additionally requires
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 plus that agreement.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
+version: "0.1.0"
+license: "permissive_research"   # non-standard; weights are NOT apache-2.0
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "openarm"
+
+# Three RGB views, named exactly as training consumed them. The station's
+# camera names already match, so no alias remap is needed — see
+# `image_preprocessing` below. ORDER is load-bearing: cameras fill the
+# policy's image slots in the order listed, matching training.
+#
+# min_width/height are π0.5's SigLIP input size (224x224); the station's real
+# cameras (2x Arducam B0495 at 1920x1200, ZED Mini) all exceed it comfortably.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.context"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist_left"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist_right"
+    min_width: 224
+    min_height: 224
+
+# Output side. The arm joints are per-step DELTAS and the grippers are
+# ABSOLUTE — a split that is not merely asserted here but readable off the
+# checkpoint's own normalization statistics:
+#
+#   dims 0-6, 8-14 (arm)   mean ~= 0.00-0.06, std 0.07-0.41  -> delta
+#   dim 7  (left gripper)  mean 0.438, q01 0.0000, q99 0.7852 -> absolute
+#   dim 15 (right gripper) mean -0.453, q01 -0.7854, q99 -0.0002 -> absolute
+#
+# Those two gripper ranges reproduce `robots/openarm/robot.yaml`'s hinge
+# limits exactly (left [0, 0.7854], right [-0.7854, 0]), which is independent
+# evidence that the checkpoint was trained in this manifest's joint
+# convention. This matters because the converted checkpoint ships no
+# `metadata.pt`, so nothing else in the artifact records the delta split.
+#
+# NOTE: `control_mode_semantics` is a *declaration*, not an implementation —
+# nothing in the OpenRAL runner integrates deltas into absolute targets today.
+# Whoever drives this policy owns that reconstruction. lerobot's PI05 does it
+# natively via `use_relative_actions`, so the published `config.json` sets it;
+# the q-research openpi bridge does it server-side.
+#
+# ⚠ If you drive this through lerobot, `config.json` MUST also carry
+# `action_feature_names` — the 16 training feature names, with the word
+# "gripper" in dims 7 and 15. lerobot resolves `relative_exclude_joints:
+# ["gripper"]` by substring-matching those names, and with them absent it
+# cannot identify the gripper dims, so it relativizes all 16 and adds the
+# current state onto the two absolute gripper channels.
+#
+# That failure is quiet, and it was measured on this checkpoint: with the
+# names absent, gripper dim 7 came out in [0.4738, 0.9445] against its trained
+# [0.0000, 0.7852] — the state mean (0.4707) added straight on. With them
+# present: [-0.0023, 0.4673]. The arm dims look identical either way, so
+# nothing in the chunk announces the problem. openpi derives the same mask by
+# the same rule (`"gripper" not in name.lower()`).
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "delta"
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "raw_joint_rad"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# MEASURED, not inherited: peak `torch.max_memory_reserved()` for a real
+# forward pass on a Jetson AGX Thor — three live camera frames in, a 35x16
+# action chunk out. The parameter footprint alone is 6.74 GiB (3.617 B BF16);
+# the rest is activations and the KV cache.
+min_vram_gb:
+  bf16: 9.2
+weights_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+# Self-hosted in this rSkill's own repo (same posture as pi05-libero-int8),
+# because the upstream checkpoint they would otherwise be fetched from no
+# longer exists. They are NOT shipped by the openpi Stage-1 conversion — that
+# writes only `config.json` + `model.safetensors` + `assets/norm_stats.json`
+# — so they are generated from the checkpoint's own norm_stats with
+# `lerobot.policies.pi05.processor_pi05.make_pi05_pre_post_processors`.
+#
+# The normalization mode is QUANTILES for STATE and ACTION (lerobot
+# PI05Config's default, and what openpi's `use_quantile_norm = model_type !=
+# PI0` selects for pi05). The two implementations agree algebraically:
+# openpi computes (x - q01)/(q99 - q01 + 1e-6)*2 - 1, lerobot computes
+# 2*(x - q01)/(q99 - q01) - 1 with eps substituted only when the denominator
+# is exactly zero. Getting this wrong — mean/std instead of quantiles —
+# silently mis-scales every commanded action, so it is pinned here explicitly.
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16/policy_postprocessor.json"
+# No rotation, and no alias remap: training's camera keys
+# (context / wrist_left / wrist_right) are already the station's own sensor
+# names, so the identity mapping is the correct one.
+image_preprocessing:
+  flip_180: false
+
+# Joint-space state: 16 absolute joint positions in radians, in the robot's
+# own joint order. No `layout` — this is not a wrapped task-space contract, so
+# there are no TF frames to bind.
+state_contract:
+  dim: 16
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# 35 = the checkpoint's baked action_horizon, recorded in the converted
+# `config.json` and in every conversion provenance record. The engine bakes it
+# in, so it is not a tunable.
+chunk_size: 35
+n_action_steps: 35
+latency_budget:
+  # MEASURED for this manifest's own runtime (bf16 PyTorch) on a Jetson AGX
+  # Thor: 423 ms warm per chunk, 880 ms on the first call. A 35-step chunk at
+  # 30 fps covers 1167 ms of motion, so one warm chunk costs ~36% of its own
+  # horizon — closed-loop replanning at n_action_steps=35 fits, but only just,
+  # and there is no room to replan more often on this runtime.
+  #
+  # For scale: the TensorRT fp8+llm-nvfp4 engine built from this same
+  # checkpoint runs 59.68 ms/chunk on the same host — 7x faster. If replan
+  # cadence matters, that is the path, not this one.
+  per_chunk_ms: 600.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2410.24164"
+# Recorded for lineage; this repo no longer resolves on the Hub (404). The
+# weights published under `weights_uri` above are the surviving artifact.
+source_repo: "hf://qualiadev/pi05-openarm-restock-sequences@7f96e610b6cb446e55301928f3d118b6591cded0"
+
+description: >
+  π0.5 (PaliGemma + flow matching, 3.617 B) fine-tuned for the Enactic OpenArm
+  v2 bimanual station to restock boxes onto a shelf. Three RGB views and 16-D
+  joint state in; 35-step chunks of 16-D actions out — arm joints as per-step
+  deltas in radians, both grippers absolute. Trained at 30 fps. ONE instruction
+  string, "restock-shelf-from-front-box"; deploy it verbatim. Upstream
+  checkpoint and dataset are both deleted from the Hub, so this is the
+  surviving copy — see the README.
+
+# Restocking is pick-and-place with a transfer between two supports; the
+# `actions` vocabulary is a closed enum, so the verb list below is the
+# closest true description of the motion rather than the task's own name.
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+  - "transfer"
+objects:
+  - "box"
+  - "shelf"
+scenes:
+  - "shelf"
+  - "warehouse"
+
+# Per-checkpoint action contract. `slots` gives the skill_runner a typed
+# contract per slice so the two grippers are dispatched as GRIPPER_POSITION
+# while the arms go out as JOINT_POSITION, instead of the whole 16-D vector
+# defaulting to one joint-position Action.
+action_contract:
+  dim: 16
+  joint_units: "radians"
+  slots:
+    - range: [0, 6]
+      control_mode: "joint_position"
+      joint_names:
+        - "left_joint1"
+        - "left_joint2"
+        - "left_joint3"
+        - "left_joint4"
+        - "left_joint5"
+        - "left_joint6"
+        - "left_joint7"
+    - range: [7, 7]
+      control_mode: "gripper_position"
+      ee: "left_gripper"
+    - range: [8, 14]
+      control_mode: "joint_position"
+      joint_names:
+        - "right_joint1"
+        - "right_joint2"
+        - "right_joint3"
+        - "right_joint4"
+        - "right_joint5"
+        - "right_joint6"
+        - "right_joint7"
+    - range: [15, 15]
+      control_mode: "gripper_position"
+      ee: "right_gripper"

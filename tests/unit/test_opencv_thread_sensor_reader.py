@@ -217,3 +217,112 @@ def test_read_latest_frame_age_is_recent(synthetic_video: Path) -> None:
     # The read happens inside the `with`; close() may add ~ms of overhead.
     # Asserting < 600 ms is generous slack while still catching a stuck thread.
     assert age_ms < 600.0, f"unexpectedly stale frame: age {age_ms:.1f} ms"
+
+
+# ── Crop ─────────────────────────────────────────────────────────────────────
+# The crop exists for side-by-side stereo cameras: a ZED Mini streams both
+# lenses in one UVC frame, and a policy trained on the left lens must not be
+# handed the doubled-width frame. That failure is silent — the uncropped frame
+# is a perfectly valid image — so the behaviour is pinned here.
+
+
+@pytest.fixture
+def half_split_video(tmp_path: Path) -> Path:
+    """A video whose left half is red and right half is blue.
+
+    Two visually distinct halves make an off-by-one or a swapped axis in the
+    crop obvious, where a uniform frame would hide it.
+    """
+    path = tmp_path / "split.avi"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), float(_FPS), (_W, _H))
+    if not writer.isOpened():
+        pytest.skip("cv2.VideoWriter MJPG codec unavailable on this host")
+    try:
+        for _ in range(_N_FRAMES):
+            frame = np.zeros((_H, _W, 3), dtype=np.uint8)
+            frame[:, : _W // 2, 2] = 255  # left half red (BGR)
+            frame[:, _W // 2 :, 0] = 255  # right half blue
+            writer.write(frame)
+    finally:
+        writer.release()
+    if path.stat().st_size == 0:
+        pytest.skip("synthetic MJPG output is empty on this host")
+    return path
+
+
+def _first_frame(reader: OpenCVThreadSensorReader) -> object:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            return reader.read_latest(max_age_ms=2000)
+        except Exception:  # reason: poll until the first frame lands
+            time.sleep(0.02)
+    pytest.fail("no frame captured within 5 s")
+
+
+def test_crop_none_keeps_the_full_frame(half_split_video: Path) -> None:
+    reader = OpenCVThreadSensorReader(sensor_id="cam", device=str(half_split_video), fps=_FPS)
+    with reader:
+        frame = _first_frame(reader)
+    assert (frame.width, frame.height) == (_W, _H)
+
+
+def test_crop_keeps_only_the_requested_region(half_split_video: Path) -> None:
+    # Take the left half — the ZED-Mini case, scaled down.
+    reader = OpenCVThreadSensorReader(
+        sensor_id="cam", device=str(half_split_video), fps=_FPS, crop=(0, 0, _W // 2, _H)
+    )
+    with reader:
+        frame = _first_frame(reader)
+    assert (frame.width, frame.height) == (_W // 2, _H)
+    assert len(frame.data) == (_W // 2) * _H * 3
+    img = np.frombuffer(frame.data, dtype=np.uint8).reshape(_H, _W // 2, 3)
+    # MJPG is lossy, so assert the dominant channel rather than exact values.
+    assert img[:, :, 2].mean() > img[:, :, 0].mean(), "left crop is not the red half"
+
+
+def test_crop_can_select_the_right_half(half_split_video: Path) -> None:
+    reader = OpenCVThreadSensorReader(
+        sensor_id="cam", device=str(half_split_video), fps=_FPS, crop=(_W // 2, 0, _W // 2, _H)
+    )
+    with reader:
+        frame = _first_frame(reader)
+    img = np.frombuffer(frame.data, dtype=np.uint8).reshape(_H, _W // 2, 3)
+    assert img[:, :, 0].mean() > img[:, :, 2].mean(), "right crop is not the blue half"
+
+
+def test_crop_accepts_a_list_from_yaml(half_split_video: Path) -> None:
+    # A scene's backend_params arrive as a JSON/YAML list, not a tuple.
+    reader = OpenCVThreadSensorReader(
+        sensor_id="cam", device=str(half_split_video), fps=_FPS, crop=[0, 0, _W // 2, _H]
+    )
+    with reader:
+        frame = _first_frame(reader)
+    assert (frame.width, frame.height) == (_W // 2, _H)
+
+
+@pytest.mark.parametrize(
+    "bad,match",
+    [
+        ((0, 0, 10), "x, y, width, height"),
+        ((-1, 0, 10, 10), "non-negative"),
+        ((0, 0, 0, 10), "positive"),
+        ((0, 0, 10, -5), "positive"),
+    ],
+)
+def test_malformed_crop_is_rejected_at_construction(bad: tuple[int, ...], match: str) -> None:
+    # Caught before any I/O — an invalid crop should not wait for a device.
+    with pytest.raises(ValueError, match=match):
+        OpenCVThreadSensorReader(sensor_id="cam", device=0, fps=_FPS, crop=bad)
+
+
+def test_crop_larger_than_the_negotiated_mode_fails_at_open(half_split_video: Path) -> None:
+    # Fail when the deploy starts, not silently at runtime. A camera that
+    # negotiated a different mode than the binding assumed would otherwise
+    # yield a correctly-shaped but wrongly-framed image.
+    reader = OpenCVThreadSensorReader(
+        sensor_id="cam", device=str(half_split_video), fps=_FPS, crop=(0, 0, _W * 2, _H)
+    )
+    with pytest.raises(ValueError, match="does not fit"):
+        reader.open()
+    assert not reader.is_open

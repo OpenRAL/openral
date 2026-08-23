@@ -122,6 +122,7 @@ _DEPLOY_STEMS: list[str] = [
     "isaac_panda_mobile_urdf",
     "libero_object",
     "libero_pnp",
+    "openarm_restock_shelf",
     "openarm_tabletop",
     "robocasa_baguette",
     "robocasa_drawer_utensil",

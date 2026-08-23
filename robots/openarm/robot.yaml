@@ -19,9 +19,11 @@
 # the `robot_descriptions` package still pins to a pre-v2 commit;
 # the helper can be removed once upstream bumps.
 #
-# A real-HW HAL wrapping lerobot's upstream OpenArm driver (see
-# huggingface.co/docs/lerobot/openarm) is a planned follow-up; both
-# share this manifest.
+# The real-hardware path shares this manifest. `hal.real` is
+# `OpenArmRealHAL`, which commands `openarm_bringup`'s four ros2_control
+# controllers (per-side arm + gripper); the C++ `openarm_hardware`
+# SystemInterface below them drives the Damiao CAN FD motor buses at
+# 400 Hz. Python never touches the motors directly (CLAUDE.md §1.5).
 
 name: "openarm_v2"
 embodiment_kind: "bimanual"
@@ -305,23 +307,66 @@ safety:
   max_torque_nm: 40.0
   deadman_required: true
 
-# `sdk_kind: open` — both the upstream enactic/openarm_mujoco MJCF and
-# the LeRobot OpenArm driver are open-source.  A future
-# `OpenArmRealHAL` wrapping lerobot will keep `sdk_kind: open` and
-# set `hal.real` to the real adapter.
+# `sdk_kind: open` — the whole real-hardware path is Apache-2.0: the
+# upstream enactic/openarm_mujoco MJCF for sim, and `openarm_can` +
+# `openarm_ros2` (the ros2_control hardware interface) for hardware.
+# There is no closed vendor runtime anywhere in the chain.
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
-# Sim-only today → real: null until the lerobot OpenArm driver wrapper lands.
+#
+# `real` drives the physical arm through `openarm_bringup`'s ros2_control
+# stack, not through Python-side CAN: the OpenArm control loop runs at
+# 400 Hz, and CLAUDE.md §1.5 keeps anything above 100 Hz in C++. The
+# actuation chain is
+#   OpenArmRealHAL → four ros2_control command topics
+#                  → controller_manager (400 Hz, C++)
+#                  → openarm_hardware SystemInterface
+#                  → openarm_can → SocketCAN → Damiao motors.
 hal:
   sim: "openral_hal.openarm:OpenArmMujocoHAL"
-  real: null
-  # issue #191 Phase 3b — OpenArmMujocoHAL construction kwargs, threaded by
-  # build_hal so the manifest-driven node needs no bespoke ROS params.
+  real: "openral_hal.openarm_real:OpenArmRealHAL"
+  # issue #191 Phase 3b — HAL construction kwargs, threaded by build_hal so
+  # the manifest-driven node needs no bespoke ROS params.
+  #
+  # One flat block serves both entrypoints: build_hal drops every key the
+  # target constructor does not accept, so the sim HAL never sees the CAN
+  # interface names and the real HAL never sees `settle_steps`. Only
+  # `staleness_limit_s` is common to both.
   parameters:
     defaults:
+      # ── sim (OpenArmMujocoHAL) ──────────────────────────────────────
       settle_steps: 4
       gravity_enabled: false
+      # ── both ────────────────────────────────────────────────────────
       staleness_limit_s: 0.5
+      # ── real (OpenArmRealHAL) ───────────────────────────────────────
+      # SocketCAN interface names. The OpenArm Jetson provisioning pins
+      # these with a udev rule keyed on the PEAK adapter's per-channel
+      # `dev_id` (0x1 → left, 0x0 → right) so they survive replug and do
+      # not depend on the kernel's `canN` enumeration order. Override per
+      # rig if wired differently.
+      # Defaults only. `openral detect` overwrites both from the host via
+      # the can_bus_bindings below, because an interface name is a fact about
+      # the machine the arm is plugged into, not about the arm.
+      left_can_interface: "openarm_left"
+      right_can_interface: "openarm_right"
+      # Controller names from openarm_bringup's bimanual controller config.
+      # Each arm's 7 joints and its gripper are commanded separately, so
+      # one 16-DoF Action fans out to four topics.
+      left_arm_controller: "left_joint_trajectory_controller"
+      left_gripper_controller: "left_gripper_controller"
+      right_arm_controller: "right_joint_trajectory_controller"
+      right_gripper_controller: "right_gripper_controller"
+    # Which physical bus fills which parameter, and how to recognise it.
+    # This is the only robot-specific half — `openral detect` supplies the
+    # values. The tokens match the OpenArm's documented udev naming
+    # (`openarm_left` = motor dev_id 0x1, `openarm_right` = 0x0); a host that
+    # names them differently still resolves as long as the role is in the
+    # name. Ambiguous or unmatched roles warn and leave the defaults alone
+    # rather than guessing which arm is which.
+    can_bus_bindings:
+      left_can_interface: "left"
+      right_can_interface: "right"
 
 # Cameras declared by the openarm_tabletop_pnp MJCF scene. The HAL's
 # offscreen renderer publishes each to /openral/cameras/<name>/image

@@ -164,8 +164,9 @@ class TestSensorCatalog:
 
 class TestGlobalCatalog:
     def test_has_entries(self) -> None:
-        # Catalog IDs that are wired into a HAL adapter or sim scene.
-        assert len(CATALOG) == 7
+        # Catalog IDs that are wired into a HAL adapter, sim scene, or a
+        # committed rig detected by `openral detect`.
+        assert len(CATALOG) == 9
 
     def test_realsense_present(self) -> None:
         for sid in [
@@ -184,6 +185,8 @@ class TestGlobalCatalog:
             "logitech/c920",
             "luxonis/oak_d_pro",
             "robotiq/ft_300s",
+            "stereolabs/zed_mini",
+            "arducam/b0495",
         ]:
             assert sid in CATALOG, f"missing {sid!r}"
 

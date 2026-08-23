@@ -1,0 +1,22 @@
+diff --git a/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro b/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro
+index 53fcd40..6b067d3 100644
+--- a/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro
++++ b/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro
+@@ -23,6 +23,8 @@ limitations under the License.
+   <xacro:arg name="emit_grasp_frame" default="false" />
+ 
+   <xacro:arg name="use_fake_hardware" default="true" />
++  <xacro:arg name="left_can_interface" default="can1" />
++  <xacro:arg name="right_can_interface" default="can0" />
+ 
+   <xacro:property name="robot_root" value="$(find openarm_description)/assets/robot/openarm_v2.0" />
+   <xacro:property name="config_root" value="${robot_root + '/config'}" />
+@@ -44,6 +46,8 @@ limitations under the License.
+     arm_type="v20"
+     control_gains="${gains_dict}"
+     use_fake_hardware="$(arg use_fake_hardware)"
++    left_can_interface="$(arg left_can_interface)"
++    right_can_interface="$(arg right_can_interface)"
+     ee_type="pinch_gripper"
+     left_arm_prefix="left_"
+     right_arm_prefix="right_"

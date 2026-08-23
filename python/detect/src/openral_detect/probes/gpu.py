@@ -66,6 +66,13 @@ NVIDIA_TOPS_BY_NAME_KEYWORD: tuple[tuple[str, float], ...] = (
 )
 
 #: TOPS per Jetson board.  Source: NVIDIA Jetson product briefs (peak INT8).
+#:
+#: AGX Thor is deliberately absent. NVIDIA publishes Thor's headline figure in
+#: sparse FP4 TFLOPS, and there is no documented conversion to the peak dense
+#: INT8 TOPS every other row here uses — deriving one would put a fabricated
+#: number into ``ComputeSpec.compute_tops`` (CLAUDE.md §1.2). An absent board
+#: yields ``0.0``, the same conservative value an unrecognised board gets.
+#: Add the row when NVIDIA publishes a comparable INT8 figure.
 JETSON_BOARD_TOPS: dict[str, float] = {
     "Jetson AGX Orin": 275.0,
     "Jetson Orin NX": 100.0,
@@ -186,6 +193,12 @@ def _tops_for_jetson_board(board: str) -> float:
 #: classified Xavier and Maxwell-Nano boards as Volta (CC 7.2), masking a
 #: best-effort gap.
 _JETSON_CC_BY_BOARD_KEYWORD: tuple[tuple[str, tuple[int, int]], ...] = (
+    # AGX Thor — Blackwell CC 11.0. Confirmed against NVML on a real
+    # `NVIDIA Jetson AGX Thor Developer Kit` (JetPack r38.4), which reports
+    # (11, 0) for the device it names "NVIDIA Thor". Without this row the
+    # board probe returned None and the report carried an "unknown board"
+    # warning on the current top-end Jetson.
+    ("Thor", (11, 0)),
     ("Orin", (8, 7)),  # Orin AGX / Orin NX / Orin Nano — Ampere CC 8.7
     ("Xavier", (7, 2)),  # Xavier AGX / Xavier NX — Volta CC 7.2
     ("Nano", (5, 3)),  # Legacy Maxwell Nano — best-effort

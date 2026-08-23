@@ -157,6 +157,13 @@ def assemble_robot_description(
         A fully-populated :class:`RobotDescription` ready to be written to
         disk and consumed by :func:`openral_detect.check_installed_rskills`.
 
+        When the base manifest declares ``hal.parameters.can_bus_bindings``,
+        the CAN interface names in ``hal.parameters.defaults`` are replaced
+        with the ones actually found on this host — see
+        :func:`_enrich_can_buses`. Any binding that cannot be resolved
+        unambiguously appends to :attr:`DetectionReport.warnings` and leaves
+        the manifest value alone.
+
     Raises:
         ROSConfigError: When ``force_robot_type`` is set but does not resolve
             to a committed ``robots/<name>/robot.yaml`` — surfaced loudly
@@ -167,6 +174,7 @@ def assemble_robot_description(
         base = _enrich_sensors(base, detection)
     base = _enrich_compute(base, detection)
     base = _enrich_ros2(base, detection)
+    base = _enrich_can_buses(base, detection)
     return base
 
 
@@ -196,8 +204,18 @@ def _pick_base(
 
 
 def _infer_bh_robot_type(detection: DetectionReport) -> str | None:
+    """Pick the robot type, most-specific evidence first.
+
+    Order: DDS topology (a running robot naming itself), then SocketCAN
+    (interface names pinned by a udev rule, i.e. deliberate provisioning),
+    then USB VID/PID (a controller chip, which is often shared across
+    several arms and is therefore the weakest signal).
+    """
     if detection.ros2.inferred_robot_type:
         return detection.ros2.inferred_robot_type
+    for can_match in detection.can.matches:
+        if can_match.bh_robot_type:
+            return can_match.bh_robot_type
     for match in detection.usb.matches:
         if match.bh_robot_type:
             return match.bh_robot_type
@@ -254,17 +272,21 @@ def _enrich_sensors(description: RobotDescription, detection: DetectionReport) -
         # Skip RealSense devices that also surfaced via V4L2 to avoid dupes.
         if any(rs_name in cam.name for rs_name in rs_names):
             continue
-        spec_name = _unique_name(f"camera_{i}", v4l2_seen)
-        new_sensors.append(
-            _build_v4l2_camera(
-                cam,
-                detection_usb=detection.usb.devices,
-                spec_name=spec_name,
-                parent_frame=description.base_frame,
-                detect_warnings=detect_warnings,
-            )
+        built = _build_v4l2_camera(
+            cam,
+            detection_usb=detection.usb.devices,
+            spec_name=_unique_name(f"camera_{i}", v4l2_seen | realsense_seen),
+            parent_frame=description.base_frame,
+            detect_warnings=detect_warnings,
         )
-        v4l2_seen.add(spec_name)
+        # A stereo head (ZED Mini) presents one V4L2 node but resolves to a
+        # multi-stream bundle; a webcam resolves to a single spec.
+        if isinstance(built, SensorBundle):
+            new_bundles.append(built)
+            realsense_seen.add(built.bundle_name)
+        else:
+            new_sensors.append(built)
+            v4l2_seen.add(built.name)
 
     onboard = dict(description.onboard_compute)
     if detect_warnings:
@@ -335,38 +357,62 @@ def _build_v4l2_camera(
     spec_name: str,
     parent_frame: str,
     detect_warnings: list[str],
-) -> SensorSpec:
-    # Try V4L2 product-name signature first.
+) -> SensorSpec | SensorBundle:
+    """Resolve one probed V4L2 camera to a catalog-built spec or bundle.
+
+    Signature resolution, strongest evidence first:
+
+    1. The camera's **own** USB VID/PID, when the probe read it out of sysfs.
+       This is exact — two different models never share a descriptor.
+    2. The V4L2 product name, token by token (``"ZED-M: ZED-M"`` → ``ZED-M``).
+    3. The VID/PID of any *other* USB device on the host.  This is a last
+       resort and deliberately last: it can only ever be a coincidence match,
+       and before the probe read per-camera descriptors it was the only USB
+       path available.
+
+    Returns:
+        A :class:`SensorSpec` for a single-stream camera, or a
+        :class:`SensorBundle` when the catalog entry describes a multi-stream
+        device (a stereo head resolves to left/right/depth/IMU from one node).
+    """
     entry = None
-    for token in cam.name.split():
-        sig = signature_for_v4l2(token)
-        entry = CATALOG.find_by_signature(sig)
-        if entry is not None:
-            break
+    # 1. The camera's own USB descriptor.
+    if cam.vid and cam.pid:
+        entry = CATALOG.find_by_signature(signature_for_usb_uvc(cam.vid, cam.pid))
+    # 2. V4L2 product name, token by token.
     if entry is None:
-        # Try USB VID/PID matching against any device on the same bus.
+        for token in cam.name.replace(":", " ").split():
+            entry = CATALOG.find_by_signature(signature_for_v4l2(token))
+            if entry is not None:
+                break
+    # 3. Any other USB device on the host — coincidence-prone, so last.
+    if entry is None:
         for usb in detection_usb:
             if usb.vid and usb.pid:
-                sig = signature_for_usb_uvc(usb.vid, usb.pid)
-                entry = CATALOG.find_by_signature(sig)
+                entry = CATALOG.find_by_signature(signature_for_usb_uvc(usb.vid, usb.pid))
                 if entry is not None:
                     break
     if entry is not None:
-        spec = CATALOG.build(entry.id, name=spec_name, parent_frame=parent_frame)
-        assert isinstance(spec, SensorSpec)
-        meta = dict(spec.metadata)
-        meta.update(
-            {
-                "detected_by": "openral detect",
-                "needs_calibration": True,
-                "device_path": cam.device_path,
-                "v4l2_name": cam.name,
-                "bus_info": cam.bus_info,
-                "catalog_id": entry.id,
-            }
-        )
-        spec.metadata = meta
-        return spec
+        built = CATALOG.build(entry.id, name=spec_name, parent_frame=parent_frame)
+        meta_update: dict[str, Any] = {
+            "detected_by": "openral detect",
+            "device_path": cam.device_path,
+            "v4l2_name": cam.name,
+            "bus_info": cam.bus_info,
+            "catalog_id": entry.id,
+        }
+        if cam.serial:
+            meta_update["serial_no"] = cam.serial
+        specs = built.sensors if isinstance(built, SensorBundle) else [built]
+        for spec in specs:
+            meta = dict(spec.metadata)
+            # A catalog factory that already materialised real intrinsics has
+            # nothing to flag; one that left them unset (lens-dependent optics)
+            # keeps its own needs_calibration=True.
+            meta.setdefault("needs_calibration", spec.intrinsics is None)
+            meta.update(meta_update)
+            spec.metadata = meta  # reason: same-package mutation
+        return built
 
     detect_warnings.append(
         f"v4l2 camera {cam.name!r} ({cam.device_path}): no catalog entry; "
@@ -498,6 +544,77 @@ def _first_non_empty(values: list[str | None]) -> str | None:
 
 
 # ── 4. ROS 2 metadata ────────────────────────────────────────────────────────
+
+
+def _enrich_can_buses(
+    description: RobotDescription, detection: DetectionReport
+) -> RobotDescription:
+    """Replace declared CAN interface defaults with the host's actual names.
+
+    A CAN interface name belongs to the *host*, not to the robot. The same
+    bimanual arm is ``openarm_left`` / ``openarm_right`` on a machine whose
+    udev rules pin it and ``can1`` / ``can0`` on one without, so a canonical
+    manifest cannot know it — it can only declare which HAL parameter each
+    bus fills. Without this step ``openral detect`` infers the robot *from*
+    the CAN bus and then emits a config naming whichever interfaces the
+    manifest author happened to have, which is the more dangerous failure: it
+    looks host-derived and is not.
+
+    Robot-specific knowledge lives entirely in the manifest's
+    ``hal.parameters.can_bus_bindings`` (parameter name to role token). What
+    is here is the mechanism, so a new CAN robot is a manifest entry rather
+    than a change to this function.
+
+    Args:
+        description: Base description, whose ``hal.parameters.can_bus_bindings``
+            decides whether anything happens at all.
+        detection: Probed host; supplies the matched CAN interfaces and
+            receives a warning for every binding that cannot be resolved.
+
+    Returns:
+        The description with resolved bus names written into
+        ``hal.parameters.defaults``, or unchanged when the robot declares no
+        bindings, has no CAN bus, or no binding resolves.
+    """
+    bindings = description.hal.parameters.can_bus_bindings
+    if not bindings:
+        return description
+
+    # Only interfaces the CAN probe attributed to a robot are candidates: a
+    # host may also carry unrelated buses (a vehicle gateway, a test rig), and
+    # binding one of those to an arm would be worse than leaving the default.
+    candidates = [iface.name for match in detection.can.matches for iface in match.interfaces]
+    if not candidates:
+        detection.warnings.append(
+            f"can.bind: '{description.name}' declares can_bus_bindings "
+            f"{sorted(bindings)} but no CAN interface was matched to a robot — "
+            "leaving the manifest defaults in place."
+        )
+        return description
+
+    resolved: dict[str, object] = {}
+    for parameter, role in sorted(bindings.items()):
+        hits = [name for name in candidates if role.lower() in name.lower()]
+        if len(hits) == 1:
+            resolved[parameter] = hits[0]
+            continue
+        # Never guess. Picking the wrong bus here would drive one limb with
+        # another limb's trajectory, and it would look like it worked.
+        detail = f"matched {sorted(hits)}" if hits else "matched nothing"
+        detection.warnings.append(
+            f"can.bind: role {role!r} for '{parameter}' {detail} among "
+            f"{sorted(candidates)} — need exactly one. Leaving the manifest "
+            f"default in place."
+        )
+
+    if not resolved:
+        return description
+
+    parameters = description.hal.parameters.model_copy(
+        update={"defaults": {**description.hal.parameters.defaults, **resolved}}
+    )
+    hal = description.hal.model_copy(update={"parameters": parameters})
+    return description.model_copy(update={"hal": hal})
 
 
 def _enrich_ros2(description: RobotDescription, detection: DetectionReport) -> RobotDescription:

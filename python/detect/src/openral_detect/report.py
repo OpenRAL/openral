@@ -1,8 +1,8 @@
 """Pydantic models for the auto-provisioning detection report.
 
 A :class:`DetectionReport` is a typed snapshot of everything ``openral detect``
-discovered on the host: USB controllers, GPUs / Jetson / Apple Silicon,
-cameras (V4L2 / RealSense / Orbbec), ROS 2 topology, and network
+discovered on the host: USB controllers, SocketCAN motor buses, GPUs / Jetson /
+Apple Silicon, cameras (V4L2 / RealSense / Orbbec), ROS 2 topology, and network
 interfaces.
 
 Every probe that fails (missing optional dep, no hardware, command not on
@@ -31,6 +31,9 @@ from pydantic import BaseModel, ConfigDict, Field
 __all__ = [
     "AppleSiliconInfo",
     "CameraProbeResult",
+    "CanInterfaceInfo",
+    "CanMatchRecord",
+    "CanProbeResult",
     "DetectionReport",
     "GpuProbeResult",
     "JetsonInfo",
@@ -75,6 +78,51 @@ class UsbProbeResult(BaseModel):
 
     devices: list[UsbDeviceRecord] = Field(default_factory=list)
     matches: list[UsbMatchRecord] = Field(default_factory=list)
+
+
+# ── SocketCAN ─────────────────────────────────────────────────────────────────
+
+
+class CanInterfaceInfo(BaseModel):
+    """One SocketCAN interface captured for the report.
+
+    Mirrors :class:`openral_cli.autodetect.CanInterface` as a Pydantic model
+    so the report serializes cleanly through JSON / YAML.
+
+    ``state`` is the field an operator reads when a detected arm will not
+    move: a link that is ``is_up`` and carries the right bitrates but sits in
+    ``"ERROR-PASSIVE"`` is transmitting into a bus whose motors are unpowered
+    — nothing is ACKing the frames.  ``"ERROR-ACTIVE"`` is the healthy state.
+    """
+
+    name: str
+    is_up: bool = False
+    fd_enabled: bool = False
+    bitrate: int = 0
+    data_bitrate: int = 0
+    state: str = ""
+    driver: str = ""
+    mtu: int = 0
+    vid: int = 0
+    pid: int = 0
+    adapter: str = ""
+
+
+class CanMatchRecord(BaseModel):
+    """A group of CAN interfaces whose names identify one known robot."""
+
+    interfaces: list[CanInterfaceInfo] = Field(default_factory=list)
+    chip: str
+    driver_hint: str
+    embodiment_tag: str
+    bh_robot_type: str
+
+
+class CanProbeResult(BaseModel):
+    """SocketCAN enumeration output."""
+
+    interfaces: list[CanInterfaceInfo] = Field(default_factory=list)
+    matches: list[CanMatchRecord] = Field(default_factory=list)
 
 
 # ── GPU / compute ──────────────────────────────────────────────────────────────
@@ -149,13 +197,26 @@ class GpuProbeResult(BaseModel):
 
 
 class V4l2CameraInfo(BaseModel):
-    """One V4L2 camera node (Linux ``/dev/video*``)."""
+    """One V4L2 camera device (Linux ``/dev/video*``).
+
+    One row per *physical* camera, not per node: a UVC device typically
+    registers two ``/dev/videoN`` nodes (capture + metadata) and
+    :attr:`device_path` names the capture one.
+
+    ``vid`` / ``pid`` / ``serial`` come from the camera's own USB descriptor
+    and are what lets the assembler resolve a ``usb_uvc`` catalog signature.
+    They are ``0`` / ``""`` for MIPI-CSI cameras and for hosts probed through
+    ``v4l2-ctl``, which does not expose them.
+    """
 
     device_path: str
     name: str
     bus_info: str = ""
     formats: list[str] = Field(default_factory=list)
     max_resolution: tuple[int, int] | None = None
+    vid: int = 0
+    pid: int = 0
+    serial: str = ""
 
 
 class RealsenseDeviceInfo(BaseModel):
@@ -245,6 +306,7 @@ class DetectionReport(BaseModel):
         host_os: ``platform.system()`` + ``platform.release()``.
         python_version: ``platform.python_version()``.
         usb: USB enumeration + matched VID/PID rows.
+        can: SocketCAN interfaces + matched motor-bus rows.
         gpu: NVIDIA / Jetson / Apple Silicon discovery.
         cameras: V4L2 / RealSense / Orbbec live device lists.
         ros2: DDS topology + RMW + domain.
@@ -259,6 +321,7 @@ class DetectionReport(BaseModel):
     host_os: str = ""
     python_version: str = ""
     usb: UsbProbeResult = Field(default_factory=UsbProbeResult)
+    can: CanProbeResult = Field(default_factory=CanProbeResult)
     gpu: GpuProbeResult = Field(default_factory=GpuProbeResult)
     cameras: CameraProbeResult = Field(default_factory=CameraProbeResult)
     ros2: Ros2TopologyResult = Field(default_factory=Ros2TopologyResult)

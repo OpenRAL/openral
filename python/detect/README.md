@@ -31,13 +31,55 @@ openral detect \
   --deployment scenes/deploy/so101_bench.yaml
 
 # Inspect probes without writing files or prompting (CI-safe).
-openral detect --include usb,gpu,cameras_v4l2 --report detect.json --no-write
+openral detect --include usb,can,gpu,cameras_v4l2 --report detect.json --no-write
 ```
 
-`openral detect` probes USB, DDS, GPU, V4L2, RealSense, Orbbec, and network
-interfaces; resolves a canonical manifest (from USB/DDS inference or
-`--robot`) as a **template**, never as the output; and records accelerator
-capabilities used by `openral rskill check`. The interactive flow is:
+`openral detect` probes USB, SocketCAN, DDS, GPU, V4L2, RealSense, Orbbec, and
+network interfaces; resolves a canonical manifest (from DDS/CAN/USB inference
+or `--robot`) as a **template**, never as the output; and records accelerator
+capabilities used by `openral rskill check`.
+
+### How a robot is identified
+
+Three transports, consulted strongest-evidence-first:
+
+| order | transport | signal | example |
+| ----- | --------- | ------ | ------- |
+| 1 | DDS | topic-name prefix | `/lowstate` → Unitree G1 |
+| 2 | SocketCAN | udev-pinned interface name | `openarm_left` → OpenArm |
+| 3 | USB serial | VID/PID of the controller chip | `1a86:7523` → SO-101 |
+
+DDS outranks CAN because a robot publishing those topics is already up and
+naming itself. CAN outranks USB because an interface name is a deliberate
+provisioning choice, while a USB controller chip is often shared across
+several arms (every Feetech-bus arm looks alike).
+
+CAN needs the udev rule because a CAN bus carries no vendor descriptor: the
+adapter identifies itself, the motors on the far side do not. A bare `can0`
+is therefore left unmatched on purpose — it is a kernel enumeration artefact,
+not a statement about what is plugged in.
+
+```bash
+# What `openral detect` sees on a provisioned OpenArm cell:
+#   can            6 interface(s), 2 up, 1 matched
+#     openarm_left   openarm · PEAK PCAN-USB Pro FD · 1000k/5000k FD · ERROR-ACTIVE
+#     openarm_right  openarm · PEAK PCAN-USB Pro FD · 1000k/5000k FD · ERROR-ACTIVE
+openral detect --include can --no-write
+```
+
+`ERROR-PASSIVE` on an otherwise healthy bus is worth knowing by name: frames
+are leaving the adapter and nothing is acknowledging them, which in practice
+means the motors are unpowered. The probe says so in a warning rather than
+leaving you to read the `state` field.
+
+### Cameras without `v4l-utils`
+
+The V4L2 probe reads `/sys/class/video4linux` first and only falls back to
+`v4l2-ctl --list-devices`. sysfs is always present, needs no package and no
+root, and is the only source of the camera's *own* USB descriptor — which is
+what resolves a `usb_uvc` catalog signature, so a recognised camera arrives
+with real intrinsics instead of a generic placeholder. It also carries the
+serial, which is the only way to tell two identical cameras apart on one rig. The interactive flow is:
 
 1. Prompt for a custom robot name (default: the canonical rig's name). This
    becomes `RobotDescription.name`, and — unless `--output` is given — sets

@@ -52,14 +52,18 @@ _:class:`SensorReader` Protocol — seam between per-sensor capture backends and
 ### `python/runner/src/openral_runner/backends/opencv_thread.py`
 _:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-camera-thread pattern._
 
-- module constant `_COLOR_NDIM = 3` — Number of dims for an OpenCV colour frame (`(H, W, 3)`); mono is `(H, W)`. Used to derive `SensorFrame.channels`. (L38)
-- `class OpenCVThreadSensorReader` — Per-camera background-thread reader on top of `cv2.VideoCapture`. Imports `cv2` lazily inside `open()` (the `opencv` optional-extra). (L41)
-  - `__init__(*, sensor_id, device, fps=30, width=None, height=None, encoding=BGR8, default_max_age_ms=100)` — Stash config; rejects non-positive `fps` / `default_max_age_ms`. (L68)
-  - `open() -> None` — Open `cv2.VideoCapture`, pin `cv2.setNumThreads(1)` (lerobot parity), spawn daemon thread. Idempotent. (L106)
-  - `close() -> None` — Stop event, join thread (2 s timeout), release capture. Idempotent. (L144)
-  - `__enter__() / __exit__()` — Context-manager sugar; calls `open` / `close`. (L162)
-  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Lock-protected snapshot of the `_latest_frame` slot; constructs a `SensorFrame` with inlined raw bytes; raises `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on closed reader. (L173)
-  - `_read_loop()` — Background daemon: `cv2.VideoCapture.read` → `_latest_frame + _latest_stamp_*_ns` under lock; sleeps `1/fps` on read failure / EOF. (L228)
+- module constant `_COLOR_NDIM = 3` — Number of dims for an OpenCV colour frame (`(H, W, 3)`); mono is `(H, W)`. Used to derive `SensorFrame.channels`. (L39)
+- module constant `_CROP_LEN = 4` — A crop is `(x, y, width, height)`.
+- `_validated_crop(sensor_id, crop) -> tuple[int, int, int, int] | None` — Normalise a crop from a tuple **or a YAML list** (scene `backend_params` arrive as lists) and reject a wrong length / negative origin / non-positive extent at construction, before any I/O.
+- `class OpenCVThreadSensorReader` — Per-camera background-thread reader on top of `cv2.VideoCapture`. Imports `cv2` lazily inside `open()` (the `opencv` optional-extra). (L84)
+  - `__init__(*, sensor_id, device, fps=30, width=None, height=None, encoding=BGR8, crop=None, default_max_age_ms=100)` — Stash config; rejects non-positive `fps` / `default_max_age_ms` and a malformed `crop`.
+  - `crop` exists for **side-by-side stereo**: a ZED Mini streams both lenses in one 1344×376 UVC frame, while a policy trained on the left lens expects 672×376. Handing it the doubled-width frame is silently out-of-distribution rather than an error, because the shape is still a valid image — so the slice is declared in the sensor binding, next to the device it belongs to. Applied in the capture thread (numpy view; the copy happens at `tobytes()` in `read_latest`), so the hot path pays nothing.
+  - `_apply_crop(frame) -> frame | None` — Returns the sub-rectangle, or `None` (frame dropped + `crop_does_not_fit` logged at error) if the device changed mode mid-stream. It does **not** raise: killing the capture thread would leave the reader permanently stale with the reason only on stderr.
+  - `open() -> None` — Open `cv2.VideoCapture`, pin `cv2.setNumThreads(1)` (lerobot parity), validate any `crop` against the mode the device **actually negotiated** (`cap.set` is best-effort), spawn daemon thread. Idempotent. A crop that does not fit raises here, so a deploy refuses to start rather than starting blind.
+  - `close() -> None` — Stop event, join thread (2 s timeout), release capture. Idempotent. (L218)
+  - `__enter__() / __exit__()` — Context-manager sugar; calls `open` / `close`. (L236)
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Lock-protected snapshot of the `_latest_frame` slot; constructs a `SensorFrame` with inlined raw bytes; raises `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on closed reader. (L247)
+  - `_read_loop()` — Background daemon: `cv2.VideoCapture.read` → `_latest_frame + _latest_stamp_*_ns` under lock; sleeps `1/fps` on read failure / EOF. (L330)
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
