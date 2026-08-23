@@ -3237,7 +3237,7 @@ libero = [
     { name = "bitsandbytes", specifier = ">=0.45" },
     { name = "lerobot", extras = ["libero"] },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 lingbot = [
     { name = "msgpack", specifier = ">=1" },
@@ -3261,7 +3261,7 @@ maniskill3 = [
     { name = "lerobot" },
     { name = "mani-skill", specifier = ">=3.0.0b9" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 metaworld = [
     { name = "accelerate", specifier = ">=1.13.0" },
@@ -3269,14 +3269,14 @@ metaworld = [
     { name = "lerobot" },
     { name = "mujoco", specifier = ">=3.8.0" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 omdet = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "timm", specifier = ">=1.0" },
     { name = "torch", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = ">=2.2" },
     { name = "torch", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 onnx-export = [
     { name = "torch", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = ">=2.2" },
@@ -3306,7 +3306,7 @@ robocasa = [
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c" },
     { name = "robosuite-models", specifier = ">=1.0.0" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 robotwin = [
     { name = "msgpack", specifier = ">=1" },
@@ -3316,7 +3316,7 @@ sam2 = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "torch", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = ">=2.2" },
     { name = "torch", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 sidecar-wire = [
     { name = "msgpack", specifier = ">=1" },
@@ -3333,7 +3333,7 @@ sim = [
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "pymunk", specifier = "<8" },
     { name = "robot-descriptions", specifier = ">=1.12.0" },
-    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
 ]
 simpler-env = [
     { name = "gymnasium", specifier = ">=1.0.0" },
