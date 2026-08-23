@@ -88,11 +88,24 @@ _EXPECTED_ALLOWED: set[str] = {
 
 def _load_record_launch() -> object:
     """Import record.launch.py by path, injecting the bringup package shim."""
-    # record.launch.py imports ``launch`` / ``launch_ros`` at module top. Those
-    # ship with a sourced ROS 2 install but are absent in the plain-pytest CI
-    # env (no ROS) — skip the launch-construction guards there, exactly as they
-    # run under ament_cmake_pytest with ROS sourced (CLAUDE.md §1.11).
-    pytest.importorskip("launch")
+    # record.launch.py imports ``launch`` at module top. That ships with a
+    # sourced ROS 2 install but is absent in the plain-pytest CI lane — skip the
+    # launch-construction guards there, exactly as they run under
+    # ament_cmake_pytest with ROS sourced (CLAUDE.md §1.11).
+    #
+    # Guard on ``launch.actions``, NOT on bare ``launch``. Several packages ship
+    # a ROS ``launch/`` directory with no ``__init__.py``
+    # (``openral_rskill_ros/launch`` is the one that wins), and their package
+    # root lands on ``sys.path`` via a sibling ``test/conftest.py``. With no real
+    # ROS on the path, ``import launch`` therefore resolves to that directory as
+    # an implicit NAMESPACE package and succeeds — so a bare
+    # ``importorskip("launch")`` is silently satisfied by a directory of launch
+    # files, and the skip never fires. The failure only surfaces later, as
+    # ``ImportError: cannot import name 'LaunchDescription' from 'launch'
+    # (unknown location)``. A submodule the namespace shadow does not contain is
+    # the reliable probe; a real ROS ``launch`` provides it and wins over any
+    # namespace portion.
+    pytest.importorskip("launch.actions")
     # Ensure topics.py is importable under the name the launch file imports.
     import sys
     import types

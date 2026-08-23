@@ -91,6 +91,13 @@ TARGETS=(
     # executor-escape - are safety-relevant, so they must run on a CI
     # surface rather than only on a dev host.
     packages/openral_rskill_ros/test/test_place_declaration_lifecycle.py
+    # Builds a real LaunchDescription, so it needs ROS `launch` and skips in the
+    # plain-pytest lane — i.e. it ran on NO CI surface, which is how it sat
+    # latently broken until a diff first selected this package. What it pins is
+    # worth a surface: the MCAP recorder's scope, including the assertions that
+    # /openral/estop, /openral/safe_action and the other actuation topics are
+    # NOT reachable through the Bucket-1 record patterns.
+    packages/openral_foxglove_bringup/test/test_record_launch.py
 )
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this
