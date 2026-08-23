@@ -415,6 +415,43 @@ x86_64 resolution is unchanged — still PyPI `torch==2.9.1`, `torchcodec==0.9.1
 >
 > Fresh venvs are unaffected.
 
+## GStreamer colour conversion on plain L4T
+
+Jetson Thor images ship the L4T multimedia stack (`nvvidconv`) but **not**
+DeepStream (`nvvideoconvert`), and the two elements do not advertise the same
+system-memory src caps. On a Jetson AGX Thor:
+
+```console
+$ gst-inspect-1.0 --exists nvvideoconvert; echo $?
+1
+$ gst-inspect-1.0 --exists nvvidconv; echo $?
+0
+$ gst-inspect-1.0 nvvidconv          # SRC template, video/x-raw
+format: { I420, UYVY, YUY2, YVYU, NV12, NV16, NV24, GRAY8, BGRx, RGBA, Y42B, Y444 }
+```
+
+`nvvideoconvert` lists packed 3-byte `BGR`; `nvvidconv` lists `BGRx` and no
+`BGR`. So a leg that pins `format=BGR` directly on `nvvidconv` never links:
+
+```console
+$ gst-launch-1.0 videotestsrc ! nvvidconv ! video/x-raw,format=BGR ! fakesink
+WARNING: erroneous pipeline: could not link nvvconv0 to fakesink0,
+  nvvconv0 can't handle caps video/x-raw, format=(string)BGR
+```
+
+`openral_runner.backends.gstreamer.pipeline.bgr_convert_chain` owns this
+distinction for every leg the builder emits: `nvvidconv` is bridged as
+`nvvidconv ! video/x-raw,format=BGRx ! videoconvert`, while `nvvideoconvert`
+(and stock `videoconvert`) stay direct-to-`BGR` so DeepStream hosts pay no
+extra CPU colour conversion. The choice is made on the resolved **element
+name**, not on a platform guess.
+
+Note that the NVMM policy leg itself (`video/x-raw(memory:NVMM)` caps, the
+default for `PipelineSpec.enable_nvmm`) still needs the private
+`openral-pro-trt` package to consume the `NvBufSurface`; without it the reader
+reports a bus error by design (no silent fallback — CLAUDE.md §1.4). Pass
+`enable_nvmm: false` in `backend_params` for a system-memory-only Jetson host.
+
 ## Related
 
 - [Sim Environments](sim-environments.md) — how a failed provision surfaces
