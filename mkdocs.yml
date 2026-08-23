@@ -100,6 +100,8 @@ nav:
     - aarch64 CUDA hosts (DGX Spark / Jetson): reference/aarch64-support.md
     - Telemetry (spans, metrics, logs): reference/telemetry.md
     - Collision-stack validation evidence: reference/collision-validation-evidence.md
+    - Collision-primitive study (OBB vs sphere-swept box): reference/collision-primitive-study.md
+    - Collision primitives, in pictures: reference/collision-primitive-images.md
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Design decisions: decisions.md
   - Contributing:

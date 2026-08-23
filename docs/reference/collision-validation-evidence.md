@@ -4,6 +4,12 @@ Where the numbers in the collision stack's code comments, READMEs and PR bodies
 came from, what each validation round actually concluded, and what is still
 open.
 
+> The *geometry* counterpart to this page is the
+> [collision-primitive study](collision-primitive-study.md): what the kernel's
+> per-link envelopes actually enclose, how much slop a different primitive would
+> remove, and — applying this page's characterised stops — whether removing it
+> would recover any of them.
+
 ## Why this page exists
 
 The attached-payload collision work (issue #102, PRs
