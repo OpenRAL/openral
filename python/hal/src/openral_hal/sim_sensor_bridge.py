@@ -33,6 +33,9 @@ from openral_hal.mobile_base_bridge import describes_mobile_base
 _THUMB_INTERVAL_NS = 1_000_000_000
 _IMAGE_DIM = 3  # HWC ndarray
 _RGB_CHANNELS = 3
+# Below this a quaternion carries no usable direction; keep the identity
+# rotation rather than dividing by ~0.
+_DEGENERATE_QUAT_NORM = 1e-12
 
 # -- E-stop ground-truth snapshot bounds --
 # Near-miss probe: the kernel stops on a *margin* (a few mm to a few cm), so
@@ -751,6 +754,240 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
     }
 
 
+def _payload_collision_points(model: Any, data: Any, root_body_id: int) -> Any:
+    """Sampled points on a payload subtree's SOLID geometry, in the root frame.
+
+    The payload counterpart of :func:`_body_collision_points`, and deliberately
+    *not* the same sampling. That one samples every primitive at the corners of
+    a cube of its largest half-size, which overstates the geometry and so
+    understates the robot-side slop — the safe direction there, because the
+    robot's OBBs come from the manifest and are only ever loose. Here the
+    measured quantity is the producer's own lowering, so an overstated point
+    set would charge an exactly-lowered box geom slop it does not have. Every
+    point below therefore lies ON the real surface: mesh vertices, a box's
+    corners, a sphere's axis extrema, a capsule's cap poles and equator.
+
+    It reads the *live* ``data`` rather than the model defaults because a
+    payload subtree can articulate, and it expresses every point in the ROOT
+    body frame — the frame ``extract_body_primitives`` lowers
+    ``pose_in_object`` into, so the two are directly comparable.
+    """
+    import numpy as np
+
+    from openral_hal._sim_attachment_evidence import _body_subtree
+
+    subtree = _body_subtree(model, root_body_id)
+    root_rot = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
+    root_pos = np.asarray(data.xpos[root_body_id], dtype=np.float64)
+    chunks: list[Any] = []
+    for geom in range(int(model.ngeom)):
+        if int(model.geom_bodyid[geom]) not in subtree:
+            continue
+        if int(model.geom_contype[geom]) == 0 and int(model.geom_conaffinity[geom]) == 0:
+            continue
+        rot = root_rot.T @ np.asarray(data.geom_xmat[geom], dtype=np.float64).reshape(3, 3)
+        pos = root_rot.T @ (np.asarray(data.geom_xpos[geom], dtype=np.float64) - root_pos)
+        local = _geom_surface_points(model, geom)
+        if local.shape[0]:
+            chunks.append((local @ rot.T) + pos)
+    return np.vstack(chunks) if chunks else np.zeros((0, 3))
+
+
+def _geom_surface_points(model: Any, geom: int) -> Any:
+    """Points lying on one geom's own surface, in the geom's local frame."""
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    kind = int(model.geom_type[geom])
+    size = np.asarray(model.geom_size[geom], dtype=np.float64)
+    if kind == int(mujoco.mjtGeom.mjGEOM_MESH):
+        mesh = int(model.geom_dataid[geom])
+        start = int(model.mesh_vertadr[mesh])
+        count = int(model.mesh_vertnum[mesh])
+        return np.asarray(model.mesh_vert[start : start + count], dtype=np.float64).reshape(-1, 3)
+    if kind == int(mujoco.mjtGeom.mjGEOM_BOX):
+        return np.array(
+            [
+                [sx * size[0], sy * size[1], sz * size[2]]
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ],
+            dtype=np.float64,
+        )
+    if kind == int(mujoco.mjtGeom.mjGEOM_SPHERE):
+        r = float(size[0])
+        return np.array(
+            [[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]],
+            dtype=np.float64,
+        )
+    if kind in {int(mujoco.mjtGeom.mjGEOM_CAPSULE), int(mujoco.mjtGeom.mjGEOM_CYLINDER)}:
+        r = float(size[0])
+        half = float(size[1])
+        # A cylinder's rim is on its surface; a capsule's pole sits r beyond
+        # the segment end. Use the shape's own extent so neither is overstated.
+        pole = half + r if kind == int(mujoco.mjtGeom.mjGEOM_CAPSULE) else half
+        return np.array(
+            [
+                [r, 0, -half],
+                [-r, 0, -half],
+                [0, r, -half],
+                [0, -r, -half],
+                [r, 0, half],
+                [-r, 0, half],
+                [0, r, half],
+                [0, -r, half],
+                [0, 0, pole],
+                [0, 0, -pole],
+            ],
+            dtype=np.float64,
+        )
+    return np.zeros((0, 3))
+
+
+def attached_payload_mesh_slop(
+    model: Any,
+    data: Any,
+    *,
+    attached_body_ids: frozenset[int],
+    max_primitives: int = 16,
+) -> dict[str, object]:
+    """How far a carried payload's kernel primitives reach beyond its meshes.
+
+    **The payload-side half of the adjudication budget, and the term the
+    2026-08-22 attached-payload round did not have.** For a world-voxel stop
+    only the robot link is an OBB — the other side is a voxel cube, and
+    :func:`collision_model_mesh_slop` plus the cell half-diagonal covers it.
+    An *attached-payload self-collision* stop has an OBB on **both** sides:
+    the kernel checks the payload's published primitives against the link
+    OBBs (``check_attached_self_collision``), while the ground-truth probe
+    still measures mesh against mesh. Charging only the link's corner slop
+    therefore under-counts the admissible gap by the payload's own.
+
+    That under-count is not hypothetical. In the 2026-08-22 ``baguette``
+    round the kernel stopped on ``attached:sim:obj_main`` vs ``panda_link2``
+    at -4.63 mm while the probe put the nearest payload mesh 75.86 mm from
+    the same link. The kernel's own arithmetic at the measured configuration
+    puts that pair at +21.71 mm — a 54.15 mm representation gap, of which
+    ``panda_link2``'s 48.22 mm corner slop is only the robot's share.
+
+    The payload's primitives come from :func:`extract_body_primitives`, which
+    lowers a *mesh* geom to its local AABB (and clusters geoms once there are
+    more than ``max_primitives``). Both inflate; a sphere/box geom lowers
+    exactly and contributes nothing. Rather than re-deriving that lowering,
+    this calls the producer and measures what it actually publishes, so the
+    budget cannot drift from the geometry the kernel was handed.
+
+    Args:
+        model: live ``mujoco.MjModel``.
+        data: live ``mujoco.MjData`` — a payload subtree can articulate, so
+            the primitives and the sampled points are both taken live.
+        attached_body_ids: root body ids of the currently carried payloads.
+        max_primitives: the producer's per-object primitive cap, mirrored
+            here so the measurement matches the published decomposition.
+
+    Returns:
+        ``{"objects": {<body>: {...}}, "max_corner_slop_m": float,
+        "unresolved_objects": [...], "method": str}``, or ``{}`` when nothing
+        is carried — so the caller reports "no budget" rather than assuming
+        zero. Each object entry carries ``n_primitives``,
+        ``n_box_primitives`` (the subset that can be loose at all),
+        ``corner_slop_m`` and ``collision_points_sampled``.
+
+    Example:
+        >>> # slop = attached_payload_mesh_slop(
+        >>> #     model, data, attached_body_ids=frozenset({380})
+        >>> # )
+        >>> # slop["max_corner_slop_m"]  # payload's share of the budget
+    """
+    import numpy as np
+
+    from openral_hal._sim_attachment_evidence import extract_body_primitives
+
+    if not attached_body_ids:
+        return {}
+    objects: dict[str, object] = {}
+    unresolved: list[str] = []
+    worst = 0.0
+    for body_id in sorted(attached_body_ids):
+        named = _body_names(model, frozenset({int(body_id)}))
+        name = named[0] if named else f"body_{int(body_id)}"
+        points = _payload_collision_points(model, data, int(body_id))
+        if points.shape[0] == 0:
+            unresolved.append(name)
+            continue
+        prims = extract_body_primitives(
+            model,
+            data,
+            root_body_id=int(body_id),
+            object_id=name,
+            max_primitives=max_primitives,
+        )
+        if not prims:
+            unresolved.append(name)
+            continue
+        corner_slop = 0.0
+        boxes = 0
+        for prim in prims:
+            # Only BOX primitives can be loose: a sphere/capsule geom lowers to
+            # a sphere/capsule the kernel checks as such, with no corner to
+            # overhang. Boxes are where the mesh AABB and the cluster merge
+            # land, so they carry the whole payload-side term.
+            half_extents = getattr(prim.shape, "half_extents_m", None)
+            if half_extents is None:
+                continue
+            boxes += 1
+            half = np.asarray(half_extents, dtype=np.float64)
+            rot = _quat_xyzw_to_matrix(prim.pose_in_object.quat_xyzw)
+            centre = np.asarray(prim.pose_in_object.xyz, dtype=np.float64)
+            local = (points - centre) @ rot  # payload points in the primitive frame
+            for sx in (-1.0, 1.0):
+                for sy in (-1.0, 1.0):
+                    for sz in (-1.0, 1.0):
+                        corner = np.array([sx * half[0], sy * half[1], sz * half[2]])
+                        corner_slop = max(
+                            corner_slop, float(np.min(np.linalg.norm(local - corner, axis=1)))
+                        )
+        worst = max(worst, corner_slop)
+        objects[name] = {
+            "n_primitives": len(prims),
+            "n_box_primitives": boxes,
+            "corner_slop_m": round(corner_slop, 6),
+            "collision_points_sampled": int(points.shape[0]),
+        }
+    return {
+        "objects": objects,
+        "max_corner_slop_m": round(worst, 6),
+        "unresolved_objects": sorted(unresolved),
+        "method": (
+            "published primitive corner -> nearest sampled payload collision "
+            "point, over the primitives extract_body_primitives actually "
+            "publishes (mesh geoms lower to their local AABB; clustering above "
+            "the primitive cap inflates further; sphere/box geoms lower "
+            "exactly and contribute 0). The payload's share of the "
+            "attached-payload self-collision budget."
+        ),
+    }
+
+
+def _quat_xyzw_to_matrix(quat_xyzw: Any) -> Any:
+    """Unit quaternion ``(x, y, z, w)`` to a 3x3 rotation matrix."""
+    import numpy as np
+
+    qx, qy, qz, qw = (float(v) for v in quat_xyzw)
+    norm = (qx * qx + qy * qy + qz * qz + qw * qw) ** 0.5
+    if norm < _DEGENERATE_QUAT_NORM:
+        return np.eye(3)
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+    return np.array(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+        ]
+    )
+
+
 def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> Any:
     """Fixed-axis roll-pitch-yaw to a 3x3 rotation matrix (``R = Rz Ry Rx``)."""
     import numpy as np
@@ -1139,7 +1376,18 @@ def estop_ground_truth_snapshot(
         voxel_half_diagonal = float(cell_m) * 3.0**0.5 / 2.0
     max_slop: Any = slop.get("max_corner_slop_m", 0.0)
     budget = float(max_slop or 0.0) + voxel_half_diagonal
-    distmax_used = max(float(distmax_m), budget)
+    # An attached-payload SELF stop has an OBB on both sides — the payload's
+    # published primitives against the link OBBs — so the voxel term does not
+    # apply and the payload's own corner slop does. Charging only the link's
+    # share under-counts the admissible gap and makes a conservative, correct
+    # stop read as a misattributed one.
+    payload_slop = attached_payload_mesh_slop(model, data, attached_body_ids=attached)
+    max_payload_slop: Any = payload_slop.get("max_corner_slop_m", 0.0)
+    self_budget = float(max_slop or 0.0) + float(max_payload_slop or 0.0)
+    # Widen the probe window to whichever comparison this stop needs, never
+    # narrow it: a window derived below the default would recreate
+    # silence-as-evidence from the other side.
+    distmax_used = max(float(distmax_m), budget, self_budget if attached_bodies else 0.0)
     distmax_m = distmax_used
     # World side excludes the WHOLE robot, not just the probed subset: a link
     # the kernel does not check (the gripper, the base) is still the robot,
@@ -1229,6 +1477,24 @@ def estop_ground_truth_snapshot(
             "probe_distmax_default_m": round(float(_NEAREST_PROBE_DISTMAX_M), 6),
             "probe_distmax_used_m": round(distmax_used, 6),
             "collision_model_slop": slop or None,
+            # The self-collision half. Distinct from the block above because
+            # the geometry is: no voxel is involved, and BOTH sides are OBBs.
+            "self_collision": {
+                "rule": (
+                    "an attached-payload self stop (collision_kind 'self', "
+                    "link_a 'attached:<id>') is checked payload-primitive-OBB "
+                    "to link-OBB, with no voxel on either side. The admissible "
+                    "gap against a mesh-to-mesh probe is "
+                    "corner_slop(link) + payload_corner_slop -- per-link slop "
+                    "is in collision_model_slop.links[<link_b>]."
+                ),
+                "max_link_corner_slop_m": slop.get("max_corner_slop_m"),
+                "max_payload_corner_slop_m": payload_slop.get("max_corner_slop_m"),
+                "admissible_gap_m": round(self_budget, 6),
+                "payload_slop": payload_slop or None,
+            }
+            if attached_bodies
+            else None,
         },
         "evidence_voxel_backing": voxel_backing,
         "robot_joint_state": None

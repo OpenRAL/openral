@@ -3494,3 +3494,293 @@ TEST(Issue102NominalPose, TheSameFixture150mmCloserStillStops) {
   EXPECT_GE(hit.link_a, 4) << "the forward links are what reach the face";
   EXPECT_GE(hit.link_b, 0) << "the evidence must name the cell it stopped on";
 }
+
+// --- Field round 2026-08-22-harness-2 / baguette: attached-payload SELF stop ---
+//
+// The kernel E-stopped on `attached:sim:obj_main` vs **panda_link2** at
+// min_distance -4.63106 mm (sweep equal, horizon_step 0, mode 5 =
+// CARTESIAN_DELTA). The ground-truth probe in the same snapshot put the
+// nearest payload MESH 75.857 mm from `robot0_link2`, which reads at a glance
+// like the evidence named the wrong link -- the same class as the defect
+// `fold_pair` exists to prevent (evidence describing one cell, min_distance
+// describing another).
+//
+// It did not. This pins the arithmetic that settles it, at the MEASURED
+// configuration the probe snapshotted:
+//
+//   * `panda_link2` is genuinely the nearest checked link by the kernel's own
+//     payload-OBB<->link-OBB math, at +21.707 mm, with `panda_link1` the
+//     runner-up 25.5 mm further out. No ranking ambiguity to misattribute.
+//   * the logged -4.63 mm is a *predicted* step-0 configuration, one damped
+//     least-squares Jacobian look-ahead past the measured one; the probe
+//     measures the measured one. The evidence says which in `horizon_step`.
+//     That exact value is NOT reproduced here and cannot be from the round's
+//     artifacts: the offending chunk was tick 117 and the ground-truth
+//     snapshot retains only tick-116 candidates, none of them mode 5. What is
+//     pinned below is the measured configuration both sides agree on, which is
+//     what the link-identity question actually turns on.
+//   * the remaining 54.15 mm between +21.707 mm (OBB<->OBB) and the probe's
+//     +75.857 mm (mesh<->mesh) is representation, not error: `panda_link2`'s
+//     own corner slop is 48.22 mm (`collision_model_mesh_slop` against
+//     panda_mj_description under mujoco 3.8.0), and the payload's published
+//     primitives -- MuJoCo mesh geoms lowered to their local AABB by
+//     `extract_body_primitives` -- carry the rest. That payload-side term is
+//     what `adjudication_budget.self_collision` now reports.
+//
+// Geometry is the field data verbatim: the arm chain + OBBs from
+// robots/panda_mobile/robot.yaml (`panda_mobile_arm_model` above), the joint
+// positions from run_gt_snapshot.json, and the payload's 16 published box
+// primitives + `pose_in_link` from run_snapshots/collision_25.npz.
+namespace {
+
+osk::AttachedPrimitive field_box_prim(const osk::Vec3& half, const osk::Transform& pose) {
+  osk::AttachedPrimitive p;
+  p.kind = osk::AttachedShapeKind::kBox;
+  p.half_extents = half;
+  p.pose_in_object = pose;
+  return p;
+}
+
+// `obj_main`'s pose in `panda_link7`, its attach link (collision_25.npz).
+osk::Transform baguette_pose_in_link() {
+  return osk::transform_from_translation_quat(
+      -0.015373307407892995, 0.0099248604017905043, 0.21371086504358913, 0.93007658543616334,
+      0.36530955689910072, 0.0094951866102542144, 0.03763395133155914);
+}
+
+// The 16 box primitives World State published for `sim:obj_main`.
+std::vector<osk::AttachedPrimitive> baguette_primitives() {
+  return {
+      field_box_prim({0.0021944784960431251, 0.0011257817776130694, 0.0013770105126306431},
+                     osk::transform_from_translation_quat(0.027972432713558686,
+                                                          0.021545365254524607,
+                                                          -0.026648798487959889, 0, 0, 0, 1)),
+      field_box_prim({0.021919994350845056, 0.031714040010949587, 0.052465094886657695},
+                     osk::transform_from_translation_quat(
+                         -0.0048482222251336185, 0.027929188767952647, 0.012688233503858155,
+                         0.18059993879382152, 0.49374329084058216, 0.76065392612349636,
+                         0.38079762280047275)),
+      field_box_prim({0.018265302458733087, 0.024228997268541958, 0.029085167087921006},
+                     osk::transform_from_translation_quat(
+                         -0.0094978477023400423, 0.059685439382957971, 0.0037803362017842413,
+                         0.54331519240459458, -0.17282809181127035, -0.035349860079674077,
+                         0.8207858671880145)),
+      field_box_prim({0.022063799717089667, 0.021054374788510782, 0.032662974238288532},
+                     osk::transform_from_translation_quat(
+                         0.0022606363368854743, 0.073427011459713643, 0.016628542592376495,
+                         0.42100958851517306, -0.093330364242762184, -0.33405678729172378,
+                         0.83812077432368304)),
+      field_box_prim({0.011616132661283959, 0.032051379292673876, 0.053275991605340522},
+                     osk::transform_from_translation_quat(
+                         0.0013311552263077838, 0.00064165683169179356, 0.010244752334121254,
+                         0.17150219795423749, 0.45382792381313225, 0.74707993331306166,
+                         0.45442137373288094)),
+      field_box_prim({0.0095261805539839303, 0.030592621148165588, 0.033432510870647109},
+                     osk::transform_from_translation_quat(
+                         0.023206835593277887, -0.016445419412603478, 0.016929847153129004,
+                         -0.14124744209942697, -0.098370370621440245, 0.86819166041757312,
+                         0.46541988683934282)),
+      field_box_prim({0.0096440873979364364, 0.028991659988381834, 0.030891758457630956},
+                     osk::transform_from_translation_quat(
+                         -0.0076429449839323753, -0.0389871253200317, -0.0078676786425067018,
+                         0.41356582998975883, 0.82384095540237168, 0.29450289898020476,
+                         0.2520266393833096)),
+      field_box_prim({0.02641717913747536, 0.028332312517563102, 0.030863830670606253},
+                     osk::transform_from_translation_quat(
+                         -0.0019898141677784334, -0.07170768929675235, -0.0067996421285204806,
+                         -0.18779225881740699, -0.3109057821475868, 0.5294421359123932,
+                         0.76665682471101537)),
+      field_box_prim({0.017123035047319716, 0.025815171579397087, 0.031247145823329436},
+                     osk::transform_from_translation_quat(
+                         0.037063536981591608, -0.067642966337284782, 0.018269733581355925,
+                         -0.17071257078426857, -0.09931636195863984, 0.85830553349233984,
+                         0.47360858269245565)),
+      field_box_prim({0.0064465983783234459, 0.010840547729609398, 0.014809863667786111},
+                     osk::transform_from_translation_quat(
+                         -0.0074719003325031553, 0.093067547956081548, 0.012477444522082892,
+                         0.31203754993969346, 0.43392470568409447, 0.78443559040943034,
+                         0.31464697952405962)),
+      field_box_prim({0.0093259872466583925, 0.0097219127068609527, 0.017627378881697044},
+                     osk::transform_from_translation_quat(
+                         -8.4036881329098358e-05, 0.1005330375204859, -0.00027260097523389214,
+                         0.46632576142475268, 0.2617598010472082, 0.84321626792139048,
+                         -0.054849031897312203)),
+      field_box_prim({0.016281558664445858, 0.032784231669578126, 0.032839751536116617},
+                     osk::transform_from_translation_quat(
+                         0.027460134028921723, -0.039575604521251972, 0.016118270490434575,
+                         -0.1345517819604875, -0.051018237309738736, 0.88959474850167974,
+                         0.43349064680947619)),
+      field_box_prim({0.0051965623962684053, 0.014221816709332893, 0.029436791234186185},
+                     osk::transform_from_translation_quat(
+                         0.0066558036450046123, -0.05443148231260226, 0.0032491418597347822,
+                         -0.0057849801688535218, -0.27408060776929805, 0.25740329880276136,
+                         0.92660126063734383)),
+      field_box_prim({0.0031831396911569114, 0.011521921153894929, 0.027966366614740005},
+                     osk::transform_from_translation_quat(
+                         0.01752611165590235, -0.075195473039578145, 0.0049550846699575896,
+                         -0.027392159283649218, -0.27694733570222796, 0.27456243698273392,
+                         0.92041583594336251)),
+      field_box_prim({0.0044187683580256759, 0.029367606521699948, 0.03271031230381518},
+                     osk::transform_from_translation_quat(
+                         0.020400298458530197, -0.0033744314697265266, 0.017508800585312685,
+                         -0.14285252630285528, -0.1028292570483671, 0.86186096476884544,
+                         0.47562062300901953)),
+      field_box_prim({0.0044127332844738224, 0.026702117686299671, 0.030034158974274926},
+                     osk::transform_from_translation_quat(
+                         -0.010103197732818285, -0.025368664459904697, -0.0063071302933151371,
+                         -0.233603683579135, -0.26652139262795843, 0.8258329986246804,
+                         0.43862914252530194)),
+  };
+}
+
+// robot_joint_state.position for panda_joint1..7 at the stop (sim t = 17.95 s).
+std::vector<double> baguette_qpos() {
+  return {-0.16164400000000001,
+          -1.1826099999999999,
+          -0.084798999999999999,
+          -2.814155,
+          -0.304174,
+          1.61849,
+          1.7912570000000001};
+}
+
+// The payload attached to link index 6 (`panda_link7`). Its only touch link,
+// `panda_finger_pair`, carries no collision box and so has no model index --
+// the gripper is deliberately absent from `collision_geometry`.
+osk::AttachedModel baguette_attached_model() {
+  osk::AttachedModel att;
+  osk::AttachedObject o;
+  o.pose_in_link = baguette_pose_in_link();
+  o.attach_link = 6;
+  o.prim_first = 0;
+  o.touch_first = 0;
+  o.touch_count = 0;
+  for (const auto& p : baguette_primitives()) {
+    att.primitives.push_back(p);
+  }
+  o.prim_count = static_cast<int>(att.primitives.size());
+  att.objects.push_back(o);
+  att.n_objects = att.objects.size();
+  att.n_primitives = att.primitives.size();
+  return att;
+}
+
+// The payload's distance to ONE link, through the public entry point: keep the
+// whole chain (FK needs it) but leave only that link's OBB checkable. Nothing
+// trips at margin 0, so `finish_sweep` leaves `min_distance` as the sweep
+// minimum -- that link's own clearance.
+double baguette_distance_to_link(int link) {
+  const auto full = panda_mobile_arm_model();
+  osk::CollisionModel model = full;
+  model.box_link.clear();
+  model.boxes.clear();
+  for (std::size_t b = 0; b < full.boxes.size(); ++b) {
+    if (full.box_link[b] == link) {
+      model.box_link.push_back(full.box_link[b]);
+      model.boxes.push_back(full.boxes[b]);
+    }
+  }
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = baguette_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+  return osk::check_attached_self_collision(model, baguette_attached_model(), scratch, 0.0)
+      .sweep_min_distance;
+}
+
+}  // namespace
+
+TEST(BaguettePayloadSelfStop, TheNamedLinkIsGenuinelyTheNearestOne) {
+  // panda_link2 is model index 1. Rank every checked link (the attach link,
+  // index 6, is always allowed and never ranked).
+  int nearest = -1;
+  double nearest_d = 1e18;
+  double runner_up_d = 1e18;
+  for (int link = 0; link < 6; ++link) {
+    const double d = baguette_distance_to_link(link);
+    if (d < nearest_d) {
+      runner_up_d = nearest_d;
+      nearest_d = d;
+      nearest = link;
+    } else if (d < runner_up_d) {
+      runner_up_d = d;
+    }
+  }
+
+  EXPECT_EQ(nearest, 1) << "panda_link2 -- the link the field evidence named";
+  EXPECT_NEAR(nearest_d, 0.02170726, 1e-7);
+  EXPECT_NEAR(runner_up_d, 0.04724177, 1e-7) << "panda_link1";
+  // The margin that rules out a misattributed ranking: the runner-up is 25.5 mm
+  // further out, far beyond any plausible tie.
+  EXPECT_GT(runner_up_d - nearest_d, 0.02) << "the nearest link is unambiguous";
+}
+
+TEST(BaguettePayloadSelfStop, TheObbOrderingLegitimatelyInvertsTheMeshOrdering) {
+  // **The reason this pose fooled two separate analyses**, and the single most
+  // important thing to keep pinned.
+  //
+  // In MESH space the two candidate links are nearly tied, and `panda_link1`
+  // is the closer of them: the run's probe measured the nearest payload mesh
+  // at 73.855 mm from `robot0_link1` and 75.857 mm from `robot0_link2`. In OBB
+  // space -- the space the kernel actually checks in -- the order REVERSES and
+  // the gap blows open: 47.242 mm for link1, 21.707 mm for link2.
+  //
+  // That is not a defect. `panda_link2`'s box is simply the more inflated of
+  // the two at this configuration (its corner slop is 48.22 mm), so it
+  // legitimately wins the argmin the kernel is entitled to take over its own
+  // geometry. Anyone who ranks links by the probe and expects the kernel to
+  // agree will conclude the evidence named the wrong body -- which is exactly
+  // what happened, twice.
+  constexpr double kMeshLink1 = 0.073855;  // run_gt_snapshot nearest_payload_robot_pairs
+  constexpr double kMeshLink2 = 0.075857;
+
+  const double obb_link1 = baguette_distance_to_link(0);
+  const double obb_link2 = baguette_distance_to_link(1);
+
+  EXPECT_LT(kMeshLink1, kMeshLink2) << "by MESH, link1 is the nearer of the two";
+  EXPECT_LT(obb_link2, obb_link1) << "by OBB, link2 is -- the ordering inverts";
+  // Both OBB distances sit inside the 28.3-88.2 mm panda corner-slop band
+  // below their mesh counterparts, so neither is unexplained conservatism.
+  EXPECT_NEAR(kMeshLink2 - obb_link2, 0.05415, 1e-4) << "link2: 54.15 mm proud";
+  EXPECT_NEAR(kMeshLink1 - obb_link1, 0.02661, 1e-4) << "link1: 26.61 mm proud";
+  EXPECT_LT(kMeshLink2 - obb_link2, 0.0882) << "within panda's worst corner slop";
+}
+
+TEST(BaguettePayloadSelfStop, TheMeasuredConfigurationIsClearAndSaysSo) {
+  // At the MEASURED configuration the payload is 21.7 mm clear, so the check
+  // does not fire -- and `finish_sweep` lets `min_distance` keep its clearance
+  // meaning, naming no pair, because there is no tripping pair to name. The
+  // stop the field logged is one predicted look-ahead step past this.
+  const auto model = panda_mobile_arm_model();
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = baguette_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+
+  const auto hit =
+      osk::check_attached_self_collision(model, baguette_attached_model(), scratch, 0.0);
+  EXPECT_FALSE(hit.hit);
+  EXPECT_EQ(hit.link_a, -1);
+  EXPECT_EQ(hit.link_b, -1);
+  EXPECT_NEAR(hit.min_distance, 0.02170726, 1e-7);
+  EXPECT_NEAR(hit.sweep_min_distance, 0.02170726, 1e-7);
+}
+
+TEST(BaguettePayloadSelfStop, WhenItTripsTheEvidenceNamesThatSamePair) {
+  // Raise the margin past the measured clearance so the same geometry trips.
+  // The evidence must then name the pair the ranking identified, carrying that
+  // pair's OWN distance -- not another link's, and not the sweep's.
+  const auto model = panda_mobile_arm_model();
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(model.n_links);
+  const auto qpos = baguette_qpos();
+  osk::forward_kinematics(model, qpos.data(), qpos.size(), scratch);
+
+  const auto hit =
+      osk::check_attached_self_collision(model, baguette_attached_model(), scratch, 0.025);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0) << "attached object 0 -- sim:obj_main";
+  EXPECT_EQ(hit.link_b, 1) << "panda_link2 -- the link the field evidence named";
+  EXPECT_NEAR(hit.min_distance, 0.02170726, 1e-7) << "the reported pair's OWN distance";
+  EXPECT_NEAR(hit.sweep_min_distance, 0.02170726, 1e-7);
+}
