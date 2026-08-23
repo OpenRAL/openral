@@ -38,6 +38,7 @@ __all__ = [
     "PipelineSpec",
     "Platform",
     "Source",
+    "bgr_convert_chain",
     "build_pipeline_string",
     "detect_platform",
     "ensure_appsink_name",
@@ -99,6 +100,16 @@ _TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")
 # second on a warm host; the timeout exists to keep an unhealthy plugin
 # registry from hanging tests.
 _GST_INSPECT_TIMEOUT_S: Final[float] = 5.0
+
+# The two NVMM-aware colour converters, named once because the choice between
+# them is load-bearing for caps negotiation (see :func:`bgr_convert_chain`).
+_NVVIDEOCONVERT: Final[str] = "nvvideoconvert"  # DeepStream
+_NVVIDCONV: Final[str] = "nvvidconv"  # Tegra / L4T multimedia stack
+_VIDEOCONVERT: Final[str] = "videoconvert"  # stock, system memory / CPU
+
+# ``nvvidconv`` cannot emit packed 3-byte ``BGR``; ``BGRx`` is the closest
+# format it does advertise and is a plain byte-drop away from ``BGR``.
+_NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"
 
 
 class Platform(str, Enum):
@@ -350,11 +361,62 @@ def nvmm_convert_element() -> str | None:
         >>> nvmm_convert_element() in {"nvvideoconvert", "nvvidconv", None}
         True
     """
-    if inspect_element_present("nvvideoconvert"):
-        return "nvvideoconvert"
-    if inspect_element_present("nvvidconv"):
-        return "nvvidconv"
+    if inspect_element_present(_NVVIDEOCONVERT):
+        return _NVVIDEOCONVERT
+    if inspect_element_present(_NVVIDCONV):
+        return _NVVIDCONV
     return None
+
+
+def bgr_convert_chain(convert: str) -> str:
+    """Return ``convert`` extended so the chain can emit system-memory ``BGR``.
+
+    The two NVMM-aware converters do **not** advertise the same system-memory
+    src caps, so "which element did we resolve" decides how ``format=BGR`` has
+    to be negotiated:
+
+    * DeepStream's ``nvvideoconvert`` lists packed 3-byte ``BGR``, so
+      ``nvvideoconvert ! video/x-raw,format=BGR`` links directly — no extra
+      CPU copy is inserted on a DeepStream host.
+    * The Tegra/L4T ``nvvidconv`` does **not**. Its system-memory
+      ``video/x-raw`` src template on a Jetson AGX Thor (plain L4T, no
+      DeepStream) is::
+
+          {I420, UYVY, YUY2, YVYU, NV12, NV16, NV24, GRAY8, BGRx, RGBA, Y42B, Y444}
+
+      ``BGRx`` is offered, plain ``BGR`` is not, so pinning ``format=BGR``
+      straight onto ``nvvidconv`` fails at ``Gst.parse_launch`` time with
+      ``could not link nvvconv0 to <sink>, nvvconv0 can't handle caps``.
+      The fix is to land on ``BGRx`` and let a stock ``videoconvert`` drop the
+      padding byte.
+
+    The decision is made on the resolved element **name**, never on a guess
+    about the platform, so a host that happens to have both elements gets the
+    chain matching whichever one :func:`nvmm_convert_element` (or the
+    platform table) actually picked.
+
+    Args:
+        convert: The colour-convert element already resolved for this host —
+            e.g. the return of :func:`nvmm_convert_element`, or stock
+            ``videoconvert``.
+
+    Returns:
+        Either ``convert`` unchanged (it can emit ``BGR`` itself) or a
+        ``<convert> ! video/x-raw,format=BGRx ! videoconvert`` chain. The
+        caller appends its own ``! video/x-raw,format=BGR[,...]`` capsfilter
+        either way.
+
+    Example:
+        >>> bgr_convert_chain("nvvideoconvert")
+        'nvvideoconvert'
+        >>> bgr_convert_chain("videoconvert")
+        'videoconvert'
+        >>> bgr_convert_chain("nvvidconv")
+        'nvvidconv ! video/x-raw,format=BGRx ! videoconvert'
+    """
+    if convert == _NVVIDCONV:
+        return f"{_NVVIDCONV} ! video/x-raw,format={_NVVIDCONV_BGR_BRIDGE_FORMAT} ! {_VIDEOCONVERT}"
+    return convert
 
 
 def ensure_appsink_name(pipeline: str, name: str = _DEFAULT_APPSINK_NAME) -> str:
@@ -425,7 +487,10 @@ def build_pipeline_string(spec: PipelineSpec, platform: Platform | None = None) 
     * Colour convert: ``nvvidconv`` on Tegra; ``nvvideoconvert`` on the
       DeepStream tier (on-GPU, NVMM-native); ``videoconvert`` on desktop
       NVIDIA (open-core bundles no DeepStream — H.264 dec stays on the
-      GPU but colour conversion runs on the CPU) and CPU-only.
+      GPU but colour conversion runs on the CPU) and CPU-only. When the
+      leg terminates in system-memory ``BGR``, ``nvvidconv`` is bridged
+      via ``BGRx`` + ``videoconvert`` (it advertises no packed ``BGR``);
+      see :func:`bgr_convert_chain`.
     * Memory: ``video/x-raw(memory:NVMM)`` caps when
       ``spec.enable_nvmm`` AND the platform supports it (Tegra → NV12,
       DeepStream → RGBA); ``video/x-raw`` (system memory) otherwise.
@@ -566,8 +631,8 @@ def _build_decode(spec: PipelineSpec, platform: Platform) -> str:
     return f"h264parse ! {h264_decoder}"
 
 
-def _build_convert(spec: PipelineSpec, platform: Platform) -> str:
-    """Return the colour-conversion element appropriate for the platform.
+def _platform_convert_element(platform: Platform) -> str:
+    """Return the bare colour-conversion element appropriate for the platform.
 
     ``nvvidconv`` exists on Tegra (L4T multimedia stack, NVMM-aware).
     ``nvvideoconvert`` is a NVIDIA DeepStream element used on
@@ -578,12 +643,44 @@ def _build_convert(spec: PipelineSpec, platform: Platform) -> str:
     bundling DeepStream into open-core, so ``Platform.NVIDIA_DESKTOP`` falls back
     to stock ``videoconvert`` (CPU) — H.264 dec/enc stays on GPU there,
     only the colour-space convert runs on CPU.
+
+    The result is the *element*, not a BGR-capable chain: callers that pin
+    system-memory ``format=BGR`` downstream must pass it through
+    :func:`bgr_convert_chain` first.
     """
     if platform is Platform.TEGRA:
-        return "nvvidconv"
+        return _NVVIDCONV
     if platform is Platform.NVIDIA_DEEPSTREAM:
-        return "nvvideoconvert"
-    return "videoconvert"
+        return _NVVIDEOCONVERT
+    return _VIDEOCONVERT
+
+
+def _use_nvmm(spec: PipelineSpec, platform: Platform) -> bool:
+    """Return whether the policy leg negotiates ``memory:NVMM`` caps.
+
+    Single definition shared by :func:`_build_convert` (which needs to know
+    whether the converter has to reach system-memory ``BGR``) and
+    :func:`_build_caps` (which emits the caps themselves), so the two can
+    never disagree about which memory the appsink sees.
+    """
+    return spec.enable_nvmm and platform in (Platform.TEGRA, Platform.NVIDIA_DEEPSTREAM)
+
+
+def _build_convert(spec: PipelineSpec, platform: Platform) -> str:
+    """Return the colour-conversion stage for the policy leg.
+
+    On the NVMM path the converter stays a single element: the caps
+    :func:`_build_caps` emits (``NV12`` on Tegra, ``RGBA`` on DeepStream) are
+    both on the platform converter's own src template.
+
+    On the system-memory path the caps are ``BGR``, which ``nvvidconv`` cannot
+    produce — :func:`bgr_convert_chain` bridges via ``BGRx`` there and leaves
+    every other element untouched.
+    """
+    convert = _platform_convert_element(platform)
+    if _use_nvmm(spec, platform):
+        return convert
+    return bgr_convert_chain(convert)
 
 
 def _build_caps(spec: PipelineSpec, platform: Platform) -> str:
@@ -603,7 +700,7 @@ def _build_caps(spec: PipelineSpec, platform: Platform) -> str:
     standard reader pipeline produces ``memory:NVMM`` caps after
     ``videoconvert``; claiming NVMM there would fail caps negotiation.
     """
-    use_nvmm = spec.enable_nvmm and platform in (Platform.TEGRA, Platform.NVIDIA_DEEPSTREAM)
+    use_nvmm = _use_nvmm(spec, platform)
     raw = "video/x-raw(memory:NVMM)" if use_nvmm else "video/x-raw"
     fmt = ("RGBA" if platform is Platform.NVIDIA_DEEPSTREAM else "NV12") if use_nvmm else "BGR"
     fields: list[str] = [f"format={fmt}"]
@@ -673,19 +770,20 @@ def _build_event_tee_branch(spec: PipelineSpec, platform: Platform) -> str:
 
 
 def _lift_convert(platform: Platform) -> str:
-    """Return the converter that lifts a tee-leg frame to system memory.
+    """Return the chain that lifts a tee-leg frame to system-memory ``BGR``.
 
     Tee legs (ROS / event) always terminate in system-memory ``BGR`` for
     CPU consumers. When the policy leg runs NVMM (Tegra / DeepStream),
     stock ``videoconvert`` cannot accept ``memory:NVMM`` caps — the lift
-    needs the platform's NVMM-aware converter (both emit system-memory
-    ``BGR`` directly; verified against DS 9 ``nvvideoconvert`` src caps).
+    needs the platform's NVMM-aware converter.
+
+    The two NVMM converters diverge on how they reach ``BGR``:
+    ``nvvideoconvert`` emits it directly (verified against DS 9
+    ``nvvideoconvert`` src caps), while the Tegra ``nvvidconv`` only offers
+    ``BGRx`` on its system-memory src pad. :func:`bgr_convert_chain` owns that
+    distinction so every leg negotiates it the same way.
     """
-    if platform is Platform.TEGRA:
-        return "nvvidconv"
-    if platform is Platform.NVIDIA_DEEPSTREAM:
-        return "nvvideoconvert"
-    return "videoconvert"
+    return bgr_convert_chain(_platform_convert_element(platform))
 
 
 def _coerce_device_str(device: int | str | None, *, default: str | None) -> str | None:
