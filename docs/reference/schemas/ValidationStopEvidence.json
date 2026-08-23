@@ -1,0 +1,58 @@
+{
+  "additionalProperties": true,
+  "description": "The kernel's ``safety.collision`` verdict for one scene, transcribed.\n\nEvery field is read verbatim out of the ``safety.collision`` log line the\nC++ kernel emits; nothing is recomputed. ``min_distance_m`` is the depth of\nthe cell the kernel *reported*, ``sweep_min_distance_m`` the depth of the\ndeepest cell its sweep found \u2014 they differ only when a support-contact\nwitness exempted a deeper cell, which makes their inequality the\nauthoritative \"was an exemption live at the trip\" evidence.\n\nAttributes:\n    kind: The kernel's collision kind (``\"world\"``, ``\"self\"``).\n    party_a: First party \u2014 a robot link, or ``attached:<object_id>`` when\n        the declared payload is the subject.\n    party_b: Second party \u2014 usually ``voxel_<index>`` for a world stop.\n    horizon_step: Predicted-horizon index the verdict was evaluated at.\n        ``-1`` is the reactive (measured-state) check.\n    min_distance_m: Reported penetration depth, negative when inside.\n    sweep_min_distance_m: Deepest cell the sweep found, negative when\n        inside. ``None`` when the kernel build did not report it.\n    place_allowance_active: Whether the ADR-0097 place-approach allowance\n        was applied on the trip itself.\n    place_target: Declared place target at the trip, empty when none.\n    exemption_active: ``True`` when ``sweep_min_distance_m`` is strictly\n        deeper than ``min_distance_m`` \u2014 a deeper cell was exempted.\n        ``None`` when the sweep depth was not reported.\n\nExample:\n    >>> ev = ValidationStopEvidence(\n    ...     kind=\"world\",\n    ...     party_a=\"panda_link5\",\n    ...     party_b=\"voxel_170781\",\n    ...     horizon_step=0,\n    ...     min_distance_m=-0.0209178,\n    ...     sweep_min_distance_m=-0.0209178,\n    ... )\n    >>> ev.exemption_active\n    False",
+  "properties": {
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "party_a": {
+      "title": "Party A",
+      "type": "string"
+    },
+    "party_b": {
+      "title": "Party B",
+      "type": "string"
+    },
+    "horizon_step": {
+      "title": "Horizon Step",
+      "type": "integer"
+    },
+    "min_distance_m": {
+      "title": "Min Distance M",
+      "type": "number"
+    },
+    "sweep_min_distance_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sweep Min Distance M"
+    },
+    "place_allowance_active": {
+      "default": false,
+      "title": "Place Allowance Active",
+      "type": "boolean"
+    },
+    "place_target": {
+      "default": "",
+      "title": "Place Target",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "party_a",
+    "party_b",
+    "horizon_step",
+    "min_distance_m"
+  ],
+  "title": "ValidationStopEvidence",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -107,3 +107,4 @@ nav:
     - Releasing: contributing/releasing.md
     - Selective testing: contributing/selective-testing.md
     - Test-suite audit: contributing/test-audit.md
+    - Validation matrix: contributing/validation-matrix.md

@@ -1,0 +1,70 @@
+{
+  "additionalProperties": true,
+  "description": "The attach / witness / place-declaration lifecycle of one scene.\n\nReconstructed from the run's monitor JSONL (producer side) and the kernel's\nown ``safety.support_witness_*`` / ``safety.place_region_*`` log lines\n(consumer side). Both are recorded because a disagreement between them is\nitself a finding.\n\nAttributes:\n    attach_t_s: Monitor time of the first payload attach, ``None`` if the\n        run never grasped.\n    detach_t_s: Monitor time of the payload detach, if any.\n    support_id: The support body the witness last attested against.\n    kernel_witness_armed: ``safety.support_witness_armed`` line count.\n    kernel_witness_separated: ``safety.support_witness_separated`` count.\n    place_declaration_seen: Whether a place declaration with a\n        producer-measured region reached the monitor.\n    place_region_armed: Whether the kernel armed the declared place region.\n    place_allowance_active_lines: How many lines disclosed\n        ``place_allowance_active=1``. ``0`` means the approach allowance\n        never applied anywhere in the run.\n\nExample:\n    >>> ValidationWitnessTimeline(attach_t_s=176.32).place_allowance_active_lines\n    0",
+  "properties": {
+    "attach_t_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attach T S"
+    },
+    "detach_t_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Detach T S"
+    },
+    "support_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Support Id"
+    },
+    "kernel_witness_armed": {
+      "default": 0,
+      "title": "Kernel Witness Armed",
+      "type": "integer"
+    },
+    "kernel_witness_separated": {
+      "default": 0,
+      "title": "Kernel Witness Separated",
+      "type": "integer"
+    },
+    "place_declaration_seen": {
+      "default": false,
+      "title": "Place Declaration Seen",
+      "type": "boolean"
+    },
+    "place_region_armed": {
+      "default": false,
+      "title": "Place Region Armed",
+      "type": "boolean"
+    },
+    "place_allowance_active_lines": {
+      "default": 0,
+      "title": "Place Allowance Active Lines",
+      "type": "integer"
+    }
+  },
+  "title": "ValidationWitnessTimeline",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

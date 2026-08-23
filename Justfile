@@ -631,6 +631,50 @@ sim-act-libero *args: _strip-hf-libero-egg _ensure-libero-config
 sim-audit *args:
     uv run python tools/audit_sim_configs.py {{args}}
 
+# The four-scene collision-stack validation matrix, as one versioned command.
+# Runs `openral deploy sim` per scene with the reasoner off and
+# SLAM/Nav2/octomap/kernel-check on, records the artifact set, and writes both
+# NOTES.md and a machine-readable verdicts.json (openral_core's
+# ValidationRoundVerdicts) under outputs/validation-matrix/<round-id>/.
+#
+# GPU host with RoboCasa only — the harness refuses to start on a dirty
+# worktree, against an overlay older than the checked-out C++ sources, through
+# the ~/.local/bin/openral wrapper (it execs the PARENT checkout), without
+# pyzmq (`--group robocasa` alone strips the XR-1 sidecar wire), or when a
+# safety knob is moved in the argv or in the resolved scene. Each refusal closes
+# a round that was actually lost to it — docs/contributing/validation-matrix.md.
+#
+# `--no-sync` on every recipe below is load-bearing: a bare `uv run` re-resolves
+# the environment, and the incident this harness exists to prevent is a sync
+# that silently uninstalled pyzmq mid-round. Sync deliberately, once, with BOTH
+# groups:
+#   just sync --group robocasa --group sidecar-wire
+#   just validation-matrix --round-id 2026-08-22-master-1 --expect-sha $(git rev-parse HEAD)
+#
+# Exit codes: 0 clean · 2 usage · 3 a guardrail refused (nothing written) ·
+# 4 the round ran but a scene bucketed harness-error.
+validation-matrix *args:
+    uv run --no-sync python tools/validation_matrix.py run {{args}}
+
+# Re-derive verdicts.json + NOTES.md from a round's recorded artifacts. Offline
+# and side-effect-free — safe to run on a dev box against a round copied off
+# the validation host.
+validation-matrix-verdicts round_dir *args:
+    uv run --no-sync python tools/validation_matrix.py verdicts {{round_dir}} {{args}}
+
+# What changed since the last round, mechanically. Equal executed_sha on both
+# sides makes it a reproducibility comparison; differing SHAs a before/after.
+validation-matrix-diff round_dir baseline *args:
+    uv run --no-sync python tools/validation_matrix.py diff {{round_dir}} --baseline {{baseline}} {{args}}
+
+# Make a pre-harness round queryable: write the metadata it never recorded
+# (stack, start time, robot and scene configs all derived from its own deploy
+# log), mapping the historical scene directory names and artifact stem.
+#   just validation-matrix-import ~/openral-runs/2026-08-22-master-1 \
+#       --round-id 2026-08-22-master-1 --executed-sha 2edcf67... --stem seed1
+validation-matrix-import round_dir *args:
+    uv run --no-sync python tools/validation_matrix.py import-round {{round_dir}} {{args}}
+
 # The load path is where deploy latency actually lives — imports,
 # from_pretrained, quantisation, to_device — and the phases are already
 # instrumented (`phase_timer`), but nothing surfaced them outside a live

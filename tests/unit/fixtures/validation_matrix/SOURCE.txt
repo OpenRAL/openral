@@ -1,0 +1,121 @@
+REAL artifacts from three collision-stack validation rounds on the project's DGX
+Spark, captured verbatim. Nothing here is hand-written: the three `metadata.json`
+files are produced by the tool itself (`import-round`), from these files.
+
+Producer:
+    spark:/home/allopart/openral-runs/2026-08-22-master-1/{bag1,sink1,fridge1,utensil1}/
+    spark:/home/allopart/openral-runs/2026-08-16-master-1/bag1/
+    spark:/home/allopart/workspace/openral-matrix-baseline/outputs/validation-matrix/
+        2026-08-22-harness-1/{baguette,sink_cup,fridge,utensil}/
+
+The two `master-1` rounds ran stack tip 2edcf67c3b087958d475813fe19234c12e90698c
+(`2edcf67`, "fix(world-state): rasterize the octree by cube overlap, not centre
+sampling"), verified equal to origin/master at run time, with the reasoner off
+and SLAM + Nav2 + octomap + octomap-kernel-check on, seed 1 pinned, on an NVIDIA
+GB10. No safety knob was touched in either. They are summarised in
+`docs/reference/collision-validation-evidence.md` under
+"2026-08-22 — `master-1`, four scenes at `2edcf67`" and
+"2026-08-16 — the paired n=15 A/B, and `master-1`".
+
+Those two are kept together on purpose: same code, same scene, same seed,
+*different* outcome — the 08-16 baguette run tripped during carry on the
+attached payload with an exemption live (min_distance_m -0.00418456 vs
+sweep_min_distance_m -0.0355338), while the 08-22 one carried cleanly and
+tripped later on an arm link with nothing exempted. That makes them a real
+round-over-round diff rather than an invented one.
+
+They also keep their ORIGINAL pre-harness layout — scene directories `bag1` /
+`sink1` / `fridge1` / `utensil1`, artifact stem `seed1` — because that layout is
+what `import-round` exists to read. Renaming them here would have hidden the
+mapping the importer is tested on.
+
+The third round, `2026-08-22-harness-1`, is the harness's FIRST live invocation.
+It died in all four scenes in under a second: `STACK_ARGV` pinned
+`--no-enable-reasoner`, an option `openral deploy sim` does not have, so click
+exited 2 before the ROS graph started. It is here because that failure was
+originally reported as `deadline-no-grasp` with exit 0 — a launch failure read
+as a clean deadline — and these artifacts are what a fixed harness must bucket
+as `harness-error`.
+
+FILES, and how each was produced
+--------------------------------
+
+`<master-round>/<scene>/seed1_deploy_excerpt.log`
+    Line subset of the round's `seed1_deploy.log` (1.7 MB), selected with, and
+    only with:
+
+        sed -n 18p seed1_deploy.log            # the resolved launch argv
+        grep -E "safety\.|sim\.task_success_final|sim\.estop_ground_truth|\
+sim\.estop_initial_configuration|place_allowance_active=1" seed1_deploy.log
+
+    Every retained line is byte-for-byte the original, ROS launch prefix and
+    all, in original file order. Line 18 is the deploy CLI's own
+    `argv: ros2 launch ...` echo: it is the only artifact that states the stack
+    the run actually got after the CLI resolved flag > scene `runtime:` >
+    default, and `import-round` reads the round's `stack_argv` out of it. The
+    full logs are not in the repo because they are ~1.7 MB each.
+
+`<master-round>/<scene>/*.yaml`
+    The per-round DeployScene the run launched, copied verbatim from that
+    round's `scripts/` directory (`robocasa_baguette_place_seed1.yaml` and
+    friends). These rounds predate the harness and pinned their whole stack in
+    the scene's `runtime:` block, which is why `enable_reasoner: false` is in
+    the YAML rather than in an argv. The verdict's `config_sha256` is the digest
+    of this file.
+
+`<master-round>/<scene>/seed1_monitor.jsonl`
+    Verbatim line subset of the round's `seed1_monitor.jsonl`, produced by
+    `attach_monitor4.py` (now `tools/_validation_matrix_monitor.py`). Kept:
+    `monitor_started`, the FIRST `world_voxels` record (it carries the grid
+    resolution the quantization budget is computed from), every
+    `place_declaration`, every `world_state_attached`, each
+    `attachment_state` at which the attached-object set changed plus the first
+    one carrying a support witness, `failure_safety`, `estop` and
+    `monitor_stopped`. The dropped records are the ~1200 `attachment_applied`
+    acks and the periodic `world_voxels`/`snapshot` lines, which no verdict
+    field reads.
+
+`<master-round>/<scene>/seed1_goal.log`
+    The dispatcher's single JSON line, complete and unmodified, from
+    `run_xr1_full.py` (now `tools/_validation_matrix_dispatch.py`).
+
+`2026-08-22-harness-1/<scene>/run_deploy.log`
+    The COMPLETE deploy log of that scene — all six lines of it, click's usage
+    error verbatim. Nothing was excerpted; there was nothing else.
+
+`2026-08-22-harness-1/metadata.json`
+    Written by the harness itself during that round, kept as it was written.
+    Its `stack_argv` records the impossible `--no-enable-reasoner` flag because
+    that is what the round really passed.
+
+`<master-round>/metadata.json`
+    Produced by the tool, not by hand:
+
+        uv run python tools/validation_matrix.py import-round \
+            tests/unit/fixtures/validation_matrix/<round> --round-id <round> \
+            --executed-sha 2edcf67c3b087958d475813fe19234c12e90698c \
+            --stem seed1 --host nvidia --gpu-name "NVIDIA GB10" \
+            --sync-group robocasa --sync-group sidecar-wire \
+            --imported-from /home/allopart/openral-runs/<round>
+
+    Derived from the artifacts above: `stack_argv` (the resolved launch argv's
+    stack tokens), `started_at` (the first ROS timestamp in the log), `repo_root`
+    / `robot_id` / `robot_manifest_path` (the argv's `robot_yaml:=` token),
+    `scene_configs`, `scene_dirs`, `artifact_stem`. Passed in as recorded facts,
+    stored as given: the executed SHA (both rounds' own NOTES.md name it, and
+    `2026-08-16-colcon-2edcf67.log` / `colcon-2edcf67.log` are its build logs),
+    the hostname, the GPU and the sync groups. `worktree_clean` is `null` and
+    `launcher_path` empty: these rounds recorded neither, and neither is
+    derivable — they are not guessed.
+
+    The verdicts.json / NOTES.md the import also writes are NOT kept here; the
+    fixture directory stays inputs-only, and the tests derive both into tmp_path.
+
+Reproduce (needs the run store, which is not public):
+    ssh spark
+    ls ~/openral-runs/2026-08-22-master-1/
+    cat ~/openral-runs/2026-08-22-master-1/NOTES.md
+    ls ~/workspace/openral-matrix-baseline/outputs/validation-matrix/
+
+Consumed by:
+    tests/unit/test_validation_matrix.py

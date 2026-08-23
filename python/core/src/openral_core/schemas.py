@@ -7538,6 +7538,512 @@ class RSkillEvalResult(BaseModel):
         return cls.model_validate(data)
 
 
+# ─── Validation-matrix round verdicts (outputs/validation-matrix/<round>/) ───
+#
+# The collision stack is validated by replaying a fixed set of scenes on a GPU
+# host and reading the artifacts each run leaves behind.  For ~17 rounds that
+# reading was done by hand, by scripts that lived only on the validation host,
+# and several rounds produced no written conclusion at all — see
+# ``docs/reference/collision-validation-evidence.md`` ("Standing caveats" §5).
+#
+# These models are the machine-readable half of that ledger.
+# ``tools/validation_matrix.py`` derives exactly one
+# :class:`ValidationRoundVerdicts` per round *from recorded artifacts only*, so
+# "what changed since the last round" becomes a diff
+# (:class:`ValidationRoundDiff`) instead of an agent re-reading logs.
+#
+# Nothing here interprets the safety kernel's decision — the kernel's verdict
+# is transcribed verbatim (:class:`ValidationStopEvidence`) and adjudicated
+# only *against the simulator's own ground truth*
+# (:class:`ValidationGroundTruthAdjudication`).  A "false positive" label is a
+# statement about the world model, never a licence to relax a margin.
+
+
+ValidationOutcome: TypeAlias = Literal[
+    "completed",
+    "estop-collision-real",
+    "estop-collision-false-positive",
+    "estop-collision-within-quantization",
+    "estop-collision-unadjudicated",
+    "estop-initial-configuration",
+    "deadline-after-grasp",
+    "deadline-no-grasp",
+    "harness-error",
+]
+"""How one scene of a validation round ended.
+
+``completed`` is the only success. The four ``estop-collision-*`` values all
+mean the C++ safety kernel stopped the run and differ only in what the
+simulator's ground truth says about that stop; ``estop-initial-configuration``
+means the stop landed before any action reached the HAL, so it is a
+scene-initialisation defect rather than a stack one (see
+:func:`openral_hal.sim_sensor_bridge.initial_configuration_stop_record`).
+``harness-error`` means the run never produced a usable artifact set.
+"""
+
+
+GroundTruthAdjudication: TypeAlias = Literal[
+    "real-contact",
+    "false-positive",
+    "within-quantization",
+    "unadjudicated",
+]
+"""Verdict of the simulator ground-truth probe on a kernel stop.
+
+``real-contact`` — some probed pair is at or below 0 m, so geometry really is
+touching. ``false-positive`` — the nearest true geometry is further from the
+tripping party than the occupancy grid's own quantization budget can explain.
+``within-quantization`` — the kernel was conservative by an amount the voxel
+size accounts for, which is correct behaviour. ``unadjudicated`` — the probe
+did not cover the stop (truncated, or no snapshot recorded).
+"""
+
+
+class ValidationStopEvidence(BaseModel):
+    """The kernel's ``safety.collision`` verdict for one scene, transcribed.
+
+    Every field is read verbatim out of the ``safety.collision`` log line the
+    C++ kernel emits; nothing is recomputed. ``min_distance_m`` is the depth of
+    the cell the kernel *reported*, ``sweep_min_distance_m`` the depth of the
+    deepest cell its sweep found — they differ only when a support-contact
+    witness exempted a deeper cell, which makes their inequality the
+    authoritative "was an exemption live at the trip" evidence.
+
+    Attributes:
+        kind: The kernel's collision kind (``"world"``, ``"self"``).
+        party_a: First party — a robot link, or ``attached:<object_id>`` when
+            the declared payload is the subject.
+        party_b: Second party — usually ``voxel_<index>`` for a world stop.
+        horizon_step: Predicted-horizon index the verdict was evaluated at.
+            ``-1`` is the reactive (measured-state) check.
+        min_distance_m: Reported penetration depth, negative when inside.
+        sweep_min_distance_m: Deepest cell the sweep found, negative when
+            inside. ``None`` when the kernel build did not report it.
+        place_allowance_active: Whether the ADR-0097 place-approach allowance
+            was applied on the trip itself.
+        place_target: Declared place target at the trip, empty when none.
+        exemption_active: ``True`` when ``sweep_min_distance_m`` is strictly
+            deeper than ``min_distance_m`` — a deeper cell was exempted.
+            ``None`` when the sweep depth was not reported.
+
+    Example:
+        >>> ev = ValidationStopEvidence(
+        ...     kind="world",
+        ...     party_a="panda_link5",
+        ...     party_b="voxel_170781",
+        ...     horizon_step=0,
+        ...     min_distance_m=-0.0209178,
+        ...     sweep_min_distance_m=-0.0209178,
+        ... )
+        >>> ev.exemption_active
+        False
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    kind: str
+    party_a: str
+    party_b: str
+    horizon_step: int
+    min_distance_m: float
+    sweep_min_distance_m: float | None = None
+    place_allowance_active: bool = False
+    place_target: str = ""
+
+    @property
+    def exemption_active(self) -> bool | None:
+        """Whether the sweep found a deeper cell than the one reported."""
+        if self.sweep_min_distance_m is None:
+            return None
+        return self.sweep_min_distance_m < self.min_distance_m - 1e-9
+
+    @property
+    def involves_payload(self) -> bool:
+        """Whether the declared payload — not a bare robot link — tripped."""
+        return self.party_a.startswith("attached:") or self.party_b.startswith("attached:")
+
+
+class ValidationGroundTruthAdjudication(BaseModel):
+    """What the simulator's own probe says about a kernel stop.
+
+    Derived from the ``sim.estop_ground_truth_snapshot`` line the sim HAL emits
+    per stop. The probe measures against solid world geometry only and carries
+    its own caveat that a zero contact count is *not* an emptiness test, so the
+    adjudication is driven by the distance probes rather than the contact list.
+
+    Attributes:
+        verdict: The adjudication.
+        stop_class: The probe's own class for the stop (``"robot_world"``,
+            ``"attached_payload"``).
+        sim_time_s: Simulator time at the stop.
+        grid_resolution_m: Occupancy-grid edge length, read from the monitor's
+            ``world_voxels`` records. Sets the quantization budget.
+        quantization_budget_m: Half the grid cell's body diagonal — the largest
+            discrepancy a correctly-behaving voxel grid can produce.
+        nearest_any_m: Distance of the closest probed pair of any kind.
+            ``None`` when nothing was within ``distmax_m``.
+        nearest_tripping_party_m: Distance of the closest pair whose subject is
+            the party the kernel named. ``None`` when nothing was in range.
+        nearest_pair: Bodies/geoms of the closest probed pair, verbatim.
+        discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's
+            ``min_distance_m`` — how much clearance the kernel did not see.
+        probed_pairs: Pairs the probe actually measured.
+        probe_truncated: Whether the probe hit its call budget. A truncated
+            probe can never support ``false-positive``.
+        distmax_m: The probe's cutoff distance; an untruncated probe that
+            returns no pair proves the nearest geometry is beyond it.
+        payload_contacts: MuJoCo contact count involving the payload.
+
+    Example:
+        >>> adj = ValidationGroundTruthAdjudication(
+        ...     verdict="real-contact", stop_class="attached_payload", sim_time_s=17.5
+        ... )
+        >>> adj.verdict
+        'real-contact'
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    verdict: GroundTruthAdjudication
+    stop_class: str | None = None
+    sim_time_s: float | None = None
+    grid_resolution_m: float | None = None
+    quantization_budget_m: float | None = None
+    nearest_any_m: float | None = None
+    nearest_tripping_party_m: float | None = None
+    nearest_pair: dict[str, object] = Field(default_factory=dict)
+    discrepancy_m: float | None = None
+    probed_pairs: int | None = None
+    probe_truncated: bool | None = None
+    distmax_m: float | None = None
+    payload_contacts: int | None = None
+
+
+class ValidationWitnessTimeline(BaseModel):
+    """The attach / witness / place-declaration lifecycle of one scene.
+
+    Reconstructed from the run's monitor JSONL (producer side) and the kernel's
+    own ``safety.support_witness_*`` / ``safety.place_region_*`` log lines
+    (consumer side). Both are recorded because a disagreement between them is
+    itself a finding.
+
+    Attributes:
+        attach_t_s: Monitor time of the first payload attach, ``None`` if the
+            run never grasped.
+        detach_t_s: Monitor time of the payload detach, if any.
+        support_id: The support body the witness last attested against.
+        kernel_witness_armed: ``safety.support_witness_armed`` line count.
+        kernel_witness_separated: ``safety.support_witness_separated`` count.
+        place_declaration_seen: Whether a place declaration with a
+            producer-measured region reached the monitor.
+        place_region_armed: Whether the kernel armed the declared place region.
+        place_allowance_active_lines: How many lines disclosed
+            ``place_allowance_active=1``. ``0`` means the approach allowance
+            never applied anywhere in the run.
+
+    Example:
+        >>> ValidationWitnessTimeline(attach_t_s=176.32).place_allowance_active_lines
+        0
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    attach_t_s: float | None = None
+    detach_t_s: float | None = None
+    support_id: str | None = None
+    kernel_witness_armed: int = 0
+    kernel_witness_separated: int = 0
+    place_declaration_seen: bool = False
+    place_region_armed: bool = False
+    place_allowance_active_lines: int = 0
+
+
+class ValidationSceneVerdict(BaseModel):
+    """One scene of one validation round, as a queryable record.
+
+    Attributes:
+        scene: Short scene key (``"baguette"``, ``"sink_cup"``, ``"fridge"``,
+            ``"utensil"``).
+        config_path: Repo-relative path of the DeployScene YAML that ran.
+        config_sha256: Digest of that YAML's bytes as executed, so a round can
+            be reproduced even if the scene later changes.
+        seed: The scene seed in force.
+        prompt: The instruction dispatched to the policy.
+        rskill_id: The rSkill the run dispatched.
+        outcome: The scene's outcome.
+        task_success_final: ``success`` from the terminal
+            ``sim.task_success_final`` line. ``None`` when the run never
+            emitted one.
+        task_success_ever: ``ever_succeeded`` from the same line.
+        task_success_steps: Simulator steps the episode ran.
+        task_success_transitions: Success-predicate transitions observed.
+        stop: The kernel's verdict, when the run was stopped.
+        ground_truth: Adjudication of that stop against the simulator.
+        witness: The attach / witness / declaration lifecycle.
+        dispatch_failure_reason: ``failure_reason`` reported by the action
+            client, verbatim.
+        wall_s: Wall-clock seconds the dispatch took.
+        artifacts: Round-relative paths of the files this verdict was derived
+            from, so every field is traceable to a file.
+        harness_error_reason: Why the run produced no usable artifact set —
+            the graph never came up, or the deploy CLI rejected its own argv.
+            Non-empty exactly when ``outcome`` is ``harness-error``, so a
+            failed launch can never be read as a clean deadline.
+
+    Example:
+        >>> v = ValidationSceneVerdict(
+        ...     scene="fridge",
+        ...     config_path="scenes/deploy/robocasa_fridge_drawer.yaml",
+        ...     seed=1,
+        ...     outcome="estop-initial-configuration",
+        ... )
+        >>> v.outcome
+        'estop-initial-configuration'
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    scene: str
+    config_path: str
+    config_sha256: str | None = None
+    seed: int
+    prompt: str = ""
+    rskill_id: str = ""
+    outcome: ValidationOutcome
+    task_success_final: bool | None = None
+    task_success_ever: bool | None = None
+    task_success_steps: int | None = None
+    task_success_transitions: int | None = None
+    stop: ValidationStopEvidence | None = None
+    ground_truth: ValidationGroundTruthAdjudication | None = None
+    witness: ValidationWitnessTimeline = Field(default_factory=ValidationWitnessTimeline)
+    dispatch_failure_reason: str = ""
+    wall_s: float | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    harness_error_reason: str = ""
+
+
+class ValidationRoundMetadata(BaseModel):
+    """What was executed, on what, from what — the reproducibility half.
+
+    Every field here exists because a past round could not be reproduced
+    without it. ``executed_sha`` + ``worktree_clean`` answer "which code ran";
+    ``overlay_built_at_ns`` answers "was the compiled overlay actually built
+    from that code"; ``sync_groups`` answers "which dependency set"; and
+    ``launcher_path`` answers "which checkout's entry point" — a round has been
+    lost to each of those questions.
+
+    Attributes:
+        round_id: Directory name of the round (``2026-08-22-master-1``).
+        started_at: ISO-8601 UTC timestamp the round began.
+        host: Hostname of the validation runner.
+        executed_sha: Full git SHA of the checkout that ran.
+        worktree_clean: Whether ``git status --porcelain`` was empty. ``None``
+            only for a round imported from before the harness recorded it —
+            ``run`` refuses to start on a dirty worktree, so a round it produced
+            is always ``True``.
+        overlay_built_at_ns: Modification time of the built ROS overlay, used
+            to prove it is not older than the checked-out sources.
+        launcher_path: Absolute path of the ``openral`` entry point invoked.
+        repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.
+        robot_manifest_path: Repo-relative path of the resolved robot manifest.
+        robot_id: The robot id the scenes resolved to.
+        sync_groups: Dependency groups the environment was synced with.
+        stack_argv: The launch argv shared by every scene, verbatim.
+        safety_overrides_absent: ``True`` only when the composed argv was
+            checked and found to contain no safety-knob override. A round is
+            refused rather than recorded with this ``False``.
+        gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.
+        notes_path: Round-relative path of the human-readable notes.
+        scene_dirs: Scene key → the round-relative directory holding that
+            scene's artifacts. Empty means "same name as the scene key", which
+            is what the harness itself writes; a round imported from the
+            pre-harness layout carries the alias it was found under
+            (``{"baguette": "bag1"}``).
+        artifact_stem: Filename stem of every per-scene artifact
+            (``run_deploy.log`` → ``"run"``). Pre-harness rounds used
+            ``"seed1"``.
+        imported_from: Absolute path of the pre-harness round directory this
+            round was imported from, when it was not produced by ``run``.
+        scene_pins: Scene ``runtime:`` keys the round pinned into its resolved
+            scene copies, because they have no CLI flag to pin them with —
+            ``{"enable_reasoner": False}`` for every round to date. Read with
+            ``stack_argv``: together they are the whole executed stack.
+
+    Example:
+        >>> m = ValidationRoundMetadata(
+        ...     round_id="2026-08-22-master-1",
+        ...     started_at="2026-08-22T10:02:00Z",
+        ...     executed_sha="2edcf67" + "0" * 33,
+        ...     worktree_clean=True,
+        ... )
+        >>> m.safety_overrides_absent
+        True
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    round_id: str
+    started_at: str
+    host: str = ""
+    executed_sha: str
+    worktree_clean: bool | None
+    overlay_built_at_ns: int | None = None
+    launcher_path: str = ""
+    repo_root: str = ""
+    robot_manifest_path: str | None = None
+    robot_id: str | None = None
+    sync_groups: list[str] = Field(default_factory=list)
+    stack_argv: list[str] = Field(default_factory=list)
+    safety_overrides_absent: bool = True
+    gpu_name: str | None = None
+    notes_path: str | None = None
+    scene_dirs: dict[str, str] = Field(default_factory=dict)
+    artifact_stem: str = "run"
+    imported_from: str | None = None
+    scene_pins: dict[str, bool] = Field(default_factory=dict)
+
+
+class ValidationRoundVerdicts(BaseModel):
+    """One validation round's machine-readable result — ``verdicts.json``.
+
+    This is the on-disk contract ``tools/validation_matrix.py`` writes and
+    ``docs/reference/collision-validation-evidence.md`` is fed from.
+
+    Attributes:
+        schema_version: On-disk format version.
+        metadata: Reproducibility metadata for the round.
+        scenes: One verdict per scene, in execution order.
+
+    Example:
+        >>> r = ValidationRoundVerdicts(
+        ...     metadata=ValidationRoundMetadata(
+        ...         round_id="r1",
+        ...         started_at="2026-08-22T10:02:00Z",
+        ...         executed_sha="0" * 40,
+        ...         worktree_clean=True,
+        ...     ),
+        ...     scenes=[],
+        ... )
+        >>> r.schema_version
+        '0.1'
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str = "0.1"
+    metadata: ValidationRoundMetadata
+    scenes: list[ValidationSceneVerdict] = Field(default_factory=list)
+
+    @classmethod
+    def from_json(cls, path: str) -> ValidationRoundVerdicts:
+        """Load and validate a round's ``verdicts.json``.
+
+        Args:
+            path: Filesystem path to the JSON file.
+
+        Returns:
+            A validated :class:`ValidationRoundVerdicts`.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+            pydantic.ValidationError: If the JSON fails schema validation.
+        """
+        import json as _json  # noqa: PLC0415  # reason: deferred import
+
+        with open(path, encoding="utf-8") as fh:
+            data = _json.load(fh)
+        return cls.model_validate(data)
+
+    def scene(self, name: str) -> ValidationSceneVerdict | None:
+        """Return the verdict for ``name``, or ``None`` when absent.
+
+        Args:
+            name: The scene key.
+
+        Returns:
+            The matching :class:`ValidationSceneVerdict`, if the round ran it.
+        """
+        return next((s for s in self.scenes if s.scene == name), None)
+
+
+class ValidationSceneDelta(BaseModel):
+    """How one scene's verdict moved between two rounds.
+
+    Attributes:
+        scene: The scene key.
+        baseline_outcome: Outcome in the baseline round, ``None`` if the scene
+            is new.
+        outcome: Outcome in the current round, ``None`` if the scene was
+            dropped.
+        changed: Whether the outcome differs.
+        changed_fields: Field-by-field deltas, as
+            ``{field: {"from": ..., "to": ...}}``, for the comparable subset
+            (outcome, task success, tripping pair, distances, allowance).
+
+    Example:
+        >>> d = ValidationSceneDelta(
+        ...     scene="baguette",
+        ...     baseline_outcome="estop-collision-real",
+        ...     outcome="estop-collision-false-positive",
+        ...     changed=True,
+        ... )
+        >>> d.changed
+        True
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    scene: str
+    baseline_outcome: ValidationOutcome | None = None
+    outcome: ValidationOutcome | None = None
+    changed: bool = False
+    changed_fields: dict[str, dict[str, object]] = Field(default_factory=dict)
+
+
+class ValidationRoundDiff(BaseModel):
+    """Round-over-round comparison — the "what changed" artifact.
+
+    Attributes:
+        schema_version: On-disk format version.
+        round_id: The newer round.
+        baseline_round_id: The round it is compared against.
+        executed_sha: SHA the newer round ran.
+        baseline_executed_sha: SHA the baseline ran. When the two SHAs are
+            equal the diff is a pure reproducibility comparison; when they
+            differ it is a before/after.
+        scenes: Per-scene deltas, in the newer round's order.
+
+    Example:
+        >>> ValidationRoundDiff(
+        ...     round_id="b",
+        ...     baseline_round_id="a",
+        ...     executed_sha="0" * 40,
+        ...     baseline_executed_sha="0" * 40,
+        ... ).same_sha
+        True
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str = "0.1"
+    round_id: str
+    baseline_round_id: str
+    executed_sha: str
+    baseline_executed_sha: str
+    scenes: list[ValidationSceneDelta] = Field(default_factory=list)
+
+    @property
+    def same_sha(self) -> bool:
+        """Whether both rounds ran the same code — a reproducibility diff."""
+        return self.executed_sha == self.baseline_executed_sha
+
+    @property
+    def changed_scenes(self) -> list[str]:
+        """Scene keys whose outcome moved between the two rounds."""
+        return [s.scene for s in self.scenes if s.changed]
+
+
 # ─── Sim environment specs (scene x task x VLA composition) ──────────────────
 #
 # These three models compose into a :class:`SimEnvironment`, the swappable
