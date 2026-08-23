@@ -478,6 +478,43 @@ sim:
 # manifest now describes only the robot; the scene describes the scene; the
 # rSkill is separate. (Was `scene_defaults`, reworked in issue #191 Phase 3b.)
 
+# Rigid, zero-DoF links of the collision tree. NOT `joints` — that list is
+# consumed unfiltered as the action-vector width, the sim qpos map, the
+# reasoner's state-contract filter and the runner's joint permutation, so a
+# zero-DoF entry there would corrupt all four.
+#
+# Both arm pedestals mount on `base_frame` (openarm_base). Without these the
+# two arms are separate trees and each is lowered onto the base origin —
+# i.e. superimposed on each other, which is the one thing a bimanual
+# self-collision model exists to prevent.
+#
+# Source: `openarm:bimanual` MJCF openarm_v20_bimanual.xml L173-174 / L259 —
+# `<worldbody>` directly contains `<body name="openarm_left_base_link"
+# pos="0 0.031 0">` and `<body name="openarm_right_base_link" pos="0 -0.031 0">`,
+# both without a `quat` (identity rotation).
+#
+# Naming + frame note: this manifest is MJCF-derived (see the ACM block's
+# `source: mjcf` marker), and its `openarm_*_link0` is the MJCF's
+# `openarm_*_base_link` — confirmed by left_joint1's origin [0, 0.0625, 0]
+# matching that body's child `<body name="openarm_left_link1" pos="0 0.0625 0">`
+# exactly. `openarm_base` is therefore the MJCF worldbody frame. The vendored
+# openarm.urdf describes a *different* assembly (a `body_link0` pedestal that
+# raises both arms to z=0.698, and links named `left_base_link` / `left_link1`
+# with no `openarm_` prefix); its z is deliberately NOT used here, because
+# every other origin in this manifest is in the MJCF's frame and mixing the
+# two would misplace both arms by 0.698 m.
+fixed_attachments:
+  - name: "openarm_left_base_mount"
+    parent_link: "openarm_base"
+    child_link: "openarm_left_link0"
+    origin_xyz: [0, 0.031, 0]
+    origin_rpy: [0, 0, 0]
+  - name: "openarm_right_base_mount"
+    parent_link: "openarm_base"
+    child_link: "openarm_right_link0"
+    origin_xyz: [0, -0.031, 0]
+    origin_rpy: [0, 0, 0]
+
 # Geometric safety. Conservative capsule/sphere bounds per arm
 # link plus the self-collision allowed-collision matrix (adjacent links touch
 # by design). Hand-authored here as the real fixture; on a production robot
