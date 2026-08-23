@@ -136,6 +136,62 @@ def _footprint_body_height_m(description: Any) -> float | None:
     return None
 
 
+def _shape_z_span_m(
+    shape: Any,
+    rotation: tuple[tuple[float, float, float], ...],
+    center_z_m: float,
+    *,
+    link_name: str,
+) -> tuple[float, float]:
+    """Exact world-frame ``(z_min, z_max)`` of one convex collision primitive.
+
+    Every member of ``openral_core.CollisionShape`` projects onto the world z
+    axis in closed form, so the band never has to approximate a primitive by
+    "a radius":
+
+    * ``sphere`` — ``center_z +/- radius_m``, orientation-free.
+    * ``capsule`` — the central segment runs along the primitive's local +Z, so
+      its half-span on world z is ``|R[2][2]| * length_m / 2``, then the radius
+      caps both ends.
+    * ``box`` — the standard OBB support projection,
+      ``sum_k |R[2][k]| * half_extents_m[k]``.
+
+    A box has no radius at all, and neither surrogate is safe to substitute.
+    The inscribed radius (``min(half_extents)``) *shrinks* the band and hides
+    obstacles at body height; the circumscribed radius (``|half_extents|``)
+    *grows* it, which does not merely add ceiling clutter — the lower edge is
+    derived from this same extent, so an inflated minimum drags the band down
+    through the floor and the node re-marks the floor it exists to remove.
+    No single scalar is conservative at both edges, so the exact span is the
+    only correct reading.
+
+    Raises:
+        ROSConfigError: If ``shape`` is not a shape this band understands.
+            Never falls back to a default span — a silently wrong height band
+            drops real obstacles out of ``/map`` with no diagnostic.
+    """
+    kind = str(getattr(shape, "shape", ""))
+    if kind == "sphere":
+        radius = float(shape.radius_m)
+        return (center_z_m - radius, center_z_m + radius)
+    if kind == "capsule":
+        radius = float(shape.radius_m)
+        half_span = abs(rotation[2][2]) * float(shape.length_m) * 0.5 + radius
+        return (center_z_m - half_span, center_z_m + half_span)
+    if kind == "box":
+        hx, hy, hz = (float(v) for v in shape.half_extents_m)
+        half_span = abs(rotation[2][0]) * hx + abs(rotation[2][1]) * hy + abs(rotation[2][2]) * hz
+        return (center_z_m - half_span, center_z_m + half_span)
+
+    from openral_core import ROSConfigError
+
+    raise ROSConfigError(
+        f"link {link_name!r} declares collision shape {kind or type(shape).__name__!r}, "
+        "which the nvblox height band cannot measure; supported shapes are "
+        "'sphere', 'capsule', 'box'"
+    )
+
+
 def _collision_z_extent_m(description: Any) -> tuple[float, float] | None:
     transforms = _link_transforms_at_zero(description)
     z_values: list[float] = []
@@ -146,16 +202,9 @@ def _collision_z_extent_m(description: Any) -> tuple[float, float] | None:
         link_r, link_t = link_tf
         ox, oy, oz, roll, pitch, yaw = (float(v) for v in geom.origin_xyz_rpy)
         geom_r, geom_t = _compose(link_r, link_t, _rpy_to_matrix(roll, pitch, yaw), (ox, oy, oz))
-        shape = geom.shape
-        radius = float(shape.radius_m)
-        if shape.shape == "sphere":
-            z_values.extend([geom_t[2] - radius, geom_t[2] + radius])
-            continue
-        half_len = float(shape.length_m) * 0.5
-        axis_z = (geom_r[0][2], geom_r[1][2], geom_r[2][2])
-        end_a_z = geom_t[2] - axis_z[2] * half_len
-        end_b_z = geom_t[2] + axis_z[2] * half_len
-        z_values.extend([min(end_a_z, end_b_z) - radius, max(end_a_z, end_b_z) + radius])
+        z_values.extend(
+            _shape_z_span_m(geom.shape, geom_r, geom_t[2], link_name=str(geom.link_name))
+        )
     if not z_values:
         return None
     return min(z_values), max(z_values)
@@ -174,6 +223,16 @@ def derive_robot_relative_height_band(
     height from the manifest footprint and collision/link geometry. The result
     is relative to ``base_frame``; the ROS node shifts it into ``global_frame``
     using live TF for every frame.
+
+    Each collision primitive contributes its exact world-frame z span (see
+    :func:`_shape_z_span_m`) — spheres, capsules and boxes alike.
+
+    Raises:
+        ValueError: If ``floor_clearance_m`` is negative, or
+            ``min_body_height_m`` does not exceed it.
+        ROSConfigError: If the manifest declares a collision shape the band
+            cannot measure. Refusing is the point: a band derived from a
+            guessed extent silently drops obstacles out of the occupancy grid.
     """
     if floor_clearance_m < 0.0:
         raise ValueError(f"floor_clearance_m must be non-negative, got {floor_clearance_m}")

@@ -57,7 +57,14 @@ suite.
 5. **Fixture triggers.** Non-code fixtures (`robots/**`, `rskills/**`,
    selected `scenes/**`) explicitly map to tests that load them for real. A
    change to `rskills/act-aloha/**`, for example, selects the ALOHA sim tests
-   instead of only the broad unit fixture checks.
+   instead of only the broad unit fixture checks. The `robots/**` mapping
+   deliberately reaches **outside** `tests/unit` into the `packages/**` test
+   files that load a real `robots/<id>/robot.yaml`: those dirs are otherwise
+   selected only by a `packages/<pkg>/**` change, so a manifest edit could —
+   and did — break a ROS package's test with nothing on any lane to see it
+   (#103's capsule→`BoxShape` conversion of `panda_mobile` against
+   `openral_slam_bringup`'s height-band derivation). Adding a `packages/**`
+   test that reads a real manifest means adding it there too.
 6. **Dependency lanes.** Selected targets matching `requirement_globs` in
    `tools/test_selection.toml` are also emitted per opt-in dependency group
    (`sim`, `libero`, `robocasa`, `robocasa-gr1`, `maniskill3`, `simpler-env`,
