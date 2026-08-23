@@ -27,9 +27,12 @@ a machine-readable `verdicts.json` (`openral_core.ValidationRoundVerdicts`)
 alongside its notes. Entries below that point should cite that file rather than
 prose, and `just validation-matrix-diff` answers "what changed since the last
 round" without anyone re-reading a log. The rounds already listed here predate
-the harness and are recorded as they were found; the 2026-08-22 and 2026-08-16
+the harness and are recorded as they were found — `just
+validation-matrix-import` makes one of them queryable in place, without moving
+or renaming anything in the run store. The 2026-08-22 and 2026-08-16 `master-1`
 rounds' artifacts are also checked in, trimmed, as the harness's own test
-fixtures (`tests/unit/fixtures/validation_matrix/`).
+fixtures (`tests/unit/fixtures/validation_matrix/`), alongside the harness's
+first (failed) live round.
 
 ## Reading the citations
 
@@ -326,6 +329,50 @@ Note also that XR-1 is stochastic across runs even at a pinned scene seed
 (`first_chunk_s` 90.96 vs 34.23, 1285 vs 632 steps for the same scene and tip),
 so per-run trajectories are not comparable between rounds — **only failure
 classes are.**
+
+### 2026-08-22 — `harness-1` / `harness-2`, the harness's first live use
+
+`spark:~/workspace/openral-matrix-baseline/outputs/validation-matrix/2026-08-22-harness-1/`
+and `…/2026-08-22-harness-2/` — the first two rounds driven by
+[`just validation-matrix`](../contributing/validation-matrix.md) rather than by
+the run store's shell scripts. Both carry `metadata.json` + `verdicts.json`.
+
+**`harness-1` is a harness failure, not a stack result.** All four scenes died
+in under a second: the harness pinned `--no-enable-reasoner`, an option
+`openral deploy sim` does not have, so click exited 2 before the ROS graph
+started. It was *reported* as `deadline-no-grasp` with exit 0 — the defect the
+`harness-error` bucket exists to prevent, since click's usage error is itself
+log lines. Both defects are fixed in PR #145, and this round's artifacts are
+checked in as the fixture that pins the fix
+(`tests/unit/fixtures/validation_matrix/2026-08-22-harness-1/`). **Cite it as
+evidence about the harness, never about the collision stack.**
+
+**`harness-2` ran the matrix and verdicted all four scenes.** Read its
+`PROVENANCE.txt` before citing it: its `executed_sha`
+(`0a76463e524aaff5a167f14f7727f76ea92ffa47`) is a **local synthetic tree** — the
+harness branch merged with `master` (for #142's scene place declarations) plus a
+local fix commit, built in a detached worktree on the Spark and never pushed. It
+is a reconstruction recipe, not a checkout.
+
+| scene | outcome | E-stop pair | kernel min / sweep (m) | ground truth |
+|---|---|---|---|---|
+| baguette | `estop-collision-real` | `attached:sim:obj_main` vs `panda_link2` (step 0) | −0.00463106 / −0.00463106 | real contact |
+| sink_cup | `estop-collision-real` | `attached:sim:obj_main` vs `voxel_86956` (step −1) | −0.0028367 / −0.0028367 | real contact |
+| fridge | `estop-initial-configuration` | `panda_link7` vs `voxel_169769` (step −1) | −0.0247489 / −0.0247489 | real contact |
+| utensil | `estop-initial-configuration` | `panda_link1` vs `voxel_76001` (step −1) | −0.0172765 / −0.0172765 | **unadjudicated** |
+
+`sim.task_success_final = False` on all four; no exemption active anywhere
+(`min == sweep` throughout); `place_allowance_active=1` occurrences: 0. The
+fridge and utensil stops reproduce the 08-22 `master-1` pairs and depths exactly
+and are now *classified* as initial-configuration stops, which #139's
+`sim.estop_initial_configuration` line made visible.
+
+The utensil verdict is `unadjudicated` for a mechanical reason worth recording:
+the scene stopped at sim t≈4.7 s, before the monitor — which attached five
+seconds ahead of dispatch, minutes later — had seen a single `world_voxels`
+record, so the round had no grid resolution and therefore no quantization budget
+to judge the stop by. The monitor now attaches when the graph launches, and a
+round's notes name any scene that stopped before it saw a grid.
 
 ## Standing caveats
 

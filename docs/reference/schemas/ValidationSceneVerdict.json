@@ -286,7 +286,7 @@
     }
   },
   "additionalProperties": true,
-  "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
+  "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n    harness_error_reason: Why the run produced no usable artifact set \u2014\n        the graph never came up, or the deploy CLI rejected its own argv.\n        Non-empty exactly when ``outcome`` is ``harness-error``, so a\n        failed launch can never be read as a clean deadline.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
   "properties": {
     "scene": {
       "title": "Scene",
@@ -433,6 +433,11 @@
       },
       "title": "Artifacts",
       "type": "object"
+    },
+    "harness_error_reason": {
+      "default": "",
+      "title": "Harness Error Reason",
+      "type": "string"
     }
   },
   "required": [

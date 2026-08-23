@@ -15916,7 +15916,7 @@
         }
       },
       "additionalProperties": true,
-      "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
+      "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n    harness_error_reason: Why the run produced no usable artifact set \u2014\n        the graph never came up, or the deploy CLI rejected its own argv.\n        Non-empty exactly when ``outcome`` is ``harness-error``, so a\n        failed launch can never be read as a clean deadline.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
       "properties": {
         "scene": {
           "title": "Scene",
@@ -16063,6 +16063,11 @@
           },
           "title": "Artifacts",
           "type": "object"
+        },
+        "harness_error_reason": {
+          "default": "",
+          "title": "Harness Error Reason",
+          "type": "string"
         }
       },
       "required": [
@@ -16077,7 +16082,7 @@
     },
     "ValidationRoundMetadata": {
       "additionalProperties": true,
-      "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
+      "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty. ``None``\n        only for a round imported from before the harness recorded it \u2014\n        ``run`` refuses to start on a dirty worktree, so a round it produced\n        is always ``True``.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n    scene_dirs: Scene key \u2192 the round-relative directory holding that\n        scene's artifacts. Empty means \"same name as the scene key\", which\n        is what the harness itself writes; a round imported from the\n        pre-harness layout carries the alias it was found under\n        (``{\"baguette\": \"bag1\"}``).\n    artifact_stem: Filename stem of every per-scene artifact\n        (``run_deploy.log`` \u2192 ``\"run\"``). Pre-harness rounds used\n        ``\"seed1\"``.\n    imported_from: Absolute path of the pre-harness round directory this\n        round was imported from, when it was not produced by ``run``.\n    scene_pins: Scene ``runtime:`` keys the round pinned into its resolved\n        scene copies, because they have no CLI flag to pin them with \u2014\n        ``{\"enable_reasoner\": False}`` for every round to date. Read with\n        ``stack_argv``: together they are the whole executed stack.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
       "properties": {
         "round_id": {
           "title": "Round Id",
@@ -16097,8 +16102,15 @@
           "type": "string"
         },
         "worktree_clean": {
-          "title": "Worktree Clean",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Worktree Clean"
         },
         "overlay_built_at_ns": {
           "anyOf": [
@@ -16188,6 +16200,37 @@
           ],
           "default": null,
           "title": "Notes Path"
+        },
+        "scene_dirs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Scene Dirs",
+          "type": "object"
+        },
+        "artifact_stem": {
+          "default": "run",
+          "title": "Artifact Stem",
+          "type": "string"
+        },
+        "imported_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Imported From"
+        },
+        "scene_pins": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Scene Pins",
+          "type": "object"
         }
       },
       "required": [
@@ -16362,7 +16405,7 @@
         },
         "ValidationRoundMetadata": {
           "additionalProperties": true,
-          "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
+          "description": "What was executed, on what, from what \u2014 the reproducibility half.\n\nEvery field here exists because a past round could not be reproduced\nwithout it. ``executed_sha`` + ``worktree_clean`` answer \"which code ran\";\n``overlay_built_at_ns`` answers \"was the compiled overlay actually built\nfrom that code\"; ``sync_groups`` answers \"which dependency set\"; and\n``launcher_path`` answers \"which checkout's entry point\" \u2014 a round has been\nlost to each of those questions.\n\nAttributes:\n    round_id: Directory name of the round (``2026-08-22-master-1``).\n    started_at: ISO-8601 UTC timestamp the round began.\n    host: Hostname of the validation runner.\n    executed_sha: Full git SHA of the checkout that ran.\n    worktree_clean: Whether ``git status --porcelain`` was empty. ``None``\n        only for a round imported from before the harness recorded it \u2014\n        ``run`` refuses to start on a dirty worktree, so a round it produced\n        is always ``True``.\n    overlay_built_at_ns: Modification time of the built ROS overlay, used\n        to prove it is not older than the checked-out sources.\n    launcher_path: Absolute path of the ``openral`` entry point invoked.\n    repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.\n    robot_manifest_path: Repo-relative path of the resolved robot manifest.\n    robot_id: The robot id the scenes resolved to.\n    sync_groups: Dependency groups the environment was synced with.\n    stack_argv: The launch argv shared by every scene, verbatim.\n    safety_overrides_absent: ``True`` only when the composed argv was\n        checked and found to contain no safety-knob override. A round is\n        refused rather than recorded with this ``False``.\n    gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.\n    notes_path: Round-relative path of the human-readable notes.\n    scene_dirs: Scene key \u2192 the round-relative directory holding that\n        scene's artifacts. Empty means \"same name as the scene key\", which\n        is what the harness itself writes; a round imported from the\n        pre-harness layout carries the alias it was found under\n        (``{\"baguette\": \"bag1\"}``).\n    artifact_stem: Filename stem of every per-scene artifact\n        (``run_deploy.log`` \u2192 ``\"run\"``). Pre-harness rounds used\n        ``\"seed1\"``.\n    imported_from: Absolute path of the pre-harness round directory this\n        round was imported from, when it was not produced by ``run``.\n    scene_pins: Scene ``runtime:`` keys the round pinned into its resolved\n        scene copies, because they have no CLI flag to pin them with \u2014\n        ``{\"enable_reasoner\": False}`` for every round to date. Read with\n        ``stack_argv``: together they are the whole executed stack.\n\nExample:\n    >>> m = ValidationRoundMetadata(\n    ...     round_id=\"2026-08-22-master-1\",\n    ...     started_at=\"2026-08-22T10:02:00Z\",\n    ...     executed_sha=\"2edcf67\" + \"0\" * 33,\n    ...     worktree_clean=True,\n    ... )\n    >>> m.safety_overrides_absent\n    True",
           "properties": {
             "round_id": {
               "title": "Round Id",
@@ -16382,8 +16425,15 @@
               "type": "string"
             },
             "worktree_clean": {
-              "title": "Worktree Clean",
-              "type": "boolean"
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Worktree Clean"
             },
             "overlay_built_at_ns": {
               "anyOf": [
@@ -16473,6 +16523,37 @@
               ],
               "default": null,
               "title": "Notes Path"
+            },
+            "scene_dirs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "title": "Scene Dirs",
+              "type": "object"
+            },
+            "artifact_stem": {
+              "default": "run",
+              "title": "Artifact Stem",
+              "type": "string"
+            },
+            "imported_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Imported From"
+            },
+            "scene_pins": {
+              "additionalProperties": {
+                "type": "boolean"
+              },
+              "title": "Scene Pins",
+              "type": "object"
             }
           },
           "required": [
@@ -16486,7 +16567,7 @@
         },
         "ValidationSceneVerdict": {
           "additionalProperties": true,
-          "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
+          "description": "One scene of one validation round, as a queryable record.\n\nAttributes:\n    scene: Short scene key (``\"baguette\"``, ``\"sink_cup\"``, ``\"fridge\"``,\n        ``\"utensil\"``).\n    config_path: Repo-relative path of the DeployScene YAML that ran.\n    config_sha256: Digest of that YAML's bytes as executed, so a round can\n        be reproduced even if the scene later changes.\n    seed: The scene seed in force.\n    prompt: The instruction dispatched to the policy.\n    rskill_id: The rSkill the run dispatched.\n    outcome: The scene's outcome.\n    task_success_final: ``success`` from the terminal\n        ``sim.task_success_final`` line. ``None`` when the run never\n        emitted one.\n    task_success_ever: ``ever_succeeded`` from the same line.\n    task_success_steps: Simulator steps the episode ran.\n    task_success_transitions: Success-predicate transitions observed.\n    stop: The kernel's verdict, when the run was stopped.\n    ground_truth: Adjudication of that stop against the simulator.\n    witness: The attach / witness / declaration lifecycle.\n    dispatch_failure_reason: ``failure_reason`` reported by the action\n        client, verbatim.\n    wall_s: Wall-clock seconds the dispatch took.\n    artifacts: Round-relative paths of the files this verdict was derived\n        from, so every field is traceable to a file.\n    harness_error_reason: Why the run produced no usable artifact set \u2014\n        the graph never came up, or the deploy CLI rejected its own argv.\n        Non-empty exactly when ``outcome`` is ``harness-error``, so a\n        failed launch can never be read as a clean deadline.\n\nExample:\n    >>> v = ValidationSceneVerdict(\n    ...     scene=\"fridge\",\n    ...     config_path=\"scenes/deploy/robocasa_fridge_drawer.yaml\",\n    ...     seed=1,\n    ...     outcome=\"estop-initial-configuration\",\n    ... )\n    >>> v.outcome\n    'estop-initial-configuration'",
           "properties": {
             "scene": {
               "title": "Scene",
@@ -16633,6 +16714,11 @@
               },
               "title": "Artifacts",
               "type": "object"
+            },
+            "harness_error_reason": {
+              "default": "",
+              "title": "Harness Error Reason",
+              "type": "string"
             }
           },
           "required": [

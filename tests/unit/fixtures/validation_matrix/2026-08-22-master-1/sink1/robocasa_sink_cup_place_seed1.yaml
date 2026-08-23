@@ -1,0 +1,46 @@
+# RoboCasa kitchen — deterministic cup counter→sink PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but a
+# different fixture pair (sink instead of cabinet) and a different payload
+# geometry (cup: tall, hollow, small footprint vs the baguette's long thin bar).
+# Used to check that the attached-object collision stack is not overfitted to
+# the baguette scene.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_sink_cup.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToSink
+  backend: mujoco
+  # 512² for the same reason as robocasa_baguette.yaml: at 128² the open-vocab
+  # detector cannot ground the object. VLA policies downsample their own input.
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToSink
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: cup
+
+# Pin the complete kitchen layout / robot start, not only the object group.
+seed: 1
+
+runtime:
+  enable_reasoner: false
+  enable_slam: true
+  enable_nav2: true
+  enable_octomap: true
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  enable_scene_vlm: false
+
+# ADR-0097 place-phase witness. Counter->sink task; the sink body the payload is
+# placed into is `sink_island_group_main` (verified by model introspection at
+# seed 1: body id 319, parent `world`; subtree = main + handle + spout, carrying
+# the `sink_island_group_reg_basin_left/right` basin regions).
+place_declaration:
+  target_id: "sim:sink_island_group_main"
+  timeout_s: 600.0
+  stamp_ns: 0

@@ -7785,6 +7785,10 @@ class ValidationSceneVerdict(BaseModel):
         wall_s: Wall-clock seconds the dispatch took.
         artifacts: Round-relative paths of the files this verdict was derived
             from, so every field is traceable to a file.
+        harness_error_reason: Why the run produced no usable artifact set —
+            the graph never came up, or the deploy CLI rejected its own argv.
+            Non-empty exactly when ``outcome`` is ``harness-error``, so a
+            failed launch can never be read as a clean deadline.
 
     Example:
         >>> v = ValidationSceneVerdict(
@@ -7816,6 +7820,7 @@ class ValidationSceneVerdict(BaseModel):
     dispatch_failure_reason: str = ""
     wall_s: float | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
+    harness_error_reason: str = ""
 
 
 class ValidationRoundMetadata(BaseModel):
@@ -7833,7 +7838,10 @@ class ValidationRoundMetadata(BaseModel):
         started_at: ISO-8601 UTC timestamp the round began.
         host: Hostname of the validation runner.
         executed_sha: Full git SHA of the checkout that ran.
-        worktree_clean: Whether ``git status --porcelain`` was empty.
+        worktree_clean: Whether ``git status --porcelain`` was empty. ``None``
+            only for a round imported from before the harness recorded it —
+            ``run`` refuses to start on a dirty worktree, so a round it produced
+            is always ``True``.
         overlay_built_at_ns: Modification time of the built ROS overlay, used
             to prove it is not older than the checked-out sources.
         launcher_path: Absolute path of the ``openral`` entry point invoked.
@@ -7847,6 +7855,20 @@ class ValidationRoundMetadata(BaseModel):
             refused rather than recorded with this ``False``.
         gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.
         notes_path: Round-relative path of the human-readable notes.
+        scene_dirs: Scene key → the round-relative directory holding that
+            scene's artifacts. Empty means "same name as the scene key", which
+            is what the harness itself writes; a round imported from the
+            pre-harness layout carries the alias it was found under
+            (``{"baguette": "bag1"}``).
+        artifact_stem: Filename stem of every per-scene artifact
+            (``run_deploy.log`` → ``"run"``). Pre-harness rounds used
+            ``"seed1"``.
+        imported_from: Absolute path of the pre-harness round directory this
+            round was imported from, when it was not produced by ``run``.
+        scene_pins: Scene ``runtime:`` keys the round pinned into its resolved
+            scene copies, because they have no CLI flag to pin them with —
+            ``{"enable_reasoner": False}`` for every round to date. Read with
+            ``stack_argv``: together they are the whole executed stack.
 
     Example:
         >>> m = ValidationRoundMetadata(
@@ -7865,7 +7887,7 @@ class ValidationRoundMetadata(BaseModel):
     started_at: str
     host: str = ""
     executed_sha: str
-    worktree_clean: bool
+    worktree_clean: bool | None
     overlay_built_at_ns: int | None = None
     launcher_path: str = ""
     repo_root: str = ""
@@ -7876,6 +7898,10 @@ class ValidationRoundMetadata(BaseModel):
     safety_overrides_absent: bool = True
     gpu_name: str | None = None
     notes_path: str | None = None
+    scene_dirs: dict[str, str] = Field(default_factory=dict)
+    artifact_stem: str = "run"
+    imported_from: str | None = None
+    scene_pins: dict[str, bool] = Field(default_factory=dict)
 
 
 class ValidationRoundVerdicts(BaseModel):

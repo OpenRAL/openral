@@ -1,0 +1,6 @@
+Usage: openral deploy sim [OPTIONS]
+Try 'openral deploy sim --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such option: --no-enable-reasoner (Possible options:                      │
+│ --no-enable-reward-monitor, --no-enable-scene-vlm, --no-enable-slam)         │
+╰──────────────────────────────────────────────────────────────────────────────╯

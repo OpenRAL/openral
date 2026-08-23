@@ -1,0 +1,37 @@
+# RoboCasa kitchen — deterministic vegetable fridge-shelf→fridge-drawer PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but
+# the pick and place surfaces are both inside the fridge — an enclosed, cluttered
+# workspace where the payload is surrounded by geometry on five sides, unlike the
+# baguette's open counter. Used to check that the attached-object collision stack
+# is not overfitted to the baguette scene.
+#
+# PickPlaceFridgeShelfToDrawer declares EXCLUDE_STYLES for the side-by-side
+# fridges that have no drawer, so not every seed yields a constructible layout.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_fridge_drawer.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceFridgeShelfToDrawer
+  backend: mujoco
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceFridgeShelfToDrawer
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: vegetable
+
+seed: 1
+
+runtime:
+  enable_reasoner: false
+  enable_slam: true
+  enable_nav2: true
+  enable_octomap: true
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  enable_scene_vlm: false

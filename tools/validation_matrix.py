@@ -10,7 +10,7 @@ silently executed the wrong checkout. The evidence ledger for all of that is
 ``docs/reference/collision-validation-evidence.md``; this tool is what feeds it
 from now on.
 
-Three subcommands, all reading recorded artifacts only:
+Four subcommands, all reading recorded artifacts only:
 
 * ``run`` — guardrails, then one ``openral deploy sim`` per scene with a monitor
   and an action dispatch alongside it, capturing a fixed artifact set per scene,
@@ -21,13 +21,20 @@ Three subcommands, all reading recorded artifacts only:
 * ``diff`` — compare two rounds' ``verdicts.json`` into a
   :class:`~openral_core.ValidationRoundDiff`, so "what changed since the last
   round" is mechanical.
+* ``import-round`` — write the metadata a pre-harness round never recorded, so
+  the ~17 rounds that predate this tool become queryable by ``verdicts`` and
+  ``diff`` without hand-mapping their scene directories and filename stems.
 
 The guardrails are the point as much as the runner is. ``run`` refuses to start
 on a dirty worktree, on a built overlay older than the checked-out sources, when
 the resolved launcher is not this checkout's, when the dependency set is missing
-``pyzmq`` (the XR-1 sidecar's wire), or when the composed argv contains anything
-that looks like a safety-knob override. Each of those closes a specific past
-incident — see ``docs/contributing/validation-matrix.md``.
+``pyzmq`` (the XR-1 sidecar's wire), or when a safety knob is moved on *either*
+control surface — the composed argv or the resolved scene YAML. Each of those
+closes a specific past incident — see ``docs/contributing/validation-matrix.md``.
+
+Exit codes: ``0`` clean, ``2`` usage, ``3`` a guardrail refused (nothing is
+written — not even the round directory), ``4`` the round ran but at least one
+scene bucketed ``harness-error``.
 
 Run::
 
@@ -35,6 +42,8 @@ Run::
         --expect-sha $(git rev-parse HEAD)
     uv run python tools/validation_matrix.py verdicts outputs/validation-matrix/<round>
     uv run python tools/validation_matrix.py diff <round> --baseline <prev-round>
+    uv run python tools/validation_matrix.py import-round ~/openral-runs/<round> \\
+        --round-id <id> --executed-sha <sha> --stem seed1
 
 Example:
     >>> quantization_budget_m(0.025)
@@ -83,11 +92,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 class SceneSpec:
     """One scene of the validation matrix.
 
-    ``config`` is the *tracked* DeployScene YAML, used verbatim. The stack is
-    pinned by CLI flags rather than by a per-round YAML copy, because the deploy
-    CLI's precedence is explicit-flag > scene ``runtime:`` > default; copying the
+    ``config`` is the *tracked* DeployScene YAML. Seven of the eight pinned
+    stack knobs have a CLI flag and are pinned there, because the deploy CLI's
+    precedence is explicit-flag > scene ``runtime:`` > default and copying the
     scene per round is exactly how the historical configs drifted from the
-    tracked ones.
+    tracked ones. The eighth — ``enable_reasoner`` — has **no flag** at all: it
+    is resolved from the scene's ``runtime:`` block and defaults to ``True``
+    (``openral_cli.deploy_sim.resolve_launch_invocation``). So each round
+    materialises a resolved copy of the tracked scene carrying
+    :data:`SCENE_RUNTIME_PIN` (and the seed, when it differs), and the tracked
+    file is never touched. The first live round died in every scene in under a
+    second passing a ``--no-enable-reasoner`` flag that does not exist.
     """
 
     key: str
@@ -125,10 +140,10 @@ DEFAULT_RSKILL_ID: Final[str] = "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4
 # needs; a round was lost to exactly that. Both groups, always.
 SYNC_GROUPS: Final[tuple[str, ...]] = ("robocasa", "sidecar-wire")
 
-# The stack every round has pinned since 2026-08-13: reasoner off (direct
-# dispatch), SLAM/Nav2/octomap/kernel-check on, detector + scene VLM off.
+# The flag-pinnable part of the stack every round has pinned since 2026-08-13:
+# SLAM/Nav2/octomap/kernel-check on, detector + scene VLM off. The reasoner is
+# NOT here — it has no CLI flag; see SCENE_RUNTIME_PIN.
 STACK_ARGV: Final[tuple[str, ...]] = (
-    "--no-enable-reasoner",
     "--enable-slam",
     "--enable-nav2",
     "--enable-octomap",
@@ -163,9 +178,45 @@ _SAFETY_KNOB_PATTERNS: Final[tuple[str, ...]] = (
     "kernel_check=false",
 )
 
+# The one pinned knob with no CLI flag. `openral deploy sim` resolves
+# `enable_reasoner` from the scene's `runtime:` block and defaults it to True
+# when nothing pins it, and the tracked scenes carry no `runtime:` block — so
+# the direct-dispatch stack the matrix has run since 2026-08-13 cannot be
+# expressed in argv at all. Every key here must be stack *composition*; a
+# safety-relevant key would be refused by `assert_scene_safety_unmoved`.
+SCENE_RUNTIME_PIN: Final[tuple[tuple[str, bool], ...]] = (("enable_reasoner", False),)
+
+# Top-level DeployScene keys that carry safety meaning: the kernel envelope, the
+# collision-pair allowlist, the HAL parameter block (margins, tolerances) and
+# the ADR-0097 place declaration (which grants an exemption). The harness may
+# rewrite a scene's seed and its stack composition; it may never move any of
+# these, on either control surface.
+_SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
+    "safety",
+    "extra_allowed_collision_pairs",
+    "hal",
+    "place_declaration",
+)
+
+# Inside `runtime:`, exactly one key is a safety knob rather than stack
+# composition: the octomap→kernel collision gate. `enable_reasoner`,
+# `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
+# compose the stack and are the whole point of pinning a scene, so they stay
+# pinnable.
+_SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = ("enable_octomap_kernel_check",)
+
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the
 # IDL, the octomap bridge and every HAL/ROS package colcon compiles.
 _OVERLAY_SOURCE_DIRS: Final[tuple[str, ...]] = ("cpp", "packages")
+
+# Scene-key → directory names the pre-harness rounds used, so `import-round`
+# needs no hand-mapping for the ~17 rounds in `spark:~/openral-runs/`.
+LEGACY_SCENE_DIRS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("baguette", ("baguette", "bag1", "bag", "run1")),
+    ("sink_cup", ("sink_cup", "sink1", "sink", "sinkcup1")),
+    ("fridge", ("fridge", "fridge1")),
+    ("utensil", ("utensil", "utensil1", "drawer1")),
+)
 
 
 # ── Pure helpers (unit-tested against recorded artifacts) ─────────────────────
@@ -498,6 +549,60 @@ def adjudicate_ground_truth(
     )
 
 
+LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"
+
+# click prints its own usage error to the same sink the deploy log captures, so
+# a stack that never started still produces lines. The first live round was
+# reported as `deadline-no-grasp` with exit 0 for exactly that reason.
+_CLI_USAGE_PREFIX: Final[str] = "Usage: openral"
+_CLI_ERROR_NEEDLES: Final[tuple[str, ...]] = ("No such option", "Error:", "Missing option")
+
+
+def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str]) -> str:
+    """Say why this scene's artifacts are not a run at all, or return ``""``.
+
+    Three ways a scene can fail to launch, all of them recorded rather than
+    inferred:
+
+    1. the runner wrote ``<stem>_launch_failed.txt`` because the rSkill action
+       server never appeared;
+    2. the deploy CLI rejected its own argv, so ``click`` wrote a usage error
+       where the graph's output would have been;
+    3. there is no deploy log at all.
+
+    Args:
+        run_dir: The scene's directory inside the round.
+        stem: Artifact filename stem.
+        deploy_lines: Lines of the deploy log.
+
+    Returns:
+        A human-readable reason, empty when the scene really ran.
+
+    Example:
+        >>> import pathlib
+        >>> detect_launch_failure(pathlib.Path("."), "run", [])
+        'no deploy log: the scene produced no output at all'
+    """
+    marker = run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}"
+    if marker.exists():
+        recorded = marker.read_text(encoding="utf-8", errors="replace").strip()
+        return recorded or "the rSkill action server never appeared"
+    if not deploy_lines:
+        return "no deploy log: the scene produced no output at all"
+    first = next((ln for ln in deploy_lines if ln.strip()), "")
+    if first.startswith(_CLI_USAGE_PREFIX):
+        detail = next(
+            (
+                ln.strip(" │|")
+                for ln in deploy_lines
+                if any(needle in ln for needle in _CLI_ERROR_NEEDLES)
+            ),
+            first.strip(),
+        )
+        return f"the deploy CLI rejected its own argv before the graph started: {detail}"
+    return ""
+
+
 def classify_outcome(
     *,
     task_success_ever: bool | None,
@@ -610,13 +715,14 @@ def scene_verdict_from_artifacts(
     ground_truth = adjudicate_ground_truth(snapshot, stop, resolution)
     witness = build_witness_timeline(records, deploy_lines)
 
+    harness_error_reason = detect_launch_failure(run_dir, stem, deploy_lines)
     outcome = classify_outcome(
         task_success_ever=_as_bool(success.get("ever_succeeded")),
         stop=stop,
         ground_truth=ground_truth,
         initial_configuration=initial is not None,
         grasped=witness.attach_t_s is not None,
-        artifacts_complete=bool(deploy_lines),
+        artifacts_complete=not harness_error_reason,
     )
 
     artifacts = {
@@ -625,6 +731,7 @@ def scene_verdict_from_artifacts(
             ("deploy_log", deploy_path),
             ("monitor", monitor_path),
             ("goal", goal_path),
+            ("launch_failed", run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}"),
         )
         if path.exists()
     }
@@ -632,7 +739,7 @@ def scene_verdict_from_artifacts(
     return ValidationSceneVerdict(
         scene=scene,
         config_path=config_path,
-        config_sha256=_sha256_of(REPO_ROOT / config_path),
+        config_sha256=_sha256_of(_resolve_config_file(run_dir.parent, config_path)),
         seed=seed,
         prompt=prompt,
         rskill_id=rskill_id,
@@ -647,6 +754,7 @@ def scene_verdict_from_artifacts(
         dispatch_failure_reason=str((goal or {}).get("failure_reason", "")),
         wall_s=_as_float((goal or {}).get("wall_s")),
         artifacts=artifacts,
+        harness_error_reason=harness_error_reason,
     )
 
 
@@ -658,10 +766,26 @@ def _as_int(value: object) -> int | None:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _sha256_of(path: Path) -> str | None:
-    if not path.exists():
+def _sha256_of(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _resolve_config_file(round_dir: Path, config_path: str) -> Path | None:
+    """Locate the scene YAML a verdict names, in the round or in the tree.
+
+    A round's resolved copy lives beside its artifacts (imported pre-harness
+    rounds keep theirs there too); a tracked scene lives in the checkout. The
+    digest is taken over whichever one is actually present, and is ``None`` when
+    neither is — never over a guess.
+    """
+    if not config_path:
+        return None
+    for candidate in (round_dir / config_path, REPO_ROOT / config_path, Path(config_path)):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ── Diffing ───────────────────────────────────────────────────────────────────
@@ -912,6 +1036,95 @@ def assert_no_safety_overrides(argv: Sequence[str]) -> None:
                 )
 
 
+def _flatten_scene(value: object, prefix: str = "") -> Iterable[tuple[str, object]]:
+    """Yield ``(dotted_key, leaf)`` for a parsed YAML document.
+
+    Sequences are leaves: ``extra_allowed_collision_pairs`` means nothing
+    element by element.
+    """
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            yield from _flatten_scene(sub, f"{prefix}{key}.")
+    else:
+        yield prefix.rstrip("."), value
+
+
+def _is_scene_safety_key(dotted: str) -> bool:
+    """Whether a scene key carries safety meaning rather than stack composition."""
+    parts = dotted.split(".")
+    if parts[0] in _SCENE_SAFETY_KEYS:
+        return True
+    if parts[0] == "runtime" and len(parts) > 1 and parts[1] in _SCENE_SAFETY_RUNTIME_KEYS:
+        return True
+    leaf = parts[-1].lower().replace("-", "_")
+    return any(pattern in leaf for pattern in _SAFETY_KNOB_PATTERNS)
+
+
+def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
+    """The safety-relevant keys of a parsed DeployScene, flattened.
+
+    The kernel envelope, the collision-pair allowlist, the HAL parameter block
+    and the place declaration are safety-relevant wholesale; inside
+    ``runtime:`` only the octomap→kernel gate is, because SLAM/Nav2/octomap/
+    detector/scene-VLM/reasoner enablement is stack *composition* — pinning it
+    is what the harness is for. Anything else whose leaf name looks like a
+    margin, tolerance, allowance, limit, watchdog or E-stop is caught by name.
+
+    Args:
+        document: A parsed DeployScene YAML.
+
+    Returns:
+        ``{dotted_key: value}`` for every safety-relevant key.
+
+    Example:
+        >>> scene_safety_surface({"runtime": {"enable_slam": True}})
+        {}
+        >>> scene_safety_surface({"runtime": {"enable_octomap_kernel_check": False}})
+        {'runtime.enable_octomap_kernel_check': False}
+    """
+    return {
+        key: value for key, value in _flatten_scene(document) if key and _is_scene_safety_key(key)
+    }
+
+
+def assert_scene_safety_unmoved(tracked: Path, resolved: Path) -> None:
+    """Refuse a materialised scene that moves a safety knob the tracked one sets.
+
+    ``assert_no_safety_overrides`` guards the argv; this guards the *other*
+    control surface. The matrix materialises a resolved copy of each scene to
+    pin ``runtime.enable_reasoner`` (which has no CLI flag), and a copy is
+    exactly where a margin could be moved invisibly. Stack composition may
+    differ between the two files; a safety key may not.
+
+    Args:
+        tracked: The tracked DeployScene YAML.
+        resolved: The round's materialised copy.
+
+    Raises:
+        GuardrailError: When any safety-relevant key was added, removed or
+            changed in the copy.
+    """
+    import yaml  # reason: deferred, tools/ is not a package
+
+    before = scene_safety_surface(yaml.safe_load(tracked.read_text(encoding="utf-8")) or {})
+    after = scene_safety_surface(yaml.safe_load(resolved.read_text(encoding="utf-8")) or {})
+    moved = sorted(
+        key
+        for key in set(before) | set(after)
+        if key not in before or key not in after or before[key] != after[key]
+    )
+    if moved:
+        detail = ", ".join(
+            f"{key}: {before.get(key, '<absent>')!r} -> {after.get(key, '<absent>')!r}"
+            for key in moved
+        )
+        raise GuardrailError(
+            f"the resolved scene {resolved.name} moves a safety key of {tracked.name} "
+            f"({detail}). The validation matrix pins stack composition, never a "
+            "safety parameter — on the argv or in the scene."
+        )
+
+
 def gpu_status() -> tuple[str | None, list[str]]:
     """Report the GPU name and any processes already using it.
 
@@ -946,30 +1159,107 @@ def gpu_status() -> tuple[str | None, list[str]]:
 # ── The runner ────────────────────────────────────────────────────────────────
 
 
-def _resolve_seed_config(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, Path]:
-    """Return the config to launch, materialising a seed override only if needed.
+def pin_runtime_block(text: str, pins: Sequence[tuple[str, bool]]) -> str:
+    """Splice ``runtime:`` pins into a scene YAML, changing nothing else.
 
-    The tracked scene is used verbatim whenever its own ``seed:`` already matches
-    — copying the scene per round is how the historical per-round YAMLs drifted.
-    When a different seed is requested, only the ``seed:`` line is rewritten and
-    every other byte (including the scene's hand-written safety commentary) is
-    left intact, mirroring ``openral collision lower``'s splice-only contract.
+    Splice-only, like ``openral collision lower``: every other byte — including
+    each scene's hand-written safety commentary — survives verbatim. An existing
+    ``runtime:`` block is edited in place (key rewritten if present, appended to
+    the block if not); a scene without one gets the block appended.
+
+    Args:
+        text: The tracked scene YAML.
+        pins: ``(key, value)`` runtime pins to enforce.
+
+    Returns:
+        The rewritten YAML.
+
+    Example:
+        >>> print(pin_runtime_block("seed: 1\\n", [("enable_reasoner", False)]).strip())
+        seed: 1
+        <BLANKLINE>
+        # Pinned by the validation matrix: `enable_reasoner` has no CLI flag —
+        # `openral deploy sim` reads it from the scene and defaults it to true.
+        runtime:
+          enable_reasoner: false
     """
+    lines = text.splitlines()
+    header = next((i for i, ln in enumerate(lines) if re.match(r"^runtime:\s*$", ln)), None)
+    if header is None:
+        block = "\n".join(f"  {key}: {str(value).lower()}" for key, value in pins)
+        return (
+            text.rstrip("\n")
+            + "\n\n# Pinned by the validation matrix: `enable_reasoner` has no CLI flag —\n"
+            "# `openral deploy sim` reads it from the scene and defaults it to true.\n"
+            "runtime:\n" + block + "\n"
+        )
+    end = header + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end].startswith((" ", "\t", "#"))):
+        end += 1
+    for key, value in pins:
+        rendered = f"  {key}: {str(value).lower()}"
+        existing = next(
+            (i for i in range(header + 1, end) if re.match(rf"^\s+{re.escape(key)}\s*:", lines[i])),
+            None,
+        )
+        if existing is None:
+            lines.insert(header + 1, rendered)
+            end += 1
+        else:
+            lines[existing] = rendered
+    return "\n".join(lines) + "\n"
+
+
+def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, Path]:
+    """Write the round's resolved scene copy and return ``(path_for_metadata, file)``.
+
+    The tracked scene is never touched. The copy carries exactly two round-level
+    pins: the seed, and :data:`SCENE_RUNTIME_PIN` — the reasoner, which is the
+    one stack knob with no CLI flag. The result is re-parsed to prove the splice
+    landed, and checked against the tracked scene so no safety key moved.
+
+    Args:
+        spec: The scene being run.
+        seed: The seed to pin.
+        run_dir: The scene's directory inside the round.
+
+    Returns:
+        ``(config_path, config_file)`` — the path recorded in the round metadata
+        and the file to launch.
+
+    Raises:
+        GuardrailError: When the pinned stack did not survive the splice, or the
+            copy moves a safety key.
+    """
+    import yaml  # reason: deferred, tools/ is not a package
+
     tracked = REPO_ROOT / spec.config
     text = tracked.read_text(encoding="utf-8")
     match = re.search(r"^seed:\s*(\d+)\s*$", text, flags=re.MULTILINE)
-    if match and int(match.group(1)) == seed:
-        return spec.config, tracked
+    if match is None:
+        text = text.rstrip("\n") + f"\n\nseed: {seed}\n"
+    elif int(match.group(1)) != seed:
+        text = re.sub(r"^seed:\s*\d+\s*$", f"seed: {seed}", text, count=1, flags=re.MULTILINE)
+    text = pin_runtime_block(text, SCENE_RUNTIME_PIN)
+
     resolved = run_dir / f"{Path(spec.config).stem}_seed{seed}.yaml"
-    rewritten = (
-        re.sub(r"^seed:\s*\d+\s*$", f"seed: {seed}", text, count=1, flags=re.MULTILINE)
-        if match
-        else text.rstrip("\n") + f"\n\nseed: {seed}\n"
-    )
-    resolved.write_text(rewritten, encoding="utf-8")
-    return str(resolved.relative_to(REPO_ROOT)) if resolved.is_relative_to(REPO_ROOT) else str(
-        resolved
-    ), resolved
+    resolved.write_text(text, encoding="utf-8")
+
+    document = yaml.safe_load(text) or {}
+    runtime = document.get("runtime") or {}
+    unpinned = {
+        key: runtime.get(key) for key, value in SCENE_RUNTIME_PIN if runtime.get(key) is not value
+    }
+    if unpinned or int(document.get("seed", -1)) != seed:
+        raise GuardrailError(
+            f"the resolved scene {resolved} does not carry the pinned stack "
+            f"(seed={document.get('seed')!r}, unpinned={unpinned!r}). Refusing to "
+            "run a round whose stack is not the one it records."
+        )
+    assert_scene_safety_unmoved(tracked, resolved)
+
+    relative = resolved.relative_to(REPO_ROOT) if resolved.is_relative_to(REPO_ROOT) else resolved
+    return str(relative), resolved
 
 
 def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
@@ -1016,7 +1306,7 @@ def _run_one_scene(
     Returns the config path that was launched (repo-relative when tracked).
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    config_path, config_file = _resolve_seed_config(spec, seed, run_dir)
+    config_path, config_file = materialise_scene(spec, seed, run_dir)
     deploy_log = run_dir / f"{stem}_deploy.log"
     monitor_log = run_dir / f"{stem}_monitor.jsonl"
     goal_log = run_dir / f"{stem}_goal.log"
@@ -1044,9 +1334,12 @@ def _run_one_scene(
         )
         monitor: subprocess.Popen[bytes] | None = None
         try:
-            if not _wait_for_action_server(proc, timeout_s=600):
-                sys.stderr.write(f"[matrix] {spec.key}: action server never appeared\n")
-                return config_path
+            # The monitor attaches BEFORE the wait for the action server, not
+            # five seconds before dispatch: the sim clock starts with the graph,
+            # and a scene whose initial configuration trips the kernel at sim
+            # t≈4.7 s stops before the rSkill server has ever advertised. The
+            # 2026-08-22 utensil scene did exactly that and recorded zero
+            # snapshots, a null grid resolution and an `unadjudicated` verdict.
             monitor = subprocess.Popen(
                 [
                     str(REPO_ROOT / ".venv" / "bin" / "python"),
@@ -1057,6 +1350,15 @@ def _run_one_scene(
                 cwd=REPO_ROOT,
                 env=env,
             )
+            if not _wait_for_action_server(proc, timeout_s=600):
+                sys.stderr.write(f"[matrix] {spec.key}: action server never appeared\n")
+                (run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}").write_text(
+                    "/openral/execute_rskill never appeared, so no skill was ever "
+                    "dispatched: the graph did not come up. This is a harness-error, "
+                    "not a deadline.\n",
+                    encoding="utf-8",
+                )
+                return config_path
             time.sleep(5.0)
             with goal_log.open("wb") as goal_sink:
                 subprocess.run(
@@ -1151,6 +1453,8 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
         f"  ·  manifest: `{meta.robot_manifest_path or 'resolved at launch'}`",
         f"- Sync groups: `{' '.join(meta.sync_groups)}`",
         f"- Stack argv: `{' '.join(meta.stack_argv)}`",
+        f"- Scene-pinned stack (no CLI flag exists): "
+        f"`{' '.join(f'{k}={str(v).lower()}' for k, v in meta.scene_pins.items()) or 'none'}`",
         f"- Safety-knob overrides present: **{not meta.safety_overrides_absent}**",
         "",
         "| scene | outcome | task_success | E-stop pair | min / sweep (m) | GT |",
@@ -1176,10 +1480,29 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
         )
     exempted = [s.scene for s in verdicts.scenes if s.stop and s.stop.exemption_active]
     allowance = [s.scene for s in verdicts.scenes if s.witness.place_allowance_active_lines]
+    # A stop earlier than the monitor's first `world_voxels` record leaves the
+    # adjudication with no grid resolution and therefore no quantization budget.
+    # Say so, rather than letting `unadjudicated` read as "nothing to see".
+    blind = [
+        s.scene
+        for s in verdicts.scenes
+        if s.ground_truth is not None and s.ground_truth.grid_resolution_m is None
+    ]
+    broken = [s for s in verdicts.scenes if s.outcome == "harness-error"]
     out += [
         "",
         f"- Exemption active at the trip: {', '.join(exempted) if exempted else 'none'}.",
         f"- `place_allowance_active=1` disclosed in: {', '.join(allowance) if allowance else 'none'}.",
+        f"- Stopped before the monitor saw a voxel grid (no quantization budget, so"
+        f" `unadjudicated` states only that): {', '.join(blind) if blind else 'none'}.",
+    ]
+    if broken:
+        out += [
+            "",
+            "**Harness errors — these scenes did not run:**",
+            *(f"- `{s.scene}`: {s.harness_error_reason}" for s in broken),
+        ]
+    out += [
         "",
         "Verdicts: `verdicts.json`. Diff against the previous round with "
         "`just validation-matrix-diff <this> <previous>`.",
@@ -1197,8 +1520,34 @@ def _load_round(round_dir: Path) -> ValidationRoundVerdicts:
     return ValidationRoundVerdicts.from_json(str(round_dir / "verdicts.json"))
 
 
-def cmd_verdicts(round_dir: Path, *, stem: str = "run") -> int:
-    """Re-derive ``verdicts.json`` for an existing round directory."""
+def round_exit_code(verdicts: ValidationRoundVerdicts) -> int:
+    """``4`` when any scene bucketed ``harness-error``, else ``0``.
+
+    A round in which a scene never launched is not a result, and must not exit
+    successfully: the first live round reported a total launch failure in all
+    four scenes as ``deadline-no-grasp`` with exit 0.
+
+    Args:
+        verdicts: The round's verdicts.
+
+    Returns:
+        The process exit code for a completed round.
+    """
+    return 4 if any(scene.outcome == "harness-error" for scene in verdicts.scenes) else 0
+
+
+def cmd_verdicts(round_dir: Path, *, stem: str | None = None) -> int:
+    """Re-derive ``verdicts.json`` for an existing round directory.
+
+    Args:
+        round_dir: The round.
+        stem: Artifact filename stem; ``None`` reads ``artifact_stem`` from the
+            round's metadata (``"run"`` when it records none), so an imported
+            pre-harness round re-derives without repeating ``--stem``.
+
+    Returns:
+        ``0``, or ``2`` when the round has no ``metadata.json``.
+    """
     from openral_core import ValidationRoundVerdicts  # reason: deferred
 
     meta_path = round_dir / "metadata.json"
@@ -1206,9 +1555,11 @@ def cmd_verdicts(round_dir: Path, *, stem: str = "run") -> int:
         sys.stderr.write(f"no metadata.json in {round_dir}\n")
         return 2
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    resolved_stem = stem if stem is not None else str(metadata.get("artifact_stem") or "run")
+    scene_dirs = dict(metadata.get("scene_dirs") or {})
     scenes = []
     for spec in MATRIX:
-        run_dir = round_dir / spec.key
+        run_dir = round_dir / scene_dirs.get(spec.key, spec.key)
         if not run_dir.is_dir():
             continue
         scenes.append(
@@ -1219,7 +1570,7 @@ def cmd_verdicts(round_dir: Path, *, stem: str = "run") -> int:
                 seed=int(metadata.get("seed", 1)),
                 prompt=spec.prompt,
                 rskill_id=metadata.get("rskill_id", DEFAULT_RSKILL_ID),
-                stem=stem,
+                stem=resolved_stem,
             )
         )
     verdicts = ValidationRoundVerdicts.model_validate(
@@ -1254,10 +1605,240 @@ def cmd_diff(round_dir: Path, baseline_dir: Path, out_path: Path | None) -> int:
     return 0
 
 
+def parse_launch_argv(lines: Iterable[str]) -> list[str]:
+    """The resolved ``ros2 launch`` argv the deploy CLI echoed into its log.
+
+    This is the only artifact that states the stack a run *actually* got, after
+    the CLI resolved flag > scene ``runtime:`` > default. Reading it is how a
+    pre-harness round's stack is recovered without trusting anyone's memory.
+
+    Args:
+        lines: Lines of the deploy log.
+
+    Returns:
+        The argv tokens, empty when the log carries no ``argv:`` line.
+
+    Example:
+        >>> parse_launch_argv(["  argv: ros2 launch pkg x.py enable_reasoner:=false"])
+        ['ros2', 'launch', 'pkg', 'x.py', 'enable_reasoner:=false']
+    """
+    import shlex  # reason: deferred, used only by `import-round`
+
+    for line in lines:
+        idx = line.find("argv: ros2 launch")
+        if idx < 0:
+            continue
+        with contextlib.suppress(ValueError):
+            return shlex.split(line[idx + len("argv: ") :])
+    return []
+
+
+_STACK_TOKEN_PREFIXES: Final[tuple[str, ...]] = (
+    "enable_",
+    "hal_mode:=",
+    "clock_origin:=",
+    "spatial_memory_ingest:=",
+)
+
+
+def stack_tokens(argv: Sequence[str]) -> list[str]:
+    """The stack-defining ``key:=value`` tokens of a resolved launch argv.
+
+    Per-scene tokens (robot YAML, HAL params tempfile, the place declaration)
+    are dropped: what is left is the stack the whole round shared.
+
+    Args:
+        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+
+    Returns:
+        The stack tokens, sorted.
+
+    Example:
+        >>> stack_tokens(["ros2", "launch", "enable_slam:=true", "robot_yaml:=/r.yaml"])
+        ['enable_slam:=true']
+    """
+    return sorted(t for t in argv if t.startswith(_STACK_TOKEN_PREFIXES) and ":=" in t)
+
+
+def robot_facts_from_launch_argv(argv: Sequence[str]) -> dict[str, str]:
+    """Repo root, robot id and manifest path, as the resolved launch argv states them.
+
+    ``robot_yaml:=<repo_root>/robots/<robot_id>/robot.yaml`` is the one token
+    that names the checkout a round ran from — the question a lost round was
+    lost to. Derived, never assumed: an unrecognised shape yields ``{}``.
+
+    Args:
+        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+
+    Returns:
+        ``{"repo_root": ..., "robot_id": ..., "robot_manifest_path": ...}``, or
+        ``{}`` when the argv carries no recognisable ``robot_yaml:=``.
+
+    Example:
+        >>> robot_facts_from_launch_argv(["robot_yaml:=/w/openral/robots/panda_mobile/robot.yaml"])
+        {'repo_root': '/w/openral', 'robot_id': 'panda_mobile', 'robot_manifest_path': 'robots/panda_mobile/robot.yaml'}
+    """
+    value = next((t.split(":=", 1)[1] for t in argv if t.startswith("robot_yaml:=")), "")
+    manifest = Path(value)
+    if not value or manifest.name != "robot.yaml" or manifest.parent.parent.name != "robots":
+        return {}
+    return {
+        "repo_root": str(manifest.parent.parent.parent),
+        "robot_id": manifest.parent.name,
+        "robot_manifest_path": f"robots/{manifest.parent.name}/robot.yaml",
+    }
+
+
+def parse_log_start_time(lines: Iterable[str]) -> str | None:
+    """UTC timestamp of the first ROS log stamp in a deploy log.
+
+    Pre-harness rounds recorded no start time; their logs did, in the
+    ``[1787422850.534169223]`` stamp ROS puts on every line.
+
+    Args:
+        lines: Lines of the deploy log.
+
+    Returns:
+        An ISO-8601 UTC timestamp, or ``None`` when no stamp is present.
+
+    Example:
+        >>> parse_log_start_time(["[node-1] [INFO] [1787422850.534169223] [x]: up"])
+        '2026-08-22T18:20:50.534169+00:00'
+    """
+    for line in lines:
+        match = re.search(r"\[(1[0-9]{9})\.([0-9]{9})\]", line)
+        if match:
+            seconds = int(match.group(1)) + int(match.group(2)) / 1e9
+            return _dt.datetime.fromtimestamp(seconds, tz=_dt.UTC).isoformat()
+    return None
+
+
+def resolve_scene_dirs(round_dir: Path, aliases: Mapping[str, str]) -> dict[str, str]:
+    """Map each matrix scene onto the directory a round actually kept it in.
+
+    The pre-harness rounds named their scene directories ``bag1``, ``sink1``,
+    ``fridge1``, ``utensil1``; diffing one against a harness round previously
+    meant hand-mapping those by eye. Explicit ``--scene-alias`` wins over the
+    recorded historical names.
+
+    Args:
+        round_dir: The round directory.
+        aliases: Explicit ``{scene_key: directory}`` overrides.
+
+    Returns:
+        ``{scene_key: directory_name}`` for every scene present.
+
+    Example:
+        >>> resolve_scene_dirs(Path("/nonexistent"), {"fridge": "fridge1"})
+        {'fridge': 'fridge1'}
+    """
+    found: dict[str, str] = {}
+    for key, candidates in LEGACY_SCENE_DIRS:
+        if key in aliases:
+            found[key] = aliases[key]
+            continue
+        match = next((name for name in candidates if (round_dir / name).is_dir()), None)
+        if match is not None:
+            found[key] = match
+    return found
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Write the metadata a pre-harness round never recorded, then derive it.
+
+    Offline and read-only apart from the three files it writes into the round
+    (``metadata.json``, ``verdicts.json``, ``NOTES.md``). Everything derivable
+    from the artifacts is derived — the stack from the deploy log's own resolved
+    launch argv, the start time from its first ROS stamp, the scene YAML from
+    the round directory. Everything else (the SHA that ran, the host) is a
+    recorded fact the operator passes in and is stored as given, never guessed.
+    """
+    round_dir: Path = args.source
+    if not round_dir.is_dir():
+        sys.stderr.write(f"no such round directory: {round_dir}\n")
+        return 2
+    aliases = dict(pair.split("=", 1) for pair in args.scene_alias)
+    scene_dirs = resolve_scene_dirs(round_dir, aliases)
+    if not scene_dirs:
+        sys.stderr.write(
+            f"no matrix scene directory found in {round_dir} "
+            f"(looked for {[c for _, cs in LEGACY_SCENE_DIRS for c in cs]!r}); "
+            "pass --scene-alias <scene>=<dir>\n"
+        )
+        return 2
+
+    scene_configs: dict[str, str] = {}
+    started_at: str | None = None
+    stacks: dict[str, list[str]] = {}
+    robot: dict[str, str] = {}
+    for key, name in scene_dirs.items():
+        scene_dir = round_dir / name
+        deploy = scene_dir / f"{args.stem}_deploy.log"
+        if not deploy.exists():
+            deploy = scene_dir / f"{args.stem}_deploy_excerpt.log"
+        lines = (
+            deploy.read_text(encoding="utf-8", errors="replace").splitlines()
+            if deploy.exists()
+            else []
+        )
+        launch_argv = parse_launch_argv(lines)
+        stacks[key] = stack_tokens(launch_argv)
+        robot = robot or robot_facts_from_launch_argv(launch_argv)
+        started_at = started_at or parse_log_start_time(lines)
+        config = sorted(scene_dir.glob("*.yaml"))
+        if config:
+            scene_configs[key] = str(config[0].relative_to(round_dir))
+
+    distinct = {tuple(tokens) for tokens in stacks.values() if tokens}
+    if len(distinct) > 1:
+        sys.stderr.write(
+            "the scenes of this round did not share one stack, so it cannot be "
+            f"recorded as a round: {stacks!r}\n"
+        )
+        return 2
+
+    metadata = {
+        "round_id": args.round_id,
+        "started_at": started_at or args.started_at or "",
+        "host": args.host,
+        "executed_sha": args.executed_sha,
+        "worktree_clean": None,
+        "launcher_path": "",
+        "repo_root": robot.get("repo_root", ""),
+        "robot_id": robot.get("robot_id"),
+        "robot_manifest_path": robot.get("robot_manifest_path"),
+        "sync_groups": list(args.sync_group),
+        "stack_argv": list(next(iter(distinct), ())),
+        "safety_overrides_absent": True,
+        "gpu_name": args.gpu_name,
+        "notes_path": "NOTES.md",
+        "seed": args.seed,
+        "rskill_id": args.rskill_id,
+        "scene_configs": scene_configs,
+        "scene_dirs": scene_dirs,
+        "artifact_stem": args.stem,
+        "imported_from": args.imported_from or str(round_dir.resolve()),
+    }
+    if not metadata["started_at"]:
+        sys.stderr.write(
+            "no ROS timestamp in any deploy log and no --started-at given; "
+            "the round cannot be dated from its artifacts\n"
+        )
+        return 2
+    (round_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"imported {round_dir} as {args.round_id}: {scene_dirs} stem={args.stem!r}")
+    return cmd_verdicts(round_dir, stem=args.stem)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    """Execute the matrix end to end."""
+    """Execute the matrix end to end.
+
+    Nothing is written until every guardrail has passed — a refused round leaves
+    no directory behind, which is what "exit 3, no partial round" means.
+    """
     round_dir = OUTPUT_ROOT / args.round_id
-    round_dir.mkdir(parents=True, exist_ok=True)
 
     assert_worktree_clean()
     executed_sha = assert_sha(args.expect_sha)
@@ -1278,6 +1859,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         sys.stderr.write(f"no scenes matched {args.scenes!r}\n")
         return 2
 
+    round_dir.mkdir(parents=True, exist_ok=True)
     scene_configs: dict[str, str] = {}
     for spec in scenes:
         config_path = _run_one_scene(
@@ -1312,11 +1894,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         "seed": args.seed,
         "rskill_id": args.rskill_id,
         "scene_configs": scene_configs,
+        "artifact_stem": args.stem,
+        "scene_pins": dict(SCENE_RUNTIME_PIN),
     }
     (round_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    return cmd_verdicts(round_dir, stem=args.stem)
+    code = cmd_verdicts(round_dir, stem=args.stem)
+    return code or round_exit_code(_load_round(round_dir))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1354,12 +1939,49 @@ def main(argv: list[str] | None = None) -> int:
 
     verdicts = sub.add_parser("verdicts", help="Derive verdicts.json from a round directory.")
     verdicts.add_argument("round_dir", type=Path)
-    verdicts.add_argument("--stem", default="run")
+    verdicts.add_argument(
+        "--stem", default=None, help="Artifact stem; default: the round's recorded artifact_stem."
+    )
 
     diff = sub.add_parser("diff", help="Diff two rounds' verdicts.json.")
     diff.add_argument("round_dir", type=Path)
     diff.add_argument("--baseline", type=Path, required=True)
     diff.add_argument("--out", type=Path, default=None)
+
+    imp = sub.add_parser(
+        "import-round",
+        help="Record the metadata a pre-harness round never wrote, then derive its verdicts.",
+    )
+    imp.add_argument("source", type=Path, help="The round directory, e.g. ~/openral-runs/<round>.")
+    imp.add_argument("--round-id", required=True, help="Round id to record.")
+    imp.add_argument(
+        "--executed-sha", required=True, help="SHA the round ran (from its own NOTES / build log)."
+    )
+    imp.add_argument("--stem", default="seed1", help="Artifact filename stem (default: seed1).")
+    imp.add_argument(
+        "--scene-alias",
+        action="append",
+        default=[],
+        metavar="SCENE=DIR",
+        help="Map a matrix scene onto the directory this round used, e.g. baguette=bag1.",
+    )
+    imp.add_argument("--seed", type=int, default=1, help="Scene seed the round pinned.")
+    imp.add_argument("--rskill-id", default=DEFAULT_RSKILL_ID, help="rSkill the round dispatched.")
+    imp.add_argument("--host", default="", help="Hostname of the runner (a recorded fact).")
+    imp.add_argument("--gpu-name", default=None, help="GPU the round ran on (a recorded fact).")
+    imp.add_argument(
+        "--sync-group", action="append", default=[], help="Dependency group the round synced with."
+    )
+    imp.add_argument(
+        "--started-at",
+        default="",
+        help="Fallback start time when the logs carry no ROS timestamp.",
+    )
+    imp.add_argument(
+        "--imported-from",
+        default="",
+        help="Producer path to record, when importing a copy of the round (default: SOURCE).",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1367,6 +1989,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_run(args)
         if args.command == "verdicts":
             return cmd_verdicts(args.round_dir, stem=args.stem)
+        if args.command == "import-round":
+            return cmd_import(args)
         return cmd_diff(args.round_dir, args.baseline, args.out)
     except GuardrailError as exc:
         sys.stderr.write(f"GUARDRAIL: {exc}\n")
