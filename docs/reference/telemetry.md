@@ -313,6 +313,38 @@ Diagnostics only (CLAUDE.md §1.4). The stop itself is correct and is neither
 suppressed, delayed, nor altered — an initial pose that interpenetrates the
 scene is exactly what the kernel exists to refuse. All the line does is name it.
 
+### The RoboCasa scene composition
+
+`robocasa_scene_composition` — `structlog`, `info`, once per `reset`, emitted by
+`openral_sim.backends.robocasa._RoboCasaSim`.
+
+| Field | Meaning |
+|---|---|
+| `scene_id` | the scene that was built, e.g. `robocasa/PickPlaceFridgeShelfToDrawer` |
+| `effective_layout_id` | the kitchen floor plan RoboCasa **actually** composed, 1..60 |
+| `effective_style_id` | the style it actually composed, 1..60, or `"custom"` for a style dict |
+| `pinned_layout_id` / `pinned_style_id` | what the scene YAML pinned, or `null` when it left the pool open |
+
+RoboCasa redraws `(layout_id, style_id)` from `env.rng` inside
+`Kitchen._load_model` on **every** reset, so the composition is a property of
+the episode, not of the built env — which is why the line is emitted at reset
+rather than at scene-factory time.
+
+It exists because the seed alone does not identify the kitchen. Layout, style,
+fixtures, `rack_index`, door-open amounts and the robot spawn deviation are all
+drawn from one shared `env.rng`, so any upstream change to the draw order
+reshuffles the scene at the same seed. Without this line a round's artifacts
+never state which of the 60 kitchens ran, and two rounds are not comparable
+even when both say `seed: 1`.
+
+When the YAML pinned exactly one layout or style, a mismatch between pinned and
+effective is a `ROSConfigError`, not a log line. The pin can be silently
+overridden two ways upstream — the task's `EXCLUDE_LAYOUTS` / `EXCLUDE_STYLES`
+filters the pinned id out of the pool, or a replayed `_ep_meta` carries its own
+`layout_id` / `style_id` and wins outright — and both would otherwise run a
+different kitchen than the scene file describes while every artifact still shows
+the declared one.
+
 ---
 
 ## Load-phase instrumentation

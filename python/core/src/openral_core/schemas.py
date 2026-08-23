@@ -8237,6 +8237,84 @@ class SceneSpec(BaseModel):
     backend_options: dict[str, object] = Field(default_factory=dict)
 
 
+# Scene-pool id domains, mirrored from RoboCasa 1.0.1
+# ``robocasa/models/scenes/scene_registry.py``. Transcribed, not guessed
+# (CLAUDE.md §1.2): ``LayoutType`` declares ``LAYOUT001..LAYOUT060`` = 1..60
+# plus the negative group aliases ``TEST=-1 TRAIN=-2 ALL=-3 NO_ISLAND=-4
+# ISLAND=-5 DINING=-6``, and ``LAYOUT_GROUPS_TO_IDS`` is keyed by exactly
+# those six negatives. ``StyleType`` declares ``STYLE001..STYLE060`` = 1..60;
+# its only negative member is ``ALL=-3``, but ``unpack_style_ids`` indexes
+# ``STYLE_GROUPS_TO_IDS``, which is keyed ``-1 -2 -3`` — so the resolver
+# accepts three negatives where the enum names one, and this mirror follows
+# the resolver (it is what actually runs).
+#
+# 0 is NOT a layout or a style. RoboCasa numbers both from 1, so a
+# ``layout_ids: 0`` is always an authoring mistake, not "the first layout".
+_ROBOCASA_LAYOUT_ID_MIN = 1
+_ROBOCASA_LAYOUT_ID_MAX = 60
+_ROBOCASA_LAYOUT_GROUP_IDS = frozenset({-1, -2, -3, -4, -5, -6})
+_ROBOCASA_STYLE_ID_MIN = 1
+_ROBOCASA_STYLE_ID_MAX = 60
+_ROBOCASA_STYLE_GROUP_IDS = frozenset({-1, -2, -3})
+# ``Kitchen.__init__`` accepts these two strings for ``layout_and_style_ids``
+# (they resolve to ``EnvUtils.KITCHEN_SCENES_5X5`` / ``KITCHEN_SCENES_5X1``).
+# Any OTHER string falls through both branches leaving
+# ``self.layout_and_style_ids`` never assigned, so the failure surfaces much
+# later as an ``AttributeError`` on an unrelated line — reject it here.
+_ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS = frozenset({"5x5", "5x1"})
+_ROBOCASA_LAYOUT_AND_STYLE_PAIR_LEN = 2
+
+
+def _check_robocasa_scene_ids(
+    value: list[int] | int | None,
+    *,
+    field: str,
+    id_min: int,
+    id_max: int,
+    group_ids: frozenset[int],
+) -> list[int] | int | None:
+    """Reject a RoboCasa layout / style id outside the upstream domain.
+
+    Args:
+        value: The field's raw value — a scalar id, a list of ids, or ``None``.
+        field: Field name, quoted back in the error message.
+        id_min: Lowest concrete id upstream defines.
+        id_max: Highest concrete id upstream defines.
+        group_ids: Negative group shorthands the upstream resolver accepts.
+
+    Returns:
+        ``value`` unchanged when every id is in the domain.
+
+    Raises:
+        ValueError: naming the offending id and the whole accepted domain.
+            Pydantic wraps this into a ``ValidationError``, which the RoboCasa
+            scene adapter re-raises as a typed
+            :class:`~openral_core.exceptions.ROSConfigError`.
+
+    Example:
+        >>> _check_robocasa_scene_ids(
+        ...     [3],
+        ...     field="layout_ids",
+        ...     id_min=1,
+        ...     id_max=60,
+        ...     group_ids=frozenset({-1, -2, -3, -4, -5, -6}),
+        ... )
+        [3]
+    """
+    if value is None:
+        return value
+    for scene_id in [value] if isinstance(value, int) else value:
+        if id_min <= scene_id <= id_max or scene_id in group_ids:
+            continue
+        raise ValueError(
+            f"RoboCasaBackendOptions.{field}: {scene_id} is not a RoboCasa "
+            f"scene id. Accepted: {id_min}..{id_max} (concrete scenes) or one "
+            f"of {sorted(group_ids)} (group shorthands). RoboCasa numbers "
+            f"layouts and styles from 1, so 0 is never valid."
+        )
+    return value
+
+
 class RoboCasaBackendOptions(BaseModel):
     """Typed validator helper for ``SceneSpec.backend_options`` under RoboCasa.
 
@@ -8342,6 +8420,16 @@ class RoboCasaBackendOptions(BaseModel):
     # ADR-amendment note: this is a purely additive Pydantic field. Old
     # SimEnvironment YAMLs (which don't carry these keys) load
     # unchanged because each field defaults to None.
+    #
+    # `layout_ids` / `style_ids` / `layout_and_style_ids` are RANGE-CHECKED
+    # against the upstream enums below. Without that check an out-of-range pin
+    # is not rejected here; it travels all the way into
+    # `SceneRegistry.get_layout_path`, which indexes a dict built from
+    # `LayoutType` and dies on a bare `KeyError: 99` from inside arena
+    # construction — a stack with no mention of the YAML key that caused it.
+    # A group shorthand outside `LAYOUT_GROUPS_TO_IDS` (`layout_ids: -7`) is
+    # the same failure one frame earlier, in `unpack_layout_ids`. Both are now
+    # `ROSConfigError` at scene-validation time, naming the offending value.
     obj_instance_split: str | None = None
     layout_and_style_ids: list[list[int]] | str | None = None
     layout_ids: list[int] | int | None = None
@@ -8362,6 +8450,89 @@ class RoboCasaBackendOptions(BaseModel):
     # ``openral_hal.sim_bringup.build_sim_env_from_yaml`` regardless of
     # what the YAML declares.
     ignore_done: bool = False
+
+    @field_validator("layout_ids")
+    @classmethod
+    def _check_layout_ids(cls, value: list[int] | int | None) -> list[int] | int | None:
+        """Reject a layout id outside RoboCasa's 1..60 + group-shorthand domain."""
+        return _check_robocasa_scene_ids(
+            value,
+            field="layout_ids",
+            id_min=_ROBOCASA_LAYOUT_ID_MIN,
+            id_max=_ROBOCASA_LAYOUT_ID_MAX,
+            group_ids=_ROBOCASA_LAYOUT_GROUP_IDS,
+        )
+
+    @field_validator("style_ids")
+    @classmethod
+    def _check_style_ids(cls, value: list[int] | int | None) -> list[int] | int | None:
+        """Reject a style id outside RoboCasa's 1..60 + group-shorthand domain."""
+        return _check_robocasa_scene_ids(
+            value,
+            field="style_ids",
+            id_min=_ROBOCASA_STYLE_ID_MIN,
+            id_max=_ROBOCASA_STYLE_ID_MAX,
+            group_ids=_ROBOCASA_STYLE_GROUP_IDS,
+        )
+
+    @field_validator("layout_and_style_ids")
+    @classmethod
+    def _check_layout_and_style_ids(
+        cls, value: list[list[int]] | str | None
+    ) -> list[list[int]] | str | None:
+        """Reject an unknown shorthand string or a malformed (layout, style) pair."""
+        if value is None:
+            return value
+        if isinstance(value, str):
+            if value not in _ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS:
+                raise ValueError(
+                    f"RoboCasaBackendOptions.layout_and_style_ids: {value!r} is "
+                    f"not a RoboCasa shorthand. Accepted: "
+                    f"{sorted(_ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS)}, or an "
+                    f"explicit list of [layout, style] pairs."
+                )
+            return value
+        for pair in value:
+            if len(pair) != _ROBOCASA_LAYOUT_AND_STYLE_PAIR_LEN:
+                raise ValueError(
+                    f"RoboCasaBackendOptions.layout_and_style_ids: {pair!r} is "
+                    f"not a [layout, style] pair."
+                )
+            _check_robocasa_scene_ids(
+                pair[0],
+                field="layout_and_style_ids[0]",
+                id_min=_ROBOCASA_LAYOUT_ID_MIN,
+                id_max=_ROBOCASA_LAYOUT_ID_MAX,
+                group_ids=_ROBOCASA_LAYOUT_GROUP_IDS,
+            )
+            _check_robocasa_scene_ids(
+                pair[1],
+                field="layout_and_style_ids[1]",
+                id_min=_ROBOCASA_STYLE_ID_MIN,
+                id_max=_ROBOCASA_STYLE_ID_MAX,
+                group_ids=_ROBOCASA_STYLE_GROUP_IDS,
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _mutually_exclusive_scene_pool_pins(self) -> RoboCasaBackendOptions:
+        """Refuse the combination ``Kitchen.__init__`` asserts on.
+
+        Upstream: ``assert layout_ids is None and style_ids is None`` when
+        ``layout_and_style_ids`` is set. Raising here names the YAML keys;
+        the upstream assert surfaces as a bare ``AssertionError`` from inside
+        env construction with no pointer back to the scene file.
+        """
+        if self.layout_and_style_ids is not None and (
+            self.layout_ids is not None or self.style_ids is not None
+        ):
+            raise ValueError(
+                "RoboCasaBackendOptions: layout_and_style_ids is mutually "
+                "exclusive with layout_ids / style_ids (RoboCasa's Kitchen "
+                "ctor asserts on the combination). Pin either the pair list "
+                "or the two axes separately, not both."
+            )
+        return self
 
     @model_validator(mode="after")
     def _xor_prebuilt_vs_procedural(self) -> RoboCasaBackendOptions:
