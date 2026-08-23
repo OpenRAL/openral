@@ -33,7 +33,10 @@ def test_manifest_matches_lowering_tool(manifest: Path) -> None:
 
     Robots whose geometry is tool-generated (the ``# GENERATED`` marker) are checked
     in **full** (geometry + ACM + joint FK); robots with hand-tuned geometry
-    (panda_mobile) are checked ACM-only so their tuned capsules aren't flagged.
+    (panda_mobile, panda_mobile_vslam, so101_follower) are checked ACM-only so
+    their hand-fitted **boxes** are not flagged — #103 converted panda_mobile's
+    capsules to boxes, and those boxes are deliberately tighter than the tool
+    would emit.
     """
     # Tool-generated GEOMETRY = a `# GENERATED` comment immediately above
     # `collision_geometry:` (panda_mobile's hand geometry has a hand comment there;
