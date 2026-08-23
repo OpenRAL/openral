@@ -118,19 +118,20 @@ def test_derive_height_band_from_real_robot_manifest_geometry() -> None:
 
 
 def test_derive_height_band_from_capsule_manifest() -> None:
-    """``franka_panda`` bounds every link with a ``CapsuleShape``.
+    """``rizon4`` bounds every link with a ``CapsuleShape``.
 
     Its lowest capsule reaches below ``base_frame`` z=0, so the floor edge is
     driven by the geometry rather than clamped at the origin — the case where
     an over-approximated lower extent would drag the band down through the
     real floor and re-mark the floor this node exists to remove.
     """
-    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/rizon4/robot.yaml"))
+    assert {geom.shape.shape for geom in description.collision_geometry} == {"capsule"}
 
     band = derive_robot_relative_height_band(description)
 
-    assert band.min_z_m == pytest.approx(-0.0154, abs=1e-3)
-    assert band.max_z_m == pytest.approx(1.1749, abs=1e-3)
+    assert band.min_z_m == pytest.approx(0.0090, abs=1e-3)
+    assert band.max_z_m == pytest.approx(1.3930, abs=1e-3)
     assert band.source == "minimum+collision_geometry"
 
 
@@ -145,6 +146,96 @@ def test_derive_height_band_from_sphere_and_capsule_manifest() -> None:
     assert band.min_z_m == pytest.approx(-0.9434, abs=1e-3)
     assert band.max_z_m == pytest.approx(0.4721, abs=1e-3)
     assert "collision_geometry" in band.source
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "expected_max_z_m"),
+    [("ur5e", 0.3354), ("ur10e", 0.4204)],
+)
+def test_derive_height_band_bridges_the_declared_urdf_root(
+    robot_id: str, expected_max_z_m: float
+) -> None:
+    """UR manifests place their arm through ``assets.urdf.root_frame``.
+
+    ``joints`` enumerates only movable joints, so UR's upstream URDF root
+    (``base_link``) is not a child of any of them — every collision volume
+    hangs off a link the ``base_frame`` (``ur5e_base_link``) chain alone cannot
+    reach. The manifest is not missing the transform: it declares it as
+    ``assets.urdf.root_frame`` + ``base_to_root_xyz_rpy``, the same pair
+    ``sim_e2e.launch.py`` publishes as a static TF. Reading it is what makes
+    the band cover the arm instead of collapsing onto the
+    ``min_body_height_m`` floor.
+    """
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))
+    assert description.assets is not None
+    assert description.assets.urdf is not None
+    assert description.assets.urdf.root_frame == "base_link"
+    assert description.base_frame != "base_link"
+
+    band = derive_robot_relative_height_band(description)
+
+    assert "collision_geometry" in band.source
+    assert band.max_z_m == pytest.approx(expected_max_z_m, abs=1e-3)
+    # The defect this pins: with the bridge unread every geom was skipped and
+    # the band was exactly the 0.30 m floor, hiding the arm from the map.
+    assert band.max_z_m > 0.30
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "unplaceable_link"),
+    [
+        # Partial — 1 of 9 volumes. The band still *looked* measured
+        # (``source`` said ``collision_geometry``) while silently omitting the
+        # gripper at the top of the chain.
+        ("franka_panda", "panda_hand"),
+        # Partial — 15 of 27. Every arm link plus the torso hangs off
+        # ``torso_link``, which no joint declares as a child, so the derived
+        # band was [-0.72, -0.02] m: a humanoid whose entire upper body sat
+        # outside its own "measured" navigation height.
+        ("g1", "torso_link"),
+        # Total — 16 of 16. Both arms root at ``openarm_*_link0``, which the
+        # manifest neither articulates nor bridges.
+        ("openarm", "openarm_left_link1"),
+    ],
+)
+def test_derive_height_band_refuses_an_unplaceable_collision_volume(
+    robot_id: str, unplaceable_link: str
+) -> None:
+    """Declared geometry that cannot be placed refuses; it is never skipped.
+
+    Partial and total placement failure get the same answer on purpose. A band
+    covering an arbitrary reachable subset of the robot is not a measurement of
+    the robot, and ``g1`` shows the partial case is the more dangerous one: it
+    keeps reporting ``collision_geometry`` as its source, so nothing downstream
+    can tell the difference between a measured band and a truncated one.
+    """
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))
+    assert description.collision_geometry
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        derive_robot_relative_height_band(description)
+
+    message = str(excinfo.value)
+    assert unplaceable_link in message
+    assert description.base_frame in message
+
+
+def test_derive_height_band_keeps_the_floor_for_a_manifest_without_collision_geometry() -> None:
+    """No declared geometry is not a placement failure — it is the floor's job.
+
+    ``min_body_height_m`` exists for exactly this manifest shape, so refusing
+    here would break a robot that is not broken. The refusal above must stay
+    narrower than "the extent is unknown": it fires only when the manifest
+    declares volumes the derivation then cannot place.
+    """
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/aloha_agilex/robot.yaml"))
+    assert description.collision_geometry == []
+
+    band = derive_robot_relative_height_band(description)
+
+    assert band.source == "minimum"
+    assert band.min_z_m == pytest.approx(0.10)
+    assert band.max_z_m == pytest.approx(0.30)
 
 
 def test_derive_height_band_projects_a_rotated_box_onto_world_z() -> None:

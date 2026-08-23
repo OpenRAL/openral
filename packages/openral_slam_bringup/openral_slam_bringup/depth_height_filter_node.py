@@ -101,6 +101,32 @@ def _compose(
     return _mat_mul(parent_r, child_r), _vec_add(parent_t, _mat_vec(parent_r, child_t))
 
 
+def _urdf_root_seed(
+    description: Any,
+) -> tuple[str, tuple[tuple[tuple[float, float, float], ...], tuple[float, float, float]]] | None:
+    """The manifest's declared ``base_frame -> urdf root`` bridge, if it has one.
+
+    ``joints`` enumerates the robot's *movable* joints, so a manifest whose URDF
+    root differs from ``base_frame`` (UR's ``ur5e_base_link`` over the upstream
+    ``base_link``, Franka's ``base_link`` over ``panda_link0``) leaves that root
+    outside the chain. It is not undeclared, though: ``assets.urdf.root_frame``
+    plus ``assets.urdf.base_to_root_xyz_rpy`` carry exactly that transform, and
+    ``sim_e2e.launch.py`` publishes it as the static ``base_frame -> root_frame``
+    TF the live tree uses. Reading the same pair here keeps the derived band
+    consistent with the TF the node shifts it by at runtime.
+    """
+    assets = getattr(description, "assets", None)
+    urdf = getattr(assets, "urdf", None) if assets is not None else None
+    if urdf is None:
+        return None
+    root_frame = getattr(urdf, "root_frame", None)
+    xyz_rpy = getattr(urdf, "base_to_root_xyz_rpy", None)
+    if root_frame is None or xyz_rpy is None:
+        return None
+    x, y, z, roll, pitch, yaw = (float(v) for v in xyz_rpy)
+    return str(root_frame), (_rpy_to_matrix(roll, pitch, yaw), (x, y, z))
+
+
 def _link_transforms_at_zero(
     description: Any,
 ) -> dict[str, tuple[tuple[tuple[float, float, float], ...], tuple[float, float, float]]]:
@@ -109,6 +135,14 @@ def _link_transforms_at_zero(
         str, tuple[tuple[tuple[float, float, float], ...], tuple[float, float, float]]
     ] = {str(description.base_frame): (identity, (0.0, 0.0, 0.0))}
     pending = list(description.joints)
+    # ``joints`` stays normative for the kinematic chain: seed the URDF-root
+    # bridge only for a root the chain does not place itself, so a manifest that
+    # articulates its root can never be overridden by the static transform.
+    root_seed = _urdf_root_seed(description)
+    if root_seed is not None:
+        chain_placed = {str(description.base_frame)} | {str(j.child_link) for j in pending}
+        if root_seed[0] not in chain_placed:
+            transforms[root_seed[0]] = root_seed[1]
     progressed = True
     while pending and progressed:
         progressed = False
@@ -193,17 +227,41 @@ def _shape_z_span_m(
 
 
 def _collision_z_extent_m(description: Any) -> tuple[float, float] | None:
+    """World-frame ``(z_min, z_max)`` over every declared collision volume.
+
+    Returns ``None`` only when the manifest declares **no** collision geometry
+    at all — the documented sparse-geometry case the ``min_body_height_m``
+    floor exists for. A manifest that declares geometry the derivation cannot
+    place raises instead of quietly measuring the subset it can reach; see
+    :func:`derive_robot_relative_height_band`.
+    """
     transforms = _link_transforms_at_zero(description)
     z_values: list[float] = []
+    unplaceable: list[str] = []
     for geom in description.collision_geometry:
         link_tf = transforms.get(str(geom.link_name))
         if link_tf is None:
+            unplaceable.append(str(geom.link_name))
             continue
         link_r, link_t = link_tf
         ox, oy, oz, roll, pitch, yaw = (float(v) for v in geom.origin_xyz_rpy)
         geom_r, geom_t = _compose(link_r, link_t, _rpy_to_matrix(roll, pitch, yaw), (ox, oy, oz))
         z_values.extend(
             _shape_z_span_m(geom.shape, geom_r, geom_t[2], link_name=str(geom.link_name))
+        )
+    if unplaceable:
+        from openral_core import ROSConfigError
+
+        total = len(list(description.collision_geometry))
+        raise ROSConfigError(
+            f"{len(unplaceable)} of {total} collision volumes cannot be placed relative to "
+            f"base_frame {str(description.base_frame)!r}: link(s) "
+            f"{sorted(set(unplaceable))} are reachable through neither the manifest's "
+            "'joints' chain nor its 'assets.urdf.root_frame' / 'base_to_root_xyz_rpy' "
+            "bridge. The nvblox height band would silently cover only the volumes it "
+            "could reach, so it refuses instead: declare the missing link placement in "
+            "the manifest, or set the node's explicit 'min_height_m'/'max_height_m' "
+            "override."
         )
     if not z_values:
         return None
@@ -225,14 +283,25 @@ def derive_robot_relative_height_band(
     using live TF for every frame.
 
     Each collision primitive contributes its exact world-frame z span (see
-    :func:`_shape_z_span_m`) — spheres, capsules and boxes alike.
+    :func:`_shape_z_span_m`) — spheres, capsules and boxes alike — placed by
+    :func:`_link_transforms_at_zero`, which walks the manifest's ``joints``
+    from ``base_frame`` and additionally seeds the declared
+    ``assets.urdf.root_frame`` bridge.
+
+    ``min_body_height_m`` is the floor for a manifest that declares **no**
+    collision geometry, which is a normal thing for a manifest to do; it is not
+    a fallback for geometry that failed to place.
 
     Raises:
         ValueError: If ``floor_clearance_m`` is negative, or
             ``min_body_height_m`` does not exceed it.
         ROSConfigError: If the manifest declares a collision shape the band
-            cannot measure. Refusing is the point: a band derived from a
-            guessed extent silently drops obstacles out of the occupancy grid.
+            cannot measure, or declares a collision volume on a link the band
+            cannot place. Refusing is the point in both cases: a band derived
+            from a guessed extent, or from the arbitrary subset of the robot
+            that happened to be reachable, silently drops obstacles out of the
+            occupancy grid while still reporting ``collision_geometry`` as its
+            source.
     """
     if floor_clearance_m < 0.0:
         raise ValueError(f"floor_clearance_m must be non-negative, got {floor_clearance_m}")
