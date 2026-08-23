@@ -81,11 +81,12 @@ _CONTACTS_CAVEAT = (
     "contype/conaffinity exclusions can suppress contacts entirely (field-"
     "observed: arm 30mm inside a freezer door with ncon==0). Adjudicate with "
     "the nearest_*_pairs probes, not with the contact list. Those probes "
-    "measure only against SOLID world geometry (a geom with neither contype "
-    "nor conaffinity is a marker, not an obstacle, and is excluded — see "
-    "nearest_*_coverage.noncollidable_world_geoms_excluded); a pair whose "
-    "bitmasks merely fail to meet each other is still measured, because "
-    "suppression is a property of the pair, not of the geom."
+    "measure only between SOLID geoms, on EVERY side — robot, payload and "
+    "world (a geom with neither contype nor conaffinity is a marker or a "
+    "visual shell, not an obstacle, and is excluded; the counts are in "
+    "nearest_*_coverage.noncollidable_{world,side,other}_geoms_excluded); a "
+    "pair whose bitmasks merely fail to meet each other is still measured, "
+    "because suppression is a property of the pair, not of the geom."
 )
 # Candidate chunks retained for predicted-horizon reconstruction. The kernel
 # checks the chunk it has just received; a small ring covers the delivery
@@ -438,10 +439,20 @@ def _nearest_pair_records(
 
     The other side is either an explicit body set (``other_included`` — used
     for payload↔robot-link self-pairs, which are not "everything else") or,
-    by default, every body outside ``side`` and ``other_excluded``. That
-    default enumeration drops geoms with neither ``contype`` nor
-    ``conaffinity``: they are not solid, so a distance measured against one is
-    not a penetration. See the exclusion's own comment below.
+    by default, every body outside ``side`` and ``other_excluded``.
+
+    **Every** side is restricted to solid geoms — one with neither ``contype``
+    nor ``conaffinity`` cannot collide with anything and the kernel never checks
+    it, so a distance measured against it is not a penetration. That rule used
+    to apply to the enumerated world side only, which is how a purely visual
+    mesh came to carry a stop: the 2026-08-23 fridge round reported
+    ``robot0_g42_vis ~ fridge_main_group_g43`` at 0.000 m and was adjudicated
+    ``real-contact``, while the nearest *solid* pair on the same link
+    (``robot0_link7_collision``) was 2.5 mm clear. Both counts are reported —
+    ``noncollidable_side_geoms_excluded`` and
+    ``noncollidable_other_geoms_excluded`` — so the omission is visible, and
+    their presence is what tells a downstream adjudicator that a 0 m pair here
+    can be trusted at all.
 
     Bounded by construction: a vectorised distance-lower-bound prefilter
     (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
@@ -478,14 +489,35 @@ def _nearest_pair_records(
         "side_geoms": 0,
         "side_geoms_probed": 0,
         "noncollidable_world_geoms_excluded": 0,
+        "noncollidable_side_geoms_excluded": 0,
+        "noncollidable_other_geoms_excluded": 0,
     }
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
         return [], coverage
+    # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can never
+    # generate a contact for it, and the safety kernel never checks one.
+    # Measuring against it manufactures penetrations that mean nothing
+    # physically — round 5/6 reported the payload "134 mm inside
+    # cab_1_left_group_reg_main", a RoboCasa region marker, and the 2026-08-23
+    # rounds called a stop `real-contact` on `robot0_g42_vis`, a visual shell.
+    # The support producer already draws the same line for the same reason
+    # (``_sim_attachment_evidence._support_candidate_geoms``: "purely visual
+    # geometry ... is not solid, and a decorative shell coincident with a real
+    # surface would only add noise"). It applies to BOTH sides of every probe:
+    # a robot link body and an attached payload body each carry visual geoms
+    # alongside their collision ones, so scoping a side by BODY does not scope
+    # it to solid geometry. Pairs whose bitmasks merely fail to *meet* are still
+    # measured — suppression there is a property of the pair, not of the geom,
+    # and that is precisely the case the probe exists to adjudicate.
+    collidable = (np.asarray(model.geom_contype, dtype=np.int64) != 0) | (
+        np.asarray(model.geom_conaffinity, dtype=np.int64) != 0
+    )
     in_side = np.isin(body_of_geom, np.fromiter(side, dtype=np.int64, count=len(side)))
-    side_geoms = np.flatnonzero(in_side)
+    side_geoms = np.flatnonzero(in_side & collidable)
+    coverage["noncollidable_side_geoms_excluded"] = int(np.count_nonzero(in_side & ~collidable))
     if other_included is not None:
-        other_geoms = np.flatnonzero(
+        in_other = (
             np.isin(
                 body_of_geom,
                 np.fromiter(other_included, dtype=np.int64, count=len(other_included)),
@@ -497,25 +529,12 @@ def _nearest_pair_records(
             body_of_geom,
             np.fromiter(other_excluded, dtype=np.int64, count=len(other_excluded)),
         )
-        # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can
-        # never generate a contact for it, and the safety kernel never checks
-        # one. Measuring against it manufactures penetrations that mean nothing
-        # physically — round 5/6 reported the payload "134 mm inside
-        # cab_1_left_group_reg_main", a RoboCasa region marker. The support
-        # producer already draws the same line for the same reason
-        # (``_sim_attachment_evidence._support_candidate_geoms``: "purely visual
-        # geometry ... is not solid, and a decorative shell coincident with a
-        # real surface would only add noise"); this is that rule applied to the
-        # world side of the diagnostic probe. Only the enumerated world side is
-        # filtered — the explicit ``other_included`` branch is the payload↔robot
-        # self-pair probe, whose other side is already the kernel-checked links.
-        collidable = (np.asarray(model.geom_contype, dtype=np.int64) != 0) | (
-            np.asarray(model.geom_conaffinity, dtype=np.int64) != 0
-        )
-        other_geoms = np.flatnonzero(~in_side & ~excluded & collidable)
+        in_other = ~in_side & ~excluded
         coverage["noncollidable_world_geoms_excluded"] = int(
-            np.count_nonzero(~in_side & ~excluded & ~collidable)
+            np.count_nonzero(in_other & ~collidable)
         )
+    other_geoms = np.flatnonzero(in_other & collidable)
+    coverage["noncollidable_other_geoms_excluded"] = int(np.count_nonzero(in_other & ~collidable))
     coverage["side_geoms"] = int(side_geoms.size)
     if side_geoms.size == 0 or other_geoms.size == 0:
         return [], coverage
@@ -1271,22 +1290,27 @@ def estop_ground_truth_snapshot(
     probes are the adjudicator, and the record carries this as
     ``contacts_caveat``.
 
-    **The probes measure only against solid world geometry.** A geom with
+    **The probes measure only between solid geoms, on every side.** A geom with
     neither ``contype`` nor ``conaffinity`` cannot collide with anything and is
     never checked by the safety kernel, so a signed distance against one is not
     a penetration — rounds 5/6 reported the payload "134 mm inside
-    ``cab_1_left_group_reg_main``", a RoboCasa region marker, which is
-    physically meaningless. Both world-side probes (robot↔world and
-    payload↔world) now exclude those geoms, the same rule the support-contact
+    ``cab_1_left_group_reg_main``", a RoboCasa region marker, and the 2026-08-23
+    fridge round reported ``robot0_g42_vis`` (a visual shell) touching the
+    freezer door at 0.000 m while the nearest solid pair on the same link was
+    2.5 mm clear. The filter therefore covers the robot and payload sides too,
+    not just the enumerated world side: scoping a probe side by *body* does not
+    scope it to solid geometry, because a link body carries its visual meshes
+    alongside its collision geom. It is the same rule the support-contact
     producer applies when enumerating support candidates
     (``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
-    coverage block reports the count as
-    ``noncollidable_world_geoms_excluded``, so the omission is visible rather
-    than silent. Pairs whose bitmasks merely fail to *meet* are still measured:
+    coverage block reports ``noncollidable_world_geoms_excluded``,
+    ``noncollidable_side_geoms_excluded`` and
+    ``noncollidable_other_geoms_excluded``, so the omission is visible rather
+    than silent — and the presence of those keys is what lets a downstream
+    adjudicator tell a trustworthy 0 m pair from one recorded before the filter
+    existed. Pairs whose bitmasks merely fail to *meet* are still measured:
     suppression there is a property of the pair, not of the geom, and that is
-    precisely the case the probe exists to adjudicate. The payload↔robot-link
-    self-pair probe is deliberately untouched — its other side is the enumerated
-    kernel-checked link set, not the scene.
+    precisely the case the probe exists to adjudicate.
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1355,8 +1379,10 @@ def estop_ground_truth_snapshot(
         *absent* pair readable: an empty near-miss list only means "nothing
         was close" when ``truncated`` is false and
         ``side_geoms_probed == side_geoms``.
-        ``noncollidable_world_geoms_excluded`` names how much non-solid world
-        geometry the probe deliberately did not measure. The payload coverage
+        ``noncollidable_world_geoms_excluded`` /
+        ``noncollidable_side_geoms_excluded`` /
+        ``noncollidable_other_geoms_excluded`` name how much non-solid geometry
+        the probe deliberately did not measure, per side. The payload coverage
         blocks are ``{}`` when nothing is carried, matching their empty pair
         lists.
     """
