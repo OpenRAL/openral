@@ -522,6 +522,34 @@ on their difference. `VoxelCollision.BaseFrameAlignmentPreservesTheProtective`
 identical across the pair; `VoxelCollision.HalfAppliedFrameAlignmentMovesThe`
 `KernelByThePedestal` asserts a half-applied change blinds the kernel.
 
+## What this kernel does NOT check: base motion (ADR-0040)
+
+The kernel checks the **arm's link capsules and the attached payload** against
+`/openral/world_voxels`. It does **not** check where the base drives. Nav2's
+2-D costmap does, on its own, against its own world model — that is ADR-0040's
+recorded decision, and the two models are deliberately separate:
+
+| | this kernel | Nav2 |
+|---|---|---|
+| geometry | 3-D link + payload capsules | one 2-D footprint polygon |
+| world | `/openral/world_voxels` (octomap-derived) | costmap from `/openral/nav2/scan` or `/map` |
+| authority | veto `/openral/candidate_action`, or E-stop | refuse a path, then `/cmd_vel` |
+
+**`/cmd_vel` never reaches `/openral/candidate_action`.**
+`openral_hal.mobile_base_bridge.MobileBaseBridge` turns Nav2's `Twist` into a
+`BODY_TWIST` action and applies it through the HAL directly, so this kernel
+neither bounds nor vetoes base velocity; Nav2's `velocity_smoother` caps it.
+The single authority this kernel retains over base motion is the **E-stop
+latch** — the bridge drops every `/cmd_vel` while the HAL node is latched, so
+an E-stop raised here does stop the base. There is no per-command bound.
+
+A consequence worth stating plainly: a payload this kernel is faithfully
+protecting in 3-D is invisible to Nav2 unless Nav2's footprint says it is
+there. `packages/openral_nav2_bringup` publishes exactly that footprint from
+the same `/openral/world_state_fast` attachment set this kernel ingests, so the
+two sides can never act on different attachments. Its README carries the full
+boundary table.
+
 ## Real-time guarantees
 
 - Validator (`validate()` in `src/validator.cpp`) is allocation-free.
@@ -558,6 +586,10 @@ Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
 
 - `cpp/opentelemetry_cpp_vendor` — ROS 2 vendor package this one
   depends on for `opentelemetry-cpp` at colcon-build time.
+- `packages/openral_nav2_bringup/README.md` — the other half of the world:
+  Nav2's base footprint vs its 2-D costmap, the `/cmd_vel` boundary above, and
+  the payload footprint publisher that keeps a carried object visible to both
+  surfaces.
 - `packages/openral_safety/openral_safety/envelope_loader.py` — Python
   bridge that writes the envelope YAML the kernel reads.
 - `packages/openral_safety/openral_safety/supervisor_node.py` — Day-1

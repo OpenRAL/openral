@@ -133,3 +133,87 @@ def test_visual_profile_consumes_map_not_scan() -> None:
     assert cm["scan"]["enabled"] is False, cm["scan"]
     # geometry/planner still mirror the base (planner threads unknown space).
     assert data["planner_server"]["ros__parameters"]["GridBased"]["allow_unknown"] is True
+
+
+def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
+    """A circle cannot express a carried payload.
+
+    `nav2_costmap_2d` only takes runtime footprint updates seriously as a
+    polygon: `robot_radius` alone leaves the costmap on its circular path with
+    nothing for the payload publisher to grow. Both profiles must ship one.
+    """
+    for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
+        data = yaml.safe_load(path.read_text())
+        for scope in ("global_costmap", "local_costmap"):
+            footprint = data[scope][scope]["ros__parameters"].get("footprint", "")
+            assert footprint not in ("", "[]"), (
+                f"{path.name}:{scope} has no polygon footprint — Nav2 reads "
+                f'"" and "[]" as "use robot_radius", which no payload can grow.'
+            )
+
+
+def test_mppi_does_not_yet_consider_the_footprint() -> None:
+    """`consider_footprint` is deliberately `false`, and pinned so it stays a decision.
+
+    Flipping it is a navigation-behaviour change, not a tuning nudge, and only
+    half its price is known. The flag's OWN cost is measured against the real
+    Jazzy ``libnav2_costmap_2d_core`` in
+    ``benchmark/cost_critic_footprint_bench.cpp``: on an i5-8600K, 56000
+    ``footprintCostAtPose`` calls per 20 Hz iteration cost **+8.1 ms** with the
+    bare chassis and **+9.7 ms** while carrying — 17-20 % of the 50 ms budget,
+    and unconditional rather than data-dependent, because ``inflation_radius``
+    0.40 m sits below both polygons' circumscribed radii (0.444 m / 0.863 m) so
+    ``findCircumscribedCost`` returns 0.0. What is NOT measured is the rest of
+    the MPPI loop around CostCritic, which needs the composite scene issue #108
+    still lacks — nothing in the repo drives the base at 20 Hz mid-carry.
+
+    So the value is asserted rather than left incidental: the dynamic footprint
+    reaches every other consumer today (behaviours, docking, the collision
+    monitor's approach polygon, ``IsPathValid``), and MPPI's own scoring waits
+    for a measurement of the whole loop. Flip this test and
+    ``config/nav2_panda_mobile.yaml``'s comment together, never separately.
+    """
+    for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
+        data = yaml.safe_load(path.read_text())
+        cost_critic = data["controller_server"]["ros__parameters"]["FollowPath"]["CostCritic"]
+        assert cost_critic["consider_footprint"] is False, path.name
+
+
+def test_payload_nodes_ride_with_nav2_on_the_right_backends() -> None:
+    """The footprint publisher needs a manifest; the scan filter needs a `/scan`.
+
+    Without a `robot_yaml` there is no measured outline to publish and inventing
+    one would put a made-up robot shape on Nav2's collision surface; on the
+    `visual` backend there is no scan to filter at all.
+    """
+    mod = _import_launch_module()
+
+    both = mod._payload_footprint_nodes(
+        robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="lidar", use_sim_time=True
+    )
+    visual_only = mod._payload_footprint_nodes(
+        robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="visual", use_sim_time=True
+    )
+    no_manifest = mod._payload_footprint_nodes(
+        robot_yaml="", slam_backend="lidar", use_sim_time=True
+    )
+
+    assert len(both) == 2, both
+    assert len(visual_only) == 1, "visual has no /scan to filter"
+    assert len(no_manifest) == 1, "no manifest means no nominal footprint to publish"
+
+
+def test_the_payload_footprint_leg_can_be_turned_off() -> None:
+    """`payload_footprint` is a declared launch arg, not a hardcoded leg."""
+    mod = _import_launch_module()
+    from ament_index_python.packages import PackageNotFoundError
+    from launch.actions import DeclareLaunchArgument
+
+    try:
+        desc = mod.generate_launch_description()
+    except PackageNotFoundError as exc:
+        pytest.skip(f"ament package missing (overlay not sourced?): {exc}")
+    arg_names = {
+        a.name for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)
+    }
+    assert "payload_footprint" in arg_names, arg_names
