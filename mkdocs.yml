@@ -102,6 +102,7 @@ nav:
     - Collision-stack validation evidence: reference/collision-validation-evidence.md
     - Collision-primitive study (OBB vs sphere-swept box): reference/collision-primitive-study.md
     - Collision primitives, in pictures: reference/collision-primitive-images.md
+    - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md

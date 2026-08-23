@@ -590,8 +590,25 @@ themselves rather than inferred:
    and comments in this repo. Treat a citation to one of those rounds as a
    citation to the in-tree comment that carries it, not to a retrievable
    verdict.
+8. **A bare `0.000 m` from a `mj_geomDistance` probe is not evidence of
+   contact.** Under mujoco 3.8.0 that function is unreliable for RoboCasa
+   fixture geoms against `panda_mobile` collision meshes — on one measured pair
+   it returns `+0.000 mm` with a witness segment lying outside both geoms, and
+   `−57 mm` / `−352 mm` at `distmax` 0.1 / 0.3 with `mjDSBL_NATIVECCD`, against a
+   densely-sampled truth of `+7.61 mm`. Every ground-truth probe in
+   `estop_ground_truth_snapshot` is built on it. This is a **third** independent
+   reason to distrust an old `real-contact` verdict, alongside caveats 5 and 6,
+   and unlike those two it is a defect in the measurement *method* rather than in
+   the filtering or the budget. Evidence, reproduction and the alternative
+   measurement are in
+   [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
 
 ## Related
+
+- [RoboCasa start-state collision census](robocasa-start-state-census.md) — every
+  layout of all four matrix scenes, measured at reset: which link stops the
+  kernel, what it is touching, and whether the start pose or the base placement
+  is responsible.
 
 - [The validation matrix](../contributing/validation-matrix.md) — how to run a
   round, what each verdict means, where the artifacts land, and the Spark
