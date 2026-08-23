@@ -392,6 +392,100 @@ survives, if at all, on baguette alone, whose evidence voxel was never
 characterised this way. Treat it as an open question about baguette, not as a
 two-scene pattern.
 
+#### 2026-08-23 — self-occupancy settled: **no**, on all four stops
+
+The hypothesis is now **closed, refuted**, by measurement rather than by
+argument. Each of the four stops above was reconstructed on a live RoboCasa
+model and re-run through the shipped stop record
+(`openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot`, whose
+`evidence_voxel_backing` is `voxel_backing_record`). Reconstruction method: the
+scene YAML the round itself ran, seed 1, with the robot driven to the
+`robot_joint_state` that round's `sim.estop_ground_truth_snapshot` published,
+then **verified** against the `base_frame_tf` in the same record.
+
+| stop | kernel | evidence-voxel verdict | what backs the cell |
+|---|---|---|---|
+| utensil | `panda_link1` vs `voxel_76001`, −17.3 mm | **`unbacked`** (0 of 243 rays) | nothing — nearest solid is `stack_2_left_group_3_door_g2` at 43.3 mm, reproducing the round's own probe to 6 dp |
+| fridge | `panda_link7` vs `voxel_169769`, −24.7 mm | `self_occupancy_suspect` → **`robot0_link7`, the stopping link itself** | `robot0_link7_collision` is −1.9 mm *inside* `fridge_main_group_freezer_door_main`, with 2 realized MuJoCo contacts |
+| baguette | `panda_link5` vs `voxel_170781`, −20.9 mm | **`unbacked`** (0 of 243 rays) | nothing — nearest solid to `link5` is `cab_1_left_group_left_door_g2` at 106.5 mm |
+| sink_cup | `attached:sim:obj_main` vs `voxel_87084`, −13.4 mm | **`noncollidable_world`** | `island_island_group_top_right_visual`, a **visual-only** counter top |
+
+**No chassis or mount body backs any of the four cells, nor any of their 26
+neighbours.** The only robot bodies that appear are arm links at the stop
+instant — which is what a *true positive* looks like, not what self-occupancy
+looks like.
+
+**The mechanism cannot produce it either**, and that is now measured on the live
+kitchen rather than on a synthetic MJCF:
+
+* `/openral/world_voxels` has exactly one producer — `octomap_server`'s
+  `cloud_in`, remapped to the HAL's depth cloud (`sim_e2e.launch.py`). No other
+  path writes occupancy.
+* `depth_cloud.robot_self_body_ids` resolves **21** bodies on the live
+  `PickPlaceCounterToDrawer` model, and that set contains every body the
+  hypothesis named: `mobilebase0_base`, `mobilebase0_support`,
+  `mobilebase0_fixed_support`, `mobilebase0_wheeled_base`, `manipulator_mount`,
+  `robot0_base`, `robot0_link0`. It equals the 14 bodies the stop records report
+  as `probe_excluded_robot_bodies` plus the 7 kernel-checked links.
+* Casting the real `front_depth` frame at the utensil stop: **13 288 of 65 536**
+  rays land on the robot's own bodies unfiltered, and **0** survive
+  `depth_camera._transparent_body_geoms`. The chassis does not even appear in
+  the *unfiltered* returns — the base-mounted camera does not see it (and
+  `mobilebase0_base` is additionally the `mj_ray` `bodyexclude`).
+
+So the earlier refutation (pinned by
+`tests/unit/test_sim_estop_voxel_backing.py::test_self_filter_covers_base_and_mount_including_unprefixed`)
+**still holds**, on the live model and on the actual stops.
+
+**Read `self_occupancy_suspect` carefully.** The fridge result is the
+classification doing what it says and still not meaning what the name suggests:
+`voxel_backing_record` reports *a robot body is in this cell now*, which is
+equally the signature of a correct stop on a link that has reached real
+geometry. It cannot distinguish "the robot wrote this cell" from "the robot has
+since driven into it". Treat a `self_occupancy_suspect` verdict as a prompt to
+check the near-miss pairs, never as a finding on its own.
+
+**What the baguette 120.9 mm actually is: an unbacked cell, and still
+unexplained.** It is not self-occupancy and it is not a payload. Measured
+against a probe window wide enough to terminate, the nearest solid world
+geometry to `panda_link5` is **106.5 mm** (`cab_1_left_group_left_door_g2`,
+confirmed analytically vertex-by-vertex against the door's OBB), so the
+discrepancy is **127.4 mm** against an `admissible_gap_m` of 109.9 mm
+(88.2 mm max corner slop + 21.7 mm voxel half-diagonal) — 17.5 mm beyond the
+budget, and far beyond `panda_link5`'s own per-link gap of 65.4 mm. The cell has
+no geometry in it at all, and its 26 neighbours contain solid
+`cab_1_left_group_left_door_main` one cell away, so the shape of it is a
+**stale or one-cell-displaced map cell**, not a body in the map. Naming the
+mechanism that leaves it there is the open question; "the robot's own base" is
+not the answer.
+
+**Two caveats on the reconstruction, stated rather than buried.**
+
+1. `panda_mobile`'s manifest declares `base_x` / `base_y` / `base_yaw` and the
+   seven arm joints, but RoboCasa's OmronMobileBase also carries
+   `mobilebase0_joint_torso_height`, a prismatic arm-mount lift that **no
+   manifest joint covers**. At the baguette stop it stood at **+334 mm**. A
+   published `robot_joint_state` therefore does not determine the robot's pose;
+   only the `base_frame_tf` beside it does. Reconstructions here set the torso
+   from that TF's z and then verify the whole pose against it — exact to
+   <1 µm on utensil / fridge / sink_cup, and 0.86 mm on baguette, whose stop
+   was taken mid-motion.
+2. The *world* is at its reset state (t = 0), while the stops are at sim
+   t = 4.85 / 6.2 / 64.1 s. Robot-side conclusions are unaffected — the robot's
+   pose is set explicitly. World-side distances are t = 0 values; on baguette
+   they agree with the round's own finding (nothing within 100 mm), which is the
+   cross-check that makes them usable.
+
+**A latent hazard found while measuring, not a live defect.**
+`mj_geomDistance` returned exactly `0.000000` for two mesh↔box pairs that are
+analytically **361 mm** and **239 mm** apart — but only at a `distmax` of
+0.6 m and 0.3 m respectively. At every window ≤ 0.2 m both saturate correctly,
+and genuinely-close pairs are exact at every window. `estop_ground_truth_snapshot`
+widens its probe window to `admissible_gap_m` (109.9 mm on `panda_mobile`), which
+is well clear — but the widening is unbounded by construction, and the harness
+promotes a `<= 0 m` pair to `real-contact`. A budget that ever grows past ~0.3 m
+would let the probe manufacture the verdict.
+
 **The place machinery was unarmed in the shipped scenes.** `place_declaration`
 appears in **zero** files under `scenes/` in this repo. The 08-22 round armed
 it only through ad-hoc scene copies in the round's own `scripts/` directory
