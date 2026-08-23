@@ -1,0 +1,1 @@
+{"failure_reason": "safety_estop:ROSPublishingHAL: safety stop latched (/openral/safety_status:kind_collision (world) + /openral/estop) while waiting for action group tick 190 to be applied", "first_chunk_s": 31.66, "latest_chunk": 189, "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4", "status": 6, "success": false, "wall_s": 169.3}

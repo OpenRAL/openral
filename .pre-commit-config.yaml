@@ -2,8 +2,15 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
+      # Recorded artefacts are evidence, not source: a validation round's
+      # deploy log is checked in byte-for-byte (see
+      # tests/unit/fixtures/validation_matrix/SOURCE.txt) and `ros2 launch`
+      # really does end its `Caught exception in launch` line with a trailing
+      # space. Trimming it would make the fixture a paraphrase of the run.
       - id: trailing-whitespace
+        exclude: ^tests/unit/fixtures/validation_matrix/
       - id: end-of-file-fixer
+        exclude: ^tests/unit/fixtures/validation_matrix/
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files

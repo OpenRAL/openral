@@ -1,0 +1,85 @@
+# RoboCasa kitchen — deterministic utensil counter→drawer PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but
+# the place target is a drawer the robot must reach down into, and the payload is
+# a thin flat utensil whose primitive decomposition is much finer than the
+# baguette's. Used to check that the attached-object collision stack is not
+# overfitted to the baguette scene.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_drawer_utensil.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToDrawer
+  backend: mujoco
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToDrawer
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: utensil
+
+seed: 1
+
+# ADR-0097 place-phase declaration — DELIBERATELY ABSENT, pending one live run.
+# See scenes/deploy/robocasa_baguette.yaml for the shape and the rationale of
+# every field; this scene is the one case where the target cannot be named
+# honestly from the authoring host, and guessing here is not the safe direction.
+#
+# `PickPlaceCounterToDrawer` resolves `register_fixture_ref("drawer",
+# FixtureType.TOP_DRAWER)` — any RoboCasa `Drawer` whose z sits in [0.7, 0.9] —
+# and drawers are not named in the layout files at all: they are levels of a
+# `stack`, so the fixture name is generated as `<stack>_<group>_<level index>`
+# (e.g. `stack_1_main_group_2`) and the body is `<fixture>_main`. Every layout
+# declares MANY qualifying drawers (2-31 drawer levels each), so `rng.choice`
+# picks one of many and the same generated name recurs across layouts pointing at
+# a DIFFERENT drawer each time. Unlike the sink / fridge scenes — one candidate
+# per layout, where a wrong guess simply does not resolve and is refused — a
+# guess here would very likely name a real receptacle somewhere else in the
+# kitchen and arm the place witness and its approach allowance at it
+# (hazard HZ-0097-2). No declaration keeps the pre-ADR-0097 behaviour, which is
+# the fail-closed direction.
+#
+# The 2026-08-22 live run on the Spark confirmed the decision to leave this
+# scene undeclared, and invalidated the procedure #142 wrote for filling it in.
+#
+# `env.fixture_refs["drawer"].name` DOES NOT EXIST. In the live seed-1 env the
+# `fixture_refs` values are TUPLES with no `.name` attribute, and the fixture
+# name they carry is `None` for the drawer as it is for the sink, the counter
+# and the fridge. That advice is not merely unreliable, it is unexecutable — and
+# following it is literally how the sink and fridge scenes shipped wrong names
+# in #142 (both refused fail-closed by the HAL, both corrected here).
+#
+# Nor is the obvious substitute — grep the MuJoCo body table for `drawer` —
+# enough on this scene. At seed 1 the only bodies matching `drawer` in
+# `PickPlaceCounterToDrawer` belong to the FRIDGE's freezer drawers. The counter
+# drawer this task places into is a `stack` level named `stack_2_left_group_3_*`,
+# which the substring `drawer` does not match at all. So a reader who greps
+# `drawer` and declares the first hit would arm the witness and its approach
+# allowance at a fridge freezer drawer on the other side of the kitchen —
+# exactly HZ-0097-2, and worse than the sink / fridge failure mode, because a
+# name that RESOLVES cannot fail closed.
+#
+# So this scene STAYS UNDECLARED. Filling it in honestly needs a live run to
+# establish which `stack_<n>_<side>_group_<level>` body the task's
+# `register_fixture_ref("drawer", ...)` actually resolved to on this seed — the
+# fixture object's identity, not a name match — and that evidence does not
+# exist yet. Until it does, no declaration is the fail-closed direction and the
+# correct call.
+#
+# When that evidence exists, the shape to add (recipe and the timeout rationale
+# are in scenes/deploy/robocasa_baguette.yaml) is:
+#
+#   place_declaration:
+#     target_id: "sim:<that fixture>_main"
+#     object_id: ""
+#     timeout_s: 300.0
+#     stamp_ns: 0
+
+# Pinned by the validation matrix: `enable_reasoner` has no CLI flag —
+# `openral deploy sim` reads it from the scene and defaults it to true.
+runtime:
+  enable_reasoner: false

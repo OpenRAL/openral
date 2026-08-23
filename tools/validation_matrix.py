@@ -365,12 +365,45 @@ def grid_resolution_from_monitor(records: Sequence[Mapping[str, Any]]) -> float 
 
     Returns:
         The first reported resolution in metres, or ``None`` when the run
-        published no grid (octomap off, or the graph never reached activation).
+        published no grid (octomap off, the graph never reached activation, or
+        — see :func:`monitor_subscription_records` — the monitor received
+        nothing at all).
     """
     for record in records:
         if record.get("event") == "world_voxels" and record.get("resolution") is not None:
             return float(record["resolution"])
     return None
+
+
+# The monitor's own lifecycle lines. Every other record it writes came from a
+# ROS subscription callback, so their count is what the monitor *received*.
+_MONITOR_LIFECYCLE_EVENTS: Final[frozenset[str]] = frozenset({"monitor_started", "monitor_stopped"})
+
+
+def monitor_subscription_records(records: Sequence[Mapping[str, Any]]) -> int:
+    """How many of a monitor's records came from a ROS subscription.
+
+    ``0`` on a monitor that ran for the whole scene is the signature of the
+    2026-08-23 defect: the monitor's DDS participant was created before
+    ``openral deploy sim`` purged ``/dev/shm/fastrtps_*``, so its shared-memory
+    segments were unlinked underneath it and it received nothing for the rest
+    of the run. All 24 runs of that round wrote exactly ``monitor_started`` and
+    ``monitor_stopped``. That is a *harness* fault, and it must not be read as
+    "the run stopped before there was anything to record".
+
+    Args:
+        records: Monitor JSONL records.
+
+    Returns:
+        The record count excluding ``monitor_started`` / ``monitor_stopped``.
+
+    Example:
+        >>> monitor_subscription_records(
+        ...     [{"event": "monitor_started"}, {"event": "monitor_stopped"}]
+        ... )
+        0
+    """
+    return sum(1 for r in records if r.get("event") not in _MONITOR_LIFECYCLE_EVENTS)
 
 
 def build_witness_timeline(
@@ -453,34 +486,137 @@ def _kernel_party_to_mujoco(party: str) -> str:
     return party
 
 
+# Every coverage block a ground-truth snapshot can carry. Their presence is
+# per-probe: the payload blocks are `{}` on a run that never grasped.
+_PROBE_COVERAGE_KEYS: Final[tuple[str, ...]] = (
+    "nearest_probe_coverage",
+    "nearest_payload_world_coverage",
+    "nearest_payload_robot_coverage",
+)
+
+# The coverage key the HAL writes once it filters BOTH sides of a probe to
+# solid geoms. A snapshot without it was recorded by a build that filtered only
+# the world side, so a robot or payload geom in its pair list may be a purely
+# visual mesh (`openral_hal.sim_sensor_bridge._nearest_pair_records`).
+_COLLIDABILITY_ATTESTATION: Final[str] = "noncollidable_side_geoms_excluded"
+
+
+def probe_is_collidability_filtered(snapshot: Mapping[str, Any]) -> bool:
+    """Whether a recorded probe attests that *every* side was solid geoms only.
+
+    A distance measured against a geom with neither ``contype`` nor
+    ``conaffinity`` is not a penetration: MuJoCo can never contact it and the
+    safety kernel never checks it. Until the HAL filtered the robot and payload
+    sides as well as the world side, a stop could be adjudicated
+    ``real-contact`` off a visual shell — ``robot0_g42_vis`` at 0.000 m from a
+    freezer door whose nearest *solid* pair was 2.5 mm clear.
+
+    Args:
+        snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
+
+    Returns:
+        ``True`` when every non-empty coverage block carries the attestation.
+
+    Example:
+        >>> probe_is_collidability_filtered(
+        ...     {"nearest_probe_coverage": {"noncollidable_side_geoms_excluded": 12}}
+        ... )
+        True
+        >>> probe_is_collidability_filtered(
+        ...     {"nearest_probe_coverage": {"noncollidable_world_geoms_excluded": 917}}
+        ... )
+        False
+    """
+    blocks = [snapshot.get(key) for key in _PROBE_COVERAGE_KEYS]
+    present = [b for b in blocks if isinstance(b, dict) and b]
+    return bool(present) and all(_COLLIDABILITY_ATTESTATION in b for b in present)
+
+
+def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
+    """The HAL's own kernel-vs-probe budget for this stop, when it recorded one.
+
+    The kernel measures OBB-to-voxel; the probes measure mesh-to-mesh. The gap
+    a *correct* stop can show is therefore the collision model's corner slop
+    plus the voxel half-diagonal — which the sim HAL computes per run and
+    publishes as ``adjudication_budget.admissible_gap_m``. Recomputing only the
+    voxel term here understates it fourfold (21.7 mm against the HAL's 88.2 mm
+    on the 2026-08-23 rounds) and turns conservative, correct stops into
+    ``false-positive``.
+
+    An attached-payload **self** stop has an OBB on both sides and no voxel at
+    all, so it takes the budget's ``self_collision`` block instead.
+
+    Args:
+        snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
+        stop: The kernel's verdict.
+
+    Returns:
+        The admissible gap in metres, or ``None`` for a snapshot recorded
+        before the HAL published a budget.
+    """
+    budget = snapshot.get("adjudication_budget")
+    if not isinstance(budget, dict):
+        return None
+    if stop.kind == "self" and stop.involves_payload:
+        self_block = budget.get("self_collision")
+        if isinstance(self_block, dict):
+            return _as_float(self_block.get("admissible_gap_m"))
+    return _as_float(budget.get("admissible_gap_m"))
+
+
 def adjudicate_ground_truth(
     snapshot: Mapping[str, Any] | None,
     stop: ValidationStopEvidence | None,
     grid_resolution_m: float | None,
+    *,
+    monitor_records: int | None = None,
 ) -> ValidationGroundTruthAdjudication | None:
     """Adjudicate a kernel stop against the simulator's own distance probe.
 
     The rule, in order:
 
-    1. Any probed pair at or below 0 m → ``real-contact``. The kernel was right
-       that the configuration is unsafe even when it named a different body:
-       the probe's own caveat is that ``contype``/``conaffinity`` exclusions
-       suppress MuJoCo *contacts* at real interpenetration, so distance — not
-       the contact list — is the test.
+    1. Any probed pair at or below 0 m → ``real-contact``, **provided the probe
+       attests that both of its sides were collidability-filtered**
+       (:func:`probe_is_collidability_filtered`). The kernel was right that the
+       configuration is unsafe even when it named a different body: the probe's
+       own caveat is that ``contype``/``conaffinity`` exclusions suppress
+       MuJoCo *contacts* at real interpenetration, so distance — not the
+       contact list — is the test. Without the attestation a 0 m pair may be a
+       purely visual mesh, which is no evidence of anything, so the stop is
+       ``unadjudicated`` rather than promoted.
     2. Otherwise, compare the clearance of the party the kernel named against
-       the kernel's reported depth. A discrepancy beyond
-       :func:`quantization_budget_m` cannot be explained by the voxel grid →
-       ``false-positive``. Within it → ``within-quantization``, which is
-       correct conservative behaviour.
-    3. A truncated probe, a missing snapshot or an unknown grid resolution →
-       ``unadjudicated``. An *untruncated* probe that returned no pair is not
-       missing data: it proves the nearest geometry is beyond ``distmax_m``,
-       which is used as a strict lower bound.
+       the kernel's reported depth. A discrepancy beyond the admissible gap
+       cannot be explained by representation → ``false-positive``. Within it →
+       ``within-quantization``, which is correct conservative behaviour. The
+       gap comes from the HAL's own ``adjudication_budget`` when the snapshot
+       carries one (:func:`hal_admissible_gap_m`) and falls back to
+       :func:`quantization_budget_m` only when it does not.
+
+       **That fallback is asymmetric, and deliberately so.** The voxel term is
+       a strict *lower bound* on the admissible gap — the real gap adds the
+       collision model's corner slop, which is the larger term on every panda
+       link (45-88 mm against 21.7 mm). So on a snapshot with no published
+       budget, ``discrepancy <= budget`` still proves ``within-quantization``
+       (it is within the smaller bound, hence within the true one), while
+       ``discrepancy > budget`` proves nothing at all and yields
+       ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone
+       is what produced two "false positives", one of which re-derives as
+       ``within-quantization`` the moment a real budget exists for the same
+       stop.
+    3. A truncated probe, a missing snapshot or an unknown budget →
+       ``unadjudicated``, with ``unadjudicated_reason`` saying which. An
+       *untruncated* probe that returned no pair is not missing data: it proves
+       the nearest geometry is beyond ``distmax_m``, which is used as a strict
+       lower bound.
 
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload, if recorded.
         stop: The kernel's verdict, if the run was stopped.
         grid_resolution_m: Occupancy-grid cell size, from the monitor.
+        monitor_records: How many records the monitor received
+            (:func:`monitor_subscription_records`), so a missing grid
+            resolution can name the right cause: ``0`` means the monitor was
+            deaf for the whole run, which is a harness fault, not an early stop.
 
     Returns:
         The adjudication, or ``None`` when there was no stop to adjudicate.
@@ -492,12 +628,16 @@ def adjudicate_ground_truth(
     if stop is None:
         return None
     if snapshot is None:
-        return ValidationGroundTruthAdjudication(verdict="unadjudicated")
+        return ValidationGroundTruthAdjudication(
+            verdict="unadjudicated",
+            unadjudicated_reason=("no sim.estop_ground_truth_snapshot was recorded for this stop"),
+        )
 
     coverage = snapshot.get("nearest_probe_coverage") or {}
     truncated = bool(coverage.get("truncated", True))
     distmax = _as_float(coverage.get("distmax_m"))
     probed = coverage.get("probed_pairs")
+    filtered = probe_is_collidability_filtered(snapshot)
 
     robot_pairs = list(snapshot.get("nearest_robot_world_pairs") or [])
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
@@ -514,7 +654,15 @@ def adjudicate_ground_truth(
         party_pairs = [p for p in robot_pairs if str(p.get("body_a")) == subject]
     nearest_party = min((p["distance_m"] for p in party_pairs), default=None)
 
-    budget = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
+    quantization = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
+    hal_gap = hal_admissible_gap_m(snapshot, stop)
+    budget = hal_gap if hal_gap is not None else quantization
+    budget_source = ""
+    if hal_gap is not None:
+        budget_source = "hal-adjudication-budget"
+    elif quantization is not None:
+        budget_source = "grid-quantization"
+
     lower_bound = nearest_party
     if lower_bound is None and not truncated and distmax is not None and probed:
         # No pair within distmax on an untruncated probe: the nearest solid
@@ -523,12 +671,40 @@ def adjudicate_ground_truth(
     discrepancy = None if lower_bound is None else lower_bound - stop.min_distance_m
 
     verdict: str
+    reason = ""
     if nearest_any is not None and nearest_any <= 0.0:
-        verdict = "real-contact"
-    elif truncated or budget is None or discrepancy is None:
+        if filtered:
+            verdict = "real-contact"
+        else:
+            verdict = "unadjudicated"
+            reason = (
+                f"the nearest probed pair is at {nearest_any:.6g} m, but this snapshot "
+                "does not attest that the robot/payload side of the probe was "
+                "collidability-filtered, so the pair may be a purely visual mesh"
+            )
+    elif truncated:
         verdict = "unadjudicated"
+        reason = "the near-miss probe hit its call budget, so an absent pair proves nothing"
+    elif budget is None:
+        verdict = "unadjudicated"
+        reason = _no_budget_reason(monitor_records)
+    elif discrepancy is None:
+        verdict = "unadjudicated"
+        reason = (
+            f"no probed pair involved {stop.party_a!r}, the party the kernel named, "
+            "so its clearance is unknown"
+        )
     elif discrepancy > budget:
-        verdict = "false-positive"
+        if budget_source == "hal-adjudication-budget":
+            verdict = "false-positive"
+        else:
+            # The voxel term is a LOWER BOUND on the admissible gap: the true
+            # gap is corner_slop(link) + voxel_half_diagonal, and the slop term
+            # is the larger of the two on every panda link. A discrepancy
+            # beyond a lower bound therefore establishes nothing. Within it
+            # still does — see `within-quantization` below.
+            verdict = "unadjudicated"
+            reason = _lower_bound_only_reason(discrepancy, budget)
     else:
         verdict = "within-quantization"
 
@@ -537,7 +713,11 @@ def adjudicate_ground_truth(
         stop_class=snapshot.get("stop_class"),
         sim_time_s=_as_float(snapshot.get("sim_time_s")),
         grid_resolution_m=grid_resolution_m,
-        quantization_budget_m=budget,
+        quantization_budget_m=quantization,
+        admissible_gap_m=budget,
+        budget_source=budget_source,
+        probe_collidability_filtered=filtered,
+        unadjudicated_reason=reason,
         nearest_any_m=nearest_any,
         nearest_tripping_party_m=nearest_party,
         nearest_pair=dict(nearest_pair) if nearest_pair else {},
@@ -549,6 +729,48 @@ def adjudicate_ground_truth(
     )
 
 
+def _lower_bound_only_reason(discrepancy_m: float, budget_m: float) -> str:
+    """Why a discrepancy past the voxel term alone is not a false positive.
+
+    The admissible gap is ``corner_slop(link) + voxel_half_diagonal``, and on
+    every panda link the slop term is the larger of the two (45-88 mm against
+    21.7 mm). A snapshot recorded before the HAL published ``adjudication_budget``
+    (#144, ``ea1b7e8``) supplies only the voxel term, which is a strict lower
+    bound on the real gap — so ``discrepancy > budget`` proves nothing, while
+    ``discrepancy <= budget`` still proves ``within-quantization``.
+    """
+    return (
+        f"the discrepancy of {discrepancy_m:.6g} m exceeds the {budget_m:.6g} m voxel "
+        "term, but this snapshot publishes no adjudication_budget, and the voxel term "
+        "alone is a LOWER BOUND on the admissible kernel-vs-probe gap — it omits the "
+        "collision model's corner slop, which is the larger term. Exceeding a lower "
+        "bound does not establish a false positive; the stop cannot be adjudicated "
+        "from these artifacts"
+    )
+
+
+def _no_budget_reason(monitor_records: int | None) -> str:
+    """Why no admissible gap was available — a harness fault or a run fact.
+
+    The two read identically in a ``verdicts.json`` (``grid_resolution_m:
+    null``) and mean opposite things. A monitor that received nothing is a
+    harness fault and the round's evidence is missing; a monitor that received
+    plenty but no grid is a run that stopped before octomap published one.
+    """
+    if monitor_records == 0:
+        return (
+            "the monitor received nothing at all for the whole scene, so no grid "
+            "resolution was ever observed and no budget could be derived — the "
+            "evidence is missing for a harness reason, not because the run stopped early"
+        )
+    if monitor_records is None:
+        return "no monitor JSONL was recorded, so the grid resolution is unknown"
+    return (
+        "the run stopped before the monitor saw a voxel grid, so the grid "
+        "resolution — and with it the budget — is unknown"
+    )
+
+
 LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"
 
 # click prints its own usage error to the same sink the deploy log captures, so
@@ -557,18 +779,39 @@ LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"
 _CLI_USAGE_PREFIX: Final[str] = "Usage: openral"
 _CLI_ERROR_NEEDLES: Final[tuple[str, ...]] = ("No such option", "Error:", "Missing option")
 
+# `ros2 launch` writes this and then unwinds. Whatever nodes it had already
+# spawned keep running, so the log is long, the graph is partly up, and nothing
+# else in it says the launch aborted. At 87dcda1 a missing
+# `payload_footprint_node.py` produced exactly this: the dispatcher raised, and
+# the scene was bucketed `deadline-no-grasp` with both failure fields empty.
+_LAUNCH_EXCEPTION_NEEDLE: Final[str] = "[ERROR] [launch]: Caught exception in launch"
+_LAUNCH_EXCEPTION_NOISE: Final[str] = "(see debug for traceback):"
+
+
+def _launch_exception_detail(deploy_lines: Sequence[str]) -> str:
+    """The text of the first ``Caught exception in launch`` line, or ``""``."""
+    line = next((ln for ln in deploy_lines if _LAUNCH_EXCEPTION_NEEDLE in ln), "")
+    if not line:
+        return ""
+    tail = line.split(_LAUNCH_EXCEPTION_NEEDLE, 1)[1]
+    return tail.replace(_LAUNCH_EXCEPTION_NOISE, "").strip()
+
 
 def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str]) -> str:
     """Say why this scene's artifacts are not a run at all, or return ``""``.
 
-    Three ways a scene can fail to launch, all of them recorded rather than
+    Four ways a scene can fail to launch, all of them recorded rather than
     inferred:
 
     1. the runner wrote ``<stem>_launch_failed.txt`` because the rSkill action
        server never appeared;
-    2. the deploy CLI rejected its own argv, so ``click`` wrote a usage error
+    2. ``ros2 launch`` threw — a missing executable, an unparseable launch
+       file — and unwound, leaving a partial graph and a long log. This is the
+       one that has no marker file and no usage banner, so it used to read as a
+       clean run;
+    3. the deploy CLI rejected its own argv, so ``click`` wrote a usage error
        where the graph's output would have been;
-    3. there is no deploy log at all.
+    4. there is no deploy log at all.
 
     Args:
         run_dir: The scene's directory inside the round.
@@ -582,11 +825,24 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
         >>> import pathlib
         >>> detect_launch_failure(pathlib.Path("."), "run", [])
         'no deploy log: the scene produced no output at all'
+        >>> detect_launch_failure(
+        ...     pathlib.Path("."),
+        ...     "run",
+        ...     [
+        ...         "[ERROR] [launch]: Caught exception in launch"
+        ...         " (see debug for traceback): executable 'x.py' not found"
+        ...     ],
+        ... )
+        "ros2 launch aborted: executable 'x.py' not found"
     """
+    caught = _launch_exception_detail(deploy_lines)
     marker = run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}"
     if marker.exists():
         recorded = marker.read_text(encoding="utf-8", errors="replace").strip()
-        return recorded or "the rSkill action server never appeared"
+        recorded = recorded or "the rSkill action server never appeared"
+        return f"{recorded} (ros2 launch aborted: {caught})" if caught else recorded
+    if caught:
+        return f"ros2 launch aborted: {caught}"
     if not deploy_lines:
         return "no deploy log: the scene produced no output at all"
     first = next((ln for ln in deploy_lines if ln.strip()), "")
@@ -601,6 +857,50 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
         )
         return f"the deploy CLI rejected its own argv before the graph started: {detail}"
     return ""
+
+
+_TRACEBACK_HEADER: Final[str] = "Traceback (most recent call last):"
+
+
+def parse_goal_log(lines: Sequence[str]) -> tuple[dict[str, Any] | None, str]:
+    """The dispatcher's JSON status line, or why it never wrote one.
+
+    ``tools/_validation_matrix_dispatch.py`` prints exactly one JSON object and
+    nothing else — *unless* it raises, in which case the log is a Python
+    traceback and carries no ``status`` at all. Reading only the JSON left
+    ``dispatch_failure_reason`` empty on a run that never dispatched anything,
+    which is how an aborted launch came to look like a clean deadline.
+
+    Args:
+        lines: Lines of ``<stem>_goal.log``.
+
+    Returns:
+        ``(status, failure_reason)``. ``status`` is the decoded JSON object, or
+        ``None`` when the dispatcher never produced one; ``failure_reason`` is
+        then why, taken verbatim from the traceback's own last line.
+
+    Example:
+        >>> parse_goal_log(
+        ...     ["Traceback (most recent call last):",
+        ...      "  File \\"x.py\\", line 1, in <module>",
+        ...      "RuntimeError: /openral/execute_rskill unavailable"]
+        ... )[1]
+        'the dispatcher raised before reporting a status: RuntimeError: /openral/execute_rskill unavailable'
+    """
+    status: dict[str, Any] | None = None
+    for line in lines:
+        with contextlib.suppress(json.JSONDecodeError):
+            decoded = json.loads(line.strip() or "{}")
+            if isinstance(decoded, dict) and "status" in decoded:
+                status = decoded
+    if status is not None:
+        return status, str(status.get("failure_reason", ""))
+    body = [ln.rstrip() for ln in lines if ln.strip()]
+    if not body:
+        return None, ""
+    if any(_TRACEBACK_HEADER in ln for ln in body):
+        return None, f"the dispatcher raised before reporting a status: {body[-1].strip()}"
+    return None, f"the dispatcher wrote no JSON status line; its log ends: {body[-1].strip()}"
 
 
 def classify_outcome(
@@ -699,23 +999,32 @@ def scene_verdict_from_artifacts(
         else []
     )
     records = read_monitor(monitor_path)
-    goal: dict[str, Any] | None = None
-    if goal_path.exists():
-        for line in goal_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                decoded = json.loads(line.strip() or "{}")
-                if isinstance(decoded, dict) and "status" in decoded:
-                    goal = decoded
+    monitor_records = monitor_subscription_records(records) if monitor_path.exists() else None
+    goal_lines = (
+        goal_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if goal_path.exists()
+        else []
+    )
+    goal, dispatch_failure_reason = parse_goal_log(goal_lines)
 
     stop = parse_kernel_collision(deploy_lines)
     success = parse_json_log_line(deploy_lines, "sim.task_success_final") or {}
     snapshot = parse_json_log_line(deploy_lines, "sim.estop_ground_truth_snapshot")
     initial = parse_json_log_line(deploy_lines, "sim.estop_initial_configuration")
     resolution = grid_resolution_from_monitor(records)
-    ground_truth = adjudicate_ground_truth(snapshot, stop, resolution)
+    ground_truth = adjudicate_ground_truth(
+        snapshot, stop, resolution, monitor_records=monitor_records
+    )
     witness = build_witness_timeline(records, deploy_lines)
 
     harness_error_reason = detect_launch_failure(run_dir, stem, deploy_lines)
+    if not harness_error_reason and goal is None and goal_lines:
+        # The dispatcher produced output but never a status line, so no goal
+        # ever reached a terminal state: that is a harness failure, not a
+        # deadline. Every such path in `_validation_matrix_dispatch.py` raises
+        # (server unavailable, goal rejected); a genuine deadline overrun still
+        # prints `{"status": -1, ...}`.
+        harness_error_reason = dispatch_failure_reason
     outcome = classify_outcome(
         task_success_ever=_as_bool(success.get("ever_succeeded")),
         stop=stop,
@@ -731,6 +1040,7 @@ def scene_verdict_from_artifacts(
             ("deploy_log", deploy_path),
             ("monitor", monitor_path),
             ("goal", goal_path),
+            ("monitor_gate", run_dir / f"{stem}_monitor_gate.txt"),
             ("launch_failed", run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}"),
         )
         if path.exists()
@@ -751,7 +1061,8 @@ def scene_verdict_from_artifacts(
         stop=stop,
         ground_truth=ground_truth,
         witness=witness,
-        dispatch_failure_reason=str((goal or {}).get("failure_reason", "")),
+        monitor_records=monitor_records,
+        dispatch_failure_reason=dispatch_failure_reason,
         wall_s=_as_float((goal or {}).get("wall_s")),
         artifacts=artifacts,
         harness_error_reason=harness_error_reason,
@@ -822,10 +1133,13 @@ def diff_rounds(
 ) -> ValidationRoundDiff:
     """Compare two rounds field by field.
 
-    When both rounds carry the same ``executed_sha`` the result is a pure
-    reproducibility comparison; when they differ it is a before/after. The
-    distinction matters because the policy is stochastic across runs even at a
-    pinned scene seed, so only failure *classes* compare between rounds.
+    The result is a pure reproducibility comparison only when both rounds carry
+    the same ``executed_sha`` **and** the same ``seed``; anything else is a
+    before/after. The seed is load-bearing because it decides the scene's
+    initial configuration — a seed-1-vs-seed-2 pair at one SHA compares two
+    different scenes, and was once labelled ``reproducibility`` on the SHA
+    alone. The distinction matters because the policy is stochastic across runs
+    even at a pinned seed, so only failure *classes* compare between rounds.
 
     Args:
         current: The newer round.
@@ -867,6 +1181,8 @@ def diff_rounds(
         baseline_round_id=baseline.metadata.round_id,
         executed_sha=current.metadata.executed_sha,
         baseline_executed_sha=baseline.metadata.executed_sha,
+        seed=current.metadata.seed,
+        baseline_seed=baseline.metadata.seed,
         scenes=deltas,
     )
 
@@ -1275,6 +1591,55 @@ def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
     return env
 
 
+def wait_for_dds_transport_ready(
+    deploy_log: Path,
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout_s: float,
+    poll_s: float = 0.05,
+) -> str:
+    """Block until the deploy CLI announces its DDS transport is safe to join.
+
+    ``openral deploy sim`` unlinks *every* ``/dev/shm/fastrtps_*`` this user
+    owns immediately before spawning ``ros2 launch``
+    (``openral_cli.deploy_sim._apply_rmw_default``). A participant created
+    before that purge loses its shared-memory segments underneath it: it does
+    not error, it simply never receives anything again. The 2026-08-23 round
+    lost all 24 monitors that way — every ``run_monitor.jsonl`` in it holds
+    exactly ``monitor_started`` and ``monitor_stopped``.
+
+    So the monitor is started on the far side of the marker
+    (:data:`~openral_cli.deploy_sim.DDS_TRANSPORT_READY_MARKER`), which the
+    deploy prints after the purge and before ``ros2 launch`` is spawned. That
+    keeps the whole of the early-stop coverage #145 added: the sim clock does
+    not start until the HAL node comes up, tens of seconds after this line, so
+    a scene whose initial configuration trips the kernel at sim t≈4.7 s is
+    still fully recorded.
+
+    Args:
+        deploy_log: The scene's deploy log, being written by ``proc``.
+        proc: The running ``openral deploy sim``.
+        timeout_s: How long to wait before giving up on the marker.
+        poll_s: Re-read interval.
+
+    Returns:
+        The marker line, or ``""`` when the deploy exited or the wait timed out
+        — the caller starts the monitor anyway and records that it did.
+    """
+    from openral_cli.deploy_sim import DDS_TRANSPORT_READY_MARKER  # reason: deferred
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if deploy_log.exists():
+            for line in deploy_log.read_text(encoding="utf-8", errors="replace").splitlines():
+                if DDS_TRANSPORT_READY_MARKER in line:
+                    return line.strip()
+        if proc.poll() is not None:
+            return ""
+        time.sleep(poll_s)
+    return ""
+
+
 def _wait_for_action_server(proc: subprocess.Popen[bytes], timeout_s: int) -> bool:
     """Poll ``ros2 action list`` until the rSkill action server appears."""
     deadline = time.monotonic() + timeout_s
@@ -1340,6 +1705,31 @@ def _run_one_scene(
             # t≈4.7 s stops before the rSkill server has ever advertised. The
             # 2026-08-22 utensil scene did exactly that and recorded zero
             # snapshots, a null grid resolution and an `unadjudicated` verdict.
+            #
+            # But not before the deploy's `/dev/shm/fastrtps_*` purge, which
+            # silently unlinks the segments of any participant that already
+            # exists — the 2026-08-23 round attached ~6 ms in and every one of
+            # its 24 monitors recorded nothing for the whole scene. The gate is
+            # the deploy's own readiness marker, so the monitor is up long
+            # before the sim clock starts and still on the safe side of the
+            # purge.
+            ready = wait_for_dds_transport_ready(deploy_log, proc, timeout_s=300.0)
+            gate = run_dir / f"{stem}_monitor_gate.txt"
+            gate.write_text(
+                (
+                    f"monitor started after the deploy's readiness line:\n{ready}\n"
+                    if ready
+                    else "the deploy never printed its DDS readiness line within 300 s; "
+                    "the monitor was started anyway and may have lost its shared-memory "
+                    "segments to the /dev/shm/fastrtps_* purge — treat an empty "
+                    "monitor JSONL from this scene as missing evidence.\n"
+                ),
+                encoding="utf-8",
+            )
+            sys.stderr.write(
+                f"[matrix] {spec.key}: {'DDS ready, ' if ready else 'DDS readiness TIMED OUT, '}"
+                "starting monitor\n"
+            )
             monitor = subprocess.Popen(
                 [
                     str(REPO_ROOT / ".venv" / "bin" / "python"),
@@ -1480,22 +1870,56 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
         )
     exempted = [s.scene for s in verdicts.scenes if s.stop and s.stop.exemption_active]
     allowance = [s.scene for s in verdicts.scenes if s.witness.place_allowance_active_lines]
-    # A stop earlier than the monitor's first `world_voxels` record leaves the
-    # adjudication with no grid resolution and therefore no quantization budget.
-    # Say so, rather than letting `unadjudicated` read as "nothing to see".
+    # Two very different causes of a null `grid_resolution_m`, which the
+    # 2026-08-23 round reported as one. A monitor that received nothing has no
+    # evidence about the run at all and is a HARNESS fault; a monitor that
+    # received plenty but no `world_voxels` describes a run that stopped before
+    # octomap published a grid. Naming them apart is the whole point.
+    deaf = [s.scene for s in verdicts.scenes if s.monitor_records == 0]
     blind = [
         s.scene
         for s in verdicts.scenes
-        if s.ground_truth is not None and s.ground_truth.grid_resolution_m is None
+        if s.monitor_records
+        and s.ground_truth is not None
+        and s.ground_truth.grid_resolution_m is None
     ]
     broken = [s for s in verdicts.scenes if s.outcome == "harness-error"]
     out += [
         "",
         f"- Exemption active at the trip: {', '.join(exempted) if exempted else 'none'}.",
         f"- `place_allowance_active=1` disclosed in: {', '.join(allowance) if allowance else 'none'}.",
-        f"- Stopped before the monitor saw a voxel grid (no quantization budget, so"
-        f" `unadjudicated` states only that): {', '.join(blind) if blind else 'none'}.",
+        f"- **Monitor received nothing** (zero records on every subscription — the"
+        f" scene's evidence is missing for a harness reason, not absent because the"
+        f" run stopped early): {', '.join(deaf) if deaf else 'none'}.",
+        f"- Stopped before the monitor saw a voxel grid (no grid resolution, so no"
+        f" budget and `unadjudicated` states only that):"
+        f" {', '.join(blind) if blind else 'none'}.",
     ]
+    unfiltered = [
+        s.scene
+        for s in verdicts.scenes
+        if s.ground_truth is not None and s.ground_truth.probe_collidability_filtered is False
+    ]
+    if unfiltered:
+        out.append(
+            "- Probe not collidability-filtered on the robot/payload side, so a 0 m"
+            " pair may be a purely visual mesh and cannot support `real-contact`:"
+            f" {', '.join(unfiltered)}."
+        )
+    # The other half of the same epistemics: a budget that is only the voxel
+    # term is a lower bound, so it can clear a stop but never convict one.
+    lower_bound_only = [
+        s.scene
+        for s in verdicts.scenes
+        if s.ground_truth is not None and s.ground_truth.budget_source == "grid-quantization"
+    ]
+    if lower_bound_only:
+        out.append(
+            "- No `adjudication_budget` published (pre-#144 artifacts), so only the voxel"
+            " term was available. It is a lower bound on the admissible gap: it can"
+            " establish `within-quantization`, never `false-positive`:"
+            f" {', '.join(lower_bound_only)}."
+        )
     if broken:
         out += [
             "",
@@ -1593,7 +2017,14 @@ def cmd_diff(round_dir: Path, baseline_dir: Path, out_path: Path | None) -> int:
     payload = diff.model_dump_json(indent=2) + "\n"
     if out_path is not None:
         out_path.write_text(payload, encoding="utf-8")
-    kind = "reproducibility" if diff.same_sha else "before/after"
+    if diff.is_reproducibility:
+        kind = "reproducibility"
+    elif diff.same_sha:
+        # Same code, different scene: the seed decides the initial
+        # configuration, so this is a before/after however equal the SHAs are.
+        kind = f"before/after — same sha, seed {diff.baseline_seed} -> {diff.seed}"
+    else:
+        kind = "before/after"
     print(f"{diff.baseline_round_id} -> {diff.round_id}  ({kind})")
     for delta in diff.scenes:
         flag = "CHANGED" if delta.changed else "same   "

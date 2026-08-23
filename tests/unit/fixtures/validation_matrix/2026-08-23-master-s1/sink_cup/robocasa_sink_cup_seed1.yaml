@@ -1,0 +1,64 @@
+# RoboCasa kitchen — deterministic cup counter→sink PnP.
+#
+# Generalization-matrix sibling of robocasa_baguette.yaml: same panda_mobile
+# digital twin and full OpenRAL stack (SLAM + Nav2 + OctoMap kernel gate), but a
+# different fixture pair (sink instead of cabinet) and a different payload
+# geometry (cup: tall, hollow, small footprint vs the baguette's long thin bar).
+# Used to check that the attached-object collision stack is not overfitted to
+# the baguette scene.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_sink_cup.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToSink
+  backend: mujoco
+  # 512² for the same reason as robocasa_baguette.yaml: at 128² the open-vocab
+  # detector cannot ground the object. VLA policies downsample their own input.
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToSink
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: cup
+
+# Pin the complete kitchen layout / robot start, not only the object group.
+seed: 1
+
+# ADR-0097 place-phase declaration — see scenes/deploy/robocasa_baguette.yaml for
+# the full field-by-field rationale (goal scoping, clock domain, why no region).
+#
+# target_id — CORRECTED AGAINST A LIVE RUN (Spark, seed 1). #142 shipped
+#   `sim:sink_main_group_1_main`, the modal name in the layout corpus (12/60),
+#   as its best guess. It was WRONG, and the fail-closed design is what caught
+#   it: the HAL refused the declaration with `Place declaration target
+#   'sim:sink_main_group_1_main' names no MuJoCo body; refused`, nothing armed,
+#   and the run behaved exactly as it does with no declaration — which is why
+#   the wrong name cost a validation round and not a collision.
+#
+#   The seed-1 body table names the sink `sink_island_group_main` (body 319),
+#   parent `world`, with `_handle` and `_spout` as its children. That is the
+#   fixture root, so its subtree is the whole sink and nothing else — the
+#   correct, tightest target here.
+#
+#   Read off the MuJoCo body table, NOT off `env.fixture_refs["sink"]`: in the
+#   live env that value is a TUPLE with no `.name` attribute and a `None`
+#   fixture name, so #142's advice to read it there could not be executed at
+#   all. Recipe (filter token `"sink"`): see the canonical block in
+#   scenes/deploy/robocasa_baguette.yaml.
+# timeout_s — 300 s, raised from #142's 120 s. Full reasoning and the stated
+#   cost are in scenes/deploy/robocasa_baguette.yaml; the short version is that
+#   120 s was derived from a benchmark horizon that does not bound a `deploy sim`
+#   goal, and the live baguette run consumed 92 s of it before the grasp.
+place_declaration:
+  target_id: "sim:sink_island_group_main"
+  object_id: ""
+  timeout_s: 300.0
+  stamp_ns: 0
+
+# Pinned by the validation matrix: `enable_reasoner` has no CLI flag —
+# `openral deploy sim` reads it from the scene and defaults it to true.
+runtime:
+  enable_reasoner: false

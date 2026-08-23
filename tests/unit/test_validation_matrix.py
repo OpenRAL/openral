@@ -8,19 +8,28 @@ The assertions are pinned to what
 rounds, so if the extractor ever stops reproducing the published ledger these
 go red.
 
-Five sections:
+Sections:
 
-1. **Verdict derivation** — the four 2026-08-22 scenes must bucket exactly as
-   the ledger says, with the same tripping pairs and distances.
+1. **Verdict derivation** — the four 2026-08-22 scenes must bucket as the
+   ledger says, with the same tripping pairs and distances.
 2. **Diffing** — the 08-16 and 08-22 baguette runs are the same code, same
    scene, same seed with a different outcome; the diff must say so.
 3. **Guardrails** — each refusal is exercised against the real repo.
 4. **The pinned stack** — the round the harness ran first died in every scene on
    a flag that does not exist, so the stack it pins is checked against the real
    ``openral deploy sim`` and against the real tracked scenes.
-5. **Importing pre-harness rounds** — the two ``master-1`` fixtures are kept in
+5. **A launch failure is never a deadline.**
+6. **Importing pre-harness rounds** — the two ``master-1`` fixtures are kept in
    their original ``bag1``/``seed1`` layout, so reading them at all exercises
    the importer.
+7. **The 2026-08-23 defects** — the round in which every monitor recorded
+   nothing, the round whose ``ros2 launch`` threw, and the budget the HAL
+   publishes that the harness used to ignore.
+
+Two of the ledger's published 2026-08-22 verdicts are *corrected* here rather
+than reproduced: ``sink_cup`` and ``fridge`` were called ``real-contact`` off
+pairs the probe should never have measured (the payload's own ``obj_reg_bbox``
+region marker, and ``robot0_g25_vis``, a visual shell). See section 1.
 """
 
 from __future__ import annotations
@@ -38,6 +47,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "validation_matrix"
 ROUND_0822 = FIXTURES / "2026-08-22-master-1"
 ROUND_0816 = FIXTURES / "2026-08-16-master-1"
 ROUND_HARNESS_1 = FIXTURES / "2026-08-22-harness-1"
+ROUND_0823 = FIXTURES / "2026-08-23-master-s1"
+ROUND_NAV143 = FIXTURES / "2026-08-23-nav143-s1"
 
 # tools/ is not an installed package — load the module by path, the same way
 # tests/unit/test_select_tests.py and test_audit_tests.py do.
@@ -68,13 +79,35 @@ def _derived(round_dir: Path, tmp_path: Path) -> object:
 
 
 def test_round_derives_the_four_ledger_outcomes(tmp_path: Path) -> None:
-    """The 2026-08-22 round buckets exactly as the evidence ledger records it."""
+    """All four 2026-08-22 verdicts are withdrawn, for two independent reasons.
+
+    None of them is *reversed*: nothing here shows the kernel was wrong. The
+    point is that these artifacts never established what was published.
+
+    ``sink_cup`` and ``fridge`` were ``estop-collision-real``, and both rest on
+    a pair the probe should never have measured — the payload's
+    ``obj_reg_bbox`` region marker at −1.8 mm, and ``robot0_g25_vis``, a visual
+    shell, at 0.000 m — because the probe filtered only its *world* side for
+    collidability, and this snapshot carries no attestation otherwise.
+
+    ``baguette`` and ``utensil`` were ``estop-collision-false-positive``, judged
+    against the 21.7 mm voxel term alone. That term is a strict *lower bound* on
+    the admissible kernel-vs-probe gap: the real gap adds the collision model's
+    corner slop, the larger of the two on every panda link. Exceeding a lower
+    bound establishes nothing. The round predates ``adjudication_budget`` (#144,
+    ``ea1b7e8``), so no real gap can be recovered from its own artifacts.
+
+    See ``docs/reference/collision-validation-evidence.md`` — which records that
+    ``baguette`` alone survives when the budget the *same robot* publishes on a
+    later round is applied by hand, and that this is a cross-round inference the
+    harness deliberately does not make.
+    """
     verdicts = _derived(ROUND_0822, tmp_path)
     assert {s.scene: s.outcome for s in verdicts.scenes} == {
-        "baguette": "estop-collision-false-positive",
-        "sink_cup": "estop-collision-real",
-        "fridge": "estop-collision-real",
-        "utensil": "estop-collision-false-positive",
+        "baguette": "estop-collision-unadjudicated",
+        "sink_cup": "estop-collision-unadjudicated",
+        "fridge": "estop-collision-unadjudicated",
+        "utensil": "estop-collision-unadjudicated",
     }
     # "sim.task_success_final = False on all four scenes" — ledger, 2026-08-22.
     assert all(s.task_success_final is False for s in verdicts.scenes)
@@ -129,56 +162,157 @@ def test_fridge_and_utensil_never_grasped(tmp_path: Path) -> None:
         assert verdicts.scene(scene).witness.attach_t_s is None
 
 
-def test_baguette_false_positive_exceeds_the_quantization_budget(tmp_path: Path) -> None:
-    """431/431 pairs probed, untruncated, nothing within 100 mm vs a −20.9 mm read."""
+def test_baguette_discrepancy_survives_the_measurement_but_not_the_budget(
+    tmp_path: Path,
+) -> None:
+    """431/431 pairs probed, untruncated, nothing within 100 mm vs a −20.9 mm read.
+
+    The *measurement* is intact and is the strongest link-class evidence in the
+    corpus: an untruncated probe that returned no pair at all proves the nearest
+    solid geometry is beyond ``distmax_m``, so 120.9 mm is a strict lower bound
+    on the discrepancy. What it cannot be compared against is a real budget —
+    this round predates ``adjudication_budget``, leaving only the 21.7 mm voxel
+    term, itself a lower bound. Two lower bounds do not make a verdict.
+
+    That it *would* survive against the 88.2 mm the same robot publishes on a
+    later round is recorded in the ledger as a cross-round inference. The
+    harness does not make it: a budget belongs to the round that measured it.
+    """
     ground_truth = _derived(ROUND_0822, tmp_path).scene("baguette").ground_truth
     assert ground_truth is not None
-    assert ground_truth.verdict == "false-positive"
+    assert ground_truth.verdict == "unadjudicated"
+    assert ground_truth.budget_source == "grid-quantization"
+    assert "lower bound" in ground_truth.unadjudicated_reason.lower()
     assert ground_truth.probed_pairs == 431
     assert ground_truth.probe_truncated is False
     assert ground_truth.nearest_any_m is None  # nothing within distmax at all
     assert ground_truth.distmax_m == 0.1
-    # >120 mm of discrepancy against a ~21.7 mm budget (25 mm voxel).
     assert ground_truth.grid_resolution_m == 0.025
     assert ground_truth.quantization_budget_m == pytest.approx(0.021651, abs=1e-6)
     assert ground_truth.discrepancy_m == pytest.approx(0.1209178, abs=1e-6)
+    # It clears 88.2 mm by 32.7 mm, which is why the ledger keeps it open.
+    assert ground_truth.discrepancy_m > 0.08822
 
 
-def test_utensil_false_positive_is_a_60mm_discrepancy(tmp_path: Path) -> None:
-    """robot0_link1 clear by +43.3 mm against a kernel −17.3 mm."""
-    ground_truth = _derived(ROUND_0822, tmp_path).scene("utensil").ground_truth
-    assert ground_truth is not None
-    assert ground_truth.verdict == "false-positive"
-    assert ground_truth.nearest_tripping_party_m == pytest.approx(0.043256, abs=1e-6)
-    assert ground_truth.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
-    assert ground_truth.nearest_pair["body_b"] == "stack_2_left_group_3_door_main"
+def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
+    tmp_path: Path,
+) -> None:
+    """The same stop, twice, with opposite verdicts — and the budget is the difference.
+
+    ``panda_link1`` vs ``voxel_76001``, reactive step −1, ``min_distance_m``
+    −0.0172764 and a 60.5 mm discrepancy: identical to seven significant figures
+    on 2026-08-22 and on 2026-08-23. The 08-22 artifacts carry no budget and the
+    stop was called a **false positive** against the 21.7 mm voxel term; the
+    08-23 artifacts publish 88.2 mm and the identical stop is
+    ``within-quantization`` — the kernel being correctly conservative.
+
+    So the 08-22 verdict is withdrawn rather than affirmed. Both rounds ran the
+    same ``collision_geometry`` (the manifest diff between the two tips touches
+    only the ``sensors:`` block), which is what makes them the same stop rather
+    than two similar ones.
+    """
+    old = _derived(ROUND_0822, tmp_path / "old")
+    new = _derived(ROUND_0823, tmp_path / "new")
+
+    old_stop, new_stop = old.scene("utensil").stop, new.scene("utensil").stop
+    assert old_stop is not None and new_stop is not None
+    assert (old_stop.party_a, old_stop.party_b, old_stop.horizon_step) == (
+        new_stop.party_a,
+        new_stop.party_b,
+        new_stop.horizon_step,
+    )
+    assert old_stop.min_distance_m == new_stop.min_distance_m == -0.0172764
+
+    old_gt, new_gt = old.scene("utensil").ground_truth, new.scene("utensil").ground_truth
+    assert old_gt is not None and new_gt is not None
+    assert old_gt.discrepancy_m == new_gt.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
+    assert old_gt.nearest_tripping_party_m == pytest.approx(0.043256, abs=1e-6)
+    assert old_gt.nearest_pair["body_b"] == "stack_2_left_group_3_door_main"
+
+    assert old_gt.budget_source == "grid-quantization"
+    assert old_gt.verdict == "unadjudicated"
+    assert new_gt.budget_source == "hal-adjudication-budget"
+    assert new_gt.admissible_gap_m == pytest.approx(0.08822, abs=1e-6)
+    assert new_gt.verdict == "within-quantization"
 
 
-def test_sink_cup_stop_is_real_payload_contact(tmp_path: Path) -> None:
-    """Nearest payload-world pair at −1.8 mm: the payload really is inside."""
+def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
+    """The asymmetry, stated directly: the voxel term is a lower bound.
+
+    The admissible gap is ``corner_slop(link) + voxel_half_diagonal``, so the
+    voxel term alone under-states it. A discrepancy *within* that term is
+    therefore within the true gap too and stays ``within-quantization``; a
+    discrepancy beyond it proves nothing. Driven through the real 2026-08-22
+    utensil snapshot, whose only variable here is the kernel's reported depth.
+    """
+    from openral_core import ValidationStopEvidence
+
+    lines = (
+        (ROUND_0822 / "utensil1" / "seed1_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+
+    def _verdict(min_distance_m: float) -> str:
+        stop = ValidationStopEvidence(
+            kind="world",
+            party_a="panda_link1",
+            party_b="voxel_76001",
+            horizon_step=-1,
+            min_distance_m=min_distance_m,
+        )
+        adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
+        assert adjudication is not None
+        return adjudication.verdict
+
+    # nearest_tripping_party_m is +43.256 mm, so the discrepancy is
+    # 0.043256 - min_distance_m against a 21.651 mm voxel term.
+    assert _verdict(0.03) == "within-quantization"  # 13.3 mm, inside the bound
+    assert _verdict(-0.0172764) == "unadjudicated"  # 60.5 mm, beyond it: unknown
+
+
+def test_sink_cup_payload_contact_rests_on_a_region_marker(tmp_path: Path) -> None:
+    """−1.8 mm, but against ``obj_reg_bbox`` — the payload's own region marker.
+
+    Published as ``real-contact``. The pair that carries it is the payload's
+    bounding-box marker against a counter top: a geom with neither ``contype``
+    nor ``conaffinity``, exactly the class rounds 5/6 already excluded on the
+    world side ("134 mm inside ``cab_1_left_group_reg_main``"). The probe never
+    filtered the payload side, so it measured its own marker. Nothing in the
+    recorded snapshot says which of its geoms are solid, so the honest verdict
+    is ``unadjudicated`` — the numbers are still all recorded.
+    """
     sink = _derived(ROUND_0822, tmp_path).scene("sink_cup")
     assert sink.stop is not None
     assert sink.stop.involves_payload is True
     assert sink.ground_truth is not None
-    assert sink.ground_truth.verdict == "real-contact"
+    assert sink.ground_truth.verdict == "unadjudicated"
+    assert sink.ground_truth.probe_collidability_filtered is False
+    assert "visual mesh" in sink.ground_truth.unadjudicated_reason
     assert sink.ground_truth.stop_class == "attached_payload"
     assert sink.ground_truth.nearest_any_m == pytest.approx(-0.001759, abs=1e-6)
+    assert sink.ground_truth.nearest_pair["geom_a"] == "obj_reg_bbox"
     assert sink.ground_truth.payload_contacts == 6
 
 
-def test_fridge_stop_is_real_despite_zero_mujoco_contacts(tmp_path: Path) -> None:
-    """The probe's own caveat: 0 contacts is not an emptiness test.
+def test_fridge_zero_metre_pair_is_a_visual_shell(tmp_path: Path) -> None:
+    """The probe's own caveat cuts both ways: 0.000 m is not a contact oracle.
 
-    ``robot0_link6`` sits at 0.000 m from the freezer door with
-    ``payload_contacts == 0`` and ``robot_world_contacts == 0``. Adjudicating
-    from the contact list would call this a false positive; adjudicating from
-    the distance probe — which is what the snapshot tells you to do — does not.
+    ``payload_contacts == 0`` and ``robot_world_contacts == 0``, so the contact
+    list says nothing — that much was already known. But the 0.000 m pair that
+    was read as the answer is ``robot0_g25_vis``, a **visual** geom on
+    ``robot0_link6``; the nearest *collision* geom on the same link is 16.1 mm
+    clear. A distance to a geom MuJoCo can never contact is not a penetration,
+    so this snapshot cannot support ``real-contact`` either way.
     """
     fridge = _derived(ROUND_0822, tmp_path).scene("fridge")
     assert fridge.ground_truth is not None
-    assert fridge.ground_truth.verdict == "real-contact"
+    assert fridge.ground_truth.verdict == "unadjudicated"
     assert fridge.ground_truth.payload_contacts == 0
     assert fridge.ground_truth.nearest_any_m == 0.0
+    assert fridge.ground_truth.nearest_pair["geom_a"] == "robot0_g25_vis"
     assert fridge.ground_truth.nearest_pair["body_b"] == "fridge_main_group_freezer_door"
     assert fridge.ground_truth.sim_time_s == pytest.approx(4.85, abs=0.01)
 
@@ -226,12 +360,19 @@ def test_verdicts_refuses_a_round_without_metadata(tmp_path: Path) -> None:
 
 
 def test_diff_two_real_rounds_at_the_same_sha(tmp_path: Path) -> None:
-    """Same code, same scene, same seed — the baguette outcome still moved.
+    """Same code, same scene, same seed — two different runs, one bucket.
 
     The 08-16 run tripped during carry on the attached payload with a deeper
     cell exempted; the 08-22 run carried cleanly and tripped later on an arm
     link with nothing exempted. That is a reproducibility finding, and the diff
     has to surface it without anyone re-reading a log.
+
+    Both now bucket ``unadjudicated`` — neither round's artifacts can judge its
+    own stop — so ``changed`` is ``False`` and ``changed_scenes`` omits
+    baguette. **That is the honest reading and also the limitation worth
+    knowing**: the flag is outcome-keyed, so a scene whose evidence moved
+    completely can still read "same". ``changed_fields`` is the part that shows
+    it, and it does.
     """
     current = _derived(ROUND_0822, tmp_path / "cur")
     baseline = _derived(ROUND_0816, tmp_path / "base")
@@ -239,15 +380,19 @@ def test_diff_two_real_rounds_at_the_same_sha(tmp_path: Path) -> None:
 
     assert diff.same_sha is True
     assert diff.baseline_round_id == "2026-08-16-master-1"
-    assert "baguette" in diff.changed_scenes
+    assert diff.is_reproducibility is True  # same sha AND same seed
 
     baguette = next(s for s in diff.scenes if s.scene == "baguette")
-    assert baguette.baseline_outcome == "estop-collision-real"
-    assert baguette.outcome == "estop-collision-false-positive"
+    assert baguette.baseline_outcome == baguette.outcome == "estop-collision-unadjudicated"
+    assert baguette.changed is False
+    assert "baguette" not in diff.changed_scenes
+
+    # ...while the run underneath it changed almost entirely.
     moves = baguette.changed_fields
     assert moves["stop.party_a"] == {"from": "attached:sim:obj_main", "to": "panda_link5"}
     assert moves["stop.min_distance_m"]["to"] == -0.0209178
     assert moves["stop.sweep_min_distance_m"]["from"] == -0.0355338
+    assert moves["witness.kernel_witness_separated"] == {"from": 0, "to": 1}
 
 
 def test_prior_round_records_a_live_exemption(tmp_path: Path) -> None:
@@ -422,7 +567,7 @@ def test_initial_configuration_stop_outranks_ground_truth(tmp_path: Path) -> Non
     verdicts = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
     assert verdicts.scene("fridge").outcome == "estop-initial-configuration"
     # The other three are untouched by the reclassification.
-    assert verdicts.scene("sink_cup").outcome == "estop-collision-real"
+    assert verdicts.scene("sink_cup").outcome == "estop-collision-unadjudicated"
 
 
 # ── 4. The pinned stack ───────────────────────────────────────────────────────
@@ -630,7 +775,7 @@ def test_import_maps_the_historical_scene_directories(tmp_path: Path) -> None:
     }
     assert metadata["artifact_stem"] == "seed1"
     verdicts = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
-    assert verdicts.scene("baguette").outcome == "estop-collision-false-positive"
+    assert verdicts.scene("baguette").outcome == "estop-collision-unadjudicated"
 
 
 def test_import_reads_the_stack_out_of_the_rounds_own_log() -> None:
@@ -686,3 +831,290 @@ def test_import_refuses_a_round_whose_scenes_did_not_share_a_stack(tmp_path: Pat
         == 2
     )
     assert not (work / "metadata.json").exists()
+
+
+# ── 7. The 2026-08-23 defects ─────────────────────────────────────────────────
+
+
+def test_every_monitor_of_the_0823_round_received_nothing(tmp_path: Path) -> None:
+    """The blocking defect, as the recorded artifacts state it.
+
+    ``openral deploy sim`` unlinks every ``/dev/shm/fastrtps_*`` this user owns
+    just before spawning ``ros2 launch``; the monitor's participant was created
+    ~6 ms earlier, lost its segments, and never received anything again. All 24
+    runs of that round wrote exactly two lines. The count is what makes it
+    legible: a monitor that stopped early still has records.
+    """
+    verdicts = _derived(ROUND_0823, tmp_path)
+    assert [s.monitor_records for s in verdicts.scenes] == [0, 0, 0, 0]
+    for scene in verdicts.scenes:
+        records = validation_matrix.read_monitor(ROUND_0823 / scene.scene / "run_monitor.jsonl")
+        assert [r["event"] for r in records] == ["monitor_started", "monitor_stopped"]
+        assert scene.ground_truth is not None
+        assert scene.ground_truth.grid_resolution_m is None
+
+
+def test_a_deaf_monitor_reads_differently_from_an_early_stop(tmp_path: Path) -> None:
+    """ "Monitor received nothing" and "stopped before a grid" are not one thing.
+
+    Both surface as ``grid_resolution_m: null``; one is a harness fault whose
+    evidence is missing, the other is a fact about the run. The 2026-08-23
+    NOTES attributed all four scenes to the early stop.
+    """
+    work = tmp_path / ROUND_0823.name
+    shutil.copytree(ROUND_0823, work)
+    assert validation_matrix.cmd_verdicts(work) == 0
+    notes = (work / "NOTES.md").read_text(encoding="utf-8")
+    assert "**Monitor received nothing**" in notes
+    assert "baguette, sink_cup, fridge, utensil" in notes
+    # ...and the early-stop line is left saying "none", because that is not
+    # what happened here.
+    early = next(ln for ln in notes.splitlines() if "before the monitor saw a voxel grid" in ln)
+    assert early.rstrip().endswith("none.")
+
+
+def test_a_deaf_monitor_names_itself_in_the_adjudication() -> None:
+    """The same distinction inside ``verdicts.json``, not only in the notes.
+
+    Shown on the 2026-08-22 utensil snapshot, which predates the HAL's published
+    budget: there the grid resolution is the *only* source of one, so whether
+    the monitor was deaf or the run stopped early decides whether the round's
+    evidence is missing or merely absent. It reads identically either way —
+    ``grid_resolution_m: null`` — until the reason says which.
+    """
+    lines = (
+        (ROUND_0822 / "utensil1" / "seed1_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    stop = validation_matrix.parse_kernel_collision(lines)
+    assert snapshot is not None and stop is not None
+    deaf = validation_matrix.adjudicate_ground_truth(snapshot, stop, None, monitor_records=0)
+    assert deaf is not None
+    assert deaf.verdict == "unadjudicated"
+    assert "harness reason" in deaf.unadjudicated_reason
+
+    early = validation_matrix.adjudicate_ground_truth(snapshot, stop, None, monitor_records=412)
+    assert early is not None
+    assert early.verdict == "unadjudicated"
+    assert "stopped before the monitor saw a voxel grid" in early.unadjudicated_reason
+    assert "harness reason" not in early.unadjudicated_reason
+
+
+def test_the_monitor_gate_waits_for_the_deploys_own_readiness_line(tmp_path: Path) -> None:
+    """The gate is the deploy CLI's marker, read out of the live deploy log.
+
+    Uses the real constant the real ``openral deploy sim`` prints, so a rename
+    on either side goes red rather than silently reopening the defect.
+    """
+    import subprocess
+
+    from openral_cli.deploy_sim import DDS_TRANSPORT_READY_MARKER
+
+    log = tmp_path / "run_deploy.log"
+    log.write_text("  argv: ros2 launch openral_rskill_ros sim_e2e.launch.py\n", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        # Not there yet: the purge has not run, so joining now loses the SHM.
+        assert (
+            validation_matrix.wait_for_dds_transport_ready(log, proc, timeout_s=0.3, poll_s=0.05)
+            == ""
+        )
+        with log.open("a", encoding="utf-8") as sink:
+            sink.write(f"  {DDS_TRANSPORT_READY_MARKER} rmw=default shm_purged=41\n")
+        ready = validation_matrix.wait_for_dds_transport_ready(
+            log, proc, timeout_s=5.0, poll_s=0.05
+        )
+        assert DDS_TRANSPORT_READY_MARKER in ready
+        assert "shm_purged=41" in ready
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_the_gate_gives_up_when_the_deploy_dies(tmp_path: Path) -> None:
+    """A deploy that exits before printing the marker must not hang the round."""
+    import subprocess
+
+    log = tmp_path / "run_deploy.log"
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait(timeout=30)
+    assert validation_matrix.wait_for_dds_transport_ready(log, proc, timeout_s=30.0) == ""
+
+
+def test_an_aborted_launch_is_a_harness_error_not_a_deadline(tmp_path: Path) -> None:
+    """The 2026-08-23 nav143 round: ``ros2 launch`` threw and left a partial graph.
+
+    ``payload_footprint_node.py`` was missing from the built overlay, so launch
+    caught the exception and unwound — but the nodes it had already spawned kept
+    running and kept logging, there was no marker file and no usage banner, and
+    the scene was bucketed ``deadline-no-grasp`` with both failure fields empty.
+    """
+    verdicts = _derived(ROUND_NAV143, tmp_path)
+    assert {s.outcome for s in verdicts.scenes} == {"harness-error"}
+    for scene in verdicts.scenes:
+        assert "ros2 launch aborted" in scene.harness_error_reason
+        assert "payload_footprint_node.py" in scene.harness_error_reason
+    assert validation_matrix.round_exit_code(verdicts) == 4
+
+
+def test_a_crashed_dispatcher_names_itself(tmp_path: Path) -> None:
+    """``dispatch_failure_reason`` was empty on a run that never dispatched.
+
+    The dispatcher prints one JSON line — unless it raises, in which case its
+    log is a Python traceback with no ``status`` in it at all.
+    """
+    verdicts = _derived(ROUND_NAV143, tmp_path)
+    for scene in verdicts.scenes:
+        assert scene.dispatch_failure_reason.startswith("the dispatcher raised")
+        assert "/openral/execute_rskill unavailable" in scene.dispatch_failure_reason
+        assert scene.wall_s is None
+
+
+def test_a_dispatcher_that_never_wrote_a_status_is_not_a_deadline(tmp_path: Path) -> None:
+    """Even with the launch itself clean, no status line means no result."""
+    scene_dir = tmp_path / "baguette"
+    scene_dir.mkdir()
+    (scene_dir / "run_deploy.log").write_text("[runtime_node-2] up\n", encoding="utf-8")
+    shutil.copy2(ROUND_NAV143 / "baguette" / "run_goal.log", scene_dir / "run_goal.log")
+    verdict = validation_matrix.scene_verdict_from_artifacts(
+        scene_dir, scene="baguette", config_path="", seed=1
+    )
+    assert verdict.outcome == "harness-error"
+    assert "the dispatcher raised" in verdict.harness_error_reason
+
+
+def test_a_real_deadline_still_reads_as_a_deadline(tmp_path: Path) -> None:
+    """The dispatcher's own overrun line is a status, so it must survive.
+
+    ``{"status": -1, ...}`` is what ``_validation_matrix_dispatch.py`` prints
+    when the action overruns its hard deadline with no result — a fact about
+    the run, not a harness failure.
+    """
+    scene_dir = tmp_path / "baguette"
+    scene_dir.mkdir()
+    (scene_dir / "run_deploy.log").write_text("[runtime_node-2] up\n", encoding="utf-8")
+    (scene_dir / "run_goal.log").write_text(
+        json.dumps({"latest_chunk": 7, "status": -1, "success": False}) + "\n", encoding="utf-8"
+    )
+    verdict = validation_matrix.scene_verdict_from_artifacts(
+        scene_dir, scene="baguette", config_path="", seed=1
+    )
+    assert verdict.outcome == "deadline-no-grasp"
+    assert verdict.harness_error_reason == ""
+
+
+def test_the_harness_uses_the_hals_budget_not_a_narrower_one(tmp_path: Path) -> None:
+    """88.2 mm from the snapshot, not 21.7 mm recomputed from the grid.
+
+    The kernel measures OBB-to-voxel and the probe measures mesh-to-mesh, so the
+    admissible gap is the collision model's corner slop plus the voxel term. The
+    HAL computes and publishes it per run; the harness recomputed only the voxel
+    half-diagonal and called conservative stops false positives with it.
+
+    The 2026-08-23 ``utensil`` stop is that call, precisely: ``robot0_link1`` is
+    43.3 mm clear against a kernel read of −17.3 mm, a 60.5 mm discrepancy. The
+    narrow term makes it a **false positive**; the HAL's own budget makes it
+    ``within-quantization``, which is the kernel behaving correctly.
+    """
+    utensil = _derived(ROUND_0823, tmp_path).scene("utensil")
+    ground_truth = utensil.ground_truth
+    assert ground_truth is not None
+    assert ground_truth.budget_source == "hal-adjudication-budget"
+    assert ground_truth.admissible_gap_m == pytest.approx(0.08822, abs=1e-6)
+    assert ground_truth.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
+    assert ground_truth.verdict == "within-quantization"
+    # The narrow term the harness used to apply, for the same stop.
+    assert validation_matrix.quantization_budget_m(0.025) == pytest.approx(0.021651, abs=1e-6)
+    assert ground_truth.discrepancy_m > validation_matrix.quantization_budget_m(0.025)
+    # ...and it is still recorded when a grid resolution is known. This round's
+    # monitor was deaf, so it is not.
+    assert ground_truth.quantization_budget_m is None
+
+
+def test_the_hal_budget_is_read_out_of_the_recorded_snapshot() -> None:
+    """Straight from the artifact, for both the world and the self-stop case."""
+    from openral_core import ValidationStopEvidence
+
+    lines = (
+        (ROUND_0823 / "baguette" / "run_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+    world = ValidationStopEvidence(
+        kind="world",
+        party_a="panda_link5",
+        party_b="voxel_1",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    payload_self = ValidationStopEvidence(
+        kind="self",
+        party_a="attached:sim:obj_main",
+        party_b="panda_link2",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, world) == pytest.approx(0.08822)
+    # A payload self stop has an OBB on both sides and no voxel: its own block.
+    assert validation_matrix.hal_admissible_gap_m(snapshot, payload_self) == pytest.approx(0.124555)
+
+
+def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:
+    """The producer-side defect, in the recorded evidence that exposed it.
+
+    ``robot0_g42_vis`` — a visual shell on ``robot0_link7`` — is reported at
+    0.000 m from the freezer door, while the same link's collision geom is
+    2.5 mm clear. Any ``real-contact`` read off that pair is read off a mesh
+    MuJoCo can never contact, so the harness refuses it.
+    """
+    fridge = _derived(ROUND_0823, tmp_path).scene("fridge")
+    assert fridge.ground_truth is not None
+    assert fridge.ground_truth.nearest_any_m == 0.0
+    assert fridge.ground_truth.nearest_pair["geom_a"] == "robot0_g42_vis"
+    assert fridge.ground_truth.nearest_pair["geom_b"] == "fridge_main_group_g43"
+    assert fridge.ground_truth.probe_collidability_filtered is False
+    assert fridge.ground_truth.verdict == "unadjudicated"
+    assert "visual mesh" in fridge.ground_truth.unadjudicated_reason
+    # The bucket is the initial-configuration one because this stop landed
+    # before any action reached the HAL, which outranks the adjudication —
+    # `baguette` is the same round's plain collision stop.
+    assert fridge.outcome == "estop-initial-configuration"
+    baguette = _derived(ROUND_0823, tmp_path / "again").scene("baguette")
+    assert baguette.outcome == "estop-collision-unadjudicated"
+
+
+def test_a_seed_change_at_one_sha_is_not_reproducibility(tmp_path: Path) -> None:
+    """The mislabelled comparison: equal SHAs, different scene.
+
+    The seed decides the scene's initial configuration, so two rounds at one
+    SHA on different seeds are a before/after of two different scenes.
+    """
+    from openral_core import ValidationRoundVerdicts
+
+    current = _derived(ROUND_0823, tmp_path / "cur")
+    work = tmp_path / "base" / ROUND_0823.name
+    shutil.copytree(ROUND_0823, work)
+    metadata = json.loads((work / "metadata.json").read_text(encoding="utf-8"))
+    metadata["seed"] = 2
+    metadata["round_id"] = "2026-08-23-master-s2"
+    (work / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    assert validation_matrix.cmd_verdicts(work) == 0
+    baseline = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
+
+    diff = validation_matrix.diff_rounds(current, baseline)
+    assert diff.same_sha is True
+    assert (diff.seed, diff.baseline_seed) == (1, 2)
+    assert diff.same_seed is False
+    assert diff.is_reproducibility is False
+
+
+def test_the_matching_seed_is_still_a_reproducibility_diff(tmp_path: Path) -> None:
+    """Same code, same seed — the comparison the label is meant for."""
+    current = _derived(ROUND_0823, tmp_path / "cur")
+    baseline = _derived(ROUND_0823, tmp_path / "base")
+    diff = validation_matrix.diff_rounds(current, baseline)
+    assert diff.is_reproducibility is True

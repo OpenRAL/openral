@@ -1,12 +1,15 @@
-REAL artifacts from three collision-stack validation rounds on the project's DGX
-Spark, captured verbatim. Nothing here is hand-written: the three `metadata.json`
-files are produced by the tool itself (`import-round`), from these files.
+REAL artifacts from five collision-stack validation rounds on the project's DGX
+Spark, captured verbatim. Nothing here is hand-written: the `metadata.json`
+files are produced by the tool itself (`run` or `import-round`), from these
+files.
 
 Producer:
     spark:/home/allopart/openral-runs/2026-08-22-master-1/{bag1,sink1,fridge1,utensil1}/
     spark:/home/allopart/openral-runs/2026-08-16-master-1/bag1/
     spark:/home/allopart/workspace/openral-matrix-baseline/outputs/validation-matrix/
         2026-08-22-harness-1/{baguette,sink_cup,fridge,utensil}/
+        2026-08-23-master-s1/{baguette,sink_cup,fridge,utensil}/
+        2026-08-23-nav143-s1/{baguette,sink_cup}/
 
 The two `master-1` rounds ran stack tip 2edcf67c3b087958d475813fe19234c12e90698c
 (`2edcf67`, "fix(world-state): rasterize the octree by cube overlap, not centre
@@ -29,6 +32,30 @@ They also keep their ORIGINAL pre-harness layout — scene directories `bag1` /
 what `import-round` exists to read. Renaming them here would have hidden the
 mapping the importer is tested on.
 
+The two `2026-08-23-*` rounds are the harness's SECOND live use, and both are
+harness evidence rather than stack evidence — see
+`docs/reference/collision-validation-evidence.md`, "2026-08-23".
+
+`2026-08-23-master-s1` is one of six rounds in which EVERY monitor recorded
+nothing: `run_monitor.jsonl` holds exactly `monitor_started` and
+`monitor_stopped` in all 24 runs, because the monitor's DDS participant was
+created ~6 ms before `openral deploy sim` unlinked every
+`/dev/shm/fastrtps_*`. It is kept because it is the only fixture that carries
+(a) a deaf monitor, and (b) the sim HAL's own `adjudication_budget`
+(`admissible_gap_m = 0.08822`), which the harness must consume in place of the
+21.7 mm quantization term — on its `utensil` scene the two disagree about the
+verdict. Its `metadata.json` is the one the harness itself wrote during that
+round, kept as written; the absolute `scene_configs` paths in it are the
+producer's, so `config_sha256` is null when derived here — that is the recorded
+truth, not a defect.
+
+`2026-08-23-nav143-s1` is the round at 87dcda1 in which `ros2 launch` threw
+(`executable 'payload_footprint_node.py' not found`) and unwound while the nodes
+it had already spawned kept logging. There is no marker file and no usage
+banner, so the scene was originally bucketed `deadline-no-grasp` with both
+failure fields empty. Its `run_goal.log` is the dispatcher's TRACEBACK rather
+than a JSON status line, which is the other half of the same defect.
+
 The third round, `2026-08-22-harness-1`, is the harness's FIRST live invocation.
 It died in all four scenes in under a second: `STACK_ARGV` pinned
 `--no-enable-reasoner`, an option `openral deploy sim` does not have, so click
@@ -41,12 +68,15 @@ FILES, and how each was produced
 --------------------------------
 
 `<master-round>/<scene>/seed1_deploy_excerpt.log`
-    Line subset of the round's `seed1_deploy.log` (1.7 MB), selected with, and
-    only with:
+`2026-08-23-*/<scene>/run_deploy_excerpt.log`
+    Line subset of the round's full deploy log (up to 1.7 MB), selected with,
+    and only with:
 
-        sed -n 18p seed1_deploy.log            # the resolved launch argv
+        the `argv: ros2 launch ...` line          # the resolved launch argv
+        the FIRST line carrying a ROS [<sec>.<nsec>] stamp   # dates the round
         grep -E "safety\.|sim\.task_success_final|sim\.estop_ground_truth|\
-sim\.estop_initial_configuration|place_allowance_active=1" seed1_deploy.log
+sim\.estop_initial_configuration|place_allowance_active=1|\
+\[ERROR\] \[launch\]: Caught exception in launch"
 
     Every retained line is byte-for-byte the original, ROS launch prefix and
     all, in original file order. Line 18 is the deploy CLI's own
@@ -76,8 +106,13 @@ sim\.estop_initial_configuration|place_allowance_active=1" seed1_deploy.log
     field reads.
 
 `<master-round>/<scene>/seed1_goal.log`
-    The dispatcher's single JSON line, complete and unmodified, from
-    `run_xr1_full.py` (now `tools/_validation_matrix_dispatch.py`).
+`2026-08-23-*/<scene>/run_goal.log`
+    The dispatcher's output, complete and unmodified, from `run_xr1_full.py`
+    (now `tools/_validation_matrix_dispatch.py`): its single JSON line, or — on
+    `2026-08-23-nav143-s1` — the Python traceback it wrote instead.
+
+`2026-08-23-*/<scene>/run_monitor.jsonl`
+    COMPLETE, unmodified. Two lines each; there was nothing else.
 
 `2026-08-22-harness-1/<scene>/run_deploy.log`
     The COMPLETE deploy log of that scene — all six lines of it, click's usage
@@ -114,6 +149,7 @@ sim\.estop_initial_configuration|place_allowance_active=1" seed1_deploy.log
 Reproduce (needs the run store, which is not public):
     ssh spark
     ls ~/openral-runs/2026-08-22-master-1/
+    ls ~/workspace/openral-matrix-baseline/outputs/validation-matrix/2026-08-23-*/
     cat ~/openral-runs/2026-08-22-master-1/NOTES.md
     ls ~/workspace/openral-matrix-baseline/outputs/validation-matrix/
 

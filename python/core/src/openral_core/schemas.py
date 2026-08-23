@@ -7623,12 +7623,17 @@ GroundTruthAdjudication: TypeAlias = Literal[
 ]
 """Verdict of the simulator ground-truth probe on a kernel stop.
 
-``real-contact`` — some probed pair is at or below 0 m, so geometry really is
-touching. ``false-positive`` — the nearest true geometry is further from the
-tripping party than the occupancy grid's own quantization budget can explain.
-``within-quantization`` — the kernel was conservative by an amount the voxel
-size accounts for, which is correct behaviour. ``unadjudicated`` — the probe
-did not cover the stop (truncated, or no snapshot recorded).
+``real-contact`` — some probed pair of **solid** geoms is at or below 0 m, so
+geometry really is touching. ``false-positive`` — the nearest true geometry is
+further from the tripping party than the admissible kernel-vs-probe gap can
+explain; this requires a *published* gap, since the voxel term alone is a lower
+bound on it and exceeding a lower bound establishes nothing.
+``within-quantization`` — the kernel was conservative by an amount that
+gap accounts for, which is correct behaviour. ``unadjudicated`` — the probe did
+not cover the stop (truncated, no snapshot recorded, no budget known, or the
+recorded probe does not attest that both of its sides were collidability
+filtered, in which case a 0 m pair may be a purely visual mesh and cannot
+support ``real-contact``).
 """
 
 
@@ -7712,7 +7717,34 @@ class ValidationGroundTruthAdjudication(BaseModel):
         grid_resolution_m: Occupancy-grid edge length, read from the monitor's
             ``world_voxels`` records. Sets the quantization budget.
         quantization_budget_m: Half the grid cell's body diagonal — the largest
-            discrepancy a correctly-behaving voxel grid can produce.
+            discrepancy a correctly-behaving voxel grid can produce. This is
+            only the *voxel* term; it is not the whole admissible gap.
+        admissible_gap_m: The budget actually applied to ``discrepancy_m``.
+            Preferred source is the HAL's own
+            ``adjudication_budget.admissible_gap_m``, which adds the collision
+            model's corner slop (the kernel measures OBB-to-voxel, the probe
+            measures mesh-to-mesh) to the voxel term — 88.2 mm against a
+            25 mm grid's 21.7 mm on the 2026-08-23 rounds. Falls back to
+            ``quantization_budget_m`` for a snapshot recorded before the HAL
+            published a budget.
+        budget_source: Where ``admissible_gap_m`` came from —
+            ``"hal-adjudication-budget"``, ``"grid-quantization"``, or ``""``
+            when no budget was available at all. The distinction is
+            load-bearing, not informational: ``"grid-quantization"`` is only a
+            *lower bound* on the real gap (it omits ``corner_slop(link)``, the
+            larger term), so it can establish ``within-quantization`` but never
+            ``false-positive``. Rounds before #144 published no budget, and two
+            of their verdicts were over-convicted on that term alone.
+        probe_collidability_filtered: Whether the recorded probe attests that
+            **both** of its sides were restricted to solid geoms
+            (``contype``/``conaffinity`` non-zero). ``False`` on a snapshot
+            recorded before that filter existed, where a 0 m pair may be a
+            purely visual mesh and therefore cannot support ``real-contact``.
+        unadjudicated_reason: Why the verdict is ``unadjudicated``, in words.
+            Empty for every other verdict. A missing grid resolution because
+            the monitor received nothing reads differently from one because the
+            run stopped early, and the difference is a harness fault versus a
+            run fact.
         nearest_any_m: Distance of the closest probed pair of any kind.
             ``None`` when nothing was within ``distmax_m``.
         nearest_tripping_party_m: Distance of the closest pair whose subject is
@@ -7742,6 +7774,10 @@ class ValidationGroundTruthAdjudication(BaseModel):
     sim_time_s: float | None = None
     grid_resolution_m: float | None = None
     quantization_budget_m: float | None = None
+    admissible_gap_m: float | None = None
+    budget_source: str = ""
+    probe_collidability_filtered: bool | None = None
+    unadjudicated_reason: str = ""
     nearest_any_m: float | None = None
     nearest_tripping_party_m: float | None = None
     nearest_pair: dict[str, object] = Field(default_factory=dict)
@@ -7813,8 +7849,15 @@ class ValidationSceneVerdict(BaseModel):
         stop: The kernel's verdict, when the run was stopped.
         ground_truth: Adjudication of that stop against the simulator.
         witness: The attach / witness / declaration lifecycle.
+        monitor_records: How many records the run's monitor wrote from a ROS
+            subscription — every line except its own ``monitor_started`` /
+            ``monitor_stopped`` pair. ``None`` when no monitor JSONL exists.
+            **Zero means the monitor received nothing**, which is a harness
+            fault (its DDS participant never saw the graph) and must not be
+            read as "the run stopped before there was anything to see".
         dispatch_failure_reason: ``failure_reason`` reported by the action
-            client, verbatim.
+            client, verbatim — or, when the dispatcher died before writing a
+            status line at all, why it did.
         wall_s: Wall-clock seconds the dispatch took.
         artifacts: Round-relative paths of the files this verdict was derived
             from, so every field is traceable to a file.
@@ -7850,6 +7893,7 @@ class ValidationSceneVerdict(BaseModel):
     stop: ValidationStopEvidence | None = None
     ground_truth: ValidationGroundTruthAdjudication | None = None
     witness: ValidationWitnessTimeline = Field(default_factory=ValidationWitnessTimeline)
+    monitor_records: int | None = None
     dispatch_failure_reason: str = ""
     wall_s: float | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
@@ -7893,6 +7937,10 @@ class ValidationRoundMetadata(BaseModel):
             is what the harness itself writes; a round imported from the
             pre-harness layout carries the alias it was found under
             (``{"baguette": "bag1"}``).
+        seed: The scene seed the whole round pinned. Read with
+            ``executed_sha``: two rounds are a *reproducibility* pair only when
+            both match — a seed-1-vs-seed-2 comparison at one SHA is a
+            before/after, and was once mislabelled as reproducibility.
         artifact_stem: Filename stem of every per-scene artifact
             (``run_deploy.log`` → ``"run"``). Pre-harness rounds used
             ``"seed1"``.
@@ -7932,6 +7980,7 @@ class ValidationRoundMetadata(BaseModel):
     gpu_name: str | None = None
     notes_path: str | None = None
     scene_dirs: dict[str, str] = Field(default_factory=dict)
+    seed: int = 1
     artifact_stem: str = "run"
     imported_from: str | None = None
     scene_pins: dict[str, bool] = Field(default_factory=dict)
@@ -8042,19 +8091,26 @@ class ValidationRoundDiff(BaseModel):
         round_id: The newer round.
         baseline_round_id: The round it is compared against.
         executed_sha: SHA the newer round ran.
-        baseline_executed_sha: SHA the baseline ran. When the two SHAs are
-            equal the diff is a pure reproducibility comparison; when they
-            differ it is a before/after.
+        baseline_executed_sha: SHA the baseline ran.
+        seed: Scene seed the newer round pinned.
+        baseline_seed: Scene seed the baseline pinned. The SHA alone does not
+            make a comparison a reproducibility one: the scene seed decides the
+            initial configuration, so two rounds at one SHA on different seeds
+            are a before/after of two different scenes. A seed-1-vs-seed-2 diff
+            was labelled ``reproducibility`` for exactly that reason.
         scenes: Per-scene deltas, in the newer round's order.
 
     Example:
-        >>> ValidationRoundDiff(
+        >>> d = ValidationRoundDiff(
         ...     round_id="b",
         ...     baseline_round_id="a",
         ...     executed_sha="0" * 40,
         ...     baseline_executed_sha="0" * 40,
-        ... ).same_sha
-        True
+        ...     seed=1,
+        ...     baseline_seed=2,
+        ... )
+        >>> d.same_sha, d.is_reproducibility
+        (True, False)
     """
 
     model_config = ConfigDict(extra="allow")
@@ -8064,12 +8120,29 @@ class ValidationRoundDiff(BaseModel):
     baseline_round_id: str
     executed_sha: str
     baseline_executed_sha: str
+    seed: int | None = None
+    baseline_seed: int | None = None
     scenes: list[ValidationSceneDelta] = Field(default_factory=list)
 
     @property
     def same_sha(self) -> bool:
-        """Whether both rounds ran the same code — a reproducibility diff."""
+        """Whether both rounds ran the same code."""
         return self.executed_sha == self.baseline_executed_sha
+
+    @property
+    def same_seed(self) -> bool:
+        """Whether both rounds pinned the same scene seed."""
+        return self.seed == self.baseline_seed
+
+    @property
+    def is_reproducibility(self) -> bool:
+        """Whether this compares one configuration with itself.
+
+        Same code **and** same seed. Anything else is a before/after: a seed
+        change moves the scene's initial configuration, so the two rounds are
+        not repeats of one another however equal their SHAs are.
+        """
+        return self.same_sha and self.same_seed
 
     @property
     def changed_scenes(self) -> list[str]:
