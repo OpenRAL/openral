@@ -100,7 +100,20 @@ isolate_globs = [
 "scenes/benchmark/pusht.yaml" = ["tests/sim/test_pusht_2d_diffusion_pusht.py"]
 "scenes/sim/libero*.yaml" = ["tests/sim/test_franka_panda_smolvla_libero.py"]
 "scenes/sim/robocasa*.yaml" = ["tests/sim/test_gr1_robocasa_env_build.py"]
-"robots/**" = ["tests/unit"]
+# A robot manifest is not only read by `tests/unit`. Several ROS packages load
+# a real `robots/<id>/robot.yaml` too, and those test dirs are selected ONLY by
+# a `packages/<pkg>/**` change — so a manifest edit could break them invisibly
+# and did: #103 converted `panda_mobile`'s link capsules to `BoxShape`, and
+# `openral_slam_bringup`'s height-band derivation (which reads `radius_m`) has
+# been raising `AttributeError` ever since, with nothing on any lane to see it.
+"robots/**" = [
+  "tests/unit",
+  "packages/openral_nav2_bringup/test",
+  "packages/openral_rskill_ros/test/test_kernel_params_no_empty_lists.py",
+  "packages/openral_safety/test/test_urdf_lowering_fk.py",
+  "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",
+  "packages/openral_slam_bringup/test/test_depth_height_filter.py",
+]
 "robots/aloha_bimanual/**" = ["tests/sim/test_aloha_bimanual_hal_mujoco.py"]
 "robots/gr1/**" = ["tests/sim/test_gr1_robocasa_env_build.py"]
 "rskills/**" = ["tests/unit"]
