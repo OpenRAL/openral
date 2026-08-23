@@ -134,10 +134,18 @@ def _link_transforms_at_zero(
     transforms: dict[
         str, tuple[tuple[tuple[float, float, float], ...], tuple[float, float, float]]
     ] = {str(description.base_frame): (identity, (0.0, 0.0, 0.0))}
-    pending = list(description.joints)
-    # ``joints`` stays normative for the kinematic chain: seed the URDF-root
-    # bridge only for a root the chain does not place itself, so a manifest that
-    # articulates its root can never be overridden by the static transform.
+    # ``joints`` enumerates only the robot's *movable* joints, so a rigid mount
+    # — a Franka hand on the flange, a bimanual rig's arm pedestals — is not in
+    # it. ``fixed_attachments`` carries exactly that connectivity, with the same
+    # ``parent_link`` / ``child_link`` / ``origin_xyz`` / ``origin_rpy`` fields
+    # and the same zero-configuration convention, so it walks identically. This
+    # is the same union the safety kernel's collision tree is built from
+    # (``openral_safety.envelope_loader``), which is what keeps the height band
+    # measuring the same robot the kernel checks.
+    pending = [*description.joints, *(getattr(description, "fixed_attachments", None) or ())]
+    # The chain stays normative: seed the URDF-root bridge only for a root the
+    # chain does not place itself, so a manifest that articulates its root can
+    # never be overridden by the static transform.
     root_seed = _urdf_root_seed(description)
     if root_seed is not None:
         chain_placed = {str(description.base_frame)} | {str(j.child_link) for j in pending}

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from openral_core import BoxShape, RobotDescription, ROSConfigError
 from openral_slam_bringup.depth_height_filter_node import (
+    _link_transforms_at_zero,
     derive_robot_relative_height_band,
     filter_depth_by_global_height,
     quaternion_to_matrix_z_row,
@@ -181,43 +182,73 @@ def test_derive_height_band_bridges_the_declared_urdf_root(
     assert band.max_z_m > 0.30
 
 
-@pytest.mark.parametrize(
-    ("robot_id", "unplaceable_link"),
-    [
-        # Partial — 1 of 9 volumes. The band still *looked* measured
-        # (``source`` said ``collision_geometry``) while silently omitting the
-        # gripper at the top of the chain.
-        ("franka_panda", "panda_hand"),
-        # Partial — 15 of 27. Every arm link plus the torso hangs off
-        # ``torso_link``, which no joint declares as a child, so the derived
-        # band was [-0.72, -0.02] m: a humanoid whose entire upper body sat
-        # outside its own "measured" navigation height.
-        ("g1", "torso_link"),
-        # Total — 16 of 16. Both arms root at ``openarm_*_link0``, which the
-        # manifest neither articulates nor bridges.
-        ("openarm", "openarm_left_link1"),
-    ],
-)
-def test_derive_height_band_refuses_an_unplaceable_collision_volume(
-    robot_id: str, unplaceable_link: str
-) -> None:
+def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
     """Declared geometry that cannot be placed refuses; it is never skipped.
 
-    Partial and total placement failure get the same answer on purpose. A band
+    Partial and total placement failure get the same answer on purpose: a band
     covering an arbitrary reachable subset of the robot is not a measurement of
-    the robot, and ``g1`` shows the partial case is the more dangerous one: it
-    keeps reporting ``collision_geometry`` as its source, so nothing downstream
-    can tell the difference between a measured band and a truncated one.
+    the robot, and the partial case is the more dangerous one — it keeps
+    reporting ``collision_geometry`` as its source, so nothing downstream can
+    tell a measured band from a truncated one.
+
+    ``franka_panda``, ``g1`` and ``openarm`` used to reach this refusal, because
+    their manifests could not place a rigid mount. That was a defect in the
+    manifests, not in the robots, and it is fixed — they now measure real bands
+    (see the test below). So the case is reproduced the only honest way left:
+    a real manifest with its declared mount taken away.
+    """
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
+    assert description.collision_geometry
+    assert description.fixed_attachments, "fixture precondition: the manifest declares a mount"
+    orphaned = description.model_copy(update={"fixed_attachments": []})
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        derive_robot_relative_height_band(orphaned)
+
+    message = str(excinfo.value)
+    assert "panda_hand" in message
+    assert orphaned.base_frame in message
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "recovered_link", "expected_max_z_m"),
+    [
+        # 1 of 9 volumes was unplaceable: the gripper at the top of the chain.
+        ("franka_panda", "panda_hand", 1.175),
+        # 15 of 27 — every arm link plus the torso. The band was [-0.72, -0.02] m,
+        # a humanoid whose entire upper body sat outside its own "measured"
+        # navigation height; it now reaches above the pelvis. The top is set by
+        # the torso volume, so it is stated in the URDF's waist convention
+        # (torso_link at z=0.054) — the model this manifest is lowered from.
+        ("g1", "torso_link", 0.518),
+        # 16 of 16 — total. Both arms hang off ``openarm_*_link0``.
+        ("openarm", "openarm_left_link1", 0.150),
+    ],
+)
+def test_derive_height_band_places_rigidly_mounted_links(
+    robot_id: str, recovered_link: str, expected_max_z_m: float
+) -> None:
+    """Rigid mounts come from ``fixed_attachments``, so these robots measure.
+
+    ``joints`` enumerates only movable joints, so a bolted-on hand or a
+    bimanual rig's arm pedestals are not in it — which is why these three
+    refused. The manifests are not missing the transforms: they declare them as
+    ``fixed_attachments``, the same list the safety kernel builds its collision
+    tree from. Reading the same source here is what keeps the height band
+    measuring the robot the kernel actually checks.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))
     assert description.collision_geometry
+    assert any(g.link_name == recovered_link for g in description.collision_geometry)
 
-    with pytest.raises(ROSConfigError) as excinfo:
-        derive_robot_relative_height_band(description)
+    band = derive_robot_relative_height_band(description)
 
-    message = str(excinfo.value)
-    assert unplaceable_link in message
-    assert description.base_frame in message
+    assert "collision_geometry" in band.source
+    assert band.max_z_m == pytest.approx(expected_max_z_m, abs=1e-3)
+    # Every declared volume was placed — a partial walk would have refused.
+    placed = _link_transforms_at_zero(description)
+    for geom in description.collision_geometry:
+        assert str(geom.link_name) in placed
 
 
 def test_derive_height_band_keeps_the_floor_for_a_manifest_without_collision_geometry() -> None:
