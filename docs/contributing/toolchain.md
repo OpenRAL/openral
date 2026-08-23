@@ -138,6 +138,17 @@ just ros2-test                  # colcon test + colcon test-result --verbose
 source install/setup.bash       # after build
 ```
 
+**Adding a Python node? Commit it mode 100755.** `just ros2-build` passes
+`--symlink-install`, so `install(PROGRAMS …)` *symlinks* the node into
+`install/lib/<pkg>/` instead of copying it — which means CMake's "make it
+executable on install" never happens and the libexec entry inherits the source
+file's mode. `launch_ros` resolves `executable=` with `shutil.which()` over that
+directory, gets `None` for a 0644 file, and raises `executable '<name>' not
+found on the libexec directory` — abandoning the **entire** launch description,
+not just the one node. A `chmod +x` alone is not enough (it leaves a 100644 blob
+in the commit); use `git update-index --chmod=+x <file>`.
+`tests/unit/test_ros_node_exec_bits.py` enforces this for every package.
+
 ## GPU motion planning — cuMotion (optional)
 
 NVIDIA Isaac ROS **cuMotion** is a CUDA-accelerated MoveIt planning pipeline
