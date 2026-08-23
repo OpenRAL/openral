@@ -35,10 +35,10 @@
 - `probe_network(*, warnings=None) -> NetworkProbeResult` — Hostname / per-interface MAC / IPv4 / MTU / link-speed / default route via psutil.
 
 ### `python/detect/src/openral_detect/registry.py`
-- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve `"so101"` / `"so100"` / `"aloha"` / `"openarm_v2"` / … to `robots/<name>/robot.yaml`. Two-step: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR` (a bare Feetech plug-in resolves to `so101`), then the slug tried verbatim as a `robots/<slug>/` dir — so an operator override can name any committed robot directly (`"so100_follower"`). (L68)
-- `signature_for_realsense(model_id) -> SensorSignature` (L112)
-- `signature_for_v4l2(name) -> SensorSignature` (L117)
-- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L122)
+- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve `"so101"` / `"so100"` / `"aloha"` / `"openarm_v2"` / … to `robots/<name>/robot.yaml`. Two-step: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR` (a bare Feetech plug-in resolves to `so101`), then the slug tried verbatim as a `robots/<slug>/` dir — so an operator override can name any committed robot directly (`"so100_follower"`). The `robots/` tree is located by walking up from the package to the nearest ancestor holding both `robots/` and `python/`, with the live CWD as a fallback, so resolution does not depend on where the operator ran `openral detect` from. (L101)
+- `signature_for_realsense(model_id) -> SensorSignature` (L145)
+- `signature_for_v4l2(name) -> SensorSignature` (L150)
+- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L155)
 
 ### `python/detect/src/openral_detect/report.py`
 

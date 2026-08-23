@@ -32,15 +32,48 @@ __all__ = [
 ]
 
 
-# Resolved against the workspace root at import time so the index works
-# whether the package is consumed from a checkout or from an installed wheel
-# next to a `robots/` tree.
-_REPO_ROOT_CANDIDATES: tuple[Path, ...] = (
-    # Editable install from the workspace.
-    Path(__file__).resolve().parents[5],
-    # Fallback: the user's CWD.
-    Path.cwd(),
-)
+# The workspace root is found by walking up from this module, so the index
+# works whether the package is consumed from a checkout or from an installed
+# wheel sitting next to a `robots/` tree.
+#
+# This was previously a hard-coded ``parents[5]``, which overshot the root by
+# one level (this file is 4 deep: ``python/detect/src/openral_detect/``, and
+# ``openral_core.assets`` uses ``parents[4]`` at the identical depth). The
+# index therefore never resolved from the package at all — every successful
+# lookup was coming from the CWD fallback, so running ``openral detect``
+# from anywhere but the repo root silently produced an empty scaffold for a
+# robot the probes had already identified. An upward search is used instead
+# of a fixed index so moving this module cannot silently break it again.
+#
+# Both markers are required: a bare `robots/` directory is a plausible name
+# for unrelated user content, while `robots/` beside `python/` is this
+# workspace's shape.
+_WORKSPACE_MARKERS: tuple[str, ...] = ("robots", "python")
+_MAX_ROOT_SEARCH_DEPTH = 6
+
+
+def _discover_workspace_root() -> Path | None:
+    """Nearest ancestor of this module that looks like the OpenRAL workspace."""
+    here = Path(__file__).resolve()
+    for ancestor in here.parents[:_MAX_ROOT_SEARCH_DEPTH]:
+        if all((ancestor / marker).is_dir() for marker in _WORKSPACE_MARKERS):
+            return ancestor
+    return None
+
+
+_PACKAGE_WORKSPACE_ROOT: Path | None = _discover_workspace_root()
+
+
+def _repo_root_candidates() -> tuple[Path, ...]:
+    """Roots to search for ``robots/<name>/robot.yaml``, best first.
+
+    The CWD is read per call rather than captured at import, so a caller that
+    changes directory (or a test that uses ``monkeypatch.chdir``) sees the
+    directory it is actually in.
+    """
+    if _PACKAGE_WORKSPACE_ROOT is None:
+        return (Path.cwd(),)
+    return (_PACKAGE_WORKSPACE_ROOT, Path.cwd())
 
 
 _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
@@ -102,7 +135,7 @@ def canonical_robot_path(bh_robot_type: str) -> Path | None:
     sub = _OPENRAL_ROBOT_TYPE_TO_DIR.get(bh_robot_type, bh_robot_type)
     if not sub:
         return None
-    for root in _REPO_ROOT_CANDIDATES:
+    for root in _repo_root_candidates():
         candidate = root / "robots" / sub / "robot.yaml"
         if candidate.is_file():
             return candidate
