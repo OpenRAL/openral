@@ -217,10 +217,14 @@ skip_patterns = [
 # The list is fail-closed in BOTH directions: a lane listed here that starts
 # producing passing tests ALSO fails, telling you to remove it, so the
 # declaration cannot quietly go stale and mask a lane that became satisfiable.
+#
+# Membership is EVIDENCE-BASED, from observed hosted runs: these three are the
+# lanes that reported "produced no passing tests" on every run. `rlbench` is
+# deliberately NOT here — it yields 6 passing tests plus one CoppeliaSim-sidecar
+# skip, so it is a partly-gated lane that must keep proving those 6.
 gated_lanes = [
   "gr00t",
   "isaacsim",
-  "rlbench",
   "robotwin",
 ]
 
