@@ -15,6 +15,7 @@ import json
 from typing import get_args
 
 import jsonschema
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from openral_core.schemas import (
@@ -99,6 +100,7 @@ from openral_core.schemas import (
     WorldCollisionPrimitive,
     WorldState,
 )
+from pydantic import ValidationError
 
 # ─── Shared primitive strategies ──────────────────────────────────────────────
 
@@ -562,6 +564,30 @@ def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
 def test_fuzz_world_collision_primitive(instance: WorldCollisionPrimitive) -> None:
     """WorldCollisionPrimitive round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(WorldCollisionPrimitive, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_link_collision_geometry_st)
+def test_fuzz_collision_shape_tag_survives_round_trip(instance: LinkCollisionGeometry) -> None:
+    """The union re-validates to the *same variant*, and refuses the tag's removal.
+
+    ``_round_trip_and_validate`` compares by equality, which a wrong-variant
+    resolution could in principle satisfy; this asserts variant identity
+    directly. It also pins the twin hazards of a defaulted discriminator:
+    a dump must always carry the tag, and a payload stripped of it must be
+    rejected rather than structurally guessed.
+    """
+    payload = json.loads(instance.model_dump_json())
+    assert payload["shape"]["shape"] == instance.shape.shape, "dump dropped the discriminator"
+
+    reloaded = LinkCollisionGeometry.model_validate(payload)
+    assert type(reloaded.shape) is type(instance.shape)
+    assert reloaded == instance
+
+    del payload["shape"]["shape"]
+    with pytest.raises(ValidationError) as excinfo:
+        LinkCollisionGeometry.model_validate(payload)
+    assert excinfo.value.errors()[0]["type"] == "union_tag_not_found"
 
 
 @_FUZZ_SETTINGS

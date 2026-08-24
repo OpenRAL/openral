@@ -13,7 +13,17 @@ import math
 import re
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, ClassVar, Literal, NamedTuple, Self, TypeAlias, TypeVar, get_args
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    NamedTuple,
+    Self,
+    TypeAlias,
+    TypeVar,
+    get_args,
+)
 
 from pydantic import (
     AliasChoices,
@@ -1447,15 +1457,48 @@ class BoxShape(BaseModel):
     half_extents_m: tuple[PositiveFloat, PositiveFloat, PositiveFloat]
 
 
-CollisionShape: TypeAlias = CapsuleShape | SphereShape | BoxShape
+CollisionShape: TypeAlias = Annotated[
+    CapsuleShape | SphereShape | BoxShape, Field(discriminator="shape")
+]
 """Discriminated union of convex collision primitives.
 
 The discriminator field is ``shape``. Used by
-:class:`LinkCollisionGeometry` (robot links) and
-:class:`WorldCollisionPrimitive` (world obstacles). Mesh primitives are
+:class:`LinkCollisionGeometry` (robot links),
+:class:`WorldCollisionPrimitive` (world obstacles) and
+:class:`AttachedCollisionPrimitive` (carried payloads). Mesh primitives are
 intentionally excluded — the allocation-free safety kernel checks only
 convex analytic shapes; mesh-accurate collision stays a planning-layer
 concern.
+
+**The discriminator is enforced, not merely documented.** Until it was
+annotated, resolution worked only by accident: pydantic v2's *smart union*
+tried each member left-to-right and ``extra="forbid"`` plus the per-member
+``Literal`` defaults happened to make exactly one fit. That is a structural
+match on the field set, not on the tag — so a member whose fields are a
+superset of an earlier member's would have been resolved to the wrong member
+*silently*, and a typo'd tag produced six errors — one per (variant, field)
+mismatch across all three branches — none of which named the bad tag. With
+``Field(discriminator="shape")`` pydantic reads ``shape`` first and reports a
+single error that enumerates the valid tags.
+
+Consequences worth knowing:
+
+- **Validating a mapping now requires the ``shape`` key.** A dict or YAML
+  block carrying only ``{"radius_m": ...}`` used to resolve to
+  :class:`SphereShape` by structure; it is now rejected with
+  ``union_tag_not_found``. Every manifest in ``robots/`` already writes the
+  tag explicitly (``shape: {shape: "box", ...}``), and the tag has been the
+  documented contract since this alias was introduced, so this narrows the
+  implementation onto the published contract rather than changing it — no
+  ``schema_version`` bump, no migrator. A third-party manifest that omitted
+  the tag gets a loud, named refusal rather than a silently guessed
+  primitive.
+- **Constructing a member directly is unaffected** — ``BoxShape(...)`` still
+  fills ``shape="box"`` from its default. The discriminator governs
+  *validation of a mapping*, not instantiation.
+- **Never dump a shape with ``exclude_defaults=True``.** The tag is a
+  defaulted field, so excluding defaults drops it and the resulting mapping
+  no longer re-validates. Nothing in-tree does this; keep it that way.
 """
 
 

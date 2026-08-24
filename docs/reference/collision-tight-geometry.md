@@ -853,13 +853,30 @@ multi-primitive link already validates. `schema_version` is
 change under §1.6 — every existing manifest still validates — so no bump and no
 migrator.
 
-**One finding that should gate any new shape variant.** `CollisionShape` is
-documented as a discriminated union but **is not one**: there is no
-`Field(discriminator="shape")` anywhere in `schemas.py`. Resolution works today
-only through pydantic v2 smart-union plus `extra="forbid"` plus the `Literal`
-defaults. A new variant whose field set is a superset of an existing member's
-would resolve to the wrong member *silently*. Adding the discriminator at the
-three `shape:` sites should be a prerequisite, not a nicety.
+**One finding that should gate any new shape variant — now closed.** This study
+found `CollisionShape` documented as a discriminated union while **not being
+one**: there was no `Field(discriminator="shape")` anywhere in `schemas.py`, and
+resolution worked only through pydantic v2 smart-union plus `extra="forbid"`
+plus the `Literal` defaults. A new variant whose field set is a superset of an
+existing member's would have resolved to the wrong member *silently*. The alias
+now carries `Field(discriminator="shape")`, which covers all three `shape:`
+sites at once (`LinkCollisionGeometry`, `WorldCollisionPrimitive`,
+`AttachedCollisionPrimitive`) because the annotation lives on the alias rather
+than on each field. Measured effect: an unknown tag went from six per-variant
+errors naming none of the valid tags to one error enumerating
+`'capsule', 'sphere', 'box'`, and an untagged mapping went from being silently
+accepted as a `SphereShape` to `union_tag_not_found`.
+
+The narrowing is real but lands on the published contract rather than past it:
+the tag has been the documented discriminator since the alias was introduced,
+and all 116 `collision_geometry` entries across the 17 committed manifests
+already write it explicitly. `schema_version` stays `"0.1"` with no migrator
+(§10.2's reading of §1.6). The generated JSON Schema now emits `oneOf` plus a
+`discriminator` mapping instead of a bare `anyOf`, so an external consumer can
+finally see which field is the tag — note it stays *looser* than runtime, since
+the per-variant `Literal` defaults keep `shape` out of `required`. Dropping
+those defaults would close that gap but break direct construction at ~40 sites,
+so they stay.
 
 **Two** downstream consumers still **fail open** on an unknown shape and would
 mis-lower a new variant rather than reject it: `envelope_loader.py:605` (an `else`
@@ -1123,11 +1140,12 @@ occupancy test would move the recovery ceiling. Neither shrinks a safety envelop
 so neither carries the containment obligation everything in §12.2 does.
 
 **12.8 Independent of all the above**, two items this study surfaced and did not
-cause: add `Field(discriminator="shape")` to `CollisionShape` — it is documented
-as a discriminated union at `schemas.py:1453` but is a bare `TypeAlias` union at
-`schemas.py:1450`, with no `Field(discriminator=...)` anywhere — before any new
-shape variant is added (§10.2); and close the two remaining fail-open shape
-branches, following the fail-closed pattern #160 established in the CLI.
+cause. The first is **now closed**: `CollisionShape` was documented as a
+discriminated union but was a bare `TypeAlias` union with no
+`Field(discriminator=...)` anywhere; it now carries the discriminator on the
+alias, so all three `shape:` sites are tagged at once (§10.2). Still open: the
+two remaining fail-open shape branches, which should follow the fail-closed
+pattern #160 established in the CLI.
 
 **The third item is already done.** This study flagged
 `urdf_lowering.lower_link_geometry`'s mesh path as a live trap that would

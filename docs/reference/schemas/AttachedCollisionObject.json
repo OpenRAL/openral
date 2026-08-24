@@ -5,7 +5,15 @@
       "description": "One bounded payload primitive positioned in its object frame.",
       "properties": {
         "shape": {
-          "anyOf": [
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxShape",
+              "capsule": "#/$defs/CapsuleShape",
+              "sphere": "#/$defs/SphereShape"
+            },
+            "propertyName": "shape"
+          },
+          "oneOf": [
             {
               "$ref": "#/$defs/CapsuleShape"
             },
