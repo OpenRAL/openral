@@ -167,8 +167,9 @@ def test_send_action_surfaces_terminal_guard_without_reset() -> None:
 #
 # Before the fix ``_probe_env_action_dim`` fell back to a hardcoded 11 for any
 # backend that didn't expose ``action_dim``. The native MuJoCo backends
-# (so101_box → 6, tabletop_push → robot actuator count, openarm_tabletop_pnp →
-# bimanual state_dim) require a specific width and raise on a 11-wide
+# (so101_box → 6, tabletop_push → robot actuator count; and, in the sibling
+# `test_sim_attached_openarm_action_dim.py`, openarm_tabletop_pnp → bimanual
+# state_dim) require a specific width and raise on a 11-wide
 # ``env.step``. Each now reports its true width via an ``action_dim`` property,
 # so the probe resolves the authoritative width for a HAL built with NO
 # explicit ``env_action_dim`` — used by both ``send_action`` and ``idle_step``.
@@ -219,35 +220,11 @@ def test_tabletop_push_action_dim_matches_robot_actuator_count() -> None:
     assert hal._env_action_dim == env.action_dim
 
 
-@_requires_renderer
-def test_openarm_tabletop_action_dim_matches_state_dim() -> None:
-    """Native openarm_tabletop_pnp reports its bimanual state_dim; the HAL probe resolves it.
-
-    Built through the deploy-sim ``build_sim_env_from_yaml`` loader (robosuite
-    MJCF wrapper). The ``openarm_tabletop_pnp`` scene mandates a ``base_pose``
-    at compose time; the loader now propagates the
-    SimScene YAML's ``base_pose`` into the composed ``SimEnvironment``,
-    so the scene builds through the loader exactly as it does through the direct
-    factory path.
-    """
-    pytest.importorskip("openral_sim")
-    pytest.importorskip("mujoco")
-    pytest.importorskip("robosuite")
-    from openral_core import RobotDescription
-    from openral_hal.sim_attached import SimAttachedHAL
-    from openral_hal.sim_bringup import build_sim_env_from_yaml
-
-    env, seed = build_sim_env_from_yaml(
-        "scenes/sim/openarm_tabletop.yaml", robot_id_fallback="openarm"
-    )
-    # state_dim is derived from the manifest joint count (bimanual OpenArm v2).
-    assert env.action_dim == env._state_dim
-    assert env.action_dim > 0
-
-    desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-    hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
-    hal.connect()
-    assert hal._env_action_dim == env.action_dim
+# NB: the openarm_tabletop_pnp counterpart of the two tests above deliberately
+# does NOT live here — see `test_sim_attached_openarm_action_dim.py`. This is a
+# LIBERO file (robosuite==1.4); the OpenArm scene needs robosuite>=1.5, and
+# tools/test_selection.toml assigns a dependency lane per FILE, so a file
+# holding both is always wrong for one of them.
 
 
 def test_probe_raises_for_non_introspectable_env_without_override() -> None:

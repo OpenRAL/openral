@@ -1929,6 +1929,56 @@ def _display_install_banner(plan: BackendInstallPlan) -> None:
     )
 
 
+def _just_free_equivalent(manual_hint: str) -> str | None:
+    """Rewrite a ``just sync …`` hint into the commands that recipe actually runs.
+
+    Mirrors the ``sync`` recipe in the repo ``Justfile``: force
+    ``--all-packages`` unless the caller already scoped the sync, then repair
+    the malformed ``hf-libero`` install. Returns ``None`` for a hint that is not
+    a ``just sync`` invocation (e.g. the ``git clone …`` sidecar hints) — those
+    are runnable as they stand.
+
+    Example:
+        >>> _just_free_equivalent("just sync --group libero")  # doctest: +ELLIPSIS
+        'uv sync --all-packages --group libero && uv run ...repair_hf_libero_install.py'
+        >>> _just_free_equivalent("git clone https://example.invalid/x") is None
+        True
+    """
+    prefix = "just sync "
+    if not manual_hint.startswith(prefix):
+        return None
+    args = manual_hint[len(prefix) :].strip()
+    scoped = any(flag in f" {args} " for flag in (" --all-packages ", " --package ", " -p "))
+    sync = f"uv sync {args}" if scoped else f"uv sync --all-packages {args}"
+    return f"{sync} && uv run --no-sync python scripts/repair_hf_libero_install.py"
+
+
+def remediation(manual_hint: str) -> str:
+    """Return ``manual_hint``, plus a runnable equivalent when ``just`` is absent.
+
+    Every hint in this module names ``just sync …`` because that is the repo's
+    documented entry point (CLAUDE.md — "always ``just sync`` (never bare ``uv
+    sync``)"). But these messages are also raised inside environments that never
+    installed ``just``: CI runners, Docker images, a fresh box. A remediation
+    you cannot run where it was printed is a defect of its own — it costs the
+    reader a round trip to find out the instruction was impossible, which is
+    exactly how the hosted `select-and-test` runner behaved. Keep the canonical
+    command first (what the docs say, and what a normal dev host runs) and
+    append the expansion only when the binary really is missing, so the common
+    case stays uncluttered.
+
+    Example:
+        >>> "just sync --group libero" in remediation("just sync --group libero")
+        True
+    """
+    if shutil.which("just") is not None:
+        return manual_hint
+    equivalent = _just_free_equivalent(manual_hint)
+    if equivalent is None:
+        return manual_hint
+    return f"{manual_hint}\n  (`just` is not on PATH here — equivalently: {equivalent})"
+
+
 def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
     """Refuse to re-pin a distribution this interpreter has already imported.
 
@@ -1967,7 +2017,7 @@ def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
         f"would swap the package underneath live objects and produce confusing "
         f"duplicate-class errors (e.g. 'X is not a MujocoXML instance') rather "
         f"than a clean failure.\n"
-        f"Install it first, then re-run in a fresh process:\n  " + plan.manual_hint
+        f"Install it first, then re-run in a fresh process:\n  " + remediation(plan.manual_hint)
     )
 
 
@@ -2017,7 +2067,8 @@ def ensure_backend_deps(backend_id: str) -> None:
             if not typer.confirm(f"Install {plan.backend_id} deps now?", default=False):
                 raise ROSConfigError(
                     f"{plan.backend_id} backend not installed. Either set "
-                    f"{_AUTO_INSTALL_ENV}=1 and re-run, or install manually:\n  " + plan.manual_hint
+                    f"{_AUTO_INSTALL_ENV}=1 and re-run, or install manually:\n  "
+                    + remediation(plan.manual_hint)
                 )
 
         for step in plan.steps:
@@ -2028,7 +2079,7 @@ def ensure_backend_deps(backend_id: str) -> None:
                 raise ROSConfigError(
                     f"{plan.backend_id} install failed at step "
                     f"{step.description!r}: {_step_failure_detail(exc)}Finish manually:\n  "
-                    + plan.manual_hint
+                    + remediation(plan.manual_hint)
                 ) from exc
 
         # Some packages need importlib's caches invalidated for newly-installed
@@ -2067,7 +2118,7 @@ def ensure_backend_deps(backend_id: str) -> None:
             raise ROSConfigError(
                 f"{plan.backend_id} install ran to completion but the probe "
                 f"still fails. Inspect the install output above and finish "
-                f"manually:\n  " + plan.manual_hint
+                f"manually:\n  " + remediation(plan.manual_hint)
             )
 
         # Post-install: silence the "No private macro file found" warnings

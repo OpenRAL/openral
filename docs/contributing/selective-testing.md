@@ -80,6 +80,35 @@ suite.
    real LeRobot dataset. Wire-only sidecar tests use the `sidecar-wire` lane;
    sidecar-backed runtime lanes keep separate logical names because their
    preflight requirements differ.
+
+   **A selected directory counts as selecting the lane files inside it.**
+   `targets` mixes files (from the import scan) with directories (a package's
+   whole `tests/` dir, or an `extra_triggers` value like `tests/unit`), and a
+   directory string never `fnmatch`es a file glob. So a lane-owned file only
+   reachable *inside* a directory target used to drop out of its lane while
+   still being "selected": it ran in the cheap partition, skipped for want of
+   the optional stack, and reported green. That is the exact failure this
+   mechanism exists to prevent, and it is why the only `python/hal/tests` files
+   ever reaching the `libero` lane were the two in `isolate_globs` (peeling
+   makes them explicit file targets). The selector now expands directory targets
+   to the concrete lane files beneath them, so containment is enough. Practical
+   effect: a `robots/**` diff (which selects `tests/unit`) now also reruns the
+   `clip`, `opencv`, `onnx-export` and `sidecar-wire` lanes it always implicitly
+   selected but never actually exercised.
+
+   **A lane is assigned per FILE, so one file must not straddle two mutually
+   exclusive groups.** LIBERO pins `robosuite==1.4`, RoboCasa/OpenArm need
+   `>=1.5`, and the two cannot coexist in one venv (CLAUDE.md — "LIBERO↔RoboCasa
+   groups are mutually exclusive"). `python/hal/tests/test_sim_attached_action_dim.py`
+   used to hold both LIBERO tests and the OpenArm tabletop test; run in the
+   `libero` lane the LIBERO half imported robosuite 1.4 first, and the OpenArm
+   half then hit `openral_sim._deps._assert_no_live_dependency_swap`, which
+   correctly refuses to swap robosuite underneath live objects — so it *failed*
+   rather than ran, on every PR whose diff reached `python/hal/tests`. The
+   OpenArm test now lives in its own file
+   (`python/hal/tests/test_sim_attached_openarm_action_dim.py`) on the `robocasa`
+   lane. When you add a test needing a different optional stack from its file's
+   neighbours, give it its own file.
 7. **Ignored domains.** `cpp/**` is covered by `test-ros2` (colcon) / the
    safety-kernel ctest, not the Python suite, so a pure-C++ change selects
    nothing here rather than forcing a wasteful full Python run.

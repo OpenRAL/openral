@@ -160,11 +160,24 @@ jobs:
       # test_cli_dataset_from_bag, …) fail with "Could not load libtorchcodec
       # … libavutil.so.* cannot open shared object file" whenever a broad diff
       # selects them. Install FFmpeg (provides libavutil.so.58 → core6).
-      - name: Install native runtime libs (torchcodec + MuJoCo OSMesa)
+      #
+      # `just` is installed for TWO reasons, both load-bearing:
+      #   1. tools/verify_test_envs.py (the robocasa-gr1 / simpler-env lanes)
+      #      shells out to `just sync --group <g>`. Without the binary those
+      #      lanes died with a bare `FileNotFoundError: 'just'` traceback
+      #      before running a single test.
+      #   2. Every optional-dependency failure in openral_sim._deps prints
+      #      "Install it first, then re-run: just sync --all-packages --group
+      #      <g> --inexact". A remediation you cannot run in the environment
+      #      that printed it is worse than no remediation — it sends the next
+      #      reader down a dead end. CLAUDE.md §1.2 (truth over plausibility).
+      # ubuntu-24.04 ships just 1.21 in universe, so no extra action/tap.
+      - name: Install native runtime libs (torchcodec + MuJoCo OSMesa + just)
         if: steps.select.outputs.any == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6
+          sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6 just
+          just --version
 
       - name: Install Python dependencies
         if: steps.select.outputs.any == 'true'

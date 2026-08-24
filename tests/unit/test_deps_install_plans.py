@@ -1001,3 +1001,103 @@ def test_step_failure_detail_handles_a_spawn_failure() -> None:
     detail = _deps._step_failure_detail(excinfo.value)
     assert "line(s) of step output" not in detail
     assert detail.endswith(". ")
+
+
+# ─── The remediation a failure prints must be runnable where it printed ────
+
+
+def _uv_only_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Narrow PATH to the real `uv` and nothing else — no `just` in sight.
+
+    Symlinks the actual uv binary rather than writing a stand-in, so the plan
+    builders (which resolve `uv` through `shutil.which`) keep working against
+    the real tool while `just` is genuinely absent.
+    """
+    uv = _deps.shutil.which("uv")
+    assert uv is not None, "uv must be on PATH to run this suite"
+    (tmp_path / "uv").symlink_to(uv)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+
+class TestRemediationIsRunnableWhereItPrinted:
+    """`just sync …` is useless advice in an environment with no `just`.
+
+    The hosted `select-and-test` runner is exactly such an environment: the
+    OpenArm lane raised "Install it first, then re-run in a fresh process:
+    just sync --all-packages --group robocasa --inexact" on a container where
+    `just` does not exist, so following the instruction produced
+    `FileNotFoundError: 'just'`. CI now installs `just` (see
+    .github/workflows/test-selective.yml), but any other `just`-less container
+    reaching this message by another route must still get somewhere to go.
+    """
+
+    def test_expansion_matches_the_justfile_sync_recipe(self) -> None:
+        """Anti-drift: the expansion is only honest if the real recipe still does this.
+
+        Reads the repo's actual Justfile (CLAUDE.md §1.11 — a real fixture, not
+        a transcribed copy). If someone changes what `just sync` does, this
+        fails and the expansion gets updated with it.
+        """
+        recipe = (Path(__file__).resolve().parents[2] / "Justfile").read_text()
+        body = recipe.split("\nsync *args:", 1)[1].split("\n\n", 1)[0]
+        assert "uv sync --all-packages {{args}}" in body
+        assert "repair_hf_libero_install.py" in body
+
+    def test_unscoped_hint_gains_all_packages(self) -> None:
+        """`just sync --group X` forces --all-packages; a bare `uv sync` would not.
+
+        This is the whole reason the docs insist on `just sync`: without
+        `--all-packages`, `uv sync --group X` syncs only the workspace ROOT and
+        uninstalls every editable member. An expansion that dropped it would be
+        a venv-wrecker dressed as help.
+        """
+        expanded = _deps._just_free_equivalent("just sync --group libero")
+        assert expanded is not None
+        assert expanded.startswith("uv sync --all-packages --group libero")
+        assert "repair_hf_libero_install.py" in expanded
+
+    def test_already_scoped_hint_is_not_double_flagged(self) -> None:
+        """A hint that already says --all-packages must not get a second copy."""
+        hint = _openarm_robosuite_plan().manual_hint
+        expanded = _deps._just_free_equivalent(hint)
+        assert expanded is not None
+        assert expanded.count("--all-packages") == 1
+        assert expanded.startswith("uv sync --all-packages --group robocasa --inexact")
+
+    def test_non_sync_hint_is_left_alone(self) -> None:
+        """Sidecar hints (`git clone …`) are already runnable; do not rewrite them."""
+        assert _deps._just_free_equivalent("git clone https://example.invalid/x") is None
+
+    def test_message_carries_a_runnable_command_without_just(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """With `just` genuinely off PATH the message names something that works.
+
+        PATH is narrowed to a directory holding the real `uv` and nothing else
+        — a genuine environment change `shutil.which` resolves against, not a
+        patched lookup, and the exact shape of the CI runner that reported this
+        (uv present via setup-uv, `just` never installed).
+        """
+        _uv_only_path(monkeypatch, tmp_path)
+        assert _deps.shutil.which("just") is None
+        assert _deps.shutil.which("uv") is not None
+        hint = _openarm_robosuite_plan().manual_hint
+        text = _deps.remediation(hint)
+        assert hint in text, "the canonical command stays, for hosts that do have just"
+        assert "uv sync --all-packages --group robocasa --inexact" in text
+
+    def test_live_swap_refusal_surfaces_the_runnable_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The reported error — the OpenArm live-swap refusal — carries it too.
+
+        The guard itself is unchanged and still fires: this asserts the refusal
+        (which is correct behaviour) explains a remediation the reader can run.
+        """
+        _uv_only_path(monkeypatch, tmp_path)
+        monkeypatch.setitem(sys.modules, "robosuite", SimpleNamespace(__version__="1.4.0"))
+        with pytest.raises(ROSConfigError) as excinfo:
+            _deps._assert_no_live_dependency_swap(_openarm_robosuite_plan())
+        message = str(excinfo.value)
+        assert "already imported it" in message, "the guard must still refuse the swap"
+        assert "uv sync --all-packages --group robocasa --inexact" in message

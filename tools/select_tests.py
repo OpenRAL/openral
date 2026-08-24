@@ -276,13 +276,36 @@ def _requirement_targets(
     *,
     full_run: bool,
 ) -> dict[str, list[str]]:
-    """Selected pytest targets that need an opt-in dependency group."""
+    """Selected pytest targets that need an opt-in dependency group.
+
+    ``targets`` holds a mix of FILE paths (top-level ``tests/`` files picked by
+    the import scan) and DIRECTORY paths (a package's whole ``tests/`` dir, or
+    an ``extra_triggers`` value like ``tests/unit``). A requirement glob names a
+    file, and a directory string never ``fnmatch``es a file glob — so a
+    lane-owned file that is only reachable *inside* a selected directory used to
+    drop out of its lane entirely. It still ran in the cheap partition, where
+    the optional stack is absent and it skips: selected, never executed, green.
+    That is the exact silent-degradation shape this selector exists to prevent,
+    and it is why the only ``python/hal/tests`` files that ever reached the
+    ``libero`` lane were the two in ``isolate_globs`` (peeling makes them
+    explicit file targets). Expand directory targets to the concrete lane files
+    beneath them so containment is enough.
+    """
     selected = set(isolated_targets)
     if full_run:
         for globs in config.requirement_globs.values():
             selected.update(_targets_matching_globs(repo_root, globs))
     else:
         selected.update(targets)
+        dir_targets = [t for t in targets if (repo_root / t).is_dir()]
+        if dir_targets:
+            prefixes = tuple(t.rstrip("/") + "/" for t in dir_targets)
+            for globs in config.requirement_globs.values():
+                selected.update(
+                    hit
+                    for hit in _targets_matching_globs(repo_root, globs)
+                    if hit.startswith(prefixes)
+                )
 
     out: dict[str, list[str]] = {}
     for requirement, globs in config.requirement_globs.items():
@@ -304,6 +327,18 @@ def select(
 
     # 1. Blast radius — any match forces a full run. The full-suite invocation
     #    still collects the isolate files, so report them for separate execution.
+    #
+    #    KNOWN GAP (issue #163): `requirement_targets` is left EMPTY here, so a
+    #    blast-radius diff runs ZERO opt-in dependency lanes — the widest diffs
+    #    get the least lane verification, and a failing PR can go green merely
+    #    by also touching `pyproject.toml`. The `if full_run:` branch in
+    #    `_requirement_targets` exists to expand every glob for exactly this
+    #    case and is currently unreachable. It is NOT switched on here because
+    #    the lanes it would then run include several the hosted GPU-less runner
+    #    cannot satisfy (isaacsim / robotwin / gr00t sidecars, CUDA- and
+    #    Vulkan-gated tests), which would make every blast-radius PR permanently
+    #    red. That needs a per-lane host-requirement concept first — see #163.
+    #    Written down rather than left silent (CLAUDE.md §1.4).
     for rel in changed_files:
         for glob in config.full_run_globs:
             if fnmatch.fnmatch(rel, glob):
@@ -346,6 +381,13 @@ def select(
             return SelectionResult(
                 full_run=True,
                 full_run_reason=f"unattributed source change: {rel}",
+                # Must be reported like the blast-radius return above: the
+                # full-suite step `--ignore`s these and reruns each alone.
+                # Omitted, they ran INSIDE the broad `tests/unit/` process and
+                # reintroduced issue #24 — a non-zero exit after an all-pass
+                # summary. (`requirement_targets` stays empty here for the same
+                # reason as the blast-radius return — issue #163.)
+                isolated_targets=isolate_files,
             )
 
     affected = transitive_dependents(graph, changed_pkgs)
