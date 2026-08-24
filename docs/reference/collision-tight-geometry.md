@@ -1143,9 +1143,16 @@ so neither carries the containment obligation everything in §12.2 does.
 cause. The first is **now closed**: `CollisionShape` was documented as a
 discriminated union but was a bare `TypeAlias` union with no
 `Field(discriminator=...)` anywhere; it now carries the discriminator on the
-alias, so all three `shape:` sites are tagged at once (§10.2). Still open: the
-two remaining fail-open shape branches, which should follow the fail-closed
-pattern #160 established in the CLI.
+alias, so all three `shape:` sites are tagged at once (§10.2). **The second is
+now closed too**: both remaining fail-open shape branches —
+`envelope_loader.py`'s bare `else` and `AttachedCollisionPrimitive.fill_idl`'s
+`else`-less `isinstance` chain — now raise `ROSConfigError` naming the shape,
+following the fail-closed pattern #160 established in the CLI. They were not
+the same severity and the fixes say so: the lowering one was **unsafe** (an
+unknown primitive became a zero-length capsule of its `radius_m`, a strictly
+smaller volume than the manifest declared), while the encoder one was a
+diagnosability defect only, since every consumer already refuses the IDL's
+default tag `0`.
 
 **The third item is already done.** This study flagged
 `urdf_lowering.lower_link_geometry`'s mesh path as a live trap that would
