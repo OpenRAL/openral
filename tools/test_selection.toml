@@ -65,14 +65,19 @@ isolate_globs = [
   # absent in most local checkouts so it skips there, which is why this only ever
   # bit on CI. Run alone in a fresh interpreter it passes clean.
   "tests/sim/test_dataset_emission.py",
-  # Each spins up a real LIBERO / robosuite-MJCF (openarm) OffScreenRenderEnv.
+  # Each spins up a real LIBERO / native-MuJoCo OffScreenRenderEnv.
   # robosuite/MuJoCo EGL contexts do not survive a sibling env's teardown in the
-  # same interpreter: once one file's openarm env is GC'd, the next file's LIBERO
+  # same interpreter: once one file's env is GC'd, the next file's LIBERO
   # env dies at reset with "<...RethinkMount> is not a MujocoXML instance" — even
   # on the correct robosuite 1.4 (issue #24 class, NOT a 1.4-vs-1.5 conflict).
   # Each file passes cleanly run alone, so isolate them per-process. The libero
   # lane is a no-ROS host, so idle_step's one rclpy-gated test legitimately skips
   # there — the isolated runner tolerates that (see test-selective.yml run_lane).
+  # NB: these are LIBERO (robosuite==1.4) files. The OpenArm tabletop test that
+  # used to sit in action_dim.py needs robosuite>=1.5 and now lives in
+  # `test_sim_attached_openarm_action_dim.py` on the `robocasa` lane — see the
+  # note there. It is deliberately NOT listed here: an isolated slot tolerates
+  # skips, and this lane's whole job is to reject them.
   "python/hal/tests/test_sim_attached_action_dim.py",
   "python/hal/tests/test_sim_attached_idle_step.py",
   # Mixed CPU/GPU sidecar files: the hosted selective runner exercises the
@@ -116,6 +121,18 @@ isolate_globs = [
 ]
 "robots/aloha_bimanual/**" = ["tests/sim/test_aloha_bimanual_hal_mujoco.py"]
 "robots/gr1/**" = ["tests/sim/test_gr1_robocasa_env_build.py"]
+# Both files load `robots/openarm/robot.yaml` for real (the composed MJCF's
+# actuator inventory and the HAL's state/action widths are DERIVED from it), so
+# a manifest edit must re-run them. Without this a `robots/openarm/**` diff
+# selected only tests/unit + the ROS package dirs and could not reach either.
+"robots/openarm/**" = [
+  "tests/sim/test_openarm_scene_pnp.py",
+  "python/hal/tests/test_sim_attached_openarm_action_dim.py",
+]
+"scenes/*/openarm*.yaml" = [
+  "tests/sim/test_openarm_scene_pnp.py",
+  "python/hal/tests/test_sim_attached_openarm_action_dim.py",
+]
 "rskills/**" = ["tests/unit"]
 "rskills/act-aloha*/**" = ["tests/sim/test_aloha_bimanual_act_aloha.py"]
 "rskills/diffusion-pusht/**" = ["tests/sim/test_pusht_2d_diffusion_pusht.py"]
@@ -145,6 +162,22 @@ libero = [
 ]
 robocasa = [
   "tests/sim/test_so100_robosuite_lift.py",
+  # The OpenArm v2 tabletop scene is a robosuite>=1.5 MJCF wrapper (backend
+  # `openarm_robosuite`; install plan in `openral_sim._deps`). Both files below
+  # were previously lane-less or MIS-laned, so neither had ever executed on CI:
+  # the scene smoke test skipped everywhere (the cheap env has no robosuite at
+  # all), and the HAL action-dim test was folded into the `libero` lane, where
+  # robosuite==1.4 is installed — `ensure_backend_deps` then correctly refused
+  # to hot-swap robosuite under an interpreter that had already imported 1.4,
+  # failing the lane for every PR whose diff reached `python/hal/tests/`.
+  # Running them HERE gives them the robosuite>=1.5 env they actually need.
+  # Batched (not isolated) on purpose: they coexist with
+  # test_so100_robosuite_lift.py in one interpreter — this lane installs no
+  # LIBERO, so there is no 1.4-vs-1.5 seam and no cross-file EGL teardown
+  # problem — and the batched path is the one that REJECTS a skip. An isolated
+  # slot tolerates skips, which is exactly how these stopped running.
+  "tests/sim/test_openarm_scene_pnp.py",
+  "python/hal/tests/test_sim_attached_openarm_action_dim.py",
 ]
 robocasa-gr1 = [
   "tests/sim/test_gr1_robocasa_env_build.py",

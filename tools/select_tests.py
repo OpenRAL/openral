@@ -276,13 +276,36 @@ def _requirement_targets(
     *,
     full_run: bool,
 ) -> dict[str, list[str]]:
-    """Selected pytest targets that need an opt-in dependency group."""
+    """Selected pytest targets that need an opt-in dependency group.
+
+    ``targets`` holds a mix of FILE paths (top-level ``tests/`` files picked by
+    the import scan) and DIRECTORY paths (a package's whole ``tests/`` dir, or
+    an ``extra_triggers`` value like ``tests/unit``). A requirement glob names a
+    file, and a directory string never ``fnmatch``es a file glob — so a
+    lane-owned file that is only reachable *inside* a selected directory used to
+    drop out of its lane entirely. It still ran in the cheap partition, where
+    the optional stack is absent and it skips: selected, never executed, green.
+    That is the exact silent-degradation shape this selector exists to prevent,
+    and it is why the only ``python/hal/tests`` files that ever reached the
+    ``libero`` lane were the two in ``isolate_globs`` (peeling makes them
+    explicit file targets). Expand directory targets to the concrete lane files
+    beneath them so containment is enough.
+    """
     selected = set(isolated_targets)
     if full_run:
         for globs in config.requirement_globs.values():
             selected.update(_targets_matching_globs(repo_root, globs))
     else:
         selected.update(targets)
+        dir_targets = [t for t in targets if (repo_root / t).is_dir()]
+        if dir_targets:
+            prefixes = tuple(t.rstrip("/") + "/" for t in dir_targets)
+            for globs in config.requirement_globs.values():
+                selected.update(
+                    hit
+                    for hit in _targets_matching_globs(repo_root, globs)
+                    if hit.startswith(prefixes)
+                )
 
     out: dict[str, list[str]] = {}
     for requirement, globs in config.requirement_globs.items():

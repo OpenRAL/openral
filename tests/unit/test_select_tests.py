@@ -9,6 +9,7 @@ fail.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import sys
 from pathlib import Path
@@ -224,3 +225,56 @@ def test_unrelated_change_does_not_isolate_fork_test() -> None:
     # isolating un-selected tests would defeat selective execution.
     result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
     assert result.isolated_targets == []
+
+
+# --- lane files reachable only inside a selected DIRECTORY target -------------
+#
+# `targets` mixes files with directories. A requirement glob names a file, and a
+# directory string never fnmatches a file glob, so a lane-owned file that is only
+# reachable via its containing directory used to silently lose its lane: still
+# "selected", but run only in the cheap partition where it skips for want of the
+# optional stack — selected, never executed, green.
+
+_OPENARM_HAL_TEST = "python/hal/tests/test_sim_attached_openarm_action_dim.py"
+
+
+def test_lane_file_inside_a_selected_directory_reaches_its_lane() -> None:
+    # A python/hal change selects the whole `python/hal/tests` DIRECTORY. The
+    # OpenArm file lives inside it and is not peeled into isolated_targets, so
+    # only directory expansion can carry it into the robocasa lane.
+    result = select_tests.select(REPO_ROOT, ["python/hal/src/openral_hal/openarm.py"], CONFIG)
+    assert "python/hal/tests" in result.targets
+    assert _OPENARM_HAL_TEST not in result.targets, "the directory target covers it"
+    assert _OPENARM_HAL_TEST not in result.isolated_targets
+    assert _OPENARM_HAL_TEST in result.requirement_targets["robocasa"]
+
+
+def test_directory_expansion_does_not_invent_unselected_lane_files() -> None:
+    # Expansion must stay inside the selected directories: a leaf change that
+    # selects only python/wam's own tests must not drag in another dir's lane
+    # files. Widening here would defeat selective execution.
+    result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
+    assert _OPENARM_HAL_TEST not in result.requirement_targets.get("robocasa", [])
+
+
+def test_openarm_manifest_change_reaches_the_robosuite_lane() -> None:
+    # `robots/openarm/robot.yaml` is loaded for real by both OpenArm tests (the
+    # composed MJCF's actuators and the HAL's action width are derived from it),
+    # but a robots/** diff previously reached neither.
+    result = select_tests.select(REPO_ROOT, ["robots/openarm/robot.yaml"], CONFIG)
+    robocasa = result.requirement_targets["robocasa"]
+    assert _OPENARM_HAL_TEST in robocasa
+    assert "tests/sim/test_openarm_scene_pnp.py" in robocasa
+
+
+def test_openarm_test_is_not_on_the_libero_lane() -> None:
+    # LIBERO pins robosuite==1.4; the OpenArm scene needs >=1.5. A file on the
+    # libero lane that needs 1.5 hits _assert_no_live_dependency_swap and fails
+    # rather than runs — the regression this split exists to prevent.
+    libero = CONFIG.requirement_globs["libero"]
+    assert not any(fnmatch.fnmatch(_OPENARM_HAL_TEST, glob) for glob in libero), (
+        "the OpenArm test must never land in the robosuite==1.4 lane"
+    )
+    assert any(
+        fnmatch.fnmatch(_OPENARM_HAL_TEST, glob) for glob in CONFIG.requirement_globs["robocasa"]
+    )
