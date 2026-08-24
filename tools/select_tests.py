@@ -327,6 +327,18 @@ def select(
 
     # 1. Blast radius — any match forces a full run. The full-suite invocation
     #    still collects the isolate files, so report them for separate execution.
+    #
+    #    KNOWN GAP (issue #163): `requirement_targets` is left EMPTY here, so a
+    #    blast-radius diff runs ZERO opt-in dependency lanes — the widest diffs
+    #    get the least lane verification, and a failing PR can go green merely
+    #    by also touching `pyproject.toml`. The `if full_run:` branch in
+    #    `_requirement_targets` exists to expand every glob for exactly this
+    #    case and is currently unreachable. It is NOT switched on here because
+    #    the lanes it would then run include several the hosted GPU-less runner
+    #    cannot satisfy (isaacsim / robotwin / gr00t sidecars, CUDA- and
+    #    Vulkan-gated tests), which would make every blast-radius PR permanently
+    #    red. That needs a per-lane host-requirement concept first — see #163.
+    #    Written down rather than left silent (CLAUDE.md §1.4).
     for rel in changed_files:
         for glob in config.full_run_globs:
             if fnmatch.fnmatch(rel, glob):
@@ -369,6 +381,13 @@ def select(
             return SelectionResult(
                 full_run=True,
                 full_run_reason=f"unattributed source change: {rel}",
+                # Must be reported like the blast-radius return above: the
+                # full-suite step `--ignore`s these and reruns each alone.
+                # Omitted, they ran INSIDE the broad `tests/unit/` process and
+                # reintroduced issue #24 — a non-zero exit after an all-pass
+                # summary. (`requirement_targets` stays empty here for the same
+                # reason as the blast-radius return — issue #163.)
+                isolated_targets=isolate_files,
             )
 
     affected = transitive_dependents(graph, changed_pkgs)

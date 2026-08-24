@@ -278,3 +278,14 @@ def test_openarm_test_is_not_on_the_libero_lane() -> None:
     assert any(
         fnmatch.fnmatch(_OPENARM_HAL_TEST, glob) for glob in CONFIG.requirement_globs["robocasa"]
     )
+
+
+def test_unattributed_source_full_run_still_reports_isolated_targets() -> None:
+    # Same contract as test_full_run_still_reports_isolated_targets: the
+    # full-suite invocation collects the fork-crashers, so it must be told to
+    # --ignore them and rerun each alone. Omitted, they ran inside the broad
+    # `tests/unit/` process and reintroduced issue #24 — a non-zero exit after
+    # an all-pass summary.
+    result = select_tests.select(REPO_ROOT, ["scripts/mystery_tool.py"], CONFIG)
+    assert result.full_run
+    assert _FORK_TEST in result.isolated_targets
