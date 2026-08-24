@@ -103,6 +103,7 @@ nav:
     - Collision-primitive study (OBB vs sphere-swept box): reference/collision-primitive-study.md
     - Collision primitives, in pictures: reference/collision-primitive-images.md
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
+    - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md
