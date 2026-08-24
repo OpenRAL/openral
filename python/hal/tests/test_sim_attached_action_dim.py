@@ -12,70 +12,14 @@ first path resolves.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
+from _renderer_probe import requires_renderer
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-
-# The classic renderer calls glXOpenDisplay() and raises SIGABRT on headless
-# runners; EGL avoids the display requirement entirely.
-os.environ.setdefault("MUJOCO_GL", "egl")
-
-
-def _mujoco_renderer_probe_error() -> str | None:
-    """Return ``None`` if a MuJoCo off-screen renderer can be created, else a reason.
-
-    Creating a ``mujoco.Renderer`` on a headless host without a working GL/EGL
-    stack calls ``abort()`` at the C level (SIGABRT), which a Python
-    ``try/except`` cannot catch — an in-process probe therefore crashes pytest
-    outright (``Fatal Python error: Aborted``) and takes the whole partition
-    down with it. Running the probe in a subprocess turns that abort into a
-    non-zero exit code we can detect and convert into a clean skip reason,
-    leaving collection alive. Mirrors ``test_sim_attached_idle_step`` /
-    ``tests/sim/conftest`` (sibling test roots we cannot import across).
-    """
-    import subprocess
-    import sys
-
-    probe = (
-        "import mujoco;"
-        "m = mujoco.MjModel.from_xml_string('<mujoco><worldbody></worldbody></mujoco>');"
-        "r = mujoco.Renderer(m, 1, 1); r.close()"
-    )
-    env = dict(os.environ)
-    env.setdefault("MUJOCO_GL", "egl")
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-            check=False,
-        )
-    except FileNotFoundError:  # mujoco import unavailable in the probe interpreter
-        return "mujoco unavailable for renderer probe"
-    except subprocess.TimeoutExpired:
-        return "mujoco renderer probe timed out (120s)"
-    if proc.returncode == 0:
-        return None
-    stderr_lines = (proc.stderr or "").strip().splitlines()
-    detail = stderr_lines[-1] if stderr_lines else "no stderr"
-    return f"renderer probe exited {proc.returncode}: {detail}"
-
-
-# The native tabletop_push / openarm_tabletop backends render an RGB observation
-# inside ``connect()``; on a headless runner that SIGABRTs the process. Skip
-# those two per-test (the other tests here don't render and must still run).
-_RENDERER_ERROR = _mujoco_renderer_probe_error()
-_requires_renderer = pytest.mark.skipif(
-    _RENDERER_ERROR is not None,
-    reason=f"mujoco renderer unavailable: {_RENDERER_ERROR}",
-)
 
 
 class _NonIntrospectableEnv:
@@ -104,7 +48,7 @@ class _NonIntrospectableEnv:
         return None
 
 
-@_requires_renderer
+@requires_renderer
 def test_libero_action_dim_is_seven() -> None:
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
@@ -127,7 +71,7 @@ def test_libero_action_dim_is_seven() -> None:
     assert hal._env_action_dim == 7
 
 
-@_requires_renderer
+@requires_renderer
 def test_send_action_surfaces_terminal_guard_without_reset() -> None:
     """A backend terminal guard is surfaced; deploy sim never resets it."""
     pytest.importorskip("openral_sim")
@@ -175,7 +119,7 @@ def test_send_action_surfaces_terminal_guard_without_reset() -> None:
 # explicit ``env_action_dim`` — used by both ``send_action`` and ``idle_step``.
 
 
-@_requires_renderer
+@requires_renderer
 def test_so101_box_action_dim_is_six() -> None:
     """Native so101_box reports 6 and the HAL probe resolves it (not the 11 fallback)."""
     pytest.importorskip("openral_sim")
@@ -197,7 +141,7 @@ def test_so101_box_action_dim_is_six() -> None:
     assert hal._env_action_dim == 6
 
 
-@_requires_renderer
+@requires_renderer
 def test_tabletop_push_action_dim_matches_robot_actuator_count() -> None:
     """Native tabletop_push reports the robot's actuator count; the HAL probe resolves it."""
     pytest.importorskip("openral_sim")

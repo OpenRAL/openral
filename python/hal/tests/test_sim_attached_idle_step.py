@@ -14,73 +14,10 @@ These tests exercise the real LIBERO (robosuite OSC_POSE) digital twin the way
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import pytest
+from _renderer_probe import requires_renderer
 from openral_hal.sim_sensor_bridge import should_idle_step
-
-# Force EGL (off-screen) rendering so CI hosts without a display don't abort.
-# The classic renderer calls glXOpenDisplay() and raises SIGABRT on headless
-# runners; EGL avoids the display requirement entirely.
-os.environ.setdefault("MUJOCO_GL", "egl")
-
-
-def _mujoco_renderer_probe_error() -> str | None:
-    """Return ``None`` if a MuJoCo off-screen renderer can be created, else a reason.
-
-    Creating a ``mujoco.Renderer`` on a headless host without a working GL/EGL
-    stack calls ``abort()`` at the C level (SIGABRT), which a Python
-    ``try/except`` cannot catch — an in-process probe therefore crashes pytest
-    outright (``Fatal Python error: Aborted``) and takes the whole partition
-    down with it. Running the probe in a subprocess turns that abort into a
-    non-zero exit code we can detect and convert into a clean skip reason,
-    leaving collection alive. Mirrors ``tests/sim/conftest`` (a sibling test
-    root we cannot import across).
-    """
-    import subprocess
-    import sys
-
-    probe = (
-        "import mujoco;"
-        "m = mujoco.MjModel.from_xml_string('<mujoco><worldbody></worldbody></mujoco>');"
-        "r = mujoco.Renderer(m, 1, 1); r.close()"
-    )
-    env = dict(os.environ)
-    env.setdefault("MUJOCO_GL", "egl")
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-            check=False,
-        )
-    except FileNotFoundError:  # mujoco import unavailable in the probe interpreter
-        return "mujoco unavailable for renderer probe"
-    except subprocess.TimeoutExpired:
-        return "mujoco renderer probe timed out (120s)"
-    if proc.returncode == 0:
-        return None
-    stderr_lines = (proc.stderr or "").strip().splitlines()
-    detail = stderr_lines[-1] if stderr_lines else "no stderr"
-    return f"renderer probe exited {proc.returncode}: {detail}"
-
-
-# Every test below that builds a HAL (native-so101 or LIBERO) renders an
-# off-screen camera frame inside ``connect()``. On a headless CI runner
-# (no GPU/display) that either abort()s the process at the C level (native
-# MuJoCo Renderer → SIGABRT) or raises (robosuite's EGL path →
-# ``eglQueryString`` AttributeError) — so every render-dependent test must
-# skip when no off-screen renderer is available. The robosuite/libero
-# importorskips alone are not enough: a host can have robosuite installed yet
-# still lack a working GL/EGL stack.
-_RENDERER_ERROR = _mujoco_renderer_probe_error()
-_requires_renderer = pytest.mark.skipif(
-    _RENDERER_ERROR is not None,
-    reason=f"mujoco renderer unavailable: {_RENDERER_ERROR}",
-)
 
 
 def test_should_idle_step_yields_within_hold_engages_after() -> None:
@@ -160,7 +97,7 @@ def _first_frame(images: dict[str, object]) -> np.ndarray:
     raise AssertionError(f"no HWC frame in images keys={sorted(images)}")
 
 
-@_requires_renderer
+@requires_renderer
 def test_idle_step_advances_render_and_changes_frame() -> None:
     """Idle → idle_step() returns True and the rendered frame advances (un-freeze)."""
     pytest.importorskip("openral_sim")
@@ -181,7 +118,7 @@ def test_idle_step_advances_render_and_changes_frame() -> None:
     assert not np.array_equal(before, after)
 
 
-@_requires_renderer
+@requires_renderer
 def test_idle_step_advances_render_native_so101() -> None:
     """Idle → idle_step() advances the frame on the native-MuJoCo so101 backend.
 
@@ -200,7 +137,7 @@ def test_idle_step_advances_render_native_so101() -> None:
     assert not np.array_equal(before, after)
 
 
-@_requires_renderer
+@requires_renderer
 def test_idle_step_suppressed_when_estop_latched_native_so101() -> None:
     """Estop latched → idle_step() returns False, frame unchanged (native so101)."""
     pytest.importorskip("openral_sim")
@@ -214,7 +151,7 @@ def test_idle_step_suppressed_when_estop_latched_native_so101() -> None:
     assert np.array_equal(before, after)
 
 
-@_requires_renderer
+@requires_renderer
 def test_idle_step_suppressed_when_estop_latched() -> None:
     """Estop latched → idle_step() returns False and _last_obs is unchanged (freeze)."""
     pytest.importorskip("openral_sim")
@@ -300,7 +237,7 @@ class _RecordingNode:
         return self._logger
 
 
-@_requires_renderer
+@requires_renderer
 def test_idle_tick_disables_timer_after_action_dim_mismatch_native_so101() -> None:
     """CONTAINMENT: an idle_step raise → one WARNING, timer cancelled + disabled.
 
