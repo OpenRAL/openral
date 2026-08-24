@@ -113,9 +113,9 @@ _Selective test execution — maps a git diff to the minimal pytest targets that
 - `build_dependency_graph(repo_root) -> dict[str, set[str]]` (L130) — Import-name → direct `openral` deps, derived from each `pyproject.toml` (never hand-written).
 - `transitive_dependents(graph, changed) -> set[str]` (L154) — Closure of packages that depend on any changed package (includes `changed`).
 - `map_test_imports(repo_root) -> dict[str, set[str]]` (L181) — Each top-level `tests/` file → the `openral_*` packages it imports.
-- `select(repo_root, changed_files, config) -> SelectionResult` (L297) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests), peeling `isolate_globs` matches into `isolated_targets`.
-- `changed_files_from_git(base, head, repo_root) -> list[str]` (L404) — Merge-base `git diff --name-only base...head`.
-- `main(argv=None) -> int` (L444) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
+- `select(repo_root, changed_files, config) -> SelectionResult` (L320) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests), peeling `isolate_globs` matches into `isolated_targets`.
+- `changed_files_from_git(base, head, repo_root) -> list[str]` (L446) — Merge-base `git diff --name-only base...head`.
+- `main(argv=None) -> int` (L486) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._
