@@ -394,10 +394,21 @@ jobs:
             fi
           }
           run_lane() {
-            group="$1"
-            targets="$2"
+            # `local` is load-bearing. Without it this function's `rc=0` reset
+            # clobbered the CALLER's accumulator of the same name: a failing
+            # lane followed by any passing lane exited 0, so the step's status
+            # reflected only the LAST non-empty lane. Verified on real runs —
+            # 32624877346, 32646323789, 32647641634, 32655994733 and
+            # 32656309517 all reported SUCCESS while carrying 12-13
+            # `::error::opt-in lane ...` messages in the log, because `lowering`
+            # happened to run last and pass. The strict-lane gate was therefore
+            # advisory for every lane except the final one.
+            local group="$1"
+            local targets="$2"
             [ -z "$targets" ] && return 0
-            dependency_group="$group"
+            local dependency_group="$group"
+            local rc
+            local log
             extra_groups=()
             env_args=()
             if [ "$group" = "sim" ]; then
