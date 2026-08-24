@@ -368,7 +368,6 @@ jobs:
           ISAACSIM_TARGETS: ${{ steps.select.outputs.isaacsim_targets }}
           ROBOTWIN_TARGETS: ${{ steps.select.outputs.robotwin_targets }}
           SIDECAR_WIRE_TARGETS: ${{ steps.select.outputs.sidecar_wire_targets }}
-          RLDX_TARGETS: ${{ steps.select.outputs.rldx_targets }}
           DATASET_TARGETS: ${{ steps.select.outputs.dataset_targets }}
           RLBENCH_TARGETS: ${{ steps.select.outputs.rlbench_targets }}
           GR00T_TARGETS: ${{ steps.select.outputs.gr00t_targets }}
@@ -380,35 +379,40 @@ jobs:
           OPENCV_TARGETS: ${{ steps.select.outputs.opencv_targets }}
           LOWERING_TARGETS: ${{ steps.select.outputs.lowering_targets }}
           ISOLATED_TARGETS: ${{ steps.select.outputs.isolated_targets }}
+          LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
         run: |
-          # A grouped (batched) run must show passes and must not skip — a skip
-          # means the lane env was under-provisioned for a test that should run.
-          check_grouped_log() {
-            if [ "$rc" -eq 0 ] && ! grep -Eq '[0-9]+ passed' "$log"; then
-              echo "::error::opt-in lane ${group} selected tests but produced no passing tests"
-              rc=1
-            fi
-            if grep -Eq '[0-9]+ skipped' "$log"; then
-              echo "::error::opt-in lane ${group} still skipped selected tests; provision the missing env or move the target out of the strict lane"
-              rc=1
-            fi
+          # Accounting is done by tools/lane_report.py against pytest's junit
+          # XML, not by grepping the terse summary. Two reasons (issue #163):
+          #  * "any skip fails the lane" is right for anything this runner CAN
+          #    provide and wrong for anything it cannot. The report attributes a
+          #    skip to a DECLARED capability gap ([capability_gaps] in
+          #    tools/test_selection.toml) and fails on every other skip, so a
+          #    CUDA gate no longer reddens the lane while a real provisioning
+          #    gap ("panda.srdf not installed") still does.
+          #  * every lane now writes a LEDGER record, and the attest step below
+          #    checks the ledger against the selection. A lane that was selected
+          #    and never executed is a hard failure instead of an absence.
+          report_lane() {
+            local lane_rc=0
+            uv run --isolated --with pydantic --python 3.12 \
+              python tools/lane_report.py --ledger "$LEDGER" lane \
+              --lane "$1" --exit-code "$2" "${@:3}" || lane_rc=1
+            return "$lane_rc"
           }
           run_lane() {
             # `local` is load-bearing. Without it this function's `rc=0` reset
             # clobbered the CALLER's accumulator of the same name: a failing
             # lane followed by any passing lane exited 0, so the step's status
-            # reflected only the LAST non-empty lane. Verified on real runs —
-            # 32624877346, 32646323789, 32647641634, 32655994733 and
-            # 32656309517 all reported SUCCESS while carrying 12-13
-            # `::error::opt-in lane ...` messages in the log, because `lowering`
-            # happened to run last and pass. The strict-lane gate was therefore
-            # advisory for every lane except the final one.
+            # reflected only the LAST lane. Five runs went green carrying 12–13
+            # `::error::opt-in lane …` messages in the log.
             local group="$1"
             local targets="$2"
             [ -z "$targets" ] && return 0
             local dependency_group="$group"
-            local rc
+            local rc=0
+            local xml_args=()
             local log
+            local batched_xml
             extra_groups=()
             env_args=()
             if [ "$group" = "sim" ]; then
@@ -419,7 +423,7 @@ jobs:
             fi
             echo "::group::pytest opt-in group=${group} targets=${targets}"
             log=$(mktemp)
-            rc=0
+            batched_xml="$RUNNER_TEMP/lane-${group}-batched.xml"
             python3 scripts/repair_hf_libero_install.py || true
             # robocasa + robocasa-gr1 both need robosuite 1.5.2 from the git pin
             # (232ce7d4). The libero lane runs first and leaves robosuite 1.4.0
@@ -441,10 +445,12 @@ jobs:
             fi
             if [ "$rc" -eq 0 ]; then
               if [ "$group" = "simpler-env" ] || [ "$group" = "robocasa-gr1" ]; then
+                # verify_test_envs.py drives its own pytest, so there is no junit
+                # report to account from — judge it by exit code alone.
                 OPENRAL_ALLOW_ROBOCASA_ASSETS=1 uv run python tools/verify_test_envs.py \
                   --include-provisioned --groups "$group" 2>&1 | tee "$log" || rc=$?
                 python3 scripts/repair_hf_libero_install.py || true
-                check_grouped_log
+                report_lane "$group" "$rc" --from-exit-code || rc=1
               else
                 # Partition selected targets: files flagged for per-process
                 # isolation (ISOLATED_TARGETS, from tools/test_selection.toml
@@ -464,24 +470,34 @@ jobs:
                 if [ -n "$batched" ]; then
                   # shellcheck disable=SC2086 -- selector-emitted space-separated list.
                   env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest $batched \
-                    -q -rs -p no:launch_testing -p no:launch_ros 2>&1 | tee "$log" || rc=$?
+                    -q -rs -p no:launch_testing -p no:launch_ros \
+                    --junit-xml="$batched_xml" 2>&1 | tee "$log" || rc=$?
                   python3 scripts/repair_hf_libero_install.py || true
-                  check_grouped_log
+                  xml_args+=(--junit-xml "$batched_xml")
                 fi
+                # Isolated files are accounted by the SAME rule as the batched
+                # run. They used to be judged on exit code alone, so any skip
+                # inside one was invisible — the batched/isolated asymmetry was
+                # a place a real gap could hide. Every skip they emit today is
+                # explained by a declared capability gap, so applying the strict
+                # rule costs nothing and closes the hole.
+                iso_n=0
                 for t in $isolated_here; do
                   echo "::group::pytest (isolated) ${t}"
+                  iso_n=$((iso_n + 1))
+                  iso_xml="$RUNNER_TEMP/lane-${group}-iso-${iso_n}.xml"
                   iso_rc=0
                   env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest "$t" \
-                    -q -rs -p no:launch_testing -p no:launch_ros || iso_rc=$?
+                    -q -rs -p no:launch_testing -p no:launch_ros \
+                    --junit-xml="$iso_xml" || iso_rc=$?
                   python3 scripts/repair_hf_libero_install.py || true
                   echo "::endgroup::"
-                  # An isolated file may legitimately importorskip an optional dep
-                  # (e.g. rclpy on this no-ROS lane host): exit 5 == nothing
-                  # collected, a partial skip still exits 0. Only a real failure
-                  # (1 failed / 2 interrupted / segfault) fails the lane — mirrors
-                  # the full-run isolated path.
+                  # exit 5 == nothing collected (whole module importorskip'd):
+                  # a legitimate all-skipped outcome, judged from the report.
                   if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
+                  xml_args+=(--junit-xml "$iso_xml")
                 done
+                report_lane "$group" "$rc" "${xml_args[@]}" || rc=1
               fi
             fi
             echo "::endgroup::"
@@ -498,7 +514,6 @@ jobs:
           run_lane isaacsim "$ISAACSIM_TARGETS" || rc=1
           run_lane robotwin "$ROBOTWIN_TARGETS" || rc=1
           run_lane sidecar-wire "$SIDECAR_WIRE_TARGETS" || rc=1
-          run_lane rldx "$RLDX_TARGETS" || rc=1
           run_lane dataset "$DATASET_TARGETS" || rc=1
           run_lane rlbench "$RLBENCH_TARGETS" || rc=1
           run_lane gr00t "$GR00T_TARGETS" || rc=1
@@ -510,3 +525,38 @@ jobs:
           run_lane opencv "$OPENCV_TARGETS" || rc=1
           run_lane lowering "$LOWERING_TARGETS" || rc=1
           exit $rc
+
+      # The anti-vacuity gate. Everything above can fail loudly; this step
+      # exists for the case where nothing failed because nothing RAN. It
+      # cross-checks the lane ledger against the selector's own output, so
+      # "tested nothing" and "tested everything and passed" can no longer
+      # report the same result (issue #163):
+      #   * a full_run diff that expanded to zero lanes fails outright — that
+      #     is the exact regression #163 describes;
+      #   * a lane the selector chose that produced no ledger record fails as
+      #     "selected but never executed";
+      #   * the ledger itself is written to the job summary, naming every lane
+      #     that was declared-not-run and the capability it needs, so the
+      #     coverage gap is legible instead of invisible.
+      # `always()` so a red lane still publishes the ledger.
+      - name: Attest lane coverage
+        if: ${{ always() && steps.select.outputs.any == 'true' }}
+        env:
+          FULL_RUN: ${{ steps.select.outputs.full_run }}
+          REQUIREMENT_TARGETS_JSON: ${{ steps.select.outputs.requirement_targets_json }}
+          LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
+        run: |
+          python3 - > "$RUNNER_TEMP/selection.json" <<'PY'
+          import json, os, sys
+          json.dump(
+              {
+                  "full_run": os.environ.get("FULL_RUN", "false"),
+                  "requirement_targets_json": os.environ.get("REQUIREMENT_TARGETS_JSON") or "{}",
+              },
+              sys.stdout,
+          )
+          PY
+          uv run --isolated --with pydantic --python 3.12 \
+            python tools/lane_report.py --ledger "$LEDGER" attest \
+            --selection-json "$RUNNER_TEMP/selection.json" \
+            --summary "$GITHUB_STEP_SUMMARY"

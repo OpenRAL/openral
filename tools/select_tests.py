@@ -62,6 +62,26 @@ _IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+(openral_[a-z_]+)", re.MULTILINE
 _DEP_RE = re.compile(r"openral-[a-z-]+")
 
 
+class CapabilityGap(BaseModel):
+    """A capability the CI runner provably cannot provide (issue #163).
+
+    A skip whose reason matches ``skip_patterns`` is *declared-not-run* — named
+    and counted in the lane ledger — rather than a lane failure. Every other
+    skip still fails the lane, so a real provisioning gap (``panda.srdf not
+    installed``) can never hide behind a hardware excuse.
+    """
+
+    summary: str
+    satisfied_by: str
+    skip_patterns: list[str] = Field(default_factory=list)
+
+
+class HostedRunnerPolicy(BaseModel):
+    """Lanes with no satisfiable coverage on a GitHub-hosted runner."""
+
+    gated_lanes: list[str] = Field(default_factory=list)
+
+
 class SelectionConfig(BaseModel):
     """Typed view of ``tools/test_selection.toml`` (CLAUDE.md §2 — Pydantic for config)."""
 
@@ -70,6 +90,8 @@ class SelectionConfig(BaseModel):
     isolate_globs: list[str] = Field(default_factory=list)
     extra_triggers: dict[str, list[str]] = Field(default_factory=dict)
     requirement_globs: dict[str, list[str]] = Field(default_factory=dict)
+    capability_gaps: dict[str, CapabilityGap] = Field(default_factory=dict)
+    hosted_runner: HostedRunnerPolicy = Field(default_factory=HostedRunnerPolicy)
 
 
 class SelectionResult(BaseModel):
@@ -317,6 +339,34 @@ def _requirement_targets(
     return out
 
 
+def _full_run_result(
+    repo_root: Path,
+    config: SelectionConfig,
+    *,
+    reason: str,
+    isolate_files: list[str],
+) -> SelectionResult:
+    """Build the ``full_run`` verdict, WITH every opt-in lane expanded.
+
+    Issue #163: both full-run exits used to leave ``requirement_targets`` empty,
+    so a blast-radius diff ran zero opt-in lanes and reported success
+    indistinguishably from a diff that ran them all and passed. The widest diffs
+    got the least verification, and a red PR could be turned green by also
+    touching a full-run glob. A blast-radius change (root ``pyproject.toml``,
+    ``uv.lock``) is precisely a dependency change — the thing the lanes exist to
+    check — so it gets every lane, and the ones a hosted runner cannot satisfy
+    are declared, reported and accounted for rather than silently skipped.
+    """
+    return SelectionResult(
+        full_run=True,
+        full_run_reason=reason,
+        isolated_targets=isolate_files,
+        requirement_targets=_requirement_targets(
+            repo_root, config, set(), isolate_files, full_run=True
+        ),
+    )
+
+
 def select(
     repo_root: Path,
     changed_files: list[str],
@@ -326,26 +376,20 @@ def select(
     isolate_files = _isolate_files(repo_root, config)
 
     # 1. Blast radius — any match forces a full run. The full-suite invocation
-    #    still collects the isolate files, so report them for separate execution.
-    #
-    #    KNOWN GAP (issue #163): `requirement_targets` is left EMPTY here, so a
-    #    blast-radius diff runs ZERO opt-in dependency lanes — the widest diffs
-    #    get the least lane verification, and a failing PR can go green merely
-    #    by also touching `pyproject.toml`. The `if full_run:` branch in
-    #    `_requirement_targets` exists to expand every glob for exactly this
-    #    case and is currently unreachable. It is NOT switched on here because
-    #    the lanes it would then run include several the hosted GPU-less runner
-    #    cannot satisfy (isaacsim / robotwin / gr00t sidecars, CUDA- and
-    #    Vulkan-gated tests), which would make every blast-radius PR permanently
-    #    red. That needs a per-lane host-requirement concept first — see #163.
-    #    Written down rather than left silent (CLAUDE.md §1.4).
+    #    still collects the isolate files, so report them for separate execution,
+    #    and EVERY opt-in lane is expanded (issue #163): the widest diffs used to
+    #    get the least lane verification, and a red PR could be turned green just
+    #    by also touching `pyproject.toml`. The lanes a hosted runner cannot
+    #    satisfy are handled downstream by the declared capability gaps in
+    #    `[capability_gaps]` / `[hosted_runner]`, not by selecting nothing here.
     for rel in changed_files:
         for glob in config.full_run_globs:
             if fnmatch.fnmatch(rel, glob):
-                return SelectionResult(
-                    full_run=True,
-                    full_run_reason=f"{rel} matches full-run glob {glob!r}",
-                    isolated_targets=isolate_files,
+                return _full_run_result(
+                    repo_root,
+                    config,
+                    reason=f"{rel} matches full-run glob {glob!r}",
+                    isolate_files=isolate_files,
                 )
 
     dir_imports = package_dir_import_names(repo_root)
@@ -378,16 +422,15 @@ def select(
             direct_tests.add(key)
             reasons[key].append(f"test file {rel} changed")
         elif kind == "unattributed-source":
-            return SelectionResult(
-                full_run=True,
-                full_run_reason=f"unattributed source change: {rel}",
-                # Must be reported like the blast-radius return above: the
-                # full-suite step `--ignore`s these and reruns each alone.
-                # Omitted, they ran INSIDE the broad `tests/unit/` process and
-                # reintroduced issue #24 — a non-zero exit after an all-pass
-                # summary. (`requirement_targets` stays empty here for the same
-                # reason as the blast-radius return — issue #163.)
-                isolated_targets=isolate_files,
+            # Same contract as the blast-radius return above, lanes included:
+            # an unattributed source file is *by definition* the case where we
+            # cannot bound the blast radius, so it gets the widest verification,
+            # not the narrowest (issue #163).
+            return _full_run_result(
+                repo_root,
+                config,
+                reason=f"unattributed source change: {rel}",
+                isolate_files=isolate_files,
             )
 
     affected = transitive_dependents(graph, changed_pkgs)

@@ -106,16 +106,26 @@ _Private helper of `validation_matrix.py`. Recovered from `run_xr1_full.py` and 
 ### `tools/select_tests.py`
 _Selective test execution — maps a git diff to the minimal pytest targets that can observe it. Backs `just test-changed` / the `test-selective` workflow. See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
 
-- `class SelectionConfig(BaseModel)` (L65) — Typed view of `tools/test_selection.toml`: `full_run_globs`, `ignore_globs`, `isolate_globs`, `extra_triggers`.
-- `class SelectionResult(BaseModel)` (L75) — `full_run` / `full_run_reason` / `affected_packages` / `targets` / `isolated_targets` (own-process, issue #24) / `reasons` (per-target rationale).
-- `load_config(path) -> SelectionConfig` (L99) — Load + validate the TOML config.
-- `package_dir_import_names(repo_root) -> dict[str, str]` (L111) — `python/<dir>` → its `src/openral_*` import name.
-- `build_dependency_graph(repo_root) -> dict[str, set[str]]` (L130) — Import-name → direct `openral` deps, derived from each `pyproject.toml` (never hand-written).
-- `transitive_dependents(graph, changed) -> set[str]` (L154) — Closure of packages that depend on any changed package (includes `changed`).
-- `map_test_imports(repo_root) -> dict[str, set[str]]` (L181) — Each top-level `tests/` file → the `openral_*` packages it imports.
-- `select(repo_root, changed_files, config) -> SelectionResult` (L320) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests), peeling `isolate_globs` matches into `isolated_targets`.
-- `changed_files_from_git(base, head, repo_root) -> list[str]` (L446) — Merge-base `git diff --name-only base...head`.
-- `main(argv=None) -> int` (L486) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
+- `class CapabilityGap(BaseModel)` (L65) — A capability the CI runner provably cannot provide: `summary`, `satisfied_by`, `skip_patterns` (fnmatch globs matched against a skip's reason).
+- `class HostedRunnerPolicy(BaseModel)` (L79) — `gated_lanes`: lanes with zero satisfiable coverage on a hosted runner.
+- `class SelectionConfig(BaseModel)` (L85) — Typed view of `tools/test_selection.toml`: `full_run_globs`, `ignore_globs`, `isolate_globs`, `extra_triggers`, `requirement_globs`, `capability_gaps`, `hosted_runner`.
+- `class SelectionResult(BaseModel)` (L97) — `full_run` / `full_run_reason` / `affected_packages` / `targets` / `isolated_targets` (own-process, issue #24) / `requirement_targets` (per opt-in lane) / `reasons` (per-target rationale).
+- `load_config(path) -> SelectionConfig` (L121) — Load + validate the TOML config.
+- `package_dir_import_names(repo_root) -> dict[str, str]` (L133) — `python/<dir>` → its `src/openral_*` import name.
+- `build_dependency_graph(repo_root) -> dict[str, set[str]]` (L152) — Import-name → direct `openral` deps, derived from each `pyproject.toml` (never hand-written).
+- `transitive_dependents(graph, changed) -> set[str]` (L176) — Closure of packages that depend on any changed package (includes `changed`).
+- `map_test_imports(repo_root) -> dict[str, set[str]]` (L203) — Each top-level `tests/` file → the `openral_*` packages it imports.
+- `select(repo_root, changed_files, config) -> SelectionResult` (L370) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests), peeling `isolate_globs` matches into `isolated_targets`.
+- `changed_files_from_git(base, head, repo_root) -> list[str]` (L489) — Merge-base `git diff --name-only base...head`.
+- `main(argv=None) -> int` (L529) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
+
+### `tools/lane_report.py`
+_Opt-in lane accounting — decides, records and attests what each dependency lane actually ran. Makes a vacuous green impossible (issue #163). See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
+
+- `class LaneRecord(BaseModel)` (L83) — One lane's accounted outcome: `lane` / `status` (`ran` / `declared-not-run` / `failed`) / `passed` / `failed` / `declared_skips` (gap → count) / `undeclared_skips` / `note`; `.declared_total` property.
+- `read_junit(paths) -> tuple[int, int, list[str]]` (L126) — Aggregate junit XML reports into `(passed, failed, skip_reasons)`; a lane may emit a batched report plus one per isolated file.
+- `build_record(lane, *, passed, failed, skip_reasons, config, exit_code=None, from_exit_code=False) -> LaneRecord` (L151) — Apply the lane policy: declared capability gaps are allowed and attributed, every other skip fails, `gated_lanes` membership is checked in both directions.
+- `main(argv=None) -> int` (L367) — CLI; `lane` (account one lane's reports) / `attest` (cross-check the ledger against the selection, write the job summary).
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._

@@ -289,3 +289,46 @@ def test_unattributed_source_full_run_still_reports_isolated_targets() -> None:
     result = select_tests.select(REPO_ROOT, ["scripts/mystery_tool.py"], CONFIG)
     assert result.full_run
     assert _FORK_TEST in result.isolated_targets
+
+
+# --- issue #163: a blast-radius diff must run the lanes, not zero of them -----
+
+
+def test_full_run_expands_every_opt_in_lane() -> None:
+    """A blast-radius diff used to emit ``requirement_targets == {}``.
+
+    The consequence was the exact inversion of the intent: the WIDEST diffs got
+    the LEAST lane verification, and a red PR could be made green by also
+    touching `pyproject.toml`. A root `pyproject.toml` / `uv.lock` change is a
+    *dependency* change — precisely what the opt-in lanes exist to check.
+    """
+    result = select_tests.select(REPO_ROOT, ["pyproject.toml"], CONFIG)
+    assert result.full_run
+    assert result.requirement_targets, "a full run must select opt-in lanes (issue #163)"
+    # Every lane with at least one existing target file is expanded.
+    assert set(result.requirement_targets) == {
+        lane
+        for lane, globs in CONFIG.requirement_globs.items()
+        if select_tests._targets_matching_globs(REPO_ROOT, globs)
+    }
+
+
+def test_unattributed_source_full_run_also_expands_lanes() -> None:
+    # Same contract via the other full-run exit. An unattributed source file is
+    # by definition the case where the blast radius cannot be bounded, so it
+    # must get the widest verification, not the narrowest.
+    result = select_tests.select(REPO_ROOT, ["some/unknown/module.py"], CONFIG)
+    assert result.full_run
+    assert result.requirement_targets
+    # ...and it must still report the fork-isolated files (issue #24): omitted,
+    # they ran inside the broad `tests/unit/` process and crashed at teardown.
+    assert result.isolated_targets
+
+
+def test_full_run_lane_targets_all_exist_on_disk() -> None:
+    # A phantom target aborts the whole pytest session with "file or directory
+    # not found", so a stale glob must never reach a lane invocation.
+    result = select_tests.select(REPO_ROOT, ["uv.lock"], CONFIG)
+    for lane, targets in result.requirement_targets.items():
+        for target in targets:
+            assert (REPO_ROOT / target).exists(), f"{lane} lane target missing: {target}"
