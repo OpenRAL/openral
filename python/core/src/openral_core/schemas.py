@@ -2644,7 +2644,33 @@ class AttachedCollisionPrimitive(BaseModel):
         )
 
     def fill_idl(self, msg: object) -> None:
-        """Populate one duck-typed attached primitive without importing ROS."""
+        """Populate one duck-typed attached primitive without importing ROS.
+
+        Args:
+            msg: A duck-typed ``openral_msgs/AttachedCollisionPrimitive`` to
+                populate in place.
+
+        Raises:
+            ROSConfigError: The primitive is none of the three shapes the IDL
+                can carry.
+
+        The branch chain used to have no ``else``, so an unrepresentable shape
+        left ``shape_type`` at the IDL default ``0`` (no ``SHAPE_*`` constant is
+        ``0``) and ``shape_dimensions`` empty, and the message was published
+        anyway. That is **not** a safety hole today — every consumer already
+        refuses tag ``0``: the C++ kernel's attached-object ingest calls
+        ``fail_closed()`` on an unknown tag, and
+        ``openral_nav2_bringup.payload_scan_filter_node`` raises
+        ``ValueError``. What it was is a *diagnosability* hole, and a contract
+        that leans on every present and future consumer to keep guarding it: a
+        producer that cannot encode a shape would surface as an E-stop in the
+        safety kernel, or an exception inside an unrelated Nav2 node, one
+        process boundary away from the code that actually failed and with the
+        shape's name nowhere in the report. Refusing here names the shape at
+        the point of the defect. Mirrors the fail-closed pattern in
+        ``openral_cli.collision.collision_primitive_envelope`` and this class's
+        own :meth:`from_idl`, which already refuses an unknown ``shape_type``.
+        """
         if isinstance(self.shape, SphereShape):
             msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
             msg.shape_dimensions = [float(self.shape.radius_m)]  # type: ignore[attr-defined]
@@ -2659,6 +2685,13 @@ class AttachedCollisionPrimitive(BaseModel):
             msg.shape_dimensions = [  # type: ignore[attr-defined]
                 float(value) for value in self.shape.half_extents_m
             ]
+        else:
+            raise ROSConfigError(
+                f"attached collision primitive {self.shape.shape!r} has no "
+                "openral_msgs/AttachedCollisionPrimitive encoding. Add a SHAPE_* "
+                "constant and a branch here (and in from_idl) before carrying it "
+                "on a payload — it must never be published as an unset shape."
+            )
         pose = msg.pose_in_object  # type: ignore[attr-defined]
         pose.position.x, pose.position.y, pose.position.z = self.pose_in_object.xyz
         (

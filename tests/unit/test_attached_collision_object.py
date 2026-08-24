@@ -2,24 +2,46 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
 import pytest
 from openral_core import (
     AttachedCollisionObject,
     AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BoxShape,
+    CapsuleShape,
     JointState,
     PlaceDeclaration,
     PlaceRegion,
     Pose6D,
     RobotDescription,
+    SphereShape,
     SupportContactWitness,
     WorldState,
 )
+from openral_core.exceptions import ROSConfigError
 from openral_world_state import WorldStateAggregator
 from pydantic import ValidationError
 
 _ROBOT_YAML = "robots/panda_mobile/robot.yaml"
+
+
+@dataclass(frozen=True)
+class _CylinderShape:
+    """A fourth primitive kind — what a future ``CollisionShape`` member looks like.
+
+    ``CollisionShape`` is closed over sphere/capsule/box, so this is the only
+    way to reach the encoder's unknown-shape branch. Mirrors the stand-in in
+    ``tests/unit/test_collision_params.py`` and
+    ``packages/openral_slam_bringup/test/test_depth_height_filter.py``.
+    """
+
+    shape: str = "cylinder"
+    radius_m: float = 0.1
+    length_m: float = 0.4
 
 
 def _attachment(object_id: str = "baguette_seed1") -> AttachedCollisionObject:
@@ -459,3 +481,113 @@ def test_detaching_takes_the_declaration_with_it() -> None:
     snapshot = aggregator.snapshot()
     assert snapshot.attached_objects == []
     assert snapshot.place_declaration is None
+
+
+# ── AttachedCollisionPrimitive.fill_idl fail-closed contract ──────────────────
+
+_PRIMITIVE_MSG = Path("packages/msgs/msg/AttachedCollisionPrimitive.msg")
+
+
+def _idl_shape_constants() -> dict[str, int]:
+    """The ``SHAPE_*`` constants, read out of the real ``.msg``.
+
+    Deriving them keeps the duck-typed stand-in below honest: if the IDL ever
+    renumbers or renames a tag, these tests fail rather than silently agreeing
+    with a stale hand-copied number.
+    """
+    constants: dict[str, int] = {}
+    for line in _PRIMITIVE_MSG.read_text().splitlines():
+        match = re.match(r"\s*uint8\s+(SHAPE_\w+)\s*=\s*(\d+)", line)
+        if match:
+            constants[match.group(1)] = int(match.group(2))
+    return constants
+
+
+class _Vec:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    w: float = 0.0
+
+
+class _Pose:
+    def __init__(self) -> None:
+        self.position = _Vec()
+        self.orientation = _Vec()
+
+
+class _PrimitiveMsg:
+    """``openral_msgs/AttachedCollisionPrimitive`` shaped without importing ROS.
+
+    ``fill_idl`` is defined against this duck type on purpose (openral_core must
+    stay import-safe without a sourced ROS 2 install), so this is the real
+    interface under test, not a stand-in for one. Field defaults mirror the
+    IDL's: ``shape_type`` 0 and an empty ``shape_dimensions``.
+    """
+
+    def __init__(self) -> None:
+        for name, value in _idl_shape_constants().items():
+            setattr(self, name, value)
+        self.shape_type: int = 0
+        self.shape_dimensions: list[float] = []
+        self.pose_in_object = _Pose()
+
+
+def test_idl_reserves_zero_so_an_unset_shape_type_is_not_a_valid_tag() -> None:
+    """No ``SHAPE_*`` constant is 0 — the IDL default is an unencodable tag."""
+    constants = _idl_shape_constants()
+    assert constants == {"SHAPE_SPHERE": 1, "SHAPE_CAPSULE": 2, "SHAPE_BOX": 3}
+    assert 0 not in constants.values()
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_tag", "expected_dims"),
+    [
+        (SphereShape(radius_m=0.05), "SHAPE_SPHERE", [0.05]),
+        (CapsuleShape(radius_m=0.04, length_m=0.3), "SHAPE_CAPSULE", [0.04, 0.3]),
+        (BoxShape(half_extents_m=(0.1, 0.2, 0.3)), "SHAPE_BOX", [0.1, 0.2, 0.3]),
+    ],
+)
+def test_fill_idl_encodes_every_union_member(
+    shape: object, expected_tag: str, expected_dims: list[float]
+) -> None:
+    """Each of the three union members lowers to its IDL tag + dimension layout."""
+    primitive = AttachedCollisionPrimitive(
+        shape=shape,  # type: ignore[arg-type]  # reason: parametrized over the union
+        pose_in_object=Pose6D(
+            xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="payload"
+        ),
+    )
+    msg = _PrimitiveMsg()
+    primitive.fill_idl(msg)
+    assert msg.shape_type == _idl_shape_constants()[expected_tag]
+    assert msg.shape_dimensions == pytest.approx(expected_dims)
+
+
+def test_fill_idl_refuses_a_shape_the_idl_cannot_carry() -> None:
+    """An unencodable primitive raises instead of publishing an unset shape.
+
+    The branch chain had no ``else``, so the message went out with
+    ``shape_type`` at the IDL default 0 and no dimensions. Every consumer
+    already refuses tag 0 (the C++ kernel's attached ingest calls
+    ``fail_closed()``; the Nav2 payload scan filter raises), so this was a
+    diagnosability defect rather than a safety hole — but it pushed a
+    producer-side encoding failure across a process boundary, where it
+    resurfaced as an E-stop or an unrelated node's ``ValueError`` with the
+    shape's name nowhere in the report.
+    """
+    primitive = AttachedCollisionPrimitive.model_construct(
+        shape=_CylinderShape(),  # type: ignore[arg-type]  # reason: future-variant stand-in
+        pose_in_object=Pose6D(
+            xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="payload"
+        ),
+    )
+    msg = _PrimitiveMsg()
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        primitive.fill_idl(msg)
+
+    assert "cylinder" in str(excinfo.value)
+    # The refusal must leave the message untouched, not half-populated.
+    assert msg.shape_type == 0
+    assert msg.shape_dimensions == []
