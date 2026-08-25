@@ -61,6 +61,19 @@ cylinders, spheres and subdivided mesh triangles), never `mj_geomDistance`
 (standing caveat 8). Sampled point-to-point is an upper bound on the true
 surface gap with error bounded by the step.
 
+> **An exact alternative now exists** (2026-08-25, after this page was
+> measured): `openral_hal.convex_distance` returns a *certified* signed distance
+> — GJK with a separating-axis optimality proof, exact SAT for penetration —
+> rather than a sampled upper bound. Nothing on this page needs redoing: a
+> sampled upper bound is conservative in the safe direction, and the two agree
+> wherever they have been compared. It is the better instrument for any future
+> pass, and it removes the step-size caveat above. The two studies converge:
+> this page names the *mechanism* behind the displaced cells, and
+> [the validation-evidence ledger](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves)
+> eliminates the competing explanation for them by certifying the distances —
+> including reaching this page's own conclusion about the fridge `0.000 m`
+> reading independently.
+
 ### Two instrument bugs, and one retraction
 
 Both silently invert results, and both are worth naming because any future

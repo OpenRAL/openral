@@ -47,7 +47,18 @@ from tests.sim.safety._kernel_subprocess import (  # noqa: E402
 
 
 def _geom_distance(model: object, data: object, g1: int, g2: int) -> float:
-    return float(mujoco.mj_geomDistance(model, data, g1, g2, 2.0, None))
+    """Certified signed distance — see `openral_hal.convex_distance`.
+
+    Deliberately not `mujoco.mj_geomDistance`: this value is the oracle the
+    kernel's own sign is checked against, and that call has been measured
+    returning `+0.000000` where the truth is `+0.148512 mm`, with a witness
+    outside both geoms. An oracle that cannot be defended cannot convict.
+    """
+    from openral_hal.convex_distance import convex_geom_distance
+
+    measured = convex_geom_distance(model, data, g1, g2)
+    assert measured.certified, measured.uncertified_reason
+    return measured.distance_m
 
 
 def _first_collidable_geom(model: object, body_id: int) -> int | None:

@@ -24,6 +24,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
 from openral_hal.mobile_base_bridge import describes_mobile_base
 
 # Throttle dashboard thumbnail emission to ~1 Hz per camera (1e9 ns).
@@ -50,9 +51,20 @@ _DEGENERATE_QUAT_NORM = 1e-12
 # ground) and hid an arm that was 17-30 mm inside a freezer door. The
 # structural fix is scoping the probe to the links the kernel actually
 # checks (:func:`kernel_checked_body_ids`); these wider caps are the belt to
-# that braces. The cost is bounded and small: 4096 ``mj_geomDistance`` calls
-# measure ~3.3 ms (0.8 us/call, mujoco 3.8, RTX 4070 laptop host) — three
-# probes at ~10 ms total, once, at a terminal event.
+# that braces.
+#
+# The exact distance is `openral_hal.convex_distance.convex_geom_distance`,
+# NOT ``mujoco.mj_geomDistance`` — that call is unreliable for exactly the
+# pairs this probe adjudicates (a RoboCasa fixture geom against a panda
+# collision mesh), in two distinct silent modes, and the module docstring
+# carries the measurements. The certified instrument costs ~2-4 ms per pair
+# against ~9 us, so the round-robin candidate set is first thinned by a
+# CERTIFIED window rejection (`distmax_m=`, a separating-axis bound that
+# proves a pair is outside the window): on the four RoboCasa matrix scenes
+# that leaves 1-24 pairs actually solved out of 74-259 candidates, and a
+# whole three-probe snapshot at ~0.1-0.7 s. That is three orders of magnitude
+# above the old cost and it is affordable for the same reason the probe
+# exists at all: it runs once, at a terminal event, off the actuation path.
 _NEAREST_PROBE_DISTMAX_M = 0.10
 _NEAREST_PROBE_MAX_CALLS = 4096
 _NEAREST_PROBE_MAX_PAIRS = 32
@@ -379,7 +391,7 @@ def _round_robin_candidates(gap: Any, distmax_m: float, max_calls: int) -> tuple
     Args:
         gap: ``(n_side, n_other)`` float lower bounds (``-inf`` allowed).
         distmax_m: probe window; pairs above it are not candidates.
-        max_calls: hard cap on exact ``mj_geomDistance`` calls.
+        max_calls: hard cap on exact distance solves.
 
     Returns:
         ``(pairs, n_candidates)`` — ``pairs`` is an ``(k, 2)`` int array of
@@ -432,10 +444,24 @@ def _nearest_pair_records(
     NO MuJoCo contact at the measured configuration — ``ncon`` alone cannot
     say whether a ``-15 mm`` predicted hit was real (and contype/conaffinity
     exclusions can suppress the contact even at 30 mm of interpenetration).
-    This probes ``mujoco.mj_geomDistance`` (signed; negative =
-    interpenetration) for the ``side``↔other geom pairs whose bounding
-    spheres are within ``distmax_m``, ranked closest-first and truncated to
-    ``max_pairs``.
+    This measures the signed distance (negative = interpenetration) for the
+    ``side``↔other geom pairs whose bounding spheres are within ``distmax_m``,
+    ranked closest-first and truncated to ``max_pairs``.
+
+    **The measurement is `convex_geom_distance`, not `mujoco.mj_geomDistance`.**
+    That call returns confidently wrong numbers on precisely the pair class
+    this probe exists to adjudicate — measured on
+    ``robocasa_fridge_drawer`` layout 9, ``robot0_link7_collision`` vs
+    ``fridge_right_group_freezer_door_main``: ``+0.000000`` from the default
+    native-CCD path with a 126.264 mm witness segment lying outside *both*
+    geoms, and ``-57 mm`` / ``-352 mm`` from libccd through a 48 mm panel,
+    against a certified truth of ``+0.148512 mm``. It is a degenerate
+    configuration rather than a distance regime — displacing the link by a
+    picometre returns the right answer — so no probe window avoids it, and a
+    scene's reset pose is where such configurations live. Every number this
+    probe emits now carries ``distance_certified``; the coverage block counts
+    both, so a downstream adjudicator can refuse rather than believe
+    (``tools/validation_matrix.py::probe_is_distance_certified``).
 
     The other side is either an explicit body set (``other_included`` — used
     for payload↔robot-link self-pairs, which are not "everything else") or,
@@ -458,7 +484,11 @@ def _nearest_pair_records(
     (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
     most ``max_calls`` exact distance calls run, shared fairly across the side
     geoms by :func:`_round_robin_candidates` so no link can be starved out of
-    the report. Pure MuJoCo reads, no ROS.
+    the report. Each of those is then offered a **certified** window
+    rejection before it is solved — a separating-axis bound that *proves* the
+    pair is outside ``distmax_m`` — which is what keeps the exact instrument
+    affordable without weakening anything: a rejected pair was provably out of
+    range, not heuristically dropped. Pure MuJoCo reads, no ROS.
 
     The prefilter is what a scene's floors used to defeat. MuJoCo reports
     ``geom_rbound == 0`` for the geoms that have no bounding sphere — planes
@@ -491,6 +521,12 @@ def _nearest_pair_records(
         "noncollidable_world_geoms_excluded": 0,
         "noncollidable_side_geoms_excluded": 0,
         "noncollidable_other_geoms_excluded": 0,
+        # Both are reported so an UNCERTIFIED distance can never be read as a
+        # certified one by omission. `certified_pairs` counts what a verdict
+        # may rest on; `uncertified_pairs` counts what it may not.
+        "certified_pairs": 0,
+        "uncertified_pairs": 0,
+        "distance_instrument": "openral_hal.convex_distance.convex_geom_distance",
     }
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
@@ -546,20 +582,25 @@ def _nearest_pair_records(
     coverage["side_geoms_probed"] = int(np.unique(candidates[:, 0]).size)
     if candidates.size == 0:
         return [], coverage
-    probed: list[tuple[float, int, int]] = []
+    probed: list[tuple[float, int, int, ConvexDistance]] = []
+    uncertified = 0
     for row, col in candidates:
         geom_side = int(side_geoms[int(row)])
         geom_other = int(other_geoms[int(col)])
-        distance = float(
-            mujoco.mj_geomDistance(model, data, geom_side, geom_other, float(distmax_m), None)
+        measured = convex_geom_distance(
+            model, data, geom_side, geom_other, distmax_m=float(distmax_m)
         )
-        if distance >= distmax_m:
-            continue  # nothing within the probe window for this pair
-        probed.append((distance, geom_side, geom_other))
+        if measured.method == "beyond-window":
+            continue  # PROVABLY nothing within the probe window for this pair
+        if not measured.certified:
+            uncertified += 1
+        probed.append((measured.distance_m, geom_side, geom_other, measured))
     probed.sort(key=lambda item: item[0])
+    coverage["certified_pairs"] = int(len(probed) - uncertified)
+    coverage["uncertified_pairs"] = int(uncertified)
     records = [
         {
-            "distance_m": round(distance, 6),
+            **measured.as_record(),
             "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_side),
             "geom_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_other),
             "body_a": mujoco.mj_id2name(
@@ -569,7 +610,7 @@ def _nearest_pair_records(
                 model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_other])
             ),
         }
-        for distance, geom_side, geom_other in probed[:max_pairs]
+        for _distance, geom_side, geom_other, measured in probed[:max_pairs]
     ]
     return records, coverage
 
@@ -1352,7 +1393,7 @@ def estop_ground_truth_snapshot(
             ``max(distmax_m, admissible_gap_m)`` and is reported as
             ``adjudication_budget.probe_distmax_used_m``.
         max_pairs: cap on reported nearest pairs, per probe.
-        max_calls: cap on exact ``mj_geomDistance`` calls per probe. The
+        max_calls: cap on exact distance solves per probe. The
             prefilter ranks candidates by proximity first and spends the
             budget round-robin across the probed geoms, so this truncates the
             far end of each probe, never the close one, and never at the cost

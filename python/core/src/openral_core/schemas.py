@@ -7841,6 +7841,17 @@ class ValidationGroundTruthAdjudication(BaseModel):
             (``contype``/``conaffinity`` non-zero). ``False`` on a snapshot
             recorded before that filter existed, where a 0 m pair may be a
             purely visual mesh and therefore cannot support ``real-contact``.
+        probe_distance_certified: Whether every distance in the recorded probe
+            carries its own proof of correctness
+            (``openral_hal.convex_distance``). ``False`` on a snapshot recorded
+            on ``mujoco.mj_geomDistance``, which returns confidently wrong
+            values for RoboCasa-fixture-vs-panda-mesh pairs in two silent
+            modes — including ``0.000 m`` readings whose certified values are
+            ``+14.8``, ``+82.2`` and ``+107.9 mm`` in the rounds checked in
+            under ``tests/unit/fixtures/validation_matrix/``. No verdict may
+            rest on such a probe, so the stop is withdrawn to
+            ``unadjudicated``; it is **not** reversed, and nothing about an
+            uncertified probe shows the kernel was wrong.
         unadjudicated_reason: Why the verdict is ``unadjudicated``, in words.
             Empty for every other verdict. A missing grid resolution because
             the monitor received nothing reads differently from one because the
@@ -7878,6 +7889,7 @@ class ValidationGroundTruthAdjudication(BaseModel):
     admissible_gap_m: float | None = None
     budget_source: str = ""
     probe_collidability_filtered: bool | None = None
+    probe_distance_certified: bool | None = None
     unadjudicated_reason: str = ""
     nearest_any_m: float | None = None
     nearest_tripping_party_m: float | None = None

@@ -257,6 +257,44 @@ contributor should look at before adding similar code.
     `test_urdf_lowering_always_colliding`. **Low risk, but if a third copy
     appears, collapse all three.**
 
+14. **Convex distance — *three implementations, three different questions.
+    Collapsing them produces a green that confirms itself.*** Read the
+    consequence first, because this entry exists to survive a refactor that
+    looks correct: the validation matrix works by comparing what the **kernel**
+    computed against what the **geometry** actually is. Route both sides
+    through one implementation and the matrix keeps reporting agreement while
+    measuring nothing — the kernel would be checked against its own arithmetic,
+    every stop would adjudicate `within-quantization`, and the failure would be
+    invisible precisely because everything went green. That is strictly worse
+    than an ordinary duplication bug, which at least announces itself. Entry 12
+    already flags a third box-SAT copy for collapse onto `kernel_predicates`,
+    so someone reaching for a fourth is a live risk, not a hypothetical.
+
+    They look like duplicates and are not:
+    - `cpp/openral_safety_kernel/src/collision.cpp` + its Python mirror
+      `kernel_predicates` answer **"what will the kernel do?"** — manifest
+      OBBs and capsules, a *lower* bound on true surface distance by
+      construction, which is why the kernel never under-reports a collision.
+      Entry 12 governs them.
+    - `openral_hal.convex_distance` answers **"where is the geometry
+      actually?"** — MuJoCo's own collision hulls, *exact* and certified, on
+      the evidence path only. It is the ground truth the first pair is
+      *measured against*, so making either one call the other would collapse
+      the comparison the whole validation matrix is built on: a kernel checked
+      against its own arithmetic proves nothing.
+    - `tests/unit/test_so101_base_box_collision._box_box` is the third box-SAT
+      copy entry 12 already flags for collapse — onto `kernel_predicates`, not
+      onto this module.
+
+    The shared *mathematics* (SAT over face normals + edge-edge crossings) is
+    genuinely the same and that is the trap. `convex_distance._sat_penetration_depth`
+    generalises it to arbitrary polytopes because a mesh hull has hundreds of
+    faces, where `box_box_distance`'s 6 + 9 axes are the closed form for a box
+    pair. **If the kernel's narrow phase gains a primitive, entry 12 applies and
+    this module does not need to change** — it never reads a `CollisionShape`,
+    only MuJoCo geoms. Conversely, changing this module cannot change what the
+    kernel does, which is the property that makes it usable as an instrument.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer

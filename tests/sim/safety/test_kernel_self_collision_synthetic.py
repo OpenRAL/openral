@@ -127,14 +127,27 @@ _COLLIDE = [0.0, math.pi, 0.0]
 
 
 def _mujoco_link1_link3_distance(qpos: list[float]) -> float:
-    """Ground-truth surface distance between the link1 and link3 capsules."""
+    """Ground-truth surface distance between the link1 and link3 capsules.
+
+    Measured with `openral_hal.convex_distance`, not `mujoco.mj_geomDistance`:
+    an oracle a test pins kernel behaviour against has to be one that can be
+    defended, and that call is unreliable enough on neighbouring geometry to
+    have withdrawn a corpus of collision verdicts (see the module docstring).
+    A capsule pair is exact here — both are `point-set ⊕ ball` forms — so the
+    result is certified with a zero-width bracket, which is asserted rather
+    than assumed.
+    """
+    from openral_hal.convex_distance import convex_geom_distance
+
     model = mujoco.MjModel.from_xml_string(_MJCF)
     data = mujoco.MjData(model)
     data.qpos[:] = qpos
     mujoco.mj_forward(model, data)
     g1 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "cap1")
     g3 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "cap3")
-    return float(mujoco.mj_geomDistance(model, data, g1, g3, 2.0, None))
+    measured = convex_geom_distance(model, data, g1, g3)
+    assert measured.certified, measured.uncertified_reason
+    return measured.distance_m
 
 
 def _kernel_params() -> dict[str, object]:
