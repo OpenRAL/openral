@@ -21,6 +21,27 @@
   with an optional `RSkillManifest.envelope` floor and writes the flat
   YAML the C++ safety kernel reads at `on_configure()`. Rejects
   loosening with `ROSConfigError`.
+* **`kernel_predicates`** (`openral_safety/kernel_predicates.py`) — the
+  Python mirror of the C++ kernel's narrow phase
+  (`cpp/openral_safety_kernel/src/collision.cpp`): the 15-axis SAT
+  `box_box_distance`, `box_capsule_distance`, `capsule_distance` and the
+  `shape_distance` dispatch, batched over configurations. Offline tools
+  that decide **what the kernel will do** must ask the kernel's question
+  with the kernel's geometry; issue #155 is what happens when they do
+  not. **The C++ is normative — when it changes, this changes in the same
+  PR** (`docs/methods/14-duplication-watch.md` item 12).
+* **`urdf_lowering`** / **`mjcf_lowering`**
+  (`openral_safety/urdf_lowering.py`, `mjcf_lowering.py`) — offline
+  lowering of a URDF(+SRDF) or MJCF into a manifest's
+  `collision_geometry` + `allowed_collision_pairs`. An ACM entry
+  *removes* a self-collision check, so every rule fails toward **fewer**
+  entries; "always-colliding" is established as a proof over each pair's
+  relative-DoF subspace, never by sampling.
+* **`cumotion_config`** (`openral_safety/cumotion_config.py`) — renders a
+  cuRobo/cuMotion `robot_cfg` from the lowered geometry. Its plan-time
+  model deliberately **over**-covers the kernel's: a planner that
+  believes the arm is thinner than it is emits trajectories the kernel
+  then has to E-stop.
 
 Per CLAUDE.md §7.7 / §1.1, any PR that **extends** enforcement here
 requires:

@@ -6,18 +6,20 @@ that ``robot.yaml`` carries and ``collision_params_from_description`` consumes:
 * **Geometry** — fit one conservative capsule/sphere per link from the URDF
   ``<collision>`` (primitive → direct map; mesh → PCA bounding capsule that
   contains every vertex, so the safety check never under-covers).
-* **ACM** — from the SRDF ``disable_collisions`` block where one exists, else a
-  MoveIt-Setup-Assistant-style random-pose sweep that disables adjacent /
-  always-colliding / never-colliding pairs, tested with the **kernel's own**
-  capsule distance (``mjcf_lowering._seg_seg_distance``) so the generated matrix
-  matches what the kernel checks.
+* **ACM** — adjacent pairs, plus pairs *proved* always-colliding over their own
+  relative-DoF subspace, plus the hand-reviewed rows of the SRDF
+  ``disable_collisions`` block where one exists. Every verdict is taken with the
+  **kernel's own** predicates (:mod:`openral_safety.kernel_predicates`) at the
+  robot's own ``self_collision_margin_m``, so the generated matrix is about the
+  robot the kernel actually checks. No RNG: the result is reproducible.
 
 Heavy deps (``yourdfpy``, ``trimesh``) are imported lazily — install the
 optional ``[lowering]`` group. Pure: no ROS, no I/O beyond reading the source
 files passed in.
 
-Later tasks extend this module with geometry fitting, the sampling ACM, and the
-top-level ``lower_robot``. This file starts with the SRDF parser.
+An ACM entry *removes* a self-collision check, so every rule here is written to
+fail toward *fewer* entries: a missing entry costs a false E-stop, an unearned
+one hides a real self-collision (issue #155).
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from openral_core import (
-    BoxShape,
     CapsuleShape,
     LinkCollisionGeometry,
     RobotDescription,
@@ -306,54 +307,68 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
     return None
 
 
-# ── ACM: MoveIt-Setup-Assistant-style random-pose sampling fallback ────────────
+# ── ACM: certified "always-colliding" over each pair's relative-DoF subspace ───
+#
+# A pair goes in the ACM only under one of three justifications (see
+# :func:`acm_for_geometry`). The one this section establishes is
+# **always-colliding**: the kernel's trip condition holds at *every* reachable
+# configuration, so the check is a constant and exempting it removes no
+# information. That argument is only valid if "every" really means every — which
+# is why this is a proof and not a sample.
+#
+# The proof rests on two observations:
+#
+# 1. **The relative pose of two links depends only on the joints between them.**
+#    ``panda_link5`` ↔ ``panda_link7`` moves with ``panda_joint6`` and
+#    ``panda_joint7`` and nothing else — a 2-D space, not the arm's 7-D one. So
+#    the subspace that matters can be enumerated exhaustively instead of sampled.
+#    (The old sweep drew 2000 uniform points from the full joint box; in 7-D that
+#    is far too sparse to find a 13 %-measure separated region, and its verdict
+#    depended on the RNG draw order — not reproducible under any change to the
+#    joint set.)
+#
+# 2. **A grid plus a Lipschitz bound certifies the continuum.** Turning joint *j*
+#    by δ moves a point at distance *R* from its axis by at most *R·δ*. So over a
+#    grid cell of half-width ``h_j/2`` every point of the far link moves by at
+#    most ``ε = Σ_j R_j · h_j/2`` relative to the near one. If the near shape
+#    *eroded by ε* still trips against the far shape at the cell's centre node,
+#    then the untouched shapes trip everywhere in that cell: pick a point of the
+#    far shape landing inside the erosion at the node; wherever it moves within
+#    the cell it stays inside the un-eroded near shape. Certify every cell and
+#    the whole subspace is certified.
+#
+# Anything that cannot be certified — too many relative DoF, an erosion that
+# eats the shape, a joint the URDF does not pin down — is simply **not** an ACM
+# entry. The rule fails toward *fewer* exemptions, which is the safe direction:
+# a missing entry costs a false E-stop, an unearned one hides a real collision.
 
-_RNG_SEED = 20260610
-_N_SAMPLES = 2000
-_SAMPLE_MARGIN_M = 0.0
+# Refinement budget for the branch-and-bound in `_certified_always_colliding`.
+# None of these is a soundness knob: hitting any of them makes that function
+# return False, i.e. *withhold* an ACM entry. Raising them can only certify more
+# pairs, never certify a wrong one — so they are tuned purely for cost.
+#
+# `_CERTIFY_MAX_DOF` bounds how many joints may separate a pair. g1's
+# `hip_pitch`↔`torso` needs 4 (the hip pitch plus the three waist joints); nothing
+# shipped needs more, and each extra DoF makes ε harder to shrink.
+_CERTIFY_MAX_DOF = 5
+# Live cells allowed at once. g1's `hip_pitch`↔`torso` — the hardest pair on any
+# shipped robot — peaks at ~246k before pruning takes over and it certifies at
+# level 23, so this leaves real headroom rather than sitting on the measurement.
+_CERTIFY_MAX_CELLS = 400_000
+# Depth ceiling. Each level halves one axis, so shrinking ε by 2^n across k axes
+# takes about k·n levels; 96 covers a 4-DoF pair over four orders of magnitude.
+_CERTIFY_MAX_LEVELS = 96
+# Nodes per axis for the cheap rejection pass that runs before refinement.
+_COARSE_NODES = 7
 
-
-def _capsule_segment_radius(
-    shape: CapsuleShape | SphereShape | BoxShape, origin: _Origin
-) -> tuple[tuple[float, float, float], tuple[float, float, float], float]:
-    """Collision shape (in its link frame) → (endpoint0, endpoint1, radius), local frame.
-
-    A sphere degenerates to a zero-length segment at its origin. A box is
-    **under-approximated by its inscribed sphere** (a zero-length segment at
-    the box centre, radius = smallest half-extent): a sphere that fits wholly
-    inside the box. This only ever *reduces* the sampled collision count vs the
-    true box, so it can never mark a pair "always-colliding" that the true box
-    would not — i.e. it never disables a self-collision check the true box would
-    keep (ACM under-approximation is the safe direction; the worst case is a
-    false E-stop, never a skipped check). The kernel still checks the true box
-    geometry via ``envelope_loader``; this segment model feeds only the offline
-    ACM always-colliding sweep. A tighter box↔box ACM model is a possible
-    follow-up, but must be proven no-less-conservative than this before it lands.
-    """
-    import numpy as np
-
-    from openral_safety.mjcf_lowering import _rpy_to_mat
-
-    cx, cy, cz, roll, pitch, yaw = origin
-    if isinstance(shape, SphereShape):
-        return (cx, cy, cz), (cx, cy, cz), shape.radius_m
-    if isinstance(shape, BoxShape):
-        return (cx, cy, cz), (cx, cy, cz), min(shape.half_extents_m)
-    rot = np.asarray(_rpy_to_mat(roll, pitch, yaw), dtype=np.float64).reshape(3, 3)
-    z_axis = rot[:, 2]  # local +Z in the link frame
-    half = shape.length_m / 2.0
-    center = np.array([cx, cy, cz], dtype=np.float64)
-    p0 = center - z_axis * half
-    p1 = center + z_axis * half
-    return (
-        (float(p0[0]), float(p0[1]), float(p0[2])),
-        (
-            float(p1[0]),
-            float(p1[1]),
-            float(p1[2]),
-        ),
-        shape.radius_m,
-    )
+# The MJCF backend (`lower_robot_from_mjcf`) still decides always-colliding by a
+# seeded random sweep: its FK comes from mujoco, so the URDF joint-tree walk the
+# certificate is built on does not apply to it. It now at least asks the kernel's
+# real predicate for the real shape (`shape_distance`), which is what #155 was
+# about; the *criterion* there remains sampled and is tracked as residual risk in
+# the hazard-log entry. Only `openarm` uses this path, and only with capsules.
+_MJCF_RNG_SEED = 20260610
+_MJCF_N_SAMPLES = 2000
 
 
 def _world_segment(
@@ -387,47 +402,271 @@ def _joint_limit_arrays(model: object) -> tuple[_Arr, _Arr]:
     return np.asarray(lo, dtype=np.float64), np.asarray(hi, dtype=np.float64)
 
 
-def _pair_collision_counts(
-    model: object,
-    geoms: dict[str, LinkCollisionGeometry],
-    *,
-    n_samples: int,
-    seed: int,
-    margin_m: float,
-) -> tuple[list[str], dict[frozenset[str], int]]:
-    """Sweep random poses; count, per link pair, how many collide under the capsules.
+def _parent_joint_map(model: object) -> dict[str, object]:
+    """``child_link -> the URDF joint that drives it``. One parent per link (a tree)."""
+    return {j.child: j for j in model.robot.joints}  # type: ignore[attr-defined]  # reason: yourdfpy URDF
 
-    FK is the kernel's: each link's capsule (from ``geoms``) is placed by the URDF
-    transform and tested with ``mjcf_lowering._seg_seg_distance``. Deterministic under
-    ``seed`` / ``n_samples``. Returns the geometry-bearing link list and the counts.
+
+def _ancestor_joints(model: object, link: str) -> list[object]:
+    """The joints from the kinematic root down to ``link``, root-first."""
+    parent_of = _parent_joint_map(model)
+    chain: list[object] = []
+    seen: set[str] = set()
+    cur = link
+    while cur in parent_of and cur not in seen:
+        seen.add(cur)
+        joint = parent_of[cur]
+        chain.append(joint)
+        cur = joint.parent  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+    chain.reverse()
+    return chain
+
+
+def _relative_chains(
+    model: object, link_a: str, link_b: str
+) -> tuple[list[object], list[object]] | None:
+    """Split the two ancestor chains at their common ancestor.
+
+    Returns ``(chain_a, chain_b)`` — the joints below the deepest shared ancestor
+    on each side, root-first. The relative transform ``A → B`` is
+    ``inv(∏ chain_a) · (∏ chain_b)`` and depends on **no other joint**. ``None``
+    when the two links are not in one tree (a disconnected graph, which
+    ``envelope_loader`` refuses separately).
+    """
+    anc_a, anc_b = _ancestor_joints(model, link_a), _ancestor_joints(model, link_b)
+    shared = 0
+    while (
+        shared < len(anc_a) and shared < len(anc_b) and anc_a[shared].name == anc_b[shared].name  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+    ):
+        shared += 1
+    root_a = anc_a[0].parent if anc_a else link_a  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+    root_b = anc_b[0].parent if anc_b else link_b  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+    if root_a != root_b:
+        return None
+    return anc_a[shared:], anc_b[shared:]
+
+
+_MOVABLE_JOINT_TYPES = ("revolute", "continuous", "prismatic")
+
+
+def _joint_span(joint: object) -> tuple[float, float]:
+    """A movable joint's ``(lower, upper)``; an unlimited revolute spans ``[-π, π]``."""
+    limit = getattr(joint, "limit", None)
+    lower = getattr(limit, "lower", None) if limit is not None else None
+    upper = getattr(limit, "upper", None) if limit is not None else None
+    if lower is None or upper is None or lower == upper:
+        return -math.pi, math.pi
+    return float(lower), float(upper)
+
+
+def _chain_transforms(chain: list[object], values: dict[str, _Arr], n: int) -> _Arr:
+    """Compose a joint chain into ``(n, 4, 4)`` transforms.
+
+    Each joint contributes its fixed ``origin`` followed by its own motion: a
+    rotation about ``axis`` for revolute/continuous, a translation along ``axis``
+    for prismatic. Joints absent from ``values`` are held at zero — correct
+    because :func:`_relative_chains` guarantees every joint that can change the
+    pair's relative transform is present.
     """
     import numpy as np
 
-    from openral_safety.mjcf_lowering import _seg_seg_distance
+    out = np.broadcast_to(np.eye(4), (n, 4, 4)).copy()
+    for joint in chain:
+        step = np.broadcast_to(_origin_matrix(joint.origin), (n, 4, 4)).copy()  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+        jtype = str(joint.type)  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+        name = str(joint.name)  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+        if jtype in _MOVABLE_JOINT_TYPES and name in values:
+            q = values[name]
+            axis = np.asarray(joint.axis, dtype=np.float64)  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+            axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+            motion = np.broadcast_to(np.eye(4), (n, 4, 4)).copy()
+            if jtype == "prismatic":
+                motion[:, :3, 3] = axis[None, :] * q[:, None]
+            else:  # Rodrigues rotation about the joint axis
+                kx = np.array(
+                    [
+                        [0.0, -axis[2], axis[1]],
+                        [axis[2], 0.0, -axis[0]],
+                        [-axis[1], axis[0], 0.0],
+                    ]
+                )
+                c, s = np.cos(q)[:, None, None], np.sin(q)[:, None, None]
+                motion[:, :3, :3] = np.eye(3) + s * kx + (1.0 - c) * (kx @ kx)
+            step = step @ motion
+        out = out @ step
+    return out
 
-    links = [ln for ln in model.link_map if ln in geoms]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-    local_seg = {
-        ln: _capsule_segment_radius(geoms[ln].shape, geoms[ln].origin_xyz_rpy) for ln in links
-    }
-    rng = np.random.default_rng(seed)
-    lo, hi = _joint_limit_arrays(model)
-    counts: dict[frozenset[str], int] = {}
-    for _ in range(n_samples):
-        q = lo + (hi - lo) * rng.random(lo.shape)
-        model.update_cfg(q)  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-        world = {}
-        for ln in links:
-            tf = np.asarray(model.get_transform(ln), dtype=np.float64)  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-            p0l, p1l, r = local_seg[ln]
-            world[ln] = (*_world_segment(tf, p0l, p1l), r)
-        for i, a in enumerate(links):
-            for b in links[i + 1 :]:
-                (a0, a1, ra) = world[a]
-                (b0, b1, rb) = world[b]
-                if _seg_seg_distance(a0, a1, b0, b1) - ra - rb <= margin_m:
-                    key = frozenset({a, b})
-                    counts[key] = counts.get(key, 0) + 1
-    return links, counts
+
+def _axis_radius_bound(chain: list[object], joint: object, geom: LinkCollisionGeometry) -> float:
+    """Bound the distance from ``joint``'s axis to any point of ``geom``.
+
+    Configuration-independent, so it is valid over the whole grid cell: rotations
+    preserve lengths, so the farthest a point of the distal link's shape can lie
+    from the joint's own frame origin is the sum of the link offsets below it plus
+    the shape's own offset and extent. Distance to the *axis line* is never more
+    than distance to a point on it, so this over-bounds — which makes ``ε`` larger
+    and the certificate stricter, never looser.
+    """
+    import numpy as np
+
+    from openral_safety.kernel_predicates import shape_max_extent_m
+
+    total = 0.0
+    seen = False
+    for link_joint in chain:
+        if seen:
+            total += float(np.linalg.norm(np.asarray(_origin_matrix(link_joint.origin))[:3, 3]))  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+        if link_joint is joint:
+            seen = True
+    origin_xyz = np.asarray(geom.origin_xyz_rpy[:3], dtype=np.float64)
+    return total + float(np.linalg.norm(origin_xyz)) + shape_max_extent_m(geom.shape)
+
+
+def _pair_relative_dofs(
+    model: object, link_a: str, link_b: str, geoms: dict[str, LinkCollisionGeometry]
+) -> list[tuple[object, float, tuple[float, float]]] | None:
+    """The joints that move ``link_a`` relative to ``link_b``, with their radius bounds.
+
+    Returns ``[(joint, radius_bound_m, (lower, upper))]`` — everything the
+    certificate needs — or ``None`` if the pair's relative pose cannot be pinned
+    down (links in different trees). An **empty** list is a meaningful answer: the
+    two links are rigidly related, so a single evaluation decides the pair
+    exactly.
+    """
+    chains = _relative_chains(model, link_a, link_b)
+    if chains is None:
+        return None
+    chain_a, chain_b = chains
+    out: list[tuple[object, float, tuple[float, float]]] = []
+    for chain, distal in ((chain_a, link_a), (chain_b, link_b)):
+        for joint in chain:
+            if str(joint.type) not in _MOVABLE_JOINT_TYPES:  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+                continue
+            radius = 1.0  # prismatic: 1 m of travel moves the link 1 m
+            if str(joint.type) != "prismatic":  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+                radius = _axis_radius_bound(chain, joint, geoms[distal])
+            out.append((joint, radius, _joint_span(joint)))
+    return out
+
+
+def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per way the proof can fail; each is a distinct, documented safe refusal
+    model: object,
+    geoms: dict[str, LinkCollisionGeometry],
+    link_a: str,
+    link_b: str,
+    *,
+    margin_m: float,
+) -> bool:
+    """Is the kernel's trip condition **provably** true at every reachable pose?
+
+    The always-colliding justification for an ACM entry (see
+    :func:`acm_for_geometry`) is only sound when the check it removes is a
+    constant. This decides that over the pair's relative-DoF subspace, using the
+    kernel's own predicates at the robot's own margin, by branch-and-bound over
+    boxes of joint space rather than by sampling poses.
+
+    Each cell of joint space is judged by one evaluation at its centre plus a
+    Lipschitz bound. Turning joint *j* by δ moves a point at distance *R* from its
+    axis by at most *R·δ*, so within a cell every point of the far link moves at
+    most ``ε = Σ_j R_j · w_j / 2`` relative to the near one. Shifting a convex
+    body by ``ε`` shifts its support function — and hence the separating-axis gap
+    — by at most ``ε``, so for every configuration ``q`` in the cell::
+
+        gap(q) <= gap(centre) + ε
+
+    That gives all three verdicts a cell can carry:
+
+    * ``gap(centre) > margin`` — a real configuration where the kernel does *not*
+      trip. The pair is not always-colliding. **Reject immediately**; this is a
+      witness, not an estimate.
+    * ``gap(centre) + ε <= margin`` — the kernel trips everywhere in this cell.
+      **Certified**; drop it.
+    * otherwise — undecided. Split the cell across the axis contributing most to
+      ``ε`` (which shrinks ``ε`` fastest per unit of work) and revisit.
+
+    The pair is always-colliding when every cell certifies. Running out of
+    refinement budget returns ``False``, as does exceeding
+    :data:`_CERTIFY_MAX_DOF` or a pair whose relative pose is not determined.
+    Every failure path is a *withheld* ACM entry: an entry withheld in error costs
+    a false E-stop, an entry granted in error hides a real self-collision.
+
+    Deterministic — no RNG, and no dependence on evaluation order.
+    """
+    import numpy as np
+
+    from openral_safety.kernel_predicates import shape_distance
+
+    dofs = _pair_relative_dofs(model, link_a, link_b, geoms)
+    if dofs is None or len(dofs) > _CERTIFY_MAX_DOF:
+        return False
+
+    geom_a, geom_b = geoms[link_a], geoms[link_b]
+    origin_a = _xyzrpy_matrix(geom_a.origin_xyz_rpy)
+    origin_b = _xyzrpy_matrix(geom_b.origin_xyz_rpy)
+    chains = _relative_chains(model, link_a, link_b)
+    if chains is None:  # pragma: no cover — _pair_relative_dofs already returned non-None
+        return False
+    chain_a, chain_b = chains
+    names = [str(j.name) for j, _, _ in dofs]  # type: ignore[attr-defined]  # reason: yourdfpy Joint
+    radii = np.asarray([r for _, r, _ in dofs], dtype=np.float64)
+    lo = np.asarray([span[0] for _, _, span in dofs], dtype=np.float64)
+    hi = np.asarray([span[1] for _, _, span in dofs], dtype=np.float64)
+
+    def gaps_at(centres: _Arr) -> _Arr:
+        """Kernel surface gap at each row of ``centres`` (one joint vector per row)."""
+        n = int(centres.shape[0])
+        values = {name: centres[:, i] for i, name in enumerate(names)}
+        t_a = _chain_transforms(chain_a, values, n) @ origin_a
+        t_b = _chain_transforms(chain_b, values, n) @ origin_b
+        return shape_distance(geom_a.shape, t_a, geom_b.shape, t_b)
+
+    if not dofs:  # rigidly related links — one evaluation settles it exactly
+        return bool(gaps_at(np.zeros((1, 0)))[0] <= margin_m)
+
+    # Cheap rejection first: most pairs on a real arm separate somewhere obvious,
+    # and finding that costs one small batch instead of a refinement run.
+    coarse = np.meshgrid(
+        *[np.linspace(lo[i], hi[i], _COARSE_NODES) for i in range(len(dofs))], indexing="ij"
+    )
+    if bool(np.any(gaps_at(np.stack([g.ravel() for g in coarse], axis=1)) > margin_m)):
+        return False
+
+    centres = ((lo + hi) / 2.0)[None, :]
+    widths = (hi - lo)[None, :]
+    for _ in range(_CERTIFY_MAX_LEVELS):
+        gaps = gaps_at(centres)
+        if bool(np.any(gaps > margin_m)):
+            return False  # witness: a reachable pose the kernel would not trip on
+        undecided = gaps + 0.5 * (widths @ radii) > margin_m
+        if not bool(undecided.any()):
+            return True  # every cell certified
+        cell_c, cell_w = centres[undecided], widths[undecided]
+        # Split the axis whose remaining width buys the most ε reduction.
+        axis = np.argmax(cell_w * radii, axis=1)
+        rows = np.arange(cell_c.shape[0])
+        half = cell_w[rows, axis] / 2.0
+        split_w = cell_w.copy()
+        split_w[rows, axis] = half
+        low, high = cell_c.copy(), cell_c.copy()
+        low[rows, axis] -= half / 2.0
+        high[rows, axis] += half / 2.0
+        centres = np.concatenate([low, high])
+        widths = np.concatenate([split_w, split_w])
+        if centres.shape[0] > _CERTIFY_MAX_CELLS:
+            return False  # out of budget — withhold the exemption
+    return False
+
+
+def _xyzrpy_matrix(origin: _Origin) -> _Arr:
+    """A manifest ``(x, y, z, roll, pitch, yaw)`` origin as a 4×4 matrix."""
+    import numpy as np
+
+    from openral_safety.mjcf_lowering import _rpy_to_mat
+
+    out = np.eye(4)
+    out[:3, :3] = np.asarray(_rpy_to_mat(origin[3], origin[4], origin[5])).reshape(3, 3)
+    out[:3, 3] = origin[:3]
+    return out
 
 
 def acm_for_geometry(
@@ -435,35 +674,52 @@ def acm_for_geometry(
     geoms: dict[str, LinkCollisionGeometry],
     *,
     srdf_path: str | None = None,
-    n_samples: int = _N_SAMPLES,
-    seed: int = _RNG_SEED,
-    margin_m: float = _SAMPLE_MARGIN_M,
+    margin_m: float = 0.0,
 ) -> _AcmPairs:
-    """The self-collision ACM for a specific per-link capsule geometry ``geoms``.
+    """The self-collision ACM for a specific per-link primitive geometry ``geoms``.
 
-    The kernel checks collisions with ``geoms``, so the ACM is computed against the
-    *same* capsules. A pair is disabled when it is:
+    The kernel checks collisions with ``geoms``, so the ACM is decided against the
+    *same* primitives, with the *same* predicates
+    (:mod:`openral_safety.kernel_predicates`), at the *same* ``margin_m``. A pair
+    is exempted under exactly one of three justifications:
 
     * **adjacent** — directly joint-connected;
-    * **always-colliding** — overlaps in every sampled pose under ``geoms`` (the
-      capsule-junction artifacts a mesh-based SRDF omits, e.g. a short link making
-      its skip-one neighbours' capsules overlap — these MUST be disabled or the
-      kernel false-E-stops every step);
-    * **never-able-to-collide** — ONLY from the SRDF ``disable_collisions`` (mesh
-      ground truth) when ``srdf_path`` is given.
+    * **always-colliding** — the kernel's trip condition holds at *every*
+      reachable configuration, so the check is a constant and removing it removes
+      no information. Established as a proof over the pair's relative-DoF
+      subspace by :func:`_certified_always_colliding`, never by sampling;
+    * **never-able-to-collide** — hand-reviewed pairs from the SRDF
+      ``disable_collisions`` block, when ``srdf_path`` is given.
 
-    So with an SRDF: ``ACM = adjacent ∪ always(capsule) ∪ SRDF``. Without one (the
-    sampling fallback): ``ACM = adjacent ∪ always(capsule)`` — every other pair stays
-    **checked**. A random-pose sweep cannot *prove* a pair never collides (it can
-    miss a rare config, especially between independent kinematic branches on a
-    bimanual / humanoid robot), so sampling never auto-disables a "never-collide"
-    pair; that's safe but mesh-authoritative SRDFs stay efficient. Deterministic
-    under the pinned seed.
+    So with an SRDF: ``ACM = adjacent ∪ always ∪ SRDF``. Without one:
+    ``ACM = adjacent ∪ always`` — every other pair stays **checked**, because
+    nothing short of mesh ground truth or a human can retire a pair that is
+    sometimes-colliding.
+
+    .. warning::
+       The SRDF term is **not** self-evidently "never collides". MoveIt's own
+       ``reason="Never"`` rows come from its mesh sweep, but a ``reason="User"``
+       row is whatever a human put there. Both are trusted here, so both are a
+       safety-WG surface. ``robots/panda_mobile/panda_mobile.srdf`` carries one
+       such row under protest — see its comment and issue #155.
+
+    Deterministic: no RNG is involved anywhere in this function.
+
+    Args:
+        urdf_path: Concrete on-disk URDF path (see :func:`_load_urdf`).
+        geoms: The per-link primitives the kernel will load, by link name.
+        srdf_path: Optional SRDF whose ``disable_collisions`` rows are unioned in.
+        margin_m: The robot's ``safety.self_collision_margin_m``. The kernel trips
+            a pair at ``distance <= margin_m``, so the always-colliding proof must
+            use the same threshold — a sweep pinned at ``0.0`` against a kernel
+            running a negative margin would exempt pairs the kernel never trips
+            on, silently deleting a live check.
+
+    Returns:
+        The disabled pairs, as unordered two-element frozensets.
     """
     model = _load_urdf(urdf_path)
-    links, counts = _pair_collision_counts(
-        model, geoms, n_samples=n_samples, seed=seed, margin_m=margin_m
-    )
+    links = [ln for ln in model.link_map if ln in geoms]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
 
     disabled: _AcmPairs = set()
     for joint in model.robot.joints:  # type: ignore[attr-defined]  # reason: yourdfpy URDF
@@ -471,32 +727,38 @@ def acm_for_geometry(
             disabled.add(frozenset({joint.parent, joint.child}))  # adjacent
     for i, a in enumerate(links):
         for b in links[i + 1 :]:
-            if counts.get(frozenset({a, b}), 0) == n_samples:  # always-colliding (capsule)
+            if frozenset({a, b}) in disabled:
+                continue  # already adjacent; no need to prove anything
+            if _certified_always_colliding(model, geoms, a, b, margin_m=margin_m):
                 disabled.add(frozenset({a, b}))
 
     if srdf_path is not None:
-        disabled |= parse_srdf_disabled_pairs(srdf_path)  # mesh-proven "never"
+        disabled |= parse_srdf_disabled_pairs(srdf_path)  # hand-reviewed exemptions
     return disabled
 
 
 def sample_acm_from_urdf(
     urdf_path: str,
     *,
-    n_samples: int = _N_SAMPLES,
-    seed: int = _RNG_SEED,
-    margin_m: float = _SAMPLE_MARGIN_M,
+    margin_m: float = 0.0,
 ) -> _AcmPairs:
-    """MoveIt-Setup-Assistant-style ACM from a URDF (the no-SRDF fallback).
+    """The ACM from a URDF alone (the no-SRDF fallback).
 
     Lowers the URDF's own collision geometry and runs :func:`acm_for_geometry`
-    without an SRDF: disables adjacent / always-colliding / never-colliding pairs,
-    tested with the kernel's own capsule distance. Deterministic under the pinned
-    ``seed`` / ``n_samples``.
+    without an SRDF, so the result is ``adjacent ∪ always-colliding`` and nothing
+    else: with no mesh ground truth and no human in the loop, a pair that is only
+    *sometimes* colliding stays checked.
+
+    Args:
+        urdf_path: Concrete on-disk URDF path.
+        margin_m: The robot's ``safety.self_collision_margin_m`` (see
+            :func:`acm_for_geometry`).
+
+    Returns:
+        The disabled pairs, as unordered two-element frozensets.
     """
     geoms = {g.link_name: g for g in lower_link_geometry(urdf_path)}
-    return acm_for_geometry(
-        urdf_path, geoms, srdf_path=None, n_samples=n_samples, seed=seed, margin_m=margin_m
-    )
+    return acm_for_geometry(urdf_path, geoms, srdf_path=None, margin_m=margin_m)
 
 
 # ── Top-level entry: URDF/SRDF → manifest collision model ──────────────────────
@@ -623,9 +885,9 @@ def lower_joint_fk(robot: RobotDescription, urdf_ref: str) -> dict[str, tuple[_V
 def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJCF lowering pass (load → link-map → FK → sweep → ACM)
     robot: RobotDescription,
     *,
-    n_samples: int = _N_SAMPLES,
-    seed: int = _RNG_SEED,
-    margin_m: float = _SAMPLE_MARGIN_M,
+    n_samples: int = _MJCF_N_SAMPLES,
+    seed: int = _MJCF_RNG_SEED,
+    margin_m: float = 0.0,
     manifest_dir: Path | None = None,
 ) -> LoweredCollisionModel:
     """Lower joint FK + sampling ACM from a robot's MJCF, keeping its manifest geometry.
@@ -648,7 +910,7 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     import numpy as np
     from openral_core.assets import AssetRefError, resolve_asset
 
-    from openral_safety.mjcf_lowering import _seg_seg_distance
+    from openral_safety.kernel_predicates import shape_distance
 
     if not robot.assets.mjcf:
         raise ROSConfigError(f"{robot.name}: no urdf and no assets.mjcf to lower from")
@@ -717,9 +979,10 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     # ACM sweep over the manifest geometry, using mujoco FK for link placement.
     geoms = {g.link_name: g for g in robot.collision_geometry if g.link_name in link_body}
     links = list(geoms)
-    local_seg = {
-        ln: _capsule_segment_radius(geoms[ln].shape, geoms[ln].origin_xyz_rpy) for ln in links
-    }
+    # Each link's primitive origin in its own body frame; the sweep places it by
+    # mujoco FK and asks `shape_distance` — the kernel's own predicate for the
+    # actual shape, not a stand-in for it (issue #155).
+    local_origin = {ln: _xyzrpy_matrix(geoms[ln].origin_xyz_rpy) for ln in links}
     sweep: list[tuple[int, float, float]] = []
     for j in robot.joints:
         ji = jid(j.sim_joint_name)
@@ -757,15 +1020,11 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         for adr, lo, hi in sweep:
             data.qpos[adr] = lo + (hi - lo) * rng.random()
         mujoco.mj_kinematics(model, data)
-        world = {}
-        for ln in links:
-            p0l, p1l, r = local_seg[ln]
-            world[ln] = (*_world_segment(body_tf(link_body[ln]), p0l, p1l), r)
+        world = {ln: (body_tf(link_body[ln]) @ local_origin[ln])[None] for ln in links}
         for i, a in enumerate(links):
             for b in links[i + 1 :]:
-                (a0, a1, ra) = world[a]
-                (b0, b1, rb) = world[b]
-                if _seg_seg_distance(a0, a1, b0, b1) - ra - rb <= margin_m:
+                gap = shape_distance(geoms[a].shape, world[a], geoms[b].shape, world[b])
+                if float(gap[0]) <= margin_m:
                     counts[frozenset({a, b})] = counts.get(frozenset({a, b}), 0) + 1
     for i, a in enumerate(links):
         for b in links[i + 1 :]:
@@ -888,7 +1147,17 @@ def lower_robot(
         # are added — otherwise the kernel would false-E-stop every step.
         geom_list = robot.collision_geometry if acm_only else geometry
         geom_by_link = {g.link_name: g for g in geom_list}
-        disabled = acm_for_geometry(urdf_ref, geom_by_link, srdf_path=used_srdf)
+        # The kernel trips at `safety.self_collision_margin_m`, so the
+        # always-colliding proof must use that same threshold — see
+        # `acm_for_geometry`. so101_follower runs -0.06 m; a sweep hardcoded at
+        # 0.0 would have called pairs always-colliding that the kernel never
+        # trips on, and exempted a check that was doing real work.
+        disabled = acm_for_geometry(
+            urdf_ref,
+            geom_by_link,
+            srdf_path=used_srdf,
+            margin_m=float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0),
+        )
         source = "srdf" if used_srdf else "sampling"
         pairs = _scoped_sorted_pairs(disabled, set(geom_by_link))
 

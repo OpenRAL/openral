@@ -7,9 +7,15 @@ targeted textual splice rather than a full manifest round-trip. No mocks (§1.11
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
+import pytest
 from openral_cli.collision import inject_joint_fk, render_blocks, splice_collision_blocks
 from openral_core import BoxShape, CapsuleShape, LinkCollisionGeometry, SphereShape
-from openral_safety.urdf_lowering import LoweredCollisionModel, _capsule_segment_radius
+from openral_safety.kernel_predicates import bounding_capsule_segment
+from openral_safety.mjcf_lowering import _rpy_to_mat
+from openral_safety.urdf_lowering import LoweredCollisionModel
 
 _MANIFEST = """\
 name: demo
@@ -205,22 +211,47 @@ def test_render_blocks_serializes_box_not_capsule() -> None:
     assert "origin_xyz_rpy: [0.0208, -0.0011, 0.0661, 0.0000, 0.0000, 0.0000]" in geo_block
 
 
-def test_capsule_segment_radius_box_uses_conservative_inscribed_sphere() -> None:
-    """A box feeds the ACM sweep as its inscribed sphere (conservative).
+def test_a_box_never_lowers_to_a_capsule_smaller_than_itself() -> None:
+    """The retired inscribed-sphere lowering, and why its safety argument was wrong.
 
-    The ACM disables a pair only when it collides in *every* sampled pose, so an
-    under-approximation of a link can only *reduce* the collision count — it can
-    never disable a self-collision check the true box would keep. The inscribed
-    sphere (a zero-length segment at the box centre, radius = smallest
-    half-extent) is that safe under-approximation: it fits wholly inside the box,
-    independent of the box's orientation. The kernel still checks the true box.
+    This test used to assert the opposite: that a box feeds the ACM sweep as its
+    *inscribed* sphere, on the reasoning that under-approximating "can only reduce
+    the collision count — it can never disable a self-collision check the true box
+    would keep".
+
+    Both halves of that were wrong (issue #155). The ACM sweep no longer reduces a
+    box to a single primitive at all — it asks `kernel_predicates.shape_distance`
+    for the true oriented box, the same question the kernel asks. And the
+    under-approximation was not safe even on its own terms: it silently dropped
+    `panda_link5`/`panda_link7`, and the same helper fed the cuMotion *planner*,
+    where believing a link is thinner than it is means planning into obstacles.
+
+    What survives is the invariant in the other direction: the one remaining
+    capsule lowering (for consumers that can only express capsules) must
+    **contain** the box.
     """
     box = BoxShape(half_extents_m=(0.08, 0.04, 0.02))
     origin = (0.1, 0.2, 0.3, 0.5, 0.6, 0.7)  # arbitrary rotation — must not matter
-    p0, p1, radius = _capsule_segment_radius(box, origin)
+    p0, p1, radius = bounding_capsule_segment(box, origin)
 
-    assert p0 == p1 == (0.1, 0.2, 0.3)  # zero-length segment at the box centre
-    assert radius == 0.02  # inscribed-sphere radius = smallest half-extent
-    # Conservative invariant: the sphere never pokes outside the box on any axis,
-    # so it cannot over-report a collision the true box would not have.
-    assert all(radius <= half for half in box.half_extents_m)
+    # Radius spans the cross-section diagonal of the two shorter axes, so it is
+    # strictly larger than the smallest half-extent the old lowering used.
+    assert radius == pytest.approx(math.hypot(0.04, 0.02))
+    assert radius > min(box.half_extents_m)
+    # The segment is the longest axis, so the capsule is not a sphere.
+    assert p0 != p1
+    assert math.dist(p0, p1) == pytest.approx(2 * 0.08)
+    # Every corner of the box lies within `radius` of the segment: it is contained.
+    axes = [
+        [(0.08 if sx else -0.08), (0.04 if sy else -0.04), (0.02 if sz else -0.02)]
+        for sx in (0, 1)
+        for sy in (0, 1)
+        for sz in (0, 1)
+    ]
+    rot = np.asarray(_rpy_to_mat(*origin[3:])).reshape(3, 3)
+    for corner in axes:
+        world = rot @ np.asarray(corner) + np.asarray(origin[:3])
+        seg = np.asarray(p1) - np.asarray(p0)
+        t = float(np.clip((world - np.asarray(p0)) @ seg / (seg @ seg), 0.0, 1.0))
+        closest = np.asarray(p0) + seg * t
+        assert float(np.linalg.norm(world - closest)) <= radius + 1e-9

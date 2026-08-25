@@ -1,11 +1,12 @@
-"""Sampling-based ACM fallback (part of the geometric safety collision-checking
-system): deterministic, adjacency-disabling, and
-conservative w.r.t. the SRDF ground truth.
+"""No-SRDF ACM fallback (part of the geometric safety collision-checking system):
+deterministic, adjacency-disabling, and conservative w.r.t. the SRDF ground truth.
 
-The sampler reconstructs the allowed-collision matrix from a URDF when no SRDF
-exists (the humanoids / openarm). It tests collisions with the safety kernel's own
-conservative capsule distance, so it never disables a pair the precise-mesh SRDF
-keeps checked (the safe direction). Real panda URDF + SRDF, no mocks (§1.11).
+Reconstructs the allowed-collision matrix from a URDF alone, for robots with no
+SRDF (the humanoids / openarm). It tests collisions with the safety kernel's own
+predicates (`openral_safety.kernel_predicates`), and exempts a pair only when it
+is adjacent or *provably* always-colliding — so it never disables a pair the
+precise-mesh SRDF keeps checked (the safe direction). Real panda URDF + SRDF, no
+mocks (§1.11).
 """
 
 from __future__ import annotations
@@ -32,9 +33,6 @@ def _resolve_urdf_path(ref: str) -> str | None:
 
 
 _PANDA_SRDF = Path("/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf")
-# A modest sweep keeps the test fast while still exercising every rule; the
-# production default is larger (_N_SAMPLES).
-_N = 400
 
 
 def _arm_only(pairs: set[frozenset[str]]) -> set[frozenset[str]]:
@@ -44,18 +42,24 @@ def _arm_only(pairs: set[frozenset[str]]) -> set[frozenset[str]]:
     }
 
 
-def test_sampling_is_deterministic_under_pinned_seed() -> None:
+def test_sampling_is_deterministic() -> None:
+    """Reproducible across runs — the `--check` linchpin.
+
+    There is no seed to pin any more: the always-colliding verdict is a proof over
+    each pair's relative-DoF subspace, not a draw from an RNG. A criterion whose
+    output moved with the draw order could not be reproduced after any change to
+    the joint set, which is how the box under-approximation (issue #155) stayed
+    invisible for so long.
+    """
     urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
-    a = sample_acm_from_urdf(urdf, n_samples=_N)
-    b = sample_acm_from_urdf(urdf, n_samples=_N)
-    assert a == b, "pinned seed must make the ACM reproducible (the --check linchpin)"
+    assert sample_acm_from_urdf(urdf) == sample_acm_from_urdf(urdf)
 
 
 def test_adjacent_links_always_disabled() -> None:
     urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
-    pairs = sample_acm_from_urdf(urdf, n_samples=_N)
+    pairs = sample_acm_from_urdf(urdf)
     # Every directly joint-connected arm pair on the panda chain.
     chain = ("0", "1", "2", "3", "4", "5", "6", "7")
     for a, b in pairwise(chain):
@@ -65,25 +69,25 @@ def test_adjacent_links_always_disabled() -> None:
 def test_sampler_does_not_disable_a_never_collide_pair() -> None:
     """Without an SRDF, a 'never-collide' pair stays CHECKED (the conservative rule).
 
-    A random-pose sweep cannot prove a pair never collides (it can miss the tail),
-    so the sampling fallback must NOT auto-disable one. link1↔link4 never collides in
-    the sweep but, lacking a mesh-ground-truth SRDF, is kept checked.
+    Geometry can prove a pair *always* collides; it cannot prove one *never* does
+    without mesh ground truth. So link1↔link4 — which the Franka SRDF marks
+    "Never" — must stay checked on this path rather than be auto-disabled.
     """
     urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
-    pairs = sample_acm_from_urdf(urdf, n_samples=_N)
+    pairs = sample_acm_from_urdf(urdf)
     assert frozenset({"panda_link1", "panda_link4"}) not in pairs
 
 
 def test_sampled_acm_keeps_never_collide_pairs_checked() -> None:
     """The safe conservative fallback: known 'never-collide' far pairs stay checked.
 
-    Disable only what provably must be (adjacent + always-colliding junctions); a
-    sampled 'never-collide' verdict is not trusted (it can miss the tail).
+    Exempt only what provably must be (adjacent + certified always-colliding); a
+    geometric 'never-collide' verdict is not trusted without mesh ground truth.
     """
     urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
-    sampled = _arm_only(sample_acm_from_urdf(urdf, n_samples=_N))
+    sampled = _arm_only(sample_acm_from_urdf(urdf))
     # SRDF "Never" pairs (kinematically far) must NOT be auto-disabled by sampling.
     for never in (("panda_link1", "panda_link4"), ("panda_link2", "panda_link4")):
         assert frozenset(never) not in sampled, f"{never} unsafely disabled by sampling"

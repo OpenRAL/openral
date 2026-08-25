@@ -973,8 +973,17 @@ re-lowering workflow, but it can no longer loosen a shipped envelope silently.
    the recommended configuration, and 45/72 states unreachable by any link-geometry
    change. A hazard entry justifying a smaller envelope on a benefit the evidence
    does not show is the exact failure mode §1.2 exists to prevent.
-8. **Issue #155 is fixed first, or the ACM is not regenerated** (#157 §7.3 item 6);
-   sequencing matters more than the geometry.
+8. ~~**Issue #155 is fixed first, or the ACM is not regenerated**~~ (#157 §7.3
+   item 6) — **discharged**: #155 is fixed, the ACM sweep uses the kernel's own
+   predicates, and a regeneration now reproduces all 10 shipped ACMs
+   byte-identically, so this no longer constrains sequencing. Note what it found,
+   because it raises this document's stakes rather than settling them:
+   `panda_link5`↔`panda_link7` is a **real** self-collision (up to 48.3 mm of
+   mesh interpenetration across a 39.6° band of `joint6`) that the current box
+   envelopes cannot separate from an artifact at *any* margin — real collisions
+   reach a box gap of -9.97 mm, collision-free poses -40.07 mm. It therefore
+   ships exempt and unchecked, under an explicit residual-risk SRDF row.
+   Tightening `link5`/`link6`/`link7` is the only thing that retires it.
 
 ---
 
