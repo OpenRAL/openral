@@ -11,6 +11,9 @@ CLAUDE.md §1.11 — real schemas + the real ``robots/openarm`` fixture, no mock
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import pytest
 from openral_core import (
     CapsuleShape,
     ControlMode,
@@ -23,6 +26,7 @@ from openral_core import (
     SafetyEnvelope,
     SphereShape,
 )
+from openral_core.exceptions import ROSConfigError
 from openral_safety.envelope_loader import (
     collision_params_from_description,
     ee_link_index_from_collision_params,
@@ -64,6 +68,55 @@ def _two_link_arm() -> RobotDescription:
         ),
         safety=SafetyEnvelope(),
     )
+
+
+@dataclass(frozen=True)
+class _CylinderShape:
+    """A fourth primitive kind — what a future ``CollisionShape`` member looks like.
+
+    ``openral_core.CollisionShape`` is closed over sphere/capsule/box, so no
+    fixture in ``robots/`` can produce this and no amount of validation will
+    build one. It exists to reach the lowering's unknown-shape branch, the same
+    way ``packages/openral_slam_bringup/test/test_depth_height_filter.py``
+    reaches the height band's.
+
+    It deliberately carries ``radius_m``: that is exactly the shape that used to
+    slip through, because the old bare ``else`` read ``shape.radius_m`` off
+    anything that was not a ``BoxShape``.
+    """
+
+    shape: str = "cylinder"
+    radius_m: float = 0.1
+    length_m: float = 0.4
+
+
+def test_unknown_primitive_is_refused_not_lowered_as_a_capsule() -> None:
+    """An unlowerable primitive raises instead of becoming an assumed capsule.
+
+    Before this fix the routing was ``if BoxShape: ... else: <capsule>``, so a
+    fourth variant was lowered as a zero-length capsule of its ``radius_m`` —
+    silently, and in the unsafe direction: a capsule of radius ``r`` is
+    contained in every non-spherical primitive carrying ``r``, so the kernel
+    received a strictly smaller volume than the manifest declared. Refusing is
+    at-least-as-conservative: no params are emitted, so no motion is authorised
+    against a wrong envelope.
+    """
+    robot = _two_link_arm()
+    # `model_construct` bypasses validation — the only way to hold a primitive
+    # the closed union cannot express.
+    bad = LinkCollisionGeometry.model_construct(
+        link_name="link2",
+        shape=_CylinderShape(),  # type: ignore[arg-type]  # reason: future-variant stand-in
+        origin_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    robot = robot.model_copy(update={"collision_geometry": [robot.collision_geometry[0], bad]})
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        collision_params_from_description(robot)
+
+    message = str(excinfo.value)
+    assert "cylinder" in message, message
+    assert "link2" in message, message
 
 
 def test_no_collision_geometry_disables_check() -> None:

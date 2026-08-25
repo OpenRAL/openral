@@ -13,7 +13,17 @@ import math
 import re
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, ClassVar, Literal, NamedTuple, Self, TypeAlias, TypeVar, get_args
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    NamedTuple,
+    Self,
+    TypeAlias,
+    TypeVar,
+    get_args,
+)
 
 from pydantic import (
     AliasChoices,
@@ -1447,15 +1457,48 @@ class BoxShape(BaseModel):
     half_extents_m: tuple[PositiveFloat, PositiveFloat, PositiveFloat]
 
 
-CollisionShape: TypeAlias = CapsuleShape | SphereShape | BoxShape
+CollisionShape: TypeAlias = Annotated[
+    CapsuleShape | SphereShape | BoxShape, Field(discriminator="shape")
+]
 """Discriminated union of convex collision primitives.
 
 The discriminator field is ``shape``. Used by
-:class:`LinkCollisionGeometry` (robot links) and
-:class:`WorldCollisionPrimitive` (world obstacles). Mesh primitives are
+:class:`LinkCollisionGeometry` (robot links),
+:class:`WorldCollisionPrimitive` (world obstacles) and
+:class:`AttachedCollisionPrimitive` (carried payloads). Mesh primitives are
 intentionally excluded — the allocation-free safety kernel checks only
 convex analytic shapes; mesh-accurate collision stays a planning-layer
 concern.
+
+**The discriminator is enforced, not merely documented.** Until it was
+annotated, resolution worked only by accident: pydantic v2's *smart union*
+tried each member left-to-right and ``extra="forbid"`` plus the per-member
+``Literal`` defaults happened to make exactly one fit. That is a structural
+match on the field set, not on the tag — so a member whose fields are a
+superset of an earlier member's would have been resolved to the wrong member
+*silently*, and a typo'd tag produced six errors — one per (variant, field)
+mismatch across all three branches — none of which named the bad tag. With
+``Field(discriminator="shape")`` pydantic reads ``shape`` first and reports a
+single error that enumerates the valid tags.
+
+Consequences worth knowing:
+
+- **Validating a mapping now requires the ``shape`` key.** A dict or YAML
+  block carrying only ``{"radius_m": ...}`` used to resolve to
+  :class:`SphereShape` by structure; it is now rejected with
+  ``union_tag_not_found``. Every manifest in ``robots/`` already writes the
+  tag explicitly (``shape: {shape: "box", ...}``), and the tag has been the
+  documented contract since this alias was introduced, so this narrows the
+  implementation onto the published contract rather than changing it — no
+  ``schema_version`` bump, no migrator. A third-party manifest that omitted
+  the tag gets a loud, named refusal rather than a silently guessed
+  primitive.
+- **Constructing a member directly is unaffected** — ``BoxShape(...)`` still
+  fills ``shape="box"`` from its default. The discriminator governs
+  *validation of a mapping*, not instantiation.
+- **Never dump a shape with ``exclude_defaults=True``.** The tag is a
+  defaulted field, so excluding defaults drops it and the resulting mapping
+  no longer re-validates. Nothing in-tree does this; keep it that way.
 """
 
 
@@ -2601,7 +2644,33 @@ class AttachedCollisionPrimitive(BaseModel):
         )
 
     def fill_idl(self, msg: object) -> None:
-        """Populate one duck-typed attached primitive without importing ROS."""
+        """Populate one duck-typed attached primitive without importing ROS.
+
+        Args:
+            msg: A duck-typed ``openral_msgs/AttachedCollisionPrimitive`` to
+                populate in place.
+
+        Raises:
+            ROSConfigError: The primitive is none of the three shapes the IDL
+                can carry.
+
+        The branch chain used to have no ``else``, so an unrepresentable shape
+        left ``shape_type`` at the IDL default ``0`` (no ``SHAPE_*`` constant is
+        ``0``) and ``shape_dimensions`` empty, and the message was published
+        anyway. That is **not** a safety hole today — every consumer already
+        refuses tag ``0``: the C++ kernel's attached-object ingest calls
+        ``fail_closed()`` on an unknown tag, and
+        ``openral_nav2_bringup.payload_scan_filter_node`` raises
+        ``ValueError``. What it was is a *diagnosability* hole, and a contract
+        that leans on every present and future consumer to keep guarding it: a
+        producer that cannot encode a shape would surface as an E-stop in the
+        safety kernel, or an exception inside an unrelated Nav2 node, one
+        process boundary away from the code that actually failed and with the
+        shape's name nowhere in the report. Refusing here names the shape at
+        the point of the defect. Mirrors the fail-closed pattern in
+        ``openral_cli.collision.collision_primitive_envelope`` and this class's
+        own :meth:`from_idl`, which already refuses an unknown ``shape_type``.
+        """
         if isinstance(self.shape, SphereShape):
             msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
             msg.shape_dimensions = [float(self.shape.radius_m)]  # type: ignore[attr-defined]
@@ -2616,6 +2685,13 @@ class AttachedCollisionPrimitive(BaseModel):
             msg.shape_dimensions = [  # type: ignore[attr-defined]
                 float(value) for value in self.shape.half_extents_m
             ]
+        else:
+            raise ROSConfigError(
+                f"attached collision primitive {self.shape.shape!r} has no "
+                "openral_msgs/AttachedCollisionPrimitive encoding. Add a SHAPE_* "
+                "constant and a branch here (and in from_idl) before carrying it "
+                "on a payload — it must never be published as an unset shape."
+            )
         pose = msg.pose_in_object  # type: ignore[attr-defined]
         pose.position.x, pose.position.y, pose.position.z = self.pose_in_object.xyz
         (

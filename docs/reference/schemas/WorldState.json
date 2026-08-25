@@ -145,7 +145,15 @@
       "description": "One bounded payload primitive positioned in its object frame.",
       "properties": {
         "shape": {
-          "anyOf": [
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxShape",
+              "capsule": "#/$defs/CapsuleShape",
+              "sphere": "#/$defs/SphereShape"
+            },
+            "propertyName": "shape"
+          },
+          "oneOf": [
             {
               "$ref": "#/$defs/CapsuleShape"
             },
@@ -789,7 +797,15 @@
       "description": "A placed convex obstacle volume in the world.\n\nThe world-frame analogue of :class:`LinkCollisionGeometry`: a convex\nprimitive plus the pose that places it. Populated by perception / SLAM and\nconsumed by the kernel's world-collision phase against the robot's link\ncapsules. A bounded, capped set is the kernel's world model (mesh\nobstacles are out of scope for the allocation-free check).\n\nAttributes:\n    shape: The convex primitive (capsule or sphere).\n    pose: Pose of the primitive's local origin in the world frame.\n    object_id: Optional stable identifier (e.g. a\n        :attr:`DetectedObject.track_id` rendered as text) surfaced in\n        :attr:`CollisionEvidence.link_b_or_object`.",
       "properties": {
         "shape": {
-          "anyOf": [
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxShape",
+              "capsule": "#/$defs/CapsuleShape",
+              "sphere": "#/$defs/SphereShape"
+            },
+            "propertyName": "shape"
+          },
+          "oneOf": [
             {
               "$ref": "#/$defs/CapsuleShape"
             },

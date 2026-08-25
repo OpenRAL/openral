@@ -41,6 +41,7 @@ from openral_core import (
     RobotDescription,
     RSkillManifest,
     SafetyEnvelope,
+    SphereShape,
 )
 from openral_core.exceptions import ROSConfigError
 
@@ -602,12 +603,30 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
             box_link.append(index[name])
             box_half_extents.extend([float(h) for h in shape.half_extents_m])
             box_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
-        else:
+        elif isinstance(shape, CapsuleShape | SphereShape):
+            # A sphere is a zero-length capsule; both share `radius_m`.
             half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
             capsule_link.append(index[name])
             capsule_radius.append(float(shape.radius_m))
             capsule_half_length.append(float(half_length))
             capsule_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
+        else:
+            # Fail closed on a primitive this lowering does not understand.
+            # The branch above used to be a bare `else`, so ANY future member of
+            # `CollisionShape` was lowered as a zero-length capsule of its
+            # `radius_m` — silently, and in the UNSAFE direction: a capsule of
+            # radius r is contained in every non-spherical primitive that
+            # carries r, so the kernel would have received a strictly SMALLER
+            # volume than the manifest declared and missed real contacts inside
+            # the difference. Refusing to build the params instead is
+            # at-least-as-conservative by construction: no envelope is emitted,
+            # so no motion is authorised against a wrong one.
+            raise ROSConfigError(
+                f"link {name!r} declares collision primitive {shape.shape!r}, which "
+                f"{__name__} cannot lower. Add it to the capsule/box routing here "
+                "(and to the kernel's distance routines) before using it in a "
+                "manifest — it must never be lowered as an assumed capsule."
+            )
 
     allowed_pairs: list[int] = []
     for a, b in robot.allowed_collision_pairs:

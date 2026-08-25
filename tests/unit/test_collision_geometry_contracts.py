@@ -56,6 +56,81 @@ def test_collision_shape_discriminates_capsule_vs_sphere() -> None:
     assert capsule.origin_xyz_rpy == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+def test_collision_shape_refuses_an_untagged_mapping() -> None:
+    """A shape mapping without the ``shape`` tag is refused, not guessed.
+
+    Before ``CollisionShape`` carried ``Field(discriminator="shape")`` this
+    mapping was *accepted*: pydantic's smart union matched it structurally and
+    silently produced a ``SphereShape``. A manifest that omitted the tag
+    therefore got a real primitive that nobody had written down. The tag has
+    always been the documented contract, so the only correct outcome is a
+    named refusal.
+    """
+    try:
+        LinkCollisionGeometry.model_validate({"link_name": "link_1", "shape": {"radius_m": 0.05}})
+    except ValidationError as exc:
+        errors = exc.errors()
+        assert len(errors) == 1, f"expected one precise error, got {len(errors)}: {errors}"
+        assert errors[0]["type"] == "union_tag_not_found"
+        assert errors[0]["loc"] == ("shape",)
+    else:
+        raise AssertionError("an untagged collision shape must not validate")
+
+
+def test_collision_shape_unknown_tag_reports_one_error_naming_the_valid_tags() -> None:
+    """An unknown tag yields a single error that enumerates the real tags.
+
+    The bare union produced *six* errors here — one per (variant, field)
+    mismatch — none of which said "cylinder is not a shape". The discriminator
+    turns that into one error against one field.
+    """
+    try:
+        LinkCollisionGeometry.model_validate(
+            {"link_name": "link_1", "shape": {"shape": "cylinder", "radius_m": 0.05}}
+        )
+    except ValidationError as exc:
+        errors = exc.errors()
+        assert len(errors) == 1, f"expected one precise error, got {len(errors)}: {errors}"
+        assert errors[0]["type"] == "union_tag_invalid"
+        message = errors[0]["msg"]
+        assert "cylinder" in message
+        for tag in ("capsule", "sphere", "box"):
+            assert tag in message, f"error should enumerate {tag!r}: {message}"
+    else:
+        raise AssertionError("an unknown collision shape tag must not validate")
+
+
+def test_every_real_manifest_round_trips_through_the_tagged_union() -> None:
+    """Every committed manifest's collision geometry survives dump → re-validate.
+
+    The discriminator narrows what validates, so the guard that it narrowed
+    onto the *published* contract and not past it is that all 11 real
+    ``robots/*/robot.yaml`` manifests still load, and that each primitive
+    re-validates to the very same variant after a serialization round-trip
+    (CLAUDE.md §1.11 — real fixtures, no placeholders).
+    """
+    manifests = sorted(Path("robots").glob("*/robot.yaml"))
+    assert manifests, "no robot manifests found"
+
+    seen: set[str] = set()
+    checked = 0
+    for path in manifests:
+        desc = RobotDescription.from_yaml(str(path))
+        for geometry in desc.collision_geometry:
+            reloaded = LinkCollisionGeometry.model_validate_json(geometry.model_dump_json())
+            assert reloaded == geometry, f"{path}:{geometry.link_name} did not round-trip"
+            assert type(reloaded.shape) is type(geometry.shape), (
+                f"{path}:{geometry.link_name} re-validated to a different variant"
+            )
+            seen.add(geometry.shape.shape)
+            checked += 1
+
+    assert checked > 0, "no collision geometry exercised"
+    # All three variants are represented in the committed corpus, so this is a
+    # round-trip over every member of the union, not just the common one.
+    assert seen == {"capsule", "sphere", "box"}, seen
+
+
 def test_capsule_rejects_nonpositive_radius() -> None:
     """``radius_m`` is constrained ``> 0`` (CLAUDE.md §1.3 — types are the contract)."""
     try:
