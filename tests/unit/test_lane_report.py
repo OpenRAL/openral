@@ -115,20 +115,27 @@ def test_fully_gated_lane_is_declared_not_run_never_silently_green() -> None:
     assert record.declared_skips == {"sidecar": 21}
 
 
-def test_undeclared_lane_with_no_passing_tests_fails() -> None:
-    # `sim` is NOT in gated_lanes, so zero coverage there is a failure even
-    # though every skip is individually excused.
-    record = _record("sim", passed=0, skips=["x requires CUDA"] * 4)
-    assert record.status == lane_report.STATUS_FAILED
-    assert "no passing tests" in (record.note or "")
+def test_narrow_selection_of_a_gated_file_is_declared_not_run_not_failed() -> None:
+    """A well-covered lane can still have every *selected* test gated.
+
+    Found by proof run 32815008771: a diff touching only `rskills/act-aloha/**`
+    selects one `sim` file whose six tests are all CUDA-gated, so the lane had
+    0 passed and 6 declared skips. `sim` yields 162 passing tests when all its
+    files are selected, but the verdict must be about what the diff SELECTED —
+    failing here would punish a PR merely for touching a GPU-only file, the
+    exact breakage this policy removes.
+    """
+    record = _record("sim", passed=0, skips=["x requires CUDA"] * 6)
+    assert record.status == lane_report.STATUS_DECLARED_NOT_RUN
+    assert record.declared_skips == {"cuda": 6}
 
 
-def test_stale_gated_declaration_fails_so_it_cannot_rot() -> None:
-    # A gated lane that starts producing coverage must force the declaration to
-    # be removed, otherwise `gated_lanes` silently weakens over time.
-    record = _record("isaacsim", passed=3, skips=[])
+def test_lane_that_collected_nothing_at_all_fails() -> None:
+    # No passes and no skips means the lane collected no tests — broken, not
+    # gated. It must not masquerade as "no satisfiable coverage".
+    record = _record("sim", passed=0, skips=[])
     assert record.status == lane_report.STATUS_FAILED
-    assert "remove it from hosted_runner.gated_lanes" in (record.note or "")
+    assert "collected no tests" in (record.note or "")
 
 
 def test_failing_test_fails_the_lane() -> None:
@@ -285,11 +292,6 @@ def test_no_lane_is_declared_with_an_empty_glob_list() -> None:
     """
     empty = sorted(name for name, globs in CONFIG.requirement_globs.items() if not globs)
     assert empty == [], f"lanes declared with no globs can never run: {empty}"
-
-
-def test_every_gated_lane_is_a_real_lane() -> None:
-    unknown = sorted(set(CONFIG.hosted_runner.gated_lanes) - set(CONFIG.requirement_globs))
-    assert unknown == [], f"gated_lanes names no-such lane(s): {unknown}"
 
 
 def test_every_capability_gap_declares_how_it_could_be_satisfied() -> None:

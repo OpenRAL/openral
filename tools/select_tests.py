@@ -76,12 +76,6 @@ class CapabilityGap(BaseModel):
     skip_patterns: list[str] = Field(default_factory=list)
 
 
-class HostedRunnerPolicy(BaseModel):
-    """Lanes with no satisfiable coverage on a GitHub-hosted runner."""
-
-    gated_lanes: list[str] = Field(default_factory=list)
-
-
 class SelectionConfig(BaseModel):
     """Typed view of ``tools/test_selection.toml`` (CLAUDE.md §2 — Pydantic for config)."""
 
@@ -91,7 +85,6 @@ class SelectionConfig(BaseModel):
     extra_triggers: dict[str, list[str]] = Field(default_factory=dict)
     requirement_globs: dict[str, list[str]] = Field(default_factory=dict)
     capability_gaps: dict[str, CapabilityGap] = Field(default_factory=dict)
-    hosted_runner: HostedRunnerPolicy = Field(default_factory=HostedRunnerPolicy)
 
 
 class SelectionResult(BaseModel):
@@ -381,7 +374,7 @@ def select(
     #    get the least lane verification, and a red PR could be turned green just
     #    by also touching `pyproject.toml`. The lanes a hosted runner cannot
     #    satisfy are handled downstream by the declared capability gaps in
-    #    `[capability_gaps]` / `[hosted_runner]`, not by selecting nothing here.
+    #    `[capability_gaps]`, not by selecting nothing here.
     for rel in changed_files:
         for glob in config.full_run_globs:
             if fnmatch.fnmatch(rel, glob):

@@ -15,18 +15,16 @@ degradations lived in that scheme:
    selects them — while a genuinely fixable gap ("panda.srdf not installed")
    looked exactly the same.
 
-The policy implemented here, driven by ``[capability_gaps]`` and
-``[hosted_runner]`` in ``tools/test_selection.toml``:
+The policy implemented here, driven by ``[capability_gaps]`` in
+``tools/test_selection.toml``:
 
 * A skip explained by a DECLARED capability gap is *declared-not-run*: allowed,
   attributed to the gap, and counted in the ledger. It is never called
   "skipped" and never silently absent.
 * Any other skip still FAILS the lane. Matching is fail-closed — reword a skip
   reason out of the declared patterns and the lane goes red, not green.
-* A lane must produce at least one passing test, unless it is declared in
-  ``hosted_runner.gated_lanes`` (zero satisfiable coverage here). A gated lane
-  that *does* produce passing tests also fails, so the declaration cannot go
-  stale and mask a lane that became satisfiable.
+* A lane whose every test is explained by a declared gap is *declared-not-run*
+  — reported, never silent. A lane that collected no tests at all still fails.
 * ``attest`` cross-checks the ledger against the selector's own output: every
   selected lane must have produced a record. "Selected but never executed" is
   the exact shape of #163 and is now a hard failure.
@@ -166,7 +164,6 @@ def build_record(  # noqa: PLR0911  # reason: one explicit early return per lane
     the ledger says so rather than implying per-test accounting it never had.
     """
     gaps = config.capability_gaps
-    gated = lane in config.hosted_runner.gated_lanes
 
     declared: Counter[str] = Counter()
     undeclared: list[str] = []
@@ -217,22 +214,26 @@ def build_record(  # noqa: PLR0911  # reason: one explicit early return per lane
         )
         return record
     if passed == 0:
-        if gated:
-            record.status = STATUS_DECLARED_NOT_RUN
-            record.note = "declared in hosted_runner.gated_lanes; no satisfiable coverage here"
+        if not skip_reasons:
+            # Nothing passed and nothing skipped: the lane collected no tests at
+            # all. That is a broken lane, not an absence of coverage.
+            record.status = STATUS_FAILED
+            record.note = "lane collected no tests at all"
             return record
-        record.status = STATUS_FAILED
-        record.note = (
-            "lane produced no passing tests and is not declared in hosted_runner.gated_lanes"
-        )
-        return record
-    if gated:
-        record.status = STATUS_FAILED
-        record.note = (
-            f"lane is declared fully gated but produced {passed} passing test(s) — "
-            "remove it from hosted_runner.gated_lanes so the zero-coverage "
-            "declaration cannot go stale"
-        )
+        # Every test the lane ran is accounted for by a DECLARED gap — the
+        # undeclared branch above has already returned. Nothing is hidden: the
+        # gap is named and counted here and printed by the attest step.
+        #
+        # Judged on what the diff SELECTED, not on the lane's full potential. A
+        # narrow diff can select a single fully-gated file out of an otherwise
+        # well-covered lane: `sim` yields 162 passing tests when all seven of
+        # its files are selected, but a diff touching only `rskills/act-aloha/**`
+        # selects just `test_aloha_bimanual_act_aloha.py`, whose six tests are
+        # all CUDA-gated (proof run 32815008771). Failing that would punish a PR
+        # for touching a GPU-only file — the exact class of breakage this policy
+        # exists to remove.
+        record.status = STATUS_DECLARED_NOT_RUN
+        record.note = "every selected test is gated by a declared capability gap"
         return record
     return record
 

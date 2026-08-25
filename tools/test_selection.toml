@@ -222,27 +222,6 @@ skip_patterns = [
   "*not in the local HF cache*",
 ]
 
-[hosted_runner]
-# Lanes with ZERO satisfiable coverage on a hosted runner: every test they own
-# is gated behind a capability above, so the lane legitimately produces no
-# passing tests there. They are reported as "declared-not-run" — named, with
-# the gap, in the job summary — never as a silent pass and never as an absent
-# lane. Every OTHER lane must still produce at least one passing test.
-#
-# The list is fail-closed in BOTH directions: a lane listed here that starts
-# producing passing tests ALSO fails, telling you to remove it, so the
-# declaration cannot quietly go stale and mask a lane that became satisfiable.
-#
-# Membership is EVIDENCE-BASED, from observed hosted runs: these three are the
-# lanes that reported "produced no passing tests" on every run. `rlbench` is
-# deliberately NOT here — it yields 6 passing tests plus one CoppeliaSim-sidecar
-# skip, so it is a partly-gated lane that must keep proving those 6.
-gated_lanes = [
-  "gr00t",
-  "isaacsim",
-  "robotwin",
-]
-
 # Selected tests matching these globs need an opt-in dependency group. The
 # default selective lane still runs them in the cheap env (where they may skip);
 # CI then reruns the matching targets with the named group installed so a

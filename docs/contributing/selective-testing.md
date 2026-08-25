@@ -203,12 +203,20 @@ The mechanism is a **declared capability allowlist**, not a blanket tolerance:
   "tolerate skips", and it is why the patterns are narrow.
 - Matching is **fail-closed**: reword a skip reason out of the declared patterns
   and the lane goes red, not quietly green.
-- `[hosted_runner] gated_lanes` lists lanes with *zero* satisfiable coverage
-  here (`gr00t`, `isaacsim`, `rlbench`, `robotwin`). Every other lane must still
-  produce at least one passing test. The list is fail-closed **both ways**: a
-  gated lane that starts producing passing tests also fails, telling you to
-  remove it, so the declaration cannot rot and mask a lane that became
-  satisfiable.
+- A lane whose **every selected test** is explained by a declared gap is
+  `declared-not-run`: a pass, but a loudly reported one, named in the summary
+  with the capability it needs. A lane that collected **no tests at all** still
+  fails — that is a broken lane, not absent coverage.
+
+  The verdict is deliberately about what the diff *selected*, not a lane's full
+  potential. `sim` yields 162 passing tests when all seven of its files are
+  selected, but a diff touching only `rskills/act-aloha/**` selects just
+  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated
+  (observed on proof run 32815008771). Failing that would punish a PR for
+  touching a GPU-only file — precisely the breakage this policy exists to
+  remove. There is deliberately **no** hand-maintained list of "lanes that
+  cannot run here": that would be a second source of truth that rots, while the
+  per-skip classification derives the verdict from evidence every run.
 
 Batched and isolated targets are now judged by the **same** rule.  Isolated
 files used to be graded on exit code alone, so a skip inside one was invisible —
