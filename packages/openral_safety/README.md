@@ -43,6 +43,43 @@
   believes the arm is thinner than it is emits trajectories the kernel
   then has to E-stop.
 
+## The collision tree must be connected
+
+`collision_params_from_description` lowers the robot's kinematic tree for the
+kernel's forward kinematics. That tree is the union of two manifest lists:
+
+* **`joints`** — the robot's *movable* joints, and only those. It is consumed
+  **unfiltered** elsewhere as the action-vector width, the sim `qpos` map, the
+  reasoner's rSkill state-contract filter and the runner's joint permutation,
+  so a zero-DoF entry here corrupts all four. Never add a fixed joint to it.
+* **`fixed_attachments`** — the rigid, zero-DoF mounts (`FixedAttachment`):
+  a hand bolted to a flange, a bimanual rig's arm pedestals. No DoF, no limits,
+  never a command channel, invisible to every `joints` consumer.
+
+Together they must describe **exactly one connected tree**. A manifest that
+leaves a rigid mount out is *refused* with `ROSConfigError` naming the
+disconnected roots — it is not lowered.
+
+The loader previously treated any link no joint reached as a second base at the
+identity frame. That silently placed the whole orphaned subtree on the robot's
+origin, which is wrong in both directions: it fabricates contacts that cannot
+happen, and — the reason this is a hazard rather than a nuisance — it leaves
+that subtree's real swept volume entirely unmodelled, so a genuine
+self-collision is never detected. There is no safe default for a link whose
+pose is unknown, so the loader refuses instead of guessing.
+
+Every attachment origin must be read out of the robot's real URDF/MJCF at the
+zero configuration (composed, where the source model inserts intermediate
+links), exactly as `joints`' own origins are. Never estimate a mount transform.
+`tests/sim/safety/test_collision_fk_matches_source_model.py` enforces this: it
+runs the kernel's FK over the lowered parameters and asserts every link lands
+within 10 µm of the same body in the robot's **normative** model — the one its
+manifest was lowered from. Which model that is matters: a robot's URDF and its
+MJCF can describe the same machine with different intermediate frames (`g1`'s
+`torso_link` sits 10 mm apart between the two while both agree on every link
+above it), so checking against the wrong one measures a convention, not a
+defect.
+
 Per CLAUDE.md §7.7 / §1.1, any PR that **extends** enforcement here
 requires:
 

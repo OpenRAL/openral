@@ -1542,6 +1542,64 @@ class LinkCollisionGeometry(BaseModel):
     )
 
 
+class FixedAttachment(BaseModel):
+    """A rigid, zero-DoF parent→child link attachment in the kinematic tree.
+
+    :attr:`RobotDescription.joints` enumerates only the robot's **movable**
+    joints — it is consumed unfiltered as the action-vector width, the sim
+    ``qpos`` map, the reasoner's rSkill state-contract filter and the runner's
+    joint permutation, so a zero-DoF entry there would corrupt all four. But a
+    real robot's collision tree also contains rigid mounts (a Franka hand
+    bolted to the flange, a bimanual rig's two arm pedestals), and without them
+    the tree is a *forest*: the safety kernel would have no way to place those
+    links relative to the base.
+
+    This list is that missing connectivity and nothing else. It carries no
+    limits, no sensors and no DoF, it is never a command channel, and it is
+    invisible to every ``joints`` consumer. The safety envelope loader unions
+    it with ``joints`` to build the collision tree and **refuses to load a
+    robot whose collision links do not form one connected tree**
+    (:func:`openral_safety.envelope_loader.collision_params_from_description`).
+
+    Every value must come from the robot's real URDF/MJCF at the zero
+    configuration — the same source ``joints``' own ``origin_xyz`` /
+    ``origin_rpy`` come from. Never hand-estimate a mount transform.
+
+    Attributes:
+        name: Attachment name, matching the source URDF ``<joint>`` name where
+            one exists (a composed multi-hop mount is named for its endpoint).
+        parent_link: The link this attachment hangs from. Must be reachable
+            from the tree's single root.
+        child_link: The rigidly attached link.
+        origin_xyz: Translation (metres) of ``child_link``'s frame in
+            ``parent_link``'s frame. When the source model inserts intermediate
+            links between the two, this is the **composed** transform, exactly
+            as :func:`openral_safety.urdf_lowering.lower_joint_fk` computes it
+            for movable joints.
+        origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame
+            convention as :attr:`origin_xyz`.
+
+    Example:
+        >>> a = FixedAttachment(
+        ...     name="panda_hand_joint",
+        ...     parent_link="panda_link7",
+        ...     child_link="panda_hand",
+        ...     origin_xyz=(0.0, 0.0, 0.107),
+        ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),
+        ... )
+        >>> a.child_link
+        'panda_hand'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    parent_link: str
+    child_link: str
+    origin_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    origin_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
 class HalParameters(BaseModel):
     """Per-robot HAL construction defaults declared in the manifest.
 
@@ -1771,6 +1829,13 @@ class RobotDescription(BaseModel):
     # URDF/SRDF contribute geometry + ACM only (no dual source of truth).
     collision_geometry: list[LinkCollisionGeometry] = Field(default_factory=list)
     allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)
+    # Rigid (zero-DoF) links of the kinematic tree that ``joints`` cannot
+    # carry — ``joints`` is consumed unfiltered as a DoF vector, so a fixed
+    # entry there would corrupt the action width, the qpos map, the reasoner's
+    # state-contract filter and the runner's permutation. Empty for a robot
+    # whose movable joints already connect every collision link. See
+    # :class:`FixedAttachment`.
+    fixed_attachments: list[FixedAttachment] = Field(default_factory=list)
     # Dashboard overlay — optional base footprint as a list of
     # base-frame ``(x, y)`` vertices in metres (CCW by convention). Used to
     # draw the robot's true outline on the SLAM occupancy grid; ``None``
@@ -1800,6 +1865,32 @@ class RobotDescription(BaseModel):
             )
         if any(not math.isfinite(c) for pt in poly for c in pt):
             raise ValueError("footprint_polygon vertices must be finite (no NaN/inf)")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_fixed_attachments(self) -> RobotDescription:
+        """Each link may be defined by exactly one edge — a joint or an attachment.
+
+        Two edges claiming the same ``child_link`` make the link's pose
+        ambiguous, and the safety kernel would silently take whichever the
+        loader visited last. Reject the ambiguity at load time instead.
+        """
+        if not self.fixed_attachments:
+            return self
+        defined_by: dict[str, str] = {j.child_link: f"joint {j.name!r}" for j in self.joints}
+        for att in self.fixed_attachments:
+            if att.child_link == att.parent_link:
+                raise ValueError(
+                    f"fixed_attachments[{att.name!r}] attaches {att.child_link!r} to itself"
+                )
+            prior = defined_by.get(att.child_link)
+            if prior is not None:
+                raise ValueError(
+                    f"fixed_attachments[{att.name!r}] re-defines child_link "
+                    f"{att.child_link!r}, already defined by {prior}; a link's pose "
+                    "must have exactly one source"
+                )
+            defined_by[att.child_link] = f"fixed_attachments[{att.name!r}]"
         return self
 
     @model_validator(mode="after")

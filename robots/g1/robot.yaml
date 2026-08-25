@@ -215,10 +215,20 @@ joints:
     effort_limit: 88.0
     has_torque_sensor: true
     actuator_kind: "bldc"
+  # child_link is "torso_link", NOT a "waist_pitch_link" — the G1 has no such
+  # link, in this manifest's URDF or in any other model file in the tree. The
+  # fabricated name orphaned torso_link and the whole upper body from the
+  # chain, AND made `lower_joint_fk` silently skip the joint (it skips any
+  # joint whose child is absent from the URDF), leaving the origin and axis at
+  # their schema defaults. All three values below are the URDF's own, from
+  # g1_description/g1_29dof.urdf `<joint name="waist_pitch_joint">`.
   - name: "waist_pitch_joint"
+    origin_xyz: [0, 0, 0.019]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
     joint_type: "revolute"
     parent_link: "waist_roll_link"
-    child_link: "waist_pitch_link"
+    child_link: "torso_link"
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
     effort_limit: 88.0

@@ -35,7 +35,6 @@ from typing import cast
 from openral_core import (
     BoxShape,
     CapsuleShape,
-    JointSpec,
     JointType,
     LinkCollisionGeometry,
     RobotDescription,
@@ -469,31 +468,127 @@ _JOINT_KIND_CODE = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class _Edge:
+    """One parent→child edge of the collision tree.
+
+    ``dof_index`` is the edge's column in ``RobotDescription.joints`` for a
+    movable joint, or ``-1`` for a rigid :class:`~openral_core.FixedAttachment`
+    (which has no commanded column). ``joint_type`` is
+    :attr:`~openral_core.JointType.FIXED` for an attachment, so the existing
+    ``_JOINT_KIND_CODE`` lookup already lowers it to the kernel's static kind.
+    """
+
+    parent_link: str
+    joint_type: JointType
+    dof_index: int
+    origin_xyz: tuple[float, float, float]
+    origin_rpy: tuple[float, float, float]
+    axis_xyz: tuple[float, float, float]
+
+
 def _ordered_collision_links(
-    joints: list[JointSpec],
-) -> tuple[list[str], dict[str, int], dict[str, tuple[int, JointSpec]]]:
+    robot: RobotDescription,
+) -> tuple[list[str], dict[str, int], dict[str, _Edge]]:
     """Topologically order the kinematic links (every parent before its children).
 
-    Returns the ordered link names, a name→index map, and a child-link →
-    (joint index in ``joints``, JointSpec) map.
+    The tree is the union of the robot's **movable** ``joints`` and its rigid
+    ``fixed_attachments``. Both are needed: ``joints`` alone is only the
+    actuated skeleton, so a robot with any rigid mount (a Franka hand on the
+    flange, a bimanual rig's arm pedestals) would otherwise present as a
+    *forest* of several disconnected components.
+
+    A forest has no safe interpretation. Treating a component's top link as a
+    second base — the behaviour this function replaced — silently places that
+    entire subtree at the robot's origin, which both fabricates contacts that
+    cannot happen and, far worse, leaves the subtree's real swept volume
+    completely unmodelled. So this refuses, naming the disconnected roots
+    (CLAUDE.md §1.1, §1.4: the loader rejects, never guesses).
+
+    Returns the ordered link names, a name→index map, and a child-link → edge
+    map.
+
+    Raises:
+        ROSConfigError: When the collision links do not form exactly one
+            connected tree — several roots (missing ``fixed_attachments``), or
+            a cycle.
     """
-    joint_of_child = {j.child_link: (idx, j) for idx, j in enumerate(joints)}
+    edge_of_child: dict[str, _Edge] = {
+        j.child_link: _Edge(
+            parent_link=j.parent_link,
+            joint_type=j.joint_type,
+            dof_index=idx,
+            origin_xyz=j.origin_xyz,
+            origin_rpy=j.origin_rpy,
+            axis_xyz=j.axis_xyz,
+        )
+        for idx, j in enumerate(robot.joints)
+    }
+    # ``RobotDescription._validate_fixed_attachments`` already rejects an
+    # attachment that re-defines a link a joint defines, so this cannot clobber.
+    for att in robot.fixed_attachments:
+        edge_of_child[att.child_link] = _Edge(
+            parent_link=att.parent_link,
+            joint_type=JointType.FIXED,
+            dof_index=-1,
+            origin_xyz=att.origin_xyz,
+            origin_rpy=att.origin_rpy,
+            axis_xyz=(0.0, 0.0, 1.0),
+        )
+
     children_of: dict[str, list[str]] = {}
     all_links: set[str] = set()
-    for j in joints:
-        all_links.add(j.parent_link)
-        all_links.add(j.child_link)
-        children_of.setdefault(j.parent_link, []).append(j.child_link)
+    for child, edge in edge_of_child.items():
+        all_links.add(edge.parent_link)
+        all_links.add(child)
+        children_of.setdefault(edge.parent_link, []).append(child)
+    for kids in children_of.values():
+        kids.sort()
 
-    roots = sorted(link for link in all_links if link not in joint_of_child)
+    roots = sorted(link for link in all_links if link not in edge_of_child)
+    if not roots:
+        raise ROSConfigError(
+            f"robot {robot.name!r}: every collision link has a parent, so the "
+            "kinematic chain contains a cycle and no link can be placed relative "
+            "to a base."
+        )
+    if len(roots) != 1:
+        detail = ", ".join(f"{r!r} ({len(_component(r, children_of))} links)" for r in roots)
+        raise ROSConfigError(
+            f"robot {robot.name!r}: collision links form {len(roots)} disconnected "
+            f"trees, not one — roots: {detail}. Every link must be placeable "
+            "relative to the robot's base, or the safety kernel cannot know where "
+            "it sweeps. 'joints' enumerates only movable joints, so declare each "
+            "rigid mount in 'fixed_attachments' (name, parent_link, child_link, "
+            "origin_xyz, origin_rpy), taking the transform from the robot's real "
+            "URDF/MJCF at the zero configuration — never estimate one."
+        )
+
     ordered: list[str] = []
     queue = list(roots)
     while queue:
         link = queue.pop(0)
         ordered.append(link)
         queue.extend(children_of.get(link, []))
+    if len(ordered) != len(all_links):
+        orphaned = sorted(all_links - set(ordered))
+        raise ROSConfigError(
+            f"robot {robot.name!r}: collision links {orphaned} are unreachable from "
+            f"root {roots[0]!r} — the kinematic chain contains a cycle."
+        )
     index = {name: i for i, name in enumerate(ordered)}
-    return ordered, index, joint_of_child
+    return ordered, index, edge_of_child
+
+
+def _component(root: str, children_of: dict[str, list[str]]) -> list[str]:
+    """Links reachable from ``root`` — used only to size a diagnostic message."""
+    seen: list[str] = []
+    queue = [root]
+    while queue:
+        link = queue.pop(0)
+        seen.append(link)
+        queue.extend(children_of.get(link, []))
+    return seen
 
 
 def _capsules_by_link(
@@ -522,11 +617,17 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
 
     Lowers :attr:`RobotDescription.collision_geometry` +
     :attr:`~RobotDescription.allowed_collision_pairs` + the kinematic chain
-    (``joints`` with their ``origin_xyz`` / ``origin_rpy`` / ``axis_xyz``)
-    into the flat parallel arrays the C++ kernel's ``load_collision_model``
-    reads. ``joints`` stays the normative kinematic source; this never parses
-    URDF/MJCF — the offline lowering tool populates the joint origins + capsules
-    in the manifest first.
+    (``joints`` **and** :attr:`~RobotDescription.fixed_attachments`, with their
+    ``origin_xyz`` / ``origin_rpy`` / ``axis_xyz``) into the flat parallel
+    arrays the C++ kernel's ``load_collision_model`` reads. The manifest stays
+    the normative kinematic source; this never parses URDF/MJCF — the offline
+    lowering tool populates the joint origins + capsules in the manifest first.
+
+    The two lists together must describe exactly **one** connected tree. Any
+    link a robot's movable ``joints`` do not reach — a rigidly mounted hand, a
+    bimanual rig's arm pedestals — belongs in ``fixed_attachments``; a manifest
+    that leaves it out is rejected rather than lowered with that subtree
+    dumped at the origin.
 
     Links are emitted in a topological order (every parent precedes its
     children) so the kernel's forward kinematics can resolve each link from its
@@ -546,9 +647,11 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         output.
 
     Raises:
-        ROSConfigError: If a link carries more than one collision primitive
-            (unsupported in this version — split it into separate links), or a
-            capsule references an unknown link.
+        ROSConfigError: If the collision links do not form exactly one
+            connected tree (missing ``fixed_attachments``, or a cycle); if a
+            link carries more than one collision primitive (unsupported in this
+            version — split it into separate links); or if a capsule references
+            an unknown link.
     """
     if not robot.collision_geometry:
         return {"self_collision_enabled": False}
@@ -558,7 +661,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     if margin_m is None:
         margin_m = float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0)
 
-    ordered, index, joint_of_child = _ordered_collision_links(list(robot.joints))
+    ordered, index, edge_of_child = _ordered_collision_links(robot)
     capsule_of = _capsules_by_link(robot, index)
 
     parent: list[int] = []
@@ -568,21 +671,21 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     axis: list[float] = []
 
     for name in ordered:
-        child = joint_of_child.get(name)
-        if child is None:
-            # Root link: no joint, identity frame.
+        edge = edge_of_child.get(name)
+        if edge is None:
+            # The tree's single root (``_ordered_collision_links`` guarantees
+            # there is exactly one): the base, at the identity frame.
             parent.append(-1)
             joint_kind.append(0)
             dof_index.append(-1)
             origin_xyzrpy.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             axis.extend([0.0, 0.0, 1.0])
         else:
-            jidx, j = child
-            parent.append(index[j.parent_link])
-            joint_kind.append(_JOINT_KIND_CODE.get(j.joint_type, 0))
-            dof_index.append(jidx if j.joint_type in _JOINT_KIND_CODE else -1)
-            origin_xyzrpy.extend([float(v) for v in (*j.origin_xyz, *j.origin_rpy)])
-            axis.extend([float(v) for v in j.axis_xyz])
+            parent.append(index[edge.parent_link])
+            joint_kind.append(_JOINT_KIND_CODE.get(edge.joint_type, 0))
+            dof_index.append(edge.dof_index if edge.joint_type in _JOINT_KIND_CODE else -1)
+            origin_xyzrpy.extend([float(v) for v in (*edge.origin_xyz, *edge.origin_rpy)])
+            axis.extend([float(v) for v in edge.axis_xyz])
 
     # Each link's primitive is routed by shape: capsules/spheres to the capsule
     # arrays (sphere = zero-length capsule), boxes to the OBB arrays

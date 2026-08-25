@@ -41,10 +41,16 @@ ros2 launch openral_slam_bringup nvblox.launch.py robot_yaml:=/abs/path/to/robot
 ```
 
 Every collision volume the manifest declares must be placeable relative to
-`base_frame` — through the `joints` chain, or through the
-`assets.urdf.root_frame` + `base_to_root_xyz_rpy` bridge that
+`base_frame` — through the `joints` chain, through `fixed_attachments`, or
+through the `assets.urdf.root_frame` + `base_to_root_xyz_rpy` bridge that
 `sim_e2e.launch.py` publishes as a static TF (this is how UR manifests reach
 their upstream `base_link` root, which no movable joint has as a child).
+
+`joints` lists only *movable* joints, so a rigidly mounted link — the Franka's
+hand on its flange, the bimanual openarm's two arm pedestals — is placed by
+`fixed_attachments`. That is the same union the safety kernel builds its
+collision tree from (`openral_safety.envelope_loader`), which is what keeps
+this band measuring the robot the kernel actually checks.
 A manifest that declares a volume on a link neither of those reaches makes
 the node **refuse at startup** with `ROSConfigError` naming the links, rather
 than measure the subset it can reach: a band covering an arbitrary part of the

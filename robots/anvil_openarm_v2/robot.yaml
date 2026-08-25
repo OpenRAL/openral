@@ -267,6 +267,35 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
 
+# Rigid, zero-DoF links of the collision tree. NOT `joints` — that list is
+# consumed unfiltered as the action-vector width, the sim qpos map, the
+# reasoner's state-contract filter and the runner's joint permutation, so a
+# zero-DoF entry there would corrupt all four.
+#
+# This robot declares no collision_geometry yet, so nothing is lowered to the
+# safety kernel today. These are declared anyway: without them the two arms
+# are separate trees, and the day someone adds geometry the arms would be
+# lowered superimposed on the base origin. Recording the real mounts now means
+# that day produces a correct model instead of a silently wrong one.
+#
+# Source: `openarm:anvil_v2_bimanual` MJCF anvil_openarm_bimanual.xml
+# L187-188 / L283 — `<worldbody>` directly contains
+# `<body name="openarm_left_base_link" pos="0 0.031 0">` and
+# `<body name="openarm_right_base_link" pos="0 -0.031 0">`, neither carrying a
+# `quat` (identity rotation). The MJCF worldbody is this manifest's
+# `base_frame: "world"`.
+fixed_attachments:
+  - name: "openarm_left_base_mount"
+    parent_link: "world"
+    child_link: "openarm_left_base_link"
+    origin_xyz: [0, 0.031, 0]
+    origin_rpy: [0, 0, 0]
+  - name: "openarm_right_base_mount"
+    parent_link: "world"
+    child_link: "openarm_right_base_link"
+    origin_xyz: [0, -0.031, 0]
+    origin_rpy: [0, 0, 0]
+
 end_effectors:
   - name: "left_gripper"
     kind: "parallel_gripper"

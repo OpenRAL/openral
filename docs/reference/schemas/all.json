@@ -2735,6 +2735,75 @@
           "title": "EndEffectorSpec",
           "type": "object"
         },
+        "FixedAttachment": {
+          "additionalProperties": false,
+          "description": "A rigid, zero-DoF parent\u2192child link attachment in the kinematic tree.\n\n:attr:`RobotDescription.joints` enumerates only the robot's **movable**\njoints \u2014 it is consumed unfiltered as the action-vector width, the sim\n``qpos`` map, the reasoner's rSkill state-contract filter and the runner's\njoint permutation, so a zero-DoF entry there would corrupt all four. But a\nreal robot's collision tree also contains rigid mounts (a Franka hand\nbolted to the flange, a bimanual rig's two arm pedestals), and without them\nthe tree is a *forest*: the safety kernel would have no way to place those\nlinks relative to the base.\n\nThis list is that missing connectivity and nothing else. It carries no\nlimits, no sensors and no DoF, it is never a command channel, and it is\ninvisible to every ``joints`` consumer. The safety envelope loader unions\nit with ``joints`` to build the collision tree and **refuses to load a\nrobot whose collision links do not form one connected tree**\n(:func:`openral_safety.envelope_loader.collision_params_from_description`).\n\nEvery value must come from the robot's real URDF/MJCF at the zero\nconfiguration \u2014 the same source ``joints``' own ``origin_xyz`` /\n``origin_rpy`` come from. Never hand-estimate a mount transform.\n\nAttributes:\n    name: Attachment name, matching the source URDF ``<joint>`` name where\n        one exists (a composed multi-hop mount is named for its endpoint).\n    parent_link: The link this attachment hangs from. Must be reachable\n        from the tree's single root.\n    child_link: The rigidly attached link.\n    origin_xyz: Translation (metres) of ``child_link``'s frame in\n        ``parent_link``'s frame. When the source model inserts intermediate\n        links between the two, this is the **composed** transform, exactly\n        as :func:`openral_safety.urdf_lowering.lower_joint_fk` computes it\n        for movable joints.\n    origin_rpy: Orientation ``(roll, pitch, yaw)`` in radians, same frame\n        convention as :attr:`origin_xyz`.\n\nExample:\n    >>> a = FixedAttachment(\n    ...     name=\"panda_hand_joint\",\n    ...     parent_link=\"panda_link7\",\n    ...     child_link=\"panda_hand\",\n    ...     origin_xyz=(0.0, 0.0, 0.107),\n    ...     origin_rpy=(0.0, 0.0, -0.7853981633974483),\n    ... )\n    >>> a.child_link\n    'panda_hand'",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "parent_link": {
+              "title": "Parent Link",
+              "type": "string"
+            },
+            "child_link": {
+              "title": "Child Link",
+              "type": "string"
+            },
+            "origin_xyz": {
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Origin Xyz",
+              "type": "array"
+            },
+            "origin_rpy": {
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Origin Rpy",
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "parent_link",
+            "child_link"
+          ],
+          "title": "FixedAttachment",
+          "type": "object"
+        },
         "GripperReadMode": {
           "description": "How :class:`openral_hal.MujocoArmHAL` reports the gripper qpos.\n\n``SUM_OVER_SCALE`` (default) \u2014 ``clip(sum(qpos[addrs]) / scale, 0, 1)``.\n  Matches the Franka parallel gripper where two finger qpos are summed\n  and divided by ``2 * max_finger_extent`` (=0.08 m for Panda).  Public\n  surface is normalised ``[0, 1]``.\n``AFFINE_LOW_HIGH`` \u2014 ``(qpos[addrs[0]] - ctrl_range[0]) / (ctrl_range[1] - ctrl_range[0])``.\n  Used by the SO-100 menagerie ``Jaw`` joint, a 1-DoF revolute with a\n  non-zero closed position (``-0.174`` rad).  Public surface is\n  normalised ``[0, 1]``.\n``PASSTHROUGH`` \u2014 ``qpos[addrs[0]]`` reported verbatim, in the same\n  physical units as the MJCF (metres for Aloha prismatic fingers,\n  radians for OpenArm revolute jaws).  The public surface is **not**\n  ``[0, 1]`` \u2014 Skills must accept the raw range.",
           "enum": [
@@ -4528,6 +4597,13 @@
             "type": "array"
           },
           "title": "Allowed Collision Pairs",
+          "type": "array"
+        },
+        "fixed_attachments": {
+          "items": {
+            "$ref": "#/$defs/FixedAttachment"
+          },
+          "title": "Fixed Attachments",
           "type": "array"
         },
         "footprint_polygon": {
