@@ -291,6 +291,18 @@ all joined by `stop_seq`, all `error`-level, all emitted through the node logger
 | `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
 | `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 
+Each pair inside `nearest_*_pairs` carries its own **proof**, not just a number:
+`distance_m`, `distance_certified`, `distance_method`, `witness_a_xyz` /
+`witness_b_xyz`, and `distance_bracket_m` when the geometry is bracketed rather
+than exact. Each coverage block adds `certified_pairs`, `uncertified_pairs` and
+`distance_instrument`. This is because `mujoco.mj_geomDistance` — which every
+probe before 2026-08-25 used — returns confidently wrong values for RoboCasa
+fixture geoms against `panda_mobile` collision meshes in two silent modes, and
+a reader must be able to tell a defensible distance from an undefendable one
+without re-running the round. A verdict may rest only on a certified pair
+(`tools/validation_matrix.py::probe_is_distance_certified`); see
+[the 2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
+
 The third line exists because the first one, read alone, is indistinguishable
 from an ordinary mid-task stop. `SimAttachedHAL.last_action_ns` is `0` until the
 first `send_action` — the single choke point every real action passes, stamped

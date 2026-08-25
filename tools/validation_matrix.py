@@ -500,6 +500,13 @@ _PROBE_COVERAGE_KEYS: Final[tuple[str, ...]] = (
 # visual mesh (`openral_hal.sim_sensor_bridge._nearest_pair_records`).
 _COLLIDABILITY_ATTESTATION: Final[str] = "noncollidable_side_geoms_excluded"
 
+# The coverage key the HAL writes once every probed distance carries a proof
+# (`openral_hal.convex_distance`). A snapshot without it was recorded on
+# `mujoco.mj_geomDistance`, which is unreliable for RoboCasa-fixture-vs-panda-
+# mesh pairs in two silent modes; a non-zero count means this snapshot itself
+# contains a distance the producer could not defend.
+_CERTIFIED_DISTANCE_ATTESTATION: Final[str] = "uncertified_pairs"
+
 
 def probe_is_collidability_filtered(snapshot: Mapping[str, Any]) -> bool:
     """Whether a recorded probe attests that *every* side was solid geoms only.
@@ -530,6 +537,54 @@ def probe_is_collidability_filtered(snapshot: Mapping[str, Any]) -> bool:
     blocks = [snapshot.get(key) for key in _PROBE_COVERAGE_KEYS]
     present = [b for b in blocks if isinstance(b, dict) and b]
     return bool(present) and all(_COLLIDABILITY_ATTESTATION in b for b in present)
+
+
+def probe_is_distance_certified(snapshot: Mapping[str, Any]) -> bool:
+    """Whether every distance in a recorded probe carries its own proof.
+
+    ``mujoco.mj_geomDistance`` — which every probe recorded before this landed
+    was built on — returns confidently wrong values on the pair class these
+    stops are adjudicated from: a RoboCasa fixture geom against a panda
+    collision mesh. Measured cases include ``+0.000000`` where the truth is
+    ``+0.148512 mm``, with a 126 mm witness segment lying outside both geoms;
+    and, in the checked-in rounds themselves, ``0.000 m`` recorded where the
+    certified distance is ``+14.806 mm`` (08-22 fridge), ``+82.185 mm``
+    (08-23 fridge) and ``+107.930 mm`` (08-23 baguette, on a *solid* pair).
+    Every one of those is a ``0.000 m`` reading, which is exactly what rule 1
+    of :func:`adjudicate_ground_truth` promotes to ``real-contact``.
+
+    So the attestation is the same shape as
+    :func:`probe_is_collidability_filtered`, for the same reason and with the
+    same fail-closed consequence: a snapshot that does not attest its
+    distances cannot support a verdict that rests on one. It does **not**
+    reverse such a verdict — the stop becomes ``unadjudicated``, and nothing
+    here shows the kernel was wrong.
+
+    Args:
+        snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
+
+    Returns:
+        ``True`` when every non-empty coverage block reports
+        ``uncertified_pairs`` and that count is zero.
+
+    Example:
+        >>> probe_is_distance_certified(
+        ...     {"nearest_probe_coverage": {"uncertified_pairs": 0, "certified_pairs": 24}}
+        ... )
+        True
+        >>> probe_is_distance_certified(
+        ...     {"nearest_probe_coverage": {"uncertified_pairs": 2, "certified_pairs": 22}}
+        ... )
+        False
+        >>> probe_is_distance_certified({"nearest_probe_coverage": {"probed_pairs": 431}})
+        False
+    """
+    blocks = [snapshot.get(key) for key in _PROBE_COVERAGE_KEYS]
+    present = [b for b in blocks if isinstance(b, dict) and b]
+    return bool(present) and all(
+        _CERTIFIED_DISTANCE_ATTESTATION in b and not b[_CERTIFIED_DISTANCE_ATTESTATION]
+        for b in present
+    )
 
 
 def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
@@ -609,6 +664,16 @@ def adjudicate_ground_truth(
        the nearest geometry is beyond ``distmax_m``, which is used as a strict
        lower bound.
 
+    4. **Finally**, whatever the ladder concluded is withdrawn to
+       ``unadjudicated`` unless the probe attests that its distances are
+       certified (:func:`probe_is_distance_certified`). Every rule above reads
+       a number off that probe, and ``mujoco.mj_geomDistance`` — which every
+       round before this one used — is wrong by 15-108 mm on this exact pair
+       class, silently. The check runs *last* rather than first so the record
+       still names what is being withdrawn (``withdrawn from 'real-contact':
+       …``) instead of erasing it. This withdraws verdicts; it reverses none,
+       and it never shows the kernel was wrong.
+
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload, if recorded.
         stop: The kernel's verdict, if the run was stopped.
@@ -638,6 +703,7 @@ def adjudicate_ground_truth(
     distmax = _as_float(coverage.get("distmax_m"))
     probed = coverage.get("probed_pairs")
     filtered = probe_is_collidability_filtered(snapshot)
+    certified = probe_is_distance_certified(snapshot)
 
     robot_pairs = list(snapshot.get("nearest_robot_world_pairs") or [])
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
@@ -708,6 +774,30 @@ def adjudicate_ground_truth(
     else:
         verdict = "within-quantization"
 
+    if not certified:
+        # The measurement itself, applied after the ladder rather than before
+        # it, so the record still says WHAT is being withdrawn. A probe built on
+        # `mj_geomDistance` can be wrong by 15-108 mm on exactly this pair
+        # class, in both directions of the comparison above: too small a
+        # distance manufactures `real-contact` and shrinks the discrepancy
+        # toward `within-quantization`, while too large a one removes a pair
+        # whose absence is then read as "nothing was near". Neither bias is
+        # proved to be the only one, so no verdict may rest on an unattested
+        # distance. WITHDRAW, never reverse — this says the evidence cannot
+        # decide, not that the kernel was wrong.
+        withdrawn = "" if verdict == "unadjudicated" else f"withdrawn from {verdict!r}: "
+        certification = (
+            "this snapshot does not attest that its probed distances are certified "
+            "(`nearest_*_coverage.uncertified_pairs`), so they were measured with "
+            "`mujoco.mj_geomDistance`, which is unreliable for RoboCasa-fixture-vs-"
+            "panda-mesh pairs — see docs/reference/collision-validation-evidence.md "
+            "standing caveat 8"
+        )
+        verdict = "unadjudicated"
+        reason = f"{withdrawn}{certification}" + (
+            f". The probe's own reading, which this withdraws: {reason}" if reason else ""
+        )
+
     return ValidationGroundTruthAdjudication(
         verdict=verdict,
         stop_class=snapshot.get("stop_class"),
@@ -717,6 +807,7 @@ def adjudicate_ground_truth(
         admissible_gap_m=budget,
         budget_source=budget_source,
         probe_collidability_filtered=filtered,
+        probe_distance_certified=certified,
         unadjudicated_reason=reason,
         nearest_any_m=nearest_any,
         nearest_tripping_party_m=nearest_party,

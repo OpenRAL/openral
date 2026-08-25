@@ -644,9 +644,322 @@ both empty. Both are now `harness-error`; its artifacts are the fixture at
 **The round produced no citable collision-stack finding.** Rerun it on a build
 carrying the fixes before drawing any conclusion from these six rounds.
 
+### 2026-08-25 — the ruler was wrong, and here is what it moves
+
+Not a validation round: a re-measurement of rounds already recorded. The
+instrument every ground-truth probe rested on — `mujoco.mj_geomDistance` — was
+characterised, found defective, replaced with one that proves its own answers
+(`openral_hal.convex_distance`), and the checked-in artifacts were re-measured
+against it. Everything below is reproducible on this dev host from artifacts in
+this repo; nothing needs the Spark.
+
+#### The defect, precisely
+
+Two distinct failures, both silent, on the pair class these stops are
+adjudicated from — a RoboCasa fixture geom against a `panda_mobile` collision
+mesh. Both reproduce in a **two-geom standalone MJCF** carrying nothing but
+that mesh and that box at those world poses, so neither is a robosuite,
+RoboCasa or model-size artifact.
+
+Measured on `robocasa_fridge_drawer` at `layout_ids: [9]`, seed 1,
+`robot0_link7_collision` vs `fridge_right_group_freezer_door_main`:
+
+| path | `distmax` (m) | returned | witness segment |
+| --- | ---: | ---: | ---: |
+| native CCD (3.8 default) | 0.02 … 1.0 | `+0.000 mm` at every window | 126.264 mm |
+| `mjDSBL_NATIVECCD` (libccd) | 0.02 | `−2.168 mm` | 2.168 mm |
+| `mjDSBL_NATIVECCD` | 0.05 / 0.1 | `−46.372` / `−57.032 mm` | ditto |
+| `mjDSBL_NATIVECCD` | 0.2 / 0.3 | `−339.690` / `−351.570 mm` | ditto |
+| `mjDSBL_NATIVECCD` | 0.6 / 1.0 | `−361.890` / `−367.604 mm` | ditto |
+
+The certified truth is **`+0.148512 mm`**, with a separating-axis duality gap
+of `1.8e-14 m` — an *optimality proof*, not a tighter estimate — and an
+independent Minkowski-difference-hull computation agrees to `1e-16 m`. It
+supersedes the `+7.61 mm` the census reported from dense surface sampling for
+this pair; sampled point-to-point is an **upper** bound on the surface gap, and
+7.61 > 0.149 is that bound behaving as one when the grid misses the true
+closest approach.
+
+* **The libccd mode is robustly wrong and unbounded in `distmax`**: a monotone
+  function of the probe window, through a 48 mm-thick door panel. It is not the
+  shipped path (`disableflags == 0`; native CCD is 3.8's default) and appears in
+  the ledger only because PR #159 probed it deliberately.
+* **The native mode is knife-edge.** Displacing the link by **1 picometre**
+  (`1e-12 m`, ten orders of magnitude below the answer) returns `+0.1485 mm`
+  with a 0.149 mm witness. So it is a degenerate *configuration*, not a distance
+  regime: **no choice of `distmax`, no "only trust it below N mm" rule and no
+  cross-check against `ncon` can separate the good answers from the bad.** And a
+  scene's reset pose is exactly where such configurations live, because fixtures
+  are placed on exact axis-aligned numbers.
+
+The tell is in the answer itself. A nearest-pair segment has its endpoints on
+its two geoms by definition; here they are **526.6 mm and 432.9 mm outside**
+them. That contradiction is detectable without knowing the right answer, and is
+now mechanised as `openral_hal.convex_distance.witness_clearance_m`.
+
+#### Scope on the shipped path
+
+Every kernel-checked-link↔solid-world pair the real probe would examine, on five
+RoboCasa states at the repo's two windows (`0.1 m` default, `0.1099 m`
+`admissible_gap_m`) — **1 102 probed pairs**:
+
+| | pairs |
+| --- | ---: |
+| agree with the certified instrument to ≤ 1e-16 m | 1 101 |
+| **wrong** | **1** — the layout-9 pair above, `+0.000` vs `+0.1485 mm` |
+| witness outside both geoms | 1 (the same pair) |
+| reported beyond-window while actually inside it | 0 |
+
+So on a *reset* state at the shipped window it is rare — and that is not
+reassurance. Every failure observed here and in the recorded rounds is toward
+**closer** (`0.000 m`, or a large negative), which is the direction that
+manufactures `real-contact`; but nothing proves that is the only direction, and
+the widened windows the probe actually uses (`admissible_gap_m` is unbounded by
+construction) are where the second mode lives.
+
+#### The replacement, and what it costs
+
+`openral_hal.convex_distance.convex_geom_distance`. Every geom becomes
+`conv(core) ⊕ ball(radius)` — a box or mesh is its hull vertices at radius 0, a
+sphere is one point, a capsule two — so the signed distance is
+`signed(core_a, core_b) − r_a − r_b` on both branches. Separated cores are
+solved by GJK and carry a **separating-axis certificate**; overlapping cores by
+exact SAT over face normals and edge-edge crossings, the same construction the
+kernel's own `box_box_distance` uses. Cylinders and ellipsoids have no ball
+form and are **bracketed** by inscribed/circumscribed polytopes, so the answer
+is an interval that provably contains the truth.
+
+Mesh hulls are read out of MuJoCo's own compiled hull graph rather than
+recomputed, so the module answers *MuJoCo's* question and adds no
+computational-geometry dependency to the HAL. On the four matrix kitchens the
+graph hull matches a `scipy.spatial.ConvexHull` of the same vertices **exactly**
+(0-vertex symmetric difference over 40 meshes), and all 135 collidable mesh
+geoms carry a graph.
+
+Validated against analytic truths, not against another implementation: separated
+and penetrating boxes, spheres, capsules, cylinders; 448 randomly rotated box
+pairs where GJK and the Minkowski-hull oracle agree to `1.1e-16 m` and the
+certificate closes to `9.8e-15 m`.
+
+**Cost: ~2–4 ms per solved pair against `mj_geomDistance`'s ~9 µs** — three
+orders of magnitude. It is affordable because a **certified** window rejection
+(a separating-axis bound that *proves* a pair is outside `distmax_m`) thins
+74–259 candidates down to the 1–24 that are genuinely inside, leaving a whole
+three-probe snapshot at ~0.1–0.7 s, once, at a terminal event. Nothing on the
+100 Hz path calls it.
+
+**Nothing falls back.** A plane, heightfield or SDF has no bounded convex hull
+and is refused by name; a bracket wider than 0.1 mm is refused; a certificate
+that does not close is refused; an overlapping pair whose exact axis set is
+unavailable (a *visual* mesh, which MuJoCo compiles no hull graph for) is
+reported as penetrating with **no depth**. Each carries its reason, and the
+coverage block counts `certified_pairs` / `uncertified_pairs` so a verdict can
+never rest on a number the producer could not defend
+(`tools/validation_matrix.py::probe_is_distance_certified`).
+
+#### What it does to the recorded rounds
+
+Reconstruction method is the one the 2026-08-23 census used and is stated with
+its own error: the round's own scene YAML at seed 1, the robot driven to the
+`robot_joint_state` the snapshot published, the torso set from `base_frame_tf`,
+then **verified** against that TF. The world is at `t = 0` while the stops are
+at `t = 4.85–64.1 s` (caveat 2, unchanged), so world-side numbers carry the
+door-settling offset — which shows up consistently as ~3–4 mm and is what makes
+the 15–108 mm discrepancies below unattributable to it.
+
+**Recorded numbers the certified instrument cannot reproduce.** Every one is a
+`0.000 m` reading, which is exactly what rule 1 of the harness promotes to
+`real-contact`:
+
+| round / scene | recorded pair | recorded | certified | reconstruction residual |
+| --- | --- | ---: | ---: | ---: |
+| 08-22 `fridge1` | `robot0_g25_vis` ↔ `fridge_main_group_freezer_door_main` | `0.000 mm` | **+14.806 mm** | 0.006 mm |
+| 08-23 `fridge` | `robot0_g42_vis` ↔ `fridge_main_group_g43` | `0.000 mm` | **+82.185 mm** | 0.006 mm |
+| 08-23 `fridge` | `robot0_g22_vis` ↔ `fridge_main_group_g101` / `_g127` | `0.000 mm` | **+98.780 mm** | 0.006 mm |
+| 08-23 `baguette` | `robot0_link1_collision` ↔ `counter_1_left_group_top_left_1` | `0.000 mm` | **+107.930 mm** | 9.936 mm |
+
+**The 08-23 baguette row is the sharpest, because the round contradicted
+itself.** `robot0_g12_vis` is a visual shell *coincident with* that same
+collision geom, and the same probe recorded it against the same world geom at
+`0.107931 m` — the certified answer to 1 µm. One pair, two robot geoms
+occupying the same space, one right and one `0.000`. And unlike the `_vis` rows
+this is a **solid↔solid** pair, so #139's collidability filter would not have
+caught it: it is the instrument alone.
+
+**This corrects a diagnosis, not a verdict — and the difference matters.** The
+08-22 and 08-23 fridge `0.000 m` readings were attributed to a *visual shell*
+being ranked first (#139, #149, and standing caveat 5). Be precise about what
+moves:
+
+* **The withdrawal stands, unchanged.** #149 withdrew the 08-22 fridge
+  `real-contact` because the ranked pair was a non-solid geom, and **a visual
+  shell cannot carry a contact at any distance** — that argument never depended
+  on the distance being 0.000 m, so a wrong distance does not weaken it. The
+  verdict was `unadjudicated` before this section and is `unadjudicated` after
+  it.
+* **The mechanism was misnamed.** `robot0_g25_vis` was not touching the door at
+  0.000 m; it was **14.806 mm clear**, and `robot0_g42_vis` on the 08-23 round
+  was **82.185 mm clear**. The reading was a `mj_geomDistance` false zero that
+  happened to land on a visual geom, and #149 named the *co-occurring* defect as
+  the proximate cause of the number.
+* **So that row carried two independent defects, not one** — and the second is
+  strictly the worse of the pair. Collidability filtering removes a `_vis` pair
+  from the ranking, but it would have left a false zero on a **solid** pair
+  standing, which is exactly what the 08-23 baguette row above shows happening.
+
+None of this reverses anything. It withdraws a *stated cause*, in the same way
+this page withdraws stated verdicts: the earlier claim is not replaced by its
+opposite, it is replaced by "the evidence did not show that". Any in-tree
+comment or PR body citing "the visual meshes touch at 0.000 m" as an observed
+fact is citing an unreliable measurement — including the `KNOWN DEFECT` block in
+`scenes/deploy/robocasa_fridge_drawer.yaml`, whose `layout_ids: [30]` pin rests
+on a layout sweep produced by the same instrument and whose `0.000 m` rows need
+re-running before they are cited again. That scene file is owned elsewhere and
+is deliberately not edited from here.
+
+**Withdrawn, not reversed.** `adjudicate_ground_truth` now applies the
+certification check **last**, so the record still names what it takes:
+`withdrawn from 'within-quantization': …`. Every round in
+`tests/unit/fixtures/validation_matrix/` predates the instrument and therefore
+re-derives as `unadjudicated` — including the 2026-08-23 `utensil`
+`within-quantization`, which was the one verdict in the corpus that had
+survived every other basis. Nothing here shows the kernel was wrong about
+anything; it shows the evidence cannot say.
+
+#### The four load-bearing stops, re-measured
+
+`2026-08-22-master-1`, robot-link↔solid-world only, certified (largest duality
+gap over all four: `2.7e-15 m`). Payload-side pairs are **not** re-measured: a
+carried object's pose is not in `robot_joint_state`, so it reconstructs at its
+reset pose and any number from it would be about a different configuration.
+
+| stop | kernel | round's own probe | **certified re-measurement** | verdict on the number |
+| --- | ---: | ---: | ---: | --- |
+| utensil `panda_link1` (`voxel_76001`) | −17.3 mm | +43.256 mm | **+43.256 mm** (`robot0_link1_collision` ↔ `stack_2_left_group_3_door_g2`), residual 0.000 mm | **unchanged**, to 6 dp |
+| baguette `panda_link5` (`voxel_170781`) | −20.9 mm | no pair within 100 mm | **+106.456 mm** (↔ `cab_1_left_group_left_door_g2`), residual 0.863 mm | **confirmed and sharpened** — the census's 106.5 mm, now certified |
+| fridge `panda_link7` (`voxel_169769`) | −24.7 mm | +2.5 mm | **−1.868 mm** — genuinely in contact, residual 0.006 mm | **unchanged** (the 4.4 mm is the door settling between `t=0` and `t=4.85 s`) |
+| sink_cup `attached:sim:obj_main` (`voxel_87084`) | −13.4 mm | — | **not re-measurable** — payload pose absent from the snapshot | open |
+
+So **the baguette's ">120.9 mm" lower bound becomes a measured 127.4 mm**
+(`106.456 − (−20.9)`), against `panda_link5`'s own per-link gap of 67.0 mm
+(45.3 + 21.7) and the round's cross-round 88.2 mm. It survives the better ruler
+by more than it survived the old one.
+
+**Open defect ([#172](https://github.com/OpenRAL/openral/issues/172)): an
+attached-payload stop cannot be reconstructed from its own snapshot.** The
+sink_cup row above is not a gap in this analysis — it is a recording defect in
+the evidence pipeline, and it should be fixed rather than rediscovered. `sim.estop_ground_truth_snapshot` publishes `robot_joint_state`
+and `base_frame_tf`, which together determine the robot exactly (verified here
+to 0.000–0.863 mm). It publishes **nothing that determines the pose of a carried
+object**: `attached_bodies` carries a name, an id and a world position, but no
+orientation and no per-geom pose, so a payload reconstructs at its *reset* pose
+and every payload↔world and payload↔link number would be about a different
+configuration than the one that stopped.
+
+That makes an `attached_payload` stop — a whole `stop_class`, and the class the
+ADR-0097 place path exists for — **unadjudicable after the fact by
+reconstruction**, which is precisely the capability this page was created to
+guarantee (CLAUDE.md §1.8). It also means the payload rows in every recorded
+round are unverifiable in *both* directions: the two 08-22 `sink1`
+payload↔world pairs recorded at `0.000 m` may be false zeros like the four
+above, or may be real contact, and nothing in the artifact can decide. They are
+neither confirmed nor withdrawn here; they are **unverifiable**, which is a
+weaker and more honest statement than either.
+
+The fix is small, locatable and belongs in the producer, not here:
+`openral_hal.sim_sensor_bridge._body_record` returns `{id, name, world_xyz}`
+and is the only thing `attached_bodies` carries. Its own docstring calls that
+"world pose at this instant", which is the imprecision that hid this — a
+position is not a pose. Adding the body's world **quaternion** (and, for a
+payload whose geoms are not body-aligned, enough per-geom framing to place
+them) makes an `attached_payload` stop reconstructable exactly as a
+`robot_world` one already is. Until it lands, treat every payload-side distance
+in every round as unreconstructable, and prefer the robot-link rows — which are
+reconstructable — when a stop offers both.
+
+#### Instrument artefact or map artefact — the partition
+
+This is the distinction the re-measurement exists to draw, against #160's
+finding that two of these stops sit on **`unbacked`** cells:
+
+| stop | probe number | classification |
+| --- | --- | --- |
+| utensil `link1` | correct (+43.256 mm, reproduced exactly) | **map artefact.** `voxel_76001` is `unbacked` — 0 of 243 rays — and the nearest solid is 43.3 mm away. Nothing here is the instrument. |
+| baguette `link5` | correct (+106.456 mm, certified) | **map artefact.** `voxel_170781` is `unbacked`, with solid `cab_1_left_group_left_door_main` one cell away. A better ruler does not fill a phantom cell; the 127.4 mm discrepancy is now *certified* to be about the map. |
+| fridge `link7` | correct (−1.868 mm) — but the **evidence cited for it** was not | **neither.** A true positive: the link really is 1.9 mm inside the freezer door. What was instrument-corrupted is the 0.000 m pair the round was adjudicated on; the correct support is the solid `robot0_link7_collision` pair. |
+| 08-23 baguette `link1` | **wrong** (0.000 recorded, +107.930 certified) | **instrument artefact**, and the only pure one in the corpus. |
+
+The short form: **the instrument did not manufacture the two open link-class
+anomalies — the map did.** The instrument's damage is to the *fridge* family,
+where it manufactured contact readings out of geometry 15–99 mm away, and to
+the 08-23 baguette record. Re-pinning the fridge layout and characterising
+phantom cells stay exactly as urgent as they were; this page's link-class open
+question (baguette) is now better founded than before, not worse.
+
+**#171 names the mechanism behind the two map rows, and it is not what "phantom
+cell" suggests.** The
+[world-map fidelity study](world-map-fidelity.md) measured the live map from the
+other end and found that **48 % of live stops** are held by
+`rasterize_octree_to_grid`'s cube-overlap rule: the octree leaf lattice and the
+base-frame grid share a resolution but not a *phase*, so a leaf holding a real
+surface also marks base cells up to one full cell away from it. The displacement
+is **exactly one cell and deterministic** — not stale, not sensor noise, and not
+a frame-alignment bug, but a dilation the bridge introduces on purpose.
+
+That is the mechanism for the pattern this page's re-measurement kept
+surfacing, and the baguette row is its signature: an empty cell with solid
+`cab_1_left_group_left_door_main` **exactly one cell away**. The two findings
+converge on the same cells from opposite ends — this page eliminated the
+competing explanation by certifying the distance, that page identified the
+surviving one by reconstructing the map — and neither could have concluded it
+alone. A certified +106.456 mm with a phantom cell of unknown origin is still
+two unknowns; with the origin named it is one finding.
+
+Two smaller convergences worth recording, because both are independent
+confirmations rather than restatements:
+
+* **#171 reached the same verdict on the fridge `0.000 m` reading, by a
+  different method.** It measures mesh gaps by dense surface sampling and never
+  by `mj_geomDistance` — citing standing caveat 8 — and concludes that the
+  `0.000 m` on that pair was "`mj_geomDistance`'s documented failure mode, not a
+  touch". Arrived at independently of the certified instrument, and agreeing
+  with it.
+* **It also closes the one inference in the fridge row above.** This page
+  attributes the 4.4 mm between the round's recorded `+2.5 mm` and the certified
+  `−1.868 mm` to the freezer door settling between `t = 0` and `t = 4.85 s`,
+  argued from neighbouring pairs shifting by the same 3–4 mm. #171's *live*
+  sampled measurement of that pair is **+2.819 mm**, which sits with the
+  round's own `+2.5 mm` at a settled state and against the `t = 0` value here.
+  The door-settling attribution is therefore measured rather than inferred, and
+  caveat 2 stands exactly as written.
+
+#### Reproduction
+
+- The defect and the replacement, on the real kitchen:
+  `tests/sim/safety/test_geom_distance_instrument_robocasa.py` (pins the
+  `+0.000` reading, its outside-both-geoms witness, the picometre knife-edge,
+  and the shipped probe's certified output).
+- The instrument against analytic truths and its own refusals:
+  `tests/unit/test_convex_distance.py`.
+- The withdrawal ladder: `tests/unit/test_validation_matrix.py`.
+
+Every stop above was re-measured on **three** stack tips — the branch's own base,
+then `cf9bc8d` (after #169 changed the self-collision ACM criterion from sampled
+to proved) and `a0f3d58` (after #164 fixed `select-and-test`) — and came back
+**bit-identical each time**: `+43.256` / `+106.456` / `−1.868 mm`, at the same
+reconstruction residuals (0.000 / 0.863 / 0.006 mm) and the same duality gaps
+(2.1e-17 / 7.4e-16 / 0.0). Both are the expected result — #169 changed which
+pairs the kernel *exempts* rather than where any geometry sits, and #164 touches
+CI only — but "expected" is not "checked", and this page's whole purpose is to
+record which of the two it had. Note in passing that #169's finding —
+`panda_link5`↔`panda_link7` genuinely interpenetrates at 914 of 14 641 poses,
+up to 48.3 mm — is a fact about the *robot*, measured on the manifest's own
+collision model, and is untouched by this page: no world probe is involved in
+it.
+
 ## Standing caveats
 
-Seven things a reader should carry away, all of them stated by the artifacts
+Eight things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -688,17 +1001,27 @@ themselves rather than inferred:
    and comments in this repo. Treat a citation to one of those rounds as a
    citation to the in-tree comment that carries it, not to a retrievable
    verdict.
-8. **A bare `0.000 m` from a `mj_geomDistance` probe is not evidence of
-   contact.** Under mujoco 3.8.0 that function is unreliable for RoboCasa
-   fixture geoms against `panda_mobile` collision meshes — on one measured pair
-   it returns `+0.000 mm` with a witness segment lying outside both geoms, and
-   `−57 mm` / `−352 mm` at `distmax` 0.1 / 0.3 with `mjDSBL_NATIVECCD`, against a
-   densely-sampled truth of `+7.61 mm`. Every ground-truth probe in
-   `estop_ground_truth_snapshot` is built on it. This is a **third** independent
-   reason to distrust an old `real-contact` verdict, alongside caveats 5 and 6,
-   and unlike those two it is a defect in the measurement *method* rather than in
-   the filtering or the budget. Evidence, reproduction and the alternative
-   measurement are in
+8. **No verdict from a probe recorded before 2026-08-25 is safe to cite, of any
+   kind.** Under mujoco 3.8.0 `mj_geomDistance` is unreliable for RoboCasa
+   fixture geoms against `panda_mobile` collision meshes, in two distinct silent
+   modes, and **every** ground-truth probe up to that date was built on it. This
+   is not only a reason to distrust `real-contact`: it corrupts the distance
+   every rule reads, so `within-quantization` and the absence-of-a-pair lower
+   bound go with it. Four `0.000 m` readings in the checked-in rounds re-measure
+   at **+14.8, +82.2, +98.8 and +107.9 mm** — the last of them on a *solid↔solid*
+   pair, which no collidability filter would have caught. Unlike caveats 5 and 6
+   this is a defect in the measurement *method* rather than in the filtering or
+   the budget, and it is the reason those rounds now re-derive as
+   `unadjudicated` with `withdrawn from '<verdict>'` naming what was taken.
+
+   **It is fixed going forward.** `openral_hal.convex_distance` measures with a
+   separating-axis certificate and refuses rather than guess; every probe
+   reports `certified_pairs` / `uncertified_pairs`, and
+   `tools/validation_matrix.py::probe_is_distance_certified` is what a future
+   round's verdict rests on. Full characterisation, scope, cost, the
+   re-measured stops and the instrument-vs-map partition are in
+   [the 2026-08-25 correction](#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves)
+   above; the older account is in
    [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
 
 ## Related

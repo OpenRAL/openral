@@ -210,6 +210,11 @@ def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
     same ``collision_geometry`` (the manifest diff between the two tips touches
     only the ``sensors:`` block), which is what makes them the same stop rather
     than two similar ones.
+
+    The 08-23 rerun is now withdrawn too, on the instrument rather than the
+    budget: neither round attests its distances. That the −17.3 mm stop really
+    was conservative-and-correct survives, but on a certified re-measurement of
+    the reconstruction rather than on either round's own probe.
     """
     old = _derived(ROUND_0822, tmp_path / "old")
     new = _derived(ROUND_0823, tmp_path / "new")
@@ -233,7 +238,12 @@ def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
     assert old_gt.verdict == "unadjudicated"
     assert new_gt.budget_source == "hal-adjudication-budget"
     assert new_gt.admissible_gap_m == pytest.approx(0.08822, abs=1e-6)
-    assert new_gt.verdict == "within-quantization"
+    # Both rounds are now withdrawn, for a *third* reason on top of the budget:
+    # neither attests its distances. The 08-23 record still names the
+    # `within-quantization` it withdraws, which is the reading the ledger cites.
+    assert new_gt.verdict == "unadjudicated"
+    assert new_gt.probe_distance_certified is False
+    assert "withdrawn from 'within-quantization'" in new_gt.unadjudicated_reason
 
 
 def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
@@ -244,6 +254,15 @@ def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
     therefore within the true gap too and stays ``within-quantization``; a
     discrepancy beyond it proves nothing. Driven through the real 2026-08-22
     utensil snapshot, whose only variable here is the kernel's reported depth.
+
+    That snapshot is re-attested as distance-certified before the budget rule
+    is exercised, because otherwise the instrument rule withdraws both arms and
+    the asymmetry under test becomes unreachable. This is not a fabricated
+    measurement: the snapshot's own ``+43.256 mm`` is the number a **certified**
+    re-measurement of the same reconstructed stop returns, to six decimal
+    places, with a separating-axis duality gap of 2e-17 m (2026-08-25
+    correction, ``docs/reference/collision-validation-evidence.md``). The
+    unattested form is exercised directly below.
     """
     from openral_core import ValidationStopEvidence
 
@@ -252,8 +271,12 @@ def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
         .read_text(encoding="utf-8")
         .splitlines()
     )
-    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
-    assert snapshot is not None
+    recorded = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert recorded is not None
+    snapshot = {
+        **recorded,
+        "nearest_probe_coverage": {**recorded["nearest_probe_coverage"], "uncertified_pairs": 0},
+    }
 
     def _verdict(min_distance_m: float) -> str:
         stop = ValidationStopEvidence(
@@ -271,6 +294,24 @@ def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
     # 0.043256 - min_distance_m against a 21.651 mm voxel term.
     assert _verdict(0.03) == "within-quantization"  # 13.3 mm, inside the bound
     assert _verdict(-0.0172764) == "unadjudicated"  # 60.5 mm, beyond it: unknown
+
+    # And as the round actually recorded it — no distance attestation — the
+    # instrument rule withdraws the cleared arm as well, naming what it takes.
+    unattested = validation_matrix.adjudicate_ground_truth(
+        recorded,
+        ValidationStopEvidence(
+            kind="world",
+            party_a="panda_link1",
+            party_b="voxel_76001",
+            horizon_step=-1,
+            min_distance_m=0.03,
+        ),
+        0.025,
+    )
+    assert unattested is not None
+    assert unattested.verdict == "unadjudicated"
+    assert unattested.probe_distance_certified is False
+    assert "withdrawn from 'within-quantization'" in unattested.unadjudicated_reason
 
 
 def test_sink_cup_payload_contact_rests_on_a_region_marker(tmp_path: Path) -> None:
@@ -1017,6 +1058,16 @@ def test_the_harness_uses_the_hals_budget_not_a_narrower_one(tmp_path: Path) -> 
     43.3 mm clear against a kernel read of −17.3 mm, a 60.5 mm discrepancy. The
     narrow term makes it a **false positive**; the HAL's own budget makes it
     ``within-quantization``, which is the kernel behaving correctly.
+
+    Since the ``mj_geomDistance`` characterisation the verdict is then withdrawn
+    on top of that, because the round's 43.3 mm was measured with an instrument
+    that cannot attest itself. This test therefore pins two things at once: the
+    budget arithmetic (unchanged), and that the withdrawal names what it
+    withdraws rather than erasing it. The 43.3 mm itself is independently
+    confirmed by a certified re-measurement of the same reconstructed stop —
+    see the 2026-08-25 correction in
+    ``docs/reference/collision-validation-evidence.md`` — but that is a
+    cross-round inference, and the harness does not make those.
     """
     utensil = _derived(ROUND_0823, tmp_path).scene("utensil")
     ground_truth = utensil.ground_truth
@@ -1024,7 +1075,12 @@ def test_the_harness_uses_the_hals_budget_not_a_narrower_one(tmp_path: Path) -> 
     assert ground_truth.budget_source == "hal-adjudication-budget"
     assert ground_truth.admissible_gap_m == pytest.approx(0.08822, abs=1e-6)
     assert ground_truth.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
-    assert ground_truth.verdict == "within-quantization"
+    # ...and it is then WITHDRAWN, because this round's distances were measured
+    # with `mj_geomDistance`. The record still names what it withdraws, so the
+    # budget arithmetic under test is visible in it.
+    assert ground_truth.verdict == "unadjudicated"
+    assert ground_truth.probe_distance_certified is False
+    assert "withdrawn from 'within-quantization'" in ground_truth.unadjudicated_reason
     # The narrow term the harness used to apply, for the same stop.
     assert validation_matrix.quantization_budget_m(0.025) == pytest.approx(0.021651, abs=1e-6)
     assert ground_truth.discrepancy_m > validation_matrix.quantization_budget_m(0.025)

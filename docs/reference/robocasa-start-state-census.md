@@ -112,6 +112,21 @@ endpoints (x ≈ 5.72) lying outside both geoms — the link OBB is centred at
 x = 5.18 and the door geom spans x = 5.06..5.49. A −351.570 mm penetration is
 independently absurd: the door panel is 48 mm thick.
 
+> **Superseded on 2026-08-25, and sharpened.** This pair now has a *certified*
+> answer — **+0.148512 mm**, with a separating-axis optimality proof closing to
+> `1.8e-14 m` — from `openral_hal.convex_distance`, the instrument this
+> section's recommendation 6 asked for. The `+7.61 mm` above is not withdrawn so
+> much as re-read: sampled point-to-point is an **upper bound** on the surface
+> gap (as this section says two paragraphs down), and 7.61 > 0.149 is that bound
+> behaving as one where the sampling grid missed the closest approach. The
+> conclusions this census draws are unaffected — they were all drawn *against*
+> the sampled measurement, which is conservative in the safe direction — but a
+> reader citing the +7.61 mm as a truth rather than a bound should cite the
+> certified value instead. The full characterisation, including that the native
+> failure is a knife-edge degenerate configuration (a **1 picometre**
+> displacement returns the right answer) rather than a distance regime, is the
+> [2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
+
 A second, distinct failure of the same function was found on
 `robocasa_sink_cup` layout 1: `robot0_link1_collision` vs `sink_main_group_g2`
 returns exactly `0.000000` at `distmax = 0.3` while the witness segment is
@@ -518,11 +533,19 @@ threshold was changed. In rough order of cost:
 5. **Fix `adjudication_budget.admissible_gap_m`** to be per-link rather than a
    single `max_corner_slop_m`-derived scalar, or rename it so it cannot be read
    as a per-link budget. As published it over-forgives `panda_link7` by 60 mm.
-6. **Stop relying on `mj_geomDistance` for fixture↔link adjudication**, or gate
-   it behind a self-check. It is the measurement every ground-truth probe in
-   `estop_ground_truth_snapshot` rests on, and on this scene set it returns
-   confidently wrong values in two distinct modes. A regression test over a
-   fixed RoboCasa state with a sampled reference would catch it.
+6. ~~**Stop relying on `mj_geomDistance` for fixture↔link adjudication**, or
+   gate it behind a self-check.~~ **Done, 2026-08-25.**
+   `estop_ground_truth_snapshot` now measures with
+   `openral_hal.convex_distance`, which carries a separating-axis optimality
+   certificate and refuses rather than emit a number it cannot defend; the
+   regression test this item asked for is
+   `tests/sim/safety/test_geom_distance_instrument_robocasa.py`, pinned on this
+   census's own layout-9 state. An audit of 1 102 probed pairs across five
+   RoboCasa states found `mj_geomDistance` wrong on exactly one — the pair
+   above — and re-measuring the checked-in validation rounds found four
+   recorded `0.000 m` readings whose certified values are +14.8 / +82.2 / +98.8
+   / +107.9 mm. See the
+   [2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
 
 ## What was not measured
 
