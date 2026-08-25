@@ -110,7 +110,15 @@ def test_no_declaration_at_all_is_still_valid() -> None:
 _DECLARING_SCENES = {
     "robocasa_baguette.yaml": "sim:cab_1_left_group_main",
     "robocasa_sink_cup.yaml": "sim:sink_island_group_main",
-    "robocasa_fridge_drawer.yaml": "sim:fridge_main_group_fridge_drawer0",
+    # The fridge target is a function of that scene's `layout_ids` pin, which
+    # moved 30 -> 47 once the pin was verified against the KERNEL criterion on a
+    # live octomap (layout 30 clears the mesh but stops at -23.47 mm). At layout
+    # 47 the kitchen composes to style 32 and the fixture is
+    # `fridgesidebyside_main_group_1`, so the old body no longer exists. Anyone
+    # changing that pin must re-resolve this in the same commit: the HAL fails
+    # closed on a stale target, so the symptom is a silently unarmed place phase
+    # rather than an error.
+    "robocasa_fridge_drawer.yaml": "sim:fridgesidebyside_main_group_1_fridge_drawer0",
 }
 
 #: Arm→grasp latency measured on `robocasa_baguette` at seed 1 (Spark,
