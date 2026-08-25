@@ -635,6 +635,15 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     the link-defining joint's position in ``robot.joints`` (the same ordering
     the envelope joint arrays and ``ActionChunk.flat`` use).
 
+    A boxed link that declares
+    :attr:`~openral_core.schemas.LinkCollisionGeometry.tight_geometry` also
+    lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget, an
+    exact convex hull) into ``collision_box_hull`` +
+    ``collision_hull_*``. Those drive the kernel's staged
+    arm-link-vs-world-voxel narrow phase; the box arrays are still emitted
+    unchanged, because the box remains the broad-phase bound and the geometry
+    every other check uses. A manifest declaring none lowers exactly as before.
+
     Args:
         robot: The robot manifest. No collision geometry → returns
             ``{"self_collision_enabled": False}`` (the kernel runs the scalar
@@ -697,6 +706,16 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     box_link: list[int] = []
     box_half_extents: list[float] = []
     box_origin_xyzrpy: list[float] = []
+    # Tight geometry, CSR-packed and parallel to the box arrays. ``box_hull[b]``
+    # is the index of box ``b``'s tight representation or ``-1`` for none, so a
+    # manifest that declares none lowers byte-for-byte as it did before and the
+    # kernel keeps the shipped ``box_box_distance`` narrow phase everywhere.
+    box_hull: list[int] = []
+    hull_dop_lo: list[float] = []
+    hull_dop_hi: list[float] = []
+    hull_vertex_first: list[int] = []
+    hull_vertex_count: list[int] = []
+    hull_vertices: list[float] = []
     for name in ordered:
         geom = capsule_of.get(name)
         if geom is None:
@@ -706,6 +725,17 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
             box_link.append(index[name])
             box_half_extents.extend([float(h) for h in shape.half_extents_m])
             box_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
+            tight = geom.tight_geometry
+            if tight is None:
+                box_hull.append(-1)
+            else:
+                box_hull.append(len(hull_vertex_count))
+                hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
+                hull_dop_hi.extend(float(v) for v in tight.dop_hi_m)
+                hull_vertex_first.append(len(hull_vertices) // 3)
+                hull_vertex_count.append(len(tight.hull_vertices_m))
+                for vertex in tight.hull_vertices_m:
+                    hull_vertices.extend(float(c) for c in vertex)
         elif isinstance(shape, CapsuleShape | SphereShape):
             # A sphere is a zero-length capsule; both share `radius_m`.
             half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
@@ -762,6 +792,19 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         params["collision_box_link"] = box_link
         params["collision_box_half_extents"] = box_half_extents
         params["collision_box_origin_xyzrpy"] = box_origin_xyzrpy
+    # Only emitted when at least one box actually carries tight geometry, so the
+    # kernel's `box_hull.size() == boxes.size()` gate is what switches the staged
+    # narrow phase on. `collision_hull_vertices` can legitimately be empty (every
+    # declared hull is stage 1 only, which is `panda_link1`'s case), and the
+    # empty-list-omission rule above applies to it as it does to the rest.
+    if any(h >= 0 for h in box_hull):
+        params["collision_box_hull"] = box_hull
+        params["collision_hull_dop_lo"] = hull_dop_lo
+        params["collision_hull_dop_hi"] = hull_dop_hi
+        params["collision_hull_vertex_first"] = hull_vertex_first
+        params["collision_hull_vertex_count"] = hull_vertex_count
+        if hull_vertices:
+            params["collision_hull_vertices"] = hull_vertices
     if allowed_pairs:
         params["collision_allowed_pairs"] = allowed_pairs
     return params

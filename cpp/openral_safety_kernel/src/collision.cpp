@@ -365,6 +365,446 @@ double box_box_distance(const Transform& a, const Vec3& a_half, const Transform&
   return best;
 }
 
+// ---------------------------------------------------------------------------
+// Staged tight narrow phase: 26-DOP separating axis, then GJK on the exact
+// convex hull. Both stages are subsets of the shipped OBB, so the broad-phase
+// window in `check_voxel_collision` is untouched.
+// ---------------------------------------------------------------------------
+
+TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
+                                            std::size_t& offending_box) noexcept {
+  offending_box = 0;
+  if (model.box_hull.empty()) {
+    return TightGeometryStatus::kOk;  // nothing declared: the shipped path
+  }
+  if (model.box_hull.size() != model.boxes.size()) {
+    return TightGeometryStatus::kBadArity;
+  }
+  for (std::size_t b = 0; b < model.box_hull.size(); ++b) {
+    offending_box = b;
+    const int h = model.box_hull[b];
+    if (h < 0) {
+      continue;
+    }
+    if (static_cast<std::size_t>(h) >= model.hulls.size()) {
+      return TightGeometryStatus::kBadArity;
+    }
+    const LinkHull& hull = model.hulls[static_cast<std::size_t>(h)];
+    const Vec3& he = model.boxes[b].half_extents;
+    const double hev[3] = {he.x, he.y, he.z};
+    for (int i = 0; i < kDopAxes; ++i) {
+      if (!std::isfinite(hull.dop_lo[i]) || !std::isfinite(hull.dop_hi[i]) ||
+          hull.dop_lo[i] > hull.dop_hi[i]) {
+        return TightGeometryStatus::kDegenerate;
+      }
+    }
+    // A 26-DOP lies inside its own first three slabs, and those three axes ARE
+    // the box's axes, so this proves DOP ⊆ shipped OBB for the whole polytope.
+    for (int k = 0; k < 3; ++k) {
+      if (hull.dop_lo[k] < -hev[k] || hull.dop_hi[k] > hev[k]) {
+        return TightGeometryStatus::kEscapesBox;
+      }
+    }
+    if (hull.vertex_count == 0) {
+      continue;  // stage 1 only
+    }
+    if (hull.vertex_count < 0 || hull.vertex_count > kMaxTightHullVertices) {
+      return TightGeometryStatus::kTooManyVertices;
+    }
+    if (hull.vertex_first < 0 ||
+        static_cast<std::size_t>(hull.vertex_first) + static_cast<std::size_t>(hull.vertex_count) >
+            model.hull_vertices.size()) {
+      return TightGeometryStatus::kBadArity;
+    }
+    for (int v = 0; v < hull.vertex_count; ++v) {
+      const Vec3& p = model.hull_vertices[static_cast<std::size_t>(hull.vertex_first + v)];
+      if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+        return TightGeometryStatus::kDegenerate;
+      }
+      for (int i = 0; i < kDopAxes; ++i) {
+        const double s = kDopAxis[i][0] * p.x + kDopAxis[i][1] * p.y + kDopAxis[i][2] * p.z;
+        if (s > hull.dop_hi[i] + kTightContainmentEpsilonM ||
+            s < hull.dop_lo[i] - kTightContainmentEpsilonM) {
+          return TightGeometryStatus::kHullEscapesDop;
+        }
+      }
+    }
+  }
+  offending_box = 0;
+  return TightGeometryStatus::kOk;
+}
+
+const char* tight_geometry_status_reason(TightGeometryStatus status) noexcept {
+  switch (status) {
+  case TightGeometryStatus::kOk:
+    return "ok";
+  case TightGeometryStatus::kBadArity:
+    return "bad_arity";
+  case TightGeometryStatus::kEscapesBox:
+    return "escapes_box";
+  case TightGeometryStatus::kHullEscapesDop:
+    return "hull_escapes_dop";
+  case TightGeometryStatus::kTooManyVertices:
+    return "too_many_vertices";
+  case TightGeometryStatus::kDegenerate:
+    return "degenerate";
+  }
+  return "unknown";
+}
+
+void tight_pose_init(const LinkHull& hull, const Vec3* hull_vertices, const Transform& box_xf,
+                     double half_side, TightPose& out) noexcept {
+  out.box = box_xf;
+  out.n_vertices = hull.vertex_count;
+  out.vertices = hull.vertex_count > 0 ? hull_vertices + hull.vertex_first : nullptr;
+  for (int i = 0; i < kDopAxes; ++i) {
+    const double ux = kDopAxis[i][0];
+    const double uy = kDopAxis[i][1];
+    const double uz = kDopAxis[i][2];
+    const double nx = box_xf.r[0] * ux + box_xf.r[1] * uy + box_xf.r[2] * uz;
+    const double ny = box_xf.r[3] * ux + box_xf.r[4] * uy + box_xf.r[5] * uz;
+    const double nz = box_xf.r[6] * ux + box_xf.r[7] * uy + box_xf.r[8] * uz;
+    out.axis[i][0] = nx;
+    out.axis[i][1] = ny;
+    out.axis[i][2] = nz;
+    out.axis_dot_t[i] = nx * box_xf.t.x + ny * box_xf.t.y + nz * box_xf.t.z;
+    // Support radius of an axis-aligned cube of half-side `half_side` on `n`.
+    out.cell_radius[i] = half_side * (std::fabs(nx) + std::fabs(ny) + std::fabs(nz));
+    out.lo[i] = hull.dop_lo[i];
+    out.hi[i] = hull.dop_hi[i];
+  }
+  const double mid[3] = {0.5 * (hull.dop_lo[0] + hull.dop_hi[0]),
+                         0.5 * (hull.dop_lo[1] + hull.dop_hi[1]),
+                         0.5 * (hull.dop_lo[2] + hull.dop_hi[2])};
+  const double halfw[3] = {0.5 * (hull.dop_hi[0] - hull.dop_lo[0]),
+                           0.5 * (hull.dop_hi[1] - hull.dop_lo[1]),
+                           0.5 * (hull.dop_hi[2] - hull.dop_lo[2])};
+  for (int k = 0; k < 3; ++k) {
+    const double* row = box_xf.r + 3 * k;
+    const double t = k == 0 ? box_xf.t.x : (k == 1 ? box_xf.t.y : box_xf.t.z);
+    out.slab_center[k] = t + row[0] * mid[0] + row[1] * mid[1] + row[2] * mid[2];
+    out.slab_extent[k] =
+        std::fabs(row[0]) * halfw[0] + std::fabs(row[1]) * halfw[1] + std::fabs(row[2]) * halfw[2];
+  }
+}
+
+double dop_cell_lower_bound(const TightPose& pose, const Vec3& center, double half_side,
+                            Vec3* best_axis) noexcept {
+  const double cv[3] = {center.x, center.y, center.z};
+  double best = std::fabs(cv[0] - pose.slab_center[0]) - pose.slab_extent[0] - half_side;
+  Vec3 axis{cv[0] >= pose.slab_center[0] ? 1.0 : -1.0, 0.0, 0.0};
+  for (int k = 1; k < 3; ++k) {
+    const double gap = std::fabs(cv[k] - pose.slab_center[k]) - pose.slab_extent[k] - half_side;
+    if (gap > best) {
+      best = gap;
+      const double s = cv[k] >= pose.slab_center[k] ? 1.0 : -1.0;
+      axis = Vec3{k == 0 ? s : 0.0, k == 1 ? s : 0.0, k == 2 ? s : 0.0};
+    }
+  }
+  for (int i = 0; i < kDopAxes; ++i) {
+    const double s = pose.axis[i][0] * center.x + pose.axis[i][1] * center.y +
+                     pose.axis[i][2] * center.z - pose.axis_dot_t[i];
+    const double above = s - pose.hi[i];
+    const double below = pose.lo[i] - s;
+    const double gap = (above > below ? above : below) - pose.cell_radius[i];
+    if (gap > best) {
+      best = gap;
+      const double sgn = above > below ? 1.0 : -1.0;
+      axis = Vec3{sgn * pose.axis[i][0], sgn * pose.axis[i][1], sgn * pose.axis[i][2]};
+    }
+  }
+  if (best_axis != nullptr) {
+    *best_axis = axis;
+  }
+  return best;
+}
+
+namespace {
+
+// GJK working simplex: up to four Minkowski-difference points, each remembered
+// by the hull vertex and cube corner that produced it so the witness survives
+// into the next cell (see `GjkWitness`).
+struct GjkSimplex {
+  Vec3 p[4]{};
+  int vertex[4]{};
+  std::uint8_t corner[4]{};
+  int n{0};
+};
+
+// Closest point to the origin on segment AB; `u` receives the parameter.
+Vec3 origin_closest_on_segment(const Vec3& a, const Vec3& b, double& u) noexcept {
+  const Vec3 ab = sub(b, a);
+  const double denom = dot(ab, ab);
+  if (!(denom > 0.0)) {
+    u = 0.0;
+    return a;
+  }
+  double t = -dot(a, ab) / denom;
+  t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+  u = t;
+  return Vec3{a.x + t * ab.x, a.y + t * ab.y, a.z + t * ab.z};
+}
+
+// Closest point to the origin on triangle ABC (the standard Voronoi-region
+// decomposition with the query point at the origin). `mask` receives the bits
+// of the vertices that support the answer (1=A, 2=B, 4=C).
+Vec3 origin_closest_on_triangle(const Vec3& a, const Vec3& b, const Vec3& c, int& mask) noexcept {
+  const Vec3 ab = sub(b, a);
+  const Vec3 ac = sub(c, a);
+  const double d1 = -dot(ab, a);
+  const double d2 = -dot(ac, a);
+  if (d1 <= 0.0 && d2 <= 0.0) {
+    mask = 1;
+    return a;
+  }
+  const double d3 = -dot(ab, b);
+  const double d4 = -dot(ac, b);
+  if (d3 >= 0.0 && d4 <= d3) {
+    mask = 2;
+    return b;
+  }
+  const double vc = d1 * d4 - d3 * d2;
+  if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+    const double v = d1 / (d1 - d3);
+    mask = 3;
+    return Vec3{a.x + v * ab.x, a.y + v * ab.y, a.z + v * ab.z};
+  }
+  const double d5 = -dot(ab, c);
+  const double d6 = -dot(ac, c);
+  if (d6 >= 0.0 && d5 <= d6) {
+    mask = 4;
+    return c;
+  }
+  const double vb = d5 * d2 - d1 * d6;
+  if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+    const double w = d2 / (d2 - d6);
+    mask = 5;
+    return Vec3{a.x + w * ac.x, a.y + w * ac.y, a.z + w * ac.z};
+  }
+  const double va = d3 * d6 - d5 * d4;
+  if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+    const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    mask = 6;
+    return Vec3{b.x + w * (c.x - b.x), b.y + w * (c.y - b.y), b.z + w * (c.z - b.z)};
+  }
+  const double denom = va + vb + vc;
+  if (!(denom > 0.0)) {
+    // Degenerate (collinear) triangle: its longest edge carries the answer.
+    double u = 0.0;
+    mask = 3;
+    return origin_closest_on_segment(a, b, u);
+  }
+  const double v = vb / denom;
+  const double w = vc / denom;
+  mask = 7;
+  return Vec3{a.x + ab.x * v + ac.x * w, a.y + ab.y * v + ac.y * w, a.z + ab.z * v + ac.z * w};
+}
+
+// Is the origin on the far side of plane ABC from D?
+bool origin_outside_face(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d) noexcept {
+  const Vec3 n = cross(sub(b, a), sub(c, a));
+  return (-dot(a, n)) * dot(sub(d, a), n) < 0.0;
+}
+
+void simplex_keep(GjkSimplex& s, const int* which, int k) noexcept {
+  Vec3 p[4];
+  int vi[4];
+  std::uint8_t co[4];
+  for (int i = 0; i < k; ++i) {
+    p[i] = s.p[which[i]];
+    vi[i] = s.vertex[which[i]];
+    co[i] = s.corner[which[i]];
+  }
+  for (int i = 0; i < k; ++i) {
+    s.p[i] = p[i];
+    s.vertex[i] = vi[i];
+    s.corner[i] = co[i];
+  }
+  s.n = k;
+}
+
+// Closest point to the origin on the simplex, reducing it to the supporting
+// sub-face. `contains_origin` is set when a tetrahedron encloses the origin.
+Vec3 simplex_closest(GjkSimplex& s, bool& contains_origin) noexcept {
+  contains_origin = false;
+  if (s.n <= 1) {
+    return s.p[0];
+  }
+  if (s.n == 2) {
+    double u = 0.0;
+    const Vec3 q = origin_closest_on_segment(s.p[0], s.p[1], u);
+    if (u <= 0.0) {
+      const int w[1] = {0};
+      simplex_keep(s, w, 1);
+    } else if (u >= 1.0) {
+      const int w[1] = {1};
+      simplex_keep(s, w, 1);
+    }
+    return q;
+  }
+  if (s.n == 3) {
+    int mask = 0;
+    const Vec3 q = origin_closest_on_triangle(s.p[0], s.p[1], s.p[2], mask);
+    int w[3];
+    int k = 0;
+    for (int i = 0; i < 3; ++i) {
+      if ((mask & (1 << i)) != 0) {
+        w[k++] = i;
+      }
+    }
+    simplex_keep(s, w, k);
+    return q;
+  }
+  static constexpr int kFace[4][3] = {{0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 3, 2}};
+  static constexpr int kOpposite[4] = {3, 1, 2, 0};
+  double best2 = std::numeric_limits<double>::infinity();
+  Vec3 best{};
+  int keep_idx[3] = {0, 0, 0};
+  int keep_n = 0;
+  bool any_outside = false;
+  for (int f = 0; f < 4; ++f) {
+    const Vec3& fa = s.p[kFace[f][0]];
+    const Vec3& fb = s.p[kFace[f][1]];
+    const Vec3& fc = s.p[kFace[f][2]];
+    if (!origin_outside_face(fa, fb, fc, s.p[kOpposite[f]])) {
+      continue;
+    }
+    any_outside = true;
+    int mask = 0;
+    const Vec3 q = origin_closest_on_triangle(fa, fb, fc, mask);
+    const double q2 = dot(q, q);
+    if (q2 < best2) {
+      best2 = q2;
+      best = q;
+      keep_n = 0;
+      for (int i = 0; i < 3; ++i) {
+        if ((mask & (1 << i)) != 0) {
+          keep_idx[keep_n++] = kFace[f][i];
+        }
+      }
+    }
+  }
+  if (!any_outside) {
+    contains_origin = true;
+    return Vec3{};
+  }
+  simplex_keep(s, keep_idx, keep_n);
+  return best;
+}
+
+// Base-frame position of hull vertex `i`.
+Vec3 hull_vertex_base(const TightPose& pose, int i) noexcept {
+  const Vec3& p = pose.vertices[i];
+  const Transform& x = pose.box;
+  return Vec3{x.t.x + x.r[0] * p.x + x.r[1] * p.y + x.r[2] * p.z,
+              x.t.y + x.r[3] * p.x + x.r[4] * p.y + x.r[5] * p.z,
+              x.t.z + x.r[6] * p.x + x.r[7] * p.y + x.r[8] * p.z};
+}
+
+// The TRUE support of the hull along base-frame direction `dir`: an exhaustive
+// scan, which is what makes the supporting-hyperplane bound in
+// `hull_cell_distance` sound. Returns the winning vertex index.
+int hull_support(const TightPose& pose, const Vec3& dir, Vec3& out) noexcept {
+  const Transform& x = pose.box;
+  // The direction in the box's local frame (Rᵀ dir), so the scan is a plain dot
+  // product against the stored local vertices.
+  const double lx = x.r[0] * dir.x + x.r[3] * dir.y + x.r[6] * dir.z;
+  const double ly = x.r[1] * dir.x + x.r[4] * dir.y + x.r[7] * dir.z;
+  const double lz = x.r[2] * dir.x + x.r[5] * dir.y + x.r[8] * dir.z;
+  const Vec3* v = pose.vertices;
+  int best = 0;
+  double best_dot = v[0].x * lx + v[0].y * ly + v[0].z * lz;
+  for (int i = 1; i < pose.n_vertices; ++i) {
+    const double d = v[i].x * lx + v[i].y * ly + v[i].z * lz;
+    if (d > best_dot) {
+      best_dot = d;
+      best = i;
+    }
+  }
+  out = hull_vertex_base(pose, best);
+  return best;
+}
+
+std::uint8_t cell_corner_code(const Vec3& dir) noexcept {
+  return static_cast<std::uint8_t>((dir.x >= 0.0 ? 1 : 0) | (dir.y >= 0.0 ? 2 : 0) |
+                                   (dir.z >= 0.0 ? 4 : 0));
+}
+
+Vec3 cell_corner(const Vec3& center, double half_side, std::uint8_t code) noexcept {
+  return Vec3{center.x + ((code & 1U) != 0U ? half_side : -half_side),
+              center.y + ((code & 2U) != 0U ? half_side : -half_side),
+              center.z + ((code & 4U) != 0U ? half_side : -half_side)};
+}
+
+}  // namespace
+
+double hull_cell_distance(const TightPose& pose, const Vec3& center, double half_side,
+                          const Vec3& seed_dir, double margin, double fallback,
+                          GjkWitness& witness) noexcept {
+  if (pose.vertices == nullptr || pose.n_vertices <= 0) {
+    return fallback;
+  }
+  GjkSimplex s;
+  for (int i = 0; i < witness.n && i < 4; ++i) {
+    s.vertex[i] = witness.vertex[i];
+    s.corner[i] = witness.corner[i];
+    s.p[i] = sub(hull_vertex_base(pose, witness.vertex[i]),
+                 cell_corner(center, half_side, witness.corner[i]));
+    s.n = i + 1;
+  }
+  if (s.n == 0) {
+    // The Minkowski point `a - b` runs from the cell toward the link, so the
+    // hull's own support is along +seed_dir and the cell's corner along -it.
+    Vec3 hp;
+    s.vertex[0] = hull_support(pose, seed_dir, hp);
+    s.corner[0] = cell_corner_code(Vec3{-seed_dir.x, -seed_dir.y, -seed_dir.z});
+    s.p[0] = sub(hp, cell_corner(center, half_side, s.corner[0]));
+    s.n = 1;
+  }
+  double lower = -std::numeric_limits<double>::infinity();
+  for (int it = 0; it < kGjkMaxIterations; ++it) {
+    bool contains = false;
+    const Vec3 v = simplex_closest(s, contains);
+    const double vlen2 = dot(v, v);
+    if (contains || vlen2 <= 1e-24) {
+      witness.n = 0;  // overlapping: stage 1's bound (<= 0 here) stands
+      return fallback;
+    }
+    const double vlen = std::sqrt(vlen2);
+    const Vec3 search{-v.x / vlen, -v.y / vlen, -v.z / vlen};
+    Vec3 hp;
+    const int vi = hull_support(pose, search, hp);
+    const std::uint8_t co = cell_corner_code(v);
+    const Vec3 w = sub(hp, cell_corner(center, half_side, co));
+    // Supporting-hyperplane bound: no point of the difference set lies closer
+    // to the origin than this, so it lower-bounds the surface distance.
+    const double bound = dot(v, w) / vlen;
+    if (bound > lower) {
+      lower = bound;
+    }
+    if (lower > margin) {
+      break;  // certainly clear; sharpening a diagnostic is not worth the scan
+    }
+    if (vlen - lower <= kGjkTolerance) {
+      lower = vlen;  // converged on the exact surface distance
+      break;
+    }
+    if (s.n == 4) {
+      break;  // no room to grow; the bound already stands
+    }
+    s.p[s.n] = w;
+    s.vertex[s.n] = vi;
+    s.corner[s.n] = co;
+    ++s.n;
+  }
+  witness.n = s.n;
+  for (int i = 0; i < s.n; ++i) {
+    witness.vertex[i] = s.vertex[i];
+    witness.corner[i] = s.corner[i];
+  }
+  return lower > fallback ? lower : fallback;
+}
+
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept {
   for (std::size_t i = 0; i < model.n_links; ++i) {
@@ -679,14 +1119,30 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
       }
     }
   }
-  // Blocky links (OBB) are voxel-checked too: an occupied voxel is the
-  // same conservative sphere, tested against the box via its box-local distance.
+  // Blocky links (OBB) are voxel-checked too, against the same conservative
+  // voxel cube. A link that declares tight geometry runs the staged 26-DOP →
+  // exact-hull narrow phase instead of `box_box_distance`; the window below is
+  // identical either way, because both stages are proved subsets of this same
+  // OBB at configure time (`validate_tight_geometry`).
   const std::size_t n_boxes = model.boxes.size();
+  const bool has_tight = model.box_hull.size() == n_boxes;
+  // Bounded across every link in this call: stage 2's cost is set by how many
+  // cells stage 1 cannot clear, which is a property of the map. Exhausting it
+  // drops back to stage 1 + the shipped bound, i.e. to today's answer or better.
+  int stage2_budget = kMaxStage2PerCheck;
   for (std::size_t b = 0; b < n_boxes; ++b) {
     const int lb = model.box_link[b];
     const Transform box_w =
         compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
     const Vec3 he = model.boxes[b].half_extents;
+    const int hull_index = has_tight ? model.box_hull[b] : -1;
+    TightPose tight;
+    GjkWitness witness;
+    if (hull_index >= 0) {
+      tight_pose_init(model.hulls[static_cast<std::size_t>(hull_index)],
+                      model.hull_vertices.empty() ? nullptr : model.hull_vertices.data(), box_w,
+                      half_side, tight);
+    }
     // World-AABB half-size of the oriented box: |R| * half_extents (row-major R).
     const double ex =
         std::fabs(box_w.r[0]) * he.x + std::fabs(box_w.r[1]) * he.y + std::fabs(box_w.r[2]) * he.z;
@@ -711,9 +1167,41 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
                             grid.origin.y + (iy + 0.5) * grid.resolution,
                             grid.origin.z + (iz + 0.5) * grid.resolution};
-          Transform voxel;
-          voxel.t = center;
-          const double d = box_box_distance(box_w, he, voxel, voxel_half);
+          double d;
+          if (hull_index < 0) {
+            Transform voxel;
+            voxel.t = center;
+            d = box_box_distance(box_w, he, voxel, voxel_half);
+          } else {
+            Vec3 seed;
+            d = dop_cell_lower_bound(tight, center, half_side, &seed);
+            if (d <= margin) {
+              // Stage 2, on the cells stage 1 could not clear: the exact
+              // hull-to-cell distance, or stage 1's bound again for a link that
+              // ships no hull or a call that has spent its refinement budget.
+              if (tight.n_vertices > 0 && stage2_budget > 0) {
+                --stage2_budget;
+                d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
+              }
+              if (d <= margin) {
+                // Still stopping. Fold in the shipped bound before committing to
+                // that, because the DOP's 16 separating axes are NOT a superset
+                // of the OBB SAT's 15 -- the box's edge-cross axes beat every DOP
+                // axis at some cells, so the tighter *solid* can still yield the
+                // looser *bound*. The maximum of two lower bounds is a lower
+                // bound, so this costs no soundness and buys a strong property:
+                // the staged path can never stop where `box_box_distance` alone
+                // would not have. This change removes false stops; it must not be
+                // able to add one.
+                Transform voxel;
+                voxel.t = center;
+                const double shipped = box_box_distance(box_w, he, voxel, voxel_half);
+                if (shipped > d) {
+                  d = shipped;
+                }
+              }
+            }
+          }
           fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(idx));
         }
       }

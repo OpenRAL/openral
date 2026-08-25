@@ -169,6 +169,20 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<double>>("collision_box_half_extents", std::vector<double>{});
   this->declare_parameter<std::vector<double>>("collision_box_origin_xyzrpy",
                                                std::vector<double>{});
+  // Tight geometry refining a subset of those OBBs for the world-voxel check
+  // only (a 26-DOP, plus an exact convex hull when it fits the kernel's vertex
+  // budget). CSR-shaped: `collision_box_hull` is parallel to
+  // `collision_box_link`; the `collision_hull_*` arrays are indexed by it.
+  // Empty means every box keeps the shipped `box_box_distance` narrow phase.
+  this->declare_parameter<std::vector<std::int64_t>>("collision_box_hull",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<double>>("collision_hull_dop_lo", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("collision_hull_dop_hi", std::vector<double>{});
+  this->declare_parameter<std::vector<std::int64_t>>("collision_hull_vertex_first",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<std::int64_t>>("collision_hull_vertex_count",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<double>>("collision_hull_vertices", std::vector<double>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
@@ -290,6 +304,28 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
                 collision_model_.n_links, self_collision_margin_m_);
+    // Disclosure, never a decision (§1.4): a reader of the log must be able to
+    // tell which links the world-voxel check tightened and how far each one
+    // got, without inferring it from the manifest.
+    if (!collision_model_.box_hull.empty()) {
+      std::size_t staged = 0;
+      std::size_t exact = 0;
+      for (std::size_t b = 0; b < collision_model_.box_hull.size(); ++b) {
+        const int h = collision_model_.box_hull[b];
+        if (h < 0) {
+          continue;
+        }
+        ++staged;
+        if (collision_model_.hulls[static_cast<std::size_t>(h)].vertex_count > 0) {
+          ++exact;
+        }
+      }
+      RCLCPP_INFO(this->get_logger(),
+                  "world-voxel tight geometry: %zu of %zu boxed links staged (26-DOP), "
+                  "%zu of those also exact (convex hull, <= %d vertices); "
+                  "the rest keep box_box_distance",
+                  staged, collision_model_.box_hull.size(), exact, kMaxTightHullVertices);
+    }
   }
 
   // Set up the measured joint-state seed used to reconstruct
@@ -1363,6 +1399,12 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   const auto box_link = this->get_parameter("collision_box_link").as_integer_array();
   const auto box_he = this->get_parameter("collision_box_half_extents").as_double_array();
   const auto box_o = this->get_parameter("collision_box_origin_xyzrpy").as_double_array();
+  const auto box_hull = this->get_parameter("collision_box_hull").as_integer_array();
+  const auto hull_lo = this->get_parameter("collision_hull_dop_lo").as_double_array();
+  const auto hull_hi = this->get_parameter("collision_hull_dop_hi").as_double_array();
+  const auto hull_first = this->get_parameter("collision_hull_vertex_first").as_integer_array();
+  const auto hull_count = this->get_parameter("collision_hull_vertex_count").as_integer_array();
+  const auto hull_verts = this->get_parameter("collision_hull_vertices").as_double_array();
   const auto pairs = this->get_parameter("collision_allowed_pairs").as_integer_array();
   const auto names = this->get_parameter("collision_link_names").as_string_array();
 
@@ -1375,6 +1417,23 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       cap_link.size() != n_caps || cap_h.size() != n_caps || cap_o.size() != 6 * n_caps ||
       box_he.size() != 3 * n_boxes || box_o.size() != 6 * n_boxes || pairs.size() % 2 != 0) {
     error = "collision_* array shapes disagree with collision_n_links / primitive count";
+    return false;
+  }
+  // Tight geometry is all-or-nothing per model: either no box declares any, or
+  // `collision_box_hull` names one entry per box. A partially-shaped set is a
+  // producer bug, and refusing it keeps the shipped narrow phase everywhere
+  // rather than half-applying a tightening nobody checked.
+  const std::size_t n_hulls = hull_count.size();
+  if (!box_hull.empty()) {
+    if (box_hull.size() != n_boxes || hull_first.size() != n_hulls ||
+        hull_lo.size() != static_cast<std::size_t>(kDopAxes) * n_hulls ||
+        hull_hi.size() != static_cast<std::size_t>(kDopAxes) * n_hulls ||
+        hull_verts.size() % 3 != 0) {
+      error = "collision_hull_* array shapes disagree with the box / hull count";
+      return false;
+    }
+  } else if (n_hulls != 0 || !hull_lo.empty() || !hull_hi.empty() || !hull_verts.empty()) {
+    error = "collision_hull_* supplied without collision_box_hull";
     return false;
   }
 
@@ -1428,6 +1487,41 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
         transform_from_xyz_rpy(box_o[6 * b + 0], box_o[6 * b + 1], box_o[6 * b + 2],
                                box_o[6 * b + 3], box_o[6 * b + 4], box_o[6 * b + 5]);
   }
+  if (!box_hull.empty()) {
+    m.hulls.resize(n_hulls);
+    for (std::size_t h = 0; h < n_hulls; ++h) {
+      m.hulls[h].vertex_first = static_cast<int>(hull_first[h]);
+      m.hulls[h].vertex_count = static_cast<int>(hull_count[h]);
+      for (int i = 0; i < kDopAxes; ++i) {
+        m.hulls[h].dop_lo[i] = hull_lo[h * kDopAxes + static_cast<std::size_t>(i)];
+        m.hulls[h].dop_hi[i] = hull_hi[h * kDopAxes + static_cast<std::size_t>(i)];
+      }
+    }
+    m.hull_vertices.resize(hull_verts.size() / 3);
+    for (std::size_t v = 0; v < m.hull_vertices.size(); ++v) {
+      m.hull_vertices[v] = Vec3{hull_verts[3 * v], hull_verts[3 * v + 1], hull_verts[3 * v + 2]};
+    }
+    m.box_hull.resize(n_boxes);
+    for (std::size_t b = 0; b < n_boxes; ++b) {
+      const std::int64_t h = box_hull[b];
+      if (h < -1 || h >= static_cast<std::int64_t>(n_hulls)) {
+        error = "collision_box_hull out of range";
+        return false;
+      }
+      m.box_hull[b] = static_cast<int>(h);
+    }
+    // The containment proof, enforced at load and never assumed: every declared
+    // representation must sit inside the OBB whose broad-phase window it will be
+    // checked in. Fail-closed -- a model that cannot prove it does not configure.
+    std::size_t offending = 0;
+    const TightGeometryStatus status = validate_tight_geometry(m, offending);
+    if (status != TightGeometryStatus::kOk) {
+      error = std::string("tight collision geometry rejected for box ") +
+              std::to_string(offending) + ": " + tight_geometry_status_reason(status);
+      return false;
+    }
+  }
+
   for (std::size_t k = 0; k + 1 < pairs.size(); k += 2) {
     m.allowed_pairs.emplace_back(static_cast<int>(pairs[k]), static_cast<int>(pairs[k + 1]));
   }
