@@ -153,8 +153,8 @@ isolate_globs = [
 # the capabilities the runner provably lacks, allow exactly the skips those
 # capabilities explain, and keep failing on every other skip. A skip for an
 # undeclared reason is still a red lane, because it is still a real gap — e.g.
-# "panda.srdf not installed" is a provisioning bug, not a hardware limit, and
-# must stay red.
+# "mujoco not installed" is a provisioning bug, not a hardware limit, and must
+# stay red.
 #
 # `skip_patterns` are fnmatch globs matched case-insensitively against a skip's
 # reason. BOTH spellings pytest emits are checked: the `message` attribute of a
@@ -201,10 +201,14 @@ skip_patterns = [
   "*ros2 binary not on PATH*",
   # `/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf`
   # — a MoveIt *resource package*, i.e. part of the ROS underlay, not something
-  # the `lowering` dependency group could ever install. Named narrowly rather
-  # than widening the pattern to "*not installed*", which would swallow real
-  # missing-package skips like "mujoco not installed".
-  "panda.srdf not installed",
+  # the `lowering` dependency group could ever install. Two call sites word it
+  # differently ("panda.srdf not installed" and "moveit_resources panda.srdf
+  # not installed"): the exact-string form matched only the first, and run
+  # 32815922208 correctly reddened `lowering` for the second rather than
+  # letting an unrecognised reason through. The glob now spans both while still
+  # naming the specific asset — deliberately NOT widened to "*not installed*",
+  # which would swallow real missing-package skips like "mujoco not installed".
+  "*panda.srdf not installed*",
 ]
 
 [capability_gaps.hf-cache]

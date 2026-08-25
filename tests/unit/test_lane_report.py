@@ -60,6 +60,7 @@ CONFIG = select_tests.load_config(CONFIG_PATH)
         ("RLBench/CoppeliaSim sidecar not provisioned", "sidecar"),
         ("could not import 'rclpy': No module named 'rclpy'", "ros"),
         ("panda.srdf not installed", "ros"),
+        ("moveit_resources panda.srdf not installed", "ros"),
     ],
 )
 def test_declared_capability_gaps_are_attributed(reason: str, expected: str) -> None:
