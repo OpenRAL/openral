@@ -98,6 +98,26 @@ Nothing below rests on the instrument alone:
 The two sampled mesh gaps also settle what the later `0.000 m` reading on that
 pair was: `mj_geomDistance`'s documented failure mode, not a touch.
 
+### Re-verified after rebasing
+
+The headline numbers were **re-derived, not carried forward** — first at
+`a0f3d58`, then again on the master that carries this page. The numpy port
+re-validated against each tree's `collision.cpp` at **4.441 × 10⁻¹⁶ m** over the
+same 4 000 pairs, and every verdict re-scored from the stored captures unchanged
+at both revisions:
+
+| state | captures (occupied cells) | kernel min |
+| --- | --- | ---: |
+| layout 30 | 5 427 and 8 239 | **−23.47 mm** on both |
+| layout 47 | 5 435 and 9 112 | **+19.34 mm** on both |
+| unpinned (29 / 20) | 7 411 | **−24.75 mm** |
+
+None of [#164](https://github.com/OpenRAL/openral/pull/164) (CI only),
+[#165](https://github.com/OpenRAL/openral/pull/165) (`CollisionShape` as a
+discriminated union) or [#169](https://github.com/OpenRAL/openral/pull/169)
+(ACM exemptions; zero manifest pairs added or removed) moves them — which is
+what one would expect, and is why it was checked rather than assumed.
+
 ### A natural replicate: map size moves, the verdict does not
 
 Two independent live captures of the *identical* start state (fridge layout 30),
@@ -216,20 +236,39 @@ costed.
 
 ### 1. Non-collidable geometry is real to the camera
 
+Tracked as [#174](https://github.com/OpenRAL/openral/issues/174).
+
 The ideal grid is built from geoms with `contype` or `conaffinity` set. The
 depth camera has no such filter — `mj_multiRay` strikes whatever is visible, and
 the synthesised cloud back-projects it. In the fridge scene **713 of 1 714**
-world geoms are non-collidable decoration. Every one of them the camera can see
-becomes occupancy the kernel treats as an obstacle, and against which no
-collision can ever occur.
+world geoms are non-collidable decoration, 42 %. Every one the camera can see
+becomes occupancy the kernel treats as an obstacle and against which no
+collision can ever occur; in the whole-map census below, **18.8 %** of occupied
+cells are backed only by such a geom.
 
-This is a simulation-specific fidelity defect, and it is worth naming as such:
-on real hardware everything the depth camera sees *is* physical, so this term
-does not transfer. In sim it inflates the map with obstacles that are not there,
-and it is one of the two reasons the live map stops more often than the ideal
-grid.
+**This is the unfinished half of
+[#149](https://github.com/OpenRAL/openral/pull/149).** That PR established that
+a geom with neither `contype` nor `conaffinity` cannot collide with anything,
+and taught the **ground-truth probe** to exclude those geoms — a `0.000 m` pair
+against a visual mesh can no longer be promoted to a `real_contact`. Nothing
+does the same for the **perception path**: the depth synth, octomap and the
+bridge carry visual-only geometry straight into `/openral/world_voxels`, and the
+kernel stops on it. The two halves of the stack disagree about what counts as
+world geometry — the adjudicator is *required* to ignore a surface the
+perception leg is *required* to voxelise.
+
+It is worth naming as simulation-specific: on real hardware everything a depth
+camera sees *is* physical, so this term has no hardware counterpart. It cuts in
+the conservative direction, so nothing is unsafe today. What it does distort is
+every sim-derived number the collision programme rests on — a sim round's stop
+rate is not a prediction of a hardware round's stop rate, which is exactly what
+the four-scene validation matrix is used for.
 
 ### 2. The octree→grid bridge dilates by up to one cell, by design
+
+Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it turns out
+to hold 48 % of the live stops measured below, which is why it gets its own
+issue rather than a line in this page.
 
 `rasterize_octree_to_grid` (`octree_to_grid.cpp`) marks a base-frame cell when
 its cube **shares volume** with an occupied octree leaf's cube. The two lattices
@@ -409,7 +448,11 @@ loosening — it would shrink the obstacle set the kernel sees — and it belong
 the safety-WG path with a hazard-log entry, not in a measurement PR. What the
 measurement does establish is that the rule is where the leverage is, and that
 it currently costs about one voxel of reach in every direction, on top of the
-21.65 mm quantisation term and #161's 20.3 mm lattice swing.
+21.65 mm quantisation term and #161's 20.3 mm lattice swing. The two terms this
+page isolates are tracked as work rather than as prose:
+[#173](https://github.com/OpenRAL/openral/issues/173) (dilation) and
+[#174](https://github.com/OpenRAL/openral/issues/174) (non-collidable geometry
+in the map).
 
 ### Caveats on this split
 
