@@ -18,18 +18,21 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import yaml
-from openral_core import CapsuleShape, JointType, LinkCollisionGeometry, SphereShape
+from openral_core import BoxShape, CapsuleShape, JointType, LinkCollisionGeometry, SphereShape
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription
 
     from openral_safety.urdf_lowering import LoweredCollisionModel
 
-# Reuse the kernel's own capsule→segment lowering so plan-time spheres are fitted
-# to the exact same geometry the safety kernel checks. Importing the
-# private helper is deliberate: duplicating the capsule axis math here would risk
-# the two collision models silently diverging, which is safety-relevant.
-from openral_safety.urdf_lowering import _capsule_segment_radius
+# Fit plan-time spheres to a capsule that CONTAINS the kernel's geometry. cuRobo
+# can only express spheres, so a link that is not one has to be approximated —
+# and for a planner the only safe direction is outward: a planner that believes
+# the arm is thinner than it is emits trajectories the kernel then E-stops.
+# `bounding_capsule_segment` is the shared, over-covering lowering (it replaced
+# `urdf_lowering._capsule_segment_radius`, which modelled a box by its
+# *inscribed* sphere — issue #155).
+from openral_safety.kernel_predicates import bounding_capsule_segment
 
 __all__ = [
     "CuMotionSphere",
@@ -103,18 +106,26 @@ def capsule_to_spheres(p0: _Vec3, p1: _Vec3, radius: float, *, count: int) -> li
     return spheres
 
 
-def spheres_for_capsule(shape: CapsuleShape | SphereShape) -> int:
+def spheres_for_capsule(shape: CapsuleShape | SphereShape | BoxShape) -> int:
     """Number of spheres needed to tile a lowered ``shape`` with spacing <= radius.
 
     A sphere (or a zero-length capsule) needs exactly one. A capsule of length
     ``L`` and radius ``r`` needs ``ceil(L / r) + 1`` spheres so adjacent centres
-    sit no more than one radius apart, covering the swept volume.
+    sit no more than one radius apart, covering the swept volume. A box is first
+    taken to its bounding capsule (:func:`bounding_capsule_segment`) and counted
+    the same way.
 
     Example:
         >>> spheres_for_capsule(CapsuleShape(radius_m=0.05, length_m=0.30))
         7
     """
-    if isinstance(shape, SphereShape) or shape.length_m == 0.0:
+    if isinstance(shape, SphereShape):
+        return 1
+    if isinstance(shape, BoxShape):
+        p0, p1, radius = bounding_capsule_segment(shape, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        length = math.dist(p0, p1)
+        return 1 if length == 0.0 else max(2, math.ceil(length / radius) + 1)
+    if shape.length_m == 0.0:
         return 1
     return max(2, math.ceil(shape.length_m / shape.radius_m) + 1)
 
@@ -124,18 +135,19 @@ def link_collision_spheres(
 ) -> list[CuMotionSphere]:
     """Lower one link's collision volume to cuRobo spheres in the link frame.
 
-    Reuses the kernel's capsule→segment lowering, then samples spheres along the
-    resulting segment. ``count`` defaults to :func:`spheres_for_capsule`.
+    Takes the link to a capsule that **contains** it
+    (:func:`bounding_capsule_segment`), then samples spheres along that segment.
+    ``count`` defaults to :func:`spheres_for_capsule`.
 
     Args:
-        geom: A lowered link collision volume (capsule or sphere).
+        geom: A lowered link collision volume (capsule, sphere or box).
         count: Optional explicit sphere count; defaults to the radius-spacing
             heuristic.
 
     Returns:
         The link's cuRobo collision spheres.
     """
-    p0, p1, radius = _capsule_segment_radius(geom.shape, geom.origin_xyz_rpy)
+    p0, p1, radius = bounding_capsule_segment(geom.shape, geom.origin_xyz_rpy)
     n = spheres_for_capsule(geom.shape) if count is None else count
     return capsule_to_spheres(p0, p1, radius, count=n)
 

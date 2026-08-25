@@ -8,10 +8,13 @@ core transformation samples spheres along each lowered capsule's segment.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
+import pytest
 import yaml
 from openral_core import (
+    BoxShape,
     CapsuleShape,
     ControlMode,
     EmbodimentKind,
@@ -110,6 +113,16 @@ class TestSpheresForCapsule:
         n = spheres_for_capsule(CapsuleShape(radius_m=0.10, length_m=0.01))
         assert n >= 2
 
+    def test_box_is_counted_not_crashed_on(self) -> None:
+        """A box link must lower, not raise.
+
+        `CollisionShape` has three members and `panda_mobile` / `so101_follower`
+        are all-box, but this helper only ever handled a radius — a box reached
+        it as an `AttributeError`. It now counts the box's bounding capsule.
+        """
+        n = spheres_for_capsule(BoxShape(half_extents_m=(0.03, 0.04, 0.10)))
+        assert n >= 2
+
 
 class TestLinkCollisionSpheres:
     def test_capsule_link_lowered_to_spheres_in_link_frame(self) -> None:
@@ -125,6 +138,31 @@ class TestLinkCollisionSpheres:
         assert min(zs) == -0.1
         assert max(zs) == 0.1
         assert all(s.radius == 0.04 for s in spheres)
+
+    def test_box_link_is_over_covered_never_under_covered(self) -> None:
+        """cuRobo spheres must CONTAIN the box the kernel checks, not fit inside it.
+
+        The planner's model may be looser than the kernel's — that only costs
+        conservative plans. If it is tighter, the planner emits trajectories the
+        kernel then has to E-stop. The old lowering used the box's *inscribed*
+        sphere (issue #155), which is the wrong direction: for this box that is a
+        30 mm radius against the 50 mm needed to cover it.
+        """
+        box = BoxShape(half_extents_m=(0.03, 0.04, 0.10))
+        geom = LinkCollisionGeometry(link_name="link_1", shape=box)
+        spheres = link_collision_spheres(geom)
+        assert spheres, "a box link must produce spheres"
+        # Radius covers the cross-section diagonal, so every corner is enclosed.
+        assert spheres[0].radius == pytest.approx(0.05)
+        assert spheres[0].radius > min(box.half_extents_m)
+        # Every corner of the box lies inside the union of the spheres.
+        for sx in (-0.03, 0.03):
+            for sy in (-0.04, 0.04):
+                for sz in (-0.10, 0.10):
+                    covered = any(
+                        math.dist((sx, sy, sz), s.center) <= s.radius + 1e-9 for s in spheres
+                    )
+                    assert covered, f"corner {(sx, sy, sz)} escapes the sphere lowering"
 
     def test_sphere_link_lowered_to_one_sphere_at_origin(self) -> None:
         geom = LinkCollisionGeometry(
