@@ -7,10 +7,12 @@
 # baguette's. Used to check that the attached-object collision stack is not
 # overfitted to the baguette scene.
 #
-# ── This scene has NO initial-configuration defect ─────────────────────────────
+# ── This scene's start state is LINK-model marginal, not base-placement broken ─
 #
-# Recorded here because it has twice been assumed to have one, by analogy with
-# the fridge scene. It does not. Measured on 2026-08-23 by resetting this file
+# Recorded here because it has twice been assumed to have the fridge scene's
+# defect, by analogy. It does not — but the "NO initial-configuration defect"
+# this block used to assert is too strong, and the reasoning under it was
+# invalid. See the CORRECTION below. Measured on 2026-08-23 by resetting this file
 # through the registered adapter and adjudicating the reset pose with
 # `openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` against
 # `robots/panda_mobile/robot.yaml`'s real collision model:
@@ -20,17 +22,42 @@
 #   stack_2_left_group_3_door_g2, 0 MuJoCo contacts, payload resting on the
 #   counter, end effector 0.63 m from it.
 #
-# 43.3 mm clears the 25 mm occupancy grid, so the arm does NOT start inside the
-# kernel's world model. That 43.3 mm is the same number the evidence ledger
-# already carries for the 2026-08-23 `utensil` stop — and that stop was a
-# false positive of the ADJUDICATION, not a scene defect: the kernel read
-# -17.3 mm because the comparison applied the 21.7 mm voxel term alone instead
-# of the full 88.2 mm admissible gap. #144 fixed that by publishing
-# `adjudication_budget`. See docs/contributing/validation-matrix.md §"the
-# kernel measures OBB-to-voxel".
+# That 43.3 mm is the same number the evidence ledger already carries for the
+# 2026-08-23 `utensil` stop — and that stop was a false positive of the
+# ADJUDICATION, not a scene defect: the kernel read -17.3 mm because the
+# comparison applied the 21.7 mm voxel term alone instead of the full 88.2 mm
+# admissible gap. #144 fixed that by publishing `adjudication_budget`. See
+# docs/contributing/validation-matrix.md §"the kernel measures OBB-to-voxel".
 #
-# So the pin below is for REPRODUCIBILITY, not for a defect. Do not describe
-# this scene as having a broken starting state.
+# ── CORRECTION (2026-08-25): 43.3 mm IS NOT A KERNEL CLEARANCE ────────────────
+#
+# This block used to conclude "43.3 mm clears the 25 mm occupancy grid, so the
+# arm does NOT start inside the kernel's world model". That inference is
+# invalid, and it is the same one #154 made for the fridge scene. The kernel
+# compares an OBB against voxel CUBES, so the gap a link needs is
+# `corner_slop(link) + 21.65 mm` — for `panda_link1`, 75.05 mm. 43.3 mm does not
+# reach it. Whether the UNPINNED draw stops is therefore unmeasured against the
+# right criterion, not established as clear.
+#
+# And at the shipped `layout_ids: [3]` pin, a live octomap round on 2026-08-25
+# measured the kernel at **-1.94 mm** on `panda_link1`: this scene does take an
+# initial-configuration stop on the real map, marginally. The start-state
+# census, scoring a geometrically ideal grid, reported no stop here; the live
+# map holds cells that grid does not (non-collidable decorative geometry the
+# depth camera renders, plus the octree->grid bridge's dilation), which is why
+# it is the harsher of the two. See docs/reference/world-map-fidelity.md.
+#
+# It is left pinned at 3 anyway, deliberately. The stop is entirely LINK-side:
+# re-scored against the same live map with exact link geometry instead of the
+# manifest OBB, the same state reads **+20.01 mm** and does not stop. The staged
+# tighter-primitive work (#166) therefore removes it with no scene change, while
+# a re-pin would churn the whole kitchen — pinning changes the draw ORDER — to
+# work around a link-model artefact that is already being fixed upstream.
+# Revisit if #166 stalls.
+#
+# So the pin below is for REPRODUCIBILITY. Do not describe this scene as having
+# the fridge scene's defect: its stop is a property of the link envelope, not of
+# where the base parks, and no layout change would address it.
 #
 # Run: openral deploy sim --config scenes/deploy/robocasa_drawer_utensil.yaml
 # Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps

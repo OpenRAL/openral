@@ -162,7 +162,7 @@ def test_xr1_state_layout_is_supported() -> None:
 @pytest.mark.parametrize(
     ("scene_file", "prebuilt_task", "expected_layout"),
     [
-        ("robocasa_fridge_drawer.yaml", "PickPlaceFridgeShelfToDrawer", 30),
+        ("robocasa_fridge_drawer.yaml", "PickPlaceFridgeShelfToDrawer", 47),
         ("robocasa_drawer_utensil.yaml", "PickPlaceCounterToDrawer", 3),
     ],
 )
@@ -172,11 +172,18 @@ def test_matrix_scene_ships_its_verified_layout_pin(
     """Both pinned matrix scenes carry the layout their header block justifies.
 
     The fridge pin is a *fix*: unpinned, seed 1 draws a side-by-side kitchen and
-    spawns ``robot0_link7_collision`` at 0.000 m from the closed freezer door,
-    so the run E-stops on the initial configuration before applying a chunk.
-    The utensil pin is a *reproducibility* pin — that scene starts 43.3 mm clear
-    unpinned and has no defect — but without it the kitchen is a free draw off
-    ``env.rng`` and two rounds at ``seed: 1`` are not comparable.
+    parks ``robot0_link7_collision`` 2.8 mm from the closed freezer door, so the
+    kernel reports -24.75 mm and the run E-stops on the initial configuration
+    before applying a chunk. The pinned value is **47**, not the 30 #154
+    shipped: layout 30 was chosen against MESH clearance, which is not the
+    criterion the kernel applies, and it still stops at -23.47 mm on a live
+    octomap. Layout 47 clears by +19.34 mm. See the scene's header block and
+    docs/reference/world-map-fidelity.md.
+
+    The utensil pin is a *reproducibility* pin — without it the kitchen is a
+    free draw off ``env.rng`` and two rounds at ``seed: 1`` are not comparable.
+    (Its start state is marginal on the live map at -1.94 mm, but that stop is
+    entirely link-side, so a re-pin is not the remedy; see its header block.)
 
     Either way the value must survive the prebuilt/procedural XOR: the
     scene-pool restrictors are deliberately independent of ``mode``, unlike the
