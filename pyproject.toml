@@ -403,6 +403,12 @@ gr00t = [
     # (diffusers, peft, timm, decord, dm-tree). Validated live: GR00T-N1.7 NF4
     # in-process solves LIBERO-spatial 5/5 at ~19 ms/step on an 8 GiB card.
     "lerobot[groot]",
+    # The NF4 quantization the adapter performs at load. `lerobot[groot]` does
+    # not pull it, so `tests/sim/test_franka_groot_libero.py` stopped at
+    # `importorskip("bitsandbytes")` and the lane never even reached its CUDA
+    # gate — an under-provisioned lane, not a hardware limit, so it is fixed by
+    # installing the package rather than excused as a capability gap (#163).
+    "bitsandbytes>=0.45",
 ]
 behavior-groot = [
     # OpenRAL-side wire for the official BEHAVIOR-1K Isaac-GR00T runtime.

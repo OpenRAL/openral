@@ -37,6 +37,16 @@ suite.
    try to be clever about a wide-blast change; a wrong *negative* would silently
    skip a regression.
 
+   A full run expands **every opt-in dependency lane** as well (rule 6). It did
+   not always: `requirement_targets` was left empty on both full-run exits, so a
+   blast-radius diff ran *zero* lanes and the job reported success having
+   executed none of them — indistinguishable from a run that executed them all
+   and passed ([#163](https://github.com/OpenRAL/openral/issues/163)). The
+   effect was the exact inverse of the intent: the widest diffs got the least
+   verification, and a red PR could be turned green by also touching
+   `pyproject.toml`. A root-`pyproject.toml`/`uv.lock` change is a *dependency*
+   change, which is precisely what the lanes exist to check.
+
    The one exception is release-please's release PR, and it is handled in the
    workflow rather than here — precisely so the selector keeps no special
    cases. `test-selective` short-circuits the `release-please--*` branch before
@@ -73,13 +83,20 @@ suite.
    `lowering`).
    The default cheap lane may still skip those tests; CI then reruns the matching
    targets with the named group installed and fails if the lane produces no
-   passing tests **or any skip**. This is what prevents “selected but skipped
-   because `gym_aloha` is absent” from going green. Mixed files with intentional
-   fixture-absence skips stay outside strict lanes. The `sim` lane also installs
-   the `dataset` extra because its dataset-emission target writes and reloads a
-   real LeRobot dataset. Wire-only sidecar tests use the `sidecar-wire` lane;
-   sidecar-backed runtime lanes keep separate logical names because their
-   preflight requirements differ.
+   passing tests **or any skip that is not a declared capability gap** (see
+   [Lane policy](#lane-policy--what-a-skip-is-allowed-to-mean) below). This is
+   what prevents “selected but skipped because `gym_aloha` is absent” from going
+   green. The `sim` lane also installs the `dataset` extra because its
+   dataset-emission target writes and reloads a real LeRobot dataset. Wire-only
+   sidecar tests use the `sidecar-wire` lane; sidecar-backed runtime lanes keep
+   separate logical names because their preflight requirements differ.
+
+   A lane declared with an **empty** glob list can never run — `run_lane`
+   returns at its `[ -z "$targets" ]` guard, logging nothing, and looks exactly
+   like a lane that simply was not selected. `rldx` sat in that state from the
+   day it was added; its real test is covered by `sidecar-wire` (the group
+   `rldx` merely includes), so the empty lane was removed and
+   `tests/unit/test_lane_report.py` now fails any lane declared with no globs.
 
    **A selected directory counts as selecting the lane files inside it.**
    `targets` mixes files (from the import scan) with directories (a package's
@@ -154,6 +171,84 @@ suite.
 
 Every selected target carries a human-readable reason.
 
+### Lane policy — what a skip is allowed to mean
+
+Once a full run expands every lane, the lanes have to be *judged* correctly, and
+the old rule ("a lane must have passing tests and must not skip **at all**")
+could not survive that. A GitHub-hosted `ubuntu-24.04` runner has no NVIDIA GPU,
+no Vulkan ICD, and no proprietary simulator sidecars. Tests gated on those skip
+there **forever**, so the blunt rule reddened lanes that had in fact done real
+work — the `sim` lane ran 162 passing tests on PR #153 and was failed anyway by
+13 `requires CUDA` skips.
+
+Three options were on the table, and only one is honest:
+
+| Option | Why not / why |
+| --- | --- |
+| Run nothing on a full run, but say so loudly | Rejected. It annotates the coverage hole instead of closing it, and a blast-radius diff (`uv.lock`!) is exactly when lanes matter most. |
+| Gate the unsatisfiable lanes behind a self-hosted runner label | Right long-term, unavailable today: no such runner is registered, and a required check waiting on a label that never appears is left `Expected` forever, blocking the merge. The declarations below name what *would* satisfy each gap, so this stays the upgrade path. |
+| **Run every satisfiable lane; declare the rest** | **Chosen.** Preserves all reachable coverage and makes the unreachable part legible instead of invisible. |
+
+The mechanism is a **declared capability allowlist**, not a blanket tolerance:
+
+- `[capability_gaps]` in `tools/test_selection.toml` names each capability the
+  runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`), what it is, what
+  *would* satisfy it, and the skip-reason patterns that indicate it.
+- A skip matching a declared pattern is **declared-not-run** — allowed,
+  attributed to the gap, counted, and printed in the job summary. It is never
+  called "skipped" and never silently absent.
+- **Every other skip still fails the lane.** `panda.srdf not installed` is a
+  ROS-underlay asset (declared); `mujoco not installed` is a *provisioning bug*
+  and stays red. That distinction is the entire value of an allowlist over
+  "tolerate skips", and it is why the patterns are narrow.
+- Matching is **fail-closed**: reword a skip reason out of the declared patterns
+  and the lane goes red, not quietly green.
+- A lane whose **every selected test** is explained by a declared gap is
+  `declared-not-run`: a pass, but a loudly reported one, named in the summary
+  with the capability it needs. A lane that collected **no tests at all** still
+  fails — that is a broken lane, not absent coverage.
+
+  The verdict is deliberately about what the diff *selected*, not a lane's full
+  potential. `sim` yields 162 passing tests when all seven of its files are
+  selected, but a diff touching only `rskills/act-aloha/**` selects just
+  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated
+  (observed on proof run 32815008771). Failing that would punish a PR for
+  touching a GPU-only file — precisely the breakage this policy exists to
+  remove. There is deliberately **no** hand-maintained list of "lanes that
+  cannot run here": that would be a second source of truth that rots, while the
+  per-skip classification derives the verdict from evidence every run.
+
+Batched and isolated targets are now judged by the **same** rule.  Isolated
+files used to be graded on exit code alone, so a skip inside one was invisible —
+an asymmetry a real gap could hide in. Every skip they emit today is explained
+by a declared gap, so closing the hole costs nothing.
+
+### Vacuous green is a failure, not a result
+
+`tools/lane_report.py` parses each lane's **junit XML** (not pytest's terse
+summary text) into a `LaneRecord`, appends it to a per-run *ledger*, and a final
+`Attest lane coverage` step cross-checks that ledger against the selector's own
+output. It fails when:
+
+- a `full_run` diff expanded to **zero** lanes — the #163 regression, guarded
+  directly;
+- a lane the selector **selected** produced no ledger record ("selected but
+  never executed");
+- any lane record is a failure.
+
+The ledger is written to the job summary, naming every declared-not-run lane and
+the capability it needs. So "tested nothing" and "tested everything and passed"
+can no longer report the same thing.
+
+> Two junit details are load-bearing and were verified against real pytest
+> output rather than assumed. A module-level `importorskip` emits
+> `message="collection skipped"` and puts the real reason in the element
+> **text**; reading only `message` would misclassify every such skip as
+> undeclared. And `simpler-env` / `robocasa-gr1` run their pytest *inside*
+> `verify_test_envs.py`, so they have no junit report at all and are recorded
+> explicitly as exit-code-only rather than being credited with per-test
+> accounting they never had.
+
 ### Usage
 
 ```bash
@@ -200,10 +295,12 @@ paid for runs that select zero tests:
    targets" launches each group as a background job (`&`), collects exit codes
    after all finish, and streams the logs in collapsible GitHub groups — cutting
    wall-clock time by roughly the number of partitions.
-4. **Opt-in lanes run only when selected and are zero-skip.** If no selected target needs
-   `gym_aloha`, the `sim` group is never installed. If one does, CI reruns just
-   those targets under `uv run --all-packages --group sim ...` and requires
-   passing tests with no skips in that lane.
+4. **Opt-in lanes run only when selected, and every skip must be accounted
+   for.** If no selected target needs `gym_aloha`, the `sim` group is never
+   installed. If one does, CI reruns just those targets under `uv run
+   --all-packages --group sim ...` and requires passing tests, with no skip
+   beyond the declared capability gaps (see
+   [Lane policy](#lane-policy--what-a-skip-is-allowed-to-mean)).
 5. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
    true` stops any in-progress run on the same branch the moment a new push
    arrives.

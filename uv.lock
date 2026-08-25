@@ -3294,6 +3294,7 @@ dev = [
     { name = "types-pyyaml" },
 ]
 gr00t = [
+    { name = "bitsandbytes" },
     { name = "lerobot", extra = ["groot"] },
 ]
 isaacsim = [
@@ -3451,7 +3452,10 @@ dev = [
     { name = "types-protobuf", specifier = ">=7.34.1.20260518" },
     { name = "types-pyyaml", specifier = ">=6" },
 ]
-gr00t = [{ name = "lerobot", extras = ["groot"] }]
+gr00t = [
+    { name = "bitsandbytes", specifier = ">=0.45" },
+    { name = "lerobot", extras = ["groot"] },
+]
 isaacsim = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },

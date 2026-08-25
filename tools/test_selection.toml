@@ -140,6 +140,92 @@ isolate_globs = [
 "rskills/*libero*/**" = ["tests/sim/test_franka_panda_smolvla_libero.py"]
 "rskills/*robotwin*/**" = ["tests/sim/test_aloha_agilex_smolvla_robotwin.py"]
 
+# ---------------------------------------------------------------------------
+# Hosted-runner capability policy (issue #163).
+# ---------------------------------------------------------------------------
+# An opt-in lane is judged "zero-skip": a skip means the lane env was
+# under-provisioned. That rule is right for anything a runner CAN provide and
+# wrong for anything it CANNOT — a GitHub-hosted ubuntu-24.04 runner has no
+# NVIDIA GPU, no Vulkan ICD, and no proprietary simulator sidecars, so tests
+# gated on those skip forever and redden every PR that selects them.
+#
+# The honest resolution is neither "fail" nor "tolerate every skip": DECLARE
+# the capabilities the runner provably lacks, allow exactly the skips those
+# capabilities explain, and keep failing on every other skip. A skip for an
+# undeclared reason is still a red lane, because it is still a real gap — e.g.
+# "mujoco not installed" is a provisioning bug, not a hardware limit, and must
+# stay red.
+#
+# `skip_patterns` are fnmatch globs matched case-insensitively against a skip's
+# reason. BOTH spellings pytest emits are checked: the `message` attribute of a
+# normal `pytest.skip`, and the element TEXT of a collection skip (a
+# module-level `importorskip` sets message="collection skipped" and puts the
+# real reason in the body). Matching is FAIL-CLOSED: reword a skip reason out
+# of these patterns and the lane goes red, never quietly green.
+[capability_gaps.cuda]
+summary = "an NVIDIA CUDA GPU"
+satisfied_by = "a self-hosted runner with a GPU, or a dev host where `nvidia-smi` resolves (CLAUDE.md §1.12)"
+skip_patterns = [
+  "*requires CUDA*",
+  "*requires a CUDA GPU*",
+  "*needs CUDA*",
+  "*needs a local GPU*",
+  "*requires a local NVIDIA GPU*",
+  "*no NVIDIA GPU visible to nvidia-smi*",
+  "*nvidia-smi not on PATH*",
+]
+
+[capability_gaps.vulkan]
+summary = "a working Vulkan driver/ICD"
+satisfied_by = "a runner with a GPU and a Vulkan ICD (SAPIEN rendering; hosted images ship none)"
+skip_patterns = [
+  "*needs a working Vulkan driver*",
+  "*ErrorIncompatibleDriver*",
+]
+
+[capability_gaps.sidecar]
+summary = "an externally provisioned simulator/model sidecar venv"
+satisfied_by = "a host with the sidecar provisioned — see PROVISIONED_GROUPS in tools/verify_test_envs.py and its `--include-provisioned` flag"
+skip_patterns = [
+  "*sidecar venv not provisioned*",
+  "*sidecar not provisioned*",
+  "*needs a provisioned * sidecar venv*",
+]
+
+[capability_gaps.ros]
+summary = "a sourced ROS 2 Jazzy underlay"
+satisfied_by = "a runner with ROS 2 installed and `install/setup.bash` sourced (covered by the `test-ros2` workflow, not this one)"
+skip_patterns = [
+  "*could not import 'rclpy'*",
+  "*ros2 CLI not on PATH*",
+  "*ros2 binary not on PATH*",
+  # `/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf`
+  # — a MoveIt *resource package*, i.e. part of the ROS underlay, not something
+  # the `lowering` dependency group could ever install. Two call sites word it
+  # differently ("panda.srdf not installed" and "moveit_resources panda.srdf
+  # not installed"): the exact-string form matched only the first, and run
+  # 32815922208 correctly reddened `lowering` for the second rather than
+  # letting an unrecognised reason through. The glob now spans both while still
+  # naming the specific asset — deliberately NOT widened to "*not installed*",
+  # which would swallow real missing-package skips like "mujoco not installed".
+  "*panda.srdf not installed*",
+]
+
+[capability_gaps.hf-cache]
+summary = "a pre-populated Hugging Face model cache"
+satisfied_by = "a host that already snapshotted the checkpoint, or a CI warm step that fetches it before the lane runs"
+# `tests/integration/test_act_onnx.py` loads the real
+# `gabrycina/so101-passing-pen-policy` and deliberately does NOT download it —
+# it skips unless a snapshot is already in `~/.cache/huggingface/hub`. On a
+# hosted runner that cache is always empty, so the test can never run there.
+# Declaring it makes that permanent absence VISIBLE in the ledger (named, with
+# the reason) instead of it silently reading as a passing lane. The pattern is
+# anchored to this exact phrasing so it cannot become a general "any missing
+# model" excuse; pre-fetching the checkpoint would remove the gap entirely.
+skip_patterns = [
+  "*not in the local HF cache*",
+]
+
 # Selected tests matching these globs need an opt-in dependency group. The
 # default selective lane still runs them in the cheap env (where they may skip);
 # CI then reruns the matching targets with the named group installed so a
@@ -201,8 +287,13 @@ sidecar-wire = [
   "tests/unit/test_robotwin_backend.py",
   "tests/unit/test_sidecar_identity_and_layout.py",
 ]
-rldx = [
-]
+# NB: there is deliberately no `rldx` lane. It existed with an EMPTY glob list,
+# so `run_lane rldx` returned at its `[ -z "$targets" ]` guard on every run
+# since it was added — a lane that could never execute, indistinguishable in
+# the log from one that had nothing selected. The RLDX adapter's real test
+# (`tests/unit/test_rldx_adapter_auto_spawn.py`) is covered by `sidecar-wire`,
+# which is the group its deps come from (`rldx` just includes `sidecar-wire`).
+# `tests/unit/test_lane_report.py` now fails any lane declared with no globs.
 dataset = [
   "tests/unit/test_cli_dataset_from_bag.py",
   "tests/unit/test_cli_replay_record_profile.py",
