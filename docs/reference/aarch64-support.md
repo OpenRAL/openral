@@ -42,7 +42,7 @@ uv pip install --dry-run --python /tmp/probe/bin/python \
   --torch-backend=cu128 torch==2.9.1     # resolves
 ```
 
-## GB10 compute capability
+## Compute capability: GB10 `sm_121`, Thor `sm_110`
 
 GB10 is **`sm_121`**. No PyTorch build ships `sm_121` SASS today, so torch
 warns at first CUDA call:
@@ -63,7 +63,29 @@ Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0
 `torch==2.9.1+cu128`: bf16 matmul, `torchvision.ops.nms`, a `bitsandbytes` NF4
 `Linear4bit` forward and a `flash_attn_func` bf16 forward all succeed.
 
-The dangerous half is silent: **anything compiled at *runtime* for the live
+**On Jetson Thor that reading does not hold, and the failure is total.** Thor
+is **`sm_110`** — a different Blackwell family, not a near-neighbour of
+`sm_120`. The `cu128` arch list above has no `sm_110` SASS *and* no `compute_*`
+entry to JIT from, so there is nothing to fall back to and the warning is not
+about a corner case:
+
+```
+torch 2.9.1+cu128   arch_list: ['sm_80', 'sm_90', 'sm_100', 'sm_120']
+>>> a @ b   ->  CUDA error: no kernel image is available for execution on the device
+```
+
+Every CUDA op fails — matmul, `sum`, `softmax`, `conv2d`, SDPA. Not the
+jiterator subset below: all of it. Measured on a Jetson Thor (L4T R38.4 /
+JetPack 7, CUDA 13.0).
+
+So the same warning text means "harmless, precompiled SASS is fine" on GB10 and
+"this GPU cannot run torch at all" on Thor, and the two are told apart only by
+whether `torch.cuda.get_arch_list()` contains a usable entry for the device.
+Check that list on any new aarch64 part rather than reading the warning as
+advisory. `cu130` carries `sm_110` and both parts work there — which is why the
+workspace root now routes aarch64 torch to that index (see below).
+
+The dangerous half on GB10 is silent: **anything compiled at *runtime* for the live
 device fails**, because the `cu128` wheels bundle CUDA 12.8 compilers that do
 not know `sm_121`. Two separate compilers, two separate failures:
 
@@ -101,11 +123,21 @@ Both compilers are swappable without touching the torch build:
   toolkit is required. Installed only by sidecars that run Triton kernels.
 
 Moving aarch64 to the `cu130` index fixes both too (nvrtc 13.0 and its ptxas
-know `sm_121`) and was verified working end-to-end. It was not chosen: it swaps
-the whole stack onto a parallel `nvidia-*-cu13` package set and, because
-`--torch-backend` is one global choice per compile, would force a
+know `sm_121`) and was verified working end-to-end. For GB10 it was not chosen:
+it swaps the whole stack onto a parallel `nvidia-*-cu13` package set and,
+because `--torch-backend` is one global choice per compile, would force a
 per-architecture lockfile. Replacing two compiler shims keeps the torch build,
 the CUDA runtime and all of x86_64 byte-identical.
+
+**That trade-off does not survive Jetson Thor.** The two compiler shims fix
+*runtime compilation* on a GPU whose precompiled SASS already works; on Thor
+there is no working SASS to begin with (see above), so no shim helps and
+`cu130` stops being an alternative and becomes the only option. `openral-pro`'s
+workspace root already made that move for exactly this reason — routing
+aarch64 `torch`/`torchvision` to `cu130` and overriding this repo's
+`torch<2.10` cap up to `2.13`/`0.28`, since torchvision is ABI-locked to a
+torch minor and does not float with it. This repo has not, so a `uv sync` here
+on a Thor still resolves the unusable `cu128` build.
 
 ## Per-sidecar status
 

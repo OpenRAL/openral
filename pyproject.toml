@@ -44,6 +44,63 @@ override-dependencies = [
     # restates that pin exactly, so x86_64 resolution is unchanged.
     "nvidia-cuda-nvrtc-cu12==12.9.86; platform_machine == 'aarch64' and sys_platform == 'linux'",
     "nvidia-cuda-nvrtc-cu12==12.8.93; platform_machine != 'aarch64' and sys_platform == 'linux'",
+    # `openral-hal` caps `torch<2.10`, which is correct on x86 — torchcodec
+    # ships per-torch-minor ABI builds (0.9.x <-> 2.9) and a floating torch
+    # there produces `undefined symbol` on every dataset-codec call. That
+    # coupling does not exist on aarch64: torchcodec's own marker is
+    # x86_64/AMD64-only, so it is never installed here.
+    #
+    # The cap has to go on aarch64 because of the cu130 move above. torch
+    # 2.9.1+cu130 does exist for aarch64 — but torchvision 0.24.1, its ABI
+    # partner, does **not**: that index carries aarch64 torchvision only from
+    # 0.27.0. torchvision is ABI-locked to a torch minor and does not float
+    # with it, so leaving it alone resolves 0.24.1 against a newer torch and
+    # every import dies on `operator torchvision::nms does not exist`. Move
+    # both or neither. 2.13/0.28 is the pair `openral-pro` already runs on a
+    # Jetson Thor. x86_64 keeps the validated torch/torchcodec pair untouched.
+    # BOTH branches, for the reason the nvrtc pair above states: an override
+    # replaces every requirement for the package it names, so aarch64-only
+    # lines would leave x86_64 with *no* torch constraint at all rather than
+    # falling back to openral-hal's cap. Verified the hard way — with only the
+    # aarch64 lines, `uv lock` collapsed every platform onto 2.13.0+cu130 while
+    # torchcodec stayed at 0.9.1, which is the `undefined symbol` pairing the
+    # cap exists to prevent.
+    #
+    # The x86_64 torchvision cap is `<0.25`, not `<0.26`, and the difference is
+    # the whole point. On master nothing constrained torchvision here: **its own
+    # metadata** did the work, because 0.25.0 declares `torch==2.10.*` and the
+    # `torch<2.10` cap made the resolver backtrack to 0.24.1 — the ABI partner
+    # of torch 2.9. Adding a `torch` override destroys that mechanism, because
+    # an override replaces every requirement for the package it names, including
+    # *torchvision's own* `torch==2.10.*`. torchvision 0.25.0 then happily
+    # resolves against torch 2.9.1 and every `import torchvision` dies with
+    # `operator torchvision::nms does not exist`. Caught by CI's full-suite lane
+    # (~30 collection errors) on the first push of this branch, exactly the
+    # failure the aarch64 comment above describes — the override just moved it
+    # to the other architecture.
+    #
+    # So on x86_64 these lines are not decoration restating a status quo: they
+    # are now the *only* thing holding the pair together, and they have to
+    # reproduce what torchvision's metadata used to enforce. Bump them together
+    # with the torch cap, never separately.
+    # The non-linux lines exist for the same reason, one level further out: an
+    # override set that names only linux markers leaves macOS / Windows with no
+    # requirement for torch **at all** — not the status quo, but the package
+    # dropped from the resolution entirely. Verified: with only the two linux
+    # pairs, `torch` and `torchvision` vanish from every darwin / win32 /
+    # emscripten resolution-marker in the lock, where master resolved 2.10.0 +
+    # 0.25.0. The bounds restate that pair exactly — pinned on both sides, not
+    # merely capped, because a one-sided cap lets uv merge the non-linux fork
+    # into the x86_64-linux one (2.9.1 + 0.24.1 satisfies both) and silently
+    # downgrade macOS as a side effect of a Jetson fix. Bounded rather than left
+    # open because, per the paragraph above, the torch override has already
+    # taken away torchvision's ability to enforce the pairing itself.
+    "torch>=2.13,<2.14; platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "torch<2.10; platform_machine != 'aarch64' and sys_platform == 'linux'",
+    "torch>=2.10,<2.11; sys_platform != 'linux'",
+    "torchvision>=0.28,<0.29; platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "torchvision<0.25; platform_machine != 'aarch64' and sys_platform == 'linux'",
+    "torchvision>=0.25,<0.26; sys_platform != 'linux'",
 ]
 # torchcodec ships per-torch-minor builds (0.9.x ↔ torch 2.9, 0.10.x ↔
 # torch 2.10). The workspace resolves torch 2.9.1 on linux/x86_64, but an
@@ -85,22 +142,26 @@ conflicts = [
 # This has to be an index pin rather than the `--torch-backend=cu128` the
 # sidecars use: that flag exists only on `uv pip`, not on `uv sync` / `uv lock`.
 #
-# Deliberately cu128, not cu130: the `nvidia-*-cu12` runtime packages are
-# already in the lock for x86_64 torch 2.9.1, so this reuses them instead of
-# adding a parallel cu13 set, and it matches what the sidecars pin. Verified on
-# a GB10 (sm_121): `torch.cuda.is_available()` True and `torchvision.ops.nms`
-# runs on CUDA. See docs/reference/aarch64-support.md.
+# cu130, not cu128. cu128 was chosen originally because it reuses the
+# `nvidia-*-cu12` runtime packages already in the x86_64 lock, and it is
+# sufficient on GB10 (sm_121), whose `sm_120` cubins run — verified there.
+# Jetson Thor breaks that: it is `sm_110`, a different Blackwell family, and
+# cu128 ships neither `sm_110` SASS nor a `compute_*` entry to JIT from, so
+# *every* CUDA op fails with "no kernel image is available for execution on the
+# device". No compiler shim helps, because nothing is compiled — the precompiled
+# kernels simply are not there. cu130 carries sm_110 and both parts work.
+# See docs/reference/aarch64-support.md.
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
 ]
 torchvision = [
-    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
 ]
 # Only declare workspace sources for packages that actually exist under python/.
 # Future packages (re-add when directories land under python/):
