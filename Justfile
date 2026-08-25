@@ -160,6 +160,16 @@ docker-build-x86:
     docker buildx build -f docker/inference/Dockerfile.x86 \
         -t openral:x86 .
 
+# Same Dockerfile, aarch64 tag. It is architecture-neutral (the CUDA base is
+# multi-arch and nothing in it is x86-specific), so this is a tag, not a fork —
+# a second Dockerfile would drift. Verified on a Jetson Thor: 13.7 GB, torch
+# 2.13.0+cu130 with sm_110, rclpy + openral import. openral-pro's
+# `docker/Dockerfile.l4t-pro` FROMs `openral:l4t` and layers DeepStream +
+# TensorRT + the NVMM fast path on top.
+docker-build-l4t:
+    docker buildx build -f docker/inference/Dockerfile.x86 \
+        -t openral:l4t .
+
 # The GStreamer/NVMM + DeepStream + TensorRT variant (`openral:x86-deepstream-latest`)
 # is built from openral-pro's `docker/Dockerfile.pro`, which FROMs the
 # gstreamer-free image `docker-build-x86` produces and installs the whole
