@@ -59,6 +59,112 @@ struct Obb {
   Transform origin{};
 };
 
+/// Number of axis directions in a 26-DOP: 3 face, 4 corner, 6 edge. Each
+/// direction carries a `lo`/`hi` slab, hence 26 halfspaces.
+inline constexpr int kDopAxes = 13;
+
+/// The 26-DOP's axis directions, unit-normalised, in the owning OBB's own local
+/// frame. The first three ARE the box's axes, which is what makes "the DOP is
+/// inside the shipped box" a two-line configure-time check rather than a
+/// polytope enumeration: a 26-DOP is contained in its own first three slabs, so
+/// `-half_extents <= dop_lo[k] <= dop_hi[k] <= half_extents` for k in {0,1,2}
+/// proves containment for the whole polytope.
+inline constexpr double kDopAxis[kDopAxes][3] = {
+    {1.0, 0.0, 0.0},
+    {0.0, 1.0, 0.0},
+    {0.0, 0.0, 1.0},
+    {0.5773502691896258, 0.5773502691896258, 0.5773502691896258},
+    {0.5773502691896258, 0.5773502691896258, -0.5773502691896258},
+    {0.5773502691896258, -0.5773502691896258, 0.5773502691896258},
+    {0.5773502691896258, -0.5773502691896258, -0.5773502691896258},
+    {0.7071067811865476, 0.7071067811865476, 0.0},
+    {0.7071067811865476, -0.7071067811865476, 0.0},
+    {0.7071067811865476, 0.0, 0.7071067811865476},
+    {0.7071067811865476, 0.0, -0.7071067811865476},
+    {0.0, 0.7071067811865476, 0.7071067811865476},
+    {0.0, 0.7071067811865476, -0.7071067811865476},
+};
+
+/// Hard ceiling on a stage-2 hull's vertex count, enforced at configure time.
+///
+/// This is a **cost** bound, not a geometry choice, and it is set by
+/// measurement rather than taste: the stage-2 support function is an exhaustive
+/// scan of the vertex list (the only form whose result is provably the true
+/// support, which is what makes the returned bound sound — see
+/// `hull_cell_distance`), so its cost is linear in the vertex count. On the
+/// reference host the staged path stays cheaper than the `box_box_distance` it
+/// replaces up to roughly 320 vertices; past that it loses. The Panda's
+/// `link1` hull has 1588 vertices and was measured **0.76x** the shipped
+/// routine's speed at 400 occupied cells, so it is refused stage 2 and runs
+/// stage 1 only — still a strict tightening (25.7 mm of support excess against
+/// the shipped box's 53.3 mm) and still ~9x cheaper per cleared cell.
+/// See `docs/reference/collision-hull-narrow-phase.md`.
+inline constexpr int kMaxTightHullVertices = 320;
+
+/// Floating-point slack (m) allowed by `validate_tight_geometry` when checking
+/// that a stage-2 hull vertex satisfies its own DOP slabs.
+///
+/// The two are tangent **by construction** — the slab bound is `h_mesh(u)`, the
+/// maximum of `u·x` over the same vertex set — so the true relation is
+/// equality, not inequality, on at least one vertex per axis, and the offline
+/// producer and the kernel evaluate that dot product in different orders. One
+/// nanometre is eleven orders of magnitude below the 25 mm voxel pitch and
+/// seven below the shipped boxes' own 0.055 mm containment margin; it buys
+/// numerical agreement, not geometric room. The DOP-inside-the-OBB check takes
+/// no slack at all, because there the margin is a real, measured 0.055–0.132 mm.
+inline constexpr double kTightContainmentEpsilonM = 1e-9;
+
+/// Iteration ceiling for the stage-2 GJK loop. Hitting it is not a failure
+/// mode: every iteration's result is a *lower* bound on the true distance, so
+/// a truncated run is simply more conservative than a converged one.
+inline constexpr int kGjkMaxIterations = 24;
+
+/// Ceiling on stage-2 invocations in ONE `check_voxel_collision` call, across
+/// every link. Past it the check keeps refining with stage 1 and the shipped
+/// `box_box_distance`, which is exactly today's behaviour or better — so the
+/// cap can only make the answer more conservative, never less.
+///
+/// This is the "hard cap on stage-2 invocations per step" that
+/// `docs/reference/collision-tight-geometry.md` §12.2 names as the alternative
+/// to shipping an oversized hull, and it exists because stage 2's cost is
+/// driven by how many cells stage 1 *cannot* clear — which is a property of the
+/// map, not of the robot. At the measured RoboCasa start state two cells reach
+/// stage 2. A map that pressed clutter against the arm at the real HAL's 20 mm
+/// world-voxel margin was measured driving that toward every occupied cell, and
+/// an unbounded stage 2 turned a 1.07x speedup into a 1.5x slowdown. The cap
+/// bounds the worst case at roughly 1.1x the shipped routine instead.
+///
+/// 32 is ~16x the measured demand and ~0.4 ms of a 10 ms budget over a 16-step
+/// horizon. Changing it changes a real-time bound: it belongs in the hazard log.
+inline constexpr int kMaxStage2PerCheck = 32;
+
+/// Convergence tolerance (m) for the stage-2 GJK loop. Four orders of
+/// magnitude below the 25 mm voxel pitch and three below anything the margin
+/// arithmetic resolves.
+inline constexpr double kGjkTolerance = 1e-9;
+
+/// Tight convex geometry refining ONE `Obb` in `CollisionModel::boxes`, for the
+/// arm-link-vs-world-voxel check only. Everything here is expressed in that
+/// box's own local frame, so the broad-phase window — which is sized from the
+/// box's `half_extents` alone — never moves.
+///
+/// Two stages, both strict subsets of the shipped box:
+///
+/// * **Stage 1, always on**: the 26-DOP slabs `[dop_lo[i], dop_hi[i]]` along
+///   `kDopAxis[i]`. Built offline as *tangent* halfspaces `u.x <= h_mesh(u)`,
+///   so containment of the true link mesh is true by construction rather than
+///   by a fit, and there is no optimiser tolerance anywhere in the argument.
+/// * **Stage 2, optional**: `vertex_count` vertices of the link's exact convex
+///   hull, packed CSR-style at `CollisionModel::hull_vertices[vertex_first]`.
+///   `vertex_count == 0` means this link stops at stage 1 — the representation
+///   `link1` uses, because its exact hull is over `kMaxTightHullVertices`.
+struct LinkHull {
+  int vertex_first{0};        ///< offset into CollisionModel::hull_vertices
+  int vertex_count{0};        ///< hull vertex count; 0 = stage 1 only
+  double dop_lo[kDopAxes]{};  ///< per-axis lower slab, box-local frame
+  double dop_hi[kDopAxes]{};  ///< per-axis upper slab, box-local frame
+};
+
 /// Flattened kinematic + collision model. Links are topologically ordered so
 /// every parent index is < its children's. A link may carry zero, one, or
 /// several capsules (real MJCF bodies often have several collision geoms);
@@ -75,6 +181,13 @@ struct CollisionModel {
   std::vector<Capsule> capsules;      ///< parallel to capsule_link
   std::vector<int> box_link;          ///< link index each OBB attaches to
   std::vector<Obb> boxes;             ///< parallel to box_link (blocky links)
+  /// Parallel to `boxes`: index into `hulls` for the tight geometry refining
+  /// that box in the world-voxel check, or -1 for none. Empty means no box
+  /// carries tight geometry — the pre-#166 behaviour, which every
+  /// capsule-lowered robot and every manifest without `tight_geometry` keeps.
+  std::vector<int> box_hull;
+  std::vector<LinkHull> hulls;                     ///< tight geometry, box-local frame
+  std::vector<Vec3> hull_vertices;                 ///< CSR-packed stage-2 vertices, box-local
   std::vector<std::pair<int, int>> allowed_pairs;  ///< unordered link pairs to skip
 };
 
@@ -378,6 +491,128 @@ double box_capsule_distance(const Transform& box, const Vec3& half_extents, cons
 double box_box_distance(const Transform& a, const Vec3& a_half, const Transform& b,
                         const Vec3& b_half) noexcept;
 
+/// Why `validate_tight_geometry` refused a model. Anything but `kOk` is
+/// fail-closed at the call site: the kernel keeps the shipped OBB narrow phase
+/// for every link rather than loading geometry it could not prove contained.
+enum class TightGeometryStatus : std::uint8_t {
+  kOk = 0,
+  kBadArity = 1,         ///< box_hull/hulls/hull_vertices sizes disagree
+  kEscapesBox = 2,       ///< a DOP slab reaches outside the shipped half-extents
+  kHullEscapesDop = 3,   ///< a stage-2 vertex sits outside its own DOP
+  kTooManyVertices = 4,  ///< stage-2 hull over kMaxTightHullVertices
+  kDegenerate = 5,       ///< non-finite or inverted slab
+};
+
+/// Prove, at configure time, that every declared tight representation is a
+/// subset of the shipped OBB it refines — the single assertion that keeps the
+/// broad-phase window (`check_voxel_collision`'s `ex`/`ey`/`ez` reach) correct
+/// without changing a line of it.
+///
+/// The chain checked here is `hull vertices ⊆ 26-DOP ⊆ shipped OBB`, both links
+/// definitional rather than fitted:
+///
+/// * a stage-2 vertex must satisfy every one of the 26 slab constraints;
+/// * the DOP's first three axes ARE the box's axes, and a 26-DOP lies inside
+///   its own first three slabs, so `-half_extents[k] <= dop_lo[k] <=
+///   dop_hi[k] <= half_extents[k]` proves the whole polytope is inside the box.
+///
+/// The remaining obligation — that the true link *mesh* is inside the DOP — is
+/// discharged offline by construction (the slabs are tangent halfspaces
+/// `u.x <= h_mesh(u)`) and re-proved against the real mesh by
+/// `tests/unit/test_collision_tight_geometry.py`. The kernel never sees a mesh.
+///
+/// On refusal `offending_box` receives the offending index. Not on the hot
+/// path. Allocation-free.
+TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
+                                            std::size_t& offending_box) noexcept;
+
+/// Stable snake_case token naming `status`, for the `reason=` key of the
+/// kernel's tight-geometry log line. Never null; unknown values read `unknown`.
+const char* tight_geometry_status_reason(TightGeometryStatus status) noexcept;
+
+/// Per-link-pose constants for the staged narrow phase, computed once per
+/// checked configuration outside the cell loop (the kernel streams cell centres
+/// against a fixed link pose, so every term that depends only on the pose is
+/// hoisted). Holds pointers into the caller's `CollisionModel`; it does not own
+/// anything and must not outlive it.
+struct TightPose {
+  double axis[kDopAxes][3]{};      ///< DOP axis in the base frame (R * u_i)
+  double axis_dot_t[kDopAxes]{};   ///< axis_i . box origin
+  double cell_radius[kDopAxes]{};  ///< voxel cube's support radius on axis_i
+  double lo[kDopAxes]{};
+  double hi[kDopAxes]{};
+  double slab_center[3]{};        ///< base-frame centre of the DOP's own axis-slab box
+  double slab_extent[3]{};        ///< that box's base-frame AABB half-extents
+  const Vec3* vertices{nullptr};  ///< stage-2 vertices, box-local; null if none
+  int n_vertices{0};              ///< 0 = stage 1 only
+  Transform box{};                ///< the OBB's frame in the base frame
+};
+
+/// Hoist the per-pose constants for `hull` at box pose `box_xf`, against a grid
+/// of half-cell `half_side`. Allocation-free.
+void tight_pose_init(const LinkHull& hull, const Vec3* hull_vertices, const Transform& box_xf,
+                     double half_side, TightPose& out) noexcept;
+
+/// Stage 1 — a conservative lower bound on the surface distance between the
+/// link's 26-DOP and the occupied voxel cube centred at `center`.
+///
+/// Separating-axis over 16 directions: the DOP's own 13 (where its support is
+/// exact, being a tangent slab) plus the three world axes (where the DOP's
+/// axis-slab AABB over-estimates its reach, which only makes the bound more
+/// conservative). The maximum gap over any set of unit axes lower-bounds the
+/// true Euclidean distance, which is the same argument `box_box_distance`
+/// already rests on — so this is the shipped conservatism property applied to a
+/// tighter, provably-contained solid.
+///
+/// `best_axis` (nullable) receives the base-frame normal of the winning
+/// separating axis: stage 2's search direction, and the reason stage 2
+/// converges in one or two iterations instead of five.
+/// Allocation-free.
+double dop_cell_lower_bound(const TightPose& pose, const Vec3& center, double half_side,
+                            Vec3* best_axis) noexcept;
+
+/// Stage-2 witness carried between adjacent cells in one window and between
+/// consecutive steps of the predictive horizon.
+///
+/// It stores hull vertex INDICES and cube-corner sign codes, never Minkowski
+/// difference points: the cube moves from cell to cell, so cached points would
+/// not lie in the current difference set and GJK's bounds would stop holding.
+/// Indices stay meaningful because they are only hints, re-evaluated against
+/// whichever cell is being checked. `n == 0` is a cold start.
+struct GjkWitness {
+  int vertex[4]{};
+  std::uint8_t corner[4]{};
+  int n{0};
+};
+
+/// Stage 2 — a lower bound on the surface distance between the link's **exact
+/// convex hull** and the occupied voxel cube, equal to that distance (to
+/// `kGjkTolerance`) on convergence. GJK over the hull's vertex list against the
+/// cube's eight corners.
+///
+/// Conservatism does not depend on convergence. Every value the routine can
+/// return is a supporting-hyperplane lower bound on the true distance, so the
+/// iteration cap, the early exit once the bound clears `margin`, and the
+/// overlap case can each only make the answer **more** conservative — never
+/// less. On overlap, and whenever the bound would be worse than the stage-1
+/// figure, `fallback` (stage 1's bound, which is <= 0 whenever the hull and the
+/// cell actually overlap, because the DOP contains the hull) is returned
+/// instead.
+///
+/// The support function is an exhaustive scan of the vertex list. That is
+/// deliberate and is the reason `kMaxTightHullVertices` exists: a hill-climbing
+/// support over an edge graph is the usual acceleration, but under floating
+/// point it can stop one vertex short of the true support, and a support that
+/// is not the true maximum turns the supporting-hyperplane bound into an
+/// **over**-report of clearance. The kernel buys soundness with a linear scan
+/// and bounds the cost with the vertex ceiling instead.
+///
+/// `seed_dir` is stage 1's winning separating-axis normal. Allocation-free
+/// (fixed-size stack simplex).
+double hull_cell_distance(const TightPose& pose, const Vec3& center, double half_side,
+                          const Vec3& seed_dir, double margin, double fallback,
+                          GjkWitness& witness) noexcept;
+
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
 /// Allocation-free; `scratch.link_world` must already be sized to
@@ -434,10 +669,21 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// Check every robot capsule (FK'd via `scratch`) against the occupied cells of
 /// a dense voxel `grid`. Only the voxels inside each capsule's inflated AABB
 /// are tested (bounded), and each occupied voxel is treated conservatively as a
-/// sphere of the voxel half-diagonal at the cell centre. On a hit, `link_a` is
-/// the robot link index and `link_b` is the linear index of the deepest cell
-/// within the margin, and `min_distance` is that cell's distance
-/// (`CollisionHit`). Allocation-free.
+/// cube at the cell centre. On a hit, `link_a` is the robot link index and
+/// `link_b` is the linear index of the deepest cell within the margin, and
+/// `min_distance` is that cell's distance (`CollisionHit`). Allocation-free.
+///
+/// A boxed link whose `box_hull` entry names a `LinkHull` runs the **staged**
+/// narrow phase instead of `box_box_distance`: a 26-DOP separating-axis bound
+/// on every occupied cell, then GJK on the link's exact convex hull only for
+/// the cells the DOP cannot clear. Both stages are strict subsets of the
+/// shipped OBB (proved at configure time by `validate_tight_geometry`), so the
+/// broad-phase window above is unchanged and cannot miss a cell it visits
+/// today. The reported distance is still a lower bound on the true link-mesh-
+/// to-cell distance — it is merely a **tighter** one, which is the whole point:
+/// the kernel gives away less clearance it never had. Links without tight
+/// geometry, every capsule-lowered robot, and every other check in this header
+/// keep the shipped primitive path exactly as it is.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin) noexcept;
 

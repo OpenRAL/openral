@@ -240,9 +240,20 @@ contributor should look at before adding similar code.
     precision (2.2e-16 against `tests/unit/test_so101_base_box_collision._box_box`
     and `mjcf_lowering._seg_seg_distance`), and every `isinstance` chain is
     exhaustive over `CollisionShape` with a typed raise, so a new primitive
-    cannot pass silently. **When `collision.cpp`'s narrow phase changes —
-    including #166's staged 26-DOP/hull path — this file changes in the same
-    PR, or the generated ACM starts describing a different robot.**
+    cannot pass silently. **When the narrow phase this mirrors changes, this
+    file changes in the same PR, or the generated ACM starts describing a
+    different robot.**
+    Read "the narrow phase this mirrors" strictly: it is
+    `check_self_collision`'s **link-vs-link** routing, because that is the only
+    question the ACM sweep asks. #166's staged 26-DOP/hull path was checked
+    against this obligation and does **not** engage it — it is confined to
+    `check_voxel_collision`'s box pass (arm-link vs **world voxel**), and
+    `check_self_collision`, `box_box_distance`, `box_capsule_distance` and
+    `capsule_distance` are byte-identical on that branch. An ACM regenerated
+    with or without #166 is the same matrix. The distinction is worth keeping
+    sharp in both directions: a future change to the *self* narrow phase owes
+    this file an update even if it looks small, and a change to the *voxel*
+    narrow phase owes it nothing however large it looks.
     `tests/unit/test_so101_base_box_collision._box_box` is a *third* copy of
     the box SAT and should be collapsed onto this module next time that file
     is touched.
@@ -294,6 +305,44 @@ contributor should look at before adding similar code.
     this module does not need to change** — it never reads a `CollisionShape`,
     only MuJoCo geoms. Conversely, changing this module cannot change what the
     kernel does, which is the property that makes it usable as an instrument.
+
+15. **26-DOP axis table + tight-geometry bounds — *deliberate C++/Python
+    mirror, update in lockstep.*** `kDopAxis[kDopAxes][3]`,
+    `kMaxTightHullVertices = 320` and `kTightContainmentEpsilonM = 1e-9`
+    (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
+    are the kernel's side of the staged world-voxel narrow phase;
+    `DOP_AXES`, `MAX_TIGHT_HULL_VERTICES` and `TIGHT_CONTAINMENT_EPSILON_M`
+    (`python/core/src/openral_core/schemas.py`, consumed by
+    `TightCollisionGeometry` and by `tools/generate_tight_geometry.py`) are the
+    manifest's. They are not consolidated for the same reason as items 9 and 10
+    — a real-time C++ kernel cannot import a Pydantic module, and it must not
+    trust a producer-supplied bound for a check it applies to a manifest it did
+    not author.
+    **The axis table is the load-bearing half, and its drift consequence is
+    silent.** `dop_lo_m[i]` / `dop_hi_m[i]` are *positional*: they carry no
+    axis of their own, only an index into this table. The manifest and the
+    kernel must therefore index the same slab with the same direction — same
+    order **and** same sign. Reorder the table on one side, or flip one axis's
+    sign, and every slab still validates (the bounds are finite and
+    non-inverted, and the first three axes still look like the box's own), the
+    kernel still loads the model, and `validate_tight_geometry` still returns
+    `kOk` — but the polytope the kernel intersects is no longer the one the
+    offline producer proved contains the link mesh. The containment proof does
+    not transfer, and what the kernel calls a "tighter lower bound" becomes an
+    **over**-report of clearance: a stop that should have fired does not. The
+    first three axes are the worst case precisely because they are the box's
+    own, so the DOP-inside-the-OBB check keeps passing while the remaining ten
+    slabs are attributed to the wrong directions.
+    Nothing in the kernel can catch this — it never sees a mesh, only the
+    slabs. The catch lives offline instead: `generate_tight_geometry check`
+    re-derives the slabs from the real mesh through `DOP_AXES` and refuses at
+    exit 3, and `tests/unit/test_collision_tight_geometry.py` re-proves mesh
+    containment against the same table. **When either table moves, move both in
+    the same PR and re-run both**, and treat the two scalar bounds the same way:
+    `kMaxTightHullVertices` raised only in Python lets a manifest ship a hull
+    the kernel refuses (fail-closed — the whole model drops back to the shipped
+    OBB narrow phase, quietly losing the tightening), while raising it only in
+    C++ leaves the extra budget unreachable.
 
 ### Already correctly DRY (do not flag)
 

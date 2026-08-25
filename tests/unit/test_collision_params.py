@@ -213,3 +213,63 @@ def test_ee_link_index_openarm_is_on_the_arm_chain() -> None:
     assert 0 <= ee < params["collision_n_links"]
     # The deepest link is never the root (which has parent -1).
     assert params["collision_parent"][ee] >= 0
+
+
+def test_tight_geometry_lowers_csr_parallel_to_the_box_arrays() -> None:
+    """The staged narrow phase's parameters, on the real panda_mobile manifest.
+
+    ``collision_box_hull`` is parallel to ``collision_box_link``: one entry per
+    box, naming its tight representation or ``-1``. The ``collision_hull_*``
+    arrays are CSR-indexed by it. Getting that shape wrong is not a cosmetic
+    bug — the kernel would attach one link's geometry to another link's box, and
+    the containment proof is per-link.
+    """
+    robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    params = collision_params_from_description(robot)
+
+    box_hull = params["collision_box_hull"]
+    assert len(box_hull) == len(params["collision_box_link"])
+    n_hulls = sum(1 for h in box_hull if h >= 0)
+    assert n_hulls == 2, "link1 and link2 -- the scope the study recommends"
+    assert sorted(h for h in box_hull if h >= 0) == list(range(n_hulls)), (
+        "hull indices must be dense and unique; a repeated index would silently share "
+        "one link's geometry with another"
+    )
+
+    assert len(params["collision_hull_dop_lo"]) == 13 * n_hulls
+    assert len(params["collision_hull_dop_hi"]) == 13 * n_hulls
+    assert len(params["collision_hull_vertex_first"]) == n_hulls
+    assert len(params["collision_hull_vertex_count"]) == n_hulls
+
+    # CSR slices must tile the vertex buffer exactly: no gaps, no overlap, no
+    # slice running off the end.
+    verts = params.get("collision_hull_vertices", [])
+    assert len(verts) % 3 == 0
+    n_vertices = len(verts) // 3
+    cursor = 0
+    for first, count in zip(
+        params["collision_hull_vertex_first"], params["collision_hull_vertex_count"], strict=True
+    ):
+        assert first == cursor
+        cursor += count
+    assert cursor == n_vertices
+
+    # link1 is stage 1 only (1588-vertex hull, over the kernel's cost budget);
+    # link2 ships its exact 152-vertex hull.
+    assert sorted(params["collision_hull_vertex_count"]) == [0, 152]
+
+
+def test_no_tight_geometry_lowers_exactly_as_before() -> None:
+    """A manifest that declares none must emit none.
+
+    The kernel switches the staged narrow phase on by seeing
+    ``box_hull.size() == boxes.size()``, so an accidentally-emitted empty array
+    would be the difference between "no robot changed" and "every boxed robot
+    changed". Checked on the real openarm fixture, which declares no tight
+    geometry.
+    """
+    robot = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    params = collision_params_from_description(robot)
+    assert "collision_box_hull" not in params
+    assert "collision_hull_dop_lo" not in params
+    assert "collision_hull_vertices" not in params

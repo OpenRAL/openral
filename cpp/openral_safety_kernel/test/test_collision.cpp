@@ -616,6 +616,37 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 #pragma GCC diagnostic pop
 #endif
 
+namespace {
+
+// A hull that is exactly an axis-aligned box of half-size `h` about the origin
+// of the link frame, with the tangent 26-DOP that box implies. Ground truth for
+// this shape against an axis-aligned cell is closed-form, which is what lets
+// the GJK be checked against an exact number rather than against itself.
+osk::LinkHull axis_aligned_box_hull(const osk::Vec3& h, std::vector<osk::Vec3>& vertices) {
+  osk::LinkHull hull;
+  hull.vertex_first = static_cast<int>(vertices.size());
+  hull.vertex_count = 8;
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sy = -1; sy <= 1; sy += 2) {
+      for (int sz = -1; sz <= 1; sz += 2) {
+        vertices.push_back(osk::Vec3{sx * h.x, sy * h.y, sz * h.z});
+      }
+    }
+  }
+  const double hv[3] = {h.x, h.y, h.z};
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    double reach = 0.0;
+    for (int k = 0; k < 3; ++k) {
+      reach += std::fabs(osk::kDopAxis[i][k]) * hv[k];
+    }
+    hull.dop_lo[i] = -reach;
+    hull.dop_hi[i] = reach;
+  }
+  return hull;
+}
+
+}  // namespace
+
 TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   // Build the model + pre-size scratch OUTSIDE the counted window.
   osk::CollisionModel m;
@@ -637,6 +668,15 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   obb.origin = identity();
   m.box_link = {0};
   m.boxes = {obb};
+  // Tight geometry on that box drives the staged narrow phase -- the 26-DOP
+  // hoist, the GJK simplex and its witness -- under the same counter. GJK is
+  // the one routine here that could plausibly want a heap: its stack-only
+  // fixed-size simplex is a design constraint, not an accident, and this is
+  // where it is pinned.
+  std::vector<osk::Vec3> tight_verts;
+  m.hulls = {axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, tight_verts)};
+  m.hull_vertices = tight_verts;
+  m.box_hull = {0};
   m.allowed_pairs = {{0, 1}, {1, 2}};
 
   osk::CollisionScratch scratch;
@@ -3783,4 +3823,460 @@ TEST(BaguettePayloadSelfStop, WhenItTripsTheEvidenceNamesThatSamePair) {
   EXPECT_EQ(hit.link_b, 1) << "panda_link2 -- the link the field evidence named";
   EXPECT_NEAR(hit.min_distance, 0.02170726, 1e-7) << "the reported pair's OWN distance";
   EXPECT_NEAR(hit.sweep_min_distance, 0.02170726, 1e-7);
+}
+
+// ── Staged tight narrow phase: 26-DOP → exact convex hull ──────────────
+//
+// The safety case for replacing `box_box_distance` on the arm-vs-world-voxel
+// path is a containment chain -- `mesh ⊆ hull ⊆ 26-DOP ⊆ shipped OBB` -- and
+// the property that every value the staged path can return is a LOWER bound on
+// the true link-to-cell distance. These tests prove the two halves the kernel
+// is responsible for. The third link, `mesh ⊆ hull`, is offline data and is
+// proved against the real robosuite mesh by
+// `tests/unit/test_collision_tight_geometry.py`.
+//
+// Note what "at least as conservative" means here, because it is easy to state
+// backwards. Against the TRUE geometry the staged path never over-reports
+// clearance -- that is what these tests check, and it is the safety property.
+// Against the SHIPPED OBB it deliberately reports MORE clearance, because the
+// box was proud of the real link by up to 53 mm. Removing excess conservatism
+// is the change; keeping the kernel sound is the constraint.
+
+namespace {
+
+// Exact surface distance between two axis-aligned boxes.
+double aabb_aabb_distance(const osk::Vec3& ca, const osk::Vec3& ha, const osk::Vec3& cb,
+                          double hb) {
+  const double d[3] = {std::fabs(cb.x - ca.x) - ha.x - hb, std::fabs(cb.y - ca.y) - ha.y - hb,
+                       std::fabs(cb.z - ca.z) - ha.z - hb};
+  double acc = 0.0;
+  bool outside = false;
+  for (const double v : d) {
+    if (v > 0.0) {
+      acc += v * v;
+      outside = true;
+    }
+  }
+  if (outside) {
+    return std::sqrt(acc);
+  }
+  return std::max(std::max(d[0], d[1]), d[2]);  // overlapping: negative
+}
+
+// An UPPER bound on the hull-to-cell surface distance that needs no solver:
+// the closest single hull vertex. Any reported value above this is an
+// over-report, which is the failure this whole change must never introduce.
+double nearest_hull_vertex_to_cell(const osk::TightPose& pose, const osk::Vec3& center,
+                                   double half_side) {
+  double best = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < pose.n_vertices; ++i) {
+    const osk::Vec3& p = pose.vertices[i];
+    const osk::Transform& x = pose.box;
+    const osk::Vec3 w{x.t.x + x.r[0] * p.x + x.r[1] * p.y + x.r[2] * p.z,
+                      x.t.y + x.r[3] * p.x + x.r[4] * p.y + x.r[5] * p.z,
+                      x.t.z + x.r[6] * p.x + x.r[7] * p.y + x.r[8] * p.z};
+    const double d[3] = {std::fabs(w.x - center.x) - half_side,
+                         std::fabs(w.y - center.y) - half_side,
+                         std::fabs(w.z - center.z) - half_side};
+    double acc = 0.0;
+    for (const double v : d) {
+      if (v > 0.0) {
+        acc += v * v;
+      }
+    }
+    best = std::min(best, std::sqrt(acc));
+  }
+  return best;
+}
+
+// The manifest's measured 26-DOP for `panda_link1` (13 tangent slabs in the
+// shipped box's own frame), lifted verbatim from robots/panda_mobile/robot.yaml.
+// `panda_link1` is the link whose exact hull is 1588 vertices -- over the
+// kernel's cost budget -- so it ships stage 1 only, and that is what this
+// fixture represents.
+osk::LinkHull panda_link1_dop() {
+  osk::LinkHull h;
+  h.vertex_first = 0;
+  h.vertex_count = 0;
+  const double lo[osk::kDopAxes] = {
+      -0.05502134419046353, -0.07224518140471763, -0.14082987685126935, -0.11711047489386382,
+      -0.11540894963827596, -0.11012989554980393, -0.1154433118227032,  -0.06860961055688732,
+      -0.07804751818779684, -0.12656989534730556, -0.11398132392419272, -0.12049854502882983,
+      -0.12788258044376566};
+  const double hi[osk::kDopAxes] = {0.055003115686142794, 0.07221304721515846, 0.1409169158859604,
+                                    0.11537882207055665,  0.11016639495826967, 0.11543191892827934,
+                                    0.11707534820255158,  0.07801075972929553, 0.06864027684344456,
+                                    0.11400731331074267,  0.12652316121368015, 0.12812835105624665,
+                                    0.12170808814947336};
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    h.dop_lo[i] = lo[i];
+    h.dop_hi[i] = hi[i];
+  }
+  return h;
+}
+
+// A deterministic spread of poses and cell offsets; no RNG, so a failure is
+// reproducible from the test name alone.
+osk::Transform rotated_pose(int i) {
+  const double a = 0.31 * i;
+  const double b = 0.17 * i;
+  const double c = 0.07 * i;
+  osk::Transform t = osk::transform_from_xyz_rpy(0.013 * ((i % 7) - 3), 0.011 * ((i % 5) - 2),
+                                                 0.009 * ((i % 11) - 5), a, b, c);
+  return t;
+}
+
+}  // namespace
+
+TEST(TightGeometryValidation, AcceptsTheShippedPandaLink1Dop) {
+  osk::CollisionModel m = one_box_model();
+  m.boxes[0].half_extents = osk::Vec3{0.0552, 0.0724, 0.1410};
+  m.box_hull = {0};
+  m.hulls = {panda_link1_dop()};
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kOk);
+  EXPECT_EQ(offending, 0u);
+  // The margin is real and measured, not a tolerance: the DOP sits inside the
+  // shipped box by 0.083 mm on its tightest axis. The shipped box carries no
+  // more headroom than that, which is why nothing here is allowed to grow.
+  double worst = std::numeric_limits<double>::infinity();
+  const double he[3] = {0.0552, 0.0724, 0.1410};
+  for (int k = 0; k < 3; ++k) {
+    worst = std::min(worst, std::min(he[k] - m.hulls[0].dop_hi[k], he[k] + m.hulls[0].dop_lo[k]));
+  }
+  EXPECT_GT(worst, 0.0) << "the DOP must be strictly inside the box the broad phase is sized from";
+  EXPECT_NEAR(worst, 8.31e-5, 1e-7);
+}
+
+TEST(TightGeometryValidation, RefusesADopSlabThatReachesOutsideItsBox) {
+  osk::CollisionModel m = one_box_model();
+  m.box_hull = {0};
+  m.hulls = {panda_link1_dop()};  // sized for a 0.141 m half-extent link
+  // one_box_model()'s box is a 0.05 m cube, so the same slabs now escape it.
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kEscapesBox);
+  EXPECT_EQ(offending, 0u);
+}
+
+TEST(TightGeometryValidation, RefusesAHullVertexOutsideItsOwnDop) {
+  osk::CollisionModel m = one_box_model();
+  std::vector<osk::Vec3> verts;
+  osk::LinkHull hull = axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, verts);
+  m.hull_vertices = verts;
+  // Shrink one slab so a corner that used to be tangent now pokes out.
+  hull.dop_hi[0] -= 1e-6;
+  m.hulls = {hull};
+  m.box_hull = {0};
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kHullEscapesDop);
+}
+
+TEST(TightGeometryValidation, RefusesAHullOverTheVertexBudget) {
+  osk::CollisionModel m = one_box_model();
+  std::vector<osk::Vec3> verts;
+  osk::LinkHull hull = axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, verts);
+  hull.vertex_count = osk::kMaxTightHullVertices + 1;
+  m.hull_vertices = verts;
+  m.hulls = {hull};
+  m.box_hull = {0};
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kTooManyVertices)
+      << "the vertex ceiling is a cost bound the kernel enforces, not advice";
+}
+
+TEST(TightGeometryValidation, RefusesAnInvertedSlab) {
+  osk::CollisionModel m = one_box_model();
+  osk::LinkHull hull = panda_link1_dop();
+  hull.dop_lo[4] = hull.dop_hi[4] + 1.0;
+  m.hulls = {hull};
+  m.box_hull = {0};
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kDegenerate);
+}
+
+TEST(TightGeometryValidation, AnEmptyBoxHullLeavesTheShippedPathAlone) {
+  const osk::CollisionModel m = one_box_model();
+  std::size_t offending = 99;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kOk);
+}
+
+TEST(TightNarrowPhase, GjkReproducesTheClosedFormDistanceForAnAxisAlignedHull) {
+  // Ground truth without a solver: an axis-aligned box hull against an
+  // axis-aligned cell has a closed-form surface distance. If GJK's converged
+  // answer is not that number, "exact" is not a claim this change may make.
+  std::vector<osk::Vec3> verts;
+  const osk::Vec3 h{0.04, 0.03, 0.05};
+  const osk::LinkHull hull = axis_aligned_box_hull(h, verts);
+  osk::Transform box;  // identity: the hull IS axis-aligned in the base frame
+  const double half_side = 0.0125;
+  osk::TightPose pose;
+  osk::tight_pose_init(hull, verts.data(), box, half_side, pose);
+
+  int checked = 0;
+  for (int ix = -6; ix <= 6; ++ix) {
+    for (int iy = -6; iy <= 6; ++iy) {
+      for (int iz = -6; iz <= 6; ++iz) {
+        const osk::Vec3 center{0.025 * ix, 0.025 * iy, 0.025 * iz};
+        const double truth = aabb_aabb_distance(osk::Vec3{0, 0, 0}, h, center, half_side);
+        osk::Vec3 seed;
+        const double stage1 = osk::dop_cell_lower_bound(pose, center, half_side, &seed);
+        ASSERT_LE(stage1, truth + 1e-12)
+            << "stage 1 must never over-report at cell " << ix << "," << iy << "," << iz;
+        if (truth <= 0.0) {
+          continue;  // overlapping: GJK yields to stage 1 by design
+        }
+        osk::GjkWitness witness;
+        const double got =
+            osk::hull_cell_distance(pose, center, half_side, seed, 1e9, stage1, witness);
+        EXPECT_NEAR(got, truth, 1e-9) << "cell " << ix << "," << iy << "," << iz;
+        ++checked;
+      }
+    }
+  }
+  EXPECT_GT(checked, 1000);
+}
+
+TEST(TightNarrowPhase, NeverReportsMoreClearanceThanTheNearestHullVertex) {
+  // The soundness property, checked without trusting the solver: no reported
+  // value may exceed the distance from the cell to the closest single hull
+  // vertex, because that vertex is IN the hull. Swept over rotated poses, both
+  // stages, and both the converged and the early-exit path.
+  std::vector<osk::Vec3> verts;
+  const osk::LinkHull hull = axis_aligned_box_hull(osk::Vec3{0.055, 0.072, 0.141}, verts);
+  const double half_side = 0.0125;
+  int checked = 0;
+  for (int p = 0; p < 40; ++p) {
+    osk::TightPose pose;
+    osk::tight_pose_init(hull, verts.data(), rotated_pose(p), half_side, pose);
+    osk::GjkWitness witness;
+    for (int ix = -5; ix <= 5; ++ix) {
+      for (int iy = -5; iy <= 5; ++iy) {
+        for (int iz = -5; iz <= 5; ++iz) {
+          const osk::Vec3 center{0.05 * ix, 0.05 * iy, 0.05 * iz};
+          const double upper = nearest_hull_vertex_to_cell(pose, center, half_side);
+          osk::Vec3 seed;
+          const double stage1 = osk::dop_cell_lower_bound(pose, center, half_side, &seed);
+          ASSERT_LE(stage1, upper + 1e-9) << "stage 1 over-reported at pose " << p;
+          const double staged =
+              osk::hull_cell_distance(pose, center, half_side, seed, 0.0, stage1, witness);
+          ASSERT_LE(staged, upper + 1e-9) << "staged over-reported at pose " << p;
+          ASSERT_GE(staged, stage1) << "the staged answer may only ever tighten stage 1";
+          ++checked;
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 50000);
+}
+
+TEST(TightNarrowPhase, ATruncatedGjkIsMoreConservativeNotLess) {
+  // Every early exit returns a lower bound, so capping the loop can only lose
+  // tightness. Driving the same query with a deliberately misleading warm
+  // witness must therefore never produce a LARGER answer than the cold,
+  // converged one.
+  std::vector<osk::Vec3> verts;
+  const osk::LinkHull hull = axis_aligned_box_hull(osk::Vec3{0.04, 0.03, 0.05}, verts);
+  const double half_side = 0.0125;
+  osk::TightPose pose;
+  osk::tight_pose_init(hull, verts.data(), rotated_pose(3), half_side, pose);
+  for (int ix = -4; ix <= 4; ++ix) {
+    for (int iy = -4; iy <= 4; ++iy) {
+      const osk::Vec3 center{0.05 * ix, 0.05 * iy, 0.06};
+      osk::Vec3 seed;
+      const double stage1 = osk::dop_cell_lower_bound(pose, center, half_side, &seed);
+      osk::GjkWitness cold;
+      const double converged =
+          osk::hull_cell_distance(pose, center, half_side, seed, 1e9, stage1, cold);
+      // The same cell, but told to stop as soon as the bound clears a margin of
+      // zero -- the kernel's real early exit.
+      osk::GjkWitness early;
+      const double truncated =
+          osk::hull_cell_distance(pose, center, half_side, seed, 0.0, stage1, early);
+      EXPECT_LE(truncated, converged + 1e-12);
+    }
+  }
+}
+
+TEST(TightNarrowPhase, TheDopAloneIsSometimesTheMoreConservativeOfTheTwo) {
+  // Recording a fact that is easy to assume away, and that the kernel's
+  // composition exists to handle: the 26-DOP's 16 separating axes are NOT a
+  // superset of `box_box_distance`'s 15. The box SAT's edge-cross axes can beat
+  // every DOP axis at some cells, so on a raw comparison the DOP is sometimes
+  // the tighter-reporting side and sometimes the looser one -- even though it is
+  // a strictly smaller solid. "Smaller solid" does not by itself imply "larger
+  // bound", which is why `check_voxel_collision` folds the shipped bound back in
+  // for every cell it refines instead of trusting the DOP outright.
+  const osk::Vec3 he{0.0552, 0.0724, 0.1410};
+  const osk::LinkHull dop = panda_link1_dop();
+  const double half_side = 0.0125;
+  const osk::Vec3 voxel_half{half_side, half_side, half_side};
+  int dop_tighter = 0;
+  int box_tighter = 0;
+  int checked = 0;
+  for (int p = 0; p < 12; ++p) {
+    const osk::Transform box = rotated_pose(p);
+    osk::TightPose pose;
+    osk::tight_pose_init(dop, nullptr, box, half_side, pose);
+    for (int ix = -5; ix <= 5; ++ix) {
+      for (int iy = -5; iy <= 5; ++iy) {
+        for (int iz = -5; iz <= 5; ++iz) {
+          const osk::Vec3 center{box.t.x + 0.04 * ix, box.t.y + 0.04 * iy, box.t.z + 0.04 * iz};
+          osk::Transform voxel;
+          voxel.t = center;
+          const double shipped = osk::box_box_distance(box, he, voxel, voxel_half);
+          const double tight = osk::dop_cell_lower_bound(pose, center, half_side, nullptr);
+          if (tight > shipped + 1e-6) {
+            ++dop_tighter;
+          } else if (shipped > tight + 1e-6) {
+            ++box_tighter;
+          }
+          ++checked;
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 15000);
+  EXPECT_GT(dop_tighter, checked / 10)
+      << "a tightening that never actually tightens is not worth a hazard entry";
+  EXPECT_GT(box_tighter, 0)
+      << "if this ever reaches zero, the fold in check_voxel_collision starts looking "
+         "redundant; it is not -- see the axis-set argument above";
+}
+
+TEST(VoxelCollisionTightGeometry, NeverStopsWhereTheShippedPathWouldNotHave) {
+  // The behavioural guarantee the safety case rests on, checked through the
+  // shipped entry point over a sweep of single-cell grids: attaching tight
+  // geometry can only ever REMOVE stops the box was causing. It must never add
+  // one -- a new stop is a regression even though it is a safe one, and the
+  // entire justification for touching this code is that the box over-reports
+  // proximity.
+  osk::CollisionModel shipped = panda_mobile_arm_model();
+  osk::CollisionModel tight = shipped;
+  tight.hulls = {panda_link1_dop()};
+  tight.box_hull = {0, -1, -1, -1, -1, -1, -1};
+  std::size_t offending = 0;
+  ASSERT_EQ(osk::validate_tight_geometry(tight, offending), osk::TightGeometryStatus::kOk);
+
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(shipped.n_links);
+  const auto qpos = panda_omron_reset_qpos();
+  osk::forward_kinematics(shipped, qpos.data(), qpos.size(), scratch);
+
+  osk::VoxelGrid grid;
+  grid.origin = {-0.4, -0.4, 0.0};
+  grid.resolution = 0.025;
+  grid.sx = 40;
+  grid.sy = 40;
+  grid.sz = 40;
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) * grid.sy * grid.sz, 0);
+  grid.occupancy = occ.data();
+
+  int recovered = 0;
+  int examined = 0;
+  for (int iz = 6; iz < 34; ++iz) {
+    for (int iy = 6; iy < 34; ++iy) {
+      for (int ix = 6; ix < 34; ++ix) {
+        const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+        occ[idx] = 1;
+        const auto a = osk::check_voxel_collision(shipped, scratch, grid, 0.0);
+        const auto b = osk::check_voxel_collision(tight, scratch, grid, 0.0);
+        occ[idx] = 0;
+        ++examined;
+        if (b.hit) {
+          ASSERT_TRUE(a.hit) << "tight geometry invented a stop at cell " << ix << "," << iy << ","
+                             << iz;
+          ASSERT_GE(b.min_distance, a.min_distance - 1e-12)
+              << "the reported depth may only ever shrink";
+        } else if (a.hit) {
+          ++recovered;
+        }
+      }
+    }
+  }
+  EXPECT_GT(examined, 1000);
+  EXPECT_GT(recovered, 0) << "at this pose the shipped box should be stopping on cells the "
+                             "26-DOP clears -- if not, the fixture stopped exercising anything";
+}
+
+TEST(VoxelCollisionTightGeometry, StagedAndShippedAgreeOnWhatStopsTheRobot) {
+  // End to end through the shipped entry point, on the real seven-link Panda:
+  // attaching tight geometry must not change the SET of cells that stop the
+  // robot for cells that are unambiguously inside or unambiguously outside --
+  // it changes only the reported distance, and only in the tighter direction.
+  osk::CollisionModel shipped = panda_mobile_arm_model();
+  osk::CollisionModel tight = shipped;
+  tight.hulls = {panda_link1_dop()};
+  tight.box_hull = {0, -1, -1, -1, -1, -1, -1};
+  std::size_t offending = 0;
+  ASSERT_EQ(osk::validate_tight_geometry(tight, offending), osk::TightGeometryStatus::kOk);
+
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(shipped.n_links);
+  const auto qpos = panda_omron_reset_qpos();
+  osk::forward_kinematics(shipped, qpos.data(), qpos.size(), scratch);
+
+  std::vector<std::uint8_t> occ(kIssue102Sx * kIssue102Sy * kIssue102Sz, 0);
+  osk::VoxelGrid grid;
+  grid.origin = {0.0, -0.5, 0.0};
+  grid.resolution = 0.025;
+  grid.sx = kIssue102Sx;
+  grid.sy = kIssue102Sy;
+  grid.sz = kIssue102Sz;
+  grid.occupancy = occ.data();
+  mark_reported_voxel(occ);
+
+  const auto a = osk::check_voxel_collision(shipped, scratch, grid, 0.0);
+  const auto b = osk::check_voxel_collision(tight, scratch, grid, 0.0);
+  EXPECT_EQ(a.hit, b.hit) << "issue #102's reported cell is deep inside the link; no amount of "
+                             "tightening should reach it";
+  if (a.hit && b.hit) {
+    EXPECT_GE(b.min_distance, a.min_distance - 1e-12);
+  }
+  // `sweep_min_distance` is deliberately NOT asserted against the shipped
+  // figure. It is the sweep-wide diagnostic, and for a cell the 26-DOP clears
+  // outright the kernel never pays for `box_box_distance`, so the diagnostic can
+  // read marginally lower than today. That is an under-report of clearance --
+  // the safe direction -- and it never reaches a stop decision.
+}
+
+TEST(VoxelCollisionTightGeometry, ExhaustingTheStage2BudgetOnlyEverAddsConservatism) {
+  // The refinement budget is a real-time bound, so what matters is what happens
+  // when it runs out. Flooding a link's whole window with occupied cells drives
+  // far more than `kMaxStage2PerCheck` cells into stage 2; the check must still
+  // return, must still stop, and must not report MORE clearance than the same
+  // grid produces with the budget effectively unlimited (which it cannot,
+  // because the fallback is stage 1 + `box_box_distance`).
+  osk::CollisionModel tight = one_box_model();
+  tight.boxes[0].half_extents = osk::Vec3{0.0552, 0.0724, 0.1410};
+  std::vector<osk::Vec3> verts;
+  tight.hulls = {axis_aligned_box_hull(osk::Vec3{0.050, 0.068, 0.135}, verts)};
+  tight.hull_vertices = verts;
+  tight.box_hull = {0};
+  std::size_t offending = 0;
+  ASSERT_EQ(osk::validate_tight_geometry(tight, offending), osk::TightGeometryStatus::kOk);
+
+  osk::CollisionModel shipped = tight;
+  shipped.box_hull.clear();
+  shipped.hulls.clear();
+  shipped.hull_vertices.clear();
+
+  osk::CollisionScratch scratch;
+  scratch.link_world = {identity()};
+
+  osk::VoxelGrid grid;
+  grid.origin = {-0.5, -0.5, -0.5};
+  grid.resolution = 0.025;
+  grid.sx = 40;
+  grid.sy = 40;
+  grid.sz = 40;
+  // Every cell occupied: far past the budget, and the adverse case for cost.
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(grid.sx) * grid.sy * grid.sz, 1);
+  grid.occupancy = occ.data();
+
+  const auto a = osk::check_voxel_collision(shipped, scratch, grid, 0.02);
+  const auto b = osk::check_voxel_collision(tight, scratch, grid, 0.02);
+  ASSERT_TRUE(a.hit);
+  ASSERT_TRUE(b.hit);
+  EXPECT_GE(b.min_distance, a.min_distance - 1e-12)
+      << "budget exhaustion must fall back to the shipped bound, never below it";
 }
