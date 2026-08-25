@@ -207,6 +207,21 @@ skip_patterns = [
   "panda.srdf not installed",
 ]
 
+[capability_gaps.hf-cache]
+summary = "a pre-populated Hugging Face model cache"
+satisfied_by = "a host that already snapshotted the checkpoint, or a CI warm step that fetches it before the lane runs"
+# `tests/integration/test_act_onnx.py` loads the real
+# `gabrycina/so101-passing-pen-policy` and deliberately does NOT download it —
+# it skips unless a snapshot is already in `~/.cache/huggingface/hub`. On a
+# hosted runner that cache is always empty, so the test can never run there.
+# Declaring it makes that permanent absence VISIBLE in the ledger (named, with
+# the reason) instead of it silently reading as a passing lane. The pattern is
+# anchored to this exact phrasing so it cannot become a general "any missing
+# model" excuse; pre-fetching the checkpoint would remove the gap entirely.
+skip_patterns = [
+  "*not in the local HF cache*",
+]
+
 [hosted_runner]
 # Lanes with ZERO satisfiable coverage on a hosted runner: every test they own
 # is gated behind a capability above, so the lane legitimately produces no
