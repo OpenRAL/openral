@@ -115,6 +115,7 @@ isolate_globs = [
   "tests/unit",
   "packages/openral_nav2_bringup/test",
   "packages/openral_rskill_ros/test/test_kernel_params_no_empty_lists.py",
+  "packages/openral_safety/test/test_urdf_lowering_always_colliding.py",
   "packages/openral_safety/test/test_urdf_lowering_fk.py",
   "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",
   "packages/openral_slam_bringup/test/test_depth_height_filter.py",
@@ -235,6 +236,7 @@ opencv = [
 ]
 lowering = [
   "tests/unit/test_collision_cli.py",
+  "packages/openral_safety/test/test_urdf_lowering_always_colliding.py",
   "packages/openral_safety/test/test_urdf_lowering_fk.py",
   "packages/openral_safety/test/test_urdf_lowering_geometry.py",
   "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",

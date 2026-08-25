@@ -221,6 +221,42 @@ contributor should look at before adding similar code.
     the difference is that three of them now say so with a red test rather
     than an audit.
 
+12. **Kernel narrow-phase predicates — *deliberate C++/Python mirror, update
+    in lockstep.*** `packages/openral_safety/openral_safety/kernel_predicates.py`
+    is a line-by-line port of the narrow phase in
+    `cpp/openral_safety_kernel/src/collision.cpp`: `box_box_distance` ↔ L327
+    (15-axis SAT), `box_capsule_distance` ↔ L293 (ternary search),
+    `capsule_distance` ↔ L252 (segment pair), and `shape_distance` ↔
+    `check_self_collision`'s type routing at L527.
+    The mirror exists because the offline ACM sweep decides **what the kernel
+    will do**, and anything that answers that question with a different
+    predicate is reasoning about a robot that does not exist. That is not
+    hypothetical: issue #155 was precisely this drift — the sweep modelled a
+    `BoxShape` as its inscribed sphere while the kernel checked the true
+    oriented box, and the two disagreed about `panda_link5`↔`panda_link7` in
+    opposite directions.
+    The Python side is pinned to the C++ **by construction and by test**: the
+    predicates were verified equal to the pre-existing mirrors to machine
+    precision (2.2e-16 against `tests/unit/test_so101_base_box_collision._box_box`
+    and `mjcf_lowering._seg_seg_distance`), and every `isinstance` chain is
+    exhaustive over `CollisionShape` with a typed raise, so a new primitive
+    cannot pass silently. **When `collision.cpp`'s narrow phase changes —
+    including #166's staged 26-DOP/hull path — this file changes in the same
+    PR, or the generated ACM starts describing a different robot.**
+    `tests/unit/test_so101_base_box_collision._box_box` is a *third* copy of
+    the box SAT and should be collapsed onto this module next time that file
+    is touched.
+
+13. **`_seg_seg_distance` — *two Python copies, one batched.***
+    `kernel_predicates._seg_seg_distance` (vectorised over a configuration
+    batch) and `mjcf_lowering._seg_seg_distance` (scalar) are the same
+    clamped-parametric segment solve (Ericson §5.1.9). The split is deliberate
+    — the MJCF path evaluates one pose at a time under mujoco FK and the ACM
+    certificate evaluates hundreds of thousands at once — and the batched copy
+    names the scalar one in a comment. They are pinned equal to 2.2e-16 in
+    `test_urdf_lowering_always_colliding`. **Low risk, but if a third copy
+    appears, collapse all three.**
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer

@@ -208,9 +208,10 @@ Small, and none of it is in the kernel:
    the real work, and it is a generator change with no safety surface of its own
    — the safety property is whatever the emitted primitives cover, checked at
    validation time.
-4. `urdf_lowering._capsule_segment_radius` and the ACM sampler already key on a
-   single shape per link (`geoms[ln].shape`); the ACM sweep would need to fold
-   several primitives per link. See §5 — that code has a separate open defect.
+4. The ACM sweep still keys on a single shape per link (`geoms[ln].shape`); it
+   would need to fold several primitives per link. (§5's separate defect there —
+   issue #155 — is now **fixed**; the sweep asks
+   `kernel_predicates.shape_distance` for the true primitive.)
 5. `openral_slam_bringup._collision_z_extent_m` iterates `collision_geometry`
    entries, so it already handles repeats without change.
 
@@ -362,7 +363,7 @@ different direction; **none of the three was conservative at both edges.**
 | site | surrogate | direction | consequence |
 |---|---|---|---|
 | the safety kernel's OBB, as an envelope for a rounded, tapered link | *circumscribed*, implicitly — a sharp box reaches `\|h\|` at its corners | **over**-approximates | corners proud of the real link (§4); the kernel reads in-collision while the surface is clear |
-| `urdf_lowering._capsule_segment_radius` (offline ACM sweep) | *inscribed*, `min(half_extents_m)` | **under**-approximates | issue [#155](https://github.com/OpenRAL/openral/issues/155): `panda_link5`↔`panda_link7` scores **0/2000** overlaps under the inscribed sphere against **1741/2000 (87%)** under the true OBB the kernel checks, so a regenerated ACM drops the pair and the kernel then self-collides on 87% of arm poses |
+| ~~`urdf_lowering._capsule_segment_radius` (offline ACM sweep)~~ — **deleted, issue [#155](https://github.com/OpenRAL/openral/issues/155) fixed** | was *inscribed*, `min(half_extents_m)` | **under**-approximated | The sweep now uses `kernel_predicates.shape_distance` — the kernel's own predicate on the true primitive. The remaining capsule lowering, `bounding_capsule_segment`, **circumscribes** and feeds only the cuMotion planner, where over-covering is the safe direction. See the note below: #155's conclusion was inverted, and the replacement numbers are grid-exhaustive rather than sampled. |
 | `openral_slam_bringup.depth_height_filter_node._collision_z_span` | neither — it was forced to take the **exact** OBB support projection `Σ_k \|R[2][k]\|·h_k` | — | the node's own docstring records why: the inscribed radius *"shrinks the band and hides obstacles at body height"*, the circumscribed radius *"grows it … and the node re-marks the floor it exists to remove"*, so **"no single scalar is conservative at both edges"** |
 
 The SLAM node is the one that got it right, and it got it right by refusing to
@@ -373,15 +374,31 @@ pick a scalar at all. That is the generalisation:
 > are wrong in opposite directions. Use the support projection
 > `Σ_k |û·ê_k|·h_k`, or use the true box.**
 
-Note the shape of the consequence in the middle row: it is *not* that the ACM is
-too conservative. Under-approximating in the ACM sweep is the safe direction for
-the ACM in isolation (it can only *keep* a check the true box would disable) —
-but the pair it keeps is a capsule-junction pair that **the kernel then trips on
-87% of configurations**, so a conservative ACM produces a robot that cannot move.
+The middle row's lesson survives its own correction, and is worth restating
+because the original version of this section got the consequence backwards.
+
 "Conservative" is not a property of a single predicate; it is a property of the
-pipeline. Issue #155 is open and reproduces on clean master; no shipped robot is
-affected today because every committed `allowed_collision_pairs` block predates
-the box conversion and still lists the pair. The hazard is *regenerating* one.
+pipeline. That much was right. What was wrong was the claim that
+under-approximating in the ACM sweep is safe "for the ACM in isolation", and the
+inference that `panda_link5`↔`panda_link7` was a capsule-junction pair the sweep
+ought to be restoring.
+
+**It is not a junction artifact — the pair genuinely collides.** Measured on the
+URDF's own collision meshes over `(panda_joint6, panda_joint7)`, the only two
+joints that move it: **914 of 14641 poses interpenetrate, up to 48.3 mm deep**,
+across a **39.6° band of `joint6`** spanning the full `joint7` range. MoveIt
+agrees and emits no `Never` row. So the committed ACM has been *exempting* a real
+self-collision, and the inscribed-sphere bug was producing the correct ACM for
+the wrong reason.
+
+It stays exempt, because the box envelopes cannot express it either way: the box
+check fires on **86.5%** of that space while only 6.9% is real (**79.6% false**),
+including the arm's `ready` home pose at -9.14 mm, and **no margin separates the
+populations** — real collisions reach -9.97 mm, collision-free poses -40.07 mm.
+The exemption is now a hand-owned `reason="User"` row in each panda SRDF carrying
+this evidence, not something a tool manufactures. **This is the strongest single
+argument in this document for tighter link geometry**: it is a live unchecked
+self-collision that only envelope precision can retire.
 
 This matters for the recommendation. If the answer to "how do we stop the arm
 reading as in-collision" is a shape change, it should be a change that **stops
@@ -500,7 +517,7 @@ per §1.13.
 |---|---|---|---|
 | multi-primitive lowering | `envelope_loader._capsules_by_link` + emit loop; `urdf_lowering.lower_link_geometry` | ~60 lines Python | **none new** — the kernel path is already exercised by `test_kernel_h1_self_collision` |
 | `Obb::radius` | `collision.hpp`, 6 call sites in `collision.cpp`, 3 in `lifecycle_kernel.cpp` (§2.4) | ~25 lines C++ | one line that can make the kernel *unsafe* — the voxel broad-phase `reach` (§2.3) |
-| downstream box readers | `depth_height_filter_node._collision_z_span`; `urdf_lowering._capsule_segment_radius`; `tools/viz_collision.py` | ~15 lines | the SLAM height band must add the radius or the band under-covers |
+| downstream box readers | `depth_height_filter_node._collision_z_span`; `tools/viz_collision.py` | ~10 lines | the SLAM height band must add the radius or the band under-covers (`_capsule_segment_radius` is gone — #155) |
 | per-robot refits | the three box-bearing manifests: `panda_mobile` (7 boxes), `panda_mobile_vslam` (7), `so101_follower` (5) | data | each needs its own containment proof re-run |
 
 ### 7.3 What the hazard entry and the safety-WG review would have to assert
@@ -522,10 +539,11 @@ per §1.13.
 5. **The SAT bound is unchanged in character.** `box_box_distance` stays a
    conservative lower bound after the offset (§2.3), so §3's "at least as
    conservative" obligation is met axis-for-axis.
-6. **`_capsule_segment_radius` is fixed first, or the ACM is not regenerated.**
-   Issue #155 (§5) means a refit that triggers an ACM regeneration can drop a
-   pair the kernel then trips on 87 % of poses. Sequencing matters more than the
-   geometry here.
+6. ~~**`_capsule_segment_radius` is fixed first, or the ACM is not
+   regenerated.**~~ **Discharged** — issue #155 is fixed and the helper is gone.
+   A regeneration now reproduces every shipped ACM byte-identically (all 10
+   manifests), so a refit no longer risks silently dropping a pair. The
+   sequencing constraint it imposed on this work is lifted.
 7. **The recovery claim is the one in §6, not a larger one.** No layout in the
    present corpus recovers. A hazard entry that justifies a *less* conservative
    envelope on a benefit the evidence does not show is the exact failure mode
@@ -596,9 +614,13 @@ it all along, and MJCF-lowered robots already rely on it — but it should be
 motivated as *removing an asymmetry between the two lowering paths*, not as a
 fix for envelope slop.
 
-**8.4 Fix issue #155 regardless.** It is independent of everything above, it is
-open on clean master, and it is the one item here that can turn a routine
-regeneration into a robot that self-collides on 87 % of poses.
+**8.4 ~~Fix issue #155 regardless.~~ Done.** The sweep now asks the kernel's own
+predicate for the true primitive and proves "always-colliding" instead of
+sampling it. What it surfaced is a *stronger* case for this document's
+recommendation, not a weaker one: `panda_link5`↔`panda_link7` turns out to be a
+real self-collision that the box envelopes cannot distinguish from an artifact at
+any margin, so it stays exempt under protest. Tighter geometry is the only thing
+that retires it.
 
 **8.5 Fix `urdf_lowering.lower_link_geometry`'s mesh path regardless.** It still
 emits a PCA capsule for a mesh collision, which the table measures at 96–112 mm
