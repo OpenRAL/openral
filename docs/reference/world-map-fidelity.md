@@ -427,7 +427,6 @@ it currently costs about one voxel of reach in every direction, on top of the
   **world**-voxel stop, so none of them is that self-collision — but a future
   round that adjudicates self-collision stops must not attribute them here.
 
-<!-- APPORTIONMENT -->
 
 ## What is not measured here
 
