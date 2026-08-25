@@ -1,4 +1,12 @@
-# OpenRAL open deploy image — x86_64 + CUDA 13 + ROS 2 Jazzy. NO GStreamer.
+# OpenRAL open deploy image — CUDA 13 + ROS 2 Jazzy. NO GStreamer.
+#
+# Despite the filename this is **architecture-neutral** and builds unmodified on
+# linux/arm64: `nvidia/cuda:13.0.0-*-ubuntu24.04` is multi-arch, and nothing
+# below is x86-specific. Verified end to end on a Jetson Thor (L4T R38.4 /
+# JetPack 7) — `just docker-build-l4t` produces a 13.7 GB `openral:l4t` whose
+# torch is 2.13.0+cu130 with sm_110 in `get_arch_list()`, with rclpy and the
+# openral packages importing. The name is kept for continuity with the existing
+# `openral:x86` tag and CI; see the two `docker-build-*` recipes in the Justfile.
 #
 # THE open-repo deploy image (`openral:x86`). Builds the full open (non-Pro)
 # OpenRAL deploy graph — every colcon ROS package + the C++ safety kernel + the
