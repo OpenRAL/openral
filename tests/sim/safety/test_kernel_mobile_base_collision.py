@@ -93,7 +93,7 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
     """The real kernel + real panda_mobile manifest estops a CARTESIAN_DELTA chunk
     whose base-relative arm config sits inside an occupied voxel."""
     import rclpy
-    from geometry_msgs.msg import Point
+    from geometry_msgs.msg import Point, Quaternion
     from openral_msgs.msg import ActionChunk, FailureTrigger, OccupancyVoxels
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -152,6 +152,10 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
             grid = OccupancyVoxels()
             grid.header.frame_id = "base_link"
             grid.origin = Point(x=_ORIGIN[0], y=_ORIGIN[1], z=_ORIGIN[2])
+            # Synthetic base-aligned lattice: `OccupancyVoxels` is oriented, and
+            # its unset orientation is the all-zero quaternion, which consumers
+            # refuse rather than read as identity.
+            grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
             grid.resolution = _RES
             grid.size_x = _SX
             grid.size_y = _SY

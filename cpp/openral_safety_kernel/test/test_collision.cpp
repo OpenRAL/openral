@@ -315,7 +315,7 @@ namespace {
 // centre sits at the base-frame origin.
 osk::VoxelGrid make_grid(const std::vector<std::uint8_t>& occ) {
   osk::VoxelGrid g;
-  g.origin = {-0.25, -0.25, -0.25};
+  g.pose.t = {-0.25, -0.25, -0.25};
   g.resolution = 0.1;
   g.sx = 5;
   g.sy = 5;
@@ -376,7 +376,7 @@ TEST(VoxelCollision, CubeCornerDoesNotUseCircumscribedSphere) {
   s.link_world = {identity()};
   const std::vector<std::uint8_t> occ = {1};
   osk::VoxelGrid grid;
-  grid.origin = {0.09, 0.09, 0.20};  // centre=(0.14,0.14,0.25), side=0.1
+  grid.pose.t = {0.09, 0.09, 0.20};  // centre=(0.14,0.14,0.25), side=0.1
   grid.resolution = 0.1;
   grid.sx = 1;
   grid.sy = 1;
@@ -426,7 +426,7 @@ osk::CollisionModel arm_root_model(double root_z) {
 // One occupied row of counter cells, `origin_z` metres up the base frame.
 osk::VoxelGrid counter_grid(const std::vector<std::uint8_t>& occ, double origin_z) {
   osk::VoxelGrid g;
-  g.origin = {-0.1, -0.1, origin_z};
+  g.pose.t = {-0.1, -0.1, origin_z};
   g.resolution = 0.025;
   g.sx = 8;
   g.sy = 8;
@@ -693,7 +693,7 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
   occ[42] = 1;
   osk::VoxelGrid grid;
-  grid.origin = {-0.4, -0.4, -0.4};
+  grid.pose.t = {-0.4, -0.4, -0.4};
   grid.resolution = 0.1;
   grid.sx = 8;
   grid.sy = 8;
@@ -773,7 +773,7 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
   occ[42] = 1;
   osk::VoxelGrid grid;
-  grid.origin = {-0.4, -0.4, -0.4};
+  grid.pose.t = {-0.4, -0.4, -0.4};
   grid.resolution = 0.1;
   grid.sx = 8;
   grid.sy = 8;
@@ -1002,7 +1002,7 @@ TEST(VoxelCollisionBox, BoxLinkIsCheckedAgainstOccupiedVoxel) {
   s.link_world = {identity()};
   std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
   osk::VoxelGrid grid;
-  grid.origin = {-0.4, -0.4, -0.4};
+  grid.pose.t = {-0.4, -0.4, -0.4};
   grid.resolution = 0.1;
   grid.sx = 8;
   grid.sy = 8;
@@ -1729,9 +1729,14 @@ osk::Transform voxel_transform_at(const osk::VoxelGrid& grid, int linear_index) 
   const int ix = linear_index % grid.sx;
   const int iy = (linear_index / grid.sx) % grid.sy;
   const int iz = linear_index / (grid.sx * grid.sy);
+  // Every grid in this file is identity-oriented (`pose.r` default), so the
+  // cell's base-frame centre is `pose.t` plus the lattice offset. A rotated
+  // grid would need `pose.r` applied to that offset — see
+  // `OrientedGrid.*` below, which builds its expectations that way.
   osk::Transform t;
-  t.t = {grid.origin.x + (ix + 0.5) * grid.resolution, grid.origin.y + (iy + 0.5) * grid.resolution,
-         grid.origin.z + (iz + 0.5) * grid.resolution};
+  t.t = {grid.pose.t.x + (ix + 0.5) * grid.resolution,
+         grid.pose.t.y + (iy + 0.5) * grid.resolution,
+         grid.pose.t.z + (iz + 0.5) * grid.resolution};
   return t;
 }
 
@@ -1771,7 +1776,7 @@ int support_index(int x, int y, int z) { return x + kSupportN * (y + kSupportN *
 osk::VoxelGrid support_grid(const std::vector<std::uint8_t>& occ) {
   osk::VoxelGrid g;
   // Phased so cell (12, 12, 12) is centred at (0, 0, +0.0032).
-  g.origin = {-0.3125, -0.3125, -0.3093};
+  g.pose.t = {-0.3125, -0.3125, -0.3093};
   g.resolution = kSupportRes;
   g.sx = kSupportN;
   g.sy = kSupportN;
@@ -2013,7 +2018,7 @@ constexpr double kR2FieldLateral = 0.0857;
 // below the probed layer, in column 12.
 osk::VoxelGrid battery_grid(const std::vector<std::uint8_t>& occ, double top_height) {
   osk::VoxelGrid g;
-  g.origin = {kR2LateralOffset - 15.5 * kSupportRes, -0.3125, top_height - 14.5 * kSupportRes};
+  g.pose.t = {kR2LateralOffset - 15.5 * kSupportRes, -0.3125, top_height - 14.5 * kSupportRes};
   g.resolution = kSupportRes;
   g.sx = kSupportN;
   g.sy = kSupportN;
@@ -2030,8 +2035,9 @@ void append_battery_baguette(osk::AttachedModel& att) {
 
 // Base-frame centre of cell (ix, iy, iz) on a battery lattice.
 osk::Vec3 battery_center(const osk::VoxelGrid& g, int ix, int iy, int iz) {
-  return osk::Vec3{g.origin.x + (ix + 0.5) * g.resolution, g.origin.y + (iy + 0.5) * g.resolution,
-                   g.origin.z + (iz + 0.5) * g.resolution};
+  // Identity-oriented lattice (see `voxel_transform_at`).
+  return osk::Vec3{g.pose.t.x + (ix + 0.5) * g.resolution, g.pose.t.y + (iy + 0.5) * g.resolution,
+                   g.pose.t.z + (iz + 0.5) * g.resolution};
 }
 
 }  // namespace
@@ -2865,7 +2871,7 @@ int coarse_index(int x, int y, int z) { return x + kCoarseN * (y + kCoarseN * z)
 osk::VoxelGrid coarse_grid(const std::vector<std::uint8_t>& occ) {
   osk::VoxelGrid g;
   // Phased so cell (6, 6, 6) is centred on the origin; its cube spans +/-25 mm.
-  g.origin = {-0.325, -0.325, -0.325};
+  g.pose.t = {-0.325, -0.325, -0.325};
   g.resolution = kCoarseRes;
   g.sx = kCoarseN;
   g.sy = kCoarseN;
@@ -3450,7 +3456,7 @@ void mark_cabinet_face(std::vector<std::uint8_t>& occ, int first_ix) {
 
 osk::VoxelGrid issue_102_grid(const std::vector<std::uint8_t>& occ) {
   osk::VoxelGrid g;
-  g.origin = {kIssue102OriginX, kIssue102OriginY, kIssue102OriginZ};
+  g.pose.t = {kIssue102OriginX, kIssue102OriginY, kIssue102OriginZ};
   g.resolution = kIssue102Res;
   g.sx = kIssue102Sx;
   g.sy = kIssue102Sy;
@@ -4163,7 +4169,7 @@ TEST(VoxelCollisionTightGeometry, NeverStopsWhereTheShippedPathWouldNotHave) {
   osk::forward_kinematics(shipped, qpos.data(), qpos.size(), scratch);
 
   osk::VoxelGrid grid;
-  grid.origin = {-0.4, -0.4, 0.0};
+  grid.pose.t = {-0.4, -0.4, 0.0};
   grid.resolution = 0.025;
   grid.sx = 40;
   grid.sy = 40;
@@ -4217,7 +4223,7 @@ TEST(VoxelCollisionTightGeometry, StagedAndShippedAgreeOnWhatStopsTheRobot) {
 
   std::vector<std::uint8_t> occ(kIssue102Sx * kIssue102Sy * kIssue102Sz, 0);
   osk::VoxelGrid grid;
-  grid.origin = {0.0, -0.5, 0.0};
+  grid.pose.t = {0.0, -0.5, 0.0};
   grid.resolution = 0.025;
   grid.sx = kIssue102Sx;
   grid.sy = kIssue102Sy;
@@ -4264,7 +4270,7 @@ TEST(VoxelCollisionTightGeometry, ExhaustingTheStage2BudgetOnlyEverAddsConservat
   scratch.link_world = {identity()};
 
   osk::VoxelGrid grid;
-  grid.origin = {-0.5, -0.5, -0.5};
+  grid.pose.t = {-0.5, -0.5, -0.5};
   grid.resolution = 0.025;
   grid.sx = 40;
   grid.sy = 40;
@@ -4279,4 +4285,153 @@ TEST(VoxelCollisionTightGeometry, ExhaustingTheStage2BudgetOnlyEverAddsConservat
   ASSERT_TRUE(b.hit);
   EXPECT_GE(b.min_distance, a.min_distance - 1e-12)
       << "budget exhaustion must fall back to the shipped bound, never below it";
+}
+
+// ── The grid's lattice is the map's, not the base frame's ────────────────────
+//
+// `VoxelGrid::pose` carries the rotation from the grid's axes into
+// `base_frame`. It exists so the perception bridge can publish on the source
+// map's own lattice, one cell per map voxel, instead of re-expressing that
+// lattice on a base-aligned one. That re-expression is sound only if every cell
+// the map voxel's volume enters is marked, which dilated the obstacle set by
+// 29-35 mm (40 mm worst) on 25 mm cells — a dilation issue #173 measured
+// holding 48% of the live start-state E-stops.
+//
+// What the kernel owes in exchange is that the rotation is actually applied,
+// everywhere.
+
+namespace {
+
+// A rigid rotation with no zero entries, so a dropped or transposed term shows
+// up rather than cancelling.
+osk::Transform oblique_rotation() {
+  osk::Transform r;
+  const double a = 0.31;
+  const double b = -0.72;
+  const double c = 1.13;
+  const double ca = std::cos(a);
+  const double sa = std::sin(a);
+  const double cb = std::cos(b);
+  const double sb = std::sin(b);
+  const double cc = std::cos(c);
+  const double sc = std::sin(c);
+  r.r[0] = cc * cb;
+  r.r[1] = cc * sb * sa - sc * ca;
+  r.r[2] = cc * sb * ca + sc * sa;
+  r.r[3] = sc * cb;
+  r.r[4] = sc * sb * sa + cc * ca;
+  r.r[5] = sc * sb * ca - cc * sa;
+  r.r[6] = -sb;
+  r.r[7] = cb * sa;
+  r.r[8] = cb * ca;
+  return r;
+}
+
+osk::Transform mul(const osk::Transform& a, const osk::Transform& b) {
+  osk::Transform o;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      double s = 0.0;
+      for (int k = 0; k < 3; ++k) {
+        s += a.r[i * 3 + k] * b.r[k * 3 + j];
+      }
+      o.r[i * 3 + j] = s;
+    }
+  }
+  o.t = osk::Vec3{a.t.x + a.r[0] * b.t.x + a.r[1] * b.t.y + a.r[2] * b.t.z,
+                  a.t.y + a.r[3] * b.t.x + a.r[4] * b.t.y + a.r[5] * b.t.z,
+                  a.t.z + a.r[6] * b.t.x + a.r[7] * b.t.y + a.r[8] * b.t.z};
+  return o;
+}
+
+// Cell (ix, iy, iz)'s base-frame centre on an ORIENTED lattice.
+osk::Vec3 oriented_cell_center(const osk::VoxelGrid& g, int ix, int iy, int iz) {
+  const double lx = (ix + 0.5) * g.resolution;
+  const double ly = (iy + 0.5) * g.resolution;
+  const double lz = (iz + 0.5) * g.resolution;
+  return osk::Vec3{g.pose.t.x + g.pose.r[0] * lx + g.pose.r[1] * ly + g.pose.r[2] * lz,
+                   g.pose.t.y + g.pose.r[3] * lx + g.pose.r[4] * ly + g.pose.r[5] * lz,
+                   g.pose.t.z + g.pose.r[6] * lx + g.pose.r[7] * ly + g.pose.r[8] * lz};
+}
+
+}  // namespace
+
+TEST(OrientedGrid, RotatingTheWholeProblemChangesNoDistance) {
+  // The invariance that makes an oriented grid safe to introduce at all:
+  // distance is a rigid-motion invariant, so rotating the robot AND the grid
+  // together must reproduce the unrotated answer — same verdict, same evidence
+  // cell, same distance to floating point.
+  //
+  // This is the property that fails first, and loudly, if the rotation reaches
+  // the cell centres but not the index window, or the window but not the
+  // staged tight path's cells.
+  const osk::CollisionModel m = one_capsule_model();
+  osk::CollisionScratch s;
+
+  std::vector<std::uint8_t> occ(5 * 5 * 5, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 7) {
+    occ[i] = 1;
+  }
+
+  const osk::Transform R = oblique_rotation();
+  for (int step = 0; step < 12; ++step) {
+    const double t = 0.02 * step;
+    osk::Transform link;
+    link.t = {0.10 + t, -0.04 + 0.5 * t, 0.06 - 0.3 * t};
+    s.link_world = {link};
+
+    osk::VoxelGrid plain = make_grid(occ);
+    osk::VoxelGrid rotated = plain;
+    rotated.pose = mul(R, plain.pose);
+
+    osk::CollisionScratch rs;
+    rs.link_world = {mul(R, link)};
+
+    const auto a = osk::check_voxel_collision(m, s, plain, 0.01);
+    const auto b = osk::check_voxel_collision(m, rs, rotated, 0.01);
+
+    EXPECT_EQ(a.hit, b.hit) << "step " << step;
+    EXPECT_EQ(a.link_b, b.link_b) << "step " << step << ": a different cell is the evidence";
+    EXPECT_NEAR(a.min_distance, b.min_distance, 1e-12) << "step " << step;
+    EXPECT_NEAR(a.sweep_min_distance, b.sweep_min_distance, 1e-12) << "step " << step;
+  }
+}
+
+TEST(OrientedGrid, TheRotationIsLoadBearingAndNotDecorative) {
+  // The invariance above would also hold if the rotation were ignored on BOTH
+  // sides, so this pins that it is applied: a capsule sitting on an occupied
+  // cell of the ROTATED lattice stops, and the very same bytes read as though
+  // the lattice were base-aligned put that cell somewhere else, where the same
+  // capsule is clear. If the second half ever starts stopping too, this fixture
+  // has stopped proving anything.
+  const osk::CollisionModel m = one_capsule_model();
+  osk::CollisionScratch s;
+
+  std::vector<std::uint8_t> occ(5 * 5 * 5, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+
+  osk::VoxelGrid rotated = make_grid(occ);
+  rotated.pose = mul(oblique_rotation(), rotated.pose);
+
+  s.link_world = {identity()};
+  osk::Transform link;
+  link.t = oriented_cell_center(rotated, 2, 2, 2);
+  s.link_world = {link};
+
+  const auto found = osk::check_voxel_collision(m, s, rotated, 0.0);
+  EXPECT_TRUE(found.hit) << "the capsule is inside the occupied cell and must stop";
+
+  osk::VoxelGrid as_if_aligned = rotated;
+  as_if_aligned.pose.r[0] = 1.0;
+  as_if_aligned.pose.r[1] = 0.0;
+  as_if_aligned.pose.r[2] = 0.0;
+  as_if_aligned.pose.r[3] = 0.0;
+  as_if_aligned.pose.r[4] = 1.0;
+  as_if_aligned.pose.r[5] = 0.0;
+  as_if_aligned.pose.r[6] = 0.0;
+  as_if_aligned.pose.r[7] = 0.0;
+  as_if_aligned.pose.r[8] = 1.0;
+  const auto misread = osk::check_voxel_collision(m, s, as_if_aligned, 0.0);
+  EXPECT_NE(found.link_b, misread.link_b)
+      << "reading the same grid without its rotation must not name the same cell";
 }

@@ -872,6 +872,15 @@ if _ROS2_AVAILABLE:
             if voxels_fresh:
                 centers = decode_occupied_centers(
                     origin=(grid.origin.x, grid.origin.y, grid.origin.z),  # type: ignore[attr-defined]
+                    # The grid's lattice is the OctoMap's, so its axes are not
+                    # base_frame's — dropping this puts every lifted object in
+                    # the wrong place whenever the base is not map-aligned.
+                    orientation_xyzw=(
+                        grid.orientation.x,  # type: ignore[attr-defined]
+                        grid.orientation.y,  # type: ignore[attr-defined]
+                        grid.orientation.z,  # type: ignore[attr-defined]
+                        grid.orientation.w,  # type: ignore[attr-defined]
+                    ),
                     resolution=grid.resolution,  # type: ignore[attr-defined]
                     size_xyz=(grid.size_x, grid.size_y, grid.size_z),  # type: ignore[attr-defined]
                     occupancy=bytes(grid.occupancy),  # type: ignore[attr-defined]

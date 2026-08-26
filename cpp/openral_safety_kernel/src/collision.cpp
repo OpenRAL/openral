@@ -1062,6 +1062,66 @@ CollisionHit check_world_collision(const CollisionModel& model, const CollisionS
   return finish_sweep(result, sweep_min);
 }
 
+// ---------------------------------------------------------------------------
+// Working in GRID coordinates
+//
+// The grid's lattice is the source map's, so its axes are not `base_frame`'s
+// (see VoxelGrid::pose). Every routine that walks a grid therefore carries its
+// query geometry into the grid's axes ONCE, and from there the cells are
+// axis-aligned cubes at `voxel_center_local` exactly as they always were.
+//
+// This is not merely tidier than rotating each cell: the staged tight-geometry
+// path REQUIRES it. `dop_cell_lower_bound` measures a cell against three
+// world-axis slabs using `half_side` directly, which is only a cube if the cell
+// is axis-aligned in the frame `tight_pose_init` was given.
+//
+// Distances are rigid-motion invariant, so the numbers are unchanged, and with
+// an identity `grid.pose.r` every routine reduces exactly to what it computed
+// before this became an oriented grid.
+// ---------------------------------------------------------------------------
+
+/// Inverse of a rigid transform: (R^T, -R^T t).
+Transform inverse_rigid(const Transform& x) noexcept {
+  Transform out;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      out.r[i * 3 + j] = x.r[j * 3 + i];
+    }
+  }
+  out.t = Vec3{-(out.r[0] * x.t.x + out.r[1] * x.t.y + out.r[2] * x.t.z),
+               -(out.r[3] * x.t.x + out.r[4] * x.t.y + out.r[5] * x.t.z),
+               -(out.r[6] * x.t.x + out.r[7] * x.t.y + out.r[8] * x.t.z)};
+  return out;
+}
+
+/// Apply a transform to a point.
+Vec3 apply(const Transform& x, const Vec3& p) noexcept {
+  return Vec3{x.t.x + x.r[0] * p.x + x.r[1] * p.y + x.r[2] * p.z,
+              x.t.y + x.r[3] * p.x + x.r[4] * p.y + x.r[5] * p.z,
+              x.t.z + x.r[6] * p.x + x.r[7] * p.y + x.r[8] * p.z};
+}
+
+/// Centre of cell (ix, iy, iz) in the GRID's own axes, where the lattice is
+/// axis-aligned and its origin is 0 by construction.
+Vec3 voxel_center_local(const VoxelGrid& grid, int ix, int iy, int iz) noexcept {
+  return Vec3{(ix + 0.5) * grid.resolution, (iy + 0.5) * grid.resolution,
+              (iz + 0.5) * grid.resolution};
+}
+
+/// Base-frame centre of cell (ix, iy, iz), for consumers comparing a cell
+/// against something measured in `base_frame`.
+Vec3 voxel_center(const VoxelGrid& grid, int ix, int iy, int iz) noexcept {
+  return apply(grid.pose, voxel_center_local(grid, ix, iy, iz));
+}
+
+/// Half-extents, along the grid's axes, of an oriented box already expressed in
+/// those axes: `|R| * he`, the standard OBB-AABB bound, for sizing a window.
+Vec3 obb_extent(const Transform& box, const Vec3& he) noexcept {
+  return Vec3{std::fabs(box.r[0]) * he.x + std::fabs(box.r[1]) * he.y + std::fabs(box.r[2]) * he.z,
+              std::fabs(box.r[3]) * he.x + std::fabs(box.r[4]) * he.y + std::fabs(box.r[5]) * he.z,
+              std::fabs(box.r[6]) * he.x + std::fabs(box.r[7]) * he.y + std::fabs(box.r[8]) * he.z};
+}
+
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin) noexcept {
   CollisionHit result;
@@ -1077,29 +1137,34 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
   const double inv_res = 1.0 / grid.resolution;
-  // Voxel-index span of a base-frame interval, clamped to the grid (shared by
-  // the capsule and box passes).
-  const auto rng = [&](double lo, double hi, double org, int dim) {
-    const int i0 = static_cast<int>(std::floor((lo - org) * inv_res));
-    const int i1 = static_cast<int>(std::floor((hi - org) * inv_res));
+  // Voxel-index span of an interval ALONG THE GRID'S OWN AXES, clamped to the
+  // grid (shared by the capsule and box passes). Callers hand it grid-axis
+  // coordinates via `to_grid_axes`; the grid's origin is 0 there by
+  // construction.
+  const auto rng = [&](double lo, double hi, int dim) {
+    const int i0 = static_cast<int>(std::floor(lo * inv_res));
+    const int i1 = static_cast<int>(std::floor(hi * inv_res));
     return std::pair<int, int>{clamp_index(i0, 0, dim - 1), clamp_index(i1, 0, dim - 1)};
   };
+  // Every link is carried into the grid's axes through this.
+  const Transform grid_from_base = inverse_rigid(grid.pose);
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t c = 0; c < n_caps; ++c) {
     const int li = model.capsule_link[c];
-    const Transform cap =
-        compose(scratch.link_world[static_cast<std::size_t>(li)], model.capsules[c].origin);
+    const Transform cap = compose(
+        grid_from_base,
+        compose(scratch.link_world[static_cast<std::size_t>(li)], model.capsules[c].origin));
     Vec3 p0;
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
     const double reach = r + margin + half_side;
     const auto [ix0, ix1] =
-        rng(std::min(p0.x, p1.x) - reach, std::max(p0.x, p1.x) + reach, grid.origin.x, grid.sx);
+        rng(std::min(p0.x, p1.x) - reach, std::max(p0.x, p1.x) + reach, grid.sx);
     const auto [iy0, iy1] =
-        rng(std::min(p0.y, p1.y) - reach, std::max(p0.y, p1.y) + reach, grid.origin.y, grid.sy);
+        rng(std::min(p0.y, p1.y) - reach, std::max(p0.y, p1.y) + reach, grid.sy);
     const auto [iz0, iz1] =
-        rng(std::min(p0.z, p1.z) - reach, std::max(p0.z, p1.z) + reach, grid.origin.z, grid.sz);
+        rng(std::min(p0.z, p1.z) - reach, std::max(p0.z, p1.z) + reach, grid.sz);
     for (int iz = iz0; iz <= iz1; ++iz) {
       for (int iy = iy0; iy <= iy1; ++iy) {
         for (int ix = ix0; ix <= ix1; ++ix) {
@@ -1107,11 +1172,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (grid.occupancy[idx] == 0) {
             continue;
           }
-          const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
-                            grid.origin.y + (iy + 0.5) * grid.resolution,
-                            grid.origin.z + (iz + 0.5) * grid.resolution};
           Transform voxel;
-          voxel.t = center;
+          voxel.t = voxel_center_local(grid, ix, iy, iz);
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
           fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(idx));
@@ -1132,8 +1194,11 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   int stage2_budget = kMaxStage2PerCheck;
   for (std::size_t b = 0; b < n_boxes; ++b) {
     const int lb = model.box_link[b];
+    // In the GRID's axes, so the cells stay axis-aligned cubes — which the
+    // staged tight path below requires, not merely prefers.
     const Transform box_w =
-        compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
+        compose(grid_from_base,
+                compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
     TightPose tight;
@@ -1143,20 +1208,13 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                       model.hull_vertices.empty() ? nullptr : model.hull_vertices.data(), box_w,
                       half_side, tight);
     }
-    // World-AABB half-size of the oriented box: |R| * half_extents (row-major R).
-    const double ex =
-        std::fabs(box_w.r[0]) * he.x + std::fabs(box_w.r[1]) * he.y + std::fabs(box_w.r[2]) * he.z;
-    const double ey =
-        std::fabs(box_w.r[3]) * he.x + std::fabs(box_w.r[4]) * he.y + std::fabs(box_w.r[5]) * he.z;
-    const double ez =
-        std::fabs(box_w.r[6]) * he.x + std::fabs(box_w.r[7]) * he.y + std::fabs(box_w.r[8]) * he.z;
+    // Bounding half-size of the oriented box on the grid's axes (`box_w` is
+    // already expressed in them), which is what sizes an index window.
+    const Vec3 ext = obb_extent(box_w, he);
     const double reach = margin + half_side;
-    const auto [ix0, ix1] =
-        rng(box_w.t.x - ex - reach, box_w.t.x + ex + reach, grid.origin.x, grid.sx);
-    const auto [iy0, iy1] =
-        rng(box_w.t.y - ey - reach, box_w.t.y + ey + reach, grid.origin.y, grid.sy);
-    const auto [iz0, iz1] =
-        rng(box_w.t.z - ez - reach, box_w.t.z + ez + reach, grid.origin.z, grid.sz);
+    const auto [ix0, ix1] = rng(box_w.t.x - ext.x - reach, box_w.t.x + ext.x + reach, grid.sx);
+    const auto [iy0, iy1] = rng(box_w.t.y - ext.y - reach, box_w.t.y + ext.y + reach, grid.sy);
+    const auto [iz0, iz1] = rng(box_w.t.z - ext.z - reach, box_w.t.z + ext.z + reach, grid.sz);
     for (int iz = iz0; iz <= iz1; ++iz) {
       for (int iy = iy0; iy <= iy1; ++iy) {
         for (int ix = ix0; ix <= ix1; ++ix) {
@@ -1164,9 +1222,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (grid.occupancy[idx] == 0) {
             continue;
           }
-          const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
-                            grid.origin.y + (iy + 0.5) * grid.resolution,
-                            grid.origin.z + (iz + 0.5) * grid.resolution};
+          const Vec3 center = voxel_center_local(grid, ix, iy, iz);
           double d;
           if (hull_index < 0) {
             Transform voxel;
@@ -1288,10 +1344,13 @@ struct CellBox {
   int z1{-1};
 };
 
+/// Index window for a primitive. `prim_xf` MUST already be expressed in the
+/// grid's axes (`compose(inverse_rigid(grid.pose), base_frame_pose)`); the
+/// lattice is axis-aligned and origin-0 there.
 CellBox primitive_cell_box(const AttachedPrimitive& prim, const Transform& prim_xf,
                            const VoxelGrid& grid, double reach) noexcept {
-  // World-AABB half-size of the primitive (|R| * extents). For a sphere/capsule
-  // the swept radius plus the endpoint span is the conservative extent.
+  // Bounding half-size of the primitive on the grid's axes (|R| * extents). For
+  // a sphere/capsule the swept radius plus the endpoint span is conservative.
   double ex;
   double ey;
   double ez;
@@ -1310,25 +1369,15 @@ CellBox primitive_cell_box(const AttachedPrimitive& prim, const Transform& prim_
     ez = std::fabs(prim_xf.r[8]) * prim.half_length + prim.radius;
   }
   const double inv_res = 1.0 / grid.resolution;
-  const auto rng = [inv_res](double lo, double hi, double org, int dim) {
-    const int i0 = static_cast<int>(std::floor((lo - org) * inv_res));
-    const int i1 = static_cast<int>(std::floor((hi - org) * inv_res));
+  const auto rng = [inv_res](double lo, double hi, int dim) {
+    const int i0 = static_cast<int>(std::floor(lo * inv_res));
+    const int i1 = static_cast<int>(std::floor(hi * inv_res));
     return std::pair<int, int>{clamp_index(i0, 0, dim - 1), clamp_index(i1, 0, dim - 1)};
   };
-  const auto [x0, x1] =
-      rng(prim_xf.t.x - ex - reach, prim_xf.t.x + ex + reach, grid.origin.x, grid.sx);
-  const auto [y0, y1] =
-      rng(prim_xf.t.y - ey - reach, prim_xf.t.y + ey + reach, grid.origin.y, grid.sy);
-  const auto [z0, z1] =
-      rng(prim_xf.t.z - ez - reach, prim_xf.t.z + ez + reach, grid.origin.z, grid.sz);
+  const auto [x0, x1] = rng(prim_xf.t.x - ex - reach, prim_xf.t.x + ex + reach, grid.sx);
+  const auto [y0, y1] = rng(prim_xf.t.y - ey - reach, prim_xf.t.y + ey + reach, grid.sy);
+  const auto [z0, z1] = rng(prim_xf.t.z - ez - reach, prim_xf.t.z + ez + reach, grid.sz);
   return CellBox{x0, x1, y0, y1, z0, z1};
-}
-
-// Base-frame centre of cell (ix, iy, iz).
-Vec3 voxel_center(const VoxelGrid& grid, int ix, int iy, int iz) noexcept {
-  return Vec3{grid.origin.x + (ix + 0.5) * grid.resolution,
-              grid.origin.y + (iy + 0.5) * grid.resolution,
-              grid.origin.z + (iz + 0.5) * grid.resolution};
 }
 
 // Is object `obj`'s attested support contact still doing work — i.e. is some
@@ -1341,11 +1390,15 @@ bool support_witness_still_in_contact(const AttachedModel& attached, const Attac
                                       double margin) noexcept {
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
+  const Transform grid_from_base = inverse_rigid(grid.pose);
   for (int p = 0; p < obj.prim_count; ++p) {
     const AttachedPrimitive& prim =
         attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
     const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
-    const CellBox box = primitive_cell_box(prim, prim_xf, grid, margin + half_side);
+    // Windowing and the cell distance run in the grid's axes; the support
+    // attestation is measured in `base_frame` and keeps its own centre.
+    const Transform prim_g = compose(grid_from_base, prim_xf);
+    const CellBox box = primitive_cell_box(prim, prim_g, grid, margin + half_side);
     for (int iz = box.z0; iz <= box.z1; ++iz) {
       for (int iy = box.y0; iy <= box.y1; ++iy) {
         for (int ix = box.x0; ix <= box.x1; ++ix) {
@@ -1353,14 +1406,13 @@ bool support_witness_still_in_contact(const AttachedModel& attached, const Attac
           if (grid.occupancy[idx] == 0) {
             continue;
           }
-          const Vec3 center = voxel_center(grid, ix, iy, iz);
-          if (!support_contact_exempts(obj, obj_xf, center, grid.resolution,
-                                       grid.attached_contact_tolerance)) {
+          if (!support_contact_exempts(obj, obj_xf, voxel_center(grid, ix, iy, iz),
+                                       grid.resolution, grid.attached_contact_tolerance)) {
             continue;
           }
           Transform voxel;
-          voxel.t = center;
-          if (attached_primitive_voxel_distance(prim, prim_xf, voxel, voxel_half) <= margin) {
+          voxel.t = voxel_center_local(grid, ix, iy, iz);
+          if (attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half) <= margin) {
             return true;
           }
         }
@@ -1537,6 +1589,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
   }
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
+  const Transform grid_from_base = inverse_rigid(grid.pose);
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
@@ -1544,7 +1597,10 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       const AttachedPrimitive& prim =
           attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
       const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
-      const CellBox box = primitive_cell_box(prim, prim_xf, grid, margin + half_side);
+      // The cell distance runs in the grid's axes; the place region and the
+      // support attestation are declared in `base_frame` and keep that centre.
+      const Transform prim_g = compose(grid_from_base, prim_xf);
+      const CellBox box = primitive_cell_box(prim, prim_g, grid, margin + half_side);
       for (int iz = box.z0; iz <= box.z1; ++iz) {
         for (int iy = box.y0; iy <= box.y1; ++iy) {
           for (int ix = box.x0; ix <= box.x1; ++ix) {
@@ -1554,8 +1610,8 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             }
             const Vec3 center = voxel_center(grid, ix, iy, iz);
             Transform voxel;
-            voxel.t = center;
-            const double d = attached_primitive_voxel_distance(prim, prim_xf, voxel, voxel_half);
+            voxel.t = voxel_center_local(grid, ix, iy, iz);
+            const double d = attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
             // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
             // amendment): inside the declared target's region this payload's
             // margin — and only this payload's, and only for cells in that
@@ -1564,7 +1620,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             // contact the place witness is earned by. The hard stop behind the
             // reduced margin is untouched.
             const double allowance = place_approach_allowance(grid, i, center);
-            const double cell_margin = margin - allowance;
+            // `kGateTieEpsilonM` because the ceiling is a documented TRIP
+            // boundary ("exactly the ceiling: it trips", ADR-0097's Second
+            // Amendment) and `d` is the end of a chain of rigid transforms.
+            // Which side of an exact tie the last ULP lands on is not a safety
+            // decision anyone made; erring onto the stop is the safe reading,
+            // and a picometre is thirteen orders below the lattice it is
+            // measured on.
+            const double cell_margin = margin - allowance + kGateTieEpsilonM;
             // Gate: a cell within the (possibly reduced) margin trips unless one
             // of the two bounded exemptions explains it — a live support-contact
             // witness (physical, index-free, quantisation-aware) or the payload's
@@ -1778,6 +1841,7 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
   }
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
+  const Transform grid_from_base = inverse_rigid(grid.pose);
   bool active = false;
   for (std::size_t idx = 0; idx < cells; ++idx) {
     if (grid.occupancy[idx] == 0) {
@@ -1789,16 +1853,16 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
     const int iy = static_cast<int>(yz % static_cast<std::size_t>(grid.sy));
     const int iz = static_cast<int>(yz / static_cast<std::size_t>(grid.sy));
     Transform voxel;
-    voxel.t = Vec3{grid.origin.x + (ix + 0.5) * grid.resolution,
-                   grid.origin.y + (iy + 0.5) * grid.resolution,
-                   grid.origin.z + (iz + 0.5) * grid.resolution};
+    voxel.t = voxel_center_local(grid, ix, iy, iz);
     for (std::size_t object_index = 0; object_index < objects; ++object_index) {
       const std::uint8_t bit = static_cast<std::uint8_t>(1U << object_index);
       if (!snapshot && (contact_mask[idx] & bit) == 0) {
         continue;
       }
       const AttachedObject& object = attached.objects[object_index];
-      const Transform object_xf = attached_object_transform(object, scratch);
+      // In the grid's axes, to match the axis-aligned local cell above.
+      const Transform object_xf =
+          compose(grid_from_base, attached_object_transform(object, scratch));
       const double distance =
           attached_object_voxel_distance(attached, object, object_xf, voxel, voxel_half);
       const std::size_t distance_index = object_index * grid.attached_contact_stride + idx;

@@ -114,6 +114,18 @@ inline constexpr int kMaxTightHullVertices = 320;
 /// no slack at all, because there the margin is a real, measured 0.055–0.132 mm.
 inline constexpr double kTightContainmentEpsilonM = 1e-9;
 
+/// Slack (m) on a collision gate whose threshold is an exact, documented
+/// boundary — currently the place-approach allowance ceiling, where "exactly at
+/// the ceiling it trips" is the accepted-cost bound itself.
+///
+/// A distance reaching such a gate is the end of a chain of rigid transforms,
+/// and which side of an exact tie the last ULP falls on is an artefact of
+/// association order, not a decision. Biasing the tie onto the STOP is the
+/// conservative reading, and a picometre is thirteen orders of magnitude below
+/// the 25 mm lattice these distances are measured on — numerical determinism,
+/// not geometric room, exactly as `kTightContainmentEpsilonM` is.
+inline constexpr double kGateTieEpsilonM = 1e-12;
+
 /// Iteration ceiling for the stage-2 GJK loop. Hitting it is not a failure
 /// mode: every iteration's result is a *lower* bound on the true distance, so
 /// a truncated run is simply more conservative than a converged one.
@@ -305,7 +317,20 @@ enum class PlaceRegionStatus : std::uint8_t {
 /// with x fastest (`idx = x + sx*(y + sy*z)`); a cell is occupied when its
 /// value is non-zero. A view: `occupancy` points at a buffer the caller owns.
 struct VoxelGrid {
-  Vec3 origin{};           ///< base-frame position of voxel (0,0,0)'s min corner
+  /// Base-frame pose of voxel (0,0,0)'s minimum corner.
+  ///
+  /// `pose.r` is NOT decoration: the grid's lattice is the source map's, fixed
+  /// in map/odom, so its axes turn relative to `base_frame` as the robot does.
+  /// Cell indices run along the grid's own axes and a cell cube is oriented by
+  /// `pose.r`. Publishing on the map's lattice is what removes the 29-40 mm
+  /// dilation a base-aligned grid had to pay to re-express one lattice on
+  /// another (issue #173); the rotation is carried here instead of being
+  /// dissolved into extra occupied cells.
+  ///
+  /// Identity is the correct value only for a grid whose lattice really is
+  /// base-aligned; the ingest refuses a non-unit rotation rather than assuming
+  /// one.
+  Transform pose{};
   double resolution{0.0};  ///< voxel edge length (m)
   int sx{0};               ///< grid dimensions
   int sy{0};

@@ -218,6 +218,22 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
   const double reach = 0.5 * grid.resolution * std::sqrt(3.0) + pad;
   const double res = grid.resolution;
 
+  // The grid's lattice is the OctoMap's, not `base_frame`'s, so cell indices
+  // live along the grid's own axes and everything that indexes them has to be
+  // carried there first. Distances and radii are rotation-invariant, so only
+  // positions move; the support patches stay in `base_frame` and are compared
+  // against a base-frame centre, exactly as before.
+  const tf2::Quaternion q(grid.orientation.x, grid.orientation.y, grid.orientation.z,
+                          grid.orientation.w);
+  if (std::fabs(q.length2() - 1.0) > 1e-6) {
+    // An unset orientation is all-zeros, not identity. Clearing against a
+    // lattice we cannot place would remove cells somewhere the payload is not.
+    return 0;
+  }
+  const tf2::Transform base_from_grid(
+      q, tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
+  const tf2::Transform grid_from_base = base_from_grid.inverse();
+
   std::size_t cleared = 0;
   for (const auto& prim : primitives) {
     const double span = bounding_radius(prim) + reach;
@@ -227,11 +243,12 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
       continue;
     }
     // Only the cells inside the primitive's inflated AABB can qualify, so the
-    // cost is the payload's own volume rather than the grid's.
-    const double lo[3] = {origin.x() - span - grid.origin.x, origin.y() - span - grid.origin.y,
-                          origin.z() - span - grid.origin.z};
-    const double hi[3] = {origin.x() + span - grid.origin.x, origin.y() + span - grid.origin.y,
-                          origin.z() + span - grid.origin.z};
+    // cost is the payload's own volume rather than the grid's. The window is
+    // taken in GRID coordinates — `span` is a radius and so survives the
+    // rotation unchanged.
+    const tf2::Vector3 origin_grid = grid_from_base * origin;
+    const double lo[3] = {origin_grid.x() - span, origin_grid.y() - span, origin_grid.z() - span};
+    const double hi[3] = {origin_grid.x() + span, origin_grid.y() + span, origin_grid.z() + span};
     const long size[3] = {sx, sy, sz};
     long first[3];
     long last[3];
@@ -254,9 +271,10 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
           if (grid.occupancy[idx] == 0) {
             continue;
           }
-          const tf2::Vector3 center(grid.origin.x + (static_cast<double>(ix) + 0.5) * res,
-                                    grid.origin.y + (static_cast<double>(iy) + 0.5) * res,
-                                    grid.origin.z + (static_cast<double>(iz) + 0.5) * res);
+          const tf2::Vector3 center =
+              base_from_grid * tf2::Vector3((static_cast<double>(ix) + 0.5) * res,
+                                            (static_cast<double>(iy) + 0.5) * res,
+                                            (static_cast<double>(iz) + 0.5) * res);
           if (surface_distance(prim, primitive_from_grid * center) > reach) {
             continue;
           }

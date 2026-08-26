@@ -75,6 +75,10 @@ _NEAREST_PROBE_MAX_PAIRS = 32
 # *surface*, so surface sampling is the right test (see
 # :func:`voxel_backing_record`).
 _VOXEL_BACKING_RAYS_PER_AXIS = 3
+# Tolerance on |q|^2 for a published grid orientation. Wide enough for a
+# quaternion that has been through a wire round-trip, far too tight for the
+# all-zero one an unset field carries.
+_QUAT_NORM_TOL = 1e-6
 # Ray start stand-off outside the cube face, as a fraction of the cell size.
 # Large enough that a surface lying exactly on the face is still struck,
 # small enough that geometry outside the cell is never attributed to it.
@@ -1162,6 +1166,29 @@ def _classify_voxel_hits(
     return out
 
 
+def _rot_from_quat_xyzw(quat: Sequence[float]) -> Any:
+    """3x3 rotation from ``(x, y, z, w)``, or ``None`` if it is not a rotation.
+
+    ``OccupancyVoxels.orientation`` defaults to the all-zero quaternion when a
+    producer never sets it, and that is not identity. Returning ``None`` lets
+    the caller refuse rather than silently probe an unrotated cube.
+    """
+    import numpy as np
+
+    q = np.asarray(list(quat), dtype=np.float64)
+    if q.shape != (4,) or not np.all(np.isfinite(q)) or abs(float(q @ q) - 1.0) > _QUAT_NORM_TOL:
+        return None
+    x, y, z, w = (float(v) for v in q)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
 def voxel_backing_record(
     model: Any,
     data: Any,
@@ -1173,6 +1200,7 @@ def voxel_backing_record(
     robot_body_ids: frozenset[int],
     attached_body_ids: frozenset[int] = frozenset(),
     base_frame_body: str | None = None,
+    grid_orientation_xyzw: Sequence[float] = (0.0, 0.0, 0.0, 1.0),
     rays_per_axis: int = _VOXEL_BACKING_RAYS_PER_AXIS,
 ) -> dict[str, object]:
     """What MuJoCo geometry, if any, backs one occupancy voxel.
@@ -1229,6 +1257,15 @@ def voxel_backing_record(
         attached_body_ids: currently carried payload bodies.
         base_frame_body: MJCF body the grid frame denotes. ``None`` treats the
             grid as already world-aligned (synthetic/world-frame grids).
+        grid_orientation_xyzw: the grid's own rotation, ``OccupancyVoxels
+            .orientation``. The published lattice is the OctoMap's, so its axes
+            are not ``base_frame``'s and this is what places a cell: a cell is
+            ``grid_origin + R * ((index + 0.5) * resolution)``, and the cube's
+            ray fans are cast along ``base_rot @ R``. Defaults to identity for
+            a caller building an axis-aligned grid itself; the all-zero value
+            an unset field carries is refused (``verdict`` ``"out_of_range"``),
+            never read as identity — a confident verdict about the wrong cube
+            is worse than none.
         rays_per_axis: rays per side of each face fan.
 
     Returns:
@@ -1272,7 +1309,18 @@ def voxel_backing_record(
     iy = (index // size[0]) % size[1]
     iz = index // (size[0] * size[1])
     origin = np.asarray(list(grid_origin), dtype=np.float64)
-    centre_base = origin + (np.array([ix, iy, iz], dtype=np.float64) + 0.5) * resolution
+    # ``OccupancyVoxels`` is an ORIENTED lattice — its cell axes are the source
+    # map's, not ``base_frame``'s — so the cell is built along the grid's axes
+    # and then carried into the base frame. Ignoring this probes a cube that is
+    # not the one the kernel stopped on, which is the difference between
+    # adjudicating a stop and inventing a verdict about it.
+    grid_rot = _rot_from_quat_xyzw(grid_orientation_xyzw)
+    if grid_rot is None:
+        record["verdict"] = "out_of_range"
+        record["reason"] = "grid_orientation is not a unit quaternion"
+        return record
+    local = (np.array([ix, iy, iz], dtype=np.float64) + 0.5) * resolution
+    centre_base = origin + grid_rot @ local
     rot = np.eye(3, dtype=np.float64)
     offset: Any = np.zeros(3, dtype=np.float64)
     if base_frame_body is not None:
@@ -1281,6 +1329,10 @@ def voxel_backing_record(
             rot = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
             offset = np.asarray(data.xpos[body_id], dtype=np.float64)
     centre_world = rot @ centre_base + offset
+    # The cube's own axes in world: the base body's rotation composed with the
+    # grid's. The ray fans below are cast along these, so a grid rotation left
+    # out here would sample a differently-oriented cube at the right centre.
+    cube_rot = rot @ grid_rot
     record["voxel_ijk"] = [int(ix), int(iy), int(iz)]
     record["base_xyz"] = [round(float(v), 6) for v in centre_base]
     record["world_xyz"] = [round(float(v), 6) for v in centre_world]
@@ -1289,7 +1341,7 @@ def voxel_backing_record(
         model,
         data,
         centre_world=centre_world,
-        rot=rot,
+        rot=cube_rot,
         resolution=resolution,
         rays_per_axis=rays_per_axis,
     )
@@ -1526,6 +1578,9 @@ def estop_ground_truth_snapshot(
             data,
             voxel_index=int(evidence_voxel["index"]),
             grid_origin=list(evidence_voxel.get("origin", (0.0, 0.0, 0.0))),
+            # The grid's lattice is the OctoMap's; without its rotation this
+            # probes a cube the kernel never stopped on.
+            grid_orientation_xyzw=list(evidence_voxel.get("orientation", (0.0, 0.0, 0.0, 1.0))),
             grid_resolution=float(evidence_voxel.get("resolution", 0.0)),
             grid_size=list(evidence_voxel.get("size", (0, 0, 0))),
             robot_body_ids=robot_body_ids,
@@ -3301,6 +3356,15 @@ class SimSensorBridge:
                 float(msg.origin.x),  # type: ignore[attr-defined]  # reason: ROS subscription type
                 float(msg.origin.y),  # type: ignore[attr-defined]  # reason: ROS subscription type
                 float(msg.origin.z),  # type: ignore[attr-defined]  # reason: ROS subscription type
+            ),
+            # The grid's lattice is the OctoMap's, so `origin` alone does not
+            # place a cell — a stop recorded without this rotation cannot be
+            # re-located afterwards, which is the whole job of this record.
+            "orientation": (
+                float(msg.orientation.x),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                float(msg.orientation.y),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                float(msg.orientation.z),  # type: ignore[attr-defined]  # reason: ROS subscription type
+                float(msg.orientation.w),  # type: ignore[attr-defined]  # reason: ROS subscription type
             ),
             "resolution": float(msg.resolution),  # type: ignore[attr-defined]  # reason: ROS subscription type
             "size": (

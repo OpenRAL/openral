@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from openral_core.schemas import DetectedObject, IntrinsicsPinhole, ObjectDetection2D, Pose6D
 from openral_world_state.object_lift import (
+    ObjectsLiftError,
     VoxelFrustumLifter,
     aabb_iou_3d,
     build_in_fov_predicate,
@@ -57,6 +60,42 @@ def test_decode_occupied_centers_origin_offset_and_empty():
         origin=(1.0, 1.0, 1.0), resolution=0.5, size_xyz=(1, 1, 1), occupancy=bytes([7])
     )
     assert np.allclose(one[0], [1.25, 1.25, 1.25])
+
+
+def test_decode_occupied_centers_applies_the_grids_orientation():
+    """The grid's lattice is the OctoMap's, so its axes are not base_frame's.
+
+    ``OccupancyVoxels`` carries the rotation precisely so the bridge can publish
+    one cell per map voxel instead of dilating the map onto a base-aligned
+    lattice (issue #173). A consumer that ignores it lifts every object into a
+    place the obstacle is not, whenever the base is not map-aligned.
+    """
+    # 90 degrees about +z: the grid's +x runs along the base frame's +y.
+    quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    centers = decode_occupied_centers(
+        origin=(0.0, 0.0, 0.0),
+        resolution=0.1,
+        size_xyz=(2, 1, 1),
+        occupancy=bytes([0, 1]),
+        orientation_xyzw=quat,
+    )
+    assert np.allclose(centers[0], [-0.05, 0.15, 0.05])
+
+
+def test_decode_occupied_centers_refuses_an_unset_orientation():
+    """All-zeros is what an unset field carries, and it is not identity.
+
+    Reading it as identity would place obstacles somewhere the robot is not,
+    which is a fail-OPEN misread of the world — so it is refused, not defaulted.
+    """
+    with pytest.raises(ObjectsLiftError, match="unit quaternion"):
+        decode_occupied_centers(
+            origin=(0.0, 0.0, 0.0),
+            resolution=0.1,
+            size_xyz=(1, 1, 1),
+            occupancy=bytes([1]),
+            orientation_xyzw=(0.0, 0.0, 0.0, 0.0),
+        )
 
 
 def test_decode_occupied_centers_length_mismatch_raises():

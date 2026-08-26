@@ -133,13 +133,17 @@ def _make_robot_desc() -> Any:
 
 def _make_voxels_msg(helper: Any) -> Any:
     """Build an OccupancyVoxels message with a solid 5×5×5 cube at (0,0,2)."""
-    from geometry_msgs.msg import Point  # type: ignore[import-untyped]
+    from geometry_msgs.msg import Point, Quaternion  # type: ignore[import-untyped]
     from openral_msgs.msg import OccupancyVoxels  # type: ignore[import-untyped]
 
     msg = OccupancyVoxels()
     msg.header.stamp = helper.get_clock().now().to_msg()
     msg.header.frame_id = "base_link"
     msg.origin = Point(x=_VOX_ORIGIN[0], y=_VOX_ORIGIN[1], z=_VOX_ORIGIN[2])
+    # Synthetic base-aligned lattice: `OccupancyVoxels` is oriented, and its
+    # unset orientation is the all-zero quaternion, which the lift refuses
+    # rather than reads as identity.
+    msg.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
     msg.resolution = _VOX_RES
     sx, sy, sz = _VOX_SIZE
     msg.size_x = sx

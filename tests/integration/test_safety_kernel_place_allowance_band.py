@@ -301,6 +301,11 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                     grid.header.frame_id = "base"
                     grid.header.stamp = helper.get_clock().now().to_msg()
                     grid.origin = Point(x=_GRID_ORIGIN_M, y=_GRID_ORIGIN_M, z=_GRID_ORIGIN_M)
+                    # A synthetic base-aligned lattice. `OccupancyVoxels` is an
+                    # oriented grid, and its unset orientation is the all-zero
+                    # quaternion, which every consumer refuses rather than
+                    # reading as identity — so say identity.
+                    grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
                     grid.resolution = _RESOLUTION_M
                     grid.size_x = _GRID_N
                     grid.size_y = _GRID_N

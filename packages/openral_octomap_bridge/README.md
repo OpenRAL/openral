@@ -1,8 +1,16 @@
 # openral_octomap_bridge
 
-Lowers a **3-D OctoMap** into the safety kernel's dense, base-frame
+Lowers a **3-D OctoMap** into the safety kernel's dense
 `openral_msgs/OccupancyVoxels` grid for the kernel's allocation-free
 capsule-vs-voxel world-collision check.
+
+The grid is published **on the OctoMap's own lattice**, one cell per octree
+cell, with the rotation carried in `OccupancyVoxels.orientation`. It is not
+base-aligned, and it stopped being so on 2026-08-25: re-expressing one lattice
+on another is sound only if every cell the map voxel's volume enters is marked,
+and that dilation was measured holding 48 % of the live start-state E-stops
+([#173](https://github.com/OpenRAL/openral/issues/173)). See "How a cell becomes
+occupied" below.
 
 The field runs this file cites by round (round-5's grid timeline, the 2026-08-13
 lattice phase, the `robocasa_drawer_utensil` rasterization measurement) are
@@ -22,66 +30,102 @@ kernel rasterizes capsules against.
 octomap_msgs/Octomap (map frame)          openral_msgs/WorldStateStamped
    │  msgToMap → octomap::OcTree             │  .attached_objects
    │  tf2: octomap_frame ← base_frame        │  tf2: base_frame ← attach_link
-   │  crop + rasterize the local box         │
+   │  cover a ball around the robot,         │
+   │  on the octree's own lattice            │
    ▼                                         ▼
    │                                         │  .support_contact (ADR-0092 D6)
    └───────────▶ clear_attached_payload_cells (the payload leaves the map,
    ▼                                          the attested support patch stays)
-openral_msgs/OccupancyVoxels (base frame, /openral/world_voxels)
+openral_msgs/OccupancyVoxels (origin+orientation in base_frame,
+                              cell axes the octree's, /openral/world_voxels)
    ▼
 C++ safety kernel  ──  check_voxel_collision (allocation-free)
 ```
 
-## How a cell becomes occupied: overlap, not sampling
+## How a cell becomes occupied: the grid's lattice IS the octree's
 
-A base cell is marked occupied when **its cube shares volume with an occupied
-octree leaf's cube**. Not when its centre point-queries occupied — that was the
-rule until 2026-08-16, and it is a sampling rule applied across two independent
-lattices:
+**One published cell is one octree cell** — same size, same phase, same axes.
+The grid carries the octree's occupied volume exactly: it neither loses
+occupancy nor adds any, and marking a leaf is integer index arithmetic.
 
-* the octree's lattice is fixed in the OctoMap's frame (`map` / `odom`);
-* the grid's is fixed in `base_frame` and rides the robot.
+The rotation that makes this possible rides on the wire, in
+`OccupancyVoxels.orientation`. `origin` + `orientation` are the pose, in
+`header.frame_id`, of cell (0,0,0)'s minimum corner, and **the cell axes are
+`orientation`'s, not `header.frame_id`'s**. Consumers apply it; nobody
+re-rasterizes.
 
-Their relative phase is therefore whatever the robot's pose makes it, and a
-single sample per cell snaps every surface onto whichever lattice the centre
-happened to land on. On the `robocasa_drawer_utensil` field run — 25 mm cells,
-a measured phase of ~12.1 mm, almost exactly half a cell — a cabinet door
-panel whose true front face is at base x = +0.0614 came out with its outermost
-occupied column at x ∈ [0.025, 0.050), **a full voxel closer to the robot**, and
-**zero cells where the panel actually is**. The best rigid shift between the
-recorded map and a ground-truth rasterization of the same camera at the same
-pose was exactly (−1, 0, 0) cells. The z axis was benign on that run only by
-luck of its own phase.
+### Why not a base-aligned grid
 
-Overlap has no phase. Every cell the occupied volume enters is marked, for every
-relative phase and (on a mobile base) every relative yaw — the cell-vs-leaf test
-is an exact separating-axis test between the two cubes, so a yawed lattice is
-not bounded by its axis-aligned box either.
+Two rules preceded this one, and both failed in ways worth not repeating.
 
-**It only ever adds cells.** A cell centre inside a leaf is a cube overlapping
-that leaf, by at least half a cell on every axis, so nothing centre sampling
-marked can fall out. `OctreeToGrid.EveryPhaseAndYawKeepsEveryCellTheCentreSample
-WouldHaveMarked` sweeps phases and yaws over a real kitchen octree and asserts
-exactly that containment, against the old predicate transcribed into the test.
+Until 2026-08-16 a base cell was marked when its **centre** point-queried
+occupied. That is a sampling rule across two independent lattices — the
+octree's fixed in `map`/`odom`, the grid's fixed in `base_frame` and riding the
+robot — so their relative phase is whatever the robot's pose makes it, and one
+sample per cell snaps every surface onto whichever lattice the centre landed on.
+On the `robocasa_drawer_utensil` field run (25 mm cells, a measured ~12.1 mm
+phase, almost exactly half a cell) a cabinet door panel whose true front face is
+at base x = +0.0614 came out with its outermost occupied column at
+x ∈ [0.025, 0.050) — **a full voxel closer to the robot** — and **zero cells
+where the panel actually is**.
 
-**And it does not dilate.** Overlap is *strict*: cubes that merely touch share
-no volume and do not mark each other, so a grid whose lattice is in phase with
-the octree's rasterizes bit-for-bit as it did before
-(`APhaseAlignedGridRasterizesExactlyAsCentreSamplingDid`). What it costs is half
-a grid cell of extra forward reach: the frontmost marked cell's centre can now
-sit up to `tree resolution + half a grid cell` in front of a surface, where the
-centre rule's bound was one tree resolution.
+**Overlap** replaced it: mark every base cell whose cube shares volume with an
+occupied leaf's. That is correct, and it is the *minimum sound* cover for a
+base-aligned output — a cell overlapping the leaf might be the one holding the
+surface, so a sound cover must include it. The rule was not the problem.
 
-Cost went **down**, because the work is now proportional to the occupied leaves
-in the box rather than to its cell count: on the reference host, a 2 m box over
-a kitchen octree fell from 2.3 ms to 0.26 ms at 50 mm cells, and from 15.2 ms to
-0.30 ms at 25 mm (64000 / 512000 cells, 6036 occupied leaves).
+The problem is that soundness for that **format** costs a dilation, and
+[issue #173](https://github.com/OpenRAL/openral/issues/173) measured what it
+cost: **29–35 mm of median extra reach on 25 mm cells, 40 mm worst case**,
+holding **48% of the live start-state E-stops**. Two directions were measured
+and rejected before this one:
+
+* *snap the grid's origin to the octree's when the yaw is ~0* — works only at
+  exact multiples of 90°; **half a degree of yaw restores the full 25 mm**, so
+  it is a sim-only knife-edge and does nothing on a real `odom`;
+* *shrink the effective leaf half-extent* — at 0.75× it buys 12 % of the
+  dilation and already leaves **9.9 % of the leaf uncovered** in the worst case.
+  That is protection given up, not a phase fixed.
+
+Since the dilation belongs to the format and not the algorithm, the format is
+what changed. There is no phase and no yaw left to be exact about.
+
+`OctreeToGrid.TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw` sweeps phases and
+yaws over a real kitchen octree and asserts both halves — nothing missing (an
+obstacle lost) and nothing extra (reach surrendered) — which is strictly
+stronger than the containment property the overlap rule could promise.
+
+Cost is proportional to the occupied leaves in the volume rather than to its
+cell count, and marking a leaf is now integer arithmetic rather than a
+separating-axis test per candidate cell, so it can only have got cheaper than
+the overlap rule's measured 0.26–0.30 ms.
 `RasterizingTheKitchenStaysInsideThePublishBudget` holds it to a quarter of the
 10 Hz publish period.
 
+## What the grid covers: a ball, and one sized by the robot
+
+`coverage_radius_m` and `coverage_center_*` name a **ball** in `base_frame`, not
+a box. The grid's axes are the map's, so they turn relative to `base_frame` as
+the robot does: a base-frame box would need its rotated bounding box covered,
+which costs up to 2× the cells at 45° and makes the cell count depend on which
+way the robot happens to be pointing. A ball is invariant —
+`ceil(2·radius/resolution)³` cells at every yaw.
+
+The radius must reach wherever the safety kernel's **checked geometry** can go.
+That is a property of the robot's manifest, not of this node, so **there is no
+default that publishes**: unset, the node logs an error and publishes nothing.
+
+This inverts how the volume used to be chosen. The old sim box was 1.6 m
+because that is what fit the kernel's then 262,144-cell cap — and measured over
+its joint limits against the manifest's own `collision_geometry`,
+panda_mobile's checked arm reaches **1016 mm** from the grid centre, so up to
+**124 mm** of it sat outside the published grid, where the world check sees
+nothing at all. `sim_e2e.launch.py` now covers 1.05 m and the kernel's cap is
+sized to hold it.
+
 ### The ≤1-resolution inflation toward the sensor is octomap's, and stays
 
-The grid inherits one more source of forward error that this node does **not**
+The grid inherits one source of forward error that this node does **not**
 correct: `insertPointCloud` marks the cell **containing the ray endpoint**, and
 that cell already reaches up to one tree resolution in front of the true
 surface. It is inherent to storing a surface in a voxel lattice at all, it is
@@ -89,11 +133,15 @@ upstream of this bridge (`octomap_server`'s octree, which Nav2 / SLAM / the
 dashboard read directly too), and correcting it here would mean second-guessing
 the map with sensor geometry this node does not have.
 
-So: a published grid can report a surface up to one tree resolution + half a
-grid cell nearer than it is, and that is the map's discretisation, not a bug in
-the lowering. Chasing it belongs upstream, in how the octree is built. The
-direction is the safe one — the robot stops early, never late — and the payload
-clearing's reaches (below) are measured against the same lattice slop.
+So: a published grid can report a surface up to one tree resolution nearer than
+it is, and that is the map's discretisation, not a bug in the lowering. It is
+now the *whole* forward error — the lowering adds nothing to it, where the
+overlap rule added up to a further cell — and
+`TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase` pins
+that bound across the full relative phase. Chasing what remains belongs
+upstream, in how the octree is built. The direction is the safe one — the robot
+stops early, never late — and the payload clearing's reaches (below) are
+measured against the same lattice slop.
 
 ## The attached payload leaves world occupancy here
 

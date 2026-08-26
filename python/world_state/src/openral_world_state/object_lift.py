@@ -33,6 +33,10 @@ __all__ = [
 
 # Numerical guards.
 _DEPTH_EPS = 1e-6  # minimum +z (metres) for a voxel/point to be "in front" of the camera
+# Tolerance on |q|^2 for a grid orientation. Wide enough for a quaternion that
+# has been through a wire round-trip, far too tight for the all-zero one an
+# unset field carries.
+_QUAT_NORM_TOL = 1e-6
 
 
 class ObjectsLiftError(ValueError):
@@ -75,28 +79,51 @@ def decode_occupied_centers(
     resolution: float,
     size_xyz: tuple[int, int, int],
     occupancy: bytes,
+    orientation_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
 ) -> NDArray[np.float64]:
-    """Occupied-voxel centers ``(N, 3)`` in the grid frame.
+    """Occupied-voxel centers ``(N, 3)`` in the grid's reference frame.
 
-    Cell ``(ix, iy, iz)`` center is ``origin + (index + 0.5) * resolution``. A
-    cell is occupied when its byte is non-zero.
+    Cell ``(ix, iy, iz)``'s center is ``origin + R * ((index + 0.5) *
+    resolution)``, where ``R`` is ``orientation_xyzw``. A cell is occupied when
+    its byte is non-zero.
+
+    ``openral_msgs/OccupancyVoxels`` is an ORIENTED lattice: its cell axes are
+    the source map's, not ``header.frame_id``'s, so the rotation is part of
+    placing a cell and not decoration. Dropping it puts every returned center in
+    the wrong place whenever the robot is not aligned with the map.
 
     Args:
-        origin: ``(x, y, z)`` grid origin (corner of cell ``(0, 0, 0)``) in
-            metres.
+        origin: ``(x, y, z)`` position of cell ``(0, 0, 0)``'s minimum corner,
+            in ``header.frame_id``, in metres.
         resolution: Edge length of a cubic voxel in metres.
         size_xyz: Grid dimensions ``(size_x, size_y, size_z)`` in voxels.
         occupancy: Flat occupancy buffer, one byte per voxel, row-major with x
             fastest: ``idx = ix + size_x * (iy + size_y * iz)``. Non-zero byte
             means occupied.
+        orientation_xyzw: Grid orientation as ``(x, y, z, w)``. Defaults to
+            identity for callers building an axis-aligned grid themselves;
+            a caller decoding a wire message must pass the message's own, and
+            an all-zero quaternion (the unset default) is rejected rather than
+            read as identity.
 
     Returns:
-        A ``(N, 3)`` float64 array of occupied-voxel centers in the grid frame,
-        or shape ``(0, 3)`` when none are occupied.
+        A ``(N, 3)`` float64 array of occupied-voxel centers in the grid's
+        reference frame, or shape ``(0, 3)`` when none are occupied.
 
     Raises:
         ObjectsLiftError: If ``len(occupancy)`` does not equal
-            ``size_x * size_y * size_z``.
+            ``size_x * size_y * size_z``, or ``orientation_xyzw`` is not a unit
+            quaternion.
+
+    Example:
+        >>> centers = decode_occupied_centers(
+        ...     origin=(0.0, 0.0, 0.0),
+        ...     resolution=0.1,
+        ...     size_xyz=(2, 1, 1),
+        ...     occupancy=bytes([0, 1]),
+        ... )
+        >>> [round(float(v), 3) for v in centers[0]]
+        [0.15, 0.05, 0.05]
     """
     sx, sy, sz = size_xyz
     expected = sx * sy * sz
@@ -105,6 +132,13 @@ def decode_occupied_centers(
         raise ObjectsLiftError(
             f"occupancy length {arr.size} != size_x*size_y*size_z {expected}",
         )
+    quat = np.asarray(orientation_xyzw, dtype=np.float64)
+    norm2 = float(quat @ quat)
+    if not np.isfinite(norm2) or abs(norm2 - 1.0) > _QUAT_NORM_TOL:
+        raise ObjectsLiftError(
+            f"orientation {orientation_xyzw!r} is not a unit quaternion "
+            "(an unset OccupancyVoxels.orientation is all zeros, not identity)",
+        )
     occ = np.nonzero(arr)[0]
     if occ.size == 0:
         return np.empty((0, 3), dtype=np.float64)
@@ -112,7 +146,17 @@ def decode_occupied_centers(
     iy = (occ // sx) % sy
     iz = occ // (sx * sy)
     idx = np.stack([ix, iy, iz], axis=1).astype(np.float64)
-    return np.asarray(origin, dtype=np.float64) + (idx + 0.5) * float(resolution)
+    local = (idx + 0.5) * float(resolution)
+    x, y, z, w = quat
+    rot = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+    return np.asarray(origin, dtype=np.float64) + local @ rot.T
 
 
 def depth_cloud_to_centers_base(

@@ -38,6 +38,7 @@ Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -305,6 +306,69 @@ def test_the_cell_is_located_through_the_base_frame_not_the_world() -> None:
     assert pytest.approx(1.25, abs=1e-6) == (
         driven["world_xyz"][0] - parked["world_xyz"][0]  # type: ignore[index]
     )
+
+
+def test_the_grids_own_rotation_places_the_cell() -> None:
+    """``OccupancyVoxels`` is an oriented lattice, so its rotation locates cells.
+
+    The grid is published on the OctoMap's lattice, whose axes turn relative to
+    ``base_frame`` as the robot does. A probe that ignores that rotation
+    interrogates a cube the kernel never stopped on — it would still return a
+    confident verdict, about the wrong place, which is worse than no verdict.
+    """
+    model, data = _model_data()
+    # +90 degrees about z: the grid's +x runs along the base frame's +y.
+    quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    index = _index_at((0.115, 0.0, 0.145))
+    aligned = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    rotated = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=_GRID_ORIGIN,
+        grid_orientation_xyzw=quat,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    assert rotated["base_xyz"] != aligned["base_xyz"], (
+        "the same index on a rotated lattice is a different point"
+    )
+    # The cell offset from origin rotates: (dx, dy) -> (-dy, dx).
+    ox, oy, _ = _GRID_ORIGIN
+    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]
+    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]
+    assert pytest.approx(-(ay - oy) + ox, abs=1e-6) == rx
+    assert pytest.approx((ax - ox) + oy, abs=1e-6) == ry
+    assert pytest.approx(az, abs=1e-9) == rz
+
+
+def test_an_unset_grid_orientation_is_refused_not_read_as_identity() -> None:
+    """All-zeros is what an unset field carries, and it is not a rotation."""
+    model, data = _model_data()
+    record = voxel_backing_record(
+        model,
+        data,
+        voxel_index=_index_at((0.115, 0.0, 0.145)),
+        grid_origin=_GRID_ORIGIN,
+        grid_orientation_xyzw=(0.0, 0.0, 0.0, 0.0),
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    assert record["verdict"] == "out_of_range"
+    assert record["rays_cast"] == 0
 
 
 def test_an_index_outside_the_grid_is_refused_not_guessed() -> None:

@@ -10,6 +10,27 @@ limb stops a kitchen) and to [tight link geometry](collision-tight-geometry.md)
 from true surfaces and both flag that as unmeasured against the live octomap.
 **This page measures the live octomap.**
 
+> **Superseded in part (2026-08-25).** The largest world-side term this page
+> isolated — the octree→grid cube-overlap dilation, [issue #173](https://github.com/OpenRAL/openral/issues/173),
+> 48 % of the live start-state stops — **no longer exists**. It was not narrowed:
+> the overlap rule was already the *minimum sound* cover for a base-aligned
+> grid, so the grid stopped being base-aligned. `/openral/world_voxels` is now
+> published on the OctoMap's own lattice, one cell per octree cell, with the
+> rotation carried in `OccupancyVoxels.orientation`, and the published obstacle
+> set is the octree's occupied volume exactly.
+>
+> Two directions this page's issue floated were measured and rejected first:
+> snapping the grid origin when the yaw is ~0 (works only at exact multiples of
+> 90° — half a degree restores the full 25 mm, so it is a sim-only knife-edge),
+> and shrinking the effective leaf half-extent (at 0.75× it buys 12 % of the
+> dilation and leaves 9.9 % of the leaf uncovered in the worst case — protection
+> given up, not a phase fixed).
+>
+> Everything else on this page stands as measured, including the quantisation
+> and sensor-phantom terms and the non-collidable-geometry finding
+> ([#174](https://github.com/OpenRAL/openral/issues/174)). The apportionment
+> below is the state of the map **before** that change.
+
 ## The question
 
 [PR #161](https://github.com/OpenRAL/openral/pull/161) closed on three

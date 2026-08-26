@@ -138,9 +138,23 @@ def _octomap_resolution(hal_mode: str) -> float:
     return 0.025 if hal_mode == "sim" else 0.05
 
 
-def _octomap_box_size(hal_mode: str) -> float:
-    """Keep the finer sim grid within the kernel's fixed 262,144-cell cap."""
-    return 1.6 if hal_mode == "sim" else 2.0
+def _octomap_coverage_radius() -> float:
+    """How far from the grid centre the world map has to reach.
+
+    Sized by the ROBOT, not by the cell cap — that inversion is what the old
+    1.6 m sim box encoded ("keep the finer sim grid within the kernel's fixed
+    262,144-cell cap"), and it left panda_mobile's kernel-checked arm reaching
+    up to 124 mm outside the published grid, where the world check sees nothing
+    at all. Measured over the arm's joint limits against the manifest's own
+    ``collision_geometry``, the checked links reach 1016 mm from the grid
+    centre; 1.05 m carries that with a small margin.
+
+    A radius, not a box, because the grid's lattice is the OctoMap's: its axes
+    turn relative to ``base_frame`` as the robot does, and only a ball is
+    invariant to that. It is also why this no longer varies with ``hal_mode`` —
+    reach is a property of the arm, the same one in sim and on hardware.
+    """
+    return 1.05
 
 
 def _attached_collision_enabled(hal_mode: str) -> bool:
@@ -822,7 +836,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # manipulation; exact OBB-vs-cube overlap still E-stops. Real
             # deploy keeps 2 cm.
             "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
-            "world_voxel_max_cells": 262144,
+            # 85^3, the worst case for `_octomap_coverage_radius()` at the sim's
+            # 25 mm cells including the one cell per axis the lattice snap can
+            # add. See the kernel's own default for what this reserves.
+            "world_voxel_max_cells": 614125,
             "world_voxel_deadline_ms": 1000.0,
         }
 
@@ -1498,9 +1515,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "octomap_topic": "/octomap_binary",
                     "output_topic": "/openral/world_voxels",
                     "resolution": _octomap_resolution(hal_mode),
-                    "box_size_x": _octomap_box_size(hal_mode),
-                    "box_size_y": _octomap_box_size(hal_mode),
-                    "box_size_z": _octomap_box_size(hal_mode),
+                    "coverage_radius_m": _octomap_coverage_radius(),
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,

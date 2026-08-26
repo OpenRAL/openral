@@ -639,6 +639,10 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
   // capsule at (0.3,0,0) lands inside; the base capsule at the origin (x<0.2)
   // does not, so only the base-frame-corrected arm pose can trigger a hit.
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.1;
   vox.size_x = 8;
   vox.size_y = 4;
@@ -788,6 +792,10 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceNamesTheVoxelItsDistanceDescribes) 
   exec.add_node(helper.get_node_base_interface());
 
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.1;
   vox.size_x = 4;
   vox.size_y = 1;
@@ -901,6 +909,10 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictiveCatchesChunkDrivingEeIntoWal
   // z in [-0.15,0.15] @ 0.1 m. The EE starts at (1,1,0) — clear (y=1 < 1.3); a
   // +y chunk drives it into the wall.
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.1;
   vox.size_x = 20;
   vox.size_y = 20;
@@ -1034,6 +1046,10 @@ TEST_F(LifecycleKernelTest, CartesianDeltaFirstStepUsesConfiguredMargin) {
   // then applies scale 0.1, so the chunk stays clear. Ignoring either
   // clipping or scale drives the prediction into the wall.
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.1;
   vox.size_x = 20;
   vox.size_y = 25;
@@ -1186,6 +1202,10 @@ void run_multistep_cartesian_predict(const std::string& node_name, double wall_f
   // grid spans x∈[0.5,1.5], y∈[0.9,2.0], z∈[-0.15,0.15] = 2640 cells: the whole
   // predicted EE path is inside it.
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.05;
   vox.size_x = 20;
   vox.size_y = 22;
@@ -1381,6 +1401,10 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   // half-length 0.05) sits INSIDE the wall at the measured configuration, so
   // the reactive check fires before any look-ahead step is evaluated.
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.resolution = 0.1;
   vox.size_x = 20;
   vox.size_y = 20;
@@ -1885,6 +1909,10 @@ std::vector<rclcpp::Parameter> place_declaration_params() {
 // the base frame the region is declared in.
 openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
   openral_msgs::msg::OccupancyVoxels vox;
+  // Identity: a base-aligned synthetic lattice. `OccupancyVoxels` is oriented,
+  // and an unset orientation is the all-zero quaternion, which the ingest
+  // refuses -- leaving this test asserting a fault it never meant to cause.
+  vox.orientation.w = 1.0;
   vox.header.frame_id = "base_link";
   vox.resolution = 0.025;
   vox.size_x = 1;
