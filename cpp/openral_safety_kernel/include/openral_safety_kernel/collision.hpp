@@ -255,6 +255,49 @@ inline constexpr double place_approach_allowance_cap(double resolution) noexcept
   return scaled < kMaxPlaceApproachAllowanceM ? scaled : kMaxPlaceApproachAllowanceM;
 }
 
+/// How far PAST the approach allowance a declared payload's world contact may
+/// read before it stops being refusable and becomes a latched stop (#176).
+///
+/// Sized by the measured OVERSHOOT, not by a voxel multiple, and the difference
+/// matters. The approach allowance is calibrated for a payload *reaching* its
+/// support through a voxel-inflated opening; a payload that has *arrived* reads
+/// a little deeper still, for reasons that are all map discretisation and none
+/// of them force. On the 2026-08-26 `oriented-grid-2` round the baguette place
+/// read **−38.22 mm** against a 37.5 mm allowance — **0.72 mm** over — while the
+/// ground-truth probe measured the physical contact at **−1.4 mm**.
+///
+/// 0.2 voxels (5 mm on sim's 25 mm grid) is ~7x that overshoot, which is the
+/// headroom a calibration deserves, and it is deliberately NOT larger. Per-cell
+/// penetration saturates near the allowance itself — measured, the deepest
+/// reachable payload-vs-cell reading is −37.50 mm at 25 mm and −50.00 mm at
+/// 50 mm — so a band of a full voxel would cover the entire reachable range and
+/// the depth bound would stop bounding anything. At 0.2 voxels real depth still
+/// latches on both lattices.
+///
+/// The band is NOT permission to penetrate. A reading inside it refuses the
+/// candidate action; it just refuses it the way a controller refuses an
+/// unreachable pose, rather than by latching a fault the operator must reset.
+/// Past the band, the stop is exactly the latched one it is today.
+inline constexpr double kPlaceAdvisoryDepthVoxels = 0.2;
+
+/// Absolute ceiling on that band, the same two-number construction (and the
+/// same reason) as `kMaxPlaceApproachAllowanceM`: a coarser map must never buy
+/// a wider advisory band, only a narrower one. 5 mm holds the band at 5 mm on
+/// both the sim and real lattices, so the reachable depth past it — where a
+/// stop still latches — does not shrink as the map coarsens.
+inline constexpr double kMaxPlaceAdvisoryDepthM = 0.005;
+
+/// The advisory band at a given live voxel `resolution` — `min(0.2 × voxel,
+/// 5 mm)`, and `0.0` for an unusable resolution (which collapses the band and
+/// leaves today's latched stop).
+inline constexpr double place_advisory_depth(double resolution) noexcept {
+  if (!(resolution > 0.0)) {
+    return 0.0;
+  }
+  const double scaled = kPlaceAdvisoryDepthVoxels * resolution;
+  return scaled < kMaxPlaceAdvisoryDepthM ? scaled : kMaxPlaceAdvisoryDepthM;
+}
+
 /// Sanity bound on one side of a declared place region. A declaration names ONE
 /// receptacle, not a room, so a half-extent past this is a producer error and
 /// buys no allowance at all (fail-closed toward the unchanged margin).
@@ -368,6 +411,16 @@ struct VoxelGrid {
 /// scoped place approach allowance had *reduced*, so an operator reading the
 /// evidence knows the stop happened inside a declared region at a reduced
 /// margin. `min_distance` stays the pair's true surface distance either way.
+/// `advisory` narrows what a hit *licenses the caller to do*, and nothing else.
+/// It is true only for the one class in issue #176: an attached payload against
+/// world occupancy, inside its own declared place region, at a depth past the
+/// approach allowance but still inside `kPlaceAdvisoryDepthVoxels` of it. The
+/// caller refuses the candidate action without latching a fault or asserting
+/// E-stop, and bounds how many times in a row it will do so.
+///
+/// It is never set for a robot link, never outside a live declaration, and
+/// never past that depth — every one of those stays the latched stop it is
+/// today. `hit` is still true: an advisory hit is a refusal, not a pass.
 struct CollisionHit {
   bool hit{false};
   int link_a{-1};
@@ -375,6 +428,7 @@ struct CollisionHit {
   double min_distance{0.0};        ///< the reported pair's surface distance (clearance if no hit)
   double sweep_min_distance{0.0};  ///< minimum over every checked pair, gated or exempted
   bool place_allowance_active{false};  ///< the reported pair's margin was reduced by the allowance
+  bool advisory{false};                ///< refusable without a latch (see above)
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
