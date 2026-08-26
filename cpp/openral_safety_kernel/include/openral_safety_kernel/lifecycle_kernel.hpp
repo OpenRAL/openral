@@ -322,6 +322,12 @@ private:
   std::uint64_t chunks_passed_{0};
   std::uint64_t chunks_dropped_{0};
   std::string last_drop_reason_;
+  /// Consecutive advisory refusals (#176) — a payload contact inside its own
+  /// declared place region, refused without latching. Reset by any accepted
+  /// chunk; at `place_advisory_max_consecutive_` the next one latches like any
+  /// other stop, so a robot cannot sit in the band shoving a shelf forever.
+  std::uint64_t advisory_refusals_{0};
+  std::uint64_t place_advisory_max_consecutive_{0};
 
   // ADR-0096 — the current /openral/safety_status value, kept as a reusable
   // member so transitions do not build a message from scratch. Default

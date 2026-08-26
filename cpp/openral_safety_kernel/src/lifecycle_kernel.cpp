@@ -231,6 +231,16 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // total-touch-link caps are enforced independently and fail closed.
   this->declare_parameter<bool>("attached_collision_enabled", false);
   this->declare_parameter<double>("attached_collision_margin_m", 0.0);
+  // How many consecutive advisory refusals (#176) the kernel will issue before
+  // treating the next one as an ordinary latched stop. 0 disables the band
+  // entirely and restores the pre-#176 behaviour exactly — which is the value
+  // to set if a deployment wants no part of it.
+  //
+  // 3 is small on purpose. The band exists so a place that has ARRIVED is not
+  // an operator-reset event; it is not there to let a skill push repeatedly. A
+  // skill that cannot get out of the band in three attempts is not grazing the
+  // receptacle, and the fourth refusal latches.
+  this->declare_parameter<std::int64_t>("place_advisory_max_consecutive", 3);
   this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
   // Physical slack added to an ATTESTED support-contact depth (ADR-0092 D6) —
   // FK and pose noise, not voxel quantisation, which the witness predicate
@@ -770,6 +780,38 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         ++chunks_dropped_;
+        // The advisory band (#176): a declared payload's own receptacle contact
+        // is refused, not latched — the chunk is dropped and the skill may try
+        // again, instead of the operator having to call /openral/estop_reset
+        // over a contact the ground truth measures in single millimetres.
+        //
+        // Bounded three ways, and any of them failing gives today's stop:
+        // `hit.advisory` is only ever set for an attached payload inside its
+        // own live declaration and within one voxel of the approach allowance;
+        // the run of refusals is capped; and every other check in this function
+        // reaches the same `report` with `advisory == false`.
+        if (hit.advisory && advisory_refusals_ < place_advisory_max_consecutive_) {
+          ++advisory_refusals_;
+          last_drop_reason_ = "collision_advisory";
+          publish_collision_failure(*msg, kind, a, b, step, hit.min_distance);
+          RCLCPP_WARN(this->get_logger(),
+                      "safety.collision_advisory kind=%s a=%s b=%s step=%d min_distance_m=%g "
+                      "sweep_min_distance_m=%g place_target=%s consecutive=%llu/%llu "
+                      "(action refused, no latch)",
+                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
+                      place_declaration_target_.c_str(),
+                      static_cast<unsigned long long>(advisory_refusals_),
+                      static_cast<unsigned long long>(place_advisory_max_consecutive_));
+          span->SetAttribute("safety.severity", "advisory");
+          span->SetAttribute("safety.drop_reason", "collision_advisory");
+          span->SetAttribute("safety.violation_value", hit.min_distance);
+          span->SetAttribute("safety.sweep_min_distance_m", hit.sweep_min_distance);
+          span->SetAttribute("safety.place_allowance_active", hit.place_allowance_active);
+          span->SetAttribute("safety.advisory_consecutive",
+                             static_cast<int64_t>(advisory_refusals_));
+          span->End();
+          return;
+        }
         last_drop_reason_ = "collision";
         fault_latch_ = true;
         last_estop_at_ = std::chrono::steady_clock::now();
@@ -1014,6 +1056,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                       msg->rskill_id, msg->trace_id);
     safe_pub_->publish(*msg);
     ++chunks_passed_;
+    // An accepted chunk is what "the payload backed off" looks like from here,
+    // so the advisory run (#176) starts again. Only an unbroken run of refusals
+    // counts toward the cap; a skill that alternates progress with the odd
+    // in-receptacle graze is making progress, not shoving.
+    advisory_refusals_ = 0;
     span->SetAttribute("safety.severity", "info");
     span->End();
     return;
@@ -1347,6 +1394,15 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   // hot path never allocates.
   attached_collision_enabled_ = this->get_parameter("attached_collision_enabled").as_bool();
   attached_collision_margin_m_ = this->get_parameter("attached_collision_margin_m").as_double();
+  {
+    const std::int64_t advisory_cap =
+        this->get_parameter("place_advisory_max_consecutive").as_int();
+    // A negative cap is a misconfiguration, and the safe reading of one is "no
+    // advisory band" rather than "an unbounded one".
+    place_advisory_max_consecutive_ =
+        advisory_cap > 0 ? static_cast<std::uint64_t>(advisory_cap) : 0U;
+  }
+  advisory_refusals_ = 0;
   attached_collision_deadline_s_ =
       this->get_parameter("attached_collision_deadline_ms").as_double() / 1000.0;
   attached_max_objects_ =

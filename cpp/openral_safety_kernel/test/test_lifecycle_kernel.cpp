@@ -1935,7 +1935,8 @@ openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
 openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachment_stamp_ns,
                                                           std::int64_t declaration_stamp_ns,
                                                           double timeout_s, bool carrying = true,
-                                                          std::uint64_t revision = 1) {
+                                                          std::uint64_t revision = 1,
+                                                          double payload_x = 0.10) {
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = attachment_stamp_ns;
   msg.attachment_revision = revision;
@@ -1944,7 +1945,11 @@ openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachmen
     openral_msgs::msg::AttachedCollisionObject obj;
     obj.object_id = "sim:obj_main";
     obj.attach_link = "link0";
-    obj.pose_in_link.position.x = 0.10;
+    // `payload_x` 0.10 is the approach pose these tests were built around (the
+    // payload's +x face at 0.120, 20 mm clear of the cell). The advisory-band
+    // tests push it in to 0.130 so the face lands 10 mm INSIDE the cell —
+    // arrived, not approaching.
+    obj.pose_in_link.position.x = payload_x;
     obj.pose_in_link.orientation.w = 1.0;
     openral_msgs::msg::AttachedCollisionPrimitive prim;
     prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
@@ -2470,4 +2475,240 @@ TEST_F(LifecycleKernelTest, CleanDetachDropsTheRegionOnceInsteadOfRejectingIt) {
   EXPECT_LE(logs.count("safety.place_region_not_armed reason=no_object"), 1U)
       << "the standing post-release state is a transition, not a heartbeat:\n"
       << logs.joined();
+}
+
+// ── The advisory band, end to end (#176) ─────────────────────────────────────
+//
+// The band's whole purpose is a difference the geometry tests cannot see: what
+// the NODE does with an advisory hit. A latched stop asserts /openral/estop and
+// requires an operator to call /openral/estop_reset; an advisory refusal drops
+// the chunk and leaves the kernel able to accept the next one.
+//
+// Both tests share the declared-carry fixture and move the payload from its
+// approach pose (`payload_x` 0.10, face 20 mm clear of the cell) to an arrived
+// one (0.130, face 10 mm inside it). At the fixture's 30 mm attached margin and
+// 37.5 mm allowance the gate sits at −7.5 mm and the band floor at −12.5 mm, so
+// 10 mm of penetration is inside the band — the 2026-08-26 baguette case.
+namespace {
+
+/// Drive one candidate action through and settle, so each chunk produces
+/// exactly one verdict. Returns the safe-action count afterwards.
+void offer_one_chunk(rclcpp::executors::SingleThreadedExecutor& exec,
+                     const std::function<void()>& publish_inputs,
+                     const std::function<void()>& publish_chunk) {
+  publish_inputs();
+  exec.spin_some(std::chrono::milliseconds(10));
+  publish_chunk();
+  for (int i = 0; i < 6; ++i) {
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_advisory", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_advisory_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  std::atomic<int> estop_count{0};
+  rclcpp::QoS estop_q(rclcpp::KeepLast(10));
+  estop_q.reliable();
+  auto estop_sub = helper.create_subscription<std_msgs::msg::Empty>(
+      "/openral/estop", estop_q,
+      [&estop_count](const std_msgs::msg::Empty::SharedPtr) { ++estop_count; });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto chunk = declared_carry_chunk();
+
+  // Warm-up at the APPROACH pose: the grid frame lands, the region arms, and
+  // the chunk passes — so anything observed afterwards is caused by the payload
+  // having arrived, not by the region never being armed.
+  const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(safe_count.load(), 0) << "the approach must pass before the arrival is meaningful";
+  ASSERT_FALSE(node->fault_latched());
+
+  // Settle before baselining: the warm-up's last in-flight approvals have to be
+  // delivered and counted BEFORE the baseline, or one of them lands afterwards
+  // and reads as "the arrived pose was passed through".
+  const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+  while (std::chrono::steady_clock::now() < settle_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+
+  const LogCapture logs;
+  const int passed_before = safe_count.load();
+  const std::uint64_t dropped_before = node->chunks_dropped();
+  const int estops_before = estop_count.load();
+
+  // Arrived: the payload's face 10 mm inside the declared receptacle's cell.
+  offer_one_chunk(
+      exec,
+      [&] {
+        voxel_pub->publish(vox);
+        js_pub->publish(js);
+        ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                             /*timeout_s=*/60.0, /*carrying=*/true,
+                                             /*revision=*/1, /*payload_x=*/0.130));
+      },
+      [&] { cand_pub->publish(chunk); });
+
+  EXPECT_GT(node->chunks_dropped(), dropped_before) << "the action is still refused";
+  EXPECT_EQ(safe_count.load(), passed_before) << "and it is NOT passed through";
+  EXPECT_FALSE(node->fault_latched())
+      << "an arrived place inside its own declared region must not latch:\n"
+      << logs.joined();
+  EXPECT_EQ(estop_count.load(), estops_before)
+      << "and must not assert /openral/estop:\n"
+      << logs.joined();
+  EXPECT_GE(logs.count("safety.collision_advisory"), 1U)
+      << "the refusal is announced as advisory, with its own reason:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.collision kind="), 0U)
+      << "and never as an ordinary collision stop:\n"
+      << logs.joined();
+
+  // Drain this node's spans before it goes away. `on_cleanup` is where
+  // `shutdown_tracing()` flushes the BatchSpanProcessor, and a test that emits
+  // safety spans and then drops the node leaves that processor racing the
+  // process teardown against a collector that is not there.
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+}
+
+TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
+  // The band must not become a way to push indefinitely. `place_advisory_max_
+  // consecutive` (3 by default) bounds the run; the next refusal is an ordinary
+  // latched stop with its E-stop, exactly as before #176.
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_advisory_cap", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_advisory_cap_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto chunk = declared_carry_chunk();
+
+  const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(safe_count.load(), 0);
+  ASSERT_FALSE(node->fault_latched());
+
+  const LogCapture logs;
+  const auto arrived_inputs = [&] {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0, /*carrying=*/true,
+                                         /*revision=*/1, /*payload_x=*/0.130));
+  };
+  const auto publish_chunk = [&] { cand_pub->publish(chunk); };
+
+  // Three refusals inside the cap: still no latch.
+  for (int i = 0; i < 3; ++i) {
+    offer_one_chunk(exec, arrived_inputs, publish_chunk);
+    EXPECT_FALSE(node->fault_latched())
+        << "refusal " << (i + 1) << " of 3 is inside the cap:\n"
+        << logs.joined();
+  }
+
+  // The fourth is over it, and is an ordinary stop.
+  offer_one_chunk(exec, arrived_inputs, publish_chunk);
+  EXPECT_TRUE(node->fault_latched())
+      << "an unbroken advisory run must latch once it passes the cap:\n"
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.collision_advisory"), 3U)
+      << "exactly the capped number of advisories precede it:\n"
+      << logs.joined();
+  EXPECT_GE(logs.count("safety.collision kind="), 1U)
+      << "and the one past the cap is announced as an ordinary collision:\n"
+      << logs.joined();
+
+  // Drain this node's spans before it goes away (see the test above).
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
 }

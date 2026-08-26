@@ -935,20 +935,34 @@ namespace {
 // `allowance_active` is carried alongside the pair it belongs to for the same
 // reason the distance is: the flag must describe the pair that is reported, not
 // whichever pair happened to be checked last.
+// Pairs are ranked by SEVERITY FIRST, then depth.
+//
+// Depth alone would be wrong the moment `advisory` exists (#176): the gate
+// threshold is not the same for every pair in a sweep — a payload outside the
+// declared region trips at the plain margin, one inside it trips only past the
+// approach allowance — so the deepest tripping pair is not the most serious
+// one. A −5 mm hard trip on an undeclared payload and a −38 mm advisory reading
+// inside the declared receptacle can occur in the same sweep, and reporting the
+// deeper of the two would hand the caller an advisory hit and lose the latch
+// the −5 mm pair earned. A hard trip therefore outranks an advisory one at any
+// depth; within one severity, the deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
-               bool allowance_active = false) noexcept {
+               bool allowance_active = false, bool advisory = false) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
   if (!tripped) {
     return;
   }
-  if (!hit.hit || d < hit.min_distance) {
+  const bool outranks_by_severity = hit.advisory && !advisory;
+  const bool same_severity = hit.advisory == advisory;
+  if (!hit.hit || outranks_by_severity || (same_severity && d < hit.min_distance)) {
     hit.hit = true;
     hit.link_a = link_a;
     hit.link_b = link_b;
     hit.min_distance = d;
     hit.place_allowance_active = allowance_active;
+    hit.advisory = advisory;
   }
 }
 
@@ -1654,8 +1668,28 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 tripped = false;
               }
             }
+            // The advisory band (#176). A payload that has ARRIVED in its own
+            // declared receptacle reads deeper than the approach allowance for
+            // reasons that are map discretisation, not force: octomap marks the
+            // cell CONTAINING the ray endpoint (so the kernel's surface starts
+            // up to one resolution early), and the payload is a fitted convex
+            // primitive that bulges past the real object. The 2026-08-26
+            // baguette place read −38.22 mm at a −1.4 mm physical contact.
+            //
+            // Inside the band the pair still TRIPS — it is a refusal, and the
+            // action is dropped. What the band changes is that the caller need
+            // not latch a fault and assert E-stop over it. Every condition is
+            // required, and each one alone restores today's latched stop:
+            // a live declaration covering THIS object (allowance > 0, which
+            // `place_approach_allowance` only returns for a cell inside the
+            // measured region), and a depth still within one voxel of the
+            // allowance. A robot link never reaches here at all — this is the
+            // attached-payload sweep.
+            const double advisory_floor =
+                cell_margin - place_advisory_depth(grid.resolution) - kGateTieEpsilonM;
+            const bool advisory = tripped && allowance > 0.0 && d > advisory_floor;
             fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx),
-                      allowance > 0.0);
+                      allowance > 0.0, advisory);
           }
         }
       }

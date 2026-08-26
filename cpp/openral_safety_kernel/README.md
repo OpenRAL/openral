@@ -402,6 +402,51 @@ delta. In particular:
   ages out in the kernel's own clock while the stream stays fresh, and the very
   next candidate stops on the cell the allowance had been clearing).
 
+**Past the allowance there is now one more outcome, and it is a refusal rather
+than a latch (issue #176).** The allowance above is calibrated for a payload
+*reaching* its support through a voxel-inflated opening. A payload that has
+**arrived** reads deeper still, and for reasons that are all map discretisation
+and none of them force: `insertPointCloud` marks the cell *containing* the ray
+endpoint (so the kernel's surface starts up to one resolution early) and the
+payload is a fitted convex primitive that bulges past the real object. The
+2026-08-26 `oriented-grid-2` round measured exactly that — the baguette place
+read **−38.22 mm** against a 37.5 mm allowance, **0.72 mm** over, while the
+ground-truth probe put the physical contact at **−1.4 mm**. Under the old rule
+that ended the run and required `/openral/estop_reset`.
+
+So a hit carries `CollisionHit::advisory`, and the node refuses the chunk
+without latching or asserting `/openral/estop` when it is set. Every bound is
+required, and any one of them failing gives the latched stop unchanged:
+
+* **payload only.** `advisory` is set inside `check_attached_voxel_collision`
+  and nowhere else — a robot link against the world is the stop it always was,
+  at any depth, declared place or not (`…ARobotLinkIsNeverAdvisoryHoweverShallow`).
+* **declared region only.** It requires `place_approach_allowance > 0`, which is
+  returned only for a cell inside the producer-measured region for the declared
+  object (`…AnUndeclaredPayloadIsNeverAdvisory`).
+* **bounded in depth.** `min(0.2 × voxel, 5 mm)` past the allowance
+  (`kPlaceAdvisoryDepthVoxels`, `kMaxPlaceAdvisoryDepthM`, read through
+  `place_advisory_depth`) — ~7× the measured 0.72 mm overshoot, and deliberately
+  no more. Per-cell penetration saturates near the allowance itself (measured:
+  −37.50 mm deepest at 25 mm, −50.00 mm at 50 mm), so a full-voxel band would
+  cover the entire reachable range and stop bounding anything
+  (`…TheBandStaysASmallFractionOfTheAllowance`, `…TheBandEndsExactlyWhereItSaysItDoes`).
+* **bounded in repetition.** `place_advisory_max_consecutive` (3) caps an
+  unbroken run; the next refusal latches with its E-stop. Any accepted chunk
+  resets the run, so the cap counts shoving, not progress
+  (`…AnUnbrokenAdvisoryRunLatchesAtItsCap`).
+* **severity outranks depth.** Because the gate threshold differs per pair, the
+  deepest tripping pair is not the most serious one: a −5 mm hard trip on an
+  undeclared payload and a −43 mm advisory reading in the declared receptacle
+  can occur in one sweep, and ranking by depth would report the advisory and
+  lose the latch the first pair earned. `fold_pair` ranks severity first
+  (`…AShallowHardTripOutranksADeeperAdvisoryOne`).
+
+It is **not** permission to penetrate: an advisory hit still has `hit == true`
+and the action is still dropped. What changes is that recovering from a place
+that arrived does not need an operator. `place_advisory_max_consecutive: 0`
+disables the band entirely and restores the pre-#176 behaviour exactly.
+
 **The allowance's effect on a live verdict is pinned end-to-end, not only in
 gtest.** Through nine validation rounds the allowance armed correctly in every
 declared run yet `place_allowance_active=1` was observed exactly once — XR-1's

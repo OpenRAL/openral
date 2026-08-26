@@ -3047,6 +3047,172 @@ TEST(PlaceApproachAllowance, ACoarserGridNeverWidensTheAllowance) {
   EXPECT_TRUE(hit.place_allowance_active) << "a stop at a reduced margin must say so";
 }
 
+// ── The advisory band (#176) ─────────────────────────────────────────────────
+//
+// A payload that has ARRIVED in its declared receptacle reads far deeper than
+// it is: the 2026-08-26 baguette place read −38.22 mm against a 37.5 mm
+// allowance while the ground truth measured −1.4 mm of physical contact, and
+// that 0.72 mm overshoot was a latched E-stop needing /openral/estop_reset.
+//
+// The band makes exactly that class refusable instead of latchable. It does not
+// widen what trips: every test below that expects `hit` expected `hit` before.
+// What it adds is `advisory`, and the whole safety argument is in how narrowly
+// that is set — so each of these pins one boundary of it.
+//
+// On the coarse 50 mm lattice these fixtures use: allowance = min(1.5 x 50, 40)
+// = 40 mm, advisory depth = min(0.2 x 50, 5) = 5 mm. So a declared payload is
+// clear above −40 mm, advisory in (−45, −40], and latched at or below −45 mm.
+// `d == dz − 25 mm` in this fixture's reachable range, whose floor is −50 mm
+// (the deepest a payload can read against a single 50 mm cell at all).
+
+namespace {
+
+// The jar-in-the-declared-region fixture, at a chosen payload offset.
+osk::CollisionHit advisory_case(double dz, bool declared) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // no witness: the band must stand on its own
+
+  static std::vector<std::uint8_t> occ;
+  occ.assign(static_cast<std::size_t>(kCoarseN) * kCoarseN * kCoarseN, 0);
+  occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;
+  auto grid = coarse_grid(occ);
+  if (declared) {
+    grid.place_region = declared_cabinet_region();
+  }
+  att.objects[0].pose_in_link = translate(0.0, 0.0, dz);
+  return osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+}
+
+}  // namespace
+
+TEST(PlaceAdvisoryBand, AnArrivedPlaceIsRefusedRatherThanLatched) {
+  // −43 mm: 3 mm past the 40 mm allowance, inside the 5 mm band. This is the
+  // 2026-08-26 baguette case in miniature (it overshot by 0.72 mm) — it still
+  // refuses the action, it just no longer demands an operator reset for it.
+  const auto hit = advisory_case(-0.018, /*declared=*/true);
+  EXPECT_TRUE(hit.hit) << "an advisory hit is a refusal, not a pass";
+  EXPECT_TRUE(hit.advisory);
+  EXPECT_TRUE(hit.place_allowance_active);
+  EXPECT_NEAR(hit.min_distance, -0.043, 1e-9) << "the reported distance is still the true one";
+}
+
+TEST(PlaceAdvisoryBand, PastTheBandItIsTheLatchedStopItAlwaysWas) {
+  // −49 mm: 4 mm beyond allowance + band, and still reachable (the floor is
+  // −50 mm). The depth the band absorbs is bounded by the overshoot it exists
+  // for; past that, a stop is a stop.
+  const auto hit = advisory_case(-0.024, /*declared=*/true);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_FALSE(hit.advisory);
+}
+
+TEST(PlaceAdvisoryBand, TheBandEndsExactlyWhereItSaysItDoes) {
+  // The boundary itself, to the millimetre either side. −44 mm is the last
+  // advisory reading; −45 mm is the band's floor and latches.
+  const auto inside = advisory_case(-0.019, /*declared=*/true);   // d = −44 mm
+  const auto outside = advisory_case(-0.020, /*declared=*/true);  // d = −45 mm
+  ASSERT_TRUE(inside.hit);
+  ASSERT_TRUE(outside.hit);
+  EXPECT_TRUE(inside.advisory);
+  EXPECT_FALSE(outside.advisory) << "the band's floor latches, like every other trip boundary";
+}
+
+TEST(PlaceAdvisoryBand, AnUndeclaredPayloadIsNeverAdvisory) {
+  // The declaration is the whole licence. The identical geometry, with nobody
+  // having declared a place, is the latched stop it is today — and it trips at
+  // the plain margin rather than at the allowance, so it trips far sooner.
+  const auto hit = advisory_case(-0.018, /*declared=*/false);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_FALSE(hit.advisory);
+  EXPECT_FALSE(hit.place_allowance_active);
+}
+
+TEST(PlaceAdvisoryBand, TheBandStaysASmallFractionOfTheAllowance) {
+  // The band must never become the dominant term. It exists to absorb a
+  // measured 0.72 mm overshoot, not to widen the allowance by stealth, so it is
+  // pinned here at both lattices and against the allowance it sits on.
+  //
+  // Why a ratio and not "the band is shallower than the deepest reachable
+  // contact": how deep a payload can read against a cell depends on the
+  // PAYLOAD's own primitive, not only on the map. Measured, a 150x25x25 mm box
+  // saturates at −37.50 mm on the 25 mm grid — at or inside the 37.5 mm
+  // allowance, so that payload can never trip in a declared region at all —
+  // while the field baguette reached −38.22 mm. There is therefore no universal
+  // "deepest reachable" to bound against, and where depth does saturate the
+  // consecutive-refusal cap in the lifecycle node is the operative bound, not
+  // this one.
+  for (const double res : {0.025, 0.05}) {
+    const double allowance = osk::place_approach_allowance_cap(res);
+    const double band = osk::place_advisory_depth(res);
+    EXPECT_GT(band, 0.0) << "resolution " << res;
+    EXPECT_LT(band, allowance / 4.0)
+        << "at resolution " << res << " the advisory band is no longer a small correction on the "
+        << "approach allowance";
+    EXPECT_LE(band, osk::kMaxPlaceAdvisoryDepthM);
+  }
+  // Sim and real end up at the same 5 mm band: the absolute ceiling binds on
+  // both, so a coarser map buys no extra permissiveness (the HZ-0097-4 lesson,
+  // applied to the new number as well).
+  EXPECT_NEAR(osk::place_advisory_depth(0.025), 0.005, 1e-12);
+  EXPECT_NEAR(osk::place_advisory_depth(0.05), 0.005, 1e-12);
+  EXPECT_NEAR(osk::place_advisory_depth(0.0), 0.0, 1e-12) << "an unusable map collapses the band";
+}
+
+TEST(PlaceAdvisoryBand, ARobotLinkIsNeverAdvisoryHoweverShallow) {
+  // The band lives in the attached-payload sweep and cannot reach a link. This
+  // is the property the whole change is scoped on: an arm touching the world is
+  // a stop, at any depth, declared place or not.
+  osk::CollisionModel m = one_capsule_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity()};
+  std::vector<std::uint8_t> occ(5 * 5 * 5, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  grid.place_region = declared_cabinet_region();  // declared, and irrelevant here
+
+  const auto hit = osk::check_voxel_collision(m, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_FALSE(hit.advisory);
+}
+
+TEST(PlaceAdvisoryBand, TheBandNeverMakesAClearPairTrip) {
+  // Strictly additive: the band re-labels tripping pairs, it never creates one.
+  // −35 mm is inside the allowance and clear, and stays clear.
+  const auto hit = advisory_case(-0.010, /*declared=*/true);
+  EXPECT_FALSE(hit.hit);
+  EXPECT_FALSE(hit.advisory);
+}
+
+TEST(PlaceAdvisoryBand, AShallowHardTripOutranksADeeperAdvisoryOne) {
+  // The failure mode `fold_pair`'s severity-first ranking exists for. Two
+  // payloads in one sweep: one deep inside its own declared region (advisory at
+  // −45 mm), one undeclared and only −5 mm into a cell — a real latching stop.
+  // Ranked by depth alone the advisory pair would win and the caller would not
+  // latch, silently losing the stop the second payload earned.
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // object 0 — declared
+  append_baguette(att, 0.0);  // object 1 — not in the region mask
+
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(kCoarseN) * kCoarseN * kCoarseN, 0);
+  occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;
+  auto grid = coarse_grid(occ);
+  grid.place_region = declared_cabinet_region(0x1);  // object 0 only
+
+  att.objects[0].pose_in_link = translate(0.0, 0.0, -0.018);  // d = −43 mm, advisory
+  att.objects[1].pose_in_link = translate(0.0, 0.0, 0.020);   // d = −5 mm, hard
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_FALSE(hit.advisory) << "a hard trip must outrank a deeper advisory one";
+  EXPECT_EQ(hit.link_a, 1) << "and the reported pair must be the hard one";
+  EXPECT_NEAR(hit.min_distance, -0.005, 1e-9);
+}
+
 TEST(PlaceApproachAllowance, AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap) {
   // HZ-0097-4's accepted cost, and its bound. A jar already sitting on the
   // declared shelf when the declaration goes live receives the same allowance as
