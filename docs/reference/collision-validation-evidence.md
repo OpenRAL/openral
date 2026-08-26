@@ -1019,6 +1019,67 @@ to catch and both now fixed:
   the overlay older than its sources. Exactly the "one round silently executed
   the wrong checkout" incident it was written for.
 
+### 2026-08-26 — `advisory-band-1..5`, the five-round battery on `7cb2376`
+
+Five full rounds of the four-scene matrix on one commit — `7cb2376`, the graded
+place outcome (#176 piece 2) on top of the oriented grid — same seed, same host
+(`q-laptop`, RTX 5070 Laptop), run through `tools/validation_matrix.py`. Twenty
+scene runs, so for the first time on this branch the per-scene result is a
+distribution rather than a single draw. Rounds 4 and 5 were run a day later than
+1–3 after the laptop's battery cut the first attempt at the battery mid-round;
+the killed round left no `verdicts.json` and was discarded, not repaired.
+
+| scene | 1 | 2 | 3 | 4 | 5 | success |
+| --- | --- | --- | --- | --- | --- | ---: |
+| baguette | ✅ | `panda_link7` −11.34 | ✅ | `panda_link6` −3.23 | `panda_link7` −7.31 | 2/5 |
+| sink_cup | ✅ | ✅ | `panda_link5` −1.38 | `panda_link7` −8.84 | `panda_link6` −2.35 | 2/5 |
+| fridge | *payload* −1.70 | `panda_link6` −0.29 | `panda_link6` −4.29 | *payload* −10.19 | ✅ | 1/5 |
+| utensil | *payload* −6.53 | `panda_link6` −0.60 | *payload* −8.00 | *payload* −7.94 | *payload* −1.60 | 0/5 |
+
+Depths are `min_distance_m` in mm; *payload* is `attached:sim:obj_main`. Verdict
+classes across the fifteen stops: eleven `within-quantization`, two `real`, one
+`false-positive`, one `unadjudicated`.
+
+**The advisory band never fired.** `place_allowance_active` is false on all
+fifteen stops, and `place_allowance_active_lines` is 0 in every witness. The
+graded outcome #176 added is, on this matrix, entirely inert — it is not making
+these scenes better or worse.
+
+**Most stops are not the payload at all.** Nine of fifteen are a robot link
+against world occupancy, which is outside #176 by construction: a link touching
+the world stays an E-stop and nothing in that issue proposes otherwise. They run
+−0.29 mm to −11.34 mm, i.e. the whole spread sits inside what map discretisation
+alone explains, and they are spread over four different links (`link5`, `link6`,
+`link7`).
+
+**Of the six payload stops, four were never a place.** All four utensil payload
+stops carry `place_declaration_seen: false` — the object hit the world while
+being *carried*, before any place was declared, so there is no declaration for
+an allowance to be scoped to and there could not have been. Only the two fridge
+payload stops are the case #176 describes: `place_declaration_seen: true`,
+region armed, contact outside the armed volume.
+
+This is the number that matters for planning: **on this battery, "what the
+declared region has to cover" is the binding constraint for 2 of 15 stops.**
+
+**It revises the single-round reading.** The n=1 comment on #176 generalised
+from a round whose only two stops happened to be payload-class and concluded the
+region boundary was what bound. At n=5 that is a minority class of a minority
+class. The battery does not overturn the *mechanism* — a payload contacting the
+world outside the armed region does still latch, twice here — it overturns the
+claim about how much of the observed failure that mechanism accounts for. The
+majority class is link-vs-world at a few millimetres, which is quantisation at
+source (#176 piece 3), not the place contract.
+
+**What this round does NOT establish.** The rollout diverges at the first stop,
+so the five runs of a scene are five independent trajectories, not repeats of
+one geometry; `task_success_steps` differs across every one. Depths are
+therefore not comparable run-to-run, and no per-scene rate here is a measurement
+of anything but this seed on this host. It also says nothing about whether the
+band would help under a *different* policy that declares its place earlier — a
+policy that never declares cannot exercise a declaration-scoped allowance, and
+that is a property of the rollout, not of the kernel.
+
 ## Standing caveats
 
 Eight things a reader should carry away, all of them stated by the artifacts
