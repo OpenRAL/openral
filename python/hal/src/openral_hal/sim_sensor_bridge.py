@@ -243,13 +243,30 @@ def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
 
 
 def _body_record(model: Any, data: Any, body_id: int) -> dict[str, object]:
-    """MJCF body id → ``{id, name, world_xyz}`` (world pose at this instant)."""
+    """MJCF body id → ``{id, name, world_xyz, world_quat_wxyz}``, the body's world pose.
+
+    Both halves are load-bearing, and for a long time only the first was here.
+    A *position* does not place a body: reconstructing a recorded stop drives
+    the robot to ``robot_joint_state`` and then has to put the carried object
+    back where it was, and without the orientation the payload lands at its
+    reset attitude. Every payload-side distance in every round recorded before
+    this reconstructed a different configuration than the one that stopped,
+    which made the whole ``attached_payload`` stop class unadjudicable after
+    the fact (#172) — a CLAUDE.md §1.8 violation in the producer.
+
+    The orientation is all that is needed. A body's geoms are placed by
+    ``geom_pos`` / ``geom_quat``, which are *model* constants rather than
+    state, so ``(xpos, xquat)`` plus the same compiled model determines every
+    geom of the body exactly. Articulated payloads are covered because
+    ``attached_bodies`` carries the whole attached set, one record each.
+    """
     import mujoco  # reason: optional sim dep
 
     return {
         "id": int(body_id),
         "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(body_id)),
         "world_xyz": [round(float(value), 6) for value in data.xpos[int(body_id)]],
+        "world_quat_wxyz": [round(float(value), 6) for value in data.xquat[int(body_id)]],
     }
 
 
