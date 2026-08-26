@@ -36,6 +36,13 @@
        deploy-sim runtime graph by the `openral deploy sim` foxglove flag. -->
   <exec_depend>foxglove_bridge</exec_depend>
   <exec_depend>openral_foxglove_bringup</exec_depend>
+  <!-- `sim_e2e.launch.py` spawns octomap_server itself (the world map the
+       octomap bridge lowers into /openral/world_voxels). Undeclared, it was
+       invisible to scripts/check_ros_build_deps.sh — which derives its set
+       from these files — so a host without it launched, dropped the whole
+       graph on "package 'octomap_server' not found", and bucketed all four
+       validation-matrix scenes as harness-error. -->
+  <exec_depend>octomap_server</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
