@@ -12,6 +12,7 @@ must never be indistinguishable from a lane that ran everything and passed.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -204,6 +205,14 @@ def test_reads_real_pytest_junit_including_module_level_skip(tmp_path: Path) -> 
             f"--junit-xml={xml}",
         ],
         cwd=tmp_path,
+        # A sourced ROS 2 overlay reaches the child through PYTHONPATH and
+        # breaks this test in both directions: `launch_testing`'s
+        # `pytest_pycollect_makemodule` hook no longer matches pytest's
+        # hookspec, so the child aborts during plugin registration and
+        # collects nothing; and `rclpy` becomes importable, so the
+        # module-level `importorskip` this test is *about* stops skipping.
+        # The child must see the interpreter this repo installs, nothing else.
+        env={**os.environ, "PYTHONPATH": ""},
         capture_output=True,
         check=False,
     )
