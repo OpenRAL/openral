@@ -106,7 +106,7 @@ def _kernel_params() -> dict[str, object]:
 def test_kernel_voxel_collision_fail_closed_then_rejects() -> None:
     """Fail-closed before a grid; pass with an empty grid; estop on an occupied voxel."""
     import rclpy
-    from geometry_msgs.msg import Point
+    from geometry_msgs.msg import Point, Quaternion
     from openral_msgs.msg import ActionChunk, FailureTrigger, OccupancyVoxels
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -164,6 +164,10 @@ def test_kernel_voxel_collision_fail_closed_then_rejects() -> None:
                 grid.header.frame_id = "base"
                 grid.header.stamp = helper.get_clock().now().to_msg()
                 grid.origin = Point(x=-0.25, y=-0.25, z=0.0)
+                # Synthetic base-aligned lattice: `OccupancyVoxels` is oriented,
+                # and its unset orientation is the all-zero quaternion, which
+                # consumers refuse rather than read as identity.
+                grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
                 grid.resolution = 0.1
                 grid.size_x = _SX
                 grid.size_y = _SY

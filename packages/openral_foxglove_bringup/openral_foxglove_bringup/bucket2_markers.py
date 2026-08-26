@@ -169,16 +169,20 @@ def occupied_voxel_centers(
     resolution: float,
     size: tuple[int, int, int],
     occupancy: Sequence[int],
+    orientation_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
 ) -> list[tuple[float, float, float]]:
     """Return the centre positions of all occupied voxels.
 
     Voxel indexing (row-major, x fastest):
         ``idx = x + size_x * (y + size_y * z)``
 
-    Centre of voxel (x, y, z):
-        ``(origin_x + (x + 0.5) * resolution,
-           origin_y + (y + 0.5) * resolution,
-           origin_z + (z + 0.5) * resolution)``
+    Centre of voxel (x, y, z), where ``R`` is ``orientation_xyzw``:
+        ``origin + R * ((x + 0.5, y + 0.5, z + 0.5) * resolution)``
+
+    ``openral_msgs/OccupancyVoxels`` is an ORIENTED lattice — its cell axes are
+    the source map's, not ``header.frame_id``'s — so the rotation places the
+    cell and is not decoration. Dropping it draws every voxel in the wrong place
+    whenever the robot is not aligned with the map.
 
     Args:
         origin: (ox, oy, oz) minimum corner of voxel (0, 0, 0) in metres.
@@ -186,15 +190,34 @@ def occupied_voxel_centers(
         size: (size_x, size_y, size_z) grid dimensions.
         occupancy: Flat occupancy array (length size_x*size_y*size_z).
             Non-zero → occupied.
+        orientation_xyzw: Grid orientation ``(x, y, z, w)``. Defaults to
+            identity for callers building an axis-aligned grid themselves; a
+            caller decoding a wire message passes the message's own. An all-zero
+            quaternion (the unset default) is rejected, never read as identity.
 
     Returns:
         List of (cx, cy, cz) centre coordinates for occupied voxels.
+
+    Raises:
+        ValueError: On a length mismatch, or a non-unit ``orientation_xyzw``.
     """
     ox, oy, oz = origin
     sx, sy, sz = size
     expected = sx * sy * sz
     if len(occupancy) != expected:
         raise ValueError(f"occupancy length {len(occupancy)} != size_x*size_y*size_z={expected}")
+    qx, qy, qz, qw = orientation_xyzw
+    norm2 = qx * qx + qy * qy + qz * qz + qw * qw
+    if not math.isfinite(norm2) or abs(norm2 - 1.0) > 1e-6:
+        raise ValueError(
+            f"orientation {orientation_xyzw!r} is not a unit quaternion "
+            "(an unset OccupancyVoxels.orientation is all zeros, not identity)"
+        )
+    rot = (
+        (1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)),
+        (2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)),
+        (2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)),
+    )
 
     centers: list[tuple[float, float, float]] = []
     for z in range(sz):
@@ -202,10 +225,16 @@ def occupied_voxel_centers(
             for x in range(sx):
                 idx = x + sx * (y + sy * z)
                 if occupancy[idx]:
-                    cx = ox + (x + 0.5) * resolution
-                    cy = oy + (y + 0.5) * resolution
-                    cz = oz + (z + 0.5) * resolution
-                    centers.append((cx, cy, cz))
+                    lx = (x + 0.5) * resolution
+                    ly = (y + 0.5) * resolution
+                    lz = (z + 0.5) * resolution
+                    centers.append(
+                        (
+                            ox + rot[0][0] * lx + rot[0][1] * ly + rot[0][2] * lz,
+                            oy + rot[1][0] * lx + rot[1][1] * ly + rot[1][2] * lz,
+                            oz + rot[2][0] * lx + rot[2][1] * ly + rot[2][2] * lz,
+                        )
+                    )
     return centers
 
 
@@ -317,9 +346,17 @@ class Bucket2MarkersNode:
         size = (int(msg.size_x), int(msg.size_y), int(msg.size_z))  # type: ignore[union-attr]
         occupancy = list(msg.occupancy)  # type: ignore[union-attr]
         resolution = float(msg.resolution)  # type: ignore[union-attr]
+        # The grid's lattice is the OctoMap's; without its rotation every voxel
+        # is drawn somewhere the obstacle is not.
+        orientation = (
+            float(msg.orientation.x),  # type: ignore[union-attr]
+            float(msg.orientation.y),  # type: ignore[union-attr]
+            float(msg.orientation.z),  # type: ignore[union-attr]
+            float(msg.orientation.w),  # type: ignore[union-attr]
+        )
 
         try:
-            centers = occupied_voxel_centers(origin, resolution, size, occupancy)
+            centers = occupied_voxel_centers(origin, resolution, size, occupancy, orientation)
         except ValueError:
             log.exception("bucket2: malformed OccupancyVoxels message — skipping")
             return

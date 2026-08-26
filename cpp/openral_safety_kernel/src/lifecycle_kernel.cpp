@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -199,7 +200,23 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("world_voxel_enabled", false);
   this->declare_parameter<double>("world_voxel_margin_m", 0.0);
   this->declare_parameter<double>("world_voxel_deadline_ms", 500.0);
-  this->declare_parameter<std::int64_t>("world_voxel_max_cells", 262144);
+  // Sized by the ROBOT, not by taste: the grid must cover wherever the
+  // kernel-checked geometry can reach, and on a lattice-aligned grid that
+  // volume is a ball (the grid's axes are the map's and turn relative to the
+  // base, so a base-aligned box is not invariant to them). panda_mobile's
+  // checked arm reaches 1016 mm from the grid centre; the deploy launch covers
+  // 1.05 m, which at the sim's 25 mm cells is 85^3 = 614125 including the one
+  // cell per axis the lattice snap can add.
+  //
+  // The previous 262144 was the cap the sim BOX WAS SHRUNK TO FIT (1.6 m at
+  // 25 mm = 64^3) — the inversion this replaces. It left the arm reaching up to
+  // 124 mm outside the published grid, where the world check sees nothing.
+  //
+  // Cost is dominated by the attached-contact baseline, not the occupancy:
+  // `attached_contact_distance_` is attached_max_objects x 8 B per cell — 64
+  // B/cell against occupancy's 1 B — so this default reserves ~40 MB, of which
+  // 39 MB is that baseline. Making it sparse is the lever if that ever binds.
+  this->declare_parameter<std::int64_t>("world_voxel_max_cells", 614125);
 
   // Attached-payload phase — grasped objects carried on
   // /openral/world_state_fast (ADR-0092). Each object leaves world occupancy
@@ -1590,7 +1607,16 @@ void SafetyKernelLifecycleNode::on_world_voxels(
     return;
   }
   const std::size_t cells = static_cast<std::size_t>(msg->size_x) * msg->size_y * msg->size_z;
-  if (msg->occupancy.size() != cells || cells > world_voxel_max_cells_ || msg->resolution <= 0.0) {
+  // The grid's lattice is the source map's, so `orientation` is load-bearing
+  // geometry, not metadata. An unset field is the all-zero quaternion, which is
+  // not a rotation: reading it as identity would place every obstacle somewhere
+  // the robot is not, and a world check against a misplaced map is fail-OPEN.
+  // Refuse it exactly as an over-large or malformed grid is refused.
+  const double quat_norm2 =
+      msg->orientation.x * msg->orientation.x + msg->orientation.y * msg->orientation.y +
+      msg->orientation.z * msg->orientation.z + msg->orientation.w * msg->orientation.w;
+  if (msg->occupancy.size() != cells || cells > world_voxel_max_cells_ || msg->resolution <= 0.0 ||
+      !std::isfinite(quat_norm2) || std::fabs(quat_norm2 - 1.0) > 1e-6) {
     voxel_overflow_ = true;
     voxel_received_ = true;
     voxel_stamp_ = this->now();
@@ -1599,7 +1625,9 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_overflow_ = false;
   std::copy(msg->occupancy.begin(), msg->occupancy.end(), voxel_occupancy_.begin());
   voxel_grid_.occupancy = voxel_occupancy_.data();
-  voxel_grid_.origin = Vec3{msg->origin.x, msg->origin.y, msg->origin.z};
+  voxel_grid_.pose = transform_from_translation_quat(
+      msg->origin.x, msg->origin.y, msg->origin.z, msg->orientation.x, msg->orientation.y,
+      msg->orientation.z, msg->orientation.w);
   voxel_grid_.resolution = msg->resolution;
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);

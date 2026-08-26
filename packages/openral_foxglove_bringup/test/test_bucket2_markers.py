@@ -217,6 +217,38 @@ class TestOccupiedVoxelCenters:
         assert _approx(cy, 20.0 + 2.5 * 0.5)  # 21.25
         assert _approx(cz, 30.0 + 0.5 * 0.5)  # 30.25
 
+    def test_the_grids_orientation_places_the_voxel(self) -> None:
+        """The lattice is the OctoMap's, so its axes are not `base_frame`'s.
+
+        Drawing a voxel without the grid's rotation puts the obstacle somewhere
+        it is not on every dashboard the operator judges a stop by.
+        """
+        occupancy = [0, 1]  # voxel (1, 0, 0)
+        quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))  # +90° about z
+        centers = occupied_voxel_centers(
+            origin=(0.0, 0.0, 0.0),
+            resolution=0.1,
+            size=(2, 1, 1),
+            occupancy=occupancy,
+            orientation_xyzw=quat,
+        )
+        assert len(centers) == 1
+        cx, cy, cz = centers[0]
+        assert _approx(cx, -0.05)
+        assert _approx(cy, 0.15)
+        assert _approx(cz, 0.05)
+
+    def test_an_unset_orientation_is_refused_not_read_as_identity(self) -> None:
+        """All-zeros is what an unset field carries, and it is not a rotation."""
+        with pytest.raises(ValueError, match="unit quaternion"):
+            occupied_voxel_centers(
+                origin=(0.0, 0.0, 0.0),
+                resolution=0.1,
+                size=(1, 1, 1),
+                occupancy=[1],
+                orientation_xyzw=(0.0, 0.0, 0.0, 0.0),
+            )
+
     def test_all_free_returns_empty_list(self) -> None:
         occupancy = [0] * (2 * 2 * 2)
         centers = occupied_voxel_centers(

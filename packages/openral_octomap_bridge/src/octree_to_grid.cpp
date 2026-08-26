@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// OctoMap → dense base-frame occupancy grid (testable core).
+// OctoMap → dense lattice-aligned occupancy grid (testable core).
 //
-// The grid's lattice lives in `base_frame` and the octree's lives in the map /
-// odom frame, so the two have an arbitrary relative phase (and, on a mobile
-// base, an arbitrary relative yaw). Sampling the octree at each base cell's
-// CENTRE — what this function did until 2026-08-16 — therefore quantizes every
-// surface to whichever lattice the centre happened to land on, and at a
-// half-cell phase that is a whole voxel of displacement toward the robot with
-// nothing left where the surface actually is. So the rule is OVERLAP, not
-// sampling: a base cell is occupied when its cube shares volume with an
-// occupied octree leaf's cube.
+// The grid's lattice IS the octree's. There are therefore no two lattices to
+// reconcile, no relative phase, no relative yaw, and no overlap closure: one
+// published cell is one octree cell, located by integer index arithmetic. The
+// rotation that used to be dissolved into a per-cell dilation is carried on the
+// wire instead, in `OccupancyVoxels.orientation`.
+//
+// Until 2026-08-25 this rasterized onto a base-frame lattice and marked every
+// cell whose cube shared volume with an occupied leaf's. That rule was correct
+// and minimal for a base-aligned output — a cell overlapping a leaf might be
+// the one holding the surface — but it dilated the obstacle set by 29-35 mm
+// median (40 mm worst) on 25 mm cells, which held 48% of the live start-state
+// E-stops. See the header and issue #173.
 
 #include "openral_octomap_bridge/octree_to_grid.hpp"
 
@@ -21,178 +24,139 @@
 #include <vector>
 
 #include <octomap/OcTreeKey.h>
-#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Vector3.h>
 
 namespace openral_octomap_bridge {
 namespace {
 
-using Vec3 = std::array<double, 3>;
-using Mat3 = std::array<Vec3, 3>;
+/// Ceiling on the published grid, well above any kernel's own capacity (the
+/// safety kernel's `world_voxel_max_cells` defaults to 589824). This is a
+/// crash guard, not a policy: a spec this large is a misconfiguration, and the
+/// answer to one is a refusal the node can log, never an allocation attempt.
+constexpr std::size_t kMaxCells = 4000000;
+constexpr std::uint32_t kMaxCellsPerAxis = 4096;
 
-Vec3 to_vec3(const tf2::Vector3& v) { return Vec3{v.x(), v.y(), v.z()}; }
-
-// Overlap is STRICT: two cubes that merely touch (a shared face, edge or
-// corner) share no volume and must not mark each other, or a base grid
-// phase-aligned with the octree's would mark all 27 cells around every leaf
-// instead of the one under it.
-//
-// "Touching" has to be recognised through octomap's FLOAT leaf coordinates,
-// whose ulp is ~6e-8 of the coordinate's own magnitude — three orders of
-// magnitude coarser than the double arithmetic around it — so the tolerance is
-// relative to how far the leaf sits from the octree origin: 1 µm at the origin,
-// 51 µm at 50 m. It stays four orders of magnitude below the half-cell
-// penetration that a centre-inside-the-leaf (the pre-2026-08-16 rule) always
-// has, which is why no cell the old rule marked can fall out of the new one.
-constexpr double kOverlapEps = 1e-6;
-
-// Guards the 9 cross-product axes of the SAT test when the two lattices are
-// (near-)parallel and the cross products degenerate to zero vectors. Enlarging
-// the projected radii can only make the test report overlap, never separation,
-// so it errs toward marking — the conservative direction here.
-constexpr double kParallelEps = 1e-9;
-
-/// The two lattices' relative orientation and the grid's cell size, hoisted out
-/// of the per-leaf work.
-struct GridFrame {
-  Mat3 r{};      ///< octree→base rotation
-  Mat3 abs_r{};  ///< its entrywise magnitude, padded by `kParallelEps`
-  double cell_half{0.0};
+/// The grid's lattice, in the octree frame.
+struct Lattice {
+  double resolution{0.0};
+  double cell0_min[3]{0.0, 0.0, 0.0};  ///< min corner of cell (0,0,0)
+  std::array<std::uint32_t, 3> size{0, 0, 0};
 };
 
-/// Separating-axis test between the grid's axis-aligned cell cube and an octree
-/// leaf cube carried into the base frame by the octree→base rotation.
+/// Build the grid lattice covering `spec`'s ball, snapped onto the octree's own
+/// cell boundaries so a leaf lands on whole cells.
 ///
-/// `t` is the leaf centre relative to the cell centre in the base frame. Both
-/// boxes are cubes, so one half-edge each is enough. `touch_eps` is the
-/// strictness tolerance for this leaf.
-bool cube_overlaps_cube(const Vec3& t, const GridFrame& frame, double leaf_half, double touch_eps) {
-  const Mat3& r = frame.r;
-  const Mat3& abs_r = frame.abs_r;
-  const double cell_half = frame.cell_half;
-  // The grid's own three axes.
+/// The snap is ARITHMETIC, deliberately, and not `coordToKeyChecked` +
+/// `keyToCoord`. Those fail outside the octree's addressable
+/// +/-32768*resolution, and a lattice this function declines to place is an
+/// empty grid — every obstacle dropped, the one direction this node must never
+/// fail in. octomap's own mapping is `keyToCoord(coordToKey(c)) ==
+/// (floor(c/res) + 0.5) * res`: the key origin cancels, so the lattice is
+/// reproduced exactly here, for every coordinate, without a range to fall out
+/// of. (The bbx *query* below still has that range, and still falls back to
+/// walking the whole tree when it does.)
+bool build_lattice(const octomap::OcTree& tree, const tf2::Transform& base_to_octomap,
+                   const GridSpec& spec, Lattice& out) {
+  const double res = tree.getResolution();
+  if (!(res > 0.0) || !(spec.radius > 0.0) || !std::isfinite(spec.radius)) {
+    return false;
+  }
+  const tf2::Vector3 center_octree =
+      base_to_octomap * tf2::Vector3(spec.center[0], spec.center[1], spec.center[2]);
+  const double lo[3] = {center_octree.x() - spec.radius, center_octree.y() - spec.radius,
+                        center_octree.z() - spec.radius};
+  const double hi[3] = {center_octree.x() + spec.radius, center_octree.y() + spec.radius,
+                        center_octree.z() + spec.radius};
   for (int i = 0; i < 3; ++i) {
-    const double reach = cell_half + leaf_half * (abs_r[i][0] + abs_r[i][1] + abs_r[i][2]);
-    if (std::fabs(t[i]) >= reach - touch_eps) {
+    if (!std::isfinite(lo[i]) || !std::isfinite(hi[i])) {
       return false;
     }
   }
-  // The octree lattice's three axes.
-  for (int j = 0; j < 3; ++j) {
-    const double reach = leaf_half + cell_half * (abs_r[0][j] + abs_r[1][j] + abs_r[2][j]);
-    const double projected = t[0] * r[0][j] + t[1] * r[1][j] + t[2] * r[2][j];
-    if (std::fabs(projected) >= reach - touch_eps) {
+  // Centre of the octree cell containing the ball's minimum corner.
+  const double c0[3] = {(std::floor(lo[0] / res) + 0.5) * res,
+                        (std::floor(lo[1] / res) + 0.5) * res,
+                        (std::floor(lo[2] / res) + 0.5) * res};
+
+  out.resolution = res;
+  for (int i = 0; i < 3; ++i) {
+    out.cell0_min[i] = c0[i] - 0.5 * res;
+    // Cells needed to reach past `hi`. `+ 1` because index 0 is cell0 itself;
+    // the floor keeps a `hi` exactly on a boundary from buying an empty layer.
+    const double span = (hi[i] - c0[i]) / res;
+    if (!(span < static_cast<double>(kMaxCellsPerAxis))) {
       return false;
     }
-  }
-  // The 9 edge-cross axes. No strictness tolerance here: an edge-on contact is
-  // separated on a cross axis while every face axis still shows real
-  // penetration, and subtracting a tolerance from a radius that is legitimately
-  // ~0 (parallel lattices) would report separation for boxes that overlap.
-  for (int i = 0; i < 3; ++i) {
-    const int i1 = (i + 1) % 3;
-    const int i2 = (i + 2) % 3;
-    for (int j = 0; j < 3; ++j) {
-      const int j1 = (j + 1) % 3;
-      const int j2 = (j + 2) % 3;
-      const double reach =
-          cell_half * (abs_r[i1][j] + abs_r[i2][j]) + leaf_half * (abs_r[i][j1] + abs_r[i][j2]);
-      const double projected = t[i2] * r[i1][j] - t[i1] * r[i2][j];
-      if (std::fabs(projected) > reach) {
-        return false;
-      }
+    const long n = static_cast<long>(std::floor(span)) + 1;
+    if (n <= 0) {
+      return false;
     }
+    out.size[static_cast<std::size_t>(i)] = static_cast<std::uint32_t>(n);
   }
-  return true;
+  // The allocation this sizes is the published message. A spec far larger than
+  // any kernel would accept must be REFUSED, not attempted: `std::bad_alloc`
+  // out of the bridge's timer callback is a crashed perception node, and the
+  // caller can only report a grid it did not get.
+  const double cells = static_cast<double>(out.size[0]) * static_cast<double>(out.size[1]) *
+                       static_cast<double>(out.size[2]);
+  return cells <= static_cast<double>(kMaxCells);
 }
 
-/// Mark every cell of `occupancy` whose cube shares volume with one leaf's.
+/// Mark the cells one occupied leaf covers.
 ///
-/// The leaf can be coarser than the tree resolution — octomap prunes siblings
-/// that carry the same value, and a published `/octomap_binary` is pruned — so
-/// its own edge length decides its reach, never `tree.getResolution()`.
-void mark_cells_overlapping_leaf(const GridSpec& spec, const GridFrame& frame,
-                                 const tf2::Transform& octomap_to_base,
-                                 const octomap::point3d& leaf_center_octree, double leaf_size,
-                                 std::vector<std::uint8_t>& occupancy) {
-  const double leaf_half = 0.5 * leaf_size;
-  // Scaled to the float precision of this leaf's own coordinate (above).
-  const double touch_eps =
-      kOverlapEps * (1.0 + static_cast<double>(std::max({std::fabs(leaf_center_octree.x()),
-                                                         std::fabs(leaf_center_octree.y()),
-                                                         std::fabs(leaf_center_octree.z())})));
-  const Vec3 leaf_center =
-      to_vec3(octomap_to_base *
-              tf2::Vector3(leaf_center_octree.x(), leaf_center_octree.y(), leaf_center_octree.z()));
-
-  // Candidate cells: the base-frame AABB of the (rotated) leaf cube. It
-  // over-covers; `cube_overlaps_cube` then decides each candidate exactly.
-  const std::array<std::uint32_t, 3> size{spec.sx, spec.sy, spec.sz};
+/// A leaf's edge is the tree resolution or a power-of-two multiple of it, and
+/// the lattices are identical, so the leaf covers a whole `k x k x k` block
+/// starting at an exact cell boundary. `std::lround` absorbs the float
+/// precision of octomap's leaf coordinates (~6e-8 relative), which is orders of
+/// magnitude below a cell.
+void mark_leaf(const Lattice& lattice, const octomap::point3d& leaf_center, double leaf_size,
+               std::vector<std::uint8_t>& occupancy) {
+  const double leaf_min[3] = {leaf_center.x() - 0.5 * leaf_size, leaf_center.y() - 0.5 * leaf_size,
+                              leaf_center.z() - 0.5 * leaf_size};
+  const long k = std::lround(leaf_size / lattice.resolution);
+  if (k <= 0) {
+    return;
+  }
   std::array<long, 3> lo{};
   std::array<long, 3> hi{};
   for (int i = 0; i < 3; ++i) {
-    const double reach = leaf_half * (frame.abs_r[i][0] + frame.abs_r[i][1] + frame.abs_r[i][2]);
-    lo[i] =
-        static_cast<long>(std::floor((leaf_center[i] - reach - spec.box_min[i]) / spec.resolution));
-    hi[i] =
-        static_cast<long>(std::floor((leaf_center[i] + reach - spec.box_min[i]) / spec.resolution));
-    lo[i] = std::max<long>(lo[i], 0);
-    hi[i] = std::min<long>(hi[i], static_cast<long>(size[i]) - 1);
+    const long first = std::lround((leaf_min[i] - lattice.cell0_min[i]) / lattice.resolution);
+    lo[i] = std::max<long>(first, 0);
+    hi[i] = std::min<long>(first + k - 1,
+                           static_cast<long>(lattice.size[static_cast<std::size_t>(i)]) - 1);
     if (lo[i] > hi[i]) {
-      return;
+      return;  // wholly outside the covered volume
     }
   }
-
+  const std::size_t sx = lattice.size[0];
+  const std::size_t sy = lattice.size[1];
   for (long iz = lo[2]; iz <= hi[2]; ++iz) {
-    const double cz = spec.box_min[2] + (static_cast<double>(iz) + 0.5) * spec.resolution;
     for (long iy = lo[1]; iy <= hi[1]; ++iy) {
-      const double cy = spec.box_min[1] + (static_cast<double>(iy) + 0.5) * spec.resolution;
+      const std::size_t row = sx * (static_cast<std::size_t>(iy) + sy * static_cast<std::size_t>(iz));
       for (long ix = lo[0]; ix <= hi[0]; ++ix) {
-        const double cx = spec.box_min[0] + (static_cast<double>(ix) + 0.5) * spec.resolution;
-        const Vec3 t{leaf_center[0] - cx, leaf_center[1] - cy, leaf_center[2] - cz};
-        if (cube_overlaps_cube(t, frame, leaf_half, touch_eps)) {
-          const std::size_t idx =
-              static_cast<std::size_t>(ix) +
-              static_cast<std::size_t>(spec.sx) *
-                  (static_cast<std::size_t>(iy) + static_cast<std::size_t>(spec.sy) * iz);
-          occupancy[idx] = 1;
-        }
+        occupancy[row + static_cast<std::size_t>(ix)] = 1;
       }
     }
   }
 }
 
-/// The octree key box covering the whole grid: its 8 corners carried into the
-/// octree frame, padded by one tree cell so key rounding cannot clip a leaf
-/// that grazes the box. octomap's bbx iterator descends on the child's full
-/// EXTENT overlapping the key box, so a coarse leaf whose centre lies outside
-/// the box is still visited.
+/// The octree key box covering the whole grid, padded by one tree cell so key
+/// rounding cannot clip a leaf that grazes it. octomap's bbx iterator descends
+/// on the child's full EXTENT overlapping the key box, so a coarse leaf whose
+/// centre lies outside the box is still visited.
 ///
-/// False when the box reaches outside the octree's addressable
-/// ±32768·resolution, where the key conversion fails and the caller must not
-/// use a key query (it would iterate nothing at all).
-bool grid_box_keys(const octomap::OcTree& tree, const tf2::Transform& base_to_octomap,
-                   const GridSpec& spec, octomap::OcTreeKey& min_key, octomap::OcTreeKey& max_key) {
-  const Vec3 box_max{spec.box_min[0] + spec.sx * spec.resolution,
-                     spec.box_min[1] + spec.sy * spec.resolution,
-                     spec.box_min[2] + spec.sz * spec.resolution};
-  Vec3 lo{};
-  Vec3 hi{};
-  for (int corner = 0; corner < 8; ++corner) {
-    const Vec3 p =
-        to_vec3(base_to_octomap * tf2::Vector3((corner & 1) != 0 ? box_max[0] : spec.box_min[0],
-                                               (corner & 2) != 0 ? box_max[1] : spec.box_min[1],
-                                               (corner & 4) != 0 ? box_max[2] : spec.box_min[2]));
-    for (int i = 0; i < 3; ++i) {
-      lo[i] = corner == 0 ? p[i] : std::min(lo[i], p[i]);
-      hi[i] = corner == 0 ? p[i] : std::max(hi[i], p[i]);
-    }
-  }
+/// False when the box reaches outside the octree's addressable range, where the
+/// key conversion fails and a key query would iterate NOTHING at all.
+bool grid_box_keys(const octomap::OcTree& tree, const Lattice& lattice, octomap::OcTreeKey& min_key,
+                   octomap::OcTreeKey& max_key) {
   const double pad = tree.getResolution();
-  const octomap::point3d bbx_min(static_cast<float>(lo[0] - pad), static_cast<float>(lo[1] - pad),
-                                 static_cast<float>(lo[2] - pad));
-  const octomap::point3d bbx_max(static_cast<float>(hi[0] + pad), static_cast<float>(hi[1] + pad),
-                                 static_cast<float>(hi[2] + pad));
+  const octomap::point3d bbx_min(static_cast<float>(lattice.cell0_min[0] - pad),
+                                 static_cast<float>(lattice.cell0_min[1] - pad),
+                                 static_cast<float>(lattice.cell0_min[2] - pad));
+  const octomap::point3d bbx_max(
+      static_cast<float>(lattice.cell0_min[0] + lattice.size[0] * lattice.resolution + pad),
+      static_cast<float>(lattice.cell0_min[1] + lattice.size[1] * lattice.resolution + pad),
+      static_cast<float>(lattice.cell0_min[2] + lattice.size[2] * lattice.resolution + pad));
   return tree.coordToKeyChecked(bbx_min, min_key) && tree.coordToKeyChecked(bbx_max, max_key);
 }
 
@@ -204,50 +168,58 @@ openral_msgs::msg::OccupancyVoxels rasterize_octree_to_grid(const octomap::OcTre
                                                             const std::string& base_frame) {
   openral_msgs::msg::OccupancyVoxels msg;
   msg.header.frame_id = base_frame;
-  msg.origin.x = spec.box_min[0];
-  msg.origin.y = spec.box_min[1];
-  msg.origin.z = spec.box_min[2];
-  msg.resolution = spec.resolution;
-  msg.size_x = spec.sx;
-  msg.size_y = spec.sy;
-  msg.size_z = spec.sz;
-  const std::size_t cells =
-      static_cast<std::size_t>(spec.sx) * static_cast<std::size_t>(spec.sy) * spec.sz;
+  // An empty grid is the honest answer to "the lattice could not be placed",
+  // and the kernel's own size checks reject it rather than reading a stale one.
+  msg.orientation.w = 1.0;
+
+  Lattice lattice;
+  if (!build_lattice(tree, base_to_octomap, spec, lattice)) {
+    return msg;
+  }
+
+  const tf2::Transform octomap_to_base = base_to_octomap.inverse();
+  const tf2::Vector3 origin_base =
+      octomap_to_base *
+      tf2::Vector3(lattice.cell0_min[0], lattice.cell0_min[1], lattice.cell0_min[2]);
+  const tf2::Quaternion q = octomap_to_base.getRotation().normalized();
+  msg.origin.x = origin_base.x();
+  msg.origin.y = origin_base.y();
+  msg.origin.z = origin_base.z();
+  msg.orientation.x = q.x();
+  msg.orientation.y = q.y();
+  msg.orientation.z = q.z();
+  msg.orientation.w = q.w();
+  msg.resolution = lattice.resolution;
+  msg.size_x = lattice.size[0];
+  msg.size_y = lattice.size[1];
+  msg.size_z = lattice.size[2];
+
+  const std::size_t cells = static_cast<std::size_t>(lattice.size[0]) *
+                            static_cast<std::size_t>(lattice.size[1]) *
+                            static_cast<std::size_t>(lattice.size[2]);
   msg.occupancy.assign(cells, 0);
   if (cells == 0) {
     return msg;
   }
 
-  const tf2::Transform octomap_to_base = base_to_octomap.inverse();
-  GridFrame frame;
-  frame.cell_half = 0.5 * spec.resolution;
-  for (int i = 0; i < 3; ++i) {
-    frame.r[i] = to_vec3(octomap_to_base.getBasis().getRow(i));
-    for (int j = 0; j < 3; ++j) {
-      frame.abs_r[i][j] = std::fabs(frame.r[i][j]) + kParallelEps;
-    }
-  }
-
   octomap::OcTreeKey min_key;
   octomap::OcTreeKey max_key;
-  if (grid_box_keys(tree, base_to_octomap, spec, min_key, max_key)) {
-    // Only the leaves that can reach the grid box.
+  if (grid_box_keys(tree, lattice, min_key, max_key)) {
+    // Only the leaves that can reach the grid.
     for (auto it = tree.begin_leafs_bbx(min_key, max_key), end = tree.end_leafs_bbx(); it != end;
          ++it) {
       if (tree.isNodeOccupied(*it)) {
-        mark_cells_overlapping_leaf(spec, frame, octomap_to_base, it.getCoordinate(), it.getSize(),
-                                    msg.occupancy);
+        mark_leaf(lattice, it.getCoordinate(), it.getSize(), msg.occupancy);
       }
     }
     return msg;
   }
-  // The box reaches outside the octree's addressable range, where a key-space
+  // The grid reaches outside the octree's addressable range, where a key-space
   // query would silently iterate NOTHING and drop every obstacle. Walk the
   // whole tree instead: slower, and never wrong in the unsafe direction.
   for (auto it = tree.begin_leafs(), end = tree.end_leafs(); it != end; ++it) {
     if (tree.isNodeOccupied(*it)) {
-      mark_cells_overlapping_leaf(spec, frame, octomap_to_base, it.getCoordinate(), it.getSize(),
-                                  msg.occupancy);
+      mark_leaf(lattice, it.getCoordinate(), it.getSize(), msg.occupancy);
     }
   }
   return msg;

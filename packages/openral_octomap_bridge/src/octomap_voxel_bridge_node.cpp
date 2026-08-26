@@ -59,13 +59,23 @@ class OctomapVoxelBridge : public rclcpp::Node {
 public:
   OctomapVoxelBridge() : rclcpp::Node("openral_octomap_voxel_bridge") {
     base_frame_ = this->declare_parameter<std::string>("base_frame", "base_link");
+    // The grid's resolution is the OCTREE's — the two lattices are one now, so
+    // there is nothing left to choose. This parameter survives only as the
+    // default for `attach_sweep_padding_m` below, which has to be declared
+    // before any octree has arrived; `on_timer` warns if the map disagrees.
     resolution_ = this->declare_parameter<double>("resolution", 0.05);
-    box_size_[0] = this->declare_parameter<double>("box_size_x", 2.0);
-    box_size_[1] = this->declare_parameter<double>("box_size_y", 2.0);
-    box_size_[2] = this->declare_parameter<double>("box_size_z", 2.0);
-    box_center_[0] = this->declare_parameter<double>("box_center_x", 0.0);
-    box_center_[1] = this->declare_parameter<double>("box_center_y", 0.0);
-    box_center_[2] = this->declare_parameter<double>("box_center_z", 0.5);
+    // The volume covered: a BALL, because the grid's axes are the map's and so
+    // turn relative to `base_frame`. See GridSpec — a base-frame box would need
+    // its rotated bounding box covered, costing up to 2x the cells at 45
+    // degrees and making the cell count depend on the robot's heading.
+    coverage_center_[0] = this->declare_parameter<double>("coverage_center_x", 0.0);
+    coverage_center_[1] = this->declare_parameter<double>("coverage_center_y", 0.0);
+    coverage_center_[2] = this->declare_parameter<double>("coverage_center_z", 0.5);
+    // No default that publishes. The radius must cover wherever the kernel's
+    // checked geometry can reach, which is a property of the ROBOT — this node
+    // cannot derive it, and a guessed one is a grid that is silently blind
+    // where the arm actually goes. Unset means publish nothing.
+    coverage_radius_m_ = this->declare_parameter<double>("coverage_radius_m", 0.0);
     const auto octomap_topic =
         this->declare_parameter<std::string>("octomap_topic", "/octomap_binary");
     const auto output_topic =
@@ -114,12 +124,18 @@ public:
     timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / std::max(rate_hz, 1.0)),
                                      std::bind(&OctomapVoxelBridge::on_timer, this));
 
+    if (!(coverage_radius_m_ > 0.0)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "coverage_radius_m is unset (%g): publishing NOTHING. Set it to cover the "
+                   "robot's kernel-checked geometry — a smaller grid is one the safety kernel "
+                   "is blind outside of.",
+                   coverage_radius_m_);
+    }
     RCLCPP_INFO(this->get_logger(),
-                "octomap→voxel bridge: %s → %s, base=%s, box=[%g %g %g]@[%g %g "
-                "%g], res=%g",
-                octomap_topic.c_str(), output_topic.c_str(), base_frame_.c_str(), box_size_[0],
-                box_size_[1], box_size_[2], box_center_[0], box_center_[1], box_center_[2],
-                resolution_);
+                "octomap→voxel bridge: %s → %s, base=%s, covering r=%g m @[%g %g %g], "
+                "lattice=the octree's",
+                octomap_topic.c_str(), output_topic.c_str(), base_frame_.c_str(),
+                coverage_radius_m_, coverage_center_[0], coverage_center_[1], coverage_center_[2]);
   }
 
 private:
@@ -160,16 +176,40 @@ private:
     tf2::Transform base_to_octomap;
     tf2::fromMsg(tf_msg.transform, base_to_octomap);
 
+    if (!(coverage_radius_m_ > 0.0)) {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "coverage_radius_m is unset: publishing nothing");
+      return;
+    }
+    if (std::fabs(octree_->getResolution() - resolution_) > 1e-9) {
+      // Not fatal — the grid takes the octree's lattice regardless — but the
+      // `resolution` parameter still sets the attach-sweep padding, so a
+      // disagreement means that padding is not one voxel of the live map.
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "octree resolution %g != `resolution` parameter %g; the grid uses the "
+                           "octree's, but attach_sweep_padding_m was defaulted from the parameter",
+                           octree_->getResolution(), resolution_);
+    }
+
     GridSpec spec;
-    spec.resolution = resolution_;
-    spec.sx = static_cast<std::uint32_t>(std::ceil(box_size_[0] / resolution_));
-    spec.sy = static_cast<std::uint32_t>(std::ceil(box_size_[1] / resolution_));
-    spec.sz = static_cast<std::uint32_t>(std::ceil(box_size_[2] / resolution_));
-    spec.box_min[0] = box_center_[0] - 0.5 * box_size_[0];
-    spec.box_min[1] = box_center_[1] - 0.5 * box_size_[1];
-    spec.box_min[2] = box_center_[2] - 0.5 * box_size_[2];
+    spec.center[0] = coverage_center_[0];
+    spec.center[1] = coverage_center_[1];
+    spec.center[2] = coverage_center_[2];
+    spec.radius = coverage_radius_m_;
 
     auto grid = rasterize_octree_to_grid(*octree_, base_to_octomap, spec, base_frame_);
+    if (grid.occupancy.empty()) {
+      // The lattice could not be placed (an unusable radius, or a spec larger
+      // than the rasterizer will allocate). Publishing the empty grid would be
+      // worse than publishing nothing: a zero-cell grid reads downstream as a
+      // world with no obstacles in it, while silence is what the kernel's
+      // staleness watchdog exists to catch.
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "could not place a grid lattice for radius %g m at the octree's %g m "
+                            "resolution: publishing nothing",
+                            coverage_radius_m_, octree_->getResolution());
+      return;
+    }
     clear_attached_payload(grid, base_to_octomap);
     grid.header.stamp = this->now();
     voxel_pub_->publish(grid);
@@ -299,8 +339,8 @@ private:
   std::string base_frame_;
   std::string octomap_frame_;
   double resolution_{0.05};
-  double box_size_[3]{2.0, 2.0, 2.0};
-  double box_center_[3]{0.0, 0.0, 0.5};
+  double coverage_center_[3]{0.0, 0.0, 0.5};
+  double coverage_radius_m_{0.0};
   bool attached_clear_enabled_{true};
   double attached_clear_padding_m_{0.0};
   double attach_sweep_padding_m_{0.05};

@@ -25,10 +25,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("octomap_topic", default_value="/octomap_binary"),
         DeclareLaunchArgument("output_topic", default_value="/openral/world_voxels"),
         DeclareLaunchArgument("resolution", default_value="0.05"),
-        DeclareLaunchArgument("box_size_x", default_value="2.0"),
-        DeclareLaunchArgument("box_size_y", default_value="2.0"),
-        DeclareLaunchArgument("box_size_z", default_value="2.0"),
-        DeclareLaunchArgument("box_center_z", default_value="0.5"),
+        # The covered volume: a ball, because the grid's lattice is the
+        # OctoMap's and its axes turn relative to `base_frame`. The radius must
+        # reach wherever the kernel-CHECKED geometry can go — a property of the
+        # robot's own manifest, not of this node — so there is no default that
+        # publishes. Unset, the node logs and publishes nothing.
+        DeclareLaunchArgument("coverage_radius_m", default_value="0.0"),
+        DeclareLaunchArgument("coverage_center_z", default_value="0.5"),
         DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
     ]
     bridge = Node(
@@ -42,10 +45,8 @@ def generate_launch_description() -> LaunchDescription:
                 "octomap_topic": LaunchConfiguration("octomap_topic"),
                 "output_topic": LaunchConfiguration("output_topic"),
                 "resolution": LaunchConfiguration("resolution"),
-                "box_size_x": LaunchConfiguration("box_size_x"),
-                "box_size_y": LaunchConfiguration("box_size_y"),
-                "box_size_z": LaunchConfiguration("box_size_z"),
-                "box_center_z": LaunchConfiguration("box_center_z"),
+                "coverage_radius_m": LaunchConfiguration("coverage_radius_m"),
+                "coverage_center_z": LaunchConfiguration("coverage_center_z"),
                 "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
             }
         ],

@@ -100,14 +100,16 @@ TEST(OccupancyPersistence, AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt) {
   const auto grid = bridge::rasterize_octree_to_grid(
       tree, tf2::Transform::getIdentity(),
       [] {
+        // Covers the stretch of the ray's bearing this test cares about. It
+        // used to be a 16x1x1 strip; the covered volume is a ball now (the
+        // grid's axes are the map's, so only a ball is invariant to them), and
+        // the count below is unaffected because this scene has exactly one
+        // occupied cell anywhere near it.
         bridge::GridSpec s;
-        s.resolution = kResolution;
-        s.sx = 16;
-        s.sy = 1;
-        s.sz = 1;
-        s.box_min[0] = 0.25;
-        s.box_min[1] = -kResolution / 2.0;
-        s.box_min[2] = -kResolution / 2.0;
+        s.center[0] = 0.45;
+        s.center[1] = 0.0;
+        s.center[2] = 0.0;
+        s.radius = 0.20;
         return s;
       }(),
       "base_link");

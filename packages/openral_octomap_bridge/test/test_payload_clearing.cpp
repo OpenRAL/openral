@@ -61,18 +61,22 @@ const double kCircumradius = 0.5 * kResolution * 1.7320508075688772;
 const tf2::Vector3 kPayloadCenter(0.40, 0.0, 0.35);
 const tf2::Vector3 kPayloadHalfExtents(0.04, 0.04, 0.10);
 
-// The grid: 12³ cells of 25 mm around the payload, its min corner on the
-// octree's own lattice so a grid cell centre and an octree voxel centre are the
-// same point (both are 0.0125 + n·0.025).
+// The covered volume around the payload. The grid lands on the octree's own
+// lattice by construction now — a grid cell centre and an octree voxel centre
+// are the same point because they are the same cell — so this only has to say
+// WHERE to cover, not how to phase it. The radius covers the box this used to
+// name explicitly (min (0.30, -0.15, 0.25), 12 cells of 25 mm on a side).
+//
+// These tests drive `clear_attached_payload_cells`, not the rasterizer, and
+// every one of them uses an identity `base_to_octomap` — so the grids here are
+// identity-oriented and the base-frame cell arithmetic in the helpers below
+// stays exactly right.
 bridge::GridSpec grid_spec() {
   bridge::GridSpec spec;
-  spec.resolution = kResolution;
-  spec.sx = 12;
-  spec.sy = 12;
-  spec.sz = 12;
-  spec.box_min[0] = 0.30;
-  spec.box_min[1] = -0.15;
-  spec.box_min[2] = 0.25;
+  spec.center[0] = 0.45;
+  spec.center[1] = 0.00;
+  spec.center[2] = 0.40;
+  spec.radius = 0.15 * std::sqrt(3.0);
   return spec;
 }
 
