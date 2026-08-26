@@ -1886,6 +1886,7 @@ class SimSensorBridge:
         self._last_collision_evidence_ns: int = 0
         self._collision_evidence_warned: bool = False
         self._estop_seq: int = 0
+        self._estop_stamp_ns: int = 0
         self._estop_awaiting_evidence: bool = False
         self._attachment_timer: Any = None
         self._attachment_revision: int = 0
@@ -3478,12 +3479,19 @@ class SimSensorBridge:
         }
         if self._estop_awaiting_evidence:
             self._estop_awaiting_evidence = False
+            backing = self._late_voxel_backing()
             self._node.get_logger().error(
                 "sim.estop_ground_truth_evidence "
                 + json.dumps(
                     {
                         "stop_seq": self._estop_seq,
                         "collision_evidence": self._last_collision_evidence,
+                        "evidence_voxel_backing": backing,
+                        "backing_after_snapshot_ns": (
+                            int(self._node.get_clock().now().nanoseconds) - self._estop_stamp_ns
+                            if backing is not None
+                            else None
+                        ),
                     },
                     sort_keys=True,
                 )
@@ -3529,6 +3537,15 @@ class SimSensorBridge:
         # contact — geometry the manifest deliberately leaves out of
         # collision_geometry — which nearly produced a wrong field verdict.
         probe_bodies = kernel_checked_body_ids(model, self._description) or None
+        # Decide freshness BEFORE the snapshot, because the evidence voxel is
+        # derived from the same cached evidence. Reading it ungated attributed
+        # the PREVIOUS stop's cell to this one whenever the current evidence
+        # had not arrived: the record then carried ``collision_evidence: null``
+        # beside an ``evidence_voxel_backing`` for a different stop entirely.
+        now_ns = int(self._node.get_clock().now().nanoseconds)
+        evidence = self._last_collision_evidence
+        age_ns = now_ns - self._last_collision_evidence_ns
+        fresh = evidence is not None and 0 <= age_ns <= _ESTOP_EVIDENCE_WINDOW_NS
         snapshot = estop_ground_truth_snapshot(
             model,
             data,
@@ -3538,13 +3555,10 @@ class SimSensorBridge:
             base_frame_body=self._base_frame_body,
             joint_state=self._read_joint_state(),
             description=self._description,
-            evidence_voxel=self._evidence_voxel(),
+            evidence_voxel=self._evidence_voxel() if fresh else None,
         )
-        now_ns = int(self._node.get_clock().now().nanoseconds)
-        evidence = self._last_collision_evidence
-        age_ns = now_ns - self._last_collision_evidence_ns
-        fresh = evidence is not None and 0 <= age_ns <= _ESTOP_EVIDENCE_WINDOW_NS
         self._estop_seq += 1
+        self._estop_stamp_ns = now_ns
         self._estop_awaiting_evidence = not fresh
         self._node.get_logger().error(
             "sim.estop_ground_truth_snapshot "
@@ -3609,6 +3623,46 @@ class SimSensorBridge:
         if not index.isdigit():
             return None
         return {"index": int(index), **grid}
+
+    def _late_voxel_backing(self) -> dict[str, object] | None:
+        """What backs the tripping cell, probed when the evidence arrived late.
+
+        The snapshot is never delayed for the evidence — the sim state must be
+        captured at the stop instant — but the *map-side* half of the record is
+        derived from that evidence, so a late arrival used to drop it silently.
+        Across the 2026-08-26 five-round battery that was 14 of 15 stops: the
+        cell the kernel stopped on could not be classified as backed by real
+        geometry, by decoration, or by nothing at all, which is the question
+        every world-voxel stop turns on.
+
+        Probing here instead is sound for the geometry this record is about.
+        The cell is a fixed world position and the fixtures that back it do not
+        move; the line reports ``backing_after_snapshot_ns`` so a reader can
+        see how long after the stop the probe ran and discount a *moving*
+        backing body (a settling payload, the robot itself) accordingly.
+
+        Returns ``None`` when the stop named no voxel, when no grid geometry
+        has been seen, or when the HAL is not MuJoCo-backed.
+        """
+        evidence_voxel = self._evidence_voxel()
+        if evidence_voxel is None or evidence_voxel.get("index") is None:
+            return None
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return None
+        model, data = handles
+        cell: Any = evidence_voxel
+        return voxel_backing_record(
+            model,
+            data,
+            voxel_index=int(cell["index"]),
+            grid_origin=list(cell.get("origin", (0.0, 0.0, 0.0))),
+            grid_resolution=float(cell.get("resolution", 0.0)),
+            grid_size=list(cell.get("size", (0, 0, 0))),
+            robot_body_ids=self._depth_self_bodies,
+            attached_body_ids=self._depth_excluded_body_ids() - self._depth_self_bodies,
+            base_frame_body=self._base_frame_body,
+        )
 
     def _read_joint_state(self) -> Any:
         """The HAL's joint state at the stop, or ``None`` if it cannot be read.

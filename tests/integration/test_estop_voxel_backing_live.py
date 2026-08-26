@@ -16,6 +16,16 @@ cannot look at the map at all — which is exactly how the 2026-08-22 round
 adjudicated two stops as false positives on ground truth that had never
 examined the cell.
 
+The second half of this test is the **ordering**, which is where the join was
+actually being lost. The kernel publishes the failure trigger and the E-stop on
+different topics with no guaranteed delivery order, and the snapshot is
+deliberately never delayed for the evidence. So when the evidence loses the
+race the located cell does not exist yet, and the map-side half of the record
+used to be dropped without a word — 14 of the 15 stops in the 2026-08-26
+five-round battery recorded no backing at all. The record must instead say
+nothing while it knows nothing (never attribute the *previous* stop's cell to
+this one) and then emit the backing on the late line.
+
 This is the live half: the production ``ManifestHALLifecycleNode`` on a real
 ``SimAttachedHAL`` (the real ``tabletop_push`` rollout, a real compiled
 ``MjModel``), its real ``SimSensorBridge``, and real ``openral_msgs`` on the
@@ -31,6 +41,7 @@ Locally::
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -80,7 +91,14 @@ def _wait_until(predicate: Any, *, timeout_s: float = _DEADLINE_S) -> bool:
     return False
 
 
-def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph() -> None:
+def _logged(err: str, marker: str) -> dict[str, Any]:
+    """The JSON payload of the last ``marker`` line the node logged to stderr."""
+    lines = [line for line in err.splitlines() if marker in line]
+    assert lines, f"no {marker} line was logged"
+    return dict(json.loads(lines[-1].split(marker, 1)[1].strip()))
+
+
+def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any) -> None:
     """The two topics a world-voxel stop needs are joined into one located cell."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("mujoco")
@@ -93,6 +111,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph() -> None:
     from rclpy.node import Node
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import Empty
 
     rclpy.init()
     node: Any = ManifestHALLifecycleNode("test_estop_voxel_backing_live")
@@ -119,6 +138,11 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph() -> None:
         reliability=QoSReliabilityPolicy.RELIABLE,
         durability=QoSDurabilityPolicy.VOLATILE,
         depth=50,
+    )
+    estop_qos = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        depth=10,
     )
     voxel_pub = peer.create_publisher(OccupancyVoxels, "/openral/world_voxels", volatile)
     failure_pub = peer.create_publisher(FailureTrigger, "/openral/failure/safety", bus)
@@ -196,6 +220,49 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph() -> None:
         # hard the probe looked — never by silence.
         assert record["verdict"] == "unbacked"
         assert int(record["rays_cast"]) > 0
+
+        # --- the ordering half: the evidence loses the race ---------------
+        #
+        # Let the cached evidence age past the freshness window, so the next
+        # stop is the real "E-stop first, evidence second" case the kernel's
+        # two topics produce.
+        from openral_hal.sim_sensor_bridge import _ESTOP_EVIDENCE_WINDOW_NS
+
+        time.sleep(_ESTOP_EVIDENCE_WINDOW_NS / 1e9 + 0.1)
+        estop_pub = peer.create_publisher(Empty, "/openral/estop", estop_qos)
+        assert _wait_until(lambda: estop_pub.get_subscription_count() > 0)
+        capfd.readouterr()
+        estop_pub.publish(Empty())
+        assert _wait_until(lambda: bridge._estop_awaiting_evidence), (
+            "a stop whose evidence has not arrived must record that it is waiting"
+        )
+        snapshot = _logged(capfd.readouterr().err, "sim.estop_ground_truth_snapshot")
+
+        # Nothing is known about the cell yet, and the record says exactly
+        # that. The stale evidence still cached from above addresses a
+        # DIFFERENT stop, and attributing its cell here would put a confident,
+        # wrong backing next to a null ``collision_evidence``.
+        assert snapshot["collision_evidence"] is None
+        assert snapshot["evidence_voxel_backing"] is None
+
+        # Now the evidence lands. The map-side half of the record is what the
+        # late line exists to carry; without it this stop could never be
+        # classified as backed by real geometry, by decoration, or by nothing.
+        trigger.header.stamp = peer.get_clock().now().to_msg()
+        failure_pub.publish(trigger)
+        assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
+        late = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+
+        assert late["stop_seq"] == snapshot["stop_seq"], "the two lines join on stop_seq"
+        assert late["collision_evidence"] is not None
+        backing = late["evidence_voxel_backing"]
+        assert isinstance(backing, dict), "the late line must carry the backing, not just evidence"
+        assert tuple(backing["voxel_ijk"]) == _EVIDENCE_IJK
+        assert tuple(backing["base_xyz"]) == pytest.approx(_EVIDENCE_BASE_XYZ)
+        assert backing["verdict"] == "unbacked"
+        # How stale the probe is, so a reader can discount a backing body that
+        # could have moved between the stop and the probe.
+        assert int(late["backing_after_snapshot_ns"]) >= 0
     finally:
         with suppress(Exception):
             node.trigger_deactivate()
