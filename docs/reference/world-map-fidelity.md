@@ -68,9 +68,21 @@ Nav2, SLAM, the detector and the policy are absent: none of them writes
 `/openral/world_voxels` (the world-state object-lift *subscribes* it), and a
 start-state measurement applies zero actions.
 
-The C++ safety kernel could **not** be built on this host — the vendored
-`opentelemetry_cpp_vendor` fails against the system protobuf, a pre-existing
-breakage unrelated to this work. Kernel verdicts are therefore a numpy port of
+The C++ safety kernel could **not** be built on this host at the time — the
+vendored `opentelemetry_cpp_vendor` failed at its `find_package(Protobuf)`.
+
+> **Corrected 2026-08-26.** That was never a conflict "against the system
+> protobuf": protobuf's *dev* files were simply not installed. With
+> `libprotobuf-dev` + `protobuf-compiler` present the vendor package configures
+> and the whole 27-package graph builds, kernel included. (A second, self-
+> inflicted variant of the same symptom: putting `.venv/bin` on `PATH` shadows
+> system cmake 3.28 with the venv's pip-installed cmake 4.1, whose
+> `FindProtobuf` then misses it too.) Nothing on this page depended on the
+> kernel being unbuildable — the numpy port was validated against the shipped
+> C++ either way — but the diagnosis should not be carried forward as a known
+> breakage, because it is not one.
+
+Kernel verdicts are therefore a numpy port of
 `box_box_distance` (`collision.cpp:327`) treating each occupied cell as a
 12.5 mm-half-extent cube exactly as `check_voxel_collision`
 (`collision.cpp:625`) does. **The port was validated against the shipped C++,
