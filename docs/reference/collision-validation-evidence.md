@@ -957,6 +957,68 @@ up to 48.3 mm — is a fact about the *robot*, measured on the manifest's own
 collision model, and is untouched by this page: no world probe is involved in
 it.
 
+### 2026-08-26 — `master-baseline` vs `oriented-grid-2`, the oriented-grid A/B
+
+The first paired round for the oriented world grid (#173): the same four scenes,
+same seed, same host (`q-laptop`, RTX 5070 Laptop), one round per arm, run
+through `tools/validation_matrix.py` and diffed with its own `diff` subcommand.
+
+**Arm A** is master `2e3b947`. **Arm B** is `195e2af` — the grid published on
+the OctoMap's own lattice instead of a base-aligned one.
+
+| scene | A (master) | B (oriented) | A min | B min | A steps | B steps |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| baguette | within-quantization | **real** | −12.52 mm | −38.22 mm | 732 | **819** |
+| sink_cup | **false-positive** | within-quantization | −2.37 mm | **−0.07 mm** | 126 | **366** |
+| fridge | within-quantization | within-quantization | −2.28 mm | **−0.36 mm** | 169 | 182 |
+| utensil | within-quantization | within-quantization | −14.12 mm | **−3.15 mm** | 313 | 316 |
+
+Two things to read carefully, because the headline number misleads on one of
+them.
+
+**baguette's deeper stop is not the same stop getting worse.** The stop *class*
+changed: `party_a` went `panda_link2` → `attached:sim:obj_main`, `horizon_step`
+−1 → 0, and `place_allowance_active` false → true. In A the arm stopped on a
+cabinet at step 732; in B it gets 87 steps further, into the place itself, and
+stops on the carried baguette contacting the receptacle. The ground-truth probe
+agrees it is real: `nearest_tripping_party_m` 0.035 m → **−0.0014 m**. A
+different, later, genuine contact — not a regression of the earlier one.
+
+**sink_cup's A-arm stop was a real false positive.** Master stopped it at step
+126 with the nearest tripping party **245 mm** away — nothing there at all. B
+reaches step 366 and stops with something 33 mm away.
+
+Across all four scenes the robot progresses further before stopping, and the
+three link-side stops report between 3.5× and 6.3× less penetration. No scene
+reached task success in either arm.
+
+**What this round does NOT establish.** One round per arm, and the rollout
+diverges the moment the first stop differs — every `task_success_steps` differs,
+so the per-scene distances are *not* matched comparisons of the same geometry.
+They are four independent trajectories per arm. The direction is consistent
+across 4/4 and the two adverse classes in A (a false positive, and the deepest
+penetration) both improved, but attributing the magnitudes needs either a
+multi-round battery per arm (as `baguette-battery` and `final-battery` did) or
+the deterministic start-state comparison, which applies zero actions and so
+isolates the map from the policy. The exact-lattice claim itself is not resting
+on this round: `OctreeToGrid.TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw`
+proves the published grid equals the octree cell-for-cell at every phase and
+yaw, and the kernel's differential oracle pins identity-grid behaviour to
+2.8 × 10⁻¹⁷ m against master.
+
+**Two harness findings from the same session**, both of which the harness exists
+to catch and both now fixed:
+
+* the first attempt bucketed **all four scenes `harness-error`** — `sim_e2e.launch.py`
+  spawns `octomap_server`, no `package.xml` declared it, and
+  `scripts/check_ros_build_deps.sh` derives its required set from those files,
+  so it cleared a host that could not launch. Fixed by declaring the
+  `exec_depend`.
+* the staleness guardrail **refused** the first baseline attempt: checking out
+  master rewrote source mtimes while colcon skipped unchanged packages, leaving
+  the overlay older than its sources. Exactly the "one round silently executed
+  the wrong checkout" incident it was written for.
+
 ## Standing caveats
 
 Eight things a reader should carry away, all of them stated by the artifacts
