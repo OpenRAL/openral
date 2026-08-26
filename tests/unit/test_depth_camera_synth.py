@@ -365,10 +365,23 @@ def test_depth_image_matches_cloud_z_column() -> None:
 # body's bounding sphere hugs the bracket and excludes the slab entirely.
 #
 # `mj_multiRay` culls whole bodies against that sphere, so it used to skip the
-# counter body and report the cabinet carcass beneath it — the counter surface
-# read 30 mm too low, in the direction that makes the world-collision voxel
-# grid think there is free space where a solid countertop is. `mj_ray` (and
-# MuJoCo's own GL depth renderer, checked by hand on this scene) reports 0.920.
+# counter body and report the cabinet carcass beneath it. That inconsistency is
+# why the synth casts `mj_ray` per pixel and not the batched call.
+#
+# **The expectation on this scene inverted with #174, and deliberately.** The
+# slab is `contype=0 conaffinity=0`: MuJoCo forms no contact pair for it, so no
+# body can ever touch it, and a cell holding only that slab is an obstacle the
+# safety kernel would E-stop on and the ground-truth probe is required (#149)
+# to call unbacked. The physical surface here is the carcass at 0.890; 0.920 is
+# paint. The depth synth now filters intangible geometry out of every cast, so
+# these two tests assert the collidable answer.
+#
+# This scene remains the adversarial one — it is built so the visual slab falls
+# outside its body's collision BVH — but it is not the RoboCasa case. Measured
+# on all four validation-matrix scenes, every one of ten `*_top_visual`
+# countertops has a collidable top geom at the same height: filtering them
+# moves those returns by a maximum of 0.0 mm and loses no ray. Across 16 384
+# rays no return anywhere came back nearer or vanished.
 _CARCASS_TOP_Z = 0.890
 _SLAB_TOP_Z = 0.920
 _COUNTER_CAM_Z = 2.0
@@ -398,8 +411,13 @@ def _counter_model_data() -> tuple[object, object]:
     return model, data
 
 
-def test_depth_cloud_hits_a_visual_only_surface_not_the_solid_behind_it() -> None:
-    """A visual-only countertop is the surface, not the collision carcass under it."""
+def test_a_visual_only_countertop_is_not_the_surface_the_map_records() -> None:
+    """The collision carcass is the surface; the intangible slab over it is not.
+
+    Inverted by #174 — see the note above the MJCF. A geom no body can touch
+    is not world, and mapping it puts a phantom obstacle 30 mm in front of the
+    real one, exactly where an arm has to finish a reach.
+    """
     model, data = _counter_model_data()
     # Narrow field of view so every ray lands on the slab (half-extent 0.6 m,
     # ~1.08 m below the camera).
@@ -418,20 +436,21 @@ def test_depth_cloud_hits_a_visual_only_surface_not_the_solid_behind_it() -> Non
         max_range_m=10.0,
     )
 
-    expected = _COUNTER_CAM_Z - _SLAB_TOP_Z
-    buried = _COUNTER_CAM_Z - _CARCASS_TOP_Z
+    expected = _COUNTER_CAM_Z - _CARCASS_TOP_Z
+    painted = _COUNTER_CAM_Z - _SLAB_TOP_Z
     assert np.allclose(depth, expected, atol=1e-3), (
-        f"every ray must stop on the visual countertop at optical-Z {expected:.3f} m; "
-        f"{buried:.3f} m means the cast saw through it to the carcass beneath"
+        f"every ray must stop on the collidable carcass at optical-Z {expected:.3f} m; "
+        f"{painted:.3f} m is the intangible slab, which no body can reach"
     )
 
 
-def test_depth_cloud_sees_a_visual_geom_with_nothing_behind_it() -> None:
-    """The same cull also loses the surface entirely when no solid backs it.
+def test_an_overhang_with_no_collidable_geom_under_it_is_not_mapped_at_all() -> None:
+    """Where the slab overhangs the carcass there is nothing to map but floor.
 
-    Aimed past the cabinet at slab-only overhang, the wrong answer is not a
-    30 mm error but the floor 0.92 m further away — a hole punched straight
-    through a solid surface in the voxel map.
+    The stronger half of the same inversion, and the one to look hardest at: a
+    cell here is not moved but *emptied*. That is correct precisely because
+    nothing collidable was ever in it — an arm passes straight through this
+    overhang in physics, and the floor is the first thing it could hit.
     """
     model, data = _counter_model_data()
     # Aim at x ≈ 0.55 m: past the carcass (half-extent 0.5) but still on the
@@ -451,9 +470,9 @@ def test_depth_cloud_sees_a_visual_geom_with_nothing_behind_it() -> None:
         max_range_m=10.0,
     )
 
-    assert np.allclose(depth, _COUNTER_CAM_Z - _SLAB_TOP_Z, atol=5e-3), (
-        "the overhanging countertop must still be the nearest surface; "
-        f"{_COUNTER_CAM_Z:.3f} m is the floor seen through it"
+    assert np.allclose(depth, _COUNTER_CAM_Z, atol=5e-3), (
+        "the floor is the nearest COLLIDABLE surface under the overhang; "
+        f"{_COUNTER_CAM_Z - _SLAB_TOP_Z:.3f} m is the intangible slab"
     )
 
 

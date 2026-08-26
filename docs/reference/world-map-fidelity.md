@@ -277,6 +277,55 @@ every sim-derived number the collision programme rests on — a sim round's stop
 rate is not a prediction of a hardware round's stop rate, which is exactly what
 the four-scene validation matrix is used for.
 
+#### Costed, and closed
+
+The filter #174 asked for is now in the depth synth: `noncollidable_geom_ids`
+is hidden from every `mj_ray` pass, so a return is always a surface something
+can collide with. What that costs was measured first, per ray, on all four
+validation-matrix scenes at the deploy stride — the real camera, the real
+built scene, one cast with every visible geom and one with intangible
+geometry filtered:
+
+| scene | geoms | intangible | returns changed | lost | median push-back | max | **nearer** |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baguette | 1 763 | 714 (40 %) | 30.2 % | 0 | 7.9 mm | 59.6 mm | **0** |
+| sink_cup | 1 539 | 617 (40 %) | 30.8 % | 0 | 0.9 mm | 79.7 mm | **0** |
+| fridge | 1 798 | 689 (38 %) | 45.1 % | 0 | 0.0 mm | 814.9 mm | **0** |
+| utensil | 1 472 | 586 (40 %) | 19.8 % | 0 | 0.6 mm | 367.6 mm | **0** |
+
+Three things this settles.
+
+**The direction is safe by construction, and measured to be.** Filtering
+removes candidates from `mj_ray`'s nearest-hit search, so a return can only
+move farther along its ray or vanish; a collidable surface is never among the
+removed candidates and stays hittable. Over 16 384 rays, no return anywhere
+came back nearer, and none was lost — every ray still finds collidable
+geometry. Along a ray, no collidable surface can be cleared either: if one lay
+between the removed decoration and the new endpoint, the ray would have
+stopped on *it*.
+
+**Countertops do not drop.** The concern recorded in `depth_camera.py` — a
+visual-only RoboCasa countertop at world z 0.920 over a collision carcass at
+0.890, so filtering would lower the perceived surface by 30 mm — does not
+occur. All **ten** `*_top_visual` geoms sampled across the four scenes move by
+a maximum of **0.0 mm** and lose no ray: each has a collidable top geom at the
+same height. That concern was about `mj_multiRay`'s body-level BVH cull, which
+is a different mechanism from per-geom collidability.
+
+**The change that has teeth is the fridge interior.** 234 of 4 087 fridge rays
+travel more than one 25 mm voxel further, most of them 200–800 mm, once the
+intangible door panel `fridgesidebyside_main_group_1_g17` stops returning.
+That is the intended effect: the interior really is open, and it is the volume
+the arm has to enter. Elsewhere the median push-back is under 2 mm — well
+inside the 21.65 mm voxel half-diagonal, so most cells do not move at all.
+
+Two consequences worth carrying forward. The two `test_depth_camera_synth.py`
+tests that asserted a visual-only countertop *must* be the reported surface
+were inverted deliberately, and say so; their scene is kept because it is the
+adversarial one. And since the `mj_multiRay` body cull only ever mis-skipped
+non-collidable geoms, the ~1.9x premium the synth pays for `mj_ray` may now be
+recoverable — unverified, and deliberately out of scope here.
+
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
 Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it turns out
