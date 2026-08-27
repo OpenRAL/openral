@@ -1,0 +1,131 @@
+name: test-ros2
+# colcon build + ctest for the C++ / ROS 2 half of the workspace — the packages
+# `tools/test_selection.toml` deliberately excludes from the Python selector.
+#
+# That exclusion is correct (a `cpp/**` change genuinely selects no Python
+# tests), but its comment named THIS workflow as the thing that covers them and
+# this file did not exist. So `cpp/openral_safety_kernel` — the safety kernel —
+# had no CI coverage of any kind: a kernel-only PR gets a green
+# `select-and-test` that ran zero tests. This file is that missing half.
+#
+# Auto-triggers disabled: out of GitHub Actions credits, matching hal.yml,
+# test-python.yml and docs.yml. Re-enable PR/push triggers once billing is
+# restored — see "Re-enabling on PRs" below. Until then this is the documented,
+# reproducible way to run the kernel suite in CI on demand, and the local
+# equivalent is `just ros2-build && just ros2-test`.
+#
+# Cost, measured rather than guessed. On a 16-core dev host, a cold
+# `--packages-up-to openral_safety_kernel openral_octomap_bridge` is 4 packages
+# in 2 min 21 s: openral_msgs 29 s, openral_octomap_bridge 29 s,
+# opentelemetry_cpp_vendor 1 min 2 s, openral_safety_kernel 1 min 19 s. Expect
+# meaningfully longer on a 4-core hosted runner, but this is minutes, not tens
+# of minutes — cheaper than assumed when the credits freeze was applied.
+#
+# `opentelemetry_cpp_vendor` git-clones and builds upstream otel-cpp from source
+# via ExternalProject_Add (there is no `ros-jazzy-opentelemetry-cpp-vendor`
+# binary package to shortcut it), so this job needs NETWORK during the build
+# step, not just during checkout — hence git + ca-certificates below.
+#
+# It deliberately builds a SUBSET, not `just ros2-build`'s full 28 packages:
+# these two are the ones the Python selector cannot cover. Widen via the
+# `packages` input when a run needs more.
+#
+# Re-enabling on PRs — replace the `on:` block with:
+#     on:
+#       workflow_dispatch:
+#       pull_request:
+#         branches: [master]
+# and add `test-ros2` to the `required_status_checks` of the
+# protect_default_branch ruleset, or a kernel PR still merges unverified.
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "colcon --packages-up-to targets (space-separated)"
+        required: false
+        default: "openral_safety_kernel openral_octomap_bridge"
+
+permissions:
+  contents: read
+
+jobs:
+  ros2:
+    name: "colcon build + ctest — Jazzy"
+    runs-on: ubuntu-24.04
+    env:
+      # Via env, never interpolated straight into a `run:` block — a dispatch
+      # input reaching the shell directly is a script-injection surface even
+      # when only write-access holders can trigger it.
+      PACKAGES: ${{ inputs.packages || 'openral_safety_kernel openral_octomap_bridge' }}
+    # ros:jazzy-ros-base pins the distro rather than relying on apt keyring
+    # setup on a bare runner, and matches the Jazzy the Justfile targets.
+    container:
+      image: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # `ros-base` omits these. octomap/octomap-msgs are octomap_bridge's build
+      # deps; octomap-server is what sim_e2e.launch.py spawns at runtime.
+      # protobuf-{dev,compiler} are opentelemetry_cpp_vendor's — without them
+      # its otel-cpp ExternalProject fails to configure, which has previously
+      # been misread as a protobuf VERSION conflict. It is not: it is absence.
+      # See docs/reference/world-map-fidelity.md.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            git ca-certificates \
+            libprotobuf-dev protobuf-compiler \
+            nlohmann-json3-dev \
+            ros-jazzy-octomap ros-jazzy-octomap-msgs ros-jazzy-octomap-server
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # The colcon build points -DPython3_EXECUTABLE at this venv, so it has to
+      # exist before the build, not just before the tests.
+      - name: Sync the Python environment
+        run: uv sync --frozen --all-packages || uv sync --all-packages
+
+      - name: Declared-dependency check
+        run: bash scripts/check_ros_build_deps.sh
+
+      # CMAKE_POLICY_VERSION_MINIMUM=3.10 mirrors the Justfile: Jazzy's bundled
+      # gtest_vendor declares cmake_minimum_required(VERSION 3.5), which CMake
+      # >= 3.27 deprecates loudly through colcon on every package with tests.
+      - name: colcon build
+        run: |
+          . /opt/ros/jazzy/setup.sh
+          colcon build --merge-install --symlink-install \
+            --base-paths packages cpp \
+            --packages-up-to ${PACKAGES} \
+            --cmake-args -DPython3_EXECUTABLE="$(pwd)/.venv/bin/python" \
+                         -DCMAKE_C_COMPILER=/usr/bin/gcc \
+                         -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+                         -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+
+      # `colcon test` exits 0 even when tests fail — the failure lives in the
+      # per-package result files. `colcon test-result --verbose` is what turns a
+      # failing suite into a failing job, so it is NOT optional here. This is
+      # the same class of hole as #164 (a lane reporting success over failure).
+      - name: colcon test
+        run: |
+          . /opt/ros/jazzy/setup.sh
+          . install/setup.sh
+          colcon test --merge-install \
+            --packages-select ${PACKAGES}
+          colcon test-result --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: colcon-test-results
+          path: |
+            build/**/test_results/**
+            log/latest_test/**
+          if-no-files-found: warn
