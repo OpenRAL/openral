@@ -122,8 +122,8 @@ def decode_occupied_centers(
         ...     size_xyz=(2, 1, 1),
         ...     occupancy=bytes([0, 1]),
         ... )
-        >>> [round(float(v), 3) for v in centers[0]]
-        [0.15, 0.05, 0.05]
+        >>> tuple(round(float(v), 3) for v in centers[0])
+        (0.15, 0.05, 0.05)
     """
     sx, sy, sz = size_xyz
     expected = sx * sy * sz
