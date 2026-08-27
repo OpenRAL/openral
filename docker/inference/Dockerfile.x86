@@ -307,6 +307,17 @@ COPY scenes/ scenes/
 # targets. It is sourced BEFORE `set -u` because colcon's generated setup
 # scripts reference unbound variables.
 #
+# `openral_nav2_bringup` is in this list for a reason that is easy to undo:
+# it is an ament_cmake package, so its Python module reaches PYTHONPATH ONLY
+# via the `ament_python_install_package()` this build runs. The live-ROS step
+# below runs tests/integration/test_nav2_payload_footprint_live.py, which
+# spawns payload_scan_filter_node.py as its own process — without this package
+# built, that node dies at import (`No module named 'openral_nav2_bringup'`),
+# no scan is ever republished, and every costmap cell reads 0. Note that the
+# resulting failure is partly SILENT: the "carried object must not mark the
+# costmap" assertion passes vacuously when nothing reaches the costmap at all,
+# and only the released-object control catches it.
+#
 # `Python3_EXECUTABLE=/workspace/.venv/bin/python` is essential so the
 # ament-python packages resolve openral_* + structlog against the venv, not the
 # unconfigured system python. `--merge-install` collapses the trees into one
@@ -333,6 +344,7 @@ RUN bash -lc 'set -eo pipefail \
                           openral_rskill_ros \
                           openral_octomap_bridge \
                           openral_perception_ros \
+                          openral_nav2_bringup \
         --cmake-args -DPython3_EXECUTABLE=/workspace/.venv/bin/python \
                      -DCMAKE_C_COMPILER=/usr/bin/gcc \
                      -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
