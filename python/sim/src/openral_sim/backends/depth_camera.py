@@ -48,21 +48,44 @@ from numpy.typing import NDArray
 _GEOMGROUP_ALL = np.ones(6, dtype=np.uint8)
 
 
+def noncollidable_geom_ids(model: Any) -> NDArray[np.int64]:
+    """Geom ids MuJoCo can never collide with — decoration, markers, sites.
+
+    A geom with **neither** ``contype`` nor ``conaffinity`` is excluded from
+    every contact pair MuJoCo forms, so no physics can ever touch it. It is
+    still *visible*, which is the whole asymmetry #174 is about: the depth
+    synth would strike it, OctoMap would integrate it, and the safety kernel
+    would E-stop on a cell no body can occupy — while the ground-truth probe
+    that adjudicates that same stop is required (since #149) to ignore it.
+
+    The test is MuJoCo's own collision predicate, not a scene convention, so
+    it holds for any MJCF: robosuite/RoboCasa's group-0/group-1 split is a
+    *rendering* convention and says nothing about what can be touched.
+    """
+    contype = np.asarray(model.geom_contype, dtype=np.int64)
+    conaffinity = np.asarray(model.geom_conaffinity, dtype=np.int64)
+    return np.flatnonzero((contype == 0) & (conaffinity == 0)).astype(np.int64)
+
+
+def _body_geom_ids(model: Any, body_ids: frozenset[int] | None) -> NDArray[np.int64]:
+    """Every geom id belonging to ``body_ids`` (empty when nothing is selected)."""
+    if not body_ids:
+        return np.empty(0, dtype=np.int64)
+    geom_body_ids = np.asarray(model.geom_bodyid)
+    return np.flatnonzero(np.isin(geom_body_ids, np.fromiter(body_ids, dtype=np.int64))).astype(
+        np.int64
+    )
+
+
 @contextmanager
-def _transparent_body_geoms(
+def _transparent_geoms(
     model: Any,  # reason: optional MuJoCo pybind type
-    body_ids: frozenset[int] | None,
+    geom_ids: NDArray[np.int64],
 ) -> Iterator[NDArray[np.uint8]]:
-    """Temporarily hide selected bodies from MuJoCo rays, then restore them."""
+    """Temporarily hide selected geoms from MuJoCo rays, then restore them."""
     from openral_core.exceptions import ROSConfigError
 
-    if not body_ids:
-        yield _GEOMGROUP_ALL
-        return
-    geom_body_ids = np.asarray(model.geom_bodyid)
-    transparent_geom_ids = np.flatnonzero(
-        np.isin(geom_body_ids, np.fromiter(body_ids, dtype=np.int64))
-    )
+    transparent_geom_ids = np.unique(geom_ids)
     if transparent_geom_ids.size == 0:
         yield _GEOMGROUP_ALL
         return
@@ -79,7 +102,7 @@ def _transparent_body_geoms(
     hidden_group = next((group for group in range(6) if group not in opaque_groups), None)
     if hidden_group is None:
         raise ROSConfigError(
-            "Depth self-filter cannot make bodies transparent: all six MuJoCo geom groups "
+            "Depth ray filter cannot make geoms transparent: all six MuJoCo geom groups "
             "are used by non-filtered geometry."
         )
     original_groups = geom_groups[transparent_geom_ids].copy()
@@ -201,19 +224,35 @@ def _cast_depth_rays(
     geomid_out = np.zeros(1, dtype=np.int32)
     bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
 
+    # Intangible geometry is filtered from EVERY pass. A geom the physics can
+    # never touch is not world the map is allowed to contain, and #174
+    # measured the cost of keeping it: 713 of 1714 geoms in the RoboCasa
+    # fridge scene are non-collidable decoration, and 18.8% of one live map's
+    # occupied cells were backed by nothing else — obstacles no policy can be
+    # trained or evaluated against, and phantom E-stops the ground-truth probe
+    # is required to call unbacked. Filtering can only move a return FARTHER
+    # along its ray or remove it: a collidable surface stays hittable, so no
+    # touchable geometry can leave the map. On hardware the term does not
+    # exist at all — a visible object is solid — so this is the sim matching
+    # the world it stands in for.
+    intangible = noncollidable_geom_ids(model)
+
     if exclude_body_ids:
-        # First pass, everything visible: which rays land on a body we are
-        # about to make transparent? Those are the ones whose second-pass
-        # result is "the world behind the payload" rather than a real return,
-        # so they clear their ray in OctoMap instead of marking a cell.
+        # First pass, every TOUCHABLE thing visible: which rays land on a body
+        # we are about to make transparent? Those are the ones whose
+        # second-pass result is "the world behind the payload" rather than a
+        # real return, so they clear their ray in OctoMap instead of marking a
+        # cell. Both passes must see the same world, or a ray blocked by
+        # decoration here would go unrecognised as a payload return there.
         initial_geomids = np.full(n_rays, -1, dtype=np.int32)
         initial_distances = np.full(n_rays, -1.0, dtype=np.float64)
-        for i in range(n_rays):
-            geomid_out[0] = -1
-            initial_distances[i] = mujoco.mj_ray(
-                model, data, origin, dir_world[i], _GEOMGROUP_ALL, 1, bodyexclude, geomid_out
-            )
-            initial_geomids[i] = geomid_out[0]
+        with _transparent_geoms(model, intangible) as solid_groups:
+            for i in range(n_rays):
+                geomid_out[0] = -1
+                initial_distances[i] = mujoco.mj_ray(
+                    model, data, origin, dir_world[i], solid_groups, 1, bodyexclude, geomid_out
+                )
+                initial_geomids[i] = geomid_out[0]
         safe_geom = np.where(initial_geomids >= 0, initial_geomids, 0)
         initial_bodies = np.asarray(model.geom_bodyid)[safe_geom]
         transparent_hits = (
@@ -222,7 +261,8 @@ def _cast_depth_rays(
             & np.isin(initial_bodies, np.fromiter(exclude_body_ids, dtype=np.int64))
         )
 
-    with _transparent_body_geoms(model, exclude_body_ids) as geom_groups:
+    hidden = np.concatenate((intangible, _body_geom_ids(model, exclude_body_ids)))
+    with _transparent_geoms(model, hidden) as geom_groups:
         for i in range(n_rays):
             geomid_out[0] = -1
             distances[i] = mujoco.mj_ray(
