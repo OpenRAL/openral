@@ -114,6 +114,18 @@ _Private helper of `validation_matrix.py`. Recovered from `run_xr1_full.py` and 
 
 - `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L29)
 
+### `tools/robocasa_carry_survey.py`
+_Answers the fact [issue #108](https://github.com/OpenRAL/openral/issues/108) was blocked on — does any RoboCasa task make the base drive while holding something — by **building the env and measuring it**, not by reading the source. Measures the distance from the base's start pose to every non-distractor object the task manipulates. Found `DeliverStraw` (3.16-3.80 m) and `GetToastedBread` (2.17-3.48 m), both in `target50`; `scenes/deploy/robocasa_deliver_straw.yaml` pins the first. Replaces an `ast` classifier that got this wrong twice — `Kitchen.get_fixture`'s `ref=` is a nearest-of-type tie-break, not the 0.10 m bound its docstring claims. See [`docs/reference/robocasa-carry-survey.md`](../reference/robocasa-carry-survey.md)._
+
+- `REQUIRED_BASE_TRANSLATION_M = 1.0` — Criterion 1 of the scene that closes #108 (`openral_nav2_bringup` README); below it the arm bridges the gap and `NavigateToPose` never runs. (L57)
+- `DISTRACTOR_PREFIXES = ("distr", "dstr")` — RoboCasa's two clutter-object spellings (117 and 6 uses). Both are needed: `distr` alone leaves `ArrangeBreadBasket` / `PanTransfer` reporting `dstr_dining*` as their furthest object, and dropping the filter entirely makes `StoreLeftoversInBowl`'s ~5 m distractors read as a cross-kitchen carry. (L64)
+- `class SurveyError(RuntimeError)` — RoboCasa unavailable, or its task registry unreadable. (L67)
+- `@dataclass(frozen=True) class CarryMeasurement(task, seed, layout, style, furthest_object_m, furthest_object, nearest_object_m, nearest_object, lang)` — One `(task, seed)` reset, measured; `.requires_base_translation` applies the threshold. (L72)
+- `robocasa_root(explicit=None) -> Path` — `--robocasa-root`, else an importable `robocasa`, else the HAL's provisioning cache. (L94)
+- `read_target50(root) -> list[str]` — The 50 task names XR-1's model card pins as its reference configuration, parsed from `dataset_registry.py` with `ast`. (L115)
+- `measure(task, seed) -> CarryMeasurement` — Build, reset, measure each object's distance from `mobilebase0_base`. Needs a provisioned RoboCasa. (L140)
+- `main(argv=None) -> int` — CLI; `--tasks` (default: target50), `--seeds`, `--robocasa-root`, `--json`. Per-`(task, seed)` build failures are reported, not fatal. (L195)
+
 ### `tools/select_tests.py`
 _Selective test execution — maps a git diff to the minimal pytest targets that can observe it. Backs `just test-changed` / the `test-selective` workflow. See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
 

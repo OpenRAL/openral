@@ -276,11 +276,43 @@ the single consumer waiting on the measurement.
 
 ### What is still open (issue #108)
 
-* **No scene drives the base while carrying** — the one remaining blocker, and
-  a maintainer decision. Every RoboCasa *atomic* PickPlace task pins
-  `init_robot_base_ref` to a single fixture near both source and destination,
-  so nothing here has been exercised against a base that actually translates
-  mid-carry. Concretely, the scene that would close #108 needs all four of:
+* **A scene now drives the base while carrying** — `DeliverStraw`, pinned at
+  seed 3 by [`scenes/deploy/robocasa_deliver_straw.yaml`](../../scenes/deploy/robocasa_deliver_straw.yaml).
+  It is upstream RoboCasa, not a custom task, and it is in `composite_seen` —
+  inside the `target50` set XR-1 RoboCasa365 reports against — so the policy
+  stays in distribution. Measured at reset: the straw starts **0.50 m** away in
+  the drawer the base is parked at (inside the Panda's 0.855 m reach, so it is
+  grasped before any base motion) and the glass cup it must end up inside sits
+  **3.795 m** away on the dining counter. `GetToastedBread` also qualifies, at
+  up to 3.48 m.
+
+  This was measured, not read off the source, and that distinction is load
+  bearing: classifying the task source statically gives the *opposite*, wrong
+  answer, because `Kitchen.get_fixture`'s docstring ("will search for fixture
+  close to ref (within 0.10m)") does not describe its code — which keeps
+  candidates within 0.10 m *of the nearest one*, a tie-break rather than a
+  bound. Method and full measurements:
+  [`docs/reference/robocasa-carry-survey.md`](../../docs/reference/robocasa-carry-survey.md).
+
+  **Criteria 1 and 4 are met. Criteria 2 and 3 are not — and the same
+  measurements show neither is reachable as written:**
+
+  * **Criterion 3 cannot be met by any counter-height carry.** The payload rides
+    at z ~ 0.97-1.03 m; `synthesize_laser_scan_2d` casts at 0.30 m. The payload
+    never enters the scan plane, so the *payload* half of
+    `payload_scan_filter_node` is inert here regardless of scene. The footprint
+    publisher is unaffected (it ignores height by design), and the *chassis*
+    half of the filter is still live.
+  * **Criterion 2 needs the polygon check it is describing.** Free-corridor
+    bottlenecks between the carry endpoints measure 0.19-0.24 m — under the bare
+    chassis's own 0.444 m circumscribed radius, which would mean the robot fits
+    nowhere, including its start pose. It does fit: the chassis is a 0.70 x 0.50 m
+    rectangle tucked against a counter that lies inside its circumscribed circle
+    and outside the rectangle. So "an aperture the bare chassis clears but the
+    grown polygon does not" is only decidable with an oriented-polygon test —
+    i.e. with `consider_footprint` on, the very flag it was meant to justify.
+
+  The original four criteria, kept for reference:
   1. a **carry path long enough to require base translation** — source and
      destination on fixtures far enough apart that the arm alone cannot bridge
      them, i.e. beyond the manipulator's reach from one base pose (> ~1.0 m of
@@ -296,12 +328,14 @@ the single consumer waiting on the measurement.
   4. **determinism** — a fixed `seed` and pinned `init_robot_base_ref`, so the
      acceptance is a pass/fail rather than a distribution.
 
-  Two ways to get it: a RoboCasa `composite/*` task (`loading_fridge` is the
-  obvious candidate but is **not confirmed** in XR-1 RoboCasa365's evaluated
-  set — that needs checking before it is chosen), or a custom deterministic
-  `scenes/` entry built to the four points above. The second is more work and
-  strictly more controllable; the first is free if the task turns out to
-  qualify. Either way the same run also settles the MPPI-loop headroom question
-  above — it is the first thing that drives the controller at 20 Hz with a
-  grown footprint — and so it is also what unblocks
+  `loading_fridge`, the candidate this file used to name, is disqualified on the
+  measurement: none of its eight classes is in `target50`, so it would put XR-1
+  out of distribution.
+
+  **What remains before #108 closes** is the run itself, not the scene: drive
+  `scenes/deploy/robocasa_deliver_straw.yaml` end to end with Nav2 and the
+  OctoMap kernel gate enabled, and time the *whole* MPPI loop against the 50 ms
+  budget with `consider_footprint` on. That is the measurement the flip was
+  deferred pending — it is the first thing that drives the controller at 20 Hz
+  with a grown footprint — and so it is also what unblocks
   `CostCritic.consider_footprint`.

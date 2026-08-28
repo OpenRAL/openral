@@ -1,0 +1,80 @@
+# RoboCasa DeliverStraw — the deterministic CARRY-WHILE-NAVIGATING scene (#108).
+#
+# `openral_nav2_bringup` publishes a payload-grown Nav2 footprint and filters
+# the payload's and chassis's own lidar returns out of the scan (PR #143). Until
+# this scene, neither had ever run against a base that actually TRANSLATES while
+# carrying, so a working footprint and a decorative one looked identical, and
+# the deferred `CostCritic.consider_footprint` flip had nothing to measure
+# against. Its README specifies four criteria; this scene supplies 1 and 4.
+#
+# WHY THIS TASK. `DeliverStraw` is upstream RoboCasa and is in `composite_seen`,
+# i.e. inside `target50` — the 50-task set XR-1 RoboCasa365 reports against — so
+# the policy stays in distribution. It is not a custom task, and it needs no
+# new code. Measured at reset on q-laptop (RTX 5070 Laptop):
+#
+#   seed | layout/style | straw (in the drawer) | glass cup (dining counter)
+#   -----+--------------+-----------------------+---------------------------
+#      1 | 29 / 15      |        0.46 m         |          3.159 m
+#      2 | 53 / 22      |        0.49 m         |          3.608 m
+#      3 | 51 /  9      |        0.50 m         |          3.795 m
+#
+# The straw starts within the arm's reach of the pinned base pose, so it is
+# grasped before any base motion; the cup is metres away on the dining counter,
+# and `_check_success` is `check_obj_in_receptacle(straw, glass_cup)`, so the
+# straw MUST be carried the whole way.
+#
+# WHY THIS ONE AND NOT A LONGER CARRY. `tools/robocasa_carry_survey.py` measured
+# every target50 task (recorded in docs/reference/robocasa-carry-survey.md) and
+# `DeliverStraw` is NOT the longest — `GatherTableware` reaches 6.80 m and
+# `GarnishPancake` 4.01 m. It is chosen for being the SIMPLEST: exactly one
+# carried object and one destination, verified by a single
+# `check_obj_in_receptacle`. The longer two are multi-object chains
+# (`GatherTableware` succeeds on the mutual distances of three glasses and a
+# bowl; `GarnishPancake` needs strawberry-on-pancake AND pancake-on-plate AND
+# plate-on-counter), so a failed run there has several explanations that have
+# nothing to do with the Nav2 footprint. Fewest confounds between the carry and
+# the verdict wins, since the verdict is what #108 reads.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_deliver_straw.yaml
+# Setup: RoboCasa is provisioned at runtime by the HAL (not by `just sync`).
+
+scene:
+  id: robocasa/DeliverStraw
+  backend: mujoco
+  # 512² for the same reason as robocasa_baguette.yaml: at 128² the open-vocab
+  # detector cannot ground a counter-top object (a straw is smaller than the
+  # baguette that already needed this). VLA policies downsample their own
+  # input, so the higher source res costs only EGL render time.
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: DeliverStraw
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    horizon: 600
+
+# THE PIN (criterion 4 — determinism). `DeliverStraw` caches its stool /
+# dining-counter / drawer choice in `fixture_refs`, so the seed pins the layout,
+# the style, both fixtures, both objects and the base start pose.
+#
+# Seed 3 is chosen on the measurement above: it is the longest carry of the
+# three (3.795 m), and criterion 1 — base displacement while holding something —
+# is the whole reason this scene exists.
+seed: 3
+
+# KNOWN PRECONDITION, stated so a failed run is read correctly. The drawer is
+# CLOSED at reset — measured, `get_door_state` returns ~2.9e-08 at this seed —
+# so the episode is: open the drawer, grasp the straw, carry it across the
+# kitchen, place it in the cup. Only the third phase exercises the footprint.
+# A run that never opens the drawer produces no evidence about Nav2 at all, and
+# must not be recorded as a footprint failure. Every target50 task that carries
+# across the kitchen has a precondition of this kind (`GetToastedBread`, the
+# runner-up at 3.48 m, must start a toaster and wait for the lever), so this is
+# a property of the evaluated set, not of this choice.
+#
+# No `place_declaration`, deliberately, unlike the sibling RoboCasa place
+# scenes: the ADR-0097 place path is orthogonal to what this scene measures, and
+# arming it would add the place witness, the approach allowance and the cup's
+# own geometry as failure modes between the carry and the verdict. Add one only
+# when this scene is being used for a place-phase question instead.
