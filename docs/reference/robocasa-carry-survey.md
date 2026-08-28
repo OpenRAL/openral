@@ -191,6 +191,99 @@ payload-grown polygon does not") can only be evaluated with an oriented-polygon
 check — which is precisely the check `CostCritic.consider_footprint` turns on,
 and precisely why the flag matters.
 
+## The run: the whole MPPI loop, timed (2026-08-28)
+
+The scene exists so `CostCritic.consider_footprint` can stop being deferred.
+PR #143 knew the flag's own price in isolation (+8.1 / +9.7 ms from
+`benchmark/cost_critic_footprint_bench.cpp`) but not the loop around it, and
+committing 17–20 % of a 50 ms budget against an unmeasured remainder is a
+navigation-behaviour change made blind. This is that measurement.
+
+**Setup.** `openral deploy sim` on this scene with the full stack —
+`--enable-slam --enable-nav2 --enable-octomap --enable-octomap-kernel-check`,
+detector and scene VLM off, reasoner off — on `q-laptop` (i7 / RTX 5070 Laptop,
+ROS 2 Jazzy). Nav2 reached `Managed nodes are active`; the safety kernel loaded
+its envelope (`12 links, margin=0 m`) and never fired. A real `NavigateToPose`
+goal was driven for 25 s per arm by
+[`tools/_nav2_mppi_loop_probe.py`](https://github.com/OpenRAL/openral/blob/master/tools/_nav2_mppi_loop_probe.py).
+
+**What is measured, and why it is CPU.** The stack runs `use_sim_time:=True`, so
+the controller's 20 Hz is 20 Hz of *simulation* time; wall-clock spacing between
+commands would measure how fast MuJoCo steps, not whether the controller fits.
+So the metric is `controller_server`'s own CPU time from `/proc`, divided by the
+control cycles it actually published on `/cmd_vel_nav`. It is clock-source
+independent and directly comparable to the 50 ms period. (The real-time factor
+was ~1.0 anyway: 500 cycles at 20 Hz = 25 s of sim time in 25.0 s of wall time.)
+
+**Every run validates its own arm.** The shipped `payload_footprint_node`
+publishes the *bare* polygon at 2 Hz whenever nothing is attached, so it and the
+probe silently alternate. Each run reads back
+`/local_costmap/published_footprint` and measures its longest edge — frame
+invariant, 0.72 m bare vs 1.23 m grown — and is discarded unless the costmap
+actually adopted the arm's polygon. Two early runs were caught and rejected this
+way before the competing node was stopped for the grown arms.
+
+### Result — 8 runs, all valid, 2 per arm
+
+| footprint | `consider_footprint` | CPU / cycle | of 50 ms budget |
+| --- | --- | ---: | ---: |
+| bare (0.72 m) | `false` *(ships today)* | **9.58 ms** | 19 % |
+| bare (0.72 m) | `true` | **10.11 ms** | 20 % |
+| grown (1.23 m) | `false` | **9.79 ms** | 20 % |
+| **grown (1.23 m)** | **`true`** | **9.97 ms** | **20 %** |
+
+**The loop fits, in every arm, with ~40 ms to spare.** Every 25 s window
+produced 500 or 501 cycles — exactly 20 Hz, never dropping one — and the entire
+multi-arm session produced **one** `Control loop missed its desired rate`
+warning.
+
+Nav2 confirmed the grown polygon was in force and that its cheap gate was
+defeated, in its own words:
+`The inflation radius (0.400000) is smaller than the circumscribed radius
+(0.908020)`. So this is the regime PR #143 described, where the full-footprint
+check is unconditional — the worst case, not a lucky one. (It logged `0.444072`
+for the bare polygon, independently reproducing the padded circumscribed radius
+that PR corrected the README to.)
+
+### The discrepancy, stated rather than smoothed over
+
+**The measured delta of flipping the flag is +0.53 ms (bare) and +0.18 ms
+(grown) — not the +8.1 / +9.7 ms the isolated benchmark predicted.** That is an
+order of magnitude, and this page does not claim to have explained it. What can
+be said:
+
+* The header confirms PR #143's reading of the gate:
+  `consider_footprint_ && (cost >= possible_collision_cost_ || possible_collision_cost_ < 1.0f)`
+  makes the `footprintCostAtPose` call unconditional once
+  `findCircumscribedCost` returns `0.0`, which Nav2's own log says it does here.
+* So the difference is almost certainly in **how many times `inCollision` is
+  actually reached per iteration** in the live optimizer, versus the 56 000
+  calls the benchmark assumes from `batch_size 2000 x time_steps 56 /
+  trajectory_point_step 2`. That is a claim about `CostCritic::score`, whose
+  source is not shipped in the Jazzy binary install, and it has **not** been
+  verified here.
+* The practical consequence is the same either way, and it is the one the
+  deferral asked for: on this scene, on this host, the full cycle fits with the
+  flag on.
+
+**What this does not settle.** The payload was *injected* — the probe published
+the grown polygon directly, because no policy ran (`attached_objects count=0`
+throughout). This measures the controller carrying a grown footprint, not a
+policy-driven carry, and the drawer-opening precondition above means an
+end-to-end XR-1 run is a separate exercise. It is also one host and one route
+through one kitchen; a busier local costmap would raise the call count the
+bullet above turns on.
+
+**The flip is still a maintainer decision.** `config/nav2_panda_mobile.yaml`,
+its CostCritic comment and
+`test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint` change
+together or not at all, and nothing here has been changed. The precondition the
+README set — "run the composite scene with the whole MPPI loop timed against the
+50 ms budget, and show the full cycle still fits with the flag on" — is now met,
+with the caveats above.
+
+Raw output: `docs/reference/data/nav2-mppi-loop-2026-08-28.jsonl`.
+
 ## Reproducing
 
 ```console

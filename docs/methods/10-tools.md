@@ -114,6 +114,14 @@ _Private helper of `validation_matrix.py`. Recovered from `run_xr1_full.py` and 
 
 - `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L29)
 
+### `tools/_nav2_mppi_loop_probe.py`
+_Times the WHOLE MPPI control loop against its 50 ms budget on a live `openral deploy sim` graph — the measurement `CostCritic.consider_footprint` was deferred pending. Attaches to a running graph, drives a real `NavigateToPose`, and divides `controller_server`'s `/proc` CPU time by the cycles it published on `/cmd_vel_nav`. CPU, not wall clock, because the stack runs `use_sim_time` and the 20 Hz is sim-time. Validates which polygon the costmap adopted per run (`published_footprint` longest edge: 0.72 m bare / 1.23 m grown), so the shipped 2 Hz `payload_footprint_node` cannot silently alternate with it. Private: attaches to someone else's graph, evidence rather than a shipped entry point. Round recorded in [`docs/reference/robocasa-carry-survey.md`](../reference/robocasa-carry-survey.md)._
+
+- `BARE` / `GROWN` — the two footprint polygons: the manifest chassis, and the chassis grown over the payload at the live 0.860 m forward reach.
+- `cpu_seconds(pid) -> float` — utime+stime from `/proc/<pid>/stat`, the clock-source-independent cost.
+- `class Probe(Node)` — publishes the arm's polygon at 20 Hz, counts `/cmd_vel_nav`, and reads back `/local_costmap/published_footprint` for the validity check.
+- `main(argv=None) -> int` — `--grown`, `--seconds=N`; emits one JSON line carrying `cpu_ms_per_cycle`, `cycles`, `footprint_len_m` and `arm_valid`.
+
 ### `tools/robocasa_carry_survey.py`
 _Answers the fact [issue #108](https://github.com/OpenRAL/openral/issues/108) was blocked on — does any RoboCasa task make the base drive while holding something — by **building the env and measuring it**, not by reading the source. Measures the distance from the base's start pose to every non-distractor object the task manipulates. Found `DeliverStraw` (3.16-3.80 m) and `GetToastedBread` (2.17-3.48 m), both in `target50`; `scenes/deploy/robocasa_deliver_straw.yaml` pins the first. Replaces an `ast` classifier that got this wrong twice — `Kitchen.get_fixture`'s `ref=` is a nearest-of-type tie-break, not the 0.10 m bound its docstring claims. See [`docs/reference/robocasa-carry-survey.md`](../reference/robocasa-carry-survey.md)._
 

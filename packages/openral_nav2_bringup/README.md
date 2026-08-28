@@ -250,6 +250,48 @@ bare chassis. Nothing restores it while carrying — the payload's circumscribed
 radius is most of the 3 m local costmap — so it is left at 0.40 m rather than
 changed blind.
 
+### MEASURED 2026-08-28: the full cycle fits with the flag on
+
+The precondition below has been met. `scenes/deploy/robocasa_deliver_straw.yaml`
+was driven with the full stack (SLAM + Nav2 + octomap + kernel gate) on
+`q-laptop`, and `controller_server`'s own CPU per published control cycle was
+measured in all four arms, 2 runs each, each run validating which polygon the
+costmap actually adopted:
+
+| footprint | `consider_footprint` | CPU / cycle | of 50 ms |
+| --- | --- | ---: | ---: |
+| bare (0.72 m) | `false` *(ships today)* | 9.58 ms | 19 % |
+| bare (0.72 m) | `true` | 10.11 ms | 20 % |
+| grown (1.23 m) | `false` | 9.79 ms | 20 % |
+| **grown (1.23 m)** | **`true`** | **9.97 ms** | **20 %** |
+
+**The loop fits in every arm**, with ~40 ms of headroom: 500-501 cycles per 25 s
+window (exactly 20 Hz, none dropped) and **one** `Control loop missed its
+desired rate` warning in the whole session. Nav2 logged
+`inflation radius (0.400000) is smaller than the circumscribed radius
+(0.908020)` for the grown polygon, confirming the cheap gate was defeated and
+this is the unconditional-check regime, i.e. the worst case.
+
+**The measured delta of the flag was +0.53 ms (bare) / +0.18 ms (grown), not
+the +8.1 / +9.7 ms the isolated benchmark below predicted.** That order of
+magnitude is *not* explained here; the likeliest cause is how often
+`CostCritic::inCollision` is actually reached per iteration versus the 56 000
+calls the benchmark assumes, which is a property of `CostCritic::score` whose
+source is not in the Jazzy binary install. Reported as a discrepancy, not
+resolved.
+
+**Caveats, both real.** The payload was *injected* — the probe published the
+grown polygon, because no policy ran (`attached_objects count=0` throughout) —
+so this is the controller carrying a grown footprint, not a policy-driven carry.
+And it is one host, one route, one kitchen; a busier local costmap raises the
+call count that the paragraph above turns on.
+
+**Nothing here has been flipped.** The config, its comment and
+`test_mppi_does_not_yet_consider_the_footprint` change together or not at all,
+and that remains a maintainer decision. Method, full numbers and the validity
+check: [`docs/reference/robocasa-carry-survey.md`](../../docs/reference/robocasa-carry-survey.md);
+raw output in `docs/reference/data/nav2-mppi-loop-2026-08-28.jsonl`.
+
 ### Why the flag is deferred, not forgotten
 
 Knowing the flag's own price is not the same as knowing the loop fits. What
