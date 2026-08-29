@@ -125,6 +125,7 @@ _DEPLOY_STEMS: list[str] = [
     "openarm_restock_shelf",
     "openarm_tabletop",
     "robocasa_baguette",
+    "robocasa_deliver_straw",
     "robocasa_drawer_utensil",
     "robocasa_fridge_drawer",
     "robocasa_navigate",

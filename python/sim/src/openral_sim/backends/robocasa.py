@@ -154,6 +154,13 @@ _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "TurnOnSinkFaucet",
     "TurnOffSinkFaucet",
     "NavigateKitchen",
+    # The one target50 task measured to carry an object across the kitchen —
+    # the base drives ~3.2-3.8 m while holding the straw, which is what
+    # `openral_nav2_bringup`'s payload footprint and scan self-filter need in
+    # order to be exercised at all (issue #108). See
+    # `docs/reference/robocasa-carry-survey.md` and
+    # `scenes/deploy/robocasa_deliver_straw.yaml`.
+    "DeliverStraw",
 )
 
 _XR1_ROBOCASA_ARM_DIM = 7
