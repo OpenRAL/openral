@@ -105,17 +105,28 @@ def install_linear4bit_shells(root: object, compute_dtype: object) -> int:
         nonlocal n
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
-                setattr(
-                    module,
-                    name,
-                    bnb.nn.Linear4bit(
+                # ON META, like the skeleton these shells are installed into.
+                # `Linear4bit.__init__` allocates a real parameter for its
+                # weight, so on the default device each shell costs host RAM
+                # proportional to the DENSE layer -- the materialization NF4
+                # exists to avoid. Loading Robometer-4B peaked at 14.3 GB RSS
+                # and was OOM-killed before a single packed weight was read.
+                # `install_prequantized` overwrites every one of these from the
+                # checkpoint, so there is nothing here to preserve: "EMPTY
+                # shells" was always the intent and meta is what makes them
+                # empty. `openral_sim._quantization` guards its own Linear4bit
+                # constructor the same way (via `accelerate.init_empty_weights`);
+                # this path is the one that missed it. Same device the caller
+                # meta-builds the skeleton on in `_robometer_scorer`.
+                with torch.device("meta"):
+                    shell = bnb.nn.Linear4bit(
                         child.in_features,
                         child.out_features,
                         bias=child.bias is not None,
                         compute_dtype=compute_dtype,
                         quant_type="nf4",
-                    ),
-                )
+                    )
+                setattr(module, name, shell)
                 n += 1
             else:
                 _replace(child)
