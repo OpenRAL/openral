@@ -2658,14 +2658,53 @@ class SimSensorBridge:
         if description is not None:
             base_names = extract_base_sim_joint_names(description)
 
+        kwargs: dict[str, object] = {}
+        height = self._scan_world_height_m()
+        if height is not None:
+            kwargs["laser_height_m"] = height
+
         ranges = synthesize_laser_scan_2d(
             model=model,
             data=data,
             base_joint_names=base_names,
             n_beams=n_beams,
             max_range_m=max_range_m,
+            **kwargs,  # type: ignore[arg-type]  # reason: optional world-z override
         )
         return [float(r) for r in ranges]
+
+    def _scan_world_height_m(self) -> float | None:
+        """World z to cast the fan at, derived from the manifest's mount pose.
+
+        ``synthesize_laser_scan_2d`` takes a **world** z, and hardcoding it is
+        what let the ray and the frame drift apart: the fan was cast 0.30 m
+        above the floor while the scan was published in ``base_link``, the
+        robot0_base_pos platform frame at 0.700 m, so Nav2 placed every return
+        0.40 m too high.
+
+        Both now come from one number. The manifest declares the lidar's mount
+        in ``static_transform_xyz_rpy`` (published as the ``base_link ->
+        base_scan`` static TF by ``sim_e2e.launch.py``), and this adds it to the
+        base frame's own world z, so the cast follows the robot instead of
+        sitting at a fixed world height — which also means a base that changes
+        height (a ramp, a lift column) no longer casts through the floor.
+
+        Returns ``None`` when the manifest declares no mount or the HAL cannot
+        report a 6-DoF base pose, leaving ``synthesize_laser_scan_2d`` on its
+        own default rather than guessing.
+        """
+        lidar = self._description.lidar_sensor
+        if lidar is None or lidar.static_transform_xyz_rpy is None:
+            return None
+        mount_z = float(lidar.static_transform_xyz_rpy[2])
+        pose = getattr(self._hal, "base_pose_6dof", None)
+        if not callable(pose):
+            return None
+        resolved = pose()
+        if resolved is None:
+            return None
+        (_, _, base_z), _ = resolved
+        return float(base_z) + mount_z
 
     # -- Depth PointCloud2 --
     def _setup_attachment_state(self) -> None:

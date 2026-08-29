@@ -310,14 +310,25 @@ local_costmap:
         enabled: True
         publish_voxel_map: True
         origin_z: 0.0
-        # The panda_mobile 2-D lidar sits at z≈1.05 m (robocasa's ~0.70 m
-        # OmronMobileBase platform + arm-base stack). A VoxelLayer can only
-        # raytrace a scan whose sensor origin lies inside the voxel column —
-        # the prior 16×0.05=0.80 m top left the sensor above the grid, so the
-        # local costmap logged "origin out of map bounds … cannot raytrace"
+        # A VoxelLayer can only raytrace a scan whose sensor origin lies inside
+        # the voxel column, and the prior 16×0.05=0.80 m top left it outside:
+        # the local costmap logged "origin out of map bounds … cannot raytrace"
         # every cycle and never formed. nav2_costmap_2d's VoxelLayer hard-caps
-        # z_voxels at 16, so we raise z_resolution instead: 16×0.08=1.28 m
-        # clears the 1.05 m mount (and the ~0.9 m counters) within the cap.
+        # z_voxels at 16, so z_resolution is raised instead — 16×0.08=1.28 m.
+        #
+        # The height that justified it was WRONG, and the fix is elsewhere. This
+        # comment used to say the lidar "sits at z≈1.05 m"; it does not. The fan
+        # is cast 0.30 m above the floor, and the 0.70 m figure was `base_link`
+        # — the robot0_base_pos platform frame the scan was mislabelled into,
+        # which is what put the sensor origin high enough to fall out of a
+        # 0.80 m column in the first place. `robots/panda_mobile/robot.yaml` now
+        # gives the lidar its own `base_scan` frame with the mount carried in
+        # TF, so the origin sits at 0.30 m and would fit the old column.
+        #
+        # 1.28 m is KEPT anyway, deliberately: it still clears the ~0.9 m
+        # counters the scan must raytrace through, the cap makes it free to
+        # keep, and narrowing it is a costmap-behaviour change with nothing to
+        # gain. Re-derive it only if the mount moves.
         z_resolution: 0.08
         z_voxels: 16
         max_obstacle_height: 2.0

@@ -1292,6 +1292,45 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     ),
                 )
 
+    # Sensor mount poses. A sensor whose manifest entry declares both
+    # ``parent_frame`` and ``static_transform_xyz_rpy`` gets that transform on
+    # /tf_static, so its readings are located by TF rather than by being
+    # mislabelled into an existing frame. panda_mobile's ``base_scan`` is why
+    # this exists: it used to declare ``frame_id: base_link`` and silently lose
+    # its 0.40 m mount offset, handing Nav2 and slam_toolbox every return 0.40 m
+    # above where the ray was cast. Same shape as the URDF-root bridge above,
+    # and the same reason — the manifest owns the geometry, not the launch file.
+    for sensor in description.sensors:
+        if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
+            continue
+        sx, sy, sz, sroll, spitch, syaw = sensor.static_transform_xyz_rpy
+        extra_nodes.append(
+            Node(
+                package="tf2_ros",
+                executable="static_transform_publisher",
+                name=f"static_{sensor.parent_frame}_to_{sensor.frame_id}",
+                arguments=[
+                    "--x",
+                    str(sx),
+                    "--y",
+                    str(sy),
+                    "--z",
+                    str(sz),
+                    "--roll",
+                    str(sroll),
+                    "--pitch",
+                    str(spitch),
+                    "--yaw",
+                    str(syaw),
+                    "--frame-id",
+                    sensor.parent_frame,
+                    "--child-frame-id",
+                    sensor.frame_id,
+                ],
+                output="log",
+            ),
+        )
+
     # Opt-in SLAM. The backend is selected by
     # ``slam_backend`` (resolved from capabilities in deploy_sim.py):
     # ``visual`` composes cuVSLAM (camera-based, lidar-less robots);

@@ -448,7 +448,24 @@ sensors:
   # (see the Nav2 generic mobile-base properties convention's known limitations) — retune in sim if the map is noisy.
   - name: "base_scan"
     modality: "lidar_2d"
-    frame_id: "base_link"
+    # The lidar's OWN frame, with its mount pose carried in TF — not
+    # `base_link`. This used to say `base_link`, which silently threw away
+    # 0.40 m: the sim casts the fan 0.30 m above the FLOOR (an RPLIDAR-A1 on the
+    # Omron base's bumper) while `base_link` is the robot0_base_pos platform
+    # frame at 0.700 m, so every return was handed to Nav2 and slam_toolbox
+    # 0.40 m higher than it was measured. Kitchens hid it — cabinets are
+    # floor-to-counter slabs, so a fan at 0.05 / 0.30 / 0.70 m returns an
+    # identical scan (measured: 344/360 hits, median 1.86 m at all three) — but
+    # anything living BETWEEN those heights (a toe-kick recess, a low shelf, a
+    # step, a cable tray, a pet) would have been mapped 0.40 m off.
+    #
+    # `static_transform_xyz_rpy` is the single source of truth for that mount:
+    # `sim_e2e.launch.py` publishes it as the `base_link -> base_scan` static
+    # TF, and the HAL adds it to the base's world z to decide where to cast, so
+    # the ray and the frame can no longer disagree.
+    frame_id: "base_scan"
+    parent_frame: "base_link"
+    static_transform_xyz_rpy: [0.0, 0.0, -0.40, 0.0, 0.0, 0.0]
     rate_hz: 10.0
     n_channels: 360
     range_min_m: 0.55
