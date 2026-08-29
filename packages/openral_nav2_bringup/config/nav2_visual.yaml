@@ -151,7 +151,7 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        consider_footprint: false
+        consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2

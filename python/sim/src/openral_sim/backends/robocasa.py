@@ -1372,7 +1372,13 @@ def read_panda_mobile_base_velocity(
 _LASER_DEFAULT_N_BEAMS = 360
 _LASER_DEFAULT_MAX_RANGE_M = 12.0
 _LASER_DEFAULT_MIN_RANGE_M = 0.05
-_LASER_DEFAULT_HEIGHT_M = 0.30  # body-frame z at which the beams are cast
+# WORLD z at which the beams are cast — `origin[2]` is set to this absolutely,
+# NOT added to the base body's height. It reads as a mount height only because
+# the RoboCasa base body sits at z = 0.000. Callers that know the robot's frame
+# should pass a derived value instead (`SimSensorBridge._scan_world_height_m`
+# adds the manifest's mount offset to the base's own world z) so the fan tracks
+# the robot; this default is the fallback for callers that cannot.
+_LASER_DEFAULT_HEIGHT_M = 0.30
 # Self-occlusion handling for the ray-cast: a beam may terminate on the
 # robot's own bodies (chassis / wheels / arm). We re-cast past each such
 # self-hit; this caps how many self-layers one beam steps through before
@@ -1418,8 +1424,11 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
         n_beams: Number of rays. 360 ≈ 1 deg resolution.
         max_range_m: Max sensor range. Beams with no hit return this
             value (NOT NaN, NOT inf).
-        laser_height_m: Body-frame z at which to cast beams. RPLIDAR-A1
-            mount height on the OmronMobileBase.
+        laser_height_m: **World** z at which to cast beams (an RPLIDAR-A1
+            mount height on the OmronMobileBase, which puts it 0.30 m above
+            the floor). Absolute, not relative to the base body — pass a
+            value derived from the robot's own pose plus its manifest mount
+            offset if the fan must follow the robot.
 
     Returns:
         ``(n_beams,)`` float32 ranges in metres.

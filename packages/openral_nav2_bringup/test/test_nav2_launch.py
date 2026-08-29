@@ -144,11 +144,12 @@ def test_visual_profile_consumes_map_not_scan() -> None:
 
 
 def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
-    """A circle cannot express a carried payload.
+    """A circle is the wrong shape for this chassis.
 
-    `nav2_costmap_2d` only takes runtime footprint updates seriously as a
-    polygon: `robot_radius` alone leaves the costmap on its circular path with
-    nothing for the payload publisher to grow. Both profiles must ship one.
+    panda_mobile is a 0.70 x 0.50 m rectangle, and `robot_radius` alone would
+    have MPPI score a 0.444 m circle that overlaps counters the rectangle
+    clears — the difference `CostCritic.consider_footprint: true` exists to
+    read. Both profiles must ship a polygon.
     """
     for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
         data = yaml.safe_load(path.read_text())
@@ -160,55 +161,62 @@ def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
             )
 
 
-def test_mppi_does_not_yet_consider_the_footprint() -> None:
-    """`consider_footprint` is deliberately `false`, and pinned so it stays a decision.
+def test_mppi_considers_the_full_footprint() -> None:
+    """`consider_footprint` is `true`, and pinned so it stays a decision.
 
-    Flipping it is a navigation-behaviour change, not a tuning nudge, and only
-    half its price is known. The flag's OWN cost is measured against the real
-    Jazzy ``libnav2_costmap_2d_core`` in
-    ``benchmark/cost_critic_footprint_bench.cpp``: on an i5-8600K, 56000
-    ``footprintCostAtPose`` calls per 20 Hz iteration cost **+8.1 ms** with the
-    bare chassis and **+9.7 ms** while carrying — 17-20 % of the 50 ms budget,
-    and unconditional rather than data-dependent, because ``inflation_radius``
-    0.40 m sits below both polygons' circumscribed radii (0.444 m / 0.863 m) so
-    ``findCircumscribedCost`` returns 0.0. What is NOT measured is the rest of
-    the MPPI loop around CostCritic, which needs the composite scene issue #108
-    still lacks — nothing in the repo drives the base at 20 Hz mid-carry.
+    MPPI scores the robot's OUTLINE rather than its centre cell. That matters
+    for a 0.70 x 0.50 m rectangle: this base routinely parks with less
+    clearance than its own circumscribed radius, because the chassis is a
+    rectangle tucked against a counter that lies inside its circumscribed
+    circle and outside the rectangle. A centre-cell test cannot see that.
 
-    So the value is asserted rather than left incidental: the dynamic footprint
-    reaches every other consumer today (behaviours, docking, the collision
-    monitor's approach polygon, ``IsPathValid``), and MPPI's own scoring waits
-    for a measurement of the whole loop. Flip this test and
-    ``config/nav2_panda_mobile.yaml``'s comment together, never separately.
+    The price was measured on the LIVE loop, not inferred from one call:
+    `scenes/deploy/robocasa_deliver_straw.yaml` with the full stack, timing
+    `controller_server`'s own CPU per published cycle over 8 runs -- 9.58
+    ms/cycle with the flag off, 10.11 ms/cycle with it on, against a 50 ms
+    budget, and 500-501 cycles per 25 s window in every arm (exactly 20 Hz,
+    none dropped). See `docs/reference/robocasa-carry-survey.md`.
+
+    The polygon this scores is the BARE chassis: Nav2 is base-only, and the
+    payload-growing publisher was removed because its 2-D projection forbade
+    the place poses the tasks require while protecting against nothing. Flip
+    this test and `config/nav2_panda_mobile.yaml`'s comment together, never
+    separately.
     """
     for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
         data = yaml.safe_load(path.read_text())
         cost_critic = data["controller_server"]["ros__parameters"]["FollowPath"]["CostCritic"]
-        assert cost_critic["consider_footprint"] is False, path.name
+        assert cost_critic["consider_footprint"] is True, path.name
 
 
-def test_payload_nodes_ride_with_nav2_on_the_right_backends() -> None:
-    """The footprint publisher needs a manifest; the scan filter needs a `/scan`.
+def test_scan_filter_rides_with_nav2_only_where_there_is_a_scan() -> None:
+    """The scan filter needs a `/scan`; a manifest only enables its self half.
 
-    Without a `robot_yaml` there is no measured outline to publish and inventing
-    one would put a made-up robot shape on Nav2's collision surface; on the
-    `visual` backend there is no scan to filter at all.
+    On the `visual` backend there is no scan to filter at all. Without a
+    `robot_yaml` the node still runs — the payload half needs no manifest — and
+    only the self half goes dark.
+
+    There is no footprint publisher to launch: Nav2 is base-only and takes its
+    polygon statically from the manifest.
     """
     mod = _import_launch_module()
 
-    both = mod._payload_footprint_nodes(
+    lidar = mod._payload_scan_filter_nodes(
         robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="lidar", use_sim_time=True
     )
-    visual_only = mod._payload_footprint_nodes(
+    visual = mod._payload_scan_filter_nodes(
         robot_yaml="robots/panda_mobile/robot.yaml", slam_backend="visual", use_sim_time=True
     )
-    no_manifest = mod._payload_footprint_nodes(
+    no_manifest = mod._payload_scan_filter_nodes(
         robot_yaml="", slam_backend="lidar", use_sim_time=True
     )
 
-    assert len(both) == 2, both
-    assert len(visual_only) == 1, "visual has no /scan to filter"
-    assert len(no_manifest) == 1, "no manifest means no nominal footprint to publish"
+    assert len(lidar) == 1, lidar
+    assert len(visual) == 0, "visual has no /scan to filter"
+    assert len(no_manifest) == 1, "the payload half needs no manifest"
+    assert not hasattr(mod, "_payload_footprint_nodes"), (
+        "the footprint publisher was removed — Nav2 is base-only"
+    )
 
 
 def _launch_referenced_executables() -> set[str]:
@@ -356,8 +364,8 @@ def test_launch_ros_resolves_every_node_in_the_built_overlay() -> None:
         assert os.access(resolved, os.X_OK), resolved
 
 
-def test_the_payload_footprint_leg_can_be_turned_off() -> None:
-    """`payload_footprint` is a declared launch arg, not a hardcoded leg."""
+def test_the_scan_filter_leg_can_be_turned_off() -> None:
+    """`payload_scan_filter` is a declared launch arg, not a hardcoded leg."""
     mod = _import_launch_module()
     from ament_index_python.packages import PackageNotFoundError
     from launch.actions import DeclareLaunchArgument
@@ -369,4 +377,7 @@ def test_the_payload_footprint_leg_can_be_turned_off() -> None:
     arg_names = {
         a.name for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)
     }
-    assert "payload_footprint" in arg_names, arg_names
+    assert "payload_scan_filter" in arg_names, arg_names
+    assert "payload_footprint" not in arg_names, (
+        "the footprint publisher was removed — Nav2 is base-only"
+    )

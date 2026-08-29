@@ -1,35 +1,33 @@
-"""Live proof that Nav2's costmap adopts the payload-inclusive footprint.
+"""Live proof that the payload scan filter keeps Nav2's costmap honest.
+
+Nav2 here is **base-only**: the costmaps' footprint is the manifest's bare
+chassis and nothing grows it, because the arm and anything carried belong to the
+3-D safety kernel (see ``packages/openral_nav2_bringup/README.md``, "Nav2 is
+base-only"). That makes this node load-bearing rather than cosmetic — with no
+footprint growing over the payload, an unfiltered payload return is simply an
+obstacle that moves with the robot, one it can never drive away from.
 
 The unit suite
-(``packages/openral_nav2_bringup/test/test_payload_footprint.py``) pins the
-polygon the publisher computes. It cannot pin the part that actually matters:
-that a **real** ``nav2_costmap_2d`` takes the polygon, on the topic and message
-type Nav2 Jazzy really uses, and re-publishes it as the footprint every
-downstream Nav2 consumer reads. That claim is about Nav2's parameter and topic
-contract, so only Nav2's own binary can settle it — and it has bitten before
-(``geometry_msgs/Polygon`` inbound vs ``PolygonStamped`` outbound; the
-subscription is the costmap's *relative* ``footprint``, not ``~/footprint`` on
-the parent server).
+(``packages/openral_nav2_bringup/test/test_payload_scan_filter.py``) pins the
+geometry the filter computes. It cannot pin the part that actually matters: that
+a **real** ``nav2_costmap_2d``, reading the filtered topic the shipped
+``config/nav2_panda_mobile.yaml`` points every observation source at, ends up
+with no cell marked for the carried object — and still marks a real obstacle at
+the same bearing. That claim is about Nav2's parameter and topic contract, so
+only Nav2's own binary can settle it.
+
+Three tests, one per direction the node can be wrong:
+
+* the carried object never marks the cost grid;
+* a self-return is removed while a real obstacle on the same bearing survives;
+* a filter that cannot place the chassis removes **nothing** — the control that
+  proves the first two measured the filter and not ``footprint_clearing_enabled``.
 
 Real components throughout (CLAUDE.md §1.11): the upstream ``nav2_costmap_2d``
 node from ``ros-${ROS_DISTRO}-nav2-bringup``, the production
-``payload_footprint_node`` run as its own process through its real ``main()``,
-and the real ``robots/panda_mobile/robot.yaml`` for the nominal outline. The one
-constructed input is the ``WorldStateStamped`` carrying the attachment — the
-same seam ``tests/sim/safety/test_kernel_voxel_collision_synthetic.py`` feeds
-``OccupancyVoxels`` at, and for the same reason: the real producer is a MuJoCo
-RoboCasa kitchen.
-
-What this test does **not** cover, and #108 still tracks: a base that actually
-drives while carrying. No RoboCasa atomic task moves the base meaningfully
-mid-carry, so the end-to-end acceptance needs a composite or custom scene.
-
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` and listed in
-``scripts/ros_live_tests.sh``. Locally::
-
-    source /opt/ros/jazzy/setup.bash && just ros2-build
-    source install/setup.bash
-    just test-ros-live            # `-k payload_footprint` narrows it
+``payload_scan_filter_node`` run as its own process through its real ``main()``,
+and the real ``robots/panda_mobile/robot.yaml`` for the chassis outline. The one
+constructed input is the ``WorldStateStamped`` carrying the attachment.
 """
 
 from __future__ import annotations
@@ -56,7 +54,6 @@ pytestmark = pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ROBOT_YAML = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 _NODE_DIR = _REPO_ROOT / "packages" / "openral_nav2_bringup" / "openral_nav2_bringup"
-_FOOTPRINT_NODE = _NODE_DIR / "payload_footprint_node.py"
 _SCAN_FILTER_NODE = _NODE_DIR / "payload_scan_filter_node.py"
 
 # The standalone `nav2_costmap_2d` executable runs one `Costmap2DROS` named
@@ -70,8 +67,6 @@ _SCAN_FILTER_NODE = _NODE_DIR / "payload_scan_filter_node.py"
 # (`geometry_msgs/PolygonStamped`).
 _COSTMAP_NAMESPACE = "/local_costmap"
 _COSTMAP_NODE = "/local_costmap/costmap"
-_FOOTPRINT_IN = "/local_costmap/footprint"
-_FOOTPRINT_OUT = "/local_costmap/published_footprint"
 
 #: ``openral_nav2_bringup.payload_scan_filter_node.DEFAULT_OUTPUT_TOPIC``,
 #: repeated rather than imported so collecting this module never needs the
@@ -92,29 +87,7 @@ _PAYLOAD_X_IN_BASE = _LINK_X_IN_BASE + _PAYLOAD_X_IN_LINK
 # nav2_costmap_2d's `footprint_padding` default, verified live: the published
 # polygon is the received one grown by this on every axis.
 _FOOTPRINT_PADDING_M = 0.01
-_NOMINAL_REACH_M = 0.35 + _FOOTPRINT_PADDING_M
-_CARRYING_REACH_M = _LINK_X_IN_BASE + _PAYLOAD_X_IN_LINK + _PAYLOAD_HALF_X + _FOOTPRINT_PADDING_M
 
-_COSTMAP_PARAMS = """\
-/**:
-  ros__parameters:
-    update_frequency: 5.0
-    publish_frequency: 5.0
-    global_frame: odom
-    robot_base_frame: base_link
-    rolling_window: true
-    width: 4
-    height: 4
-    resolution: 0.05
-    robot_radius: 0.35
-    footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
-    plugins: ["inflation_layer"]
-    inflation_layer:
-      plugin: "nav2_costmap_2d::InflationLayer"
-      cost_scaling_factor: 3.0
-      inflation_radius: 0.40
-    always_send_full_costmap: True
-"""
 
 # Same costmap, plus the obstacle layer reading the FILTERED scan topic the
 # shipped `config/nav2_panda_mobile.yaml` points every source at.
@@ -284,112 +257,6 @@ def _world_state(*, carrying: bool, revision: int) -> Any:
     obj.primitives = [primitive]
     msg.attached_objects = [obj]
     return msg
-
-
-def test_a_real_costmap_adopts_and_releases_the_payload_footprint(tmp_path: Path) -> None:
-    """Attach grows Nav2's own footprint; detach puts it back to the chassis."""
-    import rclpy
-    from geometry_msgs.msg import PolygonStamped
-    from openral_msgs.msg import WorldStateStamped
-    from rclpy.executors import SingleThreadedExecutor
-    from rclpy.node import Node
-    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-
-    params_file = tmp_path / "costmap.yaml"
-    params_file.write_text(_COSTMAP_PARAMS)
-
-    rclpy.init()
-    node = Node("test_nav2_payload_footprint")
-    executor = SingleThreadedExecutor()
-    executor.add_node(node)
-    reach: list[float] = []
-
-    def _on_footprint(msg: PolygonStamped) -> None:
-        if msg.polygon.points:
-            reach.append(max(float(p.x) for p in msg.polygon.points))
-
-    try:
-        broadcaster = _static_transforms(node)
-        assert broadcaster is not None
-        node.create_subscription(PolygonStamped, _FOOTPRINT_OUT, _on_footprint, 10)
-        state_pub = node.create_publisher(
-            WorldStateStamped,
-            "/openral/world_state_fast",
-            QoSProfile(
-                depth=1,
-                reliability=QoSReliabilityPolicy.RELIABLE,
-                durability=QoSDurabilityPolicy.VOLATILE,
-            ),
-        )
-
-        footprint_argv = [
-            sys.executable,
-            str(_FOOTPRINT_NODE),
-            "--ros-args",
-            "-p",
-            f"robot_yaml:={_ROBOT_YAML}",
-            "-p",
-            f"footprint_topics:=['{_FOOTPRINT_IN}']",
-            "-p",
-            "publish_rate_hz:=5.0",
-        ]
-        costmap_argv = [
-            "ros2",
-            "run",
-            "nav2_costmap_2d",
-            "nav2_costmap_2d",
-            "--ros-args",
-            "-r",
-            f"__ns:={_COSTMAP_NAMESPACE}",
-            "--params-file",
-            str(params_file),
-        ]
-
-        publisher_log = tmp_path / "payload_footprint.log"
-
-        def _publisher_log() -> str:
-            return publisher_log.read_text(errors="replace")[-2000:]
-
-        with (
-            _process(footprint_argv, publisher_log),
-            _process(costmap_argv, tmp_path / "costmap.log"),
-        ):
-            _lifecycle("configure")
-            _lifecycle("activate")
-
-            # 1. Nothing attached: Nav2 publishes the manifest's chassis.
-            assert _spin_until(executor, lambda: bool(reach), timeout_s=20.0), (
-                "no footprint published by the costmap at all"
-            )
-            assert reach[-1] == pytest.approx(_NOMINAL_REACH_M, abs=0.02)
-
-            # 2. Attach: Nav2's own footprint grows to cover the payload.
-            carrying = _world_state(carrying=True, revision=1)
-            assert _spin_until(
-                executor,
-                lambda: reach[-1] > _NOMINAL_REACH_M + 0.10,
-                timeout_s=20.0,
-                each=lambda: state_pub.publish(carrying),
-            ), (
-                f"costmap never adopted the grown footprint (last reach {reach[-1]:.3f} m); "
-                f"publisher said:\n{_publisher_log()}"
-            )
-            assert reach[-1] == pytest.approx(_CARRYING_REACH_M, abs=0.02)
-
-            # 3. Detach: back to the chassis, in Nav2, not just in our node.
-            released = _world_state(carrying=False, revision=2)
-            assert _spin_until(
-                executor,
-                lambda: reach[-1] < _NOMINAL_REACH_M + 0.05,
-                timeout_s=20.0,
-                each=lambda: state_pub.publish(released),
-            ), f"costmap kept the grown footprint after detach (reach {reach[-1]:.3f} m)"
-            assert reach[-1] == pytest.approx(_NOMINAL_REACH_M, abs=0.02)
-    finally:
-        executor.remove_node(node)
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
 
 
 def _payload_scan() -> Any:

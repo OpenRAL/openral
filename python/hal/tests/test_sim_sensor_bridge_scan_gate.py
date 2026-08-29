@@ -36,7 +36,12 @@ def test_panda_mobile_has_lidar_sensor_so_bridge_gate_passes() -> None:
         "creates the /scan publisher when live MuJoCo handles are available."
     )
     # Spot-check the key fields the bridge reads.
-    assert lidar.frame_id == "base_link"
+    # The lidar publishes in its OWN frame, not `base_link` -- it used to
+    # share `base_link` and silently lose its 0.40 m mount offset (the fan is
+    # cast 0.30 m above the floor while `base_link` is the platform frame at
+    # 0.700 m). See `tests/unit/test_lidar_mount_frame.py` for the full
+    # reconciliation this manifest field now carries.
+    assert lidar.frame_id == "base_scan"
     assert lidar.n_channels == 360
     assert lidar.range_min_m == pytest.approx(0.55)
     assert lidar.range_max_m == pytest.approx(12.0)

@@ -100,65 +100,69 @@ the boundary, and the two sides are deliberately opposite:
 Both sides read the same attachment set on `/openral/world_state_fast`, so they
 cannot disagree about what is attached.
 
-## Dynamic footprint while carrying
+## Nav2 is base-only
 
-Two nodes ride with Nav2 (launch arg `payload_footprint`, default on):
+**The costmaps' footprint is the manifest's bare chassis, and nothing grows
+it.** The 2-D costmap owns base geometry; the 3-D safety kernel owns the arm
+and anything carried. This replaces the dynamic footprint publisher that
+PR #143 shipped, which is now removed.
 
-| Node | In | Out |
-|---|---|---|
-| `openral_nav2_payload_footprint` | `/openral/world_state_fast` + `base_frame ← attach_link` TF | `geometry_msgs/Polygon` on `/local_costmap/footprint` + `/global_costmap/footprint` |
-| `openral_nav2_payload_scan_filter` | `/scan` + the same attachment set + the manifest's chassis outline | `sensor_msgs/LaserScan` on `/openral/nav2/scan` |
+### Why the growth was wrong
 
-The published polygon is the convex hull of the manifest's
-`footprint_polygon` and the ground projection of every attached collision
-primitive, each placed by `TF(base_frame ← attach_link) · pose_in_link ·
-pose_in_object` — the kernel's own composition. Boxes project exactly; spheres
-and capsules project onto *circumscribed* N-gons, so the polygon contains the
-true shape rather than inscribing it.
+It projected 3-D geometry onto a 2-D costmap, and the two do not describe the
+same world.
 
-**Verified against the Jazzy binaries, not from memory.** `nav2_costmap_2d`'s
-`Costmap2DROS` subscribes an **unstamped `geometry_msgs/Polygon`** on its own
-*relative* `footprint` topic (`/local_costmap/footprint` — not `~/footprint` on
-the parent server), calls `setRobotFootprintPolygon` on every message, and
-republishes the oriented result as a `PolygonStamped` on `published_footprint`,
-padded by `footprint_padding` (default 0.01 m). `nav2_collision_monitor`,
-`nav2_behaviors`, `opennav_docking` and `IsPathValid` all read that republished
-polygon, so writing the two costmaps reaches every consumer — with one
-deliberate exception today, MPPI's own scoring, which needs
-`CostCritic.consider_footprint` and is left off pending measurement (below).
+**It forbade the poses the tasks require.** Every RoboCasa place target is a
+fixture the payload must *enter* — a cabinet, a sink, a fridge. Grow the
+footprint over the payload and its ground projection lands on the fixture the
+base has to approach, so Nav2 refuses the one approach that succeeds. Placing
+into a fridge is not an edge case for this robot; it is the task.
 
-Config consequences, both in `config/nav2_panda_mobile.yaml`:
+**And it protected against nothing here.** Measured on
+`scenes/deploy/robocasa_deliver_straw.yaml`:
 
-* The costmaps declare a **`footprint` polygon**, not just `robot_radius`. A
-  circle cannot express an asymmetric payload. Nav2 reads `""` and `"[]"` as
-  "use `robot_radius`", so `RobotDescription.nav2_param_overrides()` emits
-  `"[]"` for a robot whose manifest has no `footprint_polygon` rather than
-  letting it inherit panda's outline.
-* `CostCritic.consider_footprint` is left at **`false`**, deliberately. With
-  `false`, MPPI scores the centre cell only and the payload-inclusive polygon
-  changes nothing *for the controller* — a forward-reaching payload grows the
-  circumscribed radius, but the inflation layer keys its cost cache off the
-  *inscribed* one, which the payload does not move. Turning it on is a real
-  navigation-behaviour change costing a measured **+8.1 ms** bare / **+9.7 ms**
-  carrying per 20 Hz iteration, 17–20 % of the 50 ms budget, while the rest of
-  the MPPI loop around CostCritic is still unmeasured. See
-  [below](#measured-what-consider_footprint-true-would-cost-and-why-it-is-false).
-  The value is pinned by
-  `test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint`.
+| | measured |
+| --- | ---: |
+| `odom → base_link` (TF) | **0.700 m** |
+| local costmap voxel column (`origin_z` + `z_resolution × z_voxels`) | 0.00 – 1.28 m |
+| where scan returns land | **≈ 0.70 m** |
+| carried object (`glass_cup`) | **0.981 m** |
 
-**Failure directions are opposite on purpose.** The footprint publisher refuses
-to narrow: a missing attach-link TF, a primitive the kernel would itself reject,
-or a stale world state makes it hold the last polygon, because shrinking the
-footprint is the only direction that can drive a payload into something. The
-scan filter's two halves both fail toward *more* obstacles: an unplaceable
-payload stays in the scan (keeping Nav2 more cautious, and keeping the topic
-alive so the costmap never goes blind), and an unplaceable chassis means no
-self-return is removed at all.
+The costmap is one horizontal slice, and a carried object rides ~0.28 m above
+it. A payload cannot collide with an obstacle the costmap knows about unless
+that obstacle is *also* tall — which the costmap has no way to represent. So
+the growth traded a real, frequent false block for protection against a case it
+could not distinguish anyway.
 
-Nav2 also clears its own footprint (`obstacle_layer`'s
-`footprint_clearing_enabled`, default `True`, verified live). That is a second
-line, not a substitute: it reaches only cells inside the current polygon, and
-the collision monitor reads the scan with no costmap in between.
+**What is genuinely given up.** A payload sticking forward could clip a *tall,
+thin* obstacle that the base itself clears. The kernel catches that in 3-D —
+its octomap bridge covers a ball of r = 1.05 m centred at z = 0.5 in
+`base_frame`, i.e. z ∈ [−0.55, 1.55], which contains the payload — but as an
+**E-stop, not an avoidance**, because `/cmd_vel` never passes through it
+(ADR-0040, above). That is the accepted cost: a rare stop instead of a routine
+refusal to do the task.
+
+### What replaces it
+
+Nothing new. `RobotDescription.nav2_param_overrides()` already substitutes
+`footprint_polygon` into both costmaps' `footprint` at launch, so the polygon is
+static and correct without a publisher. What did NOT go away is the scan filter
+(next section) and `CostCritic.consider_footprint`, now **`true`** — with a
+fixed chassis polygon, scoring the real outline instead of the centre cell is
+strictly more accurate and was measured at +0.53 ms on the live loop.
+
+### A defect this surfaced, not yet fixed
+
+While measuring the above: `openral_sim.backends.robocasa.synthesize_laser_scan_2d`
+casts its rays at **world z = 0.30 m** (`origin[2] = laser_height_m`, absolute —
+the base body is at z = 0.000), but publishes the result in `base_link`, which
+TF puts at **0.700 m**. The sim therefore samples the world at one height and
+tells Nav2 the returns came from another, 0.40 m higher. This config's
+`voxel_layer` comment (`z_resolution` raised to reach 1.28 m for a lidar
+"at z≈1.05 m") is downstream of the same confusion. Neither the base-only
+decision nor the measurements above turn on it — the payload is above every
+candidate height — but it should be reconciled before anyone reasons about
+obstacle heights again.
 
 ## The robot's own returns
 
@@ -212,7 +216,7 @@ Why the chassis polygon is a proof:
 the chassis deletes returns Nav2 *would* have acted on. Without `robot_yaml`
 the self half simply does not run and the node warns once.
 
-## Measured: what `consider_footprint: true` would cost, and why it is `false`
+## Measured: what `consider_footprint: true` costs, and why it is `true`
 
 `benchmark/cost_critic_footprint_bench.cpp` times upstream's own
 `FootprintCollisionChecker::footprintCostAtPose` against the real Jazzy
@@ -292,29 +296,33 @@ and that remains a maintainer decision. Method, full numbers and the validity
 check: [`docs/reference/robocasa-carry-survey.md`](../../docs/reference/robocasa-carry-survey.md);
 raw output in `docs/reference/data/nav2-mppi-loop-2026-08-28.jsonl`.
 
-### Why the flag is deferred, not forgotten
+### The flag is now `true` — decided 2026-08-29
 
-Knowing the flag's own price is not the same as knowing the loop fits. What
-this measurement does **not** settle is the rest of the MPPI loop *around*
-CostCritic, and that genuinely needs the live scene below: no RoboCasa atomic
-task drives the base at 20 Hz while an object is attached, so the surrounding
-cycle time under a grown footprint has never been observed. Committing 17–20 %
-of a 50 ms budget against an unmeasured remainder is a navigation-behaviour
-change made blind, so the flag stays `false` for now.
+The deferral asked for one thing: *"run the composite scene with the whole MPPI
+loop timed against the 50 ms budget, and show the full cycle still fits with the
+flag on."* That is the measurement above, and it does.
 
-The precondition to flip it is explicit: run the composite scene specified
-below with the **whole** MPPI loop timed against the 50 ms budget, and show the
-full cycle still fits with the flag on. Then `config/nav2_panda_mobile.yaml`,
-its CostCritic comment, and
-`test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint` flip
-together. If the remainder turns out too tight, `trajectory_point_step` is the
-knob that buys the flag room — not the flag itself.
+Flipped together, as the deferral required:
 
-Until then the dynamic footprint is still load-bearing everywhere else: the
-published polygon reaches the behaviour server's collision checker,
-`opennav_docking`, the collision monitor's approach polygon and `IsPathValid`,
-and the payload is out of the scan both costmaps read. MPPI's own scoring is
-the single consumer waiting on the measurement.
+* `config/nav2_panda_mobile.yaml` → `consider_footprint: true` (and
+  `config/nav2_visual.yaml`, regenerated from it by `tools/gen_nav2_visual.py`).
+* Its CostCritic comment, rewritten around the live numbers.
+* `test/test_nav2_launch.py::test_mppi_considers_the_full_footprint` — renamed
+  from `test_mppi_does_not_yet_consider_the_footprint`, still pinning the value
+  so it cannot drift back silently.
+
+**The polygon it scores is the bare chassis**, which is what makes this
+uncontroversial: for a 0.70 × 0.50 m rectangle a centre-cell test is simply
+wrong about the poses this base actually uses, since it routinely parks with
+less clearance than its own 0.444 m circumscribed radius against counters the
+rectangle clears.
+
+**`inflation_radius` is deliberately left at 0.40 m.** Raising it to ≥ 0.444 m
+would restore CostCritic's cheap gate and make the flag nearly free — and with
+no payload growth, the circumscribed radius is now a constant of the manifest
+rather than a function of what is being held, so that change is well defined for
+the first time. It is still a navigation-behaviour change that moves path cost
+everywhere, so it is a separate decision and has not been made.
 
 ### What is still open (issue #108)
 
@@ -336,48 +344,30 @@ the single consumer waiting on the measurement.
   bound. Method and full measurements:
   [`docs/reference/robocasa-carry-survey.md`](../../docs/reference/robocasa-carry-survey.md).
 
-  **Criteria 1 and 4 are met. Criteria 2 and 3 are not — and the same
-  measurements show neither is reachable as written:**
+  **Criteria 1 and 4 are met. Criteria 2 and 3 are obsolete** — both existed
+  only to exercise a payload-grown footprint, and Nav2 is now base-only:
 
-  * **Criterion 3 cannot be met by any counter-height carry.** The payload rides
-    at z ~ 0.97-1.03 m; `synthesize_laser_scan_2d` casts at 0.30 m. The payload
-    never enters the scan plane, so the *payload* half of
-    `payload_scan_filter_node` is inert here regardless of scene. The footprint
-    publisher is unaffected (it ignores height by design), and the *chassis*
-    half of the filter is still live.
-  * **Criterion 2 needs the polygon check it is describing.** Free-corridor
-    bottlenecks between the carry endpoints measure 0.19-0.24 m — under the bare
-    chassis's own 0.444 m circumscribed radius, which would mean the robot fits
-    nowhere, including its start pose. It does fit: the chassis is a 0.70 x 0.50 m
-    rectangle tucked against a counter that lies inside its circumscribed circle
-    and outside the rectangle. So "an aperture the bare chassis clears but the
-    grown polygon does not" is only decidable with an oriented-polygon test —
-    i.e. with `consider_footprint` on, the very flag it was meant to justify.
-
-  The original four criteria, kept for reference:
-  1. a **carry path long enough to require base translation** — source and
-     destination on fixtures far enough apart that the arm alone cannot bridge
-     them, i.e. beyond the manipulator's reach from one base pose (> ~1.0 m of
-     required base displacement for panda_mobile), so `NavigateToPose` actually
-     runs while an object is attached;
-  2. a **gap the payload's footprint decides** — at least one aperture the bare
-     chassis clears but the payload-grown polygon does not, or a turn where the
-     0.86 m circumscribed radius sweeps furniture the 0.44 m one misses.
-     Without this the dynamic footprint is exercised but never *load-bearing*,
-     and the run cannot distinguish a working footprint from a decorative one;
-  3. **lidar-visible obstacles at the payload's height**, so the scan filter's
-     two halves are both live rather than trivially satisfied;
-  4. **determinism** — a fixed `seed` and pinned `init_robot_base_ref`, so the
-     acceptance is a pass/fail rather than a distribution.
+  * **Criterion 2** ("an aperture the bare chassis clears but the payload-grown
+    polygon does not") has nothing to decide: there is no grown polygon. The
+    property it was groping for — that a *rectangle* fits where its
+    circumscribed *circle* does not — is real (measured free-corridor
+    bottlenecks run 0.19–0.24 m against a 0.444 m circumscribed radius) and is
+    exactly what `consider_footprint: true` now reads.
+  * **Criterion 3** ("lidar-visible obstacles at the payload's height") was
+    unsatisfiable and is now moot. The payload rides at ~0.98 m while scan
+    returns land at ~0.70 m, so it never enters the slice. Under base-only that
+    is the *desired* state, not a gap: the payload belongs to the kernel's 3-D
+    check, and the scan filter's job is to keep it out of Nav2's world rather
+    than into it.
 
   `loading_fridge`, the candidate this file used to name, is disqualified on the
   measurement: none of its eight classes is in `target50`, so it would put XR-1
   out of distribution.
 
-  **What remains before #108 closes** is the run itself, not the scene: drive
-  `scenes/deploy/robocasa_deliver_straw.yaml` end to end with Nav2 and the
-  OctoMap kernel gate enabled, and time the *whole* MPPI loop against the 50 ms
-  budget with `consider_footprint` on. That is the measurement the flip was
-  deferred pending — it is the first thing that drives the controller at 20 Hz
-  with a grown footprint — and so it is also what unblocks
-  `CostCritic.consider_footprint`.
+  **What remains before #108 closes.** The loop measurement is done and the
+  flag is flipped (above). What has *not* been run is the scene end to end under
+  a policy: every measurement here was taken with the base driven by a direct
+  `NavigateToPose` and the reasoner off, so `attached_objects` stayed 0
+  throughout. An XR-1 run that opens the drawer, grasps the straw and carries it
+  is the remaining acceptance, and the scene's closed-drawer precondition means
+  a failure there needs reading carefully before it is called a Nav2 failure.

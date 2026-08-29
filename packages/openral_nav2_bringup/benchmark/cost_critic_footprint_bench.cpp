@@ -165,7 +165,7 @@ int main() {
       {{0.35, 0.25}, {-0.35, 0.25}, {-0.35, -0.25}, {0.35, -0.25}},
       kFootprintPadding);
   // The live-measured carrying polygon: 0.860 m forward reach
-  // (tests/integration/test_nav2_payload_footprint_live.py). Hull of the
+  // (tests/integration/test_nav2_scan_filter_live.py). Hull of the
   // chassis with a 0.10 m half-extent box at 0.75 m ahead, 0.06 m half-width.
   const Footprint carrying = make_footprint({{0.85, 0.06},
                                              {0.85, -0.06},

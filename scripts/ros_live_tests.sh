@@ -52,13 +52,14 @@ TARGETS=(
     tests/integration/test_estop_voxel_backing_live.py
     tests/integration/test_segment_in_view_service.py
     # Nav2's side of issue #108. Every half is a claim about upstream Nav2's
-    # topic + parameter contract — the costmap subscribes an unstamped
-    # geometry_msgs/Polygon on its own relative `footprint`; a filtered scan
-    # keeps a carried payload out of the cost grid; a self-return inside the
-    # robot's own footprint is dropped while a real obstacle at the same
-    # bearing survives — so only a real nav2_costmap_2d binary can settle
-    # them. Needs ros-jazzy-nav2-bringup, which this image bakes.
-    tests/integration/test_nav2_payload_footprint_live.py
+    # topic + parameter contract — a filtered scan keeps a carried payload out
+    # of the cost grid, and a self-return inside the robot's own footprint is
+    # dropped while a real obstacle at the same bearing survives. Only a real
+    # nav2_costmap_2d binary can settle those. Load-bearing now that Nav2 is
+    # base-only: with no footprint growing over the payload, the filter is the
+    # only thing keeping the carried object out of Nav2's world.
+    # Needs ros-jazzy-nav2-bringup, which this image bakes.
+    tests/integration/test_nav2_scan_filter_live.py
     # Lives under tests/unit/ because it is a pure constant contract with no
     # graph, but it reads the numbers off the colcon-generated openral_msgs,
     # so it importorskips everywhere except this image. Without this entry the
