@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-from openral_nav2_bringup.payload_footprint_node import (
+from openral_nav2_bringup._footprint_geometry import (
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_SPHERE,

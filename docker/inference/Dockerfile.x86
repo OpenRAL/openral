@@ -310,7 +310,7 @@ COPY scenes/ scenes/
 # `openral_nav2_bringup` is in this list for a reason that is easy to undo:
 # it is an ament_cmake package, so its Python module reaches PYTHONPATH ONLY
 # via the `ament_python_install_package()` this build runs. The live-ROS step
-# below runs tests/integration/test_nav2_payload_footprint_live.py, which
+# below runs tests/integration/test_nav2_scan_filter_live.py, which
 # spawns payload_scan_filter_node.py as its own process — without this package
 # built, that node dies at import (`No module named 'openral_nav2_bringup'`),
 # no scan is ever republished, and every costmap cell reads 0. Note that the

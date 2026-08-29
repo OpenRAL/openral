@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Drop the carried payload's own returns out of the ``/scan`` Nav2 costmaps read.
 
-The other half of the dynamic footprint. Once
-:mod:`openral_nav2_bringup.payload_footprint_node` has folded the payload into
-Nav2's *robot*, the same payload must stop being one of Nav2's *obstacles* —
-otherwise the base is permanently 1.2 s from colliding with the thing it is
-holding, which is the ``collision_monitor`` failure the panda_mobile config
-already had to disable a polygon over.
+Two halves, and Nav2 being **base-only** is why both matter.
+
+*The payload half.* A carried object is not part of Nav2's robot — the
+costmaps' footprint is the manifest's bare chassis, and the arm and payload
+belong to the 3-D safety kernel. So if the payload's own returns reach the
+scan, Nav2 sees an obstacle that moves with the robot: one it can never drive
+away from, leaving the base permanently 1.2 s from colliding with the thing it
+is holding. That is the ``collision_monitor`` failure the panda_mobile config
+already had to disable a polygon over. Removing the returns is what keeps the
+payload out of Nav2's world entirely, which is the whole point of base-only.
+
+*The self half.* Same argument, one layer in: a real 2-D lidar sees the robot's
+own chassis, and those returns mark the costmap and never clear.
 
 **What actually feeds the costmaps.** Not ``/octomap_binary``. The lidar
 profile's ``voxel_layer`` / ``obstacle_layer`` and the ``collision_monitor``
@@ -88,7 +95,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from openral_nav2_bringup.payload_footprint_node import (
+from openral_nav2_bringup._footprint_geometry import (
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_SPHERE,
@@ -202,7 +209,7 @@ def points_in_convex_polygon(
     default margin is zero.
 
     Convexity and winding are **verified, not assumed**: the caller's polygon
-    comes from :func:`~openral_nav2_bringup.payload_footprint_node.convex_hull_2d`
+    comes from :func:`~openral_nav2_bringup._footprint_geometry.convex_hull_2d`
     and so is always CCW convex, but a hand-supplied concave outline would make
     the half-plane test claim the concavities are robot. Anything that fails the
     check raises, and the node's self-filter then removes nothing.

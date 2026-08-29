@@ -18,7 +18,6 @@ ament_python_install_package(${PROJECT_NAME})
 # with "executable '…' not found on the libexec directory". Enforced by
 # test/test_nav2_launch.py and tests/unit/test_ros_node_exec_bits.py.
 install(PROGRAMS
-  ${PROJECT_NAME}/payload_footprint_node.py
   ${PROJECT_NAME}/payload_scan_filter_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -32,9 +31,6 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_nav2_launch test/test_nav2_launch.py
     TIMEOUT 30
-  )
-  ament_add_pytest_test(test_payload_footprint test/test_payload_footprint.py
-    TIMEOUT 60
   )
   ament_add_pytest_test(test_payload_scan_filter test/test_payload_scan_filter.py
     TIMEOUT 60
