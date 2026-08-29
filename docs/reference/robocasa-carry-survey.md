@@ -284,6 +284,73 @@ with the caveats above.
 
 Raw output: `docs/reference/data/nav2-mppi-loop-2026-08-28.jsonl`.
 
+## The end-to-end policy run (2026-08-29) — reached the drawer, self-collided
+
+Everything above drove the base with a direct `NavigateToPose` and the reasoner
+off, so `attached_objects` stayed 0 throughout. This is the first run with a
+**policy** actually executing the scene: `openral deploy sim` on the full stack,
+then one `ExecuteRskill` goal at
+`OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4` with the scene's own
+instruction, 600 s deadline.
+
+```json
+{"failure_reason": "safety_estop:ROSPublishingHAL: safety stop latched
+ (/openral/safety_status:kind_collision (self) + /openral/estop) while waiting
+ for action group tick 366 to be applied",
+ "first_chunk_s": 19.1, "latest_chunk": 365, "success": false, "wall_s": 227.6}
+```
+
+**XR-1 ran, and got to the drawer.** First chunk at 19.1 s, then 366 action
+groups over 227.6 s wall / 179.6 s simulated. The E-stop snapshot's ground-truth
+contacts show where it had got to — the gripper was **on the drawer handle**:
+
+| pair | distance |
+| --- | ---: |
+| `gripper0_right_leftfinger` ↔ `stack_03_..._door_main` | −0.294 mm |
+| `gripper0_right_rightfinger` ↔ `stack_03_..._door_handle_main` | −2.72 mm |
+| `gripper0_right_rightfinger` ↔ `stack_03_..._door_handle_g8` | −0.12 mm |
+
+That is the drawer this scene's seed-3 pin selects, and the precondition the
+scene file warns about: open the drawer *before* anything else can happen.
+
+**What stopped it was a self-collision, not the world and not the payload:**
+
+```json
+{"collision_kind": "self", "link_a": "panda_link2",
+ "link_b_or_object": "panda_link5", "min_distance_m": -0.00534015}
+```
+
+`panda_link2` against `panda_link5` at **−5.34 mm** — the arm folded into itself
+while working the handle.
+
+### What this settles, and what it does not
+
+**Settles:** the scene is executable by the policy it was chosen for — XR-1
+loads, stays in distribution (`DeliverStraw` is in `target50`), and drives the
+manipulation phase to real contact with the right fixture. The drawer
+precondition is confirmed as the binding one.
+
+**Does not settle #108.** The run never reached the carry: `attached_objects`
+was 0 at the stop, so no payload, no base translation, nothing that exercises
+the Nav2 footprint. **This is not a Nav2 or footprint failure** — it is a
+manipulation-phase self-collision, the same class that dominates the collision
+stack's own five-round battery. Nav2 had also failed to activate on this
+particular launch (`lifecycle_manager` stalled on `behavior_server/get_state`,
+the host's intermittent Fast-DDS service-discovery flake), so the carry could
+not have been navigated even had the grasp succeeded.
+
+**n = 1.** The rollout diverges at the first stop, so this is one draw on one
+seed on one host, not a rate.
+
+### A gap this exposed, not fixed here
+
+The stop was `collision_kind: "self"`, but `sim.estop_ground_truth_snapshot`
+recorded `"stop_class": "robot_world"` and `"self_collision": null` — it probed
+and populated `nearest_robot_world_pairs` while capturing no self-collision
+ground truth at all. So a self-collision stop **cannot be adjudicated from its
+own artifact**, which is the same shape of defect as the attached-payload gap
+that became issue #172. Worth its own issue.
+
 ## Reproducing
 
 ```console
