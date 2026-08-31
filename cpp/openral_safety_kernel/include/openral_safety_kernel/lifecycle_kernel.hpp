@@ -123,9 +123,15 @@ private:
   // very pair `link_a`/`link_b` names. The sweep-wide
   // `CollisionHit::sweep_min_distance` belongs to no named pair and never
   // enters the evidence payload (it is logged separately by the caller).
+  // `joint_positions` MUST be the configuration forward kinematics was run on
+  // for the step being reported (`q_fk_`), so the verdict is re-derivable
+  // offline: a predicted step's configuration exists nowhere else, and
+  // adjudicating a predictive stop against the measured joints reads geometry
+  // the kernel never checked.
   void publish_collision_failure(const openral_msgs::msg::ActionChunk& chunk,
                                  const char* collision_kind, const std::string& link_a,
-                                 const std::string& link_b, int horizon_step, double min_distance);
+                                 const std::string& link_b, int horizon_step, double min_distance,
+                                 const std::vector<double>& joint_positions);
 
   // World phase — ingest bounded world obstacles into a pre-sized
   // buffer (single-threaded executor → no lock needed).

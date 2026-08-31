@@ -1,0 +1,43 @@
+A REAL `FailureTrigger.evidence_json` captured verbatim from the C++ safety
+kernel (`cpp/openral_safety_kernel/`), not hand-written.
+
+Producer:
+    cpp/openral_safety_kernel/test/test_lifecycle_kernel.cpp
+      TEST_F(LifecycleKernelTest,
+             CollisionEvidenceReplaysThePredictedConfigurationItAdjudicated)
+
+Reproduce:
+    source /opt/ros/jazzy/setup.bash
+    just safety-kernel-build
+    source install/setup.bash
+    ./build/openral_safety_kernel/test_lifecycle_kernel \
+        --gtest_filter='*CollisionEvidenceReplaysThePredictedConfiguration*' \
+        --gtest_output=xml:/tmp/gtest.xml
+    # the payload is the <property name="predictive_collision_evidence_json"> value
+
+Scenario: the PREDICTIVE counterpart of
+`kernel_reactive_collision_evidence.json`. A planar 2R arm seeded at
+q = [0, pi/2] (end effector clear of a voxel wall at y >= 1.3) receives a
+CARTESIAN_DELTA chunk of ten +0.05 m steps along +y. The measured
+configuration passes the reactive check; step 5 of the kernel's own
+damped-least-squares Jacobian integration does not.
+
+`joint_positions_rad` is that step-5 configuration — [0.29982877677088093,
+1.2524345104800854], nowhere near the measured seed. It is the field this
+fixture exists to pin: the configuration a predictive verdict is *about*
+exists in no other artifact (it depends on the kernel's lambda and its seed
+dt), so before it was recorded, a predictive stop could only be adjudicated
+against the measured joints — a different pose, and in the drawer-opening run
+that motivated the change, one where the two links the kernel reported at
+-5.34 mm sit +53 mm apart.
+
+Note the precision: every number is serialized at `max_digits10`, so the
+payload round-trips to the identical doubles. The default 6 significant digits
+would have rounded these joint angles to ~1e-6 rad, which at a metre of reach
+is millimetres of end-effector error — the same order as the distances the
+evidence exists to adjudicate.
+
+Kernel log line for the same event:
+    safety.collision kind=world a=ee b=voxel_269 step=5
+    min_distance_m=-0.0451849 sweep_min_distance_m=-0.0451849 mode=5
+    rskill_id= place_allowance_active=0 place_target=

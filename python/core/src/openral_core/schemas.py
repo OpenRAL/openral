@@ -10073,6 +10073,16 @@ class CollisionEvidence(_FailureEvidenceBase):
             measured-state check is the guaranteed floor.
         min_distance_m: Signed minimum distance at detection, in metres
             (negative means interpenetration).
+        joint_positions_rad: The configuration the kernel ran forward
+            kinematics on for ``horizon_step`` — the exact vector handed to
+            ``forward_kinematics``, in the envelope's dof order, with mobile-base
+            dofs zeroed (the kernel checks the arm in ``base_link``). This is
+            what makes a stop adjudicatable: a *predicted* step's configuration
+            exists in no other artifact, because it depends on the kernel's own
+            damped-least-squares Jacobian, its lambda and its seed dt — so
+            replaying such a stop against the measured joints reads geometry the
+            kernel never checked. Empty for records emitted before the field
+            existed, and for a kernel running without a collision model.
     """
 
     #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
@@ -10084,6 +10094,7 @@ class CollisionEvidence(_FailureEvidenceBase):
     link_b_or_object: str
     horizon_step: int = Field(ge=REACTIVE_HORIZON_STEP)
     min_distance_m: float
+    joint_positions_rad: list[float] = Field(default_factory=list)
 
     @property
     def is_reactive(self) -> bool:
