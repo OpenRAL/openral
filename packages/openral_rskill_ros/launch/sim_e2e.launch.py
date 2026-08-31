@@ -123,6 +123,38 @@ def _world_voxel_margin_m(hal_mode: str) -> float:
     return 0.0 if hal_mode == "sim" else 0.02
 
 
+def _collision_scale_params() -> dict[str, float]:
+    """Kernel overrides for distance-graded velocity scaling (#188), if asked.
+
+    Returns ``{}`` — the kernel's own defaults, which disable the band and
+    reproduce the pre-#188 republish exactly — unless
+    ``OPENRAL_COLLISION_SCALE_PROXIMITY_M`` is set. That env var is the seam
+    the A/B five-round battery flips, so the band can be swept across rounds
+    without a rebuild and without editing this file mid-battery.
+
+    An unparseable value yields no override and says so. It must never be read
+    as some other band width: silently arming a safety mechanism at a number
+    nobody chose is worse than not arming it.
+    """
+    band = os.environ.get("OPENRAL_COLLISION_SCALE_PROXIMITY_M")
+    if not band:
+        return {}
+    params: dict[str, float] = {}
+    for env, param in (
+        ("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "collision_scale_proximity_m"),
+        ("OPENRAL_COLLISION_SCALE_K", "collision_scale_k"),
+        ("OPENRAL_COLLISION_SCALE_MIN", "collision_scale_min"),
+    ):
+        raw = os.environ.get(env)
+        if not raw:
+            continue
+        try:
+            params[param] = float(raw)
+        except ValueError:
+            print(f"openral: ignoring unparseable {env}={raw!r}")
+    return params
+
+
 def _octomap_occupancy_threshold(hal_mode: str) -> float:
     """Require repeated simulated hits while preserving real-map behavior."""
     return 0.8 if hal_mode == "sim" else 0.6
@@ -842,6 +874,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "world_voxel_max_cells": 614125,
             "world_voxel_deadline_ms": 1000.0,
         }
+
+    kernel_params = {**kernel_params, **_collision_scale_params()}
 
     # Run identity for the dashboard's Identity card. These
     # ride as OTLP resource attributes on every node so run mode / id /

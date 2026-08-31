@@ -153,6 +153,76 @@ attribute. `sweep_min_distance_m <= min_distance_m` always. A large gap between
 the two means something deep is being tolerated on purpose — usually a grasped
 payload's own occupancy residue — not that the stop was deep.
 
+### Distance-graded velocity scaling (#188) — off by default
+
+A third verdict between "accept at full rate" and "stop the robot": an
+**accepted** chunk near an obstacle can be republished slower.
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `collision_scale_proximity_m` | **`0.0`** | Band width above each check's own gate margin. **`0` disables the mechanism and reproduces the pre-#188 republish exactly.** |
+| `collision_scale_k` | `20.0` | Exponential steepness. |
+| `collision_scale_min` | `0.1` | Floor on the scale. |
+
+The scale is `exp(k · (slack − proximity))`, clamped into
+`[collision_scale_min, 1.0]` — exactly `1.0` at the top of the band, decaying
+toward the margin. `slack` is the smallest clearance **above its own gate
+margin** seen anywhere in the chunk's sweep. Slack rather than raw distance
+because every check carries a different margin and the predictive steps inflate
+theirs with look-ahead depth; slack is the only margin-agnostic way to compare
+them.
+
+Three properties are load-bearing:
+
+1. **It never changes a verdict.** The scale is applied after the chunk has
+   already been accepted. It cannot turn an accept into a drop, or a drop into
+   an accept, and the latch below the margin is untouched. Scaling *down* a
+   rate also preserves every envelope bound the chunk already satisfied
+   (`|s·v| ≤ |v|`), so the scaled chunk needs no re-validation and travels no
+   further than the swept volume the predictive check just cleared.
+2. **Only rate-shaped modes are scaled** — `JOINT_VELOCITY`, `CARTESIAN_DELTA`,
+   `CARTESIAN_TWIST`. Multiplying an *absolute* target (`JOINT_POSITION`,
+   `CARTESIAN_POSE`, `JOINT_TRAJECTORY`) by 0.37 does not slow the arm: it
+   commands a pose a third of the way to the origin — a large unrequested
+   motion in an arbitrary direction, issued in the name of safety. Gripper,
+   dex-hand and composite-mode rows are not motion rates either. `BODY_TWIST`
+   is excluded on evidence: FK zeroes the base dofs, so nothing measured here
+   describes where the *base* is going (that is Nav2's collision monitor, #186).
+3. **Pairs below their margin that did not trip are ignored.** Not tripping
+   there means the pair is exempted — an attached payload's attach-time contact
+   baseline, an ACM row, a live place allowance — and an exemption says that
+   contact is allowed. Letting it drive the scale would make a robot that is
+   legitimately resting a payload on a shelf crawl for as long as it holds it.
+
+Every scaling event is disclosed: a `safety.collision_scaled` log line carrying
+the scale, the slack and the band, plus `safety.velocity_scale` and
+`safety.scale_slack_m` span attributes, and a `chunks_scaled` counter on
+`/diagnostics`.
+
+**Why a band at all.** The 2026-08-26 five-round battery put 11 of 15 stops
+inside what 25 mm voxel quantisation alone explains, and every one of them was
+mission-ending. PACS ([arXiv:2511.06385](https://arxiv.org/abs/2511.06385))
+measures the shape of the fix on robomimic + a dynamic obstacle: 0.70 success
+unfiltered, **0.04** under reactive projection, **0.72** under chunk-level
+graded braking. Slowing along the policy's own path is close to free; filtering
+the policy's output destroys the task.
+
+**It ships disabled.** This is a WG-gated enforcement surface, and what earns
+it a non-zero band is the A/B five-round battery on the validation-matrix
+scenes, not the parameter's existence. `OPENRAL_COLLISION_SCALE_PROXIMITY_M`
+(plus `_K` / `_MIN`) is the seam `sim_e2e.launch.py` reads, so the band can be
+swept across rounds without a rebuild.
+
+**One binding precondition before it is turned on for a given policy.** PACS's
+result holds because velocity is deliberately kept out of the policy's
+observations — slowing the robot is then invisible to the policy and cannot
+push it out of distribution. That is not true of every adapter here:
+`python/sim/src/openral_sim/policies/xvla.py` feeds gripper `qvel` (`:203`)
+**and** arm `joints["vel"]` (`:207`), so a scaled chunk changes what XVLA sees
+next tick. **XVLA is excluded from the band until that is re-analysed.** No
+other adapter under `policies/` feeds velocity; the step-index / elapsed-time
+audit is still owed.
+
 ### Collision evidence: and the configuration it was measured at
 
 The payload also carries `joint_positions_rad`: the configuration forward
