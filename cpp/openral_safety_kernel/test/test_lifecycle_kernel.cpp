@@ -9,9 +9,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
-#include <cmath>
 #include <cstdio>
 #include <future>
 #include <memory>
@@ -1099,10 +1099,15 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   std::string evidence_json;
   rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
   failure_qos.reliable();
+  // KIND_COLLISION only. The fail-closed `unavailable()` paths publish their
+  // own FailureTrigger (KIND_CONTROLLER) on this same topic, and a seed or a
+  // grid that loses the discovery race produces one — latching that instead
+  // would leave `horizon_step` empty and `std::stoi` throwing.
   auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
       "/openral/failure/safety", failure_qos,
       [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
-        if (evidence_json.empty()) {
+        if (evidence_json.empty() &&
+            msg->kind == openral_msgs::msg::FailureTrigger::KIND_COLLISION) {
           evidence_json = msg->evidence_json;
         }
       });
@@ -1132,6 +1137,19 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   for (int s = 0; s < 10; ++s) {
     cart.flat.insert(cart.flat.end(), {0.0, 0.05, 0.0, 0.0, 0.0, 0.0});
   }
+
+  // Establish the seed + grid BEFORE any candidate arrives. A Cartesian chunk
+  // reaching the kernel without a fresh measured state is refused
+  // `state_unavailable` (fail-closed, `lifecycle_kernel.cpp`), which is the
+  // right behaviour and the wrong event for this test to race against.
+  auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_FALSE(node->fault_latched()) << "start config must be clear (reactive must not fire)";
 
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
@@ -1177,6 +1195,15 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   pos.horizon = 1;
   pos.n_dof = 2;
   pos.flat = {q[0], q[1]};
+
+  // Same discipline for the replay kernel: it is brand new, so give its voxel
+  // subscription time to match before a candidate can trip `voxel_unavailable`.
+  seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
 
   evidence_json.clear();
   deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);

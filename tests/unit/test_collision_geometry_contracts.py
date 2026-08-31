@@ -12,7 +12,6 @@ mocks.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from openral_core import (
@@ -216,7 +215,16 @@ def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -
     assert decoded.joint_positions_rad == [0.29982877677088093, 1.2524345104800854]
     # Not the measured seed the chunk started from — that config passed.
     assert decoded.joint_positions_rad[1] != 1.57079632679
-    assert json.loads(payload)["joint_positions_rad"] == decoded.joint_positions_rad
+    # The precision pin. Comparing the parsed payload to the parsed model would
+    # be a tautology — both sides run the same correctly-rounded strtod, so it
+    # passes just as happily on a six-digit payload. What has to be shown is
+    # that the recorded text carries information the old serializer destroyed:
+    # every value differs from its own six-significant-digit rounding.
+    for value in [*decoded.joint_positions_rad, decoded.min_distance_m]:
+        assert float(f"{value:.6g}") != value, (
+            f"{value!r} survives a 6-significant-digit round trip, so this "
+            "fixture cannot distinguish max_digits10 from the old default"
+        )
 
 
 def test_collision_evidence_rejects_below_reactive_sentinel() -> None:

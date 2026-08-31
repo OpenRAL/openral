@@ -173,8 +173,9 @@ Every number in the payload is serialized at `max_digits10` and round-trips to
 the identical double. That is a requirement, not tidiness: the default six
 significant digits round a joint angle to ~1e-6 rad, which at a metre of reach
 is millimetres of end-effector error — the same order as the distances this
-evidence exists to adjudicate. An empty array means either a kernel with no
-collision model loaded or a record predating the field.
+evidence exists to adjudicate. An empty array means a record predating the
+field: a kernel that reports a collision necessarily has a model loaded (the
+whole block is behind that gate) and its FK buffer is always `n_dof` long.
 
 The W3C `traceparent` carried on `ActionChunk.trace_id` is extracted
 with the stock propagator and used as the parent context, so each

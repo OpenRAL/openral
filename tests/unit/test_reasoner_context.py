@@ -233,9 +233,19 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     assert json.loads(payload)["horizon_step"] == CollisionEvidence.REACTIVE_HORIZON_STEP
 
     summary = _summarise_evidence_json(payload)
-    decoded = CollisionEvidence.model_validate_json(payload)
-    expected_fields = {k: v for k, v in decoded.model_dump().items() if k != "kind"}
-    assert summary == f"evidence={json.dumps(expected_fields, sort_keys=True)[:120]}"
+    # Pinned against literal expected content, NOT against a second
+    # `model_dump()` of the same object: an expectation computed the same way
+    # the code computes it agrees with any regression the code makes. That is
+    # how a field added to `CollisionEvidence` was able to push `link_a`,
+    # `link_b_or_object` and `min_distance_m` out of this very line while this
+    # test stayed green.
+    # Note the missing closing brace: this line renders at 121 characters and
+    # the 120-char truncation already clips it. That is how little headroom
+    # there is, and why a bulk field cannot be allowed to render inline here.
+    assert summary == (
+        'evidence={"collision_kind": "world", "horizon_step": -1, "link_a": "ee", '
+        '"link_b_or_object": "voxel_189", "min_distance_m": -0.05'
+    )
     # The structured path drops the discriminator; the raw fallback would keep it.
     assert '"kind"' not in summary
     assert '"horizon_step": -1' in summary
@@ -255,6 +265,47 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     rendered = r.render(world_state=None)
     assert '"link_a": "ee"' in rendered
     assert '"horizon_step": -1' in rendered
+
+
+def test_failure_summary_keeps_identities_when_evidence_carries_a_joint_vector() -> None:
+    """A 7-dof adjudication vector must not push the identities off the line.
+
+    ``_summarise_evidence_json`` sorts its keys and truncates at 120
+    characters. ``joint_positions_rad`` sorts *before* ``link_a``, and on a
+    real arm at ``max_digits10`` it renders ~130 characters on its own — the
+    entire budget. Rendered inline it took ``link_a``,
+    ``link_b_or_object`` and ``min_distance_m`` with it, leaving the bounded
+    replanning ladder (``ReasonerCore``: retry / param-tweak /
+    substitute-skill / goal-replan) a joint vector and no idea what collided.
+
+    The vector is an offline-adjudication field. It is disclosed as a count
+    after the truncation, never inside it.
+    """
+    payload = CollisionEvidence(
+        collision_kind="self",
+        link_a="panda_link2",
+        link_b_or_object="panda_link5",
+        horizon_step=5,
+        min_distance_m=-0.00534,
+        joint_positions_rad=[
+            0.29982877677088093,
+            -1.2524345104800854,
+            0.1234567890123456,
+            -2.3456789012345678,
+            0.0987654321098765,
+            1.8765432109876543,
+            0.5432109876543210,
+        ],
+    ).model_dump_json()
+
+    summary = _summarise_evidence_json(payload)
+    assert '"link_a": "panda_link2"' in summary
+    assert '"link_b_or_object": "panda_link5"' in summary
+    assert '"collision_kind": "self"' in summary
+    assert '"horizon_step": 5' in summary
+    # Dropped from the object, disclosed as a shape after it.
+    assert "0.29982877677088093" not in summary
+    assert summary.endswith(" +joint_positions_rad[7]")
 
 
 def test_prompts_drain_once() -> None:

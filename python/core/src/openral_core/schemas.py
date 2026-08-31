@@ -10081,8 +10081,9 @@ class CollisionEvidence(_FailureEvidenceBase):
             exists in no other artifact, because it depends on the kernel's own
             damped-least-squares Jacobian, its lambda and its seed dt — so
             replaying such a stop against the measured joints reads geometry the
-            kernel never checked. Empty for records emitted before the field
-            existed, and for a kernel running without a collision model.
+            kernel never checked. Empty only on a record emitted before the field
+            existed: a kernel that reports a collision has a collision model by
+            construction, and its FK buffer is always ``n_dof`` long.
     """
 
     #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
