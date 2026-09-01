@@ -1174,3 +1174,49 @@ def test_the_matching_seed_is_still_a_reproducibility_diff(tmp_path: Path) -> No
     baseline = _derived(ROUND_0823, tmp_path / "base")
     diff = validation_matrix.diff_rounds(current, baseline)
     assert diff.is_reproducibility is True
+
+
+def test_collision_scale_env_is_empty_when_the_band_is_not_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A baseline round records no band, which is the shipped default."""
+    for env in (
+        "OPENRAL_COLLISION_SCALE_PROXIMITY_M",
+        "OPENRAL_COLLISION_SCALE_K",
+        "OPENRAL_COLLISION_SCALE_MIN",
+    ):
+        monkeypatch.delenv(env, raising=False)
+    assert validation_matrix.collision_scale_env() == {}
+
+
+def test_collision_scale_env_records_an_armed_band(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An A/B round must be distinguishable from a baseline one afterwards.
+
+    The #188 band reaches the kernel through env vars, which
+    ``assert_no_safety_overrides`` cannot see — it inspects argv. If the round
+    record did not carry them, a round that armed the band and one that did not
+    would produce identical metadata, and the battery's own evidence could not
+    say which it was.
+    """
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0.05")
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_K", "20")
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
+    assert validation_matrix.collision_scale_env() == {
+        "collision_scale_proximity_m": 0.05,
+        "collision_scale_k": 20.0,
+    }
+
+
+def test_collision_scale_env_ignores_a_value_the_launch_would_ignore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unparseable value is not recorded, because it did not take effect.
+
+    ``sim_e2e.launch.py`` drops an unparseable band rather than guessing, so the
+    round ran without it. Recording it would misdescribe the round — the one
+    thing this metadata exists to prevent.
+    """
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0,05")
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
+    assert validation_matrix.collision_scale_env() == {}

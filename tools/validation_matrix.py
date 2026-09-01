@@ -1411,6 +1411,37 @@ def assert_sidecar_wire() -> None:
         ) from exc
 
 
+def collision_scale_env() -> dict[str, float]:
+    """The #188 graded-velocity band this round will actually run with.
+
+    The band reaches the kernel through ``OPENRAL_COLLISION_SCALE_*`` env vars
+    (``sim_e2e.launch.py`` reads them), which :func:`assert_no_safety_overrides`
+    cannot see — it inspects argv. Recorded rather than refused: arming the band
+    *is* the point of the A/B battery, and what must never happen is a round
+    that armed it and cannot afterwards be told apart from one that did not.
+
+    Returns:
+        The parsed values that are set, keyed by kernel parameter name. Empty
+        when the round runs the shipped default (band disabled).
+    """
+    out: dict[str, float] = {}
+    for env, param in (
+        ("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "collision_scale_proximity_m"),
+        ("OPENRAL_COLLISION_SCALE_K", "collision_scale_k"),
+        ("OPENRAL_COLLISION_SCALE_MIN", "collision_scale_min"),
+    ):
+        raw = os.environ.get(env)
+        if not raw:
+            continue
+        try:
+            out[param] = float(raw)
+        except ValueError:
+            # The launch ignores an unparseable value, so the round did not run
+            # with it either; recording it would misdescribe the round.
+            continue
+    return out
+
+
 def assert_no_safety_overrides(argv: Sequence[str]) -> None:
     """Refuse any argv token that looks like a safety-knob override.
 
@@ -1933,6 +1964,12 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
         f"- Robot: `{meta.robot_id or 'from scene'}`"
         f"  ·  manifest: `{meta.robot_manifest_path or 'resolved at launch'}`",
         f"- Sync groups: `{' '.join(meta.sync_groups)}`",
+        "- Graded velocity band (#188): "
+        + (
+            ", ".join(f"`{k}={v}`" for k, v in sorted(meta.collision_scale.items()))
+            if meta.collision_scale
+            else "**disabled** (shipped default)"
+        ),
         f"- Stack argv: `{' '.join(meta.stack_argv)}`",
         f"- Scene-pinned stack (no CLI flag exists): "
         f"`{' '.join(f'{k}={str(v).lower()}' for k, v in meta.scene_pins.items()) or 'none'}`",
@@ -2411,6 +2448,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "sync_groups": list(SYNC_GROUPS),
         "stack_argv": [*STACK_ARGV, *args.deploy_arg],
         "safety_overrides_absent": True,
+        "collision_scale": collision_scale_env(),
         "gpu_name": gpu_name,
         "notes_path": "NOTES.md",
         "seed": args.seed,
