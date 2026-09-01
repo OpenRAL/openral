@@ -236,7 +236,32 @@ the policy's output destroys the task.
 it a non-zero band is the A/B five-round battery on the validation-matrix
 scenes, not the parameter's existence. `OPENRAL_COLLISION_SCALE_PROXIMITY_M`
 (plus `_K` / `_MIN`) is the seam `sim_e2e.launch.py` reads, so the band can be
-swept across rounds without a rebuild.
+swept across rounds without a rebuild; the round records which values it ran
+with (`ValidationRoundMetadata.collision_scale`), so an armed round and a
+baseline round can be told apart from their own artifacts.
+
+**What one A/B pair on `robocasa_baguette` (seed 1) actually showed.** The band
+fires on real geometry — 24 scaling events, down to **0.389** at 2.8 mm of
+slack in a 0.05 m band, on both the arm's `CARTESIAN_DELTA` and the base's
+`JOINT_VELOCITY` chunks. It did **not** prevent the stop: the armed round still
+ended `estop-collision-within-quantization`, on the attached payload at
+**−1.79 mm**.
+
+That is worth reading carefully rather than as a failure. PACS's result is about
+*dynamic obstacles*, where slowing buys the policy time to react. The stop class
+here is *static map quantisation* — the arm is a millimetre or two inside a cell
+whose own edge is uncertain by up to 25 mm, and approaching it more slowly does
+not move the cell. Approach speed is not what makes that stop happen, so Path A
+alone should not be expected to convert this class; it is the approach-band half
+of a pair whose contact-adjacent half is Path B (#189, declared-target
+geometry). The band's own job — slow near obstacles, never latch, never turn an
+accept into a drop — it did.
+
+**One pair is not evidence.** The same scene, same seed, same rSkill completed
+with the band disabled and stopped with it armed — and an earlier baseline at a
+different SHA stopped where this one completed. The scene is not deterministic
+run to run, which is exactly why the acceptance criterion is a **five-round**
+battery per arm and not a single comparison.
 
 **One binding precondition before it is turned on for a given policy.** PACS's
 result holds because velocity is deliberately kept out of the policy's
@@ -252,9 +277,22 @@ the kernel has no idea which policy produced a chunk. Setting
 `OPENRAL_COLLISION_SCALE_PROXIMITY_M` for a round that happens to run XVLA arms
 it for XVLA. **Do not arm the band on an XVLA scene** until that observation
 coupling is re-analysed; if this needs to be enforced rather than remembered,
-the launch layer is where the adapter id is actually known. No other adapter
-under `policies/` feeds velocity; the step-index / elapsed-time audit is still
-owed.
+the launch layer is where the adapter id is actually known.
+
+**`xvla` and `xr1` are different model families** — a similarity of name, not of
+adapter. `xr1.py` sends EE pose + axis-angle + gripper and no velocity, so the
+validation matrix's default skill
+(`OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4`, `model_family: xr1`) is not
+excluded and the A/B battery does run on it. Only `rskills/xvla-libero` uses the
+`xvla` family.
+
+What is still owed is the **step-index / elapsed-time audit**, and it is not
+vacuous: both `xr1` and `rldx` keep multi-frame histories (XR-1 samples a 7-deep
+state history at offsets 0/2/4/6; RLDX a 7-frame video history). A history of
+*poses* at a fixed stride encodes velocity implicitly, so a scaled chunk does
+change what those policies see across frames even though neither is handed a
+velocity. That is weaker coupling than XVLA's explicit `joints["vel"]`, but it
+is not none.
 
 ### Collision evidence: and the configuration it was measured at
 
