@@ -191,13 +191,26 @@ Three properties are load-bearing:
 3. **Pairs below their margin that did not trip are ignored.** Not tripping
    there means the pair is exempted — an attached payload's attach-time contact
    baseline, an ACM row, a live place allowance — and an exemption says that
-   contact is allowed. Letting it drive the scale would make a robot that is
-   legitimately resting a payload on a shelf crawl for as long as it holds it.
+   contact is allowed, so it must not also mean "slow down".
 
-Every scaling event is disclosed: a `safety.collision_scaled` log line carrying
-the scale, the slack and the band, plus `safety.velocity_scale` and
-`safety.scale_slack_m` span attributes, and a `chunks_scaled` counter on
-`/diagnostics`.
+   **This is a filter on the exempted pair, not on its surroundings, and the
+   difference matters.** A payload resting on a shelf exempts the contact cell;
+   the neighbouring cells along the same shelf surface are not exempt and
+   present a small positive slack of their own. At a 25 mm grid with a 0.02 m
+   attached margin they sit around 5 mm of slack, which in a 0.05 m band at
+   k = 20 is ≈ 0.41. So a robot holding a payload against a surface **will**
+   run reduced for as long as it does. That is defensible — it is genuinely
+   close to something — but it is a standing slowdown, not an edge case, and
+   the A/B battery has to price it.
+
+Scaling is disclosed three ways, and the difference between them is
+load-bearing: `safety.velocity_scale` / `safety.scale_slack_m` span attributes
+on every scaled chunk; a `safety.collision_scaled` log line that is
+**transition-gated** (emitted when the scale moves by ≥ 0.1 or the band is
+cleared, because the accept path runs at 30–200 Hz and its pass-through case is
+documented as touching no string); and a `scaled` key on the 1 Hz
+`/diagnostics` heartbeat, which is the continuous count. Reading only the log
+undercounts, by design.
 
 **Why a band at all.** The 2026-08-26 five-round battery put 11 of 15 stops
 inside what 25 mm voxel quantisation alone explains, and every one of them was
@@ -219,9 +232,17 @@ observations — slowing the robot is then invisible to the policy and cannot
 push it out of distribution. That is not true of every adapter here:
 `python/sim/src/openral_sim/policies/xvla.py` feeds gripper `qvel` (`:203`)
 **and** arm `joints["vel"]` (`:207`), so a scaled chunk changes what XVLA sees
-next tick. **XVLA is excluded from the band until that is re-analysed.** No
-other adapter under `policies/` feeds velocity; the step-index / elapsed-time
-audit is still owed.
+next tick.
+
+**This is an operator precondition, not a control the kernel enforces**, and
+the distinction is worth being exact about: the band is a kernel parameter and
+the kernel has no idea which policy produced a chunk. Setting
+`OPENRAL_COLLISION_SCALE_PROXIMITY_M` for a round that happens to run XVLA arms
+it for XVLA. **Do not arm the band on an XVLA scene** until that observation
+coupling is re-analysed; if this needs to be enforced rather than remembered,
+the launch layer is where the adapter id is actually known. No other adapter
+under `policies/` feeds velocity; the step-index / elapsed-time audit is still
+owed.
 
 ### Collision evidence: and the configuration it was measured at
 

@@ -3183,3 +3183,48 @@ TEST_F(LifecycleKernelTest, GradedScalingNeverTouchesAnAbsolutePositionTarget) {
                                   "asked for, toward the origin";
   EXPECT_EQ(out.scaled, 0U);
 }
+
+// CARTESIAN_DELTA is the mode every real VLA arm policy here uses, and it was
+// the one mode the first version of these tests never exercised. Two things
+// have to hold and neither is visible from a joint-velocity chunk:
+//
+//   1. Row layout. Only the leading 6-vector twist is a rate. A trailing
+//      column is not, and scaling it would corrupt whatever it carries.
+//   2. NORMALIZED chunks must be clamped before they are scaled. Native OSC
+//      controllers apply `clamp(raw, -1, 1) * range`, and the validator puts no
+//      per-axis bound on CARTESIAN_DELTA, so |raw| > 1 is admissible. Scaling
+//      2.5 by 0.37 gives 0.92 — a real slowdown — whereas scaling without the
+//      clamp gives 0.92 only by luck and, for a bigger raw value, would still
+//      clip to 1.0 downstream: the identical motion, reported as a slowdown
+//      that never happened.
+TEST_F(LifecycleKernelTest, GradedScalingClampsThenScalesOnlyTheTwistColumns) {
+  openral_msgs::msg::ActionChunk cart;
+  cart.control_mode = 5;  // CARTESIAN_DELTA
+  cart.horizon = 1;
+  cart.n_dof = 7;  // 6 twist components + one trailing non-rate column
+  //                vx    vy   vz    wx   wy   wz   aux
+  cart.flat = {2.5, -0.4, 0.0, 0.0, 0.0, 0.0, 0.75};
+  // Non-empty ⇒ the chunk is normalized, so the kernel must clamp before it
+  // scales (mirrors what the HAL's OSC controller will do to these numbers).
+  // One entry per dof — the validator enforces that length, not 6.
+  cart.cartesian_delta_scale = {0.05, 0.05, 0.05, 0.5, 0.5, 0.5, 1.0};
+
+  auto params = scale_band_params(0.25);
+  params.emplace_back("collision_ee_link_index", std::int64_t{-1});  // reactive only
+  const auto out = run_one_chunk("kernel_scale_cart", std::move(params), cart);
+
+  ASSERT_TRUE(out.published);
+  ASSERT_EQ(out.flat.size(), 7U);
+  const double scale = std::exp(20.0 * (kBandTestSlackM - 0.25));
+  // vx was 2.5 — out of range. Clamped to 1.0 first, THEN scaled, so the
+  // number the controller receives is genuinely reduced.
+  EXPECT_NEAR(out.flat[0], 1.0 * scale, 1e-9)
+      << "a saturated normalized axis must be clamped before scaling, or the "
+         "slowdown is only reported, not performed";
+  EXPECT_NEAR(out.flat[1], -0.4 * scale, 1e-9) << "an in-range axis scales normally";
+  // The trailing column is not part of the twist and must be untouched.
+  EXPECT_EQ(out.flat[6], 0.75) << "column 6 is not a rate — scaling it corrupts whatever it "
+                                  "carries";
+  EXPECT_GE(out.scaled, 1U);
+  EXPECT_FALSE(out.latched);
+}

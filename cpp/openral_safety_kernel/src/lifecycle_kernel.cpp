@@ -586,6 +586,11 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   fault_latch_ = false;
   chunks_passed_ = 0;
   chunks_dropped_ = 0;
+  // Must reset with the other two: `scaled` is documented as a subset of
+  // `passed`, and carrying it across a cleanup while they restart at 0 makes
+  // `scaled > passed` reachable on /diagnostics.
+  chunks_scaled_ = 0;
+  last_logged_scale_ = 1.0;
   last_drop_reason_.clear();
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
@@ -1149,21 +1154,50 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const std::size_t scalable = (mode == ControlMode::kJointVelocity)
                                        ? stride
                                        : std::min<std::size_t>(stride, 6);
+      // A NORMALIZED Cartesian chunk must be clamped before it is scaled.
+      // Native OSC controllers apply `clamp(raw, -1, 1) * per_axis_range`, and
+      // the validator deliberately puts no per-axis bound on CARTESIAN_DELTA,
+      // so |raw| > 1 is admissible and common. Multiplying 2.5 by 0.5 gives
+      // 1.25, which still clips to 1.0 downstream — the identical motion, while
+      // the kernel logs and counts a slowdown that did not happen. Clamping
+      // first makes the number the robot will actually use the number that gets
+      // scaled, so the disclosure describes a real effect.
+      const bool normalized = view.cartesian_delta_scale_size != 0;
       for (std::size_t s = 0; s < view.horizon && stride > 0; ++s) {
         const std::size_t row = s * stride;
         for (std::size_t d = 0; d < scalable && row + d < scaled_chunk_.flat.size(); ++d) {
-          scaled_chunk_.flat[row + d] *= scale;
+          double& value = scaled_chunk_.flat[row + d];
+          if (normalized) {
+            value = std::clamp(value, -1.0, 1.0);
+          }
+          value *= scale;
         }
       }
       safe_pub_->publish(scaled_chunk_);
       ++chunks_scaled_;
-      RCLCPP_INFO(this->get_logger(),
-                  "safety.collision_scaled scale=%g slack_m=%g band_m=%g mode=%u rskill_id=%s",
-                  scale, collision_min_slack_m, collision_scale_proximity_m_,
-                  static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str());
+      // Transition-gated, not per chunk. This is the accept path, which runs at
+      // 30-200 Hz and whose pass-through case is documented as touching no
+      // string and making no publish; an armed band near an obstacle would
+      // otherwise format two std::strings every tick inside a node whose
+      // realtime rules forbid string ops in hot loops. A tenth of a scale is
+      // the granularity worth a line; the 1 Hz /diagnostics `scaled` counter
+      // covers the "has been crawling for a minute" case continuously.
+      if (std::abs(scale - last_logged_scale_) >= 0.1) {
+        last_logged_scale_ = scale;
+        RCLCPP_INFO(this->get_logger(),
+                    "safety.collision_scaled scale=%g slack_m=%g band_m=%g mode=%u rskill_id=%s",
+                    scale, collision_min_slack_m, collision_scale_proximity_m_,
+                    static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str());
+      }
       span->SetAttribute("safety.velocity_scale", scale);
       span->SetAttribute("safety.scale_slack_m", collision_min_slack_m);
     } else {
+      // Leaving the band is a transition worth one line too, so a reader can
+      // see the slowdown end rather than infer it from silence.
+      if (last_logged_scale_ < 1.0) {
+        last_logged_scale_ = 1.0;
+        RCLCPP_INFO(this->get_logger(), "safety.collision_scaled scale=1 (cleared the band)");
+      }
       safe_pub_->publish(*msg);
     }
     ++chunks_passed_;
@@ -1521,14 +1555,29 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   advisory_refusals_ = 0;
   {
     // A negative band is a misconfiguration, and the safe reading is "no
-    // band". The floor is clamped into [0, 1]: above 1 it would SPEED THE
-    // ROBOT UP, which this mechanism must never do.
+    // band".
     const double proximity = this->get_parameter("collision_scale_proximity_m").as_double();
     collision_scale_proximity_m_ = proximity > 0.0 ? proximity : 0.0;
     const double k = this->get_parameter("collision_scale_k").as_double();
     collision_scale_k_ = k > 0.0 ? k : 0.0;
-    collision_scale_min_ =
-        std::clamp(this->get_parameter("collision_scale_min").as_double(), 0.0, 1.0);
+    // The floor must be strictly positive and at most 1. Zero is not a "very
+    // slow" setting — it is a full stop that emits no E-stop, no
+    // FailureTrigger and no latched status, while /openral/safety_status still
+    // reports "chunk accepted". Above 1 would SPEED THE ROBOT UP. Either is a
+    // misconfiguration of a safety surface, so neither is quietly clamped into
+    // range: the band is refused outright and the kernel says why, leaving
+    // today's behaviour rather than an invented one.
+    collision_scale_min_ = this->get_parameter("collision_scale_min").as_double();
+    if (collision_scale_proximity_m_ > 0.0 &&
+        !(collision_scale_min_ > 0.0 && collision_scale_min_ <= 1.0)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "collision_scale_min=%g is outside (0, 1] — graded velocity scaling is "
+                   "DISABLED. A floor of 0 is a stop that reports itself as an accepted "
+                   "chunk; above 1 would speed the robot up.",
+                   collision_scale_min_);
+      collision_scale_proximity_m_ = 0.0;
+      collision_scale_min_ = 1.0;
+    }
     if (collision_scale_proximity_m_ > 0.0) {
       RCLCPP_INFO(this->get_logger(),
                   "safety.collision_scaling armed: band=%g m k=%g floor=%g (scale at margin=%g)",

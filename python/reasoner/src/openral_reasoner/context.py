@@ -1061,23 +1061,28 @@ def _extract_priority(metadata_json: str) -> int:
     return DEFAULT_PROMPT_PRIORITY
 
 
-#: Longest a list-valued evidence field may render before the one-line prompt
-#: summary drops it from the object and discloses it as a trailing
-#: ``+<field>[<n>]`` marker instead.
+#: Evidence fields that never belong in the one-line prompt summary, whatever
+#: they happen to render to.
 #:
-#: The summary sorts its keys and truncates at 120 characters, so one bulk
-#: field silently pushes every field after it off the end.
-#: ``CollisionEvidence.joint_positions_rad`` sorts before ``link_a`` and on a
-#: 7-dof arm at full precision renders 130 characters — the entire budget —
-#: leaving the reasoner's replanning ladder a joint vector and no idea which
-#: links collided. An *empty* list is dropped for the same reason: the reactive
-#: collision line already rendered at exactly 120 characters, so even ``[]``
-#: costs it ``min_distance_m``.
+#: The summary sorts its keys and truncates at 120 characters, and the
+#: identity fields need almost all of that: the reactive collision line renders
+#: at 121 characters carrying nothing but
+#: ``collision_kind`` / ``horizon_step`` / ``link_a`` / ``link_b_or_object`` /
+#: ``min_distance_m``. So *any* extra field of any size, sorting before
+#: ``link_a``, evicts the fields the reasoner actually needs.
 #:
-#: Short arrays stay inline, because for ``SuppressedSummaryEvidence`` the
-#: parallel arrays *are* the roll-up. Joint vectors are for offline
-#: adjudication (they exist so a stop can be replayed); a prompt needs the
-#: identities and the distance.
+#: ``joint_positions_rad`` is the case in hand. It exists so a stop can be
+#: replayed offline (issue #187) and it is useless to a planner deciding retry
+#: vs. substitute-skill vs. goal-replan. Excluding it **by role** is the fix;
+#: an earlier attempt to exclude it by *rendered length* was a proxy for the
+#: wrong property and did not hold — a 2-dof vector renders 41 characters and
+#: sailed under any workable threshold while still evicting `link_a`.
+_PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad"})
+
+#: Backstop for a future bulk field nobody remembered to name above: a list
+#: that renders longer than this is dropped too. Short arrays stay inline,
+#: because for ``SuppressedSummaryEvidence`` the parallel arrays *are* the
+#: roll-up.
 _PROMPT_FIELD_BUDGET = 48
 
 
@@ -1101,14 +1106,17 @@ def _summarise_evidence_json(payload: str) -> str:
     omitted = {
         k: len(v)
         for k, v in dumped.items()
-        if isinstance(v, list) and (not v or len(json.dumps(v)) > _PROMPT_FIELD_BUDGET)
+        if isinstance(v, list)
+        and (k in _PROMPT_EXCLUDED_FIELDS or len(json.dumps(v)) > _PROMPT_FIELD_BUDGET)
     }
     summary_fields = {k: v for k, v in dumped.items() if k not in omitted}
     summary = f"evidence={json.dumps(summary_fields, sort_keys=True)[:120]}"
     # Disclosed after the truncation, never inside it (CLAUDE.md §1.4): a
     # dropped field must be visible as dropped, but it must not be what pushes
-    # the identities out of the line.
-    return summary + "".join(f" +{k}[{n}]" for k, n in sorted(omitted.items()) if n)
+    # the identities out of the line. `[0]` is disclosed like any other count —
+    # "present but empty" is what a record predating #187 looks like, and it is
+    # worth being able to tell that from "the schema never had this field".
+    return summary + "".join(f" +{k}[{n}]" for k, n in sorted(omitted.items()))
 
 
 # Suppress unused-import — TypeAdapter import for PerceptionEventMetadata is

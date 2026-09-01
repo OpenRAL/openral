@@ -355,6 +355,11 @@ private:
   double collision_scale_proximity_m_{0.0};
   double collision_scale_k_{0.0};
   double collision_scale_min_{1.0};
+  /// Last scale actually logged. The accept path runs at chunk rate, so the
+  /// `safety.collision_scaled` line is transition-gated on this rather than
+  /// emitted per chunk; the 1 Hz `/diagnostics` counter carries the continuous
+  /// signal.
+  double last_logged_scale_{1.0};
   /// Reused scale target, so a scaled republish does not allocate after the
   /// first one (the vector keeps its capacity). Untouched while scale == 1.
   openral_msgs::msg::ActionChunk scaled_chunk_;
