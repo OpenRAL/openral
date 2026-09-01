@@ -172,7 +172,19 @@ because every check carries a different margin and the predictive steps inflate
 theirs with look-ahead depth; slack is the only margin-agnostic way to compare
 them.
 
-Three properties are load-bearing:
+**The band also widens the voxel broad-phase window, and it has to.** The cell
+scan is sized by the gate margin (`reach = r + margin + half_side`), so a cell
+that is *clear* but inside the band was never visited and never folded into
+`sweep_min_distance`. On a real map the minimum therefore jumped from "nothing
+in range" straight to a tripping cell, and the scale went 1.0 → E-stop with
+nothing in between — the mechanism was dead code. `check_voxel_collision` and
+`check_attached_voxel_collision` now take a `band_m` that widens the **window
+only**; a cell still trips at `margin` and nothing else. `band_m` defaults to
+`0.0`, so the shipped window is byte-for-byte unchanged and the extra cells are
+scanned only by a deployment that arms the band — which is also where that
+scan's cost is paid.
+
+Three further properties are load-bearing:
 
 1. **It never changes a verdict.** The scale is applied after the chunk has
    already been accepted. It cannot turn an accept into a drop, or a drop into

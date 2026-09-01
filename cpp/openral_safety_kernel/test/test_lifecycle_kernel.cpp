@@ -3008,18 +3008,30 @@ std::vector<rclcpp::Parameter> scale_band_params(double proximity_m) {
   };
 }
 
-// One occupied cell, near face at x = 0.25.
+// A TEN-cell row along x with exactly one occupied cell, near face at x = 0.25.
+//
+// The width is load-bearing, not scenery. The broad-phase cell window is sized
+// by the gate margin, and `rng()` CLAMPS its indices into the grid — so on a
+// one-cell grid every query is forced onto that cell no matter how far away it
+// is. The first version of this test used a one-cell grid and passed for
+// exactly that reason, while on any real map the band was dead: a cell 20 mm
+// clear was never visited, never folded into `sweep_min_distance`, and the
+// scale went 1.0 → E-stop with nothing in between (a panda_mobile scene run is
+// what caught it — `tests/sim/safety/test_kernel_graded_scaling_approach.py`).
+// With ten cells the occupied one is only reached if the window is genuinely
+// widened by the band, so this fails if that regresses.
 openral_msgs::msg::OccupancyVoxels one_cell_at_x_025() {
   openral_msgs::msg::OccupancyVoxels vox;
   vox.orientation.w = 1.0;
   vox.resolution = 0.1;
-  vox.size_x = 1;
+  vox.size_x = 10;
   vox.size_y = 1;
   vox.size_z = 1;
-  vox.origin.x = 0.25;
+  vox.origin.x = 0.0;
   vox.origin.y = -0.05;
   vox.origin.z = -0.05;
-  vox.occupancy.assign(1, 1);
+  vox.occupancy.assign(10, 0);
+  vox.occupancy[2] = 1;  // centre x = 0.25, near face 0.20 → 0.15 m of clearance
   return vox;
 }
 
@@ -3115,10 +3127,10 @@ openral_msgs::msg::ActionChunk velocity_chunk(double v) {
 }
 
 // The clearance the geometry above presents to the voxel check at margin 0 —
-// sphere surface (r = 0.05, centred at the origin) to the cell's near face at
-// x = 0.25. Read back from the kernel's own `safety.collision_scaled slack_m=`
-// line rather than assumed, then pinned here.
-constexpr double kBandTestSlackM = 0.2;
+// sphere surface (r = 0.05, centred at the origin) to the occupied cell's near
+// face at x = 0.20. Read back from the kernel's own `safety.collision_scaled
+// slack_m=` line rather than assumed, then pinned here.
+constexpr double kBandTestSlackM = 0.15;
 
 }  // namespace
 

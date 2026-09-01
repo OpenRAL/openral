@@ -763,8 +763,19 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// the kernel gives away less clearance it never had. Links without tight
 /// geometry, every capsule-lowered robot, and every other check in this header
 /// keep the shipped primitive path exactly as it is.
+///
+/// `band_m` widens ONLY the broad-phase cell window, never the trip threshold.
+/// A cell still trips at `margin` and nothing else; `band_m` exists so cells
+/// that are *clear* but within `margin + band_m` are still visited and folded
+/// into `sweep_min_distance`. Without it that field cannot see them at all —
+/// the window is sized by the margin, so on a real map the minimum jumps from
+/// "nothing in range" straight to a tripping cell, which is exactly what made
+/// the #188 velocity band dead code on its first implementation. Default 0.0 is
+/// the shipped window, byte-for-byte, and the extra cells are only scanned when
+/// a deployment arms the band.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const VoxelGrid& grid, double margin) noexcept;
+                                   const VoxelGrid& grid, double margin,
+                                   double band_m = 0.0) noexcept;
 
 /// Validate + resolve parsed attached-object inputs into the fixed-capacity
 /// `out` model. `out.objects` / `out.primitives` / `out.touch_links` must
@@ -831,10 +842,12 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 /// An exempted cell never supplies the reported identity or distance — it
 /// reaches `sweep_min_distance` only, so an exempt cell can never be published
 /// as the contact that stopped the robot (`CollisionHit`). Allocation-free.
+/// `band_m` widens only the broad-phase cell window, exactly as it does for
+/// `check_voxel_collision`.
 CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
-                                            double margin) noexcept;
+                                            double margin, double band_m = 0.0) noexcept;
 
 /// Margin reduction the live place declaration grants object `object_index`
 /// against an occupied cell centred at `center` — `0.0` whenever it grants none.

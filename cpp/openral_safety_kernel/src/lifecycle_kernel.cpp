@@ -968,8 +968,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
         }
         if (world_voxel_enabled_) {
+          // The band is handed in as extra SCAN width, not extra margin: a
+          // cell still trips at the margin, but a cell that is merely inside
+          // the band has to be visited for `sweep_min_distance` to see it at
+          // all. Without this the window is sized by the margin alone and the
+          // minimum jumps from "nothing in range" straight to a tripping cell —
+          // which made this whole mechanism dead code until a real scene run
+          // showed the scale going 1.0 → E-stop with nothing in between.
           const auto hit = check_voxel_collision(collision_model_, collision_scratch_, voxel_grid_,
-                                                 world_voxel_margin_m_ + extra_margin);
+                                                 world_voxel_margin_m_ + extra_margin,
+                                                 collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
           if (hit.hit) {
             report("world", link_name(hit.link_a),
@@ -1002,7 +1010,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               is_cartesian && attached_contact_active_ && step >= 0 && support_witness_live_ == 0;
           if (world_voxel_enabled_ && !contact_constrained_prediction) {
             const auto hit = check_attached_voxel_collision(
-                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin);
+                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin,
+                collision_scale_proximity_m_);
             note_slack(hit, amargin);
             if (hit.hit) {
               report("world", attached_label(hit.link_a),
