@@ -3454,6 +3454,10 @@ TEST(PlaceApproachAllowance, EveryRefusalHasItsOwnReasonToken) {
   EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversize), "oversize");
   EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kOversizeVolume),
                "oversize_volume");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kBadGeometry),
+               "bad_geometry");
+  EXPECT_STREQ(osk::place_region_status_reason(osk::PlaceRegionStatus::kGeometryOverflow),
+               "geometry_overflow");
 
   const osk::PlaceRegionStatus all[] = {osk::PlaceRegionStatus::kOk,
                                         osk::PlaceRegionStatus::kNoObject,
@@ -3461,7 +3465,9 @@ TEST(PlaceApproachAllowance, EveryRefusalHasItsOwnReasonToken) {
                                         osk::PlaceRegionStatus::kBadExtents,
                                         osk::PlaceRegionStatus::kDegenerate,
                                         osk::PlaceRegionStatus::kOversize,
-                                        osk::PlaceRegionStatus::kOversizeVolume};
+                                        osk::PlaceRegionStatus::kOversizeVolume,
+                                        osk::PlaceRegionStatus::kBadGeometry,
+                                        osk::PlaceRegionStatus::kGeometryOverflow};
   std::set<std::string> tokens;
   for (const auto status : all) {
     const char* reason = osk::place_region_status_reason(status);
@@ -3482,6 +3488,307 @@ TEST(PlaceApproachAllowance, AMapWithNoResolutionGrantsNothing) {
   grid.resolution = kSupportRes;
   EXPECT_NEAR(osk::place_approach_allowance(grid, 8, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12)
       << "past the eight-object schema cap there is no mask bit to consult";
+}
+
+// ── The declared target's own geometry (ADR-0098, survey Path B) ─────────────
+//
+// The region box says WHERE the declared receptacle is; it cannot say WHAT it
+// is, so it hands the same blanket allowance to every cell inside itself whether
+// the declared body put that cell there or not. These tests cover the half that
+// closes: shipping the target's own primitives, so a payload is measured against
+// the modelled shelf instead of against the 50 mm cube the shelf was quantised
+// into.
+//
+// The coarse fixture makes the three regimes separable to the millimetre. Cell
+// (6, 6, 6) is a 50 mm cube centred on the origin, so its top face sits at
+// +25 mm; the modelled shelf below puts its top face at +5 mm, i.e. the cube
+// over-states the surface by exactly 20 mm. The baguette's bottom face is at
+// `dz`, so at margin 0:
+//
+//   * undeclared            trips at `dz <= +25 mm` (the cube's face)
+//   * declared, box only    trips at `dz <= -15 mm` (cube face minus the 40 mm
+//                           blanket allowance — 20 mm of which the real shelf
+//                           never justified)
+//   * declared + geometry   trips at `dz <=  +5 mm` (the shelf itself)
+//
+// So at this margin geometry sits strictly between the two: it keeps the relief
+// the quantisation actually created, and gives back the 20 mm the blanket was
+// forgiving on no evidence. That ordering is NOT an invariant — at the deployed
+// 30 mm standoff a deeper shelf puts geometry on the permissive side of the
+// blanket, because the standoff does not apply to the body the robot was
+// dispatched to touch. The invariant is the one
+// `NeverLetsThePayloadReachTheModelledSurface` pins: whatever the margin, the
+// payload never reaches the modelled surface without stopping.
+
+namespace {
+
+// The declared cabinet region, plus the shelf the sim producer measured inside
+// it: a box whose top face is at `top_z`. `store` is the caller's buffer because
+// `PlaceApproachRegion::geometry` is a view into it and has to outlive the
+// checks that read it — the same ownership the node gives it.
+osk::PlaceApproachRegion declared_region_with_shelf(std::vector<osk::AttachedPrimitive>& store,
+                                                    double top_z) {
+  osk::PlaceApproachRegion region;
+  EXPECT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
+  std::vector<osk::AttachedPrimitiveInput> geometry(1);
+  geometry[0].kind = osk::AttachedShapeKind::kBox;
+  geometry[0].half_extents = {0.10, 0.10, 0.05};
+  geometry[0].pose_in_object = translate(0.0, 0.0, top_z - 0.05);
+  EXPECT_EQ(osk::ingest_place_target_geometry(geometry, store, region),
+            osk::PlaceRegionStatus::kOk);
+  return region;
+}
+
+// One baguette-over-the-cell check at payload offset `dz`, under one of the
+// three regimes above. `margin` is the payload's world standoff — 0 for the
+// regime-ordering tests, where it only shifts every threshold equally, and the
+// deployed 30 mm where the point IS that the standoff does not apply to the
+// declared body.
+osk::CollisionHit shelf_case(double dz, const osk::PlaceApproachRegion& region,
+                             double margin = 0.0) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_baguette(att, 0.0);  // no witness: this must stand on geometry alone
+
+  static std::vector<std::uint8_t> occ;
+  occ.assign(static_cast<std::size_t>(kCoarseN) * kCoarseN * kCoarseN, 0);
+  occ[static_cast<std::size_t>(coarse_index(6, 6, 6))] = 1;
+  auto grid = coarse_grid(occ);
+  grid.place_region = region;
+  att.objects[0].pose_in_link = translate(0.0, 0.0, dz);
+  return osk::check_attached_voxel_collision(m, att, s, grid, margin);
+}
+
+}  // namespace
+
+TEST(PlaceTargetGeometry, AdjudicatesAgainstTheBodyNotTheCellThatQuantisedIt) {
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  const osk::PlaceApproachRegion box_only = declared_cabinet_region();
+  const osk::PlaceApproachRegion with_geometry = declared_region_with_shelf(store, 0.005);
+
+  // 15 mm above the cube's face: quantisation, and nothing else, is what would
+  // stop an UNDECLARED payload here. Both declared regimes let it through, so
+  // the relief the region exists to give survives the refinement.
+  EXPECT_TRUE(shelf_case(0.015, osk::PlaceApproachRegion{}).hit)
+      << "undeclared, the cube's inflated face stops it";
+  EXPECT_FALSE(shelf_case(0.015, box_only).hit);
+  EXPECT_FALSE(shelf_case(0.015, with_geometry).hit);
+
+  // Flush with the cube's centre plane: the modelled shelf is genuinely touched
+  // 5 mm in, and the geometry says so. The blanket allowance does not, because it
+  // is forgiving 40 mm where the quantisation only ever created 20 — it cannot
+  // tell the difference, having never been told where the shelf is.
+  const auto adjudicated = shelf_case(0.0, with_geometry);
+  ASSERT_TRUE(adjudicated.hit) << "a real 5 mm penetration of the declared shelf";
+  EXPECT_TRUE(adjudicated.place_target_adjudicated);
+  EXPECT_TRUE(adjudicated.place_allowance_active);
+  EXPECT_NEAR(adjudicated.min_distance, -0.005, 1e-9)
+      << "the reported distance is to the SHELF, measured, not to the 50 mm cube";
+  EXPECT_FALSE(shelf_case(0.0, box_only).hit);
+
+  // Deep: both stop, and only the geometry quotes the true depth. The cube reads
+  // 20 mm deeper than the shelf it stands in for, which is the number an incident
+  // review would otherwise be handed.
+  const auto deep_geometry = shelf_case(-0.020, with_geometry);
+  const auto deep_box = shelf_case(-0.020, box_only);
+  ASSERT_TRUE(deep_geometry.hit);
+  ASSERT_TRUE(deep_box.hit);
+  EXPECT_NEAR(deep_geometry.min_distance, -0.025, 1e-9);
+  EXPECT_NEAR(deep_box.min_distance, -0.045, 1e-9);
+  EXPECT_FALSE(deep_box.place_target_adjudicated)
+      << "a region with no geometry can never claim to have adjudicated one";
+}
+
+TEST(PlaceTargetGeometry, NeverLetsThePayloadReachTheModelledSurface) {
+  // The bound that replaces "at least as conservative as the box", because that
+  // is not the claim this makes and pretending otherwise would be the dangerous
+  // kind of test. Against the CUBE the refinement is looser, by exactly the
+  // amount the cube over-stated the surface. Against the BODY it is absolute:
+  // the payload never reaches the modelled surface without the pair tripping.
+  //
+  // Swept at the deployed 30 mm standoff, over shelves both shallower and deeper
+  // than the cell they sit in, so the assertion covers the range where the
+  // blanket allowance is respectively over- and under-forgiving.
+  constexpr double kMargin = 0.03;
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  int touching = 0;
+  int adjudicated = 0;
+  for (int shelf_mm = -10; shelf_mm <= 20; shelf_mm += 5) {
+    const double top_z = 0.001 * shelf_mm;
+    const osk::PlaceApproachRegion with_geometry = declared_region_with_shelf(store, top_z);
+    for (int dz_mm = -50; dz_mm <= 50; ++dz_mm) {
+      const double dz = 0.001 * dz_mm;
+      const auto hit = shelf_case(dz, with_geometry, kMargin);
+      adjudicated += hit.place_target_adjudicated ? 1 : 0;
+      if (dz > top_z) {
+        continue;  // clear of the modelled surface; the cube may still stop it
+      }
+      ++touching;
+      EXPECT_TRUE(hit.hit) << "shelf_top_mm=" << shelf_mm << " dz_mm=" << dz_mm
+                           << ": the payload is at or inside the modelled shelf and did not stop";
+      EXPECT_TRUE(hit.place_target_adjudicated)
+          << "shelf_top_mm=" << shelf_mm << " dz_mm=" << dz_mm
+          << ": a stop at the modelled surface must name the body, not the cell";
+      EXPECT_LE(hit.min_distance, 1e-9) << "shelf_top_mm=" << shelf_mm << " dz_mm=" << dz_mm;
+    }
+  }
+  // A sweep whose inner assertion never runs passes for the wrong reason — the
+  // #188 lesson, pinned rather than trusted.
+  EXPECT_GT(touching, 100) << "the payload never reached a modelled surface: nothing was asserted";
+  EXPECT_GT(adjudicated, 0) << "the geometry path was never taken: nothing was refined";
+}
+
+TEST(PlaceTargetGeometry, TheStandoffMarginDoesNotApplyToTheBodyItWasDispatchedToTouch) {
+  // Why the gate moves to the surface. The place witness is EARNED by contact,
+  // so a mechanism that keeps a 30 mm standoff against the declared receptacle
+  // can never let the payload earn it — the round-6 failure, in a new place.
+  // Against every other cell in the map the standoff is untouched.
+  constexpr double kMargin = 0.03;
+  constexpr double kShelfTopZ = 0.005;
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  const osk::PlaceApproachRegion box_only = declared_cabinet_region();
+  const osk::PlaceApproachRegion with_geometry = declared_region_with_shelf(store, kShelfTopZ);
+
+  // 10 mm clear of the modelled shelf. Undeclared the 30 mm standoff stops it;
+  // the blanket allowance stops it too, because it is measuring the cube and the
+  // cube is 20 mm in front of the shelf. Only the geometry can tell that this is
+  // a centimetre of real clearance.
+  EXPECT_TRUE(shelf_case(0.015, osk::PlaceApproachRegion{}, kMargin).hit);
+  EXPECT_TRUE(shelf_case(0.015, box_only, kMargin).hit);
+  EXPECT_FALSE(shelf_case(0.015, with_geometry, kMargin).hit)
+      << "10 mm of measured clearance from the declared shelf is not a collision";
+
+  // Contact. It trips — this is not an exemption — but at the surface, which is
+  // where the support-contact witness is attested and where the advisory band
+  // takes over from the latch.
+  const auto contact = shelf_case(kShelfTopZ, with_geometry, kMargin);
+  ASSERT_TRUE(contact.hit);
+  EXPECT_TRUE(contact.place_target_adjudicated);
+  EXPECT_NEAR(contact.min_distance, 0.0, 1e-9);
+  EXPECT_TRUE(contact.advisory) << "an arrival at the declared surface refuses, it does not latch";
+
+  // Past the advisory band it is the latched stop it always was.
+  const auto deep = shelf_case(kShelfTopZ - 0.010, with_geometry, kMargin);
+  ASSERT_TRUE(deep.hit);
+  EXPECT_FALSE(deep.advisory) << "10 mm into the modelled shelf is a stop, not a refusal";
+  EXPECT_NEAR(deep.min_distance, -0.010, 1e-9);
+}
+
+TEST(PlaceTargetGeometry, GeometryClaimingMoreClearanceThanTheCapFallsBackToTheBox) {
+  // The hazard a declared-geometry mechanism has that a box does not: a producer
+  // whose model is too SMALL — a fitted primitive that missed half the shelf, a
+  // stale articulated door — would otherwise hand the kernel unbounded clearance
+  // in the place it is least able to check. The cap is what makes that
+  // impossible: relief past the blanket allowance is refused outright and the
+  // pair falls back, bit for bit, to the region-box behaviour it would have had.
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  const osk::PlaceApproachRegion box_only = declared_cabinet_region();
+  // A shelf modelled 100 mm below its true face: 120 mm of claimed clearance
+  // where the cap permits 40.
+  const osk::PlaceApproachRegion understated = declared_region_with_shelf(store, -0.095);
+
+  for (const double margin : {0.0, 0.03}) {
+    for (int dz_mm = -50; dz_mm <= 50; ++dz_mm) {
+      const double dz = 0.001 * dz_mm;
+      const auto box = shelf_case(dz, box_only, margin);
+      const auto claimed = shelf_case(dz, understated, margin);
+      EXPECT_EQ(claimed.hit, box.hit) << "margin=" << margin << " dz_mm=" << dz_mm;
+      EXPECT_FALSE(claimed.place_target_adjudicated)
+          << "margin=" << margin << " dz_mm=" << dz_mm
+          << ": an over-claiming model must never be the reported geometry";
+      if (box.hit) {
+        EXPECT_NEAR(claimed.min_distance, box.min_distance, 1e-12)
+            << "margin=" << margin << " dz_mm=" << dz_mm;
+      }
+    }
+  }
+}
+
+TEST(PlaceTargetGeometry, TheIngestRefusesWhatItCannotMeasure) {
+  // Same fail-closed direction, and the same #142/#146 posture, as the box: a
+  // producer that names a target and then describes it with a shape the kernel
+  // cannot measure is not one whose box is trusted either. Every refusal here
+  // leaves the region carrying NO geometry, so a caller that ignores the return
+  // value still gets the pre-ADR-0098 behaviour rather than a half-model.
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  osk::PlaceApproachRegion region;
+  ASSERT_EQ(osk::ingest_place_region(identity(), osk::Vec3{0.20, 0.10, 0.10}, 0x1, region),
+            osk::PlaceRegionStatus::kOk);
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+
+  const auto box_with = [](osk::Vec3 half, osk::Transform pose) {
+    osk::AttachedPrimitiveInput in;
+    in.kind = osk::AttachedShapeKind::kBox;
+    in.half_extents = half;
+    in.pose_in_object = pose;
+    return std::vector<osk::AttachedPrimitiveInput>{in};
+  };
+
+  const std::vector<osk::AttachedPrimitiveInput> none;
+  EXPECT_EQ(osk::ingest_place_target_geometry(none, store, region), osk::PlaceRegionStatus::kOk)
+      << "no geometry is the ordinary case, not a failure";
+  EXPECT_EQ(region.n_geometry, 0U);
+
+  EXPECT_EQ(osk::ingest_place_target_geometry(box_with({0.0, 0.1, 0.1}, identity()), store, region),
+            osk::PlaceRegionStatus::kBadGeometry)
+      << "a box with no interior is a shape the narrow phase cannot measure";
+  EXPECT_EQ(
+      osk::ingest_place_target_geometry(box_with({nan_value, 0.1, 0.1}, identity()), store, region),
+      osk::PlaceRegionStatus::kBadGeometry);
+  EXPECT_EQ(osk::ingest_place_target_geometry(
+                box_with({0.1, 0.1, 0.1}, translate(nan_value, 0.0, 0.0)), store, region),
+            osk::PlaceRegionStatus::kBadGeometry)
+      << "a non-finite pose puts the modelled body nowhere";
+
+  osk::AttachedPrimitiveInput sphere;
+  sphere.kind = osk::AttachedShapeKind::kSphere;
+  sphere.radius = -0.01;
+  const std::vector<osk::AttachedPrimitiveInput> bad_sphere{sphere};
+  EXPECT_EQ(osk::ingest_place_target_geometry(bad_sphere, store, region),
+            osk::PlaceRegionStatus::kBadGeometry);
+
+  osk::AttachedPrimitiveInput good;
+  good.kind = osk::AttachedShapeKind::kBox;
+  good.half_extents = {0.1, 0.1, 0.05};
+  const std::vector<osk::AttachedPrimitiveInput> over_cap(osk::kMaxPlaceTargetPrimitives + 1, good);
+  EXPECT_EQ(osk::ingest_place_target_geometry(over_cap, store, region),
+            osk::PlaceRegionStatus::kGeometryOverflow)
+      << "past the cap the model is truncated, and half a receptacle is worse than none";
+  const std::vector<osk::AttachedPrimitiveInput> at_cap(osk::kMaxPlaceTargetPrimitives, good);
+  EXPECT_EQ(osk::ingest_place_target_geometry(at_cap, store, region), osk::PlaceRegionStatus::kOk)
+      << "the largest list the cap admits is still admitted";
+  EXPECT_EQ(region.n_geometry, osk::kMaxPlaceTargetPrimitives);
+
+  // Every refusal above left the view inert, so nothing was ever adjudicated
+  // against a shape the ingest rejected.
+  ASSERT_EQ(osk::ingest_place_target_geometry(box_with({0.0, 0.1, 0.1}, identity()), store, region),
+            osk::PlaceRegionStatus::kBadGeometry);
+  EXPECT_EQ(region.geometry, nullptr);
+  EXPECT_EQ(region.n_geometry, 0U);
+}
+
+TEST(PlaceTargetGeometry, NoDeclarationAndNoGeometryBothMeasureInfinity) {
+  // What makes "no geometry" collapse to the pre-ADR-0098 path at every call
+  // site without a branch: the distance is +infinity, so the substitution's
+  // `d_target <= d_cell + allowance` guard can never be satisfied.
+  osk::AttachedPrimitive payload;
+  payload.kind = osk::AttachedShapeKind::kBox;
+  payload.half_extents = {0.15, 0.025, 0.025};
+
+  EXPECT_TRUE(
+      std::isinf(osk::place_target_distance(osk::PlaceApproachRegion{}, payload, identity())))
+      << "no declaration at all";
+  EXPECT_TRUE(std::isinf(osk::place_target_distance(declared_cabinet_region(), payload, identity())))
+      << "a declaration whose producer measured a box but no geometry";
+
+  std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);
+  const osk::PlaceApproachRegion with_geometry = declared_region_with_shelf(store, 0.005);
+  // The payload box spans z in [-0.025, +0.025] at the identity; the shelf's top
+  // face is at +0.005, so they overlap by 30 mm.
+  EXPECT_NEAR(osk::place_target_distance(with_geometry, payload, identity()), -0.030, 1e-9);
 }
 
 TEST(PlaceApproachAllowance, TheWitnessTakesOverWhereTheAllowanceStops) {

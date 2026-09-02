@@ -38,6 +38,11 @@ TARGETS=(
     # against the real safety_kernel_node. Needs the colcon-built kernel binary
     # + openral_msgs overlay, which only this image has.
     tests/integration/test_safety_kernel_place_allowance_band.py
+    # ADR-0098: the same rig, with the declared target's own geometry shipped.
+    # Runs at the DEPLOYED margin, which is the only place the gate move is
+    # visible — the collision gtests run at margin 0, where gating at `margin`
+    # and gating at the surface are algebraically identical.
+    tests/integration/test_safety_kernel_place_target_geometry.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     tests/integration/test_safety_status_latched_topic.py
     tests/integration/test_perception_overlay_live_topic.py

@@ -123,6 +123,30 @@ def _matrix_to_quat_xyzw(matrix: NDArray[np.float64]) -> tuple[float, float, flo
     )
 
 
+def _quat_xyzw_to_matrix(quat_xyzw: tuple[float, float, float, float]) -> NDArray[np.float64]:
+    """Unit quaternion ``(x, y, z, w)`` to a 3x3 rotation matrix.
+
+    The inverse of :func:`_matrix_to_quat_xyzw`, and needed for the same reason
+    that function is: the declared place target's primitives (ADR-0098) are
+    measured once in the target body's own frame and re-posed into the robot
+    base frame on every publication, which is a rotation composition and not a
+    quaternion the producer can carry through unchanged.
+    """
+    qx, qy, qz, qw = (float(value) for value in quat_xyzw)
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm < _DEGENERATE_NORM:
+        return np.eye(3, dtype=np.float64)
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+    return np.asarray(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+        ],
+        dtype=np.float64,
+    )
+
+
 def _relative_pose(
     data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     *,
@@ -994,6 +1018,7 @@ class SimAttachmentEvidenceTracker:
         self._place_target_body_id: int | None = None
         self._place_target_body_name: str = ""
         self._place_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+        self._place_geometry_local: tuple[AttachedCollisionPrimitive, ...] | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -1289,6 +1314,7 @@ class SimAttachmentEvidenceTracker:
         self._place_target_body_id = body_id
         self._place_target_body_name = body_name
         self._place_region_local = None
+        self._place_geometry_local = None
 
     def _clear_place_declaration(self) -> None:
         """Drop the declaration and everything scoped to it.
@@ -1302,6 +1328,7 @@ class SimAttachmentEvidenceTracker:
         self._place_target_body_id = None
         self._place_target_body_name = ""
         self._place_region_local = None
+        self._place_geometry_local = None
 
     def place_declaration(
         self,
@@ -1364,6 +1391,8 @@ class SimAttachmentEvidenceTracker:
             )
             if self._place_region_local is None:
                 return None
+        if self._place_geometry_local is None:
+            self._place_geometry_local = self._place_target_geometry(data)
         centre_in_body, half_extents = self._place_region_local
         translation, rotation = _relative_pose(
             data,
@@ -1374,6 +1403,10 @@ class SimAttachmentEvidenceTracker:
         try:
             return PlaceRegion(
                 frame_id=self._base_frame_id,
+                geometry=tuple(
+                    self._primitive_in_base(primitive, translation, rotation)
+                    for primitive in self._place_geometry_local
+                ),
                 pose=Pose6D(
                     xyz=(
                         float(centre_in_base[0]),
@@ -1397,6 +1430,72 @@ class SimAttachmentEvidenceTracker:
             # unlike a malformed witness, a bad region can only ever make the
             # kernel more permissive.
             return None
+
+    def _place_target_geometry(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    ) -> tuple[AttachedCollisionPrimitive, ...]:
+        """Measure the declared target's own collision primitives (ADR-0098).
+
+        The producer half of survey Path B. The region box says *where* the
+        declared receptacle is; these say *what it is*, so the safety kernel can
+        adjudicate a payload against the modelled shelf instead of against the
+        25 mm cubes the shelf was quantised into.
+
+        Measured **once**, from the model, on the same discipline and for the
+        same reason as the box: an unmeasurable target is a decided, logged "no
+        geometry" rather than a silently varying one. That does mean an
+        articulated target measured with its door in one pose keeps that pose —
+        and it is why the kernel caps what the geometry may buy at exactly the
+        blanket allowance the box alone would have granted. A stale door can
+        never make the kernel more permissive than it already was without any
+        geometry at all; it can only fail to make it more accurate.
+
+        Returns:
+            The target's primitives in the target body's own frame, or an empty
+            tuple when the subtree has no collision geometry — which leaves the
+            region behaving exactly as it did before ADR-0098.
+        """
+        if self._place_target_body_id is None:
+            return ()
+        try:
+            return tuple(
+                extract_body_primitives(
+                    self._model,
+                    data,
+                    root_body_id=self._place_target_body_id,
+                    object_id=self._place_target_body_name,
+                    max_primitives=PlaceRegion.MAX_GEOMETRY_PRIMITIVES,
+                )
+            )
+        except ROSConfigError:
+            # No collision geometry in the subtree. The box still stands; only
+            # the mm-resolution refinement is unavailable.
+            return ()
+
+    def _primitive_in_base(
+        self,
+        primitive: AttachedCollisionPrimitive,
+        translation: NDArray[np.float64],
+        rotation: NDArray[np.float64],
+    ) -> AttachedCollisionPrimitive:
+        """Re-pose one target-frame primitive into the robot base frame.
+
+        The shape is unchanged; only the pose moves, because the base frame does
+        and the receptacle does not. This runs per publication for the same
+        reason the region box's pose does.
+        """
+        pose = primitive.pose_in_object
+        centre = translation + rotation @ np.asarray(pose.xyz, dtype=np.float64)
+        return primitive.model_copy(
+            update={
+                "pose_in_object": Pose6D(
+                    xyz=(float(centre[0]), float(centre[1]), float(centre[2])),
+                    quat_xyzw=_matrix_to_quat_xyzw(rotation @ _quat_xyzw_to_matrix(pose.quat_xyzw)),
+                    frame_id=self._base_frame_id,
+                )
+            }
+        )
 
     def _place_witness(
         self,

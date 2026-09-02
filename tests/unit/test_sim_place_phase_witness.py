@@ -671,19 +671,176 @@ def test_the_region_rides_the_wire_unchanged() -> None:
 
     The kernel reads the region off ``WorldStateStamped``, so a field that
     survives the Pydantic model but not the wire would leave the allowance
-    silently off — or, worse, on with the wrong box.
+    silently off — or, worse, on with the wrong box. Since ADR-0098 that covers
+    the declared target's own geometry too: a body that survived the model but
+    not the wire would leave the kernel adjudicating against a receptacle it was
+    told nothing about.
     """
     pytest.importorskip("openral_msgs")
-    from openral_msgs.msg import AttachmentState, WorldStateStamped
+    from openral_msgs.msg import AttachedCollisionPrimitive, AttachmentState, WorldStateStamped
 
     rig = _Rig()
     rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
     declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
     assert declaration is not None and declaration.region is not None
+    assert declaration.region.geometry, "this rig's cabinet has collision geometry to ship"
 
     for msg in (AttachmentState(), WorldStateStamped()):
         assert msg.place_declaration_valid is False, "absent by default is no allowance"
         msg.place_declaration_valid = True
-        declaration.fill_idl(msg.place_declaration)
+        declaration.fill_idl(msg.place_declaration, primitive_factory=AttachedCollisionPrimitive)
         assert msg.place_declaration.region_valid is True
+        assert len(msg.place_declaration.region.geometry) == len(declaration.region.geometry)
         assert PlaceDeclaration.from_idl(msg.place_declaration) == declaration
+
+
+# ── The declared target's own geometry (ADR-0098, survey Path B) ─────────────
+#
+# The cabinet subtree carries exactly two collision geoms, both boxes, both in
+# the cabinet's own frame: `cabinet_back` at (0.18, 0, 0.45) half (0.02, 0.25,
+# 0.45), and `cabinet_shelf_top` on the CHILD body at (0, 0, 0.2808) half (0.16,
+# 0.25, 0.02). The cabinet is at world x 0.6 and the base frame at (0.1, 0,
+# 0.05), so in the base frame they land at (0.68, 0, 0.40) and (0.50, 0, 0.2308).
+_TARGET_GEOMETRY_IN_BASE = (
+    ((_CABINET_X + 0.18 - _BASE_X, 0.0, 0.45 - _BASE_Z), (0.02, 0.25, 0.45)),
+    ((_CABINET_X - _BASE_X, 0.0, _SHELF_TOP_Z - 0.02 - _BASE_Z), (0.16, 0.25, 0.02)),
+)
+
+
+def test_the_declared_targets_geometry_is_measured_and_posed_in_the_base_frame() -> None:
+    """The region box says WHERE the receptacle is; this says WHAT it is.
+
+    Both halves of the subtree have to come through — the back panel AND the
+    shelf on the child body — because the shelf is the surface the whole
+    declaration exists to reach, and a model missing it would let the kernel
+    adjudicate the shelf away as if it were not there.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+
+    assert region is not None
+    assert len(region.geometry) == len(_TARGET_GEOMETRY_IN_BASE)
+    measured = sorted(
+        (
+            (primitive.pose_in_object.xyz, primitive.shape.half_extents_m)
+            for primitive in region.geometry
+        ),
+        reverse=True,
+    )
+    for (got_xyz, got_half), (want_xyz, want_half) in zip(
+        measured, _TARGET_GEOMETRY_IN_BASE, strict=True
+    ):
+        np.testing.assert_allclose(got_xyz, want_xyz, atol=1e-6)
+        np.testing.assert_allclose(got_half, want_half, atol=1e-6)
+    for primitive in region.geometry:
+        assert primitive.pose_in_object.frame_id == "base_link", (
+            "target geometry is posed in the region's frame, not relative to its box"
+        )
+        np.testing.assert_allclose(
+            primitive.pose_in_object.quat_xyzw, (0.0, 0.0, 0.0, 1.0), atol=1e-9
+        )
+
+
+def test_the_geometry_is_measured_in_the_base_frame_not_the_world_frame() -> None:
+    """Same conversion the box is under, pinned separately.
+
+    Geometry measured in the world frame would put the modelled receptacle
+    metres from where the occupancy grid says it is, and the kernel would then
+    clear the payload against a shelf that is not there — the one way this
+    mechanism could be more permissive than the box it refines.
+    """
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+
+    assert region is not None
+    shelf = min(region.geometry, key=lambda primitive: primitive.pose_in_object.xyz[2])
+    assert shelf.pose_in_object.xyz[0] == pytest.approx(_CABINET_X - _BASE_X, abs=1e-6)
+    assert shelf.pose_in_object.xyz[0] != pytest.approx(_CABINET_X, abs=1e-3)
+
+
+def test_geometry_posed_outside_the_region_frame_is_refused() -> None:
+    """The frame check the kernel cannot make for itself.
+
+    The kernel refuses a region whose ``frame_id`` does not match the grid's,
+    but nothing on the wire says which frame an individual primitive was posed
+    in — so the model enforces it, and a producer that posed its geometry
+    relative to the region box is refused here rather than silently applying a
+    relaxation aimed at the wrong volume.
+    """
+    from openral_core import AttachedCollisionPrimitive, BoxShape
+
+    with pytest.raises(ValueError, match="posed in"):
+        PlaceRegion(
+            frame_id="base_link",
+            pose=Pose6D(
+                xyz=_REGION_CENTRE_IN_BASE, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"
+            ),
+            half_extents=_REGION_HALF_EXTENTS,
+            geometry=(
+                AttachedCollisionPrimitive(
+                    shape=BoxShape(half_extents_m=(0.16, 0.25, 0.02)),
+                    pose_in_object=Pose6D(
+                        xyz=(0.0, 0.0, 0.0),
+                        quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                        frame_id="sim:cabinet",
+                    ),
+                ),
+            ),
+        )
+
+
+def test_geometry_past_the_kernels_cap_is_refused_rather_than_truncated() -> None:
+    """Half a receptacle is a worse model than none.
+
+    The kernel refuses the whole region past its own cap, so a model that
+    validated here and overflowed there would cost the box as well. One bound,
+    declared on both sides of the wire.
+    """
+    from openral_core import AttachedCollisionPrimitive, BoxShape
+
+    def _shelf() -> AttachedCollisionPrimitive:
+        return AttachedCollisionPrimitive(
+            shape=BoxShape(half_extents_m=(0.16, 0.25, 0.02)),
+            pose_in_object=Pose6D(
+                xyz=(0.5, 0.0, 0.23), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"
+            ),
+        )
+
+    def _region(count: int) -> PlaceRegion:
+        return PlaceRegion(
+            frame_id="base_link",
+            pose=Pose6D(
+                xyz=_REGION_CENTRE_IN_BASE, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"
+            ),
+            half_extents=_REGION_HALF_EXTENTS,
+            geometry=tuple(_shelf() for _ in range(count)),
+        )
+
+    assert len(_region(PlaceRegion.MAX_GEOMETRY_PRIMITIVES).geometry) == (
+        PlaceRegion.MAX_GEOMETRY_PRIMITIVES
+    )
+    with pytest.raises(ValueError, match="past the"):
+        _region(PlaceRegion.MAX_GEOMETRY_PRIMITIVES + 1)
+
+
+def test_publishing_a_region_cannot_silently_drop_its_geometry() -> None:
+    """A dropped body reads on the wire exactly like a producer that measured none.
+
+    The kernel has no way to tell the two apart, and the difference is whether
+    it adjudicates against a modelled receptacle or against 25 mm cubes — so the
+    encode fails loudly instead.
+    """
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import WorldStateStamped
+
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    declaration = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None and declaration.region is not None
+    assert declaration.region.geometry
+
+    msg = WorldStateStamped()
+    with pytest.raises(ROSConfigError, match="primitive_factory"):
+        declaration.fill_idl(msg.place_declaration)
