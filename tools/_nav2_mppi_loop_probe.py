@@ -52,7 +52,7 @@ from typing import Any
 
 import rclpy
 from geometry_msgs.msg import Point32, Polygon
-from nav2_msgs.action import (  # type: ignore[import-not-found]  # reason: generated ROS action package, no py.typed, not on the mypy path
+from nav2_msgs.action import (  # reason: generated ROS action package; see mypy.ini [mypy-nav2_msgs.*]
     NavigateToPose,
 )
 from rclpy.action import ActionClient
