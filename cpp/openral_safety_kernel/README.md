@@ -153,6 +153,147 @@ attribute. `sweep_min_distance_m <= min_distance_m` always. A large gap between
 the two means something deep is being tolerated on purpose — usually a grasped
 payload's own occupancy residue — not that the stop was deep.
 
+### Distance-graded velocity scaling (#188) — off by default
+
+A third verdict between "accept at full rate" and "stop the robot": an
+**accepted** chunk near an obstacle can be republished slower.
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `collision_scale_proximity_m` | **`0.0`** | Band width above each check's own gate margin. **`0` disables the mechanism and reproduces the pre-#188 republish exactly.** |
+| `collision_scale_k` | `20.0` | Exponential steepness. |
+| `collision_scale_min` | `0.1` | Floor on the scale. |
+
+The scale is `exp(k · (slack − proximity))`, clamped into
+`[collision_scale_min, 1.0]` — exactly `1.0` at the top of the band, decaying
+toward the margin. `slack` is the smallest clearance **above its own gate
+margin** seen anywhere in the chunk's sweep. Slack rather than raw distance
+because every check carries a different margin and the predictive steps inflate
+theirs with look-ahead depth; slack is the only margin-agnostic way to compare
+them.
+
+**The band also widens the voxel broad-phase window, and it has to.** The cell
+scan is sized by the gate margin (`reach = r + margin + half_side`), so a cell
+that is *clear* but inside the band was never visited and never folded into
+`sweep_min_distance`. On a real map the minimum therefore jumped from "nothing
+in range" straight to a tripping cell, and the scale went 1.0 → E-stop with
+nothing in between — the mechanism was dead code. `check_voxel_collision` and
+`check_attached_voxel_collision` now take a `band_m` that widens the **window
+only**; a cell still trips at `margin` and nothing else. `band_m` defaults to
+`0.0`, so the shipped window is byte-for-byte unchanged and the extra cells are
+scanned only by a deployment that arms the band — which is also where that
+scan's cost is paid.
+
+Three further properties are load-bearing:
+
+1. **It never changes a verdict.** The scale is applied after the chunk has
+   already been accepted. It cannot turn an accept into a drop, or a drop into
+   an accept, and the latch below the margin is untouched. Scaling *down* a
+   rate also preserves every envelope bound the chunk already satisfied
+   (`|s·v| ≤ |v|`), so the scaled chunk needs no re-validation and travels no
+   further than the swept volume the predictive check just cleared.
+2. **Only rate-shaped modes are scaled** — `JOINT_VELOCITY`, `CARTESIAN_DELTA`,
+   `CARTESIAN_TWIST`. Multiplying an *absolute* target (`JOINT_POSITION`,
+   `CARTESIAN_POSE`, `JOINT_TRAJECTORY`) by 0.37 does not slow the arm: it
+   commands a pose a third of the way to the origin — a large unrequested
+   motion in an arbitrary direction, issued in the name of safety. Gripper,
+   dex-hand and composite-mode rows are not motion rates either. `BODY_TWIST`
+   is excluded on evidence: FK zeroes the base dofs, so nothing measured here
+   describes where the *base* is going (that is Nav2's collision monitor, #186).
+3. **Pairs below their margin that did not trip are ignored.** Not tripping
+   there means the pair is exempted — an attached payload's attach-time contact
+   baseline, an ACM row, a live place allowance — and an exemption says that
+   contact is allowed, so it must not also mean "slow down".
+
+   **This is a filter on the exempted pair, not on its surroundings, and the
+   difference matters.** A payload resting on a shelf exempts the contact cell;
+   the neighbouring cells along the same shelf surface are not exempt and
+   present a small positive slack of their own. At a 25 mm grid with a 0.02 m
+   attached margin they sit around 5 mm of slack, which in a 0.05 m band at
+   k = 20 is ≈ 0.41. So a robot holding a payload against a surface **will**
+   run reduced for as long as it does. That is defensible — it is genuinely
+   close to something — but it is a standing slowdown, not an edge case, and
+   the A/B battery has to price it.
+
+Scaling is disclosed three ways, and the difference between them is
+load-bearing: `safety.velocity_scale` / `safety.scale_slack_m` span attributes
+on every scaled chunk; a `safety.collision_scaled` log line that is
+**transition-gated** (emitted when the scale moves by ≥ 0.1 or the band is
+cleared, because the accept path runs at 30–200 Hz and its pass-through case is
+documented as touching no string); and a `scaled` key on the 1 Hz
+`/diagnostics` heartbeat, which is the continuous count. Reading only the log
+undercounts, by design.
+
+**Why a band at all.** The 2026-08-26 five-round battery put 11 of 15 stops
+inside what 25 mm voxel quantisation alone explains, and every one of them was
+mission-ending. PACS ([arXiv:2511.06385](https://arxiv.org/abs/2511.06385))
+measures the shape of the fix on robomimic + a dynamic obstacle: 0.70 success
+unfiltered, **0.04** under reactive projection, **0.72** under chunk-level
+graded braking. Slowing along the policy's own path is close to free; filtering
+the policy's output destroys the task.
+
+**It ships disabled.** This is a WG-gated enforcement surface, and what earns
+it a non-zero band is the A/B five-round battery on the validation-matrix
+scenes, not the parameter's existence. `OPENRAL_COLLISION_SCALE_PROXIMITY_M`
+(plus `_K` / `_MIN`) is the seam `sim_e2e.launch.py` reads, so the band can be
+swept across rounds without a rebuild; the round records which values it ran
+with (`ValidationRoundMetadata.collision_scale`), so an armed round and a
+baseline round can be told apart from their own artifacts.
+
+**What one A/B pair on `robocasa_baguette` (seed 1) actually showed.** The band
+fires on real geometry — 24 scaling events, down to **0.389** at 2.8 mm of
+slack in a 0.05 m band, on both the arm's `CARTESIAN_DELTA` and the base's
+`JOINT_VELOCITY` chunks. It did **not** prevent the stop: the armed round still
+ended `estop-collision-within-quantization`, on the attached payload at
+**−1.79 mm**.
+
+That is worth reading carefully rather than as a failure. PACS's result is about
+*dynamic obstacles*, where slowing buys the policy time to react. The stop class
+here is *static map quantisation* — the arm is a millimetre or two inside a cell
+whose own edge is uncertain by up to 25 mm, and approaching it more slowly does
+not move the cell. Approach speed is not what makes that stop happen, so Path A
+alone should not be expected to convert this class; it is the approach-band half
+of a pair whose contact-adjacent half is Path B (#189, declared-target
+geometry). The band's own job — slow near obstacles, never latch, never turn an
+accept into a drop — it did.
+
+**One pair is not evidence.** The same scene, same seed, same rSkill completed
+with the band disabled and stopped with it armed — and an earlier baseline at a
+different SHA stopped where this one completed. The scene is not deterministic
+run to run, which is exactly why the acceptance criterion is a **five-round**
+battery per arm and not a single comparison.
+
+**One binding precondition before it is turned on for a given policy.** PACS's
+result holds because velocity is deliberately kept out of the policy's
+observations — slowing the robot is then invisible to the policy and cannot
+push it out of distribution. That is not true of every adapter here:
+`python/sim/src/openral_sim/policies/xvla.py` feeds gripper `qvel` (`:203`)
+**and** arm `joints["vel"]` (`:207`), so a scaled chunk changes what XVLA sees
+next tick.
+
+**This is an operator precondition, not a control the kernel enforces**, and
+the distinction is worth being exact about: the band is a kernel parameter and
+the kernel has no idea which policy produced a chunk. Setting
+`OPENRAL_COLLISION_SCALE_PROXIMITY_M` for a round that happens to run XVLA arms
+it for XVLA. **Do not arm the band on an XVLA scene** until that observation
+coupling is re-analysed; if this needs to be enforced rather than remembered,
+the launch layer is where the adapter id is actually known.
+
+**`xvla` and `xr1` are different model families** — a similarity of name, not of
+adapter. `xr1.py` sends EE pose + axis-angle + gripper and no velocity, so the
+validation matrix's default skill
+(`OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4`, `model_family: xr1`) is not
+excluded and the A/B battery does run on it. Only `rskills/xvla-libero` uses the
+`xvla` family.
+
+What is still owed is the **step-index / elapsed-time audit**, and it is not
+vacuous: both `xr1` and `rldx` keep multi-frame histories (XR-1 samples a 7-deep
+state history at offsets 0/2/4/6; RLDX a 7-frame video history). A history of
+*poses* at a fixed stride encodes velocity implicitly, so a scaled chunk does
+change what those policies see across frames even though neither is handed a
+velocity. That is weaker coupling than XVLA's explicit `joints["vel"]`, but it
+is not none.
+
 ### Collision evidence: and the configuration it was measured at
 
 The payload also carries `joint_positions_rad`: the configuration forward

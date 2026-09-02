@@ -251,3 +251,54 @@ def test_mobile_base_arm_kernel_params_have_collision_base_dofs(robot_id: str) -
     )
     assert params["use_sim_time"] is False
     assert params["attached_collision_enabled"] is True
+
+
+def test_collision_scale_is_absent_unless_the_operator_asks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#188's band is opt-in: no env var means no override at all.
+
+    The kernel's own default for ``collision_scale_proximity_m`` is 0.0, which
+    disables the band and reproduces the pre-#188 republish exactly. This
+    launch must not quietly supply some other value.
+    """
+    module = _import_launch_module()
+
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", raising=False)
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
+    assert module._collision_scale_params() == {}
+
+
+def test_collision_scale_params_are_forwarded_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The A/B battery's seam: the three env vars reach the kernel as floats."""
+    module = _import_launch_module()
+
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0.05")
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_K", "20")
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_MIN", "0.25")
+    assert module._collision_scale_params() == {
+        "collision_scale_proximity_m": 0.05,
+        "collision_scale_k": 20.0,
+        "collision_scale_min": 0.25,
+    }
+
+
+def test_an_unparseable_collision_scale_arms_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo must not arm a safety band at some other width.
+
+    ``"0,05"`` (comma decimal) is the realistic slip. It must produce no
+    override at all rather than a band of 0, of 5, or of anything else:
+    silently arming an enforcement surface at a number nobody chose is worse
+    than leaving it off.
+    """
+    module = _import_launch_module()
+
+    monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0,05")
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
+    monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
+    assert module._collision_scale_params() == {}

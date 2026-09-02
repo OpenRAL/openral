@@ -291,6 +291,29 @@ all joined by `stop_seq`, all `error`-level, all emitted through the node logger
 | `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
 | `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 
+The kernel's own `CollisionEvidence` additionally carries `joint_positions_rad`
+(#187) — the configuration forward kinematics was actually run on for the
+reported `horizon_step`, serialized at `max_digits10` so it round-trips exactly.
+For a *predicted* step that configuration exists in no other artifact, so
+without it such a stop can only be adjudicated against the measured joints,
+which is a different pose.
+
+### Graded velocity scaling (#188)
+
+Off by default (`collision_scale_proximity_m: 0.0`). When armed, an **accepted**
+chunk near an obstacle is republished with its rate columns scaled, and that is
+disclosed three ways:
+
+| Signal | Where | Carries |
+|---|---|---|
+| `safety.velocity_scale` | `safety.check` span attribute | the scale in `(0, 1]` applied to this chunk |
+| `safety.scale_slack_m` | `safety.check` span attribute | clearance above the gate margin that produced it |
+| `safety.collision_scaled` | kernel log, **transition-gated** | scale, slack, band, control mode, `rskill_id` — emitted when the scale moves by ≥ 0.1 or the band is cleared, not per chunk (the accept path runs at 30–200 Hz) |
+| `scaled` | `/diagnostics` key-value, 1 Hz | count of chunks republished slower. A subset of `passed`, never of `dropped` — a scaled chunk *was* accepted and executed. |
+
+The `/diagnostics` counter is the continuous signal; the log line is the
+transition. Reading only the log undercounts, by design.
+
 Each pair inside `nearest_*_pairs` carries its own **proof**, not just a number:
 `distance_m`, `distance_certified`, `distance_method`, `witness_a_xyz` /
 `witness_b_xyz`, and `distance_bracket_m` when the geometry is bracketed rather
@@ -415,15 +438,25 @@ updated.
 | `openral.event.chunk_prefetch_hit` / `_miss` | Action-chunk prefetch runs but never reports its hit rate, so "is the prefetch helping?" cannot be answered from a trace. |
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
 
-**Removed: `openral.safety.clamps` / `safety.clamped`.** OpenRAL never clamps.
-The attribute was written in four places and was a literal `False` in every one;
-no code path ever set it `True`. That is not an oversight — the safety layer is
-deny-by-default and `compute_intersection` "rejects (never clamps)" any envelope
-field that would loosen the robot ceiling. The counter therefore measured an
-operation the system does not perform, and the attribute cost a constant on
-every `safety.check` span at 30 Hz. (HAL adapters *do* saturate commands into an
-actuator's physical range — the Franka gripper maps `[0, 1]` onto its travel —
-but that is device range-mapping, not a safety correction.)
+**Removed: `openral.safety.clamps` / `safety.clamped`.** The attribute was
+written in four places and was a literal `False` in every one; no code path ever
+set it `True`. That is not an oversight — the *envelope* layer is deny-by-default
+and `compute_intersection` "rejects (never clamps)" any envelope field that would
+loosen the robot ceiling. The counter therefore measured an operation the system
+did not perform, and the attribute cost a constant on every `safety.check` span
+at 30 Hz. (HAL adapters *do* saturate commands into an actuator's physical range
+— the Franka gripper maps `[0, 1]` onto its travel — but that is device
+range-mapping, not a safety correction.)
+
+**Since #188 the blanket claim "OpenRAL never clamps" is no longer true**, and
+the replacement is deliberately a different signal rather than a revival of this
+one. Distance-graded velocity scaling *does* modify a commanded value: an
+accepted chunk near an obstacle is republished with its rate columns multiplied
+by a scale in `(0, 1]`. It is reported by
+`safety.velocity_scale` / `safety.scale_slack_m` (below), which carry *how much*
+and *why*, where `safety.clamped` carried only a boolean. The envelope layer
+still never clamps; what changed is that a second, separately-named mechanism
+sits beside it.
 
 **Fixed: the e-stop latch now self-clears.** `store.py` cleared
 `topics.safety.estopped` only on `safety.severity == "ok"`, which no emitter has

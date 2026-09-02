@@ -2964,3 +2964,279 @@ TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
   node->on_deactivate(active);
   node->on_cleanup(inactive);
 }
+
+// ── #188: distance-graded velocity scaling on the accepted chunk ─────────────
+
+namespace {
+
+// A one-link arm — a sphere at the origin, r=0.05 — and a single occupied
+// voxel whose near face sits 0.25 m away, so the checked clearance is a
+// constant that no joint value can change (the link is revolute about the
+// sphere's own centre). That makes the band arithmetic, not the geometry, the
+// thing under test. `collision_seed_dt_s: 0` keeps it to the reactive check,
+// so exactly one distance is folded per chunk.
+std::vector<rclcpp::Parameter> scale_band_params(double proximity_m) {
+  return {
+      {"n_dof", std::int64_t{1}},
+      {"joint_position_min", std::vector<double>{-3.14}},
+      {"joint_position_max", std::vector<double>{3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0}},
+      {"joint_torque_max", std::vector<double>{5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{64}},
+      {"collision_n_links", std::int64_t{1}},
+      {"collision_parent", std::vector<std::int64_t>{-1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0}},
+      {"collision_capsule_radius", std::vector<double>{0.05}},
+      {"collision_capsule_half_length", std::vector<double>{0.0}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"l0"}},
+      {"collision_joint_names", std::vector<std::string>{"j0"}},
+      {"collision_state_deadline_ms", 2000.0},
+      {"collision_seed_dt_s", 0.0},  // reactive only — one distance per chunk
+      {"collision_scale_proximity_m", proximity_m},
+      {"collision_scale_k", 20.0},
+      {"collision_scale_min", 0.1},
+  };
+}
+
+// A TEN-cell row along x with exactly one occupied cell, near face at x = 0.25.
+//
+// The width is load-bearing, not scenery. The broad-phase cell window is sized
+// by the gate margin, and `rng()` CLAMPS its indices into the grid — so on a
+// one-cell grid every query is forced onto that cell no matter how far away it
+// is. The first version of this test used a one-cell grid and passed for
+// exactly that reason, while on any real map the band was dead: a cell 20 mm
+// clear was never visited, never folded into `sweep_min_distance`, and the
+// scale went 1.0 → E-stop with nothing in between (a panda_mobile scene run is
+// what caught it — `tests/sim/safety/test_kernel_graded_scaling_approach.py`).
+// With ten cells the occupied one is only reached if the window is genuinely
+// widened by the band, so this fails if that regresses.
+openral_msgs::msg::OccupancyVoxels one_cell_at_x_025() {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.resolution = 0.1;
+  vox.size_x = 10;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.0;
+  vox.origin.y = -0.05;
+  vox.origin.z = -0.05;
+  vox.occupancy.assign(10, 0);
+  vox.occupancy[2] = 1;  // centre x = 0.25, near face 0.20 → 0.15 m of clearance
+  return vox;
+}
+
+struct ScaleOutcome {
+  std::vector<double> flat;
+  bool published{false};
+  bool latched{false};
+  std::uint64_t scaled{0};
+};
+
+// Drive one chunk through a kernel configured with `params` and report what
+// reached /openral/safe_action.
+ScaleOutcome run_one_chunk(const std::string& node_name, std::vector<rclcpp::Parameter> params,
+                           const openral_msgs::msg::ActionChunk& chunk) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(std::move(params));
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(node_name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  EXPECT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper(node_name + "_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  ScaleOutcome out;
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&out](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
+        if (!out.published) {
+          out.published = true;
+          out.flat = msg->flat;
+        }
+      });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = one_cell_at_x_025();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+
+  // Seed + grid first: a velocity chunk without a fresh measured state is
+  // refused fail-closed, which is correct and not what this test is about.
+  auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!out.published && std::chrono::steady_clock::now() < deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  out.latched = node->fault_latched();
+  out.scaled = node->chunks_scaled();
+  exec.remove_node(node->get_node_base_interface());
+  // Drain this node's spans before it goes away. `on_cleanup` is where
+  // `shutdown_tracing()` flushes the BatchSpanProcessor, and a test that emits
+  // safety spans and then drops the node leaves that processor racing the
+  // process teardown against a collector that is not there — a segfault after
+  // the last test reports OK, which is exactly what this helper produced.
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+  return out;
+}
+
+openral_msgs::msg::ActionChunk velocity_chunk(double v) {
+  openral_msgs::msg::ActionChunk c;
+  c.control_mode = 1;  // JOINT_VELOCITY
+  c.horizon = 1;
+  c.n_dof = 1;
+  c.flat = {v};
+  return c;
+}
+
+// The clearance the geometry above presents to the voxel check at margin 0 —
+// sphere surface (r = 0.05, centred at the origin) to the occupied cell's near
+// face at x = 0.20. Read back from the kernel's own `safety.collision_scaled
+// slack_m=` line rather than assumed, then pinned here.
+constexpr double kBandTestSlackM = 0.15;
+
+}  // namespace
+
+// The band's whole point: a chunk that is ACCEPTED, near an obstacle, is
+// republished slower rather than at full rate. The exponential is pinned
+// exactly — `exp(k·(slack − proximity))` with k = 20, slack = 0.20 m and a
+// 0.25 m band is `exp(-1)` — because a scale that is merely "less than 1"
+// would pass just as happily if the formula were wrong.
+TEST_F(LifecycleKernelTest, GradedScalingSlowsAnAcceptedChunkInsideTheBand) {
+  const auto out = run_one_chunk("kernel_scale_band", scale_band_params(0.25), velocity_chunk(1.0));
+  ASSERT_TRUE(out.published) << "the chunk is clear of the margin — it must still be ACCEPTED";
+  EXPECT_FALSE(out.latched) << "slowing is not stopping: the band must never latch";
+  // The publish loop runs until a chunk comes back, so more than one candidate
+  // can land first; what matters is that the counter moved at all. The
+  // must-not-scale tests below assert the exact 0, which is the load-bearing
+  // direction.
+  EXPECT_GE(out.scaled, 1U);
+  ASSERT_EQ(out.flat.size(), 1U);
+  const double expected = std::exp(20.0 * (kBandTestSlackM - 0.25));
+  EXPECT_NEAR(out.flat[0], expected, 1e-9) << "scale must follow exp(k·(slack − proximity))";
+  EXPECT_GT(out.flat[0], 0.0) << "a scale of zero is a stop that calls itself a slowdown";
+}
+
+// Outside the band the chunk is republished untouched. Not "approximately
+// untouched": the pass-through path must not copy, scale or round anything,
+// because every accepted chunk in normal operation takes it.
+TEST_F(LifecycleKernelTest, GradedScalingLeavesAChunkOutsideTheBandExactlyAlone) {
+  const auto out = run_one_chunk("kernel_scale_far", scale_band_params(0.1), velocity_chunk(1.0));
+  ASSERT_TRUE(out.published);
+  ASSERT_EQ(out.flat.size(), 1U);
+  EXPECT_EQ(out.flat[0], 1.0) << "slack 0.20 m is outside a 0.10 m band — scale must be exactly 1";
+  EXPECT_EQ(out.scaled, 0U);
+}
+
+// The rollback contract: `collision_scale_proximity_m: 0` is not "a very small
+// band", it is the mechanism switched off, reproducing the pre-#188 republish
+// exactly. This is the value that ships, and the one an operator sets to back
+// the feature out without a rebuild.
+TEST_F(LifecycleKernelTest, GradedScalingIsOffAtZeroProximityAndRepublishesVerbatim) {
+  const auto out = run_one_chunk("kernel_scale_off", scale_band_params(0.0), velocity_chunk(1.0));
+  ASSERT_TRUE(out.published);
+  ASSERT_EQ(out.flat.size(), 1U);
+  EXPECT_EQ(out.flat[0], 1.0);
+  EXPECT_EQ(out.scaled, 0U);
+}
+
+// An ABSOLUTE target must never be scaled, however close the obstacle is.
+// Multiplying a JOINT_POSITION row by 0.37 does not slow the arm down — it
+// commands a pose a third of the way to the origin, which is a large
+// unrequested motion in an arbitrary direction issued in the name of safety.
+// The band is a rate limiter or it is nothing.
+TEST_F(LifecycleKernelTest, GradedScalingNeverTouchesAnAbsolutePositionTarget) {
+  openral_msgs::msg::ActionChunk pos;
+  pos.control_mode = 0;  // JOINT_POSITION
+  pos.horizon = 1;
+  pos.n_dof = 1;
+  pos.flat = {1.25};
+  const auto out = run_one_chunk("kernel_scale_pos", scale_band_params(0.25), pos);
+  ASSERT_TRUE(out.published);
+  ASSERT_EQ(out.flat.size(), 1U);
+  EXPECT_EQ(out.flat[0], 1.25) << "a position target was scaled — that commands a motion nobody "
+                                  "asked for, toward the origin";
+  EXPECT_EQ(out.scaled, 0U);
+}
+
+// CARTESIAN_DELTA is the mode every real VLA arm policy here uses, and it was
+// the one mode the first version of these tests never exercised. Two things
+// have to hold and neither is visible from a joint-velocity chunk:
+//
+//   1. Row layout. Only the leading 6-vector twist is a rate. A trailing
+//      column is not, and scaling it would corrupt whatever it carries.
+//   2. NORMALIZED chunks must be clamped before they are scaled. Native OSC
+//      controllers apply `clamp(raw, -1, 1) * range`, and the validator puts no
+//      per-axis bound on CARTESIAN_DELTA, so |raw| > 1 is admissible. Scaling
+//      2.5 by 0.37 gives 0.92 — a real slowdown — whereas scaling without the
+//      clamp gives 0.92 only by luck and, for a bigger raw value, would still
+//      clip to 1.0 downstream: the identical motion, reported as a slowdown
+//      that never happened.
+TEST_F(LifecycleKernelTest, GradedScalingClampsThenScalesOnlyTheTwistColumns) {
+  openral_msgs::msg::ActionChunk cart;
+  cart.control_mode = 5;  // CARTESIAN_DELTA
+  cart.horizon = 1;
+  cart.n_dof = 7;  // 6 twist components + one trailing non-rate column
+  //                vx    vy   vz    wx   wy   wz   aux
+  cart.flat = {2.5, -0.4, 0.0, 0.0, 0.0, 0.0, 0.75};
+  // Non-empty ⇒ the chunk is normalized, so the kernel must clamp before it
+  // scales (mirrors what the HAL's OSC controller will do to these numbers).
+  // One entry per dof — the validator enforces that length, not 6.
+  cart.cartesian_delta_scale = {0.05, 0.05, 0.05, 0.5, 0.5, 0.5, 1.0};
+
+  auto params = scale_band_params(0.25);
+  params.emplace_back("collision_ee_link_index", std::int64_t{-1});  // reactive only
+  const auto out = run_one_chunk("kernel_scale_cart", std::move(params), cart);
+
+  ASSERT_TRUE(out.published);
+  ASSERT_EQ(out.flat.size(), 7U);
+  const double scale = std::exp(20.0 * (kBandTestSlackM - 0.25));
+  // vx was 2.5 — out of range. Clamped to 1.0 first, THEN scaled, so the
+  // number the controller receives is genuinely reduced.
+  EXPECT_NEAR(out.flat[0], 1.0 * scale, 1e-9)
+      << "a saturated normalized axis must be clamped before scaling, or the "
+         "slowdown is only reported, not performed";
+  EXPECT_NEAR(out.flat[1], -0.4 * scale, 1e-9) << "an in-range axis scales normally";
+  // The trailing column is not part of the twist and must be untouched.
+  EXPECT_EQ(out.flat[6], 0.75) << "column 6 is not a rate — scaling it corrupts whatever it "
+                                  "carries";
+  EXPECT_GE(out.scaled, 1U);
+  EXPECT_FALSE(out.latched);
+}

@@ -8308,6 +8308,14 @@ class ValidationRoundMetadata(BaseModel):
         safety_overrides_absent: ``True`` only when the composed argv was
             checked and found to contain no safety-knob override. A round is
             refused rather than recorded with this ``False``.
+        collision_scale: The #188 graded-velocity band the kernel actually ran
+            with, when a round armed it. Empty means the shipped default —
+            disabled. This is recorded rather than refused, unlike an argv
+            safety-knob override, because arming the band *is* the point of the
+            A/B battery: what must never happen is a round that armed it and
+            cannot be told apart afterwards from one that did not. The band
+            arrives through ``OPENRAL_COLLISION_SCALE_*`` env vars, which
+            ``assert_no_safety_overrides`` cannot see — it inspects argv.
         gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.
         notes_path: Round-relative path of the human-readable notes.
         scene_dirs: Scene key → the round-relative directory holding that
@@ -8355,6 +8363,7 @@ class ValidationRoundMetadata(BaseModel):
     sync_groups: list[str] = Field(default_factory=list)
     stack_argv: list[str] = Field(default_factory=list)
     safety_overrides_absent: bool = True
+    collision_scale: dict[str, float] = Field(default_factory=dict)
     gpu_name: str | None = None
     notes_path: str | None = None
     scene_dirs: dict[str, str] = Field(default_factory=dict)

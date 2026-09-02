@@ -239,12 +239,16 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     # how a field added to `CollisionEvidence` was able to push `link_a`,
     # `link_b_or_object` and `min_distance_m` out of this very line while this
     # test stayed green.
-    # Note the missing closing brace: this line renders at 121 characters and
+    # Note the missing closing brace: the object renders at 121 characters and
     # the 120-char truncation already clips it. That is how little headroom
     # there is, and why a bulk field cannot be allowed to render inline here.
+    # The `+joint_positions_rad[0]` marker sits AFTER the truncation, so it
+    # costs the identity fields nothing and still says the field was there and
+    # empty — which is what a record predating #187 looks like.
     assert summary == (
         'evidence={"collision_kind": "world", "horizon_step": -1, "link_a": "ee", '
         '"link_b_or_object": "voxel_189", "min_distance_m": -0.05'
+        " +joint_positions_rad[0]"
     )
     # The structured path drops the discriminator; the raw fallback would keep it.
     assert '"kind"' not in summary
@@ -265,6 +269,43 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     rendered = r.render(world_state=None)
     assert '"link_a": "ee"' in rendered
     assert '"horizon_step": -1' in rendered
+
+
+def test_failure_summary_keeps_identities_for_the_shipped_predictive_fixture() -> None:
+    """The REAL kernel payload in ``tests/unit/fixtures/`` keeps its identities.
+
+    Regression on the first attempt at the fix below, which dropped the joint
+    vector only when it rendered past a 48-character budget. That was a proxy
+    for the wrong property: this fixture — the kernel's own 2-dof predictive
+    payload, the one this repo ships — renders 41 characters, sailed under the
+    threshold, and still evicted ``link_a`` from the line. The exclusion is by
+    role, not by length, and this is the case that proves it.
+    """
+    payload = (
+        Path(__file__).parent / "fixtures" / "kernel_predictive_collision_evidence.json"
+    ).read_text(encoding="utf-8")
+
+    summary = _summarise_evidence_json(payload)
+    assert '"link_a": "ee"' in summary
+    assert '"link_b_or_object": "voxel_269"' in summary
+    assert "0.29982877677088093" not in summary
+    assert summary.endswith(" +joint_positions_rad[2]")
+
+
+def test_failure_summary_discloses_an_empty_joint_vector_rather_than_hiding_it() -> None:
+    """``[0]`` is disclosed like any other count (CLAUDE.md §1.4).
+
+    "Present but empty" is what a record predating #187 looks like, and a
+    reader has to be able to tell that from "the schema never had this field".
+    """
+    ev = CollisionEvidence(
+        collision_kind="world",
+        link_a="ee",
+        link_b_or_object="voxel_189",
+        horizon_step=-1,
+        min_distance_m=-0.05,
+    )
+    assert _summarise_evidence_json(ev.model_dump_json()).endswith(" +joint_positions_rad[0]")
 
 
 def test_failure_summary_keeps_identities_when_evidence_carries_a_joint_vector() -> None:

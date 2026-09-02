@@ -1137,7 +1137,7 @@ Vec3 obb_extent(const Transform& box, const Vec3& he) noexcept {
 }
 
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const VoxelGrid& grid, double margin) noexcept {
+                                   const VoxelGrid& grid, double margin, double band_m) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
@@ -1172,7 +1172,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
-    const double reach = r + margin + half_side;
+    // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
+    const double reach = r + margin + band_m + half_side;
     const auto [ix0, ix1] =
         rng(std::min(p0.x, p1.x) - reach, std::max(p0.x, p1.x) + reach, grid.sx);
     const auto [iy0, iy1] =
@@ -1225,7 +1226,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     // Bounding half-size of the oriented box on the grid's axes (`box_w` is
     // already expressed in them), which is what sizes an index window.
     const Vec3 ext = obb_extent(box_w, he);
-    const double reach = margin + half_side;
+    const double reach = margin + band_m + half_side;
     const auto [ix0, ix1] = rng(box_w.t.x - ext.x - reach, box_w.t.x + ext.x + reach, grid.sx);
     const auto [iy0, iy1] = rng(box_w.t.y - ext.y - reach, box_w.t.y + ext.y + reach, grid.sy);
     const auto [iz0, iz1] = rng(box_w.t.z - ext.z - reach, box_w.t.z + ext.z + reach, grid.sz);
@@ -1594,7 +1595,7 @@ CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
-                                            double margin) noexcept {
+                                            double margin, double band_m) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
@@ -1614,7 +1615,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       // The cell distance runs in the grid's axes; the place region and the
       // support attestation are declared in `base_frame` and keep that centre.
       const Transform prim_g = compose(grid_from_base, prim_xf);
-      const CellBox box = primitive_cell_box(prim, prim_g, grid, margin + half_side);
+      const CellBox box = primitive_cell_box(prim, prim_g, grid, margin + band_m + half_side);
       for (int iz = box.z0; iz <= box.z1; ++iz) {
         for (int iy = box.y0; iy <= box.y1; ++iy) {
           for (int ix = box.x0; ix <= box.x1; ++ix) {

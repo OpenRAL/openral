@@ -243,6 +243,26 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // skill that cannot get out of the band in three attempts is not grazing the
   // receptacle, and the fourth refusal latches.
   this->declare_parameter<std::int64_t>("place_advisory_max_consecutive", 3);
+
+  // Distance-graded velocity scaling (#188). Width of the band ABOVE each
+  // check's own gate margin in which an accepted chunk is slowed rather than
+  // passed at full rate. **0 disables the mechanism entirely and reproduces
+  // today's behaviour bit-for-bit**, which is the default: this changes an
+  // enforcement surface, and the A/B five-round battery is what earns it a
+  // non-zero value, not this parameter's existence.
+  //
+  // The scale is `exp(k · (slack − proximity))`, so it is exactly 1.0 at the
+  // top of the band and `exp(−k · proximity)` at the margin itself. With the
+  // suggested 0.05 m / 20.0 that is 1.00 → 0.37 across the band.
+  this->declare_parameter<double>("collision_scale_proximity_m", 0.0);
+  this->declare_parameter<double>("collision_scale_k", 20.0);
+  // Floor on the scale. A band that can reach zero does not slow the robot,
+  // it stops it without saying so — the deadlock the literature does not
+  // settle in either direction (survey §10). The floor is what keeps "graded"
+  // from becoming an unlogged stop; the latch below the margin is still the
+  // only thing that stops the robot.
+  this->declare_parameter<double>("collision_scale_min", 0.1);
+
   this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
   // Physical slack added to an ATTESTED support-contact depth (ADR-0092 D6) —
   // FK and pose noise, not voxel quantisation, which the witness predicate
@@ -566,6 +586,11 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   fault_latch_ = false;
   chunks_passed_ = 0;
   chunks_dropped_ = 0;
+  // Must reset with the other two: `scaled` is documented as a subset of
+  // `passed`, and carrying it across a cleanup while they restart at 0 makes
+  // `scaled > passed` reachable on /diagnostics.
+  chunks_scaled_ = 0;
+  last_logged_scale_ = 1.0;
   last_drop_reason_.clear();
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
@@ -657,6 +682,18 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     const bool geom_enabled = self_collision_enabled_ || world_collision_enabled_ ||
                               world_voxel_enabled_ || attached_collision_enabled_;
     const auto mode = static_cast<ControlMode>(view.control_mode);
+    // Smallest clearance ABOVE its own gate margin seen anywhere in this
+    // chunk's sweep (#188). Slack rather than raw distance because every check
+    // carries a different margin and the predictive steps inflate theirs with
+    // look-ahead depth — slack is the only margin-agnostic way to compare them.
+    //
+    // Pairs BELOW their margin that did not trip are deliberately excluded:
+    // not tripping there means the pair is exempted (an attached payload's
+    // attach-time contact baseline, an ACM row, a live place allowance), and an
+    // exemption says that contact is allowed. Letting it drive the scale would
+    // make a robot that is legitimately resting a payload on a shelf crawl for
+    // as long as it holds it.
+    double collision_min_slack_m = std::numeric_limits<double>::infinity();
     const bool is_position = (mode == ControlMode::kJointPosition);
     // Non-position chunks carry velocities / EE deltas, not joint
     // configs FK can place; reconstruct from the latest measured joint state.
@@ -901,11 +938,21 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
       // predicted Cartesian config.
+      // Fold one check's sweep-wide minimum into the chunk's smallest slack
+      // (#188). `m` is the margin THAT check was gated against, including the
+      // predictive look-ahead inflation, so the comparison is like-for-like.
+      const auto note_slack = [&](const CollisionHit& h, double m) {
+        const double slack = h.sweep_min_distance - m;
+        if (slack >= 0.0 && slack < collision_min_slack_m) {
+          collision_min_slack_m = slack;
+        }
+      };
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0) -> bool {
         fk_config(q);
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
+          note_slack(hit, self_collision_margin_m_ + extra_margin);
           if (hit.hit) {
             report("self", link_name(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
@@ -914,14 +961,24 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (world_collision_enabled_) {
           const auto hit = check_world_collision(collision_model_, collision_scratch_, world_model_,
                                                  world_collision_margin_m_ + extra_margin);
+          note_slack(hit, world_collision_margin_m_ + extra_margin);
           if (hit.hit) {
             report("world", link_name(hit.link_a), world_label(hit.link_b), step, hit);
             return true;
           }
         }
         if (world_voxel_enabled_) {
+          // The band is handed in as extra SCAN width, not extra margin: a
+          // cell still trips at the margin, but a cell that is merely inside
+          // the band has to be visited for `sweep_min_distance` to see it at
+          // all. Without this the window is sized by the margin alone and the
+          // minimum jumps from "nothing in range" straight to a tripping cell —
+          // which made this whole mechanism dead code until a real scene run
+          // showed the scale going 1.0 → E-stop with nothing in between.
           const auto hit = check_voxel_collision(collision_model_, collision_scratch_, voxel_grid_,
-                                                 world_voxel_margin_m_ + extra_margin);
+                                                 world_voxel_margin_m_ + extra_margin,
+                                                 collision_scale_proximity_m_);
+          note_slack(hit, world_voxel_margin_m_ + extra_margin);
           if (hit.hit) {
             report("world", link_name(hit.link_a),
                    std::string("voxel_") + std::to_string(hit.link_b), step, hit);
@@ -938,6 +995,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           if (world_collision_enabled_) {
             const auto hit = check_attached_world_collision(
                 collision_model_, attached_model_, collision_scratch_, world_model_, amargin);
+            note_slack(hit, amargin);
             if (hit.hit) {
               report("world", attached_label(hit.link_a), world_label(hit.link_b), step, hit);
               return true;
@@ -952,7 +1010,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               is_cartesian && attached_contact_active_ && step >= 0 && support_witness_live_ == 0;
           if (world_voxel_enabled_ && !contact_constrained_prediction) {
             const auto hit = check_attached_voxel_collision(
-                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin);
+                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin,
+                collision_scale_proximity_m_);
+            note_slack(hit, amargin);
             if (hit.hit) {
               report("world", attached_label(hit.link_a),
                      std::string("voxel_") + std::to_string(hit.link_b), step, hit);
@@ -961,6 +1021,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
           const auto hit = check_attached_self_collision(collision_model_, attached_model_,
                                                          collision_scratch_, amargin);
+          note_slack(hit, amargin);
           if (hit.hit) {
             report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
@@ -1065,7 +1126,89 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // set_safety_status, no string touched, no publish, no allocation.
     set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE, "chunk accepted",
                       msg->rskill_id, msg->trace_id);
-    safe_pub_->publish(*msg);
+
+    // Distance-graded slowdown (#188). The chunk has ALREADY been accepted —
+    // this never turns an accept into a drop, and never a drop into an accept.
+    // It only decides how fast the accepted motion is allowed to be executed.
+    //
+    // Only rate-shaped modes are scalable, and the distinction is not
+    // stylistic: multiplying an ABSOLUTE target (JOINT_POSITION,
+    // CARTESIAN_POSE, JOINT_TRAJECTORY) by 0.5 does not halve the speed, it
+    // commands a pose half way to the origin — a large unrequested motion, in
+    // an unpredictable direction, dressed up as a safety measure. Shrinking
+    // those toward the measured configuration would be the correct form and
+    // needs a fresh seed that position mode deliberately does not require
+    // today, so absolute modes are left alone. Gripper / dex-hand / composite
+    // rows are not motion rates either (a scaled grasp is a dropped object, a
+    // scaled mode flag is a corrupted multiplexer). BODY_TWIST is excluded on
+    // evidence, not convenience: FK zeroes the base dofs, so nothing here
+    // measures where the BASE is going, and slowing it for an arm-side
+    // clearance would be a number applied to the wrong body (the base's own
+    // proximity gate is Nav2's collision monitor, #186).
+    const bool rate_shaped = mode == ControlMode::kJointVelocity ||
+                             mode == ControlMode::kCartesianDelta ||
+                             mode == ControlMode::kCartesianTwist;
+    const double scale = (geom_enabled && rate_shaped)
+                             ? velocity_scale_for(collision_min_slack_m)
+                             : 1.0;
+    if (scale < 1.0) {
+      // Scaling DOWN a rate keeps every envelope bound it already satisfied
+      // (|s·v| <= |v| for s in [0,1]), so the scaled chunk needs no
+      // re-validation, and it travels no further than the swept volume the
+      // predictive check just cleared. Strictly more conservative, both ways.
+      scaled_chunk_ = *msg;
+      const std::size_t stride = view.n_dof;
+      // A Cartesian row is a 6-vector twist [vx,vy,vz,wx,wy,wz] inside a row of
+      // `n_dof`; a velocity row is velocities all the way across.
+      const std::size_t scalable = (mode == ControlMode::kJointVelocity)
+                                       ? stride
+                                       : std::min<std::size_t>(stride, 6);
+      // A NORMALIZED Cartesian chunk must be clamped before it is scaled.
+      // Native OSC controllers apply `clamp(raw, -1, 1) * per_axis_range`, and
+      // the validator deliberately puts no per-axis bound on CARTESIAN_DELTA,
+      // so |raw| > 1 is admissible and common. Multiplying 2.5 by 0.5 gives
+      // 1.25, which still clips to 1.0 downstream — the identical motion, while
+      // the kernel logs and counts a slowdown that did not happen. Clamping
+      // first makes the number the robot will actually use the number that gets
+      // scaled, so the disclosure describes a real effect.
+      const bool normalized = view.cartesian_delta_scale_size != 0;
+      for (std::size_t s = 0; s < view.horizon && stride > 0; ++s) {
+        const std::size_t row = s * stride;
+        for (std::size_t d = 0; d < scalable && row + d < scaled_chunk_.flat.size(); ++d) {
+          double& value = scaled_chunk_.flat[row + d];
+          if (normalized) {
+            value = std::clamp(value, -1.0, 1.0);
+          }
+          value *= scale;
+        }
+      }
+      safe_pub_->publish(scaled_chunk_);
+      ++chunks_scaled_;
+      // Transition-gated, not per chunk. This is the accept path, which runs at
+      // 30-200 Hz and whose pass-through case is documented as touching no
+      // string and making no publish; an armed band near an obstacle would
+      // otherwise format two std::strings every tick inside a node whose
+      // realtime rules forbid string ops in hot loops. A tenth of a scale is
+      // the granularity worth a line; the 1 Hz /diagnostics `scaled` counter
+      // covers the "has been crawling for a minute" case continuously.
+      if (std::abs(scale - last_logged_scale_) >= 0.1) {
+        last_logged_scale_ = scale;
+        RCLCPP_INFO(this->get_logger(),
+                    "safety.collision_scaled scale=%g slack_m=%g band_m=%g mode=%u rskill_id=%s",
+                    scale, collision_min_slack_m, collision_scale_proximity_m_,
+                    static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str());
+      }
+      span->SetAttribute("safety.velocity_scale", scale);
+      span->SetAttribute("safety.scale_slack_m", collision_min_slack_m);
+    } else {
+      // Leaving the band is a transition worth one line too, so a reader can
+      // see the slowdown end rather than infer it from silence.
+      if (last_logged_scale_ < 1.0) {
+        last_logged_scale_ = 1.0;
+        RCLCPP_INFO(this->get_logger(), "safety.collision_scaled scale=1 (cleared the band)");
+      }
+      safe_pub_->publish(*msg);
+    }
     ++chunks_passed_;
     // An accepted chunk is what "the payload backed off" looks like from here,
     // so the advisory run (#176) starts again. Only an unbroken run of refusals
@@ -1221,6 +1364,11 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   };
   add_kv("passed", std::to_string(chunks_passed_));
   add_kv("dropped", std::to_string(chunks_dropped_));
+  // A subset of `passed` (#188), not of `dropped`: these chunks were accepted
+  // and executed, just slower. The per-event log line is transition-free, so
+  // this heartbeat is what makes a robot that has been crawling for a minute
+  // visible without grepping for every scaling event.
+  add_kv("scaled", std::to_string(chunks_scaled_));
   add_kv("last_drop_reason", last_drop_reason_.empty() ? "-" : last_drop_reason_);
   add_kv("envelope_loaded", envelope_loaded_ ? "true" : "false");
   add_kv("n_dof", std::to_string(envelope_.n_dof));
@@ -1414,6 +1562,38 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
         advisory_cap > 0 ? static_cast<std::uint64_t>(advisory_cap) : 0U;
   }
   advisory_refusals_ = 0;
+  {
+    // A negative band is a misconfiguration, and the safe reading is "no
+    // band".
+    const double proximity = this->get_parameter("collision_scale_proximity_m").as_double();
+    collision_scale_proximity_m_ = proximity > 0.0 ? proximity : 0.0;
+    const double k = this->get_parameter("collision_scale_k").as_double();
+    collision_scale_k_ = k > 0.0 ? k : 0.0;
+    // The floor must be strictly positive and at most 1. Zero is not a "very
+    // slow" setting — it is a full stop that emits no E-stop, no
+    // FailureTrigger and no latched status, while /openral/safety_status still
+    // reports "chunk accepted". Above 1 would SPEED THE ROBOT UP. Either is a
+    // misconfiguration of a safety surface, so neither is quietly clamped into
+    // range: the band is refused outright and the kernel says why, leaving
+    // today's behaviour rather than an invented one.
+    collision_scale_min_ = this->get_parameter("collision_scale_min").as_double();
+    if (collision_scale_proximity_m_ > 0.0 &&
+        !(collision_scale_min_ > 0.0 && collision_scale_min_ <= 1.0)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "collision_scale_min=%g is outside (0, 1] — graded velocity scaling is "
+                   "DISABLED. A floor of 0 is a stop that reports itself as an accepted "
+                   "chunk; above 1 would speed the robot up.",
+                   collision_scale_min_);
+      collision_scale_proximity_m_ = 0.0;
+      collision_scale_min_ = 1.0;
+    }
+    if (collision_scale_proximity_m_ > 0.0) {
+      RCLCPP_INFO(this->get_logger(),
+                  "safety.collision_scaling armed: band=%g m k=%g floor=%g (scale at margin=%g)",
+                  collision_scale_proximity_m_, collision_scale_k_, collision_scale_min_,
+                  velocity_scale_for(0.0));
+    }
+  }
   attached_collision_deadline_s_ =
       this->get_parameter("attached_collision_deadline_ms").as_double() / 1000.0;
   attached_max_objects_ =
@@ -1614,6 +1794,18 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_link_names_.assign(names.begin(), names.end());
   collision_scratch_.link_world.resize(n_links);
   return true;
+}
+
+double SafetyKernelLifecycleNode::velocity_scale_for(double slack_m) const noexcept {
+  if (collision_scale_proximity_m_ <= 0.0 || !std::isfinite(slack_m) ||
+      slack_m >= collision_scale_proximity_m_) {
+    return 1.0;
+  }
+  // `slack_m` is clearance ABOVE the pair's own gate margin, so it is >= 0 for
+  // anything that did not trip. exp() is 1.0 at the top of the band and decays
+  // toward the margin; the floor bounds it away from an unlogged stop.
+  const double raw = std::exp(collision_scale_k_ * (slack_m - collision_scale_proximity_m_));
+  return std::clamp(raw, collision_scale_min_, 1.0);
 }
 
 void SafetyKernelLifecycleNode::publish_collision_failure(

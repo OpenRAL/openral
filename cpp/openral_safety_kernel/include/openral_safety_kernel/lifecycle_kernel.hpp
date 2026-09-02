@@ -69,6 +69,9 @@ public:
   bool fault_latched() const noexcept { return fault_latch_; }
   std::uint64_t chunks_passed() const noexcept { return chunks_passed_; }
   std::uint64_t chunks_dropped() const noexcept { return chunks_dropped_; }
+  /// Accepted chunks republished at a reduced rate by the #188 band. A subset
+  /// of `chunks_passed()`, never a subset of `chunks_dropped()`.
+  std::uint64_t chunks_scaled() const noexcept { return chunks_scaled_; }
   const EnvelopeIntersection& envelope() const noexcept { return envelope_; }
   bool self_collision_active() const noexcept { return self_collision_enabled_; }
   std::size_t collision_link_count() const noexcept { return collision_model_.n_links; }
@@ -327,6 +330,7 @@ private:
   std::chrono::steady_clock::time_point last_estop_at_{};
   std::uint64_t chunks_passed_{0};
   std::uint64_t chunks_dropped_{0};
+  std::uint64_t chunks_scaled_{0};
   std::string last_drop_reason_;
   /// Consecutive advisory refusals (#176) — a payload contact inside its own
   /// declared place region, refused without latching. Reset by any accepted
@@ -334,6 +338,36 @@ private:
   /// other stop, so a robot cannot sit in the band shoving a shelf forever.
   std::uint64_t advisory_refusals_{0};
   std::uint64_t place_advisory_max_consecutive_{0};
+
+  /// Distance-graded velocity scaling (issue #188 — "Path A").
+  ///
+  /// The kernel's verdict used to be accept / drop / latch at a fixed margin,
+  /// and the 2026-08-26 five-round battery measured the cost: 11 of 15 stops
+  /// were inside what 25 mm voxel quantisation alone explains, and each was
+  /// mission-ending. Slowing along the policy's own path is the response the
+  /// evidence supports (PACS, arXiv:2511.06385: 0.70 unfiltered / 0.04 under
+  /// reactive projection / 0.72 under chunk-level graded braking).
+  ///
+  /// `collision_scale_proximity_m_ == 0.0` disables the mechanism and restores
+  /// today's behaviour exactly — the same rollback shape as
+  /// `place_advisory_max_consecutive: 0`. It is the default: this is a
+  /// WG-gated enforcement surface and the A/B battery is what turns it on.
+  double collision_scale_proximity_m_{0.0};
+  double collision_scale_k_{0.0};
+  double collision_scale_min_{1.0};
+  /// Last scale actually logged. The accept path runs at chunk rate, so the
+  /// `safety.collision_scaled` line is transition-gated on this rather than
+  /// emitted per chunk; the 1 Hz `/diagnostics` counter carries the continuous
+  /// signal.
+  double last_logged_scale_{1.0};
+  /// Reused scale target, so a scaled republish does not allocate after the
+  /// first one (the vector keeps its capacity). Untouched while scale == 1.
+  openral_msgs::msg::ActionChunk scaled_chunk_;
+
+  /// Velocity scale for a chunk whose nearest checked pair cleared its own
+  /// gate margin by `slack_m`. 1.0 outside the band; floored at
+  /// `collision_scale_min_` so the band slows the robot but cannot stall it.
+  [[nodiscard]] double velocity_scale_for(double slack_m) const noexcept;
 
   // ADR-0096 — the current /openral/safety_status value, kept as a reusable
   // member so transitions do not build a message from scratch. Default
