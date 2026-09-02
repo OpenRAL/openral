@@ -2184,11 +2184,19 @@ openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
 // `carrying == false` is the pre-grasp / post-release beat: the declaration is
 // published for the whole goal, so it rides every heartbeat whether or not a
 // payload is attached yet.
+//
+// `target_face_x` is ADR-0098's half: 0.0 publishes a region with no geometry
+// (every pre-ADR-0098 test), anything else publishes the declared target as a
+// 100 mm box whose -x face — the one the payload approaches — sits there. The
+// cell spans x in [0.140, 0.165], so a face at 0.155 is a shelf the 25 mm
+// lattice over-states by 15 mm, which is the whole quantisation error the
+// blanket allowance was guessing at.
 openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachment_stamp_ns,
                                                           std::int64_t declaration_stamp_ns,
                                                           double timeout_s, bool carrying = true,
                                                           std::uint64_t revision = 1,
-                                                          double payload_x = 0.10) {
+                                                          double payload_x = 0.10,
+                                                          double target_face_x = 0.0) {
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = attachment_stamp_ns;
   msg.attachment_revision = revision;
@@ -2228,6 +2236,16 @@ openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachmen
   msg.place_declaration.region.half_extents.z = 0.05;
   msg.place_declaration.region.evidence_ref = "mujoco_body_subtree:cab_1_left_group_main";
   msg.place_declaration.region.stamp_ns = declaration_stamp_ns;
+  if (target_face_x != 0.0) {
+    openral_msgs::msg::AttachedCollisionPrimitive shelf;
+    shelf.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    shelf.shape_dimensions = {0.05, 0.05, 0.05};
+    // Posed in the region's own frame — the robot base frame — not relative to
+    // the region box.
+    shelf.pose_in_object.position.x = target_face_x + 0.05;
+    shelf.pose_in_object.orientation.w = 1.0;
+    msg.place_declaration.region.geometry.push_back(shelf);
+  }
   return msg;
 }
 
@@ -2867,6 +2885,143 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   // `shutdown_tracing()` flushes the BatchSpanProcessor, and a test that emits
   // safety spans and then drops the node leaves that processor racing the
   // process teardown against a collector that is not there.
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+}
+
+TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) {
+  // ADR-0098 end to end, through the real node: the declared target's own
+  // geometry rides the same `WorldStateStamped` the region does, arms with it,
+  // and changes both halves of the verdict.
+  //
+  // The lattice cell spans x in [0.140, 0.165]; the shelf's face is at 0.155, so
+  // the cube over-states the surface by 15 mm. The payload's +x face is at
+  // `payload_x + 0.02`, the standoff is 30 mm and the blanket allowance 37.5 mm:
+  //
+  //   * payload_x 0.130 -> face 0.150, 5 mm CLEAR of the shelf. The blanket
+  //     allowance refuses this (it is measuring the cube, and the cube says
+  //     10 mm inside) — that is exactly what
+  //     `AnArrivedPlaceRefusesTheChunkWithoutLatching` pins at the same pose.
+  //     With geometry it passes, because 5 mm of measured clearance is not a
+  //     collision.
+  //   * payload_x 0.145 -> face 0.165, 10 mm INTO the shelf. Past the advisory
+  //     band, so it is the latched stop it always was — and the evidence names
+  //     the body it was measured against, not the cell.
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(place_declaration_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_geometry", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("place_geometry_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::QoS ws_qos(rclcpp::KeepLast(1));
+  ws_qos.reliable();
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", ws_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  std::atomic<int> estop_count{0};
+  rclcpp::QoS estop_q(rclcpp::KeepLast(10));
+  estop_q.reliable();
+  auto estop_sub = helper.create_subscription<std_msgs::msg::Empty>(
+      "/openral/estop", estop_q,
+      [&estop_count](const std_msgs::msg::Empty::SharedPtr) { ++estop_count; });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const auto vox = declared_target_voxels();
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto chunk = declared_carry_chunk();
+  constexpr double kShelfFaceX = 0.155;
+
+  const LogCapture arming_logs;
+  const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(5));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                         /*timeout_s=*/60.0, /*carrying=*/true, /*revision=*/1,
+                                         /*payload_x=*/0.10, kShelfFaceX));
+    exec.spin_some(std::chrono::milliseconds(5));
+    cand_pub->publish(chunk);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(safe_count.load(), 0) << "the approach must pass before anything else is meaningful";
+  EXPECT_GE(arming_logs.count("safety.place_region_armed"), 1U) << arming_logs.joined();
+  EXPECT_GE(arming_logs.count("geometry=1"), 1U)
+      << "the armed line must say the region carried the target's geometry:\n"
+      << arming_logs.joined();
+
+  const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+  while (std::chrono::steady_clock::now() < settle_deadline) {
+    voxel_pub->publish(vox);
+    js_pub->publish(js);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+
+  // 5 mm clear of the modelled shelf: the pose the blanket allowance refuses.
+  const int passed_before = safe_count.load();
+  offer_one_chunk(
+      exec,
+      [&] {
+        voxel_pub->publish(vox);
+        js_pub->publish(js);
+        ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                             /*timeout_s=*/60.0, /*carrying=*/true, /*revision=*/1,
+                                             /*payload_x=*/0.130, kShelfFaceX));
+      },
+      [&] { cand_pub->publish(chunk); });
+  EXPECT_GT(safe_count.load(), passed_before)
+      << "5 mm of measured clearance from the declared shelf must not be a refusal";
+  ASSERT_FALSE(node->fault_latched());
+
+  // 10 mm into the modelled shelf: past the band, so the stop and its E-stop are
+  // unchanged — and the evidence names the body.
+  const LogCapture stop_logs;
+  const int estops_before = estop_count.load();
+  offer_one_chunk(
+      exec,
+      [&] {
+        voxel_pub->publish(vox);
+        js_pub->publish(js);
+        ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
+                                             /*timeout_s=*/60.0, /*carrying=*/true, /*revision=*/1,
+                                             /*payload_x=*/0.145, kShelfFaceX));
+      },
+      [&] { cand_pub->publish(chunk); });
+
+  EXPECT_TRUE(node->fault_latched()) << "10 mm into the declared shelf is a stop:\n"
+                                     << stop_logs.joined();
+  EXPECT_GT(estop_count.load(), estops_before);
+  EXPECT_GE(stop_logs.count("b=place:sim:cab_1_left_group_main"), 1U)
+      << "a pair adjudicated against the declared body must be reported as that body, never as "
+         "the cell whose distance it does not quote:\n"
+      << stop_logs.joined();
+  EXPECT_EQ(stop_logs.count("b=voxel_"), 0U)
+      << "and never under the cell's identity at the same time:\n"
+      << stop_logs.joined();
+
   rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
   node->on_deactivate(active);
   node->on_cleanup(inactive);

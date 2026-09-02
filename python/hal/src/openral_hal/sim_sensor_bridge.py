@@ -3051,8 +3051,17 @@ class SimSensorBridge:
         )
         if declaration is None:
             return
+        from openral_msgs.msg import (  # reason: ROS import at call time
+            AttachedCollisionPrimitive,
+        )
+
         msg.place_declaration_valid = True
-        declaration.fill_idl(msg.place_declaration)
+        # The factory encodes the declared target's own geometry (ADR-0098) when
+        # the tracker measured any; a region with none never calls it.
+        declaration.fill_idl(
+            msg.place_declaration,
+            primitive_factory=AttachedCollisionPrimitive,
+        )
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.

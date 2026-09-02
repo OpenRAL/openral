@@ -1,5 +1,79 @@
 {
   "$defs": {
+    "AttachedCollisionPrimitive": {
+      "additionalProperties": false,
+      "description": "One bounded payload primitive positioned in its object frame.",
+      "properties": {
+        "shape": {
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxShape",
+              "capsule": "#/$defs/CapsuleShape",
+              "sphere": "#/$defs/SphereShape"
+            },
+            "propertyName": "shape"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            },
+            {
+              "$ref": "#/$defs/BoxShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "pose_in_object": {
+          "$ref": "#/$defs/Pose6D"
+        }
+      },
+      "required": [
+        "shape",
+        "pose_in_object"
+      ],
+      "title": "AttachedCollisionPrimitive",
+      "type": "object"
+    },
+    "BoxShape": {
+      "additionalProperties": false,
+      "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
+      "properties": {
+        "shape": {
+          "const": "box",
+          "default": "box",
+          "title": "Shape",
+          "type": "string"
+        },
+        "half_extents_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Half Extents M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "half_extents_m"
+      ],
+      "title": "BoxShape",
+      "type": "object"
+    },
     "CameraSimPlacement": {
       "additionalProperties": false,
       "description": "Where an RGB sensor's camera sits in the sim MJCF.\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    up: World-up hint used to level the camera roll. Defaults to ``(0, 0, 1)``.\n        A camera physically mounted upside-down (e.g. a wrist phone bolted\n        inverted on the gripper) uses ``(0, 0, -1)`` to roll the image 180\u00b0.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
@@ -90,6 +164,34 @@
         "target"
       ],
       "title": "CameraSimPlacement",
+      "type": "object"
+    },
+    "CapsuleShape": {
+      "additionalProperties": false,
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (:attr:`LinkCollisionGeometry.origin_xyz_rpy`\nfor a link, :attr:`WorldCollisionPrimitive.pose` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "properties": {
+        "shape": {
+          "const": "capsule",
+          "default": "capsule",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "length_m": {
+          "minimum": 0.0,
+          "title": "Length M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m",
+        "length_m"
+      ],
+      "title": "CapsuleShape",
       "type": "object"
     },
     "DeployRuntime": {
@@ -525,7 +627,7 @@
     },
     "PlaceRegion": {
       "additionalProperties": false,
-      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, and 40 mm rather than 75 mm at a\nreal 50 mm grid, because the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation showed that\nwithout it the flagship counter\u2192cabinet insertion cannot complete even with\na correct declaration: inserting through an enclosed target's opening means\npassing within margin distance of voxel-quantised walls, and at 25 mm cells\nthat quantisation closes the opening's predicted clearance 22-30 mm before\nthe payload arrives. A witness earned by touching can never arm if the\npayload is stopped before it can touch.\n\n**Producer-supplied, and producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware obtains it from the\nperception stack through a seam that is **not yet implemented**, so no\nallowance is applied on real hardware today \u2014 the same posture real-hardware\nplace-witness attestation is already under. The safety kernel is\nproducer-agnostic: it consumes this box identically whoever measured it, and\nnever derives one itself.\n\nThe box is **oriented**, not axis-aligned: a receptacle has an orientation,\nand the axis-aligned hull of a rotated one is strictly larger, i.e. strictly\nmore permissive. Absent (``PlaceDeclaration.region is None``) means no\nallowance at all \u2014 the pre-amendment margins, unchanged. A degenerate or\nover-large region is rejected here and again in the kernel, both times\ntoward \"no allowance\".\n\nAttributes:\n    frame_id: Frame :attr:`pose` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in :attr:`frame_id`.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, and 40 mm rather than 75 mm at a\nreal 50 mm grid, because the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation showed that\nwithout it the flagship counter\u2192cabinet insertion cannot complete even with\na correct declaration: inserting through an enclosed target's opening means\npassing within margin distance of voxel-quantised walls, and at 25 mm cells\nthat quantisation closes the opening's predicted clearance 22-30 mm before\nthe payload arrives. A witness earned by touching can never arm if the\npayload is stopped before it can touch.\n\n**Producer-supplied, and producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware obtains it from the\nperception stack through a seam that is **not yet implemented**, so no\nallowance is applied on real hardware today \u2014 the same posture real-hardware\nplace-witness attestation is already under. The safety kernel is\nproducer-agnostic: it consumes this box identically whoever measured it, and\nnever derives one itself.\n\nThe box is **oriented**, not axis-aligned: a receptacle has an orientation,\nand the axis-aligned hull of a rotated one is strictly larger, i.e. strictly\nmore permissive. Absent (``PlaceDeclaration.region is None``) means no\nallowance at all \u2014 the pre-amendment margins, unchanged. A degenerate or\nover-large region is rejected here and again in the kernel, both times\ntoward \"no allowance\".\n\nAttributes:\n    frame_id: Frame :attr:`pose` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in :attr:`frame_id`.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        :attr:`frame_id` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
       "properties": {
         "frame_id": {
           "minLength": 1,
@@ -562,6 +664,14 @@
           "minimum": 0,
           "title": "Stamp Ns",
           "type": "integer"
+        },
+        "geometry": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AttachedCollisionPrimitive"
+          },
+          "title": "Geometry",
+          "type": "array"
         }
       },
       "required": [
@@ -1293,6 +1403,28 @@
         "rate_hz"
       ],
       "title": "SensorSpec",
+      "type": "object"
+    },
+    "SphereShape": {
+      "additionalProperties": false,
+      "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+      "properties": {
+        "shape": {
+          "const": "sphere",
+          "default": "sphere",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m"
+      ],
+      "title": "SphereShape",
       "type": "object"
     }
   },

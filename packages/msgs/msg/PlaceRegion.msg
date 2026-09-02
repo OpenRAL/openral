@@ -48,3 +48,30 @@ string evidence_ref
 # Producer timestamp (ns). The region is refreshed at the attachment publication
 # rate, so a consumer can tell a live measurement from a stale one.
 int64 stamp_ns
+
+# The declared target's OWN collision geometry (ADR-0098, collision-safety
+# survey Path B), each primitive posed in `frame_id` — the same frame as `pose`,
+# not relative to the region box. Empty is the default and the backward
+# compatible case: the region then behaves exactly as it did before ADR-0098.
+#
+# Why the box alone is not enough: mm-scale discrimination is impossible against
+# 25 mm voxels, and the region grants the SAME blanket allowance to every cell
+# inside itself whether or not the declared body is actually there. These
+# primitives ARE the declared body, so a cell can be adjudicated against the
+# modelled surface instead of against the cube that quantised it.
+#
+# This can never be more permissive than shipping only the box: the kernel uses
+# the modelled distance only while it is within the blanket allowance that cell
+# would have been granted anyway, and falls back to the blanket allowance
+# otherwise. More accurate, never looser.
+#
+# PRODUCER-SUPPLIED, on the same terms as the box: sim measures the declared
+# body's MuJoCo model subtree; real hardware fills it from the perception stack
+# through a seam that is NOT YET IMPLEMENTED. A producer that cannot measure
+# geometry publishes an empty list, never a guess.
+#
+# The kernel enforces its own primitive cap and refuses the WHOLE region — no
+# allowance at all, not a downgrade to box-only — when the list overflows that
+# cap or carries a malformed shape. A producer that cannot describe the target
+# it declared is not one whose region is trusted either (#142/#146 posture).
+AttachedCollisionPrimitive[] geometry

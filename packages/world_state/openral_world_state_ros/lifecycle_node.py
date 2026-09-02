@@ -1322,10 +1322,19 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
     absent declaration must publish as ``place_declaration_valid = False`` rather
     than as a stale leftover — that flag is what turns the approach allowance off.
     """
+    from openral_msgs.msg import (  # reason: ROS import at call time
+        AttachedCollisionPrimitive as RosAttachedCollisionPrimitive,
+    )
+
     declaration = getattr(world_state, "place_declaration", None)
     msg.place_declaration_valid = declaration is not None  # type: ignore[attr-defined]
     if declaration is not None:
-        declaration.fill_idl(msg.place_declaration)  # type: ignore[attr-defined]
+        # The factory encodes the declared target's own geometry (ADR-0098) when
+        # the producer measured any; a region with none never calls it.
+        declaration.fill_idl(  # type: ignore[attr-defined]
+            msg.place_declaration,  # type: ignore[attr-defined]
+            primitive_factory=RosAttachedCollisionPrimitive,
+        )
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:

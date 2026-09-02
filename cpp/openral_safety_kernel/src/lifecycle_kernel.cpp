@@ -107,6 +107,52 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
   return 5;
 }
 
+/// Decode one wire `AttachedCollisionPrimitive` into the kernel's input record.
+///
+/// Shared by the attached-payload ingest and the declared place target's
+/// geometry (ADR-0098): both read the same message type off the same
+/// `WorldStateStamped`, and a shape the two decoded differently would be a
+/// payload and a receptacle that disagree about where a surface is. Returns
+/// false on an unknown `SHAPE_*` tag or too few dimensions for the tag given —
+/// every caller fails closed on that, because an unrecognised shape is not safe
+/// to treat as absent.
+bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
+                               AttachedPrimitiveInput& out) {
+  const std::size_t n_dims = prim.shape_dimensions.size();
+  if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE) {
+    if (n_dims < 1) {
+      return false;
+    }
+    out.kind = AttachedShapeKind::kSphere;
+    out.radius = prim.shape_dimensions[0];
+    out.half_length = 0.0;
+  } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_CAPSULE) {
+    if (n_dims < 2) {
+      return false;
+    }
+    out.kind = AttachedShapeKind::kCapsule;
+    out.radius = prim.shape_dimensions[0];
+    // The wire carries the full central-segment length; the kernel capsule uses
+    // the half-length convention.
+    out.half_length = 0.5 * prim.shape_dimensions[1];
+  } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX) {
+    if (n_dims < 3) {
+      return false;
+    }
+    out.kind = AttachedShapeKind::kBox;
+    out.half_extents =
+        Vec3{prim.shape_dimensions[0], prim.shape_dimensions[1], prim.shape_dimensions[2]};
+  } else {
+    return false;
+  }
+  out.pose_in_object = transform_from_translation_quat(
+      prim.pose_in_object.position.x, prim.pose_in_object.position.y,
+      prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
+      prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
+      prim.pose_in_object.orientation.w);
+  return true;
+}
+
 }  // namespace
 
 SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_name,
@@ -1014,8 +1060,17 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                 collision_scale_proximity_m_);
             note_slack(hit, amargin);
             if (hit.hit) {
-              report("world", attached_label(hit.link_a),
-                     std::string("voxel_") + std::to_string(hit.link_b), step, hit);
+              // ADR-0098: when the declared target's own geometry adjudicated
+              // the pair, `hit.min_distance` is the distance to that BODY, not
+              // to the cell `link_b` indexes — so the evidence has to name the
+              // body. Quoting one geometry's distance under another's identity
+              // is precisely the failure `CollisionHit` forbids, and precisely
+              // what #187 landed to stop the evidence doing.
+              const std::string other =
+                  hit.place_target_adjudicated
+                      ? "place:" + place_declaration_target_ + "#" + std::to_string(hit.link_b)
+                      : std::string("voxel_") + std::to_string(hit.link_b);
+              report("world", attached_label(hit.link_a), other, step, hit);
               return true;
             }
           }
@@ -1377,8 +1432,9 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   // observable without re-warning at the attachment rate.
   std::string place_region_state{"-"};
   if (place_region_.valid) {
-    place_region_state =
-        (place_declaration_live() ? "live:" : "expired:") + place_declaration_target_;
+    place_region_state = (place_declaration_live() ? "live:" : "expired:") +
+                         place_declaration_target_ + ":geom=" +
+                         std::to_string(place_region_.n_geometry);
   } else if (!place_region_refusal_reason_.empty()) {
     place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
   }
@@ -1636,6 +1692,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_labels_.assign(attached_max_objects_, std::string{});
   attached_ingest_scratch_.clear();
   attached_ingest_scratch_.reserve(attached_max_objects_);
+  // Sized once, here, and never resized again: `place_region_.geometry` is a
+  // view into this buffer and the hot path reads it (ADR-0098).
+  place_geometry_.assign(kMaxPlaceTargetPrimitives, AttachedPrimitive{});
+  place_geometry_scratch_.clear();
+  place_geometry_scratch_.reserve(kMaxPlaceTargetPrimitives);
 
   // The robot collision model is needed for any geometric check; skip loading
   // only when all of them are disabled.
@@ -2005,45 +2066,12 @@ void SafetyKernelLifecycleNode::on_world_state(
     in.primitives.reserve(obj.primitives.size());
     for (const auto& prim : obj.primitives) {
       AttachedPrimitiveInput pin;
-      const std::size_t n_dims = prim.shape_dimensions.size();
-      // Decode the shape by SHAPE_* tag and required dimension count.
-      if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE) {
-        if (n_dims < 1) {
-          fail_closed();
-          return;
-        }
-        pin.kind = AttachedShapeKind::kSphere;
-        pin.radius = prim.shape_dimensions[0];
-        pin.half_length = 0.0;
-      } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_CAPSULE) {
-        if (n_dims < 2) {
-          fail_closed();
-          return;
-        }
-        pin.kind = AttachedShapeKind::kCapsule;
-        pin.radius = prim.shape_dimensions[0];
-        // The wire carries the full central-segment length; the kernel capsule
-        // uses the half-length convention.
-        pin.half_length = 0.5 * prim.shape_dimensions[1];
-      } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX) {
-        if (n_dims < 3) {
-          fail_closed();
-          return;
-        }
-        pin.kind = AttachedShapeKind::kBox;
-        pin.half_extents =
-            Vec3{prim.shape_dimensions[0], prim.shape_dimensions[1], prim.shape_dimensions[2]};
-      } else {
-        // Unknown shape tag → fail closed (an unrecognised payload is not safe
-        // to ignore).
+      // Unknown shape tag or too few dimensions → fail closed (an unrecognised
+      // payload is not safe to ignore).
+      if (!decode_attached_primitive(prim, pin)) {
         fail_closed();
         return;
       }
-      pin.pose_in_object = transform_from_translation_quat(
-          prim.pose_in_object.position.x, prim.pose_in_object.position.y,
-          prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
-          prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
-          prim.pose_in_object.orientation.w);
       in.primitives.push_back(pin);
     }
     attached_ingest_scratch_.push_back(std::move(in));
@@ -2140,6 +2168,7 @@ void SafetyKernelLifecycleNode::on_world_state(
 void SafetyKernelLifecycleNode::ingest_place_declaration(
     const openral_msgs::msg::WorldStateStamped& msg) {
   const bool was_valid = place_region_.valid;
+  const std::size_t was_geometry = place_region_.n_geometry;
   const std::string previous_target = place_declaration_target_;
   place_region_ = PlaceApproachRegion{};
   place_declaration_stamp_ns_ = 0;
@@ -2218,7 +2247,37 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
       region.pose.orientation.w);
   const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
-  const PlaceRegionStatus status = ingest_place_region(pose, half, object_mask, place_region_);
+  PlaceRegionStatus status = ingest_place_region(pose, half, object_mask, place_region_);
+  if (status == PlaceRegionStatus::kOk) {
+    // ADR-0098: the declared target's own geometry, decoded off the same
+    // message and validated the same fail-closed way. A producer that names a
+    // target and then describes it with a shape the kernel cannot measure is
+    // not one whose BOX is trusted either — so a bad list takes the whole
+    // region with it (#142/#146), leaving exactly the undeclared margins rather
+    // than a silent downgrade to box-only that would read on the wire like a
+    // producer that measured nothing.
+    place_geometry_scratch_.clear();
+    for (const auto& prim : region.geometry) {
+      AttachedPrimitiveInput pin;
+      if (!decode_attached_primitive(prim, pin)) {
+        place_geometry_scratch_.clear();
+        status = PlaceRegionStatus::kBadGeometry;
+        break;
+      }
+      if (place_geometry_scratch_.size() >= kMaxPlaceTargetPrimitives) {
+        place_geometry_scratch_.clear();
+        status = PlaceRegionStatus::kGeometryOverflow;
+        break;
+      }
+      place_geometry_scratch_.push_back(pin);
+    }
+    if (status == PlaceRegionStatus::kOk) {
+      status = ingest_place_target_geometry(place_geometry_scratch_, place_geometry_, place_region_);
+    }
+    if (status != PlaceRegionStatus::kOk) {
+      place_region_ = PlaceApproachRegion{};
+    }
+  }
   if (status != PlaceRegionStatus::kOk) {
     const char* reason = place_region_status_reason(status);
     if (refusal_is_new(reason, declaration.target_id)) {
@@ -2251,13 +2310,21 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   }
   place_region_refusal_reason_.clear();
   place_region_refusal_target_.clear();
-  if (!was_valid) {
+  // Announce on the arming transition, and again whenever the target's geometry
+  // count changes: a region that gains or loses the declared body's primitives
+  // is adjudicating against something materially different, and a producer whose
+  // measurement started failing mid-goal would otherwise be silent (CLAUDE.md
+  // §1.4). The count is stable across the 30 Hz heartbeat, so this stays a
+  // transition line rather than a stream; the standing state is on the 1 Hz
+  // `/diagnostics` `place_region` key.
+  if (!was_valid || was_geometry != place_region_.n_geometry) {
     RCLCPP_INFO(this->get_logger(),
                 "safety.place_region_armed target=%s object_mask=0x%x half_m=%g,%g,%g "
-                "allowance_m=%g rskill=%s trace=%s",
+                "allowance_m=%g geometry=%zu rskill=%s trace=%s",
                 declaration.target_id.c_str(), static_cast<unsigned>(object_mask), half.x, half.y,
                 half.z, place_approach_allowance_cap(voxel_grid_.resolution),
-                declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+                place_region_.n_geometry, declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str());
   }
 }
 

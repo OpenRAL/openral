@@ -277,6 +277,13 @@ private:
   /// reduced margin can name the declaration that reduced it (HZ-0097-2
   /// mitigation 1); nothing branches on it.
   PlaceApproachRegion place_region_{};
+  /// Backing store for `place_region_.geometry` (ADR-0098). Sized once at
+  /// configure to `kMaxPlaceTargetPrimitives` and never resized, so the view the
+  /// region hands the hot path can never dangle behind a reallocation; the
+  /// scratch is the by-name decode of the same list, reused across messages so
+  /// the ingest allocates nothing per world-state beat.
+  std::vector<AttachedPrimitive> place_geometry_;
+  std::vector<AttachedPrimitiveInput> place_geometry_scratch_;
   std::int64_t place_declaration_stamp_ns_{0};
   double place_declaration_timeout_s_{0.0};
   std::string place_declaration_target_;

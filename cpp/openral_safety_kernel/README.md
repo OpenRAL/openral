@@ -567,6 +567,65 @@ delta. In particular:
   ages out in the kernel's own clock while the stream stays fresh, and the very
   next candidate stops on the cell the allowance had been clearing).
 
+**The declared target's own geometry, so the payload is measured against the
+receptacle rather than against the cubes it was quantised into (ADR-0098,
+collision-safety survey Path B).** The allowance above is a bound on
+*quantisation error*, applied blind: the region box says WHERE the declared
+receptacle is and never WHAT it is, so every cell inside it gets the same
+`min(1.5 × voxel, 40 mm)` whether the declared body put that cell there or not.
+That is why the survey measured the mechanism binding on only 2 of 15 stops —
+the route out is not a better checker but a better world model.
+
+`openral_msgs/PlaceRegion` therefore carries a second, optional field:
+`geometry`, the declared target's own `AttachedCollisionPrimitive`s posed in the
+region's frame. Empty — the default, and what every producer that cannot measure
+geometry publishes — is byte-for-byte the pre-ADR-0098 behaviour. When it is
+present, a cell inside the region is adjudicated against the modelled body:
+`place_target_distance` measures the payload against the declared primitives
+with the same certified routines every other check uses, and the gate for that
+pair moves to the surface.
+
+* **The standoff margin does not apply to the body the robot was dispatched to
+  touch.** A margin is a standoff for geometry the robot must *not* touch; the
+  declared target is the one body in the map it was sent to place into, so it is
+  gated as an intended-contact pair at zero clearance — the negatable per-pair
+  margin contract Tesseract's `ContactAllowedValidator` and MoveIt's
+  `touch_links` both express (survey §17.2, §3.2). This is not an exemption: the
+  pair still trips at the surface, the advisory band still covers the
+  millimetres of arrival overshoot, and past the band the latched stop is
+  unchanged (`…TheStandoffMarginDoesNotApplyToTheBodyItWasDispatchedToTouch`).
+* **Against truth this is strictly more conservative than the box alone.** The
+  blanket allowance lets the payload sit 37.5 mm inside a cube whose near face
+  may be a whole voxel in front of the real surface, so what it permits against
+  the real body is unknowable. This permits penetration of the real body of
+  zero (`…NeverLetsThePayloadReachTheModelledSurface`).
+* **Against the cube it is looser, and bounded.** It is looser by exactly the
+  amount the cube over-stated the surface, and never by more than the blanket
+  allowance already in force: the modelled distance is substituted only while
+  `d_target <= d_cell + allowance`. A model claiming more clearance than the
+  map's own quantisation could explain — a primitive fitted too small, an
+  articulated door measured in a pose it has since left — is refused outright and
+  the pair falls back to the blanket path bit for bit
+  (`…GeometryClaimingMoreClearanceThanTheCapFallsBackToTheBox`).
+* **The evidence names the body, not the cell.** `CollisionHit::
+  place_target_adjudicated` marks a pair whose distance is to the declared
+  geometry, and the node reports it as `place:<target_id>#<cell>` instead of
+  `voxel_<cell>`. Quoting one geometry's distance under another's identity is
+  what `CollisionHit` forbids and what #187 landed to stop
+  (`…ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody`).
+* **The same fail-closed posture, one notch stricter.** A malformed shape or a
+  list past `kMaxPlaceTargetPrimitives` (64, matching
+  `openral_core.PlaceRegion.MAX_GEOMETRY_PRIMITIVES`) refuses the **whole
+  region**, not just the geometry: a producer that names a target and then
+  describes it with a shape the kernel cannot measure is not one whose box is
+  trusted either (#142/#146). Half a receptacle is a worse model than none,
+  because the missing half would be adjudicated as if it were not there
+  (`…TheIngestRefusesWhatItCannotMeasure`).
+* **Everything undeclared keeps the voxel grid.** Arm-vs-world, payload-vs-world
+  outside the region, and any payload the declaration does not name are all
+  untouched — the geometry only ever refines the pairs the allowance already
+  covered.
+
 **Past the allowance there is now one more outcome, and it is a refusal rather
 than a latch (issue #176).** The allowance above is calibrated for a payload
 *reaching* its support through a voxel-inflated opening. A payload that has
@@ -644,10 +703,10 @@ Three events, and the reason is always the real one:
 
 | Line | Severity | When |
 | --- | --- | --- |
-| `safety.place_region_armed` | INFO | a validated region goes live (on the transition) |
+| `safety.place_region_armed` | INFO | a validated region goes live (on the transition); `geometry=<n>` says how many declared-target primitives armed with it, `0` being the pre-ADR-0098 box-only case. Re-emitted when that count changes, because a region that gains or loses the declared body is adjudicating against something materially different |
 | `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed` |
 | `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
-| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume` |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
 
 Two rules keep them honest. **The reason is the branch that fired**
 (`place_region_status_reason`), not a category: `reason=bounds` used to label
@@ -656,8 +715,9 @@ before the grasp. And **a refusal is announced on its (reason, target)
 transition**, not per message — the attachment set is heartbeated at 30 Hz and a
 refusal is normally a standing state, which round-8 recorded as 672–811 identical
 warnings per run. The standing state is instead readable on the 1 Hz
-`/diagnostics` `place_region` key (`live:<target>`, `expired:<target>`,
-`<reason>:<target>`, or `-`). A pre-grasp declaration is *not* a fault — the
+`/diagnostics` `place_region` key (`live:<target>:geom=<n>`,
+`expired:<target>:geom=<n>`, `<reason>:<target>`, or `-`; `geom` is the count of
+declared-target primitives armed with the region, `0` for the box-only case). A pre-grasp declaration is *not* a fault — the
 margins in force are exactly the undeclared ones — so it is INFO, and it is still
 logged once, because an allowance that never armed has to be reconstructible from
 the trace (HZ-0097-2 mitigation 1).

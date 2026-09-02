@@ -2496,6 +2496,15 @@ class PlaceRegion(BaseModel):
         evidence_ref: What the producer measured the box from, for
             attributability (HZ-0097-2/4). Free text, never parsed.
         stamp_ns: Producer timestamp.
+        geometry: The declared target's own collision primitives, each posed in
+            :attr:`frame_id` (ADR-0098, survey Path B). Empty — the default, and
+            what every producer that cannot measure geometry publishes — leaves
+            the region behaving exactly as it did before ADR-0098. Supplying it
+            lets the kernel adjudicate a cell against the modelled surface
+            instead of against the 25 mm cube that quantised it, bounded so that
+            it can never be more permissive than the box alone: the kernel uses
+            the modelled distance only while it is within the blanket allowance
+            that cell would have been granted anyway.
 
     Example:
         >>> region = PlaceRegion(
@@ -2518,12 +2527,21 @@ class PlaceRegion(BaseModel):
     #: Ceiling on the box's volume — a 2 m cube. Same reasoning, applied to the
     #: product rather than to any single side.
     MAX_VOLUME_M3: ClassVar[float] = 8.0
+    #: Ceiling on :attr:`geometry`, and the same number the safety kernel's own
+    #: ``kMaxPlaceTargetPrimitives`` enforces — one bound, declared twice, so a
+    #: region that validates here cannot overflow there. A producer whose
+    #: declared subtree carries more primitives than this publishes **no**
+    #: geometry and keeps the box, rather than publishing a truncated body: half
+    #: a receptacle is a worse model than none, because the missing half would
+    #: be adjudicated as if it were not there.
+    MAX_GEOMETRY_PRIMITIVES: ClassVar[int] = 64
 
     frame_id: str = Field(min_length=1)
     pose: Pose6D
     half_extents: tuple[float, float, float]
     evidence_ref: str = ""
     stamp_ns: int = Field(default=0, ge=0)
+    geometry: tuple[AttachedCollisionPrimitive, ...] = ()
 
     @model_validator(mode="after")
     def _validate_region(self) -> PlaceRegion:
@@ -2543,6 +2561,20 @@ class PlaceRegion(BaseModel):
                 f"PlaceRegion volume {self.volume_m3()!r} m^3 exceeds the "
                 f"{self.MAX_VOLUME_M3} m^3 bound; a declaration names one receptacle, not a room."
             )
+        if len(self.geometry) > self.MAX_GEOMETRY_PRIMITIVES:
+            raise ValueError(
+                f"PlaceRegion.geometry carries {len(self.geometry)} primitives, past the "
+                f"{self.MAX_GEOMETRY_PRIMITIVES} the safety kernel will accept. Publish the "
+                "region with no geometry rather than a truncated body."
+            )
+        for primitive in self.geometry:
+            if primitive.pose_in_object.frame_id != self.frame_id:
+                raise ValueError(
+                    f"PlaceRegion.geometry primitive is posed in "
+                    f"{primitive.pose_in_object.frame_id!r}, not the region's own "
+                    f"{self.frame_id!r}. Target geometry is posed in the region frame, not "
+                    "relative to the region box."
+                )
         return self
 
     def volume_m3(self) -> float:
@@ -2570,10 +2602,31 @@ class PlaceRegion(BaseModel):
             half_extents=(float(half.x), float(half.y), float(half.z)),
             evidence_ref=str(msg.evidence_ref),  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            geometry=tuple(
+                AttachedCollisionPrimitive.from_idl(item, object_id=str(msg.frame_id))  # type: ignore[attr-defined]
+                for item in msg.geometry  # type: ignore[attr-defined]
+            ),
         )
 
-    def fill_idl(self, msg: object) -> None:
-        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+    def fill_idl(
+        self, msg: object, *, primitive_factory: Callable[[], object] | None = None
+    ) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS.
+
+        Args:
+            msg: A duck-typed ``openral_msgs/PlaceRegion`` to populate in place.
+            primitive_factory: Builds one empty ``AttachedCollisionPrimitive``
+                message. Required only when :attr:`geometry` is non-empty —
+                dispatch never measures geometry, so its publication path never
+                needs one.
+
+        Raises:
+            ROSConfigError: :attr:`geometry` is non-empty and no
+                ``primitive_factory`` was supplied. Dropping the geometry
+                silently would leave the kernel adjudicating a declared target
+                it was told nothing about, which reads on the wire exactly like
+                a producer that measured nothing.
+        """
         msg.frame_id = self.frame_id  # type: ignore[attr-defined]
         msg.pose.position.x = float(self.pose.xyz[0])  # type: ignore[attr-defined]
         msg.pose.position.y = float(self.pose.xyz[1])  # type: ignore[attr-defined]
@@ -2587,6 +2640,18 @@ class PlaceRegion(BaseModel):
         msg.half_extents.z = float(self.half_extents[2])  # type: ignore[attr-defined]
         msg.evidence_ref = self.evidence_ref  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.geometry = []  # type: ignore[attr-defined]
+        if self.geometry and primitive_factory is None:
+            raise ROSConfigError(
+                f"PlaceRegion for {self.frame_id!r} carries {len(self.geometry)} target "
+                "primitives but fill_idl was given no primitive_factory to encode them. "
+                "Publishing the region without its geometry is indistinguishable on the wire "
+                "from a producer that measured none."
+            )
+        for primitive in self.geometry:
+            item = primitive_factory()  # type: ignore[misc]  # reason: guarded above
+            primitive.fill_idl(item)
+            msg.geometry.append(item)  # type: ignore[attr-defined]
 
 
 class PlaceDeclaration(BaseModel):
@@ -2736,8 +2801,18 @@ class PlaceDeclaration(BaseModel):
             ),
         )
 
-    def fill_idl(self, msg: object) -> None:
-        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+    def fill_idl(
+        self, msg: object, *, primitive_factory: Callable[[], object] | None = None
+    ) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS.
+
+        Args:
+            msg: A duck-typed ``openral_msgs/PlaceDeclaration`` to populate.
+            primitive_factory: Forwarded to :meth:`PlaceRegion.fill_idl`; needed
+                only when the region carries the declared target's own geometry
+                (ADR-0098). Dispatch never measures geometry, so its publication
+                path never needs one.
+        """
         msg.target_id = self.target_id  # type: ignore[attr-defined]
         msg.object_id = self.object_id  # type: ignore[attr-defined]
         msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
@@ -2747,7 +2822,10 @@ class PlaceDeclaration(BaseModel):
         msg.active = bool(self.active)  # type: ignore[attr-defined]
         msg.region_valid = self.region is not None  # type: ignore[attr-defined]
         if self.region is not None:
-            self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
+            self.region.fill_idl(
+                msg.region,  # type: ignore[attr-defined]
+                primitive_factory=primitive_factory,
+            )
 
 
 class SupportContactWitness(BaseModel):
@@ -9733,6 +9811,13 @@ class SensorDeployBinding(BaseModel):
 # reader schemas (and their `SensorReaderBackend` enum) define here rather than
 # up at `SensorSpec`. Resolve that annotation now that the target exists.
 SensorSpec.model_rebuild()
+# `PlaceRegion.geometry` names `AttachedCollisionPrimitive`, which this module
+# defines several hundred lines BELOW `PlaceRegion` — the place-phase schemas
+# were written before a declared target carried geometry. `from __future__
+# import annotations` defers the annotation; this resolves it. `PlaceDeclaration`
+# embeds a `PlaceRegion`, so it is rebuilt with it.
+PlaceRegion.model_rebuild()
+PlaceDeclaration.model_rebuild()
 
 
 class HalConfig(BaseModel):

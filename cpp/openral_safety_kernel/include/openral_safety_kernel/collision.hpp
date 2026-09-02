@@ -307,6 +307,16 @@ inline constexpr double kMaxPlaceRegionHalfExtentM = 1.5;
 /// fail-closed direction as `kMaxPlaceRegionHalfExtentM`.
 inline constexpr double kMaxPlaceRegionVolumeM3 = 8.0;
 
+/// Ceiling on the primitive count of a declared target's own geometry
+/// (ADR-0098). Matches `openral_core.PlaceRegion.MAX_GEOMETRY_PRIMITIVES` — one
+/// bound declared on both sides of the wire, so a region the schema accepts can
+/// never overflow the kernel. A list past this refuses the WHOLE region rather
+/// than truncating it: half a receptacle is a worse model than none, because the
+/// missing half would be adjudicated as if it were not there.
+inline constexpr std::size_t kMaxPlaceTargetPrimitives = 64;
+
+struct AttachedPrimitive;
+
 /// The producer-supplied region of a live place declaration (ADR-0097's
 /// 2026-08-14 amendment), lowered into the kernel's own frame convention: an
 /// oriented box whose `pose` is expressed in the **robot base frame** — the same
@@ -325,11 +335,21 @@ inline constexpr double kMaxPlaceRegionVolumeM3 = 8.0;
 /// `valid == false` — no declaration, a retracted or expired one, a region the
 /// producer never supplied, or one that failed `ingest_place_region` — means no
 /// allowance anywhere, i.e. behaviour identical to before the amendment.
+///
+/// `geometry` is the ADR-0098 half: the declared target's OWN primitives, posed
+/// in the robot base frame, so a cell inside the box can be adjudicated against
+/// the modelled surface instead of against the 25 mm cube that quantised it.
+/// It is a **view** — the node owns the buffer, exactly as it owns
+/// `VoxelGrid::occupancy` — and `nullptr` / `n_geometry == 0` is the ordinary
+/// case for every producer that measures a box but no geometry, in which the
+/// region behaves precisely as it did before ADR-0098.
 struct PlaceApproachRegion {
   bool valid{false};            ///< a live, validated region is in force
   std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
   Transform pose{};             ///< region box centre pose, robot base frame
   Vec3 half_extents{};          ///< region box half-extents (m, all > 0)
+  const AttachedPrimitive* geometry{nullptr};  ///< declared target's own geometry, base frame
+  std::size_t n_geometry{0};                   ///< primitives in `geometry` (0 = box only)
 };
 
 /// Outcome of a place-region ingest attempt (`ingest_place_region`).
@@ -352,6 +372,8 @@ enum class PlaceRegionStatus : std::uint8_t {
   kDegenerate = 4,      ///< half-extent <= 0: a box with no interior licenses nothing
   kOversize = 5,        ///< a side past kMaxPlaceRegionHalfExtentM
   kOversizeVolume = 6,  ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
+  kBadGeometry = 7,     ///< a declared-target primitive with a malformed shape (ADR-0098)
+  kGeometryOverflow = 8,  ///< more target primitives than kMaxPlaceTargetPrimitives
 };
 
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
@@ -429,6 +451,12 @@ struct CollisionHit {
   double sweep_min_distance{0.0};  ///< minimum over every checked pair, gated or exempted
   bool place_allowance_active{false};  ///< the reported pair's margin was reduced by the allowance
   bool advisory{false};                ///< refusable without a latch (see above)
+  /// The reported distance is to the declared place target's OWN geometry
+  /// (ADR-0098), not to the occupied cell `link_b` indexes. Set only on a pair
+  /// the declaration's shipped geometry adjudicated; the caller names the
+  /// declared target rather than the cell, so the evidence can never quote one
+  /// geometry's distance under another's identity.
+  bool place_target_adjudicated{false};
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -821,6 +849,36 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
 /// change, not an exemption: a cell deeper than the reduced margin still stops the robot, and the
 /// reported distance is the cell's true distance.
 ///
+/// When that declaration also ships the target's own geometry (ADR-0098,
+/// survey Path B), a cell it covers is instead **adjudicated against the
+/// modelled body**: the pair's distance becomes `place_target_distance` and the
+/// gate moves to the surface itself, with `place_target_adjudicated` set so the
+/// caller names the declared target rather than the cell. A margin is a standoff
+/// for geometry the robot must not touch, and the declared target is the one
+/// body in the map it was dispatched to touch, so it is gated as an
+/// intended-contact pair at zero clearance — the contract Tesseract's negatable
+/// per-pair margins and MoveIt's `touch_links` both express (survey §17.2,
+/// §3.2). The advisory band still covers arrival overshoot; past it the latched
+/// stop is unchanged.
+///
+/// Two bounds carry the safety argument, and they point in opposite directions
+/// on purpose:
+///
+/// 1. Against **truth**, this is strictly more conservative than the blanket
+///    allowance it refines. The blanket lets the payload sit `allowance` inside
+///    a cube whose near face may be a whole voxel in front of the real surface,
+///    so what it permits against the real body is unknowable; this permits
+///    penetration of the real body of zero.
+/// 2. Against the **cube**, it is looser — by exactly the amount the cube
+///    over-stated the surface, and never by more than the blanket allowance
+///    already in force. The substitution is taken only while
+///    `d_target <= d_cell + allowance`; a model claiming more clearance than the
+///    map's own quantisation could explain (a primitive fitted too small, a
+///    stale articulated door) is refused and the pair falls back to the blanket
+///    path bit for bit.
+///
+/// A declaration with no geometry is byte-for-byte the pre-ADR-0098 path.
+///
 /// Two — and only two — exemptions can spare a cell outright, both bounded:
 ///
 /// 1. **Support-contact witness** (ADR-0092 D6): object `i` carries a World
@@ -889,6 +947,39 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
 /// hot path (once per world-state message).
 PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_extents,
                                       std::uint8_t object_mask, PlaceApproachRegion& out) noexcept;
+
+/// Lower the declared target's OWN collision geometry into an already-validated
+/// `region` (ADR-0098, collision-safety survey Path B).
+///
+/// Split from `ingest_place_region` because the two answer different questions:
+/// the box says *where* the declared receptacle is, this says *what it is*. Call
+/// it only after the box validated; on anything but `kOk` the caller must reset
+/// the whole region — a producer that cannot describe the target it declared is
+/// not one whose box is trusted either (#142/#146), and the fail-closed
+/// direction here is no allowance at all, not a silent downgrade to box-only.
+///
+/// `store` must already be sized to at least `kMaxPlaceTargetPrimitives`; this
+/// fills its first N entries and points `region.geometry` at it, so the buffer
+/// has to outlive every check that reads the region. An empty `geometry` is the
+/// ordinary case and leaves `region` exactly as `ingest_place_region` left it.
+/// Rejects a malformed shape (`kBadGeometry`) and a list past the cap
+/// (`kGeometryOverflow`). Not on the hot path.
+PlaceRegionStatus ingest_place_target_geometry(const std::vector<AttachedPrimitiveInput>& geometry,
+                                               std::vector<AttachedPrimitive>& store,
+                                               PlaceApproachRegion& region) noexcept;
+
+/// Exact surface distance from one attached payload primitive (base frame
+/// `prim_xf`) to the declared place target's own geometry — `+infinity` when the
+/// declaration ships none, which is what makes "no geometry" collapse to the
+/// pre-ADR-0098 behaviour at every call site without a branch.
+///
+/// This is the mm-resolution half of survey Path B. The voxel grid can only
+/// answer "is this 25 mm cube occupied"; the declared body answers "how far is
+/// the payload from the receptacle it was declared to be placed into", against
+/// the same certified primitive routines every other check in this header uses.
+/// Allocation-free.
+double place_target_distance(const PlaceApproachRegion& region, const AttachedPrimitive& prim,
+                             const Transform& prim_xf) noexcept;
 
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's place-region log lines. Never null; unknown values read `unknown`.

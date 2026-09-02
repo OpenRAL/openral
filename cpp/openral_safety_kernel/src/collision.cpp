@@ -947,7 +947,8 @@ namespace {
 // the −5 mm pair earned. A hard trip therefore outranks an advisory one at any
 // depth; within one severity, the deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
-               bool allowance_active = false, bool advisory = false) noexcept {
+               bool allowance_active = false, bool advisory = false,
+               bool place_target_adjudicated = false) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -963,6 +964,7 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
     hit.min_distance = d;
     hit.place_allowance_active = allowance_active;
     hit.advisory = advisory;
+    hit.place_target_adjudicated = place_target_adjudicated;
   }
 }
 
@@ -1615,6 +1617,12 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       // The cell distance runs in the grid's axes; the place region and the
       // support attestation are declared in `base_frame` and keep that centre.
       const Transform prim_g = compose(grid_from_base, prim_xf);
+      // ADR-0098 (survey Path B): the declared target's own geometry, measured
+      // once per payload primitive rather than once per cell — the receptacle
+      // does not move between cells of the same sweep. `+infinity` whenever the
+      // declaration ships no geometry, which is what collapses every use below
+      // to the pre-ADR-0098 path without a second branch.
+      const double target_distance = place_target_distance(grid.place_region, prim, prim_xf);
       const CellBox box = primitive_cell_box(prim, prim_g, grid, margin + band_m + half_side);
       for (int iz = box.z0; iz <= box.z1; ++iz) {
         for (int iy = box.y0; iy <= box.y1; ++iy) {
@@ -1626,7 +1634,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             const Vec3 center = voxel_center(grid, ix, iy, iz);
             Transform voxel;
             voxel.t = voxel_center_local(grid, ix, iy, iz);
-            const double d = attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
+            const double d_cell = attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
             // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
             // amendment): inside the declared target's region this payload's
             // margin — and only this payload's, and only for cells in that
@@ -1642,7 +1650,48 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             // decision anyone made; erring onto the stop is the safe reading,
             // and a picometre is thirteen orders below the lattice it is
             // measured on.
-            const double cell_margin = margin - allowance + kGateTieEpsilonM;
+            double d = d_cell;
+            double cell_margin = margin - allowance + kGateTieEpsilonM;
+            bool adjudicated = false;
+            // ADR-0098 (survey Path B). The blanket allowance above hands the
+            // SAME relief to every cell inside the declared box, whether or not
+            // the declared body is what put the cell there — it is a bound on
+            // quantisation error, applied blind, because the box says WHERE the
+            // receptacle is and never WHAT it is. When the producer ships the
+            // target's geometry the kernel does not have to be blind: it
+            // measures the payload against the receptacle itself.
+            //
+            // The gate then moves to the surface. A margin is a standoff for
+            // geometry the robot must not touch, and the declared target is the
+            // one body in the map it was dispatched to touch — so it is gated as
+            // an INTENDED-CONTACT pair at zero clearance, the contract
+            // Tesseract's negatable per-pair margins and MoveIt's `touch_links`
+            // both express (survey §17.2, §3.2). The advisory band below still
+            // covers the millimetres of arrival overshoot, and past the band the
+            // latched stop is exactly the one it always was.
+            //
+            // Two bounds, and the whole safety argument is in them:
+            //
+            //  1. Against TRUTH this is strictly MORE conservative than the
+            //     blanket. The blanket lets the payload sit `allowance` inside a
+            //     cube whose near face may be a whole voxel in front of the real
+            //     surface, so what it permits against the real body is
+            //     unknowable. This permits penetration of the real body of zero.
+            //  2. Against the CUBE it is looser, by exactly the amount the cube
+            //     over-stated the surface — and never by more than the blanket
+            //     allowance already in force, which is what the `<=` guard
+            //     enforces. A model claiming more clearance than the map's own
+            //     quantisation could explain (a primitive fitted too small, a
+            //     stale articulated door) is refused outright, and the pair falls
+            //     back to the blanket path bit for bit.
+            //
+            // Outside the branch — no geometry, or a model past that bound —
+            // nothing changes at all.
+            if (allowance > 0.0 && target_distance <= d_cell + allowance) {
+              d = target_distance;
+              cell_margin = kGateTieEpsilonM;
+              adjudicated = true;
+            }
             // Gate: a cell within the (possibly reduced) margin trips unless one
             // of the two bounded exemptions explains it — a live support-contact
             // witness (physical, index-free, quantisation-aware) or the payload's
@@ -1690,7 +1739,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 cell_margin - place_advisory_depth(grid.resolution) - kGateTieEpsilonM;
             const bool advisory = tripped && allowance > 0.0 && d > advisory_floor;
             fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx),
-                      allowance > 0.0, advisory);
+                      allowance > 0.0, advisory, adjudicated);
           }
         }
       }
@@ -1769,6 +1818,80 @@ PlaceRegionStatus ingest_place_region(const Transform& pose, const Vec3& half_ex
   return PlaceRegionStatus::kOk;
 }
 
+PlaceRegionStatus ingest_place_target_geometry(const std::vector<AttachedPrimitiveInput>& geometry,
+                                               std::vector<AttachedPrimitive>& store,
+                                               PlaceApproachRegion& region) noexcept {
+  region.geometry = nullptr;
+  region.n_geometry = 0;
+  if (geometry.empty()) {
+    return PlaceRegionStatus::kOk;  // a box with no geometry: the ADR-0097 path
+  }
+  if (geometry.size() > kMaxPlaceTargetPrimitives || store.size() < geometry.size()) {
+    return PlaceRegionStatus::kGeometryOverflow;
+  }
+  for (std::size_t g = 0; g < geometry.size(); ++g) {
+    const AttachedPrimitiveInput& in = geometry[g];
+    // Identical shape sanity to `ingest_attached_objects`, and for the identical
+    // reason: a primitive the kernel cannot measure against is one it would
+    // silently treat as absent, and an absent half of a receptacle is exactly
+    // the geometry a payload would then be cleared to drive through.
+    if (in.kind == AttachedShapeKind::kBox) {
+      if (!(std::isfinite(in.half_extents.x) && std::isfinite(in.half_extents.y) &&
+            std::isfinite(in.half_extents.z)) ||
+          in.half_extents.x <= 0.0 || in.half_extents.y <= 0.0 || in.half_extents.z <= 0.0) {
+        return PlaceRegionStatus::kBadGeometry;
+      }
+    } else if (!std::isfinite(in.radius) || in.radius <= 0.0 || !std::isfinite(in.half_length) ||
+               in.half_length < 0.0) {
+      return PlaceRegionStatus::kBadGeometry;
+    }
+    if (!std::isfinite(in.pose_in_object.t.x) || !std::isfinite(in.pose_in_object.t.y) ||
+        !std::isfinite(in.pose_in_object.t.z)) {
+      return PlaceRegionStatus::kBadGeometry;
+    }
+    for (std::size_t k = 0; k < 9; ++k) {
+      if (!std::isfinite(in.pose_in_object.r[k])) {
+        return PlaceRegionStatus::kBadGeometry;
+      }
+    }
+    AttachedPrimitive& out = store[g];
+    out.kind = in.kind;
+    out.radius = in.radius;
+    out.half_length = in.half_length;
+    out.half_extents = in.half_extents;
+    // The declared target's primitives are posed in the region's frame — the
+    // robot base frame — not relative to the region box and not in an object
+    // frame that would need composing. `pose_in_object` is the wire field's
+    // name; here it already IS the base-frame pose.
+    out.pose_in_object = in.pose_in_object;
+  }
+  region.geometry = store.data();
+  region.n_geometry = geometry.size();
+  return PlaceRegionStatus::kOk;
+}
+
+double place_target_distance(const PlaceApproachRegion& region, const AttachedPrimitive& prim,
+                             const Transform& prim_xf) noexcept {
+  if (!region.valid || region.geometry == nullptr || region.n_geometry == 0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double minimum = std::numeric_limits<double>::infinity();
+  for (std::size_t g = 0; g < region.n_geometry; ++g) {
+    const AttachedPrimitive& target = region.geometry[g];
+    // Both operands are already base-frame, so this is the same certified
+    // primitive-pair arithmetic every other check in this file runs — no coal,
+    // no EPA, no hot-path allocation (survey §4.1).
+    const double d =
+        target.kind == AttachedShapeKind::kBox
+            ? attached_primitive_voxel_distance(prim, prim_xf, target.pose_in_object,
+                                                target.half_extents)
+            : attached_primitive_capsule_distance(prim, prim_xf, target.pose_in_object,
+                                                  target.radius, target.half_length);
+    minimum = std::min(minimum, d);
+  }
+  return minimum;
+}
+
 const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
   switch (status) {
   case PlaceRegionStatus::kOk:
@@ -1785,6 +1908,10 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
     return "oversize";
   case PlaceRegionStatus::kOversizeVolume:
     return "oversize_volume";
+  case PlaceRegionStatus::kBadGeometry:
+    return "bad_geometry";
+  case PlaceRegionStatus::kGeometryOverflow:
+    return "geometry_overflow";
   }
   return "unknown";
 }
