@@ -9,12 +9,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -974,6 +976,256 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictiveCatchesChunkDrivingEeIntoWal
       << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
   EXPECT_EQ(safe_count.load(), 0)
       << "the colliding Cartesian chunk must never reach /openral/safe_action";
+}
+
+namespace {
+
+// Pull a JSON number array (`"key":[a,b,c]`) out of the kernel's evidence_json.
+// `evidence_field` above stops at the first comma, which is inside the array.
+std::vector<double> evidence_doubles(const std::string& json, const std::string& key) {
+  const std::string needle = "\"" + key + "\":[";
+  const std::size_t at = json.find(needle);
+  if (at == std::string::npos) {
+    return {};
+  }
+  const std::size_t begin = at + needle.size();
+  const std::size_t end = json.find(']', begin);
+  if (end == std::string::npos) {
+    return {};
+  }
+  std::vector<double> out;
+  std::istringstream in(json.substr(begin, end - begin));
+  std::string token;
+  while (std::getline(in, token, ',')) {
+    out.push_back(std::stod(token));
+  }
+  return out;
+}
+
+// The planar 2R arm + fixed EE link of the predictive test above, with the
+// voxel wall at y>=1.3. Shared by the stop and its replay so the replay is
+// adjudicating against the same geometry the stop did — the point of the test.
+std::vector<rclcpp::Parameter> planar_2r_predictive_params() {
+  return {
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-3.14, -3.14}},
+      {"joint_position_max", std::vector<double>{3.14, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{8192}},
+      {"collision_n_links", std::int64_t{3}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0, 1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1, 1, 0}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1, -1}},
+      {"collision_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.05, 0.05}},
+      {"collision_capsule_origin_xyzrpy",
+       std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"l0", "l1", "ee"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "j1"}},
+      {"collision_state_deadline_ms", 2000.0},
+      {"collision_ee_link_index", std::int64_t{2}},
+      {"collision_predict_lambda", 0.02},
+      {"collision_predict_margin_growth_m", 0.0},  // isolate the config, not the margin
+      {"collision_predict_max_steps", std::int64_t{0}},
+  };
+}
+
+// The voxel wall of the predictive test: every cell with centre y>=1.3.
+openral_msgs::msg::OccupancyVoxels wall_voxels() {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.resolution = 0.1;
+  vox.size_x = 20;
+  vox.size_y = 20;
+  vox.size_z = 3;
+  vox.origin.x = 0.0;
+  vox.origin.y = 0.0;
+  vox.origin.z = -0.15;
+  vox.occupancy.assign(static_cast<std::size_t>(vox.size_x) * vox.size_y * vox.size_z, 0);
+  for (std::uint32_t iz = 0; iz < vox.size_z; ++iz) {
+    for (std::uint32_t iy = 0; iy < vox.size_y; ++iy) {
+      const double cy = vox.origin.y + (iy + 0.5) * vox.resolution;
+      if (cy >= 1.3) {
+        for (std::uint32_t ix = 0; ix < vox.size_x; ++ix) {
+          vox.occupancy[ix + vox.size_x * (iy + vox.size_y * iz)] = 1;
+        }
+      }
+    }
+  }
+  return vox;
+}
+
+}  // namespace
+
+// A PREDICTIVE stop's verdict is about a configuration that exists in no other
+// artifact: it is the kernel's own damped-least-squares integration of the
+// chunk, at the kernel's lambda and its seed dt. Adjudicating such a stop
+// against the measured joints therefore reads geometry the kernel never
+// checked — the drawer-opening run that motivated this reported two links
+// -5.34 mm apart while offline mesh adjudication at the *recorded* joints put
+// the same pair +53 mm clear, and the disagreement was the artifact's, not the
+// kernel's.
+//
+// So the evidence must carry the configuration it was measured at, and carry
+// it exactly. The proof runs in the kernel's own arithmetic rather than a
+// reimplementation of it: replay the captured configuration through a second,
+// identically configured kernel as a JOINT_POSITION row, and require the same
+// pair and the same distance to 1e-8.
+TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItAdjudicated) {
+  const auto vox = wall_voxels();
+
+  rclcpp::Node helper("evidence_config_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  std::string evidence_json;
+  rclcpp::QoS failure_qos(rclcpp::KeepLast(10));
+  failure_qos.reliable();
+  // KIND_COLLISION only. The fail-closed `unavailable()` paths publish their
+  // own FailureTrigger (KIND_CONTROLLER) on this same topic, and a seed or a
+  // grid that loses the discovery race produces one — latching that instead
+  // would leave `horizon_step` empty and `std::stoi` throwing.
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", failure_qos,
+      [&evidence_json](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        if (evidence_json.empty() &&
+            msg->kind == openral_msgs::msg::FailureTrigger::KIND_COLLISION) {
+          evidence_json = msg->evidence_json;
+        }
+      });
+
+  // ── The stop: a CARTESIAN_DELTA chunk driving the EE into the wall. ────────
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(planar_2r_predictive_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_evidence_config", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  const std::vector<double> seed{0.0, 1.57079632679};
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0", "j1"};
+  js.position = seed;
+
+  openral_msgs::msg::ActionChunk cart;
+  cart.control_mode = 5;  // CARTESIAN_DELTA
+  cart.horizon = 10;
+  cart.n_dof = 6;
+  for (int s = 0; s < 10; ++s) {
+    cart.flat.insert(cart.flat.end(), {0.0, 0.05, 0.0, 0.0, 0.0, 0.0});
+  }
+
+  // Establish the seed + grid BEFORE any candidate arrives. A Cartesian chunk
+  // reaching the kernel without a fresh measured state is refused
+  // `state_unavailable` (fail-closed, `lifecycle_kernel.cpp`), which is the
+  // right behaviour and the wrong event for this test to race against.
+  auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_FALSE(node->fault_latched()) << "start config must be clear (reactive must not fire)";
+
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(cart);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_FALSE(evidence_json.empty()) << "the predicted trajectory enters the wall — must estop";
+  const std::string stop_evidence = evidence_json;
+  // Published as a gtest property so `tests/unit/fixtures/` can hold a REAL
+  // predictive payload rather than a hand-written one (same convention as
+  // `kernel_reactive_collision_evidence.json`).
+  RecordProperty("predictive_collision_evidence_json", stop_evidence);
+  const int step = std::stoi(evidence_field(stop_evidence, "horizon_step"));
+  ASSERT_GE(step, 0) << "this must be a predicted step, not the reactive floor: " << stop_evidence;
+
+  const std::vector<double> q = evidence_doubles(stop_evidence, "joint_positions_rad");
+  ASSERT_EQ(q.size(), seed.size()) << stop_evidence;
+  // The recorded configuration is the PREDICTED one. If it were the measured
+  // seed the record would be describing a pose the kernel found clear, which
+  // is the whole defect: the start config passes the reactive check.
+  EXPECT_GT(std::hypot(q[0] - seed[0], q[1] - seed[1]), 1e-6)
+      << "the evidence recorded the measured seed, not the configuration it "
+         "adjudicated: "
+      << stop_evidence;
+
+  exec.remove_node(node->get_node_base_interface());
+  node.reset();
+
+  // ── The replay: the captured configuration, as a position row. ────────────
+  rclcpp::NodeOptions replay_opts;
+  replay_opts.parameter_overrides(planar_2r_predictive_params());
+  auto replay =
+      std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_evidence_replay", replay_opts);
+  ASSERT_EQ(replay->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(replay->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  exec.add_node(replay->get_node_base_interface());
+
+  openral_msgs::msg::ActionChunk pos;
+  pos.control_mode = 0;  // JOINT_POSITION — FK'd directly, no reconstruction
+  pos.horizon = 1;
+  pos.n_dof = 2;
+  pos.flat = {q[0], q[1]};
+
+  // Same discipline for the replay kernel: it is brand new, so give its voxel
+  // subscription time to match before a candidate can trip `voxel_unavailable`.
+  seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < seed_deadline) {
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  evidence_json.clear();
+  deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(pos);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_FALSE(evidence_json.empty())
+      << "the recorded configuration must reproduce the stop it was recorded for";
+  EXPECT_EQ(evidence_field(evidence_json, "link_a"), evidence_field(stop_evidence, "link_a"))
+      << evidence_json << " vs " << stop_evidence;
+  EXPECT_EQ(evidence_field(evidence_json, "link_b_or_object"),
+            evidence_field(stop_evidence, "link_b_or_object"))
+      << evidence_json << " vs " << stop_evidence;
+  EXPECT_NEAR(std::stod(evidence_field(evidence_json, "min_distance_m")),
+              std::stod(evidence_field(stop_evidence, "min_distance_m")), 1e-8)
+      << "the verdict must be re-derivable from the recorded configuration alone: " << evidence_json
+      << " vs " << stop_evidence;
+
+  exec.remove_node(replay->get_node_base_interface());
 }
 
 // The first predicted step uses the configured collision margin. Margin growth

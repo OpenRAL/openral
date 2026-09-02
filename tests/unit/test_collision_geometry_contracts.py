@@ -39,6 +39,13 @@ _KERNEL_REACTIVE_EVIDENCE = (
     Path(__file__).parent / "fixtures" / "kernel_reactive_collision_evidence.json"
 )
 
+#: A real ``FailureTrigger.evidence_json`` captured from the same kernel's
+#: PREDICTIVE (Jacobian look-ahead) check. Provenance + reproduction command in
+#: the sibling ``.SOURCE.txt``.
+_KERNEL_PREDICTIVE_EVIDENCE = (
+    Path(__file__).parent / "fixtures" / "kernel_predictive_collision_evidence.json"
+)
+
 
 # ── CollisionShape discriminated union ────────────────────────────────────────
 
@@ -178,6 +185,46 @@ def test_kernel_reactive_collision_evidence_validates() -> None:
     assert decoded.horizon_step == CollisionEvidence.REACTIVE_HORIZON_STEP == -1
     assert decoded.is_reactive
     assert decoded.min_distance_m == -0.05
+    # Recorded before the kernel carried its configuration: the field is a
+    # backward-compatible addition, so an old payload still validates and says
+    # so by being empty rather than by failing to decode.
+    assert decoded.joint_positions_rad == []
+
+
+def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -> None:
+    """A REAL predictive payload carries the *predicted* configuration, exactly.
+
+    A predicted step's configuration is the kernel's own damped-least-squares
+    integration of the chunk, at its lambda and its seed dt — it exists in no
+    other artifact. Without it a predictive stop can only be adjudicated
+    against the measured joints, which is a different pose: the drawer-opening
+    run that motivated this reported ``panda_link2`` vs ``panda_link5`` at
+    -5.34 mm while offline mesh adjudication at the recorded joints put the
+    same pair +53 mm clear.
+
+    The precision assertion is the second half of the contract. The kernel
+    serializes at ``max_digits10``; the default 6 significant digits would
+    round these angles to ~1e-6 rad, millimetres of end-effector error at a
+    metre of reach — the scale the evidence exists to adjudicate at.
+    """
+    payload = _KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
+    decoded = TypeAdapter(FailureEvidence).validate_json(payload)
+    assert isinstance(decoded, CollisionEvidence)
+    assert decoded.horizon_step == 5
+    assert not decoded.is_reactive
+    assert decoded.joint_positions_rad == [0.29982877677088093, 1.2524345104800854]
+    # Not the measured seed the chunk started from — that config passed.
+    assert decoded.joint_positions_rad[1] != 1.57079632679
+    # The precision pin. Comparing the parsed payload to the parsed model would
+    # be a tautology — both sides run the same correctly-rounded strtod, so it
+    # passes just as happily on a six-digit payload. What has to be shown is
+    # that the recorded text carries information the old serializer destroyed:
+    # every value differs from its own six-significant-digit rounding.
+    for value in [*decoded.joint_positions_rad, decoded.min_distance_m]:
+        assert float(f"{value:.6g}") != value, (
+            f"{value!r} survives a 6-significant-digit round trip, so this "
+            "fixture cannot distinguish max_digits10 from the old default"
+        )
 
 
 def test_collision_evidence_rejects_below_reactive_sentinel() -> None:

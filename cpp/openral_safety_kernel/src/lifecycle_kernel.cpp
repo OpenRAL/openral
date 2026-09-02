@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 
 #include <opentelemetry/common/attribute_value.h>
@@ -777,6 +779,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // baseline) — is logged under its own `sweep_min_distance_m` key and its
       // own span attribute, and deliberately stays out of the evidence
       // payload's `min_distance_m`.
+      //
+      // The evidence also carries `q_fk_` — the configuration the hit was
+      // measured at. `report` is only ever reached from `check_config`, right
+      // after that config was FK'd, so this is the geometry the verdict is
+      // about and nothing else can be. A predicted step's configuration is
+      // reconstructible from no other artifact (it depends on the kernel's own
+      // DLS Jacobian, its lambda and its dt), and the drawer-opening stop that
+      // opened this issue was adjudicated against the *measured* joints, where
+      // the two links it named sit 53 mm apart.
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         ++chunks_dropped_;
@@ -793,7 +804,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (hit.advisory && advisory_refusals_ < place_advisory_max_consecutive_) {
           ++advisory_refusals_;
           last_drop_reason_ = "collision_advisory";
-          publish_collision_failure(*msg, kind, a, b, step, hit.min_distance);
+          publish_collision_failure(*msg, kind, a, b, step, hit.min_distance, q_fk_);
           RCLCPP_WARN(this->get_logger(),
                       "safety.collision_advisory kind=%s a=%s b=%s step=%d min_distance_m=%g "
                       "sweep_min_distance_m=%g place_target=%s consecutive=%llu/%llu "
@@ -815,7 +826,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         last_drop_reason_ = "collision";
         fault_latch_ = true;
         last_estop_at_ = std::chrono::steady_clock::now();
-        publish_collision_failure(*msg, kind, a, b, step, hit.min_distance);
+        publish_collision_failure(*msg, kind, a, b, step, hit.min_distance, q_fk_);
         set_safety_status(true, openral_msgs::msg::SafetyStatus::KIND_COLLISION, kind,
                           msg->rskill_id, msg->trace_id);
         std_msgs::msg::Empty estop_msg;
@@ -1607,7 +1618,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
 
 void SafetyKernelLifecycleNode::publish_collision_failure(
     const openral_msgs::msg::ActionChunk& chunk, const char* collision_kind,
-    const std::string& link_a, const std::string& link_b, int horizon_step, double min_distance) {
+    const std::string& link_a, const std::string& link_b, int horizon_step, double min_distance,
+    const std::vector<double>& joint_positions) {
   openral_msgs::msg::FailureTrigger trigger;
   trigger.header.stamp = this->now();
   trigger.kind = openral_msgs::msg::FailureTrigger::KIND_COLLISION;
@@ -1616,10 +1628,22 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   trigger.trace_id = chunk.trace_id;
 
   // Shape matches openral_core.CollisionEvidence (kind="collision").
+  // `max_digits10` is load-bearing, not tidiness: the default 6 significant
+  // digits round a joint angle to ~1e-6 rad, which at a metre of reach is
+  // millimetres of end-effector error — the same order as the distances this
+  // evidence exists to adjudicate. Every number here must round-trip exactly.
   std::ostringstream oss;
+  oss << std::setprecision(std::numeric_limits<double>::max_digits10);
   oss << R"({"kind":"collision","collision_kind":")" << collision_kind << R"(","link_a":")"
       << link_a << R"(","link_b_or_object":")" << link_b << R"(","horizon_step":)" << horizon_step
-      << R"(,"min_distance_m":)" << min_distance << "}";
+      << R"(,"min_distance_m":)" << min_distance << R"(,"joint_positions_rad":[)";
+  for (std::size_t i = 0; i < joint_positions.size(); ++i) {
+    if (i != 0) {
+      oss << ',';
+    }
+    oss << joint_positions[i];
+  }
+  oss << "]}";
   trigger.evidence_json = oss.str();
   failure_pub_->publish(trigger);
 }

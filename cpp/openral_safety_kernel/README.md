@@ -153,6 +153,30 @@ attribute. `sweep_min_distance_m <= min_distance_m` always. A large gap between
 the two means something deep is being tolerated on purpose — usually a grasped
 payload's own occupancy residue — not that the stop was deep.
 
+### Collision evidence: and the configuration it was measured at
+
+The payload also carries `joint_positions_rad`: the configuration forward
+kinematics was run on for the reported `horizon_step`, in the envelope's dof
+order with mobile-base dofs zeroed (the arm is checked in `base_link`). It is
+the same vector `check_config` FK'd, captured where the hit is reported, so it
+cannot describe a different pose than the verdict does.
+
+This matters most for a **predicted** step, whose configuration exists in no
+other artifact: it is the kernel's own damped-least-squares Jacobian
+integration of the candidate chunk, at this kernel's `collision_predict_lambda`
+and its `collision_seed_dt_s`. Adjudicating such a stop against the measured
+joints reads geometry the kernel never checked — the drawer-opening run that
+motivated the field reported two links 5.34 mm interpenetrating while offline
+mesh adjudication at the *recorded* joints put the same pair 53 mm apart.
+
+Every number in the payload is serialized at `max_digits10` and round-trips to
+the identical double. That is a requirement, not tidiness: the default six
+significant digits round a joint angle to ~1e-6 rad, which at a metre of reach
+is millimetres of end-effector error — the same order as the distances this
+evidence exists to adjudicate. An empty array means a record predating the
+field: a kernel that reports a collision necessarily has a model loaded (the
+whole block is behind that gate) and its FK buffer is always `n_dof` long.
+
 The W3C `traceparent` carried on `ActionChunk.trace_id` is extracted
 with the stock propagator and used as the parent context, so each
 `safety.check` span is a child of the producer's `rskill.tick`.

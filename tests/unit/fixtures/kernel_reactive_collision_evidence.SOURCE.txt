@@ -19,6 +19,16 @@ kernel reports with the `horizon_step: -1` sentinel — see
 `check_config(q_check_.data(), -1)  // step -1 = measured state` in
 `src/lifecycle_kernel.cpp`, serialized by `publish_collision_failure()`.
 
+PROVENANCE NOTE (2026-08-31): this payload was captured BEFORE the kernel
+recorded the configuration it adjudicated, so it carries no
+`joint_positions_rad` and its numbers are at the old 6-significant-digit
+default. Re-running the command above now emits the field, and
+`min_distance_m: -0.050000000000000003` at `max_digits10`. The file is kept
+verbatim on purpose: it is the in-tree specimen of a pre-field record, and
+`test_kernel_reactive_collision_evidence_validates` asserts that such a record
+still decodes and reads back an empty array. The post-change shape is pinned
+separately by `kernel_predictive_collision_evidence.json`.
+
 Kernel log line for the same event:
     safety.collision kind=world a=ee b=voxel_189 step=-1 min_distance_m=-0.05
     mode=5 rskill_id=reactive_evidence_skill

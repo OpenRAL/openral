@@ -1061,6 +1061,26 @@ def _extract_priority(metadata_json: str) -> int:
     return DEFAULT_PROMPT_PRIORITY
 
 
+#: Longest a list-valued evidence field may render before the one-line prompt
+#: summary drops it from the object and discloses it as a trailing
+#: ``+<field>[<n>]`` marker instead.
+#:
+#: The summary sorts its keys and truncates at 120 characters, so one bulk
+#: field silently pushes every field after it off the end.
+#: ``CollisionEvidence.joint_positions_rad`` sorts before ``link_a`` and on a
+#: 7-dof arm at full precision renders 130 characters — the entire budget —
+#: leaving the reasoner's replanning ladder a joint vector and no idea which
+#: links collided. An *empty* list is dropped for the same reason: the reactive
+#: collision line already rendered at exactly 120 characters, so even ``[]``
+#: costs it ``min_distance_m``.
+#:
+#: Short arrays stay inline, because for ``SuppressedSummaryEvidence`` the
+#: parallel arrays *are* the roll-up. Joint vectors are for offline
+#: adjudication (they exist so a stop can be replayed); a prompt needs the
+#: identities and the distance.
+_PROMPT_FIELD_BUDGET = 48
+
+
 def _summarise_evidence_json(payload: str) -> str:
     """Return a one-line summary of a FailureEvidence payload.
 
@@ -1077,8 +1097,18 @@ def _summarise_evidence_json(payload: str) -> str:
             return f"evidence={json.dumps(json.loads(payload), sort_keys=True)[:120]}"
         except Exception:
             return f"evidence={payload[:120]!r}"
-    summary_fields = {k: v for k, v in evidence.model_dump().items() if k not in {"kind"}}
-    return f"evidence={json.dumps(summary_fields, sort_keys=True)[:120]}"
+    dumped = {k: v for k, v in evidence.model_dump().items() if k != "kind"}
+    omitted = {
+        k: len(v)
+        for k, v in dumped.items()
+        if isinstance(v, list) and (not v or len(json.dumps(v)) > _PROMPT_FIELD_BUDGET)
+    }
+    summary_fields = {k: v for k, v in dumped.items() if k not in omitted}
+    summary = f"evidence={json.dumps(summary_fields, sort_keys=True)[:120]}"
+    # Disclosed after the truncation, never inside it (CLAUDE.md §1.4): a
+    # dropped field must be visible as dropped, but it must not be what pushes
+    # the identities out of the line.
+    return summary + "".join(f" +{k}[{n}]" for k, n in sorted(omitted.items()) if n)
 
 
 # Suppress unused-import — TypeAdapter import for PerceptionEventMetadata is
