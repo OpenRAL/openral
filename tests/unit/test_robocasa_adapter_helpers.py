@@ -521,7 +521,8 @@ def test_synthesize_laser_scan_2d_excludes_whole_robot_tree() -> None:
     chassis collision geometry lives on ``mobilebase0_wheeled_base`` — a
     *child* of the excluded ``mobilebase0_base`` root. A single-body
     ``bodyexclude`` only dropped the (geomless) root, so every one of the
-    360 beams hit the wheeled base at ~0.13-0.54 m (below ``range_min``),
+    360 beams hit the wheeled base at ~0.13-0.54 m (below the 0.55 m
+    ``range_min`` of the day, since lowered to the sensor minimum by #194),
     starving slam_toolbox and leaving it publishing an empty 0x0 ``/map``.
 
     Here the chassis cylinder (0.30 m radius) sits on a child

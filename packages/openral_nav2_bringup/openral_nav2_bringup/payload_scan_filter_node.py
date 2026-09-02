@@ -37,10 +37,12 @@ real-hardware counterpart, and this repo has no lidar driver, no lidar launch
 file and no manifest field that could carry one. On real hardware a 2-D lidar
 mounted on the base *does* see the chassis, the mast and the arm, and an
 unfiltered self-return becomes a costmap obstacle that never clears: the base
-ends up believing it is surrounded by itself. The only knob in the repo today
-is ``panda_mobile``'s ``range_min_m: 0.55``, a blunt radial cutoff that also
-deletes every real obstacle inside 0.55 m in every direction. This node
-replaces it with a shaped one.
+ends up believing it is surrounded by itself. Until #194 the only knob in the repo
+was ``panda_mobile``'s ``range_min_m: 0.55``, a blunt radial cutoff that also
+deleted every real obstacle inside 0.55 m in every direction. This node
+replaced it with a shaped one, and #194 then lowered that field to the sensor
+minimum (0.05 m) — so this filter is now the ONLY self-exclusion on the
+hardware path, and its fail-closed behaviour is what the near field rests on.
 
 **The two halves fail in opposite-looking directions, and that is the point.**
 For the payload, the dangerous mistake is *not removing* — a payload left in

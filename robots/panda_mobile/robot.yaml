@@ -443,9 +443,26 @@ sensors:
   # (which injects these as HAL ROS params) and the HAL lifecycle node
   # (which seeds its ``scan_*`` parameter defaults) read these values
   # via ``RobotDescription.lidar_sensor`` instead of hardcoding them.
-  # ``range_min_m`` filters near-field self-hits on the robot chassis in
-  # composed kitchen MJCFs; it is the primary SLAM-quality tuning knob
-  # (see the Nav2 generic mobile-base properties convention's known limitations) — retune in sim if the map is noisy.
+  # ``range_min_m`` is the SENSOR's own minimum, not a self-filter — the same
+  # meaning it carries on ``front_depth`` below. It read 0.55 m until #194:
+  # a blunt radial cutoff sized to hide a chassis whose circumscribed radius is
+  # 0.43 m, which also deleted every REAL obstacle inside 0.55 m in every
+  # direction, in the one band where Nav2 has the least room to react.
+  #
+  # Nothing needs it to be the self-filter any more. In sim the robot never
+  # enters ``/scan`` at all: ``synthesize_laser_scan_2d`` compares each
+  # ``mj_ray`` hit's ``body_rootid`` against the base body's and re-casts past
+  # its own kinematic tree (identity, not distance). On real hardware
+  # ``payload_scan_filter_node`` (packages/openral_nav2_bringup) drops a beam
+  # only when its endpoint, transformed into ``base_link``, lies inside this
+  # manifest's own ``footprint_polygon`` — a shaped proof, fail-closed: a
+  # missing TF, an unreadable manifest or a degenerate polygon removes NOTHING.
+  #
+  # Accepted consequence of the lower value: a bringup that runs neither of
+  # those (a manifest-less Nav2 launch degrades the self half to "remove
+  # nothing" by design) will now see the chassis in its own costmap. That is
+  # the conservative direction — more obstacles, never fewer — and it is the
+  # trade this field is no longer allowed to make silently.
   - name: "base_scan"
     modality: "lidar_2d"
     # The lidar's OWN frame, with its mount pose carried in TF — not
@@ -468,7 +485,7 @@ sensors:
     static_transform_xyz_rpy: [0.0, 0.0, -0.40, 0.0, 0.0, 0.0]
     rate_hz: 10.0
     n_channels: 360
-    range_min_m: 0.55
+    range_min_m: 0.05
     range_max_m: 12.0
     vendor: "sim"
     model: "robocasa_mj_ray"
