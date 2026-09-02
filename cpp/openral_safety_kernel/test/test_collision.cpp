@@ -662,21 +662,24 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   c.origin = identity();
   m.capsule_link = {0, 1, 2};
   m.capsules = {c, c, c};
-  // A box on link 0 exercises the box↔capsule / box↔box paths under the counter.
+  // Boxes on links 0 and 2 exercise the box↔capsule AND box↔box paths under the
+  // counter; the wide-margin call below drives that box pair through
+  // `refine_self_pair`, the branch that puts two `TightPose` on the stack.
   osk::Obb obb;
   obb.half_extents = {0.05, 0.05, 0.05};
   obb.origin = identity();
-  m.box_link = {0};
-  m.boxes = {obb};
-  // Tight geometry on that box drives the staged narrow phase -- the 26-DOP
+  m.box_link = {0, 2};
+  m.boxes = {obb, obb};
+  // Tight geometry on those boxes drives the staged narrow phase -- the 26-DOP
   // hoist, the GJK simplex and its witness -- under the same counter. GJK is
   // the one routine here that could plausibly want a heap: its stack-only
   // fixed-size simplex is a design constraint, not an accident, and this is
   // where it is pinned.
   std::vector<osk::Vec3> tight_verts;
-  m.hulls = {axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, tight_verts)};
+  m.hulls = {axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, tight_verts),
+             axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, tight_verts)};
   m.hull_vertices = tight_verts;
-  m.box_hull = {0};
+  m.box_hull = {0, 1};
   m.allowed_pairs = {{0, 1}, {1, 2}};
 
   osk::CollisionScratch scratch;
@@ -707,9 +710,13 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   for (int i = 0; i < 10000; ++i) {
     osk::forward_kinematics(m, qpos.data(), qpos.size(), scratch);
     const auto self_hit = osk::check_self_collision(m, scratch, 0.0);
+    // A margin wide enough that every box pair fires, so the hull refinement
+    // runs rather than being skipped by the cheap bound.
+    const auto refined_hit = osk::check_self_collision(m, scratch, 1.0);
     const auto world_hit = osk::check_world_collision(m, scratch, world, 0.0);
     const auto voxel_hit = osk::check_voxel_collision(m, scratch, grid, 0.0);
     (void)self_hit;
+    (void)refined_hit;
     (void)world_hit;
     (void)voxel_hit;
   }
@@ -4600,4 +4607,208 @@ TEST(OrientedGrid, TheRotationIsLoadBearingAndNotDecorative) {
   const auto misread = osk::check_voxel_collision(m, s, as_if_aligned, 0.0);
   EXPECT_NE(found.link_b, misread.link_b)
       << "reading the same grid without its rotation must not name the same cell";
+}
+
+// ── issue #191: self-collision at exact-hull fidelity ────────────────────────
+//
+// The OBB cannot separate a pair of interleaving links. On the shipped
+// `panda_mobile`, `panda_link5` <-> `panda_link7` has the boxes overlapping on
+// 86.38 % of the pair's (joint6, joint7) grid while the real geometry
+// interpenetrates on 6.60 %, and no margin separates the populations: the
+// deepest real collision sits at a box gap of -8.37 mm, the shallowest false
+// one at -36.64 mm. That is why the pair shipped ACM-exempted "under protest"
+// from PR #169 until `check_self_collision` learned to re-ask the hulls.
+//
+// The fixtures below reproduce that RELATIONSHIP rather than that geometry: two
+// thin plates, each sitting inside a fat box, offset so the boxes overlap and
+// the plates do not. The 152/102-vertex Panda hulls themselves are verified
+// against their source meshes in `tests/unit/test_collision_tight_geometry.py`,
+// and the pair's live verdict through the real kernel node in
+// `tests/sim/safety/test_kernel_panda_link5_link7.py`.
+namespace {
+
+// Two links, each carrying a 0.20 x 0.08 x 0.08 m box refined by a 10 mm-thick
+// plate hull. The plates lie against opposite faces of their boxes in y (link 0
+// at y = +0.035, link 1 at y = -0.035), so the boxes can interpenetrate while
+// the plates pass 60 mm clear of each other -- the OBB's corner slop standing
+// in for the Panda's wrist. `link1_origin` places the second link.
+osk::CollisionModel interleaving_plates_model(const osk::Transform& link1_origin, bool with_hulls,
+                                              std::vector<osk::Vec3>& verts) {
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {identity(), link1_origin};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  const osk::Vec3 box_half{0.10, 0.04, 0.04};
+  const osk::Vec3 plate_half{0.10, 0.005, 0.04};
+  m.box_link = {0, 1};
+  m.boxes = {osk::Obb{box_half, identity()}, osk::Obb{box_half, identity()}};
+  if (!with_hulls) {
+    return m;  // no tight geometry: `refine_self_pair` must leave the box alone
+  }
+  for (const double offset : {0.035, -0.035}) {
+    osk::LinkHull hull = axis_aligned_box_hull(plate_half, verts);
+    for (int i = 0; i < hull.vertex_count; ++i) {
+      verts[static_cast<std::size_t>(hull.vertex_first + i)].y += offset;
+    }
+    // Re-state the slabs around the shifted plate; the DOP must still contain it.
+    for (int i = 0; i < osk::kDopAxes; ++i) {
+      const double shift = osk::kDopAxis[i][1] * offset;
+      hull.dop_lo[i] += shift;
+      hull.dop_hi[i] += shift;
+    }
+    m.hulls.push_back(hull);
+  }
+  m.hull_vertices = verts;
+  m.box_hull = {0, 1};
+  return m;
+}
+
+// A hull vertex in the base frame.
+osk::Vec3 place(const osk::Transform& xf, const osk::Vec3& p) {
+  return osk::Vec3{xf.t.x + xf.r[0] * p.x + xf.r[1] * p.y + xf.r[2] * p.z,
+                   xf.t.y + xf.r[3] * p.x + xf.r[4] * p.y + xf.r[5] * p.z,
+                   xf.t.z + xf.r[6] * p.x + xf.r[7] * p.y + xf.r[8] * p.z};
+}
+
+}  // namespace
+
+TEST(SelfCollisionHull, TheHullVerdictReplacesTheBoxVerdictWhenTheyDisagree) {
+  // Frames 0.19 m apart along x: the two boxes interpenetrate by 10 mm, while
+  // the plates inside them pass 60 mm clear in y. This is the whole of #191 in
+  // two assertions -- the box says stop, the geometry says go, and the kernel
+  // must believe the geometry.
+  const osk::Transform link1 = translate(0.19, 0.0, 0.0);
+  std::vector<osk::Vec3> verts;
+  const osk::CollisionModel boxes_only = interleaving_plates_model(link1, false, verts);
+  osk::CollisionScratch s;
+  s.link_world.resize(2);
+  osk::forward_kinematics(boxes_only, nullptr, 0, s);
+
+  const auto by_box = osk::check_self_collision(boxes_only, s, 0.0);
+  EXPECT_TRUE(by_box.hit) << "the boxes overlap; without hulls this pair stops";
+  EXPECT_NEAR(by_box.min_distance, -0.01, 1e-9);
+
+  std::vector<osk::Vec3> hull_verts;
+  const osk::CollisionModel with_hulls = interleaving_plates_model(link1, true, hull_verts);
+  const auto by_hull = osk::check_self_collision(with_hulls, s, 0.0);
+  EXPECT_FALSE(by_hull.hit) << "the exact geometry is 60 mm apart; the refined check must clear";
+  EXPECT_NEAR(by_hull.sweep_min_distance, 0.06, 1e-6)
+      << "and it must report the true hull gap, not the box's bound";
+}
+
+TEST(SelfCollisionHull, ARealOverlapStillStopsWithHullsDeclared) {
+  // The direction that matters for safety: refining must not turn a genuine
+  // interpenetration into a clear. Lifting link 1 by 70 mm in y slides its plate
+  // onto link 0's, so the two plates now occupy the same slab.
+  std::vector<osk::Vec3> verts;
+  const osk::CollisionModel m = interleaving_plates_model(translate(0.19, 0.07, 0.0), true, verts);
+  osk::CollisionScratch s;
+  s.link_world.resize(2);
+  osk::forward_kinematics(m, nullptr, 0, s);
+
+  const auto hit = osk::check_self_collision(m, s, 0.0);
+  EXPECT_TRUE(hit.hit) << "overlapping hulls must stop";
+  // On overlap the GJK returns the caller's `box_box_distance`, which is the
+  // more conservative of the two numbers -- never less negative than the truth.
+  EXPECT_LE(hit.min_distance, 0.0);
+}
+
+TEST(SelfCollisionHull, RefinementIsSkippedEntirelyWhenTheBoxesAlreadyClear) {
+  // The cheap bound stays the gate: a pair the boxes separate never reaches the
+  // hulls, so its reported distance is the box's, unchanged from before #191.
+  const osk::Transform link1 = translate(0.30, 0.0, 0.0);
+  std::vector<osk::Vec3> boxed_verts;
+  std::vector<osk::Vec3> hull_verts;
+  const osk::CollisionModel boxes_only = interleaving_plates_model(link1, false, boxed_verts);
+  const osk::CollisionModel with_hulls = interleaving_plates_model(link1, true, hull_verts);
+  osk::CollisionScratch s;
+  s.link_world.resize(2);
+  osk::forward_kinematics(boxes_only, nullptr, 0, s);
+
+  const auto by_box = osk::check_self_collision(boxes_only, s, 0.0);
+  const auto by_hull = osk::check_self_collision(with_hulls, s, 0.0);
+  EXPECT_FALSE(by_box.hit);
+  EXPECT_FALSE(by_hull.hit);
+  EXPECT_EQ(by_box.sweep_min_distance, by_hull.sweep_min_distance)
+      << "declaring tight geometry must not move a verdict the boxes already settled";
+}
+
+TEST(SelfCollisionHull, AStageOneOnlyLinkKeepsTheBoxBound) {
+  // `panda_link1` ships a 26-DOP with no stage-2 hull (1588 vertices, over
+  // `kMaxTightHullVertices`). A pair with such a link has nothing to refine
+  // against, and must come back with the box's answer rather than a silently
+  // weaker one.
+  std::vector<osk::Vec3> verts;
+  osk::CollisionModel m = interleaving_plates_model(translate(0.19, 0.0, 0.0), true, verts);
+  m.hulls[1].vertex_count = 0;  // link 1 becomes stage 1 only
+  osk::CollisionScratch s;
+  s.link_world.resize(2);
+  osk::forward_kinematics(m, nullptr, 0, s);
+
+  const auto hit = osk::check_self_collision(m, s, 0.0);
+  EXPECT_TRUE(hit.hit) << "with nothing to refine against, the box verdict stands";
+  EXPECT_NEAR(hit.min_distance, -0.01, 1e-9);
+}
+
+TEST(SelfCollisionHull, HullHullDistanceIsSandwichedBetweenItsOwnBounds) {
+  // The soundness property the refinement rests on, swept rather than
+  // spot-checked. `box_box_distance` is NOT ground truth here -- it is a
+  // 15-axis SAT *lower* bound, and beating it is the whole point -- so the
+  // answer is bracketed instead, by two quantities that need no solver:
+  //
+  //   box_box_distance  <=  true distance  <=  min over vertex pairs |v_a - v_b|
+  //
+  // The left inequality is the shipped conservatism (a value below it would be
+  // a needless E-stop); the right is the one that matters for safety, since any
+  // pair of points inside the two hulls upper-bounds the distance between them.
+  // Reporting above it would be reporting clearance that does not exist.
+  std::vector<osk::Vec3> verts;
+  const osk::Vec3 plate{0.01, 0.04, 0.04};
+  const osk::LinkHull a = axis_aligned_box_hull(plate, verts);
+  const osk::LinkHull b = axis_aligned_box_hull(plate, verts);
+
+  int separated = 0;
+  int overlapping = 0;
+  int strictly_tighter = 0;
+  for (int i = 0; i < 200; ++i) {
+    const osk::Transform xf_a = identity();
+    osk::Transform xf_b = rotated_pose(i);
+    xf_b.t.x += 0.02 + 0.0006 * i;  // sweep from deep overlap out to well clear
+    osk::TightPose pose_a;
+    osk::TightPose pose_b;
+    osk::tight_pose_init(a, verts.data(), xf_a, 0.0, pose_a);
+    osk::tight_pose_init(b, verts.data(), xf_b, 0.0, pose_b);
+    const double sat = osk::box_box_distance(xf_a, plate, xf_b, plate);
+    const double got = osk::hull_hull_distance(pose_a, pose_b, 0.0, sat);
+
+    double vertex_min = std::numeric_limits<double>::infinity();
+    for (int ia = 0; ia < a.vertex_count; ++ia) {
+      const osk::Vec3 pa = place(xf_a, verts[static_cast<std::size_t>(a.vertex_first + ia)]);
+      for (int ib = 0; ib < b.vertex_count; ++ib) {
+        const osk::Vec3 pb = place(xf_b, verts[static_cast<std::size_t>(b.vertex_first + ib)]);
+        vertex_min = std::min(vertex_min, std::sqrt((pa.x - pb.x) * (pa.x - pb.x) +
+                                                    (pa.y - pb.y) * (pa.y - pb.y) +
+                                                    (pa.z - pb.z) * (pa.z - pb.z)));
+      }
+    }
+
+    EXPECT_GE(got, sat - 1e-12) << "pose " << i << ": below the shipped SAT bound";
+    EXPECT_LE(got, vertex_min + 1e-9) << "pose " << i << ": reported clearance that cannot exist";
+    if (sat > 0.0) {
+      ++separated;
+      if (got > sat + 1e-9) {
+        ++strictly_tighter;
+      }
+    } else {
+      EXPECT_EQ(got, sat) << "pose " << i << ": overlap must return the caller's bound";
+      ++overlapping;
+    }
+  }
+  EXPECT_GT(separated, 20) << "the sweep must actually reach separated poses";
+  EXPECT_GT(overlapping, 0) << "and overlapping ones";
+  EXPECT_GT(strictly_tighter, 0)
+      << "if GJK never beat the SAT bound the refinement would buy nothing";
 }

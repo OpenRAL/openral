@@ -622,11 +622,29 @@ real self-collision that the box envelopes cannot distinguish from an artifact a
 any margin, so it stays exempt under protest. Tighter geometry is the only thing
 that retires it.
 
+**Retired 2026-09-02 by [issue #191](https://github.com/OpenRAL/openral/issues/191),
+and this section called it correctly.** Tighter geometry was indeed the only
+thing that could — but not the tighter *box* §8.2 proposes: the corner-reach
+reduction available there is 7.5 mm on link5 and 1.9 mm on link7 (§4.3's table)
+against the ~28 mm the separation needs. What retired it is the exact hull, via
+the [staged narrow phase](collision-hull-narrow-phase.md) extended from world
+voxels to self-pairs. The convexity column in §4.3 is why it works: link5 and
+link7 are convex to 1e-4 in volume ratio, so `conv(mesh)` **is** the mesh and the
+hull's verdict is the mesh's. Over the pair's full `(joint6, joint7)` grid the
+false-positive population goes from 11 680 of 14 641 poses to **zero**.
+
 **8.5 Fix `urdf_lowering.lower_link_geometry`'s mesh path regardless.** It still
 emits a PCA capsule for a mesh collision, which the table measures at 96–112 mm
 of protrusion against the shipped boxes' 27–76 mm. Re-lowering `panda_mobile`
 from its URDF today would inflate the envelope slop by up to 2.1× and silently undo
 #103. Whether or not §8.2 ever lands, a mesh should lower to a box.
+
+> **This is not hypothetical, and #191 hit it.** `render_cumotion_config` was
+> sourcing its collision spheres from `LoweredCollisionModel.collision_geometry`
+> — i.e. from exactly this PCA-capsule path — rather than from the manifest the
+> kernel checks, so "plan-time and kernel-time share one source of truth" was
+> untrue for every hand-authored box manifest. It now prefers the manifest. The
+> lowering path itself is still unfixed.
 
 ---
 

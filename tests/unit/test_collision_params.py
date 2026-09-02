@@ -230,7 +230,7 @@ def test_tight_geometry_lowers_csr_parallel_to_the_box_arrays() -> None:
     box_hull = params["collision_box_hull"]
     assert len(box_hull) == len(params["collision_box_link"])
     n_hulls = sum(1 for h in box_hull if h >= 0)
-    assert n_hulls == 2, "link1 and link2 -- the scope the study recommends"
+    assert n_hulls == 4, "link1 + link2 (world side) and link5 + link7 (the self pair, #191)"
     assert sorted(h for h in box_hull if h >= 0) == list(range(n_hulls)), (
         "hull indices must be dense and unique; a repeated index would silently share "
         "one link's geometry with another"
@@ -255,8 +255,9 @@ def test_tight_geometry_lowers_csr_parallel_to_the_box_arrays() -> None:
     assert cursor == n_vertices
 
     # link1 is stage 1 only (1588-vertex hull, over the kernel's cost budget);
-    # link2 ships its exact 152-vertex hull.
-    assert sorted(params["collision_hull_vertex_count"]) == [0, 152]
+    # link2 and link5 ship their exact 152-vertex hulls and link7 its 102-vertex
+    # one -- the two the self-collision refinement needs (#191).
+    assert sorted(params["collision_hull_vertex_count"]) == [0, 102, 152, 152]
 
 
 def test_no_tight_geometry_lowers_exactly_as_before() -> None:

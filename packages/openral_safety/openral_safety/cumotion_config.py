@@ -40,6 +40,7 @@ __all__ = [
     "capsule_to_spheres",
     "link_collision_spheres",
     "render_cumotion_config",
+    "sphere_model_geometry",
     "spheres_for_capsule",
 ]
 
@@ -152,6 +153,53 @@ def link_collision_spheres(
     return capsule_to_spheres(p0, p1, radius, count=n)
 
 
+def sphere_model_geometry(
+    geoms: list[LinkCollisionGeometry],
+) -> dict[str, LinkCollisionGeometry]:
+    """Each link as the **capsule cuRobo's spheres actually cover**, by link name.
+
+    :func:`link_collision_spheres` samples spheres along
+    :func:`~openral_safety.kernel_predicates.bounding_capsule_segment`, so this is
+    the geometry the planner checks — strictly larger than the kernel's box, and
+    therefore a *different* collision model with a different allowed-collision
+    matrix. Handing it back as :class:`LinkCollisionGeometry` lets
+    :func:`~openral_safety.urdf_lowering.acm_for_geometry` decide that matrix
+    with the same proof it uses for the kernel's.
+
+    A link that is already a capsule or a sphere is returned unchanged.
+
+    Returns:
+        ``{link_name: geometry}`` where every box has become its bounding capsule.
+    """
+    out: dict[str, LinkCollisionGeometry] = {}
+    for geom in geoms:
+        if not isinstance(geom.shape, BoxShape):
+            out[geom.link_name] = geom
+            continue
+        p0, p1, radius = bounding_capsule_segment(geom.shape, geom.origin_xyz_rpy)
+        dx, dy, dz = (b - a for a, b in zip(p0, p1, strict=True))
+        length = math.sqrt(dx * dx + dy * dy + dz * dz)
+        # A capsule's axis is its local +Z, so name the rotation that sends +Z
+        # there: roll is free (the shape is a surface of revolution), and
+        # `Rz(yaw)·Ry(pitch)` sends +Z to `(cos y·sin p, sin y·sin p, cos p)`.
+        flat = math.hypot(dx, dy)
+        yaw = math.atan2(dy, dx) if flat > 0.0 else 0.0
+        pitch = math.atan2(flat, dz) if length > 0.0 else 0.0
+        out[geom.link_name] = LinkCollisionGeometry(
+            link_name=geom.link_name,
+            shape=CapsuleShape(radius_m=radius, length_m=length),
+            origin_xyz_rpy=(
+                (p0[0] + p1[0]) / 2.0,
+                (p0[1] + p1[1]) / 2.0,
+                (p0[2] + p1[2]) / 2.0,
+                0.0,
+                pitch,
+                yaw,
+            ),
+        )
+    return out
+
+
 def actuated_joint_names(robot: RobotDescription) -> list[str]:
     """The robot's single-DOF movable joint names, in manifest order.
 
@@ -164,7 +212,9 @@ def actuated_joint_names(robot: RobotDescription) -> list[str]:
 _SPHERE_DP = 6
 
 
-def render_cumotion_config(robot: RobotDescription, model: LoweredCollisionModel) -> str:
+def render_cumotion_config(
+    robot: RobotDescription, model: LoweredCollisionModel, *, urdf_path: str | None = None
+) -> str:
     """Render a cuRobo ``robot_cfg`` fragment from a lowered collision model.
 
     Emits the collision geometry cuMotion needs — per-link ``collision_spheres``
@@ -176,15 +226,42 @@ def render_cumotion_config(robot: RobotDescription, model: LoweredCollisionModel
     geometry; they are intentionally left out and added when validated against a
     live cuRobo install. The header documents this.
 
+    **The ACM is not simply copied.** The manifest's matrix is decided against
+    the *kernel's* geometry, and the spheres emitted here are strictly larger
+    than that (:func:`sphere_model_geometry`), so a pair the kernel can separate
+    may be always-colliding for the planner. ``panda_link5`` <-> ``panda_link7``
+    is exactly that pair: the kernel separates it at exact-hull fidelity (issue
+    #191) while the spheres overlap at **100.00 %** of its (joint6, joint7)
+    grid, the shallowest by 1.03 mm. Copying the kernel's matrix would hand
+    cuRobo a self-collision constraint that rejects the arm's own ``ready`` pose.
+    Given ``urdf_path``, this re-runs
+    :func:`~openral_safety.urdf_lowering.acm_for_geometry` against the sphere
+    geometry and unions the result in, so the planner's model stays **looser**
+    than the kernel's — never tighter, which is the only safe direction for a
+    planner (PR #169). Without it the manifest's matrix is used as-is and the
+    header says so.
+
     Args:
         robot: The robot manifest (provides ``base_frame`` and joints).
         model: The lowered collision model (capsule geometry + ACM).
+        urdf_path: Concrete on-disk URDF, for re-deriving the ACM against the
+            emitted sphere geometry. Omitted → the manifest ACM alone.
 
     Returns:
         A YAML document string with a generated-provenance header.
     """
+    # The kernel checks the MANIFEST's geometry. `model.collision_geometry` is
+    # what the lowering tool would *write*, which for a hand-authored box
+    # manifest is a different, looser solid (`urdf_lowering.lower_link_geometry`
+    # still emits a PCA capsule for a mesh collision — collision-primitive-study
+    # 8.5). Sourcing the spheres from it means "plan-time and kernel-time share
+    # one source of truth" was not true for exactly the robots that most need
+    # it. Prefer the manifest; fall back to the lowered model during onboarding,
+    # when the manifest has no geometry block yet.
+    geometry = list(robot.collision_geometry or []) or list(model.collision_geometry)
+
     collision_spheres: dict[str, list[dict[str, object]]] = {}
-    for g in model.collision_geometry:
+    for g in geometry:
         collision_spheres[g.link_name] = [
             {
                 "center": [round(c, _SPHERE_DP) for c in s.center],
@@ -193,8 +270,21 @@ def render_cumotion_config(robot: RobotDescription, model: LoweredCollisionModel
             for s in link_collision_spheres(g)
         ]
 
+    pairs = {frozenset({a, b}) for a, b in model.allowed_collision_pairs}
+    if urdf_path is not None:
+        from openral_safety.urdf_lowering import acm_for_geometry
+
+        margin = float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0)
+        pairs |= acm_for_geometry(
+            urdf_path,
+            sphere_model_geometry(geometry),
+            srdf_path=None,  # the SRDF's hand-owned rows are already in `pairs`
+            margin_m=margin,
+        )
+
     ignore: dict[str, set[str]] = {}
-    for a, b in model.allowed_collision_pairs:
+    for pair in pairs:
+        a, b = sorted(pair)
         ignore.setdefault(a, set()).add(b)
         ignore.setdefault(b, set()).add(a)
     self_collision_ignore = {k: sorted(v) for k, v in sorted(ignore.items())}
@@ -203,7 +293,7 @@ def render_cumotion_config(robot: RobotDescription, model: LoweredCollisionModel
         "robot_cfg": {
             "kinematics": {
                 "base_link": robot.base_frame,
-                "collision_link_names": [g.link_name for g in model.collision_geometry],
+                "collision_link_names": [g.link_name for g in geometry],
                 "collision_spheres": collision_spheres,
                 "self_collision_ignore": self_collision_ignore,
                 "cspace": {"joint_names": actuated_joint_names(robot)},
@@ -211,11 +301,18 @@ def render_cumotion_config(robot: RobotDescription, model: LoweredCollisionModel
         }
     }
 
+    acm_note = (
+        "the kernel's matrix, widened with the pairs proved always-colliding for\n"
+        "# the *sphere* geometry below (a planner may be looser than the kernel, never tighter)"
+        if urdf_path is not None
+        else "the kernel's matrix verbatim — no URDF was given, so pairs that are\n"
+        "# always-colliding for these spheres but separable by the kernel are NOT exempt here"
+    )
     header = (
         "# GENERATED by `openral collision lower --emit-cumotion` — do not hand-edit.\n"
-        f"# Source ACM: {model.acm_source}. collision_spheres + self_collision_ignore derive\n"
-        "# from the same lowered geometry the OpenRAL safety kernel checks, so\n"
-        "# cuMotion plan-time and kernel-time collision stay consistent. retract_config and\n"
-        "# accel/jerk limits are planner tuning — add + validate vs cuRobo.\n"
+        f"# Source ACM: {model.acm_source}. collision_spheres derive from the same lowered\n"
+        "# geometry the OpenRAL safety kernel checks, over-covered to spheres.\n"
+        f"# self_collision_ignore is {acm_note}.\n"
+        "# retract_config and accel/jerk limits are planner tuning — add + validate vs cuRobo.\n"
     )
     return header + yaml.safe_dump(cfg, sort_keys=False)

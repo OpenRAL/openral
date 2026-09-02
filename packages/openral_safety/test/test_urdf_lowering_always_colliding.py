@@ -126,25 +126,65 @@ def test_inscribed_sphere_would_have_hidden_the_separation() -> None:
     assert radius >= max(sorted(box5.half_extents_m)[:2])
 
 
-def test_link5_link7_really_collides_so_the_exemption_is_a_human_call() -> None:
+def test_link5_link7_is_checked_and_no_longer_exempt() -> None:
     """The pair is neither always-colliding nor never-colliding — it is *both*.
 
-    Its boxes overlap over most of the range (so checking it E-stops constantly)
-    and its real meshes interpenetrate over part of it (so exempting it hides a
-    true self-collision). No margin separates the two populations. That is why
-    ``panda_mobile``'s exemption lives in its SRDF as a hand-owned
-    ``reason="User"`` row and not in anything this module generates.
+    Its boxes overlap over most of the range (so checking it at box fidelity
+    E-stops constantly) and its real meshes interpenetrate over part of it (so
+    exempting it hides a true self-collision). No margin separates the two
+    populations, which is why the pair shipped exempted "under protest" from
+    #169 until issue #191.
+
+    What retired the exemption is not a margin and not a tighter box but the
+    kernel's exact-hull narrow phase (``hull_hull_distance``), extended from
+    world voxels to self-pairs: both links declare ``tight_geometry``, the box
+    stays the broad phase, and any box pair it cannot clear is re-asked of the
+    hulls. So the box overlap measured below is still real — it is just no
+    longer the kernel's verdict.
+
+    This test is the inverse of the one it replaces: it pins that nothing puts
+    the row back, in either channel.
     """
     model, geoms, margin = _load("panda_mobile")
     gaps = _pair_gaps(model, geoms, "panda_link5", "panda_link7", 201)
     overlap_fraction = float((gaps <= margin).mean())
     assert 0.8 < overlap_fraction < 0.95, "boxes overlap over most, not all, of the range"
-    # The exemption must be present in the manifest AND traceable to the SRDF.
+
     robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
-    assert ("panda_link5", "panda_link7") in robot.allowed_collision_pairs
+    assert ("panda_link5", "panda_link7") not in robot.allowed_collision_pairs
+    for link in ("panda_link5", "panda_link7"):
+        geom = next(g for g in robot.collision_geometry if g.link_name == link)
+        assert geom.tight_geometry is not None, (
+            f"{link} must ship tight_geometry — it is what makes checking the pair usable"
+        )
+        assert geom.tight_geometry.hull_vertices_m, f"{link} needs its stage-2 hull, not just a DOP"
     srdf = Path("robots/panda_mobile/panda_mobile.srdf").read_text(encoding="utf-8")
-    assert 'link1="panda_link5" link2="panda_link7" reason="User"' in srdf
-    assert "residual-risk" in srdf, "a User exemption must carry its evidence"
+    assert 'link1="panda_link5" link2="panda_link7"' not in srdf
+    assert "RETIRED" in srdf, "the retired exemption must leave its record behind"
+
+
+def test_a_hull_carrying_pair_is_never_certified_from_its_boxes() -> None:
+    """The proof must not outrun the geometry the kernel checks.
+
+    ``_certified_always_colliding`` reasons with ``shape_distance`` — the box.
+    Once a pair's links both ship ``tight_geometry`` the kernel decides that pair
+    on the hulls instead, and ``hull_gap >= box_gap`` everywhere, so "the boxes
+    always overlap" no longer implies "the kernel always trips". Certifying on it
+    would grant an ACM entry that hides a live check, so the criterion withholds.
+    """
+    model, geoms, margin = _load("panda_mobile")
+    assert geoms["panda_link5"].tight_geometry is not None
+    assert geoms["panda_link7"].tight_geometry is not None
+    assert not _certified_always_colliding(
+        model, geoms, "panda_link5", "panda_link7", margin_m=margin
+    )
+    # Not a vacuous pass: strip the hulls and the criterion still refuses, for
+    # the *original* reason (#169 — the boxes genuinely separate somewhere), so
+    # the guard above is an additional refusal rather than the only one.
+    bare = {k: v.model_copy(update={"tight_geometry": None}) for k, v in geoms.items()}
+    assert not _certified_always_colliding(
+        model, bare, "panda_link5", "panda_link7", margin_m=margin
+    )
 
 
 def test_generated_acm_never_invents_the_exemption() -> None:

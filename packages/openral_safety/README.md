@@ -36,12 +36,19 @@
   `collision_geometry` + `allowed_collision_pairs`. An ACM entry
   *removes* a self-collision check, so every rule fails toward **fewer**
   entries; "always-colliding" is established as a proof over each pair's
-  relative-DoF subspace, never by sampling.
+  relative-DoF subspace, never by sampling — and is **withheld outright**
+  for a pair whose links both declare `tight_geometry`, because the
+  kernel decides those on the exact hulls and this module reasons with
+  the box (issue #191).
 * **`cumotion_config`** (`openral_safety/cumotion_config.py`) — renders a
-  cuRobo/cuMotion `robot_cfg` from the lowered geometry. Its plan-time
-  model deliberately **over**-covers the kernel's: a planner that
-  believes the arm is thinner than it is emits trajectories the kernel
-  then has to E-stop.
+  cuRobo/cuMotion `robot_cfg` from the **manifest's** geometry. Its
+  plan-time model deliberately **over**-covers the kernel's: a planner
+  that believes the arm is thinner than it is emits trajectories the
+  kernel then has to E-stop. That over-covering is why it re-derives its
+  own ACM (`sphere_model_geometry` + `acm_for_geometry`) rather than
+  copying the kernel's: a pair the kernel separates at hull fidelity can
+  be genuinely always-colliding for spheres, and
+  `panda_link5`↔`panda_link7` is exactly that.
 
 ## The collision tree must be connected
 

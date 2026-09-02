@@ -7,6 +7,16 @@
 > (§11). What follows is the evidence a reviewer would need in order to decide,
 > and a recommendation with the safety case each option would require.
 >
+> **Superseded as a status line: it landed.** PR #166 shipped §12.2's staged
+> design for `check_voxel_collision`, scoped to `link1` + `link2`, and
+> [issue #191](https://github.com/OpenRAL/openral/issues/191) extended it to
+> `check_self_collision`'s box↔box pass, adding `link5` + `link7` — for a reason
+> this study did not anticipate, because it was scoring the **world** side. The
+> change record for both is
+> [the staged hull narrow phase](collision-hull-narrow-phase.md); its §9 is the
+> self-collision half. This document stays as the evidence and the design
+> argument, not as a statement of what is in the tree.
+>
 > Companion documents: the [collision-primitive study](collision-primitive-study.md)
 > (PR #157, the geometry argument), [its picture book and
 > correction](collision-primitive-images.md) (PR #158), the [RoboCasa start-state
@@ -1060,7 +1070,12 @@ to unblock cluttered kitchens, the next study is about the world grid, not the
 robot.
 
 **12.2 If a link-geometry change is made, make it a staged 26-DOP → exact convex
-hull, scoped to `link1` and `link2`.** Stage 1 is a 26-DOP SAT (62.8 ns, a
+hull, scoped to `link1` and `link2`.** (Shipped by #166. The scope grew to
+`link5` + `link7` in #191 — not because the world-side ranking moved, but
+because the **self**-collision check needs those two at hull fidelity to retire
+the `panda_link5`↔`panda_link7` ACM exemption, a use this section was not
+scoring. The scoping rule survives intact: an addition needs its own
+measurement, and #191 brought one.) Stage 1 is a 26-DOP SAT (62.8 ns, a
 conservative lower bound); stage 2 is a warm-started GJK on the exact hull, run
 only on cells stage 1 cannot clear (§9.1). This combination is the only one that
 is simultaneously:

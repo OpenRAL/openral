@@ -327,11 +327,13 @@ _PANDA_SRDF_ARM_DISABLES = frozenset(
         ("panda_link4", "panda_link7"),  # Never
     )
 )
-# Pairs our capsule model allows that the SRDF mesh model does NOT disable —
-# documented capsule-junction artifacts (link6 is a short 0.088 m capsule, so
-# link5↔link7 always overlap under capsule conservatism). Any OTHER divergence
-# from the SRDF is a bug.
-_PANDA_CAPSULE_JUNCTION_EXTRAS = frozenset({frozenset({"panda_link5", "panda_link7"})})
+# Pairs our model allows that the SRDF mesh model does NOT disable. Empty since
+# issue #191: the one entry was `panda_link5`↔`panda_link7`, exempted because
+# neither the old capsules nor the shipped boxes could separate it from an
+# artifact at any margin. Both links now ship `tight_geometry` and the kernel
+# re-asks that pair of the exact hulls, so it is CHECKED and the SRDF is matched
+# exactly. Any divergence from the SRDF is now a bug.
+_PANDA_CAPSULE_JUNCTION_EXTRAS: frozenset[frozenset[str]] = frozenset()
 
 
 def test_panda_mobile_collision_fk_starts_at_the_arm_mount() -> None:

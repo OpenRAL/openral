@@ -7,6 +7,15 @@
 > `check_voxel_collision`'s box pass. It is scoped to **arm-link vs
 > world-voxel** checks only.
 >
+> **Extended 2026-09-02 by [issue #191](https://github.com/OpenRAL/openral/issues/191)**
+> to `check_self_collision`'s box↔box pass, which is why §9 exists. That
+> extension is what retired the `panda_link5`↔`panda_link7` ACM exemption — the
+> one open item the collision-safety alternatives survey §2.2 left on the ACM
+> theme ("#169 changed no manifest, so the unsafe exemption is still in the
+> manifests"). `panda_link5` and `panda_link7` now declare
+> `tight_geometry` too, so §5.1's "today that is link1 and link2" reads
+> link1, link2, link5 and link7.
+>
 > The evidence this rests on was produced by four earlier studies and is cited,
 > not re-argued: the [collision-primitive study](collision-primitive-study.md)
 > (#157), its [picture book](collision-primitive-images.md) (#158), the
@@ -269,21 +278,32 @@ cause of `panda_link1` shipping stage 1 only (§5.2).
 
 ### 5.1 Replaced
 
-Exactly one call site: the `box_box_distance` in `check_voxel_collision`'s **box
-pass**, and only for a link whose manifest declares `tight_geometry`. Today that
-is `panda_link1` (stage 1) and `panda_link2` (stages 1 and 2).
+Two call sites, both gated on a manifest declaring `tight_geometry`:
+
+* the `box_box_distance` in `check_voxel_collision`'s **box pass** (this
+  document's original scope) — `panda_link1` (stage 1) and `panda_link2`
+  (stages 1 and 2);
+* the `box_box_distance` in `check_self_collision`'s **box↔box pass**, added by
+  #191 and described in §9 — `panda_link5` and `panda_link7` (stages 1 and 2)
+  joined the first two for this.
 
 ### 5.2 Not replaced, and why
 
 | surface | keeps the primitive path because |
 |---|---|
 | **attached payloads** (`check_attached_voxel_collision`, `check_attached_world_collision`, `check_attached_self_collision`) | §6. Extending here would engage hazard-log Entry 012's lockstep on both sides at once, and there is no measured motivation |
-| **self-collision** (`check_self_collision`) | out of the asked scope; leaving it untouched means `check_attached_self_collision`'s conservatism is unchanged, which is a *stronger* Entry-012 position than #161 §10.1 could offer |
 | **world-capsule obstacles** (`check_world_collision`) | out of scope; not voxel geometry |
 | **capsule-lowered robots** (`h1`, `rizon4`, every MJCF-lowered model) | tight geometry refines a `BoxShape`; a capsule has no box to state the containment proof against, and the schema refuses it |
 | **the broad-phase window** | §4.2 — this is the one thing that must not move |
-| **`panda_link3`–`link7`** | #159: they hold **zero** of the 72 census stops. #161 §7.4 confirms it quantitatively. Adding them would be five more containment proofs and five more hazard-entry lines for no measured recovery |
+| **`panda_link3`, `link4`, `link6`** | #159: they hold **zero** of the 72 census stops, and they are not half of a self-pair the boxes cannot separate. Adding them would be three more containment proofs and three more hazard-entry lines for no measured recovery |
 | **`panda_link1`'s exact hull** | 1588 vertices, over `kMaxTightHullVertices`, measured 0.74–0.79× the shipped routine's speed. It gets stage 1 only |
+
+> `check_self_collision` was in this table as "out of the asked scope" until
+> #191, on the reasoning that leaving it untouched kept
+> `check_attached_self_collision`'s conservatism unchanged. That is still true —
+> the attached path is untouched — but the self path is no longer, because the
+> ACM exemption it was propping up turned out to be the more expensive of the
+> two positions. §9.
 
 `box_box_distance` itself is **not deprecated**. It remains the narrow phase for
 every link without tight geometry, the fold in §4.2, and the routine every other
@@ -488,8 +508,149 @@ rather than intentions:
    `world_voxel_margin_m = 0.02` with clutter pressed against the arm.
    `panda_mobile` is sim-only so nothing ships into that regime today, and the
    entry should make re-measurement a precondition for any robot that would.
-9. **Issue #155 sequencing is unchanged** — this change regenerates no ACM and
-   does not re-lower any manifest, so #157 §7.3 item 6 is untouched.
+9. ~~**Issue #155 sequencing is unchanged** — this change regenerates no ACM and
+   does not re-lower any manifest.~~ **Superseded by #191**, which regenerates
+   the `panda_mobile` / `panda_mobile_vslam` ACM precisely so that it stops
+   carrying the exemption. §9.
+
+---
+
+## 9. The self-collision extension (issue #191)
+
+`check_self_collision`'s box↔box pass now re-asks the exact hulls when both
+links declare `tight_geometry` (`hull_hull_distance`). The box stays the broad
+phase and the fallback: a pair the OBBs already clear never reaches the GJK, and
+a manifest declaring no tight geometry is bit-for-bit unchanged.
+
+### 9.1 Why — the pair the boxes cannot answer
+
+`panda_link5`↔`panda_link7` shipped **ACM-exempted** from
+[#155](https://github.com/OpenRAL/openral/issues/155) and stayed that way through
+[#169](https://github.com/OpenRAL/openral/pull/169), which proved by
+branch-and-bound (not sampling) that the pair genuinely interpenetrates and then
+changed no manifest byte. Measured over the pair's **entire** relative-DoF
+subspace — `panda_joint6` × `panda_joint7`, the only two joints that move it, on
+the same 121 × 121 = 14 641 grid #169 used, at `self_collision_margin_m = 0`:
+
+| representation | fires | of which real | false |
+|---|---:|---:|---:|
+| shipped OBB | 12 647 (86.38 %) | 967 | **11 680 (79.78 %)** |
+| exact hull | 967 (6.60 %) | 967 | **0** |
+
+and no margin separates the OBB's populations: the deepest **real** collision
+sits at a box gap of −8.37 mm while the shallowest **false** one is at
+−36.64 mm. The hull is not merely tighter here, it is exact: the Panda's link5
+and link7 collision meshes are convex to 1e-4 in volume ratio
+([primitive study §4.3](collision-primitive-study.md)), so `conv(mesh)` **is**
+the mesh for this pair and the hull verdict is the mesh verdict.
+
+Tightening the boxes was the retirement path the SRDF comment named, and it does
+not reach: #157 §4.3 measures the achievable corner-reach reduction at 7.5 mm on
+link5 and 1.9 mm on link7, against the ~28 mm the separation needs.
+
+### 9.2 What the un-exempted pair costs at box fidelity
+
+Simply deleting the ACM row — the issue's Option A — E-stops the robot at its
+own reset pose. Measured through the kernel at robosuite's `PandaOmron.init_qpos`:
+
+| model | link5↔link7 gap | verdict |
+|---|---:|---|
+| shipped OBB | −11.68 mm | **STOP** |
+| exact hull | +21.81 mm | clear |
+
+The SRDF's own `ready` and `extended` group states are the same story (−9.14 mm
+box, +22.13 mm hull). Its `transport` state is the other half of the case: box
+−11.68 mm, hull −5.64 mm, and both agree it is a stop — a real self-collision
+the exemption was hiding.
+
+### 9.3 Cost
+
+`check_self_collision` on the shipped `panda_mobile` at its reset pose, `-O3`,
+200 000 calls:
+
+| variant | µs/call | vs before |
+|---|---:|---:|
+| A — before #191 (pair exempt, no hulls) | 0.758 | 1.00× |
+| B — after #191 (pair checked, hulls) | 2.303 | **3.04×** |
+| C — Option A (pair checked, no hulls) | 0.820 | 1.08× |
+
+The multiplier is large because the routine it sits in is small: +1.545 µs, or
+24.7 µs over a 16-step horizon, 0.25 % of a 10 ms budget. It is close to the
+sustained cost rather than a spike — this pair's boxes fail to clear on 86.38 %
+of its configuration space, so the GJK runs on nearly every call. The next lever,
+if a future robot makes that bite, is a DOP-vs-DOP stage 1 in front of the GJK,
+not a cheaper support function (§4.4).
+
+### 9.4 The interaction with #188's graded velocity band
+
+`hull_hull_distance` deliberately omits `hull_cell_distance`'s "stop at the first
+bound clearing `margin`" exit. There the exit is right — hundreds of cells are
+visited and only their minimum is reported. Here the answer **is** the reported
+`sweep_min_distance`, and the early exit was measured returning 4.2 mm for a pair
+genuinely 60.0 mm apart: sound, but it would crawl the arm past a clear pose.
+
+More consequentially, the self-collision check's `sweep_min_distance` is **no
+longer folded into the graded band's slack at all**. A robot's tightest self-pair
+is a property of how it is built, not of where it is going: over all 14 641
+poses, `panda_link5`↔`panda_link7` never opens past **22.72 mm**, and **zero**
+of them clear a 50 mm band, let alone a 100 mm one. Folding it in pinned the
+scale at a constant — measured at 0.21 on the live kernel at a 100 mm band with
+k = 20 — after which the world term, the one a chunk can actually act on, only
+mattered below 22 mm. That is a permanent speed limit, not a slowdown. The
+self-collision **latch** is untouched; only its contribution to the velocity band
+is dropped, which restores the pre-#188 rate on the self path and leaves the
+world path doing what #188 built it for. Pinned by
+`LifecycleKernelTest.GradedScalingIgnoresTheRobotsOwnSelfClearance` and
+`…TheSelfCollisionLatchSurvivesTheBandExclusion`.
+
+### 9.5 Two consequences worth naming
+
+**The all-zero Panda arm self-collides for real** — 5.65 mm at its own collision
+meshes. Two existing kernel tests flew that configuration and only passed because
+the pair was exempt; both now seed `panda_joint6` at the SRDF's own `ready`
+value. This is the "new stop class" #191 asked to be quantified, and it is a true
+positive, not a regression.
+
+**The cuMotion emitter needed its own matrix.** `render_cumotion_config` lowers
+each link to a *containing* capsule, and for that geometry the pair really is
+always-colliding: it overlaps at **100.00 %** of the same grid, the shallowest by
+1.03 mm. Copying the kernel's matrix would have handed cuRobo a constraint that
+rejects `ready`. Given the URDF the emitter now re-derives the ACM against the
+spheres it actually writes (`sphere_model_geometry` + `acm_for_geometry`), so the
+planner's model stays **looser** than the kernel's — never tighter, which is the
+only safe direction for a planner (#169). Fixing that surfaced a second defect
+the same measurement explains: the emitter was sourcing its spheres from
+`LoweredCollisionModel.collision_geometry` — what the lowering tool would
+*write*, a PCA capsule for a mesh collision (#157 §8.5) — rather than from the
+manifest the kernel checks. It now prefers the manifest.
+
+Symmetrically, `_certified_always_colliding` **withholds** for any pair whose
+links both declare `tight_geometry`: it reasons with `shape_distance`, the box,
+and `hull_gap >= box_gap` everywhere, so "the boxes always overlap" no longer
+implies "the kernel always trips". Certifying on it would grant an ACM entry
+that hides a live check. No shipped robot loses an entry to this today — every
+`panda_mobile` ACM row is adjacent or SRDF-sourced — so it is a fail-closed
+guard, not a behaviour change.
+
+### 9.6 Reproducing §9
+
+```bash
+# The grid, the verdicts, and the pair through the real kernel node.
+python -m pytest tests/sim/safety/test_kernel_panda_link5_link7.py
+python -m pytest packages/openral_safety/test/test_urdf_lowering_always_colliding.py
+
+# The kernel mechanics.
+just safety-kernel-build && ./build/openral_safety_kernel/test_collision \
+    --gtest_filter='SelfCollisionHull.*'
+```
+
+The 14 641-pose sweep and the §9.3 benchmark are one-shot analysis and are not
+checked in (§7). The sweep drives `openral_hal.convex_distance` — GJK with a
+separating-axis certificate, plus exact SAT on overlap — over MuJoCo FK of
+robosuite's Panda at every node of the `(joint6, joint7)` grid, comparing
+`kernel_predicates.box_box_distance` on the shipped OBBs against `conv(mesh)` for
+the same poses. The benchmark inlines the manifest's boxes, hulls and ACM into a
+standalone `main` linked against `collision.cpp` at `-O3`.
 
 ---
 
