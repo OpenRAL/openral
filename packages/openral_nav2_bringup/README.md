@@ -174,14 +174,34 @@ surrounded by itself. **Sim hides this completely** —
 its own tree, so a self-return never enters `/scan` in the first place. That
 mechanism is a MuJoCo body-id comparison; it has no real-hardware counterpart,
 and this repo has no lidar driver, no lidar launch file, and no `SensorSpec`
-field that could express a mount pose, a blind sector or an angle mask. The only
-real knob today is `panda_mobile`'s `range_min_m: 0.55`, a blunt radial cutoff
-that deletes every real obstacle inside 0.55 m in every direction to hide a
-chassis whose circumscribed radius is 0.43 m.
+field that could express a mount pose, a blind sector or an angle mask. Until #194 the only
+real knob was `panda_mobile`'s `range_min_m: 0.55`, a blunt radial cutoff
+that deleted every real obstacle inside 0.55 m in every direction to hide a
+chassis whose circumscribed radius is 0.43 m. #194 lowered that field to the
+sensor minimum (0.05 m) on the strength of this node, so the shaped filter
+below is now the only self-exclusion the hardware path has.
 
 `payload_scan_filter_node` therefore filters the robot too, with a shaped test
 instead of a radial one: a beam is dropped when its endpoint, transformed into
 `base_frame`, lies inside the manifest's **bare chassis** `footprint_polygon`.
+
+What the swap bought, measured on the live graph (`robocasa_deliver_straw`,
+pinned seed 3, whole graph relaunched per arm; raw output in
+`docs/reference/data/base-scan-range-min-2026-09-02.jsonl`):
+
+| | `/scan` usable | inside 0.55 m | reaching `/openral/nav2/scan` | nearest |
+|---|---|---|---|---|
+| `range_min_m: 0.55` | 192 | **0** | 192 | 0.555 m |
+| `range_min_m: 0.05` | 344 | 152 | **252** (92 dropped as chassis) | 0.344 m |
+
+So 60 real near-field returns now reach Nav2 where none could before, and the
+shaped filter still removes the 92 whose endpoints it can prove are the robot.
+Every one of the 152 near returns resolves to real kitchen geometry by body
+name — cabinet doors, the fridge housing, the freezer — and none to the robot:
+`robot0_link0`, `robot0_link7` and `mobilebase0_wheeled_base` all share the base
+body's `body_rootid`, so the sim fan's identity self-exclusion already covers
+the whole tree including the arm. The MPPI loop is unmoved: 10.03 → 10.25
+ms/cycle against the 50 ms budget, 600 → 601 cycles in 30 s, none dropped.
 
 The conservative direction here is the **opposite** of the payload's, and that
 is the whole design:

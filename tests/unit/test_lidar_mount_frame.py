@@ -10,9 +10,21 @@ identical scan) but anything living between those heights would have been mapped
 
 These pin the fix: the lidar owns its frame, the mount is declared once, and the
 declared mount is the offset that reconciles the two.
+
+The same manifest carried a second physical dishonesty, fixed by #194:
+`range_min_m` read 0.55 m — not the sensor's minimum but a radial cutoff sized
+to hide a chassis whose circumscribed radius is 0.43 m. It deleted every REAL
+obstacle inside 0.55 m in every direction, in the band where Nav2 has the least
+room to react. Self-returns are excluded by IDENTITY instead — by kinematic-tree
+root in sim, by the chassis polygon in `payload_scan_filter_node` on hardware —
+so the field is free to mean what it says. The last test below is the invariant:
+a `range_min_m` that reaches past the chassis is a self-filter again, whatever
+the comment claims.
 """
 
 from __future__ import annotations
+
+import math
 
 import pytest
 import yaml
@@ -66,3 +78,29 @@ def test_the_mount_default_matches_the_sim_cast_height() -> None:
     from openral_sim.backends.robocasa import _LASER_DEFAULT_HEIGHT_M
 
     assert _LASER_DEFAULT_HEIGHT_M == _CAST_WORLD_Z_M
+
+
+def test_range_min_cannot_reach_past_the_chassis() -> None:
+    """`range_min_m` is the sensor's minimum, so it must not double as a self-filter.
+
+    Regression for #194. A `range_min_m` at or beyond the chassis's
+    circumscribed radius is indistinguishable from a radial self-filter: every
+    return it drops inside that radius *could* be the robot, so the value stops
+    being a sensor property and starts silently deleting obstacles. Below the
+    radius it can only be the sensor's own floor.
+    """
+    desc = _panda_mobile()
+    lidar = desc.lidar_sensor
+    assert lidar is not None
+    assert lidar.range_min_m is not None
+
+    # Circumscribed radius of the bare chassis outline the shaped self-filter
+    # (`payload_scan_filter_node`) proves against — 0.43 m for panda_mobile.
+    circumscribed_m = max(math.hypot(x, y) for x, y in desc.footprint_polygon)
+
+    assert lidar.range_min_m < circumscribed_m, (
+        f"range_min_m {lidar.range_min_m} m reaches the chassis "
+        f"(circumscribed radius {circumscribed_m:.3f} m), so it is acting as a "
+        "blunt radial self-filter and deleting real obstacles with it — the job "
+        "`payload_scan_filter_node`'s chassis polygon does with a proof"
+    )

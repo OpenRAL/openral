@@ -48,6 +48,16 @@ from numpy.typing import NDArray
 # Below this magnitude a gripper action channel means HOLD (don't open/close) —
 # lets a pure BODY_TWIST step (zero arm/gripper slots) leave the gripper alone.
 _GRIPPER_DEADBAND = 1e-3
+# Self-occlusion handling for the lidar fan, mirroring the MuJoCo sibling
+# (`openral_sim.backends.robocasa._LASER_MAX_SELF_SKIPS` / `_LASER_SELF_SKIP_EPS_M`).
+# A beam may terminate on the robot's own body (chassis / wheels / arm column);
+# we re-cast past each such hit. This caps how many self-layers one beam steps
+# through before giving up and reading `range_max_m`. 8 covers chassis + arm
+# links with margin.
+_SCAN_MAX_SELF_SKIPS = 8
+# Nudge (m) added past a self-hit before re-casting, so the next ray does not
+# re-detect the surface it just exited.
+_SCAN_SELF_SKIP_EPS_M = 1e-3
 
 
 def map_dof_to_manifest(
@@ -93,6 +103,78 @@ def map_dof_to_manifest(
         else:
             out.append(0.0)
     return np.asarray(out, dtype=np.float32)
+
+
+def resolve_beam_range(
+    raycast_closest: Any,
+    *,
+    origin_xy: tuple[float, float],
+    angle_rad: float,
+    z: float,
+    range_min_m: float,
+    range_max_m: float,
+) -> float:
+    """One lidar beam's range, with the robot's own body skipped by IDENTITY.
+
+    Pure: the PhysX scene-query is the ``raycast_closest(start, dir, span)``
+    callable passed in, so the walk is testable without a Kit app. It returns
+    Isaac's dict (``hit`` / ``distance`` / ``rigidBody``) or a falsy value.
+
+    The beam starts ``range_min_m`` out — the SENSOR's minimum, nothing more —
+    and is walked outward. Any hit whose ``rigidBody`` prim is under ``/panda``
+    is the robot itself (the manifest robot imports as one articulation there),
+    so the beam is re-cast from just past it and reports the real obstacle
+    BEHIND the robot. Same resolution as
+    ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` on the MuJoCo
+    side, where the comparison is ``model.body_rootid`` instead of a prim path.
+
+    This used to lean on ``range_min_m`` itself being chassis-sized — panda_mobile
+    declared 0.55 m against a 0.43 m circumscribed radius — and reported
+    ``range_max_m``, i.e. "clear all the way out", for a beam that hit the robot
+    anyway. #194 lowered that field to the sensor minimum because it was also
+    deleting every real obstacle inside 0.55 m, which would have made that
+    fail-open branch fire on every beam.
+
+    Returns ``range_max_m`` for a miss, for an out-of-range hit, and for a beam
+    still on the robot after ``_SCAN_MAX_SELF_SKIPS`` layers.
+
+    Example:
+        >>> def cast(start, _dir, span):  # a wall 3 m out, nothing else
+        ...     d = 3.0 - start[0]
+        ...     return (
+        ...         {"hit": True, "distance": d, "rigidBody": "/wall"} if 0 <= d <= span else None
+        ...     )
+        >>> round(
+        ...     resolve_beam_range(
+        ...         cast,
+        ...         origin_xy=(0.0, 0.0),
+        ...         angle_rad=0.0,
+        ...         z=0.3,
+        ...         range_min_m=0.05,
+        ...         range_max_m=12.0,
+        ...     ),
+        ...     3,
+        ... )
+        3.0
+    """
+    cx, cy = float(np.cos(angle_rad)), float(np.sin(angle_rad))
+    ox, oy = float(origin_xy[0]), float(origin_xy[1])
+    travelled = float(range_min_m)
+    for _ in range(_SCAN_MAX_SELF_SKIPS):
+        span = float(range_max_m) - travelled
+        if span <= 0.0:
+            break
+        hit = raycast_closest(
+            (ox + travelled * cx, oy + travelled * cy, float(z)), (cx, cy, 0.0), span
+        )
+        if not (isinstance(hit, dict) and hit.get("hit")):
+            break  # nothing out there
+        distance = float(hit.get("distance", span))
+        if str(hit.get("rigidBody", "")).startswith("/panda"):
+            travelled += distance + _SCAN_SELF_SKIP_EPS_M
+            continue
+        return min(travelled + distance, float(range_max_m))
+    return float(range_max_m)
 
 
 class IsaacManifestScene(IsaacSceneBase):
@@ -302,13 +384,24 @@ class IsaacManifestScene(IsaacSceneBase):
 
         ``n_channels`` beams from ``angle_min=-π`` to ``angle_max=+π`` (the
         bridge's convention) in the **base_link** frame, rotated to world by the
-        base yaw. Each ray STARTS ``range_min_m`` beyond the base origin along the
-        beam (past the robot's own chassis/arm column, which a centre-origin ray
-        would hit at distance 0) and is cast for ``range_max_m - range_min_m``; the
-        reported range is ``range_min_m + hit_distance``. A hit still on the robot
-        (rare past ``range_min``), a miss, or an out-of-range beam reads
-        ``range_max_m``. ``None`` when the manifest declares no lidar — never a
-        fabricated scan.
+        base yaw. Each ray starts ``range_min_m`` out along the beam — the
+        SENSOR's minimum, nothing more — and is cast for
+        ``range_max_m - range_min_m``; the reported range is the distance from
+        the base origin. A miss or an out-of-range beam reads ``range_max_m``.
+        ``None`` when the manifest declares no lidar — never a fabricated scan.
+
+        **Self-exclusion is by identity, not by distance.** This used to lean on
+        ``range_min_m`` being chassis-sized (panda_mobile's was 0.55 m) to start
+        the ray past the robot's own body, and reported ``range_max_m`` — i.e.
+        "clear all the way out" — for the beams that hit the robot anyway. Once
+        #194 lowered that field to the sensor minimum the rays start inside the
+        chassis, so the fail-open branch would have been every beam. A robot hit
+        is now skipped and the beam RE-CAST from just past it, so it reports the
+        real obstacle behind the robot — the same resolution
+        ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` uses on the
+        MuJoCo side, where the comparison is ``body_rootid`` instead of a prim
+        path. A beam that is still on the robot after ``_SCAN_MAX_SELF_SKIPS``
+        reads ``range_max_m``.
         """
         if self._scan_query is None or self._lidar is None:
             return None
@@ -317,21 +410,18 @@ class IsaacManifestScene(IsaacSceneBase):
         rmax = float(self._lidar.get("range_max_m") or 12.0)
         bx, by, byaw = self._base_pose
         z = float(self._scan_z)
-        span = max(rmax - rmin, 0.0)
-        out = np.full(n, rmax, dtype=np.float32)
+        out = np.empty(n, dtype=np.float32)
         step = 2.0 * np.pi / n
         for i in range(n):
             ang = -np.pi + i * step + byaw  # base beam angle, rotated to world
-            cx, cy = float(np.cos(ang)), float(np.sin(ang))
-            start = (bx + rmin * cx, by + rmin * cy, z)  # past the robot footprint
-            hit = self._scan_query.raycast_closest(start, (cx, cy, 0.0), span)
-            # Ignore a hit still on the robot itself (imported under /panda).
-            if (
-                isinstance(hit, dict)
-                and hit.get("hit")
-                and not str(hit.get("rigidBody", "")).startswith("/panda")
-            ):
-                out[i] = min(rmin + float(hit.get("distance", span)), rmax)
+            out[i] = resolve_beam_range(
+                self._scan_query.raycast_closest,
+                origin_xy=(bx, by),
+                angle_rad=ang,
+                z=z,
+                range_min_m=rmin,
+                range_max_m=rmax,
+            )
         return out
 
     def _update_camera_poses(self) -> None:

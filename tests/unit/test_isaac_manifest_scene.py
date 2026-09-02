@@ -8,7 +8,8 @@ Two halves, both GPU-free:
   actuated joints in manifest order, an 8-D JOINT_POSITION action contract;
 * the **sidecar side** — ``map_dof_to_manifest`` maps a full Isaac articulation
   DOF vector back to the manifest joint order, including the two-finger →
-  one-gripper collapse, against the exact joint names the Panda URDF emits.
+  one-gripper collapse, against the exact joint names the Panda URDF emits;
+  and ``resolve_beam_range`` walks one lidar beam past the robot's own body.
 
 The sidecar scene module (``tools/isaac_manifest_scene.py``) imports cleanly
 without a live Kit app — the heavy Isaac imports live inside ``build()`` — so we
@@ -222,3 +223,104 @@ def test_map_dof_to_manifest_unresolved_joint_is_zero(_manifest_scene_mod: objec
     )
     assert mapped.shape == (1,)
     assert mapped[0] == 0.0
+
+
+# ── sidecar side: resolve_beam_range ──────────────────────────────────────────
+#
+# The PhysX scene query is a parameter of `resolve_beam_range`'s real signature
+# (Isaac's `raycast_closest(start, dir, span)`), so these drive it with plain
+# closures describing a world — no patching, no stub object standing in for a
+# collaborator (CLAUDE.md §1.11).
+
+
+def _world(*bodies: tuple[float, str]) -> object:
+    """A `raycast_closest` over bodies at fixed +x distances from the origin.
+
+    Each body is ``(x_from_origin_m, prim_path)``. The ray is always +x here, so
+    a hit is the nearest body ahead of ``start`` within ``span``.
+    """
+    ordered = sorted(bodies)
+
+    def raycast_closest(
+        start: tuple[float, float, float],
+        _direction: tuple[float, float, float],
+        span: float,
+    ) -> dict[str, object] | None:
+        for x, prim in ordered:
+            distance = x - start[0]
+            if 0.0 <= distance <= span:
+                return {"hit": True, "distance": distance, "rigidBody": prim}
+        return None
+
+    return raycast_closest
+
+
+_BEAM = {"origin_xy": (0.0, 0.0), "angle_rad": 0.0, "z": 0.30, "range_max_m": 12.0}
+
+
+def test_beam_recasts_past_the_robots_own_chassis(_manifest_scene_mod: object) -> None:
+    """Regression for #194: a self-hit must not read "clear all the way out".
+
+    With `range_min_m` at the sensor minimum the ray starts INSIDE the chassis,
+    so the robot is the first thing every beam hits. The old code reported
+    `range_max_m` for such a beam — 12 m of empty space where a wall stands.
+    """
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    # Chassis at 0.20 m (inside the 0.43 m circumscribed radius), wall at 3 m.
+    got = resolve_beam_range(
+        _world((0.20, "/panda/base_link"), (3.0, "/World/wall")),
+        range_min_m=0.05,
+        **_BEAM,
+    )
+    assert got == pytest.approx(3.0, abs=1e-3), (
+        "a beam that starts inside the chassis must be re-cast past the robot and "
+        "report the obstacle behind it, not range_max"
+    )
+
+
+def test_beam_reports_the_nearest_real_obstacle_not_the_robot_behind_it(
+    _manifest_scene_mod: object,
+) -> None:
+    """Identity, not distance: a near WORLD hit is kept even inside the chassis radius."""
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    got = resolve_beam_range(
+        _world((0.25, "/World/toe_kick"), (3.0, "/World/wall")),
+        range_min_m=0.05,
+        **_BEAM,
+    )
+    assert got == pytest.approx(0.25, abs=1e-3), (
+        "0.25 m is inside the chassis radius but it is not the robot — the old "
+        "0.55 m radial cutoff is exactly what deleted returns like this one"
+    )
+
+
+def test_beam_below_range_min_is_not_reported(_manifest_scene_mod: object) -> None:
+    """The sensor's own floor still applies: nothing is invented closer than it."""
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    got = resolve_beam_range(_world((0.02, "/World/dust")), range_min_m=0.05, **_BEAM)
+    assert got == pytest.approx(12.0), "a return inside range_min is not a measurement"
+
+
+def test_beam_gives_up_rather_than_looping_on_the_robot(_manifest_scene_mod: object) -> None:
+    """A beam that never leaves the robot reads range_max — bounded, not hung."""
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    def all_robot(
+        start: tuple[float, float, float],
+        _direction: tuple[float, float, float],
+        span: float,
+    ) -> dict[str, object]:
+        del span
+        return {"hit": True, "distance": 0.01, "rigidBody": "/panda/link_" + str(start[0])}
+
+    assert resolve_beam_range(all_robot, range_min_m=0.05, **_BEAM) == pytest.approx(12.0)
+
+
+def test_beam_misses_read_range_max(_manifest_scene_mod: object) -> None:
+    """An empty world is an honest max-range fan, never NaN or a fabricated hit."""
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+
+    assert resolve_beam_range(_world(), range_min_m=0.05, **_BEAM) == pytest.approx(12.0)

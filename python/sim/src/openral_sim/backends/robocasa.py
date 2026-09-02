@@ -1530,8 +1530,8 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
     # ``mobilebase0_wheeled_base`` — a child of the (geomless)
     # ``mobilebase0_base`` root that the prefix lookup resolves. A lone
     # exclude therefore let every beam terminate on the wheeled base at
-    # ~0.13-0.54 m (below ``range_min``), starving slam_toolbox so it only
-    # ever published an empty 0x0 ``/map``.
+    # ~0.13-0.54 m (below the 0.55 m ``range_min`` of the day), starving
+    # slam_toolbox so it only ever published an empty 0x0 ``/map``.
     #
     # Fix: cast per-beam and skip any hit whose body shares the base
     # body's kinematic-tree root (``model.body_rootid``), re-casting from

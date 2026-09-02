@@ -438,9 +438,10 @@ def _forward_scan(range_m: float) -> Any:
     scan.angle_min = -math.pi
     scan.angle_max = math.pi
     scan.angle_increment = 2.0 * math.pi / n_beams
-    # Below the manifest's own 0.55 m `range_min_m`, deliberately: that radial
-    # cutoff is the blunt instrument this filter replaces, and gating it here
-    # would hide the very returns under test.
+    # Matches the manifest's `range_min_m` since #194 lowered it to the sensor
+    # minimum. It used to be 0.55 m — a radial cutoff sized to hide the chassis,
+    # the blunt instrument this filter replaces — and this fixture already
+    # ignored it, because gating here would hide the very returns under test.
     scan.range_min = 0.05
     scan.range_max = 12.0
     ranges = [3.0] * n_beams

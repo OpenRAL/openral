@@ -43,6 +43,11 @@ def test_panda_mobile_has_lidar_sensor_so_bridge_gate_passes() -> None:
     # reconciliation this manifest field now carries.
     assert lidar.frame_id == "base_scan"
     assert lidar.n_channels == 360
-    assert lidar.range_min_m == pytest.approx(0.55)
+    # The SENSOR minimum, not a self-filter: #194 lowered this from 0.55 m, a
+    # radial cutoff sized to hide the chassis that also deleted every real
+    # obstacle inside 0.55 m. Self-returns are excluded by identity instead
+    # (`synthesize_laser_scan_2d` in sim, `payload_scan_filter_node`'s chassis
+    # polygon on hardware). Matches `scan_range_min: 0.05` in both Nav2 configs.
+    assert lidar.range_min_m == pytest.approx(0.05)
     assert lidar.range_max_m == pytest.approx(12.0)
     assert lidar.rate_hz == pytest.approx(10.0)
