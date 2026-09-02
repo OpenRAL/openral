@@ -19,9 +19,8 @@ This script:
 * rewrites the file only when stale (or absent).
 
 It is invoked from the ``_ensure-libero-config`` private recipe in the
-``Justfile`` so every ``just sim-*-libero`` (and the ``sim-pi05-robocasa``
-recipe, which loads LIBERO via ``lerobot`` transitively) sees a config
-that matches the active venv.
+``Justfile`` so every ``just sim-*-libero`` recipe sees a config that
+matches the active venv.
 
 Idempotent: re-runs are no-ops when the file already matches.
 
