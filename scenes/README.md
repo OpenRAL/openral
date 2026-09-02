@@ -99,7 +99,6 @@ just sim-libero                     # SmolVLA × LIBERO        (GPU + MUJOCO_GL)
 just sim-xvla-libero                # xVLA × LIBERO           (Florence-2)
 just sim-pi05-libero                # π0.5 × LIBERO           (≥8 GB VRAM)
 just sim-act-libero                 # ACT × LIBERO            (paper protocol)
-just sim-pi05-robocasa              # π0.5 × RoboCasa kitchen (≥8 GB VRAM)
 # XR-1 uses direct commands and an isolated NF4 sidecar:
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa_pnp.yaml --rskill rskills/xr1-robocasa
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa365_close_blender_lid.yaml --rskill rskills/xr1-robocasa365

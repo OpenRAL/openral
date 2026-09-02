@@ -52,7 +52,7 @@ Four RoboCasa scenes, one seed, one policy, one stack:
 | --- | --- | --- | --- |
 | `baguette` | `scenes/deploy/robocasa_baguette.yaml` | counter → cabinet | drawn |
 | `sink_cup` | `scenes/deploy/robocasa_sink_cup.yaml` | counter → sink | drawn |
-| `fridge` | `scenes/deploy/robocasa_fridge_drawer.yaml` | fridge shelf → fridge drawer | `layout_ids: [30]` |
+| `fridge` | `scenes/deploy/robocasa_fridge_drawer.yaml` | fridge shelf → fridge drawer | `layout_ids: [47]` |
 | `utensil` | `scenes/deploy/robocasa_drawer_utensil.yaml` | counter → drawer | `layout_ids: [3]` |
 
 ### Why two scenes pin their kitchen
@@ -68,8 +68,15 @@ Unpinned at seed 1 the scene draws layout 29, a side-by-side fridge, and spawns
 `robot0_link7_collision` at 0.000 m from the closed freezer door: the arm starts
 inside the kernel's world model and the run E-stops before applying a single
 action chunk. Sweeping 40 of the 60 layouts, only six start clear of the 25 mm
-occupancy grid (18, 20, 21, 22, 30, 36), so ~85% of this task's kitchens have
-the same defect. Layout 30 starts 37.0 mm clear.
+occupancy grid by mesh distance (18, 20, 21, 22, 30, 36), so ~85% of this
+task's kitchens have the same defect. The pin was `[30]` from #154 until
+#171 moved it to `[47]`: mesh clearance is not the kernel's criterion, and
+scored the way the kernel actually scores — link OBB against 25 mm voxels —
+layout 30 sits at −23.47 mm and still stops. Layout 47 clears at +19.34 mm
+across two captures 68% apart in map density. The scene file
+`scenes/deploy/robocasa_fridge_drawer.yaml` carries the full measurement
+record and is the source of truth for this pin; layouts 18 and 21 are traps
+(clear on the ideal grid, refuted live) — do not restore them.
 
 For `utensil` the pin is reproducibility only — that scene starts 43.3 mm clear
 unpinned and has **no** initial-configuration defect. Its 2026-08-23 stop was a
