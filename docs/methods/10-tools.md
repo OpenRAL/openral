@@ -287,8 +287,8 @@ _Auto-fix for the stale `~/.libero/config.yaml` pitfall._
 
 Detects and repairs `$LIBERO_CONFIG_PATH/config.yaml` (default `~/.libero/config.yaml`) when its absolute paths no longer match the currently-active `libero` package — the file is written once at first LIBERO import and never refreshed, so switching venv / clone / workspace path leaves it pointing at a directory that no longer exists. Wired into the `Justfile` as `_ensure-libero-config` (chained off `sim-libero` / `sim-xvla-libero` / `sim-pi05-libero`). Idempotent.
 
-- `_expected_config(libero_pkg_dir) -> dict[str, str]` — Compute the canonical `assets/bddl_files/benchmark_root/datasets/init_states` payload that LIBERO writes on first import. (L47)
-- `_parse_yaml_map(text) -> dict[str, str]` — Parse the flat `key: value` map LIBERO writes — no PyYAML dependency. (L65)
-- `_render_yaml(payload) -> str` — Render the same flat layout. (L79)
-- `_locate_active_libero() -> Path` — `import libero` and return its package directory; raises `RuntimeError` with a clear message when LIBERO is absent (caller treats as no-op). (L84)
-- `main() -> int` — argparse entry point; flags `--dry-run`, `--verbose`. Returns 0 when the config matches or after rewriting. (L110)
+- `_expected_config(libero_pkg_dir) -> dict[str, str]` — Compute the canonical `assets/bddl_files/benchmark_root/datasets/init_states` payload that LIBERO writes on first import. (L46)
+- `_parse_yaml_map(text) -> dict[str, str]` — Parse the flat `key: value` map LIBERO writes — no PyYAML dependency. (L64)
+- `_render_yaml(payload) -> str` — Render the same flat layout. (L78)
+- `_locate_active_libero() -> Path` — `import libero` and return its package directory; raises `RuntimeError` with a clear message when LIBERO is absent (caller treats as no-op). (L83)
+- `main() -> int` — argparse entry point; flags `--dry-run`, `--verbose`. Returns 0 when the config matches or after rewriting. (L109)
