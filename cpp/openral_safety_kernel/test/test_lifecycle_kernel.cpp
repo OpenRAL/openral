@@ -3287,6 +3287,44 @@ openral_msgs::msg::ActionChunk velocity_chunk(double v) {
 // slack_m=` line rather than assumed, then pinned here.
 constexpr double kBandTestSlackM = 0.15;
 
+// The same one-sphere-one-cell rig plus a SECOND link whose sphere sits a fixed
+// 50 mm from the first — a self-clearance well inside any band under test, and
+// one no command can change, because the joint that would move it is the root's
+// own rotation about the sphere's centre. It stands in for `panda_link5` <->
+// `panda_link7`, which is never further apart than 22.72 mm at any of the 14641
+// poses of the subspace that moves it (issue #191).
+std::vector<rclcpp::Parameter> scale_band_with_self_pair_params(double proximity_m) {
+  auto params = scale_band_params(proximity_m);
+  const auto set = [&params](const std::string& name, const rclcpp::ParameterValue& value) {
+    for (auto& p : params) {
+      if (p.get_name() == name) {
+        p = rclcpp::Parameter(name, value);
+        return;
+      }
+    }
+    params.emplace_back(name, value);
+  };
+  set("self_collision_enabled", rclcpp::ParameterValue(true));
+  set("self_collision_margin_m", rclcpp::ParameterValue(0.0));
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{2}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0}));
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 0}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{0, -1}));
+  set("collision_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0.15, 0, 0, 0}));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1}));
+  set("collision_capsule_radius", rclcpp::ParameterValue(std::vector<double>{0.05, 0.05}));
+  set("collision_capsule_half_length", rclcpp::ParameterValue(std::vector<double>{0.0, 0.0}));
+  set("collision_capsule_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+  set("collision_link_names", rclcpp::ParameterValue(std::vector<std::string>{"l0", "l1"}));
+  return params;
+}
+
+// Centre-to-centre 0.15 m less both 0.05 m radii.
+constexpr double kSelfPairSlackM = 0.05;
+
 }  // namespace
 
 // The band's whole point: a chunk that is ACCEPTED, near an obstacle, is
@@ -3307,6 +3345,49 @@ TEST_F(LifecycleKernelTest, GradedScalingSlowsAnAcceptedChunkInsideTheBand) {
   const double expected = std::exp(20.0 * (kBandTestSlackM - 0.25));
   EXPECT_NEAR(out.flat[0], expected, 1e-9) << "scale must follow exp(k·(slack − proximity))";
   EXPECT_GT(out.flat[0], 0.0) << "a scale of zero is a stop that calls itself a slowdown";
+}
+
+// Issue #191: the robot's own self-clearance must not drive the band.
+//
+// A self-pair's tightest clearance is a property of how the robot is BUILT, not
+// of where it is going, and on `panda_mobile` the pair `panda_link5` <->
+// `panda_link7` — checked for real since #191 — never opens past 22.72 mm. Fold
+// that into the band and the scale sticks at a constant (0.21 at a 100 mm band,
+// k = 20, measured on the live kernel) forever, and the world term the chunk
+// CAN act on only matters below 22 mm. That is a permanent speed limit, not a
+// slowdown. The self-collision LATCH is untouched — only its contribution to the
+// velocity band is dropped.
+TEST_F(LifecycleKernelTest, GradedScalingIgnoresTheRobotsOwnSelfClearance) {
+  // 0.10 m band: the self pair's 0.05 m clearance is well inside it, the voxel
+  // cell's 0.15 m is outside. If the self term counted, the scale would be
+  // exp(20·(0.05 − 0.10)) = 0.368.
+  const auto out = run_one_chunk("kernel_scale_selfpair",
+                                 scale_band_with_self_pair_params(0.10), velocity_chunk(1.0));
+  ASSERT_TRUE(out.published) << "a 50 mm self clearance is not a collision — it must be ACCEPTED";
+  EXPECT_FALSE(out.latched);
+  ASSERT_EQ(out.flat.size(), 1U);
+  EXPECT_EQ(out.flat[0], 1.0) << "only the voxel slack may drive the band, and 0.15 m is outside "
+                                 "a 0.10 m band — the chunk must be republished untouched";
+  EXPECT_EQ(out.scaled, 0U);
+  EXPECT_GT(kBandTestSlackM, 0.10) << "the world term must be OUTSIDE the band for this to prove "
+                                      "anything about the self term";
+  EXPECT_LT(kSelfPairSlackM, 0.10) << "and the self term inside it";
+}
+
+// The other half: the self-collision check is still a hard gate. Dropping its
+// band contribution must not have dropped the check.
+TEST_F(LifecycleKernelTest, TheSelfCollisionLatchSurvivesTheBandExclusion) {
+  auto params = scale_band_with_self_pair_params(0.10);
+  // Raise the self margin past the pair's 50 mm clearance: the same geometry
+  // now trips.
+  for (auto& p : params) {
+    if (p.get_name() == "self_collision_margin_m") {
+      p = rclcpp::Parameter("self_collision_margin_m", 0.08);
+    }
+  }
+  const auto out = run_one_chunk("kernel_selfpair_latch", params, velocity_chunk(1.0));
+  EXPECT_FALSE(out.published) << "a self-collision inside the margin must NOT be republished";
+  EXPECT_TRUE(out.latched) << "and it must latch";
 }
 
 // Outside the band the chunk is republished untouched. Not "approximately

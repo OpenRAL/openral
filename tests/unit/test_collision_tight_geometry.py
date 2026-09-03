@@ -72,9 +72,15 @@ def _declared(robot: RobotDescription) -> list[LinkCollisionGeometry]:
 def test_the_manifest_actually_declares_tight_geometry(panda: RobotDescription) -> None:
     """Guard against this whole file silently passing on an empty set."""
     declared = _declared(panda)
-    assert {g.link_name for g in declared} == {"panda_link1", "panda_link2"}, (
-        "the scope is link1 + link2 (the two links holding 60 of the census's 72 stops); "
-        "widening it needs its own measurement and its own hazard-entry line"
+    assert {g.link_name for g in declared} == {
+        "panda_link1",
+        "panda_link2",
+        "panda_link5",
+        "panda_link7",
+    }, (
+        "link1 + link2 hold 60 of the census's 72 world-side stops; link5 + link7 were added "
+        "for the SELF-collision pair the boxes cannot separate (issue #191). Widening this "
+        "further needs its own measurement and its own hazard-entry line"
     )
 
 
@@ -178,7 +184,7 @@ def test_the_real_link_mesh_is_inside_every_declared_hull(panda: RobotDescriptio
         worst = float(slack.max())
         assert worst <= 1e-9, f"{geom.link_name}: mesh escapes its hull by {worst * 1e3:.6f} mm"
         checked += 1
-    assert checked == 1, "panda_link2 is the only link shipping a stage-2 hull today"
+    assert checked == 3, "link2, link5 and link7 ship a stage-2 hull; link1 is over budget"
 
 
 def test_the_declared_geometry_reproduces_from_the_mesh(panda: RobotDescription) -> None:
@@ -198,8 +204,9 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
 
     A containment proof alone would be satisfied by a DOP identical to the box.
     This pins the *benefit* side of the hazard entry: the support excess drops
-    from 53.3 mm to 25.7 mm on link1 and from 46.8 mm to 23.0 mm on link2, and a
-    change that quietly lost that would still pass every containment test above.
+    from 53.3 mm to 25.7 mm on link1, 46.8 to 23.0 on link2, 45.2 to 19.0 on
+    link5 and 28.3 to 13.0 on link7 — and a change that quietly lost that would
+    still pass every containment test above.
     """
     gen = _mesh_tools()
     import numpy as np
@@ -213,7 +220,12 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
     phi = np.arccos(1.0 - 2.0 * i / n)
     theta = math.pi * (1.0 + 5.0**0.5) * i
     dirs = np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=1)
-    expected = {"panda_link1": (53.27, 25.69), "panda_link2": (46.83, 23.01)}
+    expected = {
+        "panda_link1": (53.27, 25.69),
+        "panda_link2": (46.83, 23.01),
+        "panda_link5": (45.20, 18.99),
+        "panda_link7": (28.25, 12.97),
+    }
     for geom in _declared(panda):
         points = gen.link_mesh_in_box_frame(xml, geoms[geom.link_name], geom.origin_xyz_rpy)
         tight = geom.tight_geometry

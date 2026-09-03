@@ -720,6 +720,54 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
                           const Vec3& seed_dir, double margin, double fallback,
                           GjkWitness& witness) noexcept;
 
+/// A lower bound on the surface distance between **two links' exact convex
+/// hulls**, equal to that distance (to `kGjkTolerance`) on convergence. The
+/// same GJK as `hull_cell_distance`, with the voxel cube's eight corners
+/// replaced by the second hull's vertex list.
+///
+/// This is the self-collision counterpart of stage 2, and it exists because the
+/// OBB cannot answer the question for a pair whose links interleave: on
+/// `panda_link5` <-> `panda_link7` the boxes overlap over 86.38 % of the pair's
+/// (joint6, joint7) grid while the real geometry interpenetrates over 6.60 %,
+/// and **no margin separates the two populations** — the deepest real collision
+/// sits at a box gap of -8.37 mm and the shallowest false one at -36.64 mm.
+/// That is why the pair shipped ACM-exempted "under protest" (issue #155, PR
+/// #169) until the hulls landed. See `docs/reference/collision-hull-narrow-phase.md`.
+///
+/// Conservatism, exactly as for `hull_cell_distance`: every value returned is a
+/// supporting-hyperplane lower bound on the true hull-to-hull distance, so the
+/// iteration cap can only make the answer more conservative. Unlike the cell
+/// routine this one does **not** stop at the first bound clearing `margin` —
+/// its result is the reported `sweep_min_distance` rather than one of hundreds
+/// of per-cell numbers, and the early exit was measured returning 4.2 mm for a
+/// pair genuinely 60.0 mm apart. On overlap, and whenever the bound is worse than
+/// `fallback` (the caller's `box_box_distance`, which is <= 0 whenever the
+/// hulls actually overlap, because each box contains its hull), `fallback` is
+/// returned instead. A link that ships no stage-2 hull returns `fallback`
+/// unchanged, so a manifest without `tight_geometry` behaves exactly as before.
+///
+/// **Refining is the less-conservative direction, and that is the point**: the
+/// hull is `conv(collision mesh)`, so it contains the geometry the robot is
+/// actually made of and cannot clear a pose the real links occupy. What it
+/// removes is the box's corner slop, which is what forced the exemption.
+///
+/// Cold-started (no witness cache): a self-collision pair is checked at most
+/// once per configuration, so there is no neighbouring cell to warm-start from.
+/// Allocation-free (fixed-size stack simplex).
+///
+/// **Cost, measured on the shipped `panda_mobile` at its robosuite reset pose**
+/// (-O3, this dev host, 200 000 calls): `check_self_collision` goes from 0.758
+/// to 2.303 us per call, +1.545 us, 3.04x. The multiplier is large because the
+/// routine it sits in is small; over a 16-step horizon the addition is 24.7 us
+/// against a 10 ms budget, 0.25 %. It is also close to the sustained cost
+/// rather than a spike: this pair's boxes fail to clear on 86.38 % of its
+/// configuration space, so the GJK runs nearly every call. If a future robot
+/// makes that bite, the next lever is a DOP-vs-DOP stage 1 in front of the GJK
+/// (the same shape as `dop_cell_lower_bound`), not a looser support function —
+/// see `kMaxTightHullVertices` for why the scan stays exhaustive.
+double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
+                          double fallback) noexcept;
+
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
 /// Allocation-free; `scratch.link_world` must already be sized to
@@ -732,6 +780,12 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 /// within the margin and `min_distance` is that pair's distance;
 /// `sweep_min_distance` carries the minimum over every checked pair
 /// (`CollisionHit`). Allocation-free.
+///
+/// A box <-> box pair whose OBBs come within `margin` is re-asked of the two
+/// links' exact convex hulls (`hull_hull_distance`) when **both** ship a
+/// stage-2 hull. The OBB result stays the broad phase and the fallback, so a
+/// pair the boxes already clear costs nothing extra and a manifest without
+/// `tight_geometry` is bit-for-bit unchanged.
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                   double margin) noexcept;
 

@@ -1552,12 +1552,15 @@ numerical agreement, not geometric room.
 
 
 class TightCollisionGeometry(BaseModel):
-    """Tight convex geometry refining a link's :class:`BoxShape` for world-voxel checks.
+    """Tight convex geometry refining a link's :class:`BoxShape` for the kernel's narrow phases.
 
     The safety kernel's arm-link-vs-world-voxel check runs a **staged** narrow
     phase when a link declares this: a 26-DOP separating-axis bound on every
     occupied cell, then GJK on the link's exact convex hull for the cells the
-    DOP cannot clear. Both stages are strict subsets of the box they refine, so
+    DOP cannot clear. Its **self-collision** check does the same for a box pair
+    the OBBs cannot separate, when *both* links declare a stage-2 hull — which
+    is what retired the ``panda_link5``/``panda_link7`` allowed-collision
+    exemption (issue #191). Both stages are strict subsets of the box they refine, so
     the kernel's broad-phase window — sized from ``half_extents_m`` alone — does
     not move, and every cell the kernel visits today is still visited.
 
@@ -1652,8 +1655,9 @@ class LinkCollisionGeometry(BaseModel):
         origin_xyz_rpy: Pose of the primitive in the link frame —
             ``(x, y, z, roll, pitch, yaw)`` in metres and radians.
         tight_geometry: Optional tighter convex geometry the safety kernel uses
-            *in place of* :attr:`shape` for the arm-link-vs-world-voxel narrow
-            phase only. :attr:`shape` remains the broad-phase bound, the
+            *in place of* :attr:`shape` in two narrow phases: arm-link vs world
+            voxel, and — when both links of a pair declare it — self-collision
+            box vs box. :attr:`shape` remains the broad-phase bound, the
             containment proof, and the geometry every other check uses. Only
             valid on a :class:`BoxShape`, and only when it fits inside it.
 

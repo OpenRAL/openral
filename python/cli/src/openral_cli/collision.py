@@ -531,10 +531,22 @@ def lower(
         _console.print(f"[red]Robot description not found:[/red] {robot}")
         raise typer.Exit(code=2)
     if emit_cumotion is not None:
+        from openral_core.assets import resolve_asset
         from openral_safety.cumotion_config import render_cumotion_config
 
         desc, model = _lower(robot, acm_only=False, geometry_only=False)
-        config_text = render_cumotion_config(desc, model)
+        # The URDF lets the emitter re-derive the ACM against the spheres it
+        # actually writes, instead of copying the kernel's (see
+        # `render_cumotion_config`). A manifest with no URDF asset falls back to
+        # the kernel's matrix, and the config header says which it got.
+        urdf = (
+            resolve_asset(desc.assets.urdf.ref, "urdf", manifest_dir=robot.parent)
+            if desc.assets.urdf is not None
+            else None
+        )
+        config_text = render_cumotion_config(
+            desc, model, urdf_path=None if urdf is None else str(urdf)
+        )
         if write:
             emit_cumotion.write_text(config_text, encoding="utf-8")
             _console.print(f"[green]Wrote[/green] cuRobo config → {emit_cumotion}")

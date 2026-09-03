@@ -805,6 +805,71 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
   return lower > fallback ? lower : fallback;
 }
 
+double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
+                          double fallback) noexcept {
+  if (a.vertices == nullptr || a.n_vertices <= 0 || b.vertices == nullptr || b.n_vertices <= 0) {
+    return fallback;  // one side stops at stage 1; the OBB bound stands
+  }
+  // Seed pointing from a's box origin toward b's, so the first support pair
+  // already straddles the gap. Any unit direction is admissible — the bound
+  // below is sound whatever the search starts from — so a degenerate
+  // (co-located) pair just picks an axis.
+  Vec3 seed = sub(b.box.t, a.box.t);
+  const double seed2 = dot(seed, seed);
+  seed = seed2 > 1e-24 ? scale(seed, 1.0 / std::sqrt(seed2)) : Vec3{1.0, 0.0, 0.0};
+
+  // The simplex lives in the Minkowski difference A (-) B; its support along
+  // `d` is `support_A(d) - support_B(-d)`. `GjkSimplex`'s vertex/corner slots
+  // exist for `hull_cell_distance`'s witness cache and are unused here.
+  GjkSimplex s;
+  Vec3 pa;
+  Vec3 pb;
+  hull_support(a, seed, pa);
+  hull_support(b, Vec3{-seed.x, -seed.y, -seed.z}, pb);
+  s.p[0] = sub(pa, pb);
+  s.n = 1;
+
+  double lower = -std::numeric_limits<double>::infinity();
+  for (int it = 0; it < kGjkMaxIterations; ++it) {
+    bool contains = false;
+    const Vec3 v = simplex_closest(s, contains);
+    const double vlen2 = dot(v, v);
+    if (contains || vlen2 <= 1e-24) {
+      return fallback;  // hulls overlap: the OBB bound (<= 0 here) stands
+    }
+    const double vlen = std::sqrt(vlen2);
+    const Vec3 search{-v.x / vlen, -v.y / vlen, -v.z / vlen};
+    hull_support(a, search, pa);
+    hull_support(b, Vec3{-search.x, -search.y, -search.z}, pb);
+    const Vec3 w = sub(pa, pb);
+    // Supporting-hyperplane bound: no point of the difference set lies closer
+    // to the origin than this, so it lower-bounds the surface distance.
+    const double bound = dot(v, w) / vlen;
+    if (bound > lower) {
+      lower = bound;
+    }
+    // NOTE the absence of `hull_cell_distance`'s `lower > margin` early exit.
+    // There it is right: hundreds of cells are visited per step, only their
+    // minimum is reported, and a cell already proved clear needs no sharper
+    // number. Here the answer IS the reported one — `sweep_min_distance` feeds
+    // the distance-graded velocity scaling — and stopping at the first positive
+    // bound was measured returning 4.2 mm for a pair genuinely 60.0 mm apart,
+    // which is sound but would crawl the arm past a clear pose. A self-pair is
+    // checked at most once per configuration and only after the boxes already
+    // failed to clear it, so converging costs a handful of scans.
+    if (vlen - lower <= kGjkTolerance) {
+      lower = vlen;  // converged on the exact surface distance
+      break;
+    }
+    if (s.n == 4) {
+      break;  // no room to grow; the bound already stands
+    }
+    s.p[s.n] = w;
+    ++s.n;
+  }
+  return lower > fallback ? lower : fallback;
+}
+
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept {
   for (std::size_t i = 0; i < model.n_links; ++i) {
@@ -978,6 +1043,35 @@ CollisionHit finish_sweep(CollisionHit hit, double sweep_min) noexcept {
   return hit;
 }
 
+// Re-ask a self-collision box pair of the two links' exact convex hulls.
+// Returns `fallback` (the caller's `box_box_distance`) untouched unless both
+// links ship a stage-2 hull, so this is inert for every manifest that declares
+// no `tight_geometry` and for every pair with a stage-1-only link.
+//
+// Called only once the OBBs are already within `margin`, so the GJK never runs
+// for a pair the cheap bound clears.
+double refine_self_pair(const CollisionModel& model, std::size_t bi, const Transform& xf_i,
+                        std::size_t bj, const Transform& xf_j, double margin,
+                        double fallback) noexcept {
+  if (model.box_hull.size() != model.boxes.size()) {
+    return fallback;
+  }
+  const int hi = model.box_hull[bi];
+  const int hj = model.box_hull[bj];
+  if (hi < 0 || hj < 0 || static_cast<std::size_t>(hi) >= model.hulls.size() ||
+      static_cast<std::size_t>(hj) >= model.hulls.size()) {
+    return fallback;
+  }
+  const Vec3* verts = model.hull_vertices.empty() ? nullptr : model.hull_vertices.data();
+  // `half_side` is the voxel-grid term; there is no cell here, so it is 0 and
+  // the `cell_radius` entries it fills go unread by `hull_hull_distance`.
+  TightPose pose_i;
+  TightPose pose_j;
+  tight_pose_init(model.hulls[static_cast<std::size_t>(hi)], verts, xf_i, 0.0, pose_i);
+  tight_pose_init(model.hulls[static_cast<std::size_t>(hj)], verts, xf_j, 0.0, pose_j);
+  return hull_hull_distance(pose_i, pose_j, margin, fallback);
+}
+
 }  // namespace
 
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
@@ -1034,8 +1128,14 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       }
       const Transform box_j =
           compose(scratch.link_world[static_cast<std::size_t>(lb2)], model.boxes[bj].origin);
-      const double d = box_box_distance(box_i, model.boxes[bi].half_extents, box_j,
-                                        model.boxes[bj].half_extents);
+      double d = box_box_distance(box_i, model.boxes[bi].half_extents, box_j,
+                                  model.boxes[bj].half_extents);
+      if (d <= margin) {
+        // The OBBs cannot separate every pair that interleaves (see
+        // `hull_hull_distance`). Refine with the exact hulls when both links
+        // ship one; otherwise `d` comes back unchanged.
+        d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d);
+      }
       fold_pair(result, sweep_min, d, d <= margin, lb, lb2);
     }
   }

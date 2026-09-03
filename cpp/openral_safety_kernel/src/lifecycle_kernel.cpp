@@ -998,7 +998,18 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
-          note_slack(hit, self_collision_margin_m_ + extra_margin);
+          // NOT folded into the graded band (#188), deliberately, since #191.
+          // A robot's tightest self-pair is a property of how it is BUILT, not
+          // of where it is going: on `panda_mobile`, `panda_link5` <->
+          // `panda_link7` is never further apart than 22.72 mm at ANY of the
+          // 14641 poses of the subspace that moves it — 0 of them clear a 50 mm
+          // band, let alone the 100 mm one. Folding that in pins the scale at a
+          // constant (0.21 at 100 mm / k=20, measured) and the world term, which
+          // the chunk CAN act on, then only matters below 22 mm. That is not a
+          // slowdown, it is a permanent speed limit wearing one's name. The
+          // self-collision LATCH is untouched; only its contribution to the
+          // velocity band is dropped, which restores the pre-#188 rate on the
+          // self path and leaves the world path doing what #188 built it for.
           if (hit.hit) {
             report("self", link_name(hit.link_a), link_name(hit.link_b), step, hit);
             return true;

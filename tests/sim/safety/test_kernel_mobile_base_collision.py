@@ -144,9 +144,19 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
                 executor.spin_once(timeout_sec=0.05)
 
             # Seed: base FAR out in the world (x=y=5 m), arm + gripper at home.
+            #
+            # `panda_joint6` is NOT zero, and cannot be: at an all-zero arm the
+            # Panda's link5 and link7 really interpenetrate, by 5.65 mm at their
+            # own collision meshes. That was invisible until issue #191 retired
+            # the link5↔link7 ACM exemption, and it is a genuine SELF collision
+            # -- which would pre-empt the WORLD stop this test is about. 1.571 is
+            # the SRDF's own `ready` value for that joint and clears by 22.07 mm.
             js = JointState()
             js.name = joint_names
-            js.position = [5.0 if n in base_dofs else 0.0 for n in joint_names]
+            js.position = [
+                5.0 if n in base_dofs else (1.571 if n == "panda_joint6" else 0.0)
+                for n in joint_names
+            ]
 
             # Base-relative occupancy box, all cells occupied.
             grid = OccupancyVoxels()

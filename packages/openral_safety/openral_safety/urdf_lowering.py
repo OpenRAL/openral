@@ -586,7 +586,10 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
 
     The pair is always-colliding when every cell certifies. Running out of
     refinement budget returns ``False``, as does exceeding
-    :data:`_CERTIFY_MAX_DOF` or a pair whose relative pose is not determined.
+    :data:`_CERTIFY_MAX_DOF`, a pair whose relative pose is not determined, or a
+    pair whose links **both** declare ``tight_geometry`` — the kernel checks
+    those at exact-hull fidelity, which this function's ``shape_distance`` (the
+    box) cannot bound in the certifying direction.
     Every failure path is a *withheld* ACM entry: an entry withheld in error costs
     a false E-stop, an entry granted in error hides a real self-collision.
 
@@ -601,6 +604,15 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
         return False
 
     geom_a, geom_b = geoms[link_a], geoms[link_b]
+    if geom_a.tight_geometry is not None and geom_b.tight_geometry is not None:
+        # The kernel re-asks a box pair it cannot clear of the two exact hulls
+        # (`hull_hull_distance`, issue #191), and the hull gap is >= the box gap
+        # everywhere. So "the box gap is <= margin at every pose" — all this
+        # function can prove with `shape_distance` — no longer implies the kernel
+        # trips, and certifying on it would grant an ACM entry that hides a live
+        # check. Withhold instead; the pair stays checked, which is the direction
+        # every other refusal here also fails in.
+        return False
     origin_a = _xyzrpy_matrix(geom_a.origin_xyz_rpy)
     origin_b = _xyzrpy_matrix(geom_b.origin_xyz_rpy)
     chains = _relative_chains(model, link_a, link_b)

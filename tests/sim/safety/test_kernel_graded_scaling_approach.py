@@ -198,9 +198,19 @@ def _run_approach(*, band_m: float) -> list[dict[str, float]]:
 
             # Base parked away from the origin; arm at home. The kernel zeroes
             # the base dofs, so the arm is evaluated in the frame the grid is in.
+            #
+            # `panda_joint6` is held at the SRDF's own `ready` value rather than
+            # zero: at an all-zero arm the Panda's link5 and link7 really
+            # interpenetrate, by 5.65 mm at their own collision meshes, which
+            # issue #191 made visible by retiring their ACM exemption. A real
+            # self-collision would latch the kernel on step 1 and this test would
+            # measure nothing.
             js = JointState()
             js.name = joint_names
-            js.position = [5.0 if n in base_dofs else 0.0 for n in joint_names]
+            js.position = [
+                5.0 if n in base_dofs else (1.571 if n == "panda_joint6" else 0.0)
+                for n in joint_names
+            ]
 
             for step, wall_x in enumerate(_WALL_SWEEP):
                 grid = _wall_grid(wall_x)
