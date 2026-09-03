@@ -115,6 +115,33 @@ def test_the_separating_axis_certificate_closes(primitives: tuple[object, object
     assert segment == pytest.approx(result.distance_m, abs=1e-12)
 
 
+def test_a_penetrating_pair_carries_a_witness_on_both_surfaces(
+    primitives: tuple[object, object],
+) -> None:
+    """The SAT branch reports where the overlap is, not only how deep.
+
+    The support-contact witness (#190) needs a contact point for a payload
+    resting *into* its counter, which is exactly the overlapping branch. The
+    ``a`` witness is the centroid of ``a``'s buried face, the ``b`` witness is
+    that point lifted onto ``b``'s supporting plane, and their difference
+    divided by the signed distance is the ``b``→``a`` direction — the same
+    contract the separated branch honours.
+    """
+    model, data = primitives
+    a, b = _geom(model, "box_a"), _geom(model, "box_overlap")
+    result = convex_geom_distance(model, data, a, b)
+
+    assert result.method == "sat" and result.certified
+    assert result.witness_a is not None and result.witness_b is not None
+    assert np.allclose(result.witness_a, (0.1, 0.0, 0.0), atol=1e-12)
+    assert np.allclose(result.witness_b, (0.05, 0.0, 0.0), atol=1e-12)
+    direction = (np.array(result.witness_a) - np.array(result.witness_b)) / result.distance_m
+    assert np.allclose(direction, (-1.0, 0.0, 0.0), atol=1e-12)
+    assert witness_clearance_m(model, data, a, result.witness_a) < 1e-9
+    assert witness_clearance_m(model, data, b, result.witness_b) < 1e-9
+    assert "witness_a_xyz" in result.as_record()
+
+
 def test_a_witness_on_its_own_geom_has_no_clearance(primitives: tuple[object, object]) -> None:
     """Both endpoints of the reported segment lie on their own geoms.
 

@@ -1080,6 +1080,59 @@ band would help under a *different* policy that declares its place earlier — a
 policy that never declares cannot exercise a declaration-scoped allowance, and
 that is a property of the rollout, not of the kernel.
 
+### 2026-09-03 — the witness path converted off `mj_geomDistance` (#190)
+
+Not a validation round: an instrument change on a **permission** path, and
+the correction of an omission in caveat 8's scope.
+
+The 2026-08-25 correction replaced `mj_geomDistance` on the *evidence* path
+and withdrew every verdict built on it. It did not touch the support-contact
+witness producer (`_sim_attachment_evidence._probe_support_hits`), which kept
+measuring payload↔support penetration with the same call at a 1 mm window —
+and unlike the evidence path, that probe's output is a safety input: the
+`SupportContactWitness` it issues earns a kernel exemption (ADR-0092 D6,
+#131). Both measured failure modes are toward *closer*, which on this path
+means attesting a contact that is not there.
+
+**What changed.** The probe now measures with
+`openral_hal.convex_distance.convex_geom_distance`, the same certified
+instrument, at the same 1 mm window (`_SUPPORT_PROBE_GAP_M`) and under the
+same 10 mm cap (`_SUPPORT_MAX_PENETRATION_M`); neither number and neither of
+their kernel mirrors moved. A hit is produced only from a **certified**
+measurement: a pair the separating-axis bound proves beyond the window is
+rejected unsolved, and an uncertified pair (a plane, an over-budget hull)
+attests nothing — so the failure direction of the converted probe is a
+*missing* exemption, never a false one. The instrument gained the one thing
+the witness needed that the evidence path did not: a nearest-point pair on
+the **overlapping** branch (the centroid of the buried face along the SAT
+minimum-translation axis, lifted onto the support's plane), since a payload
+resting into its counter is exactly that branch. Every witness now carries
+its lineage: `evidence_ref` is
+`openral_hal.convex_distance.convex_geom_distance:<support>`; one reading
+`mujoco_geom_distance:<support>` was produced by the defective instrument.
+
+**What it pins.** `tests/sim/safety/test_support_probe_instrument_robocasa.py`
+reconstructs the 08-23 `baguette` stop and puts #170's fourth false zero —
+`robot0_link1_collision` ↔ `counter_1_left_group_top_left_1`, recorded
+`0.000 m`, certified `+107.930 mm` — through the witness probe itself:
+`mj_geomDistance` still reads `0.000` there at the probe's own 1 mm window,
+which is *inside* it and would have attested a contact; the converted probe
+attests nothing. The #131 sweep (`WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`,
+53,872 cells) is unaffected by construction — it compares the bridge's
+withhold predicate to the kernel's exemption predicate on synthetic cells and
+never calls a distance instrument — and was re-run green rather than cited.
+
+**Cost.** Once per attach, never per tick. On the shipped `robocasa_baguette`
+kitchen at reset (2 383 geoms; the baguette's 16 collision geoms against 1 358
+eligible support geoms) 353 pairs pass the 1 mm bounding-sphere prefilter, the
+certified window rejection discards 234 of them unsolved, 119 are solved, and
+the attestation takes **0.46 s** against ~0.4 ms before — the same three orders
+of magnitude the evidence path paid, for the same reason. It attests
+`counter_1_left_group_main` at 0.065 mm with a 0.117 m patch, from certified
+measurements only.
+
+**Live round.** LIVE_ROUND_PLACEHOLDER
+
 ## Standing caveats
 
 Eight things a reader should carry away, all of them stated by the artifacts
@@ -1137,9 +1190,22 @@ themselves rather than inferred:
    the budget, and it is the reason those rounds now re-derive as
    `unadjudicated` with `withdrawn from '<verdict>'` naming what was taken.
 
+   **The scope includes the support-contact witness.** Until #190
+   (2026-09-03) the witness producer measured with the same call at a 1 mm
+   window, so every `SupportContactWitness` issued before then — every
+   exemption the kernel granted on one, in every round above — rests on the
+   defective instrument. Its failure direction there is a *false* exemption.
+   The exposure is probably small (#170 measured 1 101 of 1 102 pairs agreeing
+   at the shipped windows, and the witness window is 100× narrower) but #170 is
+   explicit that no window separates the good answers from the bad, so none of
+   those exemptions is re-derivable as correct; they are simply unverified. A
+   witness whose `evidence_ref` begins `mujoco_geom_distance:` is one of them.
+
    **It is fixed going forward.** `openral_hal.convex_distance` measures with a
    separating-axis certificate and refuses rather than guess; every probe
-   reports `certified_pairs` / `uncertified_pairs`, and
+   reports `certified_pairs` / `uncertified_pairs`, the witness producer issues
+   only from certified measurements (`evidence_ref`
+   `openral_hal.convex_distance.convex_geom_distance:<support>`), and
    `tools/validation_matrix.py::probe_is_distance_certified` is what a future
    round's verdict rests on. Full characterisation, scope, cost, the
    re-measured stops and the instrument-vs-map partition are in

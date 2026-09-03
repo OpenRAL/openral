@@ -160,7 +160,7 @@ def test_attests_support_the_contact_list_cannot_see() -> None:
     assert witness is not None
     assert witness.support_id == "sim:island"
     assert witness.evidence_kind is AttachmentEvidenceKind.SIM_GEOM_DISTANCE
-    assert witness.evidence_ref == "mujoco_geom_distance:island"
+    assert witness.evidence_ref == "openral_hal.convex_distance.convex_geom_distance:island"
     assert witness.stamp_ns == 17
 
     # The island's top face is exactly +z and the cup carries no rotation, so

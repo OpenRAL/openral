@@ -289,7 +289,7 @@ def test_support_contact_witness_round_trips_over_the_idl() -> None:
         max_penetration_m=0.00118,
         confidence=1.0,
         evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
-        evidence_ref="mujoco_geom_distance:counter_main",
+        evidence_ref="openral_hal.convex_distance.convex_geom_distance:counter_main",
         stamp_ns=99,
     )
     attachments = [

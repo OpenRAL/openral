@@ -100,8 +100,15 @@ class ConvexDistance:
         certified: Whether the bracket and the duality gap both closed inside
             tolerance. ``False`` means the number must not be cited.
         uncertified_reason: Why not; empty when certified.
-        witness_a: Nearest point on geom ``a``, or ``None`` when overlapping.
-        witness_b: Nearest point on geom ``b``, or ``None`` when overlapping.
+        witness_a: Nearest point on geom ``a``. For an overlapping pair solved
+            by SAT it is the centroid of ``a``'s deepest face along the
+            minimum-translation axis; ``None`` only when the depth itself was
+            not measured.
+        witness_b: Nearest point on geom ``b``; for an overlapping pair, the
+            ``witness_a`` point lifted onto ``b``'s supporting plane along the
+            minimum-translation axis. On both branches
+            ``(witness_a - witness_b) / distance_m`` is the unit direction
+            from ``b`` toward ``a``.
         duality_gap_m: Residual of the separating-axis certificate; ``0.0`` for
             an overlapping pair, which SAT solves without one.
         method: Which construction produced the answer.
@@ -473,7 +480,9 @@ def _sat_axes(body: ConvexBody) -> tuple[Any, Any] | None:
     return normals, edges
 
 
-def _sat_penetration_depth(body_a: ConvexBody, body_b: ConvexBody) -> float | None:
+def _sat_penetration_depth(
+    body_a: ConvexBody, body_b: ConvexBody
+) -> tuple[float, Any, Any, Any] | None:
     """Exact minimum translational distance between two overlapping cores.
 
     The MTD axis of two convex polytopes is always a face normal of one, a face
@@ -482,6 +491,12 @@ def _sat_penetration_depth(body_a: ConvexBody, body_b: ConvexBody) -> float | No
     no iteration. Returns ``None`` when an axis set is unavailable or would
     exceed ``_MAX_SAT_AXES``, so the caller reports "not measured" instead of a
     subsampled guess.
+
+    Returns:
+        ``(depth, axis, p_a, p_b)``: the (negative) depth; the unit MTD axis
+        oriented so that ``a`` lies on its positive side; the centroid of
+        ``a``'s deepest face along it; and that point lifted onto ``b``'s
+        supporting plane, so ``p_a - p_b == depth * axis``.
     """
     import numpy as np
 
@@ -504,10 +519,20 @@ def _sat_penetration_depth(body_a: ConvexBody, body_b: ConvexBody) -> float | No
     b = np.asarray(body_b.core, dtype=np.float64)
     proj_a = a @ axes.T
     proj_b = b @ axes.T
-    overlap = np.minimum(
-        proj_a.max(axis=0) - proj_b.min(axis=0), proj_b.max(axis=0) - proj_a.min(axis=0)
-    )
-    return -float(overlap.min())
+    a_past_b = proj_a.max(axis=0) - proj_b.min(axis=0)
+    b_past_a = proj_b.max(axis=0) - proj_a.min(axis=0)
+    overlap = np.minimum(a_past_b, b_past_a)
+    k = int(np.argmin(overlap))
+    depth = -float(overlap[k])
+    # Orient the axis so ``a`` sits on its positive side: then ``a``'s minimum
+    # projection is the face buried in ``b`` and ``b``'s maximum is the plane
+    # it is buried under.
+    axis = axes[k] if b_past_a[k] <= a_past_b[k] else -axes[k]
+    heights = a @ axis
+    deepest = a[np.isclose(heights, heights.min(), rtol=0.0, atol=1e-12)]
+    p_a = deepest.mean(axis=0)
+    p_b = p_a - depth * axis
+    return depth, axis, p_a, p_b
 
 
 def _signed_distance(body_a: ConvexBody, body_b: ConvexBody) -> tuple[float, Any, Any, float, str]:
@@ -530,10 +555,13 @@ def _signed_distance(body_a: ConvexBody, body_b: ConvexBody) -> tuple[float, Any
             p_a = np.asarray(p_a) + unit * body_a.radius
             p_b = np.asarray(p_b) - unit * body_b.radius
         return distance - inflate, p_a, p_b, gap, "gjk"
-    depth = _sat_penetration_depth(body_a, body_b)
-    if depth is None:
+    solved = _sat_penetration_depth(body_a, body_b)
+    if solved is None:
         return -inflate, None, None, float("inf"), "gjk-overlap"
-    return depth - inflate, None, None, 0.0, "sat"
+    depth, axis, p_a, p_b = solved
+    # The balls push each witness further along the axis: ``a``'s deeper into
+    # ``b``, ``b``'s further out, keeping ``p_a - p_b == (depth - inflate) * axis``.
+    return depth - inflate, p_a - axis * body_a.radius, p_b + axis * body_b.radius, 0.0, "sat"
 
 
 def convex_geom_distance(
