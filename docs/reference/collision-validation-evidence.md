@@ -1265,6 +1265,26 @@ margin than the pre-Path-A reading suggested. Three of the A-on stops name
 a stop class that could not exist before #200 gave the kernel the declared
 target's bodies.
 
+**Correction (same day): two of these verdicts are instrument artifacts, not
+findings.** The `false-positive` count above is 2 with the band off and 1 with it
+on, and the `sink_cup` `panda_link5`↔`panda_link7` stop appears in both arms. It
+is **not** a false positive. The adjudicator had no link-vs-link path at all:
+`tools/validation_matrix.py` branched on `involves_payload` rather than on
+`stop.kind` and fell through to the world-stop comparison, and the ground-truth
+producer excludes the whole robot from the far side, so a link-vs-link pair is
+structurally impossible for it to produce. The `nearest_tripping_party_m` of
+0.212 m it reported is `panda_link5` measured against a kitchen island.
+
+Replayed offline against the real narrow phase, the pair genuinely
+interpenetrates by ~1.5 mm at the recorded configuration — the hull-vs-hull GJK
+#202 introduced did run, and #202's own 86.38 % / 6.60 % table reproduces byte
+for byte. So the stop was correct and this round's 44 %/65 % contact-phase
+figures, which count payload stops, are unaffected. What changes is the verdict
+column: those two re-derive as `unadjudicated`. Fix and the full replay are on
+`fix/link5-link7-phantom-self-collision`; the earlier framing that −31.97 mm
+"sits inside the false population" was also wrong — it lies between the two
+populations, in neither.
+
 **What this round does NOT establish, and one thing it takes back.** Task
 success was **5/20** on 2026-08-26 and is **1/20** here in both arms. Neither
 path predicts that and neither arm explains it; the commits differ by far more
