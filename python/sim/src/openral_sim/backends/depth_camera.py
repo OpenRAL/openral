@@ -234,7 +234,8 @@ def _cast_depth_rays(
     # and hand back its cost premium. #195 measured that instead of adopting
     # it, on all four validation-matrix scenes at the deploy stride, both
     # casters seeing the identical filtered world
-    # (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`; table in
+    # (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`, which
+    # casts through THIS function so a swap fails it; table in
     # docs/reference/world-map-fidelity.md). The conjecture is FALSE:
     #
     #   * The batched cast disagrees on 4 113 of 65 536 rays, and every geom
