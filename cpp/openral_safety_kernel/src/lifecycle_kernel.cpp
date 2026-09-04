@@ -1092,6 +1092,40 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
           }
+          // ADR-0099 contact-force gate, survey Path C. Evaluated LAST, after
+          // every geometric check above has already passed, which is what makes
+          // "additive conservatism" literally true rather than merely argued:
+          // the only configurations this can reach are ones the kernel was about
+          // to accept, so it can turn an accept into a refusal and nothing else.
+          // It never widens a margin, never creates an exemption, and geometry
+          // keeps priority in the evidence.
+          //
+          // It is also configuration-invariant across the horizon — the witness
+          // describes the measured contact now, not a predicted one — so it is
+          // reported at the step being checked and the whole chunk is refused,
+          // exactly as any other hit at that step would be.
+          const auto force = check_contact_force_gate(attached_model_);
+          if (force.tripped) {
+            CollisionHit fhit{};
+            fhit.hit = true;
+            fhit.link_a = force.object_index;
+            fhit.link_b = -1;
+            // There is no geometric pair here, and inventing a distance for one
+            // would put a number in the evidence that no check measured — the
+            // single-pair-coherence rule `CollisionHit` exists to enforce. The
+            // force numbers travel in the log line below instead.
+            fhit.min_distance = std::numeric_limits<double>::infinity();
+            fhit.sweep_min_distance = std::numeric_limits<double>::infinity();
+            RCLCPP_ERROR(this->get_logger(),
+                         "safety.contact_force_gate object=%s target=%s magnitude_n=%g "
+                         "threshold_n=%g step=%d",
+                         attached_label(force.object_index).c_str(),
+                         place_declaration_target_.c_str(), force.magnitude_n,
+                         force.threshold_n, step);
+            report("world", attached_label(force.object_index),
+                   "force:" + place_declaration_target_, step, fhit);
+            return true;
+          }
         }
         return false;
       };
@@ -2073,6 +2107,42 @@ void SafetyKernelLifecycleNode::on_world_state(
       in.support_patch_radius = witness.patch_radius_m;
       in.support_max_penetration = witness.max_penetration_m;
     }
+    // Contact-force attestation (ADR-0099). Unlike the support witness above,
+    // an out-of-bounds value here does NOT fail the message closed: this
+    // witness licenses nothing, so a producer over-claiming on it cannot buy
+    // anything, and refusing the whole payload model would make an additive
+    // conservatism feature able to stop the robot by being malformed. It is
+    // dropped instead, which lands on the shipped geometry-only behaviour.
+    in.has_contact_force_witness = obj.contact_force_valid;
+    if (in.has_contact_force_witness) {
+      const auto& force = obj.contact_force;
+      // The magnitude is Newtons ONLY under a named calibration (survey §21.7).
+      // Both conditions are resolved here so the hot path reads two bools.
+      in.contact_force_calibrated = force.magnitude_calibrated && !force.calibration_ref.empty();
+      // Scoping: the measured contact must be against the surface the
+      // declaration named. `target_id` matches the declared target outright, or
+      // names a surface that is part of it — the same rule the support
+      // witness's `support_id` is under.
+      // Read off THIS message, never off `place_declaration_target_`: the
+      // declaration is ingested after the payloads (it is resolved against the
+      // objects just accepted), so the member still holds the previous
+      // snapshot's target here. An empty or inactive declaration matches
+      // nothing, which lands on the shipped geometry-only behaviour.
+      const std::string declared_target =
+          (msg->place_declaration_valid && msg->place_declaration.active)
+              ? msg->place_declaration.target_id
+              : std::string{};
+      in.contact_force_target_matches =
+          !declared_target.empty() && (force.target_id == declared_target ||
+                                       force.target_id.rfind(declared_target + ":", 0) == 0);
+      in.contact_force_magnitude = force.magnitude_n;
+      if (!std::isfinite(in.contact_force_magnitude) || in.contact_force_magnitude < 0.0) {
+        in.has_contact_force_witness = false;
+        in.contact_force_calibrated = false;
+        in.contact_force_target_matches = false;
+        in.contact_force_magnitude = 0.0;
+      }
+    }
     in.primitives.clear();
     in.primitives.reserve(obj.primitives.size());
     for (const auto& prim : obj.primitives) {
@@ -2156,6 +2226,7 @@ void SafetyKernelLifecycleNode::on_world_state(
                     place_declaration_target_.c_str());
       }
       place_region_ = PlaceApproachRegion{};
+      attached_model_.force_gate = PlaceForceGate{};
       place_region_refusal_reason_.clear();
       place_region_refusal_target_.clear();
     } else {
@@ -2182,6 +2253,10 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   const std::size_t was_geometry = place_region_.n_geometry;
   const std::string previous_target = place_declaration_target_;
   place_region_ = PlaceApproachRegion{};
+  // ADR-0099: the force gate is re-derived from scratch on every snapshot, for
+  // the same reason the region is — a bound that outlived its declaration is an
+  // armed enforcement surface nobody declared.
+  attached_model_.force_gate = PlaceForceGate{};
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
@@ -2225,6 +2300,37 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
     announce_dropped("retracted");
     return;
   }
+  // Which carried payload the declaration is scoped to. An empty object_id is
+  // the direct-dispatch case ("whichever payload is carried"), which the
+  // producer resolves at attach time; the kernel maps it onto every accepted
+  // object. Resolved HERE, above the region checks, because the ADR-0099 force
+  // gate travels with the *declaration* and must arm for the region-less
+  // declaration dispatch actually publishes — unlike the approach allowance,
+  // which needs a producer-measured region to mean anything.
+  std::uint8_t object_mask = 0;
+  const std::size_t objects = std::min<std::size_t>(attached_model_.n_objects, 8);
+  for (std::size_t i = 0; i < objects; ++i) {
+    if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
+      object_mask = static_cast<std::uint8_t>(object_mask | (1U << i));
+    }
+  }
+  // ADR-0099. `<= 0` is the default and means no gate at all; a threshold past
+  // the shared ceiling is a producer error and buys nothing, failing closed
+  // toward the shipped geometry-only behaviour rather than toward a clamped
+  // bound nobody chose.
+  const double threshold_n = declaration.contact_force_threshold_n;
+  if (object_mask != 0 && std::isfinite(threshold_n) && threshold_n > 0.0 &&
+      threshold_n <= kMaxContactForceThresholdN) {
+    attached_model_.force_gate.valid = true;
+    attached_model_.force_gate.object_mask = object_mask;
+    attached_model_.force_gate.threshold_n = threshold_n;
+  } else if (threshold_n > kMaxContactForceThresholdN &&
+             refusal_is_new("force_threshold_out_of_range", declaration.target_id)) {
+    RCLCPP_WARN(this->get_logger(),
+                "safety.place_force_gate_rejected reason=out_of_range threshold_n=%g ceiling_n=%g "
+                "target=%s",
+                threshold_n, kMaxContactForceThresholdN, declaration.target_id.c_str());
+  }
   if (!declaration.region_valid) {
     // The common, correct case for dispatch's own publication and for every real
     // deployment today: a declaration with no producer-measured region. It still
@@ -2242,16 +2348,6 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
           region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.target_id.c_str());
     }
     return;
-  }
-  // Which carried payload the allowance follows. An empty object_id is the
-  // direct-dispatch case ("whichever payload is carried"), which the producer
-  // resolves at attach time; the kernel maps it onto every accepted object.
-  std::uint8_t object_mask = 0;
-  const std::size_t objects = std::min<std::size_t>(attached_model_.n_objects, 8);
-  for (std::size_t i = 0; i < objects; ++i) {
-    if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
-      object_mask = static_cast<std::uint8_t>(object_mask | (1U << i));
-    }
   }
   const Transform pose = transform_from_translation_quat(
       region.pose.position.x, region.pose.position.y, region.pose.position.z,

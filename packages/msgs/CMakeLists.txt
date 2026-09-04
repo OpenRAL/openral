@@ -27,6 +27,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/OccupancyVoxels.msg
   # typed WorldState publication.
   msg/AttachedCollisionPrimitive.msg
+  msg/ContactForceWitness.msg
   msg/SupportContactWitness.msg
   msg/AttachedCollisionObject.msg
   msg/AttachmentState.msg

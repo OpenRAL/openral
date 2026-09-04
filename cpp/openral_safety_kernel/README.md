@@ -759,6 +759,71 @@ path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
 
+## The contact-force gate (ADR-0099, survey Path C)
+
+Every check above discriminates on **position**. At the instant of a place the
+true clearance *is* zero, so none of them separates "set the object down in the
+cabinet" from "crush it against the cabinet" — both are the same distance
+(survey §9 point 4). `check_contact_force_gate` reads the axis that does.
+
+**It only ever adds a refusal, and that is the whole safety argument.** The node
+evaluates it *last*, after every geometric check in `check_config` has already
+passed, so the only configurations it can reach are ones the kernel was about to
+accept. There is no branch by which it widens a margin, creates an exemption, or
+lets a measured force license contact the geometry refused — and
+`ContactForceGateResult` has no field with which to express one. Geometry keeps
+priority in the evidence: a force stop appears only where there would otherwise
+have been no stop at all.
+
+It arms only when **all four** hold, and each one fails toward the shipped
+geometry-only behaviour:
+
+* **a live declaration with a bound.** `AttachedModel::force_gate.valid`, which
+  the node sets from `PlaceDeclaration.contact_force_threshold_n`. Dispatch's
+  default is `0.0` — no gate. Unlike the approach allowance, this does **not**
+  need a producer-measured region, because the bound travels with the
+  declaration rather than with the geometry; it is therefore resolved above the
+  `region_valid` check, and armed for the region-less declaration dispatch
+  actually publishes.
+* **the declared payload.** The object's bit must be in `force_gate.object_mask`.
+  A second object the robot happens to be carrying is outside the declaration
+  and outside this (`…WithNoLiveDeclarationTheGateIsInert`).
+* **a witness on the declared target.** `contact_force_target_matches`, resolved
+  at ingest against *this* message's declaration — the same scoping rule
+  `SupportContactWitness::support_id` is under
+  (`…AContactOnAnythingButTheDeclaredTargetAttestsNothing`).
+* **a calibrated magnitude.** Without `contact_force_calibrated` the value is a
+  producer quantity and **not newtons**, so it is not read at all rather than
+  read optimistically (`…AnUncalibratedMagnitudeIsNeverReadAsNewtons`). No
+  published work validates MuJoCo contact-force magnitudes against real
+  force-torque measurements (survey §21.7), MuJoCo documents its contact model
+  as an approximation resting on `solref`/`solimp`, and FORGE
+  ([arXiv:2408.04587](https://arxiv.org/abs/2408.04587)) re-tunes its threshold
+  on hardware across >1000 real trials. A sim magnitude is a calibration knob,
+  never an equivalence claim.
+
+`kMaxContactForceThresholdN = 140.0` mirrors
+`openral_core.PlaceDeclaration.MAX_CONTACT_FORCE_THRESHOLD_N` — ISO/TS 15066
+Table A.2's quasi-static limit for hands and fingers, the most permissive body
+region in the table — so a schema-valid declaration can never overflow the
+kernel, and a threshold past it arms nothing rather than being clamped to a
+bound nobody chose (`…AnOutOfRangeOrNonFiniteBoundArmsNothing`).
+
+The comparison is **inclusive**: a declaration stating "up to 30 N" permits
+30 N. The **deepest** overrun is the one reported, so the evidence names the
+binding pair rather than the first object scanned
+(`…TheDeepestOverrunIsTheOneReported`) — the single-pair-coherence rule
+`CollisionHit` is under. A gate stop logs `safety.contact_force_gate` with the
+object, the target, the measured magnitude and the threshold it was judged
+against, and `min_distance` is left at infinity rather than carrying an invented
+geometric distance no check measured.
+
+**Absence of a witness is not evidence of absent contact.** The sim producer
+reads MuJoCo's solver contact list, which `contype`/`conaffinity` exclusions can
+leave empty under a payload demonstrably in contact. That blind spot is
+survivable precisely because this check can only add refusals: failing to arm
+lands on today's behaviour, never on something more permissive than it.
+
 ## Frame convention (ADR-0095)
 
 The kernel applies **no transforms**. It FKs each link from the manifest's
