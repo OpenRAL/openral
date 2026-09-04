@@ -67,6 +67,7 @@ _SCENE_MJCF = """
 <mujoco model="support_contact_witness">
   <option gravity="0 0 -9.81"/>
   <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" contype="4" conaffinity="4"/>
     <body name="island" pos="0 0 0.4">
       <geom name="island_top" type="box" size="0.5 0.3 0.02" contype="4" conaffinity="4"/>
     </body>
@@ -160,7 +161,7 @@ def test_attests_support_the_contact_list_cannot_see() -> None:
     assert witness is not None
     assert witness.support_id == "sim:island"
     assert witness.evidence_kind is AttachmentEvidenceKind.SIM_GEOM_DISTANCE
-    assert witness.evidence_ref == "mujoco_geom_distance:island"
+    assert witness.evidence_ref == "openral_hal.convex_distance.convex_geom_distance:island"
     assert witness.stamp_ns == 17
 
     # The island's top face is exactly +z and the cup carries no rotation, so
@@ -277,6 +278,87 @@ def test_penetration_past_the_kernel_cap_attests_nothing() -> None:
         )
         is None
     )
+
+
+_TESSELLATED_MJCF = """
+<mujoco model="tessellated_counter">
+  <option gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="counter" pos="0 0 0.4">
+      <geom name="strip_under" type="box" size="0.10 0.3 0.02" pos="0 0 0"
+            contype="4" conaffinity="4"/>
+      <geom name="strip_beside" type="box" size="0.05 0.3 0.02" pos="0.30 0 0"
+            contype="4" conaffinity="4"/>
+    </body>
+    <body name="tray" pos="0 0 0.4225">
+      <freejoint name="tray_joint"/>
+      <geom name="tray_body" type="box" size="0.45 0.2 0.0025" contype="1" conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_a_neighbouring_strip_cannot_tilt_the_attested_support_plane() -> None:
+    """One counter, two coplanar strips, a tray flush across both — plane stays level.
+
+    This is the #190 regression. A support geom's analytic face normal is only
+    meaningful at a point *on* that geom, and the certified instrument's
+    witness on the overlapping branch lies in the support's supporting PLANE,
+    which for a neighbouring strip is a point 0.25 m outside it. There the box
+    normal comes back **lateral**, and because ``_dominant_support`` groups by
+    support root and averages, that one hit tilted the attested plane 45
+    degrees off vertical — a support plane the safety kernel would have
+    exempted against.
+
+    The probe now cross-checks every hit against the instrument's own contact
+    direction, which is exact even at a flush contact, so the off-geom hits
+    are dropped and only the strip actually under the tray is attested.
+    """
+    model = mujoco.MjModel.from_xml_string(_TESSELLATED_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    witness = support_contact_witness(
+        model,
+        data,
+        root_body_id=_body(model, "tray"),
+        robot_body_ids=frozenset(),
+        stamp_ns=1,
+    )
+
+    assert witness is not None, "the tray rests flush on the counter; that is real support"
+    normal = np.asarray(witness.contact_normal_in_object, dtype=float)
+    tilt_deg = math.degrees(math.acos(float(np.clip(normal @ np.array([0.0, 0.0, 1.0]), -1, 1))))
+    assert tilt_deg < 1e-6, f"attested support plane is {tilt_deg:.1f} deg off vertical"
+
+
+def test_a_plane_support_attests_nothing_because_it_cannot_be_certified() -> None:
+    """A payload resting on the floor plane earns no exemption — stated, not silent.
+
+    The certified instrument has no bounded hull for a plane and refuses to
+    measure it (#170); the witness path issues only from certified
+    measurements (#190). So a cup flush on the floor attests nothing, and the
+    kernel stops on that contact rather than being told to ignore it. That is
+    the fail-closed direction, and this test is where the behaviour is pinned
+    so a plane-aware branch, if one is ever added, has something to flip.
+    """
+    from openral_hal.convex_distance import convex_geom_distance
+
+    model, data = _scene(cup_z=_CUP_RADIUS_M - _CUP_PENETRATION_M)
+    cup_geom = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "cup_body"))
+    floor_geom = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor"))
+    measured = convex_geom_distance(model, data, cup_geom, floor_geom)
+    assert not measured.certified and "PLANE" in measured.uncertified_reason
+
+    witness = support_contact_witness(
+        model,
+        data,
+        root_body_id=_body(model, "cup"),
+        robot_body_ids=frozenset(),
+        stamp_ns=1,
+    )
+    assert witness is None
 
 
 def test_overhead_surface_is_not_support() -> None:

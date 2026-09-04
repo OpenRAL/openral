@@ -50,6 +50,8 @@ _PRIMITIVES = """<mujoco>
   <body pos="0 4.25 0"><geom name="capsule_b" type="capsule" size="0.04 0.1"/></body>
   <body pos="0 6 0"><geom name="cylinder_a" type="cylinder" size="0.05 0.1"/></body>
   <body pos="0 6.3 0"><geom name="cylinder_b" type="cylinder" size="0.06 0.1"/></body>
+  <body pos="0 10 0"><geom name="ledge" type="box" size="0.02 0.02 0.02"/></body>
+  <body pos="0.3 10 0.0399"><geom name="slab" type="box" size="0.4 0.4 0.02"/></body>
   <body pos="0 8 0"><geom name="plane_a" type="plane" size="1 1 0.1"/></body>
   <body pos="0 8 0.4"><geom name="box_over_plane" type="box" size="0.1 0.1 0.1"/></body>
  </worldbody>
@@ -113,6 +115,59 @@ def test_the_separating_axis_certificate_closes(primitives: tuple[object, object
     assert result.witness_a is not None and result.witness_b is not None
     segment = float(np.linalg.norm(np.array(result.witness_b) - np.array(result.witness_a)))
     assert segment == pytest.approx(result.distance_m, abs=1e-12)
+
+
+def test_a_penetrating_pair_reports_where_the_overlap_is(
+    primitives: tuple[object, object],
+) -> None:
+    """The SAT branch reports where the overlap is, not only how deep.
+
+    The support-contact witness (#190) needs a contact point for a payload
+    resting *into* its counter, which is exactly the overlapping branch. The
+    ``a`` witness is the centroid of ``a``'s buried face and the ``b`` witness
+    is that point lifted onto ``b``'s supporting plane, so their difference is
+    the penetration depth along the minimum-translation axis.
+    """
+    model, data = primitives
+    a, b = _geom(model, "box_a"), _geom(model, "box_overlap")
+    result = convex_geom_distance(model, data, a, b)
+
+    assert result.method == "sat" and result.certified
+    assert result.witness_a is not None and result.witness_b is not None
+    assert np.allclose(result.witness_a, (0.1, 0.0, 0.0), atol=1e-12)
+    assert np.allclose(result.witness_b, (0.05, 0.0, 0.0), atol=1e-12)
+    assert np.allclose(result.direction, (-1.0, 0.0, 0.0), atol=1e-12)
+    assert witness_clearance_m(model, data, a, result.witness_a) < 1e-9
+    assert "witness_a_xyz" in result.as_record()
+
+
+def test_the_overlapping_witness_is_a_plane_point_and_the_direction_is_separate(
+    primitives: tuple[object, object],
+) -> None:
+    """``witness_b`` is on ``b``'s supporting PLANE, which is not ``b``'s surface.
+
+    A wide slab resting 0.1 mm into a small ledge is the case that separates
+    the two: ``a``'s buried face is the whole slab underside, so its centroid
+    lifts onto the ledge's top plane far outside the ledge itself, and
+    ``witness_clearance_m`` correctly refutes it as a point on ``b``. That is
+    why :attr:`ConvexDistance.direction` exists and why nothing may recover a
+    contact direction by differencing the two witnesses — at a flush contact
+    they coincide and carry no direction at all. #190: the support probe read
+    a *lateral* box face normal at exactly such a point and tilted an attested
+    support plane by 45 degrees.
+    """
+    model, data = primitives
+    slab, ledge = _geom(model, "slab"), _geom(model, "ledge")
+    result = convex_geom_distance(model, data, slab, ledge)
+
+    assert result.method == "sat" and result.certified
+    assert result.distance_m == pytest.approx(-1e-4, abs=1e-9)
+    # The depth is right along the axis...
+    assert np.allclose(result.direction, (0.0, 0.0, 1.0), atol=1e-12)
+    offset = np.array(result.witness_a) - np.array(result.witness_b)
+    assert np.allclose(offset, np.array(result.direction) * result.distance_m, atol=1e-12)
+    # ...and the point is nowhere near the ledge's surface. Stated, not hidden.
+    assert witness_clearance_m(model, data, ledge, result.witness_b) > 0.2
 
 
 def test_a_witness_on_its_own_geom_has_no_clearance(primitives: tuple[object, object]) -> None:

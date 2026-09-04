@@ -37,7 +37,16 @@ _DEGENERATE_NORM = 1e-9
 # payload flush on a counter can produce ZERO contact records (2026-08-14
 # acceptance: a cup resting on a RoboCasa island at 0.000 mm generated none,
 # while a baguette on a counter generated six, purely because the second pair's
-# bitmasks happened to meet). ``mj_geomDistance`` sees both.
+# bitmasks happened to meet). A signed distance sees both.
+#
+# The distance is ``openral_hal.convex_distance.convex_geom_distance``, NOT
+# ``mujoco.mj_geomDistance``. #170 measured that call returning confidently
+# wrong values on RoboCasa-fixture-vs-``panda_mobile``-mesh pairs in two silent
+# modes, always toward *closer* — which on this path would attest a contact
+# that is not there, and a witness earns a kernel exemption. Only a certified
+# measurement produces a hit; an uncertified pair (a plane, an over-budget
+# hull) attests nothing, so the failure direction is a missing exemption, never
+# a false one (#190).
 #
 # A payload separated by more than this is not resting on anything: the number
 # is the safety kernel's own ``attached_contact_tolerance_m`` — physical slack
@@ -50,17 +59,26 @@ _SUPPORT_PROBE_GAP_M = 0.001
 # contact, and attesting a clamped depth would launder it into an exemption.
 _SUPPORT_MAX_PENETRATION_M = 0.01
 _SUPPORT_MAX_PATCH_RADIUS_M = 0.5
-# Exact-distance call budget for one attestation. The payload contributes a
-# handful of geoms and this runs once per attach, so the cost is ~0.4 ms at
-# MuJoCo's ~0.8 us/call; the cap only bounds the pathological scene.
+# Exact-distance call budget for one attestation. This runs at attach, and
+# then on EVERY tick of a live place declaration until one attests (the
+# hysteresis in ``_place_witness`` short-circuits only after a success) — so
+# the per-tick worst case, not the per-attach cost, is what this cap bounds. Measured on the shipped
+# ``robocasa_baguette`` kitchen (2383 geoms, 16 payload geoms, 1358 support
+# candidates): 353 pairs pass the 1 mm bounding-sphere prefilter, the certified
+# window rejection discards 234 of them unsolved, 119 are solved, and the whole
+# attestation costs ~0.21 s — ~1.7 ms per solved mesh pair against
+# ``mj_geomDistance``'s ~0.8 us, the price of an answer that is proved. The
+# place phase measures against the DECLARED TARGET's bodies only, which is what
+# keeps a per-tick re-probe affordable.
+# ponytail: hulls are re-decoded per call (~0.1 s of the 0.46 s); cache them
+# per (model, mesh) if attach latency ever matters.
 _SUPPORT_PROBE_MAX_CALLS = 1024
-# Under this separation the probe's closest-point segment is degenerate and
-# carries no direction — which is precisely the resting case (the field cup sat
-# at 0.000 mm). The support geom's own surface normal is the primary source;
-# the segment is only ever a cross-check or a last resort.
-_SEGMENT_DIRECTION_MIN_M = 1e-5
-# A surface normal and a closest-point segment more than 60 degrees apart do not
-# describe the same plane. Rather than pick one, attest neither (fail closed).
+# A surface normal and the instrument's own contact direction more than 60
+# degrees apart do not describe the same plane. Rather than pick one, attest
+# neither (fail closed). This runs at EVERY hit, flush ones included, because
+# ``convex_geom_distance`` reports its direction directly rather than leaving
+# it to be recovered from two witness points that coincide at a resting
+# contact — the case that matters (the field cup sat at 0.000 mm).
 _NORMAL_AGREEMENT_MIN = 0.5
 
 
@@ -565,8 +583,8 @@ def _support_surface_normal(
 ) -> NDArray[np.float64] | None:
     """Outward world normal of a support geom at a point on its surface.
 
-    The closest-point segment ``mj_geomDistance`` returns is the obvious source
-    for a normal, and it is the wrong one for exactly the case that matters: at
+    The closest-point segment the distance instrument returns is the obvious
+    source for a normal, and it is the wrong one for exactly the case that matters: at
     a true resting contact the separation is ~0, the two closest points
     coincide, and the segment has no direction at all. So the primary source is
     the support's own analytic surface, which is well-defined however flush the
@@ -629,7 +647,7 @@ def _support_surface_normal(
 
 @dataclass(frozen=True)
 class _SupportProbeHit:
-    """One payload↔support geom pair measured by signed distance."""
+    """One payload↔support geom pair measured by certified signed distance."""
 
     support_root: int
     contact_point: NDArray[np.float64]
@@ -651,9 +669,16 @@ def _probe_support_hits(
     bounding-sphere prefilter and the same round-robin call budget, reused
     rather than re-derived, so a kitchen full of geometry costs a fixed number
     of exact calls and no payload geom can be starved out of the measurement.
-    """
-    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
 
+    Measured with the same certified instrument as the evidence path,
+    ``convex_geom_distance``: a pair the separating-axis bound proves to be
+    beyond the window is rejected without being solved, and a pair whose
+    distance could not be certified is skipped rather than guessed at — this
+    probe's output licenses an exemption, so only a proved contact may count.
+    """
+    from openral_hal.convex_distance import (  # noqa: PLC0415  # reason: optional sim dependency
+        convex_geom_distance,
+    )
     from openral_hal.sim_sensor_bridge import (  # noqa: PLC0415  # reason: bounded-probe reuse
         _pair_distance_lower_bound,
         _round_robin_candidates,
@@ -665,24 +690,22 @@ def _probe_support_hits(
     candidates, _ = _round_robin_candidates(gap, _SUPPORT_PROBE_GAP_M, _SUPPORT_PROBE_MAX_CALLS)
 
     hits: list[_SupportProbeHit] = []
-    segment = np.zeros(6, dtype=np.float64)
     for row, column in candidates:
         payload_geom = int(side[int(row)])
         support_geom = int(other[int(column)])
-        distance = float(
-            mujoco.mj_geomDistance(
-                model,
-                data,
-                payload_geom,
-                support_geom,
-                _SUPPORT_PROBE_GAP_M,
-                segment,
-            )
+        measured = convex_geom_distance(
+            model, data, payload_geom, support_geom, distmax_m=_SUPPORT_PROBE_GAP_M
         )
-        if distance >= _SUPPORT_PROBE_GAP_M:
-            continue  # not touching, and ``segment`` was left unwritten
-        payload_point = np.asarray(segment[:3], dtype=np.float64).copy()
-        support_point = np.asarray(segment[3:], dtype=np.float64).copy()
+        distance = measured.distance_m
+        if measured.method == "beyond-window" or distance >= _SUPPORT_PROBE_GAP_M:
+            continue  # provably not touching
+        if not measured.certified or measured.witness_a is None or measured.witness_b is None:
+            continue  # not measured: an unproved contact licenses nothing
+        payload_point = np.asarray(measured.witness_a, dtype=np.float64)
+        support_point = np.asarray(measured.witness_b, dtype=np.float64)
+        if measured.direction is None:
+            continue  # no contact direction: nothing to check a surface normal against
+        probe_normal = np.asarray(measured.direction, dtype=np.float64)
 
         surface_normal = _support_surface_normal(
             model,
@@ -690,24 +713,25 @@ def _probe_support_hits(
             geom_id=support_geom,
             world_point=support_point,
         )
-        # ``(payload_point - support_point) / distance`` is the support→payload
-        # direction for both signs of ``distance``: the segment runs payload→
-        # support when they overlap and support→payload when they do not, and
-        # dividing by the signed distance folds that flip in. It is undefined at
-        # a flush contact, which is why it is the fallback and not the source.
-        segment_normal: NDArray[np.float64] | None = None
-        if abs(distance) >= _SEGMENT_DIRECTION_MIN_M:
-            segment_normal = (payload_point - support_point) / distance
+        # The instrument reports the support→payload direction itself, on both
+        # of its branches, and — unlike differencing the two witness points —
+        # it is still defined at a flush contact, which is precisely the case
+        # this module exists for. So the cross-check runs ALWAYS, and never
+        # degrades to trusting one source alone.
+        #
+        # That matters because the SAT witness on ``b`` lies in the support's
+        # supporting *plane*, not necessarily within its face: on a tessellated
+        # counter a payload flush on one strip yields, for a neighbouring
+        # strip, a support point metres outside it, where the box face normal
+        # comes back LATERAL. Averaged into the group by ``_dominant_support``
+        # that tilted the attested plane by up to 45 degrees — a wrong support
+        # plane handed to the kernel as an exemption. Checked against the
+        # instrument's own direction, those hits are dropped (#190).
         if surface_normal is None:
-            if segment_normal is None:
-                continue  # unanalysable surface, flush contact: measure nothing
-            normal = segment_normal
-        else:
-            if segment_normal is not None and (
-                float(np.dot(surface_normal, segment_normal)) < _NORMAL_AGREEMENT_MIN
-            ):
-                continue  # the two disagree about the plane; measure nothing
-            normal = surface_normal
+            continue  # unanalysable surface (mesh, heightfield, SDF): measure nothing
+        if float(np.dot(surface_normal, probe_normal)) < _NORMAL_AGREEMENT_MIN:
+            continue  # the surface and the measurement disagree; measure nothing
+        normal = surface_normal
 
         hits.append(
             _SupportProbeHit(
@@ -849,7 +873,7 @@ def support_contact_witness(
     stamp_ns: int,
     support_roots: frozenset[int] | None = None,
 ) -> SupportContactWitness | None:
-    """Attest one payload's bounded support contact from exact MuJoCo distances.
+    """Attest one payload's bounded support contact from certified signed distances.
 
     A grasped object is routinely still resting on the counter it was picked
     from. That contact is real, legitimate, and — once the payload is checked
@@ -857,8 +881,10 @@ def support_contact_witness(
     payload through a wall. This produces the attestation that tells the two
     apart, from ground truth the simulator already has (ADR-0092 D6).
 
-    Support is measured with ``mj_geomDistance``, **not** with the solver's
-    contact list. The contact list is not a proximity oracle: ``contype`` /
+    Support is measured with ``openral_hal.convex_distance`` (the certified
+    instrument #170 put on the evidence path — never ``mj_geomDistance``, see
+    the module header), **not** with the solver's contact list. The contact
+    list is not a proximity oracle: ``contype`` /
     ``conaffinity`` suppression empties whole geom pairs, so on the 2026-08-14
     acceptance run a cup resting on an island at 0.000 mm produced no contact
     record at all — no attestation, no exemption, and an E-stop on the real
@@ -974,7 +1000,7 @@ def support_contact_witness(
         max_penetration_m=penetration,
         confidence=1.0,
         evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
-        evidence_ref=f"mujoco_geom_distance:{support_name}",
+        evidence_ref=f"openral_hal.convex_distance.convex_geom_distance:{support_name}",
         stamp_ns=stamp_ns,
     )
 
