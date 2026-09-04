@@ -41,10 +41,14 @@ same ``panda_mobile`` ``front_depth`` intrinsics at the same ``stride=4``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+import yaml
 from numpy.typing import NDArray
 
 pytest.importorskip("openral_sim")
@@ -60,57 +64,82 @@ from openral_hal.depth_cloud import (  # noqa: E402
 from openral_hal.sim_bringup import build_sim_env_from_yaml  # noqa: E402
 from openral_sim.backends.depth_camera import (  # noqa: E402
     _body_geom_ids,
+    _cast_depth_rays,
     _transparent_geoms,
     noncollidable_geom_ids,
 )
 
+
+@dataclass(frozen=True)
+class _SceneCast:
+    """One built scene and the deploy synth's ray bundle through it."""
+
+    scene_yaml: str
+    expected_disagreeing: int
+    model: Any
+    data: Any
+    origin: NDArray[np.float64]
+    dirs: NDArray[np.float64]
+    bodyexclude: int
+    self_bodies: frozenset[int]
+    synth_kwargs: dict[str, Any]
+
+
 #: The validation matrix's four scenes — the same set #180 measured its filter
-#: on, so the two results are directly comparable — each with the #195 verdict
-#: for that scene: does the batched cast lose collidable geometry here?
+#: on, so the two results are directly comparable — each with the exact number
+#: of rays #195 measured the batched cast losing on it.
 #:
-#: The fridge is `False` and that is not a reprieve. Its camera is on the fridge
-#: front at close range — median return 1.28 m, and `..._freezer_door_main`
-#: alone takes 4 711 of the 16 384 rays — with **no** counter geom in view at
-#: all, so the cull has nothing here to fire on. The same caster loses 3 815
-#: rays one scene over. A per-scene expectation is what makes this a
-#: measurement rather than a slogan.
+#: The counts are asserted exactly, not as "more than zero". A release that
+#: narrows the cull to one stray ray on baguette would leave a `> 0` gate green
+#: while the table in docs/reference/world-map-fidelity.md silently rots.
+#:
+#: The fridge's 0 is not a reprieve. Its camera is on the fridge front at close
+#: range — median return 1.28 m, and `..._freezer_door_main` alone takes 4 711
+#: of the 16 384 rays — with **no** counter geom in view at all, so nothing
+#: there fires the skip. The same caster loses 3 815 rays one scene over.
 _SCENES = (
-    ("scenes/deploy/robocasa_baguette.yaml", True),
-    ("scenes/deploy/robocasa_sink_cup.yaml", True),
-    ("scenes/deploy/robocasa_fridge_drawer.yaml", False),
-    ("scenes/deploy/robocasa_drawer_utensil.yaml", True),
+    ("scenes/deploy/robocasa_baguette.yaml", 3815),
+    ("scenes/deploy/robocasa_sink_cup.yaml", 39),
+    ("scenes/deploy/robocasa_fridge_drawer.yaml", 0),
+    ("scenes/deploy/robocasa_drawer_utensil.yaml", 259),
 )
 
-#: `SimSensorBridge` defaults (`sim_sensor_bridge.py`): stride 4, 5 m range,
-#: intrinsics rescaled to the scene's 512² render. 512/4 = 128² = 16 384 rays.
+#: `SimSensorBridge` defaults (`sim_sensor_bridge.py:1847`, `lifecycle.py:1406`).
+#: The render size is NOT a constant here: the bridge passes `self._render_size()`,
+#: the live rendered frame shape, so the ray bundle follows the scene. Read it
+#: off the scene the same way, or a scene dropped to 256² would leave this gate
+#: measuring a bundle deploy no longer casts.
 _STRIDE = 4
 _MAX_RANGE_M = 5.0
-_RENDER_SIZE = (512, 512)
+_MANIFEST = "robots/panda_mobile/robot.yaml"
+_SENSOR = "front_depth"
 
 
 @pytest.fixture(scope="module", params=_SCENES, ids=lambda p: p[0].split("/")[-1])
-def scene_cast(request: pytest.FixtureRequest) -> tuple[str, bool, tuple[Any, ...]]:
-    """One built scene + its ray bundle, shared by both tests in this module.
+def scene_cast(request: pytest.FixtureRequest) -> Iterator[_SceneCast]:
+    """One built scene + the exact ray bundle the deploy synth casts on it.
 
-    Building a RoboCasa kitchen costs ~8 s; both tests cast the same rays
-    through it, so it is built once per scene.
+    Building a RoboCasa kitchen costs ~8 s and both tests cast the same rays
+    through it, so it is built once per scene and closed on teardown.
     """
-    scene_yaml, expects_loss = request.param
-    return scene_yaml, expects_loss, _cast_setup(scene_yaml)
-
-
-def _cast_setup(scene_yaml: str) -> tuple[Any, Any, NDArray[np.float64], NDArray[np.float64], int]:
-    """Build the scene and derive the exact ray bundle the deploy synth casts.
-
-    Returns ``(model, data, origin, dir_world, bodyexclude)``.
-    """
+    scene_yaml, expected_disagreeing = request.param
     env, seed = build_sim_env_from_yaml(scene_yaml)
-    env.reset(seed=seed)
+    try:
+        env.reset(seed=seed)
+        yield _build_cast(scene_yaml, expected_disagreeing, env)
+    finally:
+        env.close()
+
+
+def _build_cast(scene_yaml: str, expected_disagreeing: int, env: Any) -> _SceneCast:
+    """Derive the deploy synth's ray bundle from a built scene."""
     model, data = env.mujoco_handles()
 
-    desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
-    spec = next(s for s in desc.sensors if is_depth_sensor(s) and s.name == "front_depth")
-    kwargs = depth_synth_kwargs(spec, max_range_default=_MAX_RANGE_M, render_size=_RENDER_SIZE)
+    desc = RobotDescription.from_yaml(_MANIFEST)
+    spec = next(s for s in desc.sensors if is_depth_sensor(s) and s.name == _SENSOR)
+    kwargs = depth_synth_kwargs(
+        spec, max_range_default=_MAX_RANGE_M, render_size=_render_size(scene_yaml)
+    )
 
     cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, kwargs["camera_name"])
     assert cam_id >= 0, f"{kwargs['camera_name']!r} is not a camera in {scene_yaml}"
@@ -129,15 +158,67 @@ def _cast_setup(scene_yaml: str) -> tuple[Any, Any, NDArray[np.float64], NDArray
     dir_world = np.ascontiguousarray((rot @ dir_cam.T).T)
     origin = np.ascontiguousarray(np.asarray(data.cam_xpos[cam_id], dtype=np.float64))
 
-    base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mobilebase0_base")
-    return model, data, origin, dir_world, int(base_id)
-
-
-def _hidden_geoms(model: Any) -> NDArray[np.int64]:
-    """The filter the shipped cast applies: intangible geometry + the robot."""
-    desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    base_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mobilebase0_base"))
     self_bodies = robot_self_body_ids(model, [j.sim_joint_name for j in desc.joints])
-    return np.concatenate((noncollidable_geom_ids(model), _body_geom_ids(model, self_bodies)))
+    return _SceneCast(
+        scene_yaml=scene_yaml,
+        expected_disagreeing=expected_disagreeing,
+        model=model,
+        data=data,
+        origin=origin,
+        dirs=dir_world,
+        bodyexclude=base_id,
+        self_bodies=self_bodies,
+        synth_kwargs=kwargs,
+    )
+
+
+def _render_size(scene_yaml: str) -> tuple[int, int]:
+    """The scene's rendered frame size, which is what `stride` subsamples.
+
+    `SimSensorBridge` feeds `depth_synth_kwargs` the live rendered shape
+    (`sim_sensor_bridge.py:3288`), so the ray count is a property of the scene,
+    not of the manifest: the RoboCasa deploy scenes span 128² to 512², a 16x
+    spread in rays. Read it off the same YAML the env was built from.
+    """
+    scene = yaml.safe_load(Path(scene_yaml).read_text())["scene"]
+    return int(scene["observation_width"]), int(scene["observation_height"])
+
+
+def _shipped_cast(cast: _SceneCast) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """The SHIPPED synth, called as the deploy bridge calls it.
+
+    This is the arm that makes these tests a gate rather than a demonstration:
+    swap ``_cast_depth_rays`` onto ``mj_multiRay`` and the distances it returns
+    stop matching the per-pixel reference below.
+    """
+    _, distances, hit, _, _, _ = _cast_depth_rays(
+        model=cast.model,
+        data=cast.data,
+        stride=_STRIDE,
+        exclude_body_id=cast.bodyexclude,
+        exclude_body_ids=cast.self_bodies,
+        **cast.synth_kwargs,
+    )
+    return distances, hit
+
+
+def _hidden_geoms(cast: _SceneCast) -> NDArray[np.int64]:
+    """The filter the shipped cast applies: intangible geometry + the robot."""
+    return np.concatenate(
+        (noncollidable_geom_ids(cast.model), _body_geom_ids(cast.model, cast.self_bodies))
+    )
+
+
+def _visible(cast: _SceneCast, groups: NDArray[np.uint8]) -> NDArray[np.bool_]:
+    """Per-geom visibility under ``groups``, with MuJoCo's own group clamping.
+
+    MuJoCo clamps a geom's group into ``[0, mjNGROUP-1]`` before testing it
+    against the mask. Indexing a length-6 array with the raw value instead
+    raises on a group of 7 and silently wraps a negative one — and RoboCasa
+    ships third-party MJCF, so neither is hypothetical.
+    """
+    return groups[np.clip(np.asarray(cast.model.geom_group), 0, groups.size - 1)] != 0
 
 
 def _per_pixel(
@@ -148,7 +229,14 @@ def _per_pixel(
     groups: NDArray[np.uint8],
     bodyexclude: int,
 ) -> tuple[NDArray[np.int32], NDArray[np.float64]]:
-    """The shipped caster: one ``mj_ray`` per ray."""
+    """A local copy of the shipped caster, used to recover per-ray geom ids.
+
+    ``_cast_depth_rays`` returns distances but not geom ids, and naming the
+    struck geom is what turns "the two casters differ" into "the batched one
+    walks through a collidable countertop". Every test that uses this first
+    pins it to the shipped path via :func:`_shipped_cast`, so it can never
+    drift into being the thing under test.
+    """
     n = dirs.shape[0]
     geomids = np.full(n, -1, dtype=np.int32)
     distances = np.full(n, -1.0, dtype=np.float64)
@@ -229,85 +317,125 @@ def _nearest_box_hit(
 
 @pytest.mark.sim
 def test_the_shipped_depth_cast_reports_the_true_nearest_collidable_surface(
-    scene_cast: tuple[str, bool, tuple[Any, ...]],
+    scene_cast: _SceneCast,
 ) -> None:
-    """Adjudicate the shipped caster against geometry, not against MuJoCo.
+    """Adjudicate the SHIPPED caster against geometry, not against MuJoCo.
 
-    This is the assertion that fails the moment someone swaps
-    ``_cast_depth_rays`` onto ``mj_multiRay``: on three of the four scenes
-    here the batched call answers with a surface *behind* the one the slab
-    test finds (the fourth, the fridge, has nothing in view for its body cull
-    to fire on — see ``_SCENES``).
+    Two links in one chain, and both have to hold:
+
+    1. ``_cast_depth_rays`` — the function the deploy bridge calls — returns
+       the same distances as a per-pixel ``mj_ray`` reference. Swap it onto
+       ``mj_multiRay`` and this fails on three of the four scenes.
+    2. That reference is itself the true nearest collidable surface, by an
+       analytic ray/box intersection sharing no code with MuJoCo's caster.
+
+    Together they say the shipped cloud is correct, which is the claim the
+    per-pixel cost is being paid for.
     """
-    scene_yaml, _, (model, data, origin, dirs, bodyexclude) = scene_cast
-    with _transparent_geoms(model, _hidden_geoms(model)) as groups:
-        geomids, distances = _per_pixel(model, data, origin, dirs, groups, bodyexclude)
+    cast = scene_cast
+    shipped_dist, shipped_hit = _shipped_cast(cast)
+
+    with _transparent_geoms(cast.model, _hidden_geoms(cast)) as groups:
+        geomids, distances = _per_pixel(
+            cast.model, cast.data, cast.origin, cast.dirs, groups, cast.bodyexclude
+        )
         visible_boxes = np.flatnonzero(
-            (np.asarray(model.geom_type) == mujoco.mjtGeom.mjGEOM_BOX)
-            & (groups[np.asarray(model.geom_group)] != 0)
-            & (np.asarray(model.geom_bodyid) != bodyexclude)
+            (np.asarray(cast.model.geom_type) == mujoco.mjtGeom.mjGEOM_BOX)
+            & _visible(cast, groups)
+            & (np.asarray(cast.model.geom_bodyid) != cast.bodyexclude)
         ).astype(np.int64)
 
-        # Adjudicating every ray against every box is O(rays x geoms) in
-        # Python; a fixed pseudo-random sample of the rays that struck a box
-        # is enough to catch a swapped caster, which moves thousands of them.
-        box_rays = np.flatnonzero(np.isin(geomids, visible_boxes))
-        assert box_rays.size >= 100, f"{scene_yaml}: too few box returns to adjudicate"
-        sample = np.random.default_rng(0).choice(box_rays, size=100, replace=False)
+    # Link 1: the shipped path IS this reference. `_cast_depth_rays` runs the
+    # same two passes with the same filters, so the distances must be equal
+    # bit for bit, not merely close.
+    assert np.array_equal(shipped_dist, distances), (
+        f"{cast.scene_yaml}: `_cast_depth_rays` no longer returns what a "
+        f"per-pixel `mj_ray` cast returns "
+        f"({int(np.count_nonzero(shipped_dist != distances))} of "
+        f"{distances.size} rays differ). If the caster was swapped onto "
+        "`mj_multiRay`, #195 measured that swap walking through collidable "
+        "countertops — see the module docstring."
+    )
+
+    # Link 2: adjudicate against geometry. Only rays the synth ACCEPTS matter
+    # — nothing else reaches the published cloud — and only box returns, so
+    # "nearest box" and "nearest geom" are the same question.
+    box_rays = np.flatnonzero(shipped_hit & np.isin(geomids, visible_boxes))
+    assert box_rays.size >= 100, f"{cast.scene_yaml}: too few box returns to adjudicate"
+    sample = np.random.default_rng(0).choice(box_rays, size=100, replace=False)
 
     wrong = [
         (int(i), int(geomids[i]), float(distances[i]), gid, t)
         for i in sample
-        for gid, t in [_nearest_box_hit(model, data, origin, dirs[i], visible_boxes)]
+        for gid, t in [
+            _nearest_box_hit(cast.model, cast.data, cast.origin, cast.dirs[i], visible_boxes)
+        ]
         if gid != int(geomids[i]) or abs(t - float(distances[i])) > 1e-6
     ]
     assert not wrong, (
-        f"{scene_yaml}: the depth cast disagrees with an independent ray/box "
-        f"intersection on {len(wrong)} of {sample.size} sampled rays "
+        f"{cast.scene_yaml}: the depth cast disagrees with an independent "
+        f"ray/box intersection on {len(wrong)} of {sample.size} sampled rays "
         f"(first: {wrong[0]}). The shipped per-pixel `mj_ray` matches it "
         "exactly; `mj_multiRay` does not (see #195)."
     )
 
 
 @pytest.mark.sim
-def test_batched_mj_multiray_still_skips_collidable_geometry(
-    scene_cast: tuple[str, bool, tuple[Any, ...]],
-) -> None:
+def test_batched_mj_multiray_still_skips_collidable_geometry(scene_cast: _SceneCast) -> None:
     """#195's measurement: the premium #180 hoped to recover is not recoverable.
 
-    Both casters see the identical filtered world. Every geom the batched one
-    fails to see is collidable — the intangible geometry #180 blamed is not
-    even in the cast any more — and every disagreement is a surface reported
-    too far away, never too near.
+    Both casters see the identical filtered world, and only the rays the synth
+    accepts are counted, so every number here is a difference in the cloud the
+    world grid is actually built from. Every geom the batched cast fails to see
+    is collidable — the intangible geometry #180 blamed is not in the cast any
+    more — and every disagreement is a surface reported too far away, never too
+    near and never lost outright.
     """
-    scene_yaml, expects_loss, (model, data, origin, dirs, bodyexclude) = scene_cast
-    with _transparent_geoms(model, _hidden_geoms(model)) as groups:
-        ref_ids, ref_dist = _per_pixel(model, data, origin, dirs, groups, bodyexclude)
-        new_ids, new_dist = _batched(model, data, origin, dirs, groups, bodyexclude)
+    cast = scene_cast
+    _, accepted = _shipped_cast(cast)
 
-    disagree = (ref_ids != new_ids) & (ref_ids >= 0)
+    with _transparent_geoms(cast.model, _hidden_geoms(cast)) as groups:
+        ref_ids, ref_dist = _per_pixel(
+            cast.model, cast.data, cast.origin, cast.dirs, groups, cast.bodyexclude
+        )
+        new_ids, new_dist = _batched(
+            cast.model, cast.data, cast.origin, cast.dirs, groups, cast.bodyexclude
+        )
+
+    disagree = accepted & (ref_ids != new_ids)
     skipped = np.unique(ref_ids[disagree])
-    contype = np.asarray(model.geom_contype)[skipped]
-    conaffinity = np.asarray(model.geom_conaffinity)[skipped]
+    contype = np.asarray(cast.model.geom_contype)[skipped]
+    conaffinity = np.asarray(cast.model.geom_conaffinity)[skipped]
     intangible = skipped[(contype == 0) & (conaffinity == 0)]
-    both = (ref_ids >= 0) & (new_ids >= 0)
+    both = accepted & (new_ids >= 0)
     delta = np.where(both, new_dist - ref_dist, 0.0)
+    nearer = int(np.count_nonzero(delta < -1e-9))
+    lost = int(np.count_nonzero(accepted & (new_ids < 0)))
 
     assert intangible.size == 0, (
-        f"{scene_yaml}: {intangible.size} of the {skipped.size} geoms the batched "
-        "cast skips are non-collidable — #180's filter should already have "
-        "removed them from both casts."
+        f"{cast.scene_yaml}: {intangible.size} of the {skipped.size} geoms the "
+        "batched cast skips are non-collidable — #180's filter should already "
+        "have removed them from both casts."
     )
-    assert np.count_nonzero(delta < -1e-9) == 0, (
-        f"{scene_yaml}: the batched cast reported a NEARER surface on "
-        f"{np.count_nonzero(delta < -1e-9)} rays, which the body cull cannot "
-        "explain — investigate before trusting either number."
+    assert nearer == 0, (
+        f"{cast.scene_yaml}: the batched cast reported a NEARER surface on "
+        f"{nearer} rays, which broad-phase culling cannot explain — "
+        "investigate before trusting either number."
     )
-    assert bool(np.any(disagree)) == expects_loss, (
-        f"{scene_yaml}: the batched cast was measured in #195 to "
-        f"{'lose' if expects_loss else 'keep'} collidable geometry here and "
-        f"now does the opposite ({int(np.count_nonzero(disagree))} rays "
-        f"disagree). That is not licence to swap the caster either way — the "
-        f"cull behaviour changed under mujoco {mujoco.__version__}. Re-run "
-        "#195's measurement on all four scenes and re-open the issue."
+    # A lost return is the one outcome worse than a late one: the cloud says
+    # "nothing here" rather than "something, further away", so OctoMap clears
+    # the cell instead of moving it. #195 measured zero of them; keep it that
+    # way, and never let this test's other numbers stand in for it.
+    assert lost == 0, (
+        f"{cast.scene_yaml}: the batched cast LOST {lost} returns the "
+        "per-pixel cast accepted — a surface reported as free space outright, "
+        "which is worse than the push-back #195 measured."
+    )
+    assert int(np.count_nonzero(disagree)) == cast.expected_disagreeing, (
+        f"{cast.scene_yaml}: #195 measured the batched cast losing "
+        f"{cast.expected_disagreeing} of the accepted rays here; it now loses "
+        f"{int(np.count_nonzero(disagree))}. That is not licence to swap the "
+        f"caster either way — the cull behaviour changed under mujoco "
+        f"{mujoco.__version__}. Re-run #195's measurement on all four scenes, "
+        "update docs/reference/world-map-fidelity.md, and re-open the issue."
     )

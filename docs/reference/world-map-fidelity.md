@@ -427,10 +427,15 @@ The cost that stays paid is larger than #111's ~1.9×: **4.2–6.2×** on these
 scenes (83–129 ms per pass per-pixel against 13.5–22.3 ms batched, q-laptop,
 CPU cast), because a real kitchen fires the cull far more often than the
 1200-geom clutter scene #111 measured on. `tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`
-holds both halves as a gate: the shipped caster is adjudicated against the slab
-test (so a swap fails), and the per-scene disagreement counts are asserted (so a
-change in upstream MuJoCo's cull re-opens #195 rather than silently licensing
-the swap).
+holds both halves as a gate, and both run against `_cast_depth_rays` itself
+rather than a copy of it: the shipped cast's distances must equal a per-pixel
+`mj_ray` reference (verified by mutation — swapping the caster onto
+`mj_multiRay` fails it on baguette, sink_cup and utensil, the three scenes
+where the two disagree), and that reference must equal the analytic slab test.
+The per-scene disagreement counts are asserted **exactly**, so a release that
+merely narrows the cull re-opens #195 rather than leaving a `> 0` gate green
+over a rotted table; a lost return — a surface reported as free space outright,
+worse than a late one — is asserted separately at zero.
 
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
