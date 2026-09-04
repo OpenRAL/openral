@@ -1209,6 +1209,72 @@ at −14.6 mm, because the attested patch is bounded to the payload's own
 footprint on the attested plane and that cell lies outside it. Three rounds of
 one scene settle nothing about rates either way.
 
+### 2026-09-04 — `post200-1..5` and `post200-aon-1..5`, the post-#200 battery, both arms
+
+Ten rounds on one commit — `aceeca6`, master with Path A (#198) and Path B
+(#200) both merged — same seed, same host (`q-laptop`, RTX 5070 Laptop), run
+through `tools/validation_matrix.py`. Forty scene runs in two arms of twenty.
+This is the first battery since 2026-08-26, which predates both paths.
+
+**The arm split, and why there are two.** The graded-velocity band #198 shipped
+is **off in the default configuration, deliberately**: `collision_scale_proximity_m`
+declares at `0.0` (`lifecycle_kernel.cpp:303`), zero disables the mechanism and
+reproduces the pre-#198 republish exactly, and the header states the reason —
+"this is a WG-gated enforcement surface and the A/B battery is what turns it
+on" (`lifecycle_kernel.hpp:358`). That is a design decision, not an oversight,
+but it has a consequence worth stating plainly: **a battery run on master
+measures Path B alone**, and any reading of §10's "A + B" gate from the default
+arm alone would be measuring one path and naming two. The second arm sets the
+band through the `OPENRAL_COLLISION_SCALE_PROXIMITY_M` seam
+(`sim_e2e.launch.py:126`) at the same `0.05 m / k=20 / min=0.1` the #188 A/B
+used, and `verdicts.json` records `collision_scale` per round so which arm a
+round belongs to is a recorded fact, not an operator's memory.
+
+| | A off (shipped default) | A on (0.05 m band) |
+| --- | ---: | ---: |
+| completed | 1/20 | 1/20 |
+| deadline | 1 (`no-grasp`) | 2 (**both `after-grasp`**) |
+| stops | 18 | 17 |
+| — payload | 12 | **16** |
+| — robot link | 6 | **1** |
+| — vs the declared place target | 2 | 3 |
+| — any party, with a live declaration | 9 | 12 |
+| — **payload**, with a live declaration | **8** | **11** |
+| depth median | 3.47 mm | 6.59 mm |
+| steps before the run ended, median | 336 | 486 |
+
+**Path A does what it claims and does not rescue completion.** The band is
+live in the second arm — 4 469 scaled republishes, scale floor 0.369, median
+active scale 0.592. The floor is the band's own arithmetic reproduced live:
+`lifecycle_kernel.cpp:300` predicts `exp(−k·proximity) = exp(−1.0) = 0.37` at
+the margin for this setting, and the measured minimum is 0.369. It moves the
+robot **45% further** before the run ends
+(336 → 486 steps median). It nearly eliminates the link-vs-world class (6 → 1).
+But **task success is 1/20 in both arms**: what the band converts is not stops
+into successes but stops into *timeouts*, and the two `deadline-after-grasp`
+outcomes are a class the off arm never produced. Slowing the approach spends
+the 420 s budget. That cost is not in §10's Path A description and should be.
+
+**The contact-phase class is now the majority, which is the gate §10 set for
+Path C.** A payload stop with a place declaration seen and armed is **8/18
+(44%)** with A off and **11/17 (65%)** with A on. On 2026-08-26 that same class
+was **2/15 (13%)**. The survey's sequencing condition — do C "only if A + B
+leave contact-phase stops on the table" — is **met**: they do, and by a wider
+margin than the pre-Path-A reading suggested. Three of the A-on stops name
+`place:` geometry directly (`cab_1_left_group_main`, `sink_island_group_main`),
+a stop class that could not exist before #200 gave the kernel the declared
+target's bodies.
+
+**What this round does NOT establish, and one thing it takes back.** Task
+success was **5/20** on 2026-08-26 and is **1/20** here in both arms. Neither
+path predicts that and neither arm explains it; the commits differ by far more
+than #198/#200 and the rollouts diverge at the first stop, so the five runs of a
+scene are five independent trajectories with no paired geometry — `task_success_steps`
+differs on every one. **This battery is not evidence that A or B caused the
+drop, and it is not evidence that they did not.** It is a flag for a separate
+bisect, not a verdict. Everything here is one seed on one host, and the
+per-scene rates measure nothing broader.
+
 ## Standing caveats
 
 Eight things a reader should carry away, all of them stated by the artifacts
