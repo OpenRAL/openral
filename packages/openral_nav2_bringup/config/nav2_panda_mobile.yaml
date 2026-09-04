@@ -263,16 +263,17 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.35  # panda_mobile chassis envelope; unused while `footprint` parses
-      # Polygon, not `robot_radius`, because only a polygon can express a
-      # carried payload: `openral_nav2_payload_footprint` republishes this
-      # outline unioned with the attached object's ground projection on
-      # `/local_costmap/footprint` while something is attached, and Nav2
-      # re-derives the layered costmap's inscribed/circumscribed radii from
-      # whatever polygon arrives. Nav2 treats `""` and `"[]"` as "use
-      # robot_radius", so a robot without a `footprint_polygon` in its
-      # manifest gets `"[]"` here from `RobotDescription.nav2_param_overrides()`
-      # rather than inheriting panda's shape. This value IS panda's
-      # `footprint_polygon`, so the rewrite is a no-op for panda.
+      # Polygon, not `robot_radius`, because the manifest measures an outline
+      # and a radius throws that away — `consider_footprint: true` below then
+      # scores the real shape rather than a disc. It is STATIC: ADR-0099 makes
+      # Nav2 base-only, nothing publishes `/local_costmap/footprint` at runtime,
+      # and the payload-footprint publisher that used to (PR #143) was deleted
+      # by #186. See the package README, "Nav2 is base-only".
+      # Nav2 treats `""` and `"[]"` as "use robot_radius", so a robot without a
+      # `footprint_polygon` in its manifest gets `"[]"` here from
+      # `RobotDescription.nav2_param_overrides()` rather than inheriting panda's
+      # shape. This value IS panda's `footprint_polygon`, so the rewrite is a
+      # no-op for panda.
       footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
@@ -286,14 +287,15 @@ local_costmap:
         # (`nav2_costmap_2d::calculateMinAndMaxDistances`, run against the real
         # Jazzy library in `benchmark/cost_critic_footprint_bench.cpp`). The
         # correction holds whatever `CostCritic.consider_footprint` is set to —
-        # it is a property of this polygon, not of that flag. What it WOULD
-        # cost is why that flag is currently `false`: with it on, MPPI's
+        # it is a property of this polygon, not of that flag. What it costs is
+        # that with the flag on (it is, see the CostCritic comment above) MPPI's
         # `findCircumscribedCost` returns 0.0 and the full-footprint check runs
-        # on every sampled point rather than a fraction of them (see the
-        # CostCritic comment above for the measured price). Raising this above
-        # 0.444 m would restore that cheap gate for the bare chassis but not
-        # while carrying (0.863 m circumscribed), so it is left at 0.40 m as a
-        # navigation-behaviour value rather than changed blind.
+        # on every sampled point rather than a fraction of them — measured on
+        # the live loop at +0.53 ms of a 50 ms cycle, which is why the flag is
+        # on. Raising this above 0.444 m would restore the cheap gate for the
+        # bare chassis; since ADR-0099 made Nav2 base-only there is no longer a
+        # grown polygon to defeat it, but 0.40 m is a navigation-behaviour value
+        # and is left alone rather than changed blind.
         # Below the INSCRIBED radius (0.26 m for this polygon) Nav2 cannot
         # use the costmap potential field at all and logs an error; the prior
         # 0.10 m did exactly that. cost_scaling_factor keeps
@@ -363,9 +365,9 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       robot_radius: 0.35  # panda_mobile chassis envelope; unused while `footprint` parses
-      # Same polygon as the local costmap — see that comment. The payload
-      # footprint publisher writes both costmaps so planner and controller
-      # agree on what the robot currently is.
+      # Same polygon as the local costmap — see that comment. Both are written
+      # from the same manifest field at launch, so planner and controller cannot
+      # disagree about what the robot is; nothing changes either at runtime.
       footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
       resolution: 0.05
       # ``track_unknown_space: false`` is REQUIRED
