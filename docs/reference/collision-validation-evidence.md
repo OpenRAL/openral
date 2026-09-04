@@ -1141,7 +1141,22 @@ of magnitude the evidence path paid, for the same reason. It attests
 `counter_1_left_group_main` at 0.065 mm with a 0.117 m patch, from certified
 measurements only.
 
-**Live round.** LIVE_ROUND_PLACEHOLDER
+**Live round, and its master baseline.** `2026-09-03-190-witness-2` on this
+branch and `2026-09-04-190-master-baseline-1` at `ed850ac`, same scene, same
+seed, same host (`q-laptop`, RTX 5070 Laptop 8 GB; harness with
+`OPENRAL_ALLOW_REMOTE_CODE=1` for the XR-1 sidecar and `--force-shared-gpu`
+because the user's own unit-test session held ~200 MiB; artifacts under this
+host's `outputs/validation-matrix/`, not checked in). Both arms:
+`support_witness_armed object=sim:obj_main support=sim:counter_1_left_group_main`
+at attach and `support_witness_separated` ~4.5 s later on lift — the witness
+fires where it legitimately should, and the #132/#133 attach-sweep machinery
+is untouched. Neither arm placed: one advisory-band refusal of the carried
+baguette against the declared cabinet geometry (−4.49 mm on this branch,
+−1.79 mm on master; `consecutive=1/3`, no latch, no E-stop snapshot), then
+the policy ran out its budget (469 vs 651 steps; master re-grasped once). The
+harness buckets both as `estop-collision-unadjudicated`. That is the policy's
+failure, identical in class on both instruments, and n=1 per arm says nothing
+about rates (standing caveat 2 applies).
 
 ## Standing caveats
 
