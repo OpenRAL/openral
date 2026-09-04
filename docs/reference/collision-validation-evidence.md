@@ -1192,9 +1192,22 @@ machine). That is a rollout difference rather than an effect of the fix: the
 producer emits a **bit-identical** witness on this scene before and after it
 (same support, 0.065 mm, 0.117 m patch, same normal), because the tilt defect
 only bites where a *neighbouring* support geom sits laterally offset under the
-payload, which this scene's reset geometry does not present. Kernel-side
-witness liveness is evaluated against the voxel grid and is not re-measured
-here; three rounds of one scene settle nothing about rates either way.
+payload, which this scene's reset geometry does not present. 
+The missing separation itself has a mechanism, and it is one already on record.
+`update_support_contact_witnesses` (`collision.cpp:1828`) keeps a witness alive
+while `support_witness_still_in_contact` still finds occupancy under the
+attested patch, transformed by the payload's *current* pose. The occupancy map
+carries no identity, so a payload carried on over other furniture — here a
+cabinet and a coffee machine — can keep meeting that test and keep its
+exemption armed, where a payload lifted clear into free space drops it in a few
+seconds, as the first two rounds did. That is exactly the **identity-blindness
+within the attested patch** residual recorded in hazard-log Entry 012
+(HZ-0092-1/2/3) when #131 shipped the witness; this round is an instance of it,
+not a new defect, and nothing in #190 touches that code path. It also did not
+launder anything: the round still E-stopped on the real payload↔world contact
+at −14.6 mm, because the attested patch is bounded to the payload's own
+footprint on the attested plane and that cell lies outside it. Three rounds of
+one scene settle nothing about rates either way.
 
 ## Standing caveats
 
