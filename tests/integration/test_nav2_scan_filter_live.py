@@ -453,13 +453,18 @@ def _forward_scan(range_m: float) -> Any:
 
 
 @contextmanager
-def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str]) -> Iterator[Any]:
+def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str], state: Any = None) -> Iterator[Any]:
     """A live costmap on the filtered topic, plus the filter process under test.
 
-    Yields ``(executor, publish, costs)``: ``costs[i]`` is sampled at the probe
-    point on every costmap update, and ``publish(scan)`` returns a callable that
-    re-publishes that scan (and an empty world state, so the payload half is
-    provably not what is doing the removing).
+    Yields ``(executor, publish_of, samples, filter_log, latest)``:
+    ``samples[probe]`` is the cost sampled at that probe point on every costmap
+    update, ``latest`` holds the most recent whole ``Costmap`` (for callers that
+    sweep the grid rather than probe it), and ``publish_of(scan)`` returns a
+    callable that re-publishes that scan alongside ``state``.
+
+    ``state`` defaults to an empty ``WorldStateStamped``, so the payload half of
+    the filter is provably not what is doing the removing. A caller that wants
+    the payload half acting passes the attachment in.
     """
     import rclpy
     from nav2_msgs.msg import Costmap
@@ -495,7 +500,10 @@ def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str]) -> Iterator[Any]
         for probe in probes:
             samples[probe] = []
 
+        latest: list[Any] = []
+
         def _on_costmap(msg: Costmap) -> None:
+            latest[:] = [msg]
             for probe in probes:
                 samples[probe].append(_cost_at(msg, probe, 0.0))
 
@@ -503,9 +511,11 @@ def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str]) -> Iterator[Any]
         scan_pub = node.create_publisher(LaserScan, "/scan", sensor_qos)
         state_pub = node.create_publisher(WorldStateStamped, "/openral/world_state_fast", state_qos)
 
+        published_state = WorldStateStamped() if state is None else state
+
         def _publish_of(scan: Any) -> Any:
             def _publish() -> None:
-                state_pub.publish(WorldStateStamped())
+                state_pub.publish(published_state)
                 scan.header.stamp = node.get_clock().now().to_msg()
                 scan_pub.publish(scan)
 
@@ -529,7 +539,7 @@ def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str]) -> Iterator[Any]
         ):
             _lifecycle("configure")
             _lifecycle("activate")
-            yield executor, _publish_of, samples, filter_log
+            yield executor, _publish_of, samples, filter_log, latest
     finally:
         executor.remove_node(node)
         node.destroy_node()
@@ -569,6 +579,7 @@ def test_a_self_return_is_removed_and_a_real_obstacle_at_the_same_bearing_is_not
         publish_of,
         samples,
         filter_log,
+        _latest,
     ):
         # 1. The chassis return must never mark the grid.
         self_hit = publish_of(_forward_scan(_SELF_RETURN_M))
@@ -629,6 +640,7 @@ def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: P
         publish_of,
         samples,
         filter_log,
+        _latest,
     ):
         seen = samples[_SELF_RETURN_M]
         self_hit = publish_of(_forward_scan(_SELF_RETURN_M))
@@ -640,4 +652,203 @@ def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: P
         ), (
             f"a degraded self-filter still removed the return (last cost {seen[-1:]}); "
             f"filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+
+#: Every beam of the ring lands this far out. 0.20 m is inside the manifest
+#: chassis at *every* bearing (its narrowest half-extent is 0.25 m), so the ring
+#: is the real-hardware picture in full: a 2-D lidar that sees nothing but the
+#: robot it is bolted to. The probe-point tests above put five beams inside the
+#: chassis; this puts 355.
+_RING_SELF_RETURN_M = 0.20
+
+#: ``nav2_costmap_2d``'s ``LETHAL_OBSTACLE``. The probe tests compare against
+#: 253 (``INSCRIBED_INFLATED_OBSTACLE``) because either value fails a robot; a
+#: silhouette *sweep* has to be stricter about what it means, and the claim
+#: being proved is that no cell inside the robot was **marked** — 253 is what an
+#: inflation layer writes near a legitimate obstacle elsewhere.
+_LETHAL_OBSTACLE = 254
+
+
+def _ring_scan(*, payload_x_m: float | None = None) -> Any:
+    """A 360-beam fan that returns off the robot at every bearing.
+
+    Optionally the five forward beams are pushed out to ``payload_x_m`` instead,
+    which is where a carried object sits — so one scan carries both halves of
+    the silhouette the sweep below asserts on.
+    """
+    import math
+
+    from sensor_msgs.msg import LaserScan
+
+    n_beams = 360
+    scan = LaserScan()
+    scan.header.frame_id = _SCAN_FRAME
+    scan.angle_min = -math.pi
+    scan.angle_max = math.pi
+    scan.angle_increment = 2.0 * math.pi / n_beams
+    scan.range_min = 0.05
+    scan.range_max = 12.0
+    ranges = [_RING_SELF_RETURN_M] * n_beams
+    if payload_x_m is not None:
+        for angle in _FORWARD_BEAM_ANGLES:
+            index = round((angle - scan.angle_min) / scan.angle_increment) % n_beams
+            ranges[index] = payload_x_m
+    scan.ranges = ranges
+    return scan
+
+
+def _silhouette_mask(costmap: Any, *, with_payload: bool) -> Any:
+    """Which of ``costmap``'s cell centres lie inside the robot (∪ the payload).
+
+    The predicates are the shipped node's own — ``base_footprint_polygon`` off
+    the real ``robots/panda_mobile/robot.yaml`` for the chassis, and
+    ``points_in_primitive`` for the carried box — so this measures the same
+    geometry the filter measures rather than a second opinion about it.
+
+    Evaluated **in the scan plane** (``_SCAN_Z_IN_BASE``), which is the only
+    height a 2-D costmap can be marked from and, in this rig, the payload box's
+    own centre height with the box axis-aligned — so the cross-section taken
+    here is its full ground projection, not a slice of it.
+
+    The rig's ``odom -> base_link`` is identity, so the costmap's own frame and
+    ``base_link`` share an origin and no transform is needed.
+    """
+    import numpy as np
+    from openral_core import RobotDescription
+    from openral_nav2_bringup._footprint_geometry import SHAPE_BOX, base_footprint_polygon
+    from openral_nav2_bringup.payload_scan_filter_node import (
+        points_in_convex_polygon,
+        points_in_primitive,
+    )
+
+    meta = costmap.metadata
+    xs = meta.origin.position.x + (np.arange(meta.size_x) + 0.5) * meta.resolution
+    ys = meta.origin.position.y + (np.arange(meta.size_y) + 0.5) * meta.resolution
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    points_xy = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+
+    chassis = base_footprint_polygon(RobotDescription.from_yaml(str(_ROBOT_YAML)))
+    inside = points_in_convex_polygon(points_xy, chassis)
+    if with_payload:
+        transform = np.eye(4)
+        transform[:3, 3] = (_PAYLOAD_X_IN_BASE, 0.0, _SCAN_Z_IN_BASE)
+        points_xyz = np.concatenate(
+            [points_xy, np.full((points_xy.shape[0], 1), _SCAN_Z_IN_BASE)], axis=1
+        )
+        inside = inside | points_in_primitive(
+            points_xyz, SHAPE_BOX, [_PAYLOAD_HALF_X, 0.06, 0.06], transform
+        )
+    return inside
+
+
+def _marked_cells_inside_silhouette(
+    costmap: Any, *, with_payload: bool
+) -> list[tuple[float, float]]:
+    """The ``(x, y)`` of every ``LETHAL_OBSTACLE`` cell inside the silhouette."""
+    import numpy as np
+
+    meta = costmap.metadata
+    data = np.asarray(costmap.data, dtype=np.int32)
+    inside = _silhouette_mask(costmap, with_payload=with_payload)
+    hits = np.flatnonzero(inside & (data == _LETHAL_OBSTACLE))
+    return [
+        (
+            float(meta.origin.position.x + (int(i) % meta.size_x + 0.5) * meta.resolution),
+            float(meta.origin.position.y + (int(i) // meta.size_x + 0.5) * meta.resolution),
+        )
+        for i in hits
+    ]
+
+
+def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_path: Path) -> None:
+    """Issue #108's costmap-clean claim, swept rather than probed.
+
+    "The costmaps contain no floating or self obstacles" is a statement about
+    the **whole** silhouette, and the probe-point tests above cannot make it: a
+    return that marks some *other* cell inside the robot — a different bearing,
+    a raytrace artefact, a stale mark the rolling window carried along — passes
+    them and still leaves the base surrounded by itself.
+
+    So this drives the full real-hardware picture (355 beams returning off the
+    chassis at every bearing, five off a carried box) through the shipped
+    filter into a real ``nav2_costmap_2d``, then sweeps every cell of the
+    published grid and asserts **zero** are marked inside the chassis ∪ payload
+    silhouette.
+
+    ``footprint_clearing_enabled`` is off in this costmap (see
+    ``_COSTMAP_PARAMS_SELF_RETURNS``), so Nav2's own footprint clearing cannot
+    be what keeps the silhouette clean — and it reproduces the one consumer
+    that has no costmap-side clearing at all, ``collision_monitor``, which reads
+    the scan raw.
+
+    This is the assertion ADR-0099 obliges: with Nav2 base-only, nothing grows
+    the footprint over a payload any more, so the scan filter is the only thing
+    keeping the robot and what it carries out of Nav2's world.
+    """
+    filter_argv = [
+        sys.executable,
+        str(_SCAN_FILTER_NODE),
+        "--ros-args",
+        "-p",
+        f"robot_yaml:={_ROBOT_YAML}",
+    ]
+
+    with _self_filter_rig(
+        tmp_path,
+        filter_argv=filter_argv,
+        state=_world_state(carrying=True, revision=1),
+    ) as (executor, publish_of, samples, filter_log, latest):
+        publish = publish_of(_ring_scan(payload_x_m=_PAYLOAD_X_IN_BASE))
+        # One entry per costmap update; 40 of them is the same settling the
+        # probe tests wait for, so the grid has been marked and re-marked many
+        # times over before the sweep reads it.
+        updates = samples[_SELF_RETURN_M]
+
+        assert _spin_until(executor, lambda: len(updates) > 40, timeout_s=25.0, each=publish), (
+            f"the costmap never published; filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+        marked = _marked_cells_inside_silhouette(latest[0], with_payload=True)
+        assert not marked, (
+            f"{len(marked)} costmap cells are marked inside the robot/payload silhouette, "
+            f"first at {marked[:5]}; filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+
+def test_the_silhouette_sweep_fails_when_the_self_filter_is_not_running(tmp_path: Path) -> None:
+    """The control: the sweep above measured the filter, not the rig.
+
+    Same ring, same costmap, same assertion — with the filter given no
+    ``robot_yaml``, which is the documented degradation to "the robot's own
+    returns are not filtered". The chassis must then mark its own silhouette.
+
+    Without this, "zero marked cells inside the robot" is a claim the rolling
+    window, the range gate or an unwired topic could satisfy on their own. That
+    is not hypothetical here: #183 found this file's payload test passing
+    vacuously because the deploy image had never built the package the filter
+    lives in.
+    """
+    filter_argv = [sys.executable, str(_SCAN_FILTER_NODE)]
+
+    with _self_filter_rig(tmp_path, filter_argv=filter_argv) as (
+        executor,
+        publish_of,
+        _samples,
+        filter_log,
+        latest,
+    ):
+        publish = publish_of(_ring_scan())
+        assert _spin_until(
+            executor,
+            lambda: (
+                bool(latest)
+                and bool(_marked_cells_inside_silhouette(latest[0], with_payload=False))
+            ),
+            timeout_s=25.0,
+            each=publish,
+        ), (
+            "an unconfigured self-filter still left the silhouette clean, so the sweep "
+            f"above proves nothing; filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
         )

@@ -69,7 +69,10 @@ mistake this section exists to prevent. Neither one covers for the other.
 | Blind to | anything not in the 2-D grid: overhangs, table tops, the arm's own reach | anything outside the local voxel box, and the base's path |
 
 **`/cmd_vel` does not pass through the kernel, and that is a recorded decision**
-(ADR-0040: base collision avoidance relies entirely on Nav2's costmap). Nav2
+(ADR-0040: base collision avoidance relies entirely on Nav2's costmap;
+ADR-0099 re-affirms it and corrects ADR-0040's stated *reason* — that record
+says no in-tree HAL advertises `body_twist`, and `panda_mobile` now does).
+Nav2
 publishes `geometry_msgs/Twist`; `openral_hal.mobile_base_bridge.MobileBaseBridge`
 maps each message to a `BODY_TWIST` `Action` and applies it through the HAL
 node's `_send_action_traced` — it never reaches `/openral/candidate_action`, so
@@ -83,22 +86,35 @@ node is latched E-stopped, so an E-stop — the kernel's included — does stop 
 Nav2 path, at the HAL rather than in the kernel. Stopping is the only kernel
 authority over base motion. There is no per-command bound.
 
-**What this costs, and why the dynamic footprint below matters.** A carried
-object is checked in 3-D by the kernel and is *not* checked at all by Nav2
-unless Nav2's footprint says it is there. Without the footprint publisher, the
-robot's arm and payload are protected while the chassis drives them into a
-counter. So the payload has to appear in **exactly one** place on each side of
-the boundary, and the two sides are deliberately opposite:
+**What this costs.** A carried object is checked in 3-D by the kernel and is
+*not* checked at all by Nav2 — nothing grows the footprint over it, by decision
+(ADR-0099, and "Nav2 is base-only" below). The arm and the payload are protected
+against a 3-D obstacle map while the chassis is free to drive them into a
+counter, and the kernel's only authority over that is to stop. So the payload
+has to appear in **exactly one** place on each side of the boundary, and the two
+sides are deliberately opposite:
 
 * **Kernel side** — the payload is *robot*: collision-active attached geometry
   the kernel keeps checking, and `openral_octomap_bridge` clears its cells out
   of the voxel grid so the robot is not stopped by itself.
-* **Nav2 side** — the payload is *robot* here too: it joins the footprint
-  polygon, and `payload_scan_filter_node` drops its returns from the scan the
-  costmaps and the collision monitor read, for the same reason.
+* **Nav2 side** — the payload is *robot* here too, but only in the sense that it
+  is removed: `payload_scan_filter_node` drops its returns from the scan the
+  costmaps and the collision monitor read, so a carried object never becomes an
+  obstacle that travels with the robot. It does **not** join the footprint.
 
 Both sides read the same attachment set on `/openral/world_state_fast`, so they
 cannot disagree about what is attached.
+
+**How that is proved, and where.**
+`tests/integration/test_nav2_scan_filter_live.py` sweeps a real
+`nav2_costmap_2d`'s published grid and asserts **zero cells are marked inside
+the chassis ∪ payload silhouette**, using this package's own
+`base_footprint_polygon` / `points_in_convex_polygon` / `points_in_primitive`
+against the real `robots/panda_mobile/robot.yaml`. The costmap in that rig runs
+with `footprint_clearing_enabled: False`, so Nav2's own clearing cannot be what
+keeps the silhouette clean, and a control test with the self-filter
+unconfigured shows the sweep failing — the assertion can fail, which is the
+thing #183 found this file's earlier payload test unable to do.
 
 ## Nav2 is base-only
 
@@ -106,6 +122,12 @@ cannot disagree about what is attached.
 it.** The 2-D costmap owns base geometry; the 3-D safety kernel owns the arm
 and anything carried. This replaces the dynamic footprint publisher that
 PR #143 shipped, which is now removed.
+
+This is a layer-boundary decision and it is recorded as one: **ADR-0099** in the
+private `OpenRAL/management` log, with the hazard analysis in that repo's
+`safety/hazard-log.md` Entry 023. The record was written *after* the code
+(PR #186), which is not the order CLAUDE.md §3 asks for — the six days in which
+this boundary existed only in this README are part of what the ADR records.
 
 ### Why the growth was wrong
 
@@ -139,7 +161,7 @@ thin* obstacle that the base itself clears. The kernel catches that in 3-D —
 its octomap bridge covers a ball of r = 1.05 m centred at z = 0.5 in
 `base_frame`, i.e. z ∈ [−0.55, 1.55], which contains the payload — but as an
 **E-stop, not an avoidance**, because `/cmd_vel` never passes through it
-(ADR-0040, above). That is the accepted cost: a rare stop instead of a routine
+(ADR-0040/ADR-0099, above). That is the accepted cost: a rare stop instead of a routine
 refusal to do the task.
 
 ### What replaces it
