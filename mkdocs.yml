@@ -106,6 +106,7 @@ nav:
     - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
+    - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md
