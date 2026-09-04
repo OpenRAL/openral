@@ -67,6 +67,7 @@ _SCENE_MJCF = """
 <mujoco model="support_contact_witness">
   <option gravity="0 0 -9.81"/>
   <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" contype="4" conaffinity="4"/>
     <body name="island" pos="0 0 0.4">
       <geom name="island_top" type="box" size="0.5 0.3 0.02" contype="4" conaffinity="4"/>
     </body>
@@ -277,6 +278,34 @@ def test_penetration_past_the_kernel_cap_attests_nothing() -> None:
         )
         is None
     )
+
+
+def test_a_plane_support_attests_nothing_because_it_cannot_be_certified() -> None:
+    """A payload resting on the floor plane earns no exemption — stated, not silent.
+
+    The certified instrument has no bounded hull for a plane and refuses to
+    measure it (#170); the witness path issues only from certified
+    measurements (#190). So a cup flush on the floor attests nothing, and the
+    kernel stops on that contact rather than being told to ignore it. That is
+    the fail-closed direction, and this test is where the behaviour is pinned
+    so a plane-aware branch, if one is ever added, has something to flip.
+    """
+    from openral_hal.convex_distance import convex_geom_distance
+
+    model, data = _scene(cup_z=_CUP_RADIUS_M - _CUP_PENETRATION_M)
+    cup_geom = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "cup_body"))
+    floor_geom = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor"))
+    measured = convex_geom_distance(model, data, cup_geom, floor_geom)
+    assert not measured.certified and "PLANE" in measured.uncertified_reason
+
+    witness = support_contact_witness(
+        model,
+        data,
+        root_body_id=_body(model, "cup"),
+        robot_body_ids=frozenset(),
+        stamp_ns=1,
+    )
+    assert witness is None
 
 
 def test_overhead_surface_is_not_support() -> None:
