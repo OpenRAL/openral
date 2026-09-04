@@ -1132,14 +1132,34 @@ cross-check fails closed — the honest answer on an edge contact. The #131 swee
 withhold predicate to the kernel's exemption predicate on synthetic cells and
 never calls a distance instrument — and was re-run green rather than cited.
 
-**Cost.** Once per attach, never per tick. On the shipped `robocasa_baguette`
+**Cost.** On the shipped `robocasa_baguette`
 kitchen at reset (2 383 geoms; the baguette's 16 collision geoms against 1 358
 eligible support geoms) 353 pairs pass the 1 mm bounding-sphere prefilter, the
 certified window rejection discards 234 of them unsolved, 119 are solved, and
-the attestation takes **0.46 s** against ~0.4 ms before — the same three orders
-of magnitude the evidence path paid, for the same reason. It attests
+the attestation takes **0.21 s** (median of five on an unloaded host) against
+~0.4 ms before — the same three orders of magnitude the evidence path paid, for
+the same reason. It attests
 `counter_1_left_group_main` at 0.065 mm with a 0.117 m patch, from certified
-measurements only.
+measurements only. It runs at attach and then on **every tick of a live place
+declaration until one attests** — the hysteresis short-circuits only after a
+success — so the per-tick worst case, not the per-attach cost, is what the call
+budget bounds. The place phase measures against the declared target's own
+bodies rather than the whole kitchen, which is what keeps that affordable.
+
+**One defect this found in its own instrument.** The certified witness on the
+overlapping branch lies in the support's supporting *plane*, which is the right
+depth but need not fall within the support's face. On a tessellated counter a
+payload flush on one strip therefore produced, for a *neighbouring* strip, a
+support point a quarter of a metre outside it — where the box's analytic face
+normal comes back **lateral**. `_dominant_support` groups by support root and
+averages, so that single hit tilted an attested support plane by **45 degrees**
+off vertical: a wrong plane, handed to the kernel as the basis of an exemption.
+The fix is that `convex_geom_distance` now reports its own contact direction
+(the separating direction, or the minimum-translation axis when overlapping),
+which is exact even at a flush contact where the two witness points coincide
+and their difference carries no direction at all. The probe cross-checks every
+hit against it and drops the ones that disagree, so the check now runs at the
+resting contact this module exists for instead of being skipped there.
 
 **Live round, and its master baseline.** `2026-09-03-190-witness-2` on this
 branch and `2026-09-04-190-master-baseline-1` at `ed850ac`, same scene, same

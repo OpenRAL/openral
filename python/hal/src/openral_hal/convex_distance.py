@@ -104,11 +104,21 @@ class ConvexDistance:
             by SAT it is the centroid of ``a``'s deepest face along the
             minimum-translation axis; ``None`` only when the depth itself was
             not measured.
-        witness_b: Nearest point on geom ``b``; for an overlapping pair, the
-            ``witness_a`` point lifted onto ``b``'s supporting plane along the
-            minimum-translation axis. On both branches
-            ``(witness_a - witness_b) / distance_m`` is the unit direction
-            from ``b`` toward ``a``.
+        witness_b: Nearest point on geom ``b`` on the separated branch. For an
+            **overlapping** pair it is the ``witness_a`` point lifted onto
+            ``b``'s supporting *plane* along the minimum-translation axis —
+            which is the right depth but need not lie within ``b``'s face, so
+            it is NOT a point on ``b``'s surface and ``witness_clearance_m``
+            will refute it as one. Read it as "where ``a``'s buried face meets
+            ``b``'s supporting plane", and take the direction from
+            :attr:`direction`, never by differencing the two witnesses.
+        direction: Unit direction from ``b`` toward ``a`` — the separating
+            direction on the GJK branch and the minimum-translation axis on
+            the SAT branch. ``None`` when the pair was not solved (beyond the
+            window, unsupported geom, or an overlap whose depth was not
+            measured). This is the ONLY reliable source of a contact direction
+            at a flush contact, where the two witnesses coincide and their
+            difference carries no direction at all.
         duality_gap_m: Residual of the separating-axis certificate; ``0.0`` for
             an overlapping pair, which SAT solves without one.
         method: Which construction produced the answer.
@@ -121,6 +131,7 @@ class ConvexDistance:
     uncertified_reason: str
     witness_a: tuple[float, float, float] | None
     witness_b: tuple[float, float, float] | None
+    direction: tuple[float, float, float] | None
     duality_gap_m: float
     method: str
 
@@ -535,8 +546,15 @@ def _sat_penetration_depth(
     return depth, axis, p_a, p_b
 
 
-def _signed_distance(body_a: ConvexBody, body_b: ConvexBody) -> tuple[float, Any, Any, float, str]:
-    """``(signed distance, p_a, p_b, duality gap, method)`` for one body pair.
+def _signed_distance(
+    body_a: ConvexBody, body_b: ConvexBody
+) -> tuple[float, Any, Any, Any, float, str]:
+    """``(signed distance, p_a, p_b, direction, duality gap, method)`` for one pair.
+
+    ``direction`` is the unit ``b``→``a`` direction: the separating direction
+    when the cores are apart, the minimum-translation axis when they overlap.
+    It is carried out separately because at a flush contact the two witness
+    points coincide and differencing them yields nothing.
 
     Inflating two convex bodies by balls shifts their signed distance by exactly
     the sum of the radii, on both the separated and the penetrating branch, so
@@ -549,19 +567,18 @@ def _signed_distance(body_a: ConvexBody, body_b: ConvexBody) -> tuple[float, Any
     if distance > _OVERLAP_TOL_M and p_a is not None and p_b is not None:
         lower = separating_axis_bound(body_a.core, body_b.core, p_b - p_a)
         gap = abs(distance - lower)
+        unit = (np.asarray(p_a) - np.asarray(p_b)) / distance
         if inflate > 0.0:
-            direction = np.asarray(p_b) - np.asarray(p_a)
-            unit = direction / float(np.linalg.norm(direction))
-            p_a = np.asarray(p_a) + unit * body_a.radius
-            p_b = np.asarray(p_b) - unit * body_b.radius
-        return distance - inflate, p_a, p_b, gap, "gjk"
+            p_a = np.asarray(p_a) - unit * body_a.radius
+            p_b = np.asarray(p_b) + unit * body_b.radius
+        return distance - inflate, p_a, p_b, unit, gap, "gjk"
     solved = _sat_penetration_depth(body_a, body_b)
     if solved is None:
-        return -inflate, None, None, float("inf"), "gjk-overlap"
+        return -inflate, None, None, None, float("inf"), "gjk-overlap"
     depth, axis, p_a, p_b = solved
     # The balls push each witness further along the axis: ``a``'s deeper into
     # ``b``, ``b``'s further out, keeping ``p_a - p_b == (depth - inflate) * axis``.
-    return depth - inflate, p_a - axis * body_a.radius, p_b + axis * body_b.radius, 0.0, "sat"
+    return depth - inflate, p_a - axis * body_a.radius, p_b + axis * body_b.radius, axis, 0.0, "sat"
 
 
 def convex_geom_distance(
@@ -626,6 +643,7 @@ def convex_geom_distance(
             ),
             witness_a=None,
             witness_b=None,
+            direction=None,
             duality_gap_m=float("inf"),
             method="unsupported-geom-type",
         )
@@ -652,14 +670,15 @@ def convex_geom_distance(
                 uncertified_reason="",
                 witness_a=None,
                 witness_b=None,
+                direction=None,
                 duality_gap_m=float("inf"),
                 method="beyond-window",
             )
-    lower, p_a, p_b, gap_outer, method = _signed_distance(outer_a, outer_b)
+    lower, p_a, p_b, direction, gap_outer, method = _signed_distance(outer_a, outer_b)
     if inner_a is outer_a and inner_b is outer_b:
         upper, gap_inner = lower, gap_outer
     else:
-        upper, _pa, _pb, gap_inner, _method = _signed_distance(inner_a, inner_b)
+        upper, _pa, _pb, _dir, gap_inner, _method = _signed_distance(inner_a, inner_b)
     if method == "gjk-overlap":
         # Overlap is proved; the depth is not. ``-(r_a + r_b)`` is the LEAST
         # negative the answer can be, so it bounds from above and nothing
@@ -690,6 +709,11 @@ def convex_geom_distance(
         uncertified_reason="; ".join(reasons),
         witness_a=None if p_a is None else (float(p_a[0]), float(p_a[1]), float(p_a[2])),
         witness_b=None if p_b is None else (float(p_b[0]), float(p_b[1]), float(p_b[2])),
+        direction=(
+            None
+            if direction is None
+            else (float(direction[0]), float(direction[1]), float(direction[2]))
+        ),
         duality_gap_m=duality,
         method=method,
     )

@@ -59,24 +59,26 @@ _SUPPORT_PROBE_GAP_M = 0.001
 # contact, and attesting a clamped depth would launder it into an exemption.
 _SUPPORT_MAX_PENETRATION_M = 0.01
 _SUPPORT_MAX_PATCH_RADIUS_M = 0.5
-# Exact-distance call budget for one attestation. This runs once per attach
-# (and once per place declaration), never per tick. Measured on the shipped
+# Exact-distance call budget for one attestation. This runs at attach, and
+# then on EVERY tick of a live place declaration until one attests (the
+# hysteresis in ``_place_witness`` short-circuits only after a success) — so
+# the per-tick worst case, not the per-attach cost, is what this cap bounds. Measured on the shipped
 # ``robocasa_baguette`` kitchen (2383 geoms, 16 payload geoms, 1358 support
 # candidates): 353 pairs pass the 1 mm bounding-sphere prefilter, the certified
 # window rejection discards 234 of them unsolved, 119 are solved, and the whole
-# attestation costs ~0.46 s — ~1.3 ms per solved mesh pair against
-# ``mj_geomDistance``'s ~0.8 us, the price of an answer that is proved. The cap
-# bounds the pathological scene at ~1.5 s.
+# attestation costs ~0.21 s — ~1.7 ms per solved mesh pair against
+# ``mj_geomDistance``'s ~0.8 us, the price of an answer that is proved. The
+# place phase measures against the DECLARED TARGET's bodies only, which is what
+# keeps a per-tick re-probe affordable.
 # ponytail: hulls are re-decoded per call (~0.1 s of the 0.46 s); cache them
 # per (model, mesh) if attach latency ever matters.
 _SUPPORT_PROBE_MAX_CALLS = 1024
-# Under this separation the probe's closest-point segment is degenerate and
-# carries no direction — which is precisely the resting case (the field cup sat
-# at 0.000 mm). The support geom's own surface normal is the primary source;
-# the segment is only ever a cross-check or a last resort.
-_SEGMENT_DIRECTION_MIN_M = 1e-5
-# A surface normal and a closest-point segment more than 60 degrees apart do not
-# describe the same plane. Rather than pick one, attest neither (fail closed).
+# A surface normal and the instrument's own contact direction more than 60
+# degrees apart do not describe the same plane. Rather than pick one, attest
+# neither (fail closed). This runs at EVERY hit, flush ones included, because
+# ``convex_geom_distance`` reports its direction directly rather than leaving
+# it to be recovered from two witness points that coincide at a resting
+# contact — the case that matters (the field cup sat at 0.000 mm).
 _NORMAL_AGREEMENT_MIN = 0.5
 
 
@@ -701,6 +703,9 @@ def _probe_support_hits(
             continue  # not measured: an unproved contact licenses nothing
         payload_point = np.asarray(measured.witness_a, dtype=np.float64)
         support_point = np.asarray(measured.witness_b, dtype=np.float64)
+        if measured.direction is None:
+            continue  # no contact direction: nothing to check a surface normal against
+        probe_normal = np.asarray(measured.direction, dtype=np.float64)
 
         surface_normal = _support_surface_normal(
             model,
@@ -708,23 +713,25 @@ def _probe_support_hits(
             geom_id=support_geom,
             world_point=support_point,
         )
-        # ``(payload_point - support_point) / distance`` is the support→payload
-        # direction for both signs of ``distance`` — the instrument's witness
-        # contract on both its branches. It is undefined at a flush contact,
-        # which is why it is the fallback and not the source.
-        segment_normal: NDArray[np.float64] | None = None
-        if abs(distance) >= _SEGMENT_DIRECTION_MIN_M:
-            segment_normal = (payload_point - support_point) / distance
+        # The instrument reports the support→payload direction itself, on both
+        # of its branches, and — unlike differencing the two witness points —
+        # it is still defined at a flush contact, which is precisely the case
+        # this module exists for. So the cross-check runs ALWAYS, and never
+        # degrades to trusting one source alone.
+        #
+        # That matters because the SAT witness on ``b`` lies in the support's
+        # supporting *plane*, not necessarily within its face: on a tessellated
+        # counter a payload flush on one strip yields, for a neighbouring
+        # strip, a support point metres outside it, where the box face normal
+        # comes back LATERAL. Averaged into the group by ``_dominant_support``
+        # that tilted the attested plane by up to 45 degrees — a wrong support
+        # plane handed to the kernel as an exemption. Checked against the
+        # instrument's own direction, those hits are dropped (#190).
         if surface_normal is None:
-            if segment_normal is None:
-                continue  # unanalysable surface, flush contact: measure nothing
-            normal = segment_normal
-        else:
-            if segment_normal is not None and (
-                float(np.dot(surface_normal, segment_normal)) < _NORMAL_AGREEMENT_MIN
-            ):
-                continue  # the two disagree about the plane; measure nothing
-            normal = surface_normal
+            continue  # unanalysable surface (mesh, heightfield, SDF): measure nothing
+        if float(np.dot(surface_normal, probe_normal)) < _NORMAL_AGREEMENT_MIN:
+            continue  # the surface and the measurement disagree; measure nothing
+        normal = surface_normal
 
         hits.append(
             _SupportProbeHit(

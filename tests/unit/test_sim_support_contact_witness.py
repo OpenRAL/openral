@@ -280,6 +280,59 @@ def test_penetration_past_the_kernel_cap_attests_nothing() -> None:
     )
 
 
+_TESSELLATED_MJCF = """
+<mujoco model="tessellated_counter">
+  <option gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="counter" pos="0 0 0.4">
+      <geom name="strip_under" type="box" size="0.10 0.3 0.02" pos="0 0 0"
+            contype="4" conaffinity="4"/>
+      <geom name="strip_beside" type="box" size="0.05 0.3 0.02" pos="0.30 0 0"
+            contype="4" conaffinity="4"/>
+    </body>
+    <body name="tray" pos="0 0 0.4225">
+      <freejoint name="tray_joint"/>
+      <geom name="tray_body" type="box" size="0.45 0.2 0.0025" contype="1" conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_a_neighbouring_strip_cannot_tilt_the_attested_support_plane() -> None:
+    """One counter, two coplanar strips, a tray flush across both — plane stays level.
+
+    This is the #190 regression. A support geom's analytic face normal is only
+    meaningful at a point *on* that geom, and the certified instrument's
+    witness on the overlapping branch lies in the support's supporting PLANE,
+    which for a neighbouring strip is a point 0.25 m outside it. There the box
+    normal comes back **lateral**, and because ``_dominant_support`` groups by
+    support root and averages, that one hit tilted the attested plane 45
+    degrees off vertical — a support plane the safety kernel would have
+    exempted against.
+
+    The probe now cross-checks every hit against the instrument's own contact
+    direction, which is exact even at a flush contact, so the off-geom hits
+    are dropped and only the strip actually under the tray is attested.
+    """
+    model = mujoco.MjModel.from_xml_string(_TESSELLATED_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    witness = support_contact_witness(
+        model,
+        data,
+        root_body_id=_body(model, "tray"),
+        robot_body_ids=frozenset(),
+        stamp_ns=1,
+    )
+
+    assert witness is not None, "the tray rests flush on the counter; that is real support"
+    normal = np.asarray(witness.contact_normal_in_object, dtype=float)
+    tilt_deg = math.degrees(math.acos(float(np.clip(normal @ np.array([0.0, 0.0, 1.0]), -1, 1))))
+    assert tilt_deg < 1e-6, f"attested support plane is {tilt_deg:.1f} deg off vertical"
+
+
 def test_a_plane_support_attests_nothing_because_it_cannot_be_certified() -> None:
     """A payload resting on the floor plane earns no exemption — stated, not silent.
 
