@@ -116,6 +116,49 @@ keeps the silhouette clean, and a control test with the self-filter
 unconfigured shows the sweep failing — the assertion can fail, which is the
 thing #183 found this file's earlier payload test unable to do.
 
+The same assertion has also been run on the **real scenes**, which the test
+cannot be: `tools/_nav2_costmap_silhouette_probe.py` attaches to a live
+`openral deploy sim` graph and sweeps every published costmap the same way.
+Raw output in `docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`;
+one graph launch per scene, driven by a direct `NavigateToPose` 2.0 m ahead so
+the base actually translates:
+
+| | `robocasa_baguette` | `robocasa_deliver_straw` |
+| --- | ---: | ---: |
+| base travelled | 1.703 m | 1.609 m |
+| **local** costmap samples | 97 | 108 |
+| silhouette cells per sample | 137 | 140 |
+| peak `LETHAL` cells elsewhere on the map | 172 | 67 |
+| **`LETHAL` cells inside the silhouette** | **0** | **0** |
+| **global** costmap samples | 50 | 51 |
+| peak cost anywhere on the global map | **0** | **0** |
+
+Read the last row before the second-to-last one — see the next section.
+
+Two limits, so the numbers are not over-read. Sim's
+`synthesize_laser_scan_2d` re-casts through the robot's own MuJoCo kinematic
+tree, so a self-return never enters `/scan` here at all: a clean silhouette on
+a scene is the *end state* being right, not proof that this node is what made
+it so. And `attached_objects` stayed 0 on both runs (no policy was dispatched,
+so nothing was ever grasped), so the payload half is unmeasured there. Both
+gaps are exactly what the deterministic sweep covers, and it is the one with a
+control.
+
+### A second defect this surfaced, not yet fixed
+
+**The global costmap is empty.** Over 50 and 51 published samples across the
+two scenes its maximum cost is `0` and it has no non-zero cell at any point,
+while the local costmap on the same graph peaks at `254` with ~2000 non-zero
+cells. Its `obstacle_layer` is configured on the same filtered
+`/openral/nav2/scan` the local costmap's `voxel_layer` reads, `static_layer` is
+deliberately out of its plugin chain (rolling window, SLAM-from-scratch), and
+`planner_server` logs no warning at all — so `NavfnPlanner` planned the
+accepted `NavigateToPose` goal against a blank 20 × 20 m grid.
+
+This makes the **global** half of the table above vacuous: nothing is marked
+inside the robot because nothing is marked anywhere. The local half stands on
+its own — 172 and 67 real marked cells elsewhere in the same samples.
+
 ## Nav2 is base-only
 
 **The costmaps' footprint is the manifest's bare chassis, and nothing grows
