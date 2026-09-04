@@ -364,9 +364,14 @@ def test_depth_image_matches_cloud_z_column() -> None:
 # counter body a BVH; MuJoCo builds that BVH from collision geoms only, so the
 # body's bounding sphere hugs the bracket and excludes the slab entirely.
 #
-# `mj_multiRay` culls whole bodies against that sphere, so it used to skip the
-# counter body and report the cabinet carcass beneath it. That inconsistency is
-# why the synth casts `mj_ray` per pixel and not the batched call.
+# `mj_multiRay` culls whole bodies against that sphere, so it skips the counter
+# body and reports the cabinet carcass beneath it. That is why the synth casts
+# `mj_ray` per pixel and not the batched call — and #195 measured that the
+# reason survives #174: on the real validation-matrix scenes the batched call
+# skips only **collidable** geoms, so filtering intangible geometry out of the
+# cast does not make it safe (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`).
+# On THIS scene the two casters happen to agree, because the slab the cull
+# drops is exactly the slab the filter drops.
 #
 # **The expectation on this scene inverted with #174, and deliberately.** The
 # slab is `contype=0 conaffinity=0`: MuJoCo forms no contact pair for it, so no
@@ -382,6 +387,11 @@ def test_depth_image_matches_cloud_z_column() -> None:
 # countertops has a collidable top geom at the same height: filtering them
 # moves those returns by a maximum of 0.0 mm and loses no ray. Across 16 384
 # rays no return anywhere came back nearer or vanished.
+#
+# Note what that means for the batched call, which #195 then measured: the
+# RoboCasa countertops it skips are the *collidable* `*_top_*_0` / `_1` slabs,
+# not the `*_top_*_visual` paint. Those slabs stay in the cast after #174, and
+# `mj_multiRay` still walks through them.
 _CARCASS_TOP_Z = 0.890
 _SLAB_TOP_Z = 0.920
 _COUNTER_CAM_Z = 2.0

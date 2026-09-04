@@ -223,21 +223,50 @@ def _cast_depth_rays(
     transparent_hits: NDArray[np.bool_] = np.zeros(n_rays, dtype=np.bool_)
 
     # One `mj_ray` per pixel, NOT the batched `mj_multiRay`. `mj_multiRay`
-    # culls whole bodies against the bounding sphere of the body's BVH root
-    # AABB (`mju_singleRay`), and MuJoCo's compiler builds that BVH from
-    # COLLISION geoms only — so a `contype=0 conaffinity=0` visual geom lying
-    # outside its body's collision extent is silently skipped and the ray
-    # reports whatever solid sits behind it. On RoboCasa that hides counter
-    # tops (world z 0.920) behind the cabinet carcasses under them (0.890):
-    # a 30 mm systematic underestimate, in the unsafe direction, on the cloud
-    # the world-collision voxel grid is built from. `mj_ray` runs the plain
-    # linear scan over every visible geom and has no such cull, matching what
-    # the GL depth renderer draws. It costs more than the batched call — how
-    # much depends entirely on how often that body cull fires, i.e. on the
-    # scene (~1.9x on the 1200-geom clutter scene the module docstring's budget
-    # is measured on), so size the budget from a measurement, not a multiplier.
-    # The depth stream is a strided, rate-limited sim sensor, and a wrong
-    # surface is worse than a slower one.
+    # applies broad-phase culling `mj_ray` does not, and on real scenes that
+    # culling drops surfaces which are really there: the ray then reports
+    # whatever solid sits behind them. `mj_ray` runs the plain linear scan over
+    # every visible geom, matching what the GL depth renderer draws.
+    #
+    # #180 conjectured that the cull only ever mis-skipped `contype=0
+    # conaffinity=0` decoration, so that filtering decoration out of the cast
+    # (which it did — see `intangible` below) would make the batched call safe
+    # and hand back its cost premium. #195 measured that instead of adopting
+    # it, on all four validation-matrix scenes at the deploy stride, both
+    # casters seeing the identical filtered world
+    # (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`; table in
+    # docs/reference/world-map-fidelity.md). The conjecture is FALSE:
+    #
+    #   * The batched cast disagrees on 4 113 of 65 536 rays, and every geom
+    #     it skips is COLLIDABLE — not one is the decoration #180 removed. On
+    #     the baguette scene it walks straight through
+    #     `counter_1_left_group_top_left_0` and `_1`, `contype=1
+    #     conaffinity=1` countertop slabs, on 3 815 rays, and answers with the
+    #     cabinet stack and the wall behind them.
+    #   * Every disagreement is in the unsafe direction: up to 480 mm too FAR
+    #     and never too near, on the cloud the world-collision voxel grid is
+    #     built from. An independent analytic ray/box intersection agrees with
+    #     `mj_ray` on 200 of 200 sampled disputed rays and with `mj_multiRay`
+    #     on 0 — the batched call is wrong, not merely different.
+    #
+    # The MECHANISM is not established, and #111's account of it — "the body's
+    # BVH is built from collision geoms only, so a visual geom outside the
+    # collision extent is skipped" — does not survive the measurement, twice
+    # over. Every geom skipped here is collidable and therefore inside its own
+    # body's collision extent; and the batched cast still returns 184 rays on
+    # `counter_1_left_group_main`, so it is not culling that body wholesale
+    # either. #195 also failed to reproduce the skip in a hand-written MJCF —
+    # far-outlier collision geoms in the same body, body yaw and geom yaw were
+    # all tried and all agree ray for ray — which is why the gate has to run on
+    # the real scenes and there is no unit-tier version of it. Do not restate
+    # a mechanism here until someone has isolated it.
+    #
+    # So the premium stays paid, and it is larger than #111 thought: 4.2-6.2x
+    # on those scenes, because whatever fires the skip fires far more often on
+    # a real kitchen than on the clutter scene #111 measured (~1.9x). Size the
+    # budget from a measurement, not a multiplier. The depth stream is a
+    # strided, rate-limited sim sensor, and a wrong surface is worse than a
+    # slower one.
     geomid_out = np.zeros(1, dtype=np.int32)
     bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
 
