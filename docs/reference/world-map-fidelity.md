@@ -359,6 +359,79 @@ adversarial one. And since the `mj_multiRay` body cull only ever mis-skipped
 non-collidable geoms, the ~1.9x premium the synth pays for `mj_ray` may now be
 recoverable — unverified, and deliberately out of scope here.
 
+#### The premium is not recoverable, and the reason is worse than #174 thought
+
+Tracked as [#195](https://github.com/OpenRAL/openral/issues/195), which
+measured the paragraph above rather than acting on it. **The conjecture is
+false.** `mj_multiRay` does not only mis-skip non-collidable geoms; with the
+intangible filter applied to *both* casters, so they see the identical world,
+every geom it skips is **collidable**.
+
+Same protocol as the filter measurement — the four validation-matrix scenes,
+built through `build_sim_env_from_yaml`, the `panda_mobile` `front_depth`
+intrinsics rescaled to each scene's 512² render, `stride=4` → 16 384 rays per
+scene, and the shipped filter set (intangible geometry + the robot's own
+bodies) hidden from both:
+
+| scene | geoms | rays disagreeing | geoms skipped | of those, intangible | max **farther** | **nearer** | lost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baguette | 2 383 | 3 815 (23.3 %) | 3 | **0** | 434.2 mm | **0** | 0 |
+| sink_cup | 2 380 | 39 (0.2 %) | 2 | **0** | 480.2 mm | **0** | 0 |
+| fridge | 1 541 | **0** | 0 | — | — | **0** | 0 |
+| utensil | 1 502 | 259 (1.6 %) | 6 | **0** | 205.9 mm | **0** | 0 |
+
+Four things this settles.
+
+**The skipped geoms are the ones a robot hits.** On the baguette scene the
+batched cast walks through `counter_1_left_group_top_left_0` and `_1` —
+`contype=1 conaffinity=1` countertop slabs, the surface the whole task reaches
+onto — and answers with `stack_1_left_group_3_top`, the cabinet doors and
+`wall_left_4_room_g0` behind them. This is the same *shape* of error #111
+described, but not the same cause: #111 blamed visual-only geometry, and after
+#174 there is none left in the cast.
+
+**The direction is uniformly unsafe.** Across all 65 536 rays not one return
+came back nearer and not one was lost; 4 113 came back *farther*, by up to
+480 mm. A depth cloud that reports free space where a countertop is, feeding
+`octomap_server` and then the kernel's world grid, is the one error mode this
+whole page exists to bound. #174's filter was safe *because* it could only push
+returns farther from a surface that was not there; this pushes them past a
+surface that is.
+
+**`mj_ray` is the correct one, adjudicated independently.** An analytic
+ray/box slab intersection sharing no code with MuJoCo's caster was run over
+200 sampled disputed rays: it agrees with `mj_ray` on **200** and with
+`mj_multiRay` on **0**. The batched call is wrong, not merely different.
+
+**The fridge's zero is a property of that camera, not a reprieve.** Its
+`front_depth` looks at the fridge front at close range — median return 1.28 m,
+`..._freezer_door_main` alone taking 4 711 of 16 384 rays — with no counter run
+in view for the cull to fire on. One scene over the same caster loses 3 815
+rays.
+
+**The mechanism is open, and #111's account of it is not it.** #111 recorded
+that MuJoCo builds a body's BVH from collision geoms only, so a visual geom
+lying outside its body's collision extent is skipped. That cannot explain this:
+every geom skipped here is collidable and so is inside its own body's collision
+extent, and the batched cast still returns 184 rays on
+`counter_1_left_group_main` — the very body whose countertop it walks through —
+so it is not culling the body wholesale either. #195 also could not reproduce
+the skip in a hand-written MJCF: far-outlier collision geoms in the same body,
+body yaw and geom yaw all agree ray for ray. Whatever scene property triggers
+it is not isolated, which is why the gate has to run on the real scenes and
+there is no unit-tier version of it. **This is the open thread to pull if the
+premium is ever worth another attempt** — the swap cannot be justified on a
+mechanism nobody has pinned down.
+
+The cost that stays paid is larger than #111's ~1.9×: **4.2–6.2×** on these
+scenes (83–129 ms per pass per-pixel against 13.5–22.3 ms batched, q-laptop,
+CPU cast), because a real kitchen fires the cull far more often than the
+1200-geom clutter scene #111 measured on. `tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`
+holds both halves as a gate: the shipped caster is adjudicated against the slab
+test (so a swap fails), and the per-scene disagreement counts are asserted (so a
+change in upstream MuJoCo's cull re-opens #195 rather than silently licensing
+the swap).
+
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
 Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it turns out
