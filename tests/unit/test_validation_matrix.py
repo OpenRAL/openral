@@ -49,6 +49,7 @@ ROUND_0816 = FIXTURES / "2026-08-16-master-1"
 ROUND_HARNESS_1 = FIXTURES / "2026-08-22-harness-1"
 ROUND_0823 = FIXTURES / "2026-08-23-master-s1"
 ROUND_NAV143 = FIXTURES / "2026-08-23-nav143-s1"
+ROUND_POST200 = FIXTURES / "2026-09-04-post200-2"
 
 # tools/ is not an installed package — load the module by path, the same way
 # tests/unit/test_select_tests.py and test_audit_tests.py do.
@@ -1220,3 +1221,46 @@ def test_collision_scale_env_ignores_a_value_the_launch_would_ignore(
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
     assert validation_matrix.collision_scale_env() == {}
+
+
+def test_a_link_vs_link_self_stop_is_not_scored_against_world_geometry() -> None:
+    """Issue: `panda_link5`/`panda_link7` scored `false-positive` off the island.
+
+    Straight from the 2026-09-04 post-#200 battery, which produced this stop
+    twice in two independent arms. The kernel named a self-pair; the snapshot's
+    robot probe excludes the whole robot from the far side, so its nearest pair
+    for `robot0_link5` is a kitchen island 212 mm away. Comparing that against a
+    -31.97 mm *self*-collision depth gave a 244 mm discrepancy against an 88 mm
+    budget and the verdict `false-positive` — for a stop whose exact hulls do
+    interpenetrate at that configuration.
+
+    The snapshot holds no evidence about link5-vs-link7, so the only honest
+    verdict is `unadjudicated`.
+    """
+    lines = (
+        (ROUND_POST200 / "sink_cup" / "run_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    stop = validation_matrix.parse_kernel_collision(lines)
+    assert stop is not None
+    assert (stop.kind, stop.party_a, stop.party_b) == ("self", "panda_link5", "panda_link7")
+    assert stop.min_distance_m == pytest.approx(-0.0319657)
+
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+    # The evidence path is otherwise sound: certified, untruncated, budgeted.
+    assert validation_matrix.probe_is_distance_certified(snapshot) is True
+    robot_pairs = snapshot["nearest_robot_world_pairs"]
+    assert not any(str(p["body_b"]).startswith("robot0_") for p in robot_pairs)
+    link5_world = min(p["distance_m"] for p in robot_pairs if p["body_a"] == "robot0_link5")
+    assert link5_world == pytest.approx(0.212256613)
+
+    adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated"
+    assert "self-pair" in adjudication.unadjudicated_reason
+    # link5's clearance to the world must not be published as the tripping
+    # party's, nor turned into a discrepancy against a self-collision depth.
+    assert adjudication.nearest_tripping_party_m is None
+    assert adjudication.discrepancy_m is None

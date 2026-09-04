@@ -658,6 +658,17 @@ def adjudicate_ground_truth(
        is what produced two "false positives", one of which re-derives as
        ``within-quantization`` the moment a real budget exists for the same
        stop.
+       **A link-vs-link self stop never reaches this rule.** The kernel names
+       two robot links; the probe's robot side excludes the whole robot from
+       the far side, so no probed pair measures one against the other and
+       ``nearest_robot_world_pairs`` can only offer ``party_a``'s clearance to
+       the *world*. That is a different question, and answering it under the
+       self-pair's identity is what scored a genuine ``panda_link5``/
+       ``panda_link7`` stop at −31.97 mm as ``false-positive`` off link5's
+       212 mm clearance to a kitchen island. Such a stop is ``unadjudicated``,
+       with no ``nearest_tripping_party_m`` and no ``discrepancy_m``, until the
+       snapshot carries a link-vs-link pair set.
+
     3. A truncated probe, a missing snapshot or an unknown budget →
        ``unadjudicated``, with ``unadjudicated_reason`` saying which. An
        *untruncated* probe that returned no pair is not missing data: it proves
@@ -713,8 +724,20 @@ def adjudicate_ground_truth(
     nearest_any = min((p["distance_m"] for p in all_pairs), default=None)
     nearest_pair = min(all_pairs, key=lambda p: p["distance_m"], default=None)
 
+    # A link-vs-link self stop names two ROBOT links, and this snapshot cannot
+    # speak to that pair at all: the HAL's robot probe excludes the whole robot
+    # from the far side (`sim_sensor_bridge._nearest_pairs`, `other_excluded`),
+    # so `nearest_robot_world_pairs` only ever holds link-vs-WORLD pairs. Taking
+    # `party_a`'s world clearance here answers a different question than the
+    # kernel asked and quotes it under the self-pair's identity — which is how
+    # `panda_link5`/`panda_link7` at -31.97 mm was scored `false-positive` off
+    # link5's 212 mm clearance to a kitchen island. Treat the pair as unprobed.
+    self_pair_unprobed = stop.kind == "self" and not stop.involves_payload
+
     if stop.involves_payload:
         party_pairs = payload_world
+    elif self_pair_unprobed:
+        party_pairs = []
     else:
         subject = _kernel_party_to_mujoco(stop.party_a)
         party_pairs = [p for p in robot_pairs if str(p.get("body_a")) == subject]
@@ -730,9 +753,12 @@ def adjudicate_ground_truth(
         budget_source = "grid-quantization"
 
     lower_bound = nearest_party
-    if lower_bound is None and not truncated and distmax is not None and probed:
-        # No pair within distmax on an untruncated probe: the nearest solid
-        # geometry is provably further away than distmax.
+    # No pair within distmax on an untruncated probe: the nearest solid geometry
+    # is provably further away than distmax. That inference needs the partner to
+    # have been a *candidate* — the tripping link's self-pair partner never is,
+    # so its absence from the pair list bounds nothing.
+    absence_is_evidence = not self_pair_unprobed and not truncated and bool(probed)
+    if lower_bound is None and absence_is_evidence and distmax is not None:
         lower_bound = distmax
     discrepancy = None if lower_bound is None else lower_bound - stop.min_distance_m
 
@@ -754,6 +780,15 @@ def adjudicate_ground_truth(
     elif budget is None:
         verdict = "unadjudicated"
         reason = _no_budget_reason(monitor_records)
+    elif self_pair_unprobed:
+        verdict = "unadjudicated"
+        reason = (
+            f"the kernel named the self-pair {stop.party_a!r}/{stop.party_b!r}, and this "
+            "probe never measures one robot link against another — its robot side "
+            "excludes the whole robot from the far side — so the tripping pair's "
+            "clearance is unknown. The link's clearance to the WORLD answers a "
+            "different question and is not quoted here"
+        )
     elif discrepancy is None:
         verdict = "unadjudicated"
         reason = (
