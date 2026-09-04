@@ -1178,6 +1178,24 @@ harness buckets both as `estop-collision-unadjudicated`. That is the policy's
 failure, identical in class on both instruments, and n=1 per arm says nothing
 about rates (standing caveat 2 applies).
 
+A third round, `2026-09-04-190-crosscheck-2`, ran the same scene on the
+cross-check fix above. The witness armed on the same support
+(`support_witness_armed object=sim:obj_main support=sim:counter_1_left_group_main`),
+which is the behaviour a wrong cross-check would have removed. That round went
+further than either of the first two — 713 steps against 469 and 651 — and
+ended in a **real E-stop of the carried payload against world occupancy**,
+`attached:sim:obj_main` vs `voxel_232330` at −14.6 mm, bucketed
+`estop-collision-within-quantization` with no exemption active at the trip.
+Unlike the first two it logged **no** `support_witness_separated`, and the
+payload had certainly left the counter (1.0 m, nearest world geometry a coffee
+machine). That is a rollout difference rather than an effect of the fix: the
+producer emits a **bit-identical** witness on this scene before and after it
+(same support, 0.065 mm, 0.117 m patch, same normal), because the tilt defect
+only bites where a *neighbouring* support geom sits laterally offset under the
+payload, which this scene's reset geometry does not present. Kernel-side
+witness liveness is evaluated against the voxel grid and is not re-measured
+here; three rounds of one scene settle nothing about rates either way.
+
 ## Standing caveats
 
 Eight things a reader should carry away, all of them stated by the artifacts
