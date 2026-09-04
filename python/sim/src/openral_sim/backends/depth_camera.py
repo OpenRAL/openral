@@ -20,12 +20,29 @@ disposes").
 
 Cost scales with rays x geoms, and the caller's ``stride`` is the lever.
 Measured on a synthetic 1200-geom clutter scene (RoboCasa-kitchen scale) with a
-256x256 camera: **one** cast costs ~60 ms at the deploy default ``stride=4``
-(4096 rays) and ~240 ms at ``stride=2`` (16384 rays). The deploy-sim depth timer
-runs on the single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` —
-default **10 Hz**, a 100 ms period (the manifest ``SensorSpec.rate_hz`` is not
-read by the bridge) — so ``stride=4`` already spends ~60% of the period inside
-the cast and ``stride=2`` cannot hold the rate at all.
+256x256 camera: **one** cast costs ~60 ms at ``stride=4`` (4096 rays) and
+~240 ms at ``stride=2`` (16384 rays). The deploy-sim depth timer runs on the
+single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` — default **10 Hz**,
+a 100 ms period (the manifest ``SensorSpec.rate_hz`` is not read by the
+bridge).
+
+**Do not read 4096 rays as the deploy load.** ``stride`` subsamples the
+*rendered* resolution, not the manifest's nominal one:
+``openral_hal.depth_cloud.depth_synth_kwargs`` rescales the intrinsics to the
+scene's ``observation_width``/``height`` first, so the ray count follows the
+*scene*, and the RoboCasa deploy scenes disagree by 16x:
+
+* the five task scenes (baguette, sink_cup, fridge_drawer, drawer_utensil,
+  deliver_straw) render at 512x512, so ``stride=4`` casts 128x128 =
+  **16 384** rays — four times the count above;
+* ``robocasa_vslam*`` render at the manifest's 256x256 → 4 096 rays;
+* ``robocasa_pnp`` / ``robocasa_navigate`` render at 128x128 → 1 024 rays.
+
+Measured on the four validation-matrix scenes at exactly those settings
+(q-laptop, CPU cast): one pass costs **83-129 ms**, i.e. it can consume the
+whole 100 ms period on its own, and a frame with an attached payload casts the
+bundle twice. ``stride`` and the scene's render size are both levers, and the
+budget belongs to the pair.
 
 Budget one cast per camera per frame: derive every output from that single
 raster rather than calling both synths, which casts each ray twice for numbers
