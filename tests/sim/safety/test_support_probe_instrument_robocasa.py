@@ -1,12 +1,21 @@
-"""The support-contact witness probe, pinned on one of #170's four false zeros.
+"""The support-contact witness probe, pinned on two of #170's false zeros.
 
 Issue #190. ``openral_hal._sim_attachment_evidence._probe_support_hits`` — the
-producer of every ``support_witness`` an attachment message carries — still
-measures with ``mujoco.mj_geomDistance``, the instrument PR #170 withdrew from
-the E-stop evidence path. This is the regression test that pins one recorded
-pair through it, so the conversion to
-``openral_hal.convex_distance.convex_geom_distance`` has something that fails
-if the witness path ever starts attesting a contact that is not there.
+producer of every ``support_witness`` an attachment message carries — measured
+with ``mujoco.mj_geomDistance``, the instrument PR #170 withdrew from the
+E-stop evidence path, until it was converted to
+``openral_hal.convex_distance.convex_geom_distance``. This file pins two
+recorded pairs through the probe, so the witness path has something that fails
+if it ever starts attesting a contact that is not there.
+
+The second pair (bottom of this file) is the one that shows the defect
+*inside the witness window*: the layout-9 ``robot0_link7_collision`` vs
+``fridge_right_group_freezer_door_main`` pair the instrument was characterised
+on. There ``mj_geomDistance`` returns ``0.000`` at the probe's own 1 mm window
+with a witness segment half a metre off both geoms, and the pre-conversion
+loop produced a **phantom support hit** from it — penetration ``0.0``, a
+contact point in empty space, a face normal read off the door at a point not
+on the door. The converted probe attests nothing there, for a stated reason.
 
 The pair is the sharpest of #170's four re-measured false zeros — the
 ``2026-08-23-master-s1`` baguette stop, ``robot0_link1_collision`` against
@@ -331,3 +340,112 @@ def test_the_support_witness_probe_attests_nothing_on_it(
         f"{_CERTIFIED_GAP_M * 1e3:.3f} mm apart: "
         + ", ".join(f"penetration {hit.penetration_m:+.6f} m" for hit in hits)
     )
+
+
+# -- The knife-edge pair: the defect inside the witness window ---------------
+# The same state ``tests/sim/safety/test_geom_distance_instrument_robocasa.py``
+# pins, composed by that module's own fixture (importing it registers it here).
+from tests.sim.safety import test_geom_distance_instrument_robocasa as _knife_edge  # noqa: E402
+
+_FRIDGE_LINK_GEOM = _knife_edge._LINK_GEOM
+_FRIDGE_DOOR_GEOM = _knife_edge._DOOR_GEOM
+_MJ_WITNESS_SEGMENT_M = _knife_edge._MJ_WITNESS_SEGMENT_M
+_TRUE_GAP_M = _knife_edge._TRUE_GAP_M
+kitchen = _knife_edge.kitchen  # the module-scoped fixture, registered in this module
+
+
+def test_mj_geomdistance_manufactures_a_phantom_hit_inside_the_witness_window(
+    kitchen: tuple[Any, Any],
+) -> None:
+    """The pre-conversion probe loop, replayed on the pair it was wrong on.
+
+    At ``_SUPPORT_PROBE_GAP_M`` — the witness window itself, not the 0.1 m
+    evidence windows #170 characterised — ``mj_geomDistance`` still returns
+    ``0.000`` for a pair certified 0.1485 mm apart, with a ``fromto`` whose
+    ends are more than 40 cm outside both geoms. Replaying the loop the probe
+    ran before #190 turns that into a support hit: penetration ``0.0``, a
+    contact point in empty space, and a face normal read off the door's box at
+    a point that is not on the door. That record is the false exemption #190
+    exists to remove.
+
+    A failure on the first assertions is not necessarily a regression: if
+    upstream mujoco fixes ``mj_geomDistance`` the standing caveat 8 in
+    ``docs/reference/collision-validation-evidence.md`` needs revisiting.
+    """
+    from openral_hal._sim_attachment_evidence import (
+        _SUPPORT_PROBE_GAP_M,
+        _support_surface_normal,
+    )
+    from openral_hal.convex_distance import witness_clearance_m
+
+    model, data = kitchen
+    link, door = _geom(model, _FRIDGE_LINK_GEOM), _geom(model, _FRIDGE_DOOR_GEOM)
+
+    fromto = np.zeros(6)
+    reported = float(mujoco.mj_geomDistance(model, data, link, door, _SUPPORT_PROBE_GAP_M, fromto))
+    assert reported == pytest.approx(0.0, abs=1e-12), (
+        f"mj_geomDistance no longer returns 0.000 at the {_SUPPORT_PROBE_GAP_M * 1e3:.0f} mm "
+        f"witness window on the layout-9 pair (got {reported:+.6f} m); revisit caveat 8"
+    )
+    segment = float(np.linalg.norm(fromto[3:] - fromto[:3]))
+    assert segment == pytest.approx(_MJ_WITNESS_SEGMENT_M, abs=1e-5)
+    assert witness_clearance_m(model, data, link, fromto[:3]) > 0.4
+    assert witness_clearance_m(model, data, door, fromto[3:]) > 0.4
+
+    # The pre-#190 loop, verbatim in its decisions: inside the window, no
+    # segment direction at |distance| == 0, so the box face normal at the
+    # (bogus) support point is taken as the plane, and a hit is recorded.
+    assert reported < _SUPPORT_PROBE_GAP_M
+    phantom_normal = _support_surface_normal(model, data, geom_id=door, world_point=fromto[3:])
+    assert phantom_normal is not None, "a box always yields a face normal, even off the box"
+    phantom_contact = 0.5 * (fromto[:3] + fromto[3:])
+    assert witness_clearance_m(model, data, link, phantom_contact) > 0.4
+    assert witness_clearance_m(model, data, door, phantom_contact) > 0.4
+
+
+def test_the_converted_probe_attests_nothing_on_the_knife_edge_pair(
+    kitchen: tuple[Any, Any],
+) -> None:
+    """Certified 0.1485 mm is inside the window, and the probe still refuses — honestly.
+
+    The certified witness lands on the freezer door's **edge**, where the box
+    face normal and the separating direction disagree; the probe's own
+    cross-check fails closed rather than pick one. No contact point in empty
+    space, no plane, no exemption. The refusal is the correct answer on an
+    edge contact — there is no support plane to attest.
+    """
+    from openral_hal._sim_attachment_evidence import (
+        _NORMAL_AGREEMENT_MIN,
+        _SUPPORT_PROBE_GAP_M,
+        _probe_support_hits,
+        _root_motion_body,
+        _support_surface_normal,
+    )
+    from openral_hal.convex_distance import convex_geom_distance, witness_clearance_m
+
+    model, data = kitchen
+    link, door = _geom(model, _FRIDGE_LINK_GEOM), _geom(model, _FRIDGE_DOOR_GEOM)
+
+    measured = convex_geom_distance(model, data, link, door, distmax_m=_SUPPORT_PROBE_GAP_M)
+    assert measured.certified, measured.uncertified_reason
+    assert measured.distance_m == pytest.approx(_TRUE_GAP_M, abs=1e-7)
+    assert measured.witness_a is not None and measured.witness_b is not None
+    assert witness_clearance_m(model, data, link, measured.witness_a) < 1e-9
+    assert witness_clearance_m(model, data, door, measured.witness_b) < 1e-9
+    face_normal = _support_surface_normal(
+        model, data, geom_id=door, world_point=np.asarray(measured.witness_b)
+    )
+    separating = (np.asarray(measured.witness_a) - np.asarray(measured.witness_b)) / (
+        measured.distance_m
+    )
+    assert face_normal is not None
+    assert float(face_normal @ separating) < _NORMAL_AGREEMENT_MIN  # an edge, not a face
+
+    hits = _probe_support_hits(
+        model,
+        data,
+        payload_geoms=[link],
+        candidate_geoms=[door],
+        support_root_of_geom={door: _root_motion_body(model, int(model.geom_bodyid[door]))},
+    )
+    assert hits == []

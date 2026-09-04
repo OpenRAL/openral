@@ -1111,13 +1111,23 @@ its lineage: `evidence_ref` is
 `openral_hal.convex_distance.convex_geom_distance:<support>`; one reading
 `mujoco_geom_distance:<support>` was produced by the defective instrument.
 
-**What it pins.** `tests/sim/safety/test_support_probe_instrument_robocasa.py`
-reconstructs the 08-23 `baguette` stop and puts #170's fourth false zero —
-`robot0_link1_collision` ↔ `counter_1_left_group_top_left_1`, recorded
-`0.000 m`, certified `+107.930 mm` — through the witness probe itself:
-`mj_geomDistance` still reads `0.000` there at the probe's own 1 mm window,
-which is *inside* it and would have attested a contact; the converted probe
-attests nothing. The #131 sweep (`WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`,
+**What it pins.** `tests/sim/safety/test_support_probe_instrument_robocasa.py`,
+two pairs through the witness probe itself. The 08-23 `baguette` stop is
+reconstructed (base residual 0.5 µm against its own `base_frame_tf`; the
+coincident `robot0_g12_vis` reproduces the round's `0.107931 m` to 2e-8 m)
+and #170's fourth false zero — `robot0_link1_collision` ↔
+`counter_1_left_group_top_left_1`, certified `+107.930 mm` — put through it:
+**the recorded `0.000` does not reproduce at the 1 mm witness window on this
+host** (the call saturates to `distmax` there), so that pin holds "no
+attestation" under both instruments and is not the failing case the issue
+anticipated. The layout-9 knife-edge pair is: `mj_geomDistance` returns
+`0.000` at the probe's own 1 mm window, with the same 126.264 mm witness
+segment 0.53 / 0.43 m outside both geoms, and the pre-#190 loop replayed on
+it produces a **phantom support hit** — penetration `0.0`, a contact point in
+empty space, a face normal read off the door's box at a point not on the door.
+The converted probe attests nothing there: the certified witness lands on the
+door's edge, the face normal and the separating direction disagree, and the
+cross-check fails closed — the honest answer on an edge contact. The #131 sweep (`WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`,
 53,872 cells) is unaffected by construction — it compares the bridge's
 withhold predicate to the kernel's exemption predicate on synthetic cells and
 never calls a distance instrument — and was re-run green rather than cited.
