@@ -8674,6 +8674,18 @@ class ValidationRoundMetadata(BaseModel):
     safety_overrides_absent: bool = True
     collision_scale: dict[str, float] = Field(default_factory=dict)
     gpu_name: str | None = None
+    ros_domain_id: str = ""
+    """``ROS_DOMAIN_ID`` the round ran on; ``""`` means unset, i.e. domain 0.
+
+    Recorded from #227 onward. Before it, no round's DDS scope was captured, so
+    it is not knowable after the fact whether one shared a ROS graph with
+    another machine — which is exactly what happened on 2026-09-05, when a sim
+    on the default scope consumed a live OpenArm's ``/joint_states``.
+    """
+    ros_automatic_discovery_range: str = ""
+    """``ROS_AUTOMATIC_DISCOVERY_RANGE``; ``""`` means unset, i.e. ``SUBNET`` —
+    discovery across the whole subnet, which is how a robot on another host
+    reaches a simulation."""
     notes_path: str | None = None
     scene_dirs: dict[str, str] = Field(default_factory=dict)
     seed: int = 1

@@ -1900,14 +1900,29 @@ def wait_for_dds_transport_ready(
     return ""
 
 
-def _wait_for_action_server(proc: subprocess.Popen[bytes], timeout_s: int) -> bool:
-    """Poll ``ros2 action list`` until the rSkill action server appears."""
+def _wait_for_action_server(
+    proc: subprocess.Popen[bytes], timeout_s: int, env: dict[str, str] | None = None
+) -> bool:
+    """Poll ``ros2 action list`` until the rSkill action server appears.
+
+    ``--no-daemon``, and under the launch's own ``env``. The ``ros2`` CLI daemon
+    is a long-lived process that answers from the environment *it* was started
+    with, so a daemon left over from an unscoped shell reports a different graph
+    than the one this round is running on — the same false reading that made
+    ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` look broken while it was working
+    (#227). Here it would mean waiting on, or being satisfied by, some other
+    graph's action server.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
         listing = subprocess.run(
-            ["ros2", "action", "list"], capture_output=True, text=True, check=False
+            ["ros2", "action", "list", "--no-daemon"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
         )
         if "/openral/execute_rskill" in listing.stdout:
             return True
@@ -2000,7 +2015,7 @@ def _run_one_scene(
                 cwd=REPO_ROOT,
                 env=env,
             )
-            if not _wait_for_action_server(proc, timeout_s=600):
+            if not _wait_for_action_server(proc, timeout_s=600, env=env):
                 sys.stderr.write(f"[matrix] {spec.key}: action server never appeared\n")
                 (run_dir / f"{stem}_{LAUNCH_FAILED_MARKER}").write_text(
                     "/openral/execute_rskill never appeared, so no skill was ever "
@@ -2588,6 +2603,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         "safety_overrides_absent": True,
         "collision_scale": collision_scale_env(),
         "gpu_name": gpu_name,
+        # The DDS scope the round ran on. Unrecorded until #227, which is why
+        # no round before 2026-09-05 can be checked for whether it shared a
+        # graph with another machine — the question the 2026-09-04 `post200-2`
+        # fridge round still cannot answer. `deploy sim` confines itself, but
+        # an operator override wins, so it is recorded rather than assumed.
+        "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", ""),
+        "ros_automatic_discovery_range": os.environ.get("ROS_AUTOMATIC_DISCOVERY_RANGE", ""),
         "notes_path": "NOTES.md",
         "seed": args.seed,
         "rskill_id": args.rskill_id,
