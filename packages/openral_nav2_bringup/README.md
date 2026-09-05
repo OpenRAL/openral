@@ -135,6 +135,14 @@ the base actually translates:
 
 Read the last row before the second-to-last one — see the next section.
 
+**Reproduced.** Both scenes were re-run in an independent session before merge.
+The conclusion reproduces and the incidental counts do not, which is what a live
+scene run looks like: **0** `LETHAL` cells inside a 140 / 141-cell silhouette on
+baguette / deliver_straw, in samples carrying 127 / 59 marked cells elsewhere,
+base driven 0.954 / 1.318 m, and the global costmap at max cost `0` on both.
+Recorded because this corpus's standing caveat is that its only two completions
+were never reproduced.
+
 Two limits, so the numbers are not over-read. Sim's
 `synthesize_laser_scan_2d` re-casts through the robot's own MuJoCo kinematic
 tree, so a self-return never enters `/scan` here at all: a clean silhouette on
