@@ -1447,6 +1447,67 @@ Publishing the grid under a wrong `header.frame_id` changes *nothing*, and that
 is correct rather than a gap — `WorldCollision.msg` states the kernel applies no
 TF on the hot path, so the frame id is advisory and the base frame is assumed.
 
+### 2026-09-05 — the colliding half of that pair, at zero margin (#102)
+
+The entry above pins the *clear* side on a real kitchen and is explicit that it
+does not pin the colliding side: layout 30 clears at zero margin on a grid built
+from true surfaces, so its refusal there has to be bought by raising
+`world_voxel_margin_m` to 20 mm. Every other refusal in the file is the
+all-occupied control, which is an artificial grid. **Nothing held that the
+kernel refuses a real kitchen at its shipped standoff for a real reason** —
+which is the other half of #102's third acceptance item, and this is it.
+
+**What it adds.** One more state in the same file, at the same pinned layout 47:
+the arm moved to `panda_joint1 = −76°, panda_joint2 = +4°` — shoulder swung to
+the fridge, elbow raised — and then the same 25 mm grid, the same real
+`safety_kernel_node`, the same zero `CARTESIAN_DELTA` chunk, at
+`world_voxel_margin_m = 0`. 5 tests, 83 s, no GPU.
+
+**Why that pose is genuinely colliding and not envelope conservatism.** The
+depth is certified *before* the kernel is asked, by the shipped
+`estop_ground_truth_snapshot` scoped to the kernel-checked links:
+`panda_link5` is **−145.13 mm** inside
+`fridgesidebyside_main_group_1_fridge_door`, `distance_certified: true`. That is
+mesh↔mesh through `openral_hal.convex_distance`, not `mj_geomDistance` and not
+MuJoCo's contact list — the list is not a penetration oracle on these pairs
+(`contacts_caveat`; the field round saw an arm 30 mm inside a freezer door at
+`ncon == 0`). No corner-slop or quantisation term can manufacture mesh
+interpenetration in the first place: `panda_link5`'s slop is 66.98 mm and the
+cell half-diagonal adds 21.65 mm, and 145 mm is outside their sum regardless.
+The test asserts the certified depth first and the kernel verdict second, so a
+kitchen or kinematics change that moves the arm out of the door fails on the
+measurement rather than passing on a stale verdict.
+
+**How the pose was found, and why the test does not re-find it.** A sweep of
+`panda_joint1 × panda_joint2` over their full ranges at 15°, one certified
+snapshot per configuration (~460), ranked by deepest certified pair. The two
+angles are pinned in the test instead of re-searched: the search was worth
+running once, and re-running it would spend ~460 probes per session to
+rediscover two constants. `panda_joint1` **alone** reaches nothing over its
+whole 332° range from this start pose, which is why the pose needs both.
+
+**One thing the sweep corrected on the way past.** A first cut skipped any
+configuration whose nearest link↔link pair was non-positive, meaning to avoid
+scoring a self-fold as a world stop. That filter rejected everything: the
+nearest link↔link pair reads **−34.3 mm at every configuration, the reset pose
+included**, because adjacent links' collision meshes overlap at the joint by
+construction and the kernel exempts them by adjacency. A mesh-level self overlap
+is not a kernel self-collision, and the pinned start state passing cleanly in
+the entry above is the proof. The verdict under test asserts
+`collision_kind == "world"` directly, which is the claim that actually matters.
+
+**Mutation-checked**, same standard as the entry above: displacing the grid
+origin by 2 m fails the E-stop assertion, so the refusal is this grid's and not
+something the kernel would have produced anyway.
+
+**What it does not do.** It does not reach #102's end-to-end gate, which needs
+the whole deploy graph under a policy and is blocked behind #217. And it is
+still the fridge scene: `robocasa_drawer_utensil` at layout 3 — the census's
+`genuinely_clear`-on-every-link state — remains unpinned. Layout 47 already
+holds the nominal-valid side on a real kitchen, so the second scene would cost
+another compose and grid build for a weaker marginal claim.
+
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts

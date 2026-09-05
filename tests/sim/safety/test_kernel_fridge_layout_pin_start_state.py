@@ -12,6 +12,11 @@ nominal valid pose and a nearby genuinely colliding fixture pose" — with the
 pair the start-state census
 (:doc:`../../../docs/reference/robocasa-start-state-census`) identified.
 
+Three states, all on the real kitchen: the shipped pin at reset, the layout it
+replaced at reset, and — the colliding half of that acceptance item — the
+pinned layout with the arm moved into the fridge, at a depth certified before
+the kernel is asked (see WHAT MAKES THE COLLIDING POSE COLLIDING below).
+
 Real kitchen, real manifest, real kernel binary, no mocks (CLAUDE.md §1.11):
 
 1. RoboCasa composes the scene at a pinned layout, at the scene's own seed, and
@@ -53,6 +58,26 @@ is the kernel's own standoff, so raising it walks a known distance in from the
 surface: at ``0.020 m`` layout 30 trips and layout 47 does not, which is the
 pin's criterion stated as a test rather than as a comment.
 
+WHAT MAKES THE COLLIDING POSE COLLIDING
+---------------------------------------
+Every refusal above is bought with ``world_voxel_margin_m``, and the only
+zero-margin refusal is the all-occupied control — an artificial grid. Neither
+shows the kernel stopping a real kitchen at its shipped standoff for a real
+reason, because on this grid the tighter layout *clears* at zero margin.
+
+``_COLLIDING_POSE_DEG`` is that missing case. It is not a stop the kernel is
+merely conservative about: ``estop_ground_truth_snapshot`` puts ``panda_link5``
+**−145.13 mm** inside ``fridgesidebyside_main_group_1_fridge_door``, certified,
+mesh↔mesh, and the test asserts that depth *before* it asks the kernel
+anything. Corner slop (66.98 mm on that link) and the cell half-diagonal
+(21.65 mm) cannot manufacture mesh interpenetration at any magnitude.
+
+A note for anyone extending the search that found the pose: the nearest
+link↔link pair reads −34.3 mm at *every* configuration including the reset
+pose, because adjacent links' collision meshes overlap at the joint and the
+kernel exempts them by adjacency. Filtering candidates on it rejects
+everything. Assert ``collision_kind == "world"`` instead.
+
 The all-occupied control is not decoration. A grid that never reached the
 kernel, or landed in the wrong frame, would let *every* configuration through
 and every clearance assertion here would pass vacuously — the failure mode #183
@@ -66,6 +91,7 @@ plus MuJoCo and the RoboCasa kitchen backend.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import uuid
@@ -96,7 +122,11 @@ from openral_core import (  # noqa: E402
     VLASpec,
 )
 from openral_hal.depth_cloud import robot_self_body_ids  # noqa: E402
-from openral_hal.sim_sensor_bridge import voxel_backing_record  # noqa: E402
+from openral_hal.sim_sensor_bridge import (  # noqa: E402
+    estop_ground_truth_snapshot,
+    kernel_checked_link_bodies,
+    voxel_backing_record,
+)
 from openral_safety.envelope_loader import (  # noqa: E402
     collision_params_from_description,
     compute_intersection,
@@ -133,6 +163,21 @@ _RAYS_PER_AXIS = 2
 #: up the pedestal (ADR-0095). The kernel zeroes the base DoFs and evaluates the
 #: arm in this frame, so the grid is published in it.
 _BASE_FRAME_BODY = "robot0_link0"
+
+#: The colliding pose, as joint angles this scene's arm can actually reach:
+#: shoulder swung to the fridge and elbow raised. Found by sweeping
+#: ``panda_joint1`` x ``panda_joint2`` on this pinned layout over their full
+#: ranges at 15 deg and taking the deepest certified pair (``panda_link5``,
+#: -145.13 mm, inside ``fridgesidebyside_main_group_1_fridge_door``). Pinned
+#: rather than re-searched: the search was worth running once, and a test that
+#: re-runs it spends ~460 snapshot probes to rediscover two numbers.
+_COLLIDING_POSE_DEG = {"panda_joint1": -76.0, "panda_joint2": 4.0}
+
+#: Certified mesh penetration the pinned pose must still reach. Well inside the
+#: -145 mm measured, and far outside anything an envelope can manufacture:
+#: ``panda_link5``'s corner slop is 66.98 mm and the cell half-diagonal adds
+#: 21.65 mm, but neither term can produce *mesh* interpenetration at all.
+_GENUINE_PENETRATION_M = -0.100
 
 #: A margin that separates the two layouts. Below the retired layout's clearance
 #: on this grid (+19.09 mm) and above nothing else that matters; see the sweep in
@@ -174,7 +219,9 @@ def _compose(layout: int) -> Any:
 class _StartState:
     """One layout's reset configuration plus the occupancy grid around its arm."""
 
-    def __init__(self, layout: int) -> None:
+    def __init__(self, layout: int, *, drive_into_fixture: bool = False) -> None:
+        self.driven_link: str | None = None
+        self.penetration_m: float | None = None
         sim = _compose(layout)
         try:
             env = getattr(sim._env, "unwrapped", sim._env)
@@ -199,11 +246,84 @@ class _StartState:
                 )
                 self.positions.append(float(data.qpos[model.jnt_qposadr[jid]]))
 
+            if drive_into_fixture:
+                self.positions, self.driven_link, self.penetration_m = _pose_in_fixture(
+                    model, data, desc, robot_bodies, self.positions
+                )
+
+            # The grid is rebuilt at whatever configuration this state holds:
+            # its bounds come from where the links actually are, and its
+            # occupancy from world geometry, which the arm does not move.
             self.origin, self.size, self.occupancy, self.occupied = _build_grid(
                 model, data, robot_bodies
             )
         finally:
             sim.close()
+
+
+def _pose_in_fixture(
+    model: Any,
+    data: Any,
+    desc: Any,
+    robot_bodies: frozenset[int],
+    positions: list[float],
+) -> tuple[list[float], str, float]:
+    """Move the arm to :data:`_COLLIDING_POSE_DEG` and certify that it is in the wood.
+
+    The kernel refusals this file otherwise measures are envelope refusals —
+    correct, but at 20-67 mm of corner slop they say nothing about whether any
+    mesh is inside any fixture. This pose is, and the depth is measured before
+    the kernel is asked, by the shipped
+    :func:`~openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` scoped to
+    the kernel-checked links.
+
+    The adjudicator is that probe's certified convex distance and **not**
+    MuJoCo's contact list, which is not a penetration oracle here
+    (``contacts_caveat``: the field round saw an arm 30 mm inside a freezer
+    door at ``ncon == 0``).
+
+    Returns the configuration, the manifest link name of the penetrating side,
+    and its certified depth in metres.
+    """
+    names = [j.name for j in desc.joints]
+    out = list(positions)
+    for joint_name, degrees in _COLLIDING_POSE_DEG.items():
+        joint = next(j for j in desc.joints if j.name == joint_name)
+        jid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint.sim_joint_name or ""))
+        assert jid >= 0, f"{joint_name} maps to {joint.sim_joint_name!r}, absent from this kitchen"
+        low, high = (float(v) for v in model.jnt_range[jid])
+        angle = math.radians(degrees)
+        assert low <= angle <= high, f"{joint_name}={degrees} deg is outside [{low}, {high}]"
+        data.qpos[int(model.jnt_qposadr[jid])] = angle
+        out[names.index(joint_name)] = angle
+    mujoco.mj_forward(model, data)
+
+    body_link = {body: link for link, body in kernel_checked_link_bodies(model, desc).items()}
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=robot_bodies,
+        probe_body_ids=frozenset(body_link),
+        base_frame_body=_BASE_FRAME_BODY,
+        description=desc,
+    )
+    pairs = snapshot["nearest_robot_world_pairs"]
+    assert pairs, "the probe found no robot-vs-world pair at all at the colliding pose"
+    deepest = pairs[0]  # type: ignore[index]  # reason: the probe returns a ranked list
+    assert deepest["distance_certified"], (
+        f"the deepest pair is uncertified ({deepest.get('uncertified_reason')!r}); "
+        f"an uncertified number cannot establish that this pose is genuinely colliding"
+    )
+    depth = float(deepest["distance_m"])
+    assert depth <= _GENUINE_PENETRATION_M, (
+        f"the pinned pose is only {depth * 1000:.2f} mm from {deepest['body_b']!r} — it no "
+        f"longer penetrates the fixture it was chosen for, so re-measure the pose before "
+        f"trusting the verdict below"
+    )
+    body = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, str(deepest["body_a"])))
+    link = body_link.get(body)
+    assert link is not None, f"{deepest['body_a']!r} is outside the kernel-checked set"
+    return out, link, depth
 
 
 def _build_grid(model: Any, data: Any, robot_bodies: frozenset[int]) -> tuple[Any, Any, Any, int]:
@@ -392,6 +512,12 @@ def pinned() -> _StartState:
 
 
 @pytest.fixture(scope="module")
+def colliding() -> _StartState:
+    """The pinned layout, with the arm moved into the fridge it parks in front of."""
+    return _StartState(_PIN_LAYOUT, drive_into_fixture=True)
+
+
+@pytest.fixture(scope="module")
 def retired() -> _StartState:
     """The ``layout_ids: [30]`` start state the pin replaced."""
     return _StartState(_RETIRED_LAYOUT)
@@ -473,3 +599,33 @@ def test_an_all_occupied_grid_is_refused(pinned: _StartState) -> None:
     joints = evidence["joint_positions_rad"]
     assert len(joints) == len(pinned.joint_names)
     assert joints[:3] == [0, 0, 0], f"base DoFs not zeroed: {joints[:3]}"
+
+
+def test_a_genuinely_colliding_pose_is_refused_at_zero_margin(colliding: _StartState) -> None:
+    """The other half of #102's acceptance pair: a pose that is really in the wood.
+
+    Every other refusal in this file is bought with ``world_voxel_margin_m``, and
+    the only zero-margin refusal is the all-occupied control — an artificial
+    grid. Neither shows that the kernel stops a real kitchen at its shipped
+    standoff for a real reason, which is the half the pin test could not reach
+    (the retired layout clears at zero margin on this reconstructed grid).
+
+    Here the depth is independently certified before the kernel is asked, so a
+    pass cannot be envelope conservatism: no corner-slop or quantisation term
+    can manufacture *mesh* interpenetration, and this pose has 145 mm of it.
+    """
+    assert colliding.penetration_m is not None and colliding.driven_link is not None
+    assert colliding.penetration_m <= _GENUINE_PENETRATION_M
+
+    verdict = _kernel_verdict(colliding, margin_m=0.0)
+    assert verdict["estopped"], (
+        f"{colliding.driven_link} is {colliding.penetration_m * 1000:.2f} mm inside solid "
+        f"kitchen geometry and the kernel passed the chunk at zero margin"
+    )
+    evidence = verdict["evidence"]
+    assert evidence is not None and evidence["collision_kind"] == "world"
+    assert evidence["link_a"] == colliding.driven_link, (
+        f"the kernel binds on {evidence['link_a']}, but the certified probe puts "
+        f"{colliding.driven_link} {colliding.penetration_m * 1000:.2f} mm inside the fixture"
+    )
+    assert str(evidence["link_b_or_object"]).startswith("voxel_")
