@@ -8302,6 +8302,17 @@ class ValidationStopEvidence(BaseModel):
         place_allowance_active: Whether the ADR-0097 place-approach allowance
             was applied on the trip itself.
         place_target: Declared place target at the trip, empty when none.
+        depth_is_box_bound: Whether the reported ``min_distance_m`` is the
+            OBB's **bound** rather than a measurement of the geometry the
+            evidence names (#213). Set by the kernel only for a self-collision
+            pair whose two links both ship a stage-2 hull and whose hulls the
+            GJK found overlapping — GJK proves an overlap but does not size
+            one. Sound (the hull is inside its box, so the box can only report
+            more penetration) but loose: -31.97 mm for a ~1.5 mm hull
+            interpenetration on ``panda_link5``/``panda_link7``. An adjudicator
+            must charge the box budget for such a stop, never treat the number
+            as a hull measurement. ``False`` on a snapshot recorded before
+            #213.
         exemption_active: ``True`` when ``sweep_min_distance_m`` is strictly
             deeper than ``min_distance_m`` — a deeper cell was exempted.
             ``None`` when the sweep depth was not reported.
@@ -8329,6 +8340,7 @@ class ValidationStopEvidence(BaseModel):
     sweep_min_distance_m: float | None = None
     place_allowance_active: bool = False
     place_target: str = ""
+    depth_is_box_bound: bool = False
 
     @property
     def exemption_active(self) -> bool | None:

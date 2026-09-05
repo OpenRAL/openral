@@ -279,6 +279,7 @@ def parse_kernel_collision(lines: Iterable[str]) -> ValidationStopEvidence | Non
             min_distance_m=float(fields["min_distance_m"]),
             sweep_min_distance_m=None if sweep is None else float(sweep),
             place_allowance_active=fields.get("place_allowance_active") == "1",
+            depth_is_box_bound=fields.get("depth_is_box_bound") == "1",
             place_target=fields.get("place_target", ""),
         )
     return None
@@ -616,6 +617,19 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
         self_block = budget.get("self_collision")
         if isinstance(self_block, dict):
             return _as_float(self_block.get("admissible_gap_m"))
+    if stop.kind == "self" and not stop.involves_payload:
+        # Link vs link (#216). Two OBBs, no voxel and no payload — or, since
+        # #202, two exact HULLS. Which one the kernel used is stated by the
+        # kernel rather than guessed: `depth_is_box_bound` (#213) means the
+        # reported depth is the OBB's bound, so the box term applies. Without
+        # it the pair was judged at hull fidelity, and the hull's own overhang
+        # past the mesh is measured nowhere — there is no budget to return, and
+        # the caller must leave such a stop unadjudicated rather than charge it
+        # a box budget it did not earn.
+        link_block = budget.get("link_link")
+        if isinstance(link_block, dict) and stop.depth_is_box_bound:
+            return _as_float(link_block.get("admissible_gap_box_m"))
+        return None
     return _as_float(budget.get("admissible_gap_m"))
 
 
@@ -719,7 +733,8 @@ def adjudicate_ground_truth(
     robot_pairs = list(snapshot.get("nearest_robot_world_pairs") or [])
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
     payload_robot = list(snapshot.get("nearest_payload_robot_pairs") or [])
-    all_pairs = robot_pairs + payload_world + payload_robot
+    link_link = list(snapshot.get("nearest_link_link_pairs") or [])
+    all_pairs = robot_pairs + payload_world + payload_robot + link_link
 
     nearest_any = min((p["distance_m"] for p in all_pairs), default=None)
     nearest_pair = min(all_pairs, key=lambda p: p["distance_m"], default=None)
@@ -731,13 +746,31 @@ def adjudicate_ground_truth(
     # `party_a`'s world clearance here answers a different question than the
     # kernel asked and quotes it under the self-pair's identity — which is how
     # `panda_link5`/`panda_link7` at -31.97 mm was scored `false-positive` off
-    # link5's 212 mm clearance to a kitchen island. Treat the pair as unprobed.
-    self_pair_unprobed = stop.kind == "self" and not stop.involves_payload
+    # link5's 212 mm clearance to a kitchen island.
+    #
+    # #216 gave the HAL a link<->link probe, so a snapshot that carries one can
+    # answer the question after all. A stop the kernel judged at HULL fidelity
+    # still cannot be scored — `hal_admissible_gap_m` returns no budget for it,
+    # because the hull's overhang past the mesh is measured nowhere — but it is
+    # the missing *budget* that stops it, not a missing pair, and the two are
+    # worth keeping distinct in the reason.
+    self_pair = stop.kind == "self" and not stop.involves_payload
+    self_pair_unprobed = self_pair and not link_link
 
     if stop.involves_payload:
         party_pairs = payload_world
     elif self_pair_unprobed:
         party_pairs = []
+    elif self_pair:
+        # Both parties are links, so either side of the probed pair may be the
+        # one the kernel named; match on both.
+        subject = _kernel_party_to_mujoco(stop.party_a)
+        partner = _kernel_party_to_mujoco(stop.party_b)
+        party_pairs = [
+            p
+            for p in link_link
+            if {str(p.get("body_a")), str(p.get("body_b"))} == {subject, partner}
+        ]
     else:
         subject = _kernel_party_to_mujoco(stop.party_a)
         party_pairs = [p for p in robot_pairs if str(p.get("body_a")) == subject]
@@ -745,11 +778,16 @@ def adjudicate_ground_truth(
 
     quantization = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
     hal_gap = hal_admissible_gap_m(snapshot, stop)
-    budget = hal_gap if hal_gap is not None else quantization
+    # The grid-quantization fallback is a VOXEL term, and a link-vs-link self
+    # stop has no voxel on either side. Falling back to it there would charge a
+    # budget from a comparison the stop never made — the same class of error as
+    # scoring the pair against world geometry (#208). No HAL budget means no
+    # budget.
+    budget = hal_gap if hal_gap is not None else (None if self_pair else quantization)
     budget_source = ""
     if hal_gap is not None:
         budget_source = "hal-adjudication-budget"
-    elif quantization is not None:
+    elif budget is not None:
         budget_source = "grid-quantization"
 
     lower_bound = nearest_party
@@ -777,9 +815,6 @@ def adjudicate_ground_truth(
     elif truncated:
         verdict = "unadjudicated"
         reason = "the near-miss probe hit its call budget, so an absent pair proves nothing"
-    elif budget is None:
-        verdict = "unadjudicated"
-        reason = _no_budget_reason(monitor_records)
     elif self_pair_unprobed:
         verdict = "unadjudicated"
         reason = (
@@ -789,6 +824,23 @@ def adjudicate_ground_truth(
             "clearance is unknown. The link's clearance to the WORLD answers a "
             "different question and is not quoted here"
         )
+    elif self_pair and budget is None:
+        # The pair WAS probed (#216) — what is missing is a term to judge it by.
+        # Both links ship stage-2 hulls and the kernel did not flag
+        # `depth_is_box_bound`, so it judged them at hull fidelity, and the
+        # hull's own overhang past the source mesh is measured nowhere. Charging
+        # the box budget here would forgive a real overlap by up to twice the
+        # OBB corner slop.
+        verdict = "unadjudicated"
+        reason = (
+            f"the kernel judged the self-pair {stop.party_a!r}/{stop.party_b!r} at hull "
+            "fidelity (depth_is_box_bound is not set), and no admissible gap is "
+            "published for a hull-to-mesh comparison — the hull's overhang past its "
+            "source mesh is not measured anywhere. See openral#215"
+        )
+    elif budget is None:
+        verdict = "unadjudicated"
+        reason = _no_budget_reason(monitor_records)
     elif discrepancy is None:
         verdict = "unadjudicated"
         reason = (

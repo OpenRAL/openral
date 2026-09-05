@@ -455,6 +455,7 @@ def _nearest_pair_records(
     side: frozenset[int],
     other_excluded: frozenset[int] = frozenset(),
     other_included: frozenset[int] | None = None,
+    within_side: bool = False,
     distmax_m: float,
     max_pairs: int,
     max_calls: int = _NEAREST_PROBE_MAX_CALLS,
@@ -574,13 +575,17 @@ def _nearest_pair_records(
     side_geoms = np.flatnonzero(in_side & collidable)
     coverage["noncollidable_side_geoms_excluded"] = int(np.count_nonzero(in_side & ~collidable))
     if other_included is not None:
-        in_other = (
-            np.isin(
-                body_of_geom,
-                np.fromiter(other_included, dtype=np.int64, count=len(other_included)),
-            )
-            & ~in_side
+        in_other = np.isin(
+            body_of_geom,
+            np.fromiter(other_included, dtype=np.int64, count=len(other_included)),
         )
+        # The two sides are normally disjoint (payload vs robot link), and
+        # subtracting `side` keeps a body appearing in both from being measured
+        # against itself. `within_side` is the case where the other side IS the
+        # side (link vs link), where that subtraction would empty it outright —
+        # the same-body and mirror masks below do that job instead.
+        if not within_side:
+            in_other = in_other & ~in_side
     else:
         excluded = np.isin(
             body_of_geom,
@@ -596,6 +601,22 @@ def _nearest_pair_records(
     if side_geoms.size == 0 or other_geoms.size == 0:
         return [], coverage
     gap = _pair_distance_lower_bound(model, data, side_geoms, other_geoms)
+    if within_side:
+        # Probing a set against ITSELF (link<->link). Two pair classes have to
+        # go before the budget is spent on them, and both are +inf rather than
+        # post-filtered so they never consume an exact call:
+        #
+        # 1. Same body. A link's own geoms touch by construction; the kernel
+        #    skips them (`lb == lb2`) and a 0 m self-pair would sort straight to
+        #    the top of the report and bury the pair that actually stopped.
+        # 2. The mirror. With one set on both sides every pair appears twice,
+        #    (a, b) and (b, a), which would double the records and halve the
+        #    effective `max_pairs`. Keeping the lower geom id is arbitrary but
+        #    total, so exactly one of each survives.
+        side_bodies = body_of_geom[side_geoms][:, None]
+        other_bodies = body_of_geom[other_geoms][None, :]
+        mirrored = side_geoms[:, None] >= other_geoms[None, :]
+        gap = np.where((side_bodies == other_bodies) | mirrored, np.inf, gap)
     candidates, n_candidates = _round_robin_candidates(gap, distmax_m, max_calls)
     coverage["candidate_pairs"] = n_candidates
     coverage["probed_pairs"] = int(candidates.shape[0])
@@ -1571,6 +1592,22 @@ def estop_ground_truth_snapshot(
             max_pairs=max_pairs,
             max_calls=max_calls,
         )
+    # Link<->link self-pairs: the kernel's own `check_self_collision`. Until
+    # #216 this probe did not exist, and the whole robot being excluded from
+    # every other probe's far side made such a pair STRUCTURALLY impossible to
+    # emit — so a `kind=self` stop naming two bare links had no ground truth at
+    # all, and the harness scored it against world geometry instead (#208).
+    # Unconditional: unlike the payload probes this needs nothing carried.
+    link_link_pairs, link_link_coverage = _nearest_pair_records(
+        model,
+        data,
+        side=probe_robot,
+        other_included=probe_robot,
+        within_side=True,
+        distmax_m=distmax_m,
+        max_pairs=max_pairs,
+        max_calls=max_calls,
+    )
     voxel_backing: dict[str, object] | None = None
     if isinstance(evidence_voxel, dict) and evidence_voxel.get("index") is not None:
         voxel_backing = voxel_backing_record(
@@ -1608,6 +1645,8 @@ def estop_ground_truth_snapshot(
         "nearest_payload_world_coverage": payload_world_coverage,
         "nearest_payload_robot_pairs": payload_robot_pairs,
         "nearest_payload_robot_coverage": payload_robot_coverage,
+        "nearest_link_link_pairs": link_link_pairs,
+        "nearest_link_link_coverage": link_link_coverage,
         # The budget every kernel-vs-probe comparison needs, carried with the
         # verdict so no future round has to reconstruct it.
         "adjudication_budget": {
@@ -1639,6 +1678,35 @@ def estop_ground_truth_snapshot(
                 "payload_slop": payload_slop or None,
             }
             if attached_bodies
+            else None,
+            # The link<->link half (#216). Distinct again: no voxel, no
+            # payload, and since #202 the kernel may have judged the pair at
+            # HULL fidelity rather than box, which needs a different term.
+            "link_link": {
+                "rule": (
+                    "a link-vs-link self stop (collision_kind 'self', both "
+                    "parties bare links) is checked OBB-to-OBB, or -- when both "
+                    "links ship stage-2 tight geometry (#191/#202) -- exact "
+                    "hull to exact hull. Neither has a voxel. Against a "
+                    "mesh-to-mesh probe the admissible gap is "
+                    "corner_slop(link_a) + corner_slop(link_b) for the BOX "
+                    "case; per-link slop is in collision_model_slop.links. "
+                    "The HULL case has no term here: the hull's own overhang "
+                    "past the mesh is not measured anywhere, so such a stop is "
+                    "not adjudicable and must stay unadjudicated. Which case "
+                    "applies is stated by the kernel, not inferred -- "
+                    "`safety.collision depth_is_box_bound=1` (#213) means the "
+                    "reported depth is the OBB's bound and the box term "
+                    "applies."
+                ),
+                "max_corner_slop_m": slop.get("max_corner_slop_m"),
+                # Both sides are links, so the worst case charges the max twice.
+                # A consumer with both link names in hand should prefer the
+                # per-link entries in `collision_model_slop.links`.
+                "admissible_gap_box_m": round(2.0 * float(max_slop or 0.0), 6),
+                "admissible_gap_hull_m": None,
+            }
+            if slop
             else None,
         },
         "evidence_voxel_backing": voxel_backing,

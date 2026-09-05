@@ -41,6 +41,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from openral_core import ValidationStopEvidence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures" / "validation_matrix"
@@ -1264,3 +1265,147 @@ def test_a_link_vs_link_self_stop_is_not_scored_against_world_geometry() -> None
     # party's, nor turned into a discrepancy against a self-collision depth.
     assert adjudication.nearest_tripping_party_m is None
     assert adjudication.discrepancy_m is None
+
+
+# ── #216: a link-vs-link self stop, now that the HAL probes the pair ──────────
+#
+# #208 stopped the harness scoring such a stop against WORLD geometry. It did
+# not make it scorable: the pair was structurally unprobeable. #216 adds the
+# link<->link probe, and these pin what the harness may now conclude from it —
+# and, just as importantly, what it still may not.
+
+
+def _link_link_snapshot(
+    *,
+    pair_distance_m: float,
+    max_corner_slop_m: float = 0.0862,
+) -> dict[str, object]:
+    """A snapshot carrying a link<->link pair, in the shape the HAL emits."""
+    return {
+        "nearest_robot_world_pairs": [
+            {
+                "body_a": "robot0_link5",
+                "body_b": "island_island_group_main",
+                "distance_m": 0.212256613,
+                "distance_certified": True,
+                "distance_method": "gjk",
+            }
+        ],
+        "nearest_probe_coverage": {
+            "truncated": False,
+            "probed_pairs": 12,
+            "certified_pairs": 12,
+            "uncertified_pairs": 0,
+            "noncollidable_side_geoms_excluded": 3,
+            "noncollidable_other_geoms_excluded": 7,
+            "distmax_m": 0.2,
+        },
+        "nearest_link_link_pairs": [
+            {
+                "body_a": "robot0_link5",
+                "body_b": "robot0_link7",
+                "distance_m": pair_distance_m,
+                "distance_certified": True,
+                "distance_method": "gjk",
+            }
+        ],
+        "nearest_link_link_coverage": {
+            "truncated": False,
+            "probed_pairs": 4,
+            "certified_pairs": 4,
+            "uncertified_pairs": 0,
+            "noncollidable_side_geoms_excluded": 1,
+            "noncollidable_other_geoms_excluded": 1,
+            "distmax_m": 0.2,
+        },
+        "adjudication_budget": {
+            "max_corner_slop_m": max_corner_slop_m,
+            "admissible_gap_m": 0.08822,
+            "link_link": {
+                "max_corner_slop_m": max_corner_slop_m,
+                "admissible_gap_box_m": round(2.0 * max_corner_slop_m, 6),
+                "admissible_gap_hull_m": None,
+            },
+        },
+    }
+
+
+def _link_link_stop(*, depth_is_box_bound: bool) -> ValidationStopEvidence:
+    return ValidationStopEvidence(
+        kind="self",
+        party_a="panda_link5",
+        party_b="panda_link7",
+        horizon_step=0,
+        min_distance_m=-0.0319657,
+        sweep_min_distance_m=-0.0319657,
+        depth_is_box_bound=depth_is_box_bound,
+    )
+
+
+def test_a_box_bounded_self_stop_is_adjudicated_against_the_link_link_pair() -> None:
+    """The 2026-09-04 stop, scorable at last — and it was a real contact.
+
+    The kernel flagged `depth_is_box_bound`, so its -31.97 mm is the OBB's bound
+    and the box term applies. The probe puts the two links in contact. That is
+    the answer #208 could only decline to give.
+    """
+    snapshot = _link_link_snapshot(pair_distance_m=-0.0015)
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=True), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "real-contact"
+    # And the number quoted is the SELF pair's, never link5's 212 mm to the island.
+    assert adjudication.nearest_tripping_party_m == pytest.approx(-0.0015)
+
+
+def test_a_hull_adjudicated_self_stop_stays_unadjudicated_for_want_of_a_budget() -> None:
+    """Probed, but not scorable — and the reason says which of the two it is.
+
+    Without `depth_is_box_bound` the kernel judged the pair at hull fidelity, and
+    no admissible gap exists for a hull-to-mesh comparison: the hull's overhang
+    past its source mesh is measured nowhere (openral#215). Charging the box
+    budget anyway would forgive a real overlap by up to twice the corner slop,
+    which on `panda_mobile` is 172 mm.
+    """
+    snapshot = _link_link_snapshot(pair_distance_m=0.004)
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=False), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated"
+    assert "hull fidelity" in adjudication.unadjudicated_reason
+    assert adjudication.admissible_gap_m is None
+
+
+def test_a_link_vs_link_stop_never_falls_back_to_the_voxel_budget() -> None:
+    """The grid-quantization term is a VOXEL budget, and this stop has no voxel.
+
+    Falling back to it would charge a budget from a comparison the stop never
+    made — the same class of error as scoring the pair against world geometry.
+    A grid resolution is passed here precisely so the fallback would fire if it
+    were still reachable.
+    """
+    snapshot = _link_link_snapshot(pair_distance_m=0.004)
+    del snapshot["adjudication_budget"]
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=True), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated"
+    assert adjudication.budget_source != "grid-quantization"
+    assert adjudication.admissible_gap_m is None
+
+
+def test_an_old_snapshot_without_the_link_link_probe_still_says_unprobed() -> None:
+    """The #208 behaviour has to survive for every round recorded before #216."""
+    snapshot = _link_link_snapshot(pair_distance_m=-0.0015)
+    del snapshot["nearest_link_link_pairs"]
+    del snapshot["nearest_link_link_coverage"]
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=True), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated"
+    assert "never measures one robot link against another" in adjudication.unadjudicated_reason
+    assert adjudication.nearest_tripping_party_m is None
