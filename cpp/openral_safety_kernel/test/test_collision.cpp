@@ -5247,3 +5247,110 @@ TEST(ContactForceGate, TheDeepestOverrunIsTheOneReported) {
   EXPECT_EQ(tripped.object_index, 1);
   EXPECT_DOUBLE_EQ(tripped.magnitude_n, 88.0);
 }
+
+// ── The hull check says when it did not measure the depth ─────────────────────
+//
+// GJK proves an overlap but does not size it; penetration depth needs an
+// expanding-polytope step this kernel does not run. So on the overlapping
+// branch `hull_hull_distance` falls back to `box_box_distance` — sound, since
+// the hull is contained in its box and the box can only report MORE
+// penetration, but far looser than the truth. Publishing that under the
+// identity of a check that exists *because* the box cannot be trusted for the
+// pair is what `depth_is_box_bound` closes. Disclosure, never a gate.
+
+TEST(SelfCollisionHull, AnOverlappingPairSaysItsDepthIsTheBoxBound) {
+  std::vector<osk::Vec3> verts;
+  const osk::Vec3 plate{0.01, 0.04, 0.04};
+  const osk::LinkHull a = axis_aligned_box_hull(plate, verts);
+  const osk::LinkHull b = axis_aligned_box_hull(plate, verts);
+
+  int overlapping = 0;
+  int separated = 0;
+  for (int i = 0; i < 200; ++i) {
+    const osk::Transform xf_a = identity();
+    osk::Transform xf_b = rotated_pose(i);
+    xf_b.t.x += 0.02 + 0.0006 * i;  // deep overlap out to well clear
+    osk::TightPose pose_a;
+    osk::TightPose pose_b;
+    osk::tight_pose_init(a, verts.data(), xf_a, 0.0, pose_a);
+    osk::tight_pose_init(b, verts.data(), xf_b, 0.0, pose_b);
+    const double sat = osk::box_box_distance(xf_a, plate, xf_b, plate);
+
+    bool depth_is_box_bound = true;  // seeded wrong on purpose: the call must set it
+    const double got = osk::hull_hull_distance(pose_a, pose_b, 0.0, sat, &depth_is_box_bound);
+
+    if (depth_is_box_bound) {
+      ++overlapping;
+      // The flag means exactly one thing: this number came from the box, not
+      // from the hulls. Anything else would make it a second, weaker gate.
+      EXPECT_DOUBLE_EQ(got, sat) << "pose " << i << ": flagged, so it must BE the bound";
+      EXPECT_LE(got, 0.0) << "pose " << i << ": the branch is reached only on overlap";
+    } else {
+      ++separated;
+      // Not flagged: the hulls were separated and the answer is the measurement
+      // the refinement exists to produce — at or above the box's bound.
+      EXPECT_GE(got, sat - 1e-12) << "pose " << i;
+    }
+  }
+  EXPECT_GT(overlapping, 0) << "the sweep must exercise the overlapping branch";
+  EXPECT_GT(separated, 0) << "and the separated one";
+}
+
+TEST(SelfCollisionHull, TheFlagIsClearedWhenNoHullRefinementHappened) {
+  // A pair that never reaches the GJK — one side stage-1 only — must not
+  // inherit a stale `true`, or a plain box verdict would advertise itself as a
+  // hull measurement that fell back. Fail-toward-honest: unset means "this is
+  // the ordinary box path", which is what it is.
+  std::vector<osk::Vec3> verts;
+  const osk::Vec3 plate{0.01, 0.04, 0.04};
+  const osk::LinkHull a = axis_aligned_box_hull(plate, verts);
+  osk::LinkHull stage_one_only = a;
+  stage_one_only.vertex_count = 0;  // DOP only: no stage-2 hull
+
+  osk::Transform xf_b = identity();
+  xf_b.t.x += 0.005;  // boxes overlap
+  osk::TightPose pose_a;
+  osk::TightPose pose_b;
+  osk::tight_pose_init(a, verts.data(), identity(), 0.0, pose_a);
+  osk::tight_pose_init(stage_one_only, verts.data(), xf_b, 0.0, pose_b);
+  const double sat = osk::box_box_distance(identity(), plate, xf_b, plate);
+
+  bool depth_is_box_bound = true;  // seeded wrong on purpose
+  const double got = osk::hull_hull_distance(pose_a, pose_b, 0.0, sat, &depth_is_box_bound);
+  EXPECT_FALSE(depth_is_box_bound);
+  EXPECT_DOUBLE_EQ(got, sat);
+}
+
+TEST(SelfCollisionHull, TheReportedHitCarriesTheDisclosure) {
+  // End to end through `check_self_collision`, because the flag is only worth
+  // anything if it survives onto the CollisionHit an operator actually reads.
+  //
+  // `interleaving_plates_model` puts its two plates in disjoint y bands on
+  // purpose — that is the case where the hulls clear a pair the boxes cannot.
+  // Here the opposite is wanted, so link 1 is given link 0's plate: same band,
+  // 5 mm apart along x, half-extent 0.10, i.e. hulls that genuinely overlap.
+  std::vector<osk::Vec3> verts;
+  osk::CollisionModel m = interleaving_plates_model(translate(0.005, 0.0, 0.0), true, verts);
+  m.hulls[1] = m.hulls[0];
+
+  osk::CollisionScratch s;
+  s.link_world.resize(2);
+  osk::forward_kinematics(m, nullptr, 0, s);
+
+  const auto hit = osk::check_self_collision(m, s, 0.0);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_TRUE(hit.depth_is_box_bound)
+      << "the hulls overlap, so the published depth is the box's bound and must say so";
+  EXPECT_LE(hit.min_distance, 0.0);
+
+  // And the ordinary interleaving case — hulls that genuinely clear — must not
+  // set it, or the flag would just mean "this pair has hulls".
+  std::vector<osk::Vec3> clear_verts;
+  const osk::CollisionModel clear =
+      interleaving_plates_model(translate(0.19, 0.0, 0.0), true, clear_verts);
+  osk::CollisionScratch cs;
+  cs.link_world.resize(2);
+  osk::forward_kinematics(clear, nullptr, 0, cs);
+  const auto clear_hit = osk::check_self_collision(clear, cs, 0.0);
+  EXPECT_FALSE(clear_hit.depth_is_box_bound);
+}

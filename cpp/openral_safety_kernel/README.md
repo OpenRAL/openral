@@ -974,6 +974,42 @@ case, and the standing real-HAL caveat:
 [`docs/reference/collision-hull-narrow-phase.md`](../../docs/reference/collision-hull-narrow-phase.md)
 (§9 for the self-collision half).
 
+## The hull check reports when it did not measure the depth
+
+`hull_hull_distance` runs GJK on the Minkowski difference. GJK **proves** an
+overlap — the simplex contains the origin — but it does not size one; that needs
+an expanding-polytope step this kernel does not run. On that branch the OBB's
+`box_box_distance` stands as the reported number.
+
+That is **sound**: the hull is contained in its box, so the box can only ever
+report *more* penetration than the truth, never less. It can also be very loose.
+On the `panda_link5` ↔ `panda_link7` pair at the 2026-09-04 battery's tripping
+configuration it reads **−31.97 mm for a ~1.5 mm hull interpenetration**, a 20×
+overstatement — published under the identity of a check that exists *because*
+#191/#202 established the box cannot be trusted for that pair.
+
+`CollisionHit::depth_is_box_bound` closes that. It is set only for a
+self-collision pair whose two links both ship a stage-2 hull and whose hulls the
+GJK found overlapping, and it means exactly one thing: **the reported
+`min_distance` is the box's bound, not a measurement of the geometry the
+evidence names.**
+
+* **Disclosure, never a gate.** The trip decision is unaffected — both numbers
+  are ≤ 0 and the pair trips either way — exactly like `place_allowance_active`
+  and `place_target_adjudicated`. Nothing branches on it.
+* **It does not mean "this pair has hulls."** A pair whose hulls genuinely clear
+  reports the measurement and leaves the flag unset
+  (`…TheReportedHitCarriesTheDisclosure`), and a pair with a stage-1-only link
+  never reached the GJK at all (`…TheFlagIsClearedWhenNoHullRefinementHappened`).
+* **Who needs it.** An adjudicator differencing this number against a mesh-level
+  probe. `tools/validation_matrix.py` scores a link-vs-link self stop
+  `unadjudicated` today; when it gains a real self-pair budget, this flag is what
+  tells it the kernel's depth is a bound rather than a measurement.
+
+The honest fix for the *number* is an expanding-polytope step. That is a new
+numerical routine on an allocation-free real-time path and is deliberately not
+bundled here — see hazard-log Entry 025's open item.
+
 ## Real-time guarantees
 
 - Validator (`validate()` in `src/validator.cpp`) is allocation-free.
