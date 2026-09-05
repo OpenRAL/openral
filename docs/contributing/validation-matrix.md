@@ -321,6 +321,42 @@ the two is itself a finding. `place_allowance_active` is transcribed from the
 trip line, and the count of `place_allowance_active=1` disclosures anywhere in
 the run is recorded separately.
 
+### Adjudicating a payload-vs-link self stop
+
+A stop whose payload side is the *carried object* and whose other side is a
+**robot link** — `a=attached:sim:obj_main b=panda_link1`, `kind=self` — is not a
+world stop, and until #228 it was scored as one. `involves_payload` was true, so
+the rule took `nearest_payload_world_pairs` and compared the kernel's −1.55 mm
+against the payload's **166 mm clearance to a countertop**: a 167 mm discrepancy
+against the world budget, verdict `false-positive`, for a pair the world probe
+never measured. That is #208 one class over.
+
+The difference from #208 is that no new probe was needed. The snapshot already
+carried `nearest_payload_robot_pairs` — `obj_main`↔`robot0_link1`, certified GJK,
+**+65.5 mm** — and `all_pairs` already summed it in. Only the pair *selection*
+ignored it.
+
+The rule now branches on **who the other side is**, not on `involves_payload`
+alone:
+
+| other side | pair set | coverage block | budget |
+| --- | --- | --- | --- |
+| `voxel_*` or `place:*` | `nearest_payload_world_pairs` | `nearest_payload_world_coverage` | `admissible_gap_m` |
+| a robot link | `nearest_payload_robot_pairs` | `nearest_payload_robot_coverage` | `self_collision.admissible_gap_m` |
+
+The coverage block moves with the pair set for the same reason the pairs do: an
+untruncated *robot-world* probe must not be allowed to assert "nothing within
+`distmax`" about a *payload-robot* probe that was never consulted. Absence of
+the right pair set is a missing instrument, not evidence — such a stop is
+`unadjudicated`, never scored off whichever pairs happen to be present.
+
+**What this changed on real rounds.** The three payload-vs-`panda_link1` stops in
+the 2026-09-05 #204 A/B re-derive from `false-positive` to
+`within-quantization`: 65.5 mm of true clearance against a −1.55 mm reported
+depth is a 67 mm discrepancy, and the attached-payload self budget is
+**124.6 mm** (88.2 mm link corner slop + 36.3 mm payload corner slop). The kernel
+was being conservative and correct; the old rule called it a defect.
+
 ### Adjudicating a link-vs-link self stop
 
 A stop naming two bare robot links is a different comparison from every other

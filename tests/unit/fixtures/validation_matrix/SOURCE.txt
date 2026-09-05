@@ -186,3 +186,17 @@ Reproduce (needs the run store, which is not public):
 
 Consumed by:
     tests/unit/test_validation_matrix.py
+
+    spark:/home/allopart/workspace/openral-217-with204/outputs/validation-matrix/
+        2026-09-05-217-with204-1/baguette/
+
+The 2026-09-05 round is the #204 A/B's first `with204` round (stack tip
+1ebe71a9391201de2fb4391459d4f4f2ff0bc7c7 plus the state-adapter guard
+cherry-picked, `ROS_AUTOMATIC_DISCOVERY_RANGE` unset, `ROS_DOMAIN_ID=77`,
+GB10). It is kept for one reason: the kernel stopped on the CARRIED PAYLOAD
+against a robot LINK (`a=attached:sim:obj_main b=panda_link1`, kind=self,
+-1.55 mm), and its snapshot carries `nearest_payload_robot_pairs` with that
+exact pair certified at +65.5 mm alongside a `self_collision` budget of
+124.6 mm. That is the payload-vs-link shape #228 is about: the adjudicator
+scored it against the payload's nearest WORLD body instead. Same two-line
+excerpt convention as the 2026-09-04 fixture.

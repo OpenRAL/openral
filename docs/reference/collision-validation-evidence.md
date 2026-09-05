@@ -1285,6 +1285,34 @@ column: those two re-derive as `unadjudicated`. Fix and the full replay are on
 "sits inside the false population" was also wrong — it lies between the two
 populations, in neither.
 
+**Correction (2026-09-05): the one `deadline-no-grasp` in the A-off arm was not
+a deadline.** `post200-2`'s fridge scene carries
+`dispatch_failure_reason = ConnectivityException: Could not find a connection
+between 'base_link' and 'panda_hand_tcp' … Tf has two or more unconnected
+trees` — the state assembler threw on the **first** policy step and the runner's
+catch-all relabelled the crash as a deadline. The policy never ran on that
+scene. **The success counts above are unaffected** (that scene was not a success
+either way), but one of the twenty A-off runs never dispatched a policy, so the
+stop-class denominators in this entry are 17 rather than 18 for any question
+about what the policy did.
+
+*Why* that first step threw is **not established.** The same first-step crash
+was hit on `spark` the next day with a different face — `KeyError:
+'panda_gripper'`, zero completed steps — and there the cause was found and it
+was not a race: `ROS_DOMAIN_ID` is unset in the deploy path, the sim joined DDS
+domain 0, and multicast discovery reached a live bimanual OpenArm on another
+host. `/joint_states` had two publishers, and the frame the assembler read
+carried `openarm_*` joints. That mechanism (#227) would produce this laptop
+error too — a second `robot_state_publisher` contributing its own `base_link`
+is exactly what "two or more unconnected trees" describes — but the
+`post200-2` log names no foreign joints and the round's DDS scope was never
+recorded, so for this instance it remains an inference. What shipped from it:
+`assemble_state` now raises a typed `ROSConfigError` naming what the robot
+*does* publish (which is how the OpenArm was identified) or
+`ROSPerceptionStale` for an empty frame, instead of a bare `KeyError`; a
+readiness wait that was written on the "race" reading was **removed** after
+ten clean rounds showed it never fired.
+
 **What this round does NOT establish, and one thing it takes back.** Task
 success was **5/20** on 2026-08-26 and is **1/20** here in both arms. Neither
 path predicts that and neither arm explains it; the commits differ by far more

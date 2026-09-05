@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from openral_core import ROSConfigError, StateLayout
+from openral_core import ROSConfigError, ROSPerceptionStale, StateLayout
 
 from openral_state_adapter._protocol import Assembler
 
@@ -58,11 +58,22 @@ def assemble_state(
 ) -> NDArray[float32]:
     """Look up the assembler for ``layout`` and run it.
 
+    Every layout assembler indexes ``joint_positions`` by the names the
+    manifest bound, so the presence check belongs here rather than in each
+    layout: one guard covers every registered layout, including ones added
+    later.
+
     Raises:
         ROSConfigError: When no assembler is registered for ``layout`` —
             the skill_runner should pre-check via
             :func:`registered_layouts` so the dispatch failure becomes
-            a palette-time drop instead of a 5 Hz runtime error.
+            a palette-time drop instead of a 5 Hz runtime error. Also when
+            the robot is publishing joints but not the bound ones, which no
+            amount of waiting will fix.
+        ROSPerceptionStale: When no joint frame has arrived at all. Kept
+            distinct from the config error above because an empty frame says
+            nothing about the manifest, whereas a populated frame that lacks
+            the bound joint does.
     """
     assembler = _LAYOUT_ASSEMBLERS.get(layout)
     if assembler is None:
@@ -72,5 +83,27 @@ def assemble_state(
             f"{sorted(_LAYOUT_ASSEMBLERS.keys())!r}. "
             f"Register one in python/state_adapter/src/openral_state_adapter/"
             f"layouts/<layout>.py, or drop the rSkill from the palette.",
+        )
+    missing = [name for name in bindings.gripper_qpos_joints if name not in joint_positions]
+    if missing:
+        # Two different faults, and the message has to tell them apart because
+        # the second is the one that actually happened (2026-09-05): a sim on
+        # DDS domain 0 discovered a LIVE OpenArm on another machine, and the
+        # populated frame it read carried `openarm_*` joints instead of
+        # `panda_*`. A bare KeyError from inside a layout said nothing; naming
+        # what the robot DOES publish is what identified the foreign robot.
+        if not joint_positions:
+            raise ROSPerceptionStale(
+                f"openral_state_adapter: no joint state has arrived yet, so "
+                f"state_contract.layout={layout!r} cannot be assembled "
+                f"(needs {sorted(missing)!r}).",
+            )
+        raise ROSConfigError(
+            f"openral_state_adapter: state_contract.layout={layout!r} binds "
+            f"gripper_qpos_joints={sorted(missing)!r}, which the robot does not "
+            f"publish. It publishes {sorted(joint_positions)!r}. Either the "
+            f"manifest's bindings are wrong for this robot, or these joints "
+            f"belong to ANOTHER robot sharing the DDS graph — check "
+            f"`ros2 topic info /joint_states --no-daemon` for a second publisher.",
         )
     return assembler(bindings, joint_positions, tf_lookup)
