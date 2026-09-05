@@ -1023,6 +1023,18 @@ bundled here — see hazard-log Entry 025's open item.
 
 ## Testing & verification
 
+**The lifecycle tests isolate their own DDS process** (#222). `LifecycleKernelTest::SetUp`
+sets `ROS_AUTOMATIC_DISCOVERY_RANGE=OFF` before `rclcpp::init`, so no participant
+outside the test process — another test run, a second worktree, a live
+`openral deploy sim` — can reach the nodes under test. This is not hygiene: the
+kernel subscribes to `/openral/estop`, a global topic, and a concurrent sim on
+the default domain asserted an E-stop that latched the node under test and failed
+`StateUnavailableDropAndRecoveryPublishSafetyStatus` with a
+`DROP_EXTERNAL_ESTOP` the test never sent (19/20 on the shared domain with that
+sim live; 20/20 with discovery off). The fixture overwrites a caller's value on
+purpose. Debugging a test with external tools needs the opposite setting; do it
+locally, never by weakening the fixture.
+
 Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
 
 - **C++ unit** (`just safety-kernel-test`) — `test_validator.cpp`,
