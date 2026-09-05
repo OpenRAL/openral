@@ -32,6 +32,7 @@ constructed input is the ``WorldStateStamped`` carrying the attachment.
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -423,6 +424,12 @@ _OBSTACLE_AT_SAME_BEARING_M = 0.60
 #: this a *control* rather than a blackout.
 _UNRESOLVABLE_BASE_FRAME = "no_such_base_frame"
 
+#: How many of the 360 ring beams must come back non-finite before the filter
+#: counts as live. The ring is entirely inside the chassis, so a working filter
+#: drops every one of them; 300 leaves room for a partial first scan without
+#: accepting a passthrough (which drops zero).
+_MIN_DROPPED_FOR_A_LIVE_FILTER = 300
+
 _FORWARD_BEAM_ANGLES = (-0.06, -0.03, 0.0, 0.03, 0.06)
 
 
@@ -452,8 +459,58 @@ def _forward_scan(range_m: float) -> Any:
     return scan
 
 
+def _wait_for_a_filtered_scan(
+    node: Any, executor: Any, *, publish: Any, filter_log: Path, timeout_s: float = 40.0
+) -> None:
+    """Block until the filter's own output proves it is filtering.
+
+    The node fails open until its TF buffer holds ``base_frame <- scan_frame``,
+    so "the process is up" is not "the filter is working". The proof is the
+    output topic: a scan whose beams have been replaced by ``inf``.
+    """
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+    from sensor_msgs.msg import LaserScan
+
+    dropped: list[int] = []
+
+    def _on_filtered(msg: LaserScan) -> None:
+        dropped.append(sum(1 for r in msg.ranges if not math.isfinite(r)))
+
+    sub = node.create_subscription(
+        LaserScan,
+        _FILTERED_SCAN_TOPIC,
+        _on_filtered,
+        QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        ),
+    )
+    try:
+        assert _spin_until(
+            executor,
+            lambda: bool(dropped) and dropped[-1] >= _MIN_DROPPED_FOR_A_LIVE_FILTER,
+            timeout_s=timeout_s,
+            each=publish,
+        ), (
+            f"the filter never dropped a beam in {timeout_s}s (best {max(dropped, default=0)} of "
+            f"{_MIN_DROPPED_FOR_A_LIVE_FILTER} needed), so the costmap would have been fed an "
+            f"unfiltered scan; filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+    finally:
+        node.destroy_subscription(sub)
+
+
 @contextmanager
-def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str], state: Any = None) -> Iterator[Any]:
+def _self_filter_rig(
+    tmp_path: Path, *, filter_argv: list[str], state: Any = None, warmup_scan: Any = None
+) -> Iterator[Any]:
     """A live costmap on the filtered topic, plus the filter process under test.
 
     Yields ``(executor, publish_of, samples, filter_log, latest)``:
@@ -465,6 +522,18 @@ def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str], state: Any = Non
     ``state`` defaults to an empty ``WorldStateStamped``, so the payload half of
     the filter is provably not what is doing the removing. A caller that wants
     the payload half acting passes the attachment in.
+
+    ``warmup_scan`` closes a startup race that is **not** cosmetic. The filter
+    fails open by design — a scan that arrives before its TF buffer has the
+    ``base_frame <- scan_frame`` transform is republished unfiltered — and a
+    self-return that reaches the cost grid even once is **permanent**: the
+    filter then removes exactly the beam whose ray would have cleared it, and
+    a costmap with ``footprint_clearing_enabled: False`` has nothing else that
+    would. (Measured: 32 cells marked by one unfiltered ring survived 20 s of
+    all-``inf`` filtered scans, and cleared the moment a real return was put on
+    the same bearings.) So a caller that asserts on the *steady state* passes
+    its scan in here, and the costmap is not configured until the filter's own
+    output proves the filter is live.
     """
     import rclpy
     from nav2_msgs.msg import Costmap
@@ -537,6 +606,10 @@ def _self_filter_rig(tmp_path: Path, *, filter_argv: list[str], state: Any = Non
             _process(filter_argv, filter_log),
             _process(costmap_argv, tmp_path / "costmap_self.log"),
         ):
+            if warmup_scan is not None:
+                _wait_for_a_filtered_scan(
+                    node, executor, publish=_publish_of(warmup_scan), filter_log=filter_log
+                )
             _lifecycle("configure")
             _lifecycle("activate")
             yield executor, _publish_of, samples, filter_log, latest
@@ -776,6 +849,12 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
     published grid and asserts **zero** are marked inside the chassis ∪ payload
     silhouette.
 
+    It asserts on the **steady state**: the rig withholds the costmap until the
+    filter's own output proves it is filtering, because a self-return that
+    reaches the grid once is permanent (the filter then removes the very beam
+    whose ray would clear it). That transient is a real property of the node's
+    fail-open design, recorded in the package README rather than hidden here.
+
     ``footprint_clearing_enabled`` is off in this costmap (see
     ``_COSTMAP_PARAMS_SELF_RETURNS``), so Nav2's own footprint clearing cannot
     be what keeps the silhouette clean — and it reproduces the one consumer
@@ -794,12 +873,18 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
         f"robot_yaml:={_ROBOT_YAML}",
     ]
 
+    ring = _ring_scan(payload_x_m=_PAYLOAD_X_IN_BASE)
     with _self_filter_rig(
         tmp_path,
         filter_argv=filter_argv,
         state=_world_state(carrying=True, revision=1),
+        # The costmap is not configured until this scan comes back filtered.
+        # Without that gate the rig can feed it one unfiltered ring during the
+        # filter's TF warm-up, and those marks never clear — see the rig's
+        # docstring, and the "permanent self-marks" note in the package README.
+        warmup_scan=ring,
     ) as (executor, publish_of, samples, filter_log, latest):
-        publish = publish_of(_ring_scan(payload_x_m=_PAYLOAD_X_IN_BASE))
+        publish = publish_of(ring)
         # One entry per costmap update; 40 of them is the same settling the
         # probe tests wait for, so the grid has been marked and re-marked many
         # times over before the sweep reads it.

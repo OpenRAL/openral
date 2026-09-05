@@ -144,7 +144,41 @@ so nothing was ever grasped), so the payload half is unmeasured there. Both
 gaps are exactly what the deterministic sweep covers, and it is the one with a
 control.
 
-### A second defect this surfaced, not yet fixed
+### A third defect this surfaced, not yet fixed (issue #212)
+
+**A self-return that reaches the cost grid once is permanent.** The filter fails
+open by design — a scan it cannot place (no `base_frame <- scan_frame` TF yet,
+an unreadable manifest, a degenerate polygon) is republished untouched, which is
+the more-obstacles direction and is the right call in isolation. What was not
+recorded is what happens next: the filter then removes *exactly the beam whose
+ray would have cleared that cell*, so the mark it let through can never be
+retracted.
+
+Measured on a real `nav2_costmap_2d` with this package's own topic wiring:
+
+| phase | scan on `/openral/nav2/scan` | cells marked inside the chassis |
+| --- | --- | ---: |
+| 1 | unfiltered ring at 0.20 m (the fail-open window) | **32** |
+| 2 | filtered ring — every self beam `inf` — for 20 s | **32** (unchanged) |
+| 3 | real returns at 3.0 m on the same bearings | **0** |
+
+Phase 3 is the control: Nav2's clearing works fine, there simply has to *be* a
+ray. `collision_monitor` reads the same topic and has no costmap-side clearing
+at all.
+
+The obvious fix — write `range_max` instead of `inf` for a dropped beam, so it
+raytrace-clears out to `raytrace_max_range` and marks nothing — is **not**
+obviously safe: it converts the filter from "leave the map alone" to "actively
+erase 3 m along this bearing", so a beam dropped in error would delete a real
+obstacle. That is the fail-closed property #143 was built around, and reversing
+it is a decision, not a patch. Recorded rather than changed here.
+
+The live-lane sweep in `tests/integration/test_nav2_scan_filter_live.py` gates
+its costmap on the filter's own output for this reason: it asserts the steady
+state, and this transient is why that gate exists rather than being a
+convenience.
+
+### A second defect this surfaced, not yet fixed (issue #211)
 
 **The global costmap is empty.** Over 50 and 51 published samples across the
 two scenes its maximum cost is `0` and it has no non-zero cell at any point,
@@ -154,6 +188,24 @@ cells. Its `obstacle_layer` is configured on the same filtered
 deliberately out of its plugin chain (rolling window, SLAM-from-scratch), and
 `planner_server` logs no warning at all — so `NavfnPlanner` planned the
 accepted `NavigateToPose` goal against a blank 20 × 20 m grid.
+
+**Root cause, measured.** It is the height filter, not the topic and not TF.
+`global_costmap` *is* subscribed to `/openral/nav2/scan` with matching
+`BEST_EFFORT` QoS, and 97 of 102 scans transform into `map` at their own stamps.
+But `ObservationBuffer` applies `min_obstacle_height` / `max_obstacle_height` in
+the costmap's **own global frame**, and the two costmaps do not share one:
+
+| TF | z |
+| --- | ---: |
+| `odom → base_link` | +0.700 m |
+| `odom → base_scan` (the **local** costmap's frame) | **+0.300 m** |
+| `map → odom` (slam_toolbox flattens `base_link` to z = 0 in `map`) | −0.700 m |
+| `map → base_scan` (the **global** costmap's frame) | **−0.400 m** |
+
+Both costmaps carry `min_obstacle_height: 0.0`. In `odom` the returns sit at
++0.30 m and are kept; in `map` they sit at −0.40 m and every single one is
+discarded before it can mark. Same scan, same parameters, opposite outcome,
+purely because of which frame the layer measures height in.
 
 This makes the **global** half of the table above vacuous: nothing is marked
 inside the robot because nothing is marked anywhere. The local half stands on
