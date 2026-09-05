@@ -24,9 +24,12 @@ Four arms, so the flag's effect is separable from the footprint's::
 **Every run validates which polygon the costmap actually adopted** by reading
 `/local_costmap/published_footprint` and measuring its longest edge (frame
 invariant: 0.72 m bare, 1.23 m grown). A run whose costmap never took the arm's
-polygon is reported `arm_valid: false` rather than counted -- the shipped
-`payload_footprint_node` publishes the bare polygon at 2 Hz whenever nothing is
-attached, and without this check the two publishers silently alternate.
+polygon is reported `arm_valid: false` rather than counted -- `payload_footprint_node`, shipped when
+this round was taken and deleted by PR #186 the following day, published the
+bare polygon at 2 Hz whenever nothing was attached, and without this check the
+two publishers silently alternated. Nav2 is base-only now (ADR-0099), so a
+rerun would find no competing publisher and the `grown` arms have nothing left
+to drive them.
 
 Private (`_` prefix): it attaches to a graph someone else launched and is
 evidence tooling, not a shipped entry point. The round it produced is recorded

@@ -15,6 +15,14 @@ tree did that — so a working footprint and a decorative one were
 indistinguishable, and the deferred `CostCritic.consider_footprint` flip had
 nothing to measure against.
 
+> **Since this round:**
+> [PR #186](https://github.com/OpenRAL/openral/pull/186) **deleted** the dynamic
+> footprint — its ground projection forbade every place approach, and the
+> payload rides ~0.28 m above the costmap slice, so it protected against nothing
+> the costmap could represent. Nav2 is base-only (ADR-0099); the lidar filter is
+> what survives, and the `consider_footprint` flip this round unblocked shipped.
+> Everything below is the measurement as it was taken and is left unedited.
+
 `packages/openral_nav2_bringup/README.md` specified the scene that would close
 #108 in four criteria and left one question open: is `loading_fridge` in XR-1
 RoboCasa365's evaluated set? The answer turned out to matter less than the
@@ -215,9 +223,11 @@ control cycles it actually published on `/cmd_vel_nav`. It is clock-source
 independent and directly comparable to the 50 ms period. (The real-time factor
 was ~1.0 anyway: 500 cycles at 20 Hz = 25 s of sim time in 25.0 s of wall time.)
 
-**Every run validates its own arm.** The shipped `payload_footprint_node`
-publishes the *bare* polygon at 2 Hz whenever nothing is attached, so it and the
-probe silently alternate. Each run reads back
+**Every run validates its own arm.** `payload_footprint_node` — shipped at the
+time of this round, deleted a day later by
+[PR #186](https://github.com/OpenRAL/openral/pull/186) — published the *bare*
+polygon at 2 Hz whenever nothing was attached, so it and the probe silently
+alternated. Each run reads back
 `/local_costmap/published_footprint` and measures its longest edge — frame
 invariant, 0.72 m bare vs 1.23 m grown — and is discarded unless the costmap
 actually adopted the arm's polygon. Two early runs were caught and rejected this

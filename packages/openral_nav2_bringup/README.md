@@ -69,7 +69,10 @@ mistake this section exists to prevent. Neither one covers for the other.
 | Blind to | anything not in the 2-D grid: overhangs, table tops, the arm's own reach | anything outside the local voxel box, and the base's path |
 
 **`/cmd_vel` does not pass through the kernel, and that is a recorded decision**
-(ADR-0040: base collision avoidance relies entirely on Nav2's costmap). Nav2
+(ADR-0040: base collision avoidance relies entirely on Nav2's costmap;
+ADR-0099 re-affirms it and corrects ADR-0040's stated *reason* — that record
+says no in-tree HAL advertises `body_twist`, and `panda_mobile` now does).
+Nav2
 publishes `geometry_msgs/Twist`; `openral_hal.mobile_base_bridge.MobileBaseBridge`
 maps each message to a `BODY_TWIST` `Action` and applies it through the HAL
 node's `_send_action_traced` — it never reaches `/openral/candidate_action`, so
@@ -83,22 +86,141 @@ node is latched E-stopped, so an E-stop — the kernel's included — does stop 
 Nav2 path, at the HAL rather than in the kernel. Stopping is the only kernel
 authority over base motion. There is no per-command bound.
 
-**What this costs, and why the dynamic footprint below matters.** A carried
-object is checked in 3-D by the kernel and is *not* checked at all by Nav2
-unless Nav2's footprint says it is there. Without the footprint publisher, the
-robot's arm and payload are protected while the chassis drives them into a
-counter. So the payload has to appear in **exactly one** place on each side of
-the boundary, and the two sides are deliberately opposite:
+**What this costs.** A carried object is checked in 3-D by the kernel and is
+*not* checked at all by Nav2 — nothing grows the footprint over it, by decision
+(ADR-0099, and "Nav2 is base-only" below). The arm and the payload are protected
+against a 3-D obstacle map while the chassis is free to drive them into a
+counter, and the kernel's only authority over that is to stop. So the payload
+has to appear in **exactly one** place on each side of the boundary, and the two
+sides are deliberately opposite:
 
 * **Kernel side** — the payload is *robot*: collision-active attached geometry
   the kernel keeps checking, and `openral_octomap_bridge` clears its cells out
   of the voxel grid so the robot is not stopped by itself.
-* **Nav2 side** — the payload is *robot* here too: it joins the footprint
-  polygon, and `payload_scan_filter_node` drops its returns from the scan the
-  costmaps and the collision monitor read, for the same reason.
+* **Nav2 side** — the payload is *robot* here too, but only in the sense that it
+  is removed: `payload_scan_filter_node` drops its returns from the scan the
+  costmaps and the collision monitor read, so a carried object never becomes an
+  obstacle that travels with the robot. It does **not** join the footprint.
 
 Both sides read the same attachment set on `/openral/world_state_fast`, so they
 cannot disagree about what is attached.
+
+**How that is proved, and where.**
+`tests/integration/test_nav2_scan_filter_live.py` sweeps a real
+`nav2_costmap_2d`'s published grid and asserts **zero cells are marked inside
+the chassis ∪ payload silhouette**, using this package's own
+`base_footprint_polygon` / `points_in_convex_polygon` / `points_in_primitive`
+against the real `robots/panda_mobile/robot.yaml`. The costmap in that rig runs
+with `footprint_clearing_enabled: False`, so Nav2's own clearing cannot be what
+keeps the silhouette clean, and a control test with the self-filter
+unconfigured shows the sweep failing — the assertion can fail, which is the
+thing #183 found this file's earlier payload test unable to do.
+
+The same assertion has also been run on the **real scenes**, which the test
+cannot be: `tools/_nav2_costmap_silhouette_probe.py` attaches to a live
+`openral deploy sim` graph and sweeps every published costmap the same way.
+Raw output in `docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`;
+one graph launch per scene, driven by a direct `NavigateToPose` 2.0 m ahead so
+the base actually translates:
+
+| | `robocasa_baguette` | `robocasa_deliver_straw` |
+| --- | ---: | ---: |
+| base travelled | 1.682 m | 1.668 m |
+| **local** costmap samples | 95 | 107 |
+| silhouette cells per sample | 138 | 141 |
+| peak `LETHAL` cells elsewhere on the map | 208 | 66 |
+| **`LETHAL` cells inside the silhouette** | **0** | **0** |
+| **global** costmap samples | 50 | 52 |
+| peak cost anywhere on the global map | **0** | **0** |
+
+Read the last row before the second-to-last one — see the next section.
+
+**Reproduced.** Both scenes were re-run in an independent session before merge.
+The conclusion reproduces and the incidental counts do not, which is what a live
+scene run looks like: **0** `LETHAL` cells inside a 140 / 141-cell silhouette on
+baguette / deliver_straw, in samples carrying 127 / 59 marked cells elsewhere,
+base driven 0.954 / 1.318 m, and the global costmap at max cost `0` on both.
+Recorded because this corpus's standing caveat is that its only two completions
+were never reproduced.
+
+Two limits, so the numbers are not over-read. Sim's
+`synthesize_laser_scan_2d` re-casts through the robot's own MuJoCo kinematic
+tree, so a self-return never enters `/scan` here at all: a clean silhouette on
+a scene is the *end state* being right, not proof that this node is what made
+it so. And `attached_objects` stayed 0 on both runs (no policy was dispatched,
+so nothing was ever grasped), so the payload half is unmeasured there. Both
+gaps are exactly what the deterministic sweep covers, and it is the one with a
+control.
+
+### A third defect this surfaced, not yet fixed (issue #212)
+
+**A self-return that reaches the cost grid once is permanent.** The filter fails
+open by design — a scan it cannot place (no `base_frame <- scan_frame` TF yet,
+an unreadable manifest, a degenerate polygon) is republished untouched, which is
+the more-obstacles direction and is the right call in isolation. What was not
+recorded is what happens next: the filter then removes *exactly the beam whose
+ray would have cleared that cell*, so the mark it let through can never be
+retracted.
+
+Measured on a real `nav2_costmap_2d` with this package's own topic wiring:
+
+| phase | scan on `/openral/nav2/scan` | cells marked inside the chassis |
+| --- | --- | ---: |
+| 1 | unfiltered ring at 0.20 m (the fail-open window) | **32** |
+| 2 | filtered ring — every self beam `inf` — for 20 s | **32** (unchanged) |
+| 3 | real returns at 3.0 m on the same bearings | **0** |
+
+Phase 3 is the control: Nav2's clearing works fine, there simply has to *be* a
+ray. `collision_monitor` reads the same topic and has no costmap-side clearing
+at all.
+
+The obvious fix — write `range_max` instead of `inf` for a dropped beam, so it
+raytrace-clears out to `raytrace_max_range` and marks nothing — is **not**
+obviously safe: it converts the filter from "leave the map alone" to "actively
+erase 3 m along this bearing", so a beam dropped in error would delete a real
+obstacle. That is the fail-closed property #143 was built around, and reversing
+it is a decision, not a patch. Recorded rather than changed here.
+
+The live-lane sweep in `tests/integration/test_nav2_scan_filter_live.py` gates
+its costmap on the filter's own output for this reason: it asserts the steady
+state, and this transient is why that gate exists rather than being a
+convenience.
+
+### A second defect this surfaced, not yet fixed (issue #211)
+
+**The global costmap is empty.** Over 50 and 52 published samples across the
+two scenes its maximum cost is `0` and it has no non-zero cell at any point,
+while the local costmap on the same graph peaks at `254` with ~2000 non-zero
+cells. Its `obstacle_layer` is configured on the same filtered
+`/openral/nav2/scan` the local costmap's `voxel_layer` reads, `static_layer` is
+deliberately out of its plugin chain (rolling window, SLAM-from-scratch), and
+`planner_server` logs no warning at all — so `NavfnPlanner` planned the
+accepted `NavigateToPose` goal against a blank 20 × 20 m grid.
+
+**Root cause, measured.** It is the height filter, not the topic and not TF.
+`global_costmap` *is* subscribed to `/openral/nav2/scan` with matching
+`BEST_EFFORT` QoS, and 97 of 102 scans transform into `map` at their own stamps.
+But `ObservationBuffer` applies `min_obstacle_height` / `max_obstacle_height` in
+the costmap's **own global frame**, and the two costmaps do not share one:
+
+| TF | z |
+| --- | ---: |
+| `odom → base_link` | +0.700 m |
+| `odom → base_scan` (the **local** costmap's frame) | **+0.300 m** |
+| `map → odom` (slam_toolbox flattens `base_link` to z = 0 in `map`) | −0.700 m |
+| `map → base_scan` (the **global** costmap's frame) | **−0.400 m** |
+
+Both costmaps carry `min_obstacle_height: 0.0`. In `odom` the returns sit at
++0.30 m and are kept; in `map` they sit at −0.40 m and every single one is
+discarded before it can mark. Same scan, same parameters, opposite outcome,
+purely because of which frame the layer measures height in.
+
+This makes the **global** half of the table above vacuous: nothing is marked
+inside the robot because nothing is marked anywhere. The local half stands on
+its own — 208 and 66 real marked cells elsewhere in the same samples. The probe
+says so itself: since code review it reports `VACUOUS - the costmap marked
+nothing anywhere` for the global costmap and exits non-zero, rather than
+printing `clean`.
 
 ## Nav2 is base-only
 
@@ -106,6 +228,12 @@ cannot disagree about what is attached.
 it.** The 2-D costmap owns base geometry; the 3-D safety kernel owns the arm
 and anything carried. This replaces the dynamic footprint publisher that
 PR #143 shipped, which is now removed.
+
+This is a layer-boundary decision and it is recorded as one: **ADR-0099** in the
+private `OpenRAL/management` log, with the hazard analysis in that repo's
+`safety/hazard-log.md` Entry 023. The record was written *after* the code
+(PR #186), which is not the order CLAUDE.md §3 asks for — the six days in which
+this boundary existed only in this README are part of what the ADR records.
 
 ### Why the growth was wrong
 
@@ -139,7 +267,7 @@ thin* obstacle that the base itself clears. The kernel catches that in 3-D —
 its octomap bridge covers a ball of r = 1.05 m centred at z = 0.5 in
 `base_frame`, i.e. z ∈ [−0.55, 1.55], which contains the payload — but as an
 **E-stop, not an avoidance**, because `/cmd_vel` never passes through it
-(ADR-0040, above). That is the accepted cost: a rare stop instead of a routine
+(ADR-0040/ADR-0099, above). That is the accepted cost: a rare stop instead of a routine
 refusal to do the task.
 
 ### What replaces it
