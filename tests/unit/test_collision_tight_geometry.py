@@ -221,6 +221,14 @@ def test_the_declared_geometry_reproduces_from_the_mesh(panda: RobotDescription)
     remembering to invoke it.
     """
     gen = _mesh_tools()
+    # Only THIS test reaches the generator's `check` path, which is the one
+    # that imports trimesh (`generate_tight_geometry._mesh_outside_dop_mm`).
+    # Guarded here rather than in `_mesh_tools` so the four containment tests
+    # that need no mesh loader keep running on a host without the `lowering`
+    # group. Without it the whole test errors with a bare ModuleNotFoundError
+    # instead of skipping, which CLAUDE.md §1.11 asks for on an unavailable
+    # dependency -- and it does so only off-CI, where the group is installed.
+    pytest.importorskip("trimesh", reason="trimesh loads the URDF collision meshes")
     for manifest in (PANDA_MANIFEST, VSLAM_MANIFEST):
         assert gen.main(["check", "--robot", str(manifest)]) == 0, manifest
 
