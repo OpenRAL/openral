@@ -747,10 +747,6 @@ def adjudicate_ground_truth(
             unadjudicated_reason=("no sim.estop_ground_truth_snapshot was recorded for this stop"),
         )
 
-    coverage = snapshot.get("nearest_probe_coverage") or {}
-    truncated = bool(coverage.get("truncated", True))
-    distmax = _as_float(coverage.get("distmax_m"))
-    probed = coverage.get("probed_pairs")
     filtered = probe_is_collidability_filtered(snapshot)
     certified = probe_is_distance_certified(snapshot)
 
@@ -759,6 +755,14 @@ def adjudicate_ground_truth(
     payload_robot = list(snapshot.get("nearest_payload_robot_pairs") or [])
     link_link = list(snapshot.get("nearest_link_link_pairs") or [])
     all_pairs = robot_pairs + payload_world + payload_robot + link_link
+
+    # The coverage block has to be the one for the probe whose pairs are read
+    # below. Reading `nearest_probe_coverage` (the robot-vs-world probe) for a
+    # payload stop lets an untruncated robot probe assert "nothing within
+    # distmax" about a payload probe that was never consulted — evidence from
+    # the wrong instrument, the same error class as scoring against the wrong
+    # bodies (#208, #228). Chosen alongside the pair set, not before it.
+    coverage_key = "nearest_probe_coverage"
 
     nearest_any = min((p["distance_m"] for p in all_pairs), default=None)
     nearest_pair = min(all_pairs, key=lambda p: p["distance_m"], default=None)
@@ -782,7 +786,23 @@ def adjudicate_ground_truth(
     self_pair_unprobed = self_pair and not link_link
 
     if stop.involves_payload:
-        party_pairs = payload_world
+        # The payload is one side. WHICH pair set can answer depends entirely on
+        # the other side, and `involves_payload` alone does not say. A voxel or
+        # a declared place is world geometry: `payload_world`. A robot link
+        # (kind="self") is not, and only `payload_robot` ever measures the
+        # payload against the robot. Routing every payload stop through
+        # `payload_world` scored a payload-vs-`panda_link1` stop at -1.55 mm
+        # off the payload's 166 mm clearance to a countertop (#228) — #208 one
+        # class over, with the difference that the right pair set was already
+        # in the snapshot and simply never consulted.
+        partner_name = stop.party_b if stop.party_a.startswith("attached:") else stop.party_a
+        if partner_name.startswith(("voxel_", "place:")):
+            party_pairs = payload_world
+            coverage_key = "nearest_payload_world_coverage"
+        else:
+            partner = _kernel_party_to_mujoco(partner_name)
+            party_pairs = [p for p in payload_robot if str(p.get("body_b")) == partner]
+            coverage_key = "nearest_payload_robot_coverage"
     elif self_pair_unprobed:
         party_pairs = []
     elif self_pair:
@@ -799,6 +819,11 @@ def adjudicate_ground_truth(
         subject = _kernel_party_to_mujoco(stop.party_a)
         party_pairs = [p for p in robot_pairs if str(p.get("body_a")) == subject]
     nearest_party = min((p["distance_m"] for p in party_pairs), default=None)
+
+    coverage = snapshot.get(coverage_key) or {}
+    truncated = bool(coverage.get("truncated", True))
+    distmax = _as_float(coverage.get("distmax_m"))
+    probed = coverage.get("probed_pairs")
 
     quantization = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
     hal_gap = hal_admissible_gap_m(snapshot, stop)

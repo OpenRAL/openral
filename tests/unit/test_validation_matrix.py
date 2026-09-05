@@ -51,6 +51,7 @@ ROUND_HARNESS_1 = FIXTURES / "2026-08-22-harness-1"
 ROUND_0823 = FIXTURES / "2026-08-23-master-s1"
 ROUND_NAV143 = FIXTURES / "2026-08-23-nav143-s1"
 ROUND_POST200 = FIXTURES / "2026-09-04-post200-2"
+ROUND_217_WITH204 = FIXTURES / "2026-09-05-217-with204-1"
 
 # tools/ is not an installed package — load the module by path, the same way
 # tests/unit/test_select_tests.py and test_audit_tests.py do.
@@ -1459,3 +1460,96 @@ def test_an_old_snapshot_without_the_link_link_probe_still_says_unprobed() -> No
     assert adjudication.verdict == "unadjudicated"
     assert "never measures one robot link against another" in adjudication.unadjudicated_reason
     assert adjudication.nearest_tripping_party_m is None
+
+
+def test_payload_vs_link_stop_is_scored_against_the_link_not_the_world() -> None:
+    """#228 — #208 one class over, with the right pair set already in the snapshot.
+
+    The 2026-09-05 `with204-1` baguette round stopped on the CARRIED PAYLOAD
+    against a robot LINK: `a=attached:sim:obj_main b=panda_link1`, kind=self,
+    -1.55 mm. `involves_payload` was true, so the rule took `payload_world` and
+    compared that depth to the payload's 166 mm clearance to a COUNTERTOP — a
+    167 mm discrepancy against an 88 mm world budget, verdict `false-positive`,
+    for a pair the world probe never measured.
+
+    The snapshot carries `nearest_payload_robot_pairs`, which does measure it:
+    obj_main <-> robot0_link1, certified GJK, +65.5 mm. Against the HAL's own
+    attached-payload self budget (124.6 mm = 88.2 link corner slop + 36.3 payload
+    corner slop) a 67 mm discrepancy is *inside* budget — envelope conservatism,
+    not a false positive. Same kernel, same stop; only the bodies it is compared
+    to changed.
+
+    No mocks: the fixture is the round's own two log lines, verbatim.
+    """
+    lines = (
+        (ROUND_217_WITH204 / "baguette" / "run_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    stop = validation_matrix.parse_kernel_collision(lines)
+    assert stop is not None
+    assert (stop.kind, stop.party_a, stop.party_b) == (
+        "self",
+        "attached:sim:obj_main",
+        "panda_link1",
+    )
+    assert stop.involves_payload is True
+    assert stop.min_distance_m == pytest.approx(-0.00155364)
+
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+    assert validation_matrix.probe_is_distance_certified(snapshot) is True
+
+    # What the two pair sets say about this payload, so the assertion below is
+    # visibly about WHICH one was consulted and not about a lucky number.
+    world_nearest = min(p["distance_m"] for p in snapshot["nearest_payload_world_pairs"])
+    link1_nearest = min(
+        p["distance_m"]
+        for p in snapshot["nearest_payload_robot_pairs"]
+        if p["body_b"] == "robot0_link1"
+    )
+    assert world_nearest == pytest.approx(0.166032596)
+    assert link1_nearest == pytest.approx(0.065511265)
+    self_budget = snapshot["adjudication_budget"]["self_collision"]["admissible_gap_m"]
+    assert self_budget == pytest.approx(0.124555)
+
+    adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, None)
+    assert adjudication is not None
+    # The link pair, not the countertop.
+    assert adjudication.nearest_tripping_party_m == pytest.approx(link1_nearest)
+    assert adjudication.nearest_tripping_party_m != pytest.approx(world_nearest)
+    # The attached-payload SELF budget, from the HAL, not the world one.
+    assert adjudication.admissible_gap_m == pytest.approx(self_budget)
+    assert adjudication.budget_source == "hal-adjudication-budget"
+    # 65.5 - (-1.55) = 67.1 mm, inside 124.6 mm: conservative and correct.
+    assert adjudication.discrepancy_m == pytest.approx(link1_nearest - stop.min_distance_m)
+    assert adjudication.verdict == "within-quantization"
+
+
+def test_payload_vs_link_with_no_payload_robot_pairs_is_unadjudicated() -> None:
+    """Absence of the RIGHT pair set is not evidence; it is a missing instrument.
+
+    Strip `nearest_payload_robot_pairs` (a pre-#220-style snapshot) and the stop
+    must come back `unadjudicated` naming the pair — never fall through to the
+    world probe's clearance, and never let the world probe's untruncated
+    coverage assert "nothing within distmax" about a probe that was not read.
+    """
+    lines = (
+        (ROUND_217_WITH204 / "baguette" / "run_deploy_excerpt.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    stop = validation_matrix.parse_kernel_collision(lines)
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert stop is not None and snapshot is not None
+    stripped = {
+        k: v
+        for k, v in snapshot.items()
+        if k not in ("nearest_payload_robot_pairs", "nearest_payload_robot_coverage")
+    }
+
+    adjudication = validation_matrix.adjudicate_ground_truth(stripped, stop, None)
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated", adjudication
+    assert adjudication.nearest_tripping_party_m is None
+    assert adjudication.discrepancy_m is None
