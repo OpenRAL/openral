@@ -759,7 +759,7 @@ path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
 
-## The contact-force gate (ADR-0099, survey Path C)
+## The contact-force gate (ADR-0100, survey Path C)
 
 Every check above discriminates on **position**. At the instant of a place the
 true clearance *is* zero, so none of them separates "set the object down in the

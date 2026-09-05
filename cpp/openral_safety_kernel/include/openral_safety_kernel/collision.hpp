@@ -512,7 +512,7 @@ struct AttachedObject {
   Vec3 support_normal{0.0, 0.0, 1.0};   ///< unit outward support normal, object frame
   double support_patch_radius{0.0};     ///< lateral radius of the supported patch (m)
   double support_max_penetration{0.0};  ///< attested PHYSICAL contact depth bound (m)
-  /// ADR-0099 contact-force witness. `has_contact_force_witness` is the wire's
+  /// ADR-0100 contact-force witness. `has_contact_force_witness` is the wire's
   /// `contact_force_valid`; `contact_force_calibrated` is the witness's own
   /// `magnitude_calibrated`, and WITHOUT it `contact_force_magnitude` is not in
   /// Newtons and the gate must not read it (survey §21.7 — no published work
@@ -538,7 +538,7 @@ struct AttachedObject {
 /// for hands and fingers (140 N), the most permissive body region in the table.
 inline constexpr double kMaxContactForceThresholdN = 140.0;
 
-/// The live declaration's contact-force bound (ADR-0099, survey Path C).
+/// The live declaration's contact-force bound (ADR-0100, survey Path C).
 ///
 /// Deliberately NOT folded into `PlaceApproachRegion`: that struct is valid only
 /// when a producer measured a region, and dispatch publishes declarations with
@@ -547,7 +547,7 @@ inline constexpr double kMaxContactForceThresholdN = 140.0;
 ///
 /// `valid == false` — no declaration, a retracted or expired one, or a
 /// declaration whose `threshold_n <= 0` — means NO force gate anywhere, i.e.
-/// behaviour identical to before ADR-0099. That is the default and the
+/// behaviour identical to before ADR-0100. That is the default and the
 /// fail-toward-shipped direction.
 struct PlaceForceGate {
   bool valid{false};            ///< a live declaration supplies a positive threshold
@@ -558,7 +558,7 @@ struct PlaceForceGate {
 /// Outcome of the declaration-scoped contact-force gate.
 ///
 /// `tripped` is the ONLY thing this can say. The gate adds a refusal and can
-/// never remove one (ADR-0099 §1): it is evaluated after every geometric check
+/// never remove one (ADR-0100 §1): it is evaluated after every geometric check
 /// has already passed, so a `tripped` result converts an accept into a refusal
 /// and nothing else. There is no branch by which it turns a refusal into an
 /// accept, widens a margin, or creates an exemption.
@@ -601,7 +601,7 @@ struct AttachedObjectInput {
   Vec3 support_normal{};                ///< outward support normal, object frame (normalised)
   double support_patch_radius{0.0};     ///< lateral patch radius (m)
   double support_max_penetration{0.0};  ///< attested physical contact depth bound (m)
-  bool has_contact_force_witness{false};    ///< wire `contact_force_valid` (ADR-0099)
+  bool has_contact_force_witness{false};    ///< wire `contact_force_valid` (ADR-0100)
   bool contact_force_calibrated{false};     ///< witness `magnitude_calibrated`
   bool contact_force_target_matches{false}; ///< witness `target_id` names the declared target
   double contact_force_magnitude{0.0};      ///< Newtons ONLY when calibrated
@@ -1016,7 +1016,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin, double band_m = 0.0) noexcept;
 
-/// The declaration-scoped contact-force gate (ADR-0099, survey Path C).
+/// The declaration-scoped contact-force gate (ADR-0100, survey Path C).
 ///
 /// At the instant of a place the true clearance IS zero, so no geometric margin
 /// at any resolution separates "set the object down" from "crush it" (survey §9
@@ -1027,7 +1027,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
 /// a refusal. There is no path here that widens a margin, creates an exemption,
 /// or lets a measured force license contact the geometry refused — that
 /// direction is the whole safety argument and it is enforced by this function
-/// having no way to express anything but `tripped` (ADR-0099 §1).
+/// having no way to express anything but `tripped` (ADR-0100 §1).
 ///
 /// It arms only when ALL FOUR of these hold, and every one fails toward the
 /// shipped geometry-only behaviour:

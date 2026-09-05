@@ -2455,7 +2455,7 @@ class AttachmentEvidenceKind(str, Enum):
     # score is never part of that decision — a confidently-wrong mask covering
     # half the frame is rejected on volume, not on confidence.
     VISION_SEGMENTATION = "vision_segmentation"
-    # ``mj_contactForce`` over MuJoCo's solver contact list (ADR-0099). It
+    # ``mj_contactForce`` over MuJoCo's solver contact list (ADR-0100). It
     # inherits that list's blind spot by construction — ``contype`` /
     # ``conaffinity`` suppression can empty a pair that is demonstrably in
     # contact — so absence of a force witness is never evidence of no contact.
@@ -2707,8 +2707,8 @@ class PlaceDeclaration(BaseModel):
             liveness key.
         active: ``False`` retracts the declaration.
         contact_force_threshold_n: Per-declaration bound on the contact force
-            this place may reach (ADR-0099). ``0.0`` — the default — means no
-            force gate at all, which is the pre-ADR-0099 behaviour. Above zero,
+            this place may reach (ADR-0100). ``0.0`` — the default — means no
+            force gate at all, which is the pre-ADR-0100 behaviour. Above zero,
             a live :class:`ContactForceWitness` on this payload attesting a
             *calibrated* magnitude past it refuses the configuration. Never read
             from :attr:`SafetyEnvelope.contact_force_threshold_n`: that number is
@@ -2747,7 +2747,7 @@ class PlaceDeclaration(BaseModel):
     #: far below anything that would span a mission.
     MAX_TIMEOUT_S: ClassVar[float] = 600.0
 
-    #: Ceiling on :attr:`contact_force_threshold_n` (ADR-0099). A threshold is a
+    #: Ceiling on :attr:`contact_force_threshold_n` (ADR-0100). A threshold is a
     #: bound on permitted contact, so an absurd one is not merely useless — it
     #: reads as a gate that is armed while being unreachable in practice. The
     #: value is ISO/TS 15066 Table A.2's quasi-static limit for hands and
@@ -2987,7 +2987,7 @@ class SupportContactWitness(BaseModel):
 class ContactForceWitness(BaseModel):
     """Bounded attestation of a MEASURED contact force on the declared target.
 
-    The second observable on the place path (ADR-0099, survey Path C).
+    The second observable on the place path (ADR-0100, survey Path C).
     ADR-0097/0098 discriminate on position, and at the instant of a place the
     true clearance *is* zero: no geometric margin at any resolution passes "set
     the object down in the cabinet" while stopping "crush it against the
@@ -2997,7 +2997,7 @@ class ContactForceWitness(BaseModel):
 
     **The gate this feeds only ever adds a refusal.** A witness never licenses a
     contact the geometry refuses, never widens an ADR-0097 allowance and never
-    moves a margin (ADR-0099 §1). It can turn an accepted configuration into a
+    moves a margin (ADR-0100 §1). It can turn an accepted configuration into a
     refused one, and nothing else.
 
     ``magnitude_n`` is in Newtons **only** when :attr:`magnitude_calibrated`.
@@ -3251,7 +3251,7 @@ class AttachedCollisionObject(BaseModel):
         evidence_ref: Optional trace/contact/track reference.
         stamp_ns: Confirmation timestamp.
         contact_force: Optional attestation of a measured contact force on the
-            declared place target (ADR-0099). ``None`` — the default, and what
+            declared place target (ADR-0100). ``None`` — the default, and what
             every producer that cannot measure force publishes — means the
             declaration-scoped force gate never arms and geometry decides
             alone. The gate it feeds only ever adds a refusal; it never

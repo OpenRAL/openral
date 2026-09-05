@@ -1092,7 +1092,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
             return true;
           }
-          // ADR-0099 contact-force gate, survey Path C. Evaluated LAST, after
+          // ADR-0100 contact-force gate, survey Path C. Evaluated LAST, after
           // every geometric check above has already passed, which is what makes
           // "additive conservatism" literally true rather than merely argued:
           // the only configurations this can reach are ones the kernel was about
@@ -2107,7 +2107,7 @@ void SafetyKernelLifecycleNode::on_world_state(
       in.support_patch_radius = witness.patch_radius_m;
       in.support_max_penetration = witness.max_penetration_m;
     }
-    // Contact-force attestation (ADR-0099). Unlike the support witness above,
+    // Contact-force attestation (ADR-0100). Unlike the support witness above,
     // an out-of-bounds value here does NOT fail the message closed: this
     // witness licenses nothing, so a producer over-claiming on it cannot buy
     // anything, and refusing the whole payload model would make an additive
@@ -2253,7 +2253,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   const std::size_t was_geometry = place_region_.n_geometry;
   const std::string previous_target = place_declaration_target_;
   place_region_ = PlaceApproachRegion{};
-  // ADR-0099: the force gate is re-derived from scratch on every snapshot, for
+  // ADR-0100: the force gate is re-derived from scratch on every snapshot, for
   // the same reason the region is — a bound that outlived its declaration is an
   // armed enforcement surface nobody declared.
   attached_model_.force_gate = PlaceForceGate{};
@@ -2303,7 +2303,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   // Which carried payload the declaration is scoped to. An empty object_id is
   // the direct-dispatch case ("whichever payload is carried"), which the
   // producer resolves at attach time; the kernel maps it onto every accepted
-  // object. Resolved HERE, above the region checks, because the ADR-0099 force
+  // object. Resolved HERE, above the region checks, because the ADR-0100 force
   // gate travels with the *declaration* and must arm for the region-less
   // declaration dispatch actually publishes — unlike the approach allowance,
   // which needs a producer-measured region to mean anything.
@@ -2314,7 +2314,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       object_mask = static_cast<std::uint8_t>(object_mask | (1U << i));
     }
   }
-  // ADR-0099. `<= 0` is the default and means no gate at all; a threshold past
+  // ADR-0100. `<= 0` is the default and means no gate at all; a threshold past
   // the shared ceiling is a producer error and buys nothing, failing closed
   // toward the shipped geometry-only behaviour rather than toward a clamped
   // bound nobody chose.

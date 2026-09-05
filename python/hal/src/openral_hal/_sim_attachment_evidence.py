@@ -79,7 +79,7 @@ _SUPPORT_MAX_PATCH_RADIUS_M = 0.5
 # ponytail: hulls are re-decoded per call (~0.1 s of the 0.46 s); cache them
 # per (model, mesh) if attach latency ever matters.
 _SUPPORT_PROBE_MAX_CALLS = 1024
-# ADR-0099 contact-force gate. MuJoCo reports a contact's force in the contact's
+# ADR-0100 contact-force gate. MuJoCo reports a contact's force in the contact's
 # own frame via ``mj_contactForce``; this scalar maps that magnitude to the
 # number a place declaration's ``contact_force_threshold_n`` is compared against.
 #
@@ -1039,7 +1039,7 @@ def contact_force_calibration() -> tuple[float, bool, str | None]:
         finite positive scale and :data:`_CONTACT_FORCE_CALIBRATION_REF_ENV` to
         a non-empty name for it. Anything else — neither set, one set, an
         unparseable or non-positive scale — yields the identity scale,
-        ``calibrated=False`` and no reference, which leaves the ADR-0099 force
+        ``calibrated=False`` and no reference, which leaves the ADR-0100 force
         gate disarmed and geometry deciding alone.
 
         Requiring the *reference* as well as the number is the point. A scale
@@ -1095,7 +1095,7 @@ def probe_contact_force(
     **Absence of a return value is not evidence of absent contact.** This reads
     the solver's contact list, and ``contype`` / ``conaffinity`` exclusions can
     suppress a pair entirely — field-observed at 30 mm of interpenetration with
-    ``ncon == 0``. A ``None`` here only ever means the ADR-0099 gate does not
+    ``ncon == 0``. A ``None`` here only ever means the ADR-0100 gate does not
     arm, and geometry decides exactly as it does today. That is why this
     producer feeds a check which can only *add* a refusal: a blind spot in it
     can never remove one.

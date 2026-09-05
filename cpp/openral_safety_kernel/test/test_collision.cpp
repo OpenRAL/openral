@@ -5120,7 +5120,7 @@ TEST(SelfCollisionHull, HullHullDistanceIsSandwichedBetweenItsOwnBounds) {
       << "if GJK never beat the SAT bound the refinement would buy nothing";
 }
 
-// ── ADR-0099: the declaration-scoped contact-force gate (survey Path C) ───────
+// ── ADR-0100: the declaration-scoped contact-force gate (survey Path C) ───────
 //
 // At the instant of a place the true clearance IS zero, so no geometric margin
 // separates "set the object down" from "crush it" (survey §9 point 4). These

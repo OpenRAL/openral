@@ -63,13 +63,13 @@ bool region_valid
 PlaceRegion region
 
 # Per-declaration bound on the contact force this place is permitted to reach
-# (ADR-0099, survey Path C). Scoped to the one goal execution and dead with the
+# (ADR-0100, survey Path C). Scoped to the one goal execution and dead with the
 # declaration, the same three ways everything else here is.
 #
 # <= 0 — THE DEFAULT — means NO force gate: exactly today's behaviour. Above 0,
 # a live ContactForceWitness on the declared payload that attests a CALIBRATED
 # magnitude past this value refuses the configuration. The gate only ever adds a
-# refusal; it never licenses a contact the geometry refuses (ADR-0099 §1).
+# refusal; it never licenses a contact the geometry refuses (ADR-0100 §1).
 #
 # This is deliberately NOT read from SafetyEnvelope.contact_force_threshold_n.
 # That field is robot-wide and its 30.0 N default predates the ISO reading, while

@@ -1,5 +1,5 @@
 # Layer 2's bounded attestation that an attached payload is in MEASURED contact
-# with its declared place target, and how hard (ADR-0099, survey Path C).
+# with its declared place target, and how hard (ADR-0100, survey Path C).
 #
 # This is the second observable on the place path. ADR-0097/0098 discriminate on
 # position, and at the instant of a place the true clearance IS zero — no
@@ -11,7 +11,7 @@
 # THE GATE THIS FEEDS ONLY ADDS REFUSALS. A witness never licenses a contact the
 # geometry refuses, never widens an ADR-0097 allowance, and never moves a margin.
 # It can turn an accepted configuration into a refused one and nothing else.
-# That direction is the whole safety argument (ADR-0099 §1) — do not extend this
+# That direction is the whole safety argument (ADR-0100 §1) — do not extend this
 # message in a way that inverts it without a new ADR.
 #
 # The kernel arms the gate only when ALL FOUR hold: a place declaration is live

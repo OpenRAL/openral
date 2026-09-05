@@ -1,6 +1,6 @@
 """The sim contact-force producer, and the calibration it refuses to assume.
 
-ADR-0099 (survey Path C) adds the second observable on the place path. At the
+ADR-0100 (survey Path C) adds the second observable on the place path. At the
 instant of a place the true clearance *is* zero, so no geometric margin at any
 resolution separates "set the cup down on the shelf" from "crush it against the
 shelf" (survey §9 point 4). Force is the axis that does.

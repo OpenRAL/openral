@@ -1622,7 +1622,7 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
     o.support_normal = support_normal;
     o.support_patch_radius = in.has_support_witness ? in.support_patch_radius : 0.0;
     o.support_max_penetration = in.has_support_witness ? in.support_max_penetration : 0.0;
-    // ADR-0099 contact-force witness. Each derived flag is masked by
+    // ADR-0100 contact-force witness. Each derived flag is masked by
     // `has_contact_force_witness` for the same reason the support fields above
     // are: a stale magnitude left behind by a retracted witness must not be
     // readable, and zeroing here means the gate's own checks cannot be reached
@@ -1863,7 +1863,7 @@ ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) n
   const PlaceForceGate& gate = attached.force_gate;
   // Condition 1 of four. Every early return here leaves `out.tripped` false,
   // which is the shipped geometry-only behaviour — the gate adds refusals and
-  // failing to arm can therefore never be unsafe relative to today (ADR-0099
+  // failing to arm can therefore never be unsafe relative to today (ADR-0100
   // §1). Re-checking the range the ingest already validated is deliberate: a
   // permissive default is never the safe one on a safety path.
   if (!gate.valid || gate.object_mask == 0) {
