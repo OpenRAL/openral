@@ -133,7 +133,11 @@ the base actually translates:
 | **global** costmap samples | 50 | 52 |
 | peak cost anywhere on the global map | **0** | **0** |
 
-Read the last row before the second-to-last one — see the next section.
+Read the last row before the second-to-last one — see the next section. That
+row is why the **global** half of this table was vacuous when it was captured.
+It was re-run after issue #211 was fixed and now reads **254** on both scenes,
+with the silhouette still clean against 164 and 254 marked cells elsewhere —
+the post-fix table is in that section.
 
 **Reproduced.** Both scenes were re-run in an independent session before merge.
 The conclusion reproduces and the incidental counts do not, which is what a live
@@ -280,12 +284,35 @@ it the arm mount deliberately. And copying this window to the **local** costmap
 would be wrong: that layer is a `VoxelLayer` with a real z column (`origin_z`
 0.0, 16 × 0.08 m), where the height bounds do carry meaning.
 
-**Evidence.** `tests/integration/test_nav2_global_costmap_height_live.py`, on
-the live lane: a real `nav2_costmap_2d` reading the *shipped* config off disk,
+**Evidence, deterministic.** `tests/integration/test_nav2_global_costmap_height_live.py`,
+on the live lane: a real `nav2_costmap_2d` reading the *shipped* config off disk,
 under the measured `map → odom → base_link → base_scan` chain, marks a 1 m
 obstacle at cost 254 — and the paired control, with the pre-fix gate restored,
 marks nothing anywhere. Restoring the pre-fix config makes the first test fail
 with "the global costmap marked nothing anywhere".
+
+**Evidence, on the scenes.** The probe was re-run on both, same method and same
+host as the capture above, with only the four height parameters different:
+
+| global costmap | `robocasa_baguette` | `robocasa_deliver_straw` |
+| --- | ---: | ---: |
+| `max_cost_seen` | 0 → **254** | 0 → **254** |
+| `nonzero_cells_max` | 0 → **2818** | 0 → **4239** |
+| `lethal_cells_anywhere_max` | 0 → **164** | 0 → **254** |
+| chassis cells per sample | 138 | 136 |
+| **`LETHAL` cells inside the silhouette** | **0** | **0** |
+| probe verdict | `VACUOUS` → **`clean`** | `VACUOUS` → **`clean`** |
+
+That last pair of rows is the part that reaches past #211. The global half of
+the silhouette table at the top of this section was clean only because nothing
+was marked anywhere; it now reports `non_vacuous: true` and stays clean against
+164 and 254 marked cells elsewhere in the very same samples. Three runs, three
+clean verdicts. Raw output appended to
+`docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`.
+
+The **payload** half is still unmeasured on scenes — `attached_objects` stayed
+`0` on every run because no policy was dispatched and nothing was grasped. That
+is #108's own gate and #211 does not touch it.
 
 ## Nav2 is base-only
 
