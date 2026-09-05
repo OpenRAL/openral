@@ -1,4 +1,4 @@
-REAL artifacts from five collision-stack validation rounds on the project's DGX
+REAL artifacts from six collision-stack validation rounds on the project's DGX
 Spark, captured verbatim. Nothing here is hand-written: the `metadata.json`
 files are produced by the tool itself (`run` or `import-round`), from these
 files.
@@ -10,6 +10,8 @@ Producer:
         2026-08-22-harness-1/{baguette,sink_cup,fridge,utensil}/
         2026-08-23-master-s1/{baguette,sink_cup,fridge,utensil}/
         2026-08-23-nav143-s1/{baguette,sink_cup}/
+    spark:/home/allopart/workspace/openral-193-battery/outputs/validation-matrix/
+        2026-09-04-post200-2/sink_cup/
 
 The two `master-1` rounds ran stack tip 2edcf67c3b087958d475813fe19234c12e90698c
 (`2edcf67`, "fix(world-state): rasterize the octree by cube overlap, not centre
@@ -55,6 +57,24 @@ it had already spawned kept logging. There is no marker file and no usage
 banner, so the scene was originally bucketed `deadline-no-grasp` with both
 failure fields empty. Its `run_goal.log` is the dispatcher's TRACEBACK rather
 than a JSON status line, which is the other half of the same defect.
+
+`2026-09-04-post200-2` is a single scene from the post-#200 validation-matrix
+battery at `aceeca6`, kept for one stop only: the safety kernel's
+`kind=self a=panda_link5 b=panda_link7 min_distance_m=-0.0319657`. The same
+stop appeared in a second, independent arm of the same battery
+(`2026-09-04-post200-aon-4`, -0.0310588), which is not kept — one copy is
+enough to pin the defect.
+
+It is the first fixture carrying a LINK-VS-LINK self stop, and the harness
+scored it `estop-collision-false-positive` off `robot0_link5`'s 212.257 mm
+clearance to `island_island_group_main` — a link-vs-WORLD measurement quoted
+under a self-pair's identity, because the sim HAL's robot probe excludes the
+whole robot from the far side and can never produce a link-vs-link pair. The
+kernel was not wrong: reproduced offline from this stop's own recorded
+`joint_positions_rad` through `check_self_collision`, `box_box_distance` returns
+-31.9657 mm to six figures and the two links' exact convex hulls genuinely
+interpenetrate (~1.5 mm; origin inside conv(A-B) by LP). The fixture pins the
+verdict at `unadjudicated`.
 
 The third round, `2026-08-22-harness-1`, is the harness's FIRST live invocation.
 It died in all four scenes in under a second: `STACK_ARGV` pinned
@@ -110,6 +130,17 @@ sim\.estop_initial_configuration|place_allowance_active=1|\
     The dispatcher's output, complete and unmodified, from `run_xr1_full.py`
     (now `tools/_validation_matrix_dispatch.py`): its single JSON line, or — on
     `2026-08-23-nav143-s1` — the Python traceback it wrote instead.
+
+`2026-09-04-post200-2/sink_cup/run_deploy_excerpt.log`
+    Two lines of that scene's 497 KB deploy log, byte-for-byte, in file order:
+    its single `safety.collision` line and its single
+    `sim.estop_ground_truth_snapshot` line. Nothing else in the round is kept
+    and no `metadata.json` is derived, because the tests read this one through
+    `parse_kernel_collision` / `parse_json_log_line` directly rather than
+    through `verdicts`.
+
+        grep -h "safety\.collision" run_deploy.log
+        grep -h "sim\.estop_ground_truth_snapshot" run_deploy.log
 
 `2026-08-23-*/<scene>/run_monitor.jsonl`
     COMPLETE, unmodified. Two lines each; there was nothing else.

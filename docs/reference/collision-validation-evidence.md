@@ -1295,9 +1295,71 @@ drop, and it is not evidence that they did not.** It is a flag for a separate
 bisect, not a verdict. Everything here is one seed on one host, and the
 per-scene rates measure nothing broader.
 
+### 2026-09-04 — `post200-2` / `post200-aon-4`: a self stop the probe cannot see
+
+Two independent arms of the post-#200 battery at `aceeca6` stopped on the same
+scene (`sink_cup`) and the same pair, and the harness called both
+`estop-collision-false-positive`:
+
+```
+kernel:  safety.collision kind=self a=panda_link5 b=panda_link7 step=0
+         min_distance_m = -0.0319657        (arm A-on: -0.0310588)
+harness: nearest_tripping_party_m = 0.212256613   (arm A-on: 0.241554176)
+         discrepancy_m = 0.244  vs  admissible_gap_m = 0.08822
+         probe_distance_certified = True
+```
+
+**Both verdicts are withdrawn to `unadjudicated`, and the kernel is not
+implicated.** Two separate findings, on their own evidence:
+
+**The harness measured the wrong pair.** `nearest_tripping_party_m` came from
+`nearest_robot_world_pairs`, filtered to `body_a == robot0_link5`: link5's
+clearance to `island_island_group_main`, a kitchen island 212 mm away. The
+kernel had asked about link5 against *link7*. That set can never answer it —
+`sim_sensor_bridge`'s robot probe passes `other_excluded = attached |
+robot_body_ids`, excluding the whole robot from the far side, so **no** probed
+pair in any of the three sets has `robot0_*` on both sides. `party_b` reached no
+comparison at all; the selection branched on `involves_payload`, which is false
+for two bare links, and fell through to the world-stop path. The snapshot holds
+no evidence about link5-vs-link7, so no verdict can rest on it.
+`adjudicate_ground_truth` now says so; the fixture is
+`tests/unit/fixtures/validation_matrix/2026-09-04-post200-2/`.
+
+**The stop reproduces offline, and at hull fidelity it is real.** #197 records
+the adjudicated configuration in every collision E-stop, so this one was replayed
+straight through `check_self_collision` from its own recorded
+`joint_positions_rad`, against the shipped `robots/panda_mobile/robot.yaml`:
+
+| quantity | value |
+|---|---:|
+| `box_box_distance(link5, link7)` | **-31.9657 mm** (the logged number, to six figures) |
+| exact hull ∩ exact hull | **overlapping**, ~1.5 mm deep |
+
+The hulls were consulted: `box_hull = [0, 1, -1, -1, 2, -1, 3]` gives link5 a
+152-vertex and link7 a 102-vertex stage-2 hull, `validate_tight_geometry`
+returns `ok`, and `refine_self_pair` runs the GJK. #202 is doing exactly what it
+documents — the same replay reproduces its §9 table byte for byte (reset pose
+box -11.68 mm / hull +21.81 mm; 86.38 % box fires, 6.60 % hull fires, 967 real,
+max hull opening 22.72 mm, deepest real box gap -8.37 mm, shallowest false
+-36.64 mm over the 121×121 grid). This configuration is in the 6.60 %.
+
+**Open, and not fixed here: the kernel reports the OBB's depth for a stop the
+hulls adjudicated.** `hull_hull_distance` returns its `fallback` — the
+`box_box_distance` bound — whenever the hulls overlap, so a hull-adjudicated
+stop is published with the box's number. Here that is -31.97 mm for a ~1.5 mm
+interpenetration, a 20× overstatement, under the identity of a check #202 exists
+because the box "cannot be trusted here". §9.2's own `transport` figure is the
+same shape: the doc's hull gap of -5.64 mm comes from the independent oracle,
+and the kernel cannot report it — replayed, the kernel returns -11.68 mm, the
+box. This inflates every self-stop discrepancy the harness computes and every
+depth an operator reads. It is untouched here because it is
+`cpp/openral_safety_kernel/` and needs a safety-WG reviewer and a hazard-log
+entry (CLAUDE.md §3). Note the direction: the reported depth is *more*
+conservative than the truth, and the trip decision is unaffected.
+
 ## Standing caveats
 
-Eight things a reader should carry away, all of them stated by the artifacts
+Nine things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -1374,6 +1436,18 @@ themselves rather than inferred:
    [the 2026-08-25 correction](#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves)
    above; the older account is in
    [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
+
+9. **No verdict on a link-vs-link self stop is safe to cite before 2026-09-04.**
+   The ground-truth probe has never measured one robot link against another —
+   its robot side excludes the whole robot from the far side — so a
+   `kind=self` stop naming two bare links was scored against the tripping
+   link's clearance to the *world*, which answers a different question and is
+   always far larger. Every such stop therefore read `false-positive`. They
+   re-derive as `unadjudicated`. As with caveats 5, 6 and 8 this withdraws a
+   conclusion and reverses none: the one observed instance
+   (`panda_link5`/`panda_link7`, 2026-09-04) replays as a **genuine** overlap
+   of the two links' exact hulls. Closing this properly needs a link-vs-link
+   pair set in `sim.estop_ground_truth_snapshot`, which does not exist yet.
 
 ## Related
 
