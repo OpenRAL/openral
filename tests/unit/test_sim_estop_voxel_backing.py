@@ -45,6 +45,7 @@ import pytest
 from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
     collision_model_mesh_slop,
+    voxel_backing_for_cell,
     voxel_backing_record,
 )
 
@@ -351,6 +352,86 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
     assert pytest.approx(-(ay - oy) + ox, abs=1e-6) == rx
     assert pytest.approx((ax - ox) + oy, abs=1e-6) == ry
     assert pytest.approx(az, abs=1e-9) == rz
+
+
+def test_the_shared_cell_helper_carries_the_grids_rotation() -> None:
+    """The regression: the late-arrival caller used to drop the orientation.
+
+    ``voxel_backing_record`` has always honoured ``grid_orientation_xyzw`` (the
+    test above). The bug was in a *caller*: two sites unpacked a cached
+    ``/openral/world_voxels`` cell into its arguments, and only one passed the
+    rotation. The other — ``SimSensorBridge._late_voxel_backing``, which is the
+    path most stops take because the snapshot is never delayed for the kernel's
+    evidence — silently took the identity default and probed a cube the kernel
+    never stopped on, then reported a confident ``unbacked`` verdict about it.
+
+    Measured on a live ``robocasa_baguette`` carry: three world-collision stops,
+    every one decoding to a cell 2.9-3.1 m from the stopping link with 27 rays
+    cast and 0 hits. ``voxel_backing_for_cell`` is now the single place a cell
+    dict is unpacked, so the two paths cannot disagree again.
+    """
+    model, data = _model_data()
+    quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    cell = {
+        "index": _index_at((0.115, 0.0, 0.145)),
+        "origin": _GRID_ORIGIN,
+        "orientation": quat,
+        "resolution": _GRID_RES,
+        "size": _GRID_SIZE,
+    }
+    through_helper = voxel_backing_for_cell(
+        model,
+        data,
+        cell,
+        robot_body_ids=_robot_bodies(model),
+        attached_body_ids=frozenset(),
+        base_frame_body=_BASE_BODY,
+    )
+    rotated = voxel_backing_record(
+        model,
+        data,
+        voxel_index=int(cell["index"]),  # type: ignore[arg-type]
+        grid_origin=_GRID_ORIGIN,
+        grid_orientation_xyzw=quat,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    assert through_helper is not None
+    assert through_helper["base_xyz"] == rotated["base_xyz"], (
+        "the helper placed the cell somewhere the grid's own rotation does not"
+    )
+
+    identity = voxel_backing_record(
+        model,
+        data,
+        voxel_index=int(cell["index"]),  # type: ignore[arg-type]
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    assert through_helper["base_xyz"] != identity["base_xyz"], (
+        "the rotation made no difference here, so this fixture cannot catch the bug"
+    )
+
+
+def test_the_shared_cell_helper_declines_a_cell_with_no_index() -> None:
+    """A stop that named no voxel has no cube to probe, and says so with ``None``."""
+    model, data = _model_data()
+    assert (
+        voxel_backing_for_cell(
+            model,
+            data,
+            {"origin": _GRID_ORIGIN, "resolution": _GRID_RES, "size": _GRID_SIZE},
+            robot_body_ids=_robot_bodies(model),
+            attached_body_ids=frozenset(),
+            base_frame_body=_BASE_BODY,
+        )
+        is None
+    )
 
 
 def test_an_unset_grid_orientation_is_refused_not_read_as_identity() -> None:
