@@ -13,6 +13,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -44,7 +45,23 @@ namespace {
 
 class LifecycleKernelTest : public ::testing::Test {
 protected:
-  void SetUp() override { rclcpp::init(0, nullptr); }
+  void SetUp() override {
+    // Isolate this process from every other DDS participant on the host
+    // (#222). The kernel subscribes to `/openral/estop`, a global topic, and
+    // nothing else pins a domain: a concurrent `openral deploy sim` on the
+    // default domain asserted an E-stop and latched the node under test,
+    // failing `StateUnavailableDropAndRecoveryPublishSafetyStatus` with a
+    // `DROP_EXTERNAL_ESTOP` the test never sent. Measured 19/20 pass on the
+    // shared domain with that sim live, 20/20 with discovery off.
+    //
+    // OFF is stronger than a per-process ROS_DOMAIN_ID: every node these
+    // tests need lives in this process, and OFF removes the domain-uniqueness
+    // gamble entirely rather than shrinking it. Overwrites a caller's value
+    // on purpose — a test that can be contaminated by the environment is the
+    // defect, not the environment.
+    setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "OFF", 1);
+    rclcpp::init(0, nullptr);
+  }
   void TearDown() override { rclcpp::shutdown(); }
 
   /// Minimal envelope parameter overrides for a 3-DoF toy robot. Mirrors

@@ -321,6 +321,47 @@ the two is itself a finding. `place_allowance_active` is transcribed from the
 trip line, and the count of `place_allowance_active=1` disclosures anywhere in
 the run is recorded separately.
 
+### Adjudicating a link-vs-link self stop
+
+A stop naming two bare robot links is a different comparison from every other
+one the matrix scores, and it took three changes to become scorable at all:
+
+* **#208** stopped it being scored against *world* geometry. The rule branched on
+  `involves_payload` rather than on `stop.kind` and fell through to the
+  world-stop path, so `panda_link5`↔`panda_link7` at −31.97 mm was adjudicated
+  against link5's 212 mm clearance to a kitchen island. It became
+  `unadjudicated` — honest, but not an answer.
+* **#213** made the kernel disclose when its reported depth is the **OBB's
+  bound** rather than a hull measurement (`depth_is_box_bound`). GJK proves an
+  overlap but does not size one.
+* **#216** gave the HAL a `nearest_link_link_pairs` probe, so the pair the kernel
+  named can finally be measured.
+* **#221** measured the hull case's missing term: `tools/generate_tight_geometry.py`
+  now samples each declared hull's own overhang past its real source mesh and
+  ships it as `TightCollisionGeometry.hull_overhang_m`, published per link in
+  `adjudication_budget.collision_model_slop.links[<link>].hull_overhang_m`.
+
+Which budget applies is stated by the kernel, never guessed:
+
+| `depth_is_box_bound` | what the kernel measured | budget | outcome |
+| --- | --- | --- | --- |
+| `1` | the OBB's bound | `2 × corner_slop` (`adjudication_budget.link_link.admissible_gap_box_m`) | adjudicable |
+| `0` | the exact hulls | `hull_overhang_m(link_a) + hull_overhang_m(link_b)`, summed by `hal_admissible_gap_m` from `collision_model_slop.links` | adjudicable once **both** links have a measured overhang, else `unadjudicated` |
+
+The hull term is **per link, never maxed or doubled** the way the box term is
+(a consumer has both link names in hand): a link with no stage-2 hull, or a
+hull with no source mesh on disk to sample, ships no `hull_overhang_m` at all
+— never a silent `0` — and the pair it is part of stays `unadjudicated`.
+Charging the box budget instead would forgive a real overlap by up to twice
+the OBB corner slop, which on `panda_mobile` is 172 mm; the hull budget is
+two orders of magnitude tighter (tenths of a millimetre on every panda link
+with a hull), which is the point of measuring it at all.
+
+The grid-quantization fallback is a **voxel** term and is deliberately not
+reachable here: a link-vs-link stop has no voxel on either side, so charging it
+would budget a comparison the stop never made — the same class of error #208
+fixed.
+
 ## 5. Diffing rounds
 
 ```console

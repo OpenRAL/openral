@@ -124,6 +124,84 @@ def link_mesh_in_box_frame(
     return in_box
 
 
+def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
+    """Triangle indices for ``geom_name``'s mesh, local to its own vertex block.
+
+    Indexes the same vertex order :func:`link_mesh_in_box_frame` returns, so
+    ``faces`` from this function and ``points`` from that one describe one
+    consistent triangle mesh.
+    """
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
+    gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+    mesh_id = model.geom_dataid[gid]
+    start = model.mesh_faceadr[mesh_id]
+    count = model.mesh_facenum[mesh_id]
+    faces: Points = model.mesh_face[start : start + count].copy()
+    return faces
+
+
+def hull_overhang_m(
+    hull_points: Points, mesh_points: Points, mesh_faces: Points, *, samples_per_edge: int = 24
+) -> float:
+    """How far the hull's surface reaches past the real source mesh, in metres.
+
+    Containment (``mesh ⊆ hull``) is exact and definitional (facet halfspaces).
+    This is the other direction, and it has no equally cheap closed form: the
+    hull's own faces bridge over whatever concavities the real mesh has, and
+    the worst point of that bridge can fall anywhere on a facet, not only at a
+    hull vertex (which sits ON the mesh by construction and overhangs by
+    exactly 0). So this samples a barycentric grid on every hull facet and
+    measures each sample's distance to the real mesh surface, not merely to
+    the nearest mesh vertex.
+
+    Args:
+        hull_points: The hull's own vertices, box-frame, the same array
+            ``scipy.spatial.ConvexHull`` was built from.
+        mesh_points: Real mesh vertices, box-frame (:func:`link_mesh_in_box_frame`).
+        mesh_faces: Real mesh triangle indices into ``mesh_points``
+            (:func:`link_mesh_faces`).
+        samples_per_edge: Barycentric grid resolution per hull facet (24 gives
+            325 samples/facet). The measured max keeps creeping up a couple of
+            percent per doubling on every panda link tried -- this is a
+            sampled lower bound on the true continuous supremum, never an
+            exact one, which is why the caller pads it (see ``_emit``) rather
+            than shipping it raw.
+
+    Returns:
+        The sampled maximum distance, in metres, with NO margin applied.
+        ``_check`` re-samples independently, at a different resolution, to
+        guard against a shipped number a denser grid would exceed.
+    """
+    import numpy as np
+    import trimesh
+
+    # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
+    from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
+
+    mesh = _trimesh(mesh_points, mesh_faces)
+    hull = ConvexHull(hull_points)
+    n = samples_per_edge
+    bary = np.array(
+        [(i / n, j / n, (n - i - j) / n) for i in range(n + 1) for j in range(n + 1 - i)]
+    )
+    tris = hull_points[hull.simplices]  # (n_facets, 3, 3)
+    samples = np.einsum("fvc,sv->fsc", tris, bary).reshape(-1, 3)
+    # `closest_point` (and `mesh.nearest`) need `rtree`, an optional trimesh
+    # dependency this workspace does not pin. The naive brute-force query
+    # scales as samples x mesh-faces, which is a few thousand by a few hundred
+    # here -- fine for an offline, once-per-manifest generation step.
+    _, distances, _ = trimesh.proximity.closest_point_naive(mesh, samples)
+    return float(distances.max())
+
+
+def _trimesh(points: Points, faces: Points) -> Any:
+    import trimesh
+
+    return trimesh.Trimesh(vertices=points, faces=faces, process=False)
+
+
 def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> dict[str, Any]:
     """Build the DOP slabs and (when it fits the budget) the exact hull.
 
@@ -134,8 +212,10 @@ def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> di
     import numpy as np
     from openral_core.schemas import MAX_TIGHT_HULL_VERTICES
 
-    # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
-    from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
+    # mypy only requires the `import-untyped` ignore on this module's FIRST
+    # import site in the file (hull_overhang_m, above); a second one here is
+    # flagged as unused.
+    from scipy.spatial import ConvexHull
 
     axes = _dop_axes()
     proj = points @ axes.T
@@ -186,11 +266,20 @@ def _emit(robot_path: Path) -> int:
             continue
         pts = link_mesh_in_box_frame(xml, geom_name, geom.origin_xyz_rpy)
         derived = derive_tight_geometry(pts, geom.shape.half_extents_m)
+        overhang = None
+        if derived["hull_vertices_m"]:
+            import numpy as np
+
+            faces = link_mesh_faces(xml, geom_name)
+            hull_pts = np.asarray(derived["hull_vertices_m"], dtype=float)
+            sampled = hull_overhang_m(hull_pts, pts, faces)
+            overhang = _round_up_m(sampled * _HULL_OVERHANG_SAFETY_MARGIN)
         print(f"\n# --- {geom.link_name} ---")
         print(
             f"#   mesh vertices {len(pts)}, hull vertices {derived['_hull_vertex_count']}, "
             f"stage 2 {'on' if derived['_stage2'] else 'OFF (over the vertex budget)'}, "
             f"DOP inward margin {derived['_dop_inward_margin_m'] * 1e3:.4f} mm"
+            + (f", hull overhang {overhang * 1e3:.4f} mm" if overhang is not None else "")
         )
         print("    tight_geometry:")
         print("      dop_lo_m: [" + ", ".join(repr(v) for v in derived["dop_lo_m"]) + "]")
@@ -199,9 +288,27 @@ def _emit(robot_path: Path) -> int:
             print("      hull_vertices_m:")
             for v in derived["hull_vertices_m"]:
                 print("        - [" + ", ".join(repr(c) for c in v) + "]")
+            print(f"      hull_overhang_m: {overhang!r}")
         else:
             print("      hull_vertices_m: []")
     return 0
+
+
+# The sampled max keeps creeping up a couple of percent per grid doubling
+# (measured up to samples_per_edge=32 on every panda link with a stage-2
+# hull); this pads the shipped number well past that residual drift instead
+# of chasing convergence with an ever-finer, ever-slower grid.
+_HULL_OVERHANG_SAFETY_MARGIN = 1.2
+
+
+def _round_up_m(value: float, precision_m: float = 1e-6) -> float:
+    """Round a sampled distance up to the next ``precision_m``, never down.
+
+    The sampled maximum is a lower bound on the true continuous supremum; this
+    keeps the shipped number from ever quietly under-stating it by less than a
+    micron of rounding.
+    """
+    return math.ceil(value / precision_m) * precision_m
 
 
 def _check(robot_path: Path) -> int:
@@ -245,6 +352,26 @@ def _check(robot_path: Path) -> int:
                 failures.append(
                     f"{geom.link_name}: mesh escapes its declared hull by {slack * 1e3:.6f} mm"
                 )
+            # The other direction: re-sample the hull's overhang past the real
+            # mesh, at a FINER grid than generation used, and refuse a shipped
+            # number a denser sample would exceed. A generator checking its own
+            # output at the same resolution would just reproduce it -- the
+            # margin in `_emit` is what makes this independent re-sample a
+            # real check rather than a coin flip against grid placement.
+            faces = link_mesh_faces(xml, geom_name)
+            fresh = hull_overhang_m(hull_pts, pts, faces, samples_per_edge=32)
+            declared = tight.hull_overhang_m
+            if declared is None:
+                failures.append(f"{geom.link_name}: ships a hull but no hull_overhang_m")
+            elif fresh > declared + 1e-6:
+                failures.append(
+                    f"{geom.link_name}: hull_overhang_m={declared * 1e3:.4f} mm understates the "
+                    f"resampled overhang of {fresh * 1e3:.4f} mm"
+                )
+        elif tight.hull_overhang_m is not None:
+            failures.append(
+                f"{geom.link_name}: hull_overhang_m is set but hull_vertices_m is empty"
+            )
         print(
             f"{geom.link_name}: mesh {len(pts)} vtx, declared hull "
             f"{len(tight.hull_vertices_m)} vtx, mesh-outside-DOP {worst * 1e3:+.9f} mm"

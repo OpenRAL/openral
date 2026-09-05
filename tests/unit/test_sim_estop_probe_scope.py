@@ -464,3 +464,96 @@ def test_unattached_stop_emits_no_payload_probes() -> None:
     robot_world = snapshot["nearest_probe_coverage"]
     assert isinstance(robot_world, dict)
     assert robot_world["side_geoms"] == robot_world["side_geoms_probed"]
+
+
+def test_link_link_self_pairs_are_probed(caplog: pytest.LogCaptureFixture) -> None:
+    """#216: the pair a `kind=self` stop between two bare links names.
+
+    Before this the probe could not produce one at all — every other probe
+    excludes the whole robot from its far side — so the 2026-09-04 battery's
+    `panda_link5`/`panda_link7` stop had no ground truth, and the harness scored
+    it against a kitchen island instead (#208).
+    """
+    del caplog
+    model, data = _model_data()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+    )
+
+    pairs = snapshot["nearest_link_link_pairs"]
+    assert isinstance(pairs, list) and pairs, "the arm's own links must be measurable"
+    for pair in pairs:
+        # Both sides are robot links. Nothing from the world may leak in.
+        assert str(pair["body_a"]).startswith(("robot0_", "mobilebase0_"))
+        assert str(pair["body_b"]).startswith(("robot0_", "mobilebase0_"))
+        # A link's own geoms touch by construction; the kernel skips the pair
+        # (`lb == lb2`) and a 0 m self-pair would sort straight to the top and
+        # bury whichever pair actually stopped the run.
+        assert pair["body_a"] != pair["body_b"]
+
+    # The mirror is gone too: with one body set on both sides every pair would
+    # otherwise appear as (a, b) and (b, a), doubling the records and halving
+    # the effective `max_pairs`.
+    seen = [frozenset({str(p["body_a"]), str(p["body_b"])}) for p in pairs]
+    assert len(seen) == len({frozenset(s) for s in seen})
+
+    coverage = snapshot["nearest_link_link_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["certified_pairs"] >= 1
+
+
+def test_the_link_link_budget_is_published_and_carries_no_voxel_term() -> None:
+    """A link-vs-link stop has an OBB on both sides and no voxel on either.
+
+    Charging it the world block's `corner_slop + voxel_half_diagonal` would
+    budget a comparison the stop never made. The BOX case's budget is a
+    snapshot-wide upper bound (`2 * max_corner_slop`); the HULL case has no
+    snapshot-wide equivalent, because a hull's overhang past its source mesh
+    is a per-link quantity a consumer sums from `collision_model_slop.links`
+    for the two specific links the kernel named (openral#221) — never maxed
+    across links the way the box term is.
+    """
+    model, data = _model_data()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+        description=_panda_mobile(),
+    )
+
+    budget = snapshot["adjudication_budget"]
+    assert isinstance(budget, dict)
+    block = budget["link_link"]
+    assert isinstance(block, dict)
+    slop = float(budget["max_corner_slop_m"])
+    assert block["admissible_gap_box_m"] == pytest.approx(2.0 * slop)
+    assert "admissible_gap_hull_m" not in block
+    # Both sides are links, so the world block's voxel term must not appear here.
+    assert "voxel_half_diagonal_m" not in block
+
+
+def test_hull_overhang_is_published_per_link_for_every_stage_two_hull() -> None:
+    """The #221 term: how far each link's declared hull reaches past its mesh.
+
+    `panda_link1` runs the 26-DOP only (its hull is over the vertex budget),
+    so it carries no `hull_overhang_m` at all -- never a silent `0`.
+    """
+    model, data = _model_data()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+        description=_panda_mobile(),
+    )
+
+    links = snapshot["adjudication_budget"]["collision_model_slop"]["links"]  # type: ignore[index]
+    for name in ("panda_link2", "panda_link5", "panda_link7"):
+        overhang = links[name]["hull_overhang_m"]
+        assert isinstance(overhang, float)
+        assert overhang > 0.0
+    assert links["panda_link1"]["hull_overhang_m"] is None
