@@ -1279,8 +1279,22 @@ def _link_link_snapshot(
     *,
     pair_distance_m: float,
     max_corner_slop_m: float = 0.0862,
+    hull_overhang_a_m: float | None = None,
+    hull_overhang_b_m: float | None = None,
 ) -> dict[str, object]:
-    """A snapshot carrying a link<->link pair, in the shape the HAL emits."""
+    """A snapshot carrying a link<->link pair, in the shape the HAL emits.
+
+    ``hull_overhang_a_m``/``hull_overhang_b_m`` land in
+    ``collision_model_slop.links``, keyed by the kernel's own link names
+    (``panda_link5``/``panda_link7``) — the shape #221 added, and the one
+    ``hal_admissible_gap_m`` reads for a hull-fidelity stop. Omitted (the
+    default) reproduces a snapshot recorded before #221 measured anything.
+    """
+    links_slop: dict[str, object] = {}
+    if hull_overhang_a_m is not None:
+        links_slop["panda_link5"] = {"hull_overhang_m": hull_overhang_a_m}
+    if hull_overhang_b_m is not None:
+        links_slop["panda_link7"] = {"hull_overhang_m": hull_overhang_b_m}
     return {
         "nearest_robot_world_pairs": [
             {
@@ -1321,23 +1335,25 @@ def _link_link_snapshot(
         "adjudication_budget": {
             "max_corner_slop_m": max_corner_slop_m,
             "admissible_gap_m": 0.08822,
+            "collision_model_slop": {"links": links_slop},
             "link_link": {
                 "max_corner_slop_m": max_corner_slop_m,
                 "admissible_gap_box_m": round(2.0 * max_corner_slop_m, 6),
-                "admissible_gap_hull_m": None,
             },
         },
     }
 
 
-def _link_link_stop(*, depth_is_box_bound: bool) -> ValidationStopEvidence:
+def _link_link_stop(
+    *, depth_is_box_bound: bool, min_distance_m: float = -0.0319657
+) -> ValidationStopEvidence:
     return ValidationStopEvidence(
         kind="self",
         party_a="panda_link5",
         party_b="panda_link7",
         horizon_step=0,
-        min_distance_m=-0.0319657,
-        sweep_min_distance_m=-0.0319657,
+        min_distance_m=min_distance_m,
+        sweep_min_distance_m=min_distance_m,
         depth_is_box_bound=depth_is_box_bound,
     )
 
@@ -1359,14 +1375,15 @@ def test_a_box_bounded_self_stop_is_adjudicated_against_the_link_link_pair() -> 
     assert adjudication.nearest_tripping_party_m == pytest.approx(-0.0015)
 
 
-def test_a_hull_adjudicated_self_stop_stays_unadjudicated_for_want_of_a_budget() -> None:
+def test_a_hull_self_stop_stays_unadjudicated_when_a_link_has_no_measured_overhang() -> None:
     """Probed, but not scorable — and the reason says which of the two it is.
 
-    Without `depth_is_box_bound` the kernel judged the pair at hull fidelity, and
-    no admissible gap exists for a hull-to-mesh comparison: the hull's overhang
-    past its source mesh is measured nowhere (openral#215). Charging the box
-    budget anyway would forgive a real overlap by up to twice the corner slop,
-    which on `panda_mobile` is 172 mm.
+    Without `depth_is_box_bound` the kernel judged the pair at hull fidelity.
+    #221 can charge `hull_overhang_m(a) + hull_overhang_m(b)` once BOTH links
+    have one measured, but this snapshot has neither (a pre-#221 recording, or
+    a hull with no source mesh) — so there is still no admissible gap, and
+    charging the box budget anyway would forgive a real overlap by up to twice
+    the corner slop, which on `panda_mobile` is 172 mm.
     """
     snapshot = _link_link_snapshot(pair_distance_m=0.004)
     adjudication = validation_matrix.adjudicate_ground_truth(
@@ -1375,6 +1392,39 @@ def test_a_hull_adjudicated_self_stop_stays_unadjudicated_for_want_of_a_budget()
     assert adjudication is not None
     assert adjudication.verdict == "unadjudicated"
     assert "hull fidelity" in adjudication.unadjudicated_reason
+    assert adjudication.admissible_gap_m is None
+
+
+def test_a_hull_self_stop_is_adjudicated_once_both_links_have_a_measured_overhang() -> None:
+    """#221 closes the gap #220 could only disclose: hull fidelity now scores.
+
+    Hull-fidelity budgets are two orders of magnitude tighter than the OBB
+    corner-slop budget (tenths of a millimetre here, not tens) — a hull
+    comparison should barely need forgiving, and asymmetric per-link values
+    prove the budget is a genuine sum, not a maxed or doubled term the way the
+    box budget is.
+    """
+    snapshot = _link_link_snapshot(
+        pair_distance_m=0.0001,
+        hull_overhang_a_m=0.00013,
+        hull_overhang_b_m=0.00007,
+    )
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=False, min_distance_m=-0.00005), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "within-quantization"
+    assert adjudication.admissible_gap_m == pytest.approx(0.0002)
+
+
+def test_a_hull_budget_needs_both_links_measured_not_just_one() -> None:
+    """One measured overhang is not a half-budget — it is no budget at all."""
+    snapshot = _link_link_snapshot(pair_distance_m=0.0001, hull_overhang_a_m=0.00013)
+    adjudication = validation_matrix.adjudicate_ground_truth(
+        snapshot, _link_link_stop(depth_is_box_bound=False, min_distance_m=-0.00005), 0.025
+    )
+    assert adjudication is not None
+    assert adjudication.verdict == "unadjudicated"
     assert adjudication.admissible_gap_m is None
 
 

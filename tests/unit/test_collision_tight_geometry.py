@@ -110,6 +110,32 @@ def test_link2_ships_its_exact_hull(panda: RobotDescription) -> None:
     assert len(link2.tight_geometry.hull_vertices_m) <= MAX_TIGHT_HULL_VERTICES
 
 
+def test_hull_overhang_is_measured_for_every_stage_two_link_and_pinned(
+    panda: RobotDescription,
+) -> None:
+    """The #221 term the offline adjudicator sums per pair, pinned to a value.
+
+    Pinned (not merely "> 0") so a mesh, hull, or sampling-margin change that
+    moves the number is a deliberate re-derivation -- caught here -- rather
+    than a silent drift the hazard entry never learns about. `panda_link1`
+    ships no stage-2 hull, so it gets no overhang at all, never a `0`.
+    """
+    expected_m = {
+        "panda_link2": 0.000217,
+        "panda_link5": 0.000259,
+        "panda_link7": 8.9e-05,
+    }
+    link1 = next(g for g in panda.collision_geometry if g.link_name == "panda_link1")
+    assert link1.tight_geometry is not None
+    assert link1.tight_geometry.hull_overhang_m is None
+    for geom in _declared(panda):
+        if geom.link_name == "panda_link1":
+            continue
+        tight = geom.tight_geometry
+        assert tight is not None
+        assert tight.hull_overhang_m == pytest.approx(expected_m[geom.link_name], abs=1e-9)
+
+
 def test_every_declared_dop_sits_inside_its_shipped_box(panda: RobotDescription) -> None:
     """`26-DOP ⊆ shipped OBB` — the link that keeps the broad-phase window correct.
 
@@ -245,6 +271,31 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
         )
         # And the DOP is strictly tighter than the box on every direction it bounds.
         assert box_excess > want_dop, f"{geom.link_name} would not be a tightening"
+
+
+def test_hull_overhang_without_a_hull_is_refused_at_the_manifest_boundary() -> None:
+    """A stage-1-only link has no hull to overhang; `hull_overhang_m` must say so.
+
+    Guards the #221 invariant the schema states but nothing else enforces:
+    the field is never a stand-in for "no hull declared".
+    """
+    with pytest.raises(ValueError, match="there is no hull to overhang"):
+        TightCollisionGeometry(
+            dop_lo_m=(-0.05,) * len(DOP_AXES),
+            dop_hi_m=(0.05,) * len(DOP_AXES),
+            hull_overhang_m=0.0002,
+        )
+
+
+def test_a_negative_hull_overhang_is_refused_at_the_manifest_boundary() -> None:
+    """Never defaulted to 0, and never negative either -- it is a distance."""
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        TightCollisionGeometry(
+            dop_lo_m=(-0.05,) * len(DOP_AXES),
+            dop_hi_m=(0.05,) * len(DOP_AXES),
+            hull_vertices_m=((0.0, 0.0, 0.0),),
+            hull_overhang_m=-0.0001,
+        )
 
 
 def test_a_hull_that_escapes_its_dop_is_refused_at_the_manifest_boundary() -> None:

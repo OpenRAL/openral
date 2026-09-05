@@ -509,9 +509,12 @@ def test_the_link_link_budget_is_published_and_carries_no_voxel_term() -> None:
     """A link-vs-link stop has an OBB on both sides and no voxel on either.
 
     Charging it the world block's `corner_slop + voxel_half_diagonal` would
-    budget a comparison the stop never made. The hull case is deliberately
-    `None`: the hull's own overhang past its source mesh is measured nowhere,
-    so such a stop is not adjudicable (openral#215).
+    budget a comparison the stop never made. The BOX case's budget is a
+    snapshot-wide upper bound (`2 * max_corner_slop`); the HULL case has no
+    snapshot-wide equivalent, because a hull's overhang past its source mesh
+    is a per-link quantity a consumer sums from `collision_model_slop.links`
+    for the two specific links the kernel named (openral#221) — never maxed
+    across links the way the box term is.
     """
     model, data = _model_data()
     snapshot = estop_ground_truth_snapshot(
@@ -528,6 +531,29 @@ def test_the_link_link_budget_is_published_and_carries_no_voxel_term() -> None:
     assert isinstance(block, dict)
     slop = float(budget["max_corner_slop_m"])
     assert block["admissible_gap_box_m"] == pytest.approx(2.0 * slop)
-    assert block["admissible_gap_hull_m"] is None
+    assert "admissible_gap_hull_m" not in block
     # Both sides are links, so the world block's voxel term must not appear here.
     assert "voxel_half_diagonal_m" not in block
+
+
+def test_hull_overhang_is_published_per_link_for_every_stage_two_hull() -> None:
+    """The #221 term: how far each link's declared hull reaches past its mesh.
+
+    `panda_link1` runs the 26-DOP only (its hull is over the vertex budget),
+    so it carries no `hull_overhang_m` at all -- never a silent `0`.
+    """
+    model, data = _model_data()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        probe_body_ids=kernel_checked_body_ids(model, _panda_mobile()),
+        description=_panda_mobile(),
+    )
+
+    links = snapshot["adjudication_budget"]["collision_model_slop"]["links"]  # type: ignore[index]
+    for name in ("panda_link2", "panda_link5", "panda_link7"):
+        overhang = links[name]["hull_overhang_m"]
+        assert isinstance(overhang, float)
+        assert overhang > 0.0
+    assert links["panda_link1"]["hull_overhang_m"] is None

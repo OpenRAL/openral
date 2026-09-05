@@ -621,16 +621,40 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
         # Link vs link (#216). Two OBBs, no voxel and no payload — or, since
         # #202, two exact HULLS. Which one the kernel used is stated by the
         # kernel rather than guessed: `depth_is_box_bound` (#213) means the
-        # reported depth is the OBB's bound, so the box term applies. Without
-        # it the pair was judged at hull fidelity, and the hull's own overhang
-        # past the mesh is measured nowhere — there is no budget to return, and
-        # the caller must leave such a stop unadjudicated rather than charge it
-        # a box budget it did not earn.
+        # reported depth is the OBB's bound, so the box term applies.
         link_block = budget.get("link_link")
-        if isinstance(link_block, dict) and stop.depth_is_box_bound:
+        if not isinstance(link_block, dict):
+            return None
+        if stop.depth_is_box_bound:
             return _as_float(link_block.get("admissible_gap_box_m"))
-        return None
+        return _link_link_hull_gap_m(budget, stop)
     return _as_float(budget.get("admissible_gap_m"))
+
+
+def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
+    """The hull-fidelity half of :func:`hal_admissible_gap_m` (#221).
+
+    The box term above is a snapshot-wide upper bound and needs no pair
+    identity; the hull term does not have that luxury -- a hull's overhang
+    past its source mesh is a PER-LINK quantity (never maxed across links),
+    so it is summed here from the two specific links the kernel named rather
+    than published as one snapshot-wide number. Either link missing a
+    measured overhang (no stage-2 hull, or a hull with no source mesh) leaves
+    the pair with no budget to charge.
+    """
+    slop = budget.get("collision_model_slop")
+    links = slop.get("links") if isinstance(slop, dict) else None
+    if not isinstance(links, dict):
+        return None
+    link_a = links.get(stop.party_a)
+    link_b = links.get(stop.party_b)
+    if not isinstance(link_a, dict) or not isinstance(link_b, dict):
+        return None
+    overhang_a = _as_float(link_a.get("hull_overhang_m"))
+    overhang_b = _as_float(link_b.get("hull_overhang_m"))
+    if overhang_a is None or overhang_b is None:
+        return None
+    return round(overhang_a + overhang_b, 6)
 
 
 def adjudicate_ground_truth(
@@ -750,10 +774,10 @@ def adjudicate_ground_truth(
     #
     # #216 gave the HAL a link<->link probe, so a snapshot that carries one can
     # answer the question after all. A stop the kernel judged at HULL fidelity
-    # still cannot be scored — `hal_admissible_gap_m` returns no budget for it,
-    # because the hull's overhang past the mesh is measured nowhere — but it is
-    # the missing *budget* that stops it, not a missing pair, and the two are
-    # worth keeping distinct in the reason.
+    # scores only when #221's per-link `hull_overhang_m` is measured for BOTH
+    # links `hal_admissible_gap_m` names; otherwise it still cannot be scored,
+    # and it is the missing *budget* that stops it, not a missing pair — the
+    # two are worth keeping distinct in the reason.
     self_pair = stop.kind == "self" and not stop.involves_payload
     self_pair_unprobed = self_pair and not link_link
 
@@ -826,17 +850,19 @@ def adjudicate_ground_truth(
         )
     elif self_pair and budget is None:
         # The pair WAS probed (#216) — what is missing is a term to judge it by.
-        # Both links ship stage-2 hulls and the kernel did not flag
-        # `depth_is_box_bound`, so it judged them at hull fidelity, and the
-        # hull's own overhang past the source mesh is measured nowhere. Charging
-        # the box budget here would forgive a real overlap by up to twice the
-        # OBB corner slop.
+        # The kernel did not flag `depth_is_box_bound`, so it judged the pair
+        # at hull fidelity, and #221 charges that a `hull_overhang_m(a) +
+        # hull_overhang_m(b)` budget when both links have one measured. This
+        # branch is reached only when at least one does not -- no stage-2 hull
+        # on that link, or a hull with no source mesh on disk to measure
+        # against (never defaulted to 0). Charging the box budget instead would
+        # forgive a real overlap by up to twice the OBB corner slop.
         verdict = "unadjudicated"
         reason = (
             f"the kernel judged the self-pair {stop.party_a!r}/{stop.party_b!r} at hull "
-            "fidelity (depth_is_box_bound is not set), and no admissible gap is "
-            "published for a hull-to-mesh comparison — the hull's overhang past its "
-            "source mesh is not measured anywhere. See openral#215"
+            "fidelity (depth_is_box_bound is not set), and at least one of the two links "
+            "has no measured hull_overhang_m, so no admissible gap can be charged for "
+            "this hull-to-mesh comparison. See openral#221"
         )
     elif budget is None:
         verdict = "unadjudicated"
