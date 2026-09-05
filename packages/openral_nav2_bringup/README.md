@@ -152,17 +152,18 @@ so nothing was ever grasped), so the payload half is unmeasured there. Both
 gaps are exactly what the deterministic sweep covers, and it is the one with a
 control.
 
-### A third defect this surfaced, not yet fixed (issue #212)
+### A third defect this surfaced — fixed here (issue #212)
 
-**A self-return that reaches the cost grid once is permanent.** The filter fails
-open by design — a scan it cannot place (no `base_frame <- scan_frame` TF yet,
-an unreadable manifest, a degenerate polygon) is republished untouched, which is
-the more-obstacles direction and is the right call in isolation. What was not
-recorded is what happens next: the filter then removes *exactly the beam whose
-ray would have cleared that cell*, so the mark it let through can never be
-retracted.
+**A self-return that reached the cost grid once was permanent.** The filter
+fails open by design — a scan it cannot place (no `base_frame <- scan_frame` TF
+yet, an unreadable manifest, a degenerate polygon) is republished untouched,
+which is the more-obstacles direction and is the right call for the payload
+half. It is not the right call for the self half, because there is no next
+scan: the working filter removes *exactly the beam whose ray would have cleared
+that cell*, so the mark it let through can never be retracted.
 
-Measured on a real `nav2_costmap_2d` with this package's own topic wiring:
+Measured on a real `nav2_costmap_2d` with this package's own topic wiring and
+`footprint_clearing_enabled: False`:
 
 | phase | scan on `/openral/nav2/scan` | cells marked inside the chassis |
 | --- | --- | ---: |
@@ -174,17 +175,43 @@ Phase 3 is the control: Nav2's clearing works fine, there simply has to *be* a
 ray. `collision_monitor` reads the same topic and has no costmap-side clearing
 at all.
 
-The obvious fix — write `range_max` instead of `inf` for a dropped beam, so it
-raytrace-clears out to `raytrace_max_range` and marks nothing — is **not**
-obviously safe: it converts the filter from "leave the map alone" to "actively
-erase 3 m along this bearing", so a beam dropped in error would delete a real
-obstacle. That is the fail-closed property #143 was built around, and reversing
-it is a decision, not a patch. Recorded rather than changed here.
+**The fix is to make phase 1 impossible, not to undo it.** While a self-polygon
+is configured and its TF has never resolved, the node now publishes **nothing**
+— an observation source that has not started is strictly better than one that
+starts by lying. The window is bounded by `self_tf_grace_s` (default 5 s),
+after which it reverts to pass-through and logs an error, because a
+permanently blind Nav2 (a mistyped `base_frame`) is the worse of the two
+failures. The gate arms once: a TF gap *after* the first successful resolve
+still fails open, which is the one-scan-at-a-time case the payload half's
+reasoning already covers.
 
-The live-lane sweep in `tests/integration/test_nav2_scan_filter_live.py` gates
-its costmap on the filter's own output for this reason: it asserts the steady
-state, and this transient is why that gate exists rather than being a
-convenience.
+**What was rejected, and why it is not a judgement call.** The obvious
+alternative is to make the map self-healing: write `range_max` instead of `inf`
+for a dropped beam, so Nav2 raytraces the bearing clear and marks nothing. Its
+stated justification is that a chassis-dropped beam's endpoint is provably
+inside the manifest polygon, so there is nothing real along it to erase — but
+that covers the wrong segment. Nav2 clears the ray out to `raytrace_max_range`
+(3.0 m here), an order of magnitude past the chassis, and a bearing on which
+the chassis returns is one the sensor is *permanently* occluded on, so the
+cells that ray erases were marked from other robot poses and nothing on that
+bearing will ever re-mark them. Measured, and now pinned as a test
+(`test_raytrace_clearing_a_dropped_beam_would_erase_a_real_obstacle`): a real
+obstacle 0.25 m past the chassis edge, already lethal in the grid, is deleted
+by one such beam. A dropped beam stays `inf`.
+
+**The residual.** A mark that does land inside the chassis is freed by Nav2's
+own `footprint_clearing_enabled` (default `True`, and not overridden in
+`config/nav2_panda_mobile.yaml`), which is the standing mitigation in the
+shipped config — the measurement above turns it off precisely so the filter is
+what is being measured. It frees cells whose *centre* falls inside the
+published polygon, so a cell straddling the boundary is not reached. That band
+is under one cell wide and only reachable through the bounded grace fallback
+above; it is not separately mitigated.
+
+The live-lane sweep in `tests/integration/test_nav2_scan_filter_live.py` still
+gates its costmap on the filter's own output: the gate makes the node's
+*startup* safe, and the sweep asserts the steady state.
+
 
 ### A second defect this surfaced, not yet fixed (issue #211)
 

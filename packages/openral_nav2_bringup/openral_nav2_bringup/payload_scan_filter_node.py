@@ -90,6 +90,40 @@ no world state at all republishes the scan **unfiltered**. That leaves the
 payload in the costmap, which makes Nav2 more cautious, never less — and it
 keeps the output topic alive, because a costmap whose only observation source
 went silent is a costmap that stops seeing the room.
+
+**Except at startup, where pass-through is not conservative** (#212). Fail-open
+reasons about one scan at a time, and for the payload half that is the whole
+story — a payload return that reaches the grid is cleared by the next scan's
+ray along the same bearing. The *self* half has no such next scan: once the
+filter starts working it removes exactly the beam whose ray would have cleared
+the cell it let through, so a single unfiltered ring published during the TF
+warm-up marks the chassis into the cost grid **permanently**. Measured: 32
+cells survived 20 s of all-``inf`` filtered scans and cleared only when real
+returns were put on the same bearings. Nav2's own ``footprint_clearing_enabled``
+(default ``True``) frees the cells whose *centre* falls inside the published
+polygon and is the standing mitigation in the shipped config, but it does not
+reach a cell straddling the boundary, and ``collision_monitor`` has no costmap
+at all.
+
+So while a self-polygon is configured and ``base_frame <- scan_frame`` has
+never yet resolved, this node publishes **nothing**: an observation source that
+has not started is strictly better than one that starts by lying. That window
+is bounded by ``self_tf_grace_s`` — after it the node reverts to pass-through
+and says so loudly, because a permanently blind Nav2 (a mistyped
+``base_frame``, say) is the worse failure of the two. The gate arms once: a TF
+gap *after* the first successful resolve still fails open, which is the
+one-scan-at-a-time case the paragraph above covers.
+
+What this node deliberately does **not** do is make the map self-healing by
+writing ``range_max`` for a dropped beam so Nav2 raytraces it clear. That
+reverses the fail direction in a way that is worse than the phantom it removes:
+Nav2 clears the whole ray out to ``raytrace_max_range`` (3.0 m in the shipped
+config), and a bearing on which the chassis returns is a bearing the sensor is
+*permanently* occluded on — so the erased cells are ones marked from other
+robot poses, which nothing on that bearing can ever re-mark. Measured, in
+``tests/integration/test_nav2_scan_filter_live.py``: a real obstacle 0.25 m
+past the chassis edge is deleted from the cost grid by one such beam. A dropped
+beam stays ``inf``.
 """
 
 from __future__ import annotations
@@ -404,6 +438,7 @@ def main(args: Any = None) -> None:
             self.declare_parameter("base_frame", "")
             self.declare_parameter("self_margin_m", 0.0)
             self.declare_parameter("circle_samples", 12)
+            self.declare_parameter("self_tf_grace_s", 5.0)
 
             gp = self.get_parameter
             self._margin_m = gp("payload_margin_m").get_parameter_value().double_value
@@ -418,6 +453,18 @@ def main(args: Any = None) -> None:
             self._state_ns: int | None = None
             self._warned_passthrough = False
             self._warned_no_self_filter = False
+
+            # Startup readiness gate (#212). Until `base_frame <- scan_frame`
+            # resolves once, a scan published here can mark the chassis into
+            # the cost grid with nothing able to clear it again, so nothing is
+            # published at all. Bounded, because a node that never publishes is
+            # a Nav2 that never sees the room.
+            self._self_tf_grace_ns = int(
+                gp("self_tf_grace_s").get_parameter_value().double_value * 1e9
+            )
+            self._self_tf_ready = False
+            self._first_scan_ns: int | None = None
+            self._warned_grace_expired = False
 
             # The self-filter's region is the manifest's BARE chassis outline.
             # Without a manifest there is no outline to prove a return is the
@@ -525,6 +572,35 @@ def main(args: Any = None) -> None:
                 (float(q.x), float(q.y), float(q.z), float(q.w)),
             )
 
+        def _gate_allows_publishing(self, self_filter_live: bool) -> bool:
+            """Whether this scan may go out at all — the #212 startup gate.
+
+            Returns ``True`` unless a self-polygon is configured, its TF has
+            never yet resolved, and the grace window is still open. See the
+            module docstring for why the self half cannot fail open the way the
+            payload half can.
+            """
+            if self_filter_live:
+                self._self_tf_ready = True
+                return True
+            if self._self_polygon is None or self._self_tf_ready:
+                return True
+
+            now = self.get_clock().now().nanoseconds
+            if self._first_scan_ns is None:
+                self._first_scan_ns = now
+            if now - self._first_scan_ns < self._self_tf_grace_ns:
+                return False
+            if not self._warned_grace_expired:
+                self._warned_grace_expired = True
+                self.get_logger().error(
+                    f"self-filter TF never resolved within {self._self_tf_grace_ns / 1e9:.1f}s; "
+                    f"republishing /scan UNFILTERED so Nav2 is not blind. Every chassis return "
+                    f"now reaching the cost grid is permanent (see #212) — check `base_frame` "
+                    f"({self._base_frame!r}) and the TF chain to the scan frame."
+                )
+            return True
+
         def _on_scan(self, msg: LaserScan) -> None:
             # The two halves are resolved independently, because their unsafe
             # directions are opposite. A payload we cannot place must stay in
@@ -559,6 +635,9 @@ def main(args: Any = None) -> None:
                             f"self-returns left in /scan: cannot place {scan_frame!r} in "
                             f"{self._base_frame!r} ({exc})"
                         )
+
+            if not self._gate_allows_publishing(self_polygon is not None):
+                return
 
             if not placements and self_polygon is None:
                 self._pub.publish(msg)
