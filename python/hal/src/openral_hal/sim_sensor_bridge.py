@@ -1374,6 +1374,53 @@ def voxel_backing_record(
     return record
 
 
+def voxel_backing_for_cell(
+    model: Any,  # reason: optional MuJoCo pybind type
+    data: Any,  # reason: optional MuJoCo pybind type
+    cell: Mapping[str, Any],
+    *,
+    robot_body_ids: frozenset[int],
+    attached_body_ids: frozenset[int],
+    base_frame_body: str | None,
+) -> dict[str, object] | None:
+    """:func:`voxel_backing_record` for one cached ``/openral/world_voxels`` cell.
+
+    The single place a cell dict is unpacked into that function's arguments, so
+    the two callers cannot disagree about which of them they pass -- and they
+    did. The in-snapshot path carried ``grid_orientation_xyzw``; the late path
+    (:meth:`SimSensorBridge._late_voxel_backing`) omitted it and silently took
+    the identity default, which places the probe cube by the OctoMap lattice's
+    axes only when those happen to be the base frame's. On a rotated base they
+    are not: three world-collision stops measured on a live
+    ``robocasa_baguette`` carry decoded to cells 2.9-3.1 m from the stopping
+    link, and every one reported ``verdict: "unbacked"`` with 27 rays cast and
+    0 hits -- a confident verdict about the wrong cube, which
+    :func:`voxel_backing_record`'s own contract calls worse than none.
+
+    That is the path that matters. The snapshot is never delayed for the
+    kernel's evidence, so the late path is where most stops are adjudicated:
+    14 of 15 across the 2026-08-26 battery, and 3 of 3 on the runs above.
+
+    Returns ``None`` when the cell names no index.
+    """
+    if cell.get("index") is None:
+        return None
+    return voxel_backing_record(
+        model,
+        data,
+        voxel_index=int(cell["index"]),
+        grid_origin=list(cell.get("origin", (0.0, 0.0, 0.0))),
+        # The grid's lattice is the OctoMap's; without its rotation this
+        # probes a cube the kernel never stopped on.
+        grid_orientation_xyzw=list(cell.get("orientation", (0.0, 0.0, 0.0, 1.0))),
+        grid_resolution=float(cell.get("resolution", 0.0)),
+        grid_size=list(cell.get("size", (0, 0, 0))),
+        robot_body_ids=robot_body_ids,
+        attached_body_ids=attached_body_ids,
+        base_frame_body=cell.get("frame_body", base_frame_body),
+    )
+
+
 def estop_ground_truth_snapshot(
     model: Any,
     data: Any,
@@ -1572,20 +1619,14 @@ def estop_ground_truth_snapshot(
             max_calls=max_calls,
         )
     voxel_backing: dict[str, object] | None = None
-    if isinstance(evidence_voxel, dict) and evidence_voxel.get("index") is not None:
-        voxel_backing = voxel_backing_record(
+    if isinstance(evidence_voxel, dict):
+        voxel_backing = voxel_backing_for_cell(
             model,
             data,
-            voxel_index=int(evidence_voxel["index"]),
-            grid_origin=list(evidence_voxel.get("origin", (0.0, 0.0, 0.0))),
-            # The grid's lattice is the OctoMap's; without its rotation this
-            # probes a cube the kernel never stopped on.
-            grid_orientation_xyzw=list(evidence_voxel.get("orientation", (0.0, 0.0, 0.0, 1.0))),
-            grid_resolution=float(evidence_voxel.get("resolution", 0.0)),
-            grid_size=list(evidence_voxel.get("size", (0, 0, 0))),
+            evidence_voxel,
             robot_body_ids=robot_body_ids,
             attached_body_ids=attached,
-            base_frame_body=evidence_voxel.get("frame_body", base_frame_body),
+            base_frame_body=base_frame_body,
         )
     snapshot: dict[str, object] = {
         "stop_class": "attached_payload" if attached_bodies else "robot_world",
@@ -3757,20 +3798,16 @@ class SimSensorBridge:
         has been seen, or when the HAL is not MuJoCo-backed.
         """
         evidence_voxel = self._evidence_voxel()
-        if evidence_voxel is None or evidence_voxel.get("index") is None:
+        if evidence_voxel is None:
             return None
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:
             return None
         model, data = handles
-        cell: Any = evidence_voxel
-        return voxel_backing_record(
+        return voxel_backing_for_cell(
             model,
             data,
-            voxel_index=int(cell["index"]),
-            grid_origin=list(cell.get("origin", (0.0, 0.0, 0.0))),
-            grid_resolution=float(cell.get("resolution", 0.0)),
-            grid_size=list(cell.get("size", (0, 0, 0))),
+            evidence_voxel,
             robot_body_ids=self._depth_self_bodies,
             attached_body_ids=self._depth_excluded_body_ids() - self._depth_self_bodies,
             base_frame_body=self._base_frame_body,
