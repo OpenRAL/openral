@@ -45,7 +45,8 @@
         "gripper_force",
         "perception_track",
         "operator",
-        "vision_segmentation"
+        "vision_segmentation",
+        "sim_contact_force"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"
@@ -113,6 +114,92 @@
         "length_m"
       ],
       "title": "CapsuleShape",
+      "type": "object"
+    },
+    "ContactForceWitness": {
+      "additionalProperties": false,
+      "description": "Bounded attestation of a MEASURED contact force on the declared target.\n\nThe second observable on the place path (ADR-0099, survey Path C).\nADR-0097/0098 discriminate on position, and at the instant of a place the\ntrue clearance *is* zero: no geometric margin at any resolution passes \"set\nthe object down in the cabinet\" while stopping \"crush it against the\ncabinet.\" Force is the axis that separates the two, and the one every\npower-and-force-limiting standard uses (ISO 10218-2:2025, which absorbed\nISO/TS 15066's PFL content).\n\n**The gate this feeds only ever adds a refusal.** A witness never licenses a\ncontact the geometry refuses, never widens an ADR-0097 allowance and never\nmoves a margin (ADR-0099 \u00a71). It can turn an accepted configuration into a\nrefused one, and nothing else.\n\n``magnitude_n`` is in Newtons **only** when :attr:`magnitude_calibrated`.\nThat is not defensive boilerplate: no published work validates MuJoCo\ncontact-force magnitudes against real force-torque measurements (survey\n\u00a721.7), MuJoCo documents its contact model as an approximation resting on\n``solref`` / ``solimp`` choices, and FORGE (arXiv:2408.04587) re-tunes its\nthreshold on hardware across more than a thousand real trials \u2014 which is\nitself the finding. A simulator magnitude is a calibration knob, never an\nequivalence claim (CLAUDE.md \u00a71.2). :attr:`direction_in_object` carries no\nsuch caveat: arXiv:2602.14174 argues from that same magnitude gap that\ndirection is the component which survives transfer.\n\nAbsence of a witness is **not** evidence of no contact. The MuJoCo producer\nreads the solver's contact list, which ``contype`` / ``conaffinity``\nsuppression can leave empty under a payload demonstrably in contact. Absence\nonly ever means the gate does not arm and geometry decides alone.\n\nAttributes:\n    target_id: Surface the measured contact is against. The gate arms only\n        when this names the live declaration's target, or a surface that is\n        part of it.\n    direction_in_object: Unit contact-force direction in the attached\n        object's frame, pointing from the support into the payload. Object\n        frame for the same reason the support witness's geometry is: base\n        frame quantities decorrelate as a mobile base drives while the\n        physical contact persists.\n    magnitude_n: Contact force magnitude. Newtons only when\n        :attr:`magnitude_calibrated`; otherwise an uncalibrated producer\n        number the kernel ignores entirely.\n    magnitude_calibrated: ``False`` (the default for any producer that has\n        not been calibrated against a real force-torque measurement) means\n        the force gate does not arm.\n    calibration_ref: Names the calibration ``magnitude_n`` was produced\n        under. Required when :attr:`magnitude_calibrated`; the kernel\n        refuses to arm on a calibrated witness that cannot name it.\n    confidence: Witness confidence in ``[0, 1]``.\n    evidence_kind: Source that measured the force. The MuJoCo producer\n        attests :attr:`AttachmentEvidenceKind.SIM_CONTACT_FORCE`.\n    evidence_ref: Optional trace / producer reference.\n    stamp_ns: Producer timestamp. With ``target_id`` this keys the kernel's\n        re-arm check, so a witness that died on separation stays dead until\n        a genuinely new contact is attested.\n\nExample:\n    >>> witness = ContactForceWitness(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     direction_in_object=(0.0, 0.0, 1.0),\n    ...     magnitude_n=4.5,\n    ...     magnitude_calibrated=False,\n    ...     confidence=1.0,\n    ...     evidence_kind=AttachmentEvidenceKind.SIM_CONTACT_FORCE,\n    ...     stamp_ns=1,\n    ... )\n    >>> witness.magnitude_calibrated\n    False",
+      "properties": {
+        "target_id": {
+          "minLength": 1,
+          "title": "Target Id",
+          "type": "string"
+        },
+        "direction_in_object": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Direction In Object",
+          "type": "array"
+        },
+        "magnitude_n": {
+          "minimum": 0.0,
+          "title": "Magnitude N",
+          "type": "number"
+        },
+        "magnitude_calibrated": {
+          "default": false,
+          "title": "Magnitude Calibrated",
+          "type": "boolean"
+        },
+        "calibration_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Ref"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "evidence_kind": {
+          "$ref": "#/$defs/AttachmentEvidenceKind"
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Ref"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_id",
+        "direction_in_object",
+        "magnitude_n",
+        "confidence",
+        "evidence_kind",
+        "stamp_ns"
+      ],
+      "title": "ContactForceWitness",
       "type": "object"
     },
     "Pose6D": {
@@ -285,7 +372,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.",
+  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0099). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.",
   "properties": {
     "object_id": {
       "minLength": 1,
@@ -402,6 +489,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/SupportContactWitness"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "contact_force": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContactForceWitness"
         },
         {
           "type": "null"

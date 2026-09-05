@@ -8,7 +8,8 @@
         "gripper_force",
         "perception_track",
         "operator",
-        "vision_segmentation"
+        "vision_segmentation",
+        "sim_contact_force"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"
