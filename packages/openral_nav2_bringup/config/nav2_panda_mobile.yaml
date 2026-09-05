@@ -405,11 +405,48 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
+        # The height gate is DISABLED here, deliberately — issue #211. Without
+        # this the whole global costmap was empty: 0 non-zero cells over 101
+        # published samples on two deploy scenes, while the local costmap on the
+        # same graph and the same scan topic peaked at 254. `NavfnPlanner`
+        # planned every goal against a blank 20 x 20 m grid and nothing warned.
+        #
+        # nav2 filters observation z in the costmap's OWN `global_frame`, in two
+        # separate places with two separate parameters: `ObservationBuffer`
+        # (`<source>.min/max_obstacle_height`, applied at buffer time after the
+        # transform) and `ObstacleLayer::updateBounds` (the LAYER-level pair,
+        # applied again while marking). Both default to a floor of 0.0, and both
+        # must be widened — setting only the source pair leaves the layer pair
+        # cutting the identical points.
+        #
+        # This costmap's frame is `map`, and `map`'s z origin is not the floor.
+        # slam_toolbox scan-matches in 2-D and publishes `map -> odom` with the
+        # z that flattens `base_link` to 0 — and `base_link` is the arm mount
+        # 0.700 m up the pedestal (ADR-0095), not ground level. So `map -> odom`
+        # carries -0.700 m, the lidar plane lands at -0.400 m in `map`, and a
+        # 0.0 floor discards every return. The local costmap is in `odom`, where
+        # the same plane is at +0.300 m, and keeps them. Same scan, same
+        # parameters, opposite outcome.
+        #
+        # The window is inert rather than tuned. `/openral/nav2/scan` is a
+        # PLANAR LaserScan and this is a 2-D layer, so every point shares one z
+        # and the gate can only admit all of them or none — it has no
+        # discriminating power to lose. +/-10 m is simply past anything a frame
+        # in this stack can offset that plane by (the largest is the 0.700 m
+        # pedestal). Do NOT copy this to the local costmap: that layer is a
+        # `VoxelLayer` with a real z column (`origin_z` 0.0, 16 x 0.08 m), where
+        # the height bounds do carry meaning.
+        min_obstacle_height: -10.0
+        max_obstacle_height: 10.0
         observation_sources: scan
         scan:
           # Payload-filtered scan — see the local costmap's source comment.
           topic: /openral/nav2/scan
-          max_obstacle_height: 2.0
+          # Paired with the layer-level values above. `max_obstacle_height`
+          # defaults to 0.0 at the SOURCE level (2.0 only at the layer level),
+          # so this one was already load-bearing before #211.
+          min_obstacle_height: -10.0
+          max_obstacle_height: 10.0
           clearing: True
           marking: True
           data_type: "LaserScan"

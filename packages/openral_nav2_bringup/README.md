@@ -213,7 +213,7 @@ gates its costmap on the filter's own output: the gate makes the node's
 *startup* safe, and the sweep asserts the steady state.
 
 
-### A second defect this surfaced, not yet fixed (issue #211)
+### A second defect this surfaced — fixed here (issue #211)
 
 **The global costmap is empty.** Over 50 and 52 published samples across the
 two scenes its maximum cost is `0` and it has no non-zero cell at any point,
@@ -242,12 +242,50 @@ Both costmaps carry `min_obstacle_height: 0.0`. In `odom` the returns sit at
 discarded before it can mark. Same scan, same parameters, opposite outcome,
 purely because of which frame the layer measures height in.
 
-This makes the **global** half of the table above vacuous: nothing is marked
-inside the robot because nothing is marked anywhere. The local half stands on
+This made the **global** half of the table above vacuous: nothing was marked
+inside the robot because nothing was marked anywhere. The local half stands on
 its own — 208 and 66 real marked cells elsewhere in the same samples. The probe
 says so itself: since code review it reports `VACUOUS - the costmap marked
 nothing anywhere` for the global costmap and exits non-zero, rather than
 printing `clean`.
+
+**The fix: the height gate is turned off on the global costmap, not retuned.**
+`/openral/nav2/scan` is a *planar* `LaserScan` and `obstacle_layer` is a 2-D
+layer, so every point in the cloud shares one z — the gate can only admit all of
+them or none, and it has no discriminating power to lose. `min_obstacle_height`
+is set to −10.0 m and `max_obstacle_height` to +10.0 m, which is simply past
+anything a frame in this stack can offset that plane by (the largest is the
+0.700 m pedestal). It is inert rather than tuned, so it cannot go wrong again
+the next time a frame's floor moves.
+
+**It has to be set in two places, and this is the part that is easy to get
+wrong.** nav2 applies the cut *twice*, from two differently-scoped parameters of
+the same name:
+
+| where | parameter | upstream default |
+| --- | --- | ---: |
+| `ObservationBuffer::bufferCloud` — at buffer time, after the transform | `obstacle_layer.scan.min/max_obstacle_height` | `0.0` / **`0.0`** |
+| `ObstacleLayer::updateBounds` — again, per point, while marking | `obstacle_layer.min/max_obstacle_height` | `0.0` / `2.0` |
+
+Widening only the source pair leaves the layer pair cutting the identical
+points. Measured, not inferred: with the layer-level pair removed and the source
+pair at ±10 m, the costmap is still empty.
+
+**Not done: the other three options.** Stopping slam_toolbox injecting z into
+`map → odom` would make the two frames agree about the floor, but it rewrites a
+frame contract that the octomap bridge and the kernel's voxel grid (ADR-0095)
+also read — a much larger change to fix a filter that should not have been
+filtering. Moving `base_link` to ground level contradicts ADR-0095, which makes
+it the arm mount deliberately. And copying this window to the **local** costmap
+would be wrong: that layer is a `VoxelLayer` with a real z column (`origin_z`
+0.0, 16 × 0.08 m), where the height bounds do carry meaning.
+
+**Evidence.** `tests/integration/test_nav2_global_costmap_height_live.py`, on
+the live lane: a real `nav2_costmap_2d` reading the *shipped* config off disk,
+under the measured `map → odom → base_link → base_scan` chain, marks a 1 m
+obstacle at cost 254 — and the paired control, with the pre-fix gate restored,
+marks nothing anywhere. Restoring the pre-fix config makes the first test fail
+with "the global costmap marked nothing anywhere".
 
 ## Nav2 is base-only
 
