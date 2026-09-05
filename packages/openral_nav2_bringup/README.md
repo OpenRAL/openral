@@ -306,18 +306,24 @@ static and correct without a publisher. What did NOT go away is the scan filter
 fixed chassis polygon, scoring the real outline instead of the centre cell is
 strictly more accurate and was measured at +0.53 ms on the live loop.
 
-### A defect this surfaced, not yet fixed
+### A defect this surfaced — since fixed
 
 While measuring the above: `openral_sim.backends.robocasa.synthesize_laser_scan_2d`
-casts its rays at **world z = 0.30 m** (`origin[2] = laser_height_m`, absolute —
-the base body is at z = 0.000), but publishes the result in `base_link`, which
-TF puts at **0.700 m**. The sim therefore samples the world at one height and
-tells Nav2 the returns came from another, 0.40 m higher. This config's
-`voxel_layer` comment (`z_resolution` raised to reach 1.28 m for a lidar
-"at z≈1.05 m") is downstream of the same confusion. Neither the base-only
-decision nor the measurements above turn on it — the payload is above every
-candidate height — but it should be reconciled before anyone reasons about
-obstacle heights again.
+cast its rays at **world z = 0.30 m** (`origin[2] = laser_height_m`, absolute —
+the base body is at z = 0.000) but published the result in `base_link`, which TF
+puts at **0.700 m**. The sim sampled the world at one height and told Nav2 the
+returns came from another, 0.40 m higher.
+
+Both now come from one number. `robots/panda_mobile/robot.yaml` gives the lidar
+its own `base_scan` frame with the mount in `static_transform_xyz_rpy` (−0.40 m
+from `base_link`); `sim_e2e.launch.py` publishes exactly that as the
+`base_link → base_scan` static TF, and `SimSensorBridge._scan_world_height_m`
+adds the same offset to the base's own world z to decide where to cast — so the
+ray and the frame can no longer disagree, and a base that changes height (a
+ramp, a lift column) no longer casts through the floor. This config's
+`voxel_layer` comment was corrected with it: the 1.28 m column is kept for the
+counters the scan raytraces through, not for a lidar "at z≈1.05 m" that never
+existed.
 
 ## The robot's own returns
 
