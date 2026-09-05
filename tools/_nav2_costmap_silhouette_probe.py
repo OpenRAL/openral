@@ -36,10 +36,15 @@ free:
   silhouette. A run where this is 0 measured an empty map and proves nothing.
 * `base_travel_m` — how far the base actually drove. A run where this is ~0
   never moved the rolling window over new geometry.
-* `payload_samples` / `attached_objects_seen` — the payload half is vacuous
-  unless something is attached, so a run that never grasped reports
-  `payload_silhouette_measured: false` rather than a clean payload verdict it
-  did not earn.
+* `payload_samples` / `payload_partial_samples` / `attached_objects_seen` — the
+  payload half is vacuous unless something is attached *and every declared
+  object could be placed*, so a run that never grasped, or that lost one
+  object's attach-link TF, reports `payload_silhouette_measured: false` rather
+  than a clean payload verdict it did not earn.
+
+The guards are not advisory: they decide `verdict` and the exit code. A costmap
+that marked nothing anywhere, or a base that never moved, reports
+`VACUOUS - ...` and exits non-zero, so a hollow run cannot be quoted as a pass.
 
 **And what it cannot attribute.** In sim `synthesize_laser_scan_2d` re-casts
 through the robot's own MuJoCo kinematic tree, so a self-return never enters
@@ -165,6 +170,7 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
                 "lethal_cells_anywhere_last": 0,
                 "max_cost_seen": 0,
                 "nonzero_cells_max": 0,
+                "payload_partial_samples": 0,
             }
             self.create_subscription(
                 Costmap, f"/{which}_costmap/costmap_raw", self._make_cb(which), 1
@@ -193,13 +199,21 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
         except Exception:
             return None
 
-    def _payload_masks(self, points_xy: Any) -> tuple[Any, int]:
-        """Union mask of the attached objects' projections, and how many were placed."""
+    def _payload_masks(self, points_xy: Any) -> tuple[Any, int, int]:
+        """Union mask of the attached objects' projections, placed and declared counts.
+
+        Both counts are returned because a partial placement is the dangerous
+        case: an object the probe cannot place silently narrows the silhouette,
+        and its cells would then be counted as "elsewhere on the map". The
+        caller only claims the payload half was measured when every declared
+        object was placed.
+        """
         mask = np.zeros(points_xy.shape[0], dtype=bool)
         placed = 0
         state = self.state
         if state is None:
-            return mask, 0
+            return mask, 0, 0
+        declared = len(state.attached_objects)
         for obj in state.attached_objects:
             base_from_link = self._base_from(obj.attach_link)
             if base_from_link is None:
@@ -223,7 +237,7 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
                         break
                 else:
                     placed += 1
-        return mask, placed
+        return mask, placed, declared
 
     def _score(self, which: str, msg: Costmap) -> None:
         out = self.results[which]
@@ -243,10 +257,13 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
 
         silhouette = points_in_convex_polygon(points_xy, self.chassis)
         out["chassis_cells_per_sample"] = int(silhouette.sum())
-        payload, placed = self._payload_masks(points_xy)
+        payload, placed, declared = self._payload_masks(points_xy)
         if placed:
-            out["payload_samples"] += 1
             silhouette = silhouette | payload
+        if declared and placed == declared:
+            out["payload_samples"] += 1
+        elif declared:
+            out["payload_partial_samples"] += 1
 
         data = np.asarray(msg.data, dtype=np.int32)
         lethal = data == LETHAL_OBSTACLE
@@ -348,17 +365,37 @@ def main() -> int:
         ),
         **driven,
     }
-    clean = True
+    #: A run that never moved the base swept no new geometry, so a clean sweep
+    #: says little about the filter. Small but non-zero, because a pure rotation
+    #: still rolls the window.
+    min_travel_m = 0.10
+    verdicts: list[str] = []
     for which, out in node.results.items():
-        out["payload_silhouette_measured"] = out["payload_samples"] > 0
-        out["clean"] = out["samples_with_tf"] > 0 and out["total_marked_in_silhouette"] == 0
+        out["payload_silhouette_measured"] = (
+            out["payload_samples"] > 0 and out["payload_partial_samples"] == 0
+        )
         out["non_vacuous"] = out["lethal_cells_anywhere_max"] > 0
-        clean = clean and bool(out["clean"])
+        # "Clean" is only a result when the map had something to mark and the
+        # robot moved. Without both, zero cells inside the silhouette is a fact
+        # about an empty measurement, not about the filter.
+        out["clean"] = out["samples_with_tf"] > 0 and out["total_marked_in_silhouette"] == 0
+        out["verdict"] = (
+            "MARKED CELLS INSIDE SILHOUETTE"
+            if not out["clean"]
+            else "clean"
+            if out["non_vacuous"]
+            else "VACUOUS - the costmap marked nothing anywhere"
+        )
+        verdicts.append(str(out["verdict"]))
         verdict[f"{which}_costmap"] = out
-    verdict["verdict"] = "clean" if clean else "MARKED CELLS INSIDE SILHOUETTE"
+    if travel < min_travel_m:
+        verdicts.append(f"VACUOUS - the base moved only {round(travel, 3)} m")
+    worst = next((v for v in verdicts if v != "clean"), "clean")
+    verdict["verdict"] = worst
+    verdict["verdict_per_costmap"] = {which: out["verdict"] for which, out in node.results.items()}
     print(json.dumps(verdict))
     rclpy.shutdown()
-    return 0 if clean else 1
+    return 0 if worst == "clean" else 1
 
 
 if __name__ == "__main__":

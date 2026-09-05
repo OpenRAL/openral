@@ -425,10 +425,12 @@ _OBSTACLE_AT_SAME_BEARING_M = 0.60
 _UNRESOLVABLE_BASE_FRAME = "no_such_base_frame"
 
 #: How many of the 360 ring beams must come back non-finite before the filter
-#: counts as live. The ring is entirely inside the chassis, so a working filter
-#: drops every one of them; 300 leaves room for a partial first scan without
-#: accepting a passthrough (which drops zero).
-_MIN_DROPPED_FOR_A_LIVE_FILTER = 300
+#: counts as live. **All** of them, deliberately: with a payload attached the
+#: ring is 355 chassis beams plus 5 on the carried box, so any threshold below
+#: 360 is satisfied by the chassis half alone and would let the payload half
+#: still be warming up — and a payload return that reaches the grid is as
+#: permanent as a chassis one.
+_MIN_DROPPED_FOR_A_LIVE_FILTER = 360
 
 _FORWARD_BEAM_ANGLES = (-0.06, -0.03, 0.0, 0.03, 0.06)
 
@@ -874,6 +876,13 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
     ]
 
     ring = _ring_scan(payload_x_m=_PAYLOAD_X_IN_BASE)
+    # The rig cannot publish while `ros2 lifecycle set` blocks, and the node's
+    # default 0.5 s `attached_state_timeout_s` expires inside that window — so
+    # the first scan after activation could find no attachment, pass the five
+    # payload beams through, and mark the payload silhouette permanently. The
+    # sweep measures containment, not attachment freshness, so the timeout is
+    # widened past the window rather than raced against.
+    filter_argv += ["-p", "attached_state_timeout_s:=30.0"]
     with _self_filter_rig(
         tmp_path,
         filter_argv=filter_argv,
@@ -894,6 +903,18 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
             f"the costmap never published; filter said:\n"
             f"{filter_log.read_text(errors='replace')[-2000:]}"
         )
+        # The payload half needs its own control, for the same reason the
+        # chassis half has one: a mis-placed box or a changed dimension
+        # convention would make "no marked cell inside the payload" true by
+        # covering no cells at all.
+        chassis_only = int(_silhouette_mask(latest[0], with_payload=False).sum())
+        with_payload = int(_silhouette_mask(latest[0], with_payload=True).sum())
+        assert with_payload > chassis_only, (
+            f"the payload contributed no cells to the silhouette ({with_payload} vs "
+            f"{chassis_only} for the chassis alone), so the payload half of this assertion "
+            "is vacuous"
+        )
+
         marked = _marked_cells_inside_silhouette(latest[0], with_payload=True)
         assert not marked, (
             f"{len(marked)} costmap cells are marked inside the robot/payload silhouette, "

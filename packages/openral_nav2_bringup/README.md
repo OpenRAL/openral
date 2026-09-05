@@ -125,12 +125,12 @@ the base actually translates:
 
 | | `robocasa_baguette` | `robocasa_deliver_straw` |
 | --- | ---: | ---: |
-| base travelled | 1.703 m | 1.609 m |
-| **local** costmap samples | 97 | 108 |
-| silhouette cells per sample | 137 | 140 |
-| peak `LETHAL` cells elsewhere on the map | 172 | 67 |
+| base travelled | 1.682 m | 1.668 m |
+| **local** costmap samples | 95 | 107 |
+| silhouette cells per sample | 138 | 141 |
+| peak `LETHAL` cells elsewhere on the map | 208 | 66 |
 | **`LETHAL` cells inside the silhouette** | **0** | **0** |
-| **global** costmap samples | 50 | 51 |
+| **global** costmap samples | 50 | 52 |
 | peak cost anywhere on the global map | **0** | **0** |
 
 Read the last row before the second-to-last one — see the next section.
@@ -180,7 +180,7 @@ convenience.
 
 ### A second defect this surfaced, not yet fixed (issue #211)
 
-**The global costmap is empty.** Over 50 and 51 published samples across the
+**The global costmap is empty.** Over 50 and 52 published samples across the
 two scenes its maximum cost is `0` and it has no non-zero cell at any point,
 while the local costmap on the same graph peaks at `254` with ~2000 non-zero
 cells. Its `obstacle_layer` is configured on the same filtered
@@ -209,7 +209,10 @@ purely because of which frame the layer measures height in.
 
 This makes the **global** half of the table above vacuous: nothing is marked
 inside the robot because nothing is marked anywhere. The local half stands on
-its own — 172 and 67 real marked cells elsewhere in the same samples.
+its own — 208 and 66 real marked cells elsewhere in the same samples. The probe
+says so itself: since code review it reports `VACUOUS - the costmap marked
+nothing anywhere` for the global costmap and exits non-zero, rather than
+printing `clean`.
 
 ## Nav2 is base-only
 
