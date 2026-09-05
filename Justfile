@@ -328,6 +328,22 @@ test-integration:
 test-ros-live *args:
     uv run bash scripts/ros_live_tests.sh -q {{args}}
 
+# The RoboCasa sim suite — the seven tests gated on a provisioned RoboCasa
+# kitchen backend. Needs the colcon overlay AND the 23 GB asset set, which is
+# why it has no CI lane at all (see scripts/robocasa_sim_tests.sh: hosted
+# runners lack the disk, and a self-hosted runner is not safe on a public
+# repo). No GPU. Narrow a busy machine with `-k`; extra args are appended, so
+# naming a path adds it to the list rather than selecting it.
+#
+#   source /opt/ros/jazzy/setup.bash && just ros2-build \
+#     && source install/setup.bash && just test-robocasa-sim
+#
+# A fresh venv may lack robocasa even after `just sync`; provision it with
+#   OPENRAL_AUTO_INSTALL_DEPS=1 uv run --no-sync python -c \
+#     "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
+test-robocasa-sim *args:
+    uv run bash scripts/robocasa_sim_tests.sh -q {{args}}
+
 # Subset by keyword
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
 # `just test` — the launch_testing pytest plugin silently aborts

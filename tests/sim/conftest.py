@@ -3,6 +3,11 @@
 Pre-stubs the broken ``lerobot.policies.groot.modeling_groot`` module before
 any test imports ``lerobot.policies``. See ``openral_rskill._lerobot_compat``.
 
+Also pins every sim test to its own DDS domain — see the module-level
+``os.environ`` block below for why that is a correctness requirement here and
+not merely hygiene, and for the one neighbouring setting that must NOT be
+added alongside it.
+
 Also exposes :func:`compose_sim_env` — the test-side equivalent of
 ``openral sim run``'s ``_load_or_build_env`` helper. The on-disk YAMLs under
 ``scenes/sim/`` and ``scenes/benchmark/`` are :class:`SimScene` /
@@ -15,9 +20,51 @@ must compose the same way the CLI does. ``load_scene_strict`` accepts a
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import openral_rskill._lerobot_compat  # noqa: F401
+
+from tests.sim.safety._kernel_subprocess import isolated_domain_id
+
+# Confine every sim test to its own DDS graph, before any test module imports
+# rclpy — pytest loads this conftest first, which is the only moment early
+# enough to matter.
+#
+# This is a CORRECTNESS requirement, not hygiene. A sim test that inherits the
+# default domain sees every other ROS process on the host and, with domain 0's
+# subnet multicast, on the network: another worktree's leftover nodes, a live
+# `openral deploy sim`, a real robot. `SimSensorBridge` reads the graph to make
+# decisions — `_on_attachment_state_applied` arms its voxel-update wait from
+# `count_publishers("/openral/world_voxels")` — so a foreign publisher does not
+# merely add noise, it changes the verdict. Measured on `q-laptop`:
+# `test_bridge_masks_multiple_attached_objects_without_reset` failed against
+# seven orphaned `octomap_voxel_bridge` graphs left by another worktree, and
+# passed on domains 91 and 92, because the barrier waited for a voxel update
+# that only the foreign publisher could have sent.
+#
+# It lives here rather than in that test because every OTHER rclpy-using sim
+# test already isolates itself through `start_kernel`, and it was the single
+# file that did not. One place, and a file added tomorrow cannot repeat it.
+#
+# `setdefault` keeps the operator's own export authoritative — the same posture
+# `openral_cli._dds_scope.confine_sim_scope` and
+# `packages/openral_safety_watchdog/test/conftest.py` take. `isolated_domain_id`
+# is per-PID, so concurrent pytest runs do not collide either; it is imported
+# from the kernel helpers because that is where the convention already lives.
+#
+# The domain, and ONLY the domain. Do not also set
+# `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` here, however tempting the symmetry
+# with `confine_sim_scope` is: it was tried and it HANGS every
+# kernel-subprocess test. `start_kernel` spawns `safety_kernel_node` as a
+# separate process that the in-process test node has to discover, and under
+# that range the two never find each other — measured as
+# `test_kernel_fridge_layout_pin_start_state.py` blocked past 20 minutes at
+# ~93% idle CPU with no kernel process alive, against 91 s with the domain
+# alone. `confine_sim_scope` can set it because it launches a whole graph into
+# one environment; this conftest cannot, because it straddles a process
+# boundary the launcher does not own.
+os.environ.setdefault("ROS_DOMAIN_ID", str(isolated_domain_id()))
 from openral_core import (
     BenchmarkMetadata,
     SimEnvironment,
