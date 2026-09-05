@@ -152,9 +152,54 @@ Two limits, so the numbers are not over-read. Sim's
 tree, so a self-return never enters `/scan` here at all: a clean silhouette on
 a scene is the *end state* being right, not proof that this node is what made
 it so. And `attached_objects` stayed 0 on both runs (no policy was dispatched,
-so nothing was ever grasped), so the payload half is unmeasured there. Both
+so nothing was ever grasped), so the payload half was unmeasured there. Both
 gaps are exactly what the deterministic sweep covers, and it is the one with a
 control.
+
+#### The payload half, measured on a scene (2026-09-05)
+
+`robocasa_baguette` at seed 1 with `runtime.enable_reasoner: false` and the
+XR-1 `robocasa365` policy dispatched directly at `/openral/execute_rskill` —
+the direct-dispatch stack `tools/validation_matrix.py` has run since
+2026-08-13. The S2 reasoner is off because it needs an API key; the S1 policy
+that actually grasps is real.
+
+| run | base travel | payload measured | `LETHAL` inside silhouette | verdict |
+| --- | ---: | --- | ---: | --- |
+| 13 | 0.523 m | both costmaps | **0** | clean |
+| 15 | 0.601 m | both costmaps | **0** | clean |
+| 17 | 0.748 m | both costmaps | **0** | clean |
+
+**It could not have been measured before, and the reason was in the probe.**
+`tools/_nav2_costmap_silhouette_probe.py` incremented its placed count once per
+placed *primitive* and compared it against a count of *objects*. Sim payloads
+come from `extract_body_primitives` over a MuJoCo body subtree — this baguette
+records **16** primitives on one object — so `placed == declared` could never
+hold and every sample was filed as a partial placement.
+`payload_silhouette_measured` was *unsatisfiable*, not unsatisfied, which is why
+every scene run in the data file reports the payload half unmeasured. It now
+counts per object, and an object counts as placed only when every one of its
+primitives projected. `tests/unit/test_nav2_costmap_probe_payload_count.py`
+pins it; reverting the count fails 2 of its 4 tests.
+
+**One `MARKED CELLS INSIDE SILHOUETTE` verdict, adjudicated as a probe false
+positive.** Run 14 flagged 2 global and 4 local cells, all at x = 0.39–0.44 m
+in `base_link` — 4–9 cm *past* the 0.35 m chassis edge, so under the payload's
+projection. They cannot be payload returns: both costmaps' only observation
+source is the planar scan, and the payload rides at z = 1.43 m in `odom`
+against a 0.30 m scan plane (0.59–0.75 m of clearance, by the probe's own
+`payload_z_span_in_base_m`). They are the counter the robot was parked at, seen
+at scan height, lying beneath a carried object that clears the lidar by more
+than half a metre. The probe now reports that span in every verdict so the
+distinction is readable from the artifact rather than re-derived.
+
+**What is still not measured: a completed task.** Every run E-stopped or
+dropped the payload before the place phase — the grasp held 5–15 s and the
+goals ended `safety_estop`. This is the costmap silhouette *during* a real
+carry with the base driving, which is what #108's payload half asks for; it is
+not a task-success claim. `docs/reference/collision-validation-evidence.md`
+records 2/5 completions on this scene, so those E-stops are the known open
+collision-stack work rather than a new finding.
 
 ### A third defect this surfaced — fixed here (issue #212)
 
@@ -611,9 +656,12 @@ everywhere, so it is a separate decision and has not been made.
   out of distribution.
 
   **What remains before #108 closes.** The loop measurement is done and the
-  flag is flipped (above). What has *not* been run is the scene end to end under
-  a policy: every measurement here was taken with the base driven by a direct
-  `NavigateToPose` and the reasoner off, so `attached_objects` stayed 0
-  throughout. An XR-1 run that opens the drawer, grasps the straw and carries it
-  is the remaining acceptance, and the scene's closed-drawer precondition means
-  a failure there needs reading carefully before it is called a Nav2 failure.
+  flag is flipped (above). The payload half has since been measured on a scene —
+  `robocasa_baguette` under a real XR-1 grasp with the base driving, three clean
+  runs, see "The payload half, measured on a scene" above — so `attached_objects`
+  is no longer 0 and the silhouette claim covers the payload as well as the
+  chassis. What is *still* missing is a **completed** episode: every run so far
+  E-stopped or dropped the payload before the place phase, so nothing has yet
+  driven the whole task through. On `robocasa_deliver_straw` the scene's
+  closed-drawer precondition means a failure there needs reading carefully
+  before it is called a Nav2 failure.

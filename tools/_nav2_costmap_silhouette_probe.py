@@ -125,6 +125,68 @@ def _primitive_z_span(shape_dimensions: list[float], transform: Any) -> tuple[fl
     return cz - reach, cz + reach
 
 
+def payload_mask(
+    objects: Any, base_from: Any, points_xy: Any
+) -> tuple[Any, int, tuple[float, float] | None]:
+    """Project every attached object onto the costmap plane.
+
+    Returns ``(union mask, objects fully placed, z span in the base frame)``.
+
+    **The count is per OBJECT, and that is the whole point.** It used to be per
+    *primitive*: ``placed`` was incremented once for each primitive that
+    projected, while the caller compared it against ``len(attached_objects)``.
+    Sim payloads come from ``extract_body_primitives`` over a MuJoCo body
+    subtree and carry many -- a RoboCasa baguette measures **16** -- so
+    ``placed == declared`` could never hold, every sample was filed as a partial
+    placement, and ``payload_silhouette_measured`` was unsatisfiable rather than
+    unsatisfied. The payload half of issue #108 could not be reported as
+    measured on any scene, no matter how completely the payload was placed.
+
+    A partial placement still has to be caught, because an object the probe
+    cannot place silently narrows the silhouette and its cells then count as
+    "elsewhere on the map". So an object is placed only when *every* one of its
+    primitives projected, and an object with no primitives -- which contributes
+    no silhouette at all -- never counts as placed.
+    """
+    mask = np.zeros(points_xy.shape[0], dtype=bool)
+    placed = 0
+    z_lo_seen: float | None = None
+    z_hi_seen: float | None = None
+    for obj in objects:
+        base_from_link = base_from(obj.attach_link)
+        if base_from_link is None:
+            continue
+        link_from_obj = _pose_matrix(obj.pose_in_link)
+        object_placed = bool(obj.primitives)
+        for prim in obj.primitives:
+            transform = base_from_link @ link_from_obj @ _pose_matrix(prim.pose_in_object)
+            dims = [float(d) for d in prim.shape_dimensions]
+            z_lo, z_hi = _primitive_z_span(dims, transform)
+            z_lo_seen = z_lo if z_lo_seen is None else min(z_lo_seen, z_lo)
+            z_hi_seen = z_hi if z_hi_seen is None else max(z_hi_seen, z_hi)
+            steps = max(2, int(math.ceil((z_hi - z_lo) / _Z_STEP_M)) + 1)
+            for z in np.linspace(z_lo, z_hi, steps):
+                pts = np.concatenate(
+                    [points_xy, np.full((points_xy.shape[0], 1), float(z))], axis=1
+                )
+                try:
+                    mask |= points_in_primitive(pts, int(prim.shape_type), dims, transform)
+                except ValueError:
+                    # A malformed primitive is the producer's problem; it must not
+                    # silently shrink the silhouette, so the whole object counts
+                    # as unplaced rather than being skipped quietly.
+                    object_placed = False
+                    break
+        if object_placed:
+            placed += 1
+    span = (
+        (round(z_lo_seen, 3), round(z_hi_seen, 3))
+        if z_lo_seen is not None and z_hi_seen is not None
+        else None
+    )
+    return mask, placed, span
+
+
 class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.typed
     """Samples both costmaps and counts marked cells inside the robot silhouette."""
 
@@ -143,6 +205,18 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
         self.tfl = TransformListener(self.buf, self)
         self.state: WorldStateStamped | None = None
         self.attached_seen = 0
+        #: The placed payload's z extent in ``base_frame``, the number that
+        #: decides whether a marked cell under its projection is even *possible*
+        #: as a payload return. Both costmaps' only observation source is the
+        #: planar scan, so a payload that never crosses the scan plane cannot
+        #: mark anything and a cell beneath it is some other, real obstacle at
+        #: scan height. Measured live on a baguette carry: the payload sits at
+        #: z = 1.43 m in ``odom`` against a 0.30 m scan plane -- 1.13 m clear --
+        #: while the cells flagged inside its silhouette were 4-9 cm past the
+        #: chassis edge, i.e. the counter the robot was parked at. Recording the
+        #: span is what lets a reader tell those two apart instead of reading
+        #: every such verdict as the scan filter failing.
+        self.payload_z_span: tuple[float, float] | None = None
         self.track: list[tuple[float, float]] = []
 
         self.create_subscription(
@@ -202,42 +276,16 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
     def _payload_masks(self, points_xy: Any) -> tuple[Any, int, int]:
         """Union mask of the attached objects' projections, placed and declared counts.
 
-        Both counts are returned because a partial placement is the dangerous
-        case: an object the probe cannot place silently narrows the silhouette,
-        and its cells would then be counted as "elsewhere on the map". The
-        caller only claims the payload half was measured when every declared
-        object was placed.
+        Thin wrapper over :func:`payload_mask` so the counting rule it got wrong
+        can be tested without a graph; see that function.
         """
-        mask = np.zeros(points_xy.shape[0], dtype=bool)
-        placed = 0
         state = self.state
         if state is None:
-            return mask, 0, 0
-        declared = len(state.attached_objects)
-        for obj in state.attached_objects:
-            base_from_link = self._base_from(obj.attach_link)
-            if base_from_link is None:
-                continue
-            link_from_obj = _pose_matrix(obj.pose_in_link)
-            for prim in obj.primitives:
-                transform = base_from_link @ link_from_obj @ _pose_matrix(prim.pose_in_object)
-                dims = [float(d) for d in prim.shape_dimensions]
-                z_lo, z_hi = _primitive_z_span(dims, transform)
-                steps = max(2, int(math.ceil((z_hi - z_lo) / _Z_STEP_M)) + 1)
-                for z in np.linspace(z_lo, z_hi, steps):
-                    pts = np.concatenate(
-                        [points_xy, np.full((points_xy.shape[0], 1), float(z))], axis=1
-                    )
-                    try:
-                        mask |= points_in_primitive(pts, int(prim.shape_type), dims, transform)
-                    except ValueError:
-                        # A malformed primitive is the producer's problem; it must
-                        # not silently shrink the silhouette, so it is counted as
-                        # unplaced rather than skipped quietly.
-                        break
-                else:
-                    placed += 1
-        return mask, placed, declared
+            return np.zeros(points_xy.shape[0], dtype=bool), 0, 0
+        mask, placed, z_span = payload_mask(state.attached_objects, self._base_from, points_xy)
+        if z_span is not None:
+            self.payload_z_span = z_span
+        return mask, placed, len(state.attached_objects)
 
     def _score(self, which: str, msg: Costmap) -> None:
         out = self.results[which]
@@ -359,6 +407,9 @@ def main() -> int:
         "chassis_polygon": [[round(x, 3), round(y, 3)] for x, y in node.chassis],
         "seconds": args.seconds,
         "attached_objects_seen": node.attached_seen,
+        "payload_z_span_in_base_m": (
+            list(node.payload_z_span) if node.payload_z_span is not None else None
+        ),
         "base_travel_m": round(travel, 3),
         "base_net_displacement_m": (
             round(math.dist(node.track[0], node.track[-1]), 3) if len(node.track) > 1 else 0.0

@@ -82,6 +82,14 @@ TARGETS=(
     # which fault a dashboard renders for a real safety stop - is pinned by a
     # test that runs on NO CI surface.
     tests/unit/test_safety_status_msg.py
+    # Same reasoning, third case: no graph, but importing
+    # tools/_nav2_costmap_silhouette_probe.py needs the colcon overlay. What it
+    # pins is the counting rule that decides whether the payload half of #108
+    # was measured at all -- it compared primitives placed against objects
+    # declared, so a payload with more than one primitive could never satisfy
+    # it. A live baguette carry measures 16 primitives on one object, which is
+    # why every scene run to date reported the payload half unmeasured.
+    tests/unit/test_nav2_costmap_probe_payload_count.py
     # Same shape, third leg of the same mirror: it reads the generated
     # FailureTrigger constants and pins the plain-int copy in
     # openral_observability.failure_bus against them, both directions. That leg
