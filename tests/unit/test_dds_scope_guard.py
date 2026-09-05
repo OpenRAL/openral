@@ -119,6 +119,25 @@ class TestGraphOccupancyGuard:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
         assert "could not read the ROS graph" in str(excinfo.value)
 
+    def test_a_host_without_ros_is_not_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No ``rclpy`` means no graph to collide with — do not block the launch.
+
+        Distinct from an unreadable graph above, and the distinction is load
+        bearing: a host with no ROS cannot run ``ros2 launch`` either, so the
+        launch fails on its own with a clearer message than this guard could
+        give. Refusing here would block every non-ROS machine (CI included) from
+        exercising the launch path while buying no safety, since there is no
+        robot within reach.
+        """
+        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: _dds_scope._NO_ROS)
+        _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
+
+    def test_no_ros_is_not_confused_with_an_unreadable_graph(self) -> None:
+        """The two outcomes must stay distinguishable at the seam itself."""
+        assert _dds_scope._NO_ROS is not None
+        assert isinstance(_dds_scope._NO_ROS, str)
+
     def test_the_escape_hatch_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Sharing on purpose stays possible, and is opt-IN."""
         monkeypatch.setenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, "1")

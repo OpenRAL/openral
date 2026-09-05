@@ -1743,10 +1743,14 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         _console.print(f"  argv: {shlex.join(argv)}")
         venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
         # Both directions, one rule: a sim must not start beside a robot and a
-        # robot must not start beside a sim. Checked against the scope actually
-        # about to be used, so a confined sim sees the empty graph it just
-        # confined itself to (#227).
-        _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
+        # robot must not start beside a sim (#227). Checked against the scope
+        # actually about to be used, so a confined sim sees the empty graph it
+        # just confined itself to — which is why it cannot live in the
+        # ``run_preflight`` block above, where ``venv_env`` does not exist yet.
+        # It is still a preflight check, so it honours the same flag: a caller
+        # passing ``run_preflight=False`` means it.
+        if run_preflight:
+            _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
         return _run_launch(argv, venv_env)
     finally:
         with contextlib.suppress(OSError):

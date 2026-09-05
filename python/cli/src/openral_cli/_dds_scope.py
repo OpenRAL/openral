@@ -76,6 +76,14 @@ _PROBE_SPIN_S: Final[float] = 3.0
 
 _PROBE_NODE_NAME: Final[str] = "openral_graph_scope_probe"
 
+#: Returned by :func:`_scan_graph` when ``rclpy`` is not importable at all.
+#: Distinct from "the probe failed": a host with no ROS has no graph to join and
+#: cannot run ``ros2 launch`` either, so the launch fails on its own with a
+#: clearer message than this guard could give. Refusing there would block every
+#: non-ROS machine — including CI — from exercising the launch path, and would
+#: buy no safety, because there is no robot to collide with.
+_NO_ROS: Final[str] = "no-ros"
+
 #: How many occupying node names the refusal lists before eliding. Enough to
 #: recognise a ros2_control stack at a glance without burying the message.
 _MAX_NODES_LISTED: Final[int] = 12
@@ -109,7 +117,11 @@ def _probe_source() -> str:
     """The probe body, run in a subprocess under the launch environment."""
     return f"""
 import json, sys, time
-import rclpy
+try:
+    import rclpy
+except ImportError:
+    json.dump({{"no_ros": True}}, sys.stdout)
+    raise SystemExit(0)
 rclpy.init(args=None)
 node = rclpy.create_node({_PROBE_NODE_NAME!r})
 deadline = time.monotonic() + {_PROBE_SPIN_S!r}
@@ -130,12 +142,18 @@ rclpy.shutdown()
 """
 
 
-def _scan_graph(env: dict[str, str]) -> dict[str, list[object]] | None:
-    """Return what is already on the graph, or ``None`` if it could not be read.
+def _scan_graph(env: dict[str, str]) -> dict[str, list[object]] | str | None:
+    """What is already on the graph.
 
-    An unreadable graph is **not** treated as an empty one by the caller: a
-    probe that failed to run has not shown the graph is clear, and a guard that
-    passes when its instrument is broken is worse than no guard.
+    Three outcomes, kept distinct because they mean different things:
+
+    * a ``dict`` — the graph was read;
+    * :data:`_NO_ROS` — ``rclpy`` is not importable, so there is no graph here
+      at all and nothing to collide with;
+    * ``None`` — the probe *should* have worked and did not. An unreadable graph
+      is **not** treated as an empty one: a probe that failed has not shown the
+      graph is clear, and a guard that passes when its instrument is broken is
+      worse than no guard.
     """
     try:
         completed = subprocess.run(
@@ -154,7 +172,11 @@ def _scan_graph(env: dict[str, str]) -> dict[str, list[object]] | None:
         parsed = json.loads(completed.stdout)
     except json.JSONDecodeError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("no_ros"):
+        return _NO_ROS
+    return parsed
 
 
 def _looks_like_hardware(nodes: list[str]) -> bool:
@@ -187,6 +209,8 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"{env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
     )
     found = _scan_graph(env)
+    if found == _NO_ROS:
+        return
     if found is None:
         raise ROSConfigError(
             f"could not read the ROS graph to check it is unoccupied ({scope}). "
