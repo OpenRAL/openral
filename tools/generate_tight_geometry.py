@@ -192,8 +192,7 @@ def hull_overhang_m(
     # dependency this workspace does not pin. The naive brute-force query
     # scales as samples x mesh-faces, which is a few thousand by a few hundred
     # here -- fine for an offline, once-per-manifest generation step.
-    # reason: trimesh ships no inline types for this call.
-    _, distances, _ = trimesh.proximity.closest_point_naive(mesh, samples)  # type: ignore[no-untyped-call]
+    _, distances, _ = trimesh.proximity.closest_point_naive(mesh, samples)
     return float(distances.max())
 
 
