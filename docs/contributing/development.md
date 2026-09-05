@@ -187,6 +187,78 @@ publish — is deliberately excluded: it also needs PyGObject, which the open
 deploy image does not ship (the GStreamer media stack is OpenRAL Pro). `just
 test` runs it on a host that has the `gstreamer` extra installed.
 
+#### The RoboCasa sim suite (manual — there is no CI lane, and there cannot be)
+
+Seven tests under `tests/sim/` are gated on `importorskip("robocasa")` and need
+three things at once: the colcon overlay (they spawn the real
+`safety_kernel_node`), MuJoCo, and a provisioned RoboCasa kitchen backend. They
+are the geometry-and-kernel evidence behind issues #102 and #108 — the layout
+pins, the certified distance instrument, the support-contact witness, the depth
+synth, and the HAL's camera / body-twist paths on a real kitchen.
+
+`scripts/robocasa_sim_tests.sh` holds the target list, and `just
+test-robocasa-sim` is its only caller:
+
+```bash
+source /opt/ros/jazzy/setup.bash && just ros2-build \
+  && source install/setup.bash && just test-robocasa-sim
+```
+
+A fresh venv may lack `robocasa` even after `just sync`. Provision it with:
+
+```bash
+OPENRAL_AUTO_INSTALL_DEPS=1 uv run --no-sync python -c \
+  "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
+```
+
+Run the suite before merging anything that touches the kernel, the
+`panda_mobile` manifest, the HAL sim bridge, or a `scenes/deploy/robocasa_*.yaml`
+pin. Narrow it with `-k` on a busy machine — a kitchen compose is memory-hungry
+and the whole suite in one pytest process has OOM-killed a 15 GB host. Extra
+args are appended to the pytest invocation, so naming a path *adds* it to the
+target list rather than selecting it: use `just test-robocasa-sim -k
+geom_distance`.
+
+**Why there is no CI lane.** Two independent reasons, both measured.
+
+*Disk.* RoboCasa's assets are 23 GB — `objects/aigen_objs` 13 GB,
+`objects/objaverse` 6.2 GB, `objects/lightwheel` 1.5 GB, `fixtures` 1.4 GB,
+`generative_textures` 1.2 GB, `textures` 521 MB — downloaded per-bundle from
+utexas.box.com with no sub-bundle granularity. The only hosted CI surface with
+a colcon overlay is the `docker-build` image, already 25.2 GB, building on a
+runner that has to `rm -rf` dotnet, android and CodeQL to reclaim its ~14 GB.
+Even a trimmed set (fixtures + textures + one object bundle, ~8 GB) is past
+that runner's whole disk. No GPU is needed, so the constraint is disk alone.
+
+*Security.* A self-hosted runner was built, registered, and then removed. It is
+not a safe option for this repository, and the reasoning is worth keeping
+because it is easy to get wrong: **a runner label is a routing request made by
+a workflow, not an access control enforced by the runner.** A repository-scoped
+self-hosted runner accepts jobs from *any* workflow in that repository naming
+its labels, and for a `pull_request` event GitHub executes the workflow
+definition from the **fork's** ref. `OpenRAL/openral` is public and has three
+fork-reachable `pull_request` workflows (`dco.yml`, `quality.yml`,
+`test-selective.yml`), so a fork PR can edit one to
+`runs-on: [self-hosted, <label>]` with arbitrary `run:` steps and execute code
+on the runner host — with that user's SSH keys, `gh` credentials and LAN access
+to the lab robots. Restricting a runner to selected workflows requires an
+organisation runner group, which this org's GitHub Free plan does not offer, so
+no native control makes the label mean anything.
+
+Note what does *not* help: giving the protected workflow safe triggers. The
+exposed asset is the runner, not the workflow. Reasoning about the triggers of
+the file you are adding is the mistake that makes this look safe.
+
+**What holds the suite together instead.** `tests/unit/test_robocasa_sim_targets.py`
+fails the unit suite if a RoboCasa-gated file is missing from `TARGETS`. With no
+CI lane, that list is the only definition of what the suite is, and that guard
+is the only thing that notices when a test drifts out of it — which is exactly
+what happened to `test_kernel_fridge_layout_pin_start_state.py` between #224 and
+#232.
+
+The rest of `tests/sim/` is manual by declared policy
+(`.github/workflows/test-selective.yml`).
+
 ### Sim evals (closed-loop, opt-in — needs HF weights ± GPU)
 
 ```bash
