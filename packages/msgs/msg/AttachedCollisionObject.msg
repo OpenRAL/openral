@@ -43,3 +43,14 @@ int64 stamp_ns
 # exempts nothing, which is the pre-witness behaviour.
 bool support_contact_valid
 SupportContactWitness support_contact
+
+# Optional contact-force attestation (ADR-0100, survey Path C). Rides here for
+# the same reason support_contact does: it is per-payload, optional, and the
+# kernel already ingests this object. False — the default, and what every
+# producer that cannot measure contact force publishes — means the force gate
+# never arms and geometry decides alone, which is the pre-ADR-0100 behaviour.
+#
+# The gate this feeds only ever ADDS a refusal (ADR-0100 §1). A true value here
+# can never license a contact the geometry refuses.
+bool contact_force_valid
+ContactForceWitness contact_force

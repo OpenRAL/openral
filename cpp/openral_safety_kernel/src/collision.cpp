@@ -1622,6 +1622,16 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
     o.support_normal = support_normal;
     o.support_patch_radius = in.has_support_witness ? in.support_patch_radius : 0.0;
     o.support_max_penetration = in.has_support_witness ? in.support_max_penetration : 0.0;
+    // ADR-0100 contact-force witness. Each derived flag is masked by
+    // `has_contact_force_witness` for the same reason the support fields above
+    // are: a stale magnitude left behind by a retracted witness must not be
+    // readable, and zeroing here means the gate's own checks cannot be reached
+    // with a value nobody attested.
+    o.has_contact_force_witness = in.has_contact_force_witness;
+    o.contact_force_calibrated = in.has_contact_force_witness && in.contact_force_calibrated;
+    o.contact_force_target_matches =
+        in.has_contact_force_witness && in.contact_force_target_matches;
+    o.contact_force_magnitude = in.has_contact_force_witness ? in.contact_force_magnitude : 0.0;
     o.prim_first = static_cast<int>(prim_cursor);
     o.prim_count = static_cast<int>(n_prims);
     o.touch_first = static_cast<int>(touch_cursor);
@@ -1846,6 +1856,58 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
     }
   }
   return finish_sweep(result, sweep_min);
+}
+
+ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) noexcept {
+  ContactForceGateResult out{};
+  const PlaceForceGate& gate = attached.force_gate;
+  // Condition 1 of four. Every early return here leaves `out.tripped` false,
+  // which is the shipped geometry-only behaviour — the gate adds refusals and
+  // failing to arm can therefore never be unsafe relative to today (ADR-0100
+  // §1). Re-checking the range the ingest already validated is deliberate: a
+  // permissive default is never the safe one on a safety path.
+  if (!gate.valid || gate.object_mask == 0) {
+    return out;
+  }
+  if (!(gate.threshold_n > 0.0) || !std::isfinite(gate.threshold_n) ||
+      gate.threshold_n > kMaxContactForceThresholdN) {
+    return out;
+  }
+  const std::size_t count = attached.n_objects < attached.objects.size()
+                                ? attached.n_objects
+                                : attached.objects.size();
+  for (std::size_t i = 0; i < count && i < 8; ++i) {
+    // Condition 2: the gate follows the DECLARED payload. A second object the
+    // robot happens to be carrying is outside the declaration and outside this.
+    if ((gate.object_mask & (1U << i)) == 0) {
+      continue;
+    }
+    const AttachedObject& obj = attached.objects[i];
+    // Condition 3: a witness exists and names the declared target.
+    if (!obj.has_contact_force_witness || !obj.contact_force_target_matches) {
+      continue;
+    }
+    // Condition 4: the magnitude is calibrated. Without this the value is a
+    // producer quantity and NOT newtons (survey §21.7), so it is not read at
+    // all rather than read optimistically.
+    if (!obj.contact_force_calibrated) {
+      continue;
+    }
+    const double magnitude = obj.contact_force_magnitude;
+    if (!std::isfinite(magnitude) || magnitude <= gate.threshold_n) {
+      continue;
+    }
+    // Report the deepest overrun, so the evidence names the worst pair rather
+    // than the first one scanned — the same single-pair-coherence rule
+    // `CollisionHit` is under.
+    if (!out.tripped || magnitude > out.magnitude_n) {
+      out.tripped = true;
+      out.object_index = static_cast<int>(i);
+      out.magnitude_n = magnitude;
+      out.threshold_n = gate.threshold_n;
+    }
+  }
+  return out;
 }
 
 double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,

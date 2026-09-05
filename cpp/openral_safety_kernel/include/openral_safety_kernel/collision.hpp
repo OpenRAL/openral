@@ -512,6 +512,18 @@ struct AttachedObject {
   Vec3 support_normal{0.0, 0.0, 1.0};   ///< unit outward support normal, object frame
   double support_patch_radius{0.0};     ///< lateral radius of the supported patch (m)
   double support_max_penetration{0.0};  ///< attested PHYSICAL contact depth bound (m)
+  /// ADR-0100 contact-force witness. `has_contact_force_witness` is the wire's
+  /// `contact_force_valid`; `contact_force_calibrated` is the witness's own
+  /// `magnitude_calibrated`, and WITHOUT it `contact_force_magnitude` is not in
+  /// Newtons and the gate must not read it (survey §21.7 — no published work
+  /// validates MuJoCo force magnitudes against real F/T measurements).
+  /// `contact_force_target_matches` is resolved at ingest: the witness's
+  /// `target_id` names the live declaration's target. All three default to the
+  /// no-gate state.
+  bool has_contact_force_witness{false};
+  bool contact_force_calibrated{false};
+  bool contact_force_target_matches{false};
+  double contact_force_magnitude{0.0};  ///< Newtons ONLY when `contact_force_calibrated`
 };
 
 /// Bounded, fixed-capacity set of attached payloads ingested from the world
@@ -519,12 +531,51 @@ struct AttachedObject {
 /// configured caps at configure time; the ingest path fills the first
 /// `n_objects` / `n_primitives` entries and the hot path never allocates.
 /// `n_objects == 0` means nothing is carried.
+/// Ceiling on a declaration's contact-force threshold. Mirrors
+/// `openral_core.PlaceDeclaration.MAX_CONTACT_FORCE_THRESHOLD_N` — one bound
+/// declared on both sides of the wire, so a schema-valid declaration can never
+/// overflow the kernel. The value is ISO/TS 15066 Table A.2's quasi-static limit
+/// for hands and fingers (140 N), the most permissive body region in the table.
+inline constexpr double kMaxContactForceThresholdN = 140.0;
+
+/// The live declaration's contact-force bound (ADR-0100, survey Path C).
+///
+/// Deliberately NOT folded into `PlaceApproachRegion`: that struct is valid only
+/// when a producer measured a region, and dispatch publishes declarations with
+/// no region at all (`region_valid=false`). The force bound travels with the
+/// *declaration*, which exists in both cases, so it needs its own carrier.
+///
+/// `valid == false` — no declaration, a retracted or expired one, or a
+/// declaration whose `threshold_n <= 0` — means NO force gate anywhere, i.e.
+/// behaviour identical to before ADR-0100. That is the default and the
+/// fail-toward-shipped direction.
+struct PlaceForceGate {
+  bool valid{false};            ///< a live declaration supplies a positive threshold
+  std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
+  double threshold_n{0.0};      ///< the declaration's bound, in (0, kMaxContactForceThresholdN]
+};
+
+/// Outcome of the declaration-scoped contact-force gate.
+///
+/// `tripped` is the ONLY thing this can say. The gate adds a refusal and can
+/// never remove one (ADR-0100 §1): it is evaluated after every geometric check
+/// has already passed, so a `tripped` result converts an accept into a refusal
+/// and nothing else. There is no branch by which it turns a refusal into an
+/// accept, widens a margin, or creates an exemption.
+struct ContactForceGateResult {
+  bool tripped{false};
+  int object_index{-1};    ///< attached object whose witness tripped, or -1
+  double magnitude_n{0.0}; ///< the calibrated magnitude judged
+  double threshold_n{0.0}; ///< the declaration bound it was judged against
+};
+
 struct AttachedModel {
   std::size_t n_objects{0};                   ///< active object count (<= objects.size())
   std::size_t n_primitives{0};                ///< active primitive count (<= primitives.size())
   std::vector<AttachedObject> objects;        ///< capacity = max attached objects
   std::vector<AttachedPrimitive> primitives;  ///< flattened, capacity = max primitives
   std::vector<int> touch_links;               ///< flattened touch-link indices, capacity = cap
+  PlaceForceGate force_gate{};                ///< live declaration's force bound, if any
 };
 
 /// Parsed, still-by-name primitive record produced by the ROS ingest callback
@@ -550,6 +601,10 @@ struct AttachedObjectInput {
   Vec3 support_normal{};                ///< outward support normal, object frame (normalised)
   double support_patch_radius{0.0};     ///< lateral patch radius (m)
   double support_max_penetration{0.0};  ///< attested physical contact depth bound (m)
+  bool has_contact_force_witness{false};    ///< wire `contact_force_valid` (ADR-0100)
+  bool contact_force_calibrated{false};     ///< witness `magnitude_calibrated`
+  bool contact_force_target_matches{false}; ///< witness `target_id` names the declared target
+  double contact_force_magnitude{0.0};      ///< Newtons ONLY when calibrated
 };
 
 /// Outcome of an attachment-ingest attempt. Anything other than `kOk` is
@@ -960,6 +1015,45 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin, double band_m = 0.0) noexcept;
+
+/// The declaration-scoped contact-force gate (ADR-0100, survey Path C).
+///
+/// At the instant of a place the true clearance IS zero, so no geometric margin
+/// at any resolution separates "set the object down" from "crush it" (survey §9
+/// point 4). Force is the axis that does, and this is the check that reads it.
+///
+/// **It only ever adds a refusal.** The caller evaluates it after every
+/// geometric check has already passed, so a tripped gate converts an accept into
+/// a refusal. There is no path here that widens a margin, creates an exemption,
+/// or lets a measured force license contact the geometry refused — that
+/// direction is the whole safety argument and it is enforced by this function
+/// having no way to express anything but `tripped` (ADR-0100 §1).
+///
+/// It arms only when ALL FOUR of these hold, and every one fails toward the
+/// shipped geometry-only behaviour:
+///
+/// 1. `attached.force_gate.valid` — a live declaration supplies a positive,
+///    in-range threshold. Dispatch's default is `0.0`, i.e. no gate.
+/// 2. Object `i`'s bit is set in `force_gate.object_mask` — the gate follows the
+///    *declared* payload, never a second object the robot happens to carry.
+/// 3. `has_contact_force_witness && contact_force_target_matches` — a witness is
+///    present and names the declared target. A measured contact against anything
+///    else attests nothing here.
+/// 4. `contact_force_calibrated` — the producer asserted a named calibration.
+///    Without it `contact_force_magnitude` is not in Newtons and is not read at
+///    all: no published work validates MuJoCo contact-force magnitudes against
+///    real force-torque measurements (survey §21.7), so an uncalibrated number
+///    is a producer quantity, never a physical claim (CLAUDE.md §1.2).
+///
+/// Absence of a witness is NOT evidence of absence of contact — the sim producer
+/// reads MuJoCo's solver contact list, which contype/conaffinity suppression can
+/// leave empty under a payload demonstrably in contact. Absence only ever means
+/// the gate does not arm and geometry decides alone.
+///
+/// The comparison is strict: a magnitude exactly at the threshold passes, so a
+/// declaration stating "up to N newtons" permits N. Allocation-free; O(n_objects)
+/// over a cap of eight.
+ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) noexcept;
 
 /// Margin reduction the live place declaration grants object `object_index`
 /// against an occupied cell centred at `center` — `0.0` whenever it grants none.

@@ -5119,3 +5119,131 @@ TEST(SelfCollisionHull, HullHullDistanceIsSandwichedBetweenItsOwnBounds) {
   EXPECT_GT(strictly_tighter, 0)
       << "if GJK never beat the SAT bound the refinement would buy nothing";
 }
+
+// ── ADR-0100: the declaration-scoped contact-force gate (survey Path C) ───────
+//
+// At the instant of a place the true clearance IS zero, so no geometric margin
+// separates "set the object down" from "crush it" (survey §9 point 4). These
+// pin the second observable, and — more importantly — pin that it can only ever
+// ADD a refusal.
+
+namespace {
+
+/// One carried payload with a contact-force witness on the declared target.
+osk::AttachedModel force_gate_model(double threshold_n, double magnitude_n, bool calibrated,
+                                    bool target_matches = true, bool has_witness = true) {
+  osk::AttachedModel attached;
+  attached.objects.assign(2, osk::AttachedObject{});
+  attached.n_objects = 1;
+  osk::AttachedObject& obj = attached.objects[0];
+  obj.has_contact_force_witness = has_witness;
+  obj.contact_force_calibrated = has_witness && calibrated;
+  obj.contact_force_target_matches = has_witness && target_matches;
+  obj.contact_force_magnitude = has_witness ? magnitude_n : 0.0;
+  if (threshold_n > 0.0) {
+    attached.force_gate.valid = true;
+    attached.force_gate.object_mask = 0b1;
+    attached.force_gate.threshold_n = threshold_n;
+  }
+  return attached;
+}
+
+}  // namespace
+
+TEST(ContactForceGate, ASubThresholdTouchPassesAndAnOverThresholdPressRefuses) {
+  // The two directions the gate exists to separate, at the same geometry. Both
+  // configurations are ones every geometric check already accepted — the gate is
+  // evaluated last — so this is the whole of what it adds.
+  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 12.5, true)).tripped)
+      << "a 12.5 N touch inside a 30 N declaration is the place the declaration authorised";
+
+  const auto pressed = osk::check_contact_force_gate(force_gate_model(30.0, 41.0, true));
+  ASSERT_TRUE(pressed.tripped);
+  EXPECT_EQ(pressed.object_index, 0);
+  EXPECT_DOUBLE_EQ(pressed.magnitude_n, 41.0);
+  EXPECT_DOUBLE_EQ(pressed.threshold_n, 30.0);
+
+  // The bound is inclusive: a declaration saying "up to 30 N" permits 30 N.
+  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 30.0, true)).tripped);
+  EXPECT_TRUE(osk::check_contact_force_gate(force_gate_model(30.0, 30.0 + 1e-9, true)).tripped);
+}
+
+TEST(ContactForceGate, WithNoLiveDeclarationTheGateIsInert) {
+  // The fail-closed scoping this feature lives or dies on, and the #142 posture:
+  // a force far past ANY plausible threshold, armed witness and all, changes
+  // nothing without a declaration to scope it. Geometry decides alone.
+  auto undeclared = force_gate_model(0.0, 5000.0, true);
+  ASSERT_FALSE(undeclared.force_gate.valid);
+  EXPECT_FALSE(osk::check_contact_force_gate(undeclared).tripped);
+
+  // A live declaration that names a DIFFERENT payload is equally inert: the
+  // gate follows the declared object, never a second one the robot carries.
+  auto other_payload = force_gate_model(30.0, 5000.0, true);
+  other_payload.force_gate.object_mask = 0b10;
+  EXPECT_FALSE(osk::check_contact_force_gate(other_payload).tripped);
+}
+
+TEST(ContactForceGate, AnUncalibratedMagnitudeIsNeverReadAsNewtons) {
+  // Survey §21.7: no published work validates MuJoCo contact-force MAGNITUDES
+  // against real force-torque measurements, so an uncalibrated producer number
+  // is not a physical claim and must not be judged as one (CLAUDE.md §1.2).
+  // This is the test that keeps a stock sim from arming an enforcement surface
+  // nobody calibrated.
+  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, false)).tripped)
+      << "an uncalibrated 4000 is a producer quantity, not 4000 newtons";
+  EXPECT_TRUE(osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, true)).tripped)
+      << "the same number under a named calibration is judged";
+}
+
+TEST(ContactForceGate, AContactOnAnythingButTheDeclaredTargetAttestsNothing) {
+  // Scoping, the same rule the support witness's support_id is under: force
+  // bounds the one surface the declaration named, and grants nothing anywhere
+  // else. A payload pressing hard on a wall mid-place is a geometry problem.
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 900.0, true, /*target_matches=*/false))
+          .tripped);
+  // And an absent witness is not evidence of absent contact — it only ever
+  // means the gate does not arm.
+  EXPECT_FALSE(osk::check_contact_force_gate(
+                   force_gate_model(30.0, 900.0, true, true, /*has_witness=*/false))
+                   .tripped);
+}
+
+TEST(ContactForceGate, AnOutOfRangeOrNonFiniteBoundArmsNothing) {
+  // Fail-closed toward the SHIPPED behaviour rather than toward a clamped bound
+  // nobody chose. The ceiling mirrors the schema's, so a declaration the wire
+  // accepts can never overflow the kernel.
+  auto over = force_gate_model(osk::kMaxContactForceThresholdN + 1.0, 5000.0, true);
+  EXPECT_FALSE(osk::check_contact_force_gate(over).tripped);
+
+  auto nan_threshold = force_gate_model(30.0, 5000.0, true);
+  nan_threshold.force_gate.threshold_n = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(osk::check_contact_force_gate(nan_threshold).tripped);
+
+  auto nan_magnitude = force_gate_model(30.0, 0.0, true);
+  nan_magnitude.objects[0].contact_force_magnitude = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(osk::check_contact_force_gate(nan_magnitude).tripped);
+
+  // At the ceiling exactly, the gate is live — the bound is a ceiling on the
+  // declaration, not an exclusion of it.
+  auto at_ceiling = force_gate_model(osk::kMaxContactForceThresholdN, 5000.0, true);
+  EXPECT_TRUE(osk::check_contact_force_gate(at_ceiling).tripped);
+}
+
+TEST(ContactForceGate, TheDeepestOverrunIsTheOneReported) {
+  // Single-pair coherence: the evidence names the worst overrun, not the first
+  // object scanned, so an incident review is handed the binding number.
+  osk::AttachedModel attached = force_gate_model(10.0, 15.0, true);
+  attached.n_objects = 2;
+  attached.force_gate.object_mask = 0b11;
+  osk::AttachedObject& second = attached.objects[1];
+  second.has_contact_force_witness = true;
+  second.contact_force_calibrated = true;
+  second.contact_force_target_matches = true;
+  second.contact_force_magnitude = 88.0;
+
+  const auto tripped = osk::check_contact_force_gate(attached);
+  ASSERT_TRUE(tripped.tripped);
+  EXPECT_EQ(tripped.object_index, 1);
+  EXPECT_DOUBLE_EQ(tripped.magnitude_n, 88.0);
+}

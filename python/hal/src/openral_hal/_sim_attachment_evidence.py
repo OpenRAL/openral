@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core import (
     AttachedCollisionObject,
@@ -16,6 +19,7 @@ from openral_core import (
     BoxShape,
     CapsuleShape,
     CollisionShape,
+    ContactForceWitness,
     JointSpec,
     PlaceDeclaration,
     PlaceRegion,
@@ -25,6 +29,8 @@ from openral_core import (
     SupportContactWitness,
 )
 from openral_core.exceptions import ROSConfigError
+
+_LOGGER = structlog.get_logger(__name__)
 
 # Below this a summed support normal carries no direction: the probed normals
 # oppose each other, so there is no support plane to attest.
@@ -73,6 +79,25 @@ _SUPPORT_MAX_PATCH_RADIUS_M = 0.5
 # ponytail: hulls are re-decoded per call (~0.1 s of the 0.46 s); cache them
 # per (model, mesh) if attach latency ever matters.
 _SUPPORT_PROBE_MAX_CALLS = 1024
+# ADR-0100 contact-force gate. MuJoCo reports a contact's force in the contact's
+# own frame via ``mj_contactForce``; this scalar maps that magnitude to the
+# number a place declaration's ``contact_force_threshold_n`` is compared against.
+#
+# IT IS A CALIBRATION KNOB, NOT AN EQUIVALENCE CLAIM (CLAUDE.md 1.2). No
+# published work validates MuJoCo contact-force MAGNITUDES against real
+# force-torque measurements (survey 21.7): MuJoCo documents its contact model as
+# an approximation whose physical validity rests on ``solref`` / ``solimp``
+# choices, FORGE (arXiv:2408.04587) re-tunes its threshold on hardware across
+# >1000 real trials, and arXiv:2602.14174 argues from that same gap that only
+# force DIRECTION survives sim-to-real. So the producer publishes
+# ``magnitude_calibrated=False`` unless an operator has explicitly asserted a
+# calibration, and the kernel then refuses to read the magnitude at all.
+#
+# 1.0 is the identity mapping, and deliberately not a claim that one MuJoCo
+# force unit is one newton. Set both env vars together to arm the gate.
+_CONTACT_FORCE_SCALE_ENV = "OPENRAL_SIM_CONTACT_FORCE_N_PER_UNIT"
+_CONTACT_FORCE_CALIBRATION_REF_ENV = "OPENRAL_SIM_CONTACT_FORCE_CALIBRATION_REF"
+_CONTACT_FORCE_DEFAULT_SCALE = 1.0
 # A surface normal and the instrument's own contact direction more than 60
 # degrees apart do not describe the same plane. Rather than pick one, attest
 # neither (fail closed). This runs at EVERY hit, flush ones included, because
@@ -1001,6 +1026,175 @@ def support_contact_witness(
         confidence=1.0,
         evidence_kind=AttachmentEvidenceKind.SIM_GEOM_DISTANCE,
         evidence_ref=f"openral_hal.convex_distance.convex_geom_distance:{support_name}",
+        stamp_ns=stamp_ns,
+    )
+
+
+def contact_force_calibration() -> tuple[float, bool, str | None]:
+    """Resolve the sim contact-force calibration from the environment.
+
+    Returns:
+        ``(scale, calibrated, reference)``. ``calibrated`` is ``True`` only when
+        an operator has set **both** :data:`_CONTACT_FORCE_SCALE_ENV` to a
+        finite positive scale and :data:`_CONTACT_FORCE_CALIBRATION_REF_ENV` to
+        a non-empty name for it. Anything else — neither set, one set, an
+        unparseable or non-positive scale — yields the identity scale,
+        ``calibrated=False`` and no reference, which leaves the ADR-0100 force
+        gate disarmed and geometry deciding alone.
+
+        Requiring the *reference* as well as the number is the point. A scale
+        with no name is a magnitude nobody can audit, and survey §21.7 is
+        explicit that a sim magnitude is a calibration knob rather than a claim
+        about newtons. An unnamed knob would be exactly the silent arming this
+        design refuses.
+
+    Example:
+        >>> scale, calibrated, ref = contact_force_calibration()
+        >>> (scale > 0.0, isinstance(calibrated, bool))
+        (True, True)
+    """
+    raw_scale = os.environ.get(_CONTACT_FORCE_SCALE_ENV, "").strip()
+    reference = os.environ.get(_CONTACT_FORCE_CALIBRATION_REF_ENV, "").strip()
+    if not raw_scale or not reference:
+        return _CONTACT_FORCE_DEFAULT_SCALE, False, None
+    try:
+        scale = float(raw_scale)
+    except ValueError:
+        _LOGGER.warning(
+            "sim.contact_force_calibration_ignored",
+            reason="unparseable_scale",
+            value=raw_scale,
+        )
+        return _CONTACT_FORCE_DEFAULT_SCALE, False, None
+    if not math.isfinite(scale) or scale <= 0.0:
+        _LOGGER.warning(
+            "sim.contact_force_calibration_ignored", reason="non_positive_scale", value=scale
+        )
+        return _CONTACT_FORCE_DEFAULT_SCALE, False, None
+    return scale, True, reference
+
+
+def probe_contact_force(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    payload_geoms: Sequence[int],
+    target_root_body: int,
+    target_name: str,
+    stamp_ns: int,
+) -> ContactForceWitness | None:
+    """Attest the measured contact force between a payload and its place target.
+
+    Walks MuJoCo's solver contact list for pairs with one geom on the payload
+    and the other on the declared target's subtree, and reports the **total**
+    normal load over them — a box resting on a shelf makes four corner contacts
+    each carrying a quarter of its weight, so any single one understates the
+    press by the size of the solver's contact manifold. The direction is the
+    dominant contact's normal, expressed in the payload's own frame.
+
+    **Absence of a return value is not evidence of absent contact.** This reads
+    the solver's contact list, and ``contype`` / ``conaffinity`` exclusions can
+    suppress a pair entirely — field-observed at 30 mm of interpenetration with
+    ``ncon == 0``. A ``None`` here only ever means the ADR-0100 gate does not
+    arm, and geometry decides exactly as it does today. That is why this
+    producer feeds a check which can only *add* a refusal: a blind spot in it
+    can never remove one.
+
+    The magnitude is Newtons only under an explicit operator calibration
+    (:func:`contact_force_calibration`); otherwise the witness carries
+    ``magnitude_calibrated=False`` and the kernel does not read it.
+
+    Args:
+        model: MuJoCo ``MjModel``.
+        data: MuJoCo ``MjData`` at the configuration to attest.
+        payload_geoms: Geom ids belonging to the carried payload.
+        target_root_body: Root body id of the declared place target.
+        target_name: The target's ``sim:`` identity, without the prefix.
+        stamp_ns: Producer timestamp.
+
+    Returns:
+        A witness, or ``None`` when no payload-to-target contact is in the
+        solver's list at this configuration.
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    payload = frozenset(int(g) for g in payload_geoms)
+    if not payload:
+        return None
+    target_bodies = frozenset(_body_subtree(model, target_root_body))
+    scale, calibrated, reference = contact_force_calibration()
+
+    # SUM of the normal components over every payload-to-target contact, not the
+    # largest single one. A box resting on a shelf makes four corner contacts
+    # each carrying a quarter of the load, so the maximum understates the press
+    # by the contact count — a number that depends on the solver's manifold
+    # rather than on how hard the payload is being pushed. The sum is the total
+    # normal load, it is what "pressing too hard on the receptacle" means, and it
+    # is the more conservative of the two (sum >= max), which is the direction
+    # this whole gate is required to move in.
+    total_normal = 0.0
+    contacts_found = 0
+    best_magnitude = -1.0
+    best_normal_world: NDArray[np.float64] | None = None
+    wrench = np.zeros(6, dtype=np.float64)
+    for index in range(int(data.ncon)):
+        contact = data.contact[index]
+        geom_a, geom_b = int(contact.geom1), int(contact.geom2)
+        a_is_payload = geom_a in payload
+        b_is_payload = geom_b in payload
+        if a_is_payload == b_is_payload:
+            continue
+        other_geom = geom_b if a_is_payload else geom_a
+        if int(model.geom_bodyid[other_geom]) not in target_bodies:
+            continue
+        mujoco.mj_contactForce(model, data, index, wrench)
+        # The normal component is the first entry of the contact-frame wrench;
+        # the tangential pair that follows is friction, which is not what a
+        # power-and-force-limiting bound is about. Magnitude of the normal
+        # component only, so a hard press registers and a shear graze does not.
+        magnitude = abs(float(wrench[0]))
+        if not math.isfinite(magnitude):
+            continue
+        total_normal += magnitude
+        contacts_found += 1
+        # Direction comes from the DOMINANT contact — the one carrying the most
+        # normal load — rather than from an average, which on a four-corner
+        # manifold would be the same vector anyway and on an edge contact would
+        # be a direction no contact actually has.
+        if magnitude > best_magnitude:
+            best_magnitude = magnitude
+            # MuJoCo's contact frame is row-major with the normal first, pointing
+            # from geom1 toward geom2. The message declares a direction pointing
+            # INTO the payload, so the normal is taken as-is when the payload is
+            # geom2 and negated when it is geom1. Verified against a settled
+            # box-on-shelf rest in test_sim_contact_force_witness.py rather than
+            # taken from the docs: a sign error here would attest a direction
+            # opposite the physical press.
+            normal = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)[0]
+            best_normal_world = -normal if a_is_payload else normal
+    if contacts_found == 0 or best_normal_world is None:
+        return None
+
+    # Into the payload's own frame, for the same reason the support witness's
+    # geometry is there: a base-frame direction decorrelates as the mobile base
+    # drives while the physical contact persists.
+    payload_body = int(model.geom_bodyid[next(iter(sorted(payload)))])
+    rotation = np.asarray(data.xmat[payload_body], dtype=np.float64).reshape(3, 3)
+    direction = rotation.T @ best_normal_world
+    norm = float(np.linalg.norm(direction))
+    if not math.isfinite(norm) or norm <= 0.0:
+        return None
+    direction = direction / norm
+
+    return ContactForceWitness(
+        target_id=f"sim:{target_name}",
+        direction_in_object=(float(direction[0]), float(direction[1]), float(direction[2])),
+        magnitude_n=total_normal * scale,
+        magnitude_calibrated=calibrated,
+        calibration_ref=reference,
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT_FORCE,
+        evidence_ref=f"mujoco.mj_contactForce:{target_name}",
         stamp_ns=stamp_ns,
     )
 

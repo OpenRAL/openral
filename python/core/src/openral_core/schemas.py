@@ -2455,6 +2455,11 @@ class AttachmentEvidenceKind(str, Enum):
     # score is never part of that decision — a confidently-wrong mask covering
     # half the frame is rejected on volume, not on confidence.
     VISION_SEGMENTATION = "vision_segmentation"
+    # ``mj_contactForce`` over MuJoCo's solver contact list (ADR-0100). It
+    # inherits that list's blind spot by construction — ``contype`` /
+    # ``conaffinity`` suppression can empty a pair that is demonstrably in
+    # contact — so absence of a force witness is never evidence of no contact.
+    SIM_CONTACT_FORCE = "sim_contact_force"
 
 
 class PlaceRegion(BaseModel):
@@ -2701,6 +2706,14 @@ class PlaceDeclaration(BaseModel):
         stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole
             liveness key.
         active: ``False`` retracts the declaration.
+        contact_force_threshold_n: Per-declaration bound on the contact force
+            this place may reach (ADR-0100). ``0.0`` — the default — means no
+            force gate at all, which is the pre-ADR-0100 behaviour. Above zero,
+            a live :class:`ContactForceWitness` on this payload attesting a
+            *calibrated* magnitude past it refuses the configuration. Never read
+            from :attr:`SafetyEnvelope.contact_force_threshold_n`: that number is
+            robot-wide, while published budgets for one body region span an
+            order of magnitude, so the dispatching skill supplies it per place.
         region: Producer-measured bounded region of the declared target
             (ADR-0097's 2026-08-14 amendment), or ``None``. Dispatch always
             publishes ``None`` — it names a target, it cannot measure where that
@@ -2734,6 +2747,17 @@ class PlaceDeclaration(BaseModel):
     #: far below anything that would span a mission.
     MAX_TIMEOUT_S: ClassVar[float] = 600.0
 
+    #: Ceiling on :attr:`contact_force_threshold_n` (ADR-0100). A threshold is a
+    #: bound on permitted contact, so an absurd one is not merely useless — it
+    #: reads as a gate that is armed while being unreachable in practice. The
+    #: value is ISO/TS 15066 Table A.2's quasi-static limit for hands and
+    #: fingers (140 N), which is the most permissive body region in the table
+    #: and therefore the highest number any place declaration could honestly
+    #: justify. Mirrored in the kernel as ``kMaxContactForceThresholdN``: one
+    #: bound declared on both sides of the wire, so a schema-valid declaration
+    #: can never overflow the kernel.
+    MAX_CONTACT_FORCE_THRESHOLD_N: ClassVar[float] = 140.0
+
     target_id: str = ""
     object_id: str = ""
     rskill_id: str = ""
@@ -2742,6 +2766,7 @@ class PlaceDeclaration(BaseModel):
     stamp_ns: int = Field(ge=0)
     active: bool = True
     region: PlaceRegion | None = None
+    contact_force_threshold_n: float = 0.0
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> PlaceDeclaration:
@@ -2752,6 +2777,17 @@ class PlaceDeclaration(BaseModel):
             )
         if self.active and not self.target_id:
             raise ValueError("An active PlaceDeclaration must name a target_id.")
+        if not math.isfinite(self.contact_force_threshold_n):
+            raise ValueError(
+                "PlaceDeclaration.contact_force_threshold_n must be finite; "
+                f"got {self.contact_force_threshold_n!r}."
+            )
+        if self.contact_force_threshold_n > self.MAX_CONTACT_FORCE_THRESHOLD_N:
+            raise ValueError(
+                f"PlaceDeclaration.contact_force_threshold_n "
+                f"{self.contact_force_threshold_n!r} exceeds the "
+                f"{self.MAX_CONTACT_FORCE_THRESHOLD_N} N ceiling."
+            )
         return self
 
     def is_live(self, *, now_ns: int) -> bool:
@@ -2798,6 +2834,7 @@ class PlaceDeclaration(BaseModel):
             timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
             active=bool(msg.active),  # type: ignore[attr-defined]
+            contact_force_threshold_n=float(getattr(msg, "contact_force_threshold_n", 0.0)),
             region=(
                 PlaceRegion.from_idl(msg.region)  # type: ignore[attr-defined]
                 if bool(getattr(msg, "region_valid", False))
@@ -2824,6 +2861,9 @@ class PlaceDeclaration(BaseModel):
         msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
         msg.active = bool(self.active)  # type: ignore[attr-defined]
+        msg.contact_force_threshold_n = float(  # type: ignore[attr-defined]
+            self.contact_force_threshold_n
+        )
         msg.region_valid = self.region is not None  # type: ignore[attr-defined]
         if self.region is not None:
             self.region.fill_idl(
@@ -2938,6 +2978,145 @@ class SupportContactWitness(BaseModel):
         normal.x, normal.y, normal.z = self.contact_normal_in_object
         msg.patch_radius_m = float(self.patch_radius_m)  # type: ignore[attr-defined]
         msg.max_penetration_m = float(self.max_penetration_m)  # type: ignore[attr-defined]
+        msg.confidence = float(self.confidence)  # type: ignore[attr-defined]
+        msg.evidence_kind = self.evidence_kind.value  # type: ignore[attr-defined]
+        msg.evidence_ref = self.evidence_ref or ""  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+
+
+class ContactForceWitness(BaseModel):
+    """Bounded attestation of a MEASURED contact force on the declared target.
+
+    The second observable on the place path (ADR-0100, survey Path C).
+    ADR-0097/0098 discriminate on position, and at the instant of a place the
+    true clearance *is* zero: no geometric margin at any resolution passes "set
+    the object down in the cabinet" while stopping "crush it against the
+    cabinet." Force is the axis that separates the two, and the one every
+    power-and-force-limiting standard uses (ISO 10218-2:2025, which absorbed
+    ISO/TS 15066's PFL content).
+
+    **The gate this feeds only ever adds a refusal.** A witness never licenses a
+    contact the geometry refuses, never widens an ADR-0097 allowance and never
+    moves a margin (ADR-0100 §1). It can turn an accepted configuration into a
+    refused one, and nothing else.
+
+    ``magnitude_n`` is in Newtons **only** when :attr:`magnitude_calibrated`.
+    That is not defensive boilerplate: no published work validates MuJoCo
+    contact-force magnitudes against real force-torque measurements (survey
+    §21.7), MuJoCo documents its contact model as an approximation resting on
+    ``solref`` / ``solimp`` choices, and FORGE (arXiv:2408.04587) re-tunes its
+    threshold on hardware across more than a thousand real trials — which is
+    itself the finding. A simulator magnitude is a calibration knob, never an
+    equivalence claim (CLAUDE.md §1.2). :attr:`direction_in_object` carries no
+    such caveat: arXiv:2602.14174 argues from that same magnitude gap that
+    direction is the component which survives transfer.
+
+    Absence of a witness is **not** evidence of no contact. The MuJoCo producer
+    reads the solver's contact list, which ``contype`` / ``conaffinity``
+    suppression can leave empty under a payload demonstrably in contact. Absence
+    only ever means the gate does not arm and geometry decides alone.
+
+    Attributes:
+        target_id: Surface the measured contact is against. The gate arms only
+            when this names the live declaration's target, or a surface that is
+            part of it.
+        direction_in_object: Unit contact-force direction in the attached
+            object's frame, pointing from the support into the payload. Object
+            frame for the same reason the support witness's geometry is: base
+            frame quantities decorrelate as a mobile base drives while the
+            physical contact persists.
+        magnitude_n: Contact force magnitude. Newtons only when
+            :attr:`magnitude_calibrated`; otherwise an uncalibrated producer
+            number the kernel ignores entirely.
+        magnitude_calibrated: ``False`` (the default for any producer that has
+            not been calibrated against a real force-torque measurement) means
+            the force gate does not arm.
+        calibration_ref: Names the calibration ``magnitude_n`` was produced
+            under. Required when :attr:`magnitude_calibrated`; the kernel
+            refuses to arm on a calibrated witness that cannot name it.
+        confidence: Witness confidence in ``[0, 1]``.
+        evidence_kind: Source that measured the force. The MuJoCo producer
+            attests :attr:`AttachmentEvidenceKind.SIM_CONTACT_FORCE`.
+        evidence_ref: Optional trace / producer reference.
+        stamp_ns: Producer timestamp. With ``target_id`` this keys the kernel's
+            re-arm check, so a witness that died on separation stays dead until
+            a genuinely new contact is attested.
+
+    Example:
+        >>> witness = ContactForceWitness(
+        ...     target_id="sim:cab_1_left_group_main",
+        ...     direction_in_object=(0.0, 0.0, 1.0),
+        ...     magnitude_n=4.5,
+        ...     magnitude_calibrated=False,
+        ...     confidence=1.0,
+        ...     evidence_kind=AttachmentEvidenceKind.SIM_CONTACT_FORCE,
+        ...     stamp_ns=1,
+        ... )
+        >>> witness.magnitude_calibrated
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str = Field(min_length=1)
+    direction_in_object: tuple[float, float, float]
+    magnitude_n: float = Field(ge=0.0)
+    magnitude_calibrated: bool = False
+    calibration_ref: str | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_kind: AttachmentEvidenceKind
+    evidence_ref: str | None = None
+    stamp_ns: int = Field(ge=0)
+
+    _UNIT_DIRECTION_TOLERANCE: ClassVar[float] = 1e-6
+
+    @model_validator(mode="after")
+    def _validate_witness(self) -> ContactForceWitness:
+        norm = math.sqrt(sum(component * component for component in self.direction_in_object))
+        if not math.isfinite(norm) or abs(norm - 1.0) > self._UNIT_DIRECTION_TOLERANCE:
+            raise ValueError(
+                f"ContactForceWitness.direction_in_object must be a unit vector (norm {norm!r})."
+            )
+        if not math.isfinite(self.magnitude_n):
+            raise ValueError("ContactForceWitness.magnitude_n must be finite.")
+        # A calibrated magnitude that cannot name its calibration is exactly the
+        # claim CLAUDE.md 1.2 forbids: it asserts Newtons with no way to check
+        # what produced them. Refuse it at the schema rather than let the kernel
+        # decline it silently later.
+        if self.magnitude_calibrated and not (self.calibration_ref or "").strip():
+            raise ValueError(
+                "ContactForceWitness.calibration_ref is required when magnitude_calibrated is true."
+            )
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        direction = msg.direction_in_object  # type: ignore[attr-defined]
+        return cls(
+            target_id=str(msg.target_id),  # type: ignore[attr-defined]
+            direction_in_object=(
+                float(direction.x),
+                float(direction.y),
+                float(direction.z),
+            ),
+            magnitude_n=float(msg.magnitude_n),  # type: ignore[attr-defined]
+            magnitude_calibrated=bool(msg.magnitude_calibrated),  # type: ignore[attr-defined]
+            calibration_ref=str(msg.calibration_ref) or None,  # type: ignore[attr-defined]
+            confidence=float(msg.confidence),  # type: ignore[attr-defined]
+            evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
+            evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+        msg.target_id = self.target_id  # type: ignore[attr-defined]
+        direction = msg.direction_in_object  # type: ignore[attr-defined]
+        direction.x, direction.y, direction.z = self.direction_in_object
+        msg.magnitude_n = float(self.magnitude_n)  # type: ignore[attr-defined]
+        msg.magnitude_calibrated = bool(self.magnitude_calibrated)  # type: ignore[attr-defined]
+        msg.calibration_ref = self.calibration_ref or ""  # type: ignore[attr-defined]
         msg.confidence = float(self.confidence)  # type: ignore[attr-defined]
         msg.evidence_kind = self.evidence_kind.value  # type: ignore[attr-defined]
         msg.evidence_ref = self.evidence_ref or ""  # type: ignore[attr-defined]
@@ -3071,6 +3250,12 @@ class AttachedCollisionObject(BaseModel):
         evidence_kind: Source that confirmed the attachment.
         evidence_ref: Optional trace/contact/track reference.
         stamp_ns: Confirmation timestamp.
+        contact_force: Optional attestation of a measured contact force on the
+            declared place target (ADR-0100). ``None`` — the default, and what
+            every producer that cannot measure force publishes — means the
+            declaration-scoped force gate never arms and geometry decides
+            alone. The gate it feeds only ever adds a refusal; it never
+            licenses a contact the geometry refuses.
         support_contact: Optional attestation that this payload is in bounded
             support contact with a named environment surface (ADR-0092 D6).
             ``None`` — the honest value for any producer that cannot measure
@@ -3093,6 +3278,7 @@ class AttachedCollisionObject(BaseModel):
     evidence_ref: str | None = None
     stamp_ns: int = Field(ge=0)
     support_contact: SupportContactWitness | None = None
+    contact_force: ContactForceWitness | None = None
 
     @model_validator(mode="after")
     def _validate_attachment(self) -> AttachedCollisionObject:
@@ -3162,6 +3348,11 @@ class AttachedCollisionObject(BaseModel):
             evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
             evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            contact_force=(
+                ContactForceWitness.from_idl(msg.contact_force)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "contact_force_valid", False))
+                else None
+            ),
             support_contact=(
                 SupportContactWitness.from_idl(msg.support_contact)  # type: ignore[attr-defined]
                 if bool(msg.support_contact_valid)  # type: ignore[attr-defined]
@@ -3206,6 +3397,9 @@ class AttachedCollisionObject(BaseModel):
         msg.support_contact_valid = self.support_contact is not None  # type: ignore[attr-defined]
         if self.support_contact is not None:
             self.support_contact.fill_idl(msg.support_contact)  # type: ignore[attr-defined]
+        msg.contact_force_valid = self.contact_force is not None  # type: ignore[attr-defined]
+        if self.contact_force is not None:
+            self.contact_force.fill_idl(msg.contact_force)  # type: ignore[attr-defined]
 
 
 class OccupancyGridRef(BaseModel):
