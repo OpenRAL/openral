@@ -193,7 +193,9 @@ def _process(argv: list[str], log_path: Path) -> Iterator[subprocess.Popen[bytes
             proc.wait(timeout=10)
 
 
-def _lifecycle(transition: str, *, timeout_s: float = 45.0) -> None:
+def _lifecycle(
+    transition: str, *, costmap_node: str = _COSTMAP_NODE, timeout_s: float = 45.0
+) -> None:
     """Drive the costmap through ``transition``, waiting for it to be ready.
 
     Retried rather than one-shot: the node needs a moment to advertise
@@ -202,12 +204,16 @@ def _lifecycle(transition: str, *, timeout_s: float = 45.0) -> None:
     races, not behaviour, and a one-shot call makes the test flaky on a loaded
     host. Stops on the first success, so it can never re-drive a transition
     that already happened.
+
+    ``costmap_node`` defaults to this file's node and is a parameter only so
+    ``test_nav2_global_costmap_height_live.py`` can drive its own costmap
+    through the same retry loop rather than copying it.
     """
     deadline = time.monotonic() + timeout_s
     last = ""
     while time.monotonic() < deadline:
         result = subprocess.run(
-            ["ros2", "lifecycle", "set", _COSTMAP_NODE, transition],
+            ["ros2", "lifecycle", "set", costmap_node, transition],
             check=False,
             capture_output=True,
             timeout=60,
@@ -216,7 +222,9 @@ def _lifecycle(transition: str, *, timeout_s: float = 45.0) -> None:
             return
         last = (result.stdout + result.stderr).decode(errors="replace").strip()
         time.sleep(0.5)
-    raise AssertionError(f"costmap never accepted `{transition}` within {timeout_s}s: {last}")
+    raise AssertionError(
+        f"{costmap_node} never accepted `{transition}` within {timeout_s}s: {last}"
+    )
 
 
 def _static_transforms(node: Any) -> Any:

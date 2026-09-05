@@ -65,6 +65,16 @@ TARGETS=(
     # only thing keeping the carried object out of Nav2's world.
     # Needs ros-jazzy-nav2-bringup, which this image bakes.
     tests/integration/test_nav2_scan_filter_live.py
+    # Issue #211, the other half of the same graph. Nav2 filters observation z
+    # in each costmap's OWN global_frame, and `map`'s z origin is not the floor
+    # -- slam_toolbox flattens `base_link`, the arm mount 0.700 m up the
+    # pedestal, to z = 0. So a `min_obstacle_height` of 0.0 kept every return in
+    # the local costmap and discarded every one in the global, and the planner
+    # ran against a blank grid with nothing warning. The paired control restores
+    # the pre-fix gate and asserts the grid goes empty again, which is a claim
+    # about the upstream binary's parameter contract -- and about the fact that
+    # it applies the cut TWICE, from two differently-scoped parameters.
+    tests/integration/test_nav2_global_costmap_height_live.py
     # Lives under tests/unit/ because it is a pure constant contract with no
     # graph, but it reads the numbers off the colcon-generated openral_msgs,
     # so it importorskips everywhere except this image. Without this entry the

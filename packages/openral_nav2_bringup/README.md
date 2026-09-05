@@ -133,7 +133,11 @@ the base actually translates:
 | **global** costmap samples | 50 | 52 |
 | peak cost anywhere on the global map | **0** | **0** |
 
-Read the last row before the second-to-last one — see the next section.
+Read the last row before the second-to-last one — see the next section. That
+row is why the **global** half of this table was vacuous when it was captured.
+It was re-run after issue #211 was fixed and now reads **254** on both scenes,
+with the silhouette still clean against 164 and 254 marked cells elsewhere —
+the post-fix table is in that section.
 
 **Reproduced.** Both scenes were re-run in an independent session before merge.
 The conclusion reproduces and the incidental counts do not, which is what a live
@@ -213,7 +217,7 @@ gates its costmap on the filter's own output: the gate makes the node's
 *startup* safe, and the sweep asserts the steady state.
 
 
-### A second defect this surfaced, not yet fixed (issue #211)
+### A second defect this surfaced — fixed here (issue #211)
 
 **The global costmap is empty.** Over 50 and 52 published samples across the
 two scenes its maximum cost is `0` and it has no non-zero cell at any point,
@@ -242,12 +246,73 @@ Both costmaps carry `min_obstacle_height: 0.0`. In `odom` the returns sit at
 discarded before it can mark. Same scan, same parameters, opposite outcome,
 purely because of which frame the layer measures height in.
 
-This makes the **global** half of the table above vacuous: nothing is marked
-inside the robot because nothing is marked anywhere. The local half stands on
+This made the **global** half of the table above vacuous: nothing was marked
+inside the robot because nothing was marked anywhere. The local half stands on
 its own — 208 and 66 real marked cells elsewhere in the same samples. The probe
 says so itself: since code review it reports `VACUOUS - the costmap marked
 nothing anywhere` for the global costmap and exits non-zero, rather than
 printing `clean`.
+
+**The fix: the height gate is turned off on the global costmap, not retuned.**
+`/openral/nav2/scan` is a *planar* `LaserScan` and `obstacle_layer` is a 2-D
+layer, so every point in the cloud shares one z — the gate can only admit all of
+them or none, and it has no discriminating power to lose. `min_obstacle_height`
+is set to −10.0 m and `max_obstacle_height` to +10.0 m, which is simply past
+anything a frame in this stack can offset that plane by (the largest is the
+0.700 m pedestal). It is inert rather than tuned, so it cannot go wrong again
+the next time a frame's floor moves.
+
+**It has to be set in two places, and this is the part that is easy to get
+wrong.** nav2 applies the cut *twice*, from two differently-scoped parameters of
+the same name:
+
+| where | parameter | upstream default |
+| --- | --- | ---: |
+| `ObservationBuffer::bufferCloud` — at buffer time, after the transform | `obstacle_layer.scan.min/max_obstacle_height` | `0.0` / **`0.0`** |
+| `ObstacleLayer::updateBounds` — again, per point, while marking | `obstacle_layer.min/max_obstacle_height` | `0.0` / `2.0` |
+
+Widening only the source pair leaves the layer pair cutting the identical
+points. Measured, not inferred: with the layer-level pair removed and the source
+pair at ±10 m, the costmap is still empty.
+
+**Not done: the other three options.** Stopping slam_toolbox injecting z into
+`map → odom` would make the two frames agree about the floor, but it rewrites a
+frame contract that the octomap bridge and the kernel's voxel grid (ADR-0095)
+also read — a much larger change to fix a filter that should not have been
+filtering. Moving `base_link` to ground level contradicts ADR-0095, which makes
+it the arm mount deliberately. And copying this window to the **local** costmap
+would be wrong: that layer is a `VoxelLayer` with a real z column (`origin_z`
+0.0, 16 × 0.08 m), where the height bounds do carry meaning.
+
+**Evidence, deterministic.** `tests/integration/test_nav2_global_costmap_height_live.py`,
+on the live lane: a real `nav2_costmap_2d` reading the *shipped* config off disk,
+under the measured `map → odom → base_link → base_scan` chain, marks a 1 m
+obstacle at cost 254 — and the paired control, with the pre-fix gate restored,
+marks nothing anywhere. Restoring the pre-fix config makes the first test fail
+with "the global costmap marked nothing anywhere".
+
+**Evidence, on the scenes.** The probe was re-run on both, same method and same
+host as the capture above, with only the four height parameters different:
+
+| global costmap | `robocasa_baguette` | `robocasa_deliver_straw` |
+| --- | ---: | ---: |
+| `max_cost_seen` | 0 → **254** | 0 → **254** |
+| `nonzero_cells_max` | 0 → **2818** | 0 → **4239** |
+| `lethal_cells_anywhere_max` | 0 → **164** | 0 → **254** |
+| chassis cells per sample | 138 | 136 |
+| **`LETHAL` cells inside the silhouette** | **0** | **0** |
+| probe verdict | `VACUOUS` → **`clean`** | `VACUOUS` → **`clean`** |
+
+That last pair of rows is the part that reaches past #211. The global half of
+the silhouette table at the top of this section was clean only because nothing
+was marked anywhere; it now reports `non_vacuous: true` and stays clean against
+164 and 254 marked cells elsewhere in the very same samples. Three runs, three
+clean verdicts. Raw output appended to
+`docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`.
+
+The **payload** half is still unmeasured on scenes — `attached_objects` stayed
+`0` on every run because no policy was dispatched and nothing was grasped. That
+is #108's own gate and #211 does not touch it.
 
 ## Nav2 is base-only
 
@@ -306,18 +371,24 @@ static and correct without a publisher. What did NOT go away is the scan filter
 fixed chassis polygon, scoring the real outline instead of the centre cell is
 strictly more accurate and was measured at +0.53 ms on the live loop.
 
-### A defect this surfaced, not yet fixed
+### A defect this surfaced — since fixed
 
 While measuring the above: `openral_sim.backends.robocasa.synthesize_laser_scan_2d`
-casts its rays at **world z = 0.30 m** (`origin[2] = laser_height_m`, absolute —
-the base body is at z = 0.000), but publishes the result in `base_link`, which
-TF puts at **0.700 m**. The sim therefore samples the world at one height and
-tells Nav2 the returns came from another, 0.40 m higher. This config's
-`voxel_layer` comment (`z_resolution` raised to reach 1.28 m for a lidar
-"at z≈1.05 m") is downstream of the same confusion. Neither the base-only
-decision nor the measurements above turn on it — the payload is above every
-candidate height — but it should be reconciled before anyone reasons about
-obstacle heights again.
+cast its rays at **world z = 0.30 m** (`origin[2] = laser_height_m`, absolute —
+the base body is at z = 0.000) but published the result in `base_link`, which TF
+puts at **0.700 m**. The sim sampled the world at one height and told Nav2 the
+returns came from another, 0.40 m higher.
+
+Both now come from one number. `robots/panda_mobile/robot.yaml` gives the lidar
+its own `base_scan` frame with the mount in `static_transform_xyz_rpy` (−0.40 m
+from `base_link`); `sim_e2e.launch.py` publishes exactly that as the
+`base_link → base_scan` static TF, and `SimSensorBridge._scan_world_height_m`
+adds the same offset to the base's own world z to decide where to cast — so the
+ray and the frame can no longer disagree, and a base that changes height (a
+ramp, a lift column) no longer casts through the floor. This config's
+`voxel_layer` comment was corrected with it: the 1.28 m column is kept for the
+counters the scan raytraces through, not for a lidar "at z≈1.05 m" that never
+existed.
 
 ## The robot's own returns
 
