@@ -320,6 +320,16 @@
           "default": null,
           "title": "Gpu Name"
         },
+        "ros_domain_id": {
+          "default": "",
+          "title": "Ros Domain Id",
+          "type": "string"
+        },
+        "ros_automatic_discovery_range": {
+          "default": "",
+          "title": "Ros Automatic Discovery Range",
+          "type": "string"
+        },
         "notes_path": {
           "anyOf": [
             {

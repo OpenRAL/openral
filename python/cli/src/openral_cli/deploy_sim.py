@@ -1628,7 +1628,7 @@ def _alloc_conf_var() -> str:
     return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
 
 
-def _prepare_launch_env() -> dict[str, str]:
+def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     """Build the environment for the ``ros2 launch`` subprocess (deploy sim + deploy run).
 
     Shared by both shelling paths so the wiring stays identical:
@@ -1648,8 +1648,22 @@ def _prepare_launch_env() -> dict[str, str]:
       the old name still works on 2.9 but logs a deprecation warning on every
       process start, which is noise on every launch.
     * Clean stale Fast-DDS SHM (``_apply_rmw_default``).
+    * **Confine a sim to its own host and DDS domain** (``hal_mode="sim"``,
+      :func:`~openral_cli._dds_scope.confine_sim_scope`). A sim graph lives on
+      one host; left on the default domain 0 with subnet discovery it joins
+      whatever else is on the LAN, which on 2026-09-05 was a live OpenArm
+      (#227). ``deploy run`` is deliberately **not** confined — a real robot's
+      graph may legitimately span machines — and is covered by the occupancy
+      guard instead.
+
+    Args:
+        hal_mode: ``"sim"`` or ``"real"``; only a sim is scope-confined.
     """
+    from openral_cli._dds_scope import confine_sim_scope  # reason: deferred
+
     env = os.environ.copy()
+    if hal_mode == "sim":
+        confine_sim_scope(env)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
     existing = env.get("PYTHONPATH", "")
@@ -1727,11 +1741,38 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         ]
         _console.print(f"  hal_params_tmp:{hal_params_tmp.name}")
         _console.print(f"  argv: {shlex.join(argv)}")
-        venv_env = _prepare_launch_env()
+        venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
+        # Both directions, one rule: a sim must not start beside a robot and a
+        # robot must not start beside a sim (#227). Checked against the scope
+        # actually about to be used, so a confined sim sees the empty graph it
+        # just confined itself to — which is why it cannot live in the
+        # ``run_preflight`` block above, where ``venv_env`` does not exist yet.
+        # It is still a preflight check, so it honours the same flag: a caller
+        # passing ``run_preflight=False`` means it.
+        if run_preflight:
+            _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
         return _run_launch(argv, venv_env)
     finally:
         with contextlib.suppress(OSError):
             Path(hal_params_tmp.name).unlink(missing_ok=True)
+
+
+def _assert_graph_unoccupied_or_exit(env: dict[str, str], *, hal_mode: str) -> None:
+    """Refuse the launch when another robot is already on this ROS graph.
+
+    Thin CLI wrapper: the rule and its wording live in
+    :mod:`openral_cli._dds_scope`; this turns the typed refusal into the exit
+    code the operator sees. Kept out of ``run_preflight`` on purpose — it has to
+    run against ``venv_env``, the scope actually about to be used, which does
+    not exist until :func:`_prepare_launch_env` has confined it.
+    """
+    from openral_cli._dds_scope import assert_graph_unoccupied  # reason: deferred
+
+    try:
+        assert_graph_unoccupied(env, hal_mode=hal_mode)
+    except ROSConfigError as exc:
+        _console.print(f"[red]refusing to launch:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 def _parse_hal_overrides(raw: list[str] | None) -> dict[str, object]:
@@ -3087,7 +3128,11 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # the editable ``.pth`` files via site.py at startup. PYTHONPATH
         # alone is not enough: .pth files in PYTHONPATH directories are
         # never processed by Python's site module.
-        venv_env = _prepare_launch_env()
+        venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
+        # Both directions, one rule — see the twin call in
+        # ``run_launch_invocation``. Runs against ``venv_env`` because that is
+        # the scope the launch will actually use (#227).
+        _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
 
         # The dashboard child is spawned by ``sim_e2e.launch.py`` itself
         # (gated on ``enable_dashboard:=true`` forwarded from ``dashboard``

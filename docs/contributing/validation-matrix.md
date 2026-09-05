@@ -321,6 +321,29 @@ the two is itself a finding. `place_allowance_active` is transcribed from the
 trip line, and the count of `place_allowance_active=1` disclosures anywhere in
 the run is recorded separately.
 
+### The DDS scope a round ran on
+
+`verdicts.json` metadata records `ros_domain_id` and `ros_automatic_discovery_range`
+from #227 onward. Before that they were captured nowhere, so for every earlier
+round it is **not knowable after the fact** whether it shared a ROS graph with
+another machine — the question the 2026-09-04 `post200-2` fridge round still
+cannot answer, and the reason its `deadline-no-grasp` is recorded as
+*cause not established* rather than blamed on anything.
+
+`openral deploy sim` now confines itself (`LOCALHOST` + a private domain) and
+both `deploy sim` and `deploy run` refuse to start onto a graph that already has
+a `/joint_states` publisher. An explicitly-exported scope still wins, which is
+why the values are recorded rather than assumed:
+
+```
+ros_domain_id: "77"
+ros_automatic_discovery_range: "LOCALHOST"
+```
+
+An empty string means the variable was unset — i.e. domain 0 with subnet-wide
+discovery, the combination that let a simulation read a live OpenArm's joints.
+`validation_matrix.py diff` surfaces a change in either field between rounds.
+
 ### Adjudicating a payload-vs-link self stop
 
 A stop whose payload side is the *carried object* and whose other side is a
