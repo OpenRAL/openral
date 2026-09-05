@@ -209,7 +209,9 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"{env.get('ROS_AUTOMATIC_DISCOVERY_RANGE', 'SUBNET (unset)')}"
     )
     found = _scan_graph(env)
-    if found == _NO_ROS:
+    if isinstance(found, str):
+        # _NO_ROS — see _scan_graph. `isinstance` rather than `== _NO_ROS` so
+        # the str arm is narrowed out of the union for the dict access below.
         return
     if found is None:
         raise ROSConfigError(
