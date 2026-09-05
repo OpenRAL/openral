@@ -789,9 +789,12 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
     Returns:
         ``{"links": {<link>: {...}}, "max_corner_slop_m": float,
         "unresolved_links": [...], "method": str}``. Each link entry carries
-        ``obb_half_extents_m``, ``face_slop_m`` (per axis) and
+        ``obb_half_extents_m``, ``face_slop_m`` (per axis),
         ``corner_slop_m`` — the largest distance from an OBB corner to the
-        nearest sampled collision point. ``{}`` when the manifest declares no
+        nearest sampled collision point — and ``hull_overhang_m`` (#221): the
+        link's declared stage-2 hull's own overhang past its source mesh, or
+        ``None`` when the link ships no hull or the hull's overhang was never
+        measured. ``{}`` when the manifest declares no
         collision geometry, so the caller reports "no budget" rather than
         assuming zero.
 
@@ -836,11 +839,18 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
             max(float(np.min(np.linalg.norm(local - corner, axis=1))) for corner in corners)
         )
         worst = max(worst, corner_slop)
+        tight = getattr(entry, "tight_geometry", None)
+        overhang = None if tight is None else tight.hull_overhang_m
         links[name] = {
             "obb_half_extents_m": [round(float(v), 6) for v in half],
             "face_slop_m": [round(float(v), 6) for v in (half - extent)],
             "corner_slop_m": round(corner_slop, 6),
             "collision_points_sampled": int(points.shape[0]),
+            # The hull's own overhang past its source mesh (#221), or `None`
+            # when the link ships no stage-2 hull or the hull's overhang was
+            # never measured. `hal_admissible_gap_m` sums two links' entries
+            # to budget a hull-fidelity self-collision stop.
+            "hull_overhang_m": None if overhang is None else round(float(overhang), 6),
         }
     return {
         "links": links,
@@ -1690,21 +1700,24 @@ def estop_ground_truth_snapshot(
                     "hull to exact hull. Neither has a voxel. Against a "
                     "mesh-to-mesh probe the admissible gap is "
                     "corner_slop(link_a) + corner_slop(link_b) for the BOX "
-                    "case; per-link slop is in collision_model_slop.links. "
-                    "The HULL case has no term here: the hull's own overhang "
-                    "past the mesh is not measured anywhere, so such a stop is "
-                    "not adjudicable and must stay unadjudicated. Which case "
-                    "applies is stated by the kernel, not inferred -- "
-                    "`safety.collision depth_is_box_bound=1` (#213) means the "
-                    "reported depth is the OBB's bound and the box term "
-                    "applies."
+                    "case, or hull_overhang_m(link_a) + hull_overhang_m(link_b) "
+                    "for the HULL case (#221) -- both per-link, not maxed, so "
+                    "the consumer looks them up in collision_model_slop.links "
+                    "by the kernel's own party names rather than reading a "
+                    "value off this block. A link with no measured overhang "
+                    "(no stage-2 hull, or a hull with no source mesh) leaves "
+                    "the pair unadjudicable. Which case applies is stated by "
+                    "the kernel, not inferred -- `safety.collision "
+                    "depth_is_box_bound=1` (#213) means the reported depth is "
+                    "the OBB's bound and the box term applies."
                 ),
                 "max_corner_slop_m": slop.get("max_corner_slop_m"),
-                # Both sides are links, so the worst case charges the max twice.
-                # A consumer with both link names in hand should prefer the
-                # per-link entries in `collision_model_slop.links`.
+                # A snapshot-wide upper bound for the BOX case only: both sides
+                # are links, so this charges the worst-observed corner slop
+                # twice. It is deliberately not the tightest possible number --
+                # see the per-link entries in collision_model_slop.links for
+                # that -- but it needs no pair identity, unlike the hull term.
                 "admissible_gap_box_m": round(2.0 * float(max_slop or 0.0), 6),
-                "admissible_gap_hull_m": None,
             }
             if slop
             else None,

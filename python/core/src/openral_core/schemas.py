@@ -1586,6 +1586,16 @@ class TightCollisionGeometry(BaseModel):
             That is the representation a link whose hull is over the ceiling
             gets, and it is a cost decision, not a safety one: the DOP is a
             containing solid either way.
+        hull_overhang_m: How far the hull's surface reaches past the real
+            source mesh it was built from, sampled by
+            ``tools/generate_tight_geometry.py`` (issue #221). Containment
+            (``mesh ⊆ hull``) is proved elsewhere; this is the *other*
+            direction, and it is what an offline adjudicator needs to charge a
+            hull-fidelity self-collision stop an admissible gap instead of
+            leaving it unscorable. ``None`` when ``hull_vertices_m`` is empty,
+            or when the hull has no source mesh on disk to measure against —
+            never defaulted to ``0``, since that would silently claim a
+            perfect fit.
 
     Example:
         >>> t = TightCollisionGeometry(
@@ -1601,6 +1611,7 @@ class TightCollisionGeometry(BaseModel):
     dop_lo_m: tuple[float, ...]
     dop_hi_m: tuple[float, ...]
     hull_vertices_m: tuple[tuple[float, float, float], ...] = ()
+    hull_overhang_m: float | None = None
 
     @model_validator(mode="after")
     def _check_slabs_and_containment(self) -> Self:
@@ -1614,6 +1625,16 @@ class TightCollisionGeometry(BaseModel):
                 raise ValueError(msg)
             if lo > hi:
                 msg = f"DOP slab {i} is inverted: lo={lo} > hi={hi}"
+                raise ValueError(msg)
+        if self.hull_overhang_m is not None:
+            if not self.hull_vertices_m:
+                msg = (
+                    "hull_overhang_m is set but hull_vertices_m is empty -- "
+                    "there is no hull to overhang"
+                )
+                raise ValueError(msg)
+            if not (math.isfinite(self.hull_overhang_m) and self.hull_overhang_m >= 0.0):
+                msg = f"hull_overhang_m must be finite and non-negative, got {self.hull_overhang_m}"
                 raise ValueError(msg)
         if len(self.hull_vertices_m) > MAX_TIGHT_HULL_VERTICES:
             msg = (
