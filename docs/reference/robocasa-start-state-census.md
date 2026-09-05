@@ -538,6 +538,13 @@ threshold was changed. In rough order of cost:
    block, and since 2026-09-05 the pin is held by
    `tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py` — real
    kitchen, real grid, real kernel — rather than by that comment alone (#102).
+   That file also carries the counterpart this census could not supply from any
+   of the 240 start states: a *genuinely* colliding pose. 91.7% of the stops
+   measured here are envelope conservatism and at most 8.3% involve contact at
+   all, so no start state pins the kernel refusing real interpenetration. The
+   test reaches one by moving the arm on the pinned layout —
+   `panda_link5` −145.13 mm inside a fridge door, certified — and holds the
+   zero-margin refusal there.
 5. **Fix `adjudication_budget.admissible_gap_m`** to be per-link rather than a
    single `max_corner_slop_m`-derived scalar, or rename it so it cannot be read
    as a per-link budget. As published it over-forgives `panda_link7` by 60 mm.
