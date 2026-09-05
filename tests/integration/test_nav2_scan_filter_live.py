@@ -444,6 +444,16 @@ _OBSTACLE_AT_SAME_BEARING_M = 0.60
 #: this a *control* rather than a blackout.
 _UNRESOLVABLE_BASE_FRAME = "no_such_base_frame"
 
+#: ``self_tf_grace_s`` for the tests that want the #212 startup gate to open
+#: again within a test's patience. The shipped default is 5.0 s, sized for a
+#: real bringup where TF and the first scans arrive together.
+_SHORT_TF_GRACE_S = 6.0
+#: What option 1 of #212 would have written for a beam the chassis half
+#: dropped: ``range_max`` less nav2's own ``inf``-substitution epsilon, so
+#: ``laser_geometry`` keeps the point (its cutoff is strict ``<``) and
+#: ``ObstacleLayer`` raytraces the bearing clear without marking the endpoint.
+_RANGE_MAX_BEAM_M = 12.0 - 0.0001
+
 #: How many of the 360 ring beams must come back non-finite before the filter
 #: counts as live. **All** of them, deliberately: with a payload attached the
 #: ring is 355 chassis beams plus 5 on the carried box, so any threshold below
@@ -722,6 +732,13 @@ def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: P
     This doubles as the proof that the sibling test measured the filter: if
     something else (footprint clearing, the range gate, the rolling window)
     were keeping that cell free, this assertion would fail too.
+
+    Since #212 the pass-through is no longer immediate — the node withholds
+    every scan until its chassis TF resolves once — so this also measures the
+    *bounded* half of that gate: with a TF that never resolves, the short
+    ``self_tf_grace_s`` here has to expire and hand Nav2 its scans back, or a
+    mistyped ``base_frame`` would leave the costmap blind forever. The
+    sibling test above measures the withholding itself.
     """
     lethal_threshold = 253
     filter_argv = [
@@ -732,6 +749,8 @@ def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: P
         f"robot_yaml:={_ROBOT_YAML}",
         "-p",
         f"base_frame:={_UNRESOLVABLE_BASE_FRAME}",
+        "-p",
+        f"self_tf_grace_s:={_SHORT_TF_GRACE_S}",
     ]
 
     with _self_filter_rig(tmp_path, filter_argv=filter_argv) as (
@@ -751,6 +770,168 @@ def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: P
         ), (
             f"a degraded self-filter still removed the return (last cost {seen[-1:]}); "
             f"filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+        # Falling back silently would be the worse bug of the two: Nav2 is
+        # being handed scans whose chassis returns are permanent.
+        assert "UNFILTERED" in filter_log.read_text(errors="replace"), (
+            "the grace window expired without saying so; filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+
+def test_the_filter_withholds_every_scan_until_it_can_place_the_chassis(
+    tmp_path: Path,
+) -> None:
+    """The #212 startup gate: no output at all rather than one unfiltered scan.
+
+    The self half cannot fail open the way the payload half can. A payload
+    return that reaches the cost grid is cleared by the next scan's ray along
+    the same bearing; a *chassis* return is not, because the working filter
+    then removes exactly that ray. One unfiltered scan published during the TF
+    warm-up is therefore permanent — which is what failed #207's silhouette
+    sweep in CI after five clean local runs.
+
+    So the node publishes nothing while a self-polygon is configured and
+    ``base_frame <- scan_frame`` has never resolved. Measured here with a
+    ``base_frame`` nobody broadcasts, which holds the gate shut for the whole
+    grace window.
+
+    The second half is the same assertion's non-vacuity **and** the property
+    that keeps the gate from being the worse bug: the window is bounded, so a
+    mistyped ``base_frame`` costs Nav2 ``self_tf_grace_s`` of blindness rather
+    than all of it. If the subscription had simply never matched, no scan would
+    arrive after the grace either and this would fail.
+    """
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import LaserScan
+
+    # Comfortably inside the grace window even after the node's own startup,
+    # which is what pushes the window's start later, never earlier.
+    withheld_window_s = 4.0
+    filter_argv = [
+        sys.executable,
+        str(_SCAN_FILTER_NODE),
+        "--ros-args",
+        "-p",
+        f"robot_yaml:={_ROBOT_YAML}",
+        "-p",
+        f"base_frame:={_UNRESOLVABLE_BASE_FRAME}",
+        "-p",
+        f"self_tf_grace_s:={_SHORT_TF_GRACE_S}",
+    ]
+
+    rclpy.init()
+    node = Node("test_nav2_self_filter_startup_gate")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        sensor_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        received: list[LaserScan] = []
+        node.create_subscription(LaserScan, _FILTERED_SCAN_TOPIC, received.append, sensor_qos)
+        scan_pub = node.create_publisher(LaserScan, "/scan", sensor_qos)
+        scan = _forward_scan(_SELF_RETURN_M)
+
+        def _publish() -> None:
+            scan.header.stamp = node.get_clock().now().to_msg()
+            scan_pub.publish(scan)
+
+        filter_log = tmp_path / "startup_gate_filter.log"
+        with _process(filter_argv, filter_log):
+            deadline = time.monotonic() + withheld_window_s
+            while time.monotonic() < deadline:
+                _publish()
+                executor.spin_once(timeout_sec=0.05)
+            assert not received, (
+                f"the filter published {len(received)} scan(s) it could not place the chassis "
+                f"in — every chassis return in them is a permanent costmap mark (#212); "
+                f"filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
+            )
+
+            assert _spin_until(executor, lambda: bool(received), timeout_s=25.0, each=_publish), (
+                f"the filter never published after its {_SHORT_TF_GRACE_S}s grace expired, so "
+                f"Nav2 would be blind for good; filter said:\n"
+                f"{filter_log.read_text(errors='replace')[-2000:]}"
+            )
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_raytrace_clearing_a_dropped_beam_would_erase_a_real_obstacle(tmp_path: Path) -> None:
+    """Why a dropped beam stays ``inf`` — the measurement that rejects #212 option 1.
+
+    The tempting one-line fix for the permanence above is to publish
+    ``range_max`` for a dropped beam instead of ``inf``, so Nav2 raytraces the
+    bearing clear and the map heals itself. Its stated justification is that a
+    chassis-dropped beam's endpoint is provably inside the manifest polygon, so
+    there is nothing real along it to erase.
+
+    That justification covers the wrong segment. Nav2 does not clear to the
+    endpoint's *shape*, it clears the ray out to ``raytrace_max_range`` — 3.0 m
+    in the shipped config, an order of magnitude past the chassis. And a
+    bearing on which the chassis returns is one the sensor is *permanently*
+    occluded on, so the cells that ray erases were marked from other robot
+    poses and nothing on that bearing will ever re-mark them.
+
+    Measured here, with the exact bytes option 1 would have put on the wire: a
+    real obstacle 0.25 m past the chassis edge, already lethal in the grid, is
+    deleted by one ``range_max`` beam on its bearing. The filter passes that
+    beam through untouched — 12 m is not inside any chassis — so this is
+    Nav2's behaviour being pinned, which is what makes it a decision about our
+    fail direction rather than a guess.
+    """
+    lethal_threshold = 253
+    filter_argv = [
+        sys.executable,
+        str(_SCAN_FILTER_NODE),
+        "--ros-args",
+        "-p",
+        f"robot_yaml:={_ROBOT_YAML}",
+    ]
+
+    with _self_filter_rig(tmp_path, filter_argv=filter_argv) as (
+        executor,
+        publish_of,
+        samples,
+        filter_log,
+        _latest,
+    ):
+        # 1. A real obstacle on the forward bearings, marked lethal.
+        beyond = samples[_OBSTACLE_AT_SAME_BEARING_M]
+        obstacle = publish_of(_forward_scan(_OBSTACLE_AT_SAME_BEARING_M))
+        assert _spin_until(
+            executor,
+            lambda: bool(beyond) and beyond[-1] >= lethal_threshold,
+            timeout_s=25.0,
+            each=obstacle,
+        ), (
+            f"the obstacle never marked, so the erasure below would prove nothing "
+            f"(last cost {beyond[-1:]}); filter said:\n"
+            f"{filter_log.read_text(errors='replace')[-2000:]}"
+        )
+
+        # 2. The same bearings, carrying what option 1 emits for a dropped beam.
+        beyond.clear()
+        healing = publish_of(_forward_scan(_RANGE_MAX_BEAM_M))
+        assert _spin_until(
+            executor,
+            lambda: bool(beyond) and beyond[-1] == 0,
+            timeout_s=25.0,
+            each=healing,
+        ), (
+            f"expected the range_max beam to raytrace the obstacle away "
+            f"(last cost {beyond[-1:]}) — if it no longer does, #212 option 1 is worth "
+            f"re-opening; filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
         )
 
 
