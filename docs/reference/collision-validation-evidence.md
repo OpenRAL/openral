@@ -1357,6 +1357,68 @@ depth an operator reads. It is untouched here because it is
 entry (CLAUDE.md §3). Note the direction: the reported depth is *more*
 conservative than the truth, and the trip decision is unaffected.
 
+### 2026-09-05 — the fridge layout pin put under a test (#102)
+
+Not a validation round: a regression, and the honest accounting of what it can
+and cannot hold.
+
+`scenes/deploy/robocasa_fridge_drawer.yaml` has pinned `layout_ids: [47]` since
+2026-08-25, on the strength of the table in its own comment block — layout 30 at
+**−23.47 mm** on `panda_link2`, layout 47 at **+19.34 mm** on `panda_link1`,
+both from live octomap captures. Nothing executable held any of it. The pin
+could be moved, `panda_link2`'s OBB loosened, or the lowered kinematics shifted,
+and the only artifact that would disagree was a YAML comment. This is issue
+#102's third acceptance item — "a regression for the nominal valid pose and a
+nearby genuinely colliding fixture pose" — with the pair the
+[start-state census](robocasa-start-state-census.md) identified.
+
+**What it runs.** `tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py`
+composes the real scene at each layout at its own seed, reads it at reset with
+zero actions applied, builds a 25 mm base-frame occupancy grid over the arm's
+neighbourhood cell by cell through the shipped
+`openral_hal.sim_sensor_bridge.voxel_backing_record` — the same probe the E-stop
+evidence path uses to ask what backs a cell — and puts the result through the
+real `safety_kernel_node` loaded from `robots/panda_mobile/robot.yaml`, as a
+zero `CARTESIAN_DELTA` chunk. 4 tests, 66 s, no GPU.
+
+**What it measures.** At `world_voxel_margin_m = 0`, bracketed by sweeping the
+kernel's own standoff rather than by porting any arithmetic into the test:
+
+| layout | this grid | live octomap (scene file) |
+| ---: | --- | --- |
+| 47 | **+44.55 mm** `panda_link1` | +19.34 mm `panda_link1` |
+| 30 | **+19.09 mm** `panda_link2` | −23.47 mm `panda_link2` |
+
+Same dominant link on both layouts, same ordering, uniformly more generous —
+which is the direction `world-map-fidelity.md` predicts and the scene file
+already states: the live map also holds non-collidable decoration and the
+octree→grid bridge dilates whatever it holds, so it stops *more* often than a
+grid built from true surfaces, never less.
+
+**So layout 30 clears at zero margin here and stops on the live map, and the
+test says so in its own docstring.** It is not evidence for restoring layout 30.
+What is pinned is the part independent of map density: 47 clears, 30 is the
+tighter of the two at a 20 mm standoff, and each binds on the link the census
+named. Reproducing the live verdict needs the whole deploy graph, which is
+#102's separate end-to-end item.
+
+**Two properties worth recording.** Adding non-collidable world geometry to the
+occupancy criterion raises the cell count from 4 702 → 7 923 (layout 30) and
+5 638 → 9 217 (layout 47), bracketing the live captures' 5 435 and 9 112 — and
+moves the reported minimum by **0.00 mm on both layouts**. The binding cells are
+solid either way. And the whole pipeline is deterministic: a cold rebuild
+reproduces both cell counts and both minima to every digit.
+
+**The control is half of it,** for the reason #183 established on the Nav2 live
+tests. A grid that never reached the kernel, or that landed where the arm is
+not, would pass every configuration and every clearance assertion would hold
+vacuously. `test_an_all_occupied_grid_is_refused` fails in that case, and the
+file was mutation-checked: neutralising the separating margin fails the ordering
+test, and displacing the grid origin by 2 m fails both it and the control.
+Publishing the grid under a wrong `header.frame_id` changes *nothing*, and that
+is correct rather than a gap — `WorldCollision.msg` states the kernel applies no
+TF on the hot path, so the frame id is advisory and the base frame is assumed.
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts

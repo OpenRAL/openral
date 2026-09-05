@@ -522,14 +522,22 @@ threshold was changed. In rough order of cost:
 3. **Re-tune the fridge start pose in `joint1`/`joint2` only** — or re-park the
    base. This is the cheapest fix for the fridge scene and needs no kernel
    change. It is bounded: ~+16 mm is the best available at layout 30.
-4. **Re-examine the `layout_ids: [30]` pin.** It clears the mesh but not the
-   reconstructed kernel. The four fridge layouts that avoid a kernel stop here
-   are **18, 21, 43 and 47** — 18 and 21 are also in the set #154 identified on
-   the mesh criterion, so either is a candidate that satisfies both. A pin chosen
-   against the kernel criterion would be better founded than one chosen against
-   the mesh criterion. **This should be confirmed on a live round first**,
-   because the idealised grid is the conservative bound and the live octomap may
-   be sparser at reset.
+4. ~~**Re-examine the `layout_ids: [30]` pin.**~~ **Done, 2026-08-25 — and the
+   caveat this item ended on was the right one to insist on.** The pin moved to
+   **47**. Of the four layouts this census called clear on the kernel criterion
+   (18, 21, 43, 47), the live octomap refutes two: 61 live captures, one per
+   layout, put 18 at −2.26 mm and 21 at −10.96 mm — both *stopping* — while 43
+   clears by 0.69 mm (3% of one voxel, not a pin) and only 47 clears and stays
+   clear, at +19.34 mm across two captures whose maps differed in density by
+   68%. So the guess embedded in this item — "the live octomap may be sparser at
+   reset" — is **falsified in the direction that matters**: the live map also
+   holds non-collidable decoration and the octree→grid bridge dilates it, so it
+   stops *more* often than this idealised grid, not less
+   ([world-map-fidelity](world-map-fidelity.md)). The measurements and the
+   reasoning are in `scenes/deploy/robocasa_fridge_drawer.yaml`'s own comment
+   block, and since 2026-09-05 the pin is held by
+   `tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py` — real
+   kitchen, real grid, real kernel — rather than by that comment alone (#102).
 5. **Fix `adjudication_budget.admissible_gap_m`** to be per-link rather than a
    single `max_corner_slop_m`-derived scalar, or rename it so it cannot be read
    as a per-link budget. As published it over-forgives `panda_link7` by 60 mm.
