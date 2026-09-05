@@ -32,8 +32,10 @@ constructed input is the ``WorldStateStamped`` carrying the attachment.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -159,18 +161,36 @@ def _spin_until(
 
 @contextmanager
 def _process(argv: list[str], log_path: Path) -> Iterator[subprocess.Popen[bytes]]:
-    """Run a node as its own process, teeing its log where a failure can quote it."""
+    """Run a node in its own process GROUP, teeing its log where a failure can quote it.
+
+    The group is the load-bearing part. ``ros2 run <pkg> <exe>`` **forks** the
+    node rather than exec-ing it, so signalling the ``Popen`` handle reaps the
+    ``ros2`` wrapper and orphans the node — which keeps publishing, on the same
+    topics, under the same node name. Every test in this file uses
+    ``/local_costmap/costmap_raw``, so one orphan makes later tests sample a
+    costmap they never configured; and the test immediately before the
+    silhouette sweep is the degraded control, whose whole job is to leave the
+    chassis marked. That is the grid the sweep then refused, twice, in CI.
+
+    Signalling the whole group is what actually stops the node. Verified by
+    ``pgrep -f nav2_costmap_2d`` returning nothing after a run, where it used to
+    return one process per test.
+    """
     with log_path.open("wb") as log:
-        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             yield proc
         finally:
-            proc.terminate()
+            group = os.getpgid(proc.pid)
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(group, signal.SIGTERM)
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:  # pragma: no cover - shutdown hardening
-                proc.kill()
-                proc.wait(timeout=10)
+                pass
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(group, signal.SIGKILL)
+            proc.wait(timeout=10)
 
 
 def _lifecycle(transition: str, *, timeout_s: float = 45.0) -> None:
@@ -604,17 +624,21 @@ def _self_filter_rig(
             str(params_file),
         ]
         filter_log = tmp_path / "self_scan_filter.log"
-        with (
-            _process(filter_argv, filter_log),
-            _process(costmap_argv, tmp_path / "costmap_self.log"),
-        ):
+        with _process(filter_argv, filter_log):
             if warmup_scan is not None:
+                # The costmap process is not started until this returns. A gate
+                # that merely delays `configure` would still leave a window in
+                # which an unfiltered scan is published while a costmap process
+                # exists, and one mark that lands inside the chassis is
+                # permanent (see this function's docstring). Not existing yet is
+                # the only airtight version.
                 _wait_for_a_filtered_scan(
                     node, executor, publish=_publish_of(warmup_scan), filter_log=filter_log
                 )
-            _lifecycle("configure")
-            _lifecycle("activate")
-            yield executor, _publish_of, samples, filter_log, latest
+            with _process(costmap_argv, tmp_path / "costmap_self.log"):
+                _lifecycle("configure")
+                _lifecycle("activate")
+                yield executor, _publish_of, samples, filter_log, latest
     finally:
         executor.remove_node(node)
         node.destroy_node()
@@ -918,8 +942,10 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
         marked = _marked_cells_inside_silhouette(latest[0], with_payload=True)
         assert not marked, (
             f"{len(marked)} costmap cells are marked inside the robot/payload silhouette, "
-            f"first at {marked[:5]}; filter said:\n"
-            f"{filter_log.read_text(errors='replace')[-2000:]}"
+            f"first at {marked[:5]} (chassis-only silhouette is {chassis_only} cells, with the "
+            f"payload {with_payload}; the ring returns at {_RING_SELF_RETURN_M} m and the payload "
+            f"at {_PAYLOAD_X_IN_BASE} m, so the x of a marked cell says which half let it "
+            f"through); filter said:\n{filter_log.read_text(errors='replace')[-2000:]}"
         )
 
 
