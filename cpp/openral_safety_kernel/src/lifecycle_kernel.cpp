@@ -922,17 +922,23 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         RCLCPP_ERROR(this->get_logger(),
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
-                     "place_target=%s",
+                     "place_target=%s depth_is_box_bound=%d",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
-                     hit.place_allowance_active ? place_declaration_target_.c_str() : "");
+                     hit.place_allowance_active ? place_declaration_target_.c_str() : "",
+                     static_cast<int>(hit.depth_is_box_bound));
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
         span->SetAttribute("safety.violation_value", hit.min_distance);
         span->SetAttribute("safety.sweep_min_distance_m", hit.sweep_min_distance);
         span->SetAttribute("safety.place_allowance_active", hit.place_allowance_active);
+        // Disclosure, never a gate: the reported depth is the OBB's bound
+        // rather than a measurement of the hulls the evidence names. An
+        // adjudicator that subtracts this number from a mesh-level probe must
+        // not read it as the hull depth (#191/#202, 2026-09-04 battery).
+        span->SetAttribute("safety.depth_is_box_bound", hit.depth_is_box_bound);
         span->AddEvent(otel::kSafetyViolationEventName, {{"safety.kind", kind}});
         span->End();
       };

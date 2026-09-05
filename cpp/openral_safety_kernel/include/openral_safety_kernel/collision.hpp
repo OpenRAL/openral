@@ -457,6 +457,24 @@ struct CollisionHit {
   /// declared target rather than the cell, so the evidence can never quote one
   /// geometry's distance under another's identity.
   bool place_target_adjudicated{false};
+  /// The reported `min_distance` is the OBB's **bound**, not a measurement of
+  /// the geometry named in the evidence.
+  ///
+  /// Set only for a self-collision pair whose two links both ship a stage-2
+  /// hull (#191/#202) and whose hulls the GJK found **overlapping**. Penetration
+  /// depth needs an expanding-polytope step the kernel does not run, so on that
+  /// branch `hull_hull_distance` falls back to `box_box_distance`. That number
+  /// is sound — the hull is contained in its box, so the box can only report
+  /// MORE penetration — but it can be far looser than the truth: on
+  /// `panda_link5` <-> `panda_link7` at the 2026-09-04 battery's tripping
+  /// configuration it reads -31.97 mm for a ~1.5 mm hull interpenetration, 20x.
+  ///
+  /// Publishing that under the identity of a check that exists *because* the
+  /// box cannot be trusted for the pair is the defect this flag closes. The trip
+  /// decision is unaffected — both numbers are <= 0 and the pair trips either
+  /// way — so this is disclosure, exactly like `place_target_adjudicated`, and
+  /// never a gate.
+  bool depth_is_box_bound{false};
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -821,7 +839,7 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
 /// (the same shape as `dop_cell_lower_bound`), not a looser support function —
 /// see `kMaxTightHullVertices` for why the scan stays exhaustive.
 double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
-                          double fallback) noexcept;
+                          double fallback, bool* depth_is_box_bound = nullptr) noexcept;
 
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.

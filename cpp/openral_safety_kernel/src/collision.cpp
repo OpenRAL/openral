@@ -806,7 +806,10 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
 }
 
 double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
-                          double fallback) noexcept {
+                          double fallback, bool* depth_is_box_bound) noexcept {
+  if (depth_is_box_bound != nullptr) {
+    *depth_is_box_bound = false;
+  }
   if (a.vertices == nullptr || a.n_vertices <= 0 || b.vertices == nullptr || b.n_vertices <= 0) {
     return fallback;  // one side stops at stage 1; the OBB bound stands
   }
@@ -835,7 +838,19 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
     const Vec3 v = simplex_closest(s, contains);
     const double vlen2 = dot(v, v);
     if (contains || vlen2 <= 1e-24) {
-      return fallback;  // hulls overlap: the OBB bound (<= 0 here) stands
+      // The hulls OVERLAP. GJK proves that but does not measure how deep —
+      // penetration depth needs an expanding-polytope step this kernel does not
+      // run — so the OBB bound (<= 0 here) stands as the reported number.
+      //
+      // It is sound: the hull is contained in its box, so the box can only
+      // report MORE penetration than the truth, never less. It can also be far
+      // looser: -31.97 mm for a ~1.5 mm hull interpenetration on the
+      // `panda_link5` <-> `panda_link7` pair. Say so rather than let the caller
+      // read a box bound as a hull measurement.
+      if (depth_is_box_bound != nullptr) {
+        *depth_is_box_bound = true;
+      }
+      return fallback;
     }
     const double vlen = std::sqrt(vlen2);
     const Vec3 search{-v.x / vlen, -v.y / vlen, -v.z / vlen};
@@ -1013,7 +1028,8 @@ namespace {
 // depth; within one severity, the deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
                bool allowance_active = false, bool advisory = false,
-               bool place_target_adjudicated = false) noexcept {
+               bool place_target_adjudicated = false,
+               bool depth_is_box_bound = false) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -1030,6 +1046,7 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
     hit.place_allowance_active = allowance_active;
     hit.advisory = advisory;
     hit.place_target_adjudicated = place_target_adjudicated;
+    hit.depth_is_box_bound = depth_is_box_bound;
   }
 }
 
@@ -1051,8 +1068,11 @@ CollisionHit finish_sweep(CollisionHit hit, double sweep_min) noexcept {
 // Called only once the OBBs are already within `margin`, so the GJK never runs
 // for a pair the cheap bound clears.
 double refine_self_pair(const CollisionModel& model, std::size_t bi, const Transform& xf_i,
-                        std::size_t bj, const Transform& xf_j, double margin,
-                        double fallback) noexcept {
+                        std::size_t bj, const Transform& xf_j, double margin, double fallback,
+                        bool* depth_is_box_bound) noexcept {
+  if (depth_is_box_bound != nullptr) {
+    *depth_is_box_bound = false;
+  }
   if (model.box_hull.size() != model.boxes.size()) {
     return fallback;
   }
@@ -1069,7 +1089,7 @@ double refine_self_pair(const CollisionModel& model, std::size_t bi, const Trans
   TightPose pose_j;
   tight_pose_init(model.hulls[static_cast<std::size_t>(hi)], verts, xf_i, 0.0, pose_i);
   tight_pose_init(model.hulls[static_cast<std::size_t>(hj)], verts, xf_j, 0.0, pose_j);
-  return hull_hull_distance(pose_i, pose_j, margin, fallback);
+  return hull_hull_distance(pose_i, pose_j, margin, fallback, depth_is_box_bound);
 }
 
 }  // namespace
@@ -1130,13 +1150,15 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
           compose(scratch.link_world[static_cast<std::size_t>(lb2)], model.boxes[bj].origin);
       double d = box_box_distance(box_i, model.boxes[bi].half_extents, box_j,
                                   model.boxes[bj].half_extents);
+      bool depth_is_box_bound = false;
       if (d <= margin) {
         // The OBBs cannot separate every pair that interleaves (see
         // `hull_hull_distance`). Refine with the exact hulls when both links
         // ship one; otherwise `d` comes back unchanged.
-        d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d);
+        d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d, &depth_is_box_bound);
       }
-      fold_pair(result, sweep_min, d, d <= margin, lb, lb2);
+      fold_pair(result, sweep_min, d, d <= margin, lb, lb2, /*allowance_active=*/false,
+                /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
     }
   }
   return finish_sweep(result, sweep_min);
