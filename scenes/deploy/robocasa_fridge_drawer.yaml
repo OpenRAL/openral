@@ -181,6 +181,24 @@
 #     the run starts legal — which is what an initial-configuration defect is —
 #     not that the task is solvable end to end.
 #
+# THE PIN IS NOW HELD BY A TEST, NOT ONLY BY THIS COMMENT (2026-09-05, #102).
+# `tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py` composes this
+# scene at layout 47 and at layout 30, builds a 25 mm occupancy grid around the
+# arm from each kitchen's own solid geometry through the shipped
+# `voxel_backing_record` probe, and puts both through the real
+# `safety_kernel_node` loaded from `robots/panda_mobile/robot.yaml`. It pins
+# that 47 clears, that 30 is the tighter of the two at a 20 mm standoff, and
+# that each binds on the link the start-state census named (`panda_link1` /
+# `panda_link2`). An all-occupied control fails if the grid ever stops reaching
+# the kernel, so a pass cannot be hollow.
+#
+# READ ITS LIMIT BEFORE CITING IT. That grid is built from TRUE SURFACES and is
+# uniformly more generous than the live octomap -- +19.09 mm on layout 30 where
+# the live map reads -23.47 mm -- for the reason this block already gives: the
+# live map also holds decoration and the octree->grid bridge dilates it. So the
+# test CANNOT reproduce layout 30's live stop and does not claim to; layout 30
+# clearing there is not a reason to restore it. Only a live round moves this pin.
+#
 # The effective layout now appears in the run artifacts on every reset as
 # `robocasa_scene_composition` (docs/reference/telemetry.md), and a pin the env
 # cannot honour is a `ROSConfigError` rather than a silent substitution.
