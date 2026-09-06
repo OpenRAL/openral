@@ -204,6 +204,14 @@ _Package and publish a local rSkill directory to the HF Hub._
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
 - `main() -> None` — Entry point. Sequence: parse args (`--publish` / `--public` / `--bump-revision` / `--fix-name` / `--token`) → validate manifest → `_enforce_repo_name` (exit 1 on a non-compliant VLA name unless `--fix-name`) → validate task space → validate docs → `public_visibility_error` gate (exit 1 if `--public` on a non-commercial skill) → exit 1 on doc errors → optional `--bump-revision` → `--publish` (private unless `--public`).
 
+### `tools/round_power.py`
+_Answers "how many validation-matrix runs does this comparison need?" **before** a battery is run — [#217](https://github.com/OpenRAL/openral/issues/217) step 1. Exists because the programme has twice drawn a conclusion a battery could not support: the n=1 reading on #176, and the 20-run success comparison #217 was opened to settle, which had under 30 % power against the very effect it observed. Exact (every outcome pair enumerated, not sampled) so the answer is reproducible on any host, and stdlib-only so scipy stays out of the workspace for a planning script; validated against `scipy.stats.fisher_exact` on 300 random 2×2 tables. Feeds the 2026-09-05 entry in [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._
+
+- `RUNS_PER_ROUND = 4` — Scene runs in one matrix round, so `required()` can report rounds as well as runs. (L53)
+- `fisher_exact_two_sided(a, n1, b, n2) -> float` — Two-sided Fisher p-value for `a`/`n1` against `b`/`n2`; the "no more probable" tail convention `scipy.stats.fisher_exact` uses. (L60)
+- `power(baseline, alternative, n, *, alpha=0.05) -> float` — Exact power at `n` per arm: enumerates every `(a, b)` under the two binomials and sums the probability of the pairs Fisher rejects. `O(n²)` Fisher evaluations, so sub-second to n=100 and a few seconds by n=300. (L98)
+- `required(baseline, alternative, *, alpha=0.05, target=0.80) -> tuple[int | None, float]` — Smallest ladder `n` per arm reaching `target` power, or `(None, best)` when the ladder tops out at 800 — a comparison needing more than that is not one this programme can afford, and saying so is the useful answer. (L133)
+
 ### `tools/rskill_scaffolder.py`
 _Standalone argparse wrapper around `openral_cli._rskill_scaffolder.scaffold_rskill`._
 Mirrors `openral rskill new`; exists so power users can scaffold without installing the CLI distribution.

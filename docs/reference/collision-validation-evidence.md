@@ -1508,6 +1508,86 @@ holds the nominal-valid side on a real kitchen, so the second scene would cost
 another compose and grid build for a weaker marginal claim.
 
 
+### 2026-09-05 — how many rounds #217 actually needs, and why stop class does not shortcut it
+
+Not a validation round: an offline analysis of rounds already recorded, which is
+[#217](https://github.com/OpenRAL/openral/issues/217) step 1 ("Power first.
+Decide the round count from the effect size worth detecting **before running
+anything**") and a first pass at step 2 ("bisect by stop class, not by success
+rate"). No GPU, no new rounds. Tool: `tools/round_power.py`.
+
+**The 20-run battery could not have separated its own effect.** Exact power for
+two-sided Fisher, 20 runs per arm:
+
+| effect | power at n=20/arm |
+| --- | ---: |
+| 25 % → 5 % (the drop actually observed) | **0.30** |
+| 25 % → 10 % | 0.14 |
+| 25 % → 2 % | 0.45 |
+
+So "5/20 vs 1/20, p = 0.18, not separable" is the arithmetic working correctly
+on a sample that had under a one-in-three chance of separating anything. It is
+not evidence of no regression, and — the operative point — **re-running the same
+20 against 20 would answer nothing again.**
+
+**What it would take.** Runs per arm for 80 % power at α = 0.05, and the
+wall-clock those imply at this battery's own measured 9.1 min per four-scene
+round (mean over the ten post-#200 rounds, range 4.5–15.2):
+
+| effect worth detecting | runs/arm | rounds/arm | both arms, wall |
+| --- | ---: | ---: | ---: |
+| 25 % → 5 % | 60 | 15 | **4.5 h** |
+| 25 % → 10 % | 120 | 30 | 9.1 h |
+| 25 % → 15 % | 320 | 80 | 24.2 h |
+
+4.5 h is affordable and is the number to plan the bisect against. A 10-point
+drop is not, on this host, and that is worth knowing before anyone promises to
+detect one.
+
+**Stop class does not rescue the comparison, which was the hopeful part of the
+plan.** Aggregating the ten post-#200 rounds by tripping party and comparing
+against the 2026-08-26 battery's own stop table (above):
+
+| battery | payload stops | link stops | payload share |
+| --- | ---: | ---: | ---: |
+| 2026-08-26 | 6 | 9 | 40 % |
+| 2026-09-04, Path A **off** (shipped) | 12 | 6 | 67 % |
+| 2026-09-04, Path A **on** | 16 | 1 | 94 % |
+
+| contrast | Fisher p |
+| --- | ---: |
+| 08-26 vs Path A **off** — tripping party | **0.17** |
+| 08-26 vs Path A **off** — success rate | 0.18 |
+| 08-26 vs Path A **on** — tripping party | 0.0017 |
+| 08-26 vs both arms pooled — tripping party | 0.0087 |
+
+**For the arm that matters, stop class is no more separable than success was**
+— 0.17 against 0.18. The one decisively separable contrast is Path A *on*, and
+that is confounded by Path A's own already-documented effect (#209 records the
+link class going 6 → 1 within this battery), so it measures Path A rather than
+whatever moved between the batteries. Stop class needs about the same n as
+success does: 40 % → 67 % reaches 80 % power at **60 stops per arm**, and the
+arms here hold 15 and 18.
+
+The verdict mix, by contrast, barely moved — 11 `within-quantization` in all
+three batteries, 2–3 `real`, 1 `false-positive`, 1–3 `unadjudicated` — so what
+shifted is *who trips*, not how the adjudicator scores it.
+
+**A caveat that limits every 08-26 comparison, including #217's own table.**
+The 2026-08-26 entry does not record which rSkill it ran, and its artifacts are
+gone (`outputs/` is gitignored), so its stop counts here are read off the table
+in this ledger rather than recomputed. The post-#200 rounds record
+`OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4` in every `verdicts.json`.
+**Policy invariance across this comparison therefore cannot be verified from the
+record** — a policy change between the batteries would move both success and
+stop class, and nothing checked in rules that out. Future entries should name
+the rSkill; the harness already writes it.
+
+**What this means for the #204 A/B now running on `spark`.** At 20 runs per arm
+it will land in the same place as this one. Size it from the table above, or
+accept in advance that it can only report a null.
+
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts
