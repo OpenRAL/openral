@@ -1,14 +1,14 @@
 [project]
 name = "openral-wam"
-version = "0.3.1"  # x-release-please-version
+version = "0.4.0"  # x-release-please-version
 description = "OpenRAL World Action Model layer — WorldModel Protocol + Rollout schema (CLAUDE.md §6.3)"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",            # reason: WorldState + Action schemas the WorldModel consumes/predicts
-    "openral-observability==0.3.1",   # reason: future wam.rollout span wraps each mental-simulation call
+    "openral-core==0.4.0",            # reason: WorldState + Action schemas the WorldModel consumes/predicts
+    "openral-observability==0.4.0",   # reason: future wam.rollout span wraps each mental-simulation call
     # x-release-please-end
     "pydantic>=2.5",           # reason: Rollout schema
     "structlog>=24.1",         # reason: structured logging per CLAUDE.md §5.1
