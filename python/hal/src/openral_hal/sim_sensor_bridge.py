@@ -1496,10 +1496,27 @@ def voxel_backing_record(
     record["rays_hit"] = hit_count
 
     # The rays cannot see a collidable geom coincident with a decoration shell,
-    # and in RoboCasa that is every counter top. Only consulted when the rays
-    # found nothing solid, so a cell the rays already explained is untouched and
-    # this cannot change a verdict the ray pass got right.
-    swept = not any(_geom_is_collidable(model, geom) for geom in hits)
+    # and in RoboCasa that is every counter top. Consulted when they found no
+    # collidable **world** geometry — which covers two cases:
+    #
+    # 1. nothing solid at all (the coincident-shell case the sweep was added
+    #    for);
+    # 2. solid geometry that is all ROBOT. That is the `self_occupancy_suspect`
+    #    signature, and on 27 rays it is genuinely ambiguous: "the cell holds
+    #    the robot" and "the cell holds the robot *and* a world surface the
+    #    fans happened to miss" produce the same record. Sweeping here answers
+    #    the second half, which is exactly the question that decides whether a
+    #    start-state stop is self-occupancy or ordinary quantisation
+    #    (2026-09-07, `fridge-s2`: 15 of 27 rays, `robot0_link2_collision`, no
+    #    world geom found — and no way to tell whether that meant none was
+    #    there).
+    #
+    # A cell whose world backing the rays already found is left alone, so this
+    # still cannot change a verdict the ray pass got right.
+    swept = not any(
+        _geom_is_collidable(model, geom) and int(model.geom_bodyid[geom]) not in robot_body_ids
+        for geom in hits
+    )
     record["collidable_overlap_swept"] = swept
     if swept:
         hits = sorted(

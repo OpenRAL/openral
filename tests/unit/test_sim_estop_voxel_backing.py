@@ -613,3 +613,38 @@ def test_the_overlap_sweep_does_not_run_when_the_rays_already_found_solid_geomet
 
     assert record["verdict"] == "solid_world"
     assert record["collidable_overlap_swept"] is False
+
+
+def test_a_cell_holding_only_robot_geometry_is_swept_for_world_geometry_too() -> None:
+    """`self_occupancy_suspect` must not rest on 27 rays having missed the world.
+
+    A cell whose only collidable ray hit is a robot body produces the same
+    record whether the world is absent or merely unsampled — and that
+    distinction is what separates a self-occupancy stop from ordinary
+    quantisation. Measured on the 2026-09-07 `fridge-s2` start-state stop: 15 of
+    27 rays struck `robot0_link2_collision`, no world geom appeared, and nothing
+    in the record said whether one was there.
+
+    The sweep therefore runs when the rays found no collidable *world*
+    geometry, not merely when they found nothing collidable at all. A cell whose
+    world backing the rays already found is still left alone.
+    """
+    model, data = _model_data()
+    # The pantry panel is real world geometry; put the probe on it and confirm
+    # the rays find it, so the sweep does NOT fire.
+    world_only = _backing(model, data, (0.0, 0.36, 0.22))
+    assert world_only["collidable_overlap_swept"] is False, (
+        "the rays found collidable world geometry; the sweep must not second-guess it"
+    )
+
+    # `robot0_link2` sits on the arm. A cell centred on it holds robot geometry
+    # and, in this fixture, nothing else — exactly the ambiguous case.
+    robot_cell = _backing(model, data, (0.0, 0.0, 0.10))
+    classes = {str(e["class"]) for e in robot_cell["backing"]}  # type: ignore[call-overload]
+    if not classes or classes == {"noncollidable_world"}:
+        pytest.skip("fixture geometry put nothing collidable in this cell")
+    if classes <= {"self_occupancy_suspect"}:
+        assert robot_cell["collidable_overlap_swept"] is True, (
+            "a cell backed only by the robot must be swept for world geometry, "
+            "or `self_occupancy_suspect` cannot be told from an unsampled world"
+        )
