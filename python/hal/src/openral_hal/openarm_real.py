@@ -85,9 +85,10 @@ from collections.abc import Callable
 import structlog
 from openral_core.can import preflight_can_links
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
-from openral_core.schemas import Action, JointState, RobotDescription
+from openral_core.schemas import Action, ControlMode, JointState, RobotDescription
 
 from openral_hal._real_description import make_real_description
+from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group
 from openral_hal.openarm import OPENARM_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
 from openral_hal.ros_control import RosControlHAL
@@ -217,6 +218,11 @@ class OpenArmRealHAL(RosControlHAL):
         self._right_can_interface = right_can_interface
         self._require_can_links = require_can_links
         self._can_health: dict[str, str] = {}
+
+        # ADR-0102 — buffers a slot-dispatched tick until every slot has passed
+        # safety, so the four controllers are commanded from one reassembled
+        # vector instead of from four partial ones.
+        self._slot_group = SlotGroupStager()
 
         # Logical (Skill-facing) name → ros2_control (URDF) name.  Sourced from
         # the manifest so there is exactly one copy of this mapping in the repo.
@@ -388,7 +394,34 @@ class OpenArmRealHAL(RosControlHAL):
                 target dimensions do not match the 16-DoF layout.
         """
         self._require_connected("send_action")
+
+        # ADR-0102 — a slot-dispatched tick arrives as several typed actions
+        # (this contract: left arm / left gripper / right arm / right gripper),
+        # none of which is a whole-robot command on its own. Reassemble the
+        # tick and fall through to the single-vector publish below, so the
+        # all-or-nothing guarantee covers the composed group too.
+        if int(action.tick_group_size) > 1:
+            group = self._slot_group.stage(action)
+            if group is None:
+                return
+            action = self._compose_group(group)
+
         self._validate_action(action)
+
+        if action.control_mode in GRIPPER_MODES:
+            # Reachable only outside a group — a lone gripper action. The four
+            # bimanual controllers are commanded from one 16-DoF vector, so
+            # there is nowhere to put it. Refuse loudly: the pre-ADR-0102
+            # behaviour fell through to the `joint_targets is None` return
+            # below and dropped the command silently, which on hardware is
+            # arms moving while the grippers never actuate.
+            raise ROSConfigError(
+                f"{type(self).__name__} cannot execute a standalone "
+                f"{action.control_mode.value} action: the bimanual controllers "
+                "are commanded as one 16-DoF joint vector, so a gripper command "
+                "is only placeable inside a slot group (tick_group_size > 1, "
+                "ADR-0102)."
+            )
 
         if action.joint_targets is None:
             log.debug("hal.send_action.empty", robot=self.description.name)
@@ -418,6 +451,64 @@ class OpenArmRealHAL(RosControlHAL):
             control_mode=action.control_mode,
             horizon=action.horizon,
             controllers=len(outbound),
+        )
+
+    def disconnect(self) -> None:
+        """Close the connection, dropping any half-staged slot group.
+
+        Without the reset a slot staged before the disconnect would still be
+        buffered on reconnect, so the first tick after it would raise the
+        incomplete-group error against a tick nobody is waiting for.
+        """
+        self._slot_group.reset()
+        super().disconnect()
+
+    def estop(self) -> None:
+        """Trigger an emergency stop, dropping any half-staged slot group.
+
+        ``SlotGroupStager.reset`` is documented as the disconnect/estop path,
+        but the base ``estop`` only clears the connection flag and raises — it
+        never routes through :meth:`disconnect`. Without this override a slot
+        staged when the stop landed would survive the stop, and the first tick
+        of the resumed run would be spent raising the incomplete-group error
+        against a tick from before the e-stop.
+
+        Raises:
+            ROSEStopRequested: Always, from the base implementation.
+        """
+        self._slot_group.reset()
+        super().estop()
+
+    def _compose_group(self, group: list[Action]) -> Action:
+        """Merge one tick's slot actions into a single 16-DoF joint action.
+
+        Args:
+            group: Every slot action of one inference tick.
+
+        Returns:
+            A ``JOINT_POSITION`` :class:`Action` covering all 16 joints, which
+            :meth:`send_action` then fans out to the four controllers exactly
+            as it does a whole-vector action.
+
+        Raises:
+            ROSConfigError: The group is unplaceable — see
+                :func:`openral_hal._slot_group.compose_slot_group`.
+        """
+        targets = compose_slot_group(group, [j.name for j in self.description.joints])
+        first = group[0]
+        log.debug(
+            "hal.send_action.slot_group",
+            robot=self.description.name,
+            slots=len(group),
+            tick=first.tick_index,
+            modes=[a.control_mode.value for a in group],
+        )
+        return Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[targets],
+            stamp_ns=first.stamp_ns,
+            confidence=first.confidence,
         )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────

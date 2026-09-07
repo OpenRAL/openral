@@ -33,6 +33,7 @@ convention = "google"
 "python/rskill/src/openral_rskill/_vla_core.py" = ["PLC0415", "ANN401"]  # torch/loader imports are deferred; Any is correct for untyped lerobot policy + tensor
 "python/rskill/src/openral_rskill/executor.py" = ["PLC0415", "ANN401", "RUF002"]  # torch is deferred; Any is correct for untyped lerobot policy + tensor; Unicode math symbols (× / —) intentional in architecture doc
 "python/runner/src/openral_runner/backends/opencv_thread.py" = ["PLC0415", "ANN401"]  # cv2 is the `opencv` optional-extra and imported lazily; Any types VideoCapture / ndarray frames before lerobot-style narrowing
+"python/runner/src/openral_runner/backends/ros2_image.py" = ["PLC0415", "ANN401", "BLE001"]  # rclpy / sensor_msgs are deferred so the runner imports without ROS (matches ros_publisher.py); Any types the duck-typed rosidl Image message and the injected node; BLE001 in the subscription callback is the intentional never-kill-the-spin-thread guard
 "python/runner/src/openral_runner/factory.py" = ["PLC0415"]  # SO100DigitalTwin defers lerobot import — only loaded when transport.digital_twin=true
 "python/runner/src/openral_runner/backends/__init__.py" = ["F401"]  # __init__ re-exports
 "python/runner/src/openral_runner/base.py" = ["S101"]  # internal-invariant asserts on subclass contract are intentional

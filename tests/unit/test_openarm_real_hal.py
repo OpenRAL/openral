@@ -390,51 +390,193 @@ class TestManifestWiring:
         hal.disconnect()
 
 
-# ── declared control modes vs. what send_action can actually dispatch ─────────
+# ── ADR-0102 slot groups ──────────────────────────────────────────────────────
 
 
-class TestControlModeDeclarationMatchesDispatch:
-    """`supported_control_modes` must not promise a mode `send_action` drops.
+def _restock_slot_group(tick: int = 1) -> list[Action]:
+    """The four actions `_dispatch_slots` emits for the restock contract.
 
-    `rskill_runner_node._dispatch_slots` emits a gripper slot as
-    ``Action(control_mode=GRIPPER_POSITION, gripper=[v], ee_name=...)`` with
-    ``joint_targets=None``. `OpenArmRealHAL.send_action` returns early on
-    ``joint_targets is None``, so declaring ``gripper_position`` in
-    `robots/openarm/robot.yaml` would convert the reasoner's loud boot-time
-    palette drop into a SILENT no-op: arms commanded, grippers never actuated,
-    nothing on the wire saying so.
+    Mirrors `rskill_runner_node._dispatch_slots` exactly: arm slots are padded
+    to full dof with zeros at joints they do not own and carry the manifest's
+    `joint_names`; gripper slots carry a scalar `gripper` payload and name
+    their end-effector. Values double as their joint index so a misroute is
+    visible in the assertion.
+    """
+    left = [0.0] * 16
+    for i in range(7):
+        left[i] = float(i)
+    right = [0.0] * 16
+    for i in range(8, 15):
+        right[i] = float(i)
 
-    This pins the two states apart. Today the manifest omits the mode and the
-    HAL fails closed; if someone adds it, this test demands the dispatch that
-    makes the declaration true.
+    def _arm(padded: list[float], names: list[str]) -> Action:
+        return Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[padded],
+            joint_names=names,
+            tick_index=tick,
+            tick_group_size=4,
+        )
+
+    def _grip(value: float, ee: str) -> Action:
+        return Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            horizon=1,
+            gripper=[value],
+            ee_name=ee,
+            tick_index=tick,
+            tick_group_size=4,
+        )
+
+    return [
+        _arm(left, [f"left_joint{i}" for i in range(1, 8)]),
+        _grip(7.0, "left_gripper"),
+        _arm(right, [f"right_joint{i}" for i in range(1, 8)]),
+        _grip(15.0, "right_gripper"),
+    ]
+
+
+class TestSlotGroupDispatch:
+    """A slot-dispatched tick must reach all four controllers, correctly sliced.
+
+    This is the contract `rskill-pi05-openarm-restock_shelf-bf16` needs: four
+    typed actions per tick, none of which is a whole-robot command, reassembled
+    into the one 16-DoF vector the bimanual bringup is driven by.
     """
 
-    def test_gripper_position_is_declared_only_if_send_action_dispatches_it(
-        self, both_buses_up: Path
-    ) -> None:
-        manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
-        declared = (
-            ControlMode.GRIPPER_POSITION.value in manifest.capabilities.supported_control_modes
-        )
+    def test_a_full_group_commands_every_joint(self, both_buses_up: Path) -> None:
         recorder = _Recorder()
-        hal = OpenArmRealHAL(manifest, publish_fn=recorder)
+        hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        gripper_only = Action(
+        for action in _restock_slot_group():
+            hal.send_action(action)
+        left_arm, left_grip, right_arm, right_grip = hal.command_topics()
+        assert recorder.by_topic(left_arm)["joint_targets"] == [[0.0, 1, 2, 3, 4, 5, 6]]
+        assert recorder.by_topic(left_grip)["joint_targets"] == [[7.0]]
+        assert recorder.by_topic(right_arm)["joint_targets"] == [[8.0, 9, 10, 11, 12, 13, 14]]
+        assert recorder.by_topic(right_grip)["joint_targets"] == [[15.0]]
+
+    def test_nothing_is_published_until_the_last_slot_lands(self, both_buses_up: Path) -> None:
+        # Atomicity: three of four slots must leave the arm on its old setpoint,
+        # not half-commanded from the new chunk.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _restock_slot_group()[:3]:
+            hal.send_action(action)
+        assert recorder.sent == []
+
+    def test_slot_order_does_not_change_the_result(self, both_buses_up: Path) -> None:
+        # The whole point of ADR-0102: addressing is by name, so a manifest whose
+        # `slots:` block is reordered must land identically.
+        forward, reverse = _Recorder(), _Recorder()
+        for recorder, group in (
+            (forward, _restock_slot_group()),
+            (reverse, list(reversed(_restock_slot_group()))),
+        ):
+            hal = OpenArmRealHAL(publish_fn=recorder)
+            hal.connect()
+            for action in group:
+                hal.send_action(action)
+        assert forward.sent == reverse.sent
+
+    def test_a_dropped_slot_refuses_the_next_tick(self, both_buses_up: Path) -> None:
+        # A slot the safety kernel rejected must not let its siblings commit.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _restock_slot_group(tick=1)[:2]:
+            hal.send_action(action)
+        with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
+            hal.send_action(_restock_slot_group(tick=2)[0])
+        assert recorder.sent == []
+
+    def test_a_dropped_slot_costs_one_tick_not_the_run(self, both_buses_up: Path) -> None:
+        # The refusal above must not consume the slot that triggered it. If it
+        # did, tick 2 would start one slot short and never complete, tick 3
+        # would lose its own first slot the same way, and one kernel rejection
+        # would stop the arm publishing for the rest of the run — near-silently,
+        # since `_send_action_traced` downgrades the raise to a WARN.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _restock_slot_group(tick=1)[:2]:
+            hal.send_action(action)
+        tick2 = _restock_slot_group(tick=2)
+        with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
+            hal.send_action(tick2[0])
+        for action in tick2[1:]:
+            hal.send_action(action)
+        left_arm, left_grip, right_arm, right_grip = hal.command_topics()
+        assert recorder.by_topic(left_arm)["joint_targets"] == [[0.0, 1, 2, 3, 4, 5, 6]]
+        assert recorder.by_topic(left_grip)["joint_targets"] == [[7.0]]
+        assert recorder.by_topic(right_arm)["joint_targets"] == [[8.0, 9, 10, 11, 12, 13, 14]]
+        assert recorder.by_topic(right_grip)["joint_targets"] == [[15.0]]
+
+    def test_estop_drops_a_half_staged_group(self, both_buses_up: Path) -> None:
+        # `SlotGroupStager.reset` names estop as one of its two callers, but the
+        # base `estop` never routes through `disconnect`. Without the override a
+        # slot staged when the stop landed outlives the stop, and the resumed
+        # run spends its first tick raising about a pre-estop tick.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _restock_slot_group(tick=1)[:2]:
+            hal.send_action(action)
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        hal.connect()
+        for action in _restock_slot_group(tick=2):
+            hal.send_action(action)  # no incomplete-group raise
+        assert recorder.by_topic(hal.command_topics()[1])["joint_targets"] == [[7.0]]
+
+    def test_an_unnamed_joint_slot_is_refused(self, both_buses_up: Path) -> None:
+        # Without joint_names a padded chunk cannot be placed, and guessing from
+        # the zeros would be wrong (0.0 is a legal target).
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        group = _restock_slot_group()
+        group[0] = group[0].model_copy(update={"joint_names": None})
+        with pytest.raises(ROSConfigError, match="no joint_names"):
+            for action in group:
+                hal.send_action(action)
+        assert recorder.sent == []
+
+    def test_a_group_leaving_a_joint_uncommanded_is_refused(self, both_buses_up: Path) -> None:
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        group = _restock_slot_group()
+        # Drop the right arm from its slot's declared names: the group now
+        # covers 9 of 16 joints, so publishing would strand the rest.
+        group[2] = group[2].model_copy(update={"joint_names": ["right_joint1"]})
+        with pytest.raises(ROSConfigError, match="uncommanded"):
+            for action in group:
+                hal.send_action(action)
+        assert recorder.sent == []
+
+    def test_a_standalone_gripper_action_is_refused_not_dropped(self, both_buses_up: Path) -> None:
+        # The pre-ADR-0102 behaviour returned silently here: arms moving, grippers
+        # never actuating, nothing on the wire saying so.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        lone = Action(
             control_mode=ControlMode.GRIPPER_POSITION,
             horizon=1,
             gripper=[0.4],
             ee_name="left_gripper",
         )
-        if declared:
-            hal.send_action(gripper_only)
-            assert recorder.sent, (
-                "robots/openarm/robot.yaml declares 'gripper_position' but "
-                "OpenArmRealHAL.send_action published nothing for a "
-                "GRIPPER_POSITION action (joint_targets is None). That is a "
-                "silent no-op on real hardware — implement gripper dispatch "
-                "or drop the declaration."
-            )
-        else:
-            with pytest.raises(ROSConfigError, match="not in supported_control_modes"):
-                hal.send_action(gripper_only)
-        hal.disconnect()
+        with pytest.raises(ROSConfigError, match="standalone"):
+            hal.send_action(lone)
+        assert recorder.sent == []
+
+    def test_the_manifest_declares_every_mode_the_group_path_executes(self) -> None:
+        # Keeps robots/openarm/robot.yaml honest in the other direction: the
+        # reasoner's real-mode gate reads this list, so it must now include
+        # gripper_position or the restock skill is dropped again.
+        manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+        declared = set(manifest.capabilities.supported_control_modes)
+        assert {"joint_position", "gripper_position"} <= declared

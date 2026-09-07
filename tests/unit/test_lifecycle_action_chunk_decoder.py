@@ -44,6 +44,7 @@ class FakeChunk:
     tick_index: int = 0
     tick_group_size: int = 1
     cartesian_delta_scale: list[float] = field(default_factory=list)
+    joint_names: list[str] = field(default_factory=list)
 
 
 class TestDecodeActionChunk:
@@ -204,3 +205,50 @@ class TestDecodeActionChunk:
             control_mode=CONTROL_MODE_TO_UINT8[unwired_mode],
         )
         assert decode_action_chunk(chunk) is None
+
+
+class TestSlotJointNames:
+    """ADR-0102 — a sub-slot chunk must arrive knowing which joints it owns.
+
+    Without this the decoder produced an `Action` indistinguishable from a
+    whole-vector one, and a consumer reassembling a tick had only slot arrival
+    order to go on.
+    """
+
+    def test_joint_names_survive_the_wire(self) -> None:
+        chunk = FakeChunk(
+            flat=[0.0, 1.0, 2.0, 0.0],
+            n_dof=4,
+            horizon=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.JOINT_POSITION],
+            joint_names=["left_joint1", "left_joint2", "left_joint3"],
+        )
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.joint_names == ["left_joint1", "left_joint2", "left_joint3"]
+
+    def test_an_empty_list_decodes_to_none(self) -> None:
+        """Empty = whole-vector action, the pre-ADR-0102 meaning."""
+        chunk = FakeChunk(
+            flat=[0.0, 0.1],
+            n_dof=2,
+            horizon=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.JOINT_POSITION],
+        )
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.joint_names is None
+
+    def test_a_pre_adr_chunk_without_the_field_decodes_to_none(self) -> None:
+        """A producer built before the IDL field must still decode."""
+
+        @dataclass
+        class PreAdrChunk:
+            flat: list[float] = field(default_factory=lambda: [0.0, 0.1])
+            n_dof: int = 2
+            horizon: int = 1
+            control_mode: int = CONTROL_MODE_TO_UINT8[ControlMode.JOINT_POSITION]
+
+        action = decode_action_chunk(PreAdrChunk())
+        assert isinstance(action, Action)
+        assert action.joint_names is None

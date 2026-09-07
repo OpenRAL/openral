@@ -80,6 +80,69 @@ List what's available:
 openral deploy list      # walks scenes/deploy/*.yaml
 ```
 
+### Cameras whose stream only exists as a ROS topic (`ros2_image`)
+
+`opencv_thread` opens a `/dev/video*` node, which covers most USB cameras. It
+cannot reach a stream that a **vendor SDK computes** rather than the device
+emitting it — most importantly **depth from a passive stereo camera**.
+
+A StereoLabs ZED is the clear case. Over USB it presents *one* UVC node carrying
+both eyes side by side (`1344×376` on a ZED Mini at WVGA); the device produces no
+depth at all. The ZED SDK rectifies and stereo-matches on the **host GPU**, and
+`zed_wrapper` publishes the result. So a host without the SDK sees one wide RGB
+camera and nothing else — which is exactly what `openral detect` reports.
+
+Bind those streams with the `ros2_image` backend:
+
+```yaml
+sensors:
+  # Left eye as RGB — still fine over UVC with a crop.
+  - name: context
+    modality: rgb
+    vla_feature_key: "observation.images.context"
+    deploy_binding:
+      backend: opencv_thread
+      backend_params: { device: /dev/camera_head_stereo, width: 1344, height: 376,
+                        crop: [0, 0, 672, 376] }
+
+  # Depth — SDK-computed, so it arrives as a topic, not a device.
+  - name: head_depth
+    modality: depth
+    frame_id: openarm_head_camera_optical_frame
+    parent_frame: openarm_base
+    rate_hz: 30.0
+    encoding: 32FC1
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/depth/depth_registered
+        # best_effort (the default) also matches a RELIABLE publisher; a
+        # `reliable` subscriber gets NOTHING from a best-effort one.
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+```
+
+Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
+and publishing. Without them the reader opens fine and then every `read_latest`
+raises `ROSPerceptionStale` naming the topic — a driver that isn't running and a
+QoS mismatch look identical from the subscriber side, so the error message calls
+both out.
+
+The reader converts `32FC1` metre depth into OpenRAL's `DEPTH16` layout (uint16
+millimetres). Samples that are non-finite (`NaN` is a stereo matcher's "no
+match") or outside `[0, 65.535] m` become `0`, the ROS "no reading" value —
+never a wrapped `uint16`, which would read as a confident *near* distance for
+something far away.
+
+The same backend covers RealSense aligned depth, Orbbec, GMSL/Isaac drivers, or
+any rectified stream published by a calibration node.
+
+> **Calibrate before you project.** A VLA conditions on pixels, so uncalibrated
+> `fx/fy/cx/cy` are inert for it. They stop being inert the moment depth is
+> projected into a point cloud for octomap / nvblox / collision. Run
+> `openral calibrate camera` first.
+
 ## 2. Dry-run against a digital twin first
 
 Before touching hardware, validate the whole graph against a simulated HAL

@@ -289,35 +289,29 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
-  # `gripper_position` is DELIBERATELY ABSENT, and adding it is not the fix
-  # for the palette drop it causes. The reasoner's action-mode gate reads this
-  # list in real mode, so a slot-dispatched skill like
-  # `rskills/rskill-pi05-openarm-restock_shelf-bf16` (action_contract.slots =
-  # joint_position x2 + gripper_position x2) is dropped at on_configure with
-  # "requires control modes ['gripper_position', 'joint_position'] which are
-  # not executable on this deployment". That drop is CORRECT: neither OpenArm
-  # HAL can execute a GRIPPER_POSITION action today.
-  #
+  # `gripper_position` is executable here ONLY inside a slot group (ADR-0102).
   # `rskill_runner_node._dispatch_slots` emits a gripper slot as
-  # `Action(control_mode=GRIPPER_POSITION, gripper=[value], ee_name=...)` with
-  # `joint_targets=None`. Against that:
+  # `Action(GRIPPER_POSITION, gripper=[v], ee_name=..., joint_targets=None)`,
+  # which is not a whole-robot command on its own; `OpenArmRealHAL` stages the
+  # tick's four slots (left arm / left gripper / right arm / right gripper) and
+  # composes them into the single 16-DoF joint vector the four bimanual
+  # controllers are commanded from. A STANDALONE gripper action has nowhere to
+  # go and is refused loudly — never dropped silently, which is what the
+  # pre-ADR-0102 `if action.joint_targets is None: return` did.
   #
-  #   * `OpenArmRealHAL.send_action` hits `if action.joint_targets is None:
-  #     return` and the gripper command is SILENTLY DISCARDED — the arms would
-  #     move and the grippers would never actuate, with nothing on the wire
-  #     saying so. It fans a 16-DoF vector out to four controllers by fixed
-  #     slice (`_command_groups`), so it only ever drives the grippers as
-  #     dims 7 / 15 of a whole-vector JOINT_POSITION action.
-  #   * `OpenArmMujocoHAL` fails closed instead: `_mujoco_arm._validate_action`
-  #     calls `_require_control_mode(action, ControlMode.JOINT_POSITION)` and
-  #     raises `ROSConfigError`.
+  # NOTE the digital twin does NOT yet do this: `OpenArmMujocoHAL` inherits
+  # `_mujoco_arm._validate_action`, which calls `_require_control_mode(action,
+  # JOINT_POSITION)` and raises on a gripper slot. `deploy sim` admits this
+  # skill regardless (the sim gate uses SIM_EXECUTABLE_CONTROL_MODES, not this
+  # list), so the twin needs the same staging before it can run the contract.
   #
-  # So listing `gripper_position` here would trade a loud boot-time drop for a
-  # silent no-op on real hardware. Declare it only together with real
-  # GRIPPER_POSITION handling in both OpenArm HALs, tests first
-  # (CLAUDE.md 4.2.4), and a HIL run on a powered cell.
+  # Do not add a mode the HAL cannot place:
+  # `tests/unit/test_openarm_real_hal.py` pins this list against what
+  # `send_action` actually dispatches, so an over-declaration fails there
+  # rather than on hardware.
   supported_control_modes:
     - "joint_position"
+    - "gripper_position"
   supported_vla_embodiments:
     - "openarm_v2"
     - "openarm"

@@ -139,6 +139,42 @@ def _joint_state_from_policy_state(
     return positions, velocities
 
 
+def _assert_slot_identity(*labelled: tuple[Action, str]) -> None:
+    """Check a positionally-unpacked joint slot really is the limb we assumed.
+
+    ADR-0102. :func:`_compose_action_group` unpacks the group by arrival order,
+    which the mode tuple cannot validate for the three same-mode
+    ``JOINT_POSITION`` slots (torso / left arm / right arm). Their
+    ``joint_names`` can: the B1K contract names them ``torso_*`` /
+    ``left_arm_*`` / ``right_arm_*``.
+
+    Slots that carry no names are skipped rather than rejected — the field is
+    optional, and this backend worked positionally before it existed.
+
+    Args:
+        labelled: ``(action, label)`` pairs where ``label`` is the limb the
+            positional unpack assigned; the expected name prefix is its first
+            word (``"torso"`` / ``"left"`` / ``"right"``).
+
+    Raises:
+        ROSRuntimeError: A slot's declared joints belong to another limb,
+            i.e. the manifest's ``slots:`` order no longer matches this unpack.
+    """
+    for action, label in labelled:
+        names = action.joint_names
+        if not names:
+            continue
+        prefix = label.split()[0]
+        wrong = [n for n in names if not n.startswith(prefix)]
+        if wrong:
+            raise ROSRuntimeError(
+                f"BEHAVIOR slot order mismatch: the slot unpacked as the {label} "
+                f"declares joints {wrong}, which are not {prefix!r} joints. The "
+                "rSkill's action_contract slots have been reordered relative to "
+                "what _compose_action_group unpacks positionally (ADR-0102)."
+            )
+
+
 def _compose_action_group(actions: list[Action]) -> NDArray[np.float32]:
     if len(actions) != _ACTION_GROUP_SIZE:
         raise ROSRuntimeError(
@@ -159,6 +195,15 @@ def _compose_action_group(actions: list[Action]) -> NDArray[np.float32]:
         )
 
     base, torso, left_arm, left_gripper, right_arm, right_gripper = actions
+
+    # ADR-0102 — the unpack above is POSITIONAL, so the manifest's slot order is
+    # a load-bearing wire contract here. The mode tuple alone does not catch a
+    # reorder of the three same-mode JOINT_POSITION slots (torso / left / right),
+    # whose failure mode is a humanoid driven with another limb's targets. When
+    # the slots carry their names (`_dispatch_slots` sets them), check them, so a
+    # reordered manifest fails here instead of silently misrouting.
+    _assert_slot_identity((torso, "torso"), (left_arm, "left arm"), (right_arm, "right arm"))
+
     if not base.body_twist:
         raise ROSRuntimeError("BEHAVIOR base slot has no body_twist payload.")
     vx, vy, _vz, _wx, _wy, wz = base.body_twist[0]

@@ -2871,6 +2871,24 @@ def _pad_joint_payload(
     return padded
 
 
+def _slot_joint_names(slot: Any) -> list[str] | None:
+    """The slot's declared joint names, or ``None`` when it declares none.
+
+    ADR-0102. A JOINT_* slot is zero-padded to full dof by
+    :func:`_pad_joint_payload`, so the emitted payload cannot say which joints
+    it owns — and ``0.0`` is a legal joint target, so no introspection recovers
+    it. Carrying the manifest's own ``ActionSlot.joint_names` through onto the
+    ``Action`` (and across the wire) makes a sub-slot chunk self-describing,
+    which is what lets a consumer route two SAME-MODE joint slots — the shape
+    the OpenArm v2 bimanual restock contract and ``gr00t-n17-b1k`` both have.
+
+    ``None`` (slot declared no names) preserves the pre-0102 meaning: a
+    whole-vector action in ``RobotDescription.joints`` order.
+    """
+    names = getattr(slot, "joint_names", None)
+    return list(names) if names else None
+
+
 def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot control mode; flat dispatch mirrors the manifest's slot list
     slots: list,
     policy_action: Any,
@@ -2929,13 +2947,34 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
-            out.append(Action(control_mode=mode, horizon=1, joint_targets=[payload]))
+            out.append(
+                Action(
+                    control_mode=mode,
+                    horizon=1,
+                    joint_targets=[payload],
+                    joint_names=_slot_joint_names(slot),
+                )
+            )
         elif mode is ControlMode.JOINT_VELOCITY:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
-            out.append(Action(control_mode=mode, horizon=1, joint_velocities=[payload]))
+            out.append(
+                Action(
+                    control_mode=mode,
+                    horizon=1,
+                    joint_velocities=[payload],
+                    joint_names=_slot_joint_names(slot),
+                )
+            )
         elif mode is ControlMode.JOINT_TORQUE:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
-            out.append(Action(control_mode=mode, horizon=1, joint_torques=[payload]))
+            out.append(
+                Action(
+                    control_mode=mode,
+                    horizon=1,
+                    joint_torques=[payload],
+                    joint_names=_slot_joint_names(slot),
+                )
+            )
         elif mode is ControlMode.CARTESIAN_DELTA:
             out.append(
                 Action(
