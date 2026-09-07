@@ -2152,6 +2152,58 @@ it exists, `self_occupancy_suspect` on a start-state stop should be read as
 "check this", exactly as its docstring says.
 
 
+### 2026-09-07 — start-state, resolved: all three are quantisation, and the self-occupancy lead is refuted
+
+The entry above left the start-state class with one ray-confirmed
+`self_occupancy_suspect` (`fridge-s2`) and one suspected (`utensil-s4`), and
+named the ambiguity: 27 ray fans cannot distinguish "the cell holds only the
+robot" from "the cell holds the robot **and** a world surface the fans missed".
+The sweep was widened to run whenever the rays found no collidable *world*
+geometry, and both stops were re-run on `spark` at that commit. The ambiguity
+resolves, and it resolves against the lead:
+
+| stop | before | after | world geometry in the cell |
+| --- | --- | --- | --- |
+| `fridge-s2` | `self_occupancy_suspect`, 15/27 rays, no world geom | **`solid_world`** | `fridgesidebyside_main_group_1_g96` |
+| `utensil-s4` | `solid_world`, 0/27 rays, robot geoms via sweep | **`solid_world`** | `stack_2_right_group_2_door_g1` |
+
+`fridge-s2`'s cell contains the **fridge drawer** — the same body its near-miss
+pair already named at +0.673 mm. The rays missed it and the sweep found it. The
+robot geoms in both cells are real but incidental: the arm is beside the surface,
+not instead of it.
+
+**So all three start-state stops are ordinary voxel quantisation against
+correctly-mapped world geometry.** Not self-occupancy, not map inflation
+(`utensil-s2`'s cell contains the true surface point at 0.00 mm), and not link
+envelope conservatism — the `panda_link1` envelope test the same day moved these
+same stops by 0.0003 mm.
+
+| stop | link | true clearance | reported | reading |
+| --- | --- | ---: | ---: | --- |
+| `utensil-s2` | `panda_link1` | +23.13 mm | −2.38 mm | quantisation |
+| `utensil-s4` | `panda_link1` | +22.01 mm | −8.31 mm | quantisation |
+| `fridge-s2` | `panda_link2` | **+0.67 mm** | −21.98 mm | genuine near-contact |
+
+`fridge-s2` deserves separating: at 0.67 mm the arm really is almost touching the
+drawer, and no reduction in map conservatism should clear it. Two of the three
+are stops of a demonstrably clear robot; the third is arguably a correct stop.
+
+**What this settles for the programme.** The start-state class was the last
+population with an unexplored root cause, and it has the *same* one as the
+payload class: the 25 mm grid, with the robot 22-23 mm from a real surface. It
+therefore has the same single remaining lever — modelled fixtures — and ADR-0101
+is currently scoped to the **carried payload** only. Extending it to bare links
+would cover both classes with one mechanism. That is a scope observation for the
+WG, not a decision, and it does not change the ADR's fail-open concern: the
+suppression step is what needs ruling on either way.
+
+**Method note.** The lead was refuted by the instrument built to test it, in the
+same session it was raised. That is the fourth diagnostic defect found this week
+(#220's `nearest_any`, the coincident-shell probe, the harness DDS scope, and
+this ray-sampling gap), and every one of them made the stack look *worse* than it
+is rather than hiding a real contact.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
