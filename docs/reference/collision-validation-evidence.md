@@ -1877,25 +1877,41 @@ here it found none *inside the cell*: within that 25 mm cube there is no
 collidable geometry at all. The collision slab is elsewhere — 24.9 mm away, as
 the certified probe independently says.
 
-That is not a probe defect. It is the occupancy grid faithfully recording what a
-depth sensor sees, which is the **visual** shell — and in MuJoCo the visual
-shell is not the collision body and cannot be touched. So the world map and the
-collision model disagree about where the counter is, and the map is proud of it.
+**Correction, same day: the interpretation first written here was wrong.** This
+entry originally read that as the occupancy grid faithfully mapping the *visual*
+surface while the collision body sat behind it — "the map is proud of the
+collision model". Reading RoboCasa's asset code does not support that.
+`robocasa/models/fixtures/counter.py` builds one full-span visual box
+(`<name>_top_visual`, `group=1`, `contype=0`) and then breaks the **same** volume
+into collidable chunks via `_get_chunks`, which tile it exactly — identical
+`pos[1]`, `pos[2]`, identical `size[1]`, `size[2]`, and `x` tiling the full span.
+Visual and collision are **coincident by construction**. There is no offset to
+be proud by.
 
-**Why this matters for ADR-0101, and it cuts both ways.** The ADR's suppression
-step exempts a cell that a modeled fixture geometrically explains. If the
-fixture publishes its *collision* primitives, a cell like this one is **not**
-explained by them — the cell centre is not within a circumradius of the collision
-surface — so ADR-0101's second bound would leave this stop in place, and the
-94 % would be optimistic by however many stops look like this one. If instead
-the fixture publishes the visual geometry the map actually sees, the cell is
-explained, but the mechanism is then suppressing against a surface that is not
-the one the kernel protects.
+That leaves a genuine tension, which is the finding:
 
-In sim the resolution is benign, because a non-collidable geom cannot be hit. On
-hardware there is no such distinction: what the sensor sees is what the robot
-hits. This is precisely the sim→real seam the ADR flags as its weakest part, now
-with a concrete instance rather than a caveat.
+* the backing probe says the cell contains a non-collidable geom and **no
+  collidable one**, after re-casting past decoration;
+* the certified probe says the nearest collidable geom of that same body is
+  **24.86 mm away**;
+* the asset code says the two are coincident.
+
+All three cannot be right. The candidate explanations are (a) a residual defect
+in the backing probe's re-cast — advancing "just past" a strike may step over a
+*coincident* collidable twin and land outside the cube, which the fix as written
+would not catch, since it was built for decoration in *front* of a slab, not
+decoration sharing its surface; (b) the cell sitting at a chunk boundary; or
+(c) something about this layout's counter that the base asset does not show.
+
+**This is not resolved, and it is the most concrete open thread on the payload
+class.** It matters because the two readings point opposite ways: under (a) the
+20.1 mm payload excess is partly an *instrument* artifact and ADR-0101 is being
+sized against a number that is itself suspect; under a real geometry gap, the
+ADR's suppression bound would not explain cells like this and the 94 % is
+optimistic. Resolving it needs a direct query of the live model at the stop —
+the collidable geoms of `counter_1_right_group_main` and their distance to that
+cell's centre — which no current artifact records.
+
 
 **n = 1.** The mechanism above is read directly off one record and is not in
 doubt; how *often* a payload stop is backed by decoration alone is unmeasured,
