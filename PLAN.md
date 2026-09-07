@@ -448,6 +448,32 @@ Four things had to be discovered to make it run at all, each worth keeping:
       re-derivation. The error runs one way — it manufactures real contacts,
       never clears one — so nothing was wrongly passed as safe. Standing caveat
       11; two mutation-checked tests.
+- [x] **Resolved the probe contradiction — it was the instrument, a third time.**
+      The tripping cell spans `z ∈ [0.90005, 0.92505]` and the collidable chunk
+      `counter_1_right_group_top_0` has its surface at `z = 0.920`: the solid
+      geometry was inside the cell all along. `c7bd2c7`'s walk-past fix handles
+      decoration *in front of* a slab but not decoration **coincident** with it,
+      which is how RoboCasa builds every counter top. Fixed with an AABB overlap
+      sweep, consulted only when the rays find nothing solid. Diagnostics only —
+      the certified probe never used rays, so the 71 % and the decomposition
+      stand; what moves is the backing *class* the "32 % too sparse" entry and
+      ADR-0101's "cells no real body explains" premise rest on.
+- [x] **`panda_link1`'s missing exact hull is NOT worth a kernel budget change.**
+      It is the only link with no stage-2 hull (1588 vertices against
+      `kMaxTightHullVertices = 320`) and it caused two of the three start-state
+      stops, so it looked like the obvious next manifest edit. Measured, it is
+      not: those stops sit **+3.86 and +8.68 mm beyond the voxel term**, so an
+      exact hull could recover at most ~9 mm of a ~25 mm error, and raising the
+      cap 5× is a hot-path cost change requiring safety-WG review. Struck.
+- [x] **The geometry levers are exhausted — this is the programme's floor.**
+      `tools/stop_excess.py` over the 13-round battery: payload **−8.50 mm**
+      beyond voxel (no headroom, as #204 found), link **+3.86 mm** — down from
+      **+33.1 mm** in the #204 battery, whose link stops were 18-of-29
+      `panda_link6`, the link that now ships tight geometry. Both classes are
+      now at or below the grid term. **Every remaining millimetre of
+      over-approximation is the 25 mm voxel grid**, and refining it was struck
+      on measured cost. No tighter envelope on any link or payload can recover
+      anything further.
 - [ ] **The start-state population — a third of stops, and no lever touches it.**
       Three of seven stops were `estop-initial-configuration`: the arm stopped
       at reset by its own start pose, at +23.13, +22.01 and +0.67 mm. Every
