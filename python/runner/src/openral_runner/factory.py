@@ -322,8 +322,46 @@ def _copy_bool_if_present(dst: dict[str, object], src: dict[str, object], key: s
         dst[key] = bool(value)
 
 
+def _make_ros2_image_reader(cfg: SensorReaderConfig) -> SensorReader:
+    """Build a :class:`Ros2ImageSensorReader` from a :class:`SensorReaderConfig`.
+
+    Imported lazily: the reader pulls ``rclpy`` at ``open()``, and the factory
+    module must stay importable on hosts with no ROS install.
+    """
+    from openral_runner.backends.ros2_image import Ros2ImageSensorReader
+
+    params = cfg.backend_params
+    topic_param = params.get("topic")
+    if not topic_param:
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}, backend=ros2_image) requires "
+            f"backend_params.topic — the driver topic to subscribe to, e.g. "
+            f"'/zed/depth/depth_registered'."
+        )
+    if not isinstance(topic_param, str):
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}).backend_params.topic must be "
+            f"a str, not {type(topic_param).__name__}"
+        )
+    reliability_param = params.get("reliability", "best_effort")
+    if not isinstance(reliability_param, str):
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}).backend_params.reliability "
+            f"must be a str, not {type(reliability_param).__name__}"
+        )
+    depth_param = params.get("qos_depth", 5)
+    return Ros2ImageSensorReader(
+        sensor_id=cfg.sensor_id,
+        topic=topic_param,
+        default_max_age_ms=cfg.max_age_ms,
+        reliability=reliability_param,
+        qos_depth=_to_int(depth_param, field="qos_depth", sensor_id=cfg.sensor_id),
+    )
+
+
 SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]] = {
     "opencv_thread": _make_opencv_thread_reader,
+    "ros2_image": _make_ros2_image_reader,
     "gstreamer": _make_gstreamer_reader,
     "galaxea_a1_camera_bridge": _make_galaxea_a1_camera_bridge_reader,
 }

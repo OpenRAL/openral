@@ -29,15 +29,19 @@ __all__ = ["SensorReader"]
 class SensorReader(Protocol):
     """Structural protocol every per-sensor reader backend satisfies.
 
-    Three concrete backends live under ``openral_runner.backends``:
+    Four concrete backends live under ``openral_runner.backends``:
 
     - :class:`OpenCVThreadSensorReader` — default, per-camera background
       thread on top of ``cv2.VideoCapture`` (mirrors lerobot's pattern).
-    - :class:`Ros2ImageSensorReader` (planned) — subscribes to a ROS 2
-      image topic published by a vendor driver.
-    - :class:`GStreamerSensorReader` (planned) — pipeline
+    - :class:`Ros2ImageSensorReader` — subscribes to a ROS 2 image topic
+      published by a vendor driver, for streams an SDK computes rather than a
+      device emits (ZED stereo depth, RealSense aligned depth). Converts
+      ``32FC1`` metre depth to the ``DEPTH16`` uint16-millimetre layout.
+    - :class:`GStreamerSensorReader` — pipeline
       string from config; appsink delivers frames. NVMM / DMA-BUF
       zero-copy on Jetson when ``nvv4l2decoder`` is present.
+    - ``galaxea_a1_camera_bridge`` — the external A1 Runtime's paired
+      raw-frame service.
 
     Attributes:
         sensor_id: Sensor name; matches :attr:`SensorReaderConfig.sensor_id`
