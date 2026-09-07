@@ -2024,6 +2024,61 @@ there (`docs/reference/aarch64-support.md`), so a single smoke round has to
 succeed before a battery is worth running.
 
 
+### 2026-09-07 — `link1spark-*`: the refined envelope does not move the stops it was built for
+
+Three rounds on `spark` (GB10), `utensil` seeds 2, 3 and 4, on `f4a670f5` — the
+commit carrying `panda_link1`'s refined envelope. This is also the **first
+end-to-end XR-1 rollout completed on GB10**, closing the smoke-test caveat
+`docs/reference/aarch64-support.md` carries.
+
+The envelope was built on a prediction: link1's 26-DOP has a support gap of
+4.52 mm median / 25.68 mm max, the refined envelope 0.18 / 0.65 mm, and the two
+`panda_link1` start-state stops of the `adr0101-live` battery sat 3.86 mm and
+8.68 mm beyond the voxel term — inside that range. **The prediction is
+refuted.** Same seeds, same scene, same stop, one commit apart:
+
+| seed | link1 envelope | reported depth | true clearance |
+| --- | --- | ---: | ---: |
+| s2 | 26-DOP (`adr0101-live`, q-laptop) | −2.37794 mm | +23.13 mm |
+| s2 | **refined** (`link1spark`, spark) | **−2.37825 mm** | +23.13 mm |
+| s4 | 26-DOP (`adr0101-live`, q-laptop) | −8.31 mm | +22.01 mm |
+| s4 | **refined** (`link1spark`, spark) | **−8.31495 mm** | +22.01 mm |
+
+Tightening link1's envelope from a 25.68 mm worst-case support gap to 0.65 mm
+moved the reported depth by **0.0003 mm**. Both stops stand.
+
+**Where the reasoning went wrong, precisely.** The start-state census's deficit
+table — "10 mm of recovered clearance clears 14 of 14 `link1` states" — is
+computed with the census's own kernel model, and that model is
+`box_box_distance` against **the manifest OBB** (census §"Kernel side"). The
+26-DOP shipped *after* that census and already collected exactly that recovery:
+link1's support excess went 53.27 → 25.69 mm. Reading the census's OBB-relative
+deficit as still-available headroom double-counted a tightening that had already
+landed. What remains at these poses is beyond both envelopes.
+
+**So the geometry levers are exhausted, and this is the controlled test that
+shows it** — not an inference from a decomposition, but the same stop measured
+under two envelopes differing by 25 mm of worst-case looseness, moving 0.0003 mm.
+
+**What the residual probably is.** `packages/openral_octomap_bridge/README.md`
+records a forward error this page's decomposition does not subtract: octomap
+marks the cell *containing the ray endpoint*, so a published grid can report a
+surface **up to one full tree resolution (25 mm) nearer than it is**, and that is
+inherent to the lattice rather than a bridge defect. `tools/stop_excess.py`
+subtracts only the 21.65 mm half-diagonal, so a stop whose cell is inflated
+toward the sensor still reads as "beyond voxel" excess and invites exactly the
+geometry hunt this entry closes. That hypothesis is **untested**; separating it
+needs the octree's own report for the tripping cell alongside the grid's, which
+no current artifact records.
+
+**Status of the envelope itself.** It is strictly tighter than the DOP it
+replaces, containment is definitional at +0.000000000 mm, and it measured
+*faster* (p99 0.5 ms on 9891 cells against 2.0 ms on 5638). It is not harmful.
+But its stated benefit did not materialise on the only stops available to test
+it, and a safety-envelope change with no measured benefit is a WG decision, not
+an author's. Hazard-log Entry 026's amendment has been corrected to say so.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
