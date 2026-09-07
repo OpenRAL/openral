@@ -261,18 +261,29 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 `python tools/cosmos3_reasoner_sidecar.py`, or point
 `OPENRAL_REASONER_ENDPOINT` at a compatible self-managed server.
 
-> ⚠️ **Live status (2026-07-21): works end-to-end on vLLM `main`; blocked on
-> the pinned stable release.** On vLLM nightly (native Edge model from
-> [vllm#48291](https://github.com/vllm-project/vllm/pull/48291) + the one-line
-> weight-filter from open [vllm#49190](https://github.com/vllm-project/vllm/pull/49190))
-> a real reasoner tick returned a **validated typed tool call in ~1.5 s** and
-> `describe_image` answered correctly, live on an 8 GB 4070 (`--kv-cache-dtype
-> fp8` needed there). The sidecar's hash-locked stable vLLM (0.24.0) predates
-> the native model and still crashes on inference via the Transformers-fallback
-> `get_rope_index` bug — the lock is bumped the moment a vLLM release contains
-> #48291 + #49190. Full findings in the
-> [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
-> curated cloud model above as the working reasoner today.**
+> ⚠️ **Live status (2026-09-07): works on linux-aarch64; still blocked on
+> x86_64.** Read the two platforms separately — the lock resolves a *different
+> vLLM* for each, and only one carries the native Edge model
+> ([vllm#48291](https://github.com/vllm-project/vllm/pull/48291)).
+>
+> * **aarch64 (Jetson AGX Thor, vLLM 0.28.0): working.** The architecture
+>   resolves natively, the server serves, and a `tool_choice="required"` tick
+>   returned a **validated tool call at 1.26–1.36 s warm** — inside the 0.2 Hz
+>   budget. The first tool-call request costs ~64 s while xgrammar builds the
+>   grammar, so the first tick after boot blows a 5 s budget; later ones do not.
+> * **x86_64 (vLLM 0.24.0): still blocked.** That release predates the native
+>   model and crashes on inference via the Transformers-fallback
+>   `get_rope_index` bug. On a nightly it worked (validated tool call ~1.5 s on
+>   an 8 GB 4070, `--kv-cache-dtype fp8`). **Use a curated cloud model there
+>   until the x86 branch resolves a vLLM with #48291.**
+>
+> Getting there needed three sidecar fixes, all landed: the `--universal` lock
+> was unsatisfiable on aarch64 (`nvidia-nccl-cu13` pinned across all of linux
+> against a torch that needs a newer one); the flattened reasoner view *breaks*
+> the native loader, which reads the diffusers layout by path; and FlashInfer's
+> JIT sampler needs CUDA toolkit headers a JetPack image does not ship, so the
+> sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0`. Full findings in the
+> [assessment page](../../docs/reference/cosmos3-edge-reasoner.md).
 
 ### Uncurated local endpoint — explicit escape hatch
 

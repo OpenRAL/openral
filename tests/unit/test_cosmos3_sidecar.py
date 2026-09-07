@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 _SIDECAR = Path(__file__).resolve().parents[2] / "tools" / "cosmos3_reasoner_sidecar.py"
@@ -192,3 +193,63 @@ def test_materialize_reasoner_view_idempotent(tmp_path: Path) -> None:
     view = sidecar.materialize_reasoner_view(snap, dest)
     link = view / "diffusion_pytorch_model-00001-of-00002.safetensors"
     assert link.is_symlink()
+
+
+# ── native-vs-fallback serving path (ADR-adjacent; see the module docstring) ───
+
+
+def _edge_snapshot(tmp_path: Path) -> Path:
+    """A real Edge-shaped snapshot dir: subfolder weight_map + shard files."""
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "transformer").mkdir(parents=True)
+    _write_index(
+        snapshot,
+        {
+            "embed_tokens.weight": "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+            "lm_head.weight": "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+        },
+    )
+    for n in (1, 2):
+        (
+            snapshot / "transformer" / f"diffusion_pytorch_model-0000{n}-of-00002.safetensors"
+        ).write_bytes(b"")
+    (snapshot / "config.json").write_text("{}")
+    return snapshot
+
+
+def test_native_vllm_serves_the_snapshot_dir_itself(tmp_path: Path, monkeypatch) -> None:
+    """A vLLM with the native Edge model must NOT be handed the flat view.
+
+    Observed on a Jetson AGX Thor with vLLM 0.28.0: the flattened view makes the
+    native loader fail with "Cannot find any model weights"; the snapshot dir
+    loads. The snapshot download itself is the network boundary, so that is the
+    one thing substituted (CLAUDE.md §1.11) — the layout on disk is real.
+    """
+    snapshot = _edge_snapshot(tmp_path)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", lambda *a, **k: str(snapshot))
+    served, name = sidecar.resolve_served_model(
+        "nvidia/Cosmos3-Edge", tmp_path / "home", native_edge=True
+    )
+    assert Path(served) == snapshot
+    assert name == "nvidia/Cosmos3-Edge"
+    assert not (tmp_path / "home").exists(), "no flattened view should be built"
+
+
+def test_fallback_vllm_still_gets_the_flat_view(tmp_path: Path, monkeypatch) -> None:
+    """Without the native model the flattened view is still required."""
+    snapshot = _edge_snapshot(tmp_path)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", lambda *a, **k: str(snapshot))
+    home = tmp_path / "home"
+    served, name = sidecar.resolve_served_model("nvidia/Cosmos3-Edge", home, native_edge=False)
+    assert Path(served) == home / "Cosmos3-Edge-reasoner"
+    assert name == "nvidia/Cosmos3-Edge"
+    assert (Path(served) / "model.safetensors.index.json").is_file()
+
+
+def test_native_probe_is_false_for_an_interpreter_without_vllm(tmp_path: Path) -> None:
+    """The probe fails closed: no vLLM (or any error) selects the view path.
+
+    Runs a real interpreter — this repo's own, which has no vllm — rather than
+    substituting subprocess.
+    """
+    assert sidecar.vllm_has_native_edge_model(Path(sys.executable)) is False
