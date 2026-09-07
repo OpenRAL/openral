@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     # openral_core stays a DEFERRED import at runtime (see the note above):
     # this file must import on a host without the OpenRAL workspace sourced.
     # `from __future__ import annotations` keeps the annotation a string.
-    from openral_core import RobotDescription
+    from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
 from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
 
@@ -1093,13 +1093,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # Workcell-mounted cameras (DeployScene.sensors) publish on the same
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
     # leg — WorldState must subscribe to them too.
+    scene_sensors: list[SensorSpec] = []
     if deploy_config:
         from openral_core import DeployScene
 
+        scene_sensors = list(DeployScene.from_yaml(deploy_config).sensors)
         scene_rgb = [
-            s.name
-            for s in DeployScene.from_yaml(deploy_config).sensors
-            if s.modality == "rgb" and s.name not in rgb_camera_names
+            s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
         ]
         rgb_camera_names = [*rgb_camera_names, *scene_rgb]
     runtime = Node(
@@ -1367,7 +1367,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # its 0.40 m mount offset, handing Nav2 and slam_toolbox every return 0.40 m
     # above where the ray was cast. Same shape as the URDF-root bridge above,
     # and the same reason — the manifest owns the geometry, not the launch file.
-    for sensor in description.sensors:
+    # Manifest sensors UNION DeployScene sensors, scene winning on a name clash
+    # (`merge_deploy_sensors`' own rule). Iterating only the manifest meant a
+    # workcell-mounted camera — every camera on the OpenArm restock cell, which
+    # declares all three at scene level — could never get its mount published,
+    # which is the exact failure the comment above says this loop exists to
+    # prevent.
+    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+
+    for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
         if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
             continue
         sx, sy, sz, sroll, spitch, syaw = sensor.static_transform_xyz_rpy
