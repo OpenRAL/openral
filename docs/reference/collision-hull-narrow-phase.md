@@ -14,7 +14,8 @@
 > theme ("#169 changed no manifest, so the unsafe exemption is still in the
 > manifests"). `panda_link5` and `panda_link7` now declare
 > `tight_geometry` too, so §5.1's "today that is link1 and link2" reads
-> link1, link2, link5 and link7.
+> link1, link2, link3, link4, link5, link6 and link7 — all seven since
+> 2026-09-07 (§5.2).
 >
 > The evidence this rests on was produced by four earlier studies and is cited,
 > not re-argued: the [collision-primitive study](collision-primitive-study.md)
@@ -295,7 +296,7 @@ Two call sites, both gated on a manifest declaring `tight_geometry`:
 | **world-capsule obstacles** (`check_world_collision`) | out of scope; not voxel geometry |
 | **capsule-lowered robots** (`h1`, `rizon4`, every MJCF-lowered model) | tight geometry refines a `BoxShape`; a capsule has no box to state the containment proof against, and the schema refuses it |
 | **the broad-phase window** | §4.2 — this is the one thing that must not move |
-| **`panda_link3`, `link4`, `link6`** | #159: they hold **zero** of the 72 census stops, and they are not half of a self-pair the boxes cannot separate. Adding them would be three more containment proofs and three more hazard-entry lines for no measured recovery |
+| ~~**`panda_link3`, `link4`, `link6`**~~ | **Reversed 2026-09-07 — they now ship.** The original reason (#159: "zero of the 72 census stops") was measured on **start states**, and it was true of them. The 120-run #204 battery measured the **carry phase** instead and found `panda_link6` dominating **18 of 29 link-class stops**, with 33.1 mm of median link-class excess surviving once the voxel term is subtracted. The three DOPs recover 51.7 / 53.0 / 31.2 mm of support excess (75.6→23.8, 76.1→23.2, 52.7→21.5 mm), and `link6`'s 31.2 mm is almost exactly the measured excess. Hulls are 152/152/102 vertices — the same class as the already-shipped `link2`/`link5`/`link7`, well inside `kMaxTightHullVertices`. See `PLAN.md` §5 |
 | **`panda_link1`'s exact hull** | 1588 vertices, over `kMaxTightHullVertices`, measured 0.74–0.79× the shipped routine's speed. It gets stage 1 only |
 
 > `check_self_collision` was in this table as "out of the asked scope" until

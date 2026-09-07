@@ -75,12 +75,18 @@ def test_the_manifest_actually_declares_tight_geometry(panda: RobotDescription) 
     assert {g.link_name for g in declared} == {
         "panda_link1",
         "panda_link2",
+        "panda_link3",
+        "panda_link4",
         "panda_link5",
+        "panda_link6",
         "panda_link7",
     }, (
         "link1 + link2 hold 60 of the census's 72 world-side stops; link5 + link7 were added "
-        "for the SELF-collision pair the boxes cannot separate (issue #191). Widening this "
-        "further needs its own measurement and its own hazard-entry line"
+        "for the SELF-collision pair the boxes cannot separate (issue #191); link3, link4 and "
+        "link6 were added 2026-09-07 on the 120-run #204 battery, which put 33.1 mm of median "
+        "excess on the link class after the voxel term is removed and 18 of 29 link stops on "
+        "link6 alone. Widening this further needs its own measurement and its own "
+        "hazard-entry line"
     )
 
 
@@ -122,7 +128,10 @@ def test_hull_overhang_is_measured_for_every_stage_two_link_and_pinned(
     """
     expected_m = {
         "panda_link2": 0.000217,
+        "panda_link3": 0.000485,
+        "panda_link4": 0.000217,
         "panda_link5": 0.000259,
+        "panda_link6": 0.000234,
         "panda_link7": 8.9e-05,
     }
     link1 = next(g for g in panda.collision_geometry if g.link_name == "panda_link1")
@@ -210,7 +219,9 @@ def test_the_real_link_mesh_is_inside_every_declared_hull(panda: RobotDescriptio
         worst = float(slack.max())
         assert worst <= 1e-9, f"{geom.link_name}: mesh escapes its hull by {worst * 1e3:.6f} mm"
         checked += 1
-    assert checked == 3, "link2, link5 and link7 ship a stage-2 hull; link1 is over budget"
+    assert checked == 6, (
+        "link2..link7 all ship a stage-2 hull; only link1 is over the vertex budget"
+    )
 
 
 def test_the_declared_geometry_reproduces_from_the_mesh(panda: RobotDescription) -> None:
@@ -241,6 +252,12 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
     from 53.3 mm to 25.7 mm on link1, 46.8 to 23.0 on link2, 45.2 to 19.0 on
     link5 and 28.3 to 13.0 on link7 — and a change that quietly lost that would
     still pass every containment test above.
+
+    link3, link4 and link6 were added 2026-09-07 (75.6 -> 23.8, 76.1 -> 23.2 and
+    52.7 -> 21.5 mm). link6 is the one the evidence asked for: it dominates 18 of
+    the 29 link-class stops in the 120-run #204 battery, and the 31.2 mm it
+    recovers is almost exactly the 33.1 mm of median link-class excess that
+    survives once the voxel term is removed (PLAN.md §5).
     """
     gen = _mesh_tools()
     import numpy as np
@@ -257,7 +274,10 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
     expected = {
         "panda_link1": (53.27, 25.69),
         "panda_link2": (46.83, 23.01),
+        "panda_link3": (75.57, 23.84),
+        "panda_link4": (76.12, 23.15),
         "panda_link5": (45.20, 18.99),
+        "panda_link6": (52.70, 21.53),
         "panda_link7": (28.25, 12.97),
     }
     for geom in _declared(panda):
