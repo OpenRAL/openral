@@ -1641,3 +1641,32 @@ def test_a_named_self_pair_still_reaches_nearest_any() -> None:
     assert adjudication is not None
     assert adjudication.nearest_any_m is not None
     assert adjudication.nearest_any_m < -0.03, "the named self pair must still be seen"
+
+
+def test_an_octomap_resolution_override_is_recorded_not_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round on a finer grid must be distinguishable afterwards from one that was not.
+
+    A finer world-voxel grid shrinks the kernel's quantisation term, so it stops
+    *later* and *nearer* -- the override is less conservative, not more.
+    ``assert_no_safety_overrides`` inspects the launch argv and cannot see an
+    environment variable, so the recording in the round metadata is the only
+    thing standing between a 15 mm round and a 25 mm one in the ledger.
+    """
+    monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", "0.015")
+    assert validation_matrix.octomap_resolution_env() == {"octomap_resolution_m": 0.015}
+
+
+def test_an_octomap_resolution_the_launch_ignores_is_not_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recording a value the launch refused would misdescribe the round.
+
+    ``_octomap_resolution`` falls back to the shipped default on anything
+    unparseable or outside ``[0.001, 0.5]``, so the round ran at 25 mm. Metadata
+    claiming otherwise is worse than metadata saying nothing.
+    """
+    for bad in ("", "   ", "not-a-number", "0", "-0.015", "1.5"):
+        monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", bad)
+        assert validation_matrix.octomap_resolution_env() == {}, bad

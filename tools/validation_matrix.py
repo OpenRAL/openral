@@ -1597,6 +1597,38 @@ def collision_scale_env() -> dict[str, float]:
     return out
 
 
+def octomap_resolution_env() -> dict[str, float]:
+    """The world-voxel resolution this round will actually run with.
+
+    ``sim_e2e.launch.py`` reads ``OPENRAL_OCTOMAP_RESOLUTION_M`` and derives the
+    kernel's ``world_voxel_max_cells`` from it. Same shape as
+    :func:`collision_scale_env`, and recorded for the same reason: a finer grid
+    shrinks the kernel's quantisation term, so it is **less** conservative, and
+    a round that ran one must never be indistinguishable afterwards from a round
+    that did not.
+
+    ``argv``-based :func:`assert_no_safety_overrides` cannot see it -- this is
+    an environment variable, and the guard inspects the launch argv.
+
+    Returns:
+        ``{"octomap_resolution_m": <value>}`` when the override is set and in
+        the range the launch honours, otherwise empty (the round ran the shipped
+        default and the metadata says nothing rather than something false).
+    """
+    raw = os.environ.get("OPENRAL_OCTOMAP_RESOLUTION_M", "").strip()
+    if not raw:
+        return {}
+    try:
+        value = float(raw)
+    except ValueError:
+        # The launch falls back to the shipped default on an unparseable value,
+        # so the round did not run with it either.
+        return {}
+    if not (0.001 <= value <= 0.5):
+        return {}
+    return {"octomap_resolution_m": value}
+
+
 def assert_no_safety_overrides(argv: Sequence[str]) -> None:
     """Refuse any argv token that looks like a safety-knob override.
 
@@ -2658,6 +2690,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "stack_argv": [*STACK_ARGV, *args.deploy_arg],
         "safety_overrides_absent": True,
         "collision_scale": collision_scale_env(),
+        "octomap_resolution": octomap_resolution_env(),
         "gpu_name": gpu_name,
         # The DDS scope the round ran on. Unrecorded until #227, which is why
         # no round before 2026-09-05 can be checked for whether it shared a
