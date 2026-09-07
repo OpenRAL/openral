@@ -1,19 +1,16 @@
 """``RobotDescription`` → LeRobot v3 ``features`` dict mapping.
 
 A LeRobot v3.0 dataset writer needs a ``features`` schema dict at
-construction time describing every column in the on-disk Parquet +
-the codec/shape for every video stream. Building that dict by hand is
-error-prone: the state vector shape comes from
-``RobotDescription.observation_spec.state_shape``, the action dim from
-``RobotDescription.action_spec.dim``, and every per-camera video key
-from the ``SensorSpec.vla_feature_key`` of every sensor whose modality
-is an image / depth stream.
+construction: state shape from
+``RobotDescription.observation_spec.state_shape``, action dim from
+``RobotDescription.action_spec.dim``, and one per-camera video key per
+sensor whose modality is an image/depth stream and has a
+``vla_feature_key``.
 
-This module exposes one pure function — :func:`features_from_robot` —
-that does that mapping. It has no I/O and no lerobot dependency, which
-keeps :class:`openral_dataset.LeRobotDatasetSink` testable on hosts
-without lerobot installed (the sink lazy-imports lerobot; this
-function does not import lerobot at all).
+:func:`features_from_robot` is the one pure function that builds it — no
+I/O, no lerobot dependency, so :class:`openral_dataset.LeRobotDatasetSink`
+stays testable on hosts without lerobot (the sink lazy-imports lerobot;
+this function doesn't import it at all).
 """
 
 from __future__ import annotations

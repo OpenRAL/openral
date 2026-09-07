@@ -10,29 +10,20 @@ events on six layer-namespaced topics::
     /openral/failure/wam
     /openral/failure/critic
 
-(The ``rskill`` suffix replaced the original ``skill`` on 2026-05-25,
-for consistency with the carried ``rskill_id``
-field on :class:`openral_msgs.msg.FailureTrigger`.)
+(``rskill`` replaced the original ``skill`` suffix on 2026-05-25, matching
+the carried ``rskill_id`` field on ``FailureTrigger``.)
 
-One source layer per topic, one topic per source layer; the reasoner
-(``openral_reasoner``, planned in F4) subscribes to the relevant subset
-and ``rqt_graph`` shows source provenance directly.
+One source layer per topic; the reasoner (``openral_reasoner``, planned in
+F4) subscribes to the relevant subset and ``rqt_graph`` shows source
+provenance directly.
 
-This module ships:
-
-- :class:`FailureSource` — enum mapping a source layer to a topic suffix.
-- :func:`topic_for` — pure helper, ``FailureSource → /openral/failure/<suffix>``.
-- ``KIND_*`` / ``SEVERITY_*`` constants — mirror the IDL constants on
-  ``openral_msgs/msg/FailureTrigger`` so callers can construct events
-  without importing the generated IDL (handy for unit tests).
-- :class:`FailureBusPublisher` — opens a ROS 2 publisher on the source's
-  topic, rate-limits ``(kind, severity)`` buckets with a token bucket,
-  emits a 1 Hz ``KIND_SUPPRESSED_SUMMARY`` roll-up when buckets dropped.
-
-The publisher class is import-safe on hosts without ``rclpy``: it
-deferred-imports rclpy + the generated IDL inside the methods that
-actually touch the ROS layer, so unit tests can exercise the token
-bucket and constants without a sourced ROS install.
+Ships :class:`FailureSource`, :func:`topic_for`, the ``KIND_*``/``SEVERITY_*``
+IDL-mirror constants (so callers can build events without the generated
+IDL — handy for unit tests), and :class:`FailureBusPublisher` (opens a
+publisher on the source's topic, rate-limits ``(kind, severity)`` buckets
+with a token bucket, emits a 1 Hz ``KIND_SUPPRESSED_SUMMARY`` roll-up when
+buckets dropped). Import-safe without ``rclpy``: rclpy and the generated
+IDL are deferred-imported inside the methods that touch the ROS layer.
 
 Example:
     >>> from openral_observability.failure_bus import (
@@ -87,20 +78,16 @@ __all__ = [
 ]
 
 
-# ─── IDL-mirror constants ───────────────────────────────────────────────────────
+# ─── IDL-mirror constants ───────────────────────────────────────────────
+# Mirror ``openral_msgs/msg/FailureTrigger`` so callers can write typed
+# events without the generated IDL — used by unit tests and code paths
+# that may run without a sourced ROS install (``openral`` CLI, sim
+# runner, fakes).
 #
-# These mirror ``openral_msgs/msg/FailureTrigger`` so callers can write
-# typed event publications without depending on the generated IDL —
-# useful for unit tests and for code paths that may run without a
-# sourced ROS install (``openral`` CLI, sim runner, fakes).
-#
-# When the IDL changes, **bump both**. This block is no longer trusted to
-# stay in step by review alone: ``tests/unit/test_failure_bus_idl_mirror.py``
-# reads the colcon-generated ``FailureTrigger`` and asserts the two sides
-# match name-for-name and value-for-value in BOTH directions, so the next
-# constant added to the ``.msg`` fails a test rather than an audit. (The
-# audit is how ``KIND_COLLISION`` was found missing for the whole life of
-# the collision stack — see docs/methods/14-duplication-watch.md item 11.)
+# When the IDL changes, bump both: ``tests/unit/test_failure_bus_idl_mirror.py``
+# asserts the two sides match name-for-name and value-for-value in both
+# directions (this caught ``KIND_COLLISION`` missing for the collision
+# stack's whole life — see docs/methods/14-duplication-watch.md item 11).
 
 KIND_TIMEOUT: int = 0
 KIND_FORCE: int = 1
@@ -150,14 +137,11 @@ def topic_for(source: FailureSource) -> str:
     return f"{TOPIC_PREFIX}/{source.value}"
 
 
-# ─── Rate-limit defaults ───────────────────────────────────────────────────────
-#
-# Token-bucket rate limit per
-# (kind, severity); WARN defaults to 10/s, ABORT is never limited.
-# INFO defaults to 10/s as well (log spam guard). FAIL is unlimited
-# because FAIL events are rare and must always reach the reasoner.
-#
-# Override per-publisher via ``FailureBusPublisher(rate_limit_hz=...)``.
+# ─── Rate-limit defaults ─────────────────────────────────────────────────
+# Token-bucket rate limit per (kind, severity): INFO and WARN default to
+# 10/s (log spam guard); FAIL and ABORT are unlimited (rare, must always
+# reach the reasoner). Override per-publisher via
+# ``FailureBusPublisher(rate_limit_hz=...)``.
 
 DEFAULT_RATE_LIMIT_HZ: dict[int, float | None] = {
     SEVERITY_INFO: 10.0,

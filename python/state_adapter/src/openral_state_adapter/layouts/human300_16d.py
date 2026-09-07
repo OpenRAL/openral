@@ -41,29 +41,20 @@ def _canonicalize_quat_xyzw(
 ) -> tuple[float, float, float, float]:
     """Pick the positive-w hemisphere for a unit quaternion.
 
-    ``q`` and ``-q`` represent the same rotation but encode different
-    bytes, so two equally-correct sources (RoboCasa proprio vs ROS TF)
-    can disagree on sign and produce a state vector that differs by
-    `max_abs_diff = 2` on the quaternion slots even though the
-    physical pose is identical. Canonicalising to ``w >= 0`` makes
-    both sources land on the same hemisphere; for the ``w == 0``
-    edge case (180 deg rotations) the first non-zero component of
-    ``(x, y, z)`` is forced positive instead, which keeps the rule
-    deterministic and side-agnostic.
+    ``q`` and ``-q`` are the same rotation but different bytes: RoboCasa
+    proprio vs ROS TF can disagree on sign, producing a state vector
+    that differs by ``max_abs_diff = 2`` on the quaternion slots for an
+    identical pose. Canonicalising to ``w >= 0`` fixes that; for the
+    ``w == 0`` edge (180 deg rotations) the first non-zero of
+    ``(x, y, z)`` is forced positive instead.
 
-    Apply at every site that materialises a quaternion into the
-    state vector the policy consumes (deploy_sim's assembler AND
-    sim_run's ``_wrap_obs`` — the policy was trained against raw
-    RoboCasa output and is robust to either hemisphere, but a
-    consistent convention makes the dump-diff regression test
-    actually pin a sign drift instead of treating it as expected
-    noise).
+    Applied at every site that materialises a quaternion into the
+    policy's state vector (deploy_sim's assembler and sim_run's
+    ``_wrap_obs``) so the dump-diff regression test pins a real sign
+    drift instead of treating either hemisphere as expected noise.
     """
     x, y, z, w = quat_xyzw
-    # Pick the hemisphere where the first non-zero component of
-    # ``(w, x, y, z)`` is positive. For the typical ``|w| > 0`` case
-    # this reduces to "force w >= 0"; the ``w == 0`` edge falls
-    # through to (x, y, z) in order.
+    # First non-zero of (w, x, y, z) must be positive; see docstring.
     for comp in (w, x, y, z):
         if comp > 0.0:
             return quat_xyzw
@@ -143,17 +134,12 @@ def assemble_human300_16d(
     eef_q = _quat_to_layout(base_to_eef.quaternion_xyzw, convention)
     base_q = _quat_to_layout(world_to_base.quaternion_xyzw, convention)
 
-    # human300_16d's gripper slot is 2-D (finger1, finger2). Two sources
-    # are supported:
-    #   * Two named joints — the manifest binds both finger qpos joints
-    #     explicitly. Used when the underlying RobotDescription exposes
-    #     each MJCF finger as a separate joint.
-    #   * One named joint — the manifest binds a single parallel-gripper
-    #     joint (openral's canonical 1-DoF abstraction over a robosuite
-    #     ``two_finger`` mimic). Mirror it to ``[v, -v]`` to reconstruct
-    #     the training-distribution shape. Matches robosuite's franka
-    #     ``gripper0_finger_joint1`` / ``gripper0_finger_joint2`` parity
-    #     (opposite-sign open/close on the parallel mechanism).
+    # human300_16d's gripper slot is 2-D (finger1, finger2), from two
+    # sources: two named joints (per-finger MJCF joints, used as-is) or
+    # one named joint (openral's 1-DoF parallel-gripper abstraction,
+    # mirrored to ``[v, -v]`` to match robosuite's franka
+    # ``gripper0_finger_joint1``/``gripper0_finger_joint2`` opposite-sign
+    # parity).
     n_joints = len(bindings.gripper_qpos_joints)
     if n_joints == _N_GRIPPER_JOINTS:
         gripper = [joint_positions[name] for name in bindings.gripper_qpos_joints]

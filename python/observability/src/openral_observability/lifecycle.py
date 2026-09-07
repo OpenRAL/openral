@@ -4,21 +4,22 @@ rclpy's ``LifecycleNodeMixin.__execute_callback`` wraps every transition
 callback (``on_configure`` / ``on_activate`` / …) in a bare ``except
 Exception`` that returns ``TransitionCallbackReturn.ERROR`` and — per the
 literal ``# TODO(ivanpauno): log sth here`` in upstream rclpy — logs
-**nothing**. A composing host such as ``openral_rskill_ros``'s ``runtime_node``
-then sees only the ``ERROR`` sentinel and reports a bare ``exit code 4``; the
-real exception and its traceback are gone, turning a one-line ``ModuleNotFound``
-into an opaque crash (CLAUDE.md §1.4 — explicit beats implicit).
+**nothing**. A composing host such as ``openral_rskill_ros``'s
+``runtime_node`` then sees only the ``ERROR`` sentinel and reports a bare
+``exit code 4``; the real exception/traceback is gone, turning a one-line
+``ModuleNotFound`` into an opaque crash (CLAUDE.md §1.4).
 
-:func:`log_lifecycle_errors` is a decorator for those callbacks. It runs the
-wrapped callback and, on any uncaught exception, logs the full traceback via the
-node's ROS logger (``get_logger()`` → ``/rosout`` → the launch console) and
-returns a clean ``TransitionCallbackReturn.FAILURE`` instead of letting the
-exception escape into rclpy's silent ``ERROR`` conversion. ``FAILURE`` (not
-``ERROR``) keeps the managed node in the well-defined ``unconfigured`` /
-``inactive`` state rather than ``errorprocessing``.
+:func:`log_lifecycle_errors` decorates those callbacks: on an uncaught
+exception it logs the full traceback via the node's ROS logger
+(``get_logger()`` → ``/rosout`` → launch console) and returns a clean
+``TransitionCallbackReturn.FAILURE`` instead of letting rclpy's silent
+``ERROR`` conversion swallow it. ``FAILURE`` (not ``ERROR``) keeps the node
+in the well-defined ``unconfigured``/``inactive`` state rather than
+``errorprocessing``.
 
-The module imports ``rclpy`` lazily (inside the wrapper) so it stays import-safe
-on pure-Python hosts, matching :mod:`openral_observability.diagnostics`.
+Imports ``rclpy`` lazily (inside the wrapper) so the module stays
+import-safe on pure-Python hosts, matching
+:mod:`openral_observability.diagnostics`.
 """
 
 from __future__ import annotations

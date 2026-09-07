@@ -1,35 +1,24 @@
 """Generalised sensor → ROS 2 image publisher.
 
-The existing :class:`openral_runner.backends.gstreamer.ros_tee.RosImagePublisher`
-is GStreamer-coupled — it republishes frames pulled from a tee'd
-``appsink``, which only works on the GStreamer backend. This module
-generalises that pattern to **any** :class:`SensorReader`: a background
-thread polls :meth:`SensorReader.read_latest` at a configurable rate and
-republishes each frame as a ``sensor_msgs/Image`` on a configurable
-topic.
+:class:`openral_runner.backends.gstreamer.ros_tee.RosImagePublisher` is
+GStreamer-coupled (republishes frames from a tee'd ``appsink``). This module
+generalises the pattern to any :class:`SensorReader`: a background thread
+polls :meth:`SensorReader.read_latest` at a configurable rate and republishes
+each frame as a ``sensor_msgs/Image`` on a configurable topic — used by
+``packages/openral_sensors_ros/`` so OpenCV/RealSense/mock readers reach the
+same dashboard, rosbag2 recorder, and converter as the GStreamer tee does.
 
-Used by the new ``packages/openral_sensors_ros/`` lifecycle node so the
-OpenCV / RealSense / mock readers — which today never reach a ROS
-topic — feed the same dashboard, rosbag2 recorder (PR3), and converter
-(PR4) as the GStreamer reader does via its zero-copy tee.
+A parallel consumer, not an in-line interceptor: the inference hot path keeps
+calling ``reader.read_latest()`` directly, so ROS publication does not slow
+the runner. When the GStreamer backend's zero-copy tee is in use, this class
+is the non-zero-copy fallback.
 
-The publisher is a **parallel** consumer of the reader, not an
-in-line interceptor. The inference hot path keeps calling
-``reader.read_latest()`` directly on every tick; the publisher polls
-from its own thread, so adding ROS publication does not slow the
-runner. When the GStreamer backend is in use, that backend's tee
-(``RosImagePublisher``) is the zero-copy path; instances of this class
-are for the non-zero-copy fallback.
+``rclpy`` is lazy-imported inside :meth:`SensorRosPublisher.start` so this
+module is importable on hosts without a sourced ROS env; the publisher just
+never starts there (unit tests ``pytest.importorskip("rclpy")``).
 
-``rclpy`` is lazy-imported inside :meth:`SensorRosPublisher.start` so
-this module is importable on hosts without a sourced ROS env. The
-publisher just never starts there (and unit tests
-``pytest.importorskip("rclpy")``).
-
-Per CLAUDE.md §5.3 (QoS profiles by data class):
-
-* image streams → ``BEST_EFFORT``, ``VOLATILE``, ``KEEP_LAST=5``
-* ``CameraInfo`` → ``RELIABLE``, ``VOLATILE``, ``KEEP_LAST=1``
+QoS per CLAUDE.md §5.3: image streams ``BEST_EFFORT``/``VOLATILE``/
+``KEEP_LAST=5``; ``CameraInfo`` ``RELIABLE``/``VOLATILE``/``KEEP_LAST=1``.
 """
 
 from __future__ import annotations
@@ -113,16 +102,13 @@ class SensorRosPublisher:
             cameras match the sim HAL's topics (mono visual SLAM
             subscribes there).
         max_size: Optional ``(width, height)`` ceiling for the published
-            image. Frames larger than this are downscaled, preserving
-            aspect ratio, and ``CameraInfo``'s ``k``/``p`` are rescaled by
-            the same factor so the intrinsics keep matching the pixels.
-            ``None`` (default) publishes at capture resolution. Exists
-            because every publish hands rclpy a full-resolution buffer
-            whose Python→C conversion holds the GIL for the whole copy —
-            profiled at ~30 ms per 640x480 frame, which is 30 % of wall
-            time even at the sensor leg's capped topic rate. The policy is
-            unaffected: it reads frames in-process from the aggregator,
-            never from this topic.
+            image. Frames larger than this are downscaled (aspect ratio
+            preserved) and ``CameraInfo``'s ``k``/``p`` rescaled to match.
+            ``None`` (default) publishes at capture resolution. Rationale: a
+            full-resolution Python→C copy holds the GIL — profiled at ~30 ms
+            per 640x480 frame, 30% of wall time at the sensor leg's capped
+            rate. The policy is unaffected — it reads in-process from the
+            aggregator, never this topic.
 
     Example:
         >>> # End-to-end exercised in tests/unit/test_sensor_ros_publisher.py
@@ -472,11 +458,10 @@ class SensorRosPublisher:
     def _publish_camera_info(self, width: int, height: int, stamp: object) -> None:
         """Publish a companion ``CameraInfo`` matching the published image.
 
-        The intrinsics are scaled to ``width x height`` rather than taken
-        verbatim from the spec: when :attr:`_max_size` downscales the frame,
-        manifest-resolution ``fx/fy/cx/cy`` against reduced dimensions would
-        be silently wrong for every geometric consumer (cuVSLAM, nvblox, the
-        depth provider, object-lift) with nothing in the graph to flag it.
+        Intrinsics are scaled to ``width x height`` rather than used verbatim:
+        when :attr:`_max_size` downscales the frame, manifest-resolution
+        ``fx/fy/cx/cy`` against reduced dimensions would silently break every
+        geometric consumer (cuVSLAM, nvblox, the depth provider, object-lift).
         """
         from openral_core import scale_intrinsics_to
         from sensor_msgs.msg import CameraInfo
@@ -485,13 +470,10 @@ class SensorRosPublisher:
         assert self._camera_info_spec is not None
         spec = self._camera_info_spec
 
-        # Scale from the resolution the intrinsics were calibrated at to the
-        # one actually being published — via the SAME helper the sim HAL uses
-        # (openral_core.scale_intrinsics_to), so real-hardware and sim
-        # CameraInfo can never drift apart on the linear rescale rule.
-        # Per-axis by construction, so a spec whose declared geometry
-        # disagrees with the sensor still lands correctly. A degenerate spec
-        # (zero width/height) is published verbatim rather than divided by.
+        # Uses the same helper as the sim HAL (openral_core.scale_intrinsics_to)
+        # so real-hardware and sim CameraInfo never drift on the rescale rule.
+        # Per-axis, so mismatched declared/actual geometry still lands correctly.
+        # Degenerate spec (zero width/height) is published verbatim, not divided by.
         if spec.width > 0 and spec.height > 0:
             scaled = scale_intrinsics_to(spec, width, height)
             fx, fy, cx, cy = scaled.fx, scaled.fy, scaled.cx, scaled.cy

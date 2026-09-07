@@ -1,37 +1,31 @@
 """Fetch the vendored voice-prompt (VAD) binary assets on first dashboard start.
 
-The dashboard's mic button runs speech detection fully client-side via
-``@ricky0123/vad-web`` (Silero VAD ONNX models over ``onnxruntime-web``/WASM —
-see ``static/vendor/vad/NOTICE.md``). Two Silero ONNX models
+The mic button runs speech detection client-side via ``@ricky0123/vad-web``
+(Silero VAD ONNX models over ``onnxruntime-web``/WASM — see
+``static/vendor/vad/NOTICE.md``). Two Silero ONNX models
 (``silero_vad_v5.onnx``, ``silero_vad_legacy.onnx``) and the onnxruntime-web
-WASM binary (``ort-wasm-simd-threaded.wasm``) total ~15 MB and were previously
-committed to git. They are now fetched on demand into a local cache
-(``$OPENRAL_CACHE_DIR/dashboard_assets/vad/``, matching the convention used by
-``openral_hal._openarm_v2_assets`` and ``openral_rskill.engine_cache``) and
+WASM binary (``ort-wasm-simd-threaded.wasm``), ~15 MB total, were previously
+committed to git; they are now fetched on demand into
+``$OPENRAL_CACHE_DIR/dashboard_assets/vad/`` (matching
+``openral_hal._openarm_v2_assets`` / ``openral_rskill.engine_cache``) and
 hard-linked (falling back to a copy) into ``static/vendor/vad/`` so
-``StaticFiles`` keeps serving them from the same URL the page already expects.
-The small JS glue files (``bundle.min.js``, ``ort.wasm.min.js``, the worklet)
-stay committed to git — they are tiny and reviewable as text.
+``StaticFiles`` keeps serving the same URL. The small JS glue files stay
+committed to git (tiny, reviewable as text).
 
-Every URL below is pinned to the exact npm-published file jsDelivr serves for
-the version recorded in ``NOTICE.md`` (onnxruntime-web 1.22.0,
-``@ricky0123/vad-web`` 0.0.29 — same source vad-web itself vendors its Silero
-ONNX models from) and verified against a sha256 of the file that was
-previously committed to git before this module existed, so the bytes served
-are provably identical to what shipped before. No Hugging Face Hub fallback
-is configured: a real, stable, versioned upstream URL exists for all three
-files, so there is nothing for a fallback mirror to cover. If a future
-version bump ever lacks a stable pinned URL, add an entry under
+Every URL is pinned to the exact npm-published file jsDelivr serves for the
+version in ``NOTICE.md`` (onnxruntime-web 1.22.0, ``@ricky0123/vad-web``
+0.0.29) and verified against the sha256 of the file that was committed to git
+before this module existed — the bytes served are provably identical. No HF
+Hub fallback is configured: a stable versioned upstream URL exists for all
+three files. If a version bump ever lacks one, add an entry under
 ``https://huggingface.co/datasets/OpenRAL/dashboard-assets/resolve/main/<file>``
-here — **that HF dataset repo does not exist yet and must be populated before
-it is relied on.**
+— **that HF dataset repo does not exist yet and must be populated first.**
 
-Failure mode: a network-less host or an upstream outage must never crash the
-dashboard (CLAUDE.md §1.11 tolerates "unavailable dependency", never a fake).
-:func:`ensure_vad_assets` is best-effort — each failure is a loud
-``structlog`` warning, never a silent ``except: pass``, and the mic button
-degrades client-side (``/api/config``'s ``voice_prompt_enabled`` flag; see
-``dashboard.js``) rather than throwing at click time.
+Failure mode: a network-less host or upstream outage must never crash the
+dashboard (CLAUDE.md §1.11). :func:`ensure_vad_assets` is best-effort — each
+failure is a loud ``structlog`` warning, never a silent ``except: pass``, and
+the mic button degrades client-side (``/api/config``'s ``voice_prompt_enabled``
+flag; see ``dashboard.js``) rather than throwing at click time.
 """
 
 from __future__ import annotations

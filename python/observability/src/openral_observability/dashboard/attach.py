@@ -43,41 +43,35 @@ def spawn_dashboard(
 ) -> Iterator[str | None]:
     """Spawn ``openral dashboard`` as a child, set OTLP env, yield the URL.
 
-    On enter:
-        1. ``shutil.which('openral')`` to locate the in-tree CLI. If missing,
-           yield ``None`` (no dashboard attached).
-        2. ``Popen(['openral', 'dashboard', '--host', host, '--port', port])``.
-        3. Poll ``/healthz`` until 200 or ``ready_timeout_s`` elapses.
-        4. Set ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``OTEL_EXPORTER_OTLP_PROTOCOL``
-           in ``os.environ`` so the next ``configure_observability`` call
-           picks the endpoint up.
-        5. Print a single-line URL banner to stderr (matches the banner
-           ``openral dashboard`` itself prints — same shape so tooling can
-           grep for either).
+    Polls ``/healthz`` for up to ``ready_timeout_s``, then sets
+    ``OTEL_EXPORTER_OTLP_ENDPOINT``/``_PROTOCOL`` so the next
+    ``configure_observability`` call attaches to it, and prints a
+    single-line URL banner to stderr (same shape as ``openral dashboard``'s
+    own banner, so tooling can grep for either).
 
-    On exit:
-        SIGINT the child (BatchSpanProcessor flushes on shutdown), wait
-        up to 5 s, then escalate to terminate / kill. Restore the prior
-        ``OTEL_EXPORTER_OTLP_*`` env values so a nested process tree
-        doesn't inherit stale config.
+    On exit: SIGINT the child (flushes the BatchSpanProcessor), wait up to
+    5 s, then escalate to terminate / kill. Restore the prior
+    ``OTEL_EXPORTER_OTLP_*`` env values so a nested process tree doesn't
+    inherit stale config.
+
+    Args:
+        host: Interface for the dashboard child to bind.
+        port: Port for the dashboard child to bind.
+        ready_timeout_s: Seconds to wait for ``/healthz`` before giving up.
 
     Yields:
         The full dashboard URL (``http://host:port/``) when attached,
         or ``None`` if the child could not be started or never reported
         healthy — caller should continue the workload either way.
     """
-    # The CLI entry point is ``openral`` (single console script; bare
-    # ``ral`` was renamed). When the workload runs in an
-    # environment where ``.venv/bin`` isn't on PATH (e.g. inside
-    # ``ros2 launch`` whose env was built from
-    # ``/opt/ros/jazzy/setup.bash``) ``shutil.which('openral')``
-    # returns None, so look for the console script next to
-    # ``sys.executable`` as a fallback — that's where ``uv sync``
-    # installs the entry point. We deliberately do NOT fall back to
-    # ``python -m openral_cli.main``: that re-imports the CLI in a
-    # child interpreter and trips a pre-existing
-    # ``if __name__ == "__main__":`` early-return that skips
-    # registration of subcommands defined later in the file.
+    # Entry point is ``openral`` (bare ``ral`` was renamed). If PATH lacks
+    # ``.venv/bin`` (e.g. under ``ros2 launch``, env built from
+    # ``/opt/ros/jazzy/setup.bash``), look next to ``sys.executable`` —
+    # where ``uv sync`` installs the console script. Do NOT fall back to
+    # ``python -m openral_cli.main``: it re-imports the CLI in a child
+    # interpreter and trips a pre-existing ``if __name__ == "__main__":``
+    # early-return that skips registration of subcommands defined later
+    # in the file.
     exe_path = shutil.which("openral")
     if exe_path is None:
         candidate = os.path.join(os.path.dirname(sys.executable), "openral")

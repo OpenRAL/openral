@@ -35,19 +35,16 @@ __all__ = [
     "traced",
 ]
 
-# The closed value set for the `kind` label on `rskill.chunk_inference` spans
-# and the `openral.inference.duration` histogram (design §9: labels are closed
-# sets). `kind` is a TIMING axis: was the compute on the control loop's critical
-# path (`foreground`), overlapped in a background thread (`prefetch`), or a
-# per-step eval adapter with no chunking at all (`single`)?
+# Closed value set (design §9) for `kind` on `rskill.chunk_inference` spans
+# and the `openral.inference.duration` histogram — a TIMING axis: control
+# loop critical path (`foreground`), background-thread overlap (`prefetch`),
+# or a per-step eval adapter with no chunking (`single`).
 #
-# There is deliberately no `"chunk"` member. Four adapters used to pass it via
-# the then-untyped `kind: str`, so mypy never saw the drift — and it conflated
-# a SHAPE axis (one action vs a chunk) into the timing label: a chunked adapter
-# computing on the critical path is `foreground` whether or not it routes
-# through `ChunkedExecutor`, and filtering `kind=foreground` silently excluded
-# four adapters doing exactly that. Chunk shape already rides the span as
-# `inference.chunk_size` / `inference.chunk_index`, where it belongs.
+# No `"chunk"` member: four adapters used to pass it through the
+# then-untyped `kind: str`, conflating chunk SHAPE into the timing label —
+# a chunked adapter on the critical path is `foreground` regardless of
+# `ChunkedExecutor`, so filtering `kind=foreground` silently excluded those
+# four. Chunk shape already rides `inference.chunk_size`/`chunk_index`.
 InferenceKind = Literal["foreground", "prefetch", "single"]
 
 _TRACER_NAME = "openral"
@@ -100,21 +97,15 @@ def inference_span(
 ) -> Iterator[Span]:
     """Span around one VLA chunk inference — and its duration metric.
 
-    **The metric is emitted here, not by the caller.** ``openral.inference.
-    duration`` used to be recorded only by
-    :class:`openral_runner.InferenceRunnerBase`, which the ROS deploy graph
-    does not use — ``rskill_runner_node`` runs its own tick loop and opens
-    this span directly. The result was that a real `openral deploy run`
-    produced per-chunk inference *spans* but no inference *histogram*: no
-    p95, no threshold line, nothing in the Metrics panel, for the single
-    number an operator most wants. Measured live on an SO-101 before the
-    fix: the panel carried `openral.system.*` and the OTel SDK's own
-    counters, and not one latency instrument.
-
-    Emitting the histogram from the span helper makes the two impossible to
-    diverge: any code path that produces a `rskill.chunk_inference` span
-    necessarily produces the matching metric, on the eval path and the
-    deploy path alike.
+    **The metric is emitted here, not by the caller.** ``rskill_runner_node``
+    (the ROS deploy graph) opens this span directly rather than going
+    through :class:`openral_runner.InferenceRunnerBase`, which used to be
+    the only place ``openral.inference.duration`` was recorded — so a real
+    `openral deploy run` produced per-chunk spans but no histogram (measured
+    live on an SO-101: the Metrics panel carried only `openral.system.*` and
+    the OTel SDK's own counters, no latency instrument). Emitting the
+    histogram here means any `rskill.chunk_inference` span necessarily
+    produces the matching metric, eval and deploy alike.
 
     Args:
         name: Span name.

@@ -3,26 +3,18 @@
 Wraps :class:`lerobot.datasets.LeRobotDataset` (codebase_version ``"3.0"``,
 shipped in ``lerobot>=0.5.1``). The sink:
 
-* Lazy-imports lerobot at construction so the package stays importable on
-  hosts without lerobot. A typed :class:`ROSConfigError` with the install
-  hint is raised the moment ``LeRobotDatasetSink`` is instantiated without
-  lerobot in the environment.
-* Defers ``LeRobotDataset.create()`` until the first :meth:`write_frame`
-  call so the per-camera video shapes can be taken from the actual frame
-  (sim and hardware often render at runtime-determined resolutions; the
-  ``SensorSpec.intrinsics`` field is optional in the RobotDescription
-  schema and not always populated).
-* Carries the per-dataset license + repo_id into
-  ``meta/info.json["metadata"]`` so downstream consumers can read it
-  without consulting an out-of-band metadata table.
-* Aggregates a per-dataset ``dataset_success_rate`` across all episodes
-  so consumers can filter to successful rollouts without a full pass
-  over the rows.
+* Lazy-imports lerobot at construction, raising a typed
+  :class:`ROSConfigError` with an install hint if it's missing — keeps the
+  package importable on hosts without lerobot.
+* Defers ``LeRobotDataset.create()`` until the first :meth:`write_frame` so
+  per-camera video shapes come from the actual frame (``SensorSpec.intrinsics``
+  is optional and not always populated).
+* Carries license + repo_id into ``meta/info.json["metadata"]``.
+* Aggregates a per-dataset ``dataset_success_rate`` across episodes.
 
-Per CLAUDE.md §1.11 (no mocks) — tests instantiate this sink and exercise
-a real :class:`lerobot.datasets.LeRobotDataset` round-trip on hosts where
-lerobot is installed; on hosts without lerobot the tests
-``pytest.skip`` with the install hint.
+Per CLAUDE.md §1.11 (no mocks) — tests exercise a real
+:class:`lerobot.datasets.LeRobotDataset` round-trip where lerobot is
+installed; ``pytest.skip`` with the install hint otherwise.
 """
 
 from __future__ import annotations
@@ -46,7 +38,7 @@ _log = structlog.get_logger(__name__)
 
 # Default license string for produced datasets. The LeRobot convention is
 # CC-BY-4.0 (matches the official lerobot/aloha and lerobot/pusht datasets);
-# the consent prompt at `openral dataset push` (PR5) enforces an upgrade to a
+# the consent prompt at `openral dataset push` enforces an upgrade to a
 # more restrictive license when the dataset contains PII.
 DEFAULT_LICENSE: Final[str] = "CC-BY-4.0"
 
@@ -108,8 +100,7 @@ class LeRobotDatasetSink(DatasetSink):
             created — every episode must use the same fps.
         repo_id: HF Hub repo id (e.g. ``openral/dataset-pick-cube``).
             Defaults to ``"openral/dataset-<robot_name>"``. Stored on
-            disk in ``meta/info.json``; not pushed by this sink (PR5
-            owns the push path).
+            disk in ``meta/info.json``; not pushed by this sink.
         license: SPDX license string for the produced dataset.
         vcodec: ffmpeg codec for the video streams (default
             ``"libsvtav1"`` — lerobot's v3 default).
@@ -377,9 +368,7 @@ class LeRobotDatasetSink(DatasetSink):
 
         # episode_data carries per-episode metadata; lerobot v3 accepts
         # any extra keys here and lands them on meta/episodes/*. The
-        # backfill of next.success across the episode's rows is
-        # documented in the converter PR (PR4); for now the per-row
-        # next.success is False on hardware and the episode-level
+        # per-row next.success is False on hardware; the episode-level
         # summary.success drives the aggregate dataset_success_rate.
         self._dataset.save_episode(parallel_encoding=True)
         self._n_episodes += 1

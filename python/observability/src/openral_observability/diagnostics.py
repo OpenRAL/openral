@@ -1,21 +1,20 @@
 """ROS 2 ``diagnostic_msgs/DiagnosticArray`` heartbeat helper.
 
-OpenRAL mandates a uniform 1 Hz ``DiagnosticArray`` publication from
-every lifecycle node in the OpenRAL graph. Centralising the publisher
-here keeps the cadence, ``hardware_id`` shape, and level-mapping
-identical across `openral_world_state`, `openral_hal_*`,
-`openral_safety`, `openral_rskill_ros`, and any future node.
+OpenRAL mandates a uniform 1 Hz ``DiagnosticArray`` publication from every
+lifecycle node in the graph. Centralising it here keeps cadence,
+``hardware_id`` shape, and level-mapping identical across
+`openral_world_state`, `openral_hal_*`, `openral_safety`,
+`openral_rskill_ros`, and any future node.
 
-The helper imports ``rclpy`` and ``diagnostic_msgs`` lazily so this
-module stays import-safe on pure-Python hosts (CI, tests that do not
-build the colcon workspace). Consumers that do not call
-:meth:`DiagnosticsHeartbeat.start` pay zero ROS cost.
+Imports ``rclpy`` and ``diagnostic_msgs`` lazily so the module stays
+import-safe on pure-Python hosts (CI, tests without a colcon build).
+Consumers that never call :meth:`DiagnosticsHeartbeat.start` pay zero ROS
+cost.
 
-The diagnostics topic answers *"what is the system
-state right now"*; the ``/openral/failure/*`` bus (the namespaced FailureTrigger bus) answers
-*"what just happened"*. Sustained ``ERROR`` keeps the level latched on
-this topic; the matching ``FailureTrigger`` fires once on the
-transition. No duplication.
+Diagnostics answers *"what is the system state right now"*; the namespaced
+``/openral/failure/*`` bus answers *"what just happened"*. Sustained
+``ERROR`` stays latched here; the matching ``FailureTrigger`` fires once on
+the transition — no duplication.
 """
 
 from __future__ import annotations

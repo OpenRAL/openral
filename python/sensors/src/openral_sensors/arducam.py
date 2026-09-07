@@ -1,24 +1,14 @@
 """Arducam USB3 global-shutter camera adapters — B0495 (AR0234 colour).
 
-Provides:
+``arducam_b0495_spec`` builds a :class:`SensorSpec` for an Arducam B0495
+(2.3 MP AR0234 global shutter over a Cypress FX3 USB 3.0 UVC bridge);
+registered in the catalog under ``arducam/b0495``.
 
-- ``arducam_b0495_spec`` — factory that builds a :class:`SensorSpec` for an
-  Arducam B0495 (2.3 MP AR0234 global shutter over a Cypress FX3 USB 3.0
-  UVC bridge).
-- Catalog registration under ``arducam/b0495``.
-
-Global shutter is the reason this module exists separately from
-:mod:`openral_sensors.usb_uvc`: a rolling-shutter webcam smears the frame
-during arm motion, which corrupts exactly the wrist / workspace views a VLA
-conditions on.  The B0495 exposes every row simultaneously, so a frame
-captured mid-trajectory is geometrically valid.
-
-Optics are **not** a property of this device.  The B0495 ships as a bare
-board with an M12 lens mount, so field of view and distortion depend on
-whichever lens the integrator screwed on.  The factory therefore leaves
-``intrinsics`` unset unless the caller supplies the mounted lens's
-horizontal FOV — an uncalibrated pinhole model would be a fabricated number,
-not a conservative default.
+Separate from :mod:`openral_sensors.usb_uvc`: global shutter avoids the
+rolling-shutter smear that would corrupt wrist/workspace views a VLA
+conditions on. Ships as a bare board with an M12 lens mount, so FOV and
+distortion are integrator-supplied; ``intrinsics`` stays unset unless the
+caller passes the mounted lens's ``hfov_deg`` — no fabricated pinhole guess.
 
 Example:
     >>> from openral_sensors.arducam import arducam_b0495_spec

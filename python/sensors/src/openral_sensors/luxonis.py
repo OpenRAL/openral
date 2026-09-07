@@ -1,22 +1,15 @@
 """Luxonis OAK-D family sensor adapters.
 
-Provides:
+``oak_d_pro_bundle`` builds a :class:`SensorBundle` for a Luxonis OAK-D Pro
+(RGB + stereo depth + IMU), with nominal intrinsics from the Luxonis
+datasheet at the default stream resolutions (1920×1080 RGB, 1280×800 depth);
+registered under ``luxonis/oak_d_pro``. Replace with calibrated values from
+``openral calibrate camera`` before deployment.
 
-- ``oak_d_pro_bundle`` — factory that builds a :class:`SensorBundle` for a
-  Luxonis OAK-D Pro (RGB + stereo depth + IMU), with nominal intrinsics
-  from the Luxonis datasheet.
-- Catalog registration under ``luxonis/oak_d_pro``.
-
-The OAK-D Pro is the overhead RGB-D camera used by the ``so101_box``
-sim scene (and the recommended pairing for the SO-101 follower in real
-hardware). The data sheet values used here are at the default stream
-resolutions (1920×1080 RGB, 1280×800 depth); replace with calibrated
-values from ``openral calibrate camera`` before deployment.
-
-The OAK-D Pro has an embedded RVC2 SoC that runs depth + AI on-device,
-so the ROS-side driver (``depthai_ros_driver`` /
-``depthai_ros_examples``) publishes RGB + depth + IMU streams without
-needing host-side stereo processing.
+Overhead RGB-D camera for the ``so101_box`` sim scene and the recommended
+pairing for the SO-101 follower in real hardware. Its embedded RVC2 SoC runs
+depth + AI on-device, so ``depthai_ros_driver`` publishes RGB + depth + IMU
+without host-side stereo processing.
 
 Example:
     >>> from openral_sensors.luxonis import oak_d_pro_bundle

@@ -1,26 +1,18 @@
 """Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` factories.
 
-Mirrors the role that ``rSkillManifest`` plays for skills: a typed, addressable
-descriptor that decouples the sensor *identity* (``intel/realsense_d435i``) from
-its *materialisation* (a Pydantic ``SensorSpec`` or ``SensorBundle`` with
-nominal data-sheet values).
+Mirrors the role ``rSkillManifest`` plays for skills: a typed, addressable
+descriptor that decouples sensor *identity* (``intel/realsense_d435i``) from
+its *materialisation* (a Pydantic ``SensorSpec``/``SensorBundle`` with nominal
+data-sheet values).
 
-Entries are registered on import by each vendor module (``realsense.py``,
-``orbbec.py``, ``slamtec.py``, …). The registry is consumed by:
-- ``openral sensor list``  — print all registered ids.
-- ``openral sensor show``  — pretty-print one resolved spec/bundle.
-- ``SensorSpec.catalog_id`` provenance on robot-mounted physical sensors. Robot
-  manifests still inline the fully materialized calibrated spec; the catalog id
-  records the nominal device/factory it came from.
+Entries are registered on import by each vendor module. Consumed by
+``openral sensor list``/``show`` and ``SensorSpec.catalog_id`` provenance on
+robot-mounted sensors (robot manifests inline the materialized calibrated
+spec; the catalog id just records the nominal factory it came from).
 
-Design notes
-------------
-- A single global ``CATALOG`` instance is exposed.  Tests that need isolation
-  use ``SensorCatalog()`` directly.
-- Re-registration of an existing id raises by default; pass
-  ``replace=True`` to overwrite (useful in tests).
-- Factories are *not* called at registration time — the catalog stores the
-  callable, so listing the catalog has zero side-effects.
+Design: a single global ``CATALOG`` is exposed (tests use ``SensorCatalog()``
+for isolation); re-registering an id raises unless ``replace=True``; factories
+are not called at registration time, so listing has zero side-effects.
 
 Example:
     >>> from openral_sensors import CATALOG

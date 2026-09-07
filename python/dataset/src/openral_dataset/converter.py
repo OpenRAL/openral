@@ -1,36 +1,23 @@
 """Rosbag2ToLeRobotConverter — offline mcap rosbag2 → LeRobotDataset v3.
 
-Reads back the mcap file written by :class:`Rosbag2Sink`
-(PR3) and produces a :class:`lerobot.datasets.LeRobotDataset` v3.0 via
-the same :class:`LeRobotDatasetSink` the online sim path uses. Closes
-the bidirectional bridge: hardware execution → mcap bag → on-disk
-LeRobotDataset → HF Hub via `openral dataset push` (PR5).
+Reads back the mcap file written by :class:`Rosbag2Sink` and produces a
+:class:`lerobot.datasets.LeRobotDataset` v3.0 via the same
+:class:`LeRobotDatasetSink` the online sim path uses: hardware execution →
+mcap bag → on-disk LeRobotDataset → HF Hub via `openral dataset push`.
 
-The converter is deliberately narrow:
-
-* Reads only the two openral topics (`/openral/tick`, `/openral/episode`).
-  Camera streams on `/cameras/<id>/image_raw` are NOT joined in this PR;
-  PR3 records zero-placeholder images in the bag (the hardware path's
-  inline data isn't available without ROS), and PR2's `SensorRosPublisher`
-  writes the real camera frames to ROS topics that this converter will
-  read in a follow-up. The current converter therefore produces
-  state-and-action-only datasets — every camera key in the robot's
-  ``features_from_robot`` output gets a zero-shape video. That is
-  honest: there are no real images in the bag to recover.
-
-* Walks `/openral/episode` markers to segment the bag into discrete
-  episodes. A bag with no Episode markers is rejected with a clean
-  :class:`ROSConfigError` — the converter is not in the business of
-  guessing where one episode ends and the next begins.
-
-* Joins state + action at the recorded timestamps. mcap iter_messages
-  is time-ordered; the converter zips Ticks with the preceding /
-  trailing Episode markers into one episode per (PHASE_START,
-  PHASE_END) pair.
+* Reads ``/openral/tick``, ``/openral/episode``, and
+  ``/openral/dataset/image`` (per-camera frames, joined by
+  ``(episode_idx, step_idx)``). A camera declared on the robot but absent
+  from the bag gets a zero frame at the bag-derived or robot-native shape.
+* `/openral/episode` markers segment the bag into episodes; a bag with none
+  is rejected with :class:`ROSConfigError` — no guessing episode bounds.
+* State/action/camera shapes are derived from the bag's own recorded data
+  (works for any robot, not just ones with an ``observation_spec``/
+  ``action_spec``); legacy metadata-only bags fall back to the robot spec.
 
 Per CLAUDE.md §1.11 — exercised in `python/dataset/tests/test_converter.py`
-against real bags written by the PR3 sink, with the resulting dataset
-reloaded by a real :class:`lerobot.datasets.LeRobotDataset` reader.
+against real bags, reloaded by a real
+:class:`lerobot.datasets.LeRobotDataset` reader.
 """
 
 from __future__ import annotations
@@ -109,9 +96,8 @@ class Rosbag2ToLeRobotConverter:
     PHASE_START/PHASE_END pairs, then replays each episode through a
     :class:`LeRobotDatasetSink` so the on-disk format is identical to
     what the online sim path produces. ``next.success`` for every frame
-    in an episode is set from the episode's PHASE_END marker
-    (episode-level success, broadcast per-frame; PR0
-    discusses why the per-frame field is uniform across the episode).
+    in an episode is set from the episode's PHASE_END marker — episode-level
+    success, broadcast uniformly per-frame.
     """
 
     @classmethod
@@ -312,8 +298,7 @@ class Rosbag2ToLeRobotConverter:
                         )
                 elif channel.topic == TOPIC_TICK and current is not None:
                     current.ticks.append(payload)
-                # Other topics (e.g. PR2's camera streams) are
-                # ignored for now; PR4-follow-up wires them in.
+                # Any other topic is ignored.
         if current is not None:
             # Open episode at EOF — treat as failure.
             cls._mark_episode_success(current, success=False)
@@ -379,14 +364,11 @@ class Rosbag2ToLeRobotConverter:
     ) -> None:
         """Drive `RolloutRecorder.record_frame` from a Tick payload.
 
-        ``observation_state`` / ``action`` are read from the inline
-        arrays the enriched :class:`Rosbag2Sink` now writes; per-camera
-        pixels are joined from the ``/openral/dataset/image`` messages
-        keyed by ``(episode_idx, step_idx)``. For legacy metadata-only
-        bags (no inline arrays / images) the converter falls back to a
-        zero vector / zero frame of the robot's declared shape, so old
-        bags still convert. reward / terminated / truncated round-trip
-        from the Tick payload verbatim.
+        ``observation_state``/``action`` come from the bag's inline arrays;
+        per-camera pixels are joined from ``/openral/dataset/image`` messages
+        keyed by ``(episode_idx, step_idx)``. Legacy metadata-only bags (no
+        inline arrays/images) fall back to a zero vector/frame of the robot's
+        declared shape. reward/terminated/truncated round-trip verbatim.
         """
         # Shapes MUST match the sink's declared feature shapes
         # (state from RobotDescription / rSkill manifest contract;

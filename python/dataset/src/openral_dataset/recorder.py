@@ -2,20 +2,17 @@
 
 The recorder is decoupled from any specific sink. The same recorder feeds:
 
-* :class:`openral_dataset.LeRobotDatasetSink` (online sim path) — writes a
-  LeRobotDataset v3.0 (codebase_version="3.0") directly from the live
-  rollout.
-* :class:`openral_dataset.Rosbag2Sink` (PR3, online hardware path) — writes
-  an mcap rosbag2 of joints, world_state, camera streams, and
-  ``/openral/tick`` per-tick metadata.
-* :class:`openral_dataset.Rosbag2ToLeRobotConverter` (PR4, offline) — reads a
-  bag back and feeds the same ``DatasetSink`` interface to produce a
-  v3 dataset.
+* :class:`openral_dataset.LeRobotDatasetSink` — writes a LeRobotDataset v3.0
+  (codebase_version="3.0") directly from the live rollout (online sim path).
+* :class:`openral_dataset.Rosbag2Sink` — writes an mcap rosbag2 of joints,
+  world_state, camera streams, and ``/openral/tick`` metadata (online
+  hardware path).
+* :class:`openral_dataset.Rosbag2ToLeRobotConverter` — reads a bag back and
+  feeds the same ``DatasetSink`` interface to produce a v3 dataset (offline).
 
-The recorder owns no I/O. ``record_frame()`` calls fan out to every
-attached sink synchronously, which keeps the sink-side concurrency
-explicit (the rosbag2 sink uses a daemon thread + bounded queue so the
-hot path never blocks on disk).
+The recorder owns no I/O. ``record_frame()`` calls fan out to every attached
+sink synchronously; sink-side concurrency (e.g. Rosbag2Sink's daemon thread +
+bounded queue) stays internal to the sink so the hot path never blocks.
 
 Per CLAUDE.md §1.11 (no mocks) — the recorder is exercised against real
 ``RobotDescription`` fixtures from ``robots/`` in
@@ -147,8 +144,8 @@ class DatasetSink(Protocol):
     pending I/O.
 
     All callbacks are synchronous from the recorder's perspective; sinks
-    that need async / threaded I/O (e.g. the PR3 ``Rosbag2Sink``)
-    implement their own backpressure internally.
+    that need async / threaded I/O (e.g. ``Rosbag2Sink``) implement
+    their own backpressure internally.
     """
 
     def open_episode(self, header: EpisodeHeader) -> None:

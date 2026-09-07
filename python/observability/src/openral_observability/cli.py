@@ -1,17 +1,16 @@
 """``cli.command`` root-span helper.
 
-Per design §4.7, every ``openral`` CLI invocation opens a single ``cli.command``
-span as the root of the trace tree. Every downstream span (``sim.run``,
-``rskill.tick``, ``hal.send_action``, ``safety.check``, …) becomes a
-child of it, and :attr:`RunResult.trace_id` ends up being the trace id of
-``cli.command`` — making the trace trivially queryable from the printed
-output.
+Per design §4.7, every ``openral`` CLI invocation opens a single
+``cli.command`` span as the root of the trace tree. Every downstream span
+(``sim.run``, ``rskill.tick``, ``hal.send_action``, ``safety.check``, …)
+becomes a child of it, and :attr:`RunResult.trace_id` ends up being the
+trace id of ``cli.command`` — making the trace trivially queryable from the
+printed output.
 
-Lives in its own module (rather than next to ``rskill_span`` /
-``inference_span`` / ``safety_span``) because the CLI is one of the few
-places the helpers know enough domain to set ``openral.run.*`` attributes,
-and keeping the import surface flat avoids dragging the rest of
-``tracing`` into the ``openral`` startup path.
+Kept in its own module (rather than next to ``rskill_span`` /
+``inference_span`` / ``safety_span``) so setting ``openral.run.*``
+attributes doesn't drag the rest of ``tracing`` into the ``openral``
+startup path.
 """
 
 from __future__ import annotations
