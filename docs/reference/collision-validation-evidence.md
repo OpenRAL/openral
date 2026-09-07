@@ -1769,6 +1769,73 @@ stands. A post-`10ff989` round should re-derive the late-path distribution
 before anyone reads a phantom-cell story into it.
 
 
+### 2026-09-07 — the harness could not see the graph it launched, and had not since #231
+
+Not a result. A **retraction of the harness's ability to produce one**: on
+post-#231 `master`, every scene of every `tools/validation_matrix.py` round
+reported `harness-error` — "action server never appeared" — beside a graph that
+was up and healthy the whole time. Two independent defects, each sufficient on
+its own, both found on `q-laptop` on `robocasa_drawer_utensil` and both now
+fixed.
+
+**1. The harness polled a different DDS scope than the one it launched into.**
+Since #227/#231 `openral deploy sim` confines itself with
+`openral_cli._dds_scope.confine_sim_scope` (`ROS_DOMAIN_ID=77`,
+`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so a simulation and a real robot
+cannot share a graph. The deploy applied that to itself; `_launch_env` did not,
+so the harness polled domain 0. Measured against the live round:
+
+| invocation | sees `/openral/execute_rskill` |
+| --- | :-: |
+| `ROS_DOMAIN_ID=77 ros2 action list` | ✅ |
+| `ros2 action list` (domain 0) | ❌ |
+
+`confine_sim_scope` now runs inside `_launch_env`, which is what makes the two
+sides agree: it uses `setdefault`, so the deploy inherits the harness's value
+instead of choosing its own, and an operator who exports their own scope still
+wins on both sides.
+
+**2. `ros2 action list --no-daemon` cannot discover an advertised action.** The
+poll passed `--no-daemon` for a real hazard (a daemon left over from an unscoped
+shell answers from the environment *it* started with — the false reading that
+made `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` look broken in #227). But the
+one-shot node it builds has a discovery window too short to see an action that
+is genuinely up. Measured against a live graph, repeatably:
+
+| invocation | finds it |
+| --- | :-: |
+| domain 77, plain | ✅ |
+| domain 77, `--no-daemon` | ❌ |
+| domain 77 + `LOCALHOST`, plain | ✅ |
+| domain 77 + `LOCALHOST`, `--no-daemon` | ❌ |
+| domain 0 | ❌ |
+
+So the poll could never succeed, on any scope. The fix closes the original
+hazard from the other side: a one-shot `ros2 daemon stop` under the round's own
+`env` before the loop, so the daemon the loop then uses is started by that call,
+on that scope.
+
+**Verification.** The same round that had reported `harness-error` twice
+completed with a real outcome (`utensil`, `deadline-no-grasp`) on the first
+attempt after both fixes.
+
+**What this invalidates.** Any `validation_matrix` round taken on post-#231
+`master` before this date is a measurement of the harness, not of the kernel.
+`#231` merged as `9ca834e`; rounds whose commit is that or later, and which
+report `harness-error` across the board, should be discarded rather than read as
+a launch or a scene failure. Rounds on earlier commits — the ceiling battery's
+`80027b18` arm among them — predate #231 and are unaffected; checked, not
+assumed.
+
+**Why it went unnoticed.** `harness-error` is the bucket that exists so a broken
+host cannot be read as a kernel result, and it did its job: nothing false
+entered this page. What it does not do is distinguish "this host cannot launch"
+from "this harness cannot see". Both read as the same bucket, and the first
+explanation was the one already on the page (the `octomap_server` `exec_depend`,
+2026-08-22), so the second went looking only when a host known to launch kept
+producing it.
+
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts

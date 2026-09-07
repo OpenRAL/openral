@@ -70,6 +70,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from openral_cli._dds_scope import confine_sim_scope
+
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 OUTPUT_ROOT: Final[Path] = REPO_ROOT / "outputs" / "validation-matrix"
 
@@ -1839,7 +1841,27 @@ def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, P
 
 
 def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
+    """The environment both the launch AND this harness's own `ros2` calls use.
+
+    **It must carry the sim DDS scope.** Since #227/#231 `openral deploy sim`
+    confines itself with `openral_cli._dds_scope.confine_sim_scope`
+    (`ROS_DOMAIN_ID=77`, `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so a
+    simulation and a real robot cannot share a graph. The deploy applied that
+    to itself, and this harness did not — so the graph came up on domain 77
+    while `_wait_for_action_server` polled `ros2 action list` on domain 0, saw
+    nothing for its full 600 s, and reported "action server never appeared".
+    Every scene of every round on post-#231 master failed that way, as
+    `harness-error`, with a perfectly healthy graph running beside it: measured
+    2026-09-07 on `robocasa_drawer_utensil`, where `ROS_DOMAIN_ID=77 ros2
+    action list` showed `/openral/execute_rskill` the whole time.
+
+    Applying it *here* rather than letting the child do it is what makes the two
+    agree: `confine_sim_scope` uses `setdefault`, so the deploy inherits this
+    value instead of choosing its own, and an operator who exports their own
+    scope still wins on both sides.
+    """
     env = os.environ.copy()
+    confine_sim_scope(env)
     env["OPENRAL_REPO_ROOT"] = str(REPO_ROOT)
     env["MUJOCO_GL"] = env.get("MUJOCO_GL", "egl")
     env.setdefault("OPENRAL_AUTO_INSTALL_DEPS", "1")
@@ -1905,20 +1927,39 @@ def _wait_for_action_server(
 ) -> bool:
     """Poll ``ros2 action list`` until the rSkill action server appears.
 
-    ``--no-daemon``, and under the launch's own ``env``. The ``ros2`` CLI daemon
-    is a long-lived process that answers from the environment *it* was started
-    with, so a daemon left over from an unscoped shell reports a different graph
-    than the one this round is running on — the same false reading that made
+    Under the launch's own ``env``, and **with** the daemon after a one-shot
+    ``ros2 daemon stop``.
+
+    This used to pass ``--no-daemon``, for a real hazard: the CLI daemon is a
+    long-lived process that answers from the environment *it* was started with,
+    so one left over from an unscoped shell reports a different graph than the
+    round is running on — the false reading that made
     ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` look broken while it was working
-    (#227). Here it would mean waiting on, or being satisfied by, some other
-    graph's action server.
+    (#227). But ``--no-daemon`` builds a one-shot node whose discovery window is
+    too short to see an action that is genuinely advertised: measured
+    2026-09-07 against a live graph with ``/openral/execute_rskill`` up,
+    ``ros2 action list`` found it and ``ros2 action list --no-daemon`` did not,
+    on the same domain, repeatably. So the poll could never succeed and every
+    scene of every round reported "action server never appeared".
+
+    Stopping the daemon first closes the original hazard from the other side:
+    the daemon the loop then uses is started by this call, in ``env``, on this
+    round's scope, so it cannot report some other graph's action server — which
+    would mean waiting on, or being satisfied by, the wrong one. Discovery still
+    needs a few seconds to settle after a restart, so the first poll can miss;
+    that is exactly what a polling loop is for.
     """
+    # Kill any daemon started from ANOTHER environment before polling, so the
+    # one this loop uses is started by this call, in `env`, and therefore on
+    # this round's DDS scope. That is the hazard `--no-daemon` was reaching for;
+    # this addresses it without paying its cost (see the note above).
+    subprocess.run(["ros2", "daemon", "stop"], capture_output=True, text=True, check=False, env=env)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
         listing = subprocess.run(
-            ["ros2", "action", "list", "--no-daemon"],
+            ["ros2", "action", "list"],
             capture_output=True,
             text=True,
             check=False,
