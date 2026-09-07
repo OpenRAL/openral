@@ -204,6 +204,18 @@ _Package and publish a local rSkill directory to the HF Hub._
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
 - `main() -> None` — Entry point. Sequence: parse args (`--publish` / `--public` / `--bump-revision` / `--fix-name` / `--token`) → validate manifest → `_enforce_repo_name` (exit 1 on a non-compliant VLA name unless `--fix-name`) → validate task space → validate docs → `public_visibility_error` gate (exit 1 if `--public` on a non-commercial skill) → exit 1 on doc errors → optional `--bump-revision` → `--publish` (private unless `--public`).
 
+### `tools/adr0101_recovery.py`
+
+- `CLEAR_THRESHOLD_M: float` — the clearance/contact boundary, `0.0`. Zero belongs to **contact**, not clearance: a payload touching a surface is stopped by a modeled body exactly as it was by the cube, so putting `0.0` on the clearance side would count real contacts as recoveries — the one class ADR-0101 must never suppress.
+- `Stop(NamedTuple)` — one payload-vs-cell stop with the certified truth behind it (`round_id`, `scene`, `payload`, `cell`, `reported_depth_m`, `certified_gap_m`, `nearest_body`); `.recovered` is `certified_gap_m > CLEAR_THRESHOLD_M`.
+- `Excluded(NamedTuple)` — a payload-vs-cell stop that could not be adjudicated, and why. Reported, never silently dropped: shrinking the denominator inflates the rate, which is the direction that would overstate the case for a fail-open mechanism.
+- `collect(round_dirs: list[Path]) -> tuple[list[Stop], list[Excluded]]` — read each round's `verdicts.json` into adjudicable stops plus exclusions. Selects only world stops whose `party_a` is `attached:<id>` and `party_b` is `voxel_<n>`, and only when the probe certified its distances.
+- `summarise(stops, excluded) -> dict[str, Any]` — ADR-0101's Consequences table as data: counts, recovery rate, median **and minimum** recovered clearance, the still-stopping depths, and the by-fixture breakdown. Returns `recovery_rate=None` over an empty set rather than a number.
+- `render(summary) -> str` — the human-readable report; refuses to print a percentage over an empty denominator.
+- `main(argv=None) -> int` — CLI. `uv run python tools/adr0101_recovery.py <round dirs...> [--json]`.
+
+Produces the "48 of 51 (94 %)" figure ADR-0101 rests on, which until now had no producer in the repo. Pure, offline, stdlib-only; reads recorded artifacts, needs no GPU or simulator. Tested in `tests/unit/test_adr0101_recovery.py` against the real `2026-08-23-master-s1` round.
+
 ### `tools/round_power.py`
 _Answers "how many validation-matrix runs does this comparison need?" **before** a battery is run — [#217](https://github.com/OpenRAL/openral/issues/217) step 1. Exists because the programme has twice drawn a conclusion a battery could not support: the n=1 reading on #176, and the 20-run success comparison #217 was opened to settle, which had under 30 % power against the very effect it observed. Exact (every outcome pair enumerated, not sampled) so the answer is reproducible on any host, and stdlib-only so scipy stays out of the workspace for a planning script; validated against `scipy.stats.fisher_exact` on 300 random 2×2 tables. Feeds the 2026-09-05 entry in [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._
 

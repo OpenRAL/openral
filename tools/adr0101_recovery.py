@@ -1,0 +1,243 @@
+"""How many payload stops would a modeled static fixture have recovered?
+
+[ADR-0101](../docs/decisions.md) proposes publishing the exact primitives of the
+static world bodies nearest a carried payload and adjudicating the payload
+against *those* instead of against the occupancy cells that represent the same
+surfaces. Its headline number — **48 of 51 payload-vs-``voxel_`` stops (94 %)
+recovered** — was computed offline, by hand, and never had a producer in the
+repo. That is exactly the shape of claim `docs/reference/collision-validation-
+evidence.md` exists to prevent, so this is that producer.
+
+**The question it answers, and why it is answerable at all.** For a stop where
+the carried payload trips against an anonymous cell, "would a modeled fixture
+have let this through?" is the same question as "was the payload certifiably
+clear of the real surface at that moment?" — because the modeled fixture *is*
+that real surface, at mesh resolution. The battery already records both halves
+of that: the kernel's reported depth, and the probe's certified distance from
+the tripping party to the nearest real body. So the counterfactual needs no
+code in the kernel and no layer crossing to evaluate; it is a re-reading of
+records already on disk.
+
+**What it deliberately does not claim.** A stop removed mid-carry is a run that
+*continues*, not a run that succeeds, so none of this converts into completion
+points — the ceiling run bounds that separately at 29 points. And the minimum
+recovered clearance is the number that matters as much as the median: at a
+fraction of a millimetre, the mechanism's own modelling error is the whole
+budget, which is the argument for ADR-0101's suppression-off first landing.
+
+Selection is deliberately narrow, and every exclusion is reported rather than
+silently dropped, because a recovery rate computed over a quietly-filtered
+denominator is worthless. A stop counts only when all of:
+
+* it is a **world** stop (``kind == "world"``) — self stops are a different
+  mechanism and ADR-0101 does not touch them;
+* the tripping party is the **carried payload** (``party_a`` is
+  ``attached:<id>``) — the link half is Entry 026's business;
+* the other party is an **anonymous cell** (``party_b`` is ``voxel_<n>``) — a
+  stop already naming a real body is not one the cubes caused;
+* the probe **certified** its distances (``probe_distance_certified``) and
+  produced ``nearest_tripping_party_m``. An uncertified or truncated probe is
+  counted as ``excluded``, never as a recovery.
+
+Run::
+
+    uv run python tools/adr0101_recovery.py outputs/validation-matrix/<round>...
+    uv run python tools/adr0101_recovery.py --json outputs/validation-matrix/*
+
+Reads recorded artifacts only — pure, offline, no GPU, no simulator. Stdlib
+only, like ``tools/round_power.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Final, NamedTuple
+
+#: A stop is "recovered" when the payload was certifiably clear of the real
+#: surface. Zero is the boundary and belongs to *contact*, not to clearance:
+#: at exactly 0 m the payload is touching, which the modeled body stops just as
+#: the cube did. Erring the other way would inflate the recovery rate with the
+#: very cases the mechanism must not let through.
+CLEAR_THRESHOLD_M: Final[float] = 0.0
+
+PAYLOAD_PREFIX: Final[str] = "attached:"
+CELL_PREFIX: Final[str] = "voxel_"
+
+
+class Stop(NamedTuple):
+    """One payload-vs-cell stop, with the certified truth behind it."""
+
+    round_id: str
+    scene: str
+    payload: str
+    cell: str
+    reported_depth_m: float
+    certified_gap_m: float
+    nearest_body: str
+
+    @property
+    def recovered(self) -> bool:
+        """Would a modeled fixture have let this stop through?"""
+        return self.certified_gap_m > CLEAR_THRESHOLD_M
+
+
+class Excluded(NamedTuple):
+    """A payload-vs-cell stop that could not be adjudicated, and why."""
+
+    round_id: str
+    scene: str
+    reason: str
+
+
+def _nearest_body(nearest_pair: dict[str, Any]) -> str:
+    """Name the real body the probe found nearest, for the by-fixture table.
+
+    ``nearest_pair`` is ``extra="allow"`` on a schema that has changed shape
+    across rounds, so this reads the keys that have existed rather than
+    insisting on one spelling — and falls back to a marker instead of raising,
+    because an unnamed body still counts toward the recovery rate.
+    """
+    for key in ("body_b", "b_body", "world_body", "body", "b"):
+        value = nearest_pair.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "<unnamed>"
+
+
+def collect(round_dirs: list[Path]) -> tuple[list[Stop], list[Excluded]]:
+    """Read every round's ``verdicts.json`` into adjudicable stops + exclusions."""
+    stops: list[Stop] = []
+    excluded: list[Excluded] = []
+    for round_dir in round_dirs:
+        verdicts_path = round_dir / "verdicts.json"
+        if not verdicts_path.is_file():
+            excluded.append(Excluded(round_dir.name, "-", "no verdicts.json"))
+            continue
+        payload = json.loads(verdicts_path.read_text())
+        round_id = str(payload.get("metadata", {}).get("round_id", round_dir.name))
+        for scene in payload.get("scenes", []):
+            name = str(scene.get("scene", "?"))
+            stop = scene.get("stop")
+            if not isinstance(stop, dict):
+                continue  # No stop at all: not an exclusion, just not a stop.
+            party_a = str(stop.get("party_a", ""))
+            party_b = str(stop.get("party_b", ""))
+            if str(stop.get("kind", "")) != "world":
+                continue
+            if not party_a.startswith(PAYLOAD_PREFIX) or not party_b.startswith(CELL_PREFIX):
+                continue
+            truth = scene.get("ground_truth")
+            if not isinstance(truth, dict):
+                excluded.append(Excluded(round_id, name, "no ground-truth adjudication"))
+                continue
+            if truth.get("probe_distance_certified") is not True:
+                excluded.append(Excluded(round_id, name, "probe distances not certified"))
+                continue
+            gap = truth.get("nearest_tripping_party_m")
+            if not isinstance(gap, (int, float)):
+                excluded.append(Excluded(round_id, name, "no nearest_tripping_party_m"))
+                continue
+            pair = truth.get("nearest_pair")
+            stops.append(
+                Stop(
+                    round_id=round_id,
+                    scene=name,
+                    payload=party_a[len(PAYLOAD_PREFIX) :],
+                    cell=party_b,
+                    reported_depth_m=float(stop.get("min_distance_m", 0.0)),
+                    certified_gap_m=float(gap),
+                    nearest_body=_nearest_body(pair if isinstance(pair, dict) else {}),
+                )
+            )
+    return stops, excluded
+
+
+def _median(values: list[float]) -> float:
+    """Median of a non-empty list; the mid-average on an even count."""
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def summarise(stops: list[Stop], excluded: list[Excluded]) -> dict[str, Any]:
+    """The ADR's table, as data."""
+    recovered = [s for s in stops if s.recovered]
+    still = [s for s in stops if not s.recovered]
+    by_fixture: dict[str, int] = {}
+    for stop in recovered:
+        by_fixture[stop.nearest_body] = by_fixture.get(stop.nearest_body, 0) + 1
+    gaps = [s.certified_gap_m for s in recovered]
+    return {
+        "adjudicable_stops": len(stops),
+        "recovered": len(recovered),
+        "still_stop": len(still),
+        "recovery_rate": (len(recovered) / len(stops)) if stops else None,
+        "median_recovered_clearance_mm": (_median(gaps) * 1e3) if gaps else None,
+        "min_recovered_clearance_mm": (min(gaps) * 1e3) if gaps else None,
+        "still_stop_depths_mm": sorted(s.certified_gap_m * 1e3 for s in still),
+        "still_stop_bodies": sorted({s.nearest_body for s in still}),
+        "recovered_by_fixture": dict(sorted(by_fixture.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "excluded": [e._asdict() for e in excluded],
+    }
+
+
+def render(summary: dict[str, Any]) -> str:
+    """Human-readable report, shaped like the ADR's Consequences table."""
+    n = summary["adjudicable_stops"]
+    lines = ["ADR-0101 — modeled-fixture recovery, from certified ground truth", ""]
+    if not n:
+        lines.append("  No adjudicable payload-vs-voxel_ stops in these rounds.")
+        lines.append("  A recovery rate over an empty denominator is not a result.")
+    else:
+        rate = summary["recovery_rate"] or 0.0
+        lines += [
+            f"  adjudicable payload-vs-voxel_ stops : {n}",
+            f"  would be recovered                  : {summary['recovered']} ({rate:.0%})",
+            f"  would still stop (real contact)     : {summary['still_stop']}",
+            "",
+            f"  median recovered clearance : {summary['median_recovered_clearance_mm']:.2f} mm"
+            if summary["median_recovered_clearance_mm"] is not None
+            else "  median recovered clearance : n/a",
+        ]
+        if summary["min_recovered_clearance_mm"] is not None:
+            lines.append(
+                f"  MINIMUM recovered clearance: {summary['min_recovered_clearance_mm']:.2f} mm"
+                "   <- the modelling-error budget"
+            )
+        if summary["still_stop_depths_mm"]:
+            depths = ", ".join(f"{d:.2f}" for d in summary["still_stop_depths_mm"])
+            bodies = ", ".join(summary["still_stop_bodies"])
+            lines += ["", f"  correctly still stopping: {depths} mm against {bodies}"]
+        if summary["recovered_by_fixture"]:
+            lines += ["", "  recovered by fixture:"]
+            lines += [
+                f"    {body:<40} {count}" for body, count in summary["recovered_by_fixture"].items()
+            ]
+    if summary["excluded"]:
+        lines += ["", f"  excluded (never counted as recoveries): {len(summary['excluded'])}"]
+        lines += [f"    {e['round_id']}/{e['scene']}: {e['reason']}" for e in summary["excluded"]]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("rounds", nargs="+", type=Path, help="Round directories.")
+    parser.add_argument("--json", action="store_true", help="Emit the summary as JSON.")
+    args = parser.parse_args(argv)
+
+    stops, excluded = collect([p for p in args.rounds if p.is_dir()])
+    summary = summarise(stops, excluded)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(render(summary))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
