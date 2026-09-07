@@ -341,8 +341,28 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [ ] **Lever 3: voxel resolution 25 -> 15 mm.**
 - [ ] Drop `baguette` from the collision scorecard: 0 % with the gate off means
       it is policy-bound and cannot report on collision work either way.
-- [ ] Land this in `docs/reference/collision-validation-evidence.md` and
-      comment on #102 / #108 / #217.
+- [x] Landed in `docs/reference/collision-validation-evidence.md`; commented on
+      #102, #108 and #217.
+- [x] **Hazard-log Entry 026** — the record #235 owes, written 2026-09-07
+      (`OpenRAL/management#33`). Containment argued and verified, Entry 018's
+      exclusion falsified, latency measured, three open items named. **WG
+      sign-off still PENDING** — that is a human ruling and is not faked.
+- [x] **ADR-0101 — modeled static fixtures for the carried payload**, proposed
+      and deliberately *not* implemented (`OpenRAL/management#33`). Recorded
+      before code because it crosses Layer 2 → Layer 6 (CLAUDE.md §3), and
+      because the last three levers were each cheaper to argue than to build —
+      two were struck by measurement after this plan had committed to them.
+      It states plainly that its suppression step is the **first fail-open
+      mechanism** in the hazard log, proposes four bounds, and offers a
+      conservative first landing: ship the model as observability with
+      suppression **off** and measure how often it *would* have explained a stop
+      before giving up any protection.
+- [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
+      the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
+      cost dwarfs the drop it was chasing. The alternative is re-scoping it to
+      the single remaining suspect (#202's ACM retirement) rather than a full
+      bisect. Needs a human call.
+- [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
 
 ### Ceiling-run mechanics worth keeping
 
