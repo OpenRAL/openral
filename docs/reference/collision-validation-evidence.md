@@ -1678,6 +1678,73 @@ tell a sibling from an orphan — so the parallel workers needed
 `OPENRAL_SKIP_ORPHAN_REAP=1`, which is deliberately not a committed default.
 
 
+### 2026-09-07 — the backing probe was stopping at decoration, and the reconstructed grid was 32 % too sparse
+
+Not a validation round: a defect in the instrument that adjudicates every stop,
+found while checking whether ADR-0101's premise holds against the **live** map
+rather than against certified mesh truth.
+
+`voxel_backing_record` answers "what, if anything, is really in the cell the
+kernel stopped on". `mj_ray` reports only the **nearest** strike, and the probe
+took it. So a non-collidable shell in front of the collidable slab it wraps was
+the only thing the probe ever saw, and the cell was adjudicated
+`noncollidable_world` — *"the map disagrees with the world"* — when a real
+surface sat millimetres behind it **inside the same cell**.
+
+**Measured on the 2026-09-06 battery.** Only 8 of 91 stops carried a backing
+record at all (the record is populated only for evidence judged fresh, which is
+its own gap). Of those 8:
+
+| verdict | stops |
+| --- | ---: |
+| `noncollidable_world` | **6** |
+| `solid_world` | 2 |
+
+All six name `counter_1_right_group_top_visual` or a sibling shell — while the
+certified nearest **collision** surface at those same stops was ~16 mm away,
+well inside the same 25 mm cell. The map was right; the diagnostic was wrong.
+
+**Why the misreading was plausible.** The class docstring still carried its
+pre-#180 justification — *"the depth synth strikes these too, so they CAN become
+occupancy"*. #180 made exactly these geoms transparent to the cast, so in sim
+decoration can no longer become occupancy at all, and a `noncollidable_world`
+verdict is now a statement about the probe or a stale cell rather than a live
+map defect. Both the docstring and the METHODS entry are corrected.
+
+**The fix**, and it is diagnostics-only (CLAUDE.md §1.4 — no stop is suppressed,
+delayed or altered): a ray that strikes a non-collidable geom inside the cube is
+re-cast from just past it, up to four times, and **both** the shell and whatever
+it hides are recorded. The existing precedence does the rest — `solid_world`
+outranks `noncollidable_world`. Nothing is filtered away, because dropping the
+shell would hide a real map defect where one genuinely exists.
+
+**How much it moves.** The same real `robocasa_fridge_drawer` layout-47 grid,
+rebuilt cell by cell through the probe:
+
+| | occupied cells |
+| --- | ---: |
+| before the fix (solid-only, as #224 measured) | 5 638 |
+| **after the fix** | **7 427** |
+| counting *all* decoration as occupancy (#224's upper bracket) | 9 217 |
+
+So **+1 789 cells, +32 %**, and the result lands between #224's two brackets
+exactly as it should: it recovers the cells where solid geometry hides behind a
+shell, without counting shells that hide nothing. Every clearance number derived
+from that reconstructed grid was computed against a map ~32 % too sparse.
+
+**What it does not change.** The shipped kernel's grid comes from OctoMap, not
+from this probe, so no deployed behaviour moves. What moves is the *adjudication*
+— which is exactly what this ledger is made of.
+`test_kernel_fridge_layout_pin_start_state.py` still passes 6/6 on the denser
+grid (the layout-47 pin still clears, layout 30 still trips at the 20 mm
+standoff, the genuinely-colliding pose still trips), and the narrow phase
+measures **p99 1.7 ms on 7 427 cells** against a 33 ms ceiling.
+
+**Open, and worth its own look:** the backing record was present on only **8 of
+91** stops. The diagnostic that says what the map contains is absent from 91 % of
+the stops it exists to explain.
+
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts
