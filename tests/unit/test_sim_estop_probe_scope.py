@@ -539,8 +539,18 @@ def test_the_link_link_budget_is_published_and_carries_no_voxel_term() -> None:
 def test_hull_overhang_is_published_per_link_for_every_stage_two_hull() -> None:
     """The #221 term: how far each link's declared hull reaches past its mesh.
 
-    `panda_link1` runs the 26-DOP only (its hull is over the vertex budget),
-    so it carries no `hull_overhang_m` at all -- never a silent `0`.
+    Every link now ships a stage-2 envelope, so every link publishes an
+    overhang. `panda_link1` was the exception until 2026-09-07 — its exact hull
+    is over the vertex budget — and it now carries a `refine_dop_to_budget`
+    envelope instead of the DOP alone.
+
+    link1's value is two orders of magnitude above the rest (41.989 mm against
+    sub-millimetre). That is the envelope bridging a deep concavity in the mesh,
+    not looseness in any support direction (0.65 mm worst case), and the 26-DOP
+    it replaced bridged the same concavity by more, being a strictly larger
+    convex set. The term feeds the link-vs-link adjudication budget, where it
+    makes link1 self-pairs the most forgiving — flagged as an open item on
+    hazard-log Entry 026 rather than assumed harmless.
     """
     model, data = _model_data()
     snapshot = estop_ground_truth_snapshot(
@@ -552,8 +562,10 @@ def test_hull_overhang_is_published_per_link_for_every_stage_two_hull() -> None:
     )
 
     links = snapshot["adjudication_budget"]["collision_model_slop"]["links"]  # type: ignore[index]
-    for name in ("panda_link2", "panda_link5", "panda_link7"):
+    for name in ("panda_link1", "panda_link2", "panda_link5", "panda_link7"):
         overhang = links[name]["hull_overhang_m"]
         assert isinstance(overhang, float)
         assert overhang > 0.0
-    assert links["panda_link1"]["hull_overhang_m"] is None
+    # A stage-2 envelope must never publish a silent `0`, and link1's concavity
+    # bridge must not be quietly rounded away either.
+    assert links["panda_link1"]["hull_overhang_m"] > 0.04
