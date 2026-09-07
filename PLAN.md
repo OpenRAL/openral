@@ -432,6 +432,35 @@ Four things had to be discovered to make it run at all, each worth keeping:
       figure rests on certified mesh truth, which the backing-probe defect never
       touched, so the two *should* agree — that agreement is worth checking
       rather than assuming before any implementation leans on it.
+- [x] **Re-derived the false-positive rate on a repaired instrument — it is
+      71 %, unchanged.** Thirteen rounds, `adr0101-live-*`, 2026-09-07. Seven
+      stops: five of a physically clear robot (+0.67 … +24.86 mm), two real
+      contact (−2.32, −0.11 mm). Reproduces the #204 battery's 85-of-91 on an
+      independent battery and a different commit. **The programme's headline
+      number has not moved**, and it is now measured with an instrument that was
+      itself broken for two days (below).
+- [x] **Found and fixed the adjudicator inversion (#220 regression).** The
+      link-vs-link probe #220 added was folded into `nearest_any`, whose first
+      rule is "any probed pair ≤ 0 m → `real-contact`". Adjacent links overlap
+      permanently and are ACM-permitted, so **every** adjudicable stop was
+      stamped `real-contact` from 2026-09-05. On `master`. Three of this
+      battery's rounds flipped `real-contact → within-quantization` on
+      re-derivation. The error runs one way — it manufactures real contacts,
+      never clears one — so nothing was wrongly passed as safe. Standing caveat
+      11; two mutation-checked tests.
+- [ ] **The start-state population — a third of stops, and no lever touches it.**
+      Three of seven stops were `estop-initial-configuration`: the arm stopped
+      at reset by its own start pose, at +23.13, +22.01 and +0.67 mm. Every
+      lever in §5 addresses the *carry* phase. None addresses a base placement
+      that starts the arm inside a counter. This is a scene-generation or
+      reset-pose question, not a kernel one, and it is now the second-largest
+      class after the payload. `docs/reference/robocasa-start-state-census.md`
+      is the existing survey of it.
+- [ ] **Half of these scenes never reach the kernel.** Five of thirteen rounds
+      ended `deadline-no-grasp` — the policy never picked the object up. With
+      the ceiling result (0 % for `baguette` gate-off), this bounds how much of
+      the scorecard collision work can move at all, and argues for scene
+      selection being part of the programme rather than a fixed input.
 - [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
       ADR's 94 % should be re-derived from post-fix rounds before implementation
