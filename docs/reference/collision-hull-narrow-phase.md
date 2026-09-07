@@ -51,7 +51,19 @@ the substance of this change, not an afterthought:
 * an **unbounded** exact hull is a straightforward loss. `panda_link1`'s hull is
   1588 vertices and measured **0.77× the shipped routine's speed** at 400
   occupied cells. The study predicted this (§12.2: "Do not ship the raw
-  1588-vertex hull on an always-on path") and the implementation refuses it.
+  1588-vertex hull on an always-on path") and the implementation refuses it —
+  and still does. What changed on 2026-09-07 is that "over the budget" stopped
+  meaning "fall back to the DOP alone".
+
+  `refine_dop_to_budget` builds a third thing: the DOP intersected with the
+  exact hull's own tangent face planes, worst-violation first, stopping before
+  the vertex count would exceed `kMaxTightHullVertices`. Every plane is tangent
+  to the mesh, so containment stays definitional, and the result is `⊆ DOP` by
+  construction. For `link1` that is a support gap of **0.18 mm median / 0.65 mm
+  max** against the DOP's **4.52 / 25.68 mm** — and, measured with it live,
+  **p99 0.5 ms over 9891 occupied cells** against the 33 ms ceiling, faster than
+  the 2.0 ms recorded before it on a sparser grid. The raw 1588-vertex hull is
+  still refused; it is the fallback that improved, not the cost verdict.
 
 **Deprecate the primitive code: no, and a blanket removal would be wrong.** §5
 sets out exactly what was replaced and what was not, and why the "not" list is
@@ -76,7 +88,7 @@ cross-check that the pipeline measures the same thing.
 
 | link | shipped OBB | 26-DOP (stage 1) | exact hull (stage 2) |
 |---|---:|---:|---:|
-| `panda_link1` | 53.27 mm | **25.69 mm** | 0.00 mm |
+| `panda_link1` | 53.27 mm | **25.69 mm** | 0.00 mm |  <!-- stage-2 since 2026-09-07: refined envelope, 0.65 mm worst-case support gap -->
 | `panda_link2` | 46.83 mm | **23.01 mm** | **0.00 mm** |
 | link3 | 75.57 | 23.84 | 0.00 |
 | link4 | 76.12 | 23.15 | 0.00 |

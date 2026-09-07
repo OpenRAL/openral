@@ -90,22 +90,44 @@ def test_the_manifest_actually_declares_tight_geometry(panda: RobotDescription) 
     )
 
 
-def test_link1_ships_stage_one_only_because_its_hull_is_over_budget(
-    panda: RobotDescription,
-) -> None:
-    """`panda_link1`'s exact hull is 1588 vertices and was measured slower than the box.
+def test_link1_ships_a_budget_fitting_refined_envelope(panda: RobotDescription) -> None:
+    """`panda_link1` used to run the 26-DOP alone. It no longer has to.
 
-    Recorded as a test rather than a comment because it is the one place the
-    scoping decision is falsifiable: if a future change makes the exact hull
-    affordable at that vertex count, this fails and the decision gets revisited
-    deliberately instead of by drift.
+    This test previously pinned the opposite — `hull_vertices_m == ()` — because
+    link1's exact hull is 1588 vertices against
+    `MAX_TIGHT_HULL_VERTICES`, and the exact hull measured 0.77x the box
+    routine's speed. Its docstring said that if a future change made a hull
+    affordable at that count the pin should fail and force a deliberate revisit.
+    That is what happened, so this is the revisit rather than a drift.
+
+    `refine_dop_to_budget` builds the envelope a different way: it starts from
+    the DOP and intersects it with the exact hull's own face planes,
+    worst-violation first, stopping before the vertex count exceeds the budget.
+    Every added plane is tangent to the mesh, so containment stays definitional,
+    and the result is `⊆ DOP` by construction rather than by an expansion that
+    would have to escape the DOP slabs.
+
+    Measured on the real mesh, support gap against a 3000-direction set:
+
+    | envelope | vertices | median | max |
+    | --- | ---: | ---: | ---: |
+    | 26-DOP (what shipped) | 48 | 4.52 mm | 25.68 mm |
+    | refined (this) | 320 | 0.18 mm | 0.65 mm |
+
+    The cost objection does not survive either: with this envelope live the
+    narrow phase measures **p99 0.5 ms, median 0.1 ms over 9891 occupied cells**
+    against the 33 ms 30 Hz ceiling, faster than the 2.0 ms recorded before it
+    on a sparser grid.
+
+    Why it matters: the 2026-09-07 battery's two `panda_link1` start-state stops
+    sat 3.86 mm and 8.68 mm beyond the voxel term — inside the range this
+    recovers — and the start-state census's deficit table says 10 mm of
+    recovered clearance clears 14 of 14 `link1` states.
     """
     link1 = next(g for g in panda.collision_geometry if g.link_name == "panda_link1")
     assert link1.tight_geometry is not None
-    assert link1.tight_geometry.hull_vertices_m == (), (
-        "link1 runs the 26-DOP only; its exact hull is 1588 vertices, over "
-        f"MAX_TIGHT_HULL_VERTICES={MAX_TIGHT_HULL_VERTICES}, and measured 0.77x the shipped "
-        "routine's speed at 400 occupied cells"
+    assert len(link1.tight_geometry.hull_vertices_m) == MAX_TIGHT_HULL_VERTICES, (
+        "link1 now ships a refined envelope filling the vertex budget exactly"
     )
 
 
@@ -123,10 +145,17 @@ def test_hull_overhang_is_measured_for_every_stage_two_link_and_pinned(
 
     Pinned (not merely "> 0") so a mesh, hull, or sampling-margin change that
     moves the number is a deliberate re-derivation -- caught here -- rather
-    than a silent drift the hazard entry never learns about. `panda_link1`
-    ships no stage-2 hull, so it gets no overhang at all, never a `0`.
+    than a silent drift the hazard entry never learns about.
+
+    `panda_link1` is two orders of magnitude above the rest at 41.989 mm, and
+    that is expected rather than alarming: overhang measures how far the
+    envelope's surface bridges the real mesh's *concavities*, and link1 has a
+    deep one. It is not looseness in any support direction — the refined
+    envelope's support gap is 0.65 mm at worst — and the 26-DOP it replaced
+    bridged the same concavity by more, being a strictly larger convex set.
     """
     expected_m = {
+        "panda_link1": 0.041989,
         "panda_link2": 0.000217,
         "panda_link3": 0.000485,
         "panda_link4": 0.000217,
@@ -134,12 +163,7 @@ def test_hull_overhang_is_measured_for_every_stage_two_link_and_pinned(
         "panda_link6": 0.000234,
         "panda_link7": 8.9e-05,
     }
-    link1 = next(g for g in panda.collision_geometry if g.link_name == "panda_link1")
-    assert link1.tight_geometry is not None
-    assert link1.tight_geometry.hull_overhang_m is None
     for geom in _declared(panda):
-        if geom.link_name == "panda_link1":
-            continue
         tight = geom.tight_geometry
         assert tight is not None
         assert tight.hull_overhang_m == pytest.approx(expected_m[geom.link_name], abs=1e-9)
@@ -219,8 +243,9 @@ def test_the_real_link_mesh_is_inside_every_declared_hull(panda: RobotDescriptio
         worst = float(slack.max())
         assert worst <= 1e-9, f"{geom.link_name}: mesh escapes its hull by {worst * 1e3:.6f} mm"
         checked += 1
-    assert checked == 6, (
-        "link2..link7 all ship a stage-2 hull; only link1 is over the vertex budget"
+    assert checked == 7, (
+        "all seven links ship a stage-2 envelope; link1's is the budget-fitting "
+        "refinement of its DOP rather than its 1588-vertex exact hull"
     )
 
 

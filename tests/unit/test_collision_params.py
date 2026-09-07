@@ -257,12 +257,16 @@ def test_tight_geometry_lowers_csr_parallel_to_the_box_arrays() -> None:
         cursor += count
     assert cursor == n_vertices
 
-    # link1 is stage 1 only (1588-vertex hull, over the kernel's cost budget).
     # link2/link3/link4/link5 ship their exact 152-vertex hulls; link6 and link7
     # their 102-vertex ones. link5 + link7 are what the self-collision
     # refinement needs (#191); link3/link4/link6 were added 2026-09-07 for the
     # link-class excess the #204 battery measured (PLAN.md §5).
-    assert sorted(params["collision_hull_vertex_count"]) == [0, 102, 102, 152, 152, 152, 152]
+    #
+    # link1 is the 320 — its exact hull is 1588 vertices, over the budget, so it
+    # ships a `refine_dop_to_budget` envelope instead of the DOP alone: the DOP
+    # intersected with the exact hull's own tangent face planes until the vertex
+    # budget is reached. Support gap 0.18 mm median against the DOP's 4.52 mm.
+    assert sorted(params["collision_hull_vertex_count"]) == [102, 102, 152, 152, 152, 152, 320]
 
 
 def test_no_tight_geometry_lowers_exactly_as_before() -> None:
