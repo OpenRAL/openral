@@ -1991,6 +1991,39 @@ looks like collision-programme failure is the policy not reaching the phase
 where the kernel matters.
 
 
+### 2026-09-07 — `link1envelope-*`: eight rounds, no result, and why that is worth recording
+
+The `panda_link1` refined envelope predicts that the two `panda_link1`
+`estop-initial-configuration` stops of the `adr0101-live` battery clear. Eight
+rounds were run to confirm it — `utensil` and `fridge`, seeds 1-4, on the commit
+carrying the envelope.
+
+**All eight are void.** Every one ended `deadline-no-grasp` at 16-19 s wall with
+`ROSConfigError: xr1 sidecar process exited with code 1 during boot`, and the
+deploy logs name the cause: `torch.OutOfMemoryError: CUDA out of memory … GPU 0
+has a total capacity of 7.53 GiB of which 31.44 MiB is free. Process 1139979 has
+2.05 GiB memory in use.` A concurrent job on this shared host held 2.0-2.5 GB
+while the XR-1 sidecar needs ~3.5 GB alongside the MuJoCo scene's ~2.5 GB.
+
+The rounds were launched with `--force-shared-gpu`, which is what let them start
+at all; the flag records the choice, it does not create memory.
+
+**This is recorded rather than discarded because the failure is legible and the
+temptation is not.** Every round shows *no stop* — `stop: null` — and a naive
+read of "seeds 2 and 4 no longer produce `estop-initial-configuration`" is
+exactly the confirmation the envelope predicts. It is not evidence of anything:
+the policy never loaded, so the arm never moved, so no kernel check ran. A
+policy-free run cannot clear a start-state stop, because a start-state stop is
+adjudicated at reset before the policy matters — but it also cannot *report* one
+here, since the graph tore down at boot.
+
+The prediction therefore stands unconfirmed. Confirming it needs either an
+uncontended window on `q-laptop` or a host with headroom; `spark` (GB10) is the
+latter, with the caveat that XR-1 has never completed an end-to-end rollout
+there (`docs/reference/aarch64-support.md`), so a single smoke round has to
+succeed before a battery is worth running.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
