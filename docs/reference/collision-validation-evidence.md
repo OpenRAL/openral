@@ -1836,6 +1836,74 @@ explanation was the one already on the page (the `octomap_server` `exec_depend`,
 producing it.
 
 
+### 2026-09-07 — the first post-fix round, and the cell that stopped it was decoration
+
+`2026-09-07-adr0101-live-1`, one scene (`utensil`, seed 1) on `q-laptop` at
+`60dcb2f` — the first `validation_matrix` round since #231 to reach a real
+outcome instead of `harness-error`. It carries both fixes from the entry above
+plus the backing-probe fix (`c7bd2c7`), verified live in the process that ran
+(`_VOXEL_BACKING_MAX_LAYERS = 4` resolved out of the worktree's own HAL).
+
+Outcome `estop-collision-real`. One stop:
+
+| field | value |
+| --- | --- |
+| stop | `kind=world a=attached:sim:obj_main b=voxel_228622` |
+| kernel depth | **−4.05 mm** |
+| certified gap to the nearest real body | **+24.86 mm** |
+| that body | `counter_1_right_group_main` |
+| probe | 183 pairs, untruncated, distances certified, collidability filtered |
+
+**The certified premise of ADR-0101 reproduces.** The payload was stopped at
+4 mm of reported penetration while sitting 24.9 mm clear of the real counter —
+an over-approximation slightly above the 21.65 mm cell half-diagonal, and
+against `counter_1_right`, the exact fixture ADR-0101 §3 names as the largest
+class (25 of 70). One stop is not a rate, and this does **not** re-derive the
+94 %; it is the first data point of that re-derivation, produced by
+`tools/adr0101_recovery.py` rather than by hand.
+
+**What was not expected: the cell is backed only by a non-collidable geom.**
+The fixed backing probe, casting 27 rays and striking on 9, reports a single
+class:
+
+```
+verdict : noncollidable_world
+backing : counter_1_right_group_main / counter_1_right_group_top_visual
+          (collidable: false)
+```
+
+The probe now walks past decoration to find the solid surface behind it, and
+here it found none *inside the cell*: within that 25 mm cube there is no
+collidable geometry at all. The collision slab is elsewhere — 24.9 mm away, as
+the certified probe independently says.
+
+That is not a probe defect. It is the occupancy grid faithfully recording what a
+depth sensor sees, which is the **visual** shell — and in MuJoCo the visual
+shell is not the collision body and cannot be touched. So the world map and the
+collision model disagree about where the counter is, and the map is proud of it.
+
+**Why this matters for ADR-0101, and it cuts both ways.** The ADR's suppression
+step exempts a cell that a modeled fixture geometrically explains. If the
+fixture publishes its *collision* primitives, a cell like this one is **not**
+explained by them — the cell centre is not within a circumradius of the collision
+surface — so ADR-0101's second bound would leave this stop in place, and the
+94 % would be optimistic by however many stops look like this one. If instead
+the fixture publishes the visual geometry the map actually sees, the cell is
+explained, but the mechanism is then suppressing against a surface that is not
+the one the kernel protects.
+
+In sim the resolution is benign, because a non-collidable geom cannot be hit. On
+hardware there is no such distinction: what the sensor sees is what the robot
+hits. This is precisely the sim→real seam the ADR flags as its weakest part, now
+with a concrete instance rather than a caveat.
+
+**n = 1.** The mechanism above is read directly off one record and is not in
+doubt; how *often* a payload stop is backed by decoration alone is unmeasured,
+and a 12-round batch (`utensil` and `fridge`, seeds 2-7) is running to answer it.
+Until that lands, nothing here licenses a revision of the 94 % in either
+direction.
+
+
 ## Standing caveats
 
 Ten things a reader should carry away, all of them stated by the artifacts
