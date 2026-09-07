@@ -12,14 +12,10 @@ same three things at the boundary:
    ``torch.no_grad()`` context, then squeeze the result to a 1-D float32
    NumPy action.
 
-Before this module these three steps were copy-pasted across each eval
-adapter under ``openral_sim.{policies,backends}`` and (with thread-aware extras)
-``openral_rskill.smolvla.ChunkedExecutor``. The duplication had a real
-cost: the ``inference_span`` instrumentation only existed on the skill-side
-copy, so ``openral sim run`` runs produced no inference spans at all.
-
-This module owns those three seams; family-specific batch construction,
-camera handling, and post-processor pipelines stay where they are.
+This module owns those three seams — sharing them fixed ``openral sim run``
+producing no inference spans (``inference_span`` had only existed on the
+skill-side copy). Family-specific batch construction, camera handling, and
+post-processor pipelines stay where they are.
 """
 
 from __future__ import annotations
@@ -1335,9 +1331,8 @@ def release_torch_modules(owner: object, *attrs: str, device: str = "", torch: A
         empty_cache() alone              768.2 MiB allocated   <- unchanged
         drop the reference, then flush     0.0 MiB allocated   <- reclaimed
 
-    Every VLA adapter's ``close()`` used to do the second thing, which is
-    why an rSkill swap did not actually give the card back and a second
-    skill OOM'd on an 8 GB machine even though each fits alone.
+    Skipping this order is why an rSkill swap can fail to give the card
+    back — a second skill OOMs on an 8 GB host even though each fits alone.
 
     ``gc.collect()`` is not optional here either: a policy is typically part
     of a reference cycle (module ↔ parameters ↔ hooks), so dropping the last
@@ -1410,12 +1405,11 @@ def suppress_hf_weight_init() -> Iterator[None]:
     plus an assign-mode state-dict load — a deeper change into lerobot's
     construction path, deliberately not attempted here. **Measured ceiling on
     an RTX 4070 host: ~1.6 s** (508 M params in transformer-shaped blocks —
-    1.79 s allocated on CPU vs 0.21 s under ``accelerate.init_empty_weights``),
-    so the win is smaller than the 2.4 s this note used to imply. Against a
-    SmolVLA load that is ~10 s in-graph that is 15-20%, bought by taking
-    ownership of construction code lerobot owns and re-validating it on every
-    lerobot bump. π0.5 does take that path (``pi05.py``) because there the same
-    change is worth 157 s → 14 s on a 3.4 B model; at 500 M it is not.
+    1.79 s allocated on CPU vs 0.21 s under ``accelerate.init_empty_weights``).
+    Against a SmolVLA load that is ~10 s in-graph that is 15-20%, bought by
+    taking ownership of construction code lerobot owns and re-validating it on
+    every lerobot bump. π0.5 does take that path (``pi05.py``) because there
+    the same change is worth 157 s → 14 s on a 3.4 B model; at 500 M it is not.
 
     Safety: only sound when the checkpoint supplies **every** parameter —
     otherwise a param that would have been randomly initialised is left as

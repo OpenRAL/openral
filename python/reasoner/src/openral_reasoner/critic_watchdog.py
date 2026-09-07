@@ -1,73 +1,34 @@
 """Tier-C critic progress-stall / success watchdog for ``/openral/failure/critic`` (R3).
 
-The OpenRAL failure bus reserves ``/openral/failure/critic`` for **Tier-C**
-triggers (per the 2026-05-25 amendment failure-tier taxonomy:
-``safety→A``, ``hal/sensor/rskill/wam→B``, ``critic→C``). Until now that topic
-had no default producer, so a robot whose task progress silently *stalls* —
-the policy keeps emitting action chunks but the scene stops moving toward the
-goal — emitted no structured signal and the S2 reasoner could not react.
+The failure bus reserves ``/openral/failure/critic`` for **Tier-C** triggers
+(2026-05-25 amendment taxonomy: ``safety→A``, ``hal/sensor/rskill/wam→B``,
+``critic→C``) — the tier a stalled or completed task should signal on.
 
-This module ships the **decision core**: :class:`CriticWatchdog`, a pure,
-import-safe state machine (no ``rclpy``) that consumes a stream of per-frame
-progress/critic scores and decides *when* to wake the reasoner — either because
-progress has **stalled** or because the attempt is **likely done** (success). It
-emits the real :class:`openral_core.CriticEvidence` (it does **not** invent a
-schema) so a thin ROS node can publish it on the bus unchanged.
+Ships the **decision core**: :class:`CriticWatchdog`, a pure, import-safe
+state machine (no ``rclpy``) that consumes a stream of per-frame
+progress/critic scores and decides *when* to wake the reasoner — because
+progress has **stalled** or the attempt is **likely done** (success). Emits
+the real :class:`openral_core.CriticEvidence` (no invented schema) for a thin
+ROS node to publish unchanged. The score source is abstract: any
+higher-is-better reward model (Robometer today, a future SARM, a success
+classifier, a heuristic) drives the same watchdog via a
+``(critic_id, score, threshold)`` stream. :class:`CriticWatchdogGroup`
+multiplexes one :class:`CriticWatchdog` per ``critic_id``.
 
-The score source is intentionally **abstract**: any reward model that emits a
-higher-is-better scalar drives the same watchdog — the Robometer reward rSkill
-today, a future SARM (self-assessment reward model), a success
-classifier, or a hand-rolled heuristic. None of them is special-cased; a critic
-is just a ``(critic_id, score, threshold)`` stream. :class:`CriticWatchdogGroup`
-multiplexes one :class:`CriticWatchdog` per ``critic_id`` so several critics
-share the single ``/openral/failure/critic`` source and each fires its own
-:class:`CriticEvidence` independently.
+Stall and success semantics are deterministic and fully covered by
+``tests/test_critic_watchdog.py``; see :meth:`CriticWatchdog.observe` for the
+precise rules (success takes precedence when both would fire on one sample).
 
-Stall semantics (deterministic, fully covered by ``tests/test_critic_watchdog.py``):
-
-- The watchdog keeps a running **best** score (the highest seen since the last
-  reset or recovery) and a consecutive-**stall** counter.
-- An observation counts as **progress** iff ``score > best + min_delta`` — it
-  strictly beats the running best by more than ``min_delta``. Progress updates
-  ``best``, zeroes the stall counter, and clears the stall latch.
-- An observation with ``score >= threshold`` is a **success/recovery**: it
-  zeroes the stall counter, clears the stall latch (and updates ``best`` when
-  it is also a new best), and fires a one-shot :class:`CriticEvidence` the
-  *first* time per streak (see success semantics below).
-- Otherwise (``score < threshold`` and not progress) the observation is a
-  **stall** and increments the counter.
-- When the counter reaches ``stall_patience`` consecutive stalls **and** the
-  watchdog is not already stall-latched, :meth:`observe` returns one
-  :class:`CriticEvidence` and **latches** — subsequent stalled observations
-  return ``None`` to avoid spamming the bus. The stall latch clears on progress
-  or recovery (above threshold), or on :meth:`reset`.
-
-Success semantics (reward-watcher wakes the reasoner promptly):
-
-- When ``score >= threshold`` and the **success latch** is not set, :meth:`observe`
-  returns one :class:`CriticEvidence` and sets the success latch.
-- Subsequent samples at or above threshold return ``None`` (one-shot per streak).
-- The success latch clears whenever the score drops back below ``threshold`` (any
-  sub-threshold observation, whether progress or stall) so a new crossing fires
-  again. :meth:`reset` also clears it.
-- If a sample would trigger both a stall fire and a success fire (``score``
-  exactly equals ``threshold`` after exactly ``stall_patience`` stalls), the
-  success path takes precedence because ``is_recovery = score >= threshold`` is
-  checked first.
-
-Intended wiring: a critic producer node subscribes to the generic
-``/openral/critic/score`` topic (``openral_msgs/CriticScore`` — any reward model
-publishes its self-describing ``(critic_id, score, threshold)`` samples there),
-routes each sample through a :class:`CriticWatchdogGroup`, and on a non-``None``
-return publishes via
-``FailureBusPublisher(node, FailureSource.CRITIC).publish(kind=KIND_CRITIC,
-severity=SEVERITY_FAIL, evidence=<that CriticEvidence>)``
-(see :mod:`openral_observability.failure_bus`). The ``reasoner_node`` then maps
-the resulting ``/openral/failure/critic`` (FAIL) event onto a forced Tier-C
-tick — ``ReasonerCore.tick(..., force=True, tier="C")`` — which is already
-supported (the tick stamps ``reasoner.tier`` on its OTel span). The producer
-calls :meth:`CriticWatchdogGroup.reset` whenever the reasoner context shifts
-(new operator prompt / new task), mirroring ``ReasonerCore.reset_kind_streak``.
+Intended wiring: a critic producer node subscribes to
+``/openral/critic/score`` (``openral_msgs/CriticScore``), routes samples
+through a :class:`CriticWatchdogGroup`, and on a non-``None`` return
+publishes via ``FailureBusPublisher(node,
+FailureSource.CRITIC).publish(kind=KIND_CRITIC, severity=SEVERITY_FAIL,
+evidence=<CriticEvidence>)`` (:mod:`openral_observability.failure_bus`).
+``reasoner_node`` maps the resulting ``/openral/failure/critic`` (FAIL)
+event onto a forced Tier-C tick (``ReasonerCore.tick(..., force=True,
+tier="C")``). The producer calls :meth:`CriticWatchdogGroup.reset` on a
+reasoner context shift, mirroring ``ReasonerCore.reset_kind_streak``.
 
 Example:
     >>> from openral_reasoner import CriticWatchdog

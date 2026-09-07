@@ -1,34 +1,27 @@
 """NVIDIA Cosmos 3 Edge reasoner backend (``OPENRAL_REASONER_MODEL=cosmos3-edge``).
 
-Cosmos 3 (released 2026; Edge tier 2026-07-20) is NVIDIA's omnimodal world-model
-family built on a Mixture-of-Transformers architecture with two towers: an
-autoregressive **reasoner** (text/image/video in → text out, physical reasoning,
-task planning, 2D/3D grounding) and a diffusion **generator** (video/action out).
-OpenRAL uses only the reasoner tower, served behind an OpenAI-compatible
-chat-completions API — the exact surface :class:`OpenAICompatibleToolUseClient`
-already speaks — so the S2 tool-call contract (provider tool-use API, no
-free-form JSON, CLAUDE.md §3) is preserved while the planner itself becomes a
-*physical-AI-native VLM running on-robot* (Jetson Thor / RTX), with no cloud
-round-trip and no per-token cost.
+Cosmos 3 (2026; Edge tier 2026-07-20) is NVIDIA's omnimodal world-model
+family: a Mixture-of-Transformers with an autoregressive **reasoner** tower
+(text/image/video in, text out; physical reasoning, task planning, 2D/3D
+grounding) and a diffusion **generator** tower (video/action out). OpenRAL
+uses only the reasoner tower, served behind an OpenAI-compatible
+chat-completions API — the surface :class:`OpenAICompatibleToolUseClient`
+already speaks (CLAUDE.md §3 tool-call contract preserved) — on-device
+(Jetson Thor / RTX), no cloud round-trip, no per-token cost.
 
 Serving paths (any OpenAI-compatible endpoint works; the first is managed):
 
 * **Managed local vLLM** (default) — :class:`Cosmos3ToolUseClient` probes
-  ``OPENRAL_REASONER_ENDPOINT`` (default ``http://127.0.0.1:8901/v1``) and,
-  when the endpoint is loopback and down, auto-starts
-  ``tools/cosmos3_reasoner_sidecar.py`` (uv-provisioned isolated venv, then
-  ``vllm serve nvidia/Cosmos3-Edge`` with tool calling enabled). Same
-  lazy-spawn/teardown lifecycle as the Qwen scene-VLM sidecar.
-* **Self-managed vLLM / NIM** — point ``OPENRAL_REASONER_ENDPOINT`` at an
-  already-running ``vllm serve`` or a Cosmos 3 Reasoner NIM container and set
-  ``OPENRAL_COSMOS3_AUTOSTART=0`` (autostart also disengages automatically for
-  non-loopback URLs).
+  ``OPENRAL_REASONER_ENDPOINT`` (default ``http://127.0.0.1:8901/v1``) and
+  auto-starts ``tools/cosmos3_reasoner_sidecar.py`` when loopback and down
+  (uv venv, then ``vllm serve nvidia/Cosmos3-Edge`` with tool calling).
+* **Self-managed vLLM / NIM** — point ``OPENRAL_REASONER_ENDPOINT`` at a
+  running server and set ``OPENRAL_COSMOS3_AUTOSTART=0`` (also disengages
+  automatically for non-loopback URLs).
 
-License: the Cosmos 3 model family ships under the Linux Foundation
-**OpenMDW-1.1** license — commercial and non-commercial use permitted — so no
-noncommercial guard (``OPENRAL_ALLOW_NONCOMMERCIAL``) applies here. This is a
-*weights* license fact recorded per CLAUDE.md §1.9; OpenRAL's own code stays
-Apache-2.0.
+License: OpenMDW-1.1 (Linux Foundation) — commercial and non-commercial use
+permitted, no ``OPENRAL_ALLOW_NONCOMMERCIAL`` guard needed (CLAUDE.md §1.9;
+OpenRAL's own code stays Apache-2.0).
 """
 
 from __future__ import annotations

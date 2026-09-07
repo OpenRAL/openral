@@ -1,17 +1,14 @@
 """Typed tool-call dispatch, per-skill tool palette — :class:`ToolPalette` + builder.
 
 The palette is the *closed set* of choices the LLM sees on every
-:meth:`ToolUseClient.select_tool` call. It is built at reasoner
-lifecycle ``configure`` time from the local rSkill registry filtered
-by the active robot's :class:`~openral_core.RobotCapabilities`, and
-refreshed when ``/openral/skill_registry_changed`` fires (fired by
-``ral skill install|remove``).
-
-Tool palette built at lifecycle configure: the LLM cannot dispatch a
-skill that isn't installed, isn't capability-matched, or isn't
-licensed for the deployment. This module enforces the "installed +
-capability-matched" half; license posture is checked downstream by the
-action server (defense in depth) when the goal is accepted.
+:meth:`ToolUseClient.select_tool` call: the LLM cannot dispatch a skill
+that isn't installed, isn't capability-matched, or isn't licensed for
+the deployment. Built at reasoner lifecycle ``configure`` time from the
+local rSkill registry filtered by the active robot's
+:class:`~openral_core.RobotCapabilities`, and refreshed when
+``/openral/skill_registry_changed`` fires (``ral skill install|remove``).
+This module enforces the "installed + capability-matched" half; license
+posture is checked downstream by the action server (defense in depth).
 
 The palette carries per-skill metadata (:class:`RSkillToolEntry`) so
 the LLM tool schema can present each skill as its own tool with a real

@@ -713,8 +713,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         ``OPENRAL_ALLOW_NONCOMMERCIAL`` environment variable is set to ``"1"``.
         The block is driven by :attr:`RSkillManifest.is_commercial_use_allowed`
         so a new restricted posture is gated by construction rather than needing
-        a hand-maintained branch here (the previous version only caught
-        NVIDIA_NON_COMMERCIAL and silently let RLWRLD / research weights through).
+        a hand-maintained branch here.
 
         PROPRIETARY and UNKNOWN licenses are surfaced as structured warnings
         rather than hard-blocked: they need out-of-band vendor review or an

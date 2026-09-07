@@ -200,14 +200,11 @@ def parse_yes_no(answer: str) -> bool:
     (``"yes"``, ``"complete"``/``"completed"``, ``"done"``,
     ``"success"``/``"succeeded"``/``"successfully"``, or ``"finished"``)
     without an obvious negation (``"no"`` / ``"not"`` / ``"cannot"`` /
-    ``"isn't"`` / …).  Returns ``False`` on any ambiguous or empty input —
-    the default is *not complete* (never a false positive).
-
-    Matching is **token-based over punctuation-normalised text**: substring
-    matching produced false completions on exactly the answers that matter
-    (``"No. It is done."`` — the ``"No."`` never matched the space-delimited
-    negation; ``"The task was abandoned"`` — ``"abandoned"`` contains
-    ``"done"``).
+    ``"isn't"`` / …). ``False`` on ambiguous or empty input (never a false
+    positive). Matching is token-based over punctuation-normalised text —
+    substring matching false-completed on ``"No. It is done."`` (the
+    ``"No."`` never matched the space-delimited negation) and
+    ``"The task was abandoned"`` (``"abandoned"`` contains ``"done"``).
 
     Args:
         answer: Raw text returned by the VLM.

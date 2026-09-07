@@ -544,15 +544,13 @@ class ContextRenderer:
     ) -> None:
         """Record (or clear) the ``execute_rskill`` goal currently in flight.
 
-        Called by the node at dispatch (``state="dispatching"`` — the goal is
-        sent but not yet accepted; policy weights may be cold-loading), on
-        goal accept (``state="running"``), and on the terminal result
-        (``None``). Surfacing the *phase* matters: during a long cold load the
-        LLM used to read an unchanged snapshot and escalate "task is blocked"
-        to the operator while the goal was in fact accepted and loading
-        (observed live, 2026-07-20). Every transition is an **event** — the
-        LLM's next decision changes materially — so a state change bumps
-        :attr:`seq`. Re-asserting the same state is a no-op.
+        Called by the node at dispatch (``state="dispatching"`` — sent but
+        not yet accepted; weights may be cold-loading), on goal accept
+        (``state="running"``), and on the terminal result (``None``).
+        Surfacing the phase matters: a cold load can otherwise read as a
+        stalled task and spuriously escalate to the operator (observed
+        live, 2026-07-20). Every transition bumps :attr:`seq`; re-asserting
+        the same state is a no-op.
         """
         new = None if rskill_id is None else (rskill_id, stamp_ns, state)
         if new != self._inflight:
@@ -575,16 +573,14 @@ class ContextRenderer:
     def note_located(self, objects: ObjectsMetadata | None) -> None:
         """Persist open-vocab ``locate_in_view`` hits into the sticky ``located`` line.
 
-        The complement to :meth:`set_in_view`: that holds the *continuous*
-        detector's latest (fixed-vocabulary) frame, which is overwritten every
-        tick. When the reasoner confirms a goal noun with the open-vocab
-        ``locate_in_view`` detector (e.g. ``basket``, ``ketchup`` — labels the
-        fixed indoor vocabulary mislabels as ``tray`` / ``bottle``), the hit is
-        kept here keyed by lowercased label (latest bbox wins, capped at
-        :attr:`_LOCATED_CAP`) so it survives the next continuous clobber and the
-        LLM can ground / decompose instead of re-locating it. A confirmed
-        detection is an **event**, so this bumps :attr:`seq`. ``None`` / empty is
-        a no-op.
+        Complements :meth:`set_in_view` (the continuous detector's
+        fixed-vocab frame, overwritten every tick): when the reasoner
+        confirms a goal noun via the open-vocab ``locate_in_view`` detector
+        (e.g. ``basket``, ``ketchup`` — labels the fixed indoor vocabulary
+        mislabels as ``tray``/``bottle``), the hit is kept here keyed by
+        lowercased label (latest bbox wins, capped at :attr:`_LOCATED_CAP`)
+        so it survives the next clobber. A confirmed detection is an
+        event, so this bumps :attr:`seq`. ``None``/empty is a no-op.
 
         Example:
             >>> from openral_core import ObjectDetection2D, ObjectsMetadata
@@ -715,13 +711,10 @@ class ContextRenderer:
     def clear_failures(self) -> None:
         """Drop accumulated failure + skill-execution records.
 
-        Called when the operator clears a safety e-stop. The e-stop aborts the
-        in-flight skill, which is recorded as a failure (``safety_estop``) and a
-        failed execution. Once the operator has reset the safety state those
-        records are stale — leaving them in context makes the LLM keep refusing
-        to retry ("the e-stop aborted the motion, I cannot proceed / please clear
-        the e-stop") instead of re-dispatching the skill. A reset is a deliberate
-        fresh start, so wipe the failure log for a clean retry. Bumps
+        Called when the operator clears a safety e-stop: the e-stop aborts
+        the in-flight skill (recorded as a ``safety_estop`` failure + failed
+        execution), and once safety state is reset those records are stale
+        — left in context they make the LLM keep refusing to retry. Bumps
         :attr:`seq` so an otherwise-idle heartbeat re-evaluates.
         """
         if self._failures or self._executions:
@@ -1061,22 +1054,17 @@ def _extract_priority(metadata_json: str) -> int:
     return DEFAULT_PROMPT_PRIORITY
 
 
-#: Evidence fields that never belong in the one-line prompt summary, whatever
-#: they happen to render to.
+#: Evidence fields that never belong in the one-line prompt summary.
 #:
-#: The summary sorts its keys and truncates at 120 characters, and the
-#: identity fields need almost all of that: the reactive collision line renders
-#: at 121 characters carrying nothing but
-#: ``collision_kind`` / ``horizon_step`` / ``link_a`` / ``link_b_or_object`` /
-#: ``min_distance_m``. So *any* extra field of any size, sorting before
-#: ``link_a``, evicts the fields the reasoner actually needs.
+#: The summary sorts keys and truncates at 120 chars; the reactive collision
+#: line alone renders 121 chars for just ``collision_kind``/``horizon_step``/
+#: ``link_a``/``link_b_or_object``/``min_distance_m``, so any extra field
+#: sorting before ``link_a`` evicts what the reasoner needs.
 #:
-#: ``joint_positions_rad`` is the case in hand. It exists so a stop can be
-#: replayed offline (issue #187) and it is useless to a planner deciding retry
-#: vs. substitute-skill vs. goal-replan. Excluding it **by role** is the fix;
-#: an earlier attempt to exclude it by *rendered length* was a proxy for the
-#: wrong property and did not hold — a 2-dof vector renders 41 characters and
-#: sailed under any workable threshold while still evicting `link_a`.
+#: ``joint_positions_rad`` exists so a stop can be replayed offline (issue
+#: #187) but is useless to the planner; excluded **by role**, not by
+#: rendered length (a 2-dof vector renders only 41 chars and still evicted
+#: ``link_a``).
 _PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad"})
 
 #: Backstop for a future bulk field nobody remembered to name above: a list

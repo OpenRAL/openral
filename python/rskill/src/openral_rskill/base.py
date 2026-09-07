@@ -35,12 +35,8 @@ Hot path
 server at the skill's control frequency.  Override :meth:`_step_impl` in
 subclasses; do not override :meth:`step` directly.
 
-Concrete subclasses implement five hooks (`_configure_impl`,
-`_activate_impl`, `_deactivate_impl`, `_shutdown_impl`, `_step_impl`)
-and may override the optional `on_load_weights` / `on_quantize` /
-`on_warmup` hooks. See `openral_rskill.gpu_passthrough` for a
-minimal real example and `openral_rskill.smolvla.SmolVLAAdapter`
-for a production VLA wiring.
+See `openral_rskill.gpu_passthrough` for a minimal real example and
+`openral_rskill.smolvla.SmolVLAAdapter` for a production VLA wiring.
 """
 
 from __future__ import annotations

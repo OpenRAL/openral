@@ -1,20 +1,18 @@
 """The self-maintained ``MEMORY.md`` file model.
 
-A persistent, human-readable **semantic** memory for the S2 reasoner —
+A persistent, human-readable **semantic** memory for the S2 reasoner,
 complementary to the *geometric* scene graph. Holds preferences,
-corrections/lessons, durable home facts, an object-location log, and open
-tasks. The reasoner reads it as the ``## MEMORY`` context block and edits it
-through the :class:`~openral_core.MemoryWriteTool` op (never a free-form
-rewrite). Advisory only — a wrong memory yields a bad plan the C++ safety
-kernel still vetoes (CLAUDE.md §1.1).
+corrections/lessons, durable home facts, an object-location log, and
+open tasks. The reasoner reads it as the ``## MEMORY`` context block and
+edits it through the :class:`~openral_core.MemoryWriteTool` op (never a
+free-form rewrite). Advisory only — a wrong memory yields a bad plan the
+C++ safety kernel still vetoes (CLAUDE.md §1.1).
 
-The file is the source of truth (human-editable). Each entry is one line in a
-fixed, round-trip-stable format::
+The file is the source of truth. Each entry is one line in a fixed,
+round-trip-stable format::
 
     ## User Preferences
     - [imp:0.90 ts:2026-06-24 st:current] Clothes go in the bedroom drawer.
-
-so a human edit that keeps the format is parsed, and re-rendering is stable.
 """
 
 from __future__ import annotations

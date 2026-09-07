@@ -5,25 +5,22 @@ Every reasoner tick the LLM picks exactly one of the four
 ReloadGstPipeline, LifecycleTransition, EmitPrompt) and the reasoner
 node routes it onto the ROS graph.
 
-This module ships:
+Ships:
 
 - :class:`ToolUseClient` — structural Protocol every provider satisfies.
-- :class:`AnthropicToolUseClient` — wraps the Anthropic Python SDK's
-  tool-use API. Lazy-imported; selected by a curated model with
-  ``dialect="anthropic"``.
-- :class:`OpenAICompatibleToolUseClient` — wraps the OpenAI Python SDK
-  pointed at any OpenAI-compatible endpoint (cloud OpenAI, local vLLM,
-  Ollama-OpenAI, etc.). Lazy-imported; selected by a curated model with
-  ``dialect="openai"`` or the explicit uncurated escape hatch.
-- :class:`build_tool_use_client_from_env` — factory that reads the
-  model-first deployment env and resolves :data:`openral_core.REASONER_MODELS`.
-  No cloud lock-in: the open-core path defaults to "no model configured";
-  endpoint location is independently overrideable.
+- :class:`AnthropicToolUseClient` — wraps the Anthropic SDK's tool-use
+  API (curated model, ``dialect="anthropic"``); lazy-imported.
+- :class:`OpenAICompatibleToolUseClient` — wraps the OpenAI SDK against
+  any OpenAI-compatible endpoint (cloud OpenAI, local vLLM,
+  Ollama-OpenAI, …); curated ``dialect="openai"`` or the uncurated
+  escape hatch; lazy-imported.
+- :class:`build_tool_use_client_from_env` — factory over the
+  model-first deployment env and :data:`openral_core.REASONER_MODELS`;
+  defaults to "no model configured", endpoint independently overrideable.
 
-Per CLAUDE.md §1.11 a deterministic :class:`FakeToolUseClient` lives
-under :mod:`tests.integration.fakes.fake_llm` — it is the only test
-double we allow at this process boundary, named explicitly, and used
-exclusively in tests.
+Per CLAUDE.md §1.11, :class:`FakeToolUseClient`
+(:mod:`tests.integration.fakes.fake_llm`) is the only test double
+allowed at this process boundary.
 """
 
 from __future__ import annotations
@@ -605,16 +602,13 @@ def _prompt_tokens(response: object) -> int | None:
 def _openai_choices(response: object) -> list[Any]:
     """``response.choices``, or a legible error when the provider sent none.
 
-    An OpenAI-compatible *gateway* that fails upstream — OpenRouter when the
-    backing provider rate-limits, 5xxs, or times out — still answers HTTP 200
-    with ``choices: null`` and the real reason under a non-standard ``error``
-    key. The SDK models that as ``choices=None``, so ``list(response.choices)``
-    raised ``TypeError: 'NoneType' object is not iterable``, the provider-SDK
-    boundary re-wrapped *that* as the tick error, and the operator saw
-    ``OpenAI-compatible call failed: 'NoneType' object is not iterable``
-    instead of "rate-limited upstream" (observed live on a free OpenRouter
-    model, 2026-08-04). The failure is transient and provider-side; the
-    message has to say so.
+    An OpenAI-compatible *gateway* (e.g. OpenRouter) that fails upstream —
+    rate-limited, 5xx, timeout — still answers HTTP 200 with ``choices:
+    null`` and the real reason under a non-standard ``error`` key; the SDK
+    models that as ``choices=None``, so a bare ``list(response.choices)``
+    raises ``TypeError: 'NoneType' object is not iterable`` instead of
+    surfacing "rate-limited upstream" (observed live on a free OpenRouter
+    model, 2026-08-04).
     """
     choices = getattr(response, "choices", None)
     if choices is not None:
@@ -743,21 +737,19 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
     """Build the client for a registry model from its resolved properties."""
     api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
     raw_endpoint = os.environ.get(REASONER_ENDPOINT_ENV, "").strip() or None
-    # A named endpoint resolves the same way here as on the uncurated path;
-    # otherwise `ENDPOINT=ollama` would be handed to the SDK as a literal URL.
-    #
-    # It contributes its ENDPOINT properties — url, tool_choice, cold-start
-    # timeout, auth posture — while the registry keeps the MODEL properties:
-    # served id, dialect, token cap. That split is what "the endpoint is the
-    # orthogonal axis" means. Taking only `preset.url` (as this did at first)
-    # silently dropped the other four, so `gpt-5.5` on the HF router was built
-    # with `tool_choice="required"` — the exact 400 the preset exists to avoid —
-    # and a cold `ollama` got the 10 s cloud timeout instead of 60 s.
+    # A named endpoint resolves the same way as on the uncurated path
+    # (otherwise `ENDPOINT=ollama` would be handed to the SDK as a literal
+    # URL). It contributes its ENDPOINT properties — url, tool_choice,
+    # cold-start timeout, auth posture — while the registry keeps the MODEL
+    # properties: served id, dialect, token cap ("the endpoint is the
+    # orthogonal axis"). Using only `preset.url` drops the other four: e.g.
+    # `gpt-5.5` on the HF router built with `tool_choice="required"` (a 400)
+    # and a cold `ollama` on the 10 s cloud timeout instead of 60 s.
     preset = _ENDPOINT_PRESETS.get(raw_endpoint.lower()) if raw_endpoint else None
     if preset is not None and preset.dialect != entry.dialect:
-        # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai). Previously this
-        # built an Anthropic client pointed at an OpenAI-only server: it
-        # configured cleanly and then failed on every single tick.
+        # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai): building an
+        # Anthropic client against an OpenAI-only server configures cleanly
+        # and then fails on every single tick.
         raise ROSConfigError(
             f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r} speaks the "
             f"{preset.dialect!r} dialect but model {entry.id!r} speaks "

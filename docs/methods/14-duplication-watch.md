@@ -568,6 +568,12 @@ contributor should look at before adding similar code.
   ranges — do not write a JOINT_POSITION + custom-IK stack like
   the early `so100_robosuite` drafts did.
 
+16. **`NDArrayOrNone = Any` alias — *resolved.*** Was defined identically in
+    both `python/rskill/src/openral_rskill/pose_goal_rskill.py` and
+    `look_at_rskill.py`; the latter now imports it from
+    `pose_goal_rskill` (which it already imports `build_pose_constraints`
+    from) instead of redefining it.
+
 ### Watch list (not yet a problem, but worth tracking)
 
 - **Pinhole back-projection of a `32FC1` depth raster** now exists twice:

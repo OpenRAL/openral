@@ -1,49 +1,11 @@
 """SmolVLA adapter — Skill implementation for the SmolVLA family of VLAs.
 
-This module provides two public classes:
-
-- :class:`ChunkedExecutor` — a background-thread pre-fetcher that overlaps GPU
-  inference for chunk N+1 with the robot executing chunk N.  This is the
-  "async chunked executor" pattern described in the SmolVLA paper and required
-  by the Day-17 spec.
-
-- :class:`SmolVLAAdapter` — a full :class:`~openral_rskill.base.Skill`
-  implementation that loads any ``SmolVLAPolicy``-compatible checkpoint from
-  the HuggingFace Hub and drives the :class:`ChunkedExecutor` from within the
-  standard Skill lifecycle.
-
-Architecture
-------------
-::
-
-    WorldState ──obs_fn──► raw_batch ──preprocessor──► batch
-                                                          │
-                                    ┌─────────────────────▼──────────────────────┐
-                                    │            ChunkedExecutor                  │
-                                    │                                             │
-                                    │  ┌──────────────────────────────────────┐  │
-                                    │  │  Background thread (daemon)          │  │
-                                    │  │  • _policy.predict_action_chunk(...) │  │
-                                    │  │  • result → _next_chunk (threading.  │  │
-                                    │  │             Event + storage)         │  │
-                                    │  └──────────────────────────────────────┘  │
-                                    │                                             │
-                                    │  Foreground (step N):                       │
-                                    │  • pop from _policy internal queue         │
-                                    │  • if queue nearly empty → trigger BG      │
-                                    └─────────────────────────────────────────────┘
-                                                          │
-                                              Action (joint_targets, 1 step)
-
-Timing contract (RTX 4070 reference host)
------------------------------------------
-- Full chunk inference: ~313 ms.
-- Queue pop: ~3 ms.
-- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 20),
-  giving ~667 ms at 30 Hz to cover the measured 313-600 ms inference.
-- Result: the background thread always finishes before the queue drains,
-  keeping per-step latency in the cached-pop regime for all but the very
-  first inference of a session.
+:class:`SmolVLAAdapter` is a full :class:`~openral_rskill.base.Skill`
+implementation that loads any ``SmolVLAPolicy``-compatible checkpoint from
+the HuggingFace Hub and drives a
+:class:`~openral_rskill.executor.ChunkedExecutor` (background-thread chunk
+pre-fetcher — see that module's docstring for the architecture and timing
+contract) from within the standard Skill lifecycle.
 
 Observation convention (SO-100 default)
 -----------------------------------------

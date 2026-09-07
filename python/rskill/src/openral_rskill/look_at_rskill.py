@@ -36,14 +36,12 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_world_state.geometry import compute_gaze_pose
 from openral_world_state.object_lift import homogeneous_from_quat_xyz
 
-from openral_rskill.pose_goal_rskill import build_pose_constraints
+from openral_rskill.pose_goal_rskill import NDArrayOrNone, build_pose_constraints
 from openral_rskill.ros_action_rskill import ROSActionRskill
 
 __all__ = ["LookAtRskill", "build_look_at_constraints", "resolve_camera_sensor"]
 
 log = structlog.get_logger(__name__)
-
-NDArrayOrNone = Any  # reason: numpy NDArray | None alias keeps signatures readable
 
 _DEFAULT_CAMERA = "wrist"
 _DEFAULT_POSITION_TOLERANCE_M = 0.02

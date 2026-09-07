@@ -1,13 +1,9 @@
 """Durable reasoner ladder state — crash-safe mission + bound resume.
 
-The mission ledger and every replanning-ladder bound (per-task attempts,
-subdivision offers, collective-decompose nudges, the per-task locate budget)
-used to live only in process memory: a reasoner-node crash or lifecycle
-restart mid-mission silently reset every cap and re-ran work the robot had
-already done — the opposite of the bounded-ladder contract (CLAUDE.md §3) and
-of replayability (§1.8). This module is the LangGraph-style fix: a single
-JSON snapshot written after every ledger mutation and reloaded at configure,
-so a restarted reasoner *resumes* the ladder exactly where it stopped.
+Persists the mission ledger and every replanning-ladder bound (per-task
+attempts, subdivision offers, collective-decompose nudges, the per-task
+locate budget) so a restarted reasoner resumes exactly where it stopped,
+per the bounded-ladder contract (CLAUDE.md §3) and replayability (§1.8).
 
 Pure (no rclpy): the node owns *when* to save/load; this module owns the
 format. Writes are atomic (tmp file + ``os.replace``) so a crash mid-write

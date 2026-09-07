@@ -52,23 +52,19 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
 
 
-# Read-only search tools are TRANSPARENT to the retry cap — neither counted
-# nor streak-resetting. Each search loop already has its own dedicated,
-# operator-facing bound (SearchProgress's miss budget and the per-task
-# TaskLocateBudget, both terminating in an explicit human-handoff); letting
-# the identity cap fire first would stop the loop in a silent retry_cap_hold
-# BEFORE the search budget can hand off (caught live by
-# test_active_search_cascade_is_bounded_and_hands_off). Transparency (rather
-# than resetting) also keeps an alternating <same-call> / <search> loop
-# accumulating toward the cap.
+# Read-only search tools (recall_object/resolve_place/locate_in_view) are
+# TRANSPARENT to the retry cap — each has its own bound (SearchProgress's
+# miss budget, the per-task TaskLocateBudget) terminating in an explicit
+# human-handoff; the identity cap firing first would silently
+# retry_cap_hold before that handoff (see
+# test_active_search_cascade_is_bounded_and_hands_off). Transparency (not
+# reset) also lets an alternating <same-call>/<search> loop still accumulate.
 #
-# "wait" is exempt for a different reason: the system prompt and the in_flight
-# context line INSTRUCT the model to keep picking wait during a nominal long
-# skill execution, and _call_identity strips rationale so every wait is
-# byte-identical — counting it would trip the cap after retry_cap heartbeats
-# of exactly the prescribed behavior and inject a fabricated "retry ladder
-# exhausted" failure into context mid-run. Waiting is already bounded by the
-# skill's own deadline/patience machinery, not the identity cap.
+# "wait" is exempt separately: the system prompt instructs the model to keep
+# picking wait during a long skill execution, and identity is
+# rationale-stripped so every wait is byte-identical — counting it would
+# fabricate a "retry ladder exhausted" failure mid-run. Waiting is already
+# bounded by the skill's own deadline/patience machinery.
 _RETRY_CAP_EXEMPT_TOOLS: frozenset[str] = frozenset(
     {"recall_object", "resolve_place", "locate_in_view", "wait"}
 )
@@ -250,13 +246,10 @@ class ReasonerCore:
     def reset_kind_streak(self) -> None:
         """Reset the consecutive-call counter used by the retry-cap gate.
 
-        Called by the reasoner_node whenever the situation changes
-        materially (new operator prompt, mission advance, decompose, etc.).
-        The retry-cap exists to prevent the model from looping on the same
-        failure mode against a static context; once the context shifts
-        (e.g. an operator types a new task), the previous streak
-        carries no information and would otherwise silently swallow
-        the next tool call. Also releases the pre-call ``retry_cap_hold``.
+        Called whenever the situation changes materially (new operator
+        prompt, mission advance, decompose, etc.) so a stale streak cannot
+        silently swallow the next tool call. Also releases the pre-call
+        ``retry_cap_hold``.
         """
         self._call_streak = ("", "", 0)
         self._retry_cap_hold_seq = None
@@ -391,18 +384,14 @@ class ReasonerCore:
                 elapsed_s=0.0,
                 suppressed_reason="mission_finished",
             )
-        # heartbeat-idle gate — gate
-        # BEFORE the OTel span for the same reason. A non-forced tick
-        # whose ContextRenderer has not received any new failure /
-        # perception / prompt event since the last tick is suppressed:
-        # the LLM would see byte-identical context and the call is
-        # wasted. Forced ticks (event preemption) bypass this gate by
-        # the ``force`` flag itself. Exception: while a skill is IN
-        # FLIGHT the heartbeat stays live even on an unchanged seq —
-        # the tick is the reasoner's only opportunity to poll
-        # ``query_task_progress`` mid-execution (the system prompt
-        # instructs exactly that), and "nothing new arrived" is not
-        # the same as "nothing to supervise".
+        # heartbeat-idle gate — gate BEFORE the OTel span for the same
+        # reason: a non-forced tick whose ContextRenderer hasn't received
+        # any new failure/perception/prompt event since the last tick would
+        # see byte-identical context, so it's suppressed (forced ticks
+        # bypass via the ``force`` flag). Exception: while a skill is IN
+        # FLIGHT the heartbeat stays live even on an unchanged seq — the
+        # tick is the reasoner's only chance to poll ``query_task_progress``
+        # mid-execution (the system prompt instructs exactly that).
         if not force and renderer.seq == self._last_seen_seq and renderer.inflight_skill is None:
             self._last_tick_s = started
             return ReasonerTickResult(
@@ -429,18 +418,14 @@ class ReasonerCore:
         # short-circuits below so suppressed (retry_cap / error) ticks still
         # carry current mission state. The mission is unchanged within a tick.
         _stamp_mission(span, renderer)
-        # palette-empty short-circuit — the LLM call would just
-        # timeout / pick a phantom rskill_id; surface the
-        # configuration error explicitly.
-        #
-        # Bypassed when ``force=True``: an event-preempted tick
-        # (SEVERITY_FAIL FailureTrigger or a new operator prompt)
-        # demands the LLM's attention even when no skills are
-        # installed — at minimum the LLM can pick :class:`EmitPromptTool`
-        # to escalate to the operator. The contract of ``force=True``
-        # is "an event demands attention, bypass the gating
-        # heuristics" — gating it here would silently swallow
-        # SEVERITY_FAIL preemptions on a bare reasoner.
+        # palette-empty short-circuit — the LLM call would just timeout /
+        # pick a phantom rskill_id; surface the configuration error
+        # explicitly. Bypassed when ``force=True``: an event-preempted tick
+        # (SEVERITY_FAIL FailureTrigger or a new operator prompt) demands
+        # the LLM's attention even with no skills installed — at minimum it
+        # can pick :class:`EmitPromptTool` to escalate to the operator;
+        # gating here would silently swallow SEVERITY_FAIL preemptions on a
+        # bare reasoner.
         if (
             not force
             and not palette.execute_rskill_ids

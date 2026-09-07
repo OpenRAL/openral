@@ -1,6 +1,6 @@
 """WorldModel Protocol — the seam every WAM adapter implements.
 
-CLAUDE.md §6.3 calls out three integration patterns for WAMs:
+CLAUDE.md §6.3: three integration patterns for WAMs:
 
 1. **Mental simulation (gating)** — sample N short rollouts before
    committing an action chunk.
@@ -9,11 +9,9 @@ CLAUDE.md §6.3 calls out three integration patterns for WAMs:
 3. **Replanning loop** — propose alternative subgoals as visual
    prompts.
 
-All three consume the same surface — a function from
-``(WorldState, ActionChunk, horizon) -> Rollout`` — so the Protocol
-below is sufficient for v0.2's "scaffold-only" deliverable. Concrete
-adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim) layer on top in v0.3+
-and add their own configuration without breaking this seam.
+All three consume one surface: ``(WorldState, ActionChunk, horizon) ->
+Rollout``. Concrete adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim)
+layer on top in v0.3+ without breaking this seam.
 """
 
 from __future__ import annotations
