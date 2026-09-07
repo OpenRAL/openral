@@ -50,10 +50,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import validation_matrix as vm  # reason: sys.path set above
+# `validation_matrix` is a sibling script in tools/, imported by path via the
+# sys.path insert above rather than as an installed package, so mypy has no stub.
+import validation_matrix as vm  # type: ignore[import-not-found]  # reason: see above
 
 #: Deadline per scene run. The harness's own default; kept identical so a
 #: gate-off run is not given more time to succeed than a gate-on one.
@@ -86,14 +89,22 @@ def _success_from_log(deploy_log: Path) -> tuple[bool | None, str]:
     return ever, json.dumps(payload, sort_keys=True)
 
 
-def run_one(spec: object, gate: str, seed: int, run_dir: Path, rskill: str) -> dict[str, object]:
+def run_one(
+    # `validation_matrix.SceneSpec`, from an untyped sibling script imported by
+    # path, so its real type is unavailable to mypy.
+    spec: Any,
+    gate: str,
+    seed: int,
+    run_dir: Path,
+    rskill: str,
+) -> dict[str, object]:
     """Launch one scene end to end and return its record."""
     run_dir.mkdir(parents=True, exist_ok=True)
     stem = "run"
     deploy_log = run_dir / f"{stem}_deploy.log"
     goal_log = run_dir / f"{stem}_goal.log"
 
-    config_path, config_file = vm.materialise_scene(spec, seed, run_dir)  # type: ignore[arg-type]  # reason: SceneSpec
+    config_path, config_file = vm.materialise_scene(spec, seed, run_dir)
     launcher = vm.resolve_launcher()
     gate_flag = (
         "--enable-octomap-kernel-check" if gate == "on" else "--no-enable-octomap-kernel-check"
@@ -154,7 +165,7 @@ def run_one(spec: object, gate: str, seed: int, run_dir: Path, rskill: str) -> d
                             "--rskill-id",
                             rskill,
                             "--prompt",
-                            spec.prompt,  # type: ignore[attr-defined]  # reason: SceneSpec
+                            spec.prompt,
                         ],
                         cwd=vm.REPO_ROOT,
                         env=env,
