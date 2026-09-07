@@ -404,6 +404,13 @@ class LaunchInvocation:
     capsule-vs-voxel check). Set by ``openral deploy sim --enable-octomap``;
     forwarded as ``enable_octomap:=true``. Defaults to "auto" = the robot
     manifest declares a depth SensorSpec (nothing to map otherwise)."""
+    octomap_cloud_topic: str | None
+    """The PointCloud2 ``octomap_server`` maps, from
+    ``DeployRuntime.octomap_cloud_topic``. Forwarded as
+    ``octomap_cloud_topic:=<topic>`` only when the scene pins it; ``None``
+    leaves the launch default (``/openral/cameras/front_depth/points``, the
+    sim sensor bridge's back-projected depth), which no node publishes under
+    ``hal_mode:=real``."""
     clock_origin: str
     """ClockAuthority origin forwarded as ``clock_origin:=…``. Derived from
     the deployment: simulator-owned elapsed time for sim backends that expose
@@ -1093,6 +1100,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     slam_stereo_cameras: tuple[str, str] | None = None
     slam_mono_camera: str | None = None
     slam_depth_sidecar_autostart: bool = True
+    # Scene-only for the same reason: which topic carries the depth cloud is a
+    # property of the workcell's driver, not of this invocation.
+    octomap_cloud_topic: str | None = None
 
     # DeployScene.runtime — the committed deploy posture. Field-by-field
     # precedence: explicit CLI flag > scene runtime > auto/built-in default
@@ -1147,6 +1157,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if slam_mono_camera is None:
             slam_mono_camera = rt.slam_mono_camera
         slam_depth_sidecar_autostart = rt.slam_depth_sidecar_autostart
+        if octomap_cloud_topic is None:
+            octomap_cloud_topic = rt.octomap_cloud_topic
     # Built-in defaults for the tri-state flags nothing pinned.
     if enable_reasoner is None:
         enable_reasoner = True
@@ -1526,6 +1538,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"slam_mono_camera:={slam_mono_camera}")
         if not slam_depth_sidecar_autostart:
             argv_template.append("slam_depth_sidecar_autostart:=false")
+    # only forward the cloud topic when the scene pins it; the launch file
+    # carries the sim default and ros2 launch rejects an empty ``name:=``.
+    if octomap_cloud_topic:
+        argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
 
     # only forward the dataset args when recording is opted in
     # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
@@ -1587,6 +1603,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         slam_depth_sidecar_autostart=slam_depth_sidecar_autostart,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
+        octomap_cloud_topic=octomap_cloud_topic,
         clock_origin=clock_origin,
         enable_object_detector=enable_object_detector,
         object_detector_onnx=resolved_object_detector_onnx,

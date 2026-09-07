@@ -2475,3 +2475,57 @@ def test_bh_head_cam_wired_into_the_shared_preflight(monkeypatch: pytest.MonkeyP
         robot_yaml=_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml",
     )
     assert os.environ.get(_HEAD_CAM_ENV) == "1"
+
+
+def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
+    """The real OpenArm restock scene with its ``runtime`` octomap block edited.
+
+    Anchors on the indented runtime keys, which appear once each; the same
+    words also occur in the scene's comment header and must stay untouched.
+    """
+    text = (_REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml").read_text(
+        encoding="utf-8"
+    )
+    text = text.replace("\n  enable_octomap: false\n", f"\n  enable_octomap: true\n{extra}")
+    scene = tmp_path / "openarm_octomap.yaml"
+    scene.write_text(text, encoding="utf-8")
+    return scene
+
+
+def test_scene_pinned_octomap_cloud_topic_is_forwarded(tmp_path: Path) -> None:
+    """A workcell can point octomap_server at the topic its depth driver publishes.
+
+    The launch default is ``/openral/cameras/front_depth/points``, back-projected
+    by the **sim** sensor bridge — nothing publishes it under ``hal_mode:=real``.
+    So without this field a real deploy runs octomap_server against silence and
+    the map, ``/openral/world_voxels`` and the dashboard pointcloud card all stay
+    empty while every node reports healthy. The ZED topic below is
+    ``mTopicRoot + "point_cloud/cloud_registered"`` from zed_camera_component.
+    """
+    topic = "/zed/zed_node/point_cloud/cloud_registered"
+    scene = _openarm_scene_with_octomap(tmp_path, f"  octomap_cloud_topic: {topic}\n")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.enable_octomap is True
+    assert invocation.octomap_cloud_topic == topic
+    assert f"octomap_cloud_topic:={topic}" in " ".join(invocation.argv_template)
+
+
+def test_an_unpinned_octomap_cloud_topic_leaves_the_launch_default(tmp_path: Path) -> None:
+    """Unset must forward nothing — ``ros2 launch`` rejects an empty ``name:=``."""
+    scene = _openarm_scene_with_octomap(tmp_path, "")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.enable_octomap is True
+    assert invocation.octomap_cloud_topic is None
+    assert "octomap_cloud_topic:=" not in " ".join(invocation.argv_template)

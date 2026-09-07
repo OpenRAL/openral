@@ -11432,6 +11432,18 @@
               "default": null,
               "title": "Enable Octomap Kernel Check"
             },
+            "octomap_cloud_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Octomap Cloud Topic"
+            },
             "enable_object_detector": {
               "anyOf": [
                 {
@@ -13043,6 +13055,18 @@
               ],
               "default": null,
               "title": "Enable Octomap Kernel Check"
+            },
+            "octomap_cloud_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Octomap Cloud Topic"
             },
             "enable_object_detector": {
               "anyOf": [
@@ -14794,6 +14818,18 @@
               ],
               "default": null,
               "title": "Enable Octomap Kernel Check"
+            },
+            "octomap_cloud_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Octomap Cloud Topic"
             },
             "enable_object_detector": {
               "anyOf": [

@@ -115,7 +115,10 @@ sensors:
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/depth/depth_registered
+        # Verified against a running zed_wrapper (ZED-M, SDK 5.4.1): the
+        # default topic root is /<camera_name>/<node_name>/, so the node
+        # name is part of the path. It is NOT /zed/depth/....
+        topic: /zed/zed_node/depth/depth_registered
         # best_effort (the default) also matches a RELIABLE publisher; a
         # `reliable` subscriber gets NOTHING from a best-effort one.
         reliability: best_effort
@@ -142,6 +145,46 @@ any rectified stream published by a calibration node.
 > `fx/fy/cx/cy` are inert for it. They stop being inert the moment depth is
 > projected into a point cloud for octomap / nvblox / collision. Run
 > `openral calibrate camera` first.
+### Building a world map from a real depth camera (`octomap_cloud_topic`)
+
+Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
+subscribes to whatever `octomap_cloud_topic` names, and that argument defaults to
+`/openral/cameras/front_depth/points` — a topic published by the **sim** sensor
+bridge, which back-projects the digital twin's depth raster. Nothing publishes it
+under `hal_mode:=real`.
+
+Leave it unset on hardware and the failure is silent in the worst way: every node
+comes up healthy, and the octree, `/openral/world_voxels` and the dashboard's
+POINTCLOUD card all just stay empty.
+
+Point it at the cloud your depth driver already publishes:
+
+```yaml
+runtime:
+  enable_octomap: true
+  # zed_wrapper's own registered cloud. RealSense: /camera/depth/color/points.
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+```
+
+That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
+and Orbbec drivers) already stereo-match and project on the GPU, so composing a
+depth-to-cloud converter would redo work the driver has done.
+
+Enabling this leg also attaches the `WorldCloudBridge`, which is what feeds the
+dashboard's `world.pointcloud` span — the card is gated on
+`enable_octomap or slam_mono_camera`, so it stays dark until one of them is on.
+
+Two things worth knowing before flipping it on a robot that moves:
+
+- `octomap_server` needs the cloud's `frame_id` resolvable against `odom` through
+  TF. A driver publishing in its own optical frame needs that frame connected to
+  the robot's tree — the sensor's `frame_id` / `parent_frame` in the deploy scene
+  is what does that.
+- With `enable_octomap_kernel_check` left at its default, these voxels become a
+  **safety input**: the C++ kernel rasterises the arm's capsules against them and
+  E-stops on overlap. That is the conservative posture and worth keeping, but it
+  means a noisy or mis-framed cloud surfaces as an E-stop rather than as a bad
+  picture. Bring the leg up with the arm unpowered and check the card first.
 
 ## 2. Dry-run against a digital twin first
 
