@@ -45,6 +45,8 @@ _VENV_SITE = os.environ.get("OPENRAL_VENV_SITE")
 if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
+from typing import TYPE_CHECKING
+
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -60,6 +62,12 @@ from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.events.matchers import matches_node_name as _matches_node_name
+
+if TYPE_CHECKING:
+    # openral_core stays a DEFERRED import at runtime (see the note above):
+    # this file must import on a host without the OpenRAL workspace sourced.
+    # `from __future__ import annotations` keeps the annotation a string.
+    from openral_core import RobotDescription
 from lifecycle_msgs.msg import Transition
 from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
 
@@ -168,6 +176,31 @@ def _octomap_clamping_max(hal_mode: str) -> float:
 def _octomap_resolution(hal_mode: str) -> float:
     """Use manipulation-scale voxels in sim without changing real maps."""
     return 0.025 if hal_mode == "sim" else 0.05
+
+
+def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
+    """The ``(fixed_frame, base_frame)`` the octomap leg should map in.
+
+    ``octomap_server`` accumulates its octree in a frame that must not move
+    under the robot, and ``octomap_voxel_bridge`` / ``WorldCloudBridge``
+    express the result in the robot's own base frame. Both used to be the
+    literals ``"odom"`` / ``"base_link"``, which is the MOBILE-BASE
+    convention: it holds only while something publishes odometry.
+
+    A fixed-base arm has no odometry and no ``odom`` frame — nothing in the
+    graph publishes one. The manifest's ``base_frame`` is already world-fixed
+    for such a robot, so it is the correct accumulation frame. Getting this
+    wrong is silent: every node comes up healthy and each cloud is dropped on
+    a TF lookup, leaving an empty map and an empty dashboard card.
+
+    Returns the manifest's own frames, so a robot that names them differently
+    (``pelvis``, ``panda_link0``, ``openarm_base``) is honoured rather than
+    assumed.
+    """
+    base_frame = description.base_frame
+    locomotion = getattr(description.capabilities, "locomotion", None) or ["none"]
+    mobile = any(kind != "none" for kind in locomotion)
+    return (description.odom_frame if mobile else base_frame), base_frame
 
 
 def _octomap_coverage_radius() -> float:
@@ -1521,6 +1554,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             ),
         )
 
+    # Manifest-derived, never the mobile-base literals: see _octomap_frames.
+    # Resolved unconditionally so the runtime node's world-cloud bridge gets the
+    # same base frame whether or not the octomap leg itself is spawned.
+    octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
+
     if enable_octomap:
         # The world-collision perception leg. octomap_server
         # builds a 3-D OcTree from the HAL's depth PointCloud2
@@ -1542,8 +1580,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             parameters=[
                 {
                     "resolution": _octomap_resolution(hal_mode),
-                    "frame_id": "odom",
-                    "base_frame_id": "base_link",
+                    "frame_id": octomap_fixed_frame,
+                    "base_frame_id": octomap_base_frame,
                     "sensor_model.max_range": 4.0,
                     # Keep the map fresh for manipulation: octomap ray-clears
                     # free space, so a grasped/moved object's old cells decay
@@ -1584,7 +1622,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             namespace="",
             parameters=[
                 {
-                    "base_frame": "base_link",
+                    "base_frame": octomap_base_frame,
                     "octomap_topic": "/octomap_binary",
                     "output_topic": "/openral/world_voxels",
                     "resolution": _octomap_resolution(hal_mode),
