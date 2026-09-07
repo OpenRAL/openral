@@ -169,6 +169,8 @@ _**Probe tiers.** The default probe resolves only the **top-level** package of e
 - `can_import_policy_manifest(manifest) -> tuple[bool, str | None]` — Probe the manifest-selected runtime: the BEHAVIOR GR00T sidecar rSkill probes `zmq` + `msgpack` (its openral-side wire), everything else falls through to `can_import_policy_family`. (L318)
 - `manifest_install_groups(manifest) -> tuple[str, ...]` — Dependency groups for the manifest-selected runtime (`("behavior-groot",)` for the BEHAVIOR sidecar rSkill, else `model_family_install_groups`). (L325)
 - `manifest_install_hint(manifest) -> str` — Paste-able install hint for the manifest-selected runtime. (L332)
+- `model_family_required_imports(family) -> tuple[str, ...]` — Leaf modules whose presence proves `family`'s policy factory will load; empty tuple for an unknown family (no false-negative on an out-of-tree policy). (L238)
+- `filter_importable_manifests(manifests, *, log_fn=None) -> list` — Return the subset of manifests whose `model_family` can be imported (via `can_import_policy_manifest`); an unknown family is kept unchanged, and each dropped manifest is reported through `log_fn` with an actionable install hint. (L342)
 
 ### `python/sim/src/openral_sim/backends/metaworld.py`
 _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a `metaworld==3.0.0 --no-deps` pip install (its transitive deps conflict with the workspace lock); the scene factory calls `openral_sim._deps.ensure_backend_deps("metaworld")` first so the user gets an interactive auto-install banner on first use. Scene id `metaworld`. Task id `metaworld/<task-name>` (e.g. `metaworld/reach-v3`)._

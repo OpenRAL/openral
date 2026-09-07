@@ -392,8 +392,16 @@ _Cached OTel meter instruments — safe to call before `configure_observability`
 - `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L199)
 - `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L213)
 - `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L234)
+- `get_sim_episode_count() -> Counter` — `openral.sim.episode.count`; sim episodes that ran to completion (terminated or truncated). (L245)
+- `get_sim_episode_success() -> Counter` — `openral.sim.episode.success`; sim episodes that hit `task.success_key` at least once. (L256)
 - `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L267)
 - `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L292)
+- `get_system_gpu_memory_used_mb() -> UpDownCounter` — `openral.system.gpu.memory_used_mb`, unit `MBy`. (L306)
+- `get_system_gpu_memory_total_mb() -> UpDownCounter` — `openral.system.gpu.memory_total_mb`, unit `MBy`. (L318)
+- `get_system_gpu_util_pct() -> UpDownCounter` — `openral.system.gpu.utilization_pct`, unit `%`. (L330)
+- `get_system_cpu_util_pct() -> UpDownCounter` — `openral.system.cpu.utilization_pct`, unit `%`. (L342)
+- `get_system_ram_used_mb() -> UpDownCounter` — `openral.system.ram.used_mb`, unit `MBy`. (L354)
+- `get_system_ram_total_mb() -> UpDownCounter` — `openral.system.ram.total_mb`, unit `MBy`. (L366)
 - `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L381)
 
 ### `python/observability/src/openral_observability/producer.py`
@@ -468,6 +476,11 @@ _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `sa
 - `mono8_mask_to_png_b64(data: bytes, width: int, height: int) -> str` — Encode one `sensor_msgs/Image` mono8 mask (the `SegmentInView` encoding: 255 = in mask, any non-zero tolerated) as a base64 **LA** PNG whose alpha channel *is* the mask, so the frontend tints it with one `source-in` composite instead of decoding pixels in JS. A binary alpha channel is also what PNG compresses best (a 640×480 mask costs a few kB in the snapshot). Raises `ValueError` when `data` is not exactly `width * height` bytes — a truncated mask must fail loudly rather than render a plausible but wrong shape. (L106)
 - `class PerceptionOverlaySubscriber` — `__init__(store: TelemetryStore)` opens the node + subscription immediately. QoS **must** match the detector node's sensor-class profile: BEST_EFFORT + VOLATILE + KEEP_LAST=5 — a RELIABLE subscriber never matches a BEST_EFFORT publisher and the overlay would sit blank with nothing to explain it. `available: bool` property; `close()` tears down the node/executor and shuts rclpy down only if it started it. `_on_objects` decodes `PromptStamped.metadata_json` as an `openral_core.ObjectsMetadata`; because that model is `extra="forbid"`, a producer newer than this dashboard raises — the callback logs `dashboard.perception_overlay_decode_failed` and drops the frame rather than letting the exception kill the spin thread and end overlays for the session. `_on_masks` decodes an `openral_msgs/SegmentMasks` — the segmenter node's diagnostic mirror of its service reply — into `TelemetryStore.set_perception_masks` via `mono8_mask_to_png_b64`, preserving the producer's area-ascending order and passing the advisory scores through for display only. Its QoS must likewise match that publisher: BEST_EFFORT + VOLATILE + KEEP_LAST=1. A malformed mask (length ≠ `width × height`) drops the whole set with `dashboard.perception_mask_decode_failed` rather than rendering a plausible but wrong shape, and never escapes into the spin thread. The mask leg is created in its own `try`/`except ImportError`, so an older `openral_msgs` overlay without `SegmentMasks` keeps drawing boxes; `masks_available: bool` reports it separately from `available`. Wired in `run_dashboard` onto `app.state.perception_overlay`. (L157)
 
+### `python/observability/src/openral_observability/dashboard/estop_publisher.py`
+_Persistent ROS 2 e-stop publisher for the dashboard (safety-critical) — the dashboard's first rclpy publisher. One publisher created at dashboard startup so DDS discovery of the HAL/kernel/runner subscribers happens once; a later press publishes instantly instead of racing a fresh `ros2 topic pub` subprocess's discovery._
+
+- `class EstopPublisher` — `__init__()` creates the node + `/openral/estop` + `/openral/estop_cleared` (`ESTOP_TOPIC`, `CLEARED_TOPIC`) publishers immediately at RELIABLE/VOLATILE/depth-10 QoS, matching the HAL/kernel/runner subscriptions; degrades to inert (callers fall back to the shell-out path) when rclpy/ROS is unavailable. (L26)
+
 ### `python/observability/src/openral_observability/dashboard/safety_status_subscriber.py`
 _ADR-0096 — the dashboard's first rclpy **subscriber** (`estop_publisher.py` is its first publisher), same shape: one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only: no publisher, no service client, no authority over the robot._
 
@@ -489,6 +502,7 @@ _mDNS advertise + browse for the live dashboard (issue #75b). Optional — requi
 ### `python/observability/src/openral_observability/dashboard/vad_assets.py`
 - `class PinnedAsset(NamedTuple)` — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
 - `PINNED_VAD_ASSETS: dict[str, PinnedAsset]` — The three voice-prompt binaries no longer committed to git (`ort-wasm-simd-threaded.wasm`, `silero_vad_v5.onnx`, `silero_vad_legacy.onnx`), pinned to the exact onnxruntime-web 1.22.0 / `@ricky0123/vad-web` 0.0.29 jsDelivr URLs + sha256 recorded in `static/vendor/vad/NOTICE.md`.
+- `sha256_of(path: Path) -> str` — Hex sha256 digest of the file at `path`, read in chunks. (L101)
 - `ensure_vad_assets() -> bool` — Best-effort: for each pinned asset, reuse a sha256-verified hit in `$OPENRAL_CACHE_DIR/dashboard_assets/vad/` (default `~/.cache/openral/…`) or download + verify one, then hard-link/copy it into the served `static/vendor/vad/` dir. Never raises; a failed asset is a `structlog` warning (`dashboard.vad_asset_unavailable`), never a silent skip, and does not stop the others. Returns `True` iff every asset ended up served. Called best-effort from `run_dashboard` on every dashboard start (never gates startup).
 - `vad_assets_available() -> bool` — Cheap presence-only check (no re-hash) of whether every pinned asset is currently served; backs `/api/config`'s `voice_prompt_enabled`.
 

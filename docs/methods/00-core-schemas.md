@@ -178,6 +178,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall wher
   fields: `per_chunk_ms, warmup_ms, load_ms, max_execution_s` (`max_execution_s` — total wall-clock budget for one `execute_rskill` goal; the skill_runner resolves a dispatched `deadline_s=0` to it, else a global default, so a VLA — which never self-terminates — is bounded, CLAUDE.md §3)
 - `class SensorRequirement(BaseModel)` — One sensor an rSkill needs the robot to provide. (L980)
   fields: `modality, vla_feature_key, min_width, min_height, count`
+- `class ImagePreprocessing(BaseModel)` — Per-rSkill checkpoint image-preprocessing contract (`flip_180`, `flip_vertical`, `input_template`, `aliases`, `norm_tag`, `image_max_crops`) surfaced on the manifest so the sim adapter need not learn a checkpoint's frame conventions from a YAML override. (L4319)
 - `class ControlModeSemantics(BaseModel)` — Action-space semantics on each `ActuatorRequirement` (rSkill self-containment audit, Gap 2). (L1180)
   fields: `mode: Literal["absolute","delta"], gripper_convention, joint_order, reference_frame`
   - Cross-validator on `ActuatorRequirement`: gripper kinds REQUIRE `gripper_convention`; cartesian kinds REQUIRE `reference_frame`; other kinds forbid both.
