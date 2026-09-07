@@ -2333,6 +2333,52 @@ themselves rather than inferred:
     `validation_matrix.py verdicts <round>` — so affected rounds should be
     re-adjudicated rather than re-run.
 
+### 2026-09-07 — how this week's work lands, and the one change that does not
+
+The week produced 33 commits: four instrument repairs, two evidence producers, a
+generator routine, a latency surface, three manifest envelopes and one that was
+withdrawn. It lands in three slices rather than one PR, split by what gates each
+piece — 4 822 lines is over CLAUDE.md §4.2.5's ceiling, and more to the point the
+pieces do not share a gate.
+
+**Slice A — `fix/collision-instrument-repairs`, no safety gate.** Everything that
+changes what the programme can *see* and nothing that changes what the kernel
+*does*: the DDS-scope repair to `validation_matrix.py`, the `nearest_any`
+inversion, both backing-probe repairs, the robot-only-cell sweep,
+`adr0101_recovery.py`, `stop_excess.py`, `refine_dop_to_budget`, the ceiling
+probe, the narrow-phase latency surface, and this page. It touches no manifest,
+no `packages/openral_safety/`, no `cpp/` — verified by an empty `git diff --stat`
+against both — so §3 does not apply and §1.4 does.
+
+This is the slice with a deadline attached. `master` has carried two of those
+four defects since 2026-09-05, and both of them corrupt the programme's primary
+measurement: a harness that cannot discover the action server it launched, and an
+adjudicator that stamps every stop `real-contact` off a permitted adjacent-link
+overlap. Every round taken on `master` since then is unusable. Nothing further
+can be measured until this lands.
+
+**Slice B — `feat/216-tight-geometry-link3-4-6`, safety-WG gated.**
+`tight_geometry` for `panda_link3`, `link4` and `link6` on both Panda manifests.
+These feed the kernel's collision model, so CLAUDE.md §3 applies in full:
+safety-WG reviewer, hazard-log Entry 026, and containment proved rather than
+sampled. The benefit is measured — link-class support excess 33.1 → 3.86 mm, and
+`link6`'s 31.2 mm recovery is almost exactly the excess the #204 battery found.
+
+**Slice C — `panda_link1`'s refined envelope, withdrawn.** The generator routine
+ships in A; the manifest change ships nowhere. Its whole justification was a
+prediction that the battery refuted: three rounds on `spark`, same seeds, same
+scene, one commit apart, moved link1's stops by **0.0003 mm**. Shipping it would
+add 41.989 mm of overhang to the link-link adjudication budget and change the
+certified envelope of a safety-critical link, in exchange for a measured nothing.
+The hazard-log amendment withdrawing the justification stands; what is left in
+the tree is a tool with its refutation written into its own docstring, so the
+next reader cannot re-derive the expectation that failed here.
+
+The split is also the honest record of the week's shape. Four of the five things
+that moved were instruments, and every one of them had been *inflating* apparent
+severity. Exactly one geometry change is defensible on measurement, and it is the
+one still waiting on a human.
+
 ## Related
 
 - [RoboCasa start-state collision census](robocasa-start-state-census.md) — every

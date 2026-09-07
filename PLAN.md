@@ -5,8 +5,20 @@
 > (the round ledger), [`docs/reference/collision-safety-alternatives-survey.md`](docs/reference/collision-safety-alternatives-survey.md)
 > (the 2026-08-30 survey) and [`docs/reference/robocasa-start-state-census.md`](docs/reference/robocasa-start-state-census.md).
 >
-> **Status: analysis + proposal.** Nothing here has landed. The ceiling
-> experiment in §4 is the gate on everything below it.
+> **Status, 2026-09-07: landing in three slices, not one.** The work grew to
+> 4 822 lines across 33 commits — over the 800-line ceiling in CLAUDE.md §4.2.5,
+> and no longer one logical change. It is split by *what gates it*:
+>
+> | slice | branch | contents | gate |
+> | --- | --- | --- | --- |
+> | **A** | `fix/collision-instrument-repairs` | four instrument repairs, two evidence producers, the generator's `refine_dop_to_budget`, the ceiling probe, the narrow-phase latency surface, this page and the evidence ledger | none — diagnostics and tools (§1.4); **changes no shipped envelope** |
+> | **B** | `feat/216-tight-geometry-link3-4-6` | `tight_geometry` on `panda_link3`/`link4`/`link6`, both manifests | safety-WG + hazard-log Entry 026 (§3) |
+> | **C** | — | `panda_link1`'s refined envelope | **withdrawn.** The tool lands in A; the manifest does not, because the battery measured it moving link1's stops by 0.0003 mm |
+>
+> A is the urgent one: `master` has been carrying a validation harness that
+> cannot see the graph it launches and an adjudicator that stamps every stop
+> `real-contact`, since 2026-09-05. Every round taken on it is unusable, so
+> nothing downstream can be measured until A lands.
 
 ---
 
@@ -316,8 +328,9 @@ Four things had to be discovered to make it run at all, each worth keeping:
       grid. The class is still the right target — but the mechanism that reaches
       it is **modeled fixtures (ADR-0101)**, not a tighter payload box. Tracked
       there, not here.
-- [x] **Lever 1: `tight_geometry` on `panda_link3`/`link4`/`link6`** — done
-      2026-09-07. Support excess 75.6→23.8, 76.1→23.2 and **52.7→21.5 mm**;
+- [x] **Lever 1: `tight_geometry` on `panda_link3`/`link4`/`link6`** — built and
+      measured 2026-09-07; **on `feat/216-tight-geometry-link3-4-6`, not on
+      `master`**, pending safety-WG sign-off on hazard-log Entry 026 (§3). Support excess 75.6→23.8, 76.1→23.2 and **52.7→21.5 mm**;
       `link6`'s 31.2 mm recovery is almost exactly the 33.1 mm of measured
       link-class excess. Applied to `panda_mobile` **and** `panda_mobile_vslam`
       (their arm geometry is contract-tested identical). `generate_tight_geometry
@@ -458,8 +471,10 @@ Four things had to be discovered to make it run at all, each worth keeping:
       the certified probe never used rays, so the 71 % and the decomposition
       stand; what moves is the backing *class* the "32 % too sparse" entry and
       ADR-0101's "cells no real body explains" premise rest on.
-- [x] **`panda_link1` ships a budget-fitting envelope — which does nothing, and
-      that IS the result.** `refine_dop_to_budget` intersects the DOP with the
+- [x] **`panda_link1`'s budget-fitting envelope does nothing, and that IS the
+      result — so it is not shipped.** The generator routine landed on
+      `fix/collision-instrument-repairs`; the manifest change was withdrawn.
+      What follows is the measurement that withdrew it. `refine_dop_to_budget` intersects the DOP with the
       exact hull's tangent face planes inside the existing 320-vertex budget, no
       kernel change; support gap 4.52/25.68 mm → **0.18/0.65 mm**, containment
       definitional, and it measured *faster* (p99 0.5 ms on 9891 cells vs 2.0 ms
