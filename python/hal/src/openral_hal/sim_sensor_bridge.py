@@ -1221,6 +1221,59 @@ def _voxel_cube_hits(
     return sorted(hits), cast, hit_count
 
 
+def _collidable_geoms_overlapping_cube(
+    model: Any,
+    data: Any,
+    *,
+    centre_world: Any,
+    resolution: float,
+) -> list[int]:
+    """Collidable geoms whose world AABB overlaps the cell — what the rays can miss.
+
+    :func:`_voxel_cube_hits` walks a ray past a non-collidable strike and casts
+    again, which finds a solid slab *behind* a decoration shell. It cannot find
+    one **coincident** with it. RoboCasa builds every counter top that way:
+    ``robocasa/models/fixtures/counter.py`` emits one full-span
+    ``<name>_top_visual`` (``contype=0``) and then tiles the *same* volume with
+    collidable chunks via ``_get_chunks``. Their surfaces are the same plane, so
+    stepping ``distance + eps`` past the visual's face lands *inside* the chunk,
+    where the ray reports no further entry surface and the chunk is never seen.
+
+    Measured on ``2026-09-07-adr0101-live-1``: 9 of 27 rays struck
+    ``counter_1_right_group_top_visual`` and nothing else, so the cell read
+    ``noncollidable_world`` — while the certified probe put the collidable chunk
+    ``counter_1_right_group_top_0``'s surface at ``z = 0.920`` and the cell
+    spanned ``z in [0.900, 0.925]``. The solid geometry was inside the cell the
+    whole time.
+
+    This is a **conservative supplement**, not a replacement: an AABB overlap can
+    claim a geom whose actual surface misses the cube, so it may report backing
+    that a surface test would not. For a diagnostic whose failure mode is
+    calling real geometry "decoration" (#180), erring toward *found* is the
+    right direction — and it never removes a class the rays did find.
+    """
+    import numpy as np  # reason: optional sim dep, imported locally module-wide
+
+    half = resolution / 2.0
+    lo = np.asarray(centre_world, dtype=np.float64) - half
+    hi = np.asarray(centre_world, dtype=np.float64) + half
+    found: list[int] = []
+    for geom_id in range(int(model.ngeom)):
+        if not _geom_is_collidable(model, geom_id):
+            continue
+        # `geom_aabb` is (centre, half-extent) in the geom's own frame. Rotating
+        # the half-extent by |R| gives the world-axis-aligned bound of the
+        # rotated box — exact for a box, an over-bound for anything else, which
+        # is the conservative direction.
+        aabb = np.asarray(model.geom_aabb[geom_id], dtype=np.float64)
+        rotation = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+        centre = np.asarray(data.geom_xpos[geom_id], dtype=np.float64) + rotation @ aabb[:3]
+        extent = np.abs(rotation) @ aabb[3:]
+        if np.all(centre - extent <= hi) and np.all(centre + extent >= lo):
+            found.append(geom_id)
+    return found
+
+
 def _classify_voxel_hits(
     model: Any,
     geom_ids: list[int],
@@ -1441,6 +1494,22 @@ def voxel_backing_record(
     )
     record["rays_cast"] = cast
     record["rays_hit"] = hit_count
+
+    # The rays cannot see a collidable geom coincident with a decoration shell,
+    # and in RoboCasa that is every counter top. Only consulted when the rays
+    # found nothing solid, so a cell the rays already explained is untouched and
+    # this cannot change a verdict the ray pass got right.
+    swept = not any(_geom_is_collidable(model, geom) for geom in hits)
+    record["collidable_overlap_swept"] = swept
+    if swept:
+        hits = sorted(
+            set(hits)
+            | set(
+                _collidable_geoms_overlapping_cube(
+                    model, data, centre_world=centre_world, resolution=resolution
+                )
+            )
+        )
 
     backing = _classify_voxel_hits(
         model,
