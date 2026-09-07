@@ -756,7 +756,16 @@ def adjudicate_ground_truth(
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
     payload_robot = list(snapshot.get("nearest_payload_robot_pairs") or [])
     link_link = list(snapshot.get("nearest_link_link_pairs") or [])
-    all_pairs = robot_pairs + payload_world + payload_robot + link_link
+    # NOT `+ link_link`. Adjacent robot links overlap permanently by design —
+    # they are in the robot's allowed-collision matrix and the kernel never
+    # checks them — so folding them in here makes `nearest_any <= 0` vacuously
+    # true and stamps EVERY stop `real-contact`. Measured on
+    # `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at -36.3 mm,
+    # `link5`/`link6` at -23.0 mm, `link4`/`link5` at -4.6 mm, all certified,
+    # all permitted, while the payload that actually tripped the kernel sat
+    # +24.9 mm clear of the counter. The named self pair is added back below,
+    # once it is known which pair the kernel meant (#220 regression).
+    all_pairs = robot_pairs + payload_world + payload_robot
 
     # The coverage block has to be the one for the probe whose pairs are read
     # below. Reading `nearest_probe_coverage` (the robot-vs-world probe) for a
@@ -765,9 +774,6 @@ def adjudicate_ground_truth(
     # the wrong instrument, the same error class as scoring against the wrong
     # bodies (#208, #228). Chosen alongside the pair set, not before it.
     coverage_key = "nearest_probe_coverage"
-
-    nearest_any = min((p["distance_m"] for p in all_pairs), default=None)
-    nearest_pair = min(all_pairs, key=lambda p: p["distance_m"], default=None)
 
     # A link-vs-link self stop names two ROBOT links, and this snapshot cannot
     # speak to that pair at all: the HAL's robot probe excludes the whole robot
@@ -821,6 +827,15 @@ def adjudicate_ground_truth(
         subject = _kernel_party_to_mujoco(stop.party_a)
         party_pairs = [p for p in robot_pairs if str(p.get("body_a")) == subject]
     nearest_party = min((p["distance_m"] for p in party_pairs), default=None)
+
+    # `nearest_any` answers "was anything the kernel could have stopped for
+    # actually touching". A link-link pair qualifies only when the kernel named
+    # that self pair; every other adjacent-link overlap is permitted by the ACM
+    # and proves nothing about this stop. `party_pairs` is already exactly the
+    # named pair in the `self_pair` branch, so adding it back is the whole fix.
+    contact_pairs = all_pairs + (party_pairs if self_pair else [])
+    nearest_any = min((p["distance_m"] for p in contact_pairs), default=None)
+    nearest_pair = min(contact_pairs, key=lambda p: p["distance_m"], default=None)
 
     coverage = snapshot.get(coverage_key) or {}
     truncated = bool(coverage.get("truncated", True))

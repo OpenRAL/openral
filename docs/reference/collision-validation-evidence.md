@@ -1922,7 +1922,7 @@ direction.
 
 ## Standing caveats
 
-Ten things a reader should carry away, all of them stated by the artifacts
+Eleven things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -2022,6 +2022,32 @@ themselves rather than inferred:
     cannot see", which is why the first explanation reached for was the
     `octomap_server` `exec_depend` of 2026-08-22. Rounds on commits before
     `9ca834e` are unaffected.
+
+11. **No `real-contact` verdict produced between 2026-09-05 and 2026-09-07 is
+    safe to cite, and the error runs one way: it manufactures them.** #220
+    (`d1d39d7`, on `master` 2026-09-05) gave the HAL a link-vs-link probe so a
+    self stop could be scored against the pair the kernel named — correct, and
+    the reason caveat 9 is closeable. But the new pairs were folded into the
+    adjudicator's `nearest_any`, which drives its first and most decisive rule:
+    *any probed pair at or below 0 m → `real-contact`*. Adjacent robot links
+    overlap permanently, are in the robot's allowed-collision matrix, and are
+    never checked by the kernel — so `nearest_any <= 0` became vacuously true
+    and **every adjudicable stop was stamped `real-contact`**, whatever the
+    tripping party's clearance.
+
+    Measured on `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at
+    −36.3 mm, `link5`/`link6` at −23.0 mm, `link4`/`link5` at −4.6 mm, all
+    certified and all permitted, while the payload the kernel actually stopped
+    for sat **+24.86 mm clear** of the counter. Re-derived with the fix, three
+    of the four stops in that batch move `real-contact → within-quantization`
+    and the one true contact (−2.32 mm) is preserved.
+
+    This inverts the single measurement the collision programme exists to make.
+    It is also self-limiting in one respect worth stating plainly: it can only
+    ever turn a false positive into an apparent real contact, never the reverse,
+    so nothing was ever wrongly *cleared*. Verdicts are re-derivable offline —
+    `validation_matrix.py verdicts <round>` — so affected rounds should be
+    re-adjudicated rather than re-run.
 
 ## Related
 
