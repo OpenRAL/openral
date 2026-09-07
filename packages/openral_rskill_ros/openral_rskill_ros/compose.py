@@ -233,15 +233,23 @@ def compose_runtime(
         # Default topic = octomap's occupied-voxel centers; a visual-SLAM deploy
         # points this at nvblox's ESDF voxel cloud so the same dashboard card
         # shows the vision-built voxels.
+        # base_frame from the MANIFEST, like SlamMapBridge above. The default
+        # is "base_link", which only exists on a mobile base; a fixed-base arm
+        # names its own root (openarm_base, panda_link0, pelvis) and the bridge
+        # then dropped every cloud on a TF lookup while the graph reported
+        # healthy and the dashboard card stayed empty.
         if world_cloud_topic:
             world_cloud_bridge = WorldCloudBridge(
                 skill_runner_node,
                 topic=world_cloud_topic,
+                base_frame=description.base_frame,
                 source_node_name="openral_nvblox",
                 latched=False,  # nvblox publishes its ESDF cloud VOLATILE
             )
         else:
-            world_cloud_bridge = WorldCloudBridge(skill_runner_node)
+            world_cloud_bridge = WorldCloudBridge(
+                skill_runner_node, base_frame=description.base_frame
+            )
     dataset_recorder_bridge: object | None = None
     if dataset_out is not None:
         # Attach a bus recorder sharing the runner's executor +

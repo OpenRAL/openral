@@ -1934,7 +1934,11 @@ def _reap_orphans_with_log() -> None:
 # deploy graph. Each entry must be specific enough that a coincidental
 # unrelated invocation never matches — the reaper additionally scopes to
 # the calling user's PIDs (the ``st_uid`` guard) so a shared host is safe.
-_ORPHAN_GRAPH_NEEDLES: tuple[str, ...] = (
+#: A needle is either a substring, or a tuple of substrings that must ALL be
+#: present (logical AND) — needed when the distinguishing evidence is split
+#: across a cmdline, e.g. an executable path before ``--ros-args`` and the node
+#: remap after it.
+_ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "sim_e2e.launch.py",
     "openral_rskill_ros/runtime_node",
     "install/lib/openral_hal_",
@@ -1971,11 +1975,23 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str, ...] = (
     # the next launch's correct ``z=0.0`` publisher couldn't override it
     # (tf2 picks non-deterministically among same-name static frames).
     # Reaping the renamed static publisher (``static_<base>_to_<root>``)
-    # and the URDF ``robot_state_publisher`` closes that hole. Scoped to
-    # the ``tf2_ros`` / ``robot_state_publisher`` executables under the
-    # calling user so we never touch an unrelated TF graph.
-    "/lib/tf2_ros/static_transform_publisher",
-    "/lib/robot_state_publisher/robot_state_publisher",
+    # and the URDF ``robot_state_publisher`` closes that hole.
+    #
+    # These two are TUPLES — every element must be present — because the
+    # executable path alone is NOT ours. `zed_wrapper` runs the very same
+    # ``/lib/robot_state_publisher/robot_state_publisher`` under the same
+    # user for its own ``zed_state_publisher``; reaping it left the ZED node
+    # alive with its optical frames gone, so ``octomap_server`` rejected
+    # every cloud for an unknown source frame and the map stayed empty while
+    # the graph reported healthy. Observed on hardware 2026-09-07. Pairing
+    # the executable with the node name this launch actually assigns keeps
+    # the sweep to our own TF chain, which is what the previous comment here
+    # claimed but could not deliver.
+    ("/lib/tf2_ros/static_transform_publisher", "__node:=static_"),
+    (
+        "/lib/robot_state_publisher/robot_state_publisher",
+        "__node:=robot_state_publisher",
+    ),
     # rldx out-of-process sidecar (ADR auto-spawn). It runs in its OWN
     # session (``start_new_session=True`` in ``openral_sim.policies.rldx``)
     # so the launch group's SIGINT never reaches it; if the runtime node
@@ -2000,8 +2016,16 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     Pure predicate over a space-joined ``/proc/<pid>/cmdline`` string so
     the needle set (:data:`_ORPHAN_GRAPH_NEEDLES`) is unit-testable
     without spawning real processes.
+
+    A tuple needle matches only when EVERY element is present, which is how
+    the shared-executable cases (``robot_state_publisher``,
+    ``static_transform_publisher``) stay scoped to this launch's own nodes
+    instead of any co-running stack's.
     """
-    return any(needle in cmdline for needle in _ORPHAN_GRAPH_NEEDLES)
+    return any(
+        all(part in cmdline for part in needle) if isinstance(needle, tuple) else needle in cmdline
+        for needle in _ORPHAN_GRAPH_NEEDLES
+    )
 
 
 def _kill_orphan_openral_graph_processes() -> int:

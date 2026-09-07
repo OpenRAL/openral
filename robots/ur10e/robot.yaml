@@ -34,6 +34,19 @@ base_frame: "ur10e_base_link"
 assets:
   urdf:
     ref: "file:ur10e.urdf"
+    # `base_link`, NOT the URDF's `world` root, and deliberately so:
+    # `root_frame` names the link `base_frame` ATTACHES TO — the one the
+    # manifest's collision geometry hangs off — not the tree's root.
+    # `derive_robot_relative_height_band` reads this pair to place every UR
+    # collision volume (`joints` lists only movable joints, so `base_link` is
+    # no joint's child and the `base_frame` chain alone cannot reach it).
+    # Retargeting it to `world` makes those volumes unplaceable and the band
+    # refuses outright — verified, not assumed.
+    #
+    # Known and accepted: robot_state_publisher also publishes the URDF's
+    # `world -> base_link`, so `base_link` has two parents. Both hops are
+    # identity and nothing consumes `world` here, so the ambiguity is inert;
+    # it is not worth trading a working height band for.
     root_frame: "base_link"
     base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   mjcf: "rd:ur10e_mj_description"

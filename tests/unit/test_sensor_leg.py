@@ -135,6 +135,45 @@ def test_merge_scene_entry_wins_on_name_collision() -> None:
     assert top.deploy_binding is not None  # the scene's bound copy survived
 
 
+def test_merge_keeps_manifest_geometry_the_scene_did_not_mention() -> None:
+    """The scene binds the device; the manifest keeps owning where it points.
+
+    This is the documented split — "the robot manifest for robot-mounted
+    cameras (wrist / head), DeployScene.sensors for workcell-mounted ones" —
+    and replacing wholesale made it unusable: a scene supplying only a device
+    path silently discarded the manifest's mount, so the camera's readings
+    landed in whatever frame happened to be named and nothing said so.
+    octomap_server / SLAM then drop every message on an unresolvable frame
+    while the graph reports healthy.
+    """
+    mount = (0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0)
+    manifest = [
+        _spec("head", binding=None).model_copy(
+            update={"parent_frame": "openarm_base", "static_transform_xyz_rpy": mount}
+        )
+    ]
+    # A binding-only scene entry: it says WHERE THE PIXELS COME FROM, nothing
+    # about where the camera is.
+    scene = [_spec("head", binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}))]
+
+    (head,) = merge_deploy_sensors(manifest, scene)
+
+    assert head.deploy_binding is not None  # scene's binding applied
+    assert head.deploy_binding.backend_params["device"] == "/dev/video0"
+    assert head.parent_frame == "openarm_base"  # manifest geometry survived
+    assert head.static_transform_xyz_rpy == mount
+
+
+def test_merge_lets_the_scene_override_geometry_when_it_says_so() -> None:
+    """An explicit scene value still wins — an override is still an override."""
+    manifest = [_spec("head", binding=None).model_copy(update={"parent_frame": "openarm_base"})]
+    scene = [_spec("head", binding=None).model_copy(update={"parent_frame": "bench_post"})]
+
+    (head,) = merge_deploy_sensors(manifest, scene)
+
+    assert head.parent_frame == "bench_post"
+
+
 def test_unbound_specs_are_skipped() -> None:
     """Committed reference manifests leave deploy_binding unset — the leg skips them."""
     leg = open_deploy_sensor_readers([_spec("top", binding=None)])

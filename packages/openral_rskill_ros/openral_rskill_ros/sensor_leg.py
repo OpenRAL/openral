@@ -295,15 +295,43 @@ def merge_deploy_sensors(
     manifest_sensors: Iterable[SensorSpec],
     scene_sensors: Iterable[SensorSpec],
 ) -> list[SensorSpec]:
-    """Robot-manifest sensors ∪ ``DeployScene.sensors``, scene wins on name collision.
+    """Robot-manifest sensors ∪ ``DeployScene.sensors``, merged field-wise.
+
+    On a name collision the scene's explicitly-set fields win and the manifest
+    fills the rest.
 
     A scene entry named like a manifest sensor is that sensor's deploy-time
-    binding — keeping both would double-open the device
-    and publish the same topic twice.
+    binding, and exactly one spec must survive — keeping both would
+    double-open the device and publish the same topic twice.
+
+    Which is why this merges rather than replaces. The split the sensor leg
+    documents is "the robot manifest for robot-mounted cameras (wrist / head),
+    ``DeployScene.sensors`` for workcell-mounted ones" — i.e. the manifest owns
+    the robot-side geometry (``parent_frame`` / ``static_transform_xyz_rpy`` /
+    ``intrinsics``) and the scene owns the host-side binding (which
+    ``/dev/video*``, which topic, what fps). Replacing wholesale made that
+    split unusable: a scene that supplied only a device path silently discarded
+    the manifest's mount, so the camera's readings landed in whatever frame
+    happened to be named and nothing said so.
+
+    Scene-only fields still win when set — an override is still an override.
+    Uses ``model_fields_set`` so "explicitly set to the default" is honoured
+    and an unmentioned field is left to the manifest.
     """
     scene = list(scene_sensors)
-    scene_names = {s.name for s in scene}
-    return [s for s in manifest_sensors if s.name not in scene_names] + scene
+    by_name = {s.name: s for s in scene}
+    merged: list[SensorSpec] = []
+    for spec in manifest_sensors:
+        override = by_name.pop(spec.name, None)
+        if override is None:
+            merged.append(spec)
+            continue
+        merged.append(
+            spec.model_copy(update={f: getattr(override, f) for f in override.model_fields_set})
+        )
+    # Scene-only sensors (workcell-mounted) keep their declaration order.
+    merged.extend(s for s in scene if s.name in by_name)
+    return merged
 
 
 def _publish_rate_hz(spec: SensorSpec) -> float:

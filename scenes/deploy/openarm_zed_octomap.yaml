@@ -1,0 +1,97 @@
+# OpenArm + ZED-M depth into the world map — REAL camera, SIMULATED HAL.
+#
+# Answers one question end to end: does a StereoLabs ZED reach the dashboard's
+# POINTCLOUD card through OpenRAL's octomap leg? Everything on the perception
+# side is real — ZED SDK stereo matching on the host GPU, zed_wrapper's
+# registered PointCloud2, octomap_server, openral_octomap_bridge,
+# WorldCloudBridge — and only the HAL is the MuJoCo twin, so no motor is ever
+# commanded and it does not matter whether the arms are powered.
+#
+# The camera's MOUNT is not here: `head_zed` in robots/openarm/robot.yaml owns
+# it, because the ZED is bolted to the robot rather than to the workcell. This
+# scene only declares posture.
+#
+# Bring up the camera driver on the SAME ROS_DOMAIN_ID first, then:
+#
+#     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
+#         publish_tf:=false publish_map_tf:=false
+#     openral deploy sim --config scenes/deploy/openarm_zed_octomap.yaml \
+#         --hal viewer_enabled=false
+#
+# `publish_tf:=false` matters: with it on, zed_wrapper publishes its own
+# odom -> zed_camera_link from visual odometry, and the manifest ALSO parents
+# zed_camera_link to the arm. A frame with two parents is not a tree — tf2
+# keeps whichever static arrived last, so lookups go order-dependent and
+# octomap_server starts silently dropping clouds. The camera is bolted to the
+# rig, so its pose belongs to the robot's tree, not to VO.
+#
+# `--hal viewer_enabled=false` is only needed headless (no DISPLAY); MuJoCo's
+# offscreen renderer additionally wants MUJOCO_GL=egl over ssh.
+#
+# ── Verified on the lab Jetson AGX Orin (qorin1), 2026-09-07 ───────────────
+#   ZED SDK 5.4.1 (L4T 39.2 / CUDA 13.2), ZED-M S/N 18970159, HD1080,
+#   NEURAL_LIGHT depth. /octomap_point_cloud_centers ~5 Hz,
+#   /openral/world_voxels ~10 Hz, dashboard card 5330 points @ range 4.0 m in
+#   frame openarm_base. Arms UNPOWERED and the graph structurally
+#   non-actuating (see `enable_reasoner` below).
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_tabletop_pnp
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist_left", "wrist_right"]
+  backend_options:
+    render_width: 640
+    render_height: 480
+    max_steps: 500
+
+base_pose:
+  xyz: [0.20, 0.0, 0.55]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+  frame_id: world
+
+composition:
+  composer: "openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf"
+  params:
+    strip_actuators: false
+    robot_lift_z: 0.36
+    robot_forward_x: 0.20
+    white_background: true
+    top_camera_pos: [0.20, 0.0, 0.95]
+    top_camera_target: [0.65, 0.0, 0.05]
+    top_camera_fovy: 65.0
+
+runtime:
+  # No reasoner => no rSkill is ever selected or loaded, so this graph has no
+  # path to a motor command at all: structurally non-actuating rather than
+  # merely e-stopped. WorldCloudBridge lives on runtime_node, not on the
+  # reasoner, so the POINTCLOUD card is unaffected.
+  enable_reasoner: false
+
+  enable_octomap: true
+  # Without this, octomap_server subscribes to the launch default
+  # /openral/cameras/front_depth/points — published only by the SIM sensor
+  # bridge, so a real-camera deploy maps silence.
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+
+  # The ZED observes a room; the kernel is protecting a MuJoCo twin. Feeding
+  # one into the other would put phantom obstacles around a simulated arm. The
+  # leg still publishes /openral/world_voxels and still drives the dashboard
+  # card — only the capsule-vs-voxel check is off, which is its
+  # --no-enable-octomap baseline, never below it.
+  #
+  # Set this TRUE on any scene where the camera actually observes the robot's
+  # own workspace — AND only after `openral calibrate camera`, because
+  # head_zed's pose is an uncalibrated approximation and a mis-framed cloud
+  # becomes an E-stop rather than a bad picture.
+  enable_octomap_kernel_check: false
+
+  enable_slam: false
+  enable_nav2: false
+  enable_object_detector: false
+  enable_reward_monitor: false
+  enable_critic: false
+  approach_skill_id: null
