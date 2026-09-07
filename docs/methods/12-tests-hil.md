@@ -55,6 +55,30 @@ _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 - `RosControlHILTransport(node, joint_names, *, command_topic, joint_state_topic)` — Subscribes to `joint_state_topic`, exposes `publish(_topic, msg)` for the HAL's outgoing trajectories and `state()` for the cached joint state. Helpers: `spin_once`, `wait_for_first_state`, `last_stamp`. (L68)
 - `make_hil_transport(node_name, joint_names, *, command_topic, joint_state_topic) -> tuple[Node, RosControlHILTransport, Callable[[], None]]` — Factory that initialises rclpy, creates the node, and returns a teardown callable. (L179)
 
+### `tests/hil/_openarm_ros_transport.py`
+_4-way fan-out bridge for the bimanual OpenArm v2 HAL — the only thing between `OpenArmRealHAL` and a physical arm._
+
+- `OpenArmHILTransport(node, joint_names, *, command_topics, joint_state_topic, time_from_start_s=0.8)` — Four `JointTrajectory` publishers plus one aggregated `JointState` subscriber. Simpler than the ALOHA bridge because ADR-0102 puts `joint_names` **in the message**, so the transport forwards them rather than keeping a second copy of the slice table that could drift. Build it from `OpenArmRealHAL.ros2_control_joint_names()` — the URDF namespace (`openarm_left_joint1`) that `/joint_states` is keyed by, **not** the manifest's (`left_joint1`). (L57)
+- `time_from_start_s` is a constructor argument, unlike the 100 ms the production transports hardcode. A `JointTrajectoryController` given an absolute target and a 100 ms deadline moves at `(target - current) / 0.1s`, so the rate is set by how wrong the command is. A longer window bounds it by construction; a test that cares about production timing passes 0.1.
+- `publish(topic, msg)` dispatches by topic match and raises on an unknown topic or a name/value width mismatch — silently dropping a command is the ADR-0102 failure mode itself. `state()` zero-fills joints it has never heard from; `missing_joints()` / `wait_for_every_joint()` are what let a caller tell that apart from a real pose.
+- Its own tests (`tests/hil/test_openarm_ros_transport.py`) need only a ROS install, not the cell: real publishers and real messages over DDS on an isolated domain with LOCALHOST discovery (#227 — a stray graph once reached a live OpenArm on another host, and this suite's whole subject is arm command topics).
+
+### `tests/hil/test_openarm_bringup_agreement.py`
+_`OpenArmRealHAL`'s controller/joint table vs `openarm_bringup`'s own YAML — no hardware, not even the CAN links._
+
+- The HAL's `_command_groups` is a hand-copied transcription of names that live in a **different repo** on a different cadence, and nothing compared the two. A `JointTrajectoryController` handed joints it does not own **rejects the whole message**: no publisher-side exception, nothing odd on `/joint_states`, the arm just does not move — indistinguishable from a policy holding still. Same failure shape ADR-0102 ended, one layer further out.
+- The gripper is the trap and the reason the file exists: bringup calls it `openarm_left_finger_joint1`, **not** `openarm_left_gripper`. Every plausible guess is wrong, so the config is the only safe source.
+- Four checks: every controller the HAL publishes to is declared; each is a `JointTrajectoryController` (a `ForwardCommandController` takes `Float64MultiArray` on `/commands`, so the HAL's topic and message type would both miss); the joint names match per controller; and the four lists concatenate to exactly the HAL's 16-DoF order, which is what the slice spans mean.
+- Gated on `openarm_bringup` being on the ament prefix path, so it skips cleanly off-rig. It answers **statically** what would otherwise need a powered cell: bringing the controllers up to look at them runs `OpenArmHW::on_activate` → `openarm_->enable_all()`, energising all sixteen motors. Reading the config energises nothing.
+
+### `tests/hil/test_openarm_slot_group_motion.py`
+_The one test in the tree that commands a real OpenArm to move._
+
+- Closes the last ADR-0102 gate: `test_openarm_restock_deploy_preflight.py` proves the composed 16-DoF vector reaches the four controllers correctly named and sliced, but never publishes, so it cannot see a sign flip, a scale error, or a joint the controller ignores. This one commands measured-pose + `0.02 rad` on **one** joint, holds the other fifteen at their measured values, and reads the physical result back off `/joint_states` — asserting the addressed joint arrived and every other joint stayed put.
+- Two independent gates, both explicit: `OPENRAL_OPENARM_ALLOW_MOTION=1` (this bench can move) and `OPENRAL_OPENARM_ATTENDED=1` (someone is at the E-stop right now). Separate on purpose, so a rig that leaves the first exported does not thereby become a rig that moves unattended.
+- Why a small number is not by itself a small motion: the wire format is an **absolute** position with a deadline, so travel is `(target - measured) / time_from_start` — set by how wrong the command is, which is the quantity under test. The bounds that do work are the measured-pose baseline, the 0.8 s window, and the refusal to start until all 16 joints have appeared on `/joint_states` (a partial state zero-fills into a plausible pose, and "measured + delta" on top of that is a command to slew the cell home).
+- Cases run gripper-first (1-DoF, lowest inertia, and the actuator ADR-0102 exists for) then the most distal arm joint, and each restores the measured pose before returning, so the suite is idempotent.
+
 ### `tests/hil/_aloha_ros_transport.py`
 _4-way fan-out bridge for the bimanual ALOHA HAL._
 
