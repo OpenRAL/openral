@@ -362,7 +362,27 @@ Four things had to be discovered to make it run at all, each worth keeping:
       cost dwarfs the drop it was chasing. The alternative is re-scoping it to
       the single remaining suspect (#202's ACM retirement) rather than a full
       bisect. Needs a human call.
+- [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`
+      stops (94 %) would be recovered, median true clearance 16.2 mm; the 3 that
+      correctly still stop are real penetration (−0.25, −2.02, −2.76 mm).
+      Minimum recovered clearance is **0.1 mm**, which is the number that argues
+      for the suppression-off first landing. Folded into the ADR, so the WG
+      rules on a measured proposal rather than an unknown.
+- [x] **Fixed the instrument that adjudicates every stop.** Chasing the ADR's
+      premise against the *live* map (not certified ground truth) found that
+      `voxel_backing_record` stopped at the first `mj_ray` strike — so a
+      non-collidable shell in front of the slab it wraps was the only thing it
+      saw, and the cell was blamed on decoration. **6 of the 8 stops in the
+      2026-09-06 battery that carried a backing record at all** were
+      misattributed this way, naming `counter_1_right_group_top_visual` while
+      the collision surface sat ~16 mm inside the same cell. The ray now walks
+      past decoration within the cell. Diagnostics only; mutation-checked.
 - [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
+      Note the fix above changes what the *live-map* evidence will say, so the
+      ADR's 94 % should be re-derived from post-fix rounds before implementation
+      leans on it: the offline figure rests on certified mesh truth, which was
+      never affected by the probe defect, but the two should now agree and that
+      agreement is worth checking rather than assuming.
 
 ### Ceiling-run mechanics worth keeping
 
