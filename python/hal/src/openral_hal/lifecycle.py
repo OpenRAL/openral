@@ -150,6 +150,10 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
+    # ADR-0102. Empty (or a pre-0102 IDL with no such field) decodes to None,
+    # which is the whole-vector-in-manifest-order meaning the field replaced.
+    slot_joint_names = [str(n) for n in (getattr(msg, "joint_names", None) or [])]
+    kwargs["joint_names"] = slot_joint_names or None
     if mode in (ControlMode.JOINT_POSITION, ControlMode.JOINT_TRAJECTORY):
         kwargs["joint_targets"] = rows
     elif mode is ControlMode.JOINT_VELOCITY:

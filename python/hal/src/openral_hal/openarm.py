@@ -317,7 +317,12 @@ OPENARM_DESCRIPTION = RobotDescription(
         can_lift_kg=2.0,
         has_force_control=True,
         bimanual=True,
-        supported_control_modes=[ControlMode.JOINT_POSITION],
+        # GRIPPER_POSITION is executable only inside a slot group (ADR-0102):
+        # `OpenArmRealHAL` stages the tick's four slots and composes them into
+        # one 16-DoF joint vector. Kept in lock-step with
+        # `robots/openarm/robot.yaml`, whose comment carries the full rationale
+        # — including that the MuJoCo twin does NOT yet stage groups.
+        supported_control_modes=[ControlMode.JOINT_POSITION, ControlMode.GRIPPER_POSITION],
         supported_vla_embodiments=["openarm_v2", "openarm"],
         embodiment_tags=["openarm", "openarm_v2", "enactic", "bimanual"],
     ),
