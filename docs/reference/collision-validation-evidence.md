@@ -2079,6 +2079,79 @@ it, and a safety-envelope change with no measured benefit is a WG decision, not
 an author's. Hazard-log Entry 026's amendment has been corrected to say so.
 
 
+### 2026-09-07 — what actually stops the arm at reset: three start-state stops, three causes
+
+`estop-initial-configuration` was three of the seven stops in the `adr0101-live`
+battery — the second-largest class after the payload, and the one no lever in
+`PLAN.md` §5 addresses. This is the map-side reading of all three, which had
+never been done.
+
+**First, where the evidence is, because it is not where you would look.** The
+snapshot for a start-state stop carries `collision_evidence: null` and
+`evidence_voxel_backing: null`. That is not a gap: the E-stop fires at reset,
+before the kernel's `safety.collision` line reaches the bridge, so the freshness
+gate correctly refuses to attribute a cell. The record arrives on the **deferred
+path** instead — `sim.estop_ground_truth_evidence`, captured as
+`run_gt_evidence.json`, with `backing_after_snapshot_ns: 0`. Reading only
+`run_gt_snapshot.json` shows nothing and invites the conclusion that this class
+is un-diagnosable. It is not.
+
+| stop | tripping link | rays | world geometry in the cell | robot geometry in the cell |
+| --- | --- | ---: | --- | --- |
+| `utensil-s2` | `panda_link1` | 8/27 | `stack_2_right_group_3_door_g1` ✅ | none |
+| `utensil-s4` | `panda_link1` | 0/27 (sweep) | `stack_2_right_group_2_door_g1` ✅ | `robot0_link0_collision`, `robot0_link1_collision` |
+| `fridge-s2` | `panda_link2` | 15/27 | **NONE** | `robot0_link2_collision` |
+
+**`utensil-s2` — textbook quantisation, and nothing else.** The cell *contains*
+the true nearest surface point of the cabinet door it is backed by (0.00 mm from
+the cell box), so the map is exactly where the world is. The arm is +23.13 mm
+clear; the kernel reports −2.38 mm. Excess 25.51 mm = the 21.65 mm half-diagonal
+plus 3.86 mm. **This also refutes the octomap-inflation hypothesis** raised
+earlier the same day for this class: a cell displaced toward the sensor would not
+contain the surface, and this one does. Same for `utensil-s4`.
+
+**`fridge-s2` — the cell contains the robot and no world geometry at all.**
+Fifteen of 27 rays struck inside the cube and found `robot0_link2_collision` —
+the *same link the kernel stopped*. No world geom is in that cell. The verdict
+is `self_occupancy_suspect`, and its own docstring is the right caution: it
+cannot distinguish "the robot wrote this cell" from "the robot has since moved
+into it". For a start-state stop the arm has not moved since reset, which weakens
+the second reading without eliminating it — the map is built over ~11 s with the
+arm static, so a ray grazing past could have written a cell the arm's surface
+also occupies.
+
+**`utensil-s4` — the same signature, but on weaker evidence, and it is only
+visible at all because of a fix landed hours earlier.** Its cell holds both a
+door and two robot links. The robot geoms were found by the AABB overlap sweep,
+not by rays (0/27) — and that sweep is deliberately conservative, so it can claim
+a geom whose surface misses the cube. Treat this as suspected, not shown. Worth
+recording separately: the *same stop* on `q-laptop` before the sweep fix read
+`unbacked` — no information at all. The fix turned a blank into a diagnosis.
+
+**What this does and does not establish.** One of three start-state stops is
+pure quantisation of correctly-placed world geometry. One has the robot's own
+body in the tripping cell on ray evidence with no world geometry present. One
+suggests the same on weaker evidence. That is a real lead and **not** a finding:
+n = 3, and `self_occupancy_suspect` is explicitly not conclusive on its own.
+
+**The mechanism is not a missing exclusion.** The depth self-filter is wired
+correctly: `_publish_depth_clouds` passes `_depth_excluded_body_ids()` (robot
+self bodies ∪ attached) to the synth, `robot_self_body_ids` matches by
+`_`-prefix *and* pulls in every descendant of a matched root, and
+`synthesize_depth_pointcloud` makes those geoms transparent while marking rays
+that would have struck them so they **clear** their ray in OctoMap rather than
+mark a cell. So if the robot is in the map, it is not because it was never
+excluded.
+
+**The decisive test, which no artifact supports today.** Whether a cell was
+*written by* the robot or merely *coincides with* it is answerable by asking
+whether it survives the robot leaving: re-run the same layout and seed with the
+arm parked elsewhere, and see whether the cell at the old pose persists in the
+published grid. That needs a start-pose override the harness does not have. Until
+it exists, `self_occupancy_suspect` on a start-state stop should be read as
+"check this", exactly as its docstring says.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
