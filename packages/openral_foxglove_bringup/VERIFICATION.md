@@ -159,3 +159,37 @@ forward fine. Cosmetic, upstream.
 because the host's miniforge Python 3.13 shadows ROS's 3.12 and breaks ros2cli
 `--ros-args` remap forwarding (unrelated to this package). The real deploy-sim
 above made that stand-in unnecessary.
+
+## Layout rebuild + wider allowlist (2026-09-07) — what is NOT yet verified
+
+The layout moved from a hand-written file to `layout.py`'s generator (hero 3D
+scene + one Image panel per camera slot + tabbed telemetry), and the Bucket-1
+allowlist grew a depth/reconstruction group and a telemetry group. Verified
+hermetically (76 tests): the generator's output only references exposed topics
+for five different camera-slot lists, no generated layout contains a
+write-capable panel or a 3D publish target, the shipped JSON is exactly the
+generator's output, the allowlist is exactly its four named groups, no pattern
+matches an arbitrary `/openral/…` topic, and the command/safety plane
+(`estop`, `estop_reset`, `execute_rskill`, `prompt`, `safe_action`,
+`candidate_action`, `safety_status`) stays unmatched.
+
+**Not verified — needs a live Foxglove client** (this environment still has no
+installable browser, see the 2026-06-16 row):
+
+- **Panel type ids.** `3D`, `Image`, `Plot`, `RawMessages` and `Tab` were
+  present in the previously-verified layout. `RosOut` (Log),
+  `DiagnosticSummary`, `StateTransitions` and `TopicGraph` are new here and
+  their id strings are unconfirmed against a running client. A wrong id
+  degrades to an "unknown panel" tile in that slot only — the rest of the
+  layout still loads.
+- **Message-path slicing.** `/joint_states.position[:]` replaces six
+  hard-coded indices so the plot fits any DOF count; the `[:]` slice syntax is
+  unconfirmed here.
+- **Live delivery on the new topics.** The depth and telemetry groups were
+  proven to pass the allowlist, not to stream — most need a deploy posture
+  (`--enable-octomap`, an nvblox/cuVSLAM scene, a reward monitor) that was not
+  running.
+
+Camera slots no longer need the panel's topic dropdown as the primary escape
+hatch: regenerate with `python -m openral_foxglove_bringup.layout --cameras …`
+for the scene's own `cameras:` list.

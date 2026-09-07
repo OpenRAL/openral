@@ -31,6 +31,11 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_record_launch test/test_record_launch.py
     TIMEOUT 30
   )
+  # Layout generator — the shipped layout may only reference exposed topics,
+  # and no generated layout may contain a write-capable panel.
+  ament_add_pytest_test(test_layout test/test_layout.py
+    TIMEOUT 30
+  )
 endif()
 
 ament_package()

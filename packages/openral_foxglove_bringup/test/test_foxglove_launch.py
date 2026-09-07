@@ -53,6 +53,52 @@ _FORBIDDEN_TOPICS = [
     "/openral/cameras/base/image/compressed/estop",
     "/openral/estop/compressed",
     "/openral/safe_action/compressed",
+    # The command plane. Reading these leaks no actuation on its own — the
+    # bridge advertises no ``clientPublish`` — but they are the topics a
+    # capability regression would turn into remote control, so they stay off
+    # the allowlist as defence in depth.
+    "/openral/estop_reset",
+    "/openral/estop_cleared",
+    "/openral/execute_rskill",
+    "/openral/prompt",
+    # Read-only safety *status* (the latched kernel state the dashboard's
+    # "Safety · current state" card renders). Withheld deliberately: it sits
+    # in the safety plane this package promises never to advertise, so
+    # exposing it needs safety-WG sign-off (CLAUDE.md §3). Until then the
+    # dashboard remains the place an operator reads the latch.
+    "/openral/safety_status",
+]
+
+# Read-only telemetry mirrored from the OTel dashboard's cards. Each is an
+# observation a node publishes about itself; the panels that render them sit
+# empty if the allowlist stops matching, which is a silent failure — hence a
+# test rather than a comment.
+_TELEMETRY_TOPICS = [
+    "/openral/world_state_fast",
+    "/openral/world_state_slow",
+    "/openral/policy_state",
+    "/openral/episode",
+    "/openral/critic/score",
+    "/openral/reward/active_task",
+    "/openral/perception/objects",
+    "/openral/attachment_state",
+    "/openral/attachment_state_applied",
+    "/diagnostics",
+    "/rosout",
+]
+
+# The depth / reconstruction leg — present only under the matching deploy
+# posture, but exposed whenever it is.
+_DEPTH_TOPICS = [
+    "/openral/cameras/front_depth/depth/image",
+    "/openral/cameras/front_depth/depth/camera_info",
+    "/openral/cameras/front_depth/points",
+    "/openral/cameras/top/camera_info",
+    "/openral/depth/image",
+    "/openral/nvblox/depth_filtered/image",
+    "/openral_nvblox/static_esdf_pointcloud",
+    "/openral/imu",
+    "/openral/visual_slam/odometry",
 ]
 
 
@@ -88,6 +134,46 @@ def test_bucket1_topics_are_whitelisted(topic: str) -> None:
     """Every native panel's source topic is actually exposed."""
     assert any(re.fullmatch(pat, topic) for pat in BUCKET1_TOPIC_WHITELIST), (
         f"{topic} is NOT reachable — its panel would be empty"
+    )
+
+
+@pytest.mark.parametrize("topic", _TELEMETRY_TOPICS)
+def test_telemetry_topics_are_whitelisted(topic: str) -> None:
+    """The dashboard-mirroring telemetry plane is reachable."""
+    assert any(re.fullmatch(pat, topic) for pat in BUCKET1_TOPIC_WHITELIST), (
+        f"{topic} is NOT reachable — its telemetry panel would be empty"
+    )
+
+
+@pytest.mark.parametrize("topic", _DEPTH_TOPICS)
+def test_depth_topics_are_whitelisted(topic: str) -> None:
+    """The depth / reconstruction leg is reachable when a scene publishes it."""
+    assert any(re.fullmatch(pat, topic) for pat in BUCKET1_TOPIC_WHITELIST), (
+        f"{topic} is NOT reachable — its depth panel would be empty"
+    )
+
+
+def test_allowlist_groups_partition_the_whitelist() -> None:
+    """``BUCKET1_TOPIC_WHITELIST`` is exactly the four named groups, no extras.
+
+    The groups exist so a reader can tell why each topic is exposed; a pattern
+    appended straight to the union would dodge that review.
+    """
+    grouped = [
+        *_topics.SCENE_TOPICS,
+        *_topics.DEPTH_TOPICS,
+        *_topics.BUCKET2_TOPICS,
+        *_topics.TELEMETRY_TOPICS,
+    ]
+    assert grouped == BUCKET1_TOPIC_WHITELIST
+    assert len(set(grouped)) == len(grouped), "a pattern is listed in two groups"
+
+
+def test_no_pattern_matches_the_whole_openral_namespace() -> None:
+    """No entry may be broad enough to swallow an unreviewed future topic."""
+    canary = "/openral/some_future_command_topic"
+    assert not any(re.fullmatch(pat, canary) for pat in BUCKET1_TOPIC_WHITELIST), (
+        "an allowlist pattern matches an arbitrary /openral topic — it is too broad"
     )
 
 

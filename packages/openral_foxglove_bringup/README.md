@@ -4,12 +4,19 @@ A read-only live [Foxglove](https://foxglove.dev/) visualisation surface for
 OpenRAL's live ROS scene — camera images, the `/map` occupancy grid, the octomap
 point cloud (voxels), joint states, TF, the robot model (**Bucket-1**, native),
 plus the custom OpenRAL world types re-published as standard markers/clouds
-(**Bucket-2**, via a converter node).
+(**Bucket-2**, via a converter node), plus the ROS-side telemetry plane —
+world state, diagnostics, node logs, episode/mission transitions, reward
+scores, detected objects.
 
 This is the live-scene half of a **hybrid** — Foxglove owns the live 3D/2D
 scene; the `openral dashboard` OTel receiver keeps traces, metrics,
 system health, and the reasoner/safety cards. Foxglove is a visualization tool,
 not an observability backend, so the OTel plane does **not** port here.
+
+**Nothing has been removed from the dashboard.** The telemetry mirrored into
+Foxglove is read from ROS topics; the dashboard keeps rendering its own
+OTel-derived copy. Where the two disagree, the dashboard is the one wired to
+the latched `/openral/safety_status` subscriber and to the trace index.
 
 The surface is **read-only and cannot actuate the robot**. Any path that
 re-enables a write capability (E-stop reset, Publish/Teleop, prompt input) is out
@@ -25,6 +32,31 @@ default:
 | Bind address | `127.0.0.1` (loopback) | `0.0.0.0` | Matches dashboard posture (issue #44); no auth on the bridge |
 | Capabilities | `[connectionGraph, assets]` | adds `clientPublish, services, parameters…` | **Read-only** — a viewer cannot publish topics or call services (no remote actuation / E-stop poke) |
 | Topics | explicit Bucket-1 allowlist | `['.*']` (everything) | Safety/e-stop/action topics are never exposed |
+
+The allowlist lives in `openral_foxglove_bringup/topics.py` as four named
+groups, so it is reviewable a group at a time:
+
+| Group | What it carries |
+|---|---|
+| `SCENE_TOPICS` | Camera images (+ `/compressed` siblings, `camera_info`), `/map`, octomap cloud, `/scan`, `/odom`, `/joint_states`, `/robot_description`, TF |
+| `DEPTH_TOPICS` | Per-camera depth + `points`, the DA3 metric-depth sidecar, nvblox filtered depth + ESDF slice, `/openral/imu`, cuVSLAM odometry |
+| `BUCKET2_TOPICS` | The converter's `MarkerArray` + `PointCloud2` outputs |
+| `TELEMETRY_TOPICS` | `world_state_fast`/`_slow`, `policy_state`, `episode`, `critic/score`, `reward/active_task`, `perception/objects`, `attachment_state`(`_applied`), `skill_registry_changed`, `/diagnostics`, `/rosout` |
+
+Every entry is an observation topic a node publishes *about itself*. The
+command plane (`/openral/estop`, `estop_reset`, `safe_action`,
+`candidate_action`, `execute_rskill`, `prompt`, …) is on none of them, and
+`test/test_foxglove_launch.py` proves each one stays unreachable.
+
+`/openral/safety_status` is **deliberately withheld** even though it is
+read-only status: it sits in the safety plane this package promises never to
+advertise, so exposing it needs safety-WG sign-off (CLAUDE.md §3). Read the
+latch state on the dashboard's *Safety · current state* card.
+
+> **Bag size:** `record.launch.py` records exactly what the bridge exposes
+> (one source of truth), so a scene publishing depth images and point clouds
+> now produces a substantially larger MCAP than before the depth group
+> existed. Narrow the `--regex` by hand for a long capture.
 
 ## Install the bridge (one-time)
 
@@ -64,21 +96,76 @@ Then open **https://app.foxglove.dev** (or the desktop app) →
 **Open connection** → **Foxglove WebSocket** → `ws://localhost:8765` →
 import the layout from `config/openral_layout.json`.
 
-## Layout panels
+## Layout
 
-| Panel | Topic | Message | Shows |
-|---|---|---|---|
-| Image | `/openral/cameras/top/image` | `sensor_msgs/Image` | Camera feed (3rd-person overview slot; pick another slot — `wrist`, `base`, … — from the panel's topic dropdown for robots without `top`) |
-| 3D (top-down) | `/map`, `/odom`, `/scan` | `OccupancyGrid` + `Odometry` + `LaserScan` | 2D nav map |
-| 3D (perspective) | `/octomap_point_cloud_centers`, `/map` | `PointCloud2` | Voxels / world cloud in real 3D |
-| 3D (Bucket-2) | `/openral/world_collisions_markers`, `/openral/world_voxels_cloud` | `MarkerArray` + `PointCloud2` | Collision capsules + voxel grid (converter node) |
-| Plot | `/joint_states` | `sensor_msgs/JointState` | Joint position traces |
-| Raw Messages | `/joint_states` | — | Live message inspection |
-| Topic Graph | — | — | Connection graph (via `connectionGraph`) |
+```
+┌───────────────────────────┬──────────────┐
+│ 3D · robot + environment  │ camera 0     │
+│ URDF · TF · map · voxels  │ camera 1     │
+│ · collisions · odom       │ camera 2     │
+├───────────────────────────┼──────────────┤
+│ tabs: nav map · joints ·  │ tabs: log ·  │
+│ collisions · policy state │ health · …   │
+└───────────────────────────┴──────────────┘
+```
+
+One hero 3D panel draws the robot inside its environment; the scene's cameras
+stack beside it; everything else is tabbed, one click away.
+
+**Main area**
+
+| Panel | Topics | Shows |
+|---|---|---|
+| 3D · scene (hero) | `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_collisions_markers`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, collision capsules |
+| Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
+
+**Scene tabs**
+
+| Tab | Topics | Shows |
+|---|---|---|
+| Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
+| Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
+| Collisions · voxels | `/openral/world_collisions_markers`, `/openral/world_voxels_cloud` | Bucket-2 geometry close-up |
+| Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
+
+**Telemetry tabs**
+
+| Tab | Topic | Mirrors (dashboard card) |
+|---|---|---|
+| Log | `/rosout` | Event log (the ROS lane; the dashboard's is OTel-fed) |
+| Health | `/diagnostics` | System health |
+| World state | `/openral/world_state_fast` | World state — one `WorldStateStamped` carries joint state, base pose/twist, EE poses, per-component diagnostics + staleness, battery, detected objects |
+| Mission | `/openral/episode` (`phase`, `success`, `task_string`) | Reasoner · mission, as a State Transitions timeline |
+| Reward | `/openral/critic/score` (`score`, `threshold`) | rSkill reward bars |
+| Objects | `/openral/perception/objects` | Spatial memory · scene objects |
+| Attachments | `/openral/attachment_state` | — (grasped-object set) |
+| Topics | — | Connection graph (via `connectionGraph`) |
 
 > **Note:** Foxglove's *Map* panel is geographic (GPS/`NavSatFix`), **not** for
 > occupancy grids. `nav_msgs/OccupancyGrid` renders in the **3D panel** as a
 > ground layer — hence the top-down 3D panel instead of a Map panel.
+
+### Regenerate the layout for your scene
+
+A Foxglove layout is imported client-side, so a launch argument cannot reach
+it — the camera panels in a shipped layout are baked in. Scenes disagree about
+camera names (`behavior_r1pro` → `head` / `left_wrist` / `right_wrist`;
+`isaac_franka` → `top`), so generate one for yours:
+
+```bash
+python -m openral_foxglove_bringup.layout \
+  --cameras head left_wrist right_wrist -o /tmp/openral_layout.json
+# point the Image panels at the /compressed siblings instead:
+python -m openral_foxglove_bringup.layout --cameras head left_wrist --compressed
+# keep the hero view pinned to the world origin rather than the robot:
+python -m openral_foxglove_bringup.layout --follow-frame map
+```
+
+The shipped `config/openral_layout.json` is this generator's output for
+`top` / `left_wrist` / `right_wrist`; regenerate it in place with
+`--write-default` rather than hand-editing, and a test asserts the two match.
+A slot a scene does not publish shows as an empty panel — pick another from
+the panel's topic dropdown, or regenerate.
 
 ## Render `/tf` + the robot model
 
@@ -162,6 +249,16 @@ robot-connected run.
 
 ## Not covered (by design)
 
-Traces, OTLP metrics, system-health gauges, the reasoner/safety cards — these
-live on the OpenTelemetry plane, which Foxglove cannot ingest. Keep
-Jaeger/OTLP for those.
+The dashboard stays the surface for everything below; none of it is being
+retired.
+
+| Dashboard capability | Why it does not port |
+|---|---|
+| Trace chip, `/api/traces`, `/api/spans/{trace_id}`, Jaeger deep link | Foxglove has no span/waterfall panel, and its data model is one message per timestamp — it cannot hold nested spans with durations |
+| OTLP metric histograms (p50/p95, threshold bands, freeze/zoom) | Same: the histogram + threshold semantics are OTel-side |
+| `openral sim run` / `benchmark run` telemetry | Those run HAL-only with no ROS graph at all; there is nothing for `foxglove_bridge` to bridge |
+| E-stop, prompt input (text + voice), skill execute, param set | Write paths. The bridge advertises no `clientPublish`/`services`, and the dashboard's e-stop uses a launch-time, pre-matched publisher precisely because a freshly-created one raced DDS discovery and dropped the message (see `dashboard/estop_publisher.py`) |
+| Safety · current state (latched kernel state) | Read-only, but `/openral/safety_status` is withheld pending safety-WG sign-off (above) |
+
+Keep `openral dashboard` (and Jaeger/OTLP) running alongside the bridge; the
+two are complementary, not alternatives.
