@@ -1740,9 +1740,33 @@ grid (the layout-47 pin still clears, layout 30 still trips at the 20 mm
 standoff, the genuinely-colliding pose still trips), and the narrow phase
 measures **p99 1.7 ms on 7 427 cells** against a 33 ms ceiling.
 
-**Open, and worth its own look:** the backing record was present on only **8 of
-91** stops. The diagnostic that says what the map contains is absent from 91 % of
-the stops it exists to explain.
+**A correction to an earlier draft of this entry, kept rather than silently
+edited.** It first said the backing record was "present on only 8 of 91 stops".
+That was wrong, and the way it was wrong is worth recording. The record is
+present on **82** stops — the 8 in `run_gt_snapshot.json` (the in-snapshot path)
+plus 74 more in `run_gt_evidence.json`, which is #177's *late* path. But the
+late path is not usable on this battery:
+
+| late-path verdict | stops |
+| --- | ---: |
+| `unbacked` | 46 |
+| `noncollidable_world` | 21 |
+| `solid_world` | 1 |
+| `self_occupancy_suspect` | 1 |
+
+That 56 % `unbacked` majority looks like a dramatic finding — the kernel
+stopping on cells nothing backs — and it is **not one**. It is the defect
+`fix(hal): the late voxel-backing probe dropped the grid's rotation`
+(`10ff989`) describes exactly: the late path omitted `grid_orientation_xyzw`,
+took the identity default, and decoded a cube metres from the stopping link,
+reporting `unbacked` with 27 rays cast and 0 hits — *"a confident verdict about
+the wrong cube"*. **`10ff989` landed 2026-09-05, and none of this battery's
+commits (`34e7b5f`, `1ebe71a`, `80027b18`, all 2026-09-04) contain it.**
+
+So on this battery the late path's 74 records are all suspect, the 8
+snapshot-path records are the usable set, and the 6-of-8 misattribution above
+stands. A post-`10ff989` round should re-derive the late-path distribution
+before anyone reads a phantom-cell story into it.
 
 
 ## Standing caveats
