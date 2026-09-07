@@ -42,6 +42,35 @@ base_frame: "openarm_base"
 assets:
   urdf:
     ref: "file:openarm.urdf"
+    # openarm.urdf roots at `world`, NOT at this manifest's `base_frame`
+    # (`openarm_base`), so without this bridge nothing on /tf ever publishes
+    # `openarm_base` and every consumer that looks it up fails: sensor mounts
+    # (_sensor_wiring defaults `parent_frame` to base_frame), SlamMapBridge,
+    # and — once the octomap frames are manifest-derived — octomap_server and
+    # the world-cloud bridge.
+    #
+    # `root_frame` must be the URDF's ROOT (`world`), not the visually obvious
+    # `body_link0`: robot_state_publisher already publishes world->body_link0,
+    # so bridging onto body_link0 would give it two parents, and a frame with
+    # two parents is not a tree — tf2 lookups become order-dependent and start
+    # silently dropping data.
+    #
+    # The offset follows from the two mount points, which describe the SAME
+    # physical link (this file's note below: `openarm_*_link0` IS the MJCF's
+    # `openarm_*_base_link`, i.e. the URDF's `left_base_link`):
+    #
+    #   openarm_base -> openarm_left_link0  = [0, 0.031, 0]      (fixed_attachments)
+    #   body_link0   -> left_base_link      = [0, 0.031, 0.698]  (openarm.urdf)
+    #   world        -> body_link0          = identity           (openarm.urdf)
+    #   => openarm_base sits 0.698 m ABOVE world, so world expressed in
+    #      openarm_base is z = -0.698.
+    #
+    # This is additive TF only: `base_frame` is unchanged, so the MJCF-derived
+    # collision geometry and every existing origin in this manifest keep their
+    # frame. It is the mechanism UrdfAsset already documents for exactly this
+    # case ("Franka's panda_link0 mounted onto a base_link mobile platform").
+    root_frame: "world"
+    base_to_root_xyz_rpy: [0.0, 0.0, -0.698, 0.0, 0.0, 0.0]
   mjcf: "openarm:bimanual"
   # Hand-reviewed ACM exemptions (rest-pose contacts the sweep can't prove);
   # unioned into the MJCF lowering - see the SRDF header for the paper trail.
