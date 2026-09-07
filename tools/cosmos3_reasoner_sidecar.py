@@ -29,34 +29,46 @@ on a Nemotron backbone but keeps the message format), so the default
 Override with ``--tool-call-parser`` if a future vLLM ships a dedicated cosmos3
 parser.
 
-Edge weight layout — the flattened reasoner view. ``nvidia/Cosmos3-Edge`` is
-published as a *diffusers* ``Cosmos3OmniPipeline``: the reasoner weights live in
-the ``transformer/`` (and ``vision_encoder/``) subfolders, and the top-level
-``model.safetensors.index.json`` maps every tensor to those subfolder paths.
-vLLM's weight loader only resolves *bare top-level* filenames, so serving the
-repo id directly fails with "Cannot find any model weights". :func:`materialize_reasoner_view`
-builds a small directory of symlinks (bare-named shards + a rewritten index +
-tokenizer/config) that vLLM can read; the sidecar serves that view with
-``--served-model-name nvidia/Cosmos3-Edge`` so the client's ``model_id`` still
-matches. Verified live on an RTX 4070 (8 GB): with the view + the transformers
-overlay below, vLLM loads the reasoner (~6.4 GB resident at BF16, 8192-token KV)
-and reports "Application startup complete".
+Edge weight layout — TWO paths, chosen by what the serving vLLM can do.
+``nvidia/Cosmos3-Edge`` is published as a *diffusers* ``Cosmos3OmniPipeline``:
+the reasoner weights live in the ``transformer/`` (and ``vision_encoder/``)
+subfolders, and the top-level ``model.safetensors.index.json`` maps every
+tensor to those subfolder paths.
 
-UPSTREAM STATUS (2026-07-21). With the *pinned stable* vLLM (0.24.0, this
-lock), serving loads but the first forward pass crashes in transformers'
-``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids`` — a bug in vLLM's
-Transformers-multimodal fallback path; the model itself is sound at ~46 tok/s
-under plain ``transformers.generate``). **Fixed on vLLM ``main``**: the native
-``Cosmos3EdgeForConditionalGeneration`` (vllm-project/vllm#48291, merged
-2026-07-14, in no release yet) bypasses that path, reads the diffusers
-subfolder layout by repo id (no flat view needed), and — with the one-line
-``k_norm_und_for_gen`` weight-filter from the still-open #49190 — served a
-**validated end-to-end reasoner tool call live on the 8 GB RTX 4070**
-(1.5–2 s/tick warm; ``--kv-cache-dtype fp8`` required for the 8192 window on
-8 GB). Bump this lock to the first vLLM release containing #48291 + #49190 and
-retire :func:`materialize_reasoner_view` for Edge; until then the pinned stable
-serve remains blocked and the cloud/local reasoner baselines are the working
-default. Full findings + reproduction in
+* **Transformers-fallback vLLM** — its weight loader resolves only *bare
+  top-level* filenames, so serving the repo id fails with "Cannot find any
+  model weights". :func:`materialize_reasoner_view` builds a directory of
+  symlinks (bare-named shards + rewritten index + tokenizer/config) it can
+  read. Verified live on an RTX 4070 (8 GB): ~6.4 GB resident at BF16,
+  8192-token KV, "Application startup complete".
+* **Native vLLM** (carrying vllm#48291) — reads the diffusers layout by path,
+  and the flattened view **breaks** it: observed on a Jetson AGX Thor with
+  vLLM 0.28.0, ``RuntimeError: Cannot find any model weights with
+  …/Cosmos3-Edge-reasoner``. Serving the snapshot directory as-is loads it
+  (3 shards, 4.66 GiB, 5.71 s).
+
+:func:`vllm_has_native_edge_model` asks the venv's own ``ModelRegistry`` which
+of the two it is, rather than comparing version strings; either way
+``--served-model-name nvidia/Cosmos3-Edge`` keeps the client's ``model_id``
+matching.
+
+UPSTREAM STATUS — **platform-dependent, and the lock resolves differently
+per platform**. On x86_64 this lock pins vLLM 0.24.0, whose Transformers
+fallback loads the Edge tier but crashes on the first forward pass in
+``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids``; the model itself is
+sound at ~46 tok/s under plain ``transformers.generate``). The native
+``Cosmos3EdgeForConditionalGeneration`` (vllm-project/vllm#48291) bypasses that
+path — it served a **validated end-to-end reasoner tool call live on an 8 GB
+RTX 4070** on a nightly (1.5–2 s/tick warm; ``--kv-cache-dtype fp8`` for the
+8192 window on 8 GB).
+
+On **linux-aarch64** the same lock resolves **vLLM 0.28.0**, which already
+carries #48291: a Jetson AGX Thor logs ``Resolved architecture:
+Cosmos3EdgeForConditionalGeneration`` and loads the weights natively. So the
+"blocked" verdict is an x86 statement, not a global one — hence the runtime
+probe rather than a hardcoded assumption. Retire
+:func:`materialize_reasoner_view` for Edge once *every* supported platform
+resolves a vLLM with #48291. Full findings + reproduction in
 ``docs/reference/cosmos3-edge-reasoner.md``.
 
 Usage::
@@ -80,6 +92,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -232,14 +245,74 @@ def _relink(link: Path, target: Path) -> None:
     link.symlink_to(target)
 
 
-def resolve_served_model(model: str, home: Path) -> tuple[str, str | None]:
+def vllm_has_native_edge_model(py: Path) -> bool:
+    """Whether the serving venv's vLLM ships the native Edge model.
+
+    ``Cosmos3EdgeForConditionalGeneration`` arrived upstream in
+    `vllm#48291 <https://github.com/vllm-project/vllm/pull/48291>`_, after the
+    0.24.0 release the x86 branch of the lock pins but well before the 0.28.0
+    the aarch64 branch resolves. Which of the two a host gets therefore decides
+    how the weights must be served (see :func:`resolve_served_model`), so this
+    asks vLLM's own registry rather than comparing version strings — the
+    registry is the thing that actually decides.
+
+    Args:
+        py: The serving venv's interpreter.
+
+    Returns:
+        ``True`` only on a clean, affirmative answer. Any failure (import
+        error, timeout, a vLLM too old to have the registry helper) returns
+        ``False``, which selects the flattened-view path that worked before
+        this probe existed.
+    """
+    probe = (
+        "from vllm.model_executor.models.registry import ModelRegistry;"
+        "print('Cosmos3EdgeForConditionalGeneration' in ModelRegistry.get_supported_archs())"
+    )
+    try:
+        done = subprocess.run(  # reason: argv list, interpreter path is ours
+            [str(py), "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.stdout.strip().splitlines()[-1:] == ["True"]
+
+
+def resolve_served_model(
+    model: str, home: Path, *, native_edge: bool = False
+) -> tuple[str, str | None]:
     """Resolve ``model`` to a vLLM ``serve`` target + optional served-model-name.
 
     * A local directory is served verbatim (``served_name`` = ``None``).
-    * A HF repo id is snapshot-downloaded; an Edge diffusers layout is turned
-      into a flat reasoner view (:func:`materialize_reasoner_view`) served with
-      ``served_name = model`` so the client's ``model_id`` still matches, while
-      Nano/Super (standard layout) are served by their repo id directly.
+    * A HF repo id is snapshot-downloaded. An Edge diffusers layout is then
+      served one of two ways, because the two vLLM generations read it
+      differently:
+
+      - **Native** (``native_edge=True``, i.e. a vLLM carrying vllm#48291):
+        the snapshot directory is served **as-is**. The native implementation
+        follows the diffusers subfolder ``weight_map`` itself. Handing it the
+        flattened view instead fails outright — observed on a Jetson AGX Thor
+        with vLLM 0.28.0: ``RuntimeError: Cannot find any model weights with
+        …/Cosmos3-Edge-reasoner``.
+      - **Transformers fallback** (``native_edge=False``): the flattened view
+        (:func:`materialize_reasoner_view`), because that loader cannot follow
+        the subfolder ``weight_map``.
+
+      Either way ``served_name = model`` keeps the client's ``model_id``
+      matching. Nano/Super (standard layout) are served by repo id directly.
+
+    Args:
+        model: Repo id or local directory.
+        home: Sidecar work directory the flattened view is built under.
+        native_edge: Whether the serving vLLM has the native Edge model —
+            :func:`vllm_has_native_edge_model` answers this.
+
+    Returns:
+        ``(serve_target, served_model_name_or_None)``.
     """
     if Path(model).is_dir():
         return model, None
@@ -249,6 +322,8 @@ def resolve_served_model(model: str, home: Path) -> tuple[str, str | None]:
     snapshot = Path(snapshot_download(model))
     if not is_diffusers_reasoner_layout(snapshot):
         return model, None
+    if native_edge:
+        return str(snapshot), model
     view = materialize_reasoner_view(snapshot, home / f"{model.rsplit('/', 1)[-1]}-reasoner")
     return str(view), model
 
@@ -364,9 +439,21 @@ def main() -> int:
     # from the venv's actual torch rather than hardcoding either name.
     env.setdefault(alloc_conf_var(venv_torch_version(py.parent.parent)), "expandable_segments:True")
 
-    # Download + (for the Edge diffusers layout) build the flat reasoner view
-    # vLLM can load; served_name keeps the public model id stable.
-    served_path, served_name = resolve_served_model(args.model, args.home)
+    # FlashInfer's sampler is JIT-compiled on first use and needs the CUDA
+    # toolkit headers. A JetPack 7 Jetson has the runtime but not those headers,
+    # so engine init died in `determine_available_memory` with
+    # `flashinfer/sampling.cuh:20:10: fatal error: curand.h: No such file or
+    # directory` — a hard boot dependency on a toolchain the sidecar never
+    # otherwise needs, to accelerate sampling for a 4B model ticking at 0.2 Hz.
+    # Prefer vLLM's PyTorch sampler; an operator who has the headers (and wants
+    # the speed) can export the var to re-enable it.
+    env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+
+    # Download + serve the Edge diffusers layout the way THIS vLLM reads it:
+    # snapshot dir as-is for the native model, flattened view for the
+    # Transformers fallback. served_name keeps the public model id stable.
+    native_edge = vllm_has_native_edge_model(py)
+    served_path, served_name = resolve_served_model(args.model, args.home, native_edge=native_edge)
 
     cmd = build_serve_argv(
         vllm_bin=py.parent / "vllm",
@@ -380,16 +467,19 @@ def main() -> int:
         served_model_name=served_name,
         kv_cache_dtype=args.kv_cache_dtype,
     )
-    if "edge" in args.model.lower():
+    if "edge" in args.model.lower() and not native_edge:
         # Don't let a zero-config user sit through a ~30-minute first boot and
         # then hit HTTP 500s without ever being told why (see UPSTREAM STATUS
-        # in the module docstring): the hash-locked stable vLLM boots the Edge
-        # tier but crashes on the first forward pass until a vLLM release
-        # ships the native model (vllm#48291 + vllm#49190).
+        # in the module docstring). This applies ONLY to a vLLM without the
+        # native Edge model: there the Transformers-fallback backend boots the
+        # Edge tier and then crashes on the first forward pass. A vLLM carrying
+        # vllm#48291 (the aarch64 branch of the lock resolves one) has no such
+        # problem, so warning there would be false.
         print(
-            "[cosmos3-sidecar] WARNING: with the pinned stable vLLM this Edge server "
-            "boots but is expected to fail on inference (upstream cosmos3_edge "
-            "get_rope_index bug — fixed on vLLM main, unreleased). See "
+            "[cosmos3-sidecar] WARNING: this vLLM has no native "
+            "Cosmos3EdgeForConditionalGeneration, so the Edge server boots via the "
+            "Transformers fallback and is expected to fail on inference (upstream "
+            "cosmos3_edge get_rope_index bug). See "
             "docs/reference/cosmos3-edge-reasoner.md; use a cloud/local reasoner "
             "baseline meanwhile, or MODEL=nvidia/Cosmos3-Nano on a >=24 GB GPU.",
             flush=True,

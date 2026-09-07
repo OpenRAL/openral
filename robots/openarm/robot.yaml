@@ -289,8 +289,29 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
+  # `gripper_position` is executable here ONLY inside a slot group (ADR-0102).
+  # `rskill_runner_node._dispatch_slots` emits a gripper slot as
+  # `Action(GRIPPER_POSITION, gripper=[v], ee_name=..., joint_targets=None)`,
+  # which is not a whole-robot command on its own; `OpenArmRealHAL` stages the
+  # tick's four slots (left arm / left gripper / right arm / right gripper) and
+  # composes them into the single 16-DoF joint vector the four bimanual
+  # controllers are commanded from. A STANDALONE gripper action has nowhere to
+  # go and is refused loudly — never dropped silently, which is what the
+  # pre-ADR-0102 `if action.joint_targets is None: return` did.
+  #
+  # NOTE the digital twin does NOT yet do this: `OpenArmMujocoHAL` inherits
+  # `_mujoco_arm._validate_action`, which calls `_require_control_mode(action,
+  # JOINT_POSITION)` and raises on a gripper slot. `deploy sim` admits this
+  # skill regardless (the sim gate uses SIM_EXECUTABLE_CONTROL_MODES, not this
+  # list), so the twin needs the same staging before it can run the contract.
+  #
+  # Do not add a mode the HAL cannot place:
+  # `tests/unit/test_openarm_real_hal.py` pins this list against what
+  # `send_action` actually dispatches, so an over-declaration fails there
+  # rather than on hardware.
   supported_control_modes:
     - "joint_position"
+    - "gripper_position"
   supported_vla_embodiments:
     - "openarm_v2"
     - "openarm"

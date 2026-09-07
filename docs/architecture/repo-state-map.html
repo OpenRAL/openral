@@ -1107,6 +1107,15 @@ const LAYERS = [
         schemas: ["SensorFrame", "FrameEncoding"],
       },
       {
+        title: "Ros2ImageSensorReader",
+        pkg: "python/runner · openral_runner.backends.ros2_image",
+        status: "green",
+        desc: "Backend for streams a device cannot emit: a ZED presents ONE side-by-side UVC node over USB and its depth is computed on the host GPU by the ZED SDK, published only as a ROS topic (same for RealSense aligned depth). The stereolabs/zed_mini catalog bundle has always declared a depth stream; with `ros2_image` in the SensorReaderBackend enum but ABSENT from SENSOR_BACKEND_REGISTRY, selecting it raised `unknown sensor reader backend`, so that declaration was undeliverable. Subscribes with the sensor-data QoS class (BEST_EFFORT/VOLATILE/KEEP_LAST=5 — also the compatible-in-both-directions choice, since a RELIABLE subscriber silently gets nothing from a BEST_EFFORT publisher), buffers the newest message, serves it through the same read_latest staleness contract. Converts 32FC1 metre depth to the DEPTH16 uint16-millimetre layout, mapping non-finite / out-of-range samples to 0 (ROS `no reading`) rather than letting a uint16 wrap into a confident near distance. Owns no device; node ownership mirrors SensorRosPublisher (inject one, or it spins a private node). Tested in tests/unit/test_ros2_image_sensor_reader.py: 15 tests including two REAL DDS round-trips (rclpy publisher -> subscription, rgb8 and 32FC1 depth) on an isolated ROS_DOMAIN_ID with LOCALHOST discovery.",
+        inputs: ["sensor_msgs/Image"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorFrame", "FrameEncoding", "SensorReaderConfig"],
+      },
+      {
         title: "GStreamerSensorReader (PR I, M8)",
         pkg: "python/runner · openral_runner.backends.gstreamer",
         status: "green",

@@ -435,6 +435,9 @@ class ROSPublishingHAL:
         chunk.rskill_revision = self._skill_revision_getter()
         chunk.tick_index = int(self._tick_index_getter()) & 0xFFFFFFFF
         chunk.tick_group_size = int(action.tick_group_size) & 0xFFFF
+        # ADR-0102 — empty list = "whole-vector action in description.joints
+        # order", the pre-0102 meaning that every single-slot skill still has.
+        chunk.joint_names = list(action.joint_names or ())
         # trace_id is the join key. Source it from the
         # active OTel span context via the existing W3C helper so the
         # field stays in lock-step with the OTel parent.

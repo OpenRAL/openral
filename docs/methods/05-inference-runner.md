@@ -45,9 +45,9 @@ _:class:`SensorReader` Protocol — seam between per-sensor capture backends and
 - `class SensorReader(Protocol)` — `@runtime_checkable` Protocol; concrete backends live under `openral_runner.backends`. (L29)
   - attr `sensor_id: str` — matches `SensorReaderConfig.sensor_id`.
   - attr `is_open: bool` — True between `open()` and `close()`.
-  - `open() -> None` — Acquire device, start background workers. Idempotent. (L51)
-  - `close() -> None` — Release device, join workers. Idempotent. (L60)
-  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Non-blocking peek at the most recent buffered frame; raises `ROSPerceptionStale` if no frame yet or freshest exceeds budget. (L67)
+  - `open() -> None` — Acquire device, start background workers. Idempotent. (L55)
+  - `close() -> None` — Release device, join workers. Idempotent. (L64)
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Non-blocking peek at the most recent buffered frame; raises `ROSPerceptionStale` if no frame yet or freshest exceeds budget. (L71)
 
 ### `python/runner/src/openral_runner/backends/opencv_thread.py`
 _:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-camera-thread pattern._
@@ -64,6 +64,22 @@ _:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-ca
   - `__enter__() / __exit__()` — Context-manager sugar; calls `open` / `close`. (L236)
   - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Lock-protected snapshot of the `_latest_frame` slot; constructs a `SensorFrame` with inlined raw bytes; raises `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on closed reader. (L247)
   - `_read_loop()` — Background daemon: `cv2.VideoCapture.read` → `_latest_frame + _latest_stamp_*_ns` under lock; sleeps `1/fps` on read failure / EOF. (L330)
+
+### `python/runner/src/openral_runner/backends/ros2_image.py`
+_:class:`Ros2ImageSensorReader` — the backend for streams a device cannot emit.  A StereoLabs ZED presents ONE side-by-side UVC node over USB; its depth is computed on the host GPU by the ZED SDK and only ever **published**.  Same for RealSense aligned depth.  The catalog's `stereolabs/zed_mini` bundle has always declared a depth stream; before this backend nothing could subscribe to it, so the declaration was undeliverable._
+
+- module constant `_DIRECT_ENCODINGS` — `sensor_msgs/Image.encoding` → `(FrameEncoding, numpy dtype, channels)` for `rgb8` / `bgr8` / `mono8` / `8UC1` / `8UC3` / `mono16` / `16UC1`. Anything not listed is refused **by name**, not misread as pixels.
+- module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` — float metre depth (what the ZED SDK publishes), converted on the way in.
+- module constant `_DEPTH16_MAX_MM = 65535` — the uint16-millimetre ceiling of `FrameEncoding.DEPTH16`.
+- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` — Unpacks an `Image` payload into pixels **honouring `msg.step`**, the published row stride. It equals the packed row length only when the publisher packs rows tightly: Isaac/NITROS hand out pitch-aligned buffers and an ROI crop keeps its parent's stride, and reading such a payload as `height x width` raises — which `_on_image` downgrades to a WARN, so the sensor goes permanently `ROSPerceptionStale` and reads like a dead camera. `step` is trusted only when it is at least the packed length, divides the item size, and the payload holds `height` such rows; otherwise the packed stride is used, so a publisher with a wrong `step` fails as before rather than silently yielding a skewed image.
+- `_depth32f_to_depth16(metres) -> NDArray[uint16]` — float32 metres → uint16 millimetres. `FrameEncoding` has no float-depth member and every downstream consumer (nvblox / octomap / the world-cloud bridge) speaks uint16 mm, so the conversion happens once here. Non-finite samples (`NaN` = a stereo matcher's "no match", `inf` = beyond range) and anything outside `[0, 65.535] m` become **0**, the ROS "no reading" value — the fail-safe direction, since a wrapped `uint16` would report a confident, wrong, *near* distance for something far away.
+- `class Ros2ImageSensorReader` — Subscribes to a driver topic, keeps the newest message in a one-slot buffer, serves it through the same non-blocking `read_latest` staleness contract as every other backend. Owns no device.
+  - `__init__(*, sensor_id, topic, default_max_age_ms=100, reliability="best_effort", qos_depth=5, node=None)` — Config only; rejects an empty `topic` and an unknown `reliability`. Node ownership mirrors `SensorRosPublisher`: a composed runtime injects its node, a standalone caller gets a private one.
+  - QoS defaults to the **sensor data** class (CLAUDE.md §2: `BEST_EFFORT`, `VOLATILE`, `KEEP_LAST=5`), which is also the compatible-in-both-directions choice — a `BEST_EFFORT` subscriber matches a `RELIABLE` publisher, while a `RELIABLE` subscriber receives **nothing** from a `BEST_EFFORT` one, a mismatch that reads exactly like a dead camera. `read_latest`'s no-frame-yet message names that trap.
+  - `open() / close()` — Create/destroy the subscription; when the reader owns its node it also spins a `SingleThreadedExecutor` daemon thread and only calls `rclpy.shutdown()` if it was the one that init'd. Both idempotent — `close` guards on each resource it releases rather than on `is_open`, which `open` sets **last**, so an `open` that failed after creating the node (or after `rclpy.init`) is still cleaned up. `rclpy` / `sensor_msgs` are lazy-imported so the runner stays importable without ROS.
+  - `read_latest(max_age_ms=None) -> SensorFrame` — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data` (**not** a `topic` reference) — every consumer needs the bytes.
+  - `_on_image(msg)` — Subscription callback. Conversion failures are counted + logged, never raised: this runs on the executor thread, where an exception would kill the spin loop and silently stop the camera. A stopped reader surfaces through the staleness contract instead.
+  - `_byte_order(msg)` — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
@@ -87,10 +103,10 @@ _Shared native transport for public A1 Runtime local services._
   Exact shape/dtype/data ndarray wire helpers.
 
 ### `python/runner/src/openral_runner/backends/__init__.py`
-_Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` (PR I) + `Ros2ImageSensorReader` gate on optional deps._
+_Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` gates on PyGObject and `Ros2ImageSensorReader` on a ROS 2 install (both lazy-imported at `open()`)._
 
 - `OpenCVThreadSensorReader` — lazy-exported via PEP 562 `__getattr__` (M8 PR I/8) so importing `openral_runner.backends.gstreamer` does NOT eagerly pull in `cv2`. cv2 initialises glib state that segfaults a subsequent `rclpy.Node()` inside the x86-ros Docker image; the lazy split keeps the gstreamer-only path importable in ROS-enabled processes.
-- `__getattr__(name) -> Any` — PEP 562 attribute hook; resolves `OpenCVThreadSensorReader` on first access via `importlib.import_module`. (L27)
+- `__getattr__(name) -> Any` — PEP 562 attribute hook; resolves `OpenCVThreadSensorReader` on first access via `importlib.import_module`. (L28)
 
 ### `python/runner/src/openral_runner/backends/gstreamer/pipeline.py`
 _GStreamer pipeline-string builder + platform detection. Pure-Python — does **not** import `gi` at module load._
@@ -210,10 +226,11 @@ _Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): h
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
 - `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L92)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`, `galaxea_a1_camera_bridge`. (L325)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L362)
 - `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L48)
 - `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L69)
-- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L98)
+- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`.
+- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L325)
 - `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L138)
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   native A1 Runtime paired-camera connector. Accepts only `camera`; unknown

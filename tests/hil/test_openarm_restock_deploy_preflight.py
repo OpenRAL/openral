@@ -9,7 +9,10 @@ the physical CAN links and the three physical cameras.
 Deliberately stops short of two things:
 
 - **Actuation.** Nothing here commands a joint. The HAL is connected and its
-  bus preflight is exercised, then disconnected.
+  bus preflight is exercised, then disconnected. The ADR-0102 checks go one
+  step further and build the real command messages, but through the adapter's
+  ``publish_fn`` seam, so they never reach the wire — see
+  :func:`test_the_policys_flat_vector_reaches_the_four_controllers_intact`.
 - **Inference.** Loading 6.74 GiB of BF16 weights and running a forward pass
   is a different tier of test (and needs the policy's processors, which are
   gated behind the PaliGemma tokenizer). This checks the *plumbing* around the
@@ -149,6 +152,192 @@ def test_hal_builds_from_the_scene_and_passes_its_bus_preflight() -> None:  # pr
         assert health["left_can"] == "openarm_left"
         assert health["right_can"] == "openarm_right"
         assert len(hal.command_topics()) == 4
+    finally:
+        hal.disconnect()
+
+
+# ── ADR-0102: the slot-dispatched 16-DoF vector ───────────────────────────────
+#
+# Why these run here and not only as unit tests: the unit suite hand-builds the
+# slot group and hand-builds the HAL. These drive the REAL dispatcher over the
+# REAL rSkill manifest's `slots:` block into a REAL `OpenArmRealHAL` that has
+# passed its bus preflight against the physically wired cell, so a manifest /
+# robot-manifest / adapter disagreement about joint ORDER shows up here and
+# nowhere else.
+#
+# Why they cannot move the arm, whether or not it is powered: the only path
+# from the four command topics to `openarm_can` and the motors is
+# `openarm_bringup`'s ros2_control stack (CLAUDE.md §1.5 — the 400 Hz loop is
+# C++, not Python). These tests never publish to ROS at all; they collect the
+# messages through the adapter's own `publish_fn` seam, in-process. There is no
+# subscriber because there is no publication.
+
+
+def _slot_actions_from_the_real_manifest(tick: int = 1) -> list:  # pragma: no cover
+    """Run the production dispatcher over the committed rSkill's slot block.
+
+    The policy vector is ``[0.0, 1.0, … 15.0]`` — every value equals the index
+    of the joint it must reach, and `robots/openarm/robot.yaml` orders its 16
+    joints ``left_joint1..7, left_gripper, right_joint1..7, right_gripper``. So
+    any misroute, off-by-one, or side swap shows up as a value that does not
+    match its position, rather than as a plausible-looking pose.
+    """
+    import numpy as np
+    from openral_core.schemas import RobotDescription, RSkillManifest
+    from openral_rskill_ros.rskill_runner_node import _dispatch_slots
+
+    manifest = RSkillManifest.from_yaml(str(RSKILL))
+    robot = RobotDescription.from_yaml(str(ROBOT))
+    vector = np.arange(16, dtype=np.float32)
+    actions = _dispatch_slots(manifest.action_contract.slots, vector, description=robot)
+    for action in actions:
+        # `_dispatch_slots` sets `tick_group_size`; `tick_index` is the runner
+        # node's (`tick_index_getter`), so supply it the way the wire does.
+        action.tick_index = tick
+    return actions
+
+
+@requires_can
+def test_the_policys_flat_vector_reaches_the_four_controllers_intact() -> None:  # pragma: no cover
+    """The whole ADR-0102 path on the real cell: policy vector → four messages.
+
+    This is the contract `rskill-pi05-openarm-restock_shelf-bf16` needs and the
+    one that silently did not hold before ADR-0102: the OpenArm could not
+    declare `gripper_position`, so `send_action` returned early on
+    `joint_targets is None` and **discarded the gripper command** — arms moving,
+    grippers never actuating, nothing on the wire to say so.
+    """
+    import inspect
+
+    from openral_core.schemas import DeployScene, RobotDescription
+    from openral_hal.openarm_real import OpenArmRealHAL
+
+    pytest.importorskip("openral_rskill_ros", reason="needs the built ROS overlay")
+
+    robot = RobotDescription.from_yaml(str(ROBOT))
+    scene = DeployScene.from_yaml(str(SCENE))
+    params = {**robot.hal.parameters.defaults, **(scene.hal.defaults if scene.hal else {})}
+    accepted = set(inspect.signature(OpenArmRealHAL.__init__).parameters)
+
+    sent: list[tuple[str, dict]] = []
+    hal = OpenArmRealHAL(
+        robot,
+        publish_fn=lambda topic, msg: sent.append((topic, msg)),
+        **{k: v for k, v in params.items() if k in accepted},
+    )
+    hal.connect()  # real bus preflight against the wired cell
+    try:
+        actions = _slot_actions_from_the_real_manifest()
+        assert len(actions) == 4, "the committed manifest declares four slots"
+        assert {int(a.tick_group_size) for a in actions} == {4}
+
+        for action in actions[:3]:
+            hal.send_action(action)
+        assert sent == [], "atomicity: three of four slots must publish nothing"
+
+        hal.send_action(actions[3])
+        left_arm, left_grip, right_arm, right_grip = hal.command_topics()
+        by_topic = {topic: msg for topic, msg in sent}
+        assert set(by_topic) == {left_arm, left_grip, right_arm, right_grip}
+
+        # Every value equals its joint index, so this is the misroute check.
+        assert by_topic[left_arm]["joint_targets"] == [[0.0, 1, 2, 3, 4, 5, 6]]
+        assert by_topic[left_grip]["joint_targets"] == [[7.0]]
+        assert by_topic[right_arm]["joint_targets"] == [[8.0, 9, 10, 11, 12, 13, 14]]
+        assert by_topic[right_grip]["joint_targets"] == [[15.0]]
+
+        # Each controller must also be told which joints it was handed — and in
+        # the ros2_control namespace, NOT the manifest's. The policy and the
+        # manifest say `left_joint1`; the URDF and `openarm_bringup`'s
+        # controllers say `openarm_left_joint1`, and the adapter translates
+        # (`OpenArmRealHAL` docstring, `ros2_control_joint_names`). Publishing
+        # the manifest names would leave every controller rejecting the command
+        # as naming joints it does not own. Asserted against the HAL's own
+        # public accessor, sliced by the four spans, so this pins the
+        # translation itself rather than restating a literal.
+        control_names = hal.ros2_control_joint_names()
+        assert control_names[0] == "openarm_left_joint1", "ros2_control namespace expected"
+        assert by_topic[left_arm]["joint_names"] == control_names[0:7]
+        assert by_topic[left_grip]["joint_names"] == control_names[7:8]
+        assert by_topic[right_arm]["joint_names"] == control_names[8:15]
+        assert by_topic[right_grip]["joint_names"] == control_names[15:16]
+    finally:
+        hal.disconnect()
+
+
+@requires_can
+def test_slot_arrival_order_does_not_change_what_the_controllers_get() -> None:  # pragma: no cover
+    """ADR-0102's point: addressing is by name, not by arrival order.
+
+    Before it, `behavior._compose_action_group` unpacked positionally, making a
+    manifest's `slots:` ordering a load-bearing but unwritten wire contract.
+    """
+    import inspect
+
+    from openral_core.schemas import DeployScene, RobotDescription
+    from openral_hal.openarm_real import OpenArmRealHAL
+
+    pytest.importorskip("openral_rskill_ros", reason="needs the built ROS overlay")
+
+    robot = RobotDescription.from_yaml(str(ROBOT))
+    scene = DeployScene.from_yaml(str(SCENE))
+    params = {**robot.hal.parameters.defaults, **(scene.hal.defaults if scene.hal else {})}
+    accepted = set(inspect.signature(OpenArmRealHAL.__init__).parameters)
+
+    runs: list[list[tuple[str, dict]]] = []
+    for reverse in (False, True):
+        sent: list[tuple[str, dict]] = []
+        hal = OpenArmRealHAL(
+            robot,
+            publish_fn=lambda topic, msg, sink=sent: sink.append((topic, msg)),
+            **{k: v for k, v in params.items() if k in accepted},
+        )
+        hal.connect()
+        try:
+            actions = _slot_actions_from_the_real_manifest()
+            for action in reversed(actions) if reverse else actions:
+                hal.send_action(action)
+        finally:
+            hal.disconnect()
+        runs.append(sorted(sent, key=lambda pair: pair[0]))
+    assert runs[0] == runs[1]
+
+
+@requires_can
+def test_a_standalone_gripper_action_raises_instead_of_vanishing() -> None:  # pragma: no cover
+    """The exact silent failure ADR-0102 exists to end, checked on the cell.
+
+    A lone gripper action has nowhere to go — the four bimanual controllers are
+    driven from one 16-DoF vector — and the pre-0102 code dropped it without a
+    word. On a powered robot that is arms moving while the grippers never
+    actuate, which is why it must be loud.
+    """
+    import inspect
+
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.schemas import DeployScene, RobotDescription
+    from openral_hal.openarm_real import OpenArmRealHAL
+
+    pytest.importorskip("openral_rskill_ros", reason="needs the built ROS overlay")
+
+    robot = RobotDescription.from_yaml(str(ROBOT))
+    scene = DeployScene.from_yaml(str(SCENE))
+    params = {**robot.hal.parameters.defaults, **(scene.hal.defaults if scene.hal else {})}
+    accepted = set(inspect.signature(OpenArmRealHAL.__init__).parameters)
+
+    sent: list[tuple[str, dict]] = []
+    hal = OpenArmRealHAL(
+        robot,
+        publish_fn=lambda topic, msg: sent.append((topic, msg)),
+        **{k: v for k, v in params.items() if k in accepted},
+    )
+    hal.connect()
+    try:
+        gripper = _slot_actions_from_the_real_manifest()[1]
+        gripper.tick_group_size = 1  # arriving alone, not as part of a tick
+        with pytest.raises(ROSConfigError, match="standalone"):
+            hal.send_action(gripper)
+        assert sent == []
     finally:
         hal.disconnect()
 

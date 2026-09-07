@@ -21,3 +21,18 @@ string trace_id
 uint32 tick_index
 # Number of non-discard slots emitted for this tick. 1 = single-surface.
 uint16 tick_group_size
+
+# Robot joint names this chunk's `flat` rows target, in the slot's own
+# order (ADR-0102). Empty = the chunk is a whole-vector action in
+# `RobotDescription.joints` order, which is what every single-slot skill
+# emits and what every pre-0102 producer meant.
+#
+# A slot-dispatched JOINT_* chunk is padded to full dof (the kernel
+# enforces `chunk.n_dof == envelope.n_dof`) with ZEROS at non-target
+# joints, so the payload alone cannot say which joints it owns — and 0.0
+# is a legal joint target, so it never can. `ee_name` disambiguates
+# gripper/Cartesian slots; this does the same for JOINT_* slots, which is
+# the case two committed rSkills already hit (the OpenArm v2 bimanual
+# restock contract and gr00t-n17-b1k). When non-empty this is
+# AUTHORITATIVE over slot arrival order.
+string[] joint_names

@@ -494,7 +494,10 @@ them. Unrecognised layouts take `--scene-alias <scene>=<dir>`.
 What it **derives from the artifacts**, never asks for:
 
 - `stack_argv` — the stack tokens of the deploy log's own resolved
-  `argv: ros2 launch …` echo, which is the only record of what the CLI resolved.
+  `argv: … launch …` echo, which is the only record of what the CLI resolved.
+  The head varies (older rounds echo a bare `ros2 launch`, newer ones the
+  venv-wrapped `<venv>/bin/python …/ros2 launch`), so the line is found by its
+  `argv: ` prefix and a `launch` token; only `key:=value` tokens are read.
   Scenes that disagree are refused: two stacks are two rounds.
 - `started_at` — the first ROS timestamp in the log.
 - `repo_root`, `robot_id`, `robot_manifest_path` — from the argv's `robot_yaml:=`.

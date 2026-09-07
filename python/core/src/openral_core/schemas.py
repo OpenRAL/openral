@@ -3484,9 +3484,12 @@ class SensorFrame(BaseModel):
       capture. JSON-serialized as base64 by Pydantic, so payloads round-trip
       through ``model_dump_json`` / ``model_validate_json``.
     * ``topic`` points at a ROS 2 topic — the bytes live on the ROS 2 bus and
-      the consumer subscribes for them. This is the path the
-      ``Ros2ImageSensorReader`` uses and what :attr:`WorldState.images`
-      already carries.
+      the consumer subscribes for them, which is what :attr:`WorldState.images`
+      carries. Note the ``Ros2ImageSensorReader`` does NOT return this shape:
+      it subscribes on the caller's behalf and inlines the decoded pixels as
+      ``data``, because every ``read_latest`` consumer (the VLA observation
+      builder, trace capture, the republishing sensor leg) needs the bytes, not
+      a second subscription.
     * ``handle`` is an opaque integer (e.g. CUDA NVMM pointer, DMA-BUF file
       descriptor) — in-process only, never serialized. Set by the
       ``GStreamerSensorReader`` when frames stay on the GPU.
@@ -3951,6 +3954,11 @@ class Action(BaseModel):
             Cartesian-delta controller. Predictive safety applies
             ``clip(raw, -1, 1) * scale``; the raw delta remains unchanged for
             the HAL. ``None`` means the policy already emits physical units.
+        joint_names: Robot joint names this action's rows target, in the
+            emitting slot's order (ADR-0102). ``None`` = a whole-vector action in
+            ``RobotDescription.joints`` order. Set for JOINT_* slots, which are
+            zero-padded to full dof and so cannot otherwise say which joints they
+            own; authoritative over slot arrival order when present.
         tick_index: Shared 1-based inference tick for every slot emitted by one
             policy step. Preserved across the ROS safety wire so a simulation HAL
             can commit a multi-surface action atomically after every slot passes.
@@ -3981,6 +3989,15 @@ class Action(BaseModel):
     ee_name: str | None = None
     frame_id: str | None = None
     cartesian_delta_scale: tuple[float, ...] | None = None
+    # ADR-0102. Robot joint names this action's rows target, in the emitting
+    # slot's own order. ``None`` = a whole-vector action in
+    # ``RobotDescription.joints`` order (every single-slot skill, and every
+    # pre-0102 producer). Set by ``_dispatch_slots`` for JOINT_* slots, whose
+    # payload is zero-padded to full dof and therefore cannot say which joints
+    # it owns — 0.0 is a legal target, so no amount of introspection recovers
+    # it. ``ee_name`` already plays this role for gripper / Cartesian slots.
+    # When set, this is AUTHORITATIVE over slot arrival order.
+    joint_names: list[str] | None = None
     tick_index: int = Field(default=0, ge=0)
     tick_group_size: int = Field(default=1, ge=1)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
@@ -9909,10 +9926,11 @@ class SensorReaderBackend(str, Enum):
     ``opencv_thread`` is the default and mirrors lerobot's per-camera
     background-thread pattern. ``galaxea_a1_camera_bridge`` consumes the
     versioned paired raw-frame service owned by an external A1 Runtime process
-    without importing Runtime or opening either RealSense device. Three
-    additional backends are reserved.
-    ``ros2_image`` subscribes to a ROS 2 image topic published by
-    a vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink
+    without importing Runtime or opening either RealSense device.
+    ``ros2_image`` subscribes to a ROS 2 image topic published by a vendor
+    driver — the path for streams that exist only because an SDK computed them
+    (ZED stereo depth, RealSense aligned depth), which no ``/dev/video*`` read
+    can reach. ``gstreamer`` runs a GStreamer pipeline whose appsink
     delivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).
 
     ``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation
