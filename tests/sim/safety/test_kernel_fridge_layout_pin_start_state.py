@@ -150,8 +150,12 @@ _MANIFEST = str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
 _PIN_LAYOUT = 47
 _RETIRED_LAYOUT = 30
 
-#: The kernel's own world-voxel resolution in the deploy graph.
-_RES = 0.025
+#: The kernel's own world-voxel resolution in the deploy graph. Overridable so
+#: the resolution sweep in `docs/reference/collision-validation-evidence.md`
+#: (2026-09-07) is reproducible from the shipped test rather than from a probe
+#: that duplicates it -- the default is what `sim_e2e.launch.py` emits and what
+#: every assertion in this file is pinned against.
+_RES = float(os.environ.get("OPENRAL_FRIDGE_GRID_RES_M", "0.025"))
 #: Padding around the arm's own extent. The widest corner slop in this model is
 #: ``panda_link4``'s 88.22 mm and a 25 mm cell adds 21.65 mm of half-diagonal,
 #: so 200 mm leaves the nearest cell of every checked link inside the region.
@@ -178,6 +182,12 @@ _COLLIDING_POSE_DEG = {"panda_joint1": -76.0, "panda_joint2": 4.0}
 #: ``panda_link5``'s corner slop is 66.98 mm and the cell half-diagonal adds
 #: 21.65 mm, but neither term can produce *mesh* interpenetration at all.
 _GENUINE_PENETRATION_M = -0.100
+
+#: Chunks timed in the narrow-phase latency test, and the p99 target. 33 ms is
+#: the hard 30 Hz chunk ceiling the kernel's real-time contract rests on; 30 ms
+#: leaves headroom for a dev host that is not a benchmark rig.
+_LATENCY_CHUNKS = 200
+_P99_BUDGET_MS = 30.0
 
 #: A margin that separates the two layouts. Below the retired layout's clearance
 #: on this grid (+19.09 mm) and above nothing else that matters; see the sweep in
@@ -629,3 +639,131 @@ def test_a_genuinely_colliding_pose_is_refused_at_zero_margin(colliding: _StartS
         f"{colliding.driven_link} {colliding.penetration_m * 1000:.2f} mm inside the fixture"
     )
     assert str(evidence["link_b_or_object"]).startswith("voxel_")
+
+
+def test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid(pinned: _StartState) -> None:
+    """p99 round-trip under the 30 Hz chunk budget, with the hull narrow phase live.
+
+    THE GAP THIS CLOSES. ``tests/sim/safety/test_kernel_latency_soak.py`` is the
+    only latency surface the kernel has, and it publishes **no**
+    ``OccupancyVoxels`` at all — it runs a synthetic ``soak_test`` envelope with
+    no ``collision_geometry``, so the staged 26-DOP → hull narrow phase never
+    executes. Its pass is therefore vacuous for any change to that phase, which
+    is the kernel's dominant cost: the shipped benchmark
+    (``docs/reference/collision-hull-narrow-phase.md`` §4) puts the seven link
+    windows at 10 475 cells and ~5.8 ms, against ~8.8 µs on an empty grid. The
+    same class of hole #183 found in the Nav2 live tests.
+
+    This is the only place in the tree with a **real** grid: a real RoboCasa
+    kitchen rasterised cell by cell, thousands of occupied cells, the real
+    manifest (so all seven links lower their tight geometry) and the real kernel
+    binary. It is deliberately measured at ``world_voxel_margin_m = 0.0``, the
+    sim value ``panda_mobile`` actually runs.
+
+    The budget is the same one the soak asserts — 33 ms is the hard 30 Hz chunk
+    ceiling — but the target here is looser (30 ms), because this path does real
+    geometric work the soak's does not and the host is not a controlled
+    benchmark rig. A regression that pushes the narrow phase past the chunk rate
+    fails here rather than silently eating headroom.
+    """
+    import rclpy
+    from geometry_msgs.msg import Point, Quaternion
+    from openral_msgs.msg import ActionChunk, OccupancyVoxels
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from sensor_msgs.msg import JointState
+
+    assert pinned.occupied > 1000, (
+        f"only {pinned.occupied} occupied cells — too empty to exercise the narrow phase"
+    )
+    desc = RobotDescription.from_yaml(_MANIFEST)
+    node_name = f"fridge_lat_{uuid.uuid4().hex[:8]}"
+    proc = start_kernel(_kernel_params(desc, 0.0), node_name, isolated_domain_id())
+    try:
+        time.sleep(1.5)
+        rclpy.init()
+        try:
+            helper = rclpy.create_node("fridge_lat_helper")
+            assert activate_kernel_node(node_name, helper), "kernel activation failed"
+
+            seen: dict[str, float] = {}
+            helper.create_subscription(
+                ActionChunk,
+                "/openral/safe_action",
+                lambda m: seen.setdefault(m.trace_id, time.perf_counter()),
+                50,
+            )
+            cand_pub = helper.create_publisher(ActionChunk, "/openral/candidate_action", 10)
+            voxel_pub = helper.create_publisher(
+                OccupancyVoxels,
+                "/openral/world_voxels",
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE),
+            )
+            js_pub = helper.create_publisher(
+                JointState,
+                "/joint_states",
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+            )
+            executor = SingleThreadedExecutor()
+            executor.add_node(helper)
+            deadline = time.time() + 5.0
+            while time.time() < deadline and cand_pub.get_subscription_count() < 1:
+                executor.spin_once(timeout_sec=0.05)
+
+            js = JointState()
+            js.name = pinned.joint_names
+            js.position = list(pinned.positions)
+            grid = OccupancyVoxels()
+            grid.header.frame_id = "base_link"
+            grid.origin = Point(
+                x=float(pinned.origin[0]), y=float(pinned.origin[1]), z=float(pinned.origin[2])
+            )
+            grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+            grid.resolution = _RES
+            grid.size_x, grid.size_y, grid.size_z = (int(v) for v in pinned.size)
+            grid.occupancy = [int(v) for v in pinned.occupancy.tolist()]
+
+            warm = time.time() + 2.0
+            while time.time() < warm:
+                js.header.stamp = helper.get_clock().now().to_msg()
+                grid.header.stamp = js.header.stamp
+                js_pub.publish(js)
+                voxel_pub.publish(grid)
+                executor.spin_once(timeout_sec=0.02)
+
+            chunk = ActionChunk()
+            chunk.control_mode = 5  # CARTESIAN_DELTA, the robocasa arm mode
+            chunk.horizon = 1
+            chunk.n_dof = 6
+            chunk.flat = [0.0] * 6
+            chunk.rskill_id = "openral/fridge-narrow-phase-latency"
+
+            sent: dict[str, float] = {}
+            for i in range(_LATENCY_CHUNKS):
+                trace = f"lat-{i:04d}"
+                js.header.stamp = helper.get_clock().now().to_msg()
+                grid.header.stamp = js.header.stamp
+                js_pub.publish(js)
+                voxel_pub.publish(grid)
+                chunk.trace_id = trace
+                sent[trace] = time.perf_counter()
+                cand_pub.publish(chunk)
+                end = time.time() + 0.5
+                while time.time() < end and trace not in seen:
+                    executor.spin_once(timeout_sec=0.005)
+
+            latencies = sorted((seen[t] - sent[t]) * 1e3 for t in sent if t in seen)
+            assert len(latencies) >= _LATENCY_CHUNKS * 0.9, (
+                f"only {len(latencies)}/{_LATENCY_CHUNKS} chunks came back; the kernel "
+                f"is dropping under a real grid, which is a worse finding than a slow p99"
+            )
+            p99 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.99))]
+            assert p99 < _P99_BUDGET_MS, (
+                f"narrow-phase p99 {p99:.1f} ms over the {_P99_BUDGET_MS:.0f} ms target on "
+                f"{pinned.occupied} occupied cells (33 ms is the hard 30 Hz chunk ceiling); "
+                f"median {latencies[len(latencies) // 2]:.1f} ms"
+            )
+        finally:
+            rclpy.shutdown()
+    finally:
+        terminate_kernel(proc)

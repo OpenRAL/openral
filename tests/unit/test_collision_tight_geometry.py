@@ -362,3 +362,70 @@ def test_a_hull_over_the_vertex_budget_is_refused() -> None:
     too_many = tuple((0.0, 0.0, 0.001 * k) for k in range(MAX_TIGHT_HULL_VERTICES + 1))
     with pytest.raises(ValueError, match="over the"):
         TightCollisionGeometry(dop_lo_m=lo, dop_hi_m=hi, hull_vertices_m=too_many)
+
+
+def test_refine_dop_to_budget_beats_the_dop_without_escaping_it() -> None:
+    """The generator's third option for a link whose exact hull is over budget.
+
+    ``panda_link1``'s exact hull is 1588 vertices against
+    ``MAX_TIGHT_HULL_VERTICES``, so ``derive_tight_geometry`` used to fall back
+    to the 26-DOP alone. ``refine_dop_to_budget`` intersects that DOP with the
+    exact hull's own tangent face planes instead, worst-violation first.
+
+    Nothing in ``robots/`` ships this envelope yet -- the 2026-09-07 battery
+    measured it moving link1's stops by 0.0003 mm, so the manifest change was
+    withdrawn and only the tool landed (``docs/reference/
+    collision-validation-evidence.md``, 2026-09-07). That is precisely why the
+    check has to live here: without a manifest exercising it, an unverified
+    generator path would rot until the next reviewer trusted it.
+
+    The three properties are the ones a safety-WG reviewer would have to
+    re-derive by hand, and they are structural rather than numeric:
+
+    * ``mesh ⊆ result`` -- every plane added is tangent to ``conv(mesh)``, so
+      no addition can cut the mesh;
+    * ``result ⊆ DOP`` -- the DOP's own slabs are never removed, which is what
+      the ``TightCollisionGeometry`` schema requires and what a
+      subset-then-expand construction cannot promise;
+    * it is *strictly* tighter than the DOP it started from, or it would not be
+      worth the vertices.
+    """
+    gen = _mesh_tools()
+    import numpy as np
+    from scipy.spatial import ConvexHull
+
+    panda = RobotDescription.from_yaml(str(PANDA_MANIFEST))
+    xml, geoms = gen._sources_for(panda.name)
+    link1 = next(g for g in panda.collision_geometry if g.link_name == "panda_link1")
+    points = gen.link_mesh_in_box_frame(xml, geoms["panda_link1"], link1.origin_xyz_rpy)
+
+    axes = np.asarray(DOP_AXES, dtype=float)
+    proj = points @ axes.T
+    lo, hi = proj.min(axis=0), proj.max(axis=0)
+    assert len(ConvexHull(points).vertices) > MAX_TIGHT_HULL_VERTICES, (
+        "link1 is the over-budget case this routine exists for; if its mesh ever "
+        "fits the budget the exact hull should be shipped instead"
+    )
+
+    refined = gen.refine_dop_to_budget(points, lo, hi, MAX_TIGHT_HULL_VERTICES)
+    assert len(refined) <= MAX_TIGHT_HULL_VERTICES
+
+    hull = ConvexHull(np.asarray(refined, dtype=float))
+    normals, offsets = hull.equations[:, :3], hull.equations[:, 3]
+    escape = float(((points @ normals.T + offsets) / np.linalg.norm(normals, axis=1)).max())
+    assert escape <= 1e-9, f"mesh escapes the refined envelope by {escape * 1e3:.6f} mm"
+
+    refined_proj = np.asarray(refined, dtype=float) @ axes.T
+    outside = float(max((refined_proj - hi).max(), (lo - refined_proj).max()))
+    assert outside <= 1e-9, f"refined envelope escapes its own DOP by {outside * 1e3:.6f} mm"
+
+    # Tighter, and measured as volume rather than as support gap along the DOP
+    # axes -- along those the DOP is exactly the mesh's support, so its gap is
+    # zero by construction and would prove nothing. The DOP's looseness lives in
+    # the directions between its 26 axes, which is what enclosed volume sees.
+    # Budget 0 admits no refining plane, so this is the raw DOP polytope.
+    dop_volume = ConvexHull(gen.refine_dop_to_budget(points, lo, hi, 0)).volume
+    assert hull.volume < dop_volume, (
+        f"refined envelope encloses {hull.volume * 1e6:.1f} cm^3 against the DOP's "
+        f"{dop_volume * 1e6:.1f} cm^3 -- it bought no tightness for its vertices"
+    )

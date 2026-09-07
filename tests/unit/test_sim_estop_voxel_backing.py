@@ -100,6 +100,25 @@ _MJCF = """
       <geom name="region_marker" type="box" size="0.02 0.3 0.3"
             contype="0" conaffinity="0"/>
     </body>
+    <!-- A RoboCasa-shaped fixture: a collidable slab wearing a non-collidable
+         visual shell, both inside ONE 50 mm cell, with the shell nearer the
+         probe's ray start. `counter_1_right` is exactly this shape and is what
+         the 2026-09-06 battery kept stopping on. -->
+    <body name="counter_1_right_group" pos="0 -0.317 0.40">
+      <geom name="counter_top" type="box" size="0.10 0.02 0.10" pos="0 0.027 0"/>
+      <geom name="counter_top_visual" type="box" size="0.10 0.005 0.10" pos="0 -0.028 0"
+            contype="0" conaffinity="0"/>
+    </body>
+    <!-- The RoboCasa counter as `counter.py` ACTUALLY builds it: one full-span
+         non-collidable `*_top_visual` and collidable chunks tiling the SAME
+         volume, so the two share a surface exactly. Stepping past the shell's
+         face lands inside the chunk, where a ray reports no further entry —
+         which is why the coincident case needs more than the walk-past fix. -->
+    <body name="counter_2_right_group" pos="0.60 0 0.40">
+      <geom name="counter2_top_visual" type="box" size="0.10 0.02 0.10"
+            contype="0" conaffinity="0"/>
+      <geom name="counter2_top_0" type="box" size="0.10 0.02 0.10"/>
+    </body>
     <body name="carried_cup" pos="0.30 0 0.40">
       <freejoint name="carried_cup_joint"/>
       <geom name="cup_body" type="sphere" size="0.03"/>
@@ -507,3 +526,125 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     # Every kernel-checked link resolved, so the budget is not silently partial.
     assert slop["unresolved_links"] == []
     assert float(slop["max_corner_slop_m"]) > 0.020  # type: ignore[arg-type]
+
+
+def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> None:
+    """A cell holding both a visual shell and the slab it wraps reads `solid_world`.
+
+    `mj_ray` reports only the NEAREST strike, so a probe that stops at the first
+    surface sees only the shell — and adjudicates the cell
+    `noncollidable_world`, i.e. "the map disagrees with the world", when a
+    collidable slab is millimetres behind it inside the same cell.
+
+    That is not hypothetical. On the 2026-09-06 battery, **6 of the 8 stops that
+    carried a backing record at all** came back `noncollidable_world` naming
+    `counter_1_right_group_top_visual` — while the certified nearest *collision*
+    surface was ~16 mm away, well inside the same 25 mm cell. Since #180 the
+    depth cast makes those shells transparent, so the cell was created by the
+    collidable surface: the map was right and the diagnostic was wrong.
+
+    The probe now walks past a non-collidable strike and looks again, so both
+    are recorded and `solid_world` takes precedence. Without that, this test
+    fails with `noncollidable_world`.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.0, -0.325, 0.22))
+
+    assert record["verdict"] == "solid_world", (
+        "the collidable slab behind the shell was missed; the stop would be "
+        "adjudicated as landing on decoration"
+    )
+    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert "counter_top" in names, "the slab that explains the cell must be named"
+    assert "counter_top_visual" in names, (
+        "the shell must still be reported — it is what the depth cast used to "
+        "integrate, and dropping it would hide a real map defect"
+    )
+    classes = {str(entry["class"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert classes == {"solid_world", "noncollidable_world"}
+
+
+def test_a_collidable_slab_coincident_with_its_visual_shell_is_not_read_as_decoration() -> None:
+    """Coincident geometry, not just geometry behind a shell.
+
+    `test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration`
+    covers a shell in FRONT of a slab, and the walk-past fix handles it. It does
+    not handle the shell and the slab sharing a surface — and that is how
+    RoboCasa actually builds every counter top:
+    `robocasa/models/fixtures/counter.py` emits one full-span
+    `<name>_top_visual` (`contype=0`) and then tiles the *same* volume with
+    collidable chunks via `_get_chunks`, identical in `y` and `z` and tiling
+    `x`. Stepping `distance + eps` past the shell's face lands *inside* the
+    chunk, where the ray reports no further entry surface, so the chunk is never
+    seen and the cell reads `noncollidable_world`.
+
+    Measured on `2026-09-07-adr0101-live-1`: 9 of 27 rays struck
+    `counter_1_right_group_top_visual` and nothing else, so the tripping cell
+    was adjudicated decoration — while the certified probe put the collidable
+    chunk `counter_1_right_group_top_0`'s surface at `z = 0.920` with the cell
+    spanning `z in [0.900, 0.925]`. The solid geometry was inside the cell the
+    whole time, and the map was right again.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.60, 0.0, 0.22))
+
+    assert record["verdict"] == "solid_world", (
+        "a collidable chunk coincident with its visual shell was missed; the "
+        "stop would be adjudicated as landing on decoration"
+    )
+    assert record["collidable_overlap_swept"] is True, (
+        "the rays found nothing solid, so the overlap sweep must have run"
+    )
+    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert names & {"counter2_top_0", "counter2_top_1"}, (
+        f"the collidable chunk that explains the cell must be named; got {names}"
+    )
+
+
+def test_the_overlap_sweep_does_not_run_when_the_rays_already_found_solid_geometry() -> None:
+    """The sweep is a supplement, and must not second-guess a good ray result.
+
+    An AABB overlap can claim a geom whose surface misses the cube, so running
+    it unconditionally would let a conservative bound override an exact one.
+    It is consulted only when the rays found nothing collidable.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.0, -0.325, 0.22))
+
+    assert record["verdict"] == "solid_world"
+    assert record["collidable_overlap_swept"] is False
+
+
+def test_a_cell_holding_only_robot_geometry_is_swept_for_world_geometry_too() -> None:
+    """`self_occupancy_suspect` must not rest on 27 rays having missed the world.
+
+    A cell whose only collidable ray hit is a robot body produces the same
+    record whether the world is absent or merely unsampled — and that
+    distinction is what separates a self-occupancy stop from ordinary
+    quantisation. Measured on the 2026-09-07 `fridge-s2` start-state stop: 15 of
+    27 rays struck `robot0_link2_collision`, no world geom appeared, and nothing
+    in the record said whether one was there.
+
+    The sweep therefore runs when the rays found no collidable *world*
+    geometry, not merely when they found nothing collidable at all. A cell whose
+    world backing the rays already found is still left alone.
+    """
+    model, data = _model_data()
+    # The pantry panel is real world geometry; put the probe on it and confirm
+    # the rays find it, so the sweep does NOT fire.
+    world_only = _backing(model, data, (0.0, 0.36, 0.22))
+    assert world_only["collidable_overlap_swept"] is False, (
+        "the rays found collidable world geometry; the sweep must not second-guess it"
+    )
+
+    # `robot0_link2` sits on the arm. A cell centred on it holds robot geometry
+    # and, in this fixture, nothing else — exactly the ambiguous case.
+    robot_cell = _backing(model, data, (0.0, 0.0, 0.10))
+    classes = {str(e["class"]) for e in robot_cell["backing"]}  # type: ignore[call-overload]
+    if not classes or classes == {"noncollidable_world"}:
+        pytest.skip("fixture geometry put nothing collidable in this cell")
+    if classes <= {"self_occupancy_suspect"}:
+        assert robot_cell["collidable_overlap_swept"] is True, (
+            "a cell backed only by the robot must be swept for world geometry, "
+            "or `self_occupancy_suspect` cannot be told from an unsampled world"
+        )
