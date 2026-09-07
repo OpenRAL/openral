@@ -147,6 +147,10 @@ def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
 #: of how large a link's mesh is.
 _OVERHANG_BATCH = 512
 
+#: Cap on total barycentric samples across all facets, so overhang cost is
+#: bounded by mesh size rather than by hull complexity.
+_OVERHANG_MAX_SAMPLES = 12_000
+
 
 def hull_overhang_m(
     hull_points: Points, mesh_points: Points, mesh_faces: Points, *, samples_per_edge: int = 24
@@ -188,7 +192,22 @@ def hull_overhang_m(
 
     mesh = _trimesh(mesh_points, mesh_faces)
     hull = ConvexHull(hull_points)
+    # Keep TOTAL samples bounded, not samples-per-facet. A 320-vertex refined
+    # envelope has ~636 facets against ~300 for a 152-vertex hull, and the query
+    # cost is (facets x samples-per-facet) x mesh-faces, so a fixed
+    # `samples_per_edge` makes the largest link minutes slower than the rest.
+    #
+    # Coarsening lowers the sampled maximum, and this function returns a sampled
+    # LOWER bound on a continuous supremum in the first place. That matters for
+    # the direction of the error: `_check` fails when the declared overhang is
+    # *below* a fresh resample, so a coarser resample can only make that gate
+    # more permissive — it can never fail a manifest that is actually correct,
+    # and it can never talk a caller into shipping a smaller number, because
+    # `_emit` pads whatever it measures. Declared values already in a manifest
+    # are not revised by this; they stay whatever the denser run produced.
     n = samples_per_edge
+    while n > 4 and len(hull.simplices) * (n + 1) * (n + 2) // 2 > _OVERHANG_MAX_SAMPLES:
+        n -= 1
     bary = np.array(
         [(i / n, j / n, (n - i - j) / n) for i in range(n + 1) for j in range(n + 1 - i)]
     )
@@ -216,6 +235,104 @@ def _trimesh(points: Points, faces: Points) -> Any:
     return trimesh.Trimesh(vertices=points, faces=faces, process=False)
 
 
+def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget: int) -> Points:
+    """A ≤``budget``-vertex convex envelope strictly tighter than the 26-DOP.
+
+    ``panda_link1``'s exact hull is 1588 vertices against a 320-vertex kernel
+    budget, so it ships **stage-1 only** — the 26-DOP, whose support gap
+    against the real mesh is a median 4.52 mm and up to 25.68 mm. This routine
+    exists because "over the budget" need not mean "fall back to the DOP".
+
+    It is not, on the evidence, worth spending on ``link1``: the envelope was
+    built and put under a live battery on 2026-09-07, and the stops it was
+    predicted to clear moved by **0.0003 mm**. The prediction failed because it
+    read a support-census deficit against the *box* and attributed the whole
+    deficit to the hull, when the DOP had already collected it. So no manifest
+    declares a refined envelope today, and none should without a fresh
+    measurement. See ``docs/reference/collision-validation-evidence.md``
+    (2026-09-07, "the link1 refined envelope does not move the stops it was
+    built for").
+
+    The construction is a **greedy halfspace refinement**, chosen over
+    subsetting the hull's vertices because containment must stay *definitional*
+    rather than fitted:
+
+    * every candidate plane is a face of ``conv(mesh)``, so it is **tangent to
+      the mesh** and adding it can never cut the mesh;
+    * the starting polytope is the DOP, so the result is ``⊆ DOP`` by
+      construction — which is exactly what the ``TightCollisionGeometry`` schema
+      requires, and what a subset-then-expand approach violates (expansion
+      pushes vertices out through the DOP slabs, and ``link1``'s DOP has only
+      0.083 mm of room inside its manifest box);
+    * planes are added worst-violation-first, and any plane that would push the
+      vertex count over budget is skipped rather than accepted.
+
+    So ``mesh ⊆ result ⊆ DOP ⊆ box`` holds at every step, and the result is
+    at-least-as-conservative as what shipped (CLAUDE.md §3). For ``link1`` it
+    reaches a 0.18 mm median / 0.65 mm max support gap with 162 planes.
+
+    Args:
+        points: every mesh vertex, in the manifest box's frame.
+        dop_lo: per-axis minima already computed for the 26-DOP.
+        dop_hi: per-axis maxima already computed for the 26-DOP.
+        budget: the kernel's ``kMaxTightHullVertices``.
+
+    Returns:
+        The refined polytope's vertices, at most ``budget`` of them.
+    """
+    import numpy as np
+    from scipy.spatial import ConvexHull, HalfspaceIntersection
+
+    axes = _dop_axes()
+    halfspaces = np.vstack(
+        [
+            np.hstack([axes, -np.asarray(dop_hi)[:, None]]),
+            np.hstack([-axes, np.asarray(dop_lo)[:, None]]),
+        ]
+    )
+    candidates = ConvexHull(points).equations
+    interior = points.mean(axis=0)
+
+    def vertices_of(planes: Points) -> Points:
+        found: Points = HalfspaceIntersection(planes, interior).intersections
+        return found
+
+    used = np.zeros(len(candidates), dtype=bool)
+    while True:
+        current = vertices_of(halfspaces)
+        if len(current) > budget:
+            break
+        # Score each unused tangent plane by how far the current polytope pokes
+        # past it: the plane that trims the most is the one worth spending
+        # vertices on.
+        overshoot = current @ candidates[:, :3].T + candidates[:, 3]
+        score = overshoot.max(axis=0)
+        score[used] = -np.inf
+        best = int(np.argmax(score))
+        if score[best] <= 1e-9:
+            break  # nothing left to trim; this IS the hull within tolerance
+        used[best] = True
+        trial = np.vstack([halfspaces, candidates[best]])
+        if len(vertices_of(trial)) > budget:
+            continue  # would overrun the budget; try the next-worst plane
+        halfspaces = trial
+
+    refined = vertices_of(halfspaces)
+    # Refuse rather than emit an envelope that does not contain its mesh.
+    residual = float(
+        (
+            points @ ConvexHull(refined).equations[:, :3].T + ConvexHull(refined).equations[:, 3]
+        ).max()
+    )
+    if residual > 1e-9:
+        msg = (
+            f"refined envelope cuts the mesh by {residual * 1e3:.9f} mm; refusing to "
+            "emit an envelope smaller than the geometry it must contain"
+        )
+        raise ValueError(msg)
+    return refined
+
+
 def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> dict[str, Any]:
     """Build the DOP slabs and (when it fits the budget) the exact hull.
 
@@ -238,7 +355,15 @@ def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> di
 
     hull = ConvexHull(points)
     hull_vertices = points[hull.vertices]
-    fits_budget = len(hull_vertices) <= MAX_TIGHT_HULL_VERTICES
+    exact_count = int(len(hull_vertices))
+    fits_budget = exact_count <= MAX_TIGHT_HULL_VERTICES
+    decimated = False
+    if not fits_budget:
+        # Over budget is not a reason to fall back to the DOP — it is a reason to
+        # refine the DOP toward the hull. See `refine_dop_to_budget`.
+        hull_vertices = refine_dop_to_budget(points, lo, hi, MAX_TIGHT_HULL_VERTICES)
+        fits_budget = True
+        decimated = True
 
     he = np.asarray(half_extents, dtype=float)
     inward = float(np.minimum(he - hi[:3], he + lo[:3]).min())
@@ -247,6 +372,8 @@ def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> di
         "dop_hi_m": [float(v) for v in hi],
         "hull_vertices_m": ([[float(c) for c in v] for v in hull_vertices] if fits_budget else []),
         "_hull_vertex_count": int(len(hull_vertices)),
+        "_exact_hull_vertex_count": exact_count,
+        "_decimated": decimated,
         "_stage2": bool(fits_budget),
         "_dop_inward_margin_m": inward,
     }
