@@ -1116,6 +1116,24 @@ def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> Any:
     )
 
 
+#: How many non-collidable shells one ray will look past inside a single cell
+#: before giving up. RoboCasa fixtures wrap a collision geom in one visual
+#: shell; four allows for nested decoration without letting a pathological
+#: scene turn one probe ray into an unbounded march.
+_VOXEL_BACKING_MAX_LAYERS = 4
+
+
+def _geom_is_collidable(model: Any, geom_id: int) -> bool:
+    """MuJoCo's own predicate: a geom with neither bitmask forms no contact pair.
+
+    The same test `openral_sim.backends.depth_camera.noncollidable_geom_ids`
+    applies when it hides decoration from the depth cast (#180), stated here
+    rather than imported so Layer 0 does not take a dependency on the sim
+    backend for one bitmask check.
+    """
+    return bool(int(model.geom_contype[geom_id]) or int(model.geom_conaffinity[geom_id]))
+
+
 def _voxel_cube_hits(
     model: Any,
     data: Any,
@@ -1133,6 +1151,27 @@ def _voxel_cube_hits(
     to it. Returns ``(geom_ids, rays_cast, rays_hit)`` — the counts are the
     coverage attestation that keeps "nothing found" distinct from "did not
     look".
+
+    **A ray does not stop at decoration.** ``mj_ray`` reports only the nearest
+    strike, so a non-collidable shell in front of the collidable surface it
+    wraps would be the only thing this ever saw — and the cell would be
+    adjudicated ``noncollidable_world`` ("the map disagrees with the world")
+    when a solid surface is millimetres behind it, inside the same cell. That
+    is not hypothetical: it is what the 2026-09-06 battery recorded on
+    ``counter_1_right``, whose ``_top_visual`` shell sits inside the same 25 mm
+    cell as the countertop's collision geom, on 6 of the 8 stops that carried a
+    backing record at all. Since #180 the depth cast makes exactly these geoms
+    transparent, so a cell like that was created by the *collidable* surface —
+    and the diagnostic that adjudicates the stop was the only thing still
+    blind to it.
+
+    So a ray that strikes a non-collidable geom inside the cube is re-cast from
+    just past that strike, up to :data:`_VOXEL_BACKING_MAX_LAYERS` times, and
+    both the shell and whatever it hides are recorded. The verdict precedence
+    in :func:`voxel_backing_record` then does the rest: ``solid_world``
+    outranks ``noncollidable_world``, so the cell reads as explained by real
+    geometry, while a cell with genuinely nothing solid behind the decoration
+    still reads ``noncollidable_world``.
     """
     import mujoco  # reason: optional sim dep
     import numpy as np
@@ -1155,12 +1194,30 @@ def _voxel_cube_hits(
                 start = np.ascontiguousarray(
                     centre_world - direction * (half + eps) + u * du + v * dv
                 )
-                geomid[0] = -1
-                distance = float(mujoco.mj_ray(model, data, start, direction, None, 1, -1, geomid))
                 cast += 1
-                if geomid[0] >= 0 and 0.0 <= distance <= span:
-                    hit_count += 1
+                travelled = 0.0
+                struck = False
+                for _layer in range(_VOXEL_BACKING_MAX_LAYERS):
+                    geomid[0] = -1
+                    distance = float(
+                        mujoco.mj_ray(model, data, start, direction, None, 1, -1, geomid)
+                    )
+                    if geomid[0] < 0 or distance < 0.0:
+                        break
+                    travelled += distance
+                    if travelled > span:  # past the far face; not this cell's
+                        break
+                    struck = True
                     hits.setdefault(int(geomid[0]), None)
+                    if _geom_is_collidable(model, int(geomid[0])):
+                        break  # real geometry found; nothing behind it matters
+                    # A decoration shell: step just past it and look again,
+                    # still inside this cell.
+                    step = distance + eps
+                    start = np.ascontiguousarray(start + direction * step)
+                    travelled += eps
+                if struck:
+                    hit_count += 1
     return sorted(hits), cast, hit_count
 
 
@@ -1260,10 +1317,16 @@ def voxel_backing_record(
       the stopping link, 1.9 mm inside a freezer door. Read it as a prompt to
       check the near-miss pairs, never as a finding on its own. What a hit does
       rule out is that the stop was on nothing at all.
-    * ``noncollidable_world`` — a marker/visual geom. ``mj_ray`` strikes these
-      and so does the depth synth, so they *can* become occupancy; the
-      near-miss probe deliberately never measures them.
-    * ``unbacked`` — nothing at all. A phantom or stale cell.
+    * ``noncollidable_world`` — a marker/visual geom, and **since #180 this is
+      a narrower claim than it used to be**. That bullet used to read "the
+      depth synth strikes these too, so they CAN become occupancy"; #180 made
+      exactly these geoms transparent to the cast, so in sim they no longer
+      can. A cell backed *only* by decoration is therefore now a statement
+      about the probe or a stale cell, not a live map defect — and because a
+      shell usually wraps something, the ray is re-cast past it
+      (:func:`_voxel_cube_hits`) so the slab behind is found and
+      ``solid_world`` wins. The class is still reported when it is genuinely
+      all there is: ``unbacked`` — nothing at all. A phantom or stale cell.
 
     Method: three orthogonal ray fans, one per base-frame cube axis, each
     ``rays_per_axis**2`` rays started just outside one face and accepted only

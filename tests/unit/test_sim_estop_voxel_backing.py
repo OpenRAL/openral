@@ -100,6 +100,15 @@ _MJCF = """
       <geom name="region_marker" type="box" size="0.02 0.3 0.3"
             contype="0" conaffinity="0"/>
     </body>
+    <!-- A RoboCasa-shaped fixture: a collidable slab wearing a non-collidable
+         visual shell, both inside ONE 50 mm cell, with the shell nearer the
+         probe's ray start. `counter_1_right` is exactly this shape and is what
+         the 2026-09-06 battery kept stopping on. -->
+    <body name="counter_1_right_group" pos="0 -0.317 0.40">
+      <geom name="counter_top" type="box" size="0.10 0.02 0.10" pos="0 0.027 0"/>
+      <geom name="counter_top_visual" type="box" size="0.10 0.005 0.10" pos="0 -0.028 0"
+            contype="0" conaffinity="0"/>
+    </body>
     <body name="carried_cup" pos="0.30 0 0.40">
       <freejoint name="carried_cup_joint"/>
       <geom name="cup_body" type="sphere" size="0.03"/>
@@ -507,3 +516,39 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     # Every kernel-checked link resolved, so the budget is not silently partial.
     assert slop["unresolved_links"] == []
     assert float(slop["max_corner_slop_m"]) > 0.020  # type: ignore[arg-type]
+
+
+def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> None:
+    """A cell holding both a visual shell and the slab it wraps reads `solid_world`.
+
+    `mj_ray` reports only the NEAREST strike, so a probe that stops at the first
+    surface sees only the shell — and adjudicates the cell
+    `noncollidable_world`, i.e. "the map disagrees with the world", when a
+    collidable slab is millimetres behind it inside the same cell.
+
+    That is not hypothetical. On the 2026-09-06 battery, **6 of the 8 stops that
+    carried a backing record at all** came back `noncollidable_world` naming
+    `counter_1_right_group_top_visual` — while the certified nearest *collision*
+    surface was ~16 mm away, well inside the same 25 mm cell. Since #180 the
+    depth cast makes those shells transparent, so the cell was created by the
+    collidable surface: the map was right and the diagnostic was wrong.
+
+    The probe now walks past a non-collidable strike and looks again, so both
+    are recorded and `solid_world` takes precedence. Without that, this test
+    fails with `noncollidable_world`.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.0, -0.325, 0.22))
+
+    assert record["verdict"] == "solid_world", (
+        "the collidable slab behind the shell was missed; the stop would be "
+        "adjudicated as landing on decoration"
+    )
+    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert "counter_top" in names, "the slab that explains the cell must be named"
+    assert "counter_top_visual" in names, (
+        "the shell must still be reported — it is what the depth cast used to "
+        "integrate, and dropping it would hide a real map defect"
+    )
+    classes = {str(entry["class"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert classes == {"solid_world", "noncollidable_world"}
