@@ -1920,6 +1920,61 @@ Until that lands, nothing here licenses a revision of the 94 % in either
 direction.
 
 
+### 2026-09-07 — `adr0101-live-*`, the first battery with a working harness and a working adjudicator
+
+Thirteen single-scene rounds on `q-laptop` (`utensil` and `fridge`, seeds 1-7),
+all on `feat/216-tight-geometry-carry-phase`, run after both harness fixes and
+re-adjudicated offline after the `nearest_any` fix (caveat 11). This is the
+first battery on this page where the instrument and the harness were both
+known-good at the time of reading — the verdicts below are *derived*, not the
+ones the harness wrote at run time, and three rounds changed when re-derived.
+
+| outcome | rounds |
+| --- | ---: |
+| `deadline-no-grasp` | 5 |
+| `estop-initial-configuration` | 3 |
+| `estop-collision-within-quantization` | 2 |
+| `estop-collision-real` | 2 |
+| **`completed`** | **1** |
+
+**Seven stops. Five were of a physically clear robot.**
+
+| verdict | n | true clearance at the stop |
+| --- | ---: | --- |
+| `within-quantization` | **5 (71 %)** | +0.67, +11.13, +22.01, +23.13, +24.86 mm |
+| `real-contact` | 2 (29 %) | −2.32, −0.11 mm |
+
+The 71 % reproduces the #204 battery's headline (85 of 91 stops of a clear
+robot) on an independent battery, a different commit, and a repaired
+instrument. It is the number the programme exists to reduce, and it has not
+moved.
+
+**By class.** Four of the seven stops are the carried payload, three are bare
+links at reset. The payload four split evenly: two clear (+24.86, +11.13 mm)
+and two real contact (−2.32, −0.11 mm). `tools/adr0101_recovery.py` reports
+**2 of 4 recovered, median 17.99 mm, minimum 11.13 mm** — far below the offline
+94 %, but at n=4 the two are not in conflict and no revision is claimed here.
+
+**The start-state population is a third of all stops and no lever touches it.**
+`estop-initial-configuration` fired three times — `panda_link1` twice and
+`panda_link2` once — at +23.13, +22.01 and +0.67 mm. These are not carry-phase
+stops: the robot is stopped before it has done anything, by its own reset pose
+against the kitchen. `tight_geometry`, modeled fixtures and voxel resolution all
+address the *carry* phase; none of them addresses a base placement that starts
+the arm inside a counter. The +0.67 mm case is a genuine near-contact and would
+survive any geometry work.
+
+**One round completed with the gate on.** `fridge` seed 6 succeeded — against a
+2.3 % gate-on completion rate in the ceiling battery. One success is not a rate
+either, but it is the first `completed` this branch has recorded.
+
+**Five of thirteen rounds never grasped.** `deadline-no-grasp` is the policy
+failing to pick the object up at all, with no kernel involvement. Combined with
+the ceiling result, it is a reminder that on these scenes roughly half of what
+looks like collision-programme failure is the policy not reaching the phase
+where the kernel matters.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
