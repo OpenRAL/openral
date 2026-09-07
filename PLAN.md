@@ -458,13 +458,28 @@ Four things had to be discovered to make it run at all, each worth keeping:
       the certified probe never used rays, so the 71 % and the decomposition
       stand; what moves is the backing *class* the "32 % too sparse" entry and
       ADR-0101's "cells no real body explains" premise rest on.
-- [x] **`panda_link1`'s missing exact hull is NOT worth a kernel budget change.**
-      It is the only link with no stage-2 hull (1588 vertices against
-      `kMaxTightHullVertices = 320`) and it caused two of the three start-state
-      stops, so it looked like the obvious next manifest edit. Measured, it is
-      not: those stops sit **+3.86 and +8.68 mm beyond the voxel term**, so an
-      exact hull could recover at most ~9 mm of a ~25 mm error, and raising the
-      cap 5× is a hot-path cost change requiring safety-WG review. Struck.
+- [x] **`panda_link1` now ships a budget-fitting envelope — and the reasoning
+      that struck it was wrong.** The first pass here struck it on the grounds
+      that a hull "recovers at most ~9 mm of a ~25 mm error". That framed the
+      wrong question: what matters is not the *fraction* of the error recovered
+      but whether it flips the stop, and the start-state census's deficit table
+      says **10 mm clears 14 of 14 `link1` states**. It also assumed the only
+      options were the DOP or an over-budget hull, and assumed a cap change was
+      needed. Neither held.
+
+      `refine_dop_to_budget` intersects the DOP with the exact hull's own
+      tangent face planes within the existing 320-vertex budget — **no kernel
+      change**. Containment stays definitional and `mesh ⊆ result ⊆ DOP ⊆ box`
+      holds at every step, so it is a subset of what it replaced.
+
+      | link1 envelope | verts | support gap median | max |
+      | --- | ---: | ---: | ---: |
+      | 26-DOP (shipped) | 48 | 4.52 mm | 25.68 mm |
+      | refined | 320 | **0.18 mm** | **0.65 mm** |
+
+      The cost objection also failed its own re-measurement: **p99 0.5 ms on
+      9891 occupied cells** against a 33 ms ceiling, versus 2.0 ms on 5638 cells
+      before. Hazard-log Entry 026 amended; safety-WG sign-off still PENDING.
 - [x] **The geometry levers are exhausted — this is the programme's floor.**
       `tools/stop_excess.py` over the 13-round battery: payload **−8.50 mm**
       beyond voxel (no headroom, as #204 found), link **+3.86 mm** — down from
@@ -474,7 +489,15 @@ Four things had to be discovered to make it run at all, each worth keeping:
       over-approximation is the 25 mm voxel grid**, and refining it was struck
       on measured cost. No tighter envelope on any link or payload can recover
       anything further.
-- [ ] **The start-state population — a third of stops, and no lever touches it.**
+- [~] **The start-state population — a third of stops; one lever now reaches it.**
+      Two of the three `estop-initial-configuration` stops were `panda_link1`,
+      whose envelope is now 0.65 mm worst-case instead of 25.68 mm. Predicted to
+      clear both; **not yet observed** — a post-change battery has to confirm it,
+      and that is the honest status. The third (`panda_link2` at +0.67 mm) is a
+      genuine near-contact no geometry work reaches. What remains open is the
+      residue: a base placement that parks the arm inside a counter is a
+      scene-generation question, and the census shows `link1`'s clearance is set
+      almost entirely by where the base parked.
       Three of seven stops were `estop-initial-configuration`: the arm stopped
       at reset by its own start pose, at +23.13, +22.01 and +0.67 mm. Every
       lever in §5 addresses the *carry* phase. None addresses a base placement
