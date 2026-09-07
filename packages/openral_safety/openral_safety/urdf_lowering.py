@@ -308,39 +308,23 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
 
 
 # ── ACM: certified "always-colliding" over each pair's relative-DoF subspace ───
-#
-# A pair goes in the ACM only under one of three justifications (see
-# :func:`acm_for_geometry`). The one this section establishes is
-# **always-colliding**: the kernel's trip condition holds at *every* reachable
-# configuration, so the check is a constant and exempting it removes no
-# information. That argument is only valid if "every" really means every — which
-# is why this is a proof and not a sample.
-#
-# The proof rests on two observations:
-#
-# 1. **The relative pose of two links depends only on the joints between them.**
-#    ``panda_link5`` ↔ ``panda_link7`` moves with ``panda_joint6`` and
-#    ``panda_joint7`` and nothing else — a 2-D space, not the arm's 7-D one. So
-#    the subspace that matters can be enumerated exhaustively instead of sampled.
-#    (The old sweep drew 2000 uniform points from the full joint box; in 7-D that
-#    is far too sparse to find a 13 %-measure separated region, and its verdict
-#    depended on the RNG draw order — not reproducible under any change to the
-#    joint set.)
-#
-# 2. **A grid plus a Lipschitz bound certifies the continuum.** Turning joint *j*
-#    by δ moves a point at distance *R* from its axis by at most *R·δ*. So over a
-#    grid cell of half-width ``h_j/2`` every point of the far link moves by at
-#    most ``ε = Σ_j R_j · h_j/2`` relative to the near one. If the near shape
-#    *eroded by ε* still trips against the far shape at the cell's centre node,
-#    then the untouched shapes trip everywhere in that cell: pick a point of the
-#    far shape landing inside the erosion at the node; wherever it moves within
-#    the cell it stays inside the un-eroded near shape. Certify every cell and
-#    the whole subspace is certified.
-#
-# Anything that cannot be certified — too many relative DoF, an erosion that
-# eats the shape, a joint the URDF does not pin down — is simply **not** an ACM
-# entry. The rule fails toward *fewer* exemptions, which is the safe direction:
-# a missing entry costs a false E-stop, an unearned one hides a real collision.
+# A pair enters the ACM here only under the **always-colliding** justification (see
+# :func:`acm_for_geometry`): the kernel's trip condition holds at *every* reachable
+# configuration — a proof, not a sample, since "every" must mean every.
+# 1. Relative pose of two links depends only on the joints between them (``panda_link5``
+#    <-> ``panda_link7`` moves with ``panda_joint6``+``panda_joint7`` only, a 2-D subspace of
+#    the arm's 7-D one), so it can be enumerated exhaustively rather than sampled. (The old
+#    sweep drew 2000 uniform 7-D points — too sparse for a 13%-measure separated region, and
+#    RNG-draw-order-dependent, so not reproducible.)
+# 2. A grid + Lipschitz bound certifies the continuum: turning joint *j* by δ moves a point at
+#    distance *R* from its axis by at most *R·δ*, so over a grid cell of half-width ``h_j/2``
+#    the far link moves at most ``ε = Σ_j R_j·h_j/2`` relative to the near one. If the near
+#    shape eroded by ε still trips against the far shape at the cell's centre node, the
+#    untouched shapes trip everywhere in that cell — certify every cell and the whole subspace
+#    is certified.
+# Anything uncertifiable (too many relative DoF, an erosion that eats the shape, a joint the
+# URDF doesn't pin down) is simply not an ACM entry — fails toward fewer exemptions, the safe
+# direction: a missing entry costs a false E-stop, an unearned one hides a real collision.
 
 # Refinement budget for the branch-and-bound in `_certified_always_colliding`.
 # None of these is a soundness knob: hitting any of them makes that function
@@ -559,41 +543,30 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
 ) -> bool:
     """Is the kernel's trip condition **provably** true at every reachable pose?
 
-    The always-colliding justification for an ACM entry (see
-    :func:`acm_for_geometry`) is only sound when the check it removes is a
-    constant. This decides that over the pair's relative-DoF subspace, using the
-    kernel's own predicates at the robot's own margin, by branch-and-bound over
-    boxes of joint space rather than by sampling poses.
+    The always-colliding justification for an ACM entry (:func:`acm_for_geometry`)
+    is only sound when the check it removes is a constant. Decided over the
+    pair's relative-DoF subspace, using the kernel's own predicates at the
+    robot's own margin, by branch-and-bound over boxes of joint space (not by
+    sampling poses).
 
-    Each cell of joint space is judged by one evaluation at its centre plus a
-    Lipschitz bound. Turning joint *j* by δ moves a point at distance *R* from its
-    axis by at most *R·δ*, so within a cell every point of the far link moves at
-    most ``ε = Σ_j R_j · w_j / 2`` relative to the near one. Shifting a convex
-    body by ``ε`` shifts its support function — and hence the separating-axis gap
-    — by at most ``ε``, so for every configuration ``q`` in the cell::
+    Each cell is judged by one evaluation at its centre plus a Lipschitz bound:
+    turning joint *j* by δ moves a point at distance *R* from its axis by at
+    most *R·δ*, so within a cell every point of the far link moves at most
+    ``ε = Σ_j R_j · w_j / 2`` relative to the near one, and
+    ``gap(q) <= gap(centre) + ε`` for every configuration ``q`` in the cell.
+    Three verdicts follow: ``gap(centre) > margin`` is a witness the pair is
+    NOT always-colliding (reject immediately); ``gap(centre) + ε <= margin``
+    certifies the cell (drop it); otherwise undecided — split across the axis
+    that shrinks ε fastest and revisit.
 
-        gap(q) <= gap(centre) + ε
-
-    That gives all three verdicts a cell can carry:
-
-    * ``gap(centre) > margin`` — a real configuration where the kernel does *not*
-      trip. The pair is not always-colliding. **Reject immediately**; this is a
-      witness, not an estimate.
-    * ``gap(centre) + ε <= margin`` — the kernel trips everywhere in this cell.
-      **Certified**; drop it.
-    * otherwise — undecided. Split the cell across the axis contributing most to
-      ``ε`` (which shrinks ``ε`` fastest per unit of work) and revisit.
-
-    The pair is always-colliding when every cell certifies. Running out of
-    refinement budget returns ``False``, as does exceeding
-    :data:`_CERTIFY_MAX_DOF`, a pair whose relative pose is not determined, or a
-    pair whose links **both** declare ``tight_geometry`` — the kernel checks
-    those at exact-hull fidelity, which this function's ``shape_distance`` (the
-    box) cannot bound in the certifying direction.
-    Every failure path is a *withheld* ACM entry: an entry withheld in error costs
-    a false E-stop, an entry granted in error hides a real self-collision.
-
-    Deterministic — no RNG, and no dependence on evaluation order.
+    Always-colliding requires every cell to certify. Returns ``False`` on:
+    exhausted refinement budget, exceeding :data:`_CERTIFY_MAX_DOF`, an
+    undetermined relative pose, or both links declaring ``tight_geometry``
+    (the kernel checks those at exact-hull fidelity, which this function's
+    box-based ``shape_distance`` cannot bound in the certifying direction).
+    Every failure path withholds the ACM entry: withheld-in-error costs a
+    false E-stop, granted-in-error hides a real self-collision. Deterministic
+    — no RNG, no dependence on evaluation order.
     """
     import numpy as np
 
@@ -693,20 +666,15 @@ def acm_for_geometry(
     The kernel checks collisions with ``geoms``, so the ACM is decided against the
     *same* primitives, with the *same* predicates
     (:mod:`openral_safety.kernel_predicates`), at the *same* ``margin_m``. A pair
-    is exempted under exactly one of three justifications:
-
-    * **adjacent** — directly joint-connected;
-    * **always-colliding** — the kernel's trip condition holds at *every*
-      reachable configuration, so the check is a constant and removing it removes
-      no information. Established as a proof over the pair's relative-DoF
-      subspace by :func:`_certified_always_colliding`, never by sampling;
-    * **never-able-to-collide** — hand-reviewed pairs from the SRDF
-      ``disable_collisions`` block, when ``srdf_path`` is given.
-
-    So with an SRDF: ``ACM = adjacent ∪ always ∪ SRDF``. Without one:
-    ``ACM = adjacent ∪ always`` — every other pair stays **checked**, because
-    nothing short of mesh ground truth or a human can retire a pair that is
-    sometimes-colliding.
+    is exempted under exactly one of three justifications: **adjacent** (directly
+    joint-connected); **always-colliding** (the kernel's trip condition holds at
+    every reachable configuration — a proof over the pair's relative-DoF
+    subspace via :func:`_certified_always_colliding`, never a sample); or
+    **never-able-to-collide** (hand-reviewed SRDF ``disable_collisions`` rows,
+    when ``srdf_path`` is given). So with an SRDF: ``ACM = adjacent ∪ always ∪
+    SRDF``; without one: ``ACM = adjacent ∪ always`` — every other pair stays
+    **checked**, since nothing short of mesh ground truth or a human can retire
+    a sometimes-colliding pair.
 
     .. warning::
        The SRDF term is **not** self-evidently "never collides". MoveIt's own

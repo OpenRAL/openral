@@ -129,21 +129,19 @@ def test_inscribed_sphere_would_have_hidden_the_separation() -> None:
 def test_link5_link7_is_checked_and_no_longer_exempt() -> None:
     """The pair is neither always-colliding nor never-colliding — it is *both*.
 
-    Its boxes overlap over most of the range (so checking it at box fidelity
-    E-stops constantly) and its real meshes interpenetrate over part of it (so
-    exempting it hides a true self-collision). No margin separates the two
-    populations, which is why the pair shipped exempted "under protest" from
-    #169 until issue #191.
+    Its boxes overlap over most of the range (box fidelity E-stops constantly)
+    and its real meshes interpenetrate over part of it (exempting it hides a
+    true self-collision); no margin separates the two, which is why the pair
+    shipped exempted "under protest" from #169 until issue #191.
 
-    What retired the exemption is not a margin and not a tighter box but the
-    kernel's exact-hull narrow phase (``hull_hull_distance``), extended from
-    world voxels to self-pairs: both links declare ``tight_geometry``, the box
-    stays the broad phase, and any box pair it cannot clear is re-asked of the
-    hulls. So the box overlap measured below is still real — it is just no
-    longer the kernel's verdict.
+    What retired the exemption: the kernel's exact-hull narrow phase
+    (``hull_hull_distance``), extended from world voxels to self-pairs — both
+    links declare ``tight_geometry``, the box stays the broad phase, and any
+    box pair it cannot clear is re-asked of the hulls. The box overlap
+    measured below is still real; it is just no longer the kernel's verdict.
 
-    This test is the inverse of the one it replaces: it pins that nothing puts
-    the row back, in either channel.
+    Inverse of the test it replaces: pins that nothing puts the row back, in
+    either channel.
     """
     model, geoms, margin = _load("panda_mobile")
     gaps = _pair_gaps(model, geoms, "panda_link5", "panda_link7", 201)

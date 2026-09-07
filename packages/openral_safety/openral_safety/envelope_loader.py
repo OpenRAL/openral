@@ -399,18 +399,16 @@ def compute_intersection(
 def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, object]:
     """Translate :class:`EnvelopeIntersection` → safety_kernel ROS parameters.
 
-    The C++ safety kernel (``cpp/openral_safety_kernel/``) reads its
-    envelope exclusively from per-field ROS parameters (added 2026-05-24).
-    This function is the canonical Python → ROS-params
-    converter — used by ``openral deploy sim``'s ``sim_e2e.launch.py`` to
-    feed the kernel from ``robots/<id>/robot.yaml``, by ``kernel_only``
-    launches, and by every C++ / Python kernel test fixture.
+    The C++ safety kernel (``cpp/openral_safety_kernel/``) reads its envelope
+    exclusively from per-field ROS parameters (added 2026-05-24). Canonical
+    Python → ROS-params converter, used by ``openral deploy sim``'s
+    ``sim_e2e.launch.py`` (feeding ``robots/<id>/robot.yaml``), by
+    ``kernel_only`` launches, and by every C++/Python kernel test fixture.
 
-    Workspace-box corners are *omitted* (not passed as empty arrays)
-    when unset — launch_ros's parameter validator rejects empty
-    ``double_array`` parameters, and the kernel already declares them
-    defaulted-empty so omission has the same "unbounded Cartesian
-    envelope" semantics.
+    Workspace-box corners are *omitted* (not empty arrays) when unset —
+    launch_ros's parameter validator rejects empty ``double_array``
+    parameters, and the kernel already defaults them empty, so omission has
+    the same "unbounded Cartesian envelope" semantics.
 
     Args:
         envelope: Validated envelope intersection (typically from
@@ -496,14 +494,12 @@ def _ordered_collision_links(
     ``fixed_attachments``. Both are needed: ``joints`` alone is only the
     actuated skeleton, so a robot with any rigid mount (a Franka hand on the
     flange, a bimanual rig's arm pedestals) would otherwise present as a
-    *forest* of several disconnected components.
-
-    A forest has no safe interpretation. Treating a component's top link as a
-    second base — the behaviour this function replaced — silently places that
-    entire subtree at the robot's origin, which both fabricates contacts that
-    cannot happen and, far worse, leaves the subtree's real swept volume
-    completely unmodelled. So this refuses, naming the disconnected roots
-    (CLAUDE.md §1.1, §1.4: the loader rejects, never guesses).
+    *forest* of several disconnected components. A forest has no safe
+    interpretation — treating a component's top link as a second base would
+    silently place that subtree at the robot's origin, fabricating impossible
+    contacts and leaving the subtree's real swept volume unmodelled — so this
+    refuses, naming the disconnected roots (CLAUDE.md §1.1, §1.4: the loader
+    rejects, never guesses).
 
     Returns the ordered link names, a name→index map, and a child-link → edge
     map.
@@ -618,31 +614,28 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     Lowers :attr:`RobotDescription.collision_geometry` +
     :attr:`~RobotDescription.allowed_collision_pairs` + the kinematic chain
     (``joints`` **and** :attr:`~RobotDescription.fixed_attachments`, with their
-    ``origin_xyz`` / ``origin_rpy`` / ``axis_xyz``) into the flat parallel
-    arrays the C++ kernel's ``load_collision_model`` reads. The manifest stays
-    the normative kinematic source; this never parses URDF/MJCF — the offline
-    lowering tool populates the joint origins + capsules in the manifest first.
+    ``origin_xyz``/``origin_rpy``/``axis_xyz``) into the flat parallel arrays
+    the C++ kernel's ``load_collision_model`` reads. The manifest stays the
+    normative kinematic source; this never parses URDF/MJCF (the offline
+    lowering tool populates joint origins + capsules in the manifest first).
 
-    The two lists together must describe exactly **one** connected tree. Any
-    link a robot's movable ``joints`` do not reach — a rigidly mounted hand, a
-    bimanual rig's arm pedestals — belongs in ``fixed_attachments``; a manifest
+    The two lists together must describe exactly **one** connected tree: any
+    link the movable ``joints`` don't reach (a rigidly mounted hand, a
+    bimanual rig's arm pedestals) belongs in ``fixed_attachments``; a manifest
     that leaves it out is rejected rather than lowered with that subtree
-    dumped at the origin.
+    dumped at the origin. Links are emitted in topological order (every
+    parent before its children) so kernel forward kinematics can resolve each
+    from its already-computed parent frame; a link's per-row joint index is
+    its defining joint's position in ``robot.joints`` (same ordering as the
+    envelope joint arrays and ``ActionChunk.flat``).
 
-    Links are emitted in a topological order (every parent precedes its
-    children) so the kernel's forward kinematics can resolve each link from its
-    already-computed parent frame. The chunk's per-row joint index for a link is
-    the link-defining joint's position in ``robot.joints`` (the same ordering
-    the envelope joint arrays and ``ActionChunk.flat`` use).
-
-    A boxed link that declares
+    A boxed link declaring
     :attr:`~openral_core.schemas.LinkCollisionGeometry.tight_geometry` also
-    lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget, an
-    exact convex hull) into ``collision_box_hull`` +
-    ``collision_hull_*``. Those drive the kernel's staged
-    arm-link-vs-world-voxel narrow phase; the box arrays are still emitted
-    unchanged, because the box remains the broad-phase bound and the geometry
-    every other check uses. A manifest declaring none lowers exactly as before.
+    lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget,
+    an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
+    these drive the kernel's staged arm-link-vs-world-voxel narrow phase; the
+    box arrays are still emitted unchanged since the box remains the
+    broad-phase bound. A manifest declaring none lowers exactly as before.
 
     Args:
         robot: The robot manifest. No collision geometry → returns
@@ -859,13 +852,14 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
 
     The C++ kernel reconstructs where a ``CARTESIAN_DELTA`` chunk's EE deltas
     drive the arm using the geometric Jacobian of one *control* link. For a
-    serial manipulator that link is the kinematically **deepest** collision link
-    — the wrist/tip the Cartesian command moves — so we return the index with the
-    longest parent chain to the root. The choice only sets the Jacobian's control
-    point; the predicted configuration is still checked against the *whole* arm's
-    capsules, and the kernel's reactive measured-config check is the guaranteed
-    floor, so a mis-identified EE link can only weaken the *early-warning* margin,
-    never make the kernel unsafe.
+    serial manipulator that link is the kinematically **deepest** collision
+    link (the wrist/tip the Cartesian command moves), so this returns the
+    index with the longest parent chain to the root. The choice only sets the
+    Jacobian's control point; the predicted configuration is still checked
+    against the *whole* arm's capsules, and the kernel's reactive
+    measured-config check is the guaranteed floor, so a mis-identified EE
+    link can only weaken the *early-warning* margin, never make the kernel
+    unsafe.
 
     Args:
         params: The dict from :func:`collision_params_from_description` (or

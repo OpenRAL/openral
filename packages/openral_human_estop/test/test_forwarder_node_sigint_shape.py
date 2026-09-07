@@ -1,33 +1,23 @@
 """forwarder_node SIGINT teardown contract — structural regression guard.
 
 Mirrors ``packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py``
-(the canonical reference for this pattern across the deploy graph). ROS 2
-Jazzy installs a SIGINT signal handler in :func:`rclpy.init` that:
-
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
-
-Before issue #290, ``forwarder_node.main`` wrapped ``rclpy.spin(node)`` in a
-bare ``try/finally`` and called plain ``rclpy.shutdown()`` in the outer
-``finally`` block. On every operator Ctrl-C during ``openral deploy sim``
-the finally then crashed with::
+(the canonical reference for this pattern). ROS 2 Jazzy installs a SIGINT
+handler in :func:`rclpy.init` that shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of :func:`rclpy.spin`. Before issue #290, a bare
+``rclpy.shutdown()`` called after that raised::
 
     rclpy._rclpy_pybind11.RCLError: failed to shutdown:
     rcl_shutdown already called on the given context
 
 This is a safety-path node (Layer 6 — ROS 2 reasoner + supervisor graph spec
-§5 bullet 2). The structural
-contract here additionally proves that the ``except`` clause is scoped to
-teardown-signal-only exceptions (``KeyboardInterrupt`` /
-``ExternalShutdownException``) — it does NOT catch ``Exception``,
-``ROSError``, or ``ROSSafetyViolation``, so an E-stop condition or a
-safety-path failure cannot be silently swallowed at shutdown entry.
-
-These nodes are shutdown *entry-points* for the process, not actuation
-control loops, so this ``except`` cannot leave motors energised: by the time
-``main()`` is exiting the forwarder has already published its estop on
-``/openral/estop`` and the C++ safety kernel owns the actuation
-gate independently.
+§5 bullet 2). The structural contract additionally proves the ``except``
+clause is scoped to teardown-signal-only exceptions (``KeyboardInterrupt``/
+``ExternalShutdownException``) — not ``Exception``, ``ROSError``, or
+``ROSSafetyViolation`` — so an E-stop condition or safety-path failure can't
+be silently swallowed at shutdown entry. This ``except`` cannot leave motors
+energised: by the time ``main()`` is exiting, the forwarder has already
+published its estop on ``/openral/estop`` and the C++ safety kernel owns the
+actuation gate independently.
 """
 
 from __future__ import annotations

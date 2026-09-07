@@ -23,21 +23,16 @@ pytest.importorskip("robot_descriptions")
 _PANDA_SRDF = Path("/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf")
 _PANDA_MOBILE_DIR = Path("robots/panda_mobile")
 
-# Exactly the Franka SRDF's arm-link (1-7) disables — no more.
-#
-# This set used to carry a 16th pair, link5↔link7, described as a "capsule-junction
-# extra" that the sweep had certified as always-colliding. It was never
-# always-colliding: measured on the URDF's own collision meshes over
-# (panda_joint6, panda_joint7) — the only joints that move the pair — 914 of 14641
-# poses interpenetrate by up to 48.3 mm, and 13.5% of that space separates the
-# boxes outright. MoveIt agrees and emits no row for it. The old verdict came from
-# a sweep that modelled each box as its inscribed sphere and drew 2000 random
-# points from the arm's full 7-D joint box (issue #155).
-#
-# `lower_robot` now proves always-colliding instead of sampling it, so it no
-# longer invents this pair. panda_mobile still *ships* the exemption — as an
-# explicit `reason="User"` row in its own SRDF, carrying the measurement and the
-# residual risk — which is why the with-manifest-SRDF path below still sees 16.
+# Exactly the Franka SRDF's arm-link (1-7) disables — no more. This set used to carry a 16th
+# pair, link5<->link7, wrongly certified as always-colliding by a sweep that modelled each box
+# as its inscribed sphere and drew 2000 random points from the arm's full 7-D joint box (issue
+# #155). It was never always-colliding: measured on the URDF's own meshes over
+# (panda_joint6, panda_joint7) — the only joints that move the pair — 914 of 14641 poses
+# interpenetrate by up to 48.3 mm, and 13.5% of that space separates the boxes outright; MoveIt
+# agrees and emits no row for it. `lower_robot` now proves always-colliding instead of sampling
+# it, so it no longer invents this pair — panda_mobile still *ships* the exemption as an
+# explicit `reason="User"` SRDF row (carrying the measurement + residual risk), which is why
+# the with-manifest-SRDF path below still sees 16.
 _EXPECTED_PANDA_ARM_ACM = {
     frozenset(p)
     for p in (
@@ -94,19 +89,15 @@ def test_acm_pairs_are_sorted_and_scoped_to_geometry_links() -> None:
 def test_lower_robot_falls_back_to_sampling_without_srdf() -> None:
     """With srdf_path cleared → the no-SRDF fallback over the robot's own geometry.
 
-    With neither mesh ground truth nor a human, only two justifications are
-    available, and the result must contain nothing else:
-
-    * **adjacent** — link5↔link6 is joint-connected, so it goes in;
-    * **always-colliding** — nothing on this arm qualifies, because nothing on it
-      is *provably* colliding at every reachable pose.
-
-    Both of the pairs this asserts are absent are absent for a reason worth
-    keeping distinct. link1↔link4 is (per MoveIt's mesh sweep) a never-collide
-    pair, and a geometric sweep cannot prove a negative — so it stays CHECKED.
-    link5↔link7 is the opposite: it genuinely collides in part of its range
-    (issue #155), so it is not always-colliding either, and exempting it is a
-    human decision recorded in the SRDF — never something this path may invent.
+    With neither mesh ground truth nor a human, only two justifications apply:
+    **adjacent** (link5<->link6 is joint-connected) and **always-colliding**
+    (nothing on this arm qualifies — nothing is provably colliding at every
+    reachable pose). The two absent pairs this asserts differ in why:
+    link1<->link4 is a MoveIt never-collide pair, but a geometric sweep can't
+    prove a negative, so it stays CHECKED; link5<->link7 genuinely collides in
+    part of its range (issue #155), so it isn't always-colliding either, and
+    exempting it is a human decision recorded in the SRDF, never something
+    this path may invent.
     """
     base = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     robot = base.model_copy(update={"assets": base.assets.model_copy(update={"srdf": None})})
