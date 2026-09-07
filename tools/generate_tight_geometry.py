@@ -142,6 +142,12 @@ def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
     return faces
 
 
+#: Samples per `closest_point_naive` call. The query allocates
+#: `samples x mesh-faces x 3` floats, so this bounds peak memory independently
+#: of how large a link's mesh is.
+_OVERHANG_BATCH = 512
+
+
 def hull_overhang_m(
     hull_points: Points, mesh_points: Points, mesh_faces: Points, *, samples_per_edge: int = 24
 ) -> float:
@@ -190,10 +196,18 @@ def hull_overhang_m(
     samples = np.einsum("fvc,sv->fsc", tris, bary).reshape(-1, 3)
     # `closest_point` (and `mesh.nearest`) need `rtree`, an optional trimesh
     # dependency this workspace does not pin. The naive brute-force query
-    # scales as samples x mesh-faces, which is a few thousand by a few hundred
-    # here -- fine for an offline, once-per-manifest generation step.
-    _, distances, _ = trimesh.proximity.closest_point_naive(mesh, samples)
-    return float(distances.max())
+    # allocates a `samples x mesh-faces x 3` array, so it must be fed in
+    # batches: the largest panda link reaches ~207k samples against ~12k
+    # triangles, which is 57.8 GiB in one call and raised
+    # `numpy._core._exceptions._ArrayMemoryError`. Batching bounds the peak at
+    # `_OVERHANG_BATCH x faces x 3` regardless of link size, and the maximum
+    # over batches is the maximum over the whole set.
+    worst = 0.0
+    for start in range(0, len(samples), _OVERHANG_BATCH):
+        batch = samples[start : start + _OVERHANG_BATCH]
+        _, distances, _ = trimesh.proximity.closest_point_naive(mesh, batch)
+        worst = max(worst, float(distances.max()))
+    return worst
 
 
 def _trimesh(points: Points, faces: Points) -> Any:
