@@ -328,9 +328,16 @@ Four things had to be discovered to make it run at all, each worth keeping:
       with no collision geometry, so it **cannot reach the narrow phase** — its
       pass is vacuous for any hull change. The kernel's dominant cost path has no
       latency surface. Same class as the #183 vacuous Nav2 test.
-- [ ] **Give the narrow phase a latency surface** — a soak that publishes a real
-      grid against the real manifest. Currently the only cost evidence is the
-      one-off table in `collision-hull-narrow-phase.md` §4.
+- [x] **Give the narrow phase a latency surface** — done 2026-09-07.
+      `test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid` lives in the
+      fridge pin file, the only place in the tree with a real grid (a real
+      RoboCasa kitchen rasterised cell by cell, the real manifest so all seven
+      links lower, the real kernel binary, at the sim margin of 0.0 m).
+      **Measured: p99 2.0 ms, median 0.1 ms over 5 638 occupied cells** — 15x
+      under the 33 ms 30 Hz ceiling, with the three new hulls live. Mutation-
+      checked by forcing the budget to 0.001 ms to read the real numbers out.
+      That also answers the latency question the `link3`/`link4`/`link6` change
+      raised, on the shipped configuration rather than by extrapolation.
 - [ ] **Lever 3: voxel resolution 25 -> 15 mm.**
 - [ ] Drop `baguette` from the collision scorecard: 0 % with the gate off means
       it is policy-bound and cannot report on collision work either way.
