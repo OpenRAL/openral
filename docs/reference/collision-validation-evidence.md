@@ -1588,6 +1588,96 @@ it will land in the same place as this one. Size it from the table above, or
 accept in advance that it can only report a null.
 
 
+### 2026-09-07 — the ceiling: what the policy does with the gate off (31.1 % vs 2.3 %)
+
+The measurement nobody had taken. After a month of collision work, completion
+had gone from 25 % (2026-08-26) to 5-10 % (2026-09-06), and no round in this
+ledger, the census, or the survey had ever run the policy with the world-voxel
+gate **off** — so nobody knew whether XR-1's ceiling on these four scenes was
+12 % or 60 %. The validation harness *refuses* the flag
+(`_SAFETY_KNOB_PATTERNS`), correctly for a validation round, and that is
+exactly why the number was missing. The survey quotes the external version of
+this experiment (PACS, arXiv:2511.06385 Table I — unfiltered 0.70 vs
+binary-filtered 0.04) without ever asking for the in-tree one.
+
+**Not a validation round and not a configuration.** `tools/_ceiling_probe.py`
+deliberately bypasses the harness, reusing its `materialise_scene`, readiness
+gate and dispatch tool so the arms differ **only** in the gate flag (verified
+in the launch argv as `enable_octomap_kernel_check:=false`). Nothing lands in a
+scene file, a launch default or a manifest.
+
+**Setup.** `spark` (GB10), worktree at `80027b18`, 4 scenes x 2 arms, 10-12
+valid runs per cell, **both arms running simultaneously** so contention and
+drift load onto each equally rather than masquerading as an effect.
+
+| | valid runs | completed | rate |
+| --- | ---: | ---: | ---: |
+| world-voxel gate **OFF** | 45 | **14** | **31.1 %** |
+| world-voxel gate **ON** (shipped) | 43 | **1** | **2.3 %** |
+
+**Fisher p = 3.5e-04**, power 0.97. Leave-one-scene-out keeps it (worst case
+p = 5.4e-02 dropping `utensil`).
+
+| scene | OFF | ON | p |
+| --- | ---: | ---: | ---: |
+| `utensil` | 7/12 (58 %) | 0/10 | 0.005 |
+| `fridge` | 5/11 (45 %) | 0/10 | 0.035 |
+| `sink_cup` | 2/11 (18 %) | 1/11 (9 %) | 1.0 |
+| `baguette` | 0/11 (0 %) | 0/12 (0 %) | 1.0 |
+
+**`baguette` should leave the collision scorecard.** It is 0 % with the gate
+off, so it is policy-bound and cannot report on collision work in either
+direction. Four of the five task completions in this ledger's whole history
+were baguette runs, which is what made it look like the bellwether scene; at a
+0 % ceiling it is not one.
+
+**What it does and does not license.** It does **not** say turn the gate off —
+6 of 91 stops in the 2026-09-06 battery were real contact. It is a ceiling: it
+says the geometry levers are competing for **up to 29 points of completion**,
+concentrated in the payload class, rather than for noise. Taken with the
+decomposition below, that is what moved the programme from "consider closing"
+to "pull the two measured levers".
+
+**The decomposition that reordered the levers.** For every stop the 2026-09-06
+battery records both the kernel's reported depth and the certified mesh gap
+that was really there; the difference is the over-approximation, and it splits
+by class once the 21.65 mm cell half-diagonal is subtracted:
+
+| stop class | n | median excess | **beyond the voxel term** |
+| --- | ---: | ---: | ---: |
+| payload | 62 | 20.1 mm | **−1.5 mm** |
+| link | 29 | 54.8 mm | **+33.1 mm** |
+
+So the payload primitives are already tight (`extract_body_primitives` lowers
+each geom separately) and the **link envelopes were not** — which is what
+`feat(safety): ship tight geometry for panda_link3, link4 and link6` acts on,
+`panda_link6` alone holding 18 of the 29 link stops.
+
+**Three defects were fixed before this number was trustworthy**, each of which
+would have produced a confidently wrong answer:
+
+1. an uncaught `subprocess.TimeoutExpired` killed whole workers rather than
+   single rounds, leaving the arms **scene-confounded** — gate-off had run
+   mostly `fridge` (which completes) and gate-on mostly `utensil` (which then
+   never did). The interim reading of 4/17 vs 1/20 was an artifact of scene
+   composition, not the gate;
+2. `SidecarClient` reaps the sidecar **it** spawned on exit, so the first
+   crashed worker took the shared XR-1 sidecar down with it and every later run
+   was policy-free (30-85 s against 600+). Fixed with a keeper process that
+   owns the sidecar and nothing else;
+3. policy-free runs have to be excluded by reading each run's own goal log for
+   `ROSConfigError` / sidecar-exit — **14 of 102 runs** were dropped that way.
+
+**Standing caveats on this entry.** `spark` is a shared host (a GR00T eval
+server was resident throughout), so absolute rates here are not directly
+comparable to q-laptop's; the arm-vs-arm comparison is what is valid. The
+gate-off arm also runs longer per scene, because nothing stops it early. And
+`openral deploy sim` cannot run concurrently with itself —
+`_kill_orphan_openral_graph_processes()` matches by argv signature and cannot
+tell a sibling from an orphan — so the parallel workers needed
+`OPENRAL_SKIP_ORPHAN_REAP=1`, which is deliberately not a committed default.
+
+
 ## Standing caveats
 
 Nine things a reader should carry away, all of them stated by the artifacts
