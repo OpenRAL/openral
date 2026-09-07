@@ -92,19 +92,68 @@ class Excluded(NamedTuple):
     reason: str
 
 
-def _nearest_body(nearest_pair: dict[str, Any]) -> str:
-    """Name the real body the probe found nearest, for the by-fixture table.
+#: Tolerance for matching a recorded snapshot to the stop being adjudicated.
+#: Both numbers come from the same probe call, so they agree exactly or the
+#: snapshot describes a different stop.
+_GAP_MATCH_TOL_M: Final[float] = 1e-9
 
-    ``nearest_pair`` is ``extra="allow"`` on a schema that has changed shape
-    across rounds, so this reads the keys that have existed rather than
-    insisting on one spelling — and falls back to a marker instead of raising,
-    because an unnamed body still counts toward the recovery rate.
+UNATTRIBUTED: Final[str] = "<unattributed>"
+
+
+def fixture_at_stop(scene_dir: Path, certified_gap_m: float) -> str:
+    """Name the world body the payload was nearest, for the by-fixture table.
+
+    **Not** ``ground_truth.nearest_pair``. That field records the closest probed
+    pair *of any kind*, which for a carried payload is routinely two robot links
+    — on the round this was written against it read ``robot0_link3`` vs
+    ``robot0_link4`` at −36 mm while the payload itself sat 24.9 mm clear of a
+    counter. Attributing the stop to ``robot0_link4`` would have put a robot link
+    in a table of kitchen fixtures, so the body has to come from the probe's
+    **payload-vs-world** pair list, which only the raw
+    ``sim.estop_ground_truth_snapshot`` line carries.
+
+    The match is verified rather than assumed: the minimum certified distance in
+    that list must equal the ``nearest_tripping_party_m`` this stop was
+    adjudicated on. Both are the same probe call, so they agree exactly; if they
+    do not, the snapshot is describing some other stop and the honest answer is
+    no attribution at all. The recovery *count* never depends on this — only the
+    breakdown does.
     """
-    for key in ("body_b", "b_body", "world_body", "body", "b"):
-        value = nearest_pair.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return "<unnamed>"
+    log_path = scene_dir / "run_deploy.log"
+    if not log_path.is_file():
+        return UNATTRIBUTED
+    snapshot: dict[str, Any] | None = None
+    with log_path.open(errors="replace") as handle:
+        for line in handle:
+            if "sim.estop_ground_truth_snapshot" not in line:
+                continue
+            start, end = line.find("{"), line.rfind("}")
+            if start < 0 or end <= start:
+                continue
+            try:
+                snapshot = json.loads(line[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+            break
+    if snapshot is None:
+        return UNATTRIBUTED
+    pairs = snapshot.get("nearest_payload_world_pairs")
+    if not isinstance(pairs, list):
+        return UNATTRIBUTED
+    certified = [
+        pair
+        for pair in pairs
+        if isinstance(pair, dict)
+        and pair.get("distance_certified") is True
+        and isinstance(pair.get("distance_m"), (int, float))
+    ]
+    if not certified:
+        return UNATTRIBUTED
+    nearest = min(certified, key=lambda pair: float(pair["distance_m"]))
+    if abs(float(nearest["distance_m"]) - certified_gap_m) > _GAP_MATCH_TOL_M:
+        return UNATTRIBUTED
+    body = nearest.get("body_b")
+    return body if isinstance(body, str) and body else UNATTRIBUTED
 
 
 def collect(round_dirs: list[Path]) -> tuple[list[Stop], list[Excluded]]:
@@ -140,7 +189,6 @@ def collect(round_dirs: list[Path]) -> tuple[list[Stop], list[Excluded]]:
             if not isinstance(gap, (int, float)):
                 excluded.append(Excluded(round_id, name, "no nearest_tripping_party_m"))
                 continue
-            pair = truth.get("nearest_pair")
             stops.append(
                 Stop(
                     round_id=round_id,
@@ -149,7 +197,7 @@ def collect(round_dirs: list[Path]) -> tuple[list[Stop], list[Excluded]]:
                     cell=party_b,
                     reported_depth_m=float(stop.get("min_distance_m", 0.0)),
                     certified_gap_m=float(gap),
-                    nearest_body=_nearest_body(pair if isinstance(pair, dict) else {}),
+                    nearest_body=fixture_at_stop(round_dir / name, float(gap)),
                 )
             )
     return stops, excluded

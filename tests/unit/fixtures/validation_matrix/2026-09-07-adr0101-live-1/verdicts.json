@@ -1,0 +1,131 @@
+{
+  "schema_version": "0.1",
+  "metadata": {
+    "round_id": "2026-09-07-adr0101-live-1",
+    "started_at": "2026-09-07T08:24:07.820209+00:00",
+    "host": "q-laptop",
+    "executed_sha": "60dcb2ff992cb7e4c06e5e362d8a000cd82a43e8",
+    "worktree_clean": true,
+    "overlay_built_at_ns": 1788769266592623702,
+    "launcher_path": "/home/allopart/workspace/openral-plan/.venv/bin/openral",
+    "repo_root": "/home/allopart/workspace/openral-plan",
+    "robot_manifest_path": null,
+    "robot_id": null,
+    "sync_groups": [
+      "robocasa",
+      "sidecar-wire"
+    ],
+    "stack_argv": [
+      "--enable-slam",
+      "--enable-nav2",
+      "--enable-octomap",
+      "--enable-octomap-kernel-check",
+      "--no-object-detector",
+      "--no-enable-scene-vlm",
+      "--no-dashboard",
+      "--hal",
+      "viewer_enabled=false"
+    ],
+    "safety_overrides_absent": true,
+    "collision_scale": {},
+    "gpu_name": "NVIDIA GeForce RTX 5070 Laptop GPU",
+    "ros_domain_id": "",
+    "ros_automatic_discovery_range": "LOCALHOST",
+    "notes_path": "NOTES.md",
+    "scene_dirs": {},
+    "seed": 1,
+    "artifact_stem": "run",
+    "imported_from": null,
+    "scene_pins": {
+      "enable_reasoner": false
+    },
+    "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4",
+    "scene_configs": {
+      "utensil": "outputs/validation-matrix/2026-09-07-adr0101-live-1/utensil/robocasa_drawer_utensil_seed1.yaml"
+    }
+  },
+  "scenes": [
+    {
+      "scene": "utensil",
+      "config_path": "outputs/validation-matrix/2026-09-07-adr0101-live-1/utensil/robocasa_drawer_utensil_seed1.yaml",
+      "config_sha256": "bdb94c1bcb3af2e7cdb7ef72309cc6266db34054aaf5840a273523279d80146f",
+      "seed": 1,
+      "prompt": "Pick the utensil from the counter and place it in the drawer.",
+      "rskill_id": "OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4",
+      "outcome": "estop-collision-real",
+      "task_success_final": false,
+      "task_success_ever": false,
+      "task_success_steps": 406,
+      "task_success_transitions": 0,
+      "stop": {
+        "kind": "world",
+        "party_a": "attached:sim:obj_main",
+        "party_b": "voxel_228622",
+        "horizon_step": 0,
+        "min_distance_m": -0.0040461,
+        "sweep_min_distance_m": -0.0040461,
+        "place_allowance_active": false,
+        "place_target": "",
+        "depth_is_box_bound": false
+      },
+      "ground_truth": {
+        "verdict": "real-contact",
+        "stop_class": "attached_payload",
+        "sim_time_s": 20.15,
+        "grid_resolution_m": 0.025,
+        "quantization_budget_m": 0.021650635094610966,
+        "admissible_gap_m": 0.109871,
+        "budget_source": "hal-adjudication-budget",
+        "probe_collidability_filtered": true,
+        "probe_distance_certified": true,
+        "unadjudicated_reason": "",
+        "nearest_any_m": -0.03633558,
+        "nearest_tripping_party_m": 0.024858349,
+        "nearest_pair": {
+          "body_a": "robot0_link3",
+          "body_b": "robot0_link4",
+          "distance_certified": true,
+          "distance_m": -0.03633558,
+          "distance_method": "sat",
+          "geom_a": "robot0_link3_collision",
+          "geom_b": "robot0_link4_collision",
+          "witness_a_xyz": [
+            4.231731942,
+            -1.270224116,
+            1.303124474
+          ],
+          "witness_b_xyz": [
+            4.206034794,
+            -1.248221859,
+            1.289864321
+          ]
+        },
+        "discrepancy_m": 0.028904449,
+        "probed_pairs": 183,
+        "probe_truncated": false,
+        "distmax_m": 0.10987063509461098,
+        "payload_contacts": 6
+      },
+      "witness": {
+        "attach_t_s": 111.524,
+        "detach_t_s": null,
+        "support_id": "sim:counter_1_right_group_main",
+        "kernel_witness_armed": 1,
+        "kernel_witness_separated": 1,
+        "place_declaration_seen": false,
+        "place_region_armed": false,
+        "place_allowance_active_lines": 0
+      },
+      "monitor_records": 585,
+      "dispatch_failure_reason": "safety_estop:ROSPublishingHAL: safety stop latched (/openral/safety_status:kind_collision (world) + /openral/estop) while waiting for action group tick 127 to be applied",
+      "wall_s": 101.3,
+      "artifacts": {
+        "deploy_log": "utensil/run_deploy.log",
+        "monitor": "utensil/run_monitor.jsonl",
+        "goal": "utensil/run_goal.log",
+        "monitor_gate": "utensil/run_monitor_gate.txt"
+      },
+      "harness_error_reason": ""
+    }
+  ]
+}
