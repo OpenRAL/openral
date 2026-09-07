@@ -200,3 +200,26 @@ exact pair certified at +65.5 mm alongside a `self_collision` budget of
 124.6 mm. That is the payload-vs-link shape #228 is about: the adjudicator
 scored it against the payload's nearest WORLD body instead. Same two-line
 excerpt convention as the 2026-09-04 fixture.
+
+`2026-09-07-adr0101-live-1` is a single-scene round run on `q-laptop`
+(RTX 5070 Laptop 8 GB) at `60dcb2ff992cb7e4c06e5e362d8a000cd82a43e8`, the first
+round after the harness DDS-scope and `--no-daemon` fixes, with
+`OPENRAL_ALLOW_REMOTE_CODE=1`. It is the first `validation_matrix` round since
+#231 to reach a real outcome rather than `harness-error`, and it is kept for one
+stop only: `kind=world a=attached:sim:obj_main b=voxel_228622
+min_distance_m=-0.0040461`, certified 24.858349 mm clear of
+`counter_1_right_group_main`.
+
+    q-laptop:/home/allopart/workspace/openral-plan/outputs/validation-matrix/
+        2026-09-07-adr0101-live-1/
+
+`2026-09-07-adr0101-live-1/utensil/run_deploy.log`
+    The scene's single `sim.estop_ground_truth_snapshot` line, byte-for-byte.
+    Nothing else of the 1.9 MB deploy log is kept. `tools/adr0101_recovery.py`
+    reads exactly this line for the payload-vs-world pair list, which is the
+    only place the body behind `nearest_tripping_party_m` is recorded —
+    `verdicts.json`'s `nearest_pair` is the nearest pair of *any* kind and on
+    this round names two robot links.
+
+`2026-09-07-adr0101-live-1/verdicts.json`
+    Derived by the harness at run time, kept verbatim.

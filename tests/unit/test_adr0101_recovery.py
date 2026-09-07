@@ -21,6 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures" / "validation_matrix"
 ROUND_0823 = FIXTURES / "2026-08-23-master-s1"
+ROUND_LIVE = FIXTURES / "2026-09-07-adr0101-live-1"
 
 # tools/ is not an installed package — load by path, as test_validation_matrix.py does.
 _spec = importlib.util.spec_from_file_location(
@@ -109,3 +110,54 @@ def test_touching_is_contact_not_clearance() -> None:
     assert not at_contact.recovered
     assert not penetrating.recovered
     assert clear.recovered
+
+
+def test_the_fixture_is_the_body_the_payload_was_near_not_the_nearest_pair_of_any_kind() -> None:
+    """The by-fixture table must not name a robot link.
+
+    This is a regression test for a real defect in the first cut of this tool.
+    ``ground_truth.nearest_pair`` records the closest probed pair *of any kind*,
+    and for a carried payload that is routinely two robot links: on this very
+    round it reads ``robot0_link3`` vs ``robot0_link4`` at −36.3 mm, while the
+    payload itself sat 24.9 mm clear of a counter. Reading the fixture off that
+    field put ``robot0_link4`` into a table of kitchen fixtures — a robot link
+    presented as a static world body, in the record that argues for modelling
+    static world bodies.
+
+    The attribution must instead come from the probe's payload-vs-world pair
+    list, and it must agree with the gap the stop was adjudicated on.
+    """
+    stops, excluded = adr0101_recovery.collect([ROUND_LIVE])
+
+    assert excluded == []
+    assert len(stops) == 1, stops
+    (stop,) = stops
+    assert stop.nearest_body == "counter_1_right_group_main"
+    assert not stop.nearest_body.startswith("robot0_"), (
+        "a robot link must never be attributed as a static fixture"
+    )
+    # The gap the attribution was matched against is the one that decides
+    # recovery, so the two cannot drift apart silently.
+    assert stop.certified_gap_m == 0.024858349
+    assert stop.recovered
+
+
+def test_attribution_is_withheld_when_the_snapshot_does_not_match_the_stop() -> None:
+    """A snapshot describing a different stop yields no attribution, not a wrong one.
+
+    The recovery count never depends on the fixture name, so the safe failure is
+    to say nothing rather than to name a body the probe did not measure at this
+    stop.
+    """
+    assert (
+        adr0101_recovery.fixture_at_stop(ROUND_LIVE / "utensil", certified_gap_m=0.999)
+        == adr0101_recovery.UNATTRIBUTED
+    )
+
+
+def test_a_missing_deploy_log_degrades_to_no_attribution(tmp_path: Path) -> None:
+    """Without the raw snapshot the stop still counts; only its fixture is unknown."""
+    assert (
+        adr0101_recovery.fixture_at_stop(tmp_path, certified_gap_m=0.0249)
+        == adr0101_recovery.UNATTRIBUTED
+    )
