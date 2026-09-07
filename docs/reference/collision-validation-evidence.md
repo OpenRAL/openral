@@ -1838,7 +1838,7 @@ producing it.
 
 ## Standing caveats
 
-Nine things a reader should carry away, all of them stated by the artifacts
+Ten things a reader should carry away, all of them stated by the artifacts
 themselves rather than inferred:
 
 1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
@@ -1927,6 +1927,17 @@ themselves rather than inferred:
    (`panda_link5`/`panda_link7`, 2026-09-04) replays as a **genuine** overlap
    of the two links' exact hulls. Closing this properly needs a link-vs-link
    pair set in `sim.estop_ground_truth_snapshot`, which does not exist yet.
+
+10. **No `validation_matrix` round taken on post-#231 `master` before
+    2026-09-07 is a measurement of the kernel.** The harness polled a DDS scope
+    the launch had confined away from, and its `ros2 action list --no-daemon`
+    poll could not discover an advertised action on *any* scope, so every scene
+    reported `harness-error` beside a healthy graph — see the 2026-09-07 entry.
+    `harness-error` did its job, in that nothing false reached this page; what
+    it does not do is distinguish "this host cannot launch" from "this harness
+    cannot see", which is why the first explanation reached for was the
+    `octomap_server` `exec_depend` of 2026-08-22. Rounds on commits before
+    `9ca834e` are unaffected.
 
 ## Related
 
