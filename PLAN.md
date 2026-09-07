@@ -185,8 +185,48 @@ term, which is the OBB corner slop (`panda_link6`: 53.35 mm).
 | # | lever | targets | headroom | cost |
 | --- | --- | --- | --- | --- |
 | 1 | **`tight_geometry` on `panda_link6`** (and `link3`/`link4`, which have none) | 18 of 29 link stops, incl. the whole `voxel_352030` class | ~33 mm of the link excess | **one manifest edit**; `tools/generate_tight_geometry.py` exists |
-| 2 | **Voxel resolution 25 → 12.5–15 mm** | the 71 % payload class *and* 21.65 mm of the link class | halves the dominant term | **heavy** — 2.1 m box at 15 mm is 2.74 M cells against a 614 125 cap (85³); needs cap, message size, latency and safety-WG |
-| 3 | ~~Payload as a tight hull~~ | — | **−1.5 mm: none** | struck; measured out |
+| 2 | **Promote the fixtures the payload passes to modeled geometry** | 51 of 70 payload stops (the `voxel_` ones) | removes the voxel term entirely for those | moderate — generalises ADR-0098/#200 from the *declared place target* to the fixture the payload is near |
+| 3 | ~~Voxel resolution 25 → 12.5–15 mm~~ | — | **struck: cost is cubic** | see below |
+| 4 | ~~Payload as a tight hull~~ | — | **−1.5 mm: none** | struck; measured out |
+
+### Why resolution is struck (lever 3)
+
+`OccupancyVoxels.occupancy` is a **dense** `uint8[]`, and the kernel's per-link
+window holds `O(1/res³)` cells, so halving the cell size is an **8× check cost**,
+not a 2× one:
+
+| resolution | grid cells | message | window cost | est. check | error term |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| **25 mm (today)** | 614 125 | 0.61 MB | 1.00× | 5.8 ms | 21.7 mm |
+| 20 mm | 1 191 016 | 1.19 MB | 1.95× | 11.3 ms | 17.3 mm |
+| 15 mm | 2 803 221 | 2.80 MB | 4.63× | **26.7 ms** | 13.0 mm |
+| 12.5 mm | 4 826 809 | 4.83 MB | 8.00× | **46.1 ms** | 10.8 mm |
+
+Against a 33 ms hard budget at 30 Hz (25 ms soak target), 15 mm is marginal and
+12.5 mm is over. 20 mm fits but buys only 4.4 mm of the 20.1 mm payload excess.
+The cap would also have to rise 2-8×. **Poor return; not the lever.**
+
+### Why modeled fixtures is the lever (lever 2)
+
+51 of 70 payload stops are against anonymous `voxel_` cells, and the certified
+nearest real body at those stops is almost always a **static kitchen fixture
+whose exact geometry MuJoCo already has**:
+
+| nearest body at a payload stop | stops |
+| --- | ---: |
+| `counter_1_right` | 25 |
+| `fridgesidebyside_main` | 9 |
+| `counter_1_left` | 8 |
+| `cab_1_left` | 5 |
+| `island` | 4 |
+
+The robot carries an object over a counter and the counter's 25 mm cubes stop
+it at 20 mm of air. This is exactly the survey's §9 point 1 — *"the route to mm
+world-side discrimination is not a better checker but a better world model —
+objects the robot intends to touch promoted from anonymous voxels to posed
+meshes/primitives"* — and #200 already built the machinery for the **declared
+place target**. Generalising it from "the target" to "the fixture the payload is
+near" is the measured next step.
 
 **Deliberately not leading with a negative world margin.** It is zero
 engineering and there is now a paper trail for it, but it also lets the 6 real
