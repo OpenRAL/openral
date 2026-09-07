@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 import shlex
@@ -1418,7 +1419,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     approach_skill = approach_skill_id or ""
 
     argv_template: list[str] = [
-        "ros2",
+        *_ros2_argv_head(),
         "launch",
         "openral_rskill_ros",
         "sim_e2e.launch.py",
@@ -1626,6 +1627,83 @@ def _alloc_conf_var() -> str:
     except (importlib.metadata.PackageNotFoundError, ValueError):
         return "PYTORCH_CUDA_ALLOC_CONF"
     return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+
+
+def _ros2_argv_head() -> list[str]:
+    """Return the argv prefix that runs ``ros2`` under the **workspace venv** interpreter.
+
+    ``/opt/ros/<distro>/bin/ros2`` carries a ``#!/usr/bin/python3`` shebang, so
+    a bare ``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system*
+    interpreter. :func:`_prepare_launch_env` puts the venv site directory on
+    ``PYTHONPATH``, which is enough for the launch file to import
+    ``openral_core`` — but ``PYTHONPATH`` only *prepends*: every distribution
+    the venv does NOT carry still resolves out of
+    ``/usr/lib/python3/dist-packages``. Mixing an apt distribution's compiled
+    extensions with the venv's NumPy is an ABI coin-flip.
+
+    That is not hypothetical. On a Jetson AGX Thor with ``python3-pandas``
+    installed, ``openral deploy run`` aborted the whole launch with::
+
+        ValueError: numpy.dtype size changed, may indicate binary
+        incompatibility. Expected 96 from C header, got 88 from PyObject
+
+    …from ``openral_hal.sim_bringup`` → ``lerobot`` → ``deepdiff`` →
+    ``import pandas``, which resolved to the apt build (compiled against NumPy
+    1.26) inside a process that had already imported the venv's NumPy 2.2.
+    ``deepdiff`` guards that import with ``except ImportError``, so a
+    ``ValueError`` sails straight through the guard and out of the launch.
+
+    Running the launch parser under ``sys.executable`` makes the venv's
+    ``pyvenv.cfg`` (``include-system-site-packages = false``) actually apply, so
+    ``dist-packages`` is off ``sys.path`` entirely and the whole class of
+    apt-shadowing failures goes away — pandas today, anything else tomorrow.
+    ROS's own Python packages are unaffected: they arrive via the
+    ``/opt/ros/<distro>`` entry that ``PYTHONPATH`` already carries.
+
+    Wrapping is conditional on two things, because getting either wrong turns
+    a working install into a hard failure:
+
+    1. **``sys.executable`` must be able to import ``ros2cli``.** The shebang
+       only says *some* interpreter owns the script; it does not say ours can
+       run it. On a deb ROS this holds — ``PYTHONPATH`` carries
+       ``/opt/ros/<distro>/lib/python3.12/site-packages`` whenever the install
+       is sourced, and :func:`_prepare_launch_env` passes that through. Where
+       ROS came from conda/RoboStack or a pip install into another environment
+       it does not: the shebang names *that* interpreter, its site-packages are
+       not on ``PYTHONPATH``, and the wrap would die with
+       ``PackageNotFoundError: ros2cli`` on a host where the bare ``ros2``
+       worked. The CLI inherits the same ``PYTHONPATH`` it hands the
+       subprocess, so an in-process ``find_spec`` answers this exactly.
+    2. **``ros2`` must actually be a Python script.** ``ros2cli`` installs it
+       as a console-script entry point (``#!/usr/bin/python3`` on a Jazzy deb),
+       but that is a property of the installation, not a guarantee — a distro
+       or container shipping a shell wrapper would be broken by exec-ing it
+       under an interpreter. So the shebang is read too.
+
+    Anything else (no ``ros2`` on ``PATH``, ``ros2cli`` not importable here, an
+    unreadable file, a non-Python shebang) falls back to the bare ``["ros2"]``
+    this function replaced, so the worst case is the pre-existing behaviour.
+
+    Returns:
+        ``[sys.executable, "<abs path to ros2>"]`` when ``ros2`` is a Python
+        script this interpreter can run, else ``["ros2"]``.
+
+    Example:
+        >>> head = _ros2_argv_head()
+        >>> head == ["ros2"] or head[0] == sys.executable
+        True
+    """
+    ros2_bin = shutil.which("ros2")
+    if ros2_bin is None or importlib.util.find_spec("ros2cli") is None:
+        return ["ros2"]
+    try:
+        with open(ros2_bin, "rb") as handle:
+            shebang = handle.readline(256)
+    except OSError:
+        return ["ros2"]
+    if not shebang.startswith(b"#!") or b"python" not in shebang:
+        return ["ros2"]
+    return [sys.executable, ros2_bin]
 
 
 def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:

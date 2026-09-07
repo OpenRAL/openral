@@ -30,6 +30,24 @@ it is a fact about the bench and not about the code. The round-trip is
 read-only by construction: it queries motor state and never calls
 `enable_all()`, so it cannot energise or move the arm.
 
+`tests/hil/test_openarm_restock_deploy_preflight.py` is the cell-level gate
+for the restocking deploy: the committed scene / robot manifest / rSkill, the
+CAN links, the three physical cameras, and — since ADR-0102 — the
+slot-dispatched 16-DoF vector. That last tier drives the **production**
+dispatcher (`rskill_runner_node._dispatch_slots`) over the committed
+manifest's `slots:` block into a real `OpenArmRealHAL` that has passed its bus
+preflight, then checks the four controller messages reconstruct the policy's
+own vector, that arrival order does not change them, and that a standalone
+gripper action raises instead of vanishing. A policy value equal to its joint
+index makes a misroute or side swap read as a mismatch rather than as a
+plausible pose. It cannot move the arm whether or not the arm is powered:
+`openarm_bringup`'s `ros2_control` stack is the only path from those topics to
+`openarm_can`, and these tests never publish to ROS at all — the messages are
+collected in-process through the adapter's own `publish_fn` seam. What it
+therefore does **not** cover is command→motion: that the composed vector moves
+the right joints by the right amount, and that the gripper physically
+actuates, still needs a powered run.
+
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 

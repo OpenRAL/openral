@@ -2,10 +2,11 @@
 
 The default :class:`OpenCVThreadSensorReader` is always available
 (``opencv-python`` is declared as the ``opencv`` optional-extra on
-``openral-runner``). The :class:`GStreamerSensorReader` (PR I) and
-:class:`Ros2ImageSensorReader` (PR D follow-up) gate on their respective
-optional deps and import lazily so the package stays importable on hosts
-without GStreamer / rclpy.
+``openral-runner``). :class:`GStreamerSensorReader` and
+:class:`Ros2ImageSensorReader` gate on their respective optional deps and
+import lazily so the package stays importable on hosts without GStreamer /
+rclpy. The factory reaches both by full module path rather than through this
+package, so neither is re-exported here.
 
 OpenCVThreadSensorReader is exposed via PEP 562 ``__getattr__`` so that
 ``import openral_runner.backends.gstreamer`` does NOT eagerly pull

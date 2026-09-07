@@ -131,7 +131,15 @@ KV-VRAM permitting.
 Honesty ledger (CLAUDE.md §1.2). Validated live on an **RTX 4070 Laptop
 (8 GB, CUDA 13.0)**: 2026-07-20 (day the Edge weights shipped — pinned
 stable stack) and 2026-07-21 (vLLM `main` nightly — first working
-end-to-end tick).
+end-to-end tick). The aarch64 rows are from a **Jetson AGX Thor**
+(JetPack 7, 122 GiB unified) on 2026-09-07, where cosmos3-edge now serves
+and tool-calls for real.
+
+**Read the two platforms separately.** The x86 and aarch64 branches of the
+same lock resolve to *different vLLM releases* (0.24.0 vs 0.28.0), and only
+the latter carries the native Edge model — so a ❌ in an x86 row says
+nothing about a Jetson, and vice versa. That is why the sidecar probes the
+serving venv's `ModelRegistry` at boot instead of assuming.
 
 | Item | Status |
 |---|---|
@@ -150,7 +158,14 @@ end-to-end tick).
 | 8 GB fit with the native impl | ✅ needs the expandable-segments allocator config (now set by the sidecar — `PYTORCH_ALLOC_CONF` or `PYTORCH_CUDA_ALLOC_CONF` depending on the sidecar venv's torch) **and** `--kv-cache-dtype fp8` for the 8192-token window (flag added); ~6.75 GB resident, 15,392-token fp8 KV. |
 | Tick latency | ✅ 1.5–2 s warm per tool-call tick on the 4070 — far inside the 0.2 Hz S2 budget. |
 | Tool-call reliability vs. the deploy-sim baseline | ⬜ pending eval run (unblocked once the sidecar's pinned vLLM contains #48291) |
-| Tick latency / VRAM on Jetson Thor | ⬜ pending hardware (Q1 2027 modules) |
+| Sidecar venv provisions on **linux-aarch64** (Jetson Thor) | ✅ **fixed** — the committed `--universal` lock was unsatisfiable there: its `nvidia-nccl-cu13==2.28.9 ; sys_platform == 'linux'` covered aarch64 too, where `torch==2.13.0` requires `2.29.7`. Regenerating the lock scopes it per platform (`nvidia-nccl-cu12==2.27.5` x86 / `nvidia-nccl-cu13==2.29.7` aarch64); `uv pip install --dry-run` on the Thor now resolves, selecting **vllm 0.28.0 / transformers 5.16.1 / torch 2.13.0**. |
+| `cosmos3_edge` arch on aarch64 / vLLM 0.28.0 | ✅ **native, no transformers overlay needed** — `Resolved architecture: Cosmos3EdgeForConditionalGeneration`. vLLM 0.28.0 carries [#48291](https://github.com/vllm-project/vllm/pull/48291), so the x86 "blocked on the pinned stable release" rows above **do not apply to a Jetson**. The sidecar no longer assumes either way: `vllm_has_native_edge_model()` asks the venv's own `ModelRegistry`. |
+| Flattened reasoner view vs. the native loader | ✅ **fixed** — the view *breaks* the native loader (`RuntimeError: Cannot find any model weights with …/Cosmos3-Edge-reasoner`); it exists for the Transformers fallback, which cannot follow the subfolder `weight_map`. `resolve_served_model(..., native_edge=True)` now serves the snapshot dir as-is: **3 shards, 4.66 GiB, 5.71 s**. |
+| `vllm serve` reaches serving on Thor | ✅ **fixed** — engine init died in FlashInfer's JIT (`flashinfer/sampling.cuh:20:10: fatal error: curand.h: No such file or directory`; JetPack 7 ships the CUDA runtime, not the toolkit headers). The sidecar now defaults `VLLM_USE_FLASHINFER_SAMPLER=0` — a JIT-compiled sampler is not worth a hard boot dependency on the toolchain for a 4B model at 0.2 Hz. Server listens on 127.0.0.1:8901. (`ninja` must also be on `PATH`; it is, from the sidecar venv's own `bin`.) |
+| **Live inference on Jetson AGX Thor** | ✅ **WORKS** — a real chat completion returned coherent physical-reasoning text (vllm-0.28.0, BF16, 8192-token window, `--enforce-eager`, `--gpu-memory-utilization 0.20`). This is precisely the forward pass that crashes on the x86 pinned stack. |
+| **Live `select_tool`-shaped tick on Thor** | ✅ **WORKS** — `tool_choice="required"` over a `decompose_mission` schema returned a **validated tool call** with well-formed arguments and `finish_reason="tool_calls"`. |
+| Tick latency on Jetson AGX Thor | ✅ **1.26 / 1.26 / 1.36 s warm** per tool-call tick — inside the 0.2 Hz S2 budget, and in line with the 1.5–2 s measured on the 4070. **First** tool-call request cost **64 s** cold (xgrammar builds the tool-call grammar); that is a one-off per grammar, not a per-tick cost, but it does mean the first reasoner tick after boot blows a 5 s budget. |
+| Tool-call reliability vs. the deploy-sim baseline on Thor | ⬜ still pending — three identical ticks are a latency measurement, not a reliability eval. |
 
 ### Upstream timeline & what unblocks the pinned sidecar
 
