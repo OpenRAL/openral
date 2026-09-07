@@ -1,25 +1,19 @@
 """Export a LeRobot ACT policy to a single whole-model ONNX graph.
 
-Unlike SmolVLA (whose VLM + flow-matching graph needs a *split* export — see
-``openral_rskill.smolvla_export``), ACT is a plain CNN + transformer: the core
-network maps normalized observations straight to the normalized action chunk,
-so it exports whole-model in one shot.
+Unlike SmolVLA (split export, see ``openral_rskill.smolvla_export``), ACT is a
+plain CNN + transformer, so it exports whole-model in one shot.
 
-Export target: ``ACTPolicy.model`` (the ``ACT`` nn.Module), reached exactly as
-``predict_action_chunk`` does — it builds ``batch[OBS_IMAGES]`` as an ordered
-list over ``config.image_features`` and returns ``model(batch)[0]`` of shape
-``(B, chunk_size, action_dim)``. Normalization is **external** (the checkpoint's
-``policy_preprocessor.json`` / ``policy_postprocessor.json`` MEAN_STD sidecars,
-applied in Python by the ACT adapter), so the ONNX graph takes already-normalized
-images + state and emits the normalized action chunk. The parity test
-(``tests/integration/test_act_onnx.py``) compares this graph against the torch
-``predict_action_chunk`` on the same normalized inputs.
+Export target: ``ACTPolicy.model``, called as ``predict_action_chunk`` does —
+``model(batch)[0]`` of shape ``(B, chunk_size, action_dim)``. Normalization is
+external (checkpoint's ``policy_preprocessor.json`` / ``policy_postprocessor.json``
+MEAN_STD sidecars, applied by the ACT adapter): the graph takes already-normalized
+images + state and emits normalized actions. Parity checked in
+``tests/integration/test_act_onnx.py``.
 
-Inputs are ordered by ``config.image_features`` (for so101-passing-pen that is
-``[wrist, front]``) plus the 6-D state. The gabrycina/so101-passing-pen-policy
-checkpoint trains at 480x640.
+Inputs ordered by ``config.image_features`` (so101-passing-pen: ``[wrist, front]``)
+plus 6-D state. gabrycina/so101-passing-pen-policy trains at 480x640.
 
-Usage (uses the project venv, which already carries torch + lerobot + onnx):
+Usage (project venv; already has torch + lerobot + onnx):
 
     uv run python tools/export_act_onnx.py \
         --repo-id gabrycina/so101-passing-pen-policy \
@@ -68,11 +62,10 @@ class _ACTExportWrapper(torch.nn.Module):
 class _ACTDeviceWrapper(torch.nn.Module):
     """Device-preprocess ACT facade: takes ``/255`` RGB images, bakes image normalize.
 
-    The zero-copy NVMM path (``openral_rskill.act_nvmm``) hands the engine
-    ``[0,1]`` RGB NCHW tensors straight off the nvrtc RGBA→NCHW/255 kernel — so
-    the per-channel MEAN_STD image normalize the lerobot processor would apply on
-    the host is folded into the graph here instead. State stays host-normalized
-    (6-D, negligible); the graph consumes the already-normalized ``state``.
+    For the zero-copy NVMM path (``openral_rskill.act_nvmm``), which hands the
+    engine ``[0,1]`` RGB NCHW tensors off an nvrtc kernel: image normalize is
+    folded into the graph instead of run on the host. State (6-D) stays
+    host-normalized.
     """
 
     def __init__(

@@ -1,14 +1,13 @@
 """Boot the RLDX-1 inference server in an isolated Python 3.10 sidecar venv.
 
-The ``rldx`` Python package pins ``requires-python = "~=3.10"`` and ships a
-custom architectures=["RLDX"] model class that lives outside HuggingFace
-Transformers. The openral workspace is Python 3.12-only (CLAUDE.md §3),
-so we run the upstream inference server out-of-process and talk to it from
-the ``rldx`` policy adapter (python/sim/src/openral_sim/policies/rldx.py)
-over its native ZMQ + msgpack wire protocol. This script is the boot helper;
-the clone / venv / env-isolation / exec scaffolding it shares with the gr00t
-sidecar (RLDX-1 is a GR00T-N1.5 finetune) lives in
-``tools/_sidecar_common.py``.
+``rldx`` pins ``requires-python = "~=3.10"`` and ships a custom
+architectures=["RLDX"] model class outside HuggingFace Transformers; the
+openral workspace is Python 3.12-only (CLAUDE.md §3). Runs out-of-process,
+talking to the ``rldx`` policy adapter
+(python/sim/src/openral_sim/policies/rldx.py) over its native ZMQ + msgpack
+wire protocol. Clone/venv/env-isolation/exec scaffolding (shared with the
+gr00t sidecar — RLDX-1 is a GR00T-N1.5 finetune) lives in
+``openral_sim._sidecar_common``.
 
 Usage::
 
@@ -17,18 +16,9 @@ Usage::
         --port 5555 \\
         --quantization nf4
 
-The script blocks and forwards signals; SIGINT cleanly stops the server.
-
-CLAUDE.md compliance:
-* The sidecar is a real subprocess running real upstream code — no mocks
-  (§1.11). The wire protocol on the openral side is a real ZMQ
-  client.
-* Python version isolation is the only safe way to bridge ``rldx``
-  (3.10) and ``openral`` (3.12-only); see §3.
-* The non-commercial license guard is enforced upstream in the
-  ``RSkillManifest`` loader, not here — this script just boots the
-  process. The first ``openral sim run`` call will fail loud if the user
-  has not set ``OPENRAL_ALLOW_NONCOMMERCIAL=1``.
+Real subprocess, no mocks (§1.11). The non-commercial license guard is
+enforced upstream in the ``RSkillManifest`` loader, not here — the first
+``openral sim run`` fails loud without ``OPENRAL_ALLOW_NONCOMMERCIAL=1``.
 """
 
 from __future__ import annotations
@@ -69,25 +59,18 @@ _NVRTC_OVERRIDE = (
 def _install_deps_aarch64(*, source: Path, quantization: str) -> Path:
     """Provision ``<source>/.venv`` from upstream's deps under the aarch64 overrides.
 
-    Same venv location and same Python (3.10) as the ``uv sync`` path this
-    replaces — only the resolution changes. ``uv pip install -e <source>``
-    installs the ``rldx`` package plus everything in its ``[project]
-    dependencies``, which is what ``uv sync`` does minus the (x86_64-only)
-    ``uv.lock``; :data:`_AARCH64_OVERRIDE` is what makes that set resolvable
-    here.
-
-    Provisioning goes through :func:`ensure_pip_venv` rather than a bare
-    ``uv venv`` so the sentinel is keyed on the override text: correcting a pin
-    later repairs an already-provisioned venv instead of being silently ignored.
+    Same venv/Python(3.10) as the ``uv sync`` path this replaces; only the
+    resolution changes. ``uv pip install -e <source>`` does what ``uv sync``
+    does minus the x86_64-only ``uv.lock``; :data:`_AARCH64_OVERRIDE` makes
+    that set resolvable. Goes through :func:`ensure_pip_venv` so the sentinel
+    is keyed on the override text — a corrected pin repairs an existing venv.
     """
 
     def _install(uv: str, py: Path) -> None:
-        # The overrides ride on BOTH passes. uv re-resolves the whole
-        # environment on every ``pip install``, so a later pass without them
-        # sees torch's exact ``nvidia-cuda-nvrtc-cu12==12.8.93`` pin again and
-        # silently downgrades the shim the first pass installed — the fix would
-        # survive exactly one command (observed that way in the LingBot
-        # sidecar). Invariant: every uv pass that can re-resolve carries them.
+        # Overrides ride on BOTH passes: uv re-resolves the whole env on every
+        # `pip install`, so a later pass without them re-downgrades torch's
+        # `nvidia-cuda-nvrtc-cu12==12.8.93` pin (same failure the LingBot
+        # sidecar hit). Invariant: every re-resolving pass carries them.
         pip = [
             uv,
             "pip",
@@ -122,16 +105,13 @@ def _install_deps_aarch64(*, source: Path, quantization: str) -> Path:
 def _aarch64_extras(quantization: str) -> list[str]:
     """Packages installed on top of upstream's own dependency set, on aarch64.
 
-    Deliberately *not* including ``nvidia-cuda-nvcc-cu12`` (the ``sm_121``
-    ``ptxas`` the LingBot sidecar needs): triton 3.5.1's bundled assembler only
-    matters to a sidecar that actually compiles Triton kernels, and this one
-    does not. Verified on GB10 across four real ``get_action`` round trips —
-    ``~/.triton/cache`` gained no entries, and ``make_isolated_env`` already
-    exports ``TORCH_COMPILE_DISABLE`` / ``TORCHINDUCTOR_DISABLE``. If a future
-    RLDX path (its ``rldx/inference/`` kernel chains, say) does reach Triton, the
-    symptom is ``ptxas fatal: Value 'sm_121a' is not defined`` and the fix is to
-    add the pin back here — ``make_isolated_env`` wires ``TRITON_PTXAS_PATH``
-    automatically once the wheel is present.
+    Deliberately excludes ``nvidia-cuda-nvcc-cu12`` (the ``sm_121`` ``ptxas``
+    the LingBot sidecar needs): this sidecar compiles no Triton kernels, so
+    triton 3.5.1's bundled assembler is never exercised (``TORCH_COMPILE_DISABLE``
+    / ``TORCHINDUCTOR_DISABLE`` are already set by ``make_isolated_env``). If a
+    future RLDX path does reach Triton, the symptom is ``ptxas fatal: Value
+    'sm_121a' is not defined`` — add the pin back here (``make_isolated_env``
+    wires ``TRITON_PTXAS_PATH`` once the wheel is present).
     """
     if quantization in {"nf4", "int8"}:
         return ["bitsandbytes>=0.43.0"]
@@ -141,17 +121,12 @@ def _aarch64_extras(quantization: str) -> list[str]:
 def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     """Install rldx + bitsandbytes (for NF4) into ``<source>/.venv``.
 
-    ``uv sync`` in a directory with a ``pyproject.toml`` creates its own
-    ``.venv`` next to that file regardless of ``$VIRTUAL_ENV``. We let it
-    do exactly that and return the resulting venv path — fighting uv on
-    venv placement causes the model deps to land in one venv and the
-    quantization deps in another (the failure mode the first revision
-    of this script hit).
-
-    On aarch64 that ``uv sync`` cannot succeed at all (upstream's
-    ``torchcodec==0.4.0`` has no aarch64 wheel), so the equivalent install runs
-    through :func:`_install_deps_aarch64` instead. Every other platform takes
-    the unchanged path below.
+    ``uv sync`` creates its own ``.venv`` next to ``pyproject.toml`` regardless
+    of ``$VIRTUAL_ENV``; we let it and return that path — fighting uv on venv
+    placement splits model deps and quant deps across two venvs. On aarch64
+    ``uv sync`` cannot succeed (``torchcodec==0.4.0`` has no aarch64 wheel), so
+    :func:`_install_deps_aarch64` runs instead; other platforms use the path
+    below unchanged.
     """
     if platform.machine() == "aarch64":
         return _install_deps_aarch64(source=source, quantization=quantization)
@@ -210,49 +185,33 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
 
             QUANTIZATION = {args.quantization!r}
 
-            # rldx/model/modules/backbone/adapter.py loads the Qwen3-VL
-            # backbone with `os.environ.get("RLDX_ATTN_IMPL",
-            # "flash_attention_2")` and documents the env var as the opt-out
-            # for "environments that cannot build flash-attn". aarch64 + cp310
-            # is one: flash-attn ships no PyPI wheel on any platform, and the
-            # only aarch64 wheels on its GitHub release are cp312, while `rldx`
-            # pins requires-python == "3.10.*". Nothing in rldx imports
-            # flash_attn directly — the backbone reaches it through
-            # transformers' ALL_ATTENTION_FUNCTIONS — so sdpa is a complete
-            # substitute, not a stub. Keyed on the module actually being
-            # missing rather than on the platform, so the x86_64 venv (where
-            # `uv sync` installs flash-attn==2.7.4.post1) keeps
-            # FlashAttention-2 untouched, and an operator who source-builds it
-            # on aarch64 gets it back for free.
+            # rldx/model/modules/backbone/adapter.py reads
+            # RLDX_ATTN_IMPL (default "flash_attention_2") as its opt-out.
+            # aarch64+cp310 has no flash-attn wheel (PyPI: none; GitHub
+            # release: cp312 only; rldx pins requires-python "3.10.*").
+            # rldx reaches flash_attn only via transformers'
+            # ALL_ATTENTION_FUNCTIONS, so sdpa is a full substitute, not a
+            # stub. Keyed on the module being absent, not the platform, so
+            # x86_64 (uv sync installs flash-attn==2.7.4.post1) is untouched
+            # and a source-built aarch64 wheel is picked up automatically.
             if importlib.util.find_spec("flash_attn") is None:
                 os.environ.setdefault("RLDX_ATTN_IMPL", "sdpa")
 
             if QUANTIZATION in {{"nf4", "int8"}}:
-                # The upstream RLDX loader (rldx/policy/policy_loader.py:172)
-                # calls `AutoModel.from_pretrained(model_dir, device_map=device,
-                # torch_dtype=torch.bfloat16)` with the LOCAL CACHE PATH —
-                # not a name that contains "Qwen3-VL". So we cannot filter by
-                # name; we apply the BitsAndBytesConfig to every AutoModel
-                # load that doesn't already have one. Caveat: this also
-                # quantizes the MSAT diffusion head (action flow matcher),
-                # which the research note flagged as suboptimal but is the
-                # only path the upstream loader exposes without a fork. For
-                # ≥12 GiB GPUs prefer --quantization none and let the bf16
-                # path run untouched.
+                # rldx/policy/policy_loader.py:172 calls AutoModel.from_pretrained
+                # with the local cache path, not a "Qwen3-VL" name, so we can't
+                # filter by name — apply BitsAndBytesConfig to every AutoModel
+                # load lacking one. This also quantizes the MSAT diffusion head
+                # (action flow matcher); for >=12 GiB GPUs prefer
+                # --quantization none to keep it at bf16.
                 import transformers
                 _orig_from_pretrained = transformers.AutoModel.from_pretrained
 
-                # Minimal `llm_int8_skip_modules` list — keep ONLY
-                # `lm_head` + `embed_tokens` outside quantization.
-                # Quantize everything else (including the action_model
-                # MSAT head) to keep peak VRAM under 8 GiB.
-                #
-                # Caveat: rldx/model/modules/action_model/ops.py:130 uses
-                # `next(self.parameters()).dtype` to infer compute dtype,
-                # which returns torch.uint8 for bnb-packed 4bit weights
-                # and crashes downstream SiLU on "Byte". We patch that
-                # one site below to use bf16 unconditionally — this is
-                # the single upstream bug bnb-4bit interacts with.
+                # Only lm_head + embed_tokens skip quantization (keeps peak VRAM
+                # <8 GiB). rldx/model/modules/action_model/ops.py:130 infers compute
+                # dtype via next(self.parameters()).dtype, which is torch.uint8 for
+                # bnb-packed 4bit weights and crashes SiLU on "Byte" — patched below
+                # to hard-pin bf16 instead.
                 _SKIP_MODULES = ["lm_head", "embed_tokens"]
 
                 def _patched_from_pretrained(*args, **kwargs):

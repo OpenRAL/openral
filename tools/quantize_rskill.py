@@ -1,77 +1,30 @@
 r"""Quantize a lerobot policy and upload the result to the HuggingFace Hub.
 
-A generic, policy-agnostic counterpart to the in-process fast-path in
-:mod:`openral_sim._quantization`. Loads ANY lerobot policy class
-through its standard ``from_pretrained``, applies an in-place
-quantization rewrite, saves the resulting state dict to a local
-``model.safetensors`` plus a sibling ``quantization_metadata.json``,
-and uploads the bundle to a target rSkill repo on the Hub.
+Policy-agnostic counterpart to the in-process fast-path in
+:mod:`openral_sim._quantization`. Loads any lerobot policy via
+``from_pretrained``, quantizes in place, saves ``model.safetensors`` +
+``quantization_metadata.json``, and uploads to a target rSkill repo. The
+adapter's :func:`load_prequantized_state_for_rskill` detects the metadata
+sentinel and skips the on-line nf4 conversion
+(:func:`openral_sim._quantization.quantize_nf4_in_place`, ~90 s/checkpoint
+on a 4070-mobile) on every subsequent launch by installing the packed
+weights directly via :func:`install_prequantized_linears`.
 
-Why this exists
----------------
-Loading a large lerobot checkpoint can take ~90 s on a
-4070-mobile: ~20 s reading bf16 safetensors from cache, ~10 s
-restoring transformers/lerobot metadata, and the rest is the on-line
-``bitsandbytes`` nf4 conversion that
-:func:`openral_sim._quantization.quantize_nf4_in_place` runs every
-process launch. Packaging the *post*-quantization state dict cuts the
-quantization step out for every subsequent launch -- the policy
-adapter's :func:`load_prequantized_state_for_rskill` detects the
-``quantization_metadata.json`` sentinel, downloads ``model.safetensors``,
-and runs :func:`install_prequantized_linears` to drop the packed nf4
-weights directly into pre-allocated ``Linear4bit`` modules.
+Not part of CI — a one-shot Hub-mutating tool gated on ``HF_TOKEN``. Upload
+is bandwidth-bound: ~15-30 min on home WiFi for a ~2 GiB nf4 bundle.
 
-This script is **not** part of CI. It is a one-shot tooling helper
-that mutates a HuggingFace Hub repo, so it is intentionally gated on
-the operator setting ``HF_TOKEN=<your-write-token>`` in the
-environment. Read-only contributors can ignore it.
-
-Usage
------
-
-Example::
+Usage::
 
     HF_TOKEN=<your-token> uv run python tools/quantize_rskill.py \\
         --source <local-or-hf-lerobot-policy> \\
         --target <hf-org>/<rskill-id>-nf4
 
-To package a different lerobot policy with the same nf4 rule, point
-``--policy-class`` at its modeling module's policy class::
+For a different policy, point ``--policy-class`` at its modeling class::
 
     HF_TOKEN=<your-token> uv run python tools/quantize_rskill.py \\
         --source <hf-org>/<smolvla-finetune> \\
         --target <hf-org>/<smolvla-finetune>-nf4 \\
         --policy-class lerobot.policies.smolvla.modeling_smolvla.SmolVLAPolicy
-
-The script:
-
-1. Imports ``--policy-class`` via :func:`importlib.import_module` so
-   no per-policy code changes are needed when a new lerobot family
-   lands.
-2. Loads the source repo through that policy's ``from_pretrained``
-   into bf16 on CPU.
-3. Calls :func:`quantize_nf4_in_place` from the shared
-   :mod:`openral_sim._quantization` module (so any future change
-   to the quantization rule carries over automatically to every
-   policy).
-4. Moves the policy to ``--device`` so bitsandbytes packs the 4-bit
-   weights.
-5. Saves ``policy.state_dict()`` to ``<temp>/model.safetensors`` plus
-   a sibling ``quantization_metadata.json`` recording the rule
-   (min-param threshold, compute_dtype, source repo, source revision,
-   policy class).
-6. Copies the upstream ``*.json`` / ``*.md`` /
-   ``policy_*_processor.safetensors`` sidecars so the rSkill loader
-   has the same architectural metadata the source carried.
-7. Stamps a ``quantization_config`` block into the copied
-   ``config.json`` (when present) so the HuggingFace Hub auto-tags the
-   mirror (``bitsandbytes`` / ``nf4`` / ``4-bit`` / ``8-bit``). Without
-   this the bf16 source ``config.json`` is uploaded verbatim and the
-   quantized mirror is mistagged.
-8. Creates the target repo (idempotent) and uploads the bundle.
-
-The upload is bandwidth-bound; expect 15-30 min on home WiFi for the
-~2 GiB nf4 bundle.
 """
 
 from __future__ import annotations
@@ -190,12 +143,10 @@ def _load_transformers_model(
 ) -> Any:
     """Load a transformers custom-code checkpoint on CPU.
 
-    The escape hatch for action-reasoning models that ship as transformers
-    custom-code models rather than first-class lerobot policies — e.g.
-    ``allenai/MolmoAct2-LIBERO`` (arch ``molmoact2``, ~5.5 B params,
-    ``custom_code``). ``quantize_nf4_in_place`` operates on any
-    ``torch.nn.Module`` tree, so the rest of the pipeline (rewrite, save,
-    sidecar copy, upload) is unchanged.
+    Escape hatch for action-reasoning models shipped as transformers
+    custom-code (e.g. ``allenai/MolmoAct2-LIBERO``, arch ``molmoact2``,
+    ~5.5B params) rather than lerobot policies. ``quantize_nf4_in_place``
+    works on any ``torch.nn.Module``, so the rest of the pipeline is unchanged.
     """
     if trust_remote_code:
         _require_trusted_remote_code(source_repo)
@@ -279,19 +230,13 @@ def _build_policy_and_quantize(
             min_params=min_params,
         )
     elif scheme == "int8":
-        # LLM.int8 path (bnb.nn.Linear8bitLt). The runtime adapter
-        # cannot consume the resulting pack today — this branch is
-        # upload-only and exists so an operator can mirror an int8
-        # variant of a checkpoint on the Hub. Add a sibling
-        # ``install_prequantized_int8_linears`` in
-        # ``openral_sim._quantization`` and wire it through the pi05
-        # adapter before pointing a manifest's ``weights_uri`` at an
-        # int8 mirror.
-        # Mirror the nf4 path's compute_dtype=bf16 default; the int8
-        # helper's signature became compute_dtype-required when the
-        # remote landed the threshold / new_modules_on_meta knobs.
-        # ``threshold`` and ``new_modules_on_meta`` keep their helper
-        # defaults (LLM.int8 paper value 6.0; no accelerate wrap).
+        # LLM.int8 (bnb.nn.Linear8bitLt) — upload-only; the runtime adapter
+        # does not yet consume this pack. To wire it: add
+        # install_prequantized_int8_linears in openral_sim._quantization and
+        # call it from the pi05 adapter before pointing weights_uri here.
+        # compute_dtype=bf16 mirrors the nf4 path. threshold /
+        # new_modules_on_meta keep their helper defaults (LLM.int8 paper
+        # threshold 6.0, no accelerate wrap).
         quantize_int8_in_place(
             policy,
             torch=torch,
@@ -407,14 +352,12 @@ def _save_state(
 def _bnb_quantization_config(scheme: str) -> dict[str, Any]:
     """Return the ``transformers`` BitsAndBytesConfig block matching ``scheme``.
 
-    The values mirror what :mod:`openral_sim._quantization` builds at runtime —
-    nf4 ``Linear4bit`` with bf16 compute and nested (double) quantization, or
-    LLM.int8 ``Linear8bitLt`` with the paper's 6.0 outlier threshold and
-    fp16 weights disabled. Stamping this into the uploaded ``config.json`` is
-    what lets the HuggingFace Hub auto-tag the repo (``bitsandbytes`` / ``nf4`` /
-    ``4-bit`` / ``8-bit``); without it the tool copies the *source* (bf16)
-    ``config.json`` verbatim and the quantized mirror is mistagged (the SO-101
-    nf4 repo showed only a stray ``8-bit`` tag and no ``nf4`` / ``4-bit``).
+    Mirrors what :mod:`openral_sim._quantization` builds at runtime (nf4
+    Linear4bit, bf16 compute + double-quant; or int8 Linear8bitLt, threshold
+    6.0, fp16 weights disabled). Stamping it into config.json lets the Hub
+    auto-tag the repo; without it the source's bf16 config.json is copied
+    verbatim and mistagged (observed: the SO-101 nf4 repo tagged only
+    "8-bit", no "nf4"/"4-bit").
 
     Args:
         scheme: ``"nf4"`` or ``"int8"``.
@@ -446,20 +389,15 @@ def _bnb_quantization_config(scheme: str) -> dict[str, Any]:
 def _stamp_quantization_config(out_dir: Path, *, scheme: str, loader: str) -> None:
     """Inject a ``quantization_config`` into the staged ``config.json``.
 
-    The model bytes are already packed (``_save_state``); this only writes the
-    metadata the Hub reads to auto-tag the repo and that a direct
-    ``from_pretrained`` would read to rebuild the bnb config. A no-op (with a
-    clear log) when the staging dir carries no ``config.json`` — lerobot
-    checkpoints keep their config elsewhere and rely on
-    ``quantization_metadata.json`` + the runtime overlay instead.
+    Writes the metadata the Hub uses to auto-tag the repo and that
+    ``from_pretrained`` reads to rebuild the bnb config. No-op (logged) when
+    no config.json is staged — lerobot checkpoints keep config elsewhere and
+    use quantization_metadata.json instead.
 
-    Gated to ``loader == "transformers"``: that path's ``from_pretrained``
-    reads ``quantization_config`` to rebuild the bnb config. A lerobot policy
-    config class (e.g. ``PI05Config``) raises ``DecodingError: fields
-    quantization_config are not valid`` on the unknown field, and the lerobot
-    runtime fast-path keys off ``quantization_metadata.json`` not
-    ``config.json`` — so stamping a lerobot ``config.json`` (which
-    ``_copy_source_config`` does bring into the staging dir) breaks the load.
+    Gated to ``loader == "transformers"``: a lerobot config class (e.g.
+    ``PI05Config``) raises ``DecodingError: fields quantization_config are
+    not valid`` on the unknown field, and the lerobot runtime fast-path keys
+    off quantization_metadata.json, not config.json.
     """
     if loader != "transformers":
         print(
@@ -491,25 +429,16 @@ def _stamp_quantization_config(out_dir: Path, *, scheme: str, loader: str) -> No
 def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None:
     """Pull the source's config / metadata / processor / custom-code sidecars.
 
-    Copies every ``*.json``, ``*.md`` and ``policy_*_processor.safetensors``
-    from the source repo so the lerobot processor pipeline can
-    reconstruct without re-fetching from the source. The processor
-    sidecars are small (~10 KB each) but lerobot's PreTrainedConfig
-    refuses to instantiate the preprocessor / postprocessor without
-    them, so missing them turns the new rSkill into a hard error.
+    Copies ``*.json``, ``*.md``, ``policy_*_processor.safetensors`` (~10 KB
+    each; lerobot's PreTrainedConfig hard-errors without the processor
+    sidecars). For ``loader == "transformers"`` also copies every ``*.py`` —
+    ``config.json``'s ``auto_map`` points at those modules and
+    ``from_pretrained`` fails to import without them.
 
-    For ``loader == "transformers"`` (custom-code models like MolmoAct2),
-    also copies every ``*.py`` so the quantized repo stays loadable via
-    ``trust_remote_code`` — the ``auto_map`` in ``config.json`` points at
-    those modules. Without them, ``from_pretrained`` on the nf4 repo fails
-    to import the model class.
-
-    The full source weights (the sharded fp32 ``model-XXXXX-of-YYYYY.safetensors``
-    + their ``model.safetensors.index.json``, and a single-file
-    ``model.safetensors``) are NEVER copied: the nf4 pack we just wrote is
-    the only weight file the rSkill ships. Shipping the fp32 shards would
-    both bloat the repo by ~20 GiB and shadow the nf4 pack at load time
-    (transformers prefers a sharded index over a single ``model.safetensors``).
+    Never copies the source weights (sharded ``model-XXXXX-of-YYYYY.safetensors``
+    + index, or single-file ``model.safetensors``): would bloat the repo by
+    ~20 GiB and shadow the nf4 pack this script just wrote (transformers
+    prefers a sharded index over a single ``model.safetensors``).
     """
     print(f"[quantize] cloning {source_repo} architecture metadata...", flush=True)
     allow = ["*.json", "*.md", "*.safetensors", ".gitattributes"]
@@ -528,13 +457,10 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
     for src in snapshot.iterdir():
         if not src.is_file():
             continue
-        # `ignore_patterns` only suppresses re-downloads; if a previous
-        # `snapshot_download` already pulled the full source repo, the
-        # weight files are still symlinked in the snapshot dir and would
-        # clobber the nf4 blob we just wrote in `_save_state` (single-file
-        # `model.safetensors`) or shadow it (sharded `model-XXXXX-*` + the
-        # `model.safetensors.index.json` that points at them). Skip every
-        # source weight artefact explicitly.
+        # ignore_patterns only suppresses re-downloads; a prior snapshot_download
+        # may have already pulled the full repo, so weight files can still be
+        # symlinked here and would clobber/shadow the nf4 blob _save_state wrote.
+        # Skip every source weight artefact explicitly.
         if src.name in {"model.safetensors", "model.safetensors.index.json"}:
             continue
         if src.name.startswith("model-") and src.suffix == ".safetensors":
@@ -575,11 +501,10 @@ def _auto_map_modules(out_dir: Path) -> set[str]:
 def _verify_auto_map_complete(out_dir: Path) -> None:
     """Fail loudly if an ``auto_map`` module is missing from the quantized bundle.
 
-    Caught here at quantization time rather than at load time in a production
-    deploy: shipping a ``trust_remote_code`` rSkill without one of its
-    ``auto_map`` modules makes ``from_pretrained`` raise
-    ``"<repo> does not appear to have a file named <module>.py"`` — the exact bug
-    that shipped ``rskill-molmoact2-franka_panda-libero_spatial-nf4`` without
+    Catches at quantize time rather than deploy time: a missing module makes
+    ``from_pretrained`` raise ``"<repo> does not appear to have a file named
+    <module>.py"`` — the bug that shipped
+    ``rskill-molmoact2-franka_panda-libero_spatial-nf4`` without
     ``image_processing_molmoact2.py`` / ``video_processing_molmoact2.py``.
     """
     missing = sorted(m for m in _auto_map_modules(out_dir) if not (out_dir / m).is_file())

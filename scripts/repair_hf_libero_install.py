@@ -1,37 +1,27 @@
 #!/usr/bin/env python3
 """Repair a malformed ``hf-libero`` install so ``uv sync`` can uninstall it.
 
-The PyPI sdist for ``hf-libero==0.1.3`` (and any future release built with
-the same ``uv_build`` backend) ships two pieces of metadata side-by-side:
-
-* ``hf_libero-<ver>.dist-info/`` — modern PEP 376 wheel metadata.
-* ``hf_libero-<ver>.egg-info``  — a single regular FILE (byte-for-byte
-  identical to ``dist-info/METADATA``) installed at the site-packages
-  root.
-
-When uv tries to uninstall ``hf-libero`` (e.g. on the next
-``uv sync --group <other>`` invocation), it sees the legacy ``.egg-info``
-sibling and falls back to the distutils-style uninstall path, which
-demands an ``installed-files.txt`` manifest the wheel never produced.
-The result is the misleading error::
+``hf-libero==0.1.3``'s PyPI sdist (built with ``uv_build``, same for future
+releases on that backend) ships both ``hf_libero-<ver>.dist-info/`` (PEP 376
+wheel metadata) and ``hf_libero-<ver>.egg-info`` as a plain FILE
+byte-identical to ``dist-info/METADATA``, at the site-packages root. uv's
+uninstall sees the ``.egg-info`` sibling, falls back to the distutils path,
+and demands an ``installed-files.txt`` manifest the wheel never produced::
 
     error: Unable to uninstall `hf-libero==0.1.3`.
     distutils-installed distributions do not include the metadata
     required to uninstall safely.
 
-This script removes the spurious ``hf_libero-<ver>.egg-info`` file and
-strips its RECORD line so uv treats the install as a plain wheel on
-subsequent runs. Idempotent: if no broken install is present, it exits
-0 with no output. Safe to invoke after any ``uv sync`` (the canonical
-entry point is the ``just sync`` recipe, which wraps ``uv sync`` +
-this repair).
+Removes the spurious ``.egg-info`` file and strips its RECORD line so uv
+treats the install as a plain wheel. Idempotent; no-op with exit 0 if
+nothing is broken. Invoked by the ``just sync`` recipe after every
+``uv sync``.
 
 Usage::
 
     uv run python scripts/repair_hf_libero_install.py [--venv PATH]
 
-Exits with status 1 only on unexpected I/O errors, never on a clean
-install (running against a venv without hf-libero is a no-op).
+Exits 1 only on unexpected I/O errors.
 """
 
 from __future__ import annotations
@@ -56,15 +46,9 @@ def find_site_packages(venv: Path) -> Path | None:
 def repair(site_packages: Path) -> int:
     """Repair every ``hf_libero-*.dist-info`` install under ``site_packages``.
 
-    Returns the number of installs that needed repair (0 when nothing
-    was wrong). Side effects per install:
-
-    * Delete the spurious ``hf_libero-<ver>.egg-info`` regular file
-      (a real setuptools ``.egg-info`` would be a directory; this only
-      removes the FILE shape that hf-libero's sdist produces).
-    * Strip the matching ``hf_libero-<ver>.egg-info,...`` line from
-      ``RECORD`` so a future ``uv pip uninstall`` reads a coherent
-      manifest.
+    Returns the number of installs repaired. Deletes the spurious
+    ``hf_libero-<ver>.egg-info`` FILE (a real setuptools ``.egg-info`` is a
+    directory and is left alone) and strips its ``RECORD`` line.
     """
     repaired = 0
     for dist_info in site_packages.glob("hf_libero-*.dist-info"):
@@ -122,10 +106,8 @@ def main() -> int:
 
     site_packages = find_site_packages(args.venv)
     if site_packages is None:
-        # Nothing to do — caller invoked us outside a venv layout. Not an
-        # error (the canonical ``just sync`` wrapper runs this
-        # unconditionally and we want it to be a silent no-op when uv
-        # itself hasn't materialised .venv yet).
+        # Not an error: `just sync` runs this unconditionally and .venv may
+        # not exist yet.
         return 0
 
     try:

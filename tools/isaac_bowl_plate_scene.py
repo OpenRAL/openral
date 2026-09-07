@@ -1,32 +1,25 @@
 """Isaac Sim table + bowl + plate Franka scene with the LIBERO obs/action contract.
 
 Runs under the Isaac Sim py3.11 venv only (imported by ``isaac_sidecar.py`` after
-``SimulationApp`` is live). Built on Isaac Sim **core** — no Isaac Lab — proving
-that moving a robot and doing end-effector control needs neither Isaac Lab nor its
-OSC term:
+``SimulationApp`` is live). Built on Isaac Sim **core**, no Isaac Lab: arm motion
+via ``ArticulationController.apply_action`` on the core ``Franka``; end-effector
+control via the core ``isaacsim.robot_motion.motion_generation`` Lula solver
+(``LulaKinematicsSolver`` + ``ArticulationKinematicsSolver``, position-delta IK on
+``right_gripper``).
 
-* arm motion: ``ArticulationController.apply_action`` on the core ``Franka``;
-* end-effector control: the core ``isaacsim.robot_motion.motion_generation`` Lula
-  kinematics solver (``LulaKinematicsSolver`` + ``ArticulationKinematicsSolver``)
-  does position-delta inverse kinematics on the ``right_gripper`` frame.
+Mirrors the LIBERO contract so act-libero/smolvla-libero drive it through
+``openral sim run`` unchanged:
 
-The scene mirrors the LIBERO contract so a LIBERO-finetuned rSkill (act-libero /
-smolvla-libero) can drive it through ``openral sim run`` unchanged:
+* obs ``images``: ``camera1``/``camera2`` = front agent-view / secondary prop view
+  (legacy ordinal slots; HAL bridge maps them via ``vla_feature_key`` fallback —
+  TODO: pass canonical scene-side camera names through the isaac-sidecar protocol);
+* obs ``state``: 8-D ``[eef_pos(3) ‖ eef_axisangle(3) ‖ gripper_qpos(2)]`` (matches
+  ``openral_sim.backends.libero._wrap_obs``);
+* action: 7-D OSC-pose delta ``[dx, dy, dz, drx, dry, drz, gripper]`` — drives a
+  Lula IK target (orientation held); ``gripper>0`` closes.
 
-* obs ``images``: ``camera1`` = front agent-view, ``camera2`` = secondary prop view
-  (legacy ordinal slots predating the canonical camera-name convention; the HAL bridge tolerates the
-  mismatch with the canonical sensor name via ``vla_feature_key`` fallback —
-  TODO: extend the isaac-sidecar protocol so the host can pass canonical
-  scene-side names and emit them directly);
-* obs ``state``: 8-D ``[eef_pos(3) ‖ eef_axisangle(3) ‖ gripper_qpos(2)]``
-  (matches ``openral_sim.backends.libero._wrap_obs``);
-* action: 7-D OSC-pose delta ``[dx, dy, dz, drx, dry, drz, gripper]`` — the
-  position delta drives a Lula IK target (orientation held); ``gripper>0`` closes.
-
-The lifecycle/obs skeleton lives in :class:`_isaac_scene_base.IsaacSceneBase`;
-this class supplies only the build + control + obs specifics. Props are
-out-of-distribution for a LIBERO policy, so this validates that the pipeline RUNS
-and the arm MOVES — not task success.
+Lifecycle/obs skeleton: :class:`_isaac_scene_base.IsaacSceneBase`. Props are OOD
+for a LIBERO policy — this validates the pipeline runs, not task success.
 """
 
 from __future__ import annotations

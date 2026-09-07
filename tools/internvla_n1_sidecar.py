@@ -1,20 +1,17 @@
 """Boot the InternVLA-N1 navigation server in an isolated sidecar venv.
 
-InternRobotics' InternNav pins ``transformers==4.51.0`` (plus a matching
-diffusers/accelerate set) for InternVLA-N1 / DualVLN inference — incompatible
-with the openral py3.12 workspace's transformers 5.x. Like the ``rldx``
-sidecar, we run inference out-of-process and talk to it over ZMQ + msgpack
-from the ``internvla_n1`` policy adapter
-(python/sim/src/openral_sim/policies/internvla_n1.py). The served process is
-``tools/_internvla_n1_server.py``.
+InternNav pins ``transformers==4.51.0`` (+ matching diffusers/accelerate),
+incompatible with the openral workspace's transformers 5.x. Runs
+out-of-process (like ``rldx``) over ZMQ + msgpack from the ``internvla_n1``
+policy adapter (python/sim/src/openral_sim/policies/internvla_n1.py); served
+by ``tools/_internvla_n1_server.py``.
 
-Unlike rldx (whose upstream lockfile we ``uv sync``), InternNav's setup.py
-drags the full eval stack (habitat / isaac extras). We instead provision a
-py3.11 venv with the explicit inference-only pin set from
-``requirements/internvla_n1.txt`` upstream, install ``internnav`` and
-``diffusion_policy`` with ``--no-deps`` (System-1's NavDP needs only
-``SinusoidalPosEmb`` from the latter), and skip flash-attn — the server
-loads the model with ``attn_implementation="sdpa"``.
+InternNav's setup.py drags the full eval stack (habitat/isaac extras), so
+this provisions a py3.11 venv with the explicit inference-only pin set from
+upstream's ``requirements/internvla_n1.txt`` instead, installs ``internnav``
+and ``diffusion_policy`` with ``--no-deps`` (System-1's NavDP needs only
+``SinusoidalPosEmb`` from the latter), and skips flash-attn — the server
+loads with ``attn_implementation="sdpa"``.
 
 Usage::
 
@@ -46,16 +43,11 @@ _PYTHON = "3.11"
 
 # Inference-only pin set, mirroring upstream requirements/internvla_n1.txt
 # (transformers/diffusers/accelerate) minus flash-attn (sdpa instead) and
-# minus depth-camera-filtering (only used by their Go2 ROS scripts).
-#
-# torch is 2.9.1 on the ``cu128`` index, matching every other sidecar. It was
-# 2.6.0 installed from plain PyPI, on the belief that transformers 4.51.0
-# capped it — it does not: 4.51.0, diffusers 0.32.2 and accelerate 1.4.0 all
-# declare `torch>=2.0` / `>=1.4` with no upper bound. Two things were wrong
-# with the old pin on an aarch64 CUDA host (GB10 / DGX Spark, Jetson Thor):
-# PyPI's aarch64 torch wheel is the **CPU** build, so without
-# ``--torch-backend=cu128`` the whole 8.3B dual-system model silently ran on
-# the CPU; and 2.6.0 predates the ``cu128`` index entirely. See
+# depth-camera-filtering (only used by their Go2 ROS scripts).
+# torch 2.9.1 on the cu128 index, matching every other sidecar: none of
+# transformers 4.51.0 / diffusers 0.32.2 / accelerate 1.4.0 cap torch, and
+# PyPI's aarch64 torch wheel is CPU-only, so without --torch-backend=cu128
+# the 8.3B model would silently run on CPU. See
 # ``docs/reference/aarch64-support.md``.
 _PINNED_DEPS = [
     "torch==2.9.1",
@@ -87,13 +79,11 @@ _DIFFUSION_POLICY_PIN = (
     "diffusion_policy @ git+https://github.com/real-stanford/diffusion_policy.git"
     "@5ba07ac6661db573af695b419a7947ecb704690f"
 )
-# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor). torch's
-# own metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, whose newest arch is
-# sm_120, so anything torch compiles at runtime through the nvrtc jiterator
-# dies with "invalid value for --gpu-architecture". Not hypothetical here:
-# transformers 4.51's Qwen2.5-VL vision stack reduces the patch grid with
-# ``.prod()``, a jiterator op, so *every* System-2 replan would fail.
-# Marker-scoped inside the file — see its header.
+# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor): torch
+# pins nvidia-cuda-nvrtc-cu12==12.8.93 (newest arch sm_120), so any runtime
+# nvrtc-jiterator kernel dies with "invalid value for --gpu-architecture" —
+# transformers 4.51's Qwen2.5-VL vision stack hits this via `.prod()`, so
+# every System-2 replan would fail without it.
 _NVRTC_OVERRIDE = (
     Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
 )
@@ -114,14 +104,12 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     py = venv / "bin" / "python"
     if not py.exists():
         run_cmd(_LABEL, [uv, "venv", str(venv), "--python", _PYTHON], cwd=source)
-    # Both flags ride on EVERY pass, not just the torch one. uv re-resolves the
-    # whole environment on each ``pip install``, so a pass that omits the
-    # override file sees torch's exact ``nvidia-cuda-nvrtc-cu12==12.8.93`` pin
-    # again and silently downgrades the sm_121-aware shim an earlier pass
-    # installed — the fix would survive exactly one command. (Observed that way
-    # in the LingBot and XR-1 sidecars.) ``--torch-backend`` rides along for the
-    # same reason: it is what selects the CUDA wheel over PyPI's aarch64
-    # CPU-only build, and re-resolving without it can swap torch back out.
+    # Both flags ride on EVERY pass: uv re-resolves the whole env on each
+    # `pip install`, so a pass without --overrides sees torch's exact
+    # nvidia-cuda-nvrtc-cu12==12.8.93 pin again and downgrades an earlier
+    # pass's shim (same failure the LingBot and XR-1 sidecars hit).
+    # --torch-backend rides along too: it selects the CUDA wheel over PyPI's
+    # aarch64 CPU-only build, which re-resolving without it can swap back in.
     pip = [
         uv,
         "pip",

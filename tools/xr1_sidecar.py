@@ -24,16 +24,13 @@ _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "xr1-sidecar"
 _SERVER = Path(__file__).resolve().parent / "_xr1_server.py"
 
 # Pinned deps, installed in three passes (torch index redirect / plain PyPI /
-# no-build-isolation for flash-attn). Named constants rather than inline lists
-# so the same pins key the provisioning sentinel — editing one repairs an
-# already-provisioned venv instead of being ignored (see ``ensure_pip_venv``).
-#
-# torch is 2.9.1, not the 2.8.0 upstream XR-1 validated against: the ``cu128``
-# 2.8.0 build publishes no ``linux_aarch64`` wheel (only manylinux x86_64 +
-# win_amd64) and its required ``triton==3.4.0`` has no aarch64 wheel either, so
-# the sidecar could not provision at all on an aarch64 CUDA host (GB10 / DGX
-# Spark, Jetson Thor). 2.9.1+cu128 publishes ``manylinux_2_28_aarch64`` and
-# pulls triton 3.5.1, which does too. See ``docs/reference/aarch64-support.md``.
+# no-build-isolation for flash-attn); named constants so editing one repairs
+# an already-provisioned venv (keys the sentinel, see ``ensure_pip_venv``).
+# torch 2.9.1, not upstream's validated 2.8.0: the cu128 2.8.0 build has no
+# linux_aarch64 wheel (x86_64/win_amd64 only) and needs triton==3.4.0, which
+# also has none — blocking provisioning on aarch64 (GB10/DGX Spark, Jetson
+# Thor). 2.9.1+cu128 publishes manylinux_2_28_aarch64 and pulls triton 3.5.1,
+# which does too. See ``docs/reference/aarch64-support.md``.
 _XR1_TORCH_DEPS = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
 # Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor). torch's
 # own metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, whose newest supported
@@ -68,14 +65,11 @@ def _ensure_venv(home: Path) -> Path:
         return path
 
     def _install(uv: str, py: Path) -> None:
-        # The override rides on ALL THREE passes, not just the torch one. uv
-        # re-resolves the whole environment on every `pip install`, so a later
-        # pass without the override file sees torch's exact
+        # Override rides on ALL THREE passes: uv re-resolves the whole env on
+        # every `pip install`, so a pass without it sees torch's exact
         # `nvidia-cuda-nvrtc-cu12==12.8.93` pin again and silently downgrades
-        # the shim an earlier pass installed — the fix would survive exactly one
-        # command. (Observed exactly that way in the LingBot sidecar, whose
-        # extras pass undid it.) Invariant: every uv pass that can re-resolve
-        # carries the override file.
+        # an earlier pass's shim (same failure the LingBot sidecar hit).
+        # Invariant: every uv pass that can re-resolve carries the override.
         pip = [uv, "pip", "install", "--python", str(py), "--overrides", str(_NVRTC_OVERRIDE)]
         run_cmd(_LABEL, [*pip, "--torch-backend=cu128", *_XR1_TORCH_DEPS])
         run_cmd(_LABEL, [*pip, *_XR1_RUNTIME_DEPS])

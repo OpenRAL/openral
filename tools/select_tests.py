@@ -1,23 +1,14 @@
 """Selective test execution — choose the pytest targets a diff actually needs.
 
-OpenRAL ships ~2.9k tests across ~300 files (CLAUDE.md §2 *Tests*). Running
-the whole suite on every PR is wasteful — and, while the GitHub Actions
-budget is exhausted (every workflow is ``workflow_dispatch`` only), it is the
-difference between affordable and not. This tool maps a git diff to the
-*minimal* set of tests that can observe the change, by:
+Maps a git diff to the minimal test set that can observe it: derive the
+workspace dependency graph from each ``python/<pkg>/pyproject.toml``, expand
+changed packages by transitive dependents, then select per-package ``tests/``
+dirs plus any top-level ``tests/`` file whose ``import openral_*`` set
+intersects the affected packages.
 
-1. Deriving the workspace dependency graph from each
-   ``python/<pkg>/pyproject.toml`` (never hand-maintained — it cannot drift).
-2. Expanding the set of changed packages by its transitive *dependents* (edit
-   ``openral_core`` → every package that imports it is in scope).
-3. Selecting tests two ways: per-package ``tests/`` dirs for affected
-   packages, and any top-level ``tests/`` file whose ``import openral_*`` set
-   intersects the affected packages.
-
-CLAUDE.md §1.4 (explicit beats implicit): every selection carries a reason,
-and a *blast-radius* change (root config, lockfile, shared conftest, this
-tool's own inputs) forces a full run rather than a clever guess — a wrong
-negative would silently skip a real regression.
+Every selection carries a reason (CLAUDE.md §1.4); a blast-radius change
+(root config, lockfile, shared conftest, this tool's own inputs) forces a
+full run rather than risk a false negative.
 
 Run::
 
@@ -293,18 +284,14 @@ def _requirement_targets(
 ) -> dict[str, list[str]]:
     """Selected pytest targets that need an opt-in dependency group.
 
-    ``targets`` holds a mix of FILE paths (top-level ``tests/`` files picked by
-    the import scan) and DIRECTORY paths (a package's whole ``tests/`` dir, or
-    an ``extra_triggers`` value like ``tests/unit``). A requirement glob names a
-    file, and a directory string never ``fnmatch``es a file glob — so a
-    lane-owned file that is only reachable *inside* a selected directory used to
-    drop out of its lane entirely. It still ran in the cheap partition, where
-    the optional stack is absent and it skips: selected, never executed, green.
-    That is the exact silent-degradation shape this selector exists to prevent,
-    and it is why the only ``python/hal/tests`` files that ever reached the
-    ``libero`` lane were the two in ``isolate_globs`` (peeling makes them
-    explicit file targets). Expand directory targets to the concrete lane files
-    beneath them so containment is enough.
+    ``targets`` mixes FILE paths (top-level ``tests/`` files from the import
+    scan) and DIRECTORY paths (a package's ``tests/`` dir, or an
+    ``extra_triggers`` value like ``tests/unit``). A requirement glob names a
+    file and never matches a directory string, so directory targets are
+    expanded to the concrete lane files beneath them first — otherwise a
+    lane-owned file reachable only via a directory target silently runs in
+    the cheap partition (no optional stack) and skips: selected, never
+    executed, green (issue #163).
     """
     selected = set(isolated_targets)
     if full_run:
@@ -341,14 +328,10 @@ def _full_run_result(
 ) -> SelectionResult:
     """Build the ``full_run`` verdict, WITH every opt-in lane expanded.
 
-    Issue #163: both full-run exits used to leave ``requirement_targets`` empty,
-    so a blast-radius diff ran zero opt-in lanes and reported success
-    indistinguishably from a diff that ran them all and passed. The widest diffs
-    got the least verification, and a red PR could be turned green by also
-    touching a full-run glob. A blast-radius change (root ``pyproject.toml``,
-    ``uv.lock``) is precisely a dependency change — the thing the lanes exist to
-    check — so it gets every lane, and the ones a hosted runner cannot satisfy
-    are declared, reported and accounted for rather than silently skipped.
+    A blast-radius change (root ``pyproject.toml``, ``uv.lock``) is a
+    dependency change — the thing the lanes exist to check — so it gets
+    every lane; ones a hosted runner can't satisfy are declared and reported
+    rather than left empty and silently skipped (issue #163).
     """
     return SelectionResult(
         full_run=True,
@@ -368,12 +351,9 @@ def select(
     """Resolve a list of changed repo-relative paths to pytest targets."""
     isolate_files = _isolate_files(repo_root, config)
 
-    # 1. Blast radius — any match forces a full run. The full-suite invocation
-    #    still collects the isolate files, so report them for separate execution,
-    #    and EVERY opt-in lane is expanded (issue #163): the widest diffs used to
-    #    get the least lane verification, and a red PR could be turned green just
-    #    by also touching `pyproject.toml`. The lanes a hosted runner cannot
-    #    satisfy are handled downstream by the declared capability gaps in
+    # 1. Blast radius — any match forces a full run: report the isolate files
+    #    for separate execution and expand every opt-in lane (issue #163).
+    #    Lanes a hosted runner can't satisfy are handled via the declared
     #    `[capability_gaps]`, not by selecting nothing here.
     for rel in changed_files:
         for glob in config.full_run_globs:

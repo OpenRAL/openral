@@ -1,19 +1,16 @@
 """LingBot-VLA 2.0 inference server — runs inside the sidecar venv (no openral import).
 
-This is the **server side** of the LingBot-VLA 2.0 sidecar: it loads the upstream
-``LingbotVLAv2Server`` (NF4 Qwen3-VL backbone + bf16 sparse-MoE action expert) from
-Robbyant's ``lingbotvla`` package (https://github.com/robbyant/lingbot-vla-v2,
-Apache-2.0 code + weights) and answers ``ping`` / ``reset`` / ``get_action`` /
-``close`` over ZMQ REQ/REP framed by msgpack — the same ndarray wire the
-:class:`openral_sim.sidecar.SidecarClient` speaks. It is ``os.execvpe``-d by the
-boot helper :mod:`tools.lingbot_vla2_sidecar` *after* the repo checkout + torch-2.9
-venv are provisioned, so it only ever runs under the sidecar interpreter and never
-imports ``openral_*`` (that stack pins transformers>=5, incompatible with the
-upstream transformers==4.57.3 pin — CLAUDE.md §3).
+Server side of the sidecar: loads upstream ``LingbotVLAv2Server`` (NF4 Qwen3-VL
+backbone + bf16 sparse-MoE expert) from robbyant/lingbot-vla-v2
+(https://github.com/robbyant/lingbot-vla-v2, Apache-2.0 code + weights) and
+answers ``ping``/``reset``/``get_action``/``close`` over ZMQ REQ/REP + msgpack,
+the same wire :class:`openral_sim.sidecar.SidecarClient` speaks. ``os.execvpe``-d
+by :mod:`tools.lingbot_vla2_sidecar` after the repo + torch-2.9 venv are
+provisioned; never imports ``openral_*`` (that stack pins transformers>=5,
+incompatible with the upstream transformers==4.57.3 pin — CLAUDE.md §3).
 
-Wire protocol (msgpack ``{"endpoint","data"}`` in, dict out; ndarrays via the
-``__ndarray__`` / ``np.save`` sentinel that mirrors
-``openral_sim.sidecar.encode_ndarray``)::
+Wire (msgpack ``{"endpoint","data"}`` in, dict out; ndarrays via the
+``__ndarray__``/``np.save`` sentinel mirroring ``openral_sim.sidecar.encode_ndarray``)::
 
     ping        -> {"ok": True, "model": <id>, "robo_name": <robo>}
     reset       -> {"ok": True}                       data: {"robo_name": <robo>}
@@ -22,21 +19,17 @@ Wire protocol (msgpack ``{"endpoint","data"}`` in, dict out; ndarrays via the
                                                           "state": (14,), "task": <str>}}
     close       -> {"ok": True}  (stops the server)
 
-The 6.38 B model does not fit an 8 GB card at bf16 (12.8 GB), so the Qwen3-VL
-backbone is NF4-quantized in place (``--quantization nf4``) while the MoE action
-expert stays bf16; ``none`` loads bf16 for ≥16 GB GPUs.
+6.38B model doesn't fit an 8 GB card at bf16 (12.8 GB): backbone is NF4-quantized
+in place (``--quantization nf4``, MoE expert stays bf16); ``none`` loads bf16 for
+>=16 GB GPUs.
 
-Attention backend: flash-attn is intentionally NOT installed in the sidecar venv
-(it is not in the upstream ``requirements.txt`` and needs a source build). The
-upstream ``QwenvlWithExpertV2Model.__init__`` hardcodes ``_attn_implementation =
-"flash_attention_2"`` on the VLM / text / expert configs, so we coerce those
-configs to a flash-free backend (``--attn sdpa`` by default; ``eager`` as the
-universally-correct fallback) before and after the model is built (see
-:func:`_install_attn_fallback`).
+flash-attn is not installed in the sidecar venv (absent from upstream
+requirements.txt, needs a source build) but upstream hardcodes
+``flash_attention_2``, so configs are coerced to sdpa (default) or eager before
+and after model build (:func:`_install_attn_fallback`).
 
 CLAUDE.md compliance: real upstream code in a real subprocess (no mocks, §1.11);
-py-version/dep isolation is the only safe bridge (§3); the model's Apache-2.0
-weights carry no license guard.
+py-version/dep isolation is the bridge (§3); Apache-2.0 weights, no license guard.
 """
 
 from __future__ import annotations
@@ -141,7 +134,7 @@ def _write_cli_yaml(repo: Path, ckpt_dir: str, qwen: str) -> Path:
     tmpl["data"].setdefault("img_size", 256)
     # FeatureInfo.update_info / get_normalizer ast.literal_eval each joints +
     # norm_type entry, so they must be string-reprs of the {name: val} dicts,
-    # not YAML-parsed dicts (verified live: FeatureTransform crashes otherwise).
+    # not YAML-parsed dicts — FeatureTransform crashes otherwise.
     for _key in ("joints", "norm_type"):
         if _key in tmpl["data"]:
             tmpl["data"][_key] = [
@@ -161,8 +154,8 @@ def _install_lerobot_stub() -> None:
     ``lerobot`` imports scattered across submodules) — not needed for inference,
     and ``lerobot`` cannot be installed here anyway (it wants transformers 5.x,
     conflicting with the pinned 4.57.3). A meta-path finder returns a permissive
-    stub module for every ``lerobot`` submodule. Verified live: without this the
-    ``from deploy.lingbot_vla_v2_policy import ...`` chain ModuleNotFound's.
+    stub module for every ``lerobot`` submodule; without it, ``from
+    deploy.lingbot_vla_v2_policy import ...`` fails with ModuleNotFoundError.
     """
     import importlib.abc
     import importlib.machinery
@@ -223,27 +216,17 @@ def _coerce_attn_config(config: Any, target: str) -> None:
 def _install_moe_logger() -> None:
     """Bind the ``logger`` name upstream's MoE fallback handler references but never defines.
 
-    ``qwen2_action_expert.py`` catches a failure in ``robby_moe_forward`` and
-    logs ``logger.warning_once(...)`` before falling back to ``fused_moe_forward``
-    — but the module never imports or defines ``logger`` (2 references, 0
-    bindings). So *any* MoE kernel fault becomes ``NameError: name 'logger' is
-    not defined``, which names nothing and points nowhere.
+    ``qwen2_action_expert.py`` calls ``logger.warning_once(...)`` in its MoE
+    fallback path but never imports/defines ``logger``, so any MoE kernel fault
+    raises ``NameError: name 'logger' is not defined`` instead of the real error
+    — this masked a real ``PTXASError`` during aarch64 bring-up (cost a full boot
+    cycle). Same upstream-gap shape as :func:`_patch_eager_vision_rotary_v1`.
 
-    That is not hypothetical: it masked a real ``PTXASError`` during the aarch64
-    bring-up and cost a full boot cycle to see past. The fallback it unblocks is
-    nearly worthless (``fused_moe_forward`` uses the same Triton kernels), so the
-    value here is purely diagnostic — the real error reaches the log instead of a
-    lie. Same shape as :func:`_patch_eager_vision_rotary_v1`, which fills an
-    identical upstream gap: a name referenced but never bound.
-
-    Uses upstream's own factory rather than ``logging.getLogger`` to guarantee
-    ordering, not type: ``get_logger`` returns a plain stdlib ``logging.Logger``,
-    and ``warning_once`` exists only because ``lingbotvla/utils/logging.py``
-    assigns it onto ``logging.Logger`` at import time. A bare
-    ``logging.getLogger`` would therefore work *iff* something else had already
-    imported that module — correct by accident, order-dependent. Going through
-    the factory forces the class-level patch (and their root-logger config) to be
-    installed first.
+    Uses upstream's ``get_logger`` factory rather than ``logging.getLogger``:
+    ``warning_once`` is only patched onto ``logging.Logger`` by
+    ``lingbotvla/utils/logging.py`` import, which the factory forces first — a
+    bare ``getLogger`` would work only if that module happened to already be
+    imported.
     """
     import lingbotvla.models.vla.lingbot_vla.qwen2_action_expert as _qae
     from lingbotvla.utils import logging as _lbl
@@ -469,17 +452,15 @@ def _follow_model_device(srv: Any, *, torch: Any) -> None:
 def _install_cpu_moe_fallback() -> None:
     """Replace the CUDA-only fused MoE kernel with a pure-torch SwiGLU expert loop.
 
-    The action expert routes tokens through ``Qwen2FusedExperts.forward`` ->
-    ``lingbotvla.ops.fused_moe.fused_moe_forward``, whose ``group_gemm`` Triton
-    kernel hard-asserts ``input.is_cuda`` (``ops/group_gemm/kernel/moe.py``), so
-    the expert cannot run on CPU. The math is a standard top-k SwiGLU mixture over
-    the packed per-expert weights (``gate_proj``/``up_proj``/``down_proj`` of shape
-    ``[E, I, H]``/``[E, I, H]``/``[E, H, I]``): ``down(silu(gate·x) * (up·x))``,
-    scaled by the token's routing weight and summed over its selected experts —
-    exactly what the fused kernel computes (``fused_moe.py`` steps 4-10). We monkey-
-    patch ``Qwen2FusedExperts.forward`` with that per-expert loop; it matches the
-    method the outer ``Qwen2MoeSparseMoeBlock.forward`` already calls on the fused
-    path, so only the inner kernel changes. Idempotent.
+    ``Qwen2FusedExperts.forward`` -> ``fused_moe.fused_moe_forward``'s
+    ``group_gemm`` Triton kernel hard-asserts ``input.is_cuda``
+    (``ops/group_gemm/kernel/moe.py``), so the expert can't run on CPU. Replaces
+    it with the same math (top-k SwiGLU over per-expert
+    gate_proj/up_proj/down_proj: ``down(silu(gate*x) * (up*x))``, weighted by
+    routing weight, summed over selected experts — ``fused_moe.py`` steps 4-10)
+    as a per-expert loop, monkey-patched onto the method
+    ``Qwen2MoeSparseMoeBlock.forward`` already calls on the fused path.
+    Idempotent.
     """
     import torch
     from lingbotvla.models.vla.lingbot_vla.qwen2_action_expert import Qwen2FusedExperts
@@ -961,13 +942,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
-    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
-    # and warns whenever the old spelling is present. This server serves BOTH
-    # variants and they sit on opposite sides of that rename — v2 runs torch
-    # 2.9.1, v1 is held at 2.8 by lerobot 0.4.2's `torch<2.8.0` cap — so the
-    # spelling has to follow the installed torch rather than being a constant.
-    # Read from metadata, not `import torch`, so nothing initializes the CUDA
-    # allocator before the var is set.
+    # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
+    # the old spelling). This server serves both variants (v2 torch 2.9.1, v1 held
+    # at 2.8 by lerobot 0.4.2's torch<2.8.0 cap), so the var name is resolved from
+    # metadata, not `import torch`, to avoid initializing CUDA before it's set.
     _torch_mm = tuple(int(part) for part in importlib.metadata.version("torch").split(".")[:2])
     _var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
     os.environ.setdefault(_var, "expandable_segments:True")

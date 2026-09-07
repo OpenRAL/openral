@@ -1,31 +1,16 @@
 """Detect and repair a stale ``~/.libero/config.yaml``.
 
-LIBERO installs persist a YAML file at ``$LIBERO_CONFIG_PATH/config.yaml``
-(default ``~/.libero/config.yaml``) that pins absolute filesystem paths
-to the ``libero`` package's data dirs (assets / bddl_files / benchmark_root /
-datasets / init_states). The paths are computed **once**, the first time
-LIBERO is imported from any environment, and never refreshed. Switching
-to a different virtual environment, repo clone, or workspace path leaves
-the file pointing at a directory that no longer exists; the next
-``openral sim libero`` invocation crashes deep inside
+LIBERO pins absolute paths (assets / bddl_files / benchmark_root / datasets /
+init_states) into ``$LIBERO_CONFIG_PATH/config.yaml`` (default
+``~/.libero/config.yaml``) on first import, and never refreshes them.
+Switching venv/clone/workspace leaves stale paths, and the next
+``openral sim libero`` crashes inside
 ``lerobot.envs.libero.get_task_init_states`` with a confusing
-``FileNotFoundError`` for ``<stale-path>/init_files/<task>.pruned_init``.
-
-This script:
-
-* locates the **currently active** ``libero`` package via ``import libero``,
-* computes the canonical config that pairs with it,
-* compares to ``$LIBERO_CONFIG_PATH/config.yaml`` (default ``~/.libero``),
-* rewrites the file only when stale (or absent).
-
-It is invoked from the ``_ensure-libero-config`` private recipe in the
-``Justfile`` so every ``just sim-*-libero`` recipe sees a config that
-matches the active venv.
-
-Idempotent: re-runs are no-ops when the file already matches.
-
-Documented in ``docs/reference/vla_compatibility.md`` under the LIBERO
-section.
+``FileNotFoundError``. This locates the active ``libero`` package, computes
+the canonical config, and rewrites the file only when stale or absent.
+Idempotent. Invoked from the ``_ensure-libero-config`` Justfile recipe so
+every ``just sim-*-libero`` run sees a matching config. Documented in
+``docs/reference/vla_compatibility.md`` (LIBERO section).
 
 Usage::
 
@@ -46,10 +31,8 @@ from pathlib import Path
 def _expected_config(libero_pkg_dir: Path) -> dict[str, str]:
     """Return the canonical ``~/.libero/config.yaml`` payload for ``libero_pkg_dir``.
 
-    Mirrors the dict layout LIBERO writes on first import — five keys,
-    all absolute paths under the ``libero/libero/`` subtree (which is
-    itself a sibling of a ``../datasets`` directory the upstream package
-    places relative to the install).
+    Mirrors LIBERO's own first-import layout: five keys, absolute paths under
+    ``libero/libero/``, with ``datasets`` a sibling of that dir.
     """
     base = libero_pkg_dir / "libero"
     return {
@@ -83,10 +66,9 @@ def _render_yaml(payload: dict[str, str]) -> str:
 def _locate_active_libero() -> Path:
     """Import ``libero`` and return its package directory.
 
-    Raises ``RuntimeError`` with a clear message when LIBERO is not
-    installed — the caller (the Justfile recipe) treats this as a no-op
-    rather than failing the whole sim run, because the libero recipes
-    install the libero group before invoking ``openral sim run`` anyway.
+    Raises:
+        RuntimeError: LIBERO is not installed; the Justfile recipe treats
+            this as a no-op since it installs the libero group first.
     """
     try:
         libero = importlib.import_module("libero")

@@ -1,16 +1,15 @@
 """LocateAnything-3B inference server — runs INSIDE the isolated sidecar venv.
 
-This module is exec'd by :mod:`tools.locateanything_sidecar` inside a
-``transformers==4.57.1`` virtualenv (see that file for *why* the model cannot
-share the openral runtime's ``transformers>=5`` environment). It loads the NF4
-bitsandbytes-quantized model once and answers detection requests over a ZMQ
-REP socket using msgpack frames.
+Exec'd by :mod:`tools.locateanything_sidecar` inside a ``transformers==4.57.1``
+virtualenv (see that file for why it can't share the runtime's
+``transformers>=5`` env). Loads the NF4 bitsandbytes-quantized model once and
+answers detection requests over ZMQ REP + msgpack.
 
-It is deliberately **thin**: it returns the model's *raw* generated text. All
-``<ref>``/``<box>`` parsing, degenerate-box filtering, and ``ObjectsMetadata``
-construction live in the main-env backend
-(:mod:`openral_runner.backends.gstreamer.locateanything_detector`) so that
-logic is unit-testable without a GPU or this venv.
+Deliberately thin: returns the model's raw generated text. ``<ref>``/``<box>``
+parsing, degenerate-box filtering, and ``ObjectsMetadata`` construction live
+in the main-env backend
+(:mod:`openral_runner.backends.gstreamer.locateanything_detector`), unit-testable
+without a GPU or this venv.
 
 Wire protocol (msgpack dict in, msgpack dict out, ZMQ REQ/REP):
 
@@ -56,13 +55,11 @@ def _split_model_ref(model_ref: str) -> tuple[str, str]:
 def _load(model_ref: str) -> tuple[object, object, object]:
     """Load tokenizer, processor, and the NF4-quantized model on the GPU.
 
-    The OpenRAL mirror ships a *prequantized* bnb-NF4 model: config.json already
-    carries the ``quantization_config`` block, so ``from_pretrained`` reads it and
-    drops the packed weights straight into ``bnb.nn.Linear4bit`` modules. Passing
-    a fresh ``BitsAndBytesConfig`` here would tell transformers to quantize again
-    over already-packed weights and the Linear state_dict no longer lines up
-    ("Error(s) in loading state_dict for Linear"). So we only supply a config when
-    the source is *not* self-describing (e.g. pointed at the upstream bf16 repo).
+    The OpenRAL mirror ships prequantized bnb-NF4: config.json's
+    ``quantization_config`` makes ``from_pretrained`` load packed weights
+    directly. A fresh ``BitsAndBytesConfig`` there would re-quantize over
+    already-packed weights ("Error(s) in loading state_dict for Linear"), so
+    only supply one when the source isn't self-describing (e.g. upstream bf16).
     """
     model_id, revision = _split_model_ref(model_ref)
     config = AutoConfig.from_pretrained(

@@ -1,44 +1,27 @@
 r"""RLBench scene sidecar — drives a CoppeliaSim/PyRep RLBench task over ZMQ.
 
-RLBench (James et al., 2020, arXiv:1909.12271) runs on CoppeliaSim +
-PyRep, a heavy, externally-provisioned, ~py3.10 stack that cannot be loaded into
-the openral py3.12 workspace (PyRep builds a Cython extension against a specific
-CoppeliaSim 4.1.0 install; the released 3D keyframe policies pin the
-``MohitShridhar/RLBench@peract`` fork). So — exactly like the Isaac Sim scene
-backend (:mod:`openral_sim.backends.isaac_sim`) — we run RLBench in its own venv
-and talk to it over ZMQ REQ/REP framed by msgpack.
-
-This file is the **sidecar side** (no openral import — it runs under the
-externally-provisioned ``rlbench`` venv). It owns CoppeliaSim, the RLBench task,
-and the keyframe motion executor. The openral side is
+RLBench (James et al. 2020, arXiv:1909.12271) needs CoppeliaSim + PyRep, a
+~py3.10 stack that can't load into the py3.12 openral workspace (PyRep builds a
+Cython extension against CoppeliaSim 4.1.0; the released 3D keyframe policies
+pin ``MohitShridhar/RLBench@peract``) — so, like
+:mod:`openral_sim.backends.isaac_sim`, it runs in its own venv over ZMQ
+REQ/REP + msgpack. This file is the sidecar side (no openral import, owns
+CoppeliaSim/task/keyframe executor); the openral side is
 :mod:`openral_sim.backends.rlbench`.
 
-Wire protocol (mirrors ``tools/isaac_sidecar.py``)::
+Wire (mirrors ``tools/isaac_sidecar.py``): ``ping -> {"ok", "action_dim": 8,
+"task", "layout": "rlbench"}``, ``reset``/``step -> {"observation", "reward",
+"terminated", "truncated", "info"}``. Observation: ``images``/``point_clouds``
+per camera (left_shoulder/right_shoulder/wrist/front, HWC uint8 / world-frame
+float32), ``gripper_pose`` (7,) ``[xyz, quat wxyz]``, ``gripper_open`` (1.0/0.0),
+``state`` = pose(7)+gripper(1). Action: 8-D keyframe ``[xyz, quat, gripper_open]``;
+the sidecar appends the peract fork's ``ignore_collisions`` channel and retries
+the planned motion until the end-effector is within 5 mm of target (matches the
+upstream 3D-policy evaluators).
 
-    ping  -> {"ok": True, "action_dim": 8, "task": <task_str>, "layout": "rlbench"}
-    reset -> {"observation": {...}}
-    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info"}
-
-Observation dict (eval-layer shape + RLBench multi-view extras the 3D keyframe
-policies consume)::
-
-    images:        {<cam>: HWC uint8 RGB}            # left_shoulder/right_shoulder/wrist/front
-    point_clouds:  {<cam>: HWC float32 world-frame}  # one per camera
-    gripper_pose:  (7,) float32  [x y z qx qy qz qw]
-    gripper_open:  float                              # 1.0 open, 0.0 closed
-    state:         (8,) float32  [gripper_pose(7), gripper_open(1)]
-    task:          str instruction
-
-Action: an 8-D keyframe ``[x y z qx qy qz qw gripper_open]`` (world frame,
-``wxyz``→ executed as the RLBench convention). The sidecar appends the peract
-fork's ``ignore_collisions`` channel and executes via a retry-mover that re-tries
-the planned motion until the end-effector reaches the target pose (<5 mm) — the
-same closed-loop execution the upstream 3D-policy evaluators use.
-
-License (CLAUDE.md §1.9): CoppeliaSim is proprietary (free EDU license) and is
-NEVER vendored — it is an externally-provisioned dependency the user installs
-(see :mod:`openral_sim.backends.rlbench` for the provisioning hint). RLBench and
-PyRep are open source.
+License (CLAUDE.md §1.9): CoppeliaSim is proprietary (free EDU license), never
+vendored — externally provisioned (see :mod:`openral_sim.backends.rlbench`).
+RLBench and PyRep are open source.
 """
 
 from __future__ import annotations

@@ -3,34 +3,22 @@
 Runs under the Isaac Sim py3.11 venv only; imported by ``isaac_sidecar.py`` AFTER
 ``SimulationApp`` is live (every import here needs a running Kit app).
 
-Why Isaac Sim *core* and not Isaac Lab
---------------------------------------
-The PyPI ``isaaclab`` (2.3.x) wheel does not ship the ``isaaclab.sim`` /
-``isaaclab.envs`` task machinery — those require the git-source install
-(``./isaaclab.sh``) plus the ``isaaclab_assets`` / ``isaaclab_tasks`` packages,
-which are not on PyPI. The Isaac Sim *core* API (``isaacsim.core.api.World``,
-``isaacsim.robot.manipulators.examples.franka.Franka``,
-``isaacsim.sensors.camera.Camera``) IS fully present in the pip install and is
-enough to stand up a real PhysX + RTX manipulation scene. The PoC therefore
-targets Isaac Sim core; wiring the full Isaac Lab manager-based env (OSC action
-terms, task MDP) is the documented next step once the source install
-is provisioned.
+Isaac Sim **core**, not Isaac Lab: the PyPI ``isaaclab`` (2.3.x) wheel omits
+``isaaclab.sim``/``isaaclab.envs`` (need the git-source install plus
+``isaaclab_assets``/``isaaclab_tasks``, not on PyPI). Core's
+``isaacsim.core.api.World`` + ``Franka`` + ``Camera`` are on PyPI and enough for
+a real PhysX+RTX scene; the full Isaac Lab manager-based env (OSC terms, task
+MDP) is a follow-up once the source install is provisioned.
 
-Scene: a Franka on a ground plane with a red cube in front of it and two RTX
-cameras — ``camera1`` a front agent-view of the workspace and ``camera2`` an
-eye-in-hand wrist camera parented to ``panda_hand`` (so a two-camera LIBERO-shaped
-rSkill clears the sensor/camera contract). The action is an 8-vector
-``[dq0..dq6, gripper]`` — seven arm joint-position deltas plus a gripper command
-(>0 open, <=0 close). Reward is the cube height; the task succeeds when the cube
-is lifted above ``_LIFT_SUCCESS_Z``. The lifecycle/obs skeleton lives in
+Franka on a ground plane, red cube in front, two RTX cameras (``camera1`` front
+agent-view, ``camera2`` eye-in-hand on ``panda_hand``, for the LIBERO two-camera
+contract). Action: 8-vector ``[dq0..dq6, gripper]`` (>0 open, <=0 close). Reward
+is cube height; succeeds above ``_LIFT_SUCCESS_Z``. Lifecycle/obs skeleton:
 :class:`_isaac_scene_base.IsaacSceneBase`.
 
-.. note::
-   The ``camera1`` / ``camera2`` output keys are LEGACY ordinal slots that
-   pre-date the canonical camera-name vocabulary. The HAL bridge tolerates
-   the mismatch via the ``vla_feature_key`` lookup fallback. TODO: extend the
-   isaac-sidecar protocol so the host can pass scene-side camera names
-   (``front`` / ``wrist`` ...) and emit those directly.
+``camera1``/``camera2`` are legacy ordinal keys the HAL bridge maps via
+``vla_feature_key`` fallback. TODO: pass canonical scene-side camera names
+(``front``/``wrist``) through the isaac-sidecar protocol directly.
 """
 
 from __future__ import annotations
@@ -82,11 +70,9 @@ class IsaacLiftScene(IsaacSceneBase):
 
         self._ArticulationAction = ArticulationAction
 
-        # NOTE: do NOT pass device="cuda:0" here. Forcing the GPU PhysX pipeline
-        # makes the first world.reset() / step warmup hang for minutes on an
-        # 8 GB-class laptop GPU; the default device renders the same scene in
-        # ~15 s (verified). GPU PhysX is a tuning knob for a follow-up, not the
-        # PoC default.
+        # NOTE: no device="cuda:0" — forcing GPU PhysX hangs the first
+        # world.reset()/step warmup for minutes on an 8 GB-class laptop GPU;
+        # default device renders the same scene in ~15 s.
         self._world = World(stage_units_in_meters=1.0)
         self._world.scene.add_default_ground_plane()
         self._cube = self._world.scene.add(

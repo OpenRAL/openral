@@ -1,41 +1,25 @@
 """Boot the Qwen3.5-4B scene-VLM inference server in an isolated sidecar venv.
 
-The ``query_scene`` reasoner tool asks a vision-language model
-open-ended questions about the current camera view ("has the robot grasped the
-mug?", "is the task complete?"). The model is ``Qwen/Qwen3.5-4B``, loaded NF4
-via bitsandbytes, and is run **out-of-process** for three reasons:
-
-* **Dependency isolation.** The openral runtime venv hard-pins
-  ``transformers==5.3.0`` for lerobot (every VLA adapter aliases that pin —
-  see ``pyproject.toml``). The VLM needs ``bitsandbytes`` (NF4), ``qwen-vl-utils``
-  (vision preprocessing), and the optional Gated DeltaNet kernels
-  (``fla`` / ``causal-conv1d``). Resolving those into the lerobot-pinned env
-  risks perturbing the VLA stack; a separate venv keeps the resolver clean.
-* **VRAM / process isolation.** A 4B model + CUDA context should not live in
-  the ``rclpy`` reasoner process. On an 8 GB GPU a model OOM must not take
-  down the reasoner; the sidecar owns its own VRAM lifecycle and can be torn
-  down independently.
-* **Same pattern as the rest of the tree.** ``tools/locateanything_sidecar.py``
-  (LocateAnything detector) and ``tools/rldx_sidecar.py`` (RLDX-1 / GR00T-N1.5)
-  already run models out-of-process over ZMQ REQ/REP + msgpack. This is that
-  pattern.
+The ``query_scene`` reasoner tool asks ``Qwen/Qwen3.5-4B`` (NF4 via
+bitsandbytes) open-ended questions about the camera view. Runs
+out-of-process: the runtime venv hard-pins ``transformers==5.3.0`` for
+lerobot, and resolving ``bitsandbytes``/``qwen-vl-utils``/optional
+Gated-DeltaNet kernels (``fla``/``causal-conv1d``) into that env risks
+perturbing the VLA stack; a 4B model + CUDA context also should not live in
+the ``rclpy`` reasoner process (its OOM must not take the reasoner down).
+Same ZMQ REQ/REP + msgpack pattern as ``tools/locateanything_sidecar.py`` and
+``tools/rldx_sidecar.py``.
 
 The openral side is
 :class:`openral_runner.backends.gstreamer.qwen_scene_vlm.QwenSceneVlm`, which
-auto-spawns this sidecar on first use and talks to ``_qwen_vlm_server.py`` over
-ZMQ.
+auto-spawns this sidecar and talks to ``_qwen_vlm_server.py`` over ZMQ.
 
 Usage::
 
     python tools/qwen_vlm_sidecar.py --port 5759
 
-The script blocks and forwards signals; SIGINT cleanly stops the server.
-
-CLAUDE.md compliance:
-* Real subprocess running real upstream model code — no mocks (§1.11). The
-  openral-side wire protocol is a real ZMQ client.
-* ``Qwen/Qwen3.5-4B`` is Apache-2.0 (commercial OK) — no license guard needed
-  here (the ``RSkillManifest`` loader handles posture).
+Real subprocess, no mocks (§1.11). ``Qwen/Qwen3.5-4B`` is Apache-2.0
+(commercial OK) — no license guard needed here.
 """
 
 from __future__ import annotations
@@ -51,23 +35,19 @@ _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "qwen-vlm-sidecar"
 _VENV_ENV = "OPENRAL_QWEN_VLM_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_QWEN_VLM_SIDECAR_HOME"
 
-# Fully-pinned, hash-locked deps. transformers==5.3.0 matches the runtime pin
-# (Qwen3.5 support landed in the 5.x line); torch/torchvision resolve to +cu128.
-# ``fla`` / ``causal-conv1d`` (optional Gated-DeltaNet kernels) are intentionally
-# NOT in the lock — without them transformers falls back to slower PyTorch ops
-# but the model still loads, and their wheels do not resolve on every platform.
-# Regenerate after editing the .in source with:
+# Hash-locked deps: transformers==5.3.0 (matches the runtime pin), torch/torchvision +cu128.
+# `fla`/`causal-conv1d` (optional Gated-DeltaNet kernels) deliberately excluded — without them
+# transformers falls back to slower PyTorch ops but still loads; their wheels don't resolve
+# everywhere. Regenerate:
 #   uv pip compile tools/sidecar_requirements/qwen_vlm.in \
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
 #     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/qwen_vlm.lock
 _LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "qwen_vlm.lock"
-# Raises nvrtc past the sm_121 cliff on aarch64. Load-bearing for THIS sidecar
-# specifically: Qwen3.5 reduces the vision grid with ``image_grid_thw.prod(-1)``
-# and ``prod`` is a jiterator op, so on GB10 every single query died in nvrtc
-# until this landed. Passed at *install* time as well as compile time — torch's
-# metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, so without the override uv
-# rejects the lock's aarch64 line as a conflict instead of honouring it.
+# Raises nvrtc past the sm_121 cliff on aarch64. Load-bearing here: Qwen3.5's
+# `image_grid_thw.prod(-1)` is a jiterator op — every GB10 query died in nvrtc without this.
+# Passed at install time too: torch pins `nvidia-cuda-nvrtc-cu12==12.8.93`, so without the
+# override uv rejects the lock's aarch64 line as a conflict.
 _NVRTC_OVERRIDE = (
     Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
 )
@@ -76,20 +56,15 @@ _NVRTC_OVERRIDE = (
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """Return the sidecar venv python, creating + populating it if needed.
 
-    ``override`` (or ``$OPENRAL_QWEN_VLM_SIDECAR_VENV``) points at an existing
-    venv to reuse instead of provisioning one under ``home`` — handy for
-    development against an already-built env. Otherwise a Python 3.12 venv is
-    provisioned from the hash-locked ``qwen_vlm.lock`` for reproducibility
-    (CLAUDE.md §1.8).
+    ``override`` (or ``$OPENRAL_QWEN_VLM_SIDECAR_VENV``) reuses an existing
+    venv instead of provisioning one under ``home``. Otherwise provisions
+    Python 3.12 from the hash-locked ``qwen_vlm.lock`` (CLAUDE.md §1.8).
     """
 
     def _install(uv: str, py: Path) -> None:
-        # ``-r <lock>`` installs the pinned, hash-bearing lock (uv verifies the
-        # recorded hashes); we deliberately do NOT pass ``--require-hashes`` —
-        # the cu128 torch wheels surface a marker-only transitive (torchcodec)
-        # that uv's compile drops, which --require-hashes rejects even though it
-        # is never installed on this platform. Pinned versions still give the
-        # reproducibility we want (CLAUDE.md §1.8).
+        # No --require-hashes: cu128 torch wheels surface a marker-only
+        # transitive (torchcodec) the lock drops, which --require-hashes
+        # would reject even though it's never installed here.
         run_cmd(
             "qwen-sidecar",
             [

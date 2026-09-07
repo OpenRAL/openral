@@ -1,30 +1,26 @@
 """Boot the DA3 metric-depth inference server in an isolated sidecar venv.
 
-`depth-anything/DA3-SMALL` ships as the `depth-anything-3` package
-(not transformers-native), so we run it out-of-process in its own Python 3.12
-venv and talk to it over ZMQ REQ/REP + msgpack from the
-`openral_perception_ros` depth-provider node — the same pattern as
-:mod:`tools.locateanything_sidecar`. The provider republishes the result as a
-`32FC1` depth Image + CameraInfo for nvblox, giving lidar-less robots a Nav2
-cost map.
+`depth-anything/DA3-SMALL` ships as the `depth-anything-3` package (not
+transformers-native), so it runs out-of-process in its own Python 3.12 venv,
+talking to the `openral_perception_ros` depth-provider node over ZMQ REQ/REP +
+msgpack (same pattern as :mod:`tools.locateanything_sidecar`). The provider
+republishes as `32FC1` depth Image + CameraInfo for nvblox.
 
 Measured on an 8 GB Ada (RTX 4070 Laptop): DA3-SMALL loads in ~5 s, ~0.27 GB
-peak, ~27 Hz — comfortably real-time for nvblox's depth integration.
+peak, ~27 Hz.
 
-On aarch64 CUDA hosts (GB10 / DGX Spark, Jetson Thor) the install recipe is
-different — see :data:`_AARCH64_REQUIREMENTS` and
-:func:`_defer_pycolmap_import`, and docs/reference/aarch64-support.md.
+aarch64 (GB10 / DGX Spark, Jetson Thor) uses a different install recipe — see
+:data:`_AARCH64_REQUIREMENTS`, :func:`_defer_pycolmap_import`, and
+docs/reference/aarch64-support.md.
 
 Usage::
 
     python tools/da3_depth_sidecar.py --port 5771
 
-CLAUDE.md compliance:
-* Real subprocess running real upstream model code — no mocks (§1.11).
-* Version isolation is the bridge between the `depth-anything-3` package and the
-  transformers-5.x runtime venv (§3).
-* DA3 weights keep their upstream license — verify per checkpoint (§9); no
-  license guard is enforced here.
+Real subprocess, no mocks (CLAUDE.md §1.11). Version isolation bridges
+`depth-anything-3` and the transformers-5.x runtime venv (§3). DA3 weights
+keep their upstream license; verify per checkpoint (§9) — no guard enforced
+here.
 """
 
 from __future__ import annotations
@@ -61,41 +57,18 @@ _HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"
 # generated, install the package set verified working on the 8 GB Ada host.
 _REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")
 
-# aarch64 (GB10 / DGX Spark, Jetson Thor) needs a hand-rolled install instead:
-# two of `depth-anything-3`'s declared dependencies publish **no** linux-aarch64
-# wheel on any index, so the one-line `uv pip install depth-anything-3` above is
-# unsatisfiable there.
-#
-#   open3d   — 0.19.0 (the only cp312 release) is manylinux_2_31_x86_64 / macOS /
-#              win_amd64; the aarch64 builds stop at 0.18.0 / cp311. Imported
-#              *only* by `depth_anything_3.bench.*` (the DTU / ETH3D /
-#              ScanNet++ / 7-Scenes evaluators), never by the inference path, so
-#              it is simply dropped.
-#   pycolmap — every release ever published is x86_64-linux / macOS-arm64 /
-#              win_amd64, with no sdist at all; conda-forge has a linux-aarch64
-#              build but there is no pip route to it. Unlike open3d it *is* on
-#              the import path — `api.py` eagerly pulls in
-#              `depth_anything_3.utils.export`, whose `__init__` imports the
-#              COLMAP writer — so it needs :func:`_defer_pycolmap_import`.
-#
-# The pin set below is upstream's `pyproject.toml` dependency list minus those
-# two, minus `xformers` (also x86_64/win-only, and already optional upstream:
-# `dinov2/layers/swiglu_ffn.py` falls back to a pure-torch SwiGLU when it is
-# absent) and minus `pre-commit` (an upstream packaging slip — a dev tool), plus
-# `addict` (an *undeclared* upstream dependency of
-# `depth_anything_3/model/da3.py`, normally pulled in transitively), plus the
-# repo's standard aarch64 torch pins and the ZMQ/msgpack wire deps.
-#
-# torch 2.9.1, not whatever `torch>=2` resolves to: the cu128 index publishes no
-# aarch64 wheel for 2.8.0 and its required triton==3.4.0 has none either — the
-# same pin the LocateAnything and LingBot sidecars carry. See
-# docs/reference/aarch64-support.md.
-#
-# Raises nvrtc past the sm_121 ceiling; shared with the other sidecars, see that
-# file's header. Load-bearing here: DA3's `@torch.jit.script affine_inverse` is
-# NVRTC-fused by the TensorExpr fuser once the profiling executor warms up, so
-# without this the FIRST depth request succeeds and every later one dies — the
-# worst possible failure shape for a provider streaming frames.
+# aarch64 (GB10 / DGX Spark, Jetson Thor): `pip install depth-anything-3` is unsatisfiable —
+# two declared deps ship no linux-aarch64 wheel:
+#   open3d   — cp312 only on x86_64/macOS/win; used only by `depth_anything_3.bench.*`
+#              (evaluators), never by inference → dropped.
+#   pycolmap — x86_64/macOS-arm64/win only, no sdist; imported eagerly through
+#              `depth_anything_3.utils.export` → see `_defer_pycolmap_import`.
+# Pin set = upstream pyproject minus those two, minus xformers (x86-only, optional upstream)
+# and pre-commit (dev tool), plus `addict` (undeclared dep of model/da3.py), plus the repo's
+# aarch64 torch pins (2.9.1: cu128 has no aarch64 wheel for 2.8.0 / triton 3.4.0; see
+# docs/reference/aarch64-support.md) and the ZMQ/msgpack wire deps. NVRTC override shared with
+# the other sidecars: DA3's jit-scripted `affine_inverse` is NVRTC-fused after warm-up, so
+# without it the first request succeeds and every later one dies.
 _NVRTC_OVERRIDE = (
     Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
 )
@@ -128,13 +101,10 @@ _AARCH64_REQUIREMENTS = (
 # release's source text; a silent upgrade must not silently skip the rewrite.
 _AARCH64_DA3 = "depth-anything-3==0.1.1"
 
-# The module-level statement in `depth_anything_3/utils/export/colmap.py` that
-# makes `import depth_anything_3.api` fail on aarch64, and the deferred proxy we
-# swap it for. This is a *deferred import*, not a stub (CLAUDE.md §1.11): every
-# `pycolmap.<name>` in that file is an attribute read inside `export_to_colmap`,
-# so exporting to COLMAP still raises the real `ModuleNotFoundError: pycolmap` —
-# it just raises it when that export format is requested rather than when the
-# depth model is imported.
+# Patches `depth_anything_3/utils/export/colmap.py`'s eager `import pycolmap`
+# (breaks `import depth_anything_3.api` on aarch64) into a deferred proxy.
+# Deferred import, not a stub (CLAUDE.md §1.11): `export_to_colmap` still
+# raises the real `ModuleNotFoundError: pycolmap`, just lazily.
 _PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"
 _PYCOLMAP_LAZY_IMPORT = '''
 class _LazyPycolmap:
@@ -209,12 +179,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         if not aarch64:
             run_cmd("da3-sidecar", [*pip, *_REQUIREMENTS])
             return
-        # The nvrtc override is what lets DA3 keep TorchScript ON here: its
-        # `@torch.jit.script affine_inverse` gets NVRTC-fused once the profiling
-        # executor warms up, and the stock cu128 nvrtc 12.8 cannot target
-        # sm_121 — so request #1 succeeded and every later one died. Raising
-        # nvrtc fixes the codegen itself rather than disabling the fuser.
-        pip += ["--overrides", str(_NVRTC_OVERRIDE)]
+        pip += ["--overrides", str(_NVRTC_OVERRIDE)]  # rationale: see the aarch64 block above
         run_cmd("da3-sidecar", [*pip, *_AARCH64_REQUIREMENTS])
         # --no-deps: the dependency set above is deliberately not upstream's.
         run_cmd("da3-sidecar", [*pip, "--no-deps", _AARCH64_DA3])

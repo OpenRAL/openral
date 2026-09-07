@@ -1,33 +1,23 @@
 """How much of a kernel stop's over-approximation is the voxel grid, and how much is geometry?
 
-`PLAN.md` §5 turns on one table: for every stop, the kernel's reported depth
-against the certified mesh gap that was really there, with the 25 mm grid's
-21.65 mm half-diagonal subtracted. That decomposition is what struck two levers
-and promoted a third — and, like ADR-0101's 94 %, it was computed by hand and
-had no producer in the repo. This is that producer.
-
-The arithmetic is deliberately trivial, and stating it plainly is most of the
-point::
+`PLAN.md` §5 turns on one table: kernel-reported depth vs. certified mesh gap,
+with the 25 mm grid's 21.65 mm half-diagonal subtracted. That decomposition
+struck two levers and promoted a third; like ADR-0101's 94%, it had no
+producer in the repo until now::
 
     excess = certified_gap - reported_depth
     beyond_voxel = excess - voxel_half_diagonal
 
-`excess` is how much *further* from the surface the robot really was than the
-kernel believed. Subtracting the half-diagonal leaves what the collision model
-itself contributes. A class whose median `beyond_voxel` is at or below zero has
-**no geometry headroom left**: every millimetre it over-approximates by is the
-grid, and no tighter envelope can recover any of it.
+``excess`` is how much further from the surface the robot really was than the
+kernel believed; subtracting the half-diagonal leaves what the collision model
+itself contributes. A class whose median ``beyond_voxel`` is <= 0 has no
+geometry headroom left: every millimetre of over-approximation is the grid.
 
-That is a conclusion about where work can still pay, so it must be reproducible
-rather than asserted. Two guards keep it honest:
-
-* only stops whose probe **certified** its distances are counted — an
-  uncertified distance can be wrong by 15-108 mm in either direction
-  (`collision-validation-evidence.md` standing caveat 8), which is larger than
-  the entire quantity being measured;
-* the voxel half-diagonal is read from **each round's own recorded
-  `grid_resolution_m`**, never assumed, so a round taken at a different
-  resolution cannot be silently pooled with the rest.
+Two guards: only probe-**certified** distances are counted (an uncertified
+distance can be wrong by 15-108 mm either way — `collision-validation-
+evidence.md` caveat 8, larger than the quantity being measured); the voxel
+half-diagonal is read from each round's own recorded ``grid_resolution_m``,
+never assumed, so rounds at different resolutions cannot be silently pooled.
 
 Run::
 

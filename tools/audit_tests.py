@@ -1,22 +1,16 @@
 """Test-suite auditor — surface redundant / low-signal tests for review.
 
-OpenRAL carries ~2.9k test functions. We want *meaningful* coverage, not
-volume (CLAUDE.md §1.7 — tests are part of the contract; §2 truth over
-plausibility — we report what is actually there, we do not manufacture
-deletions). This tool reads every test with the ``ast`` module and reports:
+Reads every test with ``ast`` (CLAUDE.md §1.7/§2: meaningful coverage over
+volume; report what's there, don't manufacture deletions) and reports:
 
-* **trivial** — body is only ``pass`` / ``...`` / a docstring. Genuinely
-  dead; safe to delete.
-* **duplicate-body** — two+ test functions with byte-identical normalized
-  ASTs. Strong dedup / parametrize signal.
-* **no-assertion** — no ``assert``, ``pytest.raises``, ``*.assert*`` call, or
-  recognised validation call (``from_yaml`` / ``model_validate`` / ``load`` …).
-  These are *candidates* for review, not automatic deletes: a constructor that
-  raises on bad input is a real check even without an ``assert``.
-* **inventory** — counts per tier / marker / directory, slowest-by-marker.
+* **trivial** — body is only ``pass``/``...``/docstring. Safe to delete.
+* **duplicate-body** — 2+ tests with identical normalized ASTs. Dedup signal.
+* **no-assertion** — no ``assert``/``*.assert*``/validation call (``from_yaml``,
+  ``model_validate``, ``load``, ``pytest.raises``...). Review candidates only —
+  a constructor that raises on bad input is a real check without ``assert``.
+* **inventory** — counts per tier/marker/directory.
 
-It is read-only. Pruning is a separate, reviewed commit (CLAUDE.md §1.15 /
-§4.2). Regenerate the committed report with ``just test-audit``.
+Read-only; pruning is a separate reviewed commit. Regenerate via `just test-audit`.
 
 Run::
 

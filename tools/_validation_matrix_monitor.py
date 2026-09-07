@@ -1,30 +1,21 @@
 """Record attachment / voxel / E-stop evidence during a live ``deploy sim`` run.
 
-Private helper of ``tools/validation_matrix.py``, which spawns it alongside each
-scene's ROS graph. Recovered verbatim (bar this docstring and the node name)
-from ``attach_monitor4.py``, the fourth generation of the monitor that lived in
-``spark:~/openral-runs/<round>/scripts/``; it is in the repo so a round no longer
-depends on one machine's home directory.
+Private helper of ``tools/validation_matrix.py``, spawned per scene. Recovered from
+``attach_monitor4.py`` (``spark:~/openral-runs/<round>/scripts/``), now repo-tracked.
 
-What it records, beyond the plain attachment stream:
+Beyond the plain attachment stream, records:
 
-* the kernel's own collision verdict, parsed out of ``FailureTrigger.evidence_json``
-  on ``/openral/failure/safety`` (``min_distance_m`` + the ``voxel_<idx>`` evidence
-  cell);
-* a full ``.npz`` snapshot at every E-stop *and* periodically while a payload is
-  carried: the last ``OccupancyVoxels`` grid, the last ``AttachmentState`` payload
-  primitives, and the TF that places the attach link in the grid frame —
-  everything needed to recompute payload residue offline. Carry snapshots exist
-  because an E-stop-only monitor records nothing at all on a run that passes;
-* the ``PlaceDeclaration`` and its producer-measured region, keyed on identity +
-  liveness + region *shape* so a region whose pose is re-measured every tick does
-  not emit a record per tick;
-* the occupied-cell **set** hash, not merely the count — a frozen map keeps an
-  identical set, which a count alone cannot distinguish from a live one.
+* the kernel's collision verdict from ``FailureTrigger.evidence_json`` on
+  ``/openral/failure/safety`` (``min_distance_m`` + ``voxel_<idx>`` cell);
+* a full ``.npz`` snapshot at every E-stop and periodically while a payload is carried (last
+  ``OccupancyVoxels`` grid, last ``AttachmentState`` primitives, attach-link-to-grid-frame TF) —
+  carry snapshots exist because an E-stop-only monitor records nothing on a passing run;
+* ``PlaceDeclaration`` + its region, keyed on identity + liveness + region shape, not pose (the
+  pose is re-measured every tick);
+* the occupied-cell set hash, not just the count, to tell a frozen map from a live one.
 
-Requires a sourced ROS 2 environment and the built overlay. Writes one JSON
-object per line to argv[1]; snapshots to argv[2]/``<tag>_<n>.npz``. Runs until
-SIGINT/SIGTERM.
+Requires a sourced ROS 2 environment and the built overlay. Writes one JSON object per line to
+argv[1]; snapshots to argv[2]/``<tag>_<n>.npz``. Runs until SIGINT/SIGTERM.
 
 Run::
 
@@ -106,11 +97,9 @@ def _witness(obj: Any) -> dict[str, Any] | None:
 def _declaration(msg: Any) -> dict[str, Any] | None:
     """The PlaceDeclaration riding an AttachmentState / WorldStateStamped.
 
-    ``None`` when no declaration is in force, which is the pre-ADR-0097
-    behaviour: no place witness and no approach allowance. The region is the
-    2026-08-14 amendment's producer-measured box; ``region`` is ``None``
-    whenever ``region_valid`` is false, which is the "no allowance, unchanged
-    margin" case.
+    ``None`` when no declaration is in force (pre-ADR-0097: no place witness, no approach
+    allowance). ``region`` (the 2026-08-14 amendment's producer-measured box) is ``None`` when
+    ``region_valid`` is false: no allowance, unchanged margin.
     """
     if not getattr(msg, "place_declaration_valid", False):
         return None
@@ -184,11 +173,9 @@ class Monitor:
         self._last_voxels: OccupancyVoxels | None = None
         self._last_attachment: AttachmentState | None = None
         self._n_snap = 0
-        # Round-6 addition: periodic snapshots WHILE a payload is carried,
-        # so the attach-sweep question ('did the stale shell clear, and did
-        # the widened reach close once the payload moved a padding-distance')
-        # is answerable on a run that never E-stops. attach_monitor2 only
-        # snapshotted at an E-stop, which a passing run never reaches.
+        # Round-6: periodic snapshots while a payload is carried, so the attach-sweep
+        # question is answerable on a run that never E-stops (attach_monitor2 only
+        # snapshotted at E-stop, unreachable on a passing run).
         self._last_carry_snap = 0.0
         # Round-7: place declaration + producer-measured region tracking.
         self._last_decl_key: str | None = None

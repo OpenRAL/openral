@@ -1,36 +1,22 @@
 #!/usr/bin/env python3
 """Profile one policy load and print a phase-by-phase wall-time breakdown.
 
-Use when ``ros2 launch openral_rskill_ros …_e2e.launch.py`` or
-``openral sim run`` takes a surprising amount of time to reach the first
-action and you want to know which phase to attack. The script drives
-``openral_sim.factory.make_policy`` end-to-end against the in-tree
-rSkill manifest you point it at, captures every
-``<prefix>_<name>_{start,heartbeat,done}`` event emitted by
-:mod:`openral_rskill._diagnostics.phase_timer`, and renders a table::
-
-    phase                     elapsed_s   share
-    smolvla_imports               12.4    14%
-    smolvla_from_pretrained       45.1    50%
-    smolvla_to_device              0.4     0%
-    smolvla_processor_dir          3.1     3%
-    smolvla_make_processors        1.2     1%
-    ────────────────────────  ─────────  ─────
-    end-to-end                    90.0   100%
+Use when a policy load takes a surprising amount of time and you want to know
+which phase to attack. Drives ``openral_sim.factory.make_policy`` end-to-end
+against the given rSkill manifest, captures every
+``<prefix>_<name>_{start,heartbeat,done}`` event from
+:mod:`openral_rskill._diagnostics.phase_timer`, and renders a phase/elapsed_s/
+share table. Captures the same events ``openral dashboard`` ingests via OTel,
+so the numbers match what an operator sees live.
 
 Usage::
 
-    uv run tools/profile_policy_load.py \\
-        --rskill rskills/rldx1-ft-rc365-nf4
+    uv run tools/profile_policy_load.py --rskill rskills/rldx1-ft-rc365-nf4
 
-    # Or to bypass HF cache validation entirely for the inner lerobot
-    # calls our `local_files_only=True` fast-path does not cover:
+    # Bypass HF cache validation for inner lerobot calls not covered by our
+    # local_files_only=True fast-path:
     HF_HUB_OFFLINE=1 uv run tools/profile_policy_load.py \\
         --rskill rskills/rldx1-ft-rc365-nf4
-
-The script captures the same events ``openral dashboard`` ingests via OTel,
-so the numbers here match what an operator would see live; it just
-formats them as a one-shot summary.
 """
 
 from __future__ import annotations
@@ -49,19 +35,14 @@ import structlog
 class _PhaseCapture:
     """``structlog`` processor that buffers `_start` / `_done` events.
 
-    Every `phase_timer(name=…, prefix=…)` context manager emits a
-    ``<prefix>_<name>_start`` and matching ``..._done`` log event with
-    an ``elapsed_s`` float on the done side. We match them up by event
-    name and stash ``(phase_name, elapsed_s)`` pairs in insertion
-    order — that is the order phases actually ran, which is what we
-    want to render.
+    Each `phase_timer(name=…, prefix=…)` emits a ``<prefix>_<name>_start`` and
+    matching ``..._done`` event (``elapsed_s`` float on the done side); matched
+    by event name into ``(phase_name, elapsed_s)`` pairs in run order.
     """
 
     def __init__(self) -> None:
         self.pairs: list[tuple[str, float]] = []
-        # Map start-event-name → start monotonic time so we can compute
-        # elapsed even if structlog's emitted event_dict somehow lacks
-        # the ``elapsed_s`` field (shouldn't happen, but defensive).
+        # Fallback start time, in case event_dict ever lacks elapsed_s.
         self._open: dict[str, float] = {}
 
     def __call__(self, logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:

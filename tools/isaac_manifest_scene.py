@@ -3,22 +3,15 @@
 Runs under the Isaac Sim py3.11 venv only; imported by ``isaac_sidecar.py`` AFTER
 ``SimulationApp`` is live (every import here needs a running Kit app).
 
-Why this exists
----------------
-The PoC scenes (``IsaacLiftScene`` in ``isaac_scene.py``, ``IsaacBowlPlateScene``
-in ``isaac_bowl_plate_scene.py``) hardcode Isaac's built-in ``Franka`` example USD
-asset and ignore the forwarded ``--robot``. That contradicts the ``DeployScene``
-contract, where a scene is *environment + backend* and the robot is pluggable from
-its ``RobotDescription``. This scene is the robot-agnostic
-path: it builds the articulation by **importing the manifest robot's URDF**
-(Isaac's ``isaacsim.asset.importer.urdf`` extension) and wires joints / sensors /
-control from a plain-JSON "isaac robot spec" the openral-side backend marshals
-across the venv boundary (the sidecar cannot import ``openral_core``).
+Unlike the PoC scenes (``isaac_scene.py``, ``isaac_bowl_plate_scene.py``), which
+hardcode Isaac's ``Franka`` USD asset, this scene honours the forwarded
+``--robot``: it imports the manifest robot's URDF (``isaacsim.asset.importer.urdf``)
+and wires joints/sensors/control from a plain-JSON "isaac robot spec" the
+openral-side backend marshals across the venv boundary (the sidecar cannot
+import ``openral_core``).
 
-Milestone M1 (this module's first cut): a fixed-base arm (``franka_panda``)
-imported from its URDF, one RGB camera, and a JOINT_POSITION-delta articulation
-controller, with ``/joint_states`` carrying the live imported-arm pose. Generic
-depth/lidar sensors (M2) and the mobile base (M3) extend the same class.
+M1 (this cut): fixed-base arm (``franka_panda``), one RGB camera,
+JOINT_POSITION-delta control. M2 adds depth/lidar sensors, M3 the mobile base.
 
 Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec``)::
 
@@ -71,20 +64,15 @@ def map_dof_to_manifest(
 ) -> NDArray[np.float32]:
     """Map an Isaac articulation DOF vector to the full manifest joint order.
 
-    Generic replacement for the Franka-specific ``_franka_dof_to_manifest``.
-    For each manifest joint, in order:
+    Generic replacement for the Franka-specific ``_franka_dof_to_manifest``. Per
+    manifest joint: a base joint reads ``base_values`` (not a URDF DOF); an arm
+    joint reads its matching URDF DOF; a gripper joint (manifest collapses the
+    two physical fingers into one width DoF) reads the mean of ``finger_dof_idx``;
+    anything else is ``0.0``. Works for positions or velocities (same indexing).
 
-    * a planar **base** joint (name in ``base_joints``) → the matching component
-      of ``base_values`` (the kinematic base pose/twist) — it is not a URDF DOF;
-    * an arm joint whose ``name`` matches a URDF DOF name → that DOF value;
-    * a ``role == "gripper"`` joint with no direct DOF (the OpenRAL manifest
-      collapses the two physical finger joints into one width DoF) → the mean of
-      the finger DOFs;
-    * anything unresolved → ``0.0``.
-
-    Works for positions or velocities (same indexing). Returns a vector in
-    ``manifest_joints`` order so ``SimAttachedHAL.read_state`` can index it
-    against ``description.joints``.
+    Returns:
+        Vector in ``manifest_joints`` order, for ``SimAttachedHAL.read_state``
+        to index against ``description.joints``.
     """
     v = np.asarray(values, dtype=np.float32).reshape(-1)
     base_idx = {name: i for i, name in enumerate(base_joints or [])}
@@ -116,27 +104,21 @@ def resolve_beam_range(
 ) -> float:
     """One lidar beam's range, with the robot's own body skipped by IDENTITY.
 
-    Pure: the PhysX scene-query is the ``raycast_closest(start, dir, span)``
-    callable passed in, so the walk is testable without a Kit app. It returns
-    Isaac's dict (``hit`` / ``distance`` / ``rigidBody``) or a falsy value.
+    Pure: ``raycast_closest(start, dir, span)`` is a PhysX scene-query callable,
+    so the walk is testable without a Kit app. Returns Isaac's hit dict
+    (``hit``/``distance``/``rigidBody``) or a falsy value.
 
-    The beam starts ``range_min_m`` out — the SENSOR's minimum, nothing more —
-    and is walked outward. Any hit whose ``rigidBody`` prim is under ``/panda``
-    is the robot itself (the manifest robot imports as one articulation there),
-    so the beam is re-cast from just past it and reports the real obstacle
-    BEHIND the robot. Same resolution as
-    ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` on the MuJoCo
-    side, where the comparison is ``model.body_rootid`` instead of a prim path.
+    The beam starts at ``range_min_m`` (the sensor's own minimum) and walks
+    outward; a hit whose ``rigidBody`` prim is under ``/panda`` is the robot
+    itself, so the beam re-casts from just past it — same resolution as
+    ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` (which compares
+    ``model.body_rootid`` instead of a prim path). #194: ``range_min_m`` was
+    lowered from chassis-sized (panda_mobile: 0.55 m vs 0.43 m circumscribed
+    radius) to the sensor minimum, so self-hits must be skipped by identity
+    rather than assumed clear.
 
-    This used to lean on ``range_min_m`` itself being chassis-sized — panda_mobile
-    declared 0.55 m against a 0.43 m circumscribed radius — and reported
-    ``range_max_m``, i.e. "clear all the way out", for a beam that hit the robot
-    anyway. #194 lowered that field to the sensor minimum because it was also
-    deleting every real obstacle inside 0.55 m, which would have made that
-    fail-open branch fire on every beam.
-
-    Returns ``range_max_m`` for a miss, for an out-of-range hit, and for a beam
-    still on the robot after ``_SCAN_MAX_SELF_SKIPS`` layers.
+    Returns ``range_max_m`` for a miss, an out-of-range hit, or a beam still on
+    the robot after ``_SCAN_MAX_SELF_SKIPS`` layers.
 
     Example:
         >>> def cast(start, _dir, span):  # a wall 3 m out, nothing else
@@ -207,13 +189,12 @@ class IsaacManifestScene(IsaacSceneBase):
             )
         )
 
-        # Kinematic planar base: the arm is imported
-        # fix_base=True (pinned) and the whole articulation root is teleported each
-        # step from an integrated (x, y, yaw) pose driven by the action's last 3
-        # base-twist channels (vx, vy, wyaw, base frame). No PhysX base joints.
-        # The base integrates by the BODY_TWIST command interval (one env.step =
-        # one /cmd_vel command), NOT the physics dt — so a velocity command moves
-        # the base v·dt per step, matching SimAttachedHAL's body_twist_dt_s.
+        # Kinematic planar base: the arm imports fix_base=True (pinned) and the
+        # whole articulation root is teleported each step from an integrated
+        # (x, y, yaw) pose driven by the action's last 3 base-twist channels
+        # (vx, vy, wyaw, base frame) — no PhysX base joints. Integrated by the
+        # BODY_TWIST command interval (one env.step = one /cmd_vel command), not
+        # the physics dt, matching SimAttachedHAL's body_twist_dt_s.
         self._base_pose = [0.0, 0.0, 0.0]  # world x, y, yaw
         self._mount_z = float(robot_spec.get("mount_z", 0.0))
         self._base_dt = float(action.get("body_twist_dt_s", 0.05))
@@ -382,26 +363,11 @@ class IsaacManifestScene(IsaacSceneBase):
     def _scan_ranges(self) -> NDArray[np.float32] | None:
         """A 2-D LaserScan range fan via PhysX raycasts from the base.
 
-        ``n_channels`` beams from ``angle_min=-π`` to ``angle_max=+π`` (the
-        bridge's convention) in the **base_link** frame, rotated to world by the
-        base yaw. Each ray starts ``range_min_m`` out along the beam — the
-        SENSOR's minimum, nothing more — and is cast for
-        ``range_max_m - range_min_m``; the reported range is the distance from
-        the base origin. A miss or an out-of-range beam reads ``range_max_m``.
-        ``None`` when the manifest declares no lidar — never a fabricated scan.
-
-        **Self-exclusion is by identity, not by distance.** This used to lean on
-        ``range_min_m`` being chassis-sized (panda_mobile's was 0.55 m) to start
-        the ray past the robot's own body, and reported ``range_max_m`` — i.e.
-        "clear all the way out" — for the beams that hit the robot anyway. Once
-        #194 lowered that field to the sensor minimum the rays start inside the
-        chassis, so the fail-open branch would have been every beam. A robot hit
-        is now skipped and the beam RE-CAST from just past it, so it reports the
-        real obstacle behind the robot — the same resolution
-        ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` uses on the
-        MuJoCo side, where the comparison is ``body_rootid`` instead of a prim
-        path. A beam that is still on the robot after ``_SCAN_MAX_SELF_SKIPS``
-        reads ``range_max_m``.
+        ``n_channels`` beams over ``[-π, π]`` (bridge convention) in the
+        base_link frame, rotated to world by base yaw; each ray starts at
+        ``range_min_m``. Self-hits (the robot's own body) are skipped by
+        identity per beam — see :func:`resolve_beam_range` for the resolution
+        and the #194 rationale. ``None`` when the manifest declares no lidar.
         """
         if self._scan_query is None or self._lidar is None:
             return None

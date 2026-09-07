@@ -1,34 +1,24 @@
 """Boot the LocateAnything-3B inference server in an isolated sidecar venv.
 
-``nvidia/LocateAnything-3B`` ships ``trust_remote_code`` modeling files written
-against ``transformers==4.57.1`` (see the model card / the nvidia/LocateAnything
-Space ``requirements.txt``). The openral runtime is ``transformers>=5`` and
-Python 3.12-only (CLAUDE.md §3); transformers 5.x removed/renamed the APIs the
-model's custom code calls (``config.rope_theta``, the GenerationMixin
-inheritance, ``_check_and_adjust_attn_implementation`` signature), so the model
-cannot load in the runtime venv. We therefore run it out-of-process in its own
-venv and talk to it from the
+``nvidia/LocateAnything-3B`` ships ``trust_remote_code`` modeling files pinned
+to ``transformers==4.57.1``; the openral runtime is ``transformers>=5``
+(Python 3.12-only, CLAUDE.md §3), which removed/renamed APIs the model's
+custom code calls (``config.rope_theta``, GenerationMixin inheritance,
+``_check_and_adjust_attn_implementation``). It therefore runs out-of-process,
+talking to
 :class:`openral_runner.backends.gstreamer.locateanything_detector.LocateAnythingDetector`
-backend over ZMQ REQ/REP + msgpack — the same pattern as
-:mod:`tools.rldx_sidecar`.
-
-Unlike RLDX-1, there is no upstream repo to clone: the model is custom-code on
-the Hub, so the sidecar only needs a venv with the pinned dependencies plus the
-thin server in :mod:`tools._locateanything_server`.
+over ZMQ REQ/REP + msgpack (same pattern as :mod:`tools.rldx_sidecar`). No
+upstream repo to clone — the model is custom-code on the Hub — so the sidecar
+is just the pinned venv plus the thin server in
+:mod:`tools._locateanything_server`.
 
 Usage::
 
     python tools/locateanything_sidecar.py --port 5757
 
-The script blocks and forwards signals; SIGINT cleanly stops the server.
-
-CLAUDE.md compliance:
-* The sidecar is a real subprocess running real upstream model code — no mocks
-  (§1.11). The openral-side wire protocol is a real ZMQ client.
-* Version isolation is the only safe bridge between transformers 4.57.1
-  (LocateAnything) and transformers 5.x (openral runtime); see §3.
-* ``nvidia/LocateAnything-3B`` weights are NVIDIA non-commercial; the license
-  guard is enforced upstream in the ``RSkillManifest`` loader, not here.
+Real subprocess, no mocks (§1.11); version isolation bridges transformers
+4.57.1 and 5.x (§3). Weights are NVIDIA non-commercial; the license guard is
+enforced upstream in the ``RSkillManifest`` loader, not here.
 """
 
 from __future__ import annotations
@@ -64,20 +54,16 @@ _NVRTC_OVERRIDE = (
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """Return the sidecar venv python, creating + populating it if needed.
 
-    ``override`` (or ``$OPENRAL_LOCATEANYTHING_SIDECAR_VENV``) points at an
-    existing venv to reuse instead of provisioning one under ``home`` — handy
-    for development against an already-built ``transformers==4.57.1`` env.
-    Otherwise a Python 3.12 venv is provisioned from the hash-locked
-    ``locateanything.lock`` so the env is reproducible (CLAUDE.md §1.8).
+    ``override`` (or ``$OPENRAL_LOCATEANYTHING_SIDECAR_VENV``) reuses an
+    existing venv instead of provisioning one under ``home``. Otherwise
+    provisions Python 3.12 from the hash-locked ``locateanything.lock``
+    (CLAUDE.md §1.8).
     """
 
     def _install(uv: str, py: Path) -> None:
-        # ``-r <lock>`` installs the pinned, hash-bearing lock (uv verifies the
-        # recorded hashes); we deliberately do NOT pass ``--require-hashes`` —
-        # the cu128 torch wheels surface a marker-only transitive (torchcodec)
-        # that uv's compile drops, which --require-hashes rejects even though it
-        # is never installed on this platform. Pinned versions still give the
-        # reproducibility we want (CLAUDE.md §1.8).
+        # No --require-hashes: cu128 torch wheels surface a marker-only
+        # transitive (torchcodec) the lock drops, which --require-hashes
+        # would reject even though it's never installed here.
         run_cmd(
             "la-sidecar",
             [

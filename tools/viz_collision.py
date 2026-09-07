@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Visualise a robot's *kernel* collision primitives on top of its real meshes.
 
-Overlays the exact box/capsule geometry the C++ safety kernel checks (lowered by
-``collision_params_from_description``) onto the robot's MJCF meshes, at any joint
-pose. Semi-transparent so you can see the primitive fit — this is how you eyeball
-whether the SO-101 ``base`` OBB (box/OBB collision primitive, issue #84) hugs the housing and
-clears the folded distal links, without a `deploy run`.
-
-This is a standalone inspection tool, NOT a pytest test (tests stay headless for
-CI). Two modes:
+Overlays the exact box/capsule geometry the C++ safety kernel checks
+(``collision_params_from_description``) onto the MJCF meshes at any joint
+pose, semi-transparent — e.g. to eyeball whether the SO-101 ``base`` OBB
+(issue #84) hugs the housing and clears the folded distal links, without a
+`deploy run`. Standalone inspection tool, NOT a pytest test.
 
     # interactive MuJoCo window (needs a display)
     python tools/viz_collision.py --robot so101_follower --viewer
@@ -16,19 +13,19 @@ CI). Two modes:
     # offscreen screenshot (headless-safe)
     python tools/viz_collision.py --robot so101_follower --screenshot /tmp/so101.png
 
-    # inspect a specific folded pose (degrees, manifest joint order)
+    # specific folded pose (degrees, manifest joint order)
     python tools/viz_collision.py --robot so101_follower --deg 0 -60 90 0 0 0 --screenshot /tmp/fold.png
 
     # real RViz (RobotModel + TF + collision MarkerArray) — needs ROS sourced
     python tools/viz_collision.py --robot so101_follower --rviz --deg 0 -75 100 40 0 0
 
-IMPORTANT — env. ``openral_core`` lives in the worktree venv and ``openral_safety``
-is a ROS package, so run the VENV python with the safety package on the path:
+Env: ``openral_core`` is in the worktree venv, ``openral_safety`` is a ROS
+package — run the venv python with it on the path:
 
     PYTHONPATH=packages/openral_safety MUJOCO_GL=glfw \\
       .venv/bin/python tools/viz_collision.py --robot so101_follower --viewer
 
-Use ``MUJOCO_GL=egl`` for ``--screenshot`` (offscreen). For ``--rviz`` also
+``MUJOCO_GL=egl`` for ``--screenshot``; ``--rviz`` also needs
 ``source /opt/ros/jazzy/setup.bash`` first (rclpy / rviz2 / robot_state_publisher).
 """
 

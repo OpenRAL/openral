@@ -1,51 +1,31 @@
 #!/usr/bin/env bash
 #
-# OpenRAL — Tier-0 curl-bash installer .
+# OpenRAL — Tier-0 curl-bash installer.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/OpenRAL/openral/master/scripts/install.sh | bash
 #
-# What this does (Tier-0 only — no sudo, no apt, no GPU, no ROS 2):
-#   1. Detect OS / arch / shell.
-#   2. Install `uv` if missing (the astral.sh installer; user-local).
-#   3. Install CPython 3.12 via `uv python install 3.12`  (user-local).
-#   4. `uv tool install --python 3.12 openral-cli`        — drops `openral`
-#                                                            into ~/.local/bin/.
-#   5. Print PATH instructions if ~/.local/bin is not on $PATH.
-#   6. Print the "next steps" menu for the heavier opt-in groups
-#      (`openral install sim|libero|metaworld|ros|…`).
+# Tier-0 only (no sudo, no apt, no GPU, no ROS 2): detects OS/arch, installs
+# `uv` (astral.sh installer) and CPython 3.12 (both user-local), then
+# `uv tool install --python 3.12 openral-cli` into ~/.local/bin/, prints PATH
+# guidance and the opt-in-groups menu. Does NOT install ROS 2, MuJoCo/LIBERO/
+# RoboCasa, or NVIDIA drivers/CUDA (use `openral install <group>` instead);
+# refuses to run as root (CLAUDE.md §4).
 #
-# What this DOES NOT do (by design — see CLAUDE.md §4):
-#   - Install ROS 2 (sudo + apt).            Use: openral install ros
-#   - Install MuJoCo / LIBERO / RoboCasa.    Use: openral install sim|libero|robocasa
-#   - Install NVIDIA drivers / CUDA.         Out of scope.
-#   - Run as root.                            Refused.
-#
-# Environment knobs:
+# Env:
 #   OPENRAL_INSTALL_SOURCE   pypi (default) | git+https://github.com/OpenRAL/openral
-#   OPENRAL_INSTALL_VERSION  PyPI version specifier (default: empty → latest).
-#   OPENRAL_INSTALL_INDEX    extra package index, appended as uv
-#                            `--extra-index-url`. For a clean alternate index
-#                            (private devpi, or real PyPI) `openral-*` resolve
-#                            from here while deps come from PyPI.
-#                            CAVEAT: TestPyPI (test.pypi.org) does NOT resolve
-#                            cleanly — it hosts placeholder builds of common
-#                            deps (e.g. rich==0.0.0, fastapi==1.0) and uv's
-#                            default first-index guard won't fall through to
-#                            PyPI for them (`--index-strategy unsafe-best-match`
-#                            then pulls the broken placeholders instead). Use
-#                            TestPyPI to verify a *publish*, not a full install.
-#   OPENRAL_TORCH_BACKEND    PyTorch wheel backend (default: cpu). Tier-0 is the
-#                            CPU harness (doctor / detect / connect / CPU sim),
-#                            so the base install takes CPU-only torch — ~1.6 GB
-#                            instead of the ~5-6 GB CUDA stack, and no NVIDIA
-#                            wheels. GPU inference is a heavier opt-in: set
-#                            `auto` (uv detects the installed CUDA driver) or a
-#                            specific `cu128` / `cu130` / … to pull CUDA torch
-#                            into the base venv. Set empty to skip the flag and
-#                            take uv's default (PyPI's manylinux CUDA wheels).
-#                            `openral doctor` reports the GPU either way (it
-#                            probes via NVML, not torch).
+#   OPENRAL_INSTALL_VERSION  PyPI version specifier (default: latest)
+#   OPENRAL_INSTALL_INDEX    extra `--extra-index-url` for openral-* (deps
+#                            still come from PyPI). TestPyPI does NOT resolve
+#                            cleanly — it hosts placeholder deps (e.g.
+#                            rich==0.0.0) that `--index-strategy
+#                            unsafe-best-match` would pull in; use it to
+#                            verify a publish, not a full install.
+#   OPENRAL_TORCH_BACKEND    default cpu (~1.6 GB, no NVIDIA wheels) vs the
+#                            ~5-6 GB CUDA stack. `auto` detects the installed
+#                            driver, or set cu128/cu130/etc.; empty skips the
+#                            flag (uv's default). `openral doctor` probes GPU
+#                            via NVML regardless of this setting.
 #   OPENRAL_INSTALL_DEBUG    1 → set -x.
 
 set -euo pipefail
@@ -121,23 +101,16 @@ case "${OPENRAL_INSTALL_SOURCE}" in
         ;;
 esac
 
-# Optional extra index (e.g. TestPyPI). uv's default first-index strategy
-# resolves `openral-*` from this index while third-party deps still come from
-# real PyPI, since the openral names are absent from PyPI until the namespace
-# lands. Empty-array expansion is written `${arr[@]+"${arr[@]}"}` so it is
-# safe under `set -u` on bash 3.2 (macOS).
+# See OPENRAL_INSTALL_INDEX above. `${arr[@]+"${arr[@]}"}` is the
+# bash-3.2-safe (macOS) empty-array expansion under `set -u`.
 extra_index_args=()
 if [[ -n "${OPENRAL_INSTALL_INDEX:-}" ]]; then
     info "extra index: ${OPENRAL_INSTALL_INDEX}"
     extra_index_args=(--extra-index-url "${OPENRAL_INSTALL_INDEX}")
 fi
 
-# PyTorch backend selection. openral-cli's dependency chain pulls torch, which
-# defaults to PyPI's ~5-6 GB CUDA wheel + NVIDIA cu12/cu13 stack even on a
-# GPU-less host. Tier-0 is the CPU harness, so default to CPU-only torch
-# (~1.6 GB, zero NVIDIA wheels). GPU users opt in with OPENRAL_TORCH_BACKEND=auto
-# (uv detects the CUDA driver) or an explicit cuXXX. Same bash-3.2-safe empty
-# expansion as extra_index_args; an empty knob skips the flag.
+# See OPENRAL_TORCH_BACKEND above; same bash-3.2-safe empty expansion as
+# extra_index_args.
 OPENRAL_TORCH_BACKEND="${OPENRAL_TORCH_BACKEND-cpu}"
 torch_backend_args=()
 if [[ -n "${OPENRAL_TORCH_BACKEND}" ]]; then
@@ -154,11 +127,9 @@ uv tool install --force --python 3.12 \
 
 # ── 3b. just (user-local task runner) ──────────────────────────────────────────
 
-# `just` is the repo's task runner and shows up in every doc snippet, so a
-# Tier-0 host that later clones the repo needs it. It installs user-local via
-# uv (the `rust-just` PyPI wheel) — no sudo, unlike the /usr/local/bin install
-# the system bootstrap does. Non-fatal: a failure here must not sink the CLI
-# install, which is what the user actually asked for.
+# `just` (task runner, used in every doc snippet) installs user-local via uv
+# (`rust-just` wheel) — no sudo, unlike the system bootstrap's /usr/local/bin
+# install. Non-fatal: must not sink the CLI install the user actually asked for.
 if ! command -v just >/dev/null 2>&1; then
     info "installing just (uv tool install rust-just)"
     uv tool install rust-just || warn "could not install just — \`openral\` itself is unaffected."

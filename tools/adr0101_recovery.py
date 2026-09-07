@@ -1,51 +1,34 @@
 """How many payload stops would a modeled static fixture have recovered?
 
-[ADR-0101](../docs/decisions.md) proposes publishing the exact primitives of the
-static world bodies nearest a carried payload and adjudicating the payload
-against *those* instead of against the occupancy cells that represent the same
-surfaces. Its headline number — **48 of 51 payload-vs-``voxel_`` stops (94 %)
-recovered** — was computed offline, by hand, and never had a producer in the
-repo. That is exactly the shape of claim `docs/reference/collision-validation-
-evidence.md` exists to prevent, so this is that producer.
+[ADR-0101](../docs/decisions.md) proposes adjudicating a carried payload
+against the exact primitives of the nearest static world bodies instead of
+the occupancy cells that represent the same surfaces. Its headline number —
+**48 of 51 payload-vs-``voxel_`` stops (94%) recovered** — had no producer in
+the repo; this is that producer (see `docs/reference/collision-validation-
+evidence.md`). A stop is "recovered" if the probe's certified payload-to-real-
+body distance at the moment of the stop is > 0.
 
-**The question it answers, and why it is answerable at all.** For a stop where
-the carried payload trips against an anonymous cell, "would a modeled fixture
-have let this through?" is the same question as "was the payload certifiably
-clear of the real surface at that moment?" — because the modeled fixture *is*
-that real surface, at mesh resolution. The battery already records both halves
-of that: the kernel's reported depth, and the probe's certified distance from
-the tripping party to the nearest real body. So the counterfactual needs no
-code in the kernel and no layer crossing to evaluate; it is a re-reading of
-records already on disk.
+Not claimed: a stop removed mid-carry is a run that continues, not a
+completion — the ceiling run bounds completion separately at 29 points. The
+minimum recovered clearance matters as much as the median (ADR-0101's
+suppression-off first landing rests on it).
 
-**What it deliberately does not claim.** A stop removed mid-carry is a run that
-*continues*, not a run that succeeds, so none of this converts into completion
-points — the ceiling run bounds that separately at 29 points. And the minimum
-recovered clearance is the number that matters as much as the median: at a
-fraction of a millimetre, the mechanism's own modelling error is the whole
-budget, which is the argument for ADR-0101's suppression-off first landing.
+A stop counts only when all of:
 
-Selection is deliberately narrow, and every exclusion is reported rather than
-silently dropped, because a recovery rate computed over a quietly-filtered
-denominator is worthless. A stop counts only when all of:
-
-* it is a **world** stop (``kind == "world"``) — self stops are a different
-  mechanism and ADR-0101 does not touch them;
-* the tripping party is the **carried payload** (``party_a`` is
-  ``attached:<id>``) — the link half is Entry 026's business;
-* the other party is an **anonymous cell** (``party_b`` is ``voxel_<n>``) — a
-  stop already naming a real body is not one the cubes caused;
+* it is a **world** stop (``kind == "world"``) — self stops are Entry 026's;
+* the tripping party is the **carried payload** (``party_a`` = ``attached:<id>``);
+* the other party is an **anonymous cell** (``party_b`` = ``voxel_<n>``);
 * the probe **certified** its distances (``probe_distance_certified``) and
-  produced ``nearest_tripping_party_m``. An uncertified or truncated probe is
-  counted as ``excluded``, never as a recovery.
+  produced ``nearest_tripping_party_m``. Uncertified/truncated -> ``excluded``,
+  never a recovery.
 
 Run::
 
     uv run python tools/adr0101_recovery.py outputs/validation-matrix/<round>...
     uv run python tools/adr0101_recovery.py --json outputs/validation-matrix/*
 
-Reads recorded artifacts only — pure, offline, no GPU, no simulator. Stdlib
-only, like ``tools/round_power.py``.
+Pure, offline, stdlib-only (like ``tools/round_power.py``) — reads recorded
+artifacts, no GPU or simulator.
 """
 
 from __future__ import annotations
@@ -103,21 +86,16 @@ UNATTRIBUTED: Final[str] = "<unattributed>"
 def fixture_at_stop(scene_dir: Path, certified_gap_m: float) -> str:
     """Name the world body the payload was nearest, for the by-fixture table.
 
-    **Not** ``ground_truth.nearest_pair``. That field records the closest probed
-    pair *of any kind*, which for a carried payload is routinely two robot links
-    — on the round this was written against it read ``robot0_link3`` vs
-    ``robot0_link4`` at −36 mm while the payload itself sat 24.9 mm clear of a
-    counter. Attributing the stop to ``robot0_link4`` would have put a robot link
-    in a table of kitchen fixtures, so the body has to come from the probe's
-    **payload-vs-world** pair list, which only the raw
-    ``sim.estop_ground_truth_snapshot`` line carries.
+    Not ``ground_truth.nearest_pair`` — that is the closest probed pair of ANY
+    kind (often two robot links: one round read ``robot0_link3``/``link4`` at
+    -36 mm while the payload sat 24.9 mm clear of a counter). The body must
+    come from the probe's payload-vs-world pair list in the raw
+    ``sim.estop_ground_truth_snapshot`` line instead.
 
-    The match is verified rather than assumed: the minimum certified distance in
-    that list must equal the ``nearest_tripping_party_m`` this stop was
-    adjudicated on. Both are the same probe call, so they agree exactly; if they
-    do not, the snapshot is describing some other stop and the honest answer is
-    no attribution at all. The recovery *count* never depends on this — only the
-    breakdown does.
+    Verified, not assumed: the list's minimum certified distance must equal
+    this stop's ``nearest_tripping_party_m`` (same probe call), else the
+    attribution is ``UNATTRIBUTED``. Only the by-fixture breakdown depends on
+    this — the recovery count does not.
     """
     log_path = scene_dir / "run_deploy.log"
     if not log_path.is_file():

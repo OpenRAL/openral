@@ -2,23 +2,19 @@
 # Preflight for `just ros2-build`: fail early, and legibly, when the ROS 2
 # apt dependencies the colcon graph needs are not installed.
 #
-# Without this the build runs for ~45 s, dies inside CMake on the first
-# package whose find_package() misses, and aborts every remaining package —
-# so the operator sees a wall of "Aborted <<< openral_hal_*" with the single
-# real cause (one missing apt package) buried in a per-package log file:
-#
+# Without this the build runs ~45s, dies in CMake on the first missing
+# find_package(), and aborts every remaining package -- a wall of
+# "Aborted <<< openral_hal_*" burying the one real cause, e.g.:
 #   CMake Error at CMakeLists.txt:20 (find_package):
 #     Could not find a package configuration file provided by "octomap_msgs"
 #
-# The required set is DERIVED from the package.xml files rather than
-# hardcoded, so it stays correct as packages come and go. In-tree packages
-# (anything declaring its own <name> under packages/ or cpp/) are excluded,
-# as are non-ament apt deps that resolve to system libraries or Python
-# distributions rather than an ament share directory.
+# The required set is DERIVED from package.xml files, not hardcoded, so it
+# stays correct as packages change. Excludes in-tree packages (declaring
+# their own <name> under packages/ or cpp/) and non-ament apt deps that
+# resolve to system libraries or Python distributions.
 #
-# Advisory by default: exits 0 with a warning so an operator who knows a
-# given package is unnecessary for their build can proceed. Set
-# OPENRAL_ROS_DEPS_STRICT=1 to make missing deps a hard failure.
+# Advisory by default: exits 0 with a warning. Set OPENRAL_ROS_DEPS_STRICT=1
+# to make missing deps a hard failure.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

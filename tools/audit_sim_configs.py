@@ -1,25 +1,11 @@
 """Real GPU rollout audit for every (scene x rSkill) combination under ``scenes/``.
 
-Per CLAUDE.md §1.11–§1.12: no smoke tests, no ``--dry-run``. Each catalogue
-entry is launched through the matching tier-aware CLI (``openral sim run``
-for SimScene-tier entries, ``openral benchmark scene`` for BenchmarkScene-tier
-entries, ``openral deploy sim`` for DeployScene-tier entries) for one real
-episode (sim/benchmark) or one full ROS-graph launch + graceful SIGINT
-teardown (deploy), and the outcome is classified from the exit code +
-stderr tail. Result is written as a JSON report and printed as a Markdown
-table that the operator can paste into a PR.
-
-Two modes:
-
-* **Default (full rollout / launch).** Tier 3 for sim+benchmark scenes;
-  Tier 2 (launch + ``--alive-grace`` seconds + SIGINT) for deploy scenes.
-  Expensive — 30 s – 10 min per row depending on the VLA + asset cold-cache.
-* **``--check-compatibility``.** In-process gate. For sim/benchmark rows it
-  loads the scene via :func:`openral_core.load_scene_strict` *and* validates
-  the rSkill manifest via :class:`openral_core.RSkillManifest`; for deploy
-  rows it loads the scene + asserts ``robot_id`` resolves to a HAL entry in
-  ``openral_cli.deploy_sim._ROBOT_HAL_REGISTRY``. Cheap — single-digit
-  seconds per row, no GPU, no subprocess.
+Launches each catalogue entry through its tier CLI (``openral sim run`` /
+``openral benchmark scene`` / ``openral deploy sim``) for one real episode or
+a full ROS-graph launch + SIGINT teardown, classifies the outcome from exit
+code + stderr tail, and writes a JSON report + Markdown table. Default mode
+does a full rollout (30 s-10 min/row); ``--check-compatibility`` is a cheap
+in-process schema/manifest/HAL-registry check only (no subprocess, no GPU).
 
 Usage::
 
@@ -27,10 +13,9 @@ Usage::
     uv run python tools/audit_sim_configs.py --check-compatibility    # cheap gate
     uv run python tools/audit_sim_configs.py libero_spatial pusht     # narrow by stem
 
-This is operator-driven, not a pytest test — full rollouts at 30 s – 10 min
-each don't belong in ``just test``. The companion fast check lives in
-``tests/unit/test_examples_sim_configs_load.py``, which only asserts that
-every YAML *loads* as its tier's typed schema (no rollout).
+Operator-driven (CLAUDE.md §1.11-§1.12: no smoke tests, no --dry-run), not a
+pytest test — the fast schema-only check is
+``tests/unit/test_examples_sim_configs_load.py``.
 """
 
 from __future__ import annotations
@@ -65,25 +50,19 @@ RunMode = Literal["sim", "benchmark", "deploy"]
 class ConfigSpec:
     """One row in the audit catalogue.
 
-    ``config`` is the YAML's path relative to the repo root.
-    ``rskill`` is the bare rSkill reference (name or path). Empty string for
-    ``run_mode == "deploy"`` — DeployScenes are env-only and the reasoner
-    picks the rSkill at runtime; the audit therefore tests the launch +
-    teardown contract, not a specific policy.
-    ``uv_group`` selects the uv dependency group (``libero``, ``metaworld``,
-    ``robocasa``, ``maniskill3``, ``simpler-env``, or ``sim`` for the default).
-    ``run_mode`` is ``"sim"`` for ``scenes/sim/*.yaml`` (driven by
-    ``openral sim run``), ``"benchmark"`` for ``scenes/benchmark/*.yaml``
-    (driven by ``openral benchmark scene --no-update-manifest --n-episodes 1``;
-    a demo-grade run, not a paper-comparable claim), or
-    ``"deploy"`` for ``scenes/deploy/*.yaml`` (driven by ``openral deploy sim``
-    + ``--alive-grace`` seconds of soak + SIGINT graceful teardown).
+    Attributes:
+        config: YAML path relative to the repo root.
+        rskill: Bare rSkill reference (name/path); empty for ``run_mode ==
+            "deploy"`` (env-only — the reasoner picks the rSkill at runtime).
+        uv_group: uv dependency group (``libero``, ``metaworld``, ``robocasa``,
+            ``maniskill3``, ``simpler-env``, or ``sim``).
+        run_mode: ``"sim"`` (``openral sim run``), ``"benchmark"`` (``openral
+            benchmark scene --no-update-manifest --n-episodes 1``, demo-grade),
+            or ``"deploy"`` (``openral deploy sim`` + ``--alive-grace`` soak +
+            SIGINT teardown).
 
-    The catalogue holds only scene×rSkill pairs that actually exist in
-    the tree — scenes without a matching in-tree rSkill are tracked in
-    the scene YAML itself (and in
-    ``tests/unit/test_examples_sim_configs_load.py`` for schema-load
-    coverage), not as audit rows.
+    Only scene×rSkill pairs that exist in the tree; schema-load coverage for
+    every scene lives in ``tests/unit/test_examples_sim_configs_load.py``.
     """
 
     config: str
@@ -221,20 +200,16 @@ _OPT_DEP_PATTERNS: Final[tuple[str, ...]] = (
     "robocasa is not installed",
     "ModuleNotFoundError: No module named 'metaworld'",
     "ModuleNotFoundError: No module named 'robocasa'",
-    # The robocasa auto-install flow races with the package's own
-    # import probe; when the install runs to completion but the probe
-    # still fails the OpenRAL CLI emits this exact phrase and exits.
-    # Surface it as `host-setup` so the operator knows it's not a real
-    # config bug — it's a known robosuite/robocasa import-cache issue
-    # documented at the install site.
+    # robocasa auto-install races its own import probe: install completes but
+    # the probe still fails, and the CLI emits this exact phrase — a known
+    # robosuite/robocasa import-cache issue, not a config bug.
     "install ran to completion but the probe still fails",
 )
 _HOST_SETUP_PATTERNS: Final[tuple[str, ...]] = (
-    # `uv` reinstalls `hf-libero==0.1.3` during group switches and the
-    # distutils-installed egg-info from the prior install resists
-    # uninstall. The audit's per-call purge fixes the first occurrence
-    # but successive `uv group` swaps can recreate the .egg-info inside
-    # the same audit run. Treat as host-setup, not as a config failure.
+    # uv reinstalls hf-libero==0.1.3 on every group switch; the prior
+    # install's distutils egg-info resists uninstall. The per-call purge
+    # fixes the first hit, but repeated swaps (libero->robocasa->libero) can
+    # recreate it mid-run — host-setup, not a config failure.
     "Unable to uninstall `hf-libero",
     "distutils-installed distributions do not include the metadata",
 )
@@ -334,24 +309,15 @@ class _VramSampler:
 def _check_compat(spec: ConfigSpec) -> AuditRow:
     """Cheap in-process compatibility gate (``--check-compatibility``).
 
-    For sim/benchmark rows: load the YAML via
-    :func:`openral_core.load_scene_strict` (covers the bare-list
-    contract for benchmark rows and the SimScene contract for
-    sim rows), then validate the rSkill manifest via
-    :class:`openral_core.RSkillManifest` so a missing or schema-busted
-    ``rskill.yaml`` is caught before paying for env build.
+    Sim/benchmark rows: load the YAML via :func:`openral_core.load_scene_strict`,
+    then validate the rSkill manifest via :class:`openral_core.RSkillManifest`.
+    Deploy rows: load as :class:`openral_core.DeployScene` and assert
+    ``robot_id`` resolves in ``openral_cli.deploy_sim._ROBOT_HAL_REGISTRY``.
 
-    For deploy rows: load the YAML as :class:`openral_core.DeployScene` and
-    assert ``robot_id`` resolves to a HAL package registered in
-    ``openral_cli.deploy_sim._ROBOT_HAL_REGISTRY``. Catches the common
-    "scene references a robot that has no HAL twin" failure mode without
-    booting a ROS graph.
-
-    Returns an :class:`AuditRow` with ``status="pass-compat"`` on success
-    or ``"fail-compat"`` on any schema / lookup error.
-
-    No subprocess. No GPU. ``wall_s`` is the in-process cost (single-digit
-    seconds even with cold imports).
+    Returns:
+        An :class:`AuditRow` with ``status="pass-compat"`` on success or
+        ``"fail-compat"`` on any schema/lookup error. No subprocess, no GPU;
+        single-digit seconds even with cold imports.
     """
     started = time.monotonic()
     try:
@@ -486,23 +452,15 @@ def _run_one_deploy(
 ) -> AuditRow:
     """Tier-2 deploy launch: `openral deploy sim` → soak → SIGINT → graceful exit.
 
-    Mirrors the SIGINT / SIGKILL escalation that
-    ``openral_cli.deploy_sim._run_launch`` applies internally, but the
-    SIGINT is operator-driven here (after ``alive_grace_s`` seconds of
-    soak), not user-driven via Ctrl-C.
+    Mirrors the SIGINT/SIGKILL escalation in
+    ``openral_cli.deploy_sim._run_launch``, but operator-driven (SIGINT after
+    ``alive_grace_s``, not Ctrl-C).
 
-    Pass criteria: the launch survives the alive grace without crashing AND
-    exits cleanly on SIGINT within ``shutdown_grace_s`` AND the captured
-    log contains the `deploy sim` banner from
-    ``openral_cli.deploy_sim.deploy_sim_command`` (proves at least the CLI
-    resolution + invocation path ran).
-
-    Returncode interpretation: 0, 130 (=128+SIGINT, the Python convention),
-    -2 (signal.SIGINT as a negative exit code), and -15 (SIGTERM, in case
-    the launch's shutdown supervisor intercepts) are all "graceful". Any
-    other code while the proc was alive past the grace = fail-other.
-    Early exit (before alive grace) with non-zero = fail (classified by
-    tail patterns as usual).
+    Pass criteria: survives the alive grace, exits within ``shutdown_grace_s``
+    of SIGINT, and the log contains the `deploy sim` banner from
+    ``openral_cli.deploy_sim.deploy_sim_command``. Graceful exit codes: 0, 130
+    (128+SIGINT), -2, -15 (SIGTERM). Any other code past the grace is
+    fail-other; an early non-zero exit is classified via the tail patterns.
     """
     # Deploy rows switch uv groups too (libero → robocasa → libero); strip
     # the stale hf-libero egg-info first or `uv run --group libero` aborts
@@ -534,13 +492,10 @@ def _run_one_deploy(
     sampler = _VramSampler()
     sampler.start()
     started = time.monotonic()
-    # Drain the child's stdout/stderr to temp files rather than PIPEs.
-    # runtime_node logs at ~30 Hz; an undrained OS pipe (~64 KB) fills
-    # during the alive-grace soak, blocks the child's writers, and prevents
-    # them from reaching their SIGINT shutdown handlers — forcing a false
-    # fail-timeout SIGKILL. Files have no backpressure, so the graph tears
-    # down cleanly and we read the captured output back after exit for
-    # classification.
+    # Drain to temp files, not PIPEs: runtime_node logs at ~30 Hz and an
+    # undrained OS pipe (~64 KB) fills during the soak, blocking the child's
+    # writers before they reach their SIGINT handlers — false fail-timeout
+    # SIGKILL. Files have no backpressure; read back after exit.
     with (
         tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out_f,
         tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err_f,
@@ -563,8 +518,7 @@ def _run_one_deploy(
             shutdown_grace_s=shutdown_grace_s,
         )
 
-        # Process has fully exited — read the captured output back from the
-        # temp files (replaces the old post-exit proc.communicate()).
+        # Process has fully exited — read the captured output back.
         out_f.seek(0)
         err_f.seek(0)
         stdout = out_f.read()
@@ -617,12 +571,10 @@ def _soak_and_shutdown(
 ) -> tuple[int | None, int, float, int | None]:
     """Soak the deploy graph for the alive grace, then SIGINT → SIGKILL.
 
-    Returns ``(early_exit_code, returncode, wall_s, peak_vram)``. The
-    signal / timeout sequencing is unchanged from the original inline
-    body — only the output draining moved to the caller (temp files).
-    ``early_exit_code`` is the code if the proc exited before the alive
-    grace elapsed (``None`` if it survived the soak); ``returncode`` is
-    the final exit code in all cases.
+    Returns:
+        ``(early_exit_code, returncode, wall_s, peak_vram)``. ``early_exit_code``
+        is the code if the proc exited before the alive grace elapsed (``None``
+        if it survived the soak); ``returncode`` is the final exit code.
     """
     early_exit_code: int | None = None
     returncode: int
@@ -681,19 +633,13 @@ def _classify_or_fallback(
 def _purge_hf_libero_egg(spec: ConfigSpec) -> None:
     """Strip the stale ``hf_libero-*.egg-info`` before a libero-group call.
 
-    uv re-installs ``hf-libero`` whenever it switches dependency groups,
-    which repeatedly re-creates the duplicate egg-info that the
-    ``_strip-hf-libero-egg`` Justfile recipe purges. Purge before every
-    libero call, not just once at audit start, otherwise the second
-    round-trip (e.g. libero → robocasa → libero) fails with
-    "Unable to uninstall hf-libero==0.1.3: distutils-installed
+    uv re-creates the duplicate egg-info (that ``_strip-hf-libero-egg``
+    purges) on every group switch, so purge before each libero call, not
+    just once — otherwise a round-trip like libero → robocasa → libero fails
+    with "Unable to uninstall hf-libero==0.1.3: distutils-installed
     distributions do not include the metadata required to uninstall safely".
-
-    The egg-info appears in two forms across uv/distutils versions: a
-    directory (older setuptools editable layout) and a flat file (the
-    distutils-installed manifest uv cannot uninstall). Remove both —
-    ``shutil.rmtree`` alone misses the file form, which is exactly the one
-    that triggers the uv error.
+    Removes both forms: the directory (setuptools editable layout) and the
+    flat file (distutils manifest) — only the file form triggers the error.
     """
     if spec.uv_group != "libero":
         return

@@ -1,17 +1,13 @@
 """Qwen3.5-4B scene-VLM inference server — runs INSIDE the isolated sidecar venv.
 
-Exec'd by :mod:`tools.qwen_vlm_sidecar` inside the sidecar virtualenv (see that
-file for *why* the model runs out-of-process). It loads the NF4
-bitsandbytes-quantized model once and answers open-ended scene questions over a
-ZMQ REP socket using msgpack frames.
-
-It is deliberately **thin**: it returns the model's generated answer text
-verbatim. The main-env backend
+Exec'd by :mod:`tools.qwen_vlm_sidecar` (see that file for why out-of-process).
+Loads the NF4 bitsandbytes-quantized model once and answers scene questions
+over ZMQ REP + msgpack. Deliberately thin: returns the model's answer text
+verbatim; the main-env backend
 (:mod:`openral_runner.backends.gstreamer.qwen_scene_vlm`) only strips
-whitespace, so the protocol stays trivially unit-testable without a GPU or this
-venv.
+whitespace, keeping the protocol unit-testable without a GPU.
 
-Wire protocol (msgpack dict in, msgpack dict out, ZMQ REQ/REP):
+Wire protocol (msgpack dict in/out, ZMQ REQ/REP):
 
     {"op": "ping"}                                  -> {"ok": True, "model": <id>}
     {"op": "query", "image": <png/jpeg bytes>,
@@ -19,13 +15,10 @@ Wire protocol (msgpack dict in, msgpack dict out, ZMQ REQ/REP):
      "max_side": 1024, "max_new_tokens": 256}       -> {"ok": True, "answer": <str>}
     {"op": "shutdown"}                              -> {"ok": True}
 
-On any exception the reply is ``{"ok": False, "error": <str>}``.
+On any exception: ``{"ok": False, "error": <str>}``.
 
-Real upstream model code (no mocks, CLAUDE.md §1.11). The exact processor /
-generate entrypoints below follow the canonical Qwen-VL transformers recipe;
-they are validated for real by the GPU-gated end-to-end test
-(``tests/sim/test_qwen_scene_vlm_e2e.py``), which the operator runs once against
-a provisioned sidecar venv — not asserted blind here (CLAUDE.md §1.2).
+Real upstream model code, no mocks (§1.11); validated by the GPU-gated
+``tests/sim/test_qwen_scene_vlm_e2e.py``, not asserted blind here (§1.2).
 """
 
 from __future__ import annotations
@@ -37,19 +30,14 @@ import os
 import sys
 import time
 
-# Reduce CUDA allocator fragmentation during the NF4 load on tight (8 GB) GPUs —
+# Reduce CUDA allocator fragmentation for the NF4 load on tight (8 GB) GPUs —
 # transformers 5.x's parallel tensor loader spikes VRAM before bitsandbytes
-# quantizes, and the recommended mitigation is expandable segments. Must be set
-# before torch initializes its CUDA caching allocator.
-#
-# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
-# and warns whenever the old spelling is present, so pick the one this venv's
-# torch reads. Resolved from installed metadata rather than `import torch`,
-# which must not happen before the var is set. The boot helper's
-# `make_isolated_env` normally sets this already; the duplicated rule is what
-# keeps `python tools/_qwen_vlm_server.py` correct when run directly, and the
-# logic cannot be shared because this module runs in the sidecar venv with no
-# `openral_*` on the path.
+# quantizes. Must be set before torch initializes its CUDA allocator, so the
+# version is read from installed metadata rather than `import torch`. torch
+# renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF) and
+# warns on the old spelling. `make_isolated_env` (the boot helper) usually
+# sets this already; duplicated here so running this file directly is still
+# correct — this module has no `openral_*` on the path to share the logic.
 if (_v := importlib.metadata.version("torch").split(".")[:2]) and tuple(map(int, _v)) >= (2, 9):
     os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 else:
@@ -72,18 +60,14 @@ def _load(model_id: str) -> tuple[object, object]:
     """Load the processor and the NF4 model on the GPU.
 
     ``Qwen/Qwen3.5-4B`` registers as ``Qwen3_5ForConditionalGeneration``
-    (model_type ``qwen3_5``), the image-text-to-text auto class in
-    transformers 5.x — hence ``AutoModelForImageTextToText``.
+    (model_type ``qwen3_5``) — ``AutoModelForImageTextToText`` in
+    transformers 5.x.
 
-    Two load paths, auto-selected by whether ``model_id`` is already quantized:
-
-    * **Pre-quantized** (e.g. ``OpenRAL/rskill-qwen35_4b-any-general-nf4``, whose config
-      embeds a bitsandbytes ``quantization_config``): the 4-bit weights load
-      directly (~3.3 GB) with no bf16 spike — the clean path for an 8 GB GPU.
-    * **Raw upstream** (e.g. ``Qwen/Qwen3.5-4B``): quantize NF4 at load.
-      transformers 5.x materializes weights in bf16 on-GPU before bitsandbytes
-      quantizes; the 4-way-concurrent transient OOMs a tight card, so force
-      serial materialization.
+    Two paths, auto-selected by whether ``model_id`` is already quantized:
+    pre-quantized (e.g. ``OpenRAL/rskill-qwen35_4b-any-general-nf4``) loads
+    4-bit weights directly (~3.3 GB), no bf16 spike; raw upstream (e.g.
+    ``Qwen/Qwen3.5-4B``) quantizes NF4 at load, forcing serial materialization
+    since transformers 5.x's concurrent bf16 loader OOMs a tight 8 GB card.
     """
     cfg = AutoConfig.from_pretrained(model_id)
     processor = AutoProcessor.from_pretrained(model_id)
@@ -139,21 +123,13 @@ def _query(
             ],
         }
     ]
-    # Thinking is left ON deliberately. `enable_thinking=False` would pre-close
-    # the <think> block in the prompt and is ~3x faster (measured on a GB10:
-    # ~132 tokens / 8.4 s versus 801 tokens / 28.9 s on the same question), but
-    # it costs real accuracy on exactly what this sidecar is asked — non-thinking
-    # mode was observed describing an occupied gripper as empty, twice, in
-    # separate runs. A wrong answer is worse than a slow one for a reasoner
-    # deciding what the robot does next.
-    #
-    # The cost of keeping it on is that the trace has to *finish* inside
-    # `max_new_tokens`, or the </think> strip below no-ops and the sidecar hands
-    # back a truncated scratchpad that reads like an answer. That is what the
-    # 1024 default and the truncation guard below exist for: 256 and 512 both
-    # truncate on questions 1024 answers, and the threshold is question-dependent
-    # — so the budget gives headroom and the guard fails loudly past it rather
-    # than returning garbage as success.
+    # Thinking left ON deliberately: `enable_thinking=False` is ~3x faster
+    # (GB10: ~132 tok/8.4s vs 801 tok/28.9s, same question) but less accurate —
+    # non-thinking mode described an occupied gripper as empty, twice. Cost:
+    # the trace must finish inside `max_new_tokens` or the </think> strip
+    # below no-ops and a truncated scratchpad reads like an answer — hence the
+    # 1024 default + the truncation guard below (256/512 both truncated on a
+    # question that took ~801 tokens).
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
@@ -175,18 +151,13 @@ def _query(
     # return only the text after the final </think>.
     if "</think>" in answer:
         answer = answer.rsplit("</think>", 1)[-1]
-    # Guard on *truncation*, not on a tag. Hitting the token ceiling means the
-    # trace never closed, so the strip above no-opped and `answer` is the raw
-    # scratchpad — which reads exactly like a real answer. Returning that as
-    # {"ok": True} is the dangerous outcome: a reasoner parsing "The tray is on
-    # the right side [603, 126," for a completion signal acts on garbage.
-    #
-    # A tag-based check cannot do this job, which was verified the hard way: the
-    # chat template puts the *opening* <think> in the prompt, and the prompt
-    # tokens are trimmed above, so a completion can only ever contain the
-    # closing </think>. `elif "<think>" in answer` is therefore unreachable, and
-    # replaying the defect showed it staying silent while the sidecar handed back
-    # the scratchpad.
+    # Guard on truncation, not a tag. Hitting the ceiling means the trace
+    # never closed, so the strip above no-opped and `answer` is the raw
+    # scratchpad — returning that as {"ok": True} lets a reasoner act on
+    # garbage (e.g. "The tray is on the right side [603, 126,"). A tag check
+    # can't substitute: the opening <think> is in the (trimmed) prompt, so a
+    # completion only ever holds the closing tag — `elif "<think>" in answer`
+    # is unreachable.
     if len(trimmed[0]) >= max_new_tokens:
         raise RuntimeError(
             f"Qwen hit the {max_new_tokens}-token ceiling, so its <think> trace never "
@@ -202,12 +173,9 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5759)
     ap.add_argument("--max-side", type=int, default=1024)
-    # 1024, not 256. Thinking is on (see `_query`), so the budget has to cover
-    # the whole <think> trace *plus* the answer. Measured on real weights: 256
-    # and 512 both truncate mid-trace on a question 1024 answers in ~801 tokens.
-    # Under the truncation guard in `_query` an undersized budget is now a hard
-    # failure rather than a silently clipped reply, so the default has to leave
-    # real headroom.
+    # 1024, not 256: thinking is on (see `_query`), so the budget must cover
+    # the <think> trace plus the answer — 256/512 both truncated mid-trace on
+    # a question measured at ~801 tokens.
     ap.add_argument("--max-new-tokens", type=int, default=1024)
     args = ap.parse_args()
 

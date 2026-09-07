@@ -2,37 +2,27 @@
 # SPDX-License-Identifier: Apache-2.0
 """The policy's success ceiling with the world-voxel gate off.
 
-**This is a ceiling measurement, not a validation round, and it deliberately
-does not go through ``tools/validation_matrix.py``.** That harness refuses
-``no_enable_octomap_kernel_check`` (``_SAFETY_KNOB_PATTERNS``) because a
-validation round must never silently disable the collision check — which is
-correct, and is exactly why this number has never been taken. Nothing here
-writes a scene file, a launch default or a manifest: the gate is a CLI flag on
-one process, in simulation, where nothing can be hurt.
+Ceiling measurement, not a validation round: bypasses
+``tools/validation_matrix.py`` (which refuses ``no_enable_octomap_kernel_check``
+/ ``_SAFETY_KNOB_PATTERNS`` — a validation round must never silently disable
+the collision check). A CLI flag on one simulated process; writes no scene
+file, launch default or manifest.
 
-The question it answers: **of the runs the kernel stops, how many would have
-succeeded anyway?** After 120 runs at 5-10 % completion with the gate on, and a
-measured median true clearance of 20.1 mm at the moment of the stop, nobody
-knows whether XR-1's ceiling on these four scenes is 12 % or 60 % — and that
-single number decides whether the collision programme continues or closes
-(``PLAN.md`` §4). The survey quotes the external version of this experiment
-(PACS, arXiv:2511.06385 Table I: unfiltered 0.70 vs binary-filtered 0.04) and
-never asked for the in-tree one.
+Answers: of the runs the kernel stops, how many would have succeeded anyway?
+120 runs at 5-10% completion (gate on), median true clearance 20.1 mm at the
+stop — the ceiling could be 12% or 60%, and that number decides whether the
+collision programme continues (``PLAN.md`` §4). External analogue: PACS
+(arXiv:2511.06385 Table I, unfiltered 0.70 vs binary-filtered 0.04).
 
-One worker = one scene, one gate setting, N rounds. Workers are launched in
-parallel by ``tools/ceiling_battery.sh``; each needs its own ``ROS_DOMAIN_ID``
-(a shared DDS graph is not merely noisy — ``SimSensorBridge`` reads
-``count_publishers`` to make decisions, see ``tests/sim/conftest.py``) and its
-own XR-1 sidecar port. The sidecar is NOT shared between workers: its server
-holds a resettable policy object (``tools/_xr1_server.py``, the ``reset``
-endpoint), so two concurrent clients could silently corrupt each other's
-episode state — the one failure mode that would invalidate the measurement
-without announcing itself.
+One worker = one scene/gate/N rounds, launched in parallel by
+``tools/ceiling_battery.sh``. Each needs its own ``ROS_DOMAIN_ID``
+(``SimSensorBridge`` uses ``count_publishers``, see ``tests/sim/conftest.py``)
+and its own XR-1 sidecar port: the sidecar's resettable policy object
+(``tools/_xr1_server.py`` ``reset`` endpoint) is not safe to share across
+concurrent clients.
 
-The launch mirrors the harness exactly — same ``materialise_scene`` (seed +
-``enable_reasoner: False`` spliced into a copy, tracked scene untouched), same
-readiness gate, same dispatch tool, same deadline — so the only difference
-between the two arms is the gate flag.
+Launch mirrors the harness (``materialise_scene``, readiness gate, dispatch
+tool, deadline) so the gate flag is the only difference between arms.
 
 Usage (normally via the battery script):
     python tools/_ceiling_probe.py --scene baguette --gate off --rounds 10 \\

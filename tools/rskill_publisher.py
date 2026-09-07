@@ -19,52 +19,28 @@ Usage
     # Rewrite a non-compliant manifest name to the canonical convention:
     uv run python tools/rskill_publisher.py rskills/smolvla-libero/ --fix-name
 
-Naming convention (CLAUDE.md §3 — rSkill packaging)
----------------------------------------------------
-Every rSkill's HF repo name is enforced to one of two shapes (hyphens are ONLY
-the segment separators; every token uses underscores internally, so a name
-parses by a plain ``split("-")``):
+Naming (CLAUDE.md §3, hyphens are segment separators only, tokens use
+underscores): ``<owner>/rskill-<model>-<robot>-<task>-<quantization>``
+(weight-bearing kinds — ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS``, consistent
+with ``model_family`` for a VLA; ``<robot>`` ∈ ``EmbodimentTag`` incl.
+``any``/``multi``; ``<task>`` author-chosen, shape ``^[a-z0-9][a-z0-9_]*$``;
+``<quantization>`` ∈ ``{fp32, fp16, bf16, int8, nf4}``, schema ``int4`` maps to
+``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for ``ros_action``/
+``ros_service`` (no weights, no quant segment); ``<owner>/rskill-playbook-<name>``
+for ``kind: playbook``. Enforced by :func:`_enforce_repo_name`, which calls
+:func:`openral_core.schemas.repo_name_is_canonical` / ``expected_repo_name``;
+hard-fails both dry-run and ``--publish`` unless ``--fix-name``.
 
-- ``<owner>/rskill-<model>-<robot>-<task>-<quantization>`` — weight-bearing
-  kinds. ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` (a versioned checkpoint token,
-  e.g. ``smolvla`` / ``gr00t_n17`` / ``omdet_turbo``; for a VLA it must also be
-  consistent with ``model_family``); ``<robot>`` ∈ the ``EmbodimentTag`` values
-  (incl. ``any`` / ``multi``); ``<task>`` is AUTHOR-CHOSEN (validated by shape
-  ``^[a-z0-9][a-z0-9_]*$`` only); ``<quantization>`` ∈
-  ``{fp32, fp16, bf16, int8, nf4}`` (schema ``int4`` → ``nf4``).
-- ``<owner>/rskill-<model>-<robot>-<task>`` — ``ros_action`` / ``ros_service``:
-  a ROS wrapper carries no weights, so it omits the ``<quantization>`` segment.
-- ``<owner>/rskill-playbook-<name>`` — ``kind: playbook``.
-
-Validation is :func:`openral_core.schemas.repo_name_is_canonical` (vocab +
-shape); the suggested compliant name (printed on a mismatch, written by
-``--fix-name``) comes from :func:`openral_core.schemas.expected_repo_name`,
-which derives ``<model>`` / ``<robot>`` / ``<quant>`` from the manifest and
-*suggests* a ``<task>`` default. Publish and dry-run both hard-fail on a
-non-canonical name. Weight-mirror repos without an ``rskill.yaml`` are out of
-scope (see the naming docs for their recommended non-enforced shape).
-
-Design constraints (CLAUDE.md §7.2, §9, §12)
---------------------------------------------
-- Private by default. ``--public`` opts into a public repo, but ONLY for skills
-  whose license permits commercial use (``RSkillManifest.is_commercial_use_allowed``):
-  the tool refuses to make a non-commercial-licensed skill (e.g. NVIDIA GR00T /
-  LocateAnything) public, enforcing the license-lineage posture (§9). The chosen
-  visibility is re-verified against the API after ``create_repo`` and the upload
-  aborts on a mismatch (so a pre-existing repo of the wrong visibility is caught).
-- Requires an HF token with ``repo.write`` scope.  Read-only tokens produce a
-  clear error message rather than a generic 403.
-- Validates the manifest against :class:`openral_core.schemas.RSkillManifest`
-  before touching the network.
-- Runs :func:`openral_cli._rskill_doc_validator.validate_rskill_docs` as a hard
-  gate (CLAUDE.md §6.4): the upload is refused if ``README.md`` is missing,
-  too short, missing canonical sections, or contains unresolved template
-  sentinels (``TEMPLATE_ORG`` / ``TODO:`` / …), and likewise if the manifest
-  description, ``paper_url``, ``weights_uri``, or ``source_repo`` are still at
-  their template placeholders. The same report prints in dry-run mode so
-  authors see what to fix without attempting an upload.
-- Uses ``HfApi.upload_folder`` with ``ignore_patterns`` to exclude
-  non-distributable files (.env, *.pyc, __pycache__, etc.).
+Design constraints: private by default; ``--public`` requires
+``manifest.is_commercial_use_allowed`` (license-lineage §9) and is
+re-verified against the API post-``create_repo``. Requires an HF token with
+``repo.write`` scope. Validates :class:`openral_core.schemas.RSkillManifest`
+before any network call, then :func:`openral_cli._rskill_doc_validator.
+validate_rskill_docs` as a hard gate (§6.4: missing/short README, missing
+sections, template sentinels ``TEMPLATE_ORG``/``TODO:``, or template
+placeholders in ``description``/``paper_url``/``weights_uri``/``source_repo``)
+— reported in dry-run too. Uploads via ``HfApi.upload_folder`` with
+``ignore_patterns`` excluding non-distributable files.
 """
 
 from __future__ import annotations
@@ -245,29 +221,14 @@ def _enforce_repo_name(
     *,
     fix_name: bool,
 ) -> RSkillManifest:  # type: ignore[name-defined]  # noqa: F821
-    """Enforce the ratified rSkill repo-naming grammar.
+    """Enforce the ratified rSkill repo-naming grammar (see module docstring).
 
-    Validates ``manifest.name`` with
-    :func:`openral_core.schemas.repo_name_is_canonical` for the manifest's
-    ``kind`` (passing ``model_family`` so a VLA's ``<model>`` token must be
-    family-consistent): playbooks must be ``rskill-playbook-<name>``; the ROS
-    wrappers (``ros_action`` / ``ros_service``) must be
-    ``rskill-<model>-<robot>-<task>`` (no ``<quant>`` — they carry no weights);
-    every other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with each
-    segment in its canonical vocabulary and ``<task>`` an author-chosen,
-    shape-valid slug. No kind is exempt.
-
-    When the name is not canonical:
-
-    * ``fix_name=True`` — rewrite ``rskill.yaml`` in place to the suggested name
-      from :func:`openral_core.schemas.expected_repo_name`, reload, and return
-      the corrected manifest (one-command migration).
-    * ``fix_name=False`` — hard-fail (``sys.exit(1)``) printing the suggested
-      name. Runs in both dry-run and ``--publish`` paths.
-
-    Note the suggested ``<task>`` slug is a *default* — it is author-owned, so an
-    author may pick a different (still shape-valid) task and the name stays
-    canonical without ``--fix-name`` re-running.
+    Validates via :func:`openral_core.schemas.repo_name_is_canonical`
+    (``kind`` + ``model_family``); no kind is exempt. ``fix_name=True``
+    rewrites ``rskill.yaml`` to the suggested name from ``expected_repo_name``
+    and reloads; ``fix_name=False`` hard-fails printing the suggestion. The
+    suggested ``<task>`` is only a default — an author-chosen shape-valid
+    slug stays canonical without re-running ``--fix-name``.
 
     Args:
         skill_dir: The local ``rskills/<name>`` directory.
@@ -323,14 +284,11 @@ def _enforce_repo_name(
 def _validate_task_space(manifest: RSkillManifest, skill_dir: Path) -> None:  # type: ignore[name-defined]  # noqa: F821
     """TaskSpace-contract Phase 2 — warn-only cross-layer task-space check at publish time.
 
-    For an actuating rSkill (one carrying an ``action_contract``), build its
-    :class:`openral_core.TaskSpace` and run :func:`task_space_compatible`
-    (``hal_mode="sim"``) against every in-tree ``robots/<id>/robot.yaml`` whose
-    ``embodiment_tags`` the skill targets. Emits a warning per incompatible
-    (skill, robot) pair — catching slot end-effector-name mismatches and
-    joint-width overruns (the class of bug the TaskSpace-contract sweep surfaced) before the
-    manifest reaches the Hub. **Never fails the publish** — Phase 4 makes this
-    gate blocking.
+    For an actuating rSkill (has ``action_contract``), checks it via
+    :func:`task_space_compatible` (``hal_mode="sim"``) against every in-tree
+    ``robots/<id>/robot.yaml`` matching the skill's ``embodiment_tags``, and
+    warns per incompatible pair (slot/EE-name mismatch, joint-width overrun).
+    Never fails the publish — Phase 4 makes this gate blocking.
 
     Args:
         manifest: The validated rSkill manifest.
@@ -631,25 +589,16 @@ def main() -> None:
     # ── Validate manifest ──────────────────────────────────────────────────────
     manifest = _validate_manifest(skill_dir)
 
-    # ── Enforce the HF-repo naming convention (CLAUDE.md §3 rSkill packaging) ───
-    # rskill-<model>-<robot>-<task>-<quantization>. Runs in both dry-run and
-    # --publish paths so authors see the check without an upload attempt;
-    # --fix-name rewrites a non-compliant name in place. VLA skills only —
-    # perception / playbook kinds are exempt (no <model> axis).
+    # ── Enforce the HF-repo naming convention (CLAUDE.md §3) ────────────────────
     manifest = _enforce_repo_name(skill_dir, manifest, fix_name=args.fix_name)
 
     # ── Cross-layer task-space check (TaskSpace-contract Phase 2, warn-only) ────
     _validate_task_space(manifest, skill_dir)
 
     # ── Validate README + manifest documentation (CLAUDE.md §6.4) ──────────────
-    # Runs in both dry-run and --publish paths so authors see the same report
-    # without having to attempt an upload first. The dry-run prints it as
-    # informational; --publish treats any error-severity issue as fatal.
     doc_report = _validate_docs(skill_dir, manifest)
 
-    # ── License gate for --public (CLAUDE.md §9) ───────────────────────────────
-    # Checked before the dry-run return + before any network call, so `--public`
-    # on a non-commercial skill fails fast with a clear reason.
+    # ── License gate for --public (CLAUDE.md §9), before any network call ───────
     public_error = public_visibility_error(manifest, args.public)
     if public_error:
         log.error("rskill_publisher.public_refused", error=public_error)
