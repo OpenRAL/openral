@@ -289,6 +289,33 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
+  # `gripper_position` is DELIBERATELY ABSENT, and adding it is not the fix
+  # for the palette drop it causes. The reasoner's action-mode gate reads this
+  # list in real mode, so a slot-dispatched skill like
+  # `rskills/rskill-pi05-openarm-restock_shelf-bf16` (action_contract.slots =
+  # joint_position x2 + gripper_position x2) is dropped at on_configure with
+  # "requires control modes ['gripper_position', 'joint_position'] which are
+  # not executable on this deployment". That drop is CORRECT: neither OpenArm
+  # HAL can execute a GRIPPER_POSITION action today.
+  #
+  # `rskill_runner_node._dispatch_slots` emits a gripper slot as
+  # `Action(control_mode=GRIPPER_POSITION, gripper=[value], ee_name=...)` with
+  # `joint_targets=None`. Against that:
+  #
+  #   * `OpenArmRealHAL.send_action` hits `if action.joint_targets is None:
+  #     return` and the gripper command is SILENTLY DISCARDED — the arms would
+  #     move and the grippers would never actuate, with nothing on the wire
+  #     saying so. It fans a 16-DoF vector out to four controllers by fixed
+  #     slice (`_command_groups`), so it only ever drives the grippers as
+  #     dims 7 / 15 of a whole-vector JOINT_POSITION action.
+  #   * `OpenArmMujocoHAL` fails closed instead: `_mujoco_arm._validate_action`
+  #     calls `_require_control_mode(action, ControlMode.JOINT_POSITION)` and
+  #     raises `ROSConfigError`.
+  #
+  # So listing `gripper_position` here would trade a loud boot-time drop for a
+  # silent no-op on real hardware. Declare it only together with real
+  # GRIPPER_POSITION handling in both OpenArm HALs, tests first
+  # (CLAUDE.md 4.2.4), and a HIL run on a powered cell.
   supported_control_modes:
     - "joint_position"
   supported_vla_embodiments:

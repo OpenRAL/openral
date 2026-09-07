@@ -388,3 +388,53 @@ class TestManifestWiring:
         hal.connect()
         assert hal.command_topics()[0] == "/left_joint_trajectory_controller/joint_trajectory"
         hal.disconnect()
+
+
+# ── declared control modes vs. what send_action can actually dispatch ─────────
+
+
+class TestControlModeDeclarationMatchesDispatch:
+    """`supported_control_modes` must not promise a mode `send_action` drops.
+
+    `rskill_runner_node._dispatch_slots` emits a gripper slot as
+    ``Action(control_mode=GRIPPER_POSITION, gripper=[v], ee_name=...)`` with
+    ``joint_targets=None``. `OpenArmRealHAL.send_action` returns early on
+    ``joint_targets is None``, so declaring ``gripper_position`` in
+    `robots/openarm/robot.yaml` would convert the reasoner's loud boot-time
+    palette drop into a SILENT no-op: arms commanded, grippers never actuated,
+    nothing on the wire saying so.
+
+    This pins the two states apart. Today the manifest omits the mode and the
+    HAL fails closed; if someone adds it, this test demands the dispatch that
+    makes the declaration true.
+    """
+
+    def test_gripper_position_is_declared_only_if_send_action_dispatches_it(
+        self, both_buses_up: Path
+    ) -> None:
+        manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+        declared = (
+            ControlMode.GRIPPER_POSITION.value in manifest.capabilities.supported_control_modes
+        )
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(manifest, publish_fn=recorder)
+        hal.connect()
+        gripper_only = Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            horizon=1,
+            gripper=[0.4],
+            ee_name="left_gripper",
+        )
+        if declared:
+            hal.send_action(gripper_only)
+            assert recorder.sent, (
+                "robots/openarm/robot.yaml declares 'gripper_position' but "
+                "OpenArmRealHAL.send_action published nothing for a "
+                "GRIPPER_POSITION action (joint_targets is None). That is a "
+                "silent no-op on real hardware — implement gripper dispatch "
+                "or drop the declaration."
+            )
+        else:
+            with pytest.raises(ROSConfigError, match="not in supported_control_modes"):
+                hal.send_action(gripper_only)
+        hal.disconnect()
