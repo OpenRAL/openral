@@ -307,9 +307,15 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] **Close-vs-continue** — **continue.** The gate is worth 29 points of
       completion, so the §5 levers are competing for real headroom rather than
       for noise.
-- [ ] **Lever 1: the payload bounding box** — first, and by a distance. It is
-      71 % of all stops, and `utensil` (58 % ceiling, 0 % shipped) is a pure
-      instance of it.
+- [x] ~~**Lever 1: the payload bounding box**~~ — **struck by measurement,
+      2026-09-07.** This entry predates §5's reordering and kept the old
+      numbering. The payload *is* 71 % of stops, but the decomposition shows its
+      primitives are already tight to **−1.5 mm** beyond the voxel term: there is
+      no payload-geometry headroom to recover. `extract_body_primitives` lowers
+      each collision geom separately, so the payload's entire error is the 25 mm
+      grid. The class is still the right target — but the mechanism that reaches
+      it is **modeled fixtures (ADR-0101)**, not a tighter payload box. Tracked
+      there, not here.
 - [x] **Lever 1: `tight_geometry` on `panda_link3`/`link4`/`link6`** — done
       2026-09-07. Support excess 75.6→23.8, 76.1→23.2 and **52.7→21.5 mm**;
       `link6`'s 31.2 mm recovery is almost exactly the 33.1 mm of measured
@@ -338,9 +344,23 @@ Four things had to be discovered to make it run at all, each worth keeping:
       checked by forcing the budget to 0.001 ms to read the real numbers out.
       That also answers the latency question the `link3`/`link4`/`link6` change
       raised, on the shipped configuration rather than by extrapolation.
-- [ ] **Lever 3: voxel resolution 25 -> 15 mm.**
-- [ ] Drop `baguette` from the collision scorecard: 0 % with the gate off means
-      it is policy-bound and cannot report on collision work either way.
+- [x] ~~**Lever 3: voxel resolution 25 -> 15 mm**~~ — **struck on measured cost,
+      2026-09-07** (§5). `OccupancyVoxels.occupancy` is a dense `uint8[]` and the
+      per-link window is `O(1/res³)`, so halving the cell is an **8× check cost**:
+      26.7 ms estimated at 15 mm against a 33 ms hard ceiling, 46.1 ms at
+      12.5 mm. 20 mm fits but buys 4.4 mm of a 20.1 mm error, and the
+      `world_voxel_max_cells` cap would have to rise 2-8×. Poor return; not the
+      lever.
+- [x] **Drop `baguette` from the collision scorecard** — recorded 2026-09-07 in
+      the ceiling entry of `docs/reference/collision-validation-evidence.md`:
+      0/11 with the gate **off**, so it is policy-bound and cannot report on
+      collision work in either direction. Four of the five task completions in
+      the ledger's whole history were baguette runs, which is what made it look
+      like the bellwether scene; at a 0 % ceiling it is not one. It **stays in
+      the matrix** — it still exercises the launch, the attach sweep and the stop
+      path, and still yields usable stop records — it just leaves the
+      *completion* scorecard. `utensil` (58 % ceiling, 0 % shipped) carries that
+      signal instead.
 - [x] Landed in `docs/reference/collision-validation-evidence.md`; commented on
       #102, #108 and #217.
 - [x] **Hazard-log Entry 026** — the record #235 owes, written 2026-09-07
@@ -377,6 +397,41 @@ Four things had to be discovered to make it run at all, each worth keeping:
       misattributed this way, naming `counter_1_right_group_top_visual` while
       the collision surface sat ~16 mm inside the same cell. The ray now walks
       past decoration within the cell. Diagnostics only; mutation-checked.
+- [x] **Fixed the harness itself — it could not see the graph it launched, and
+      had not since #231.** Every scene of every `validation_matrix` round on
+      post-#231 `master` reported `harness-error` ("action server never
+      appeared") beside a healthy graph. Two independent defects, each
+      sufficient alone: (a) `_launch_env` never applied the sim DDS scope, so the
+      graph came up on domain 77 and the harness polled domain 0; (b) `ros2
+      action list --no-daemon` cannot discover an advertised action at all — its
+      one-shot node's discovery window is too short — so the poll could never
+      succeed on *any* scope. Both measured against a live round, both fixed;
+      the round that had failed twice then completed with a real outcome
+      (`utensil`, `deadline-no-grasp`) on the first attempt.
+
+      **This is the reason the post-#231 rounds looked like launch failures.**
+      It also sets the precondition for everything still open below: no further
+      number on this page can be taken until this fix is on the branch the round
+      runs from. The ceiling battery's `80027b18` arm predates #231 and is
+      unaffected — checked, not assumed.
+- [x] **Fixed the launch parser's interpreter** (separate branch,
+      `fix/deploy-run-jetson-bringup`). `/opt/ros/<distro>/bin/ros2` carries a
+      `#!/usr/bin/python3` shebang, so `ros2 launch` parsed `sim_e2e.launch.py`
+      under the *system* interpreter; `PYTHONPATH` only prepends, so anything the
+      venv lacks still resolved out of `dist-packages`. On a Jetson AGX Thor with
+      `python3-pandas` that aborted the whole launch with `ValueError:
+      numpy.dtype size changed` via `lerobot` → `deepdiff` → `import pandas`
+      (deepdiff guards that import with `except ImportError`, which a
+      `ValueError` sails through). Running the parser under `sys.executable`
+      makes the venv's `include-system-site-packages = false` apply and closes
+      the whole apt-shadowing class. **This is the `spark`-side launch failure,
+      distinct from the harness one above.**
+- [ ] **Re-derive ADR-0101's 94 % from post-fix live-map rounds.** Unblocked
+      2026-09-07: the foreign 1.9 GB GPU process that caused the XR-1 sidecar to
+      OOM on `q-laptop`'s 8 GB is gone (175 MiB of 8151 in use). The offline
+      figure rests on certified mesh truth, which the backing-probe defect never
+      touched, so the two *should* agree — that agreement is worth checking
+      rather than assuming before any implementation leans on it.
 - [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
       ADR's 94 % should be re-derived from post-fix rounds before implementation
