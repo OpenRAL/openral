@@ -30,6 +30,7 @@ from openral_cli.deploy_sim import (
     _preflight_palette_deps,
     _prepare_launch_env,
     _resolve_slam_backend,
+    _ros2_argv_head,
     _run_launch,
     _scan_params_from_description,
     _terminate_launch_group,
@@ -130,7 +131,15 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     assert invocation.approach_skill_id == ""
     joined = " ".join(invocation.argv_template)
     assert "approach_skill_id:=" not in joined
-    assert joined.startswith("ros2 launch openral_rskill_ros sim_e2e.launch.py")
+    # The argv head is `_ros2_argv_head()` — the venv interpreter plus the
+    # resolved `ros2` script, not a bare `ros2`, so the launch file is parsed
+    # without apt dist-packages shadowing the venv. Assert on what follows it.
+    _head = len(_ros2_argv_head())
+    assert invocation.argv_template[_head : _head + 3] == [
+        "launch",
+        "openral_rskill_ros",
+        "sim_e2e.launch.py",
+    ]
     assert "envelope_file:=" not in joined  # no file path of any kind
     assert "HAL_PARAMS_FILE_PLACEHOLDER" in joined
     assert "hal_package:=openral_hal_openarm" in joined
