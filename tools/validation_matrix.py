@@ -2318,30 +2318,42 @@ def cmd_diff(round_dir: Path, baseline_dir: Path, out_path: Path | None) -> int:
 
 
 def parse_launch_argv(lines: Iterable[str]) -> list[str]:
-    """The resolved ``ros2 launch`` argv the deploy CLI echoed into its log.
+    """The resolved launch argv the deploy CLI echoed into its log.
 
     This is the only artifact that states the stack a run *actually* got, after
     the CLI resolved flag > scene ``runtime:`` > default. Reading it is how a
     pre-harness round's stack is recovered without trusting anyone's memory.
 
+    The head of that argv is not fixed: since ``_ros2_argv_head`` the CLI may
+    echo ``<venv>/bin/python /opt/ros/<distro>/bin/ros2 launch …`` instead of
+    the bare ``ros2 launch …`` older rounds carry. So the line is found by its
+    ``argv: `` prefix and only required to contain a ``launch`` token —
+    matching the old head literally silently returned ``[]`` for every round
+    recorded after that change, which reads as "no stack recorded" rather than
+    as an error.
+
     Args:
         lines: Lines of the deploy log.
 
     Returns:
-        The argv tokens, empty when the log carries no ``argv:`` line.
+        The argv tokens, empty when the log carries no launch ``argv:`` line.
 
     Example:
         >>> parse_launch_argv(["  argv: ros2 launch pkg x.py enable_reasoner:=false"])
         ['ros2', 'launch', 'pkg', 'x.py', 'enable_reasoner:=false']
+        >>> parse_launch_argv(["  argv: /w/.venv/bin/python /opt/ros/jazzy/bin/ros2 launch p x.py"])
+        ['/w/.venv/bin/python', '/opt/ros/jazzy/bin/ros2', 'launch', 'p', 'x.py']
     """
     import shlex  # reason: deferred, used only by `import-round`
 
     for line in lines:
-        idx = line.find("argv: ros2 launch")
+        idx = line.find("argv: ")
         if idx < 0:
             continue
         with contextlib.suppress(ValueError):
-            return shlex.split(line[idx + len("argv: ") :])
+            argv = shlex.split(line[idx + len("argv: ") :])
+            if "launch" in argv:
+                return argv
     return []
 
 
