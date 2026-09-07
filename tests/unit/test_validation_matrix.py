@@ -1553,3 +1553,91 @@ def test_payload_vs_link_with_no_payload_robot_pairs_is_unadjudicated() -> None:
     assert adjudication.verdict == "unadjudicated", adjudication
     assert adjudication.nearest_tripping_party_m is None
     assert adjudication.discrepancy_m is None
+
+
+def test_permitted_adjacent_link_overlap_is_not_evidence_of_contact() -> None:
+    """An ACM-allowed link overlap must not stamp an unrelated stop `real-contact`.
+
+    Regression for a defect #220 introduced and shipped to `master` on
+    2026-09-05. That PR gave the HAL a link-vs-link probe so a self stop could
+    finally be scored against the pair the kernel named. The pairs were then
+    folded into the adjudicator's `nearest_any`, which drives its first and
+    most decisive rule: *any probed pair at or below 0 m → `real-contact`*.
+
+    Adjacent robot links overlap permanently — they are in the robot's
+    allowed-collision matrix and the kernel never checks them — so from #220
+    onward `nearest_any <= 0` was vacuously true and **every** adjudicable stop
+    was stamped `real-contact`, whatever the tripping party's real clearance.
+
+    On this round the kernel stopped the carried payload against a voxel while
+    the payload sat **+24.86 mm clear** of the counter. The snapshot also
+    records `robot0_link3`/`link4` at −36.3 mm, `link5`/`link6` at −23.0 mm and
+    `link4`/`link5` at −4.6 mm: all certified, all permitted, none of them what
+    the kernel stopped for. The honest verdict is `within-quantization` — a
+    stop of a physically clear robot — and reading it as `real-contact` inverts
+    the one measurement the collision programme exists to make.
+    """
+    from openral_core import ValidationStopEvidence
+
+    lines = (
+        (FIXTURES / "2026-09-07-adr0101-live-1" / "utensil" / "run_deploy.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+
+    # The permitted overlaps really are in the record, and really are negative.
+    link_link = {
+        frozenset((p["body_a"], p["body_b"])): p["distance_m"]
+        for p in snapshot["nearest_link_link_pairs"]
+    }
+    assert link_link[frozenset(("robot0_link3", "robot0_link4"))] < -0.03
+
+    stop = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_228622",
+        horizon_step=0,
+        min_distance_m=-0.0040461,
+    )
+    adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
+    assert adjudication is not None
+
+    assert adjudication.verdict == "within-quantization", adjudication.verdict
+    # `nearest_any` must now describe something the kernel could have stopped
+    # for — not the permanently-overlapping pair two joints away.
+    assert adjudication.nearest_any_m is not None
+    assert adjudication.nearest_any_m > 0.0
+
+
+def test_a_named_self_pair_still_reaches_nearest_any() -> None:
+    """Excluding permitted overlaps must not deafen the self-stop path.
+
+    The fix drops `nearest_link_link_pairs` from `nearest_any` wholesale and
+    adds back only the pair the kernel named. If that add-back were missing, a
+    genuine link-vs-link self stop in real overlap would stop being detectable
+    as contact — trading one blind spot for its mirror image.
+    """
+    from openral_core import ValidationStopEvidence
+
+    lines = (
+        (FIXTURES / "2026-09-07-adr0101-live-1" / "utensil" / "run_deploy.log")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    snapshot = validation_matrix.parse_json_log_line(lines, "sim.estop_ground_truth_snapshot")
+    assert snapshot is not None
+
+    # The kernel names the overlapping pair itself: that IS the stop under test.
+    stop = ValidationStopEvidence(
+        kind="self",
+        party_a="panda_link3",
+        party_b="panda_link4",
+        horizon_step=0,
+        min_distance_m=-0.02,
+    )
+    adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
+    assert adjudication is not None
+    assert adjudication.nearest_any_m is not None
+    assert adjudication.nearest_any_m < -0.03, "the named self pair must still be seen"
