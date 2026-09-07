@@ -1786,6 +1786,25 @@ def test_orphan_needles_cover_tf_publishers_and_sidecar() -> None:
     assert _cmdline_is_openral_graph_process(static_tf)
     assert _cmdline_is_openral_graph_process(rsp)
     assert _cmdline_is_openral_graph_process(sidecar)
+    # A CO-RUNNING third-party stack must survive the sweep. zed_wrapper runs
+    # the very same robot_state_publisher / static_transform_publisher
+    # executables under the same user; reaping them left the ZED node alive
+    # with its optical frames gone, so octomap_server rejected every cloud for
+    # an unknown source frame and the map stayed empty while the graph
+    # reported healthy (observed on hardware 2026-09-07). Real argv from
+    # `ros2 launch zed_wrapper zed_camera.launch.py`.
+    zed_rsp = (
+        "/opt/ros/jazzy/lib/robot_state_publisher/robot_state_publisher "
+        "--ros-args -r __node:=zed_state_publisher -r __ns:=/zed "
+        "--params-file /tmp/launch_params_ni2h -r robot_description:=zed_description"
+    )
+    zed_static_tf = (
+        "/opt/ros/jazzy/lib/tf2_ros/static_transform_publisher --x 0 --y 0 --z 0 "
+        "--frame-id map --child-frame-id zed_odom "
+        "--ros-args -r __node:=zed_map_broadcaster -r __ns:=/zed"
+    )
+    assert not _cmdline_is_openral_graph_process(zed_rsp)
+    assert not _cmdline_is_openral_graph_process(zed_static_tf)
     # Perception / critic graph nodes (were leaking when graceful shutdown
     # overran ``grace_s``).
     reward_node = (
