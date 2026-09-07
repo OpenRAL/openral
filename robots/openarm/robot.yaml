@@ -429,6 +429,76 @@ hal:
 # ``top``: overhead workspace overview (mddoai dataset POV).
 # ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
+  # ── head_zed — the ZED Mini head camera's SDK depth, and its MOUNT ───────
+  # Robot-parented, so it lives here and not in a DeployScene: the sensor
+  # leg's own rule is "the robot manifest for robot-mounted cameras (wrist /
+  # head), DeployScene.sensors for workcell-mounted ones (overhead / front)".
+  # Enactic model it the same way — openarm_zed_wrapper.xacro bolts the camera
+  # to a body link via `mount_origin`, and reference_points.yaml classes it
+  # `kind: sensor_mount`.
+  #
+  # No `deploy_binding` here: the manifest owns the geometry, a scene owns the
+  # host binding, and merge_deploy_sensors now merges the two field-wise. The
+  # pixels and the cloud arrive on zed_wrapper's own topics anyway — the ZED
+  # SDK computes depth on the host GPU and the device emits only a
+  # side-by-side UVC stream, so an `opencv_thread` binding would fight the SDK
+  # for the single UVC node the camera exposes.
+  #
+  # ⚠ POSE AND INTRINSICS ARE UNCALIBRATED, by operator decision. There is no
+  # vendor extrinsic to adopt: Stereolabs ship the mount as a xacro PARAMETER
+  # and Enactic leave their camera reference point commented out with "Tune
+  # this pose from CAD or calibration before using it on hardware". The pose
+  # is the stated approximation — 0.20 m above the midpoint of the two
+  # shoulders, pitched 45 deg down. `openarm_base` IS that midpoint (both arm
+  # mounts sit at (0, ±0.031, 0) below), which is why the number reads as the
+  # measurement rather than needing arithmetic. fx/fy follow from StereoLabs'
+  # published 90 deg horizontal FOV at the HD1080 depth stream
+  # (fx = (1920/2)/tan(45 deg) = 960), the same basis as the `context` entry in
+  # scenes/deploy/openarm_restock_shelf.yaml.
+  #
+  # Good enough to prove the pipeline and to look at; NOT good enough to
+  # project against. Run `openral calibrate camera` before this cloud informs
+  # anything geometric.
+  #
+  # Declaring a depth sensor WITH intrinsics auto-enables the octomap leg
+  # (deploy_sim.py: "a camera the HAL can ray-cast a PointCloud2 from"). That
+  # is why every in-tree OpenArm scene now pins `runtime.enable_octomap`
+  # explicitly: this camera's cloud comes from the SDK on a topic, so a scene
+  # that wants the map must also set `octomap_cloud_topic` or it maps silence.
+  #
+  # Optional hardware: OpenArm ships with or without the top stereo camera. On
+  # a cell without one this entry publishes a frame nothing populates, which is
+  # inert — no device is opened and no topic is expected.
+  #
+  # Known cost in SIM, accepted: this manifest is shared by the MuJoCo twin,
+  # and the OpenArm MJCF has no `head_zed` camera. SimSensorBridge creates the
+  # depth publishers, `synthesize_depth_pointcloud` raises ROSConfigError
+  # ("camera 'head_zed' not found in the MuJoCo model"), and the bridge catches
+  # it, logs ONE warning and adds the sensor to `_depth_disabled` for the rest
+  # of the run. So a `deploy sim` on OpenArm carries one startup warning and
+  # three publishers that never publish. Bounded and self-limiting, not a
+  # crash. The clean upgrade is to add a `head_zed` <camera> to the tabletop
+  # MJCF composer at this same mount, which would give the twin a synthetic
+  # head depth stream; until someone does, `metadata.mjcf_camera` can also
+  # point this at an existing MJCF camera if a twin-side stand-in is wanted.
+  - name: "head_zed"
+    modality: "depth"
+    frame_id: "zed_camera_link"
+    parent_frame: "openarm_base"
+    static_transform_xyz_rpy: [0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0]
+    rate_hz: 10.0
+    intrinsics:
+      width: 1920
+      height: 1080
+      fx: 960.0
+      fy: 960.0
+      cx: 960.0
+      cy: 540.0
+    encoding: "32FC1"
+    catalog_id: "stereolabs/zed_mini"
+    vendor: "StereoLabs"
+    model: "ZED Mini"
+
   - name: "top"
     modality: "rgb"
     frame_id: "world"
