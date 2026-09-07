@@ -11,8 +11,6 @@ CLAUDE.md §1.11 — real schemas + the real ``robots/openarm`` fixture, no mock
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 from openral_core import (
     CapsuleShape,
@@ -31,6 +29,8 @@ from openral_safety.envelope_loader import (
     collision_params_from_description,
     ee_link_index_from_collision_params,
 )
+
+from tests.unit.conftest import _CylinderShape
 
 
 def _two_link_arm() -> RobotDescription:
@@ -68,26 +68,6 @@ def _two_link_arm() -> RobotDescription:
         ),
         safety=SafetyEnvelope(),
     )
-
-
-@dataclass(frozen=True)
-class _CylinderShape:
-    """A fourth primitive kind — what a future ``CollisionShape`` member looks like.
-
-    ``openral_core.CollisionShape`` is closed over sphere/capsule/box, so no
-    fixture in ``robots/`` can produce this and no amount of validation will
-    build one. It exists to reach the lowering's unknown-shape branch, the same
-    way ``packages/openral_slam_bringup/test/test_depth_height_filter.py``
-    reaches the height band's.
-
-    It deliberately carries ``radius_m``: that is exactly the shape that used to
-    slip through, because the old bare ``else`` read ``shape.radius_m`` off
-    anything that was not a ``BoxShape``.
-    """
-
-    shape: str = "cylinder"
-    radius_m: float = 0.1
-    length_m: float = 0.4
 
 
 def test_unknown_primitive_is_refused_not_lowered_as_a_capsule() -> None:

@@ -111,13 +111,6 @@ def hal() -> UR5eHAL:
     return UR5eHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: UR5eHAL) -> UR5eHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _zero_action(horizon: int = 1) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,

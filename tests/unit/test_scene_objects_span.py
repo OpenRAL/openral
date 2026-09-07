@@ -9,33 +9,14 @@ read: ``openral.world_state.scene_objects.{count,frame_id,source_node,list}``.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
 from openral_core import SceneGraph, SpatialNodeKind
 from openral_observability import semconv
 from openral_world_state import emit_scene_objects_span, scene_objects_payload
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 _FIXTURE = Path("tests/unit/fixtures/home_scene_graph.json")
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
 
 
 def _graph() -> SceneGraph:

@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.sim.conftest import _libero_robosuite_conflict
+
 # Use `importlib.util.find_spec` + `pytestmark` rather than module-level
 # `pytest.importorskip` / `pytest.skip(allow_module_level=True)`: with
 # `tests/sim/__init__.py` making this directory a Package, a Skipped raised
@@ -54,24 +56,6 @@ if not _MISSING_MODULES:
     import torch
 
     _CUDA_AVAILABLE = torch.cuda.is_available()
-
-
-def _libero_robosuite_conflict() -> bool:
-    """True when an installed robosuite blocks the LIBERO runtime (it pins 1.4.x).
-
-    A >=1.5 robosuite (e.g. provisioned by a robocasa install) makes the live
-    LIBERO episode unprovisionable here — the runner's ``--group libero`` install
-    cannot downgrade robosuite. Skip the rollout cleanly rather than go red. On a
-    clean runner robosuite is absent, so the install supplies 1.4.x and it runs.
-    """
-    import importlib.metadata as _md
-
-    if importlib.util.find_spec("robosuite") is None:
-        return False
-    try:
-        return not _md.version("robosuite").startswith("1.4")
-    except _md.PackageNotFoundError:
-        return False
 
 
 pytestmark = [

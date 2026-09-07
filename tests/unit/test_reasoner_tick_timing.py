@@ -12,9 +12,6 @@ Real :class:`ReasonerCore` + real OTel SDK + real
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
 from openral_core import EmitPromptTool
 from openral_core.exceptions import ROSPlanningError
 from openral_observability import semconv
@@ -26,8 +23,6 @@ from openral_reasoner import (
     ToolPalette,
 )
 from openral_reasoner.tool_use import _prompt_tokens
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
@@ -35,23 +30,6 @@ from tests.integration.fakes.fake_llm import FakeToolUseClient
 LLM_DELAY_S = 0.05
 """Modelled provider round-trip. Long enough to dominate the sub-millisecond
 render + bookkeeping either side of it, short enough to keep the tier <30 s."""
-
-
-@pytest.fixture
-def exporter() -> Iterator[InMemorySpanExporter]:
-    """Fresh in-memory-exporting TracerProvider (see test_reasoner_observability)."""
-    from opentelemetry import trace
-
-    exp = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exp))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exp
-    finally:
-        exp.clear()
 
 
 def _renderer() -> ContextRenderer:

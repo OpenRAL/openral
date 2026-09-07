@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -26,22 +25,9 @@ from openral_core.exceptions import ROSConfigError
 from openral_world_state import WorldStateAggregator
 from pydantic import ValidationError
 
+from tests.unit.conftest import _CylinderShape
+
 _ROBOT_YAML = "robots/panda_mobile/robot.yaml"
-
-
-@dataclass(frozen=True)
-class _CylinderShape:
-    """A fourth primitive kind — what a future ``CollisionShape`` member looks like.
-
-    ``CollisionShape`` is closed over sphere/capsule/box, so this is the only
-    way to reach the encoder's unknown-shape branch. Mirrors the stand-in in
-    ``tests/unit/test_collision_params.py`` and
-    ``packages/openral_slam_bringup/test/test_depth_height_filter.py``.
-    """
-
-    shape: str = "cylinder"
-    radius_m: float = 0.1
-    length_m: float = 0.4
 
 
 def _attachment(object_id: str = "baguette_seed1") -> AttachedCollisionObject:

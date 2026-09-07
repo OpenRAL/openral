@@ -20,10 +20,13 @@ must compose the same way the CLI does. ``load_scene_strict`` accepts a
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
+from typing import Any
 
 import openral_rskill._lerobot_compat  # noqa: F401
+import pytest
 
 from tests.sim.safety._kernel_subprocess import isolated_domain_id
 
@@ -186,3 +189,104 @@ def mujoco_renderer_probe_error() -> str | None:
     stderr_lines = (proc.stderr or "").strip().splitlines()
     detail = stderr_lines[-1] if stderr_lines else "no stderr"
     return f"renderer probe exited {proc.returncode}: {detail}"
+
+
+def _libero_robosuite_conflict() -> bool:
+    """True when an installed robosuite (>=1.5) blocks the LIBERO 1.4.x runtime.
+
+    A >=1.5 robosuite (e.g. provisioned by a robocasa install) makes LIBERO
+    unprovisionable here — the ``libero`` dependency group cannot downgrade
+    robosuite. Skip cleanly rather than go red; on a clean runner robosuite
+    is absent, so the ``libero`` group install supplies 1.4.x and it runs.
+    """
+    import importlib.metadata as _md
+
+    if importlib.util.find_spec("robosuite") is None:
+        return False
+    try:
+        return not _md.version("robosuite").startswith("1.4")
+    except _md.PackageNotFoundError:
+        return False
+
+
+def _sidecar_python_available() -> bool:
+    """Whether the Isaac Sim sidecar venv (or an operator override) is provisioned."""
+    override = os.environ.get("OPENRAL_ISAAC_SIDECAR_PYTHON")
+    if override:
+        return Path(override).is_file()
+    default = Path.home() / ".cache" / "openral" / "isaac-sidecar" / ".venv" / "bin" / "python"
+    return default.is_file()
+
+
+def _repo_root() -> Path:
+    """Walk up from *this file* to the directory holding ``robots/`` + ``pyproject.toml``.
+
+    Callers historically walked up from their own ``__file__``; since both
+    conftest.py and every caller live under the same repo tree, walking up
+    from here lands on the same root.
+    """
+    here = Path(__file__).resolve()
+    for ancestor in (here, *here.parents):
+        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    raise RuntimeError("could not locate repo root from test file")
+
+
+def _robotwin_obs() -> dict[str, object]:
+    """A synthetic 3-camera RoboTwin-shaped observation for the aloha_agilex (14-DoF) rig."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
+    return {
+        "images": {"camera1": img, "camera2": img.copy(), "camera3": img.copy()},
+        "state": np.zeros(14, dtype=np.float32),
+    }
+
+
+@pytest.fixture()
+def connected_hal(hal: Any) -> Any:
+    """Connect/disconnect wrapper generic over whichever concrete ``hal`` fixture is in scope."""
+    hal.connect()
+    yield hal
+    hal.disconnect()
+
+
+def _robocasa_unavailable() -> str:
+    """Empty string if RoboCasa's kitchen fork is installed and active, else why not."""
+    if importlib.util.find_spec("robocasa") is None:
+        return "robocasa not installed"
+    from openral_sim._deps import _has_robocasa_kitchen
+
+    return "" if _has_robocasa_kitchen() else "RoboCasa kitchen fork is not active"
+
+
+_PANDA_MOBILE_ROBOT = Path(__file__).resolve().parents[2] / "robots" / "panda_mobile" / "robot.yaml"
+_BAGUETTE_SCENE = (
+    Path(__file__).resolve().parents[2] / "scenes" / "deploy" / "robocasa_baguette.yaml"
+)
+
+
+@pytest.fixture
+def hal() -> Any:
+    """A connected panda_mobile HAL attached to the real baguette scene."""
+    from openral_core import RobotDescription
+    from openral_hal import build_hal
+
+    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE_ROBOT))
+    built = build_hal(desc, mode="sim", sim_env_yaml=str(_BAGUETTE_SCENE))
+    built.connect()
+    try:
+        yield built
+    finally:
+        built.disconnect()
+
+
+@pytest.fixture(scope="module")
+def scene_env(_scene_config: Path) -> Any:
+    """Load *_scene_config* as a :class:`~openral_core.BenchmarkScene`, skipping if absent."""
+    from openral_core import BenchmarkScene, load_scene_strict
+
+    if not _scene_config.exists():
+        pytest.skip(f"sim config not found at {_scene_config}")
+    return load_scene_strict(str(_scene_config), BenchmarkScene)

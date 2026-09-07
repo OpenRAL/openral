@@ -16,46 +16,11 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSPlanningError
 from openral_observability import reasoner_span, semconv
-from openral_reasoner import ContextRenderer, PromptRecord, ReasonerCore, ToolPalette
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from openral_reasoner import ContextRenderer, ReasonerCore, ToolPalette
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
-
-
-@pytest.fixture
-def exporter() -> InMemorySpanExporter:
-    """Replace the global TracerProvider with one that records to memory.
-
-    Mirrors the canonical pattern from
-    ``python/observability/tests/conftest.py``: bypass the OTel API's
-    set-once guard via the private holder so each test gets a fresh
-    provider + fresh in-memory exporter (the OTel SDK only allows
-    :func:`trace.set_tracer_provider` to take effect once per process
-    otherwise). Per CLAUDE.md §1.11 the exporter and provider are
-    real SDK components — only the on-the-wire destination is swapped
-    for in-memory storage.
-    """
-    from opentelemetry import trace
-
-    exp = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exp))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exp
-    finally:
-        exp.clear()
-
-
-def _renderer_with_prompt() -> ContextRenderer:
-    """One-prompt renderer (so the empty-palette short-circuit doesn't fire)."""
-    r = ContextRenderer()
-    r.append_prompt(PromptRecord(text="x", metadata_json="", stamp_ns=0))
-    return r
+from tests.unit.conftest import _renderer_with_prompt
 
 
 def _palette(*skills: str) -> ToolPalette:

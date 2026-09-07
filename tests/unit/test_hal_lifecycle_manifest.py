@@ -18,19 +18,11 @@ import pytest
 
 pytest.importorskip("rclpy")
 
-import rclpy  # reason: import-after-skip is the rclpy test idiom
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal.lifecycle import _ManifestHALLifecycleNode
 from rclpy.parameter import Parameter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture(scope="module")
-def _rclpy_ctx() -> object:
-    rclpy.init()
-    yield
-    rclpy.shutdown()
 
 
 def _build(node_name: str, robot_id: str, mode: str) -> object:

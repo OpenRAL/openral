@@ -23,20 +23,11 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tests.sim.conftest import mujoco_renderer_probe_error
+from tests.sim.conftest import _robocasa_unavailable, mujoco_renderer_probe_error
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROBOT = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 _SCENE = _REPO_ROOT / "scenes" / "deploy" / "robocasa_baguette.yaml"
-
-
-def _robocasa_unavailable() -> str:
-    if importlib.util.find_spec("robocasa") is None:
-        return "robocasa not installed"
-    from openral_sim._deps import _has_robocasa_kitchen
-
-    return "" if _has_robocasa_kitchen() else "RoboCasa kitchen fork is not active"
-
 
 _ROBOCASA_ERROR = _robocasa_unavailable()
 _RENDERER_ERROR = mujoco_renderer_probe_error() if not _ROBOCASA_ERROR else ""

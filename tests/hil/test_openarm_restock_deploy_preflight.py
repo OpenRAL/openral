@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hil.conftest import _can_links_up
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE = REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml"
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"
@@ -42,19 +44,12 @@ _CAMERA_NODES = (
 )
 
 
-def _can_links_up() -> bool:
-    from openral_cli.autodetect import enumerate_can_interfaces
-
-    up = {i.name for i in enumerate_can_interfaces() if i.is_up}
-    return set(_CAN_LINKS) <= up
-
-
 def _cameras_present() -> bool:
     return all(Path(p).exists() for p in _CAMERA_NODES)
 
 
 requires_can = pytest.mark.skipif(
-    not _can_links_up(), reason="OpenArm CAN links are not both up — not on the cell"
+    not _can_links_up(_CAN_LINKS), reason="OpenArm CAN links are not both up — not on the cell"
 )
 requires_cameras = pytest.mark.skipif(
     not _cameras_present(),

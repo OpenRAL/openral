@@ -47,6 +47,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hil.conftest import _can_links_up
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"
 RSKILL = REPO_ROOT / "rskills" / "rskill-pi05-openarm-restock_shelf-bf16" / "rskill.yaml"
@@ -70,15 +72,8 @@ _ARRIVAL_TOL_RAD = 0.015
 _SETTLE_S = 2.5
 
 
-def _can_links_up() -> bool:
-    from openral_cli.autodetect import enumerate_can_interfaces
-
-    up = {i.name for i in enumerate_can_interfaces() if i.is_up}
-    return set(_CAN_LINKS) <= up
-
-
 requires_can = pytest.mark.skipif(
-    not _can_links_up(), reason="OpenArm CAN links are not both up — not on the cell"
+    not _can_links_up(_CAN_LINKS), reason="OpenArm CAN links are not both up — not on the cell"
 )
 requires_rclpy = pytest.mark.skipif(
     importlib.util.find_spec("rclpy") is None, reason="rclpy not available"

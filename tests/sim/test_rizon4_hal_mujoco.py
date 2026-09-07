@@ -180,13 +180,6 @@ def hal() -> Rizon4MujocoHAL:
     return Rizon4MujocoHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: Rizon4MujocoHAL) -> Rizon4MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _zero_action(horizon: int = 1) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,

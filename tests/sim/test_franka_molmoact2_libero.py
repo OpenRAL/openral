@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.sim.conftest import _libero_robosuite_conflict
+
 # Deferred skip via pytestmark (see the sibling SmolVLA-LIBERO test for why a
 # module-level Skipped would poison tests/sim package collection).
 _REQUIRED_MODULES = ("torch", "transformers", "lerobot", "bitsandbytes", "accelerate")
@@ -37,18 +39,6 @@ if not _MISSING_MODULES:
     import torch
 
     _CUDA_AVAILABLE = torch.cuda.is_available()
-
-
-def _libero_robosuite_conflict() -> bool:
-    """True when an installed robosuite (>=1.5) blocks the LIBERO 1.4.x runtime."""
-    import importlib.metadata as _md
-
-    if importlib.util.find_spec("robosuite") is None:
-        return False
-    try:
-        return not _md.version("robosuite").startswith("1.4")
-    except _md.PackageNotFoundError:
-        return False
 
 
 pytestmark = [

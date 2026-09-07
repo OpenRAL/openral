@@ -23,46 +23,11 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Any
 
 import pytest
-import structlog
 from openral_rskill._diagnostics import phase_timer
 
-
-class _CaptureProcessor:
-    """Real ``structlog`` processor that buffers events for assertion.
-
-    Implements the processor contract — call returns the event_dict or
-    raises ``structlog.DropEvent`` to stop the pipeline (we drop because
-    we don't want test logs polluting pytest output).
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def __call__(self, logger: Any, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
-        del logger, method
-        name = str(event_dict.pop("event", ""))
-        self.events.append((name, dict(event_dict)))
-        raise structlog.DropEvent
-
-
-@pytest.fixture
-def cap() -> Any:
-    """Install a fresh capture processor; restore structlog defaults after.
-
-    ``structlog.reset_defaults`` undoes the global ``configure`` so the
-    test pollutes neither pytest's own structlog setup nor other tests
-    in the same session.
-    """
-    proc = _CaptureProcessor()
-    structlog.reset_defaults()
-    structlog.configure(processors=[proc])
-    try:
-        yield proc
-    finally:
-        structlog.reset_defaults()
+from tests.unit.conftest import _CaptureProcessor
 
 
 def test_emits_start_and_done(cap: _CaptureProcessor) -> None:

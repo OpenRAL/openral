@@ -16,16 +16,12 @@ minimal holder (no ROS context), same trick as
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 from types import MethodType
 from typing import Any
 
 import pytest
 from openral_core import Pose6D, SceneGraph, SpatialNode, SpatialNodeKind
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 pytest.importorskip("rclpy")
@@ -35,20 +31,6 @@ from openral_reasoner_ros.reasoner_node import ReasonerNode
 from openral_world_state import SpatialMemory
 
 _FIXTURE = Path("tests/unit/fixtures/home_scene_graph.json")
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
 
 
 class _Holder:

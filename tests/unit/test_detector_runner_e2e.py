@@ -28,17 +28,12 @@ from __future__ import annotations
 import pathlib
 import time
 
-import numpy as np
 import pytest
 import yaml
 
 gi = pytest.importorskip("gi")
 pytest.importorskip("onnxruntime")
 pytest.importorskip("onnx")
-
-import onnx  # noqa: E402
-import onnx.helper as h  # noqa: E402
-import onnx.numpy_helper as nph  # noqa: E402
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
@@ -54,6 +49,8 @@ from openral_runner.backends.gstreamer.pipeline import (  # noqa: E402
     build_pipeline_string,
 )
 
+from tests.unit.conftest import _write_rtdetr_like_onnx  # noqa: E402
+
 Gst.init(None)
 
 # ── Repo-root path helper ──────────────────────────────────────────────────────
@@ -61,55 +58,10 @@ Gst.init(None)
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 
 
-# ── Deterministic ONNX fixture (mirrors test_objects_detector._write_rtdetr_like_onnx) ──
-
-# 4-class labels that match the ONNX fixture constants below.
+# 4-class labels that match tests.unit.conftest._write_rtdetr_like_onnx's fixture.
 # COCO indices 0=person, 2=car — so the 4-class ["person","bicycle","car","dog"]
 # slice aligns with COCO: q0 cls-2 → "car", q1 cls-0 → "person".
 _LABELS_4 = ["person", "bicycle", "car", "dog"]
-
-
-def _write_rtdetr_like_onnx(path: pathlib.Path) -> None:
-    """Write a deterministic 4-class RT-DETR-like ONNX to *path*.
-
-    Identical to the fixture in :mod:`tests.unit.test_objects_detector`:
-    - q0 logits ``[-5, -5, 3.0, -5]``  → car (idx 2),   sigmoid(3)  ≈ 0.953
-    - q1 logits ``[2.0, -5, -5, -5]``  → person (idx 0), sigmoid(2) ≈ 0.881
-    - q2 logits ``[-5, -5, -5, -5]``   → max ≈ 0.007 (below 0.5 threshold)
-    """
-    logits_data = np.array(
-        [[[-5.0, -5.0, 3.0, -5.0], [2.0, -5.0, -5.0, -5.0], [-5.0, -5.0, -5.0, -5.0]]],
-        dtype=np.float32,
-    )
-    boxes_data = np.array(
-        [[[0.5, 0.5, 0.2, 0.4], [0.25, 0.25, 0.1, 0.1], [0.8, 0.8, 0.1, 0.1]]],
-        dtype=np.float32,
-    )
-
-    logits_tensor = nph.from_array(logits_data, name="logits_const")
-    boxes_tensor = nph.from_array(boxes_data, name="boxes_const")
-
-    images_input = h.make_tensor_value_info("images", onnx.TensorProto.FLOAT, [1, 3, 640, 640])
-    logits_out = h.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [1, 3, 4])
-    boxes_out = h.make_tensor_value_info("boxes", onnx.TensorProto.FLOAT, [1, 3, 4])
-    passthrough_out = h.make_tensor_value_info(
-        "images_passthrough", onnx.TensorProto.FLOAT, [1, 3, 640, 640]
-    )
-
-    id_node = h.make_node("Identity", inputs=["images"], outputs=["images_passthrough"])
-    logits_node = h.make_node("Constant", inputs=[], outputs=["logits"], value=logits_tensor)
-    boxes_node = h.make_node("Constant", inputs=[], outputs=["boxes"], value=boxes_tensor)
-
-    graph = h.make_graph(
-        nodes=[id_node, logits_node, boxes_node],
-        name="rtdetr_test",
-        inputs=[images_input],
-        outputs=[logits_out, boxes_out, passthrough_out],
-    )
-    model = h.make_model(graph, opset_imports=[h.make_opsetid("", 13)])
-    model.ir_version = 8
-    onnx.checker.check_model(model)
-    onnx.save(model, str(path))
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

@@ -22,8 +22,9 @@ Run with:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+
+from tests.unit.conftest import _script_targets
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "robocasa_sim_tests.sh"
@@ -33,20 +34,6 @@ _SIM = _REPO_ROOT / "tests" / "sim"
 #: (robosuite 1.4) are mutually exclusive dependency groups, so the backend is
 #: never merely optional — it is either provisioned or the test skips.
 _GATE = 'importorskip("robocasa")'
-
-
-def _script_targets() -> set[str]:
-    """The repo-relative paths inside the TARGETS=( … ) block."""
-    body = _SCRIPT.read_text(encoding="utf-8")
-    # Anchor the closing paren to its own line so a parenthesis inside an
-    # array comment can never truncate the parse.
-    block = re.search(r"TARGETS=\((.*?)^\)$", body, flags=re.DOTALL | re.MULTILINE)
-    assert block is not None, f"no TARGETS=() block in {_SCRIPT}"
-    return {
-        stripped
-        for line in block.group(1).splitlines()
-        if (stripped := line.strip()) and not stripped.startswith("#")
-    }
 
 
 def _gated_tests() -> set[str]:
@@ -61,7 +48,7 @@ def _gated_tests() -> set[str]:
 def test_every_robocasa_gated_sim_test_is_in_targets() -> None:
     gated = _gated_tests()
     assert gated, f"no {_GATE} tests found under tests/sim/ — glob or gate string moved?"
-    missing = gated - _script_targets()
+    missing = gated - _script_targets(_SCRIPT)
     assert not missing, (
         f"RoboCasa-gated tests missing from {_SCRIPT.relative_to(_REPO_ROOT)} TARGETS "
         f"(they will run on NO CI surface): {sorted(missing)}"
@@ -69,5 +56,5 @@ def test_every_robocasa_gated_sim_test_is_in_targets() -> None:
 
 
 def test_targets_only_lists_files_that_exist() -> None:
-    stale = {t for t in _script_targets() if not (_REPO_ROOT / t).exists()}
+    stale = {t for t in _script_targets(_SCRIPT) if not (_REPO_ROOT / t).exists()}
     assert not stale, f"TARGETS lists files that do not exist: {sorted(stale)}"

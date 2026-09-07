@@ -96,13 +96,6 @@ def hal() -> UR10eHAL:
     return UR10eHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: UR10eHAL) -> UR10eHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 # ── Protocol + lifecycle ──────────────────────────────────────────────────────
 
 

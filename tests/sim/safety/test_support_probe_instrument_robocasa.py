@@ -74,7 +74,7 @@ pytest.importorskip("robocasa")  # robocasa (robosuite >=1.5) ⊥ libero (robosu
 import mujoco
 import numpy as np
 
-from tests.sim.conftest import mujoco_renderer_probe_error
+from tests.sim.conftest import _robocasa_unavailable, mujoco_renderer_probe_error
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROUND = (
@@ -112,14 +112,6 @@ _ROUND_PROBE_DISTMAX_M = 0.124555
 # `base_frame_tf` is published rounded to 6 decimals, so a micrometre is the
 # floor on any reconstruction check against it.
 _RECONSTRUCTION_TOL_M = 1e-5
-
-
-def _robocasa_unavailable() -> str:
-    if importlib.util.find_spec("robocasa") is None:
-        return "robocasa not installed"
-    from openral_sim._deps import _has_robocasa_kitchen
-
-    return "" if _has_robocasa_kitchen() else "RoboCasa kitchen fork is not active"
 
 
 _ROBOCASA_ERROR = _robocasa_unavailable()

@@ -7,9 +7,6 @@ through 1–N episodes; asserts the new telemetry surface added by
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
 from openral_core import (
     PhysicsBackend,
     SceneSpec,
@@ -18,47 +15,12 @@ from openral_core import (
     VLASpec,
 )
 from openral_observability import semconv
-from openral_observability.metrics import _reset_instrument_cache
 from openral_sim import SimRunner
-from opentelemetry import metrics, trace
-from opentelemetry.metrics import _internal as metrics_internal
-from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
     InMemoryMetricReader,
     NumberDataPoint,
 )
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
-
-
-@pytest.fixture
-def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]
-    metrics.set_meter_provider(provider)
-    _reset_instrument_cache()
-    try:
-        yield reader
-    finally:
-        provider.shutdown()
-        _reset_instrument_cache()
 
 
 def _mock_env(*, n_episodes: int = 1, success_step: int = 2, max_steps: int = 5) -> SimEnvironment:

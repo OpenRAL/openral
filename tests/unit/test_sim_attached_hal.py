@@ -26,7 +26,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-import structlog
 from openral_core import (
     Action,
     AttachedCollisionObject,
@@ -51,6 +50,7 @@ from openral_hal.sim_attached import (
     pack_action_for_env,
 )
 
+from tests.unit.conftest import _CaptureProcessor
 from tests.unit.fakes.fake_sim_env import FakeSimEnv
 
 # ── pack_action_for_env ──────────────────────────────────────────────
@@ -867,42 +867,6 @@ def test_sim_time_ns_monotonic_across_reconnect() -> None:
 # — a validation run could prove attach/detach but not placement. These
 # tests pin the emitted lines' shape and, critically, that reading the
 # predicate changes no control flow.
-
-
-class _CaptureProcessor:
-    """Real ``structlog`` processor that buffers events for assertion.
-
-    Same pattern as `tests/unit/test_diagnostics_phase_timer.py`: a real
-    processor in the real pipeline (not a mock logger), dropping the event
-    at the end so test logs don't pollute pytest output.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, object]]] = []
-
-    def __call__(
-        self, logger: object, method: str, event_dict: dict[str, object]
-    ) -> dict[str, object]:
-        del logger, method
-        name = str(event_dict.pop("event", ""))
-        self.events.append((name, dict(event_dict)))
-        raise structlog.DropEvent
-
-    def named(self, event: str) -> list[dict[str, object]]:
-        """Every captured payload logged under ``event``."""
-        return [payload for name, payload in self.events if name == event]
-
-
-@pytest.fixture
-def cap() -> Any:
-    """Install a fresh capture processor; restore structlog defaults after."""
-    proc = _CaptureProcessor()
-    structlog.reset_defaults()
-    structlog.configure(processors=[proc])
-    try:
-        yield proc
-    finally:
-        structlog.reset_defaults()
 
 
 def _success_env(**kwargs: Any) -> FakeSimEnv:

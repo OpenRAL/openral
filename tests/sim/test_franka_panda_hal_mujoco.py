@@ -108,13 +108,6 @@ def hal() -> FrankaPandaHAL:
     return FrankaPandaHAL(gravity_enabled=False, settle_steps=1500)
 
 
-@pytest.fixture()
-def connected_hal(hal: FrankaPandaHAL) -> FrankaPandaHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _make_action(targets: list[float]) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,

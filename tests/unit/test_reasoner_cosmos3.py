@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from openral_core import EmitPromptTool, RobotCapabilities
@@ -33,6 +32,8 @@ from openral_reasoner.cosmos3 import (
 )
 from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import build_tool_use_client_from_env
+
+from tests.unit.conftest import _install_fake_openai
 
 _ENV_VARS = (
     "OPENRAL_REASONER_MODEL",
@@ -296,31 +297,6 @@ def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         client.select_tool(context_text="go", palette=_empty_palette())
     assert "exited early" in str(excinfo.value)
     assert "code 3" in str(excinfo.value)
-
-
-# ── Wire path (openai SDK network-boundary double, §1.11) ─────────────────────
-
-
-def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> None:
-    """Patch ``openai.OpenAI`` so ``create()`` returns one ``emit_prompt`` call.
-
-    Mirrors the real SDK response graph
-    (``response.choices[0].message.tool_calls[0].function.{name,arguments}``).
-    """
-
-    def _create(**_kwargs: object) -> SimpleNamespace:
-        function = SimpleNamespace(name="emit_prompt", arguments=arguments)
-        tool_call = SimpleNamespace(function=function)
-        message = SimpleNamespace(tool_calls=[tool_call])
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs: object) -> None:
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
-
-    import openai  # reason: network-boundary double per §1.11
-
-    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
 
 
 # ── Sidecar pre-warm ─────────────────────────────────────────────────────────
