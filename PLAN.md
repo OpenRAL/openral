@@ -458,53 +458,53 @@ Four things had to be discovered to make it run at all, each worth keeping:
       the certified probe never used rays, so the 71 % and the decomposition
       stand; what moves is the backing *class* the "32 % too sparse" entry and
       ADR-0101's "cells no real body explains" premise rest on.
-- [x] **`panda_link1` now ships a budget-fitting envelope — and the reasoning
-      that struck it was wrong.** The first pass here struck it on the grounds
-      that a hull "recovers at most ~9 mm of a ~25 mm error". That framed the
-      wrong question: what matters is not the *fraction* of the error recovered
-      but whether it flips the stop, and the start-state census's deficit table
-      says **10 mm clears 14 of 14 `link1` states**. It also assumed the only
-      options were the DOP or an over-budget hull, and assumed a cap change was
-      needed. Neither held.
+- [x] **`panda_link1` ships a budget-fitting envelope — which does nothing, and
+      that IS the result.** `refine_dop_to_budget` intersects the DOP with the
+      exact hull's tangent face planes inside the existing 320-vertex budget, no
+      kernel change; support gap 4.52/25.68 mm → **0.18/0.65 mm**, containment
+      definitional, and it measured *faster* (p99 0.5 ms on 9891 cells vs 2.0 ms
+      on 5638).
 
-      `refine_dop_to_budget` intersects the DOP with the exact hull's own
-      tangent face planes within the existing 320-vertex budget — **no kernel
-      change**. Containment stays definitional and `mesh ⊆ result ⊆ DOP ⊆ box`
-      holds at every step, so it is a subset of what it replaced.
+      **Then it was tested, and the prediction failed.** Three rounds on `spark`
+      — same seeds, same scene, one commit apart:
 
-      | link1 envelope | verts | support gap median | max |
+      | seed | 26-DOP | refined | Δ |
       | --- | ---: | ---: | ---: |
-      | 26-DOP (shipped) | 48 | 4.52 mm | 25.68 mm |
-      | refined | 320 | **0.18 mm** | **0.65 mm** |
+      | s2 | −2.37794 mm | −2.37825 mm | **0.0003 mm** |
+      | s4 | −8.31 mm | −8.31495 mm | ~0 |
 
-      The cost objection also failed its own re-measurement: **p99 0.5 ms on
-      9891 occupied cells** against a 33 ms ceiling, versus 2.0 ms on 5638 cells
-      before. Hazard-log Entry 026 amended; safety-WG sign-off still PENDING.
-- [x] **The geometry levers are exhausted — this is the programme's floor.**
-      `tools/stop_excess.py` over the 13-round battery: payload **−8.50 mm**
-      beyond voxel (no headroom, as #204 found), link **+3.86 mm** — down from
-      **+33.1 mm** in the #204 battery, whose link stops were 18-of-29
-      `panda_link6`, the link that now ships tight geometry. Both classes are
-      now at or below the grid term. **Every remaining millimetre of
-      over-approximation is the 25 mm voxel grid**, and refining it was struck
-      on measured cost. No tighter envelope on any link or payload can recover
-      anything further.
-- [~] **The start-state population — a third of stops; one lever now reaches it.**
-      Two of the three `estop-initial-configuration` stops were `panda_link1`,
-      whose envelope is now 0.65 mm worst-case instead of 25.68 mm. Predicted to
-      clear both; **not yet observed** — a post-change battery has to confirm it,
-      and that is the honest status. The third (`panda_link2` at +0.67 mm) is a
-      genuine near-contact no geometry work reaches. What remains open is the
-      residue: a base placement that parks the arm inside a counter is a
-      scene-generation question, and the census shows `link1`'s clearance is set
-      almost entirely by where the base parked.
-      Three of seven stops were `estop-initial-configuration`: the arm stopped
-      at reset by its own start pose, at +23.13, +22.01 and +0.67 mm. Every
-      lever in §5 addresses the *carry* phase. None addresses a base placement
-      that starts the arm inside a counter. This is a scene-generation or
-      reset-pose question, not a kernel one, and it is now the second-largest
-      class after the payload. `docs/reference/robocasa-start-state-census.md`
-      is the existing survey of it.
+      Neither `panda_link1` start-state stop clears. **My reasoning was wrong
+      twice over**: first striking the lever for the wrong reason, then
+      un-striking it for another wrong one. The census's "10 mm clears 14/14" is
+      computed against the **manifest OBB**, and the 26-DOP shipped later had
+      already collected that recovery (53.27 → 25.69 mm) — I read an
+      OBB-relative deficit as headroom still available after the DOP.
+
+      Hazard-log Entry 026's amendment now says the justification is withdrawn
+      and asks the WG to rule on a change that is safe, free and unproven, with
+      the recommendation that reverting the manifest while keeping the generator
+      tool is the cheaper option.
+
+- [ ] **The start-state population — a third of stops, and NO lever reaches it.**
+      Briefly thought to be addressed by link1's envelope; measured, it is not
+      (above). Three of seven stops are the arm stopped at reset by its own
+      pose — `panda_link1` ×2 at +23.13/+22.01 mm true clearance, `panda_link2`
+      ×1 at +0.67 mm. The census shows `link1`'s clearance is set almost entirely
+      by **where the base parked**, and that joints 3-7 cannot change a
+      start-state verdict at all when link1 or link2 dominates (83.3 % of
+      stopping states). So this is a scene-generation / base-placement question,
+      not a kernel one, and it is the largest class no current lever touches.
+
+- [ ] **NEW: the residual may be map inflation, not geometry.**
+      `packages/openral_octomap_bridge/README.md` records that octomap marks the
+      cell *containing the ray endpoint*, so a published grid can report a
+      surface **up to one full tree resolution (25 mm) nearer than it is** —
+      inherent to the lattice, upstream of the bridge. `tools/stop_excess.py`
+      subtracts only the 21.65 mm half-diagonal, so that inflation reads as
+      collision-model excess and is exactly what sent me hunting link1's
+      envelope. **Untested.** Separating it needs the octree's own report for the
+      tripping cell alongside the grid's, which no artifact records. This is the
+      first thing I would measure next.
 - [ ] **Half of these scenes never reach the kernel.** Five of thirteen rounds
       ended `deadline-no-grasp` — the policy never picked the object up. With
       the ceiling result (0 % for `baguette` gate-off), this bounds how much of
