@@ -150,8 +150,12 @@ _MANIFEST = str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
 _PIN_LAYOUT = 47
 _RETIRED_LAYOUT = 30
 
-#: The kernel's own world-voxel resolution in the deploy graph.
-_RES = 0.025
+#: The kernel's own world-voxel resolution in the deploy graph. Overridable so
+#: the resolution sweep in `docs/reference/collision-validation-evidence.md`
+#: (2026-09-07) is reproducible from the shipped test rather than from a probe
+#: that duplicates it -- the default is what `sim_e2e.launch.py` emits and what
+#: every assertion in this file is pinned against.
+_RES = float(os.environ.get("OPENRAL_FRIDGE_GRID_RES_M", "0.025"))
 #: Padding around the arm's own extent. The widest corner slop in this model is
 #: ``panda_link4``'s 88.22 mm and a 25 mm cell adds 21.65 mm of half-diagonal,
 #: so 200 mm leaves the nearest cell of every checked link inside the region.

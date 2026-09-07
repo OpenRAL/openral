@@ -198,25 +198,80 @@ term, which is the OBB corner slop (`panda_link6`: 53.35 mm).
 | --- | --- | --- | --- | --- |
 | 1 | **`tight_geometry` on `panda_link6`** (and `link3`/`link4`, which have none) | 18 of 29 link stops, incl. the whole `voxel_352030` class | ~33 mm of the link excess | **one manifest edit**; `tools/generate_tight_geometry.py` exists |
 | 2 | **Promote the fixtures the payload passes to modeled geometry** | 51 of 70 payload stops (the `voxel_` ones) | removes the voxel term entirely for those | moderate — generalises ADR-0098/#200 from the *declared place target* to the fixture the payload is near |
-| 3 | ~~Voxel resolution 25 → 12.5–15 mm~~ | — | **struck: cost is cubic** | see below |
+| 3 | **Voxel resolution 25 → 15 mm** | the quantisation term in *every* stop class, payload and link alike | **8.7 mm** of the 21.65 mm voxel half-diagonal | **un-struck 2026-09-07** — measured p99 **0.825 ms**, not the estimated 26.7 ms |
 | 4 | ~~Payload as a tight hull~~ | — | **−1.5 mm: none** | struck; measured out |
 
-### Why resolution is struck (lever 3)
+### Resolution was struck on an estimate, and the estimate was wrong (lever 3)
 
-`OccupancyVoxels.occupancy` is a **dense** `uint8[]`, and the kernel's per-link
-window holds `O(1/res³)` cells, so halving the cell size is an **8× check cost**,
-not a 2× one:
+**This was the one lever struck on paper rather than by test, and it does not
+survive being tested.** The original argument: `OccupancyVoxels.occupancy` is a
+dense `uint8[]` and the kernel's per-link window holds `O(1/res³)` cells, so
+halving the cell is an 8× check cost, giving 26.7 ms at 15 mm against a 33 ms
+ceiling. The table below is what it predicted, and what the kernel actually does.
 
-| resolution | grid cells | message | window cost | est. check | error term |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| **25 mm (today)** | 614 125 | 0.61 MB | 1.00× | 5.8 ms | 21.7 mm |
-| 20 mm | 1 191 016 | 1.19 MB | 1.95× | 11.3 ms | 17.3 mm |
-| 15 mm | 2 803 221 | 2.80 MB | 4.63× | **26.7 ms** | 13.0 mm |
-| 12.5 mm | 4 826 809 | 4.83 MB | 8.00× | **46.1 ms** | 10.8 mm |
+Measured 2026-09-07 on `q-laptop`: the real kernel binary, the real
+`panda_mobile` manifest (all seven links lowering their tight geometry), the
+`layout_ids: [47]` RoboCasa kitchen rasterised cell by cell at each resolution
+over the **same volume**, `world_voxel_margin_m = 0.0`, 200 chunks per point,
+end-to-end `/openral/candidate_action` → `/openral/safe_action`:
 
-Against a 33 ms hard budget at 30 Hz (25 ms soak target), 15 mm is marginal and
-12.5 mm is over. 20 mm fits but buys only 4.4 mm of the 20.1 mm payload excess.
-The cap would also have to rise 2-8×. **Poor return; not the lever.**
+| resolution | grid cells | occupied | median | **measured p99** | *estimated* | error term |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **25 mm (today)** | 82 368 | 9 891 | 0.104 ms | **0.517 ms** | *5.8 ms* | 21.65 mm |
+| 20 mm | 158 400 | 17 321 | 0.166 ms | **0.597 ms** | *11.3 ms* | 17.32 mm |
+| **15 mm** | 376 680 | 35 828 | 0.184 ms | **0.825 ms** | *26.7 ms* | 12.99 mm |
+| 12.5 mm | 630 054 | 59 948 | 0.162 ms | **0.838 ms** | *46.1 ms* | 10.83 mm |
+
+The estimate is wrong by 11× at the baseline and **55× at 12.5 mm**. Two
+independent errors compounded:
+
+1. **The 5.8 ms baseline was never the kernel.** It came from the shipped hull
+   benchmark (`collision-hull-narrow-phase.md` §4), a microbenchmark of the
+   narrow phase, not a round trip through the kernel under a real grid. There
+   was no latency surface to take that number from until one was built on
+   2026-09-07 — the same day the strike was written. Measured, the baseline is
+   **0.517 ms**.
+2. **The cubic factor was applied to the wrong term.** `collision.cpp:1541`'s
+   window loop is `if (grid.occupancy[idx] == 0) { continue; }` as its first
+   statement. The cubic growth therefore lands on an array load and a
+   branch-not-taken; the expensive work — the support-exemption test and the
+   staged 26-DOP → hull distance — runs only on **occupied** cells, and
+   occupancy is a *surface*. Measured: 25 → 12.5 mm multiplies total cells by
+   7.65× and occupied cells by 6.06×, but p99 by **1.62×**.
+
+**The cap objection also fails on its own numbers.** 15 mm is 376 680 cells,
+*under* the shipped `world_voxel_max_cells = 614 125` — no cap change at all.
+Only 12.5 mm exceeds it (630 054), and that cap is a `voxel_occupancy_.assign()`
+at `on_configure` (`lifecycle_kernel.cpp:1655`), so raising it costs 0.63 MB of
+pre-allocated memory, not hot-loop time. The plan's original "2 803 221 cells at
+15 mm" was a **whole-kitchen** grid; the kernel scans an arm-neighbourhood
+window, which is a different volume.
+
+**What it buys, and what it does not.** The error term is the cell half-diagonal,
+so 25 → 15 mm recovers **8.7 mm** and 25 → 12.5 mm recovers **10.8 mm**. Against
+a 20.1 mm median true clearance at the stop that is roughly half the payload
+class, and it applies to the link class and the start-state class equally —
+it is the only lever that touches all three. It is *not* on its own sufficient:
+the two clear start-state stops sit at +23.13 mm and +22.01 mm, beyond what even
+12.5 mm recovers. It composes with modeled fixtures (lever 2) rather than
+competing: ADR-0101 removes the voxel term entirely for the fixtures it models,
+and this shrinks it for everything else.
+
+**The honest limit of this measurement.** It measures the kernel *consuming* a
+grid, not the bridge *producing* one. `packages/openral_octomap_bridge`'s
+octree→grid conversion at a finer tree resolution is unmeasured, and octomap's
+own resolution would have to change with it; the 0.63 MB message also crosses
+DDS every cycle (that part *is* in the round trip above). It is also one pose in
+one layout — the window is sized by where the links are. Before shipping a
+resolution change, the bridge side needs its own measurement.
+
+Reproduce with the shipped test:
+
+```
+OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
+  tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py \
+  -k narrow_phase_meets_the_chunk_budget
+```
 
 ### Why modeled fixtures is the lever (lever 2)
 
@@ -357,13 +412,24 @@ Four things had to be discovered to make it run at all, each worth keeping:
       checked by forcing the budget to 0.001 ms to read the real numbers out.
       That also answers the latency question the `link3`/`link4`/`link6` change
       raised, on the shipped configuration rather than by extrapolation.
-- [x] ~~**Lever 3: voxel resolution 25 -> 15 mm**~~ — **struck on measured cost,
-      2026-09-07** (§5). `OccupancyVoxels.occupancy` is a dense `uint8[]` and the
-      per-link window is `O(1/res³)`, so halving the cell is an **8× check cost**:
-      26.7 ms estimated at 15 mm against a 33 ms hard ceiling, 46.1 ms at
-      12.5 mm. 20 mm fits but buys 4.4 mm of a 20.1 mm error, and the
-      `world_voxel_max_cells` cap would have to rise 2-8×. Poor return; not the
-      lever.
+- [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **un-struck 2026-09-07, and
+      the strike was mine.** It was the one lever struck on an *estimate* rather
+      than a measurement, and measuring it moved the number by **32×**: p99
+      **0.825 ms** at 15 mm, not the estimated 26.7 ms, against a 33 ms ceiling
+      (§5 for the full curve and both errors — a baseline that was never the
+      kernel, and a cubic factor applied to a branch-not-taken). 15 mm needs no
+      change to `world_voxel_max_cells` either; it is 376 680 cells against the
+      shipped 614 125.
+
+      Recovers **8.7 mm** of the 21.65 mm quantisation term, in *every* stop
+      class — the only lever that touches payload, link and start-state alike.
+      Not sufficient alone (the two clear start-state stops are +22 to +23 mm)
+      and it composes with lever 2 rather than competing.
+
+      **Not yet actionable.** What is measured is the kernel *consuming* a grid.
+      `packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
+      resolution is unmeasured, and it is the other half of the cost. That
+      measurement is the next step on this lever, not a manifest edit.
 - [x] **Drop `baguette` from the collision scorecard** — recorded 2026-09-07 in
       the ceiling entry of `docs/reference/collision-validation-evidence.md`:
       0/11 with the gate **off**, so it is policy-bound and cannot report on

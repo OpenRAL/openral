@@ -2379,6 +2379,76 @@ that moved were instruments, and every one of them had been *inflating* apparent
 severity. Exactly one geometry change is defensible on measurement, and it is the
 one still waiting on a human.
 
+### 2026-09-07 — the voxel-resolution strike was an estimate, and it was wrong by 32×
+
+`PLAN.md` §5 struck the 25 → 15 mm lever on cost. It was the only lever in the
+programme struck on paper rather than by test, and the paper was wrong.
+
+Measured on `q-laptop`: the real kernel binary, the real `panda_mobile` manifest
+(all seven links lowering tight geometry), the `layout_ids: [47]` RoboCasa
+kitchen rasterised cell by cell at each resolution over the **same volume**,
+`world_voxel_margin_m = 0.0`, 200 chunks per point, round trip
+`/openral/candidate_action` → `/openral/safe_action`. 200 of 200 chunks returned
+at every resolution.
+
+| resolution | grid cells | occupied | median | **measured p99** | max | *§5 estimate* |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 82 368 | 9 891 | 0.104 ms | **0.517 ms** | 2.607 ms | *5.8 ms* |
+| 20 mm | 158 400 | 17 321 | 0.166 ms | **0.597 ms** | 0.929 ms | *11.3 ms* |
+| **15 mm** | 376 680 | 35 828 | 0.184 ms | **0.825 ms** | 1.104 ms | *26.7 ms* |
+| 12.5 mm | 630 054 | 59 948 | 0.162 ms | **0.838 ms** | 1.301 ms | *46.1 ms* |
+
+Against a 33 ms hard 30 Hz ceiling, the resolution the strike called "marginal"
+runs **40× under** it, and the one it called "over" runs 39× under.
+
+**Why the estimate failed — two errors, compounding.**
+
+1. *The baseline was never the kernel.* 5.8 ms came from the shipped hull
+   microbenchmark (`collision-hull-narrow-phase.md` §4), not from a round trip
+   under a real grid — which had no latency surface until one was built the same
+   day the strike was written. The real baseline is 0.517 ms, 11× lower.
+2. *The cubic factor was applied to the wrong term.* The window loop
+   (`cpp/openral_safety_kernel/src/collision.cpp:1541`) opens with
+   `if (grid.occupancy[idx] == 0) { continue; }`. The `O(1/res³)` growth
+   therefore falls on an array load and a branch-not-taken; the support-exemption
+   test and the staged 26-DOP → hull distance run only on **occupied** cells, and
+   occupancy is a *surface*. 25 → 12.5 mm multiplies cells by 7.65× and occupied
+   cells by 6.06×, but p99 by **1.62×**.
+
+**The cap objection fails on its own numbers too.** 15 mm is 376 680 cells,
+under the shipped `world_voxel_max_cells = 614 125` — no cap change. Only 12.5 mm
+exceeds it, and the cap is a `voxel_occupancy_.assign()` at `on_configure`
+(`lifecycle_kernel.cpp:1655`): 0.63 MB of pre-allocated memory, not hot-loop
+cost. §5's "2 803 221 cells at 15 mm" was a whole-kitchen grid; the kernel scans
+an arm-neighbourhood window.
+
+**What it is worth.** The error term is the cell half-diagonal: 21.65 mm today,
+**12.99 mm at 15 mm**, 10.83 mm at 12.5 mm. That is 8.7 mm recovered in *every*
+stop class — the only lever that touches payload, link and start-state alike,
+where `tight_geometry` reaches links only and ADR-0101 reaches modeled fixtures
+only. It is not sufficient alone: the two clear start-state stops sit at
++23.13 mm and +22.01 mm, past what even 12.5 mm recovers.
+
+**What this does not measure, stated plainly.** The kernel *consuming* a grid,
+not the bridge *producing* one. `packages/openral_octomap_bridge`'s octree→grid
+conversion at a finer tree resolution is unmeasured and is the other half of the
+cost; octomap's own tree resolution would have to move with it. It is also one
+pose in one layout — the window is sized by where the links are — and one host.
+**No resolution change should ship on this measurement alone**; the bridge-side
+measurement is the next step.
+
+Reproducible from the shipped test rather than from a probe that duplicates it:
+
+```
+OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
+  tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py \
+  -k narrow_phase_meets_the_chunk_budget
+```
+
+Recorded here in full, including the estimate it replaces, because this is the
+fourth time this week a number that came from reasoning rather than from the
+instrument turned out to be wrong — and the other three were mine too.
+
 ## Related
 
 - [RoboCasa start-state collision census](robocasa-start-state-census.md) — every
