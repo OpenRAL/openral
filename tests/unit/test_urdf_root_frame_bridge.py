@@ -14,9 +14,21 @@ while dropping every frame, which is the worst shape this failure can take.
 which *needs* it *declares* it, and that what it declares matches the URDF on
 disk rather than a remembered number.
 
-The `root_frame` must be the URDF's ROOT link, not merely some link near the
-base: bridging onto a link the URDF already parents would give that link two
-parents, and a frame with two parents is not a tree.
+``root_frame`` names the link ``base_frame`` ATTACHES TO — not necessarily the
+tree's root. That distinction is load-bearing: ``derive_robot_relative_height_band``
+reads the same pair to place collision geometry, and the UR manifests point it
+at ``base_link`` because ``joints`` lists only movable joints, so ``base_link``
+is no joint's child and the ``base_frame`` chain alone cannot reach the arm.
+Retargeting those to the URDF's ``world`` root made every UR collision volume
+unplaceable and the height band refuse outright — verified by doing it and
+watching `packages/openral_slam_bringup` fail, so this file asserts
+reachability, NOT rootness.
+
+A consequence worth knowing rather than enforcing: when ``root_frame`` is a
+link the URDF already parents, that link ends up with two parents on /tf. For
+the UR manifests both hops are identity and nothing consumes the URDF's
+``world``, so the ambiguity is inert — and not worth trading a working height
+band for.
 """
 
 from __future__ import annotations
@@ -93,9 +105,10 @@ def test_base_frame_reaches_the_urdf_root(robot_id: str, manifest: Path, urdf: P
         f"{urdf.name} and no root_frame bridge is declared — nothing will ever "
         f"publish {description.base_frame!r} on /tf"
     )
-    assert asset.root_frame == urdf_root, (
-        f"{robot_id}: root_frame {asset.root_frame!r} is not the URDF root {urdf_root!r}. "
-        f"Bridging onto a non-root link gives it two parents, which is not a tree."
+    assert asset.root_frame in urdf_links, (
+        f"{robot_id}: root_frame {asset.root_frame!r} is not a link in {urdf.name} "
+        f"(links include {urdf_root!r}). The bridge must land on a real link, or "
+        f"nothing connects base_frame to the robot's geometry."
     )
     assert asset.base_to_root_xyz_rpy is not None, (
         f"{robot_id}: root_frame is declared without base_to_root_xyz_rpy, so the "

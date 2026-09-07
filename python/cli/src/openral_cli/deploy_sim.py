@@ -2023,9 +2023,7 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     instead of any co-running stack's.
     """
     return any(
-        all(part in cmdline for part in needle)
-        if isinstance(needle, tuple)
-        else needle in cmdline
+        all(part in cmdline for part in needle) if isinstance(needle, tuple) else needle in cmdline
         for needle in _ORPHAN_GRAPH_NEEDLES
     )
 

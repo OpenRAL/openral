@@ -37,14 +37,20 @@ base_frame: "ur5e_base_link"
 assets:
   urdf:
     ref: "file:ur5e.urdf"
-    # The URDF root is `world` (`world -> base_link` is a fixed identity
-    # joint), so bridging onto `base_link` gave it TWO parents — `world`
-    # from robot_state_publisher and `ur5e_base_link` from this static
-    # transform. A frame with two parents is not a tree: tf2 keeps
-    # whichever static arrived last, so which parent wins is a startup
-    # race. Retargeting to the actual root is numerically identical
-    # (both hops are identity) and leaves a single well-formed chain.
-    root_frame: "world"
+    # `base_link`, NOT the URDF's `world` root, and deliberately so:
+    # `root_frame` names the link `base_frame` ATTACHES TO — the one the
+    # manifest's collision geometry hangs off — not the tree's root.
+    # `derive_robot_relative_height_band` reads this pair to place every UR
+    # collision volume (`joints` lists only movable joints, so `base_link` is
+    # no joint's child and the `base_frame` chain alone cannot reach it).
+    # Retargeting it to `world` makes those volumes unplaceable and the band
+    # refuses outright — verified, not assumed.
+    #
+    # Known and accepted: robot_state_publisher also publishes the URDF's
+    # `world -> base_link`, so `base_link` has two parents. Both hops are
+    # identity and nothing consumes `world` here, so the ambiguity is inert;
+    # it is not worth trading a working height band for.
+    root_frame: "base_link"
     base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   mjcf: "rd:ur5e_mj_description"
   srdf: "file:ur5e.srdf"
