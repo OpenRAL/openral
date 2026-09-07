@@ -485,26 +485,37 @@ Four things had to be discovered to make it run at all, each worth keeping:
       the recommendation that reverting the manifest while keeping the generator
       tool is the cheaper option.
 
-- [ ] **The start-state population — a third of stops, and NO lever reaches it.**
-      Briefly thought to be addressed by link1's envelope; measured, it is not
-      (above). Three of seven stops are the arm stopped at reset by its own
-      pose — `panda_link1` ×2 at +23.13/+22.01 mm true clearance, `panda_link2`
-      ×1 at +0.67 mm. The census shows `link1`'s clearance is set almost entirely
-      by **where the base parked**, and that joints 3-7 cannot change a
-      start-state verdict at all when link1 or link2 dominates (83.3 % of
-      stopping states). So this is a scene-generation / base-placement question,
-      not a kernel one, and it is the largest class no current lever touches.
+- [x] **Start-state investigated end to end — it is quantisation, same as the
+      payload class.** Three stops, read map-side for the first time. Two
+      candidate root causes were raised and both were refuted by measurement:
 
-- [ ] **NEW: the residual may be map inflation, not geometry.**
-      `packages/openral_octomap_bridge/README.md` records that octomap marks the
-      cell *containing the ray endpoint*, so a published grid can report a
-      surface **up to one full tree resolution (25 mm) nearer than it is** —
-      inherent to the lattice, upstream of the bridge. `tools/stop_excess.py`
-      subtracts only the 21.65 mm half-diagonal, so that inflation reads as
-      collision-model excess and is exactly what sent me hunting link1's
-      envelope. **Untested.** Separating it needs the octree's own report for the
-      tripping cell alongside the grid's, which no artifact records. This is the
-      first thing I would measure next.
+      * **map inflation** — refuted. `utensil-s2`'s tripping cell *contains* the
+        true nearest surface point (0.00 mm from the cell box), so the cell is
+        where the world is.
+      * **self-occupancy** — refuted. `fridge-s2` looked like the robot in its
+        own map (15/27 rays on `robot0_link2_collision`, no world geom). Widening
+        the backing sweep to run whenever the rays found no collidable *world*
+        geometry, then re-running on `spark`, found the **fridge drawer** in that
+        cell — the same body its near-miss pair already named at +0.673 mm. The
+        rays had missed it.
+      * **link envelope** — refuted separately: the `panda_link1` envelope moved
+        these same stops by 0.0003 mm.
+
+      | stop | link | true clearance | reported |
+      | --- | --- | ---: | ---: |
+      | `utensil-s2` | `panda_link1` | +23.13 mm | −2.38 mm |
+      | `utensil-s4` | `panda_link1` | +22.01 mm | −8.31 mm |
+      | `fridge-s2` | `panda_link2` | **+0.67 mm** | −21.98 mm |
+
+      Two are stops of a demonstrably clear robot; `fridge-s2` at 0.67 mm is a
+      genuine near-contact and is arguably a correct stop. **The class has the
+      same single lever as the payload class**, which is the real conclusion:
+      ADR-0101 is scoped to the carried payload, and extending it to bare links
+      would cover both with one mechanism. A scope note for the WG, not a
+      decision — the fail-open suppression step still needs ruling on either way.
+- [x] ~~**NEW: the residual may be map inflation, not geometry.**~~ **Struck the
+      same day it was raised** — the tripping cells contain the true surface
+      point, so they are not displaced toward the sensor.
 - [ ] **Half of these scenes never reach the kernel.** Five of thirteen rounds
       ended `deadline-no-grasp` — the policy never picked the object up. With
       the ceiling result (0 % for `baguette` gate-off), this bounds how much of
