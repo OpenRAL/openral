@@ -204,6 +204,17 @@ _Package and publish a local rSkill directory to the HF Hub._
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
 - `main() -> None` — Entry point. Sequence: parse args (`--publish` / `--public` / `--bump-revision` / `--fix-name` / `--token`) → validate manifest → `_enforce_repo_name` (exit 1 on a non-compliant VLA name unless `--fix-name`) → validate task space → validate docs → `public_visibility_error` gate (exit 1 if `--public` on a non-commercial skill) → exit 1 on doc errors → optional `--bump-revision` → `--publish` (private unless `--public`).
 
+### `tools/stop_excess.py`
+
+- `half_diagonal(resolution_m: float) -> float` — half a cubic cell's body diagonal, the grid's worst-case error.
+- `Excess(NamedTuple)` — one stop's decomposition (`round_id`, `scene`, `party`, `is_payload`, `reported_depth_m`, `certified_gap_m`, `voxel_half_diagonal_m`, `verdict`); `.excess_m` is `certified_gap − reported_depth`, `.beyond_voxel_m` subtracts the half-diagonal.
+- `collect(round_dirs: list[Path]) -> tuple[list[Excess], list[str]]` — certified stops plus the reasons for every skip. Reads each round's own `grid_resolution_m`; a stop without one is skipped, **never** defaulted to 25 mm, since the half-diagonal is the whole quantity being subtracted.
+- `summarise(stops, skipped) -> dict[str, Any]` — per-class `n`, median excess, median beyond-voxel, and `has_geometry_headroom` (strict `> 0`: a class exactly at the voxel term has none).
+- `render(stops, summary) -> str` — the per-stop table plus the per-class verdict.
+- `main(argv=None) -> int` — CLI. `uv run python tools/stop_excess.py <round dirs...> [--json]`.
+
+Produces `PLAN.md` §5's decomposition table — the measurement that struck the payload-hull and voxel-resolution levers and promoted modeled fixtures. Pure, offline, stdlib-only. Tested in `tests/unit/test_stop_excess.py`.
+
 ### `tools/adr0101_recovery.py`
 
 - `CLEAR_THRESHOLD_M: float` — the clearance/contact boundary, `0.0`. Zero belongs to **contact**, not clearance: a payload touching a surface is stopped by a modeled body exactly as it was by the cube, so putting `0.0` on the clearance side would count real contacts as recoveries — the one class ADR-0101 must never suppress.
