@@ -109,6 +109,16 @@ _MJCF = """
       <geom name="counter_top_visual" type="box" size="0.10 0.005 0.10" pos="0 -0.028 0"
             contype="0" conaffinity="0"/>
     </body>
+    <!-- The RoboCasa counter as `counter.py` ACTUALLY builds it: one full-span
+         non-collidable `*_top_visual` and collidable chunks tiling the SAME
+         volume, so the two share a surface exactly. Stepping past the shell's
+         face lands inside the chunk, where a ray reports no further entry —
+         which is why the coincident case needs more than the walk-past fix. -->
+    <body name="counter_2_right_group" pos="0.60 0 0.40">
+      <geom name="counter2_top_visual" type="box" size="0.10 0.02 0.10"
+            contype="0" conaffinity="0"/>
+      <geom name="counter2_top_0" type="box" size="0.10 0.02 0.10"/>
+    </body>
     <body name="carried_cup" pos="0.30 0 0.40">
       <freejoint name="carried_cup_joint"/>
       <geom name="cup_body" type="sphere" size="0.03"/>
@@ -552,3 +562,54 @@ def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> No
     )
     classes = {str(entry["class"]) for entry in record["backing"]}  # type: ignore[call-overload]
     assert classes == {"solid_world", "noncollidable_world"}
+
+
+def test_a_collidable_slab_coincident_with_its_visual_shell_is_not_read_as_decoration() -> None:
+    """Coincident geometry, not just geometry behind a shell.
+
+    `test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration`
+    covers a shell in FRONT of a slab, and the walk-past fix handles it. It does
+    not handle the shell and the slab sharing a surface — and that is how
+    RoboCasa actually builds every counter top:
+    `robocasa/models/fixtures/counter.py` emits one full-span
+    `<name>_top_visual` (`contype=0`) and then tiles the *same* volume with
+    collidable chunks via `_get_chunks`, identical in `y` and `z` and tiling
+    `x`. Stepping `distance + eps` past the shell's face lands *inside* the
+    chunk, where the ray reports no further entry surface, so the chunk is never
+    seen and the cell reads `noncollidable_world`.
+
+    Measured on `2026-09-07-adr0101-live-1`: 9 of 27 rays struck
+    `counter_1_right_group_top_visual` and nothing else, so the tripping cell
+    was adjudicated decoration — while the certified probe put the collidable
+    chunk `counter_1_right_group_top_0`'s surface at `z = 0.920` with the cell
+    spanning `z in [0.900, 0.925]`. The solid geometry was inside the cell the
+    whole time, and the map was right again.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.60, 0.0, 0.22))
+
+    assert record["verdict"] == "solid_world", (
+        "a collidable chunk coincident with its visual shell was missed; the "
+        "stop would be adjudicated as landing on decoration"
+    )
+    assert record["collidable_overlap_swept"] is True, (
+        "the rays found nothing solid, so the overlap sweep must have run"
+    )
+    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    assert names & {"counter2_top_0", "counter2_top_1"}, (
+        f"the collidable chunk that explains the cell must be named; got {names}"
+    )
+
+
+def test_the_overlap_sweep_does_not_run_when_the_rays_already_found_solid_geometry() -> None:
+    """The sweep is a supplement, and must not second-guess a good ray result.
+
+    An AABB overlap can claim a geom whose surface misses the cube, so running
+    it unconditionally would let a conservative bound override an exact one.
+    It is consulted only when the rays found nothing collidable.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.0, -0.325, 0.22))
+
+    assert record["verdict"] == "solid_world"
+    assert record["collidable_overlap_swept"] is False

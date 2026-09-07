@@ -1888,29 +1888,45 @@ into collidable chunks via `_get_chunks`, which tile it exactly — identical
 Visual and collision are **coincident by construction**. There is no offset to
 be proud by.
 
-That leaves a genuine tension, which is the finding:
+**Resolved, same day, and it was the instrument again.** The three-way tension
+— probe says no collidable geom in the cell, certified probe says the nearest
+collidable geom of that body is 24.86 mm away, asset code says the two are
+coincident — is settled by the certified witness points the round already
+recorded:
 
-* the backing probe says the cell contains a non-collidable geom and **no
-  collidable one**, after re-casting past decoration;
-* the certified probe says the nearest collidable geom of that same body is
-  **24.86 mm away**;
-* the asset code says the two are coincident.
+| quantity | value |
+| --- | --- |
+| cell centre | `z = 0.91255` |
+| cell extent (25 mm) | `z ∈ [0.90005, 0.92505]` |
+| nearest **collidable** geom | `counter_1_right_group_top_0` |
+| its witness point | `z = 0.920` |
 
-All three cannot be right. The candidate explanations are (a) a residual defect
-in the backing probe's re-cast — advancing "just past" a strike may step over a
-*coincident* collidable twin and land outside the cube, which the fix as written
-would not catch, since it was built for decoration in *front* of a slab, not
-decoration sharing its surface; (b) the cell sitting at a chunk boundary; or
-(c) something about this layout's counter that the base asset does not show.
+**The collidable chunk's surface is inside the cell.** The certified probe and
+the asset code agree; only the backing probe was wrong.
 
-**This is not resolved, and it is the most concrete open thread on the payload
-class.** It matters because the two readings point opposite ways: under (a) the
-20.1 mm payload excess is partly an *instrument* artifact and ADR-0101 is being
-sized against a number that is itself suspect; under a real geometry gap, the
-ADR's suppression bound would not explain cells like this and the 94 % is
-optimistic. Resolving it needs a direct query of the live model at the stop —
-the collidable geoms of `counter_1_right_group_main` and their distance to that
-cell's centre — which no current artifact records.
+The mechanism is a residual defect in the decoration fix (`c7bd2c7`), exactly as
+hypothesised. That fix walks the ray *past* a non-collidable strike and casts
+again, which finds a slab **behind** a shell. It cannot find one **coincident**
+with it: `counter.py` emits the full-span `<name>_top_visual` and the collidable
+chunks on the same plane, so stepping `distance + eps` past the shell's face
+lands *inside* the chunk, where the ray reports no further entry surface. Nine
+of 27 rays struck the shell and nothing else.
+
+`voxel_backing_record` now falls back to a world-AABB overlap sweep over
+collidable geoms when — and only when — the rays found nothing solid. That is
+conservative in the safe direction for a diagnostic whose failure mode is
+calling real geometry "decoration", and it cannot override a ray pass that
+already found something. Reproduced in
+`tests/unit/test_sim_estop_voxel_backing.py` with a coincident shell/chunk pair,
+which yields the same 9-of-27 signature; mutation-checked.
+
+**What this does and does not move.** The certified probe measures geom-to-geom
+distance and never used rays, so the 71 % false-positive rate, the stop
+decomposition, and every `nearest_tripping_party_m` in this page are unaffected.
+What changes is the *backing class* of cells previously read as
+`noncollidable_world` — which is the evidence the 2026-09-07 "32 % too sparse"
+entry and ADR-0101's premise about "cells no real body explains" rest on. Those
+should be re-derived from a post-fix round before either is leaned on further.
 
 
 **n = 1.** The mechanism above is read directly off one record and is not in
