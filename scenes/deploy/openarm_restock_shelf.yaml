@@ -66,14 +66,14 @@ sensors:
     vendor: StereoLabs
     model: ZED Mini
     deploy_binding:
-      backend: opencv_thread
+      # zed_wrapper owns the UVC device while producing the registered cloud.
+      # Subscribe to its rectified left image instead of opening the same device.
+      backend: ros2_image
       backend_params:
-        device: /dev/camera_head_stereo
-        width: 1344
-        height: 376
-        fps: 30
-        # (x, y, width, height) — the left lens.
-        crop: [0, 0, 672, 376]
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
 
   # ── wrist_left / wrist_right — Arducam B0495 global shutter ─────────────
   # Names match the robot manifest's sim wrist cameras, so these entries are
@@ -142,13 +142,13 @@ sensors:
         height: 600
         fps: 30
 
-# Committed deploy posture. Fixed-base bimanual arm, three RGB cameras, no
-# lidar and no depth consumed by this policy (the ZED's depth needs the ZED SDK
-# and nothing here asks for it) -> SLAM / Nav2 / octomap off.
+# Fixed-base bimanual arm. The registered ZED cloud is mapped by octomap and
+# remains a safety input through the kernel voxel check.
 runtime:
   enable_slam: false
   enable_nav2: false
-  enable_octomap: false
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
   enable_octomap_kernel_check: true
   # Off for the first bring-up. Thor has headroom for more GPU tenants than the
   # 8 GB benches do, but the restocking policy is 6.74 GiB of BF16 weights on
