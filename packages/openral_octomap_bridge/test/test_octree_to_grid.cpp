@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -149,14 +150,16 @@ constexpr double kProbHit = 0.7;
 constexpr double kProbMiss = 0.4;
 constexpr double kMaxRange = 6.0;
 
-octomap::OcTree deploy_sim_tree() {
-  octomap::OcTree tree(kRes);
+octomap::OcTree deploy_sim_tree_at(double resolution) {
+  octomap::OcTree tree(resolution);
   tree.setOccupancyThres(kOccupancyThres);
   tree.setClampingThresMax(kClampingMax);
   tree.setProbHit(kProbHit);
   tree.setProbMiss(kProbMiss);
   return tree;
 }
+
+octomap::OcTree deploy_sim_tree() { return deploy_sim_tree_at(kRes); }
 
 // One frame of real returns; two frames confirm a cell at occupancy_thres 0.8.
 void insert_frame(octomap::OcTree& tree, const octomap::point3d& sensor,
@@ -179,22 +182,22 @@ void insert_confirmed(octomap::OcTree& tree, const octomap::point3d& sensor,
 // A back wall, a counter top and a side wall, seen from a depth camera on the
 // robot and inserted through real rays, so the octree carries real free space
 // and octomap prunes it where it can.
-octomap::OcTree kitchen_scene() {
-  octomap::OcTree tree = deploy_sim_tree();
+octomap::OcTree kitchen_scene_at(double resolution) {
+  octomap::OcTree tree = deploy_sim_tree_at(resolution);
   const octomap::point3d sensor(0.0F, 0.0F, 0.6F);
   std::vector<octomap::point3d> returns;
-  for (double y = -1.2; y <= 1.2; y += kRes) {
-    for (double z = 0.0; z <= 1.6; z += kRes) {
+  for (double y = -1.2; y <= 1.2; y += resolution) {
+    for (double z = 0.0; z <= 1.6; z += resolution) {
       returns.emplace_back(1.20F, static_cast<float>(y), static_cast<float>(z));
     }
   }
-  for (double x = 0.4; x <= 1.2; x += kRes) {
-    for (double y = -1.2; y <= 1.2; y += kRes) {
+  for (double x = 0.4; x <= 1.2; x += resolution) {
+    for (double y = -1.2; y <= 1.2; y += resolution) {
       returns.emplace_back(static_cast<float>(x), static_cast<float>(y), 0.90F);
     }
   }
-  for (double x = 0.2; x <= 1.2; x += kRes) {
-    for (double z = 0.0; z <= 1.6; z += kRes) {
+  for (double x = 0.2; x <= 1.2; x += resolution) {
+    for (double z = 0.0; z <= 1.6; z += resolution) {
       returns.emplace_back(static_cast<float>(x), 1.10F, static_cast<float>(z));
     }
   }
@@ -202,6 +205,8 @@ octomap::OcTree kitchen_scene() {
   tree.updateInnerOccupancy();
   return tree;
 }
+
+octomap::OcTree kitchen_scene() { return kitchen_scene_at(kRes); }
 
 // The deploy-sim coverage: the ball the panda_mobile arm's checked geometry
 // lives in, at the bridge's sim resolution.
@@ -437,6 +442,64 @@ TEST(OctreeToGrid, AnAbsurdSpecIsRefusedRatherThanAllocated) {
   const auto grid = bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(),
                                                      ball(0.05, 0.05, 0.05, 4000.0), "base_link");
   EXPECT_TRUE(grid.occupancy.empty());
+}
+
+TEST(OctreeToGrid, RasterizationCostAcrossTreeResolutions) {
+  // The PRODUCER half of the 25 -> 15 mm lever. `PLAN.md` §5 un-struck that
+  // lever after measuring the kernel CONSUMING a finer grid (p99 0.825 ms at
+  // 15 mm, against a 26.7 ms estimate) and named this as the other half: the
+  // bridge rebuilds the grid on every publish, and the grid's resolution IS the
+  // octree's, so a finer kernel grid means a finer TREE.
+  //
+  // Two costs move oppositely with a finer tree, which is why this is measured:
+  // the dense `occupancy` buffer is O(1/res^3) to allocate and zero, while the
+  // marking loop iterates OCCUPIED LEAVES, which are a surface and grow as
+  // O(1/res^2). The estimate-versus-measurement error that made the original
+  // strike wrong by 32x is available here too, so this prints the curve instead
+  // of asserting a shape.
+  //
+  // `kitchen_spec()`'s 1.0 m ball is slightly smaller than the shipped 1.05 m
+  // coverage radius (`sim_e2e.launch.py::_octomap_coverage_radius`), so these
+  // cell counts are a mild under-estimate of the deployed ones.
+  constexpr double kResolutions[] = {0.025, 0.020, 0.015, 0.0125};
+  for (const double resolution : kResolutions) {
+    const octomap::OcTree tree = kitchen_scene_at(resolution);
+    const auto spec = kitchen_spec();
+    (void)bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(), spec, "base_link");
+
+    const auto started = std::chrono::steady_clock::now();
+    constexpr int kIterations = 10;
+    std::size_t cells = 0;
+    std::size_t occupied = 0;
+    for (int i = 0; i < kIterations; ++i) {
+      const auto grid =
+          bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(), spec, "base_link");
+      cells = grid.occupancy.size();
+      occupied = occupied_count(grid);
+    }
+    const double per_call_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count() /
+        kIterations;
+    std::cout << "  resolution " << resolution * 1e3 << " mm: " << cells << " cells, " << occupied
+              << " occupied, " << per_call_ms << " ms/call" << std::endl;
+
+    if (cells == 0) {
+      // Not a failure: `kMaxCells` (4e6) is a real allocation guard, and at the
+      // shipped coverage radius 12.5 mm crosses it. Refusing is the correct
+      // fail-closed behaviour — but it means 12.5 mm is unreachable without
+      // raising that guard, which is a decision, not a manifest edit. Pinned
+      // here so the boundary is a recorded fact rather than a surprise.
+      EXPECT_LT(resolution, 0.015) << "an unexpected resolution was refused outright";
+      continue;
+    }
+    ASSERT_GT(occupied, 0U) << "non-empty grid carried no occupancy at " << resolution << " m";
+    // The publish period is the contract at every resolution, not only the
+    // shipped one: a tree the bridge cannot rasterize in time is not a usable
+    // lever however cheap the kernel finds it.
+    EXPECT_LT(per_call_ms, 100.0) << "rasterization at " << resolution * 1e3 << " mm took "
+                                  << per_call_ms << " ms, over the 10 Hz publish period";
+  }
 }
 
 TEST(OctreeToGrid, RasterizingTheKitchenStaysInsideThePublishBudget) {

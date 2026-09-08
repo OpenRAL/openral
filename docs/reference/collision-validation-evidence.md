@@ -2204,6 +2204,57 @@ this ray-sampling gap), and every one of them made the stack look *worse* than i
 is rather than hiding a real contact.
 
 
+### 2026-09-08 — the producer half of the resolution lever, and the cell count the un-strike got wrong
+
+`PLAN.md` §5 un-struck the 25 → 15 mm lever on 2026-09-07 after measuring the
+kernel *consuming* a finer grid, and named the other half as unmeasured: the
+bridge has to **build** the grid on every publish, and since the published
+lattice IS the octree's, a finer kernel grid means a finer **tree**. Measured in
+`test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`, real octree,
+real rasterizer, 10 calls each:
+
+| tree resolution | grid cells | occupied | rasterize |
+| ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 512 000 | 825 | **0.88 ms** |
+| 20 mm | 1 000 000 | 1 380 | 1.29 ms |
+| 15 mm | 2 406 104 | 3 936 | **1.60 ms** |
+| 12.5 mm | — | — | **refused** |
+
+**The producer is not the obstacle.** 1.60 ms at 15 mm against a 100 ms publish
+period, and the curve is nearly flat — cells ×4.7 for time ×1.8 — because the
+marking loop iterates occupied leaves, which are a *surface*, while only the
+dense buffer's allocation scales with volume. The same shape that made the
+consumer cheap makes the producer cheap.
+
+**12.5 mm is refused outright**, and correctly: `octree_to_grid.cpp`'s
+`kMaxCells = 4 000 000` allocation guard is crossed at 4 096 000 cells for this
+ball. Fail-closed is the right behaviour, but it means 12.5 mm is unreachable
+without raising that guard — a decision, not a manifest edit.
+
+**A correction to the un-strike, which was mine.** It claimed "15 mm needs no
+change to `world_voxel_max_cells`; it is 376 680 cells against the shipped
+614 125", and dismissed §5's 2.8 M figure as "a whole-kitchen grid, not the
+arm-neighbourhood window". That was wrong in both halves. The coverage ball is
+sized by the **arm's reach** — `sim_e2e.launch.py::_octomap_coverage_radius`
+measures the kernel-checked links at 1016 mm and ships 1.05 m — so at 15 mm it
+needs **141³ = 2 803 221** cells. §5's original 2.8 M was right. The measurement
+above lands at 2 406 104 for a slightly smaller 1.0 m test ball, which is the
+same number.
+
+The cap consequence is therefore real and was not avoided: a kernel still
+reserving 614 125 rejects every grid it is sent, which reads as "no world" and
+is a **fail-open on the world check**. That is why `_world_voxel_max_cells` now
+derives the cap from the resolution rather than carrying it as a hand-kept
+constant — the fix landed in the same commit that made the resolution
+configurable, before this measurement was taken.
+
+**What is still unmeasured on this lever.** Message size. 2.8 M cells is a
+2.8 MB dense `uint8[]` on every publish at 10 Hz — 28 MB/s over DDS, against
+0.6 MB and 6 MB/s today. Neither the transport cost nor its effect on the
+kernel's own deadline has been measured, and it is now the only unquantified
+term left between here and a 15 mm manifest edit.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
