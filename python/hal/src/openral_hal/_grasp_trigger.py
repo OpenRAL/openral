@@ -1,51 +1,52 @@
 """Gripper-effort grasp trigger — when to ask perception "what is in the jaws?".
 
-``_vision_attachment_evidence`` is *told* that a grasp happened;
-it does not decide it. This module is that decision, and only that: a debounced
+``_vision_attachment_evidence`` is *told* that a grasp happened; it does
+not decide it. This module is that decision, and only that: a debounced
 state machine over the gripper joint's effort channel in the typed
 ``JointState`` the HAL already reads every tick. It emits
 ``GraspEvent`` s — ATTACH, REGRASP, DETACH — which the vision attachment
 bridge turns into ``SegmentInView`` calls.
 
 Pure: no ROS, no numpy, no I/O, no clock. The caller supplies the state
-snapshots, so the whole state machine is unit-testable against real manifests.
+snapshots, so the whole state machine is unit-testable against real
+manifests.
 
-Why effort, and why N consecutive ticks
----------------------------------------
-
-A commanded jaw *position* says nothing about whether anything is between the
-jaws — a closed-on-nothing gripper reaches the same position as one holding a
-thin object. Effort is what distinguishes them: closing onto an object stalls
-the servo and the effort readback rises. A single tick over the threshold is not
-enough, though: effort spikes transiently on every jaw acceleration, and a
-one-tick spike would fire a segmentation (and a payload attachment) for a grasp
-that never happened. ``GraspTriggerConfig.consecutive_ticks`` is the
-debounce, and the thresholds carry hysteresis so a payload held right at the
-boundary does not chatter attach/detach.
+Why effort, and why N consecutive ticks: a commanded jaw *position* says
+nothing about whether anything is between the jaws — a closed-on-nothing
+gripper reaches the same position as one holding a thin object. Effort
+distinguishes them: closing onto an object stalls the servo and the
+effort readback rises. A single tick over threshold is not enough,
+though — effort spikes transiently on every jaw acceleration, and a
+one-tick spike would fire a segmentation (and a payload attachment) for
+a grasp that never happened. ``GraspTriggerConfig.consecutive_ticks`` is
+the debounce, and the thresholds carry hysteresis so a payload held
+right at the boundary does not chatter attach/detach.
 
 .. warning::
 
-   **The SO-101 (Feetech STS3215) effort readback is UNVERIFIED as a grasp
-   signal.** Nothing in the design work behind this module measured whether
-   those servos report a usable present-load value through
-   ``lerobot``'s Feetech bus, or whether the channel is quantised, sign-flipped,
-   latched, or simply zero. Until that is measured, this trigger MUST NOT be
-   trusted as the sole attach signal on SO-101 hardware.
+   **The SO-101 (Feetech STS3215) effort readback is UNVERIFIED as a
+   grasp signal.** Nothing in the design work behind this module
+   measured whether those servos report a usable present-load value
+   through ``lerobot``'s Feetech bus, or whether the channel is
+   quantised, sign-flipped, latched, or simply zero. Until measured,
+   this trigger MUST NOT be trusted as the sole attach signal on SO-101
+   hardware.
 
-   This is deliberately left as a falsifiable measurement rather than a guessed
+   Deliberately left as a falsifiable measurement rather than a guessed
    constant. ``assess_effort_readback`` is the test hook: record a real
    open → close-on-object → hold → open sequence on the arm, feed the
-   ``JointState`` snapshots in, and read the verdict. A
-   channel that is absent, all-zero, or constant across a sequence that
-   *physically* loaded the jaws is unusable, and the attach trigger then needs a
-   different signal entirely (tactile, current sense, or an explicit skill-level
-   attach command) — which would change this module's interface, so it is the
-   cheapest thing to falsify now and the most expensive to discover late.
+   ``JointState`` snapshots in, and read the verdict. A channel that is
+   absent, all-zero, or constant across a sequence that *physically*
+   loaded the jaws is unusable, and the attach trigger then needs a
+   different signal entirely (tactile, current sense, or an explicit
+   skill-level attach command) — which would change this module's
+   interface, so it is cheapest to falsify now and most expensive to
+   discover late.
 
-Every threshold below is a **calibration point, not a measured constant**
-(CLAUDE.md §1.2). They are expressed as fractions of the gripper joint's own
-``effort_limit`` from the manifest, so at least the scale comes from the robot
-rather than from a number typed into this file.
+Every threshold below is a **calibration point, not a measured
+constant** (CLAUDE.md §1.2). They are expressed as fractions of the
+gripper joint's own ``effort_limit`` from the manifest, so at least the
+scale comes from the robot rather than a number typed into this file.
 """
 
 from __future__ import annotations

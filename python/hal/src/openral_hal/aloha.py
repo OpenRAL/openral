@@ -2,31 +2,29 @@
 
 The physical ALOHA is two ViperX 300 6-DoF arms with parallel grippers
 mounted side-by-side, exposing a 14-DoF joint-position action space
-(2 * (6 arm + 1 gripper)).  The gym-aloha simulator uses an MJCF that mirrors
-the same kinematics and scene layout, so the manifest and the in-code
-``ALOHA_DESCRIPTION`` describe both the real robot and the simulator
-one-to-one (CLAUDE.md robot/sim split).
+(2 * (6 arm + 1 gripper)). The gym-aloha simulator uses an MJCF
+mirroring the same kinematics and scene layout, so the manifest and the
+in-code ``ALOHA_DESCRIPTION`` describe both the real robot and the
+simulator one-to-one (CLAUDE.md robot/sim split).
 
 This module wires the **real-hardware** Layer-0 path; the gym-aloha sim
-path is owned by ``openral_sim.backends.aloha`` and invokes the
-gym ``MjModel`` directly.
+path is owned by ``openral_sim.backends.aloha`` and invokes the gym
+``MjModel`` directly.
 
-Driver landscape
-----------------
-The reference ROS 2 driver is
-`Interbotix/interbotix_ros_manipulators`_, which provides a
+Driver landscape: the reference ROS 2 driver is
+`Interbotix/interbotix_ros_manipulators`_, providing a
 ``ros2_control`` joint trajectory controller (default name
 ``"arm_controller"``) per arm and a gripper position controller per
-gripper.  ALOHA bring-up launches two robot namespaces (``"left_arm"`` /
-``"right_arm"``) and we expose a single 14-DoF action by interleaving
-left arm + left gripper, then right arm + right gripper, in the same
-order as ``ALOHA_DESCRIPTION.joints``.
+gripper. ALOHA bring-up launches two robot namespaces (``"left_arm"`` /
+``"right_arm"``); we expose a single 14-DoF action by interleaving left
+arm + left gripper, then right arm + right gripper, in the same order
+as ``ALOHA_DESCRIPTION.joints``.
 
 Per CLAUDE.md §7.4 the Trossen Interbotix XS SDK is BSD-3 / Apache-2.0
 (fully compatible) but ships as vendor-distributed packages, so the
 real-hardware manifest (``ALOHA_REAL_DESCRIPTION``, derived from
 ``ALOHA_DESCRIPTION`` via ``make_real_description``) declares
-``sdk_kind: "closed_with_api"``.  Both share the same ``hal`` block:
+``sdk_kind: "closed_with_api"``. Both share the same ``hal`` block:
 ``hal.sim = "openral_hal.aloha:AlohaMujocoHAL"`` and
 ``hal.real = "openral_hal.aloha:AlohaHAL"``; the sim baseline keeps
 ``sdk_kind: "open"``. ``deploy sim`` / ``deploy run`` pick the HAL via

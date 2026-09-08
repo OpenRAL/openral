@@ -1,32 +1,29 @@
 """MuJoCo HAL adapter for the SO-100 follower arm (digital twin via Menagerie).
 
-This module wraps the upstream DeepMind ``mujoco_menagerie`` SO-100 MJCF
-(``trs_so_arm100/so_arm100.xml``, vendored via ``robot_descriptions``) as a
-``openral_hal.HAL`` Protocol implementation, mirroring the
+Wraps the upstream DeepMind ``mujoco_menagerie`` SO-100 MJCF
+(``trs_so_arm100/so_arm100.xml``, vendored via ``robot_descriptions``) as
+an ``openral_hal.HAL`` Protocol implementation, mirroring the
 ``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL`` pattern.
 
-It complements two existing SO-100 paths in the repo:
+Complements two existing SO-100 paths:
 
-* ``openral_hal.SO100FollowerHAL`` — talks to the **real** lerobot
-  driver over USB serial.  Production path.
+* ``openral_hal.SO100FollowerHAL`` — the **real** lerobot driver over
+  USB serial. Production path.
 * ``openral_hal.SO100DigitalTwin`` — kinematic-only in-process state
-  holder (no physics).  Used as a drop-in for ``SO100FollowerHAL`` in
-  unit tests.
+  holder (no physics), a drop-in for ``SO100FollowerHAL`` in unit tests.
 
-This module adds the **third leg**: a real-physics MuJoCo twin reusable
-under ``tests/sim/`` to validate the 6-DoF action contract end-to-end
-before the physical arm is connected.  See CLAUDE.md §1.11 ("real
-component or ``pytest.skip`` — nothing in between").
+This adds the third leg: a real-physics MuJoCo twin reusable under
+``tests/sim/`` to validate the 6-DoF action contract end-to-end before
+the physical arm is connected (CLAUDE.md §1.11: "real component or
+``pytest.skip`` — nothing in between").
 
-Joint inventory
----------------
-The menagerie XML and the canonical ``openral_hal.SO100_DESCRIPTION``
-use different names — the menagerie follows the SO-ARM-100 mechanical
-naming (``Rotation``, ``Pitch``, ``Elbow``, …), while lerobot and the
-description use functional names (``shoulder_pan``, ``shoulder_lift``,
-``elbow_flex``, …).  This module maps between the two; the description
-joint order is preserved on the public ``read_state`` / ``send_action``
-surface.
+Joint inventory: the menagerie XML and the canonical
+``openral_hal.SO100_DESCRIPTION`` use different names — menagerie
+follows SO-ARM-100 mechanical naming (``Rotation``, ``Pitch``,
+``Elbow``, …), lerobot/the description use functional names
+(``shoulder_pan``, ``shoulder_lift``, ``elbow_flex``, …). This module
+maps between the two; description joint order is preserved on the
+public ``read_state`` / ``send_action`` surface.
 
 ============== ===============  ==============================
 description    menagerie joint  qpos / actuator idx (menagerie)
@@ -39,8 +36,8 @@ wrist_roll     Wrist_Roll       4
 gripper        Jaw              5 (revolute jaw rotation)
 ============== ===============  ==============================
 
-The MJCF has 6 ``position`` actuators in the same order; the gripper is a
-revolute joint with range ``[-0.174, 1.75]`` rad which is normalised to
+The MJCF has 6 ``position`` actuators in the same order; the gripper is
+a revolute joint with range ``[-0.174, 1.75]`` rad, normalised to
 ``[0, 1]`` on the public surface (0 = closed, 1 = fully open) so the
 ``SO100_DESCRIPTION`` gripper contract is honoured.
 

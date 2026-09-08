@@ -177,26 +177,24 @@ def build_joint_permutation_from_names(
     """Build the permutation that maps a wrapped server's joints onto the host robot.
 
     The wrapped action (MoveIt) returns a
-    ``trajectory_msgs.msg.JointTrajectory`` whose ``joint_names``
-    list orders the per-point ``positions`` array. The
-    ``RobotDescription``'s ``joints`` list
-    orders the safety supervisor's envelope check and the HAL's wire
-    ``ActionChunk``. The two are not guaranteed to match — MoveIt uses
-    its ``JointModelGroup`` ordering, which is configuration-driven,
-    and the robot description typically carries additional joints the
-    planner doesn't move (gripper, head pan, …). Without a reorder
-    the supervisor checks the wrong joint against the wrong envelope
-    limit (``packages/openral_safety/openral_safety/supervisor_node.py``);
+    ``trajectory_msgs.msg.JointTrajectory`` whose ``joint_names`` list
+    orders the per-point ``positions`` array. The ``RobotDescription``'s
+    ``joints`` list orders the safety supervisor's envelope check and
+    the HAL's wire ``ActionChunk``. The two are not guaranteed to
+    match — MoveIt uses its configuration-driven ``JointModelGroup``
+    ordering, and the robot description typically carries additional
+    joints the planner doesn't move (gripper, head pan, …). Without a
+    reorder the supervisor checks the wrong joint against the wrong
+    envelope limit
+    (``packages/openral_safety/openral_safety/supervisor_node.py``);
     silently mis-applied joint targets would be a safety-critical bug.
 
     The wrapped server's joint list MUST be a (non-strict) subset of
-    the host's joint list. Slots in ``target_names`` that don't appear
-    in ``source_names`` are returned in the second tuple element so
-    the caller (typically
-    ``ROSActionRskill._dispatch_and_cache_result``) knows which
-    slots to backfill from the host's current
-    ``WorldState.joint_state`` rather than
-    leaving them undefined.
+    the host's joint list. Slots in ``target_names`` absent from
+    ``source_names`` are returned in the second tuple element so the
+    caller (typically ``ROSActionRskill._dispatch_and_cache_result``)
+    knows which slots to backfill from the host's current
+    ``WorldState.joint_state`` rather than leaving them undefined.
 
     Args:
         source_names: Joint names in the wrapped server's order.

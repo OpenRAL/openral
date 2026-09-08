@@ -1,10 +1,9 @@
 """HAL adapter for the Unitree H1 humanoid (MuJoCo digital twin).
 
-This module wraps the upstream DeepMind ``mujoco_menagerie`` H1 MJCF
-(``unitree_h1/h1.xml``, vendored via ``robot_descriptions``) as a
-``openral_hal.HAL`` Protocol implementation, following the same
-pattern as ``openral_hal.G1MujocoHAL`` — the H1's bigger,
-earlier sibling.
+Wraps the upstream DeepMind ``mujoco_menagerie`` H1 MJCF
+(``unitree_h1/h1.xml``, vendored via ``robot_descriptions``) as an
+``openral_hal.HAL`` Protocol implementation, following the same pattern
+as ``openral_hal.G1MujocoHAL`` — the H1's bigger, earlier sibling.
 
 Like ``G1MujocoHAL``, this HAL is a **digital-twin contract
 validator**, not a useful humanoid sim: the H1 has a floating base and no

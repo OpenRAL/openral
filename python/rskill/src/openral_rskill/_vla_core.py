@@ -1378,15 +1378,14 @@ def suppress_hf_weight_init() -> Iterator[None]:
 
     ``transformers`` fills every parameter with its per-module init
     distribution at construction time, then ``from_pretrained`` immediately
-    overwrites all of it with the stored tensors — the init is pure waste. HF
-    knows this and skips it internally, but only on its own
-    ``from_pretrained`` path. lerobot's SmolVLA builds the backbone by calling
-    the model class *directly*
-    (``SmolVLMForConditionalGeneration(config=...)`` in
+    overwrites all of it with the stored tensors — pure waste. HF skips
+    this internally, but only on its own ``from_pretrained`` path.
+    lerobot's SmolVLA builds the backbone by calling the model class
+    directly (``SmolVLMForConditionalGeneration(config=...)`` in
     ``smolvlm_with_expert.py``, taken whenever the checkpoint sets
-    ``load_vlm_weights=False`` — which every SmolVLA finetune does), so it pays
-    the full init. Worse, it then truncates the text stack to
-    ``num_vlm_layers`` and throws half those freshly-initialised layers away.
+    ``load_vlm_weights=False`` — every SmolVLA finetune), so it pays the
+    full init, then truncates the text stack to ``num_vlm_layers`` and
+    throws half those freshly-initialised layers away.
 
     Measured on the SO-101 eraser-place checkpoint (SmolVLM2-500M backbone,
     507 M params built, 16 of 32 layers kept):
@@ -1401,26 +1400,26 @@ def suppress_hf_weight_init() -> Iterator[None]:
 
     i.e. ~6 s of the ~15 s cold load is init math for values nothing reads.
 
-    The remaining time is allocation. Reclaiming it needs a meta-device build
-    plus an assign-mode state-dict load — a deeper change into lerobot's
-    construction path, deliberately not attempted here. **Measured ceiling on
-    an RTX 4070 host: ~1.6 s** (508 M params in transformer-shaped blocks —
-    1.79 s allocated on CPU vs 0.21 s under ``accelerate.init_empty_weights``).
-    Against a SmolVLA load that is ~10 s in-graph that is 15-20%, bought by
-    taking ownership of construction code lerobot owns and re-validating it on
-    every lerobot bump. π0.5 does take that path (``pi05.py``) because there
-    the same change is worth 157 s → 14 s on a 3.4 B model; at 500 M it is not.
+    The remaining time is allocation. Reclaiming it needs a meta-device
+    build plus an assign-mode state-dict load — deliberately not
+    attempted here. **Measured ceiling on an RTX 4070 host: ~1.6 s**
+    (508 M params in transformer-shaped blocks — 1.79 s allocated on CPU
+    vs 0.21 s under ``accelerate.init_empty_weights``). Against a ~10 s
+    in-graph SmolVLA load that is 15-20%, bought by owning construction
+    code lerobot owns and re-validating it on every lerobot bump. π0.5
+    does take that path (``pi05.py``) since there it is worth 157 s →
+    14 s on a 3.4 B model; at 500 M it is not.
 
     Safety: only sound when the checkpoint supplies **every** parameter —
-    otherwise a param that would have been randomly initialised is left as
-    whatever ``malloc`` returned. Callers must therefore validate the loaded
-    model; ``assert_all_parameters_finite`` is the guard used by the
-    SmolVLA adapter.
+    otherwise a param that would have been randomly initialised is left
+    as whatever ``malloc`` returned. Callers must validate the loaded
+    model; ``assert_all_parameters_finite`` is the guard the SmolVLA
+    adapter uses.
 
-    Process-global for the duration (it patches the ``PreTrainedModel``
-    class), so it must not wrap a block that loads models on several threads
-    at once. The skill runner serialises loads behind its resident-skill lock,
-    which is the only in-process caller.
+    Process-global for the duration (patches ``PreTrainedModel``), so it
+    must not wrap a block loading models on several threads at once. The
+    skill runner serialises loads behind its resident-skill lock, the
+    only in-process caller.
 
     Yields:
         Nothing; the caller's construction runs with init suppressed.

@@ -172,19 +172,20 @@ def evaluate_task_verdict(
     real success. ``success_threshold``/``check_floor`` (0.8/0.5) are
     calibrated against ``progress_now`` (internal notes cite progress≈0.78
     on a physical success); ``success_now`` is a secondary corroborating
-    signal surfaced in the verdict text, never overriding the progress band.
+    signal surfaced in the verdict text, never overriding the progress
+    band.
 
     Three-tier verdict when the reward is available (``ok=True``):
 
     1. ``progress_now >= success_threshold`` → ``"complete"`` (auto-pass).
-    2. ``check_floor <= progress_now < success_threshold`` → ``"vlm_check"``
-       — caller must adjudicate via ``describe_image``.
-    3. ``progress_now < check_floor`` → attempts ladder: ``"abandon"`` once
-       ``attempts >= max_attempts``, else ``"retry"``.
+    2. ``check_floor <= progress_now < success_threshold`` →
+       ``"vlm_check"`` — caller must adjudicate via ``describe_image``.
+    3. ``progress_now < check_floor`` → attempts ladder: ``"abandon"``
+       once ``attempts >= max_attempts``, else ``"retry"``.
 
-    ``ok=False`` skips tier evaluation and goes straight to the attempts
-    ladder. Caller must pass ``check_floor <= success_threshold`` (enforced
-    upstream by ``RewardContract``, not re-validated here).
+    ``ok=False`` skips tier evaluation, going straight to the attempts
+    ladder. Caller must pass ``check_floor <= success_threshold``
+    (enforced upstream by ``RewardContract``, not re-validated here).
 
     Returns:
         ``(action, verdict_text)`` — progress is primary; success appended

@@ -241,17 +241,17 @@ def configure_worker_observability(
     things in order:
 
     1. Calls ``configure_observability`` so the worker gets its own OTLP
-       pipeline **and** the structlog→OTel log bridge (logs and spans both
+       pipeline and the structlog→OTel log bridge (logs and spans both
        ship to the collector with the worker's ``service.name``).
     2. Calls
        ``openral_observability.propagation.attach_traceparent_from_env``
        so the worker's root OTel context is the parent process's span —
-       every span the worker opens, and every log line it stamps, carries
-       the parent's ``trace_id``.
+       every span the worker opens, and every log line it stamps,
+       carries the parent's ``trace_id``.
 
-    The parent **must** propagate its active context into the child's
-    environment. Spawn the worker with
-    ``env={**os.environ, **traceparent_env()}`` (see
+    The parent must propagate its active context into the child's
+    environment: spawn the worker with ``env={**os.environ,
+    **traceparent_env()}`` (see
     ``openral_observability.propagation.traceparent_env``); otherwise
     step 2 is a no-op and the worker starts a fresh, uncorrelated trace.
 

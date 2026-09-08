@@ -1,23 +1,22 @@
 """HAL adapter for the Unitree G1 humanoid (MuJoCo digital twin).
 
-This module wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
-(``unitree_g1/g1.xml``, vendored via ``robot_descriptions``) as a
+Wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
+(``unitree_g1/g1.xml``, vendored via ``robot_descriptions``) as an
 ``openral_hal.HAL`` Protocol implementation, extending the
 ``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL`` /
-``openral_hal.SO100MujocoHAL`` pattern to a 29-DoF bipedal
-humanoid.
+``openral_hal.SO100MujocoHAL`` pattern to a 29-DoF bipedal humanoid.
 
 The default HAL is a **digital-twin contract validator** with the
 ADR-0087 kinematic glide. ``walking_enabled=True`` selects ADR-0089's
 pinned MuJoCo Playground ONNX controller and matching dynamics for
-gravity-on sim walking (simulation-only Python policy; the production C++
-S0 controller is future work — see `docs/architecture/repo-state-map.html`
-for the planned production S0 block; the walking controller must never be
-reused by a real HAL). The suite validates the 29-DoF joint-position
-action layout, lifecycle wiring
-(``connect → read_state → send_action → estop``), joint indexing,
-``RobotDescription`` round-trip, embodiment/VLA tag plumbing, and the
-optional BODY_TWIST-to-walking controller path.
+gravity-on sim walking (simulation-only Python policy; the production
+C++ S0 controller is future work — see
+`docs/architecture/repo-state-map.html` for the planned production S0
+block; the walking controller must never be reused by a real HAL). The
+suite validates the 29-DoF joint-position action layout, lifecycle
+wiring (``connect → read_state → send_action → estop``), joint
+indexing, ``RobotDescription`` round-trip, embodiment/VLA tag plumbing,
+and the optional BODY_TWIST-to-walking controller path.
 
 Joint inventory: the menagerie MJCF has 30 joints (29 actuated + 1
 floating base, not exposed on ``RobotDescription`` — implicit world

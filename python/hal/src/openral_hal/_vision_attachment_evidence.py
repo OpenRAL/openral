@@ -1,11 +1,11 @@
 """Vision attachment evidence for real hardware — masked wrist depth to payload geometry.
 
-Real-hardware counterpart of ``_sim_attachment_evidence``,
-which reads MuJoCo ground truth (exact contacts, geoms, mass, kinematic
-class) — none of which exists on real hardware. This module answers the
-same question from a wrist RGB-D frame and a mask, emitting the
-**identical** ``AttachedCollisionObject`` contract; the
-safety kernel cannot tell which producer filled it in.
+Real-hardware counterpart of ``_sim_attachment_evidence``, which reads
+MuJoCo ground truth (exact contacts, geoms, mass, kinematic class) —
+none of which exists on real hardware. This answers the same question
+from a wrist RGB-D frame and a mask, emitting the **identical**
+``AttachedCollisionObject`` contract; the safety kernel cannot tell
+which producer filled it in.
 
 Flow: (1) a ``kind: "segmenter"`` rSkill (SAM 2.1) is prompted with one
 positive point at the TF-projected tool center point on the wrist camera
@@ -27,37 +27,35 @@ depth-validity fraction; the mask score is only recorded, as
 ``VisionAttachmentReport.mask_score_advisory``.
 
 **On gate failure the attachment is not skipped**: ``on_grasp`` always
-returns an ``AttachedCollisionObject`` — a rejected
-mask degrades to a conservative jaw-span box stamped
-``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
-confidence, which is strictly safer than an invisible payload.
+returns an ``AttachedCollisionObject`` — a rejected mask degrades to a
+conservative jaw-span box stamped ``AttachmentEvidenceKind.GRIPPER_FORCE``
+at low confidence, strictly safer than an invisible payload.
 
-Honest limitations — what this does NOT fix
--------------------------------------------
+Honest limitations — what this does NOT fix:
 
-* **Articulated objects.** Vision gives geometry, not kinematic class (the
-  simulator producer classifies FREE/HINGE/SLIDE/ARTICULATED/FIXED from
-  ground truth; this module cannot — a drawer handle and a free box look
-  identical). Scope is deliberately **free objects only**; nothing here
-  detects a violation of that scope.
+* **Articulated objects.** Vision gives geometry, not kinematic class
+  (the simulator producer classifies FREE/HINGE/SLIDE/ARTICULATED/FIXED
+  from ground truth; a drawer handle and a free box look identical
+  here). Scope is deliberately free objects only; nothing detects a
+  scope violation.
 * **Support contact.** Establishes what is *attached*, never what is
   *resting on* something (separate support-contact witness).
-* **Transparent / thin objects.** Expected to fail the depth-validity gate
-  and degrade to the fallback box. Not specially handled.
+* **Transparent / thin objects.** Expected to fail the depth-validity
+  gate and degrade to the fallback box. Not specially handled.
 * **Self-occlusion.** The far side is never observed; only partially
   mitigated by ``VisionGateConfig.view_ray_inflation_m``, an
   unbenchmarked free parameter.
 * **Mass / centre of mass / inertia.** Not estimable from vision;
   ``mass_kg`` and friends stay ``None``, unlike the simulator producer
   which reads them from MuJoCo.
-* **Deformable objects and multi-object grasps.** A single positive point
-  means a single rigid object. Not addressed.
+* **Deformable objects and multi-object grasps.** A single positive
+  point means a single rigid object. Not addressed.
 * **The attach trigger itself.** This module is *told* a grasp happened;
   it does not decide it. Whether SO-101's feetech effort readback is
   trustworthy enough to be that trigger is unverified.
 
-Every threshold on ``VisionGateConfig`` is a **calibration point, not
-a measured constant** — see that class's docstring. The design work
+Every threshold on ``VisionGateConfig`` is a **calibration point, not a
+measured constant** (see that class's docstring): the design work
 behind this module benchmarked latency, VRAM and mask quality, not gate
 thresholds; they are set conservatively and must be tuned per robot
 before this producer is trusted on hardware.
@@ -602,25 +600,25 @@ class VisionAttachmentEvidenceProducer:
     ) -> tuple[AttachedCollisionObject, VisionAttachmentReport]:
         """Fit and gate one payload from a wrist RGB-D frame's candidate masks.
 
-        **Selection happens here, and on geometry.** The segmenter returns SAM
-        2's nested subpart/part/whole hypotheses because, lacking depth, it
-        cannot choose between them; this producer does. Every candidate is
-        back-projected against the same depth frame and run through the same
-        gates: among those clearing **every** gate, the largest fitted volume
-        wins (over-approximating a payload is the conservative error for
-        collision checking); if none clear, the report describes the
-        closest-to-acceptable candidate (fewest failed gates, ties broken
-        toward smaller volume) and the attachment degrades to the fallback
-        box. Per-candidate model scores are carried into the report but
-        **never** part of that choice — a mis-aimed prompt produced this
-        model's top score of 0.977 on a mask covering 59.8% of the frame.
+        **Selection happens here, and on geometry.** The segmenter returns
+        SAM 2's nested subpart/part/whole hypotheses because, lacking
+        depth, it cannot choose between them; this producer does. Every
+        candidate is back-projected against the same depth frame and run
+        through the same gates: among those clearing **every** gate, the
+        largest fitted volume wins (over-approximating a payload is the
+        conservative error for collision checking); if none clear, the
+        report names the closest-to-acceptable candidate (fewest failed
+        gates, ties broken toward smaller volume) and the attachment
+        degrades to the fallback box. Per-candidate model scores are
+        carried into the report but **never** part of that choice — a
+        mis-aimed prompt produced this model's top score of 0.977 on a
+        mask covering 59.8% of the frame.
 
         **Always returns an attachment.** A rejected grasp yields the
         conservative jaw-span box stamped
-        ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
-        confidence — never ``None``, never a silent skip; the report names
-        every failed gate so the fallback is visible in the trace
-        (CLAUDE.md §1.4).
+        ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low confidence — never
+        ``None``, never a silent skip; the report names every failed gate
+        so the fallback is visible in the trace (CLAUDE.md §1.4).
 
         Args:
             masks: Candidate ``(H, W)`` boolean masks from the segmenter, in the

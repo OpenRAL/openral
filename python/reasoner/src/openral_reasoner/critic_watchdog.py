@@ -4,20 +4,21 @@ The failure bus reserves ``/openral/failure/critic`` for **Tier-C** triggers
 (2026-05-25 amendment taxonomy: ``safety→A``, ``hal/sensor/rskill/wam→B``,
 ``critic→C``) — the tier a stalled or completed task should signal on.
 
-Ships the **decision core**: ``CriticWatchdog``, a pure, import-safe
-state machine (no ``rclpy``) that consumes a stream of per-frame
-progress/critic scores and decides *when* to wake the reasoner — because
-progress has **stalled** or the attempt is **likely done** (success). Emits
-the real ``openral_core.CriticEvidence`` (no invented schema) for a thin
-ROS node to publish unchanged. The score source is abstract: any
-higher-is-better reward model (Robometer today, a future SARM, a success
-classifier, a heuristic) drives the same watchdog via a
+Ships the decision core: ``CriticWatchdog``, a pure, import-safe state
+machine (no ``rclpy``) that consumes a stream of per-frame
+progress/critic scores and decides when to wake the reasoner — because
+progress has **stalled** or the attempt is **likely done** (success).
+Emits the real ``openral_core.CriticEvidence`` (no invented schema) for
+a thin ROS node to publish unchanged. The score source is abstract: any
+higher-is-better reward model (Robometer today, a future SARM, a
+success classifier, a heuristic) drives the same watchdog via a
 ``(critic_id, score, threshold)`` stream. ``CriticWatchdogGroup``
 multiplexes one ``CriticWatchdog`` per ``critic_id``.
 
-Stall and success semantics are deterministic and fully covered by
-``tests/test_critic_watchdog.py``; see ``CriticWatchdog.observe`` for the
-precise rules (success takes precedence when both would fire on one sample).
+Stall and success semantics are deterministic, covered by
+``tests/test_critic_watchdog.py``; see ``CriticWatchdog.observe`` for
+the precise rules (success takes precedence when both would fire on one
+sample).
 
 Intended wiring: a critic producer node subscribes to
 ``/openral/critic/score`` (``openral_msgs/CriticScore``), routes samples

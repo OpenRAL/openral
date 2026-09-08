@@ -1,31 +1,30 @@
 """Persistent object-centric scene-graph spatial memory.
 
 ``SpatialMemory`` accumulates the momentary
-``WorldState.detected_objects`` into a durable, queryable scene graph and
-answers the following read-only query contracts:
+``WorldState.detected_objects`` into a durable, queryable scene graph
+and answers two read-only query contracts:
 
-- ``SpatialMemory.recall_object`` — recall a remembered object by label/text,
-  with optional proximity/recency filters, returning the object's ``map``-frame
-  pose plus a **camera-facing approach viewpoint** (the standoff pose a mobile
-  base drives to so its gripper-mounted camera faces the object) and, when the
-  object sits inside an occluding container, the ``inside_container_id`` the
+- ``SpatialMemory.recall_object`` — recall a remembered object by
+  label/text, with optional proximity/recency filters, returning its
+  ``map``-frame pose plus a **camera-facing approach viewpoint** (the
+  standoff pose a mobile base drives to so its gripper-mounted camera
+  faces the object) and, when occluded, the ``inside_container_id`` the
   planner must open first.
 - ``SpatialMemory.resolve_place`` — resolve a place/room/agent reference
   ("the kitchen", "where I was standing") to a navigation goal plus a
   ``traversable_to`` path.
 
-This is **advisory** Layer-2 world-model state consumed by the S2 Reasoner; it
-is never a safety input (CLAUDE.md §1.1) — the safety kernel gates only on the
-live, bounded geometric world. Object poses are anchored in the
-durable ``map`` frame (TF resolution happens upstream); the memory never stores
+Advisory Layer-2 world-model state consumed by the S2 Reasoner, never a
+safety input (CLAUDE.md §1.1) — the safety kernel gates only on the
+live, bounded geometric world. Object poses are anchored in the durable
+``map`` frame (TF resolution happens upstream); the memory never stores
 a raw transform.
 
-Persistence is the ``SceneGraph`` JSON contract
-(``SpatialMemory.save`` / ``SpatialMemory.load``). The graph is small
-(hundreds-to-thousands of nodes for one robot), so traversal is a plain typed
-BFS — no graph-engine dependency. Open-vocabulary embedding retrieval and a
-``sqlite-vec`` store layer on top of this without
-changing the contract.
+Persistence is the ``SceneGraph`` JSON contract (``SpatialMemory.save``
+/ ``SpatialMemory.load``). The graph is small (hundreds-to-thousands of
+nodes per robot), so traversal is a plain typed BFS — no graph-engine
+dependency. Open-vocabulary embedding retrieval and a ``sqlite-vec``
+store layer on top of this without changing the contract.
 
 Example:
     >>> import time

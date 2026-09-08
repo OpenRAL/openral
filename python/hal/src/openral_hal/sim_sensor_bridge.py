@@ -449,64 +449,66 @@ def _nearest_pair_records(
 
     The safety kernel stops on a *margin*, so a genuine stop usually leaves
     NO MuJoCo contact at the measured configuration — ``ncon`` alone cannot
-    say whether a ``-15 mm`` predicted hit was real (and contype/conaffinity
-    exclusions can suppress the contact even at 30 mm of interpenetration).
-    This measures the signed distance (negative = interpenetration) for the
-    ``side``↔other geom pairs whose bounding spheres are within ``distmax_m``,
-    ranked closest-first and truncated to ``max_pairs``.
+    say whether a predicted ``-15 mm`` hit was real (contype/conaffinity
+    exclusions can suppress a contact even at 30 mm of interpenetration).
+    This measures signed distance (negative = interpenetration) for every
+    ``side``↔other geom pair whose bounding spheres are within
+    ``distmax_m``, ranked closest-first, truncated to ``max_pairs``.
 
-    **The measurement is `convex_geom_distance`, not `mujoco.mj_geomDistance`.**
-    That call returns confidently wrong numbers on precisely the pair class
-    this probe exists to adjudicate — measured on
-    ``robocasa_fridge_drawer`` layout 9, ``robot0_link7_collision`` vs
-    ``fridge_right_group_freezer_door_main``: ``+0.000000`` from the default
-    native-CCD path with a 126.264 mm witness segment lying outside *both*
-    geoms, and ``-57 mm`` / ``-352 mm`` from libccd through a 48 mm panel,
-    against a certified truth of ``+0.148512 mm``. It is a degenerate
-    configuration rather than a distance regime — displacing the link by a
-    picometre returns the right answer — so no probe window avoids it, and a
-    scene's reset pose is where such configurations live. Every number this
-    probe emits now carries ``distance_certified``; the coverage block counts
-    both, so a downstream adjudicator can refuse rather than believe
+    **The measurement is `convex_geom_distance`, not `mujoco.mj_geomDistance`
+    — that call returns confidently wrong numbers on exactly the pair class
+    this probe exists to adjudicate.** Measured on ``robocasa_fridge_drawer``
+    layout 9, ``robot0_link7_collision`` vs
+    ``fridge_right_group_freezer_door_main``: the default native-CCD path
+    returned ``+0.000000`` via a 126.264 mm witness segment lying outside
+    *both* geoms; libccd returned ``-57 mm`` / ``-352 mm`` through a 48 mm
+    panel; certified truth is ``+0.148512 mm``. This is a degenerate
+    configuration, not a distance regime — displacing the link a picometre
+    gives the right answer — so no probe window avoids it, and a scene's
+    reset pose is exactly where such configurations live. Every number this
+    probe emits carries ``distance_certified``; the coverage block counts
+    both certified and uncertified so a downstream adjudicator can refuse
+    rather than believe
     (``tools/validation_matrix.py::probe_is_distance_certified``).
 
     The other side is either an explicit body set (``other_included`` — used
     for payload↔robot-link self-pairs, which are not "everything else") or,
     by default, every body outside ``side`` and ``other_excluded``.
 
-    **Every** side is restricted to solid geoms — one with neither ``contype``
-    nor ``conaffinity`` cannot collide with anything and the kernel never checks
-    it, so a distance measured against it is not a penetration. That rule used
-    to apply to the enumerated world side only, which is how a purely visual
-    mesh came to carry a stop: the 2026-08-23 fridge round reported
-    ``robot0_g42_vis ~ fridge_main_group_g43`` at 0.000 m and was adjudicated
+    **Every side is restricted to solid geoms** — a geom with neither
+    ``contype`` nor ``conaffinity`` cannot collide with anything and the
+    kernel never checks it, so measuring against it manufactures
+    meaningless penetrations. That rule used to apply only to the
+    enumerated world side, which is how a purely visual mesh once carried
+    a stop: the 2026-08-23 fridge round reported ``robot0_g42_vis ~
+    fridge_main_group_g43`` at 0.000 m and was adjudicated
     ``real-contact``, while the nearest *solid* pair on the same link
-    (``robot0_link7_collision``) was 2.5 mm clear. Both counts are reported —
-    ``noncollidable_side_geoms_excluded`` and
-    ``noncollidable_other_geoms_excluded`` — so the omission is visible, and
-    their presence is what tells a downstream adjudicator that a 0 m pair here
-    can be trusted at all.
+    (``robot0_link7_collision``) was 2.5 mm clear. Both exclusion counts
+    are reported (``noncollidable_side_geoms_excluded``,
+    ``noncollidable_other_geoms_excluded``) so the omission is visible,
+    and their presence is what lets a downstream adjudicator trust a 0 m
+    pair at all. Applies to both sides — a body carries visual geoms
+    alongside its collision ones, so scoping a side by body does not
+    scope it to solid geometry.
 
     Bounded by construction: a vectorised distance-lower-bound prefilter
     (``_pair_distance_lower_bound``) reduces the O(n·m) pair set, then at
-    most ``max_calls`` exact distance calls run, shared fairly across the side
-    geoms by ``_round_robin_candidates`` so no link can be starved out of
-    the report. Each of those is then offered a **certified** window
-    rejection before it is solved — a separating-axis bound that *proves* the
-    pair is outside ``distmax_m`` — which is what keeps the exact instrument
-    affordable without weakening anything: a rejected pair was provably out of
-    range, not heuristically dropped. Pure MuJoCo reads, no ROS.
+    most ``max_calls`` exact distance calls run, shared fairly across side
+    geoms by ``_round_robin_candidates`` so no link is starved out of the
+    report. Each call gets a **certified** window rejection first — a
+    separating-axis bound that *proves* the pair is outside ``distmax_m``
+    — which keeps the exact instrument affordable without weakening
+    anything: a rejected pair was provably out of range, never
+    heuristically dropped. Pure MuJoCo reads, no ROS.
 
-    The prefilter is what a scene's floors used to defeat. MuJoCo reports
-    ``geom_rbound == 0`` for the geoms that have no bounding sphere — planes
-    and heightfields — and reading that as radius ``inf`` scored every pair
-    involving one at ``-inf``, ahead of every finite pair. A plane is now
-    bounded **exactly** (``|n · (c - p)| - r``), so a floor competes on real
-    distance instead of pre-empting the queue: it is excluded from the
-    candidate set outright when it is further than ``distmax_m``, and ranks
-    on merit when it is not. Round-robin then bounds the residual: a
-    heightfield still has no cheap bound and keeps ``-inf``, but it can cost
-    each side geom only its first call, never the whole budget.
+    The prefilter is what a scene's floors used to defeat: MuJoCo reports
+    ``geom_rbound == 0`` for geoms with no bounding sphere (planes,
+    heightfields), and reading that as radius ``inf`` scored every such
+    pair at ``-inf``, ahead of every finite pair. A plane is now bounded
+    exactly (``|n · (c - p)| - r``), so a floor competes on real distance
+    instead of pre-empting the queue. Round-robin bounds the residual: a
+    heightfield still has no cheap bound and keeps ``-inf``, but it can
+    cost each side geom only its first call, never the whole budget.
 
     Returns:
         ``(records, coverage)`` — ``records`` is the closest ``max_pairs``
@@ -943,29 +945,29 @@ def attached_payload_mesh_slop(
 ) -> dict[str, object]:
     """How far a carried payload's kernel primitives reach beyond its meshes.
 
-    **The payload-side half of the adjudication budget, and the term the
-    2026-08-22 attached-payload round did not have.** For a world-voxel stop
-    only the robot link is an OBB — the other side is a voxel cube, and
-    ``collision_model_mesh_slop`` plus the cell half-diagonal covers it.
-    An *attached-payload self-collision* stop has an OBB on **both** sides:
+    The payload-side half of the adjudication budget, missing from the
+    2026-08-22 attached-payload round. For a world-voxel stop only the
+    robot link is an OBB — the other side is a voxel cube, covered by
+    ``collision_model_mesh_slop`` plus the cell half-diagonal. An
+    *attached-payload self-collision* stop has an OBB on **both** sides:
     the kernel checks the payload's published primitives against the link
     OBBs (``check_attached_self_collision``), while the ground-truth probe
-    still measures mesh against mesh. Charging only the link's corner slop
-    therefore under-counts the admissible gap by the payload's own.
+    still measures mesh against mesh — charging only the link's corner
+    slop under-counts the admissible gap by the payload's own.
 
-    That under-count is not hypothetical. In the 2026-08-22 ``baguette``
-    round the kernel stopped on ``attached:sim:obj_main`` vs ``panda_link2``
-    at -4.63 mm while the probe put the nearest payload mesh 75.86 mm from
-    the same link. The kernel's own arithmetic at the measured configuration
-    puts that pair at +21.71 mm — a 54.15 mm representation gap, of which
+    Not hypothetical: in the 2026-08-22 ``baguette`` round the kernel
+    stopped on ``attached:sim:obj_main`` vs ``panda_link2`` at -4.63 mm
+    while the probe put the nearest payload mesh 75.86 mm from the same
+    link. The kernel's own arithmetic at that configuration puts the pair
+    at +21.71 mm — a 54.15 mm representation gap, of which
     ``panda_link2``'s 48.22 mm corner slop is only the robot's share.
 
-    The payload's primitives come from ``extract_body_primitives``, which
-    lowers a *mesh* geom to its local AABB (and clusters geoms once there are
-    more than ``max_primitives``). Both inflate; a sphere/box geom lowers
-    exactly and contributes nothing. Rather than re-deriving that lowering,
-    this calls the producer and measures what it actually publishes, so the
-    budget cannot drift from the geometry the kernel was handed.
+    Payload primitives come from ``extract_body_primitives``, which lowers
+    a *mesh* geom to its local AABB (clustering geoms past
+    ``max_primitives``); a sphere/box geom lowers exactly and contributes
+    nothing. This calls that producer directly and measures what it
+    actually publishes, so the budget cannot drift from the geometry the
+    kernel was handed.
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1324,43 +1326,39 @@ def voxel_backing_record(
     """What MuJoCo geometry, if any, backs one occupancy voxel.
 
     The kernel stops on a cell in ``/openral/world_voxels``; the near-miss
-    probes measure MuJoCo against MuJoCo and never look at the map — so a
-    stop could be adjudicated "nothing was there" when the truth was "the
-    map and the world disagree." That disagreement hides exactly in the
-    probe's two blind spots (it excludes every robot body from its world
-    side, and every non-collidable geom), so this locates the cell and asks
-    MuJoCo directly, with no exclusions:
+    probes measure MuJoCo against MuJoCo and never look at the map, so a
+    stop could be adjudicated "nothing was there" when map and world
+    disagree. That gap hides in the probe's two blind spots — it excludes
+    every robot body from the world side, and every non-collidable geom —
+    so this locates the cell and asks MuJoCo directly, with no exclusions:
 
     * ``solid_world`` — a collidable world geom passes through the cell;
       the stop is explained by real geometry.
     * ``attached_payload`` — the carried object; should have been cleared
       from world occupancy by the bridge.
     * ``self_occupancy_suspect`` — the robot's own body, base and mount
-      included. ``suspect`` because a robot body in the cell *now* is
+      included. "suspect" because a robot body in the cell *now* is
       equally the signature of a correct stop on a link that reached real
-      geometry — it cannot distinguish "the robot wrote this cell" from
-      "the robot has since moved into it" (2026-08-23 fridge
-      reconstruction: backing body ``robot0_link7``, the stopping link,
-      1.9 mm inside a freezer door). Read as a prompt to check the
-      near-miss pairs, never as a finding alone; it only rules out that the
-      stop was on nothing at all.
-    * ``noncollidable_world`` — a marker/visual geom. Since #180 made
-      exactly these geoms transparent to the depth cast (in sim they can no
-      longer become occupancy), a cell backed *only* by decoration is now a
-      statement about the probe or a stale cell, not a live map defect —
-      and since a shell usually wraps something, the ray is re-cast past it
-      (``_voxel_cube_hits``) so the slab behind is found and
-      ``solid_world`` wins. Still reported when genuinely all there is.
+      geometry — it cannot tell "the robot wrote this cell" from "the
+      robot has since moved into it" (2026-08-23 fridge reconstruction:
+      backing body ``robot0_link7``, the stopping link, 1.9 mm inside a
+      freezer door). Read as a prompt to check the near-miss pairs, never
+      as a finding alone.
+    * ``noncollidable_world`` — a marker/visual geom. Since #180 these are
+      transparent to the depth cast (no longer occupancy in sim), so a
+      cell backed only by decoration is now a probe/stale-cell signal, not
+      a live map defect; the ray is re-cast past it (``_voxel_cube_hits``)
+      so any slab behind wins as ``solid_world``. Still reported when
+      genuinely all there is.
     * ``unbacked`` — nothing at all: a phantom or stale cell.
 
     Method: three orthogonal ray fans, one per base-frame cube axis, each
     ``rays_per_axis**2`` rays started just outside one face and accepted
     only where the strike lies inside the cube. A depth-derived occupancy
     cell is created by a *surface* return, so surface sampling is the
-    matching test — a cell buried strictly inside a solid could not have
-    been written by the depth path and is not sought. ``rays_cast``/
-    ``rays_hit`` are reported so ``unbacked`` reads as "looked and found
-    nothing", never "did not look".
+    matching test — a cell buried strictly inside a solid is not sought.
+    ``rays_cast``/``rays_hit`` are reported so ``unbacked`` reads as
+    "looked and found nothing", never "did not look".
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1586,36 +1584,39 @@ def estop_ground_truth_snapshot(
 
     Every kernel E-stop gets one of these (CLAUDE.md §1.4) — without it a
     stop cannot be adjudicated real-vs-false after the fact. Payload
-    sections populate only when something is carried; robot↔world sections
-    always populate, which a PRE-GRASP arm↔world stop needs (the 2026-08-13
-    post-fix matrix had 3 of 4 stops in that class with zero ground truth).
+    sections populate only when something is carried; robot↔world
+    sections always populate, which a PRE-GRASP arm↔world stop needs (the
+    2026-08-13 post-fix matrix had 3 of 4 stops in that class with zero
+    ground truth).
 
     **Contact lists are not a penetration oracle.** MuJoCo
     contype/conaffinity exclusions can suppress a contact entirely (field
-    round: an arm 30 mm inside a freezer door with ``ncon == 0``). An empty
-    ``robot_world_contacts`` means "MuJoCo reported no contact", never
-    "nothing is interpenetrating" — the ``nearest_*_pairs`` probes are the
-    adjudicator, and the record carries this as ``contacts_caveat``.
+    round: an arm 30 mm inside a freezer door with ``ncon == 0``). An
+    empty ``robot_world_contacts`` means "MuJoCo reported no contact",
+    never "nothing is interpenetrating" — the ``nearest_*_pairs`` probes
+    are the adjudicator, and the record carries this as
+    ``contacts_caveat``.
 
-    **The probes measure only between solid geoms, on every side.** A geom
-    with neither ``contype`` nor ``conaffinity`` cannot collide with
+    **The probes measure only between solid geoms, on every side.** A
+    geom with neither ``contype`` nor ``conaffinity`` cannot collide with
     anything and is never checked by the kernel, so a signed distance
     against one is not a penetration (rounds 5/6: payload "134 mm inside
     ``cab_1_left_group_reg_main``", a RoboCasa region marker; 2026-08-23
-    fridge round: ``robot0_g42_vis``, a visual shell, touching the freezer
-    door at 0.000 m while the nearest solid pair on the same link was
-    2.5 mm clear). The filter covers the robot and payload sides too, not
-    just the enumerated world side — scoping a probe side by *body* does
-    not scope it to solid geometry, since a link body carries its visual
+    fridge round: ``robot0_g42_vis``, a visual shell, touching the
+    freezer door at 0.000 m while the nearest solid pair on the same link
+    was 2.5 mm clear). The filter covers the robot and payload sides too,
+    not just the world side — scoping a probe side by *body* does not
+    scope it to solid geometry, since a link body carries its visual
     meshes alongside its collision geom (same rule as
     ``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
     coverage block reports ``noncollidable_world_geoms_excluded``,
     ``noncollidable_side_geoms_excluded`` and
-    ``noncollidable_other_geoms_excluded`` so the omission is visible, not
-    silent — letting a downstream adjudicator tell a trustworthy 0 m pair
-    from one recorded before the filter existed. Pairs whose bitmasks
-    merely fail to *meet* are still measured: suppression is a property of
-    the pair, not the geom, and that is what the probe adjudicates.
+    ``noncollidable_other_geoms_excluded`` so the omission is visible,
+    not silent, letting a downstream adjudicator tell a trustworthy 0 m
+    pair from one recorded before the filter existed. Pairs whose
+    bitmasks merely fail to *meet* are still measured: suppression is a
+    property of the pair, not the geom, and that is what the probe
+    adjudicates.
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1970,25 +1971,27 @@ def initial_configuration_stop_record(
 ) -> dict[str, object] | None:
     """Classify a kernel stop that landed before the robot was ever commanded.
 
-    A stop with ``last_action_ns == 0`` is categorically different from the
-    mid-task stop the ``sim.estop_ground_truth_snapshot`` line reads like: no
-    action has reached ``SimAttachedHAL.send_action`` yet — the single choke
-    point every real action passes, stamped *before* any early return — so the
-    configuration the kernel refused is the one the **scene reset produced**,
-    not one a policy drove into. The robot is not doing something unsafe; it
-    was **spawned** somewhere unsafe, and no policy, chunk, or margin tweak can
-    clear it. The remedy is a scene-config change (a different seed, or pinned
-    ``layout_ids`` / ``style_ids`` in ``backend_options``), not a safety one.
+    A stop with ``last_action_ns == 0`` differs categorically from the
+    mid-task stop the ``sim.estop_ground_truth_snapshot`` line reads like:
+    no action has reached ``SimAttachedHAL.send_action`` yet — the single
+    choke point every real action passes, stamped *before* any early
+    return — so the configuration the kernel refused is the one the
+    **scene reset produced**, not one a policy drove into. The robot was
+    **spawned** somewhere unsafe, not doing something unsafe, and no
+    policy, chunk, or margin tweak can clear it. The remedy is a
+    scene-config change (a different seed, or pinned ``layout_ids`` /
+    ``style_ids`` in ``backend_options``), not a safety one.
 
-    This is observability only (CLAUDE.md §1.4). The stop itself is correct and
-    is neither suppressed, delayed, nor altered — an initial pose that
-    interpenetrates the scene is exactly what the kernel exists to refuse. All
-    this does is name it, so an operator reading a run's artifacts does not
-    spend a round debugging a policy that never got to act.
+    This is observability only (CLAUDE.md §1.4): the stop itself is
+    correct and is neither suppressed, delayed, nor altered — an initial
+    pose that interpenetrates the scene is exactly what the kernel exists
+    to refuse. This only names it, so an operator reading a run's
+    artifacts does not spend a round debugging a policy that never got to
+    act.
 
-    ``candidate_chunks_seen`` is reported but deliberately does **not** gate:
-    a chunk the kernel *rejected* is a candidate that was never applied, and
-    that stop is still at the initial configuration.
+    ``candidate_chunks_seen`` is reported but deliberately does **not**
+    gate: a chunk the kernel *rejected* is a candidate that was never
+    applied, and that stop is still at the initial configuration.
 
     Args:
         snapshot: The ``estop_ground_truth_snapshot`` record for this stop.

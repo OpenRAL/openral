@@ -385,18 +385,18 @@ def build_tool_palette(
 ) -> ToolPalette:
     """Build a ``ToolPalette`` from the installed-skill registry.
 
-    A skill is included in the palette iff:
+    A skill is included iff:
 
     1. Every flag in ``skill.capabilities_required`` is set on
        ``robot_capabilities``.
     2. ``skill.embodiment_tags`` intersects
        ``robot_capabilities.embodiment_tags``.
     3. ``role == "s1"`` — only S1 skills are dispatchable via
-       ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots are
-       reserved and have separate dispatch paths) — **and**
-       ``kind not in {"detector", "segmenter"}``: both are S1-rate perception
-       producers, not ExecuteRskill-dispatchable; they activate as the
-       perception ROS node / GStreamer tee consumer.
+       ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots have
+       separate dispatch paths) — and ``kind not in {"detector",
+       "segmenter"}``: both are S1-rate perception producers, not
+       ExecuteRskill-dispatchable; they activate as the perception ROS
+       node / GStreamer tee consumer.
     4. If ``commercial_deployment`` is ``True``, the skill's license
        posture allows commercial use
        (``RSkillManifest.is_commercial_use_allowed``). Defense in
@@ -404,10 +404,9 @@ def build_tool_palette(
        (CLAUDE.md §1.9), but the palette filter prevents a smuggled
        weights cache from reaching production.
 
-    Each included skill is materialised as a ``RSkillToolEntry``
-    carrying the manifest's ``description`` + ``actions`` + ``objects``
-    + ``scenes``, so the reasoner LLM sees one tool per skill with a
-    real description.
+    Each included skill becomes an ``RSkillToolEntry`` carrying the
+    manifest's ``description`` + ``actions`` + ``objects`` + ``scenes``,
+    so the reasoner LLM sees one tool per skill with a real description.
 
     Args:
         installed_skills: Iterable of every installed

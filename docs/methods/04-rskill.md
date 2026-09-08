@@ -138,12 +138,12 @@ _ROS-wrapping rSkill adapter — bridges arbitrary ROS 2 action / service server
 - `build_joint_permutation_from_names(*, source_names, target_names) -> list[int]` — Build the permutation that reorders a wrapped server's `JointTrajectory.positions` into the host `RobotDescription.joints` order. Raises `ROSConfigError` on set-inequality so a joint mismatch surfaces loudly instead of silently swapping bytes. (L172)
 - `CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"` — the cuMotion MoveIt planning-pipeline id.
 - `maybe_inject_cumotion_pipeline(goal_dict, *, interface_type, capabilities) -> dict` — On a host that clears the cuMotion GPU floor (`RobotCapabilities.supports_cumotion()`), set `request.pipeline_id = CUMOTION_PIPELINE_ID` on a `MoveGroup` goal so MoveIt plans with cuMotion; no-op for non-MoveGroup actions, CPU/low-VRAM hosts (→ OMPL default), an already-set `pipeline_id`, or a goal with no `request` block. Pure; never mutates the input. Called by `_configure_impl` after the goal-merge.
-- `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client). Two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()` and raises `ROSRskillGoalSatisfied` after the last; result-only mode awaits the wrapped result and raises `ROSRskillGoalSatisfied` on success without emitting any `Action`. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L301)
-  - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L334)
-  - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L405)
-  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L495)
-  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L498)
-  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L515)
+- `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client). Two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()` and raises `ROSRskillGoalSatisfied` after the last; result-only mode awaits the wrapped result and raises `ROSRskillGoalSatisfied` on success without emitting any `Action`. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L299)
+  - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L332)
+  - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L403)
+  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L493)
+  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L496)
+  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L513)
 
 ### `python/rskill/src/openral_rskill/look_at_rskill.py`
 _Camera-aiming MoveGroup skill. Selected by `make_default_skill_resolver` when `manifest.ros_integration.goal_builder == "look_at"` (new `RosIntegration.goal_builder` field; `RSkillAction` gains `LOOK = "look"`)._

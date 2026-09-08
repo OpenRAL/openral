@@ -101,12 +101,17 @@ def _probe_availability() -> tuple[bool, bool]:
     gpu_ok = False
     try:
         import pynvml  # type: ignore[import-untyped]  # reason: nvidia-ml-py ships no py.typed marker; runtime-safe via outer try/except for hosts that strip the dep
-
-        pynvml.nvmlInit()
-        pynvml.nvmlShutdown()
-        gpu_ok = True
-    except Exception:
-        pass
+    except ImportError:
+        pynvml = None
+    if pynvml is not None:
+        try:
+            pynvml.nvmlInit()
+            pynvml.nvmlShutdown()
+            gpu_ok = True
+        except Exception as exc:
+            # pynvml raises undocumented NVMLError_* subclasses that vary by
+            # driver/platform; the probe must never crash the caller.
+            _LOG.debug("system_metrics: pynvml capability probe failed: %r", exc)
     return cpu_ok, gpu_ok
 
 

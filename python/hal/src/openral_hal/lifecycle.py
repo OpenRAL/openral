@@ -7,31 +7,33 @@ publisher / subscriber / heartbeat / OTel-span wiring.
 
 Three ways to use this module, in decreasing preference:
 
-1. **Manifest-driven** (preferred — issue #191): ``make_lifecycle_main_from_manifest``
-   spins up ``ManifestHALLifecycleNode``, which reads ``robot_yaml`` +
-   ``hal_mode`` ROS parameters and builds its HAL via
-   ``openral_hal.build_hal`` — construction kwargs (serial ``port``,
-   ``robot_ip``) live in the manifest's ``hal.parameters.defaults`` block, so
-   adding a robot needs only a ``robot.yaml`` + a HAL class, no new node class.
+1. **Manifest-driven** (preferred, issue #191):
+   ``make_lifecycle_main_from_manifest`` spins up
+   ``ManifestHALLifecycleNode``, which reads ``robot_yaml`` + ``hal_mode``
+   ROS parameters and builds its HAL via ``openral_hal.build_hal`` —
+   construction kwargs (serial ``port``, ``robot_ip``) live in the
+   manifest's ``hal.parameters.defaults`` block, so adding a robot needs
+   only a ``robot.yaml`` + a HAL class, no new node class.
 2. **Zero-parameter HALs** (legacy): ``make_lifecycle_main`` with a
-   callable returning a fresh HAL; for constructors with no ROS parameters.
+   callable returning a fresh HAL; for constructors with no ROS
+   parameters.
 3. **Bespoke parameterised HALs** (OpenArm cameras/viewer/MJCF scene;
    panda_mobile mobile base): subclass ``HALLifecycleNodeBase``,
-   implement ``HALLifecycleNodeBase._create_hal`` plus the optional hooks
+   implement ``_create_hal`` plus the optional hooks
    (``_heartbeat_extra_fields``, ``on_configure_post_hal``,
    ``on_activate_post_subs``, ``on_deactivate_pre_teardown``,
    ``on_cleanup_pre_disconnect``). Tracked for collapse into (1) under
    issue #191 (Phases 2-3).
 
-The base class owns: the standard publishers (``/joint_states`` +
+The base class owns: standard publishers (``/joint_states`` +
 ``~/joint_states``); standard subscribers (``/openral/safe_action``,
-``/openral/estop``); the 1 Hz ``DiagnosticsHeartbeat``; the per-tick OTel
-``hal.read_state``/``hal.send_action`` spans the dashboard's Robot State /
-Commands / Identity cards consume; and the estop latch (CLAUDE.md §1.5
-defense in depth).
+``/openral/estop``); the 1 Hz ``DiagnosticsHeartbeat``; the per-tick
+OTel ``hal.read_state``/``hal.send_action`` spans the dashboard's Robot
+State / Commands / Identity cards consume; and the estop latch
+(CLAUDE.md §1.5 defense in depth).
 
-ROS 2 imports are deferred so this module imports cleanly without a live
-ROS 2 install (pure-Python CI / linting).
+ROS 2 imports are deferred so this module imports cleanly without a
+live ROS 2 install (pure-Python CI / linting).
 
 Lifecycle transitions:
 ``configure`` → ``_create_hal`` + ``connect()`` → ``on_configure_post_hal``.
