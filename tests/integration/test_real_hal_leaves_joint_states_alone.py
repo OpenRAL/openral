@@ -20,9 +20,10 @@ interleaved with the real arm.
 Nothing covered the *post-activation* state, which is why it shipped: asserting
 after ``configure`` would have passed. These tests assert after ``activate``.
 
-Per CLAUDE.md §1.11: real ``rclpy``, real manifest, real ``OpenArmRealHAL``. No
-CAN hardware is needed — ``require_can_links=False`` skips the bus preflight, and
-the publisher wiring under test is independent of whether a motor answers.
+Per CLAUDE.md §1.11: real ``rclpy``, real manifest, real ``OpenArmRealHAL``.
+``connect()`` preflights the CAN links, so this needs the two buses *up* — but
+not a motor answering, since the publisher wiring under test does not depend on
+a reply. Skipped where those interfaces are absent.
 """
 
 from __future__ import annotations
@@ -42,10 +43,24 @@ _ROS2_AVAILABLE = bool(os.environ.get("ROS_DISTRO")) and (
     importlib.util.find_spec("openral_msgs") is not None
 )
 
-pytestmark = pytest.mark.skipif(
-    not _ROS2_AVAILABLE,
-    reason="ROS_DISTRO not set — these tests require a sourced ROS 2 installation.",
+#: `OpenArmRealHAL.connect` refuses a bus that is missing or down, so these
+#: tests need the arm cell's two CAN links present. Names match the manifest's
+#: `hal.parameters.defaults` (the udev names OpenArm provisioning assigns).
+_CAN_LINKS_UP = all(
+    (Path("/sys/class/net") / name / "operstate").exists()
+    for name in ("openarm_left", "openarm_right")
 )
+
+pytestmark = [
+    pytest.mark.skipif(
+        not _ROS2_AVAILABLE,
+        reason="ROS_DISTRO not set — these tests require a sourced ROS 2 installation.",
+    ),
+    pytest.mark.skipif(
+        not _CAN_LINKS_UP,
+        reason="openarm_left/openarm_right CAN links absent — real HAL connect() would refuse.",
+    ),
+]
 
 
 @contextmanager
@@ -55,16 +70,16 @@ def _real_mode_node() -> Iterator[Any]:
     from openral_hal.lifecycle import ManifestHALLifecycleNode
     from rclpy.lifecycle import TransitionCallbackReturn
 
-    rclpy.init()
+    # One context per process: rclpy refuses a second `init`, so each test
+    # cannot own one.
+    owns_context = not rclpy.ok()
+    if owns_context:
+        rclpy.init()
     node = ManifestHALLifecycleNode("openral_hal_openarm")
     node.set_parameters(
         [
             rclpy.parameter.Parameter("robot_yaml", value=str(_OPENARM_YAML)),
             rclpy.parameter.Parameter("hal_mode", value="real"),
-            # No CAN bus in this test environment. The bus preflight is
-            # `OpenArmRealHAL.connect`'s own guard and is exercised on the HIL
-            # tier; what is under test here is publisher wiring.
-            rclpy.parameter.Parameter("require_can_links", value=False),
         ],
     )
     try:
@@ -78,8 +93,9 @@ def _real_mode_node() -> Iterator[Any]:
             node.trigger_cleanup()
         with suppress(Exception):
             node.destroy_node()
-        with suppress(Exception):
-            rclpy.shutdown()
+        if owns_context:
+            with suppress(Exception):
+                rclpy.shutdown()
 
 
 def test_no_global_joint_states_publisher_after_activation() -> None:
