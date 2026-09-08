@@ -1,34 +1,21 @@
 #!/usr/bin/env python3
 """Stereo visual SLAM from the PyCuVSLAM wheel — no Isaac ROS apt stack.
 
-The existing visual backend (``cuvslam.launch.py``) composes NVIDIA's
-``isaac_ros_visual_slam`` C++ node, which requires the operator's full
-Isaac ROS apt install (NITROS, VPI, ``nvsci`` — see the package README
-for the x86 install pain). NVIDIA now also ships **PyCuVSLAM**
-(https://github.com/nvidia-isaac/cuVSLAM): the same cuVSLAM engine as a
-pip wheel with a Python API, supporting this workspace's Python 3.12 on
-Ubuntu 24.04 x86_64/aarch64 (CUDA 12/13).
+Alternative to ``cuvslam.launch.py`` (NVIDIA's ``isaac_ros_visual_slam`` C++
+node, needs the full Isaac ROS apt install: NITROS, VPI, ``nvsci``).
+PyCuVSLAM (https://github.com/nvidia-isaac/cuVSLAM) is the same engine as a
+pip wheel, for Python 3.12 / Ubuntu 24.04 x86_64/aarch64 (CUDA 12/13).
 
-This node runs that engine in-process: it subscribes a synchronized
-image pair from the OpenRAL camera bus, tracks with ``cuvslam.Tracker``,
-and fills the same ``map → odom`` TF edge the other SLAM backends fill
-(composing the tracker's ``map ← rig`` pose with the live ``odom ← rig``
-TF). Two rig modes:
+Runs in-process: subscribes a synced image pair from the OpenRAL camera bus,
+tracks with ``cuvslam.Tracker``, fills the same ``map → odom`` TF edge as the
+other backends. Two rig modes: **multi-camera** (``rig_frame`` set, or
+derived from ``robot_yaml``'s ``base_frame``) reads each camera's
+``rig_from_camera`` from TF (cuVSLAM's default ``Multicamera`` mode, handles
+arbitrary rigs); **rectified baseline** (neither set) uses the left camera as
+rig, right camera at a pure x-baseline from its ``P`` matrix.
 
-* **Multi-camera** (``rig_frame`` set, or derived from ``robot_yaml``'s
-  ``base_frame``): each camera's ``rig_from_camera`` extrinsic is read
-  from TF, so an arbitrary base-mounted rig — e.g. the toed-in sim
-  cameras of a mobile robot — works without a rectified pair. This is
-  cuVSLAM's default mode (``odometry_mode=Multicamera``).
-* **Rectified baseline** (neither set): the rig is the left camera
-  optical frame and the right camera sits at a pure x-baseline read from
-  its projection matrix ``P`` — a standalone RealSense-style rectified
-  pair.
-
-License posture: the cuVSLAM engine is NVIDIA-proprietary (NVIDIA
-Community License — commercial use OK, NVIDIA hardware only). OpenRAL
-does **not** bundle or depend on the wheel; the operator installs it
-(see README). Import failure raises ``ROSConfigError`` at node startup.
+License: NVIDIA Community License (commercial OK, NVIDIA hardware only),
+operator-installed, never bundled. Import failure raises ``ROSConfigError``.
 """
 
 from __future__ import annotations
@@ -169,15 +156,12 @@ def transform_to_pose(transform: Any) -> _Pose:
 def depth_to_uint16_mm(msg: Any, width: int, height: int, scale: float) -> Any:
     """Convert a ``32FC1`` metric-depth ``Image`` to the ``uint16`` cuVSLAM RGBD eats.
 
-    cuVSLAM's RGBD odometry expects depth as ``uint16`` aligned pixel-for-pixel
-    with camera-0 (the RGB image), and divides each raw value by
-    ``depth_scale_factor`` to recover metres. The metric-depth provider (DA3)
-    publishes ``32FC1`` metres at the model's own resolution, so this resizes to
-    the RGB ``width``/``height`` (bilinear) and encodes ``metres * scale`` — the
-    inverse of cuVSLAM's divide, so ``scale`` (e.g. ``1000`` for millimetres) is
-    the single knob shared by both sides. Values are clipped to the ``uint16``
-    range; the RealSense reference example uses the same ``1/depth_scale``
-    convention.
+    cuVSLAM's RGBD odometry expects ``uint16`` depth, pixel-aligned with
+    camera-0, dividing by ``depth_scale_factor`` to recover metres (RealSense's
+    ``1/depth_scale`` convention). DA3's native-resolution ``32FC1`` metres is
+    bilinear-resized to the RGB ``width``/``height``, encoded as
+    ``metres * scale`` (e.g. ``scale=1000`` → millimetres) and clipped to the
+    ``uint16`` range.
 
     Example:
         >>> import numpy as np

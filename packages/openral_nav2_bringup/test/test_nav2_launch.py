@@ -164,24 +164,18 @@ def test_costmaps_declare_a_polygon_footprint_not_only_a_radius() -> None:
 def test_mppi_considers_the_full_footprint() -> None:
     """`consider_footprint` is `true`, and pinned so it stays a decision.
 
-    MPPI scores the robot's OUTLINE rather than its centre cell. That matters
-    for a 0.70 x 0.50 m rectangle: this base routinely parks with less
-    clearance than its own circumscribed radius, because the chassis is a
-    rectangle tucked against a counter that lies inside its circumscribed
-    circle and outside the rectangle. A centre-cell test cannot see that.
+    MPPI scores the robot's OUTLINE, not its centre cell — a 0.70 x 0.50 m
+    rectangle can corner-clip inside its own circumscribed radius against a
+    counter, which a centre-cell check cannot see. Live-loop cost measured on
+    `scenes/deploy/robocasa_deliver_straw.yaml` (full stack, `controller_server`
+    CPU/cycle, 8 runs): 9.58 ms/cycle off, 10.11 ms/cycle on, vs. a 50 ms
+    budget; 500-501 cycles/25 s window in every arm (20 Hz, none dropped). See
+    `docs/reference/robocasa-carry-survey.md`.
 
-    The price was measured on the LIVE loop, not inferred from one call:
-    `scenes/deploy/robocasa_deliver_straw.yaml` with the full stack, timing
-    `controller_server`'s own CPU per published cycle over 8 runs -- 9.58
-    ms/cycle with the flag off, 10.11 ms/cycle with it on, against a 50 ms
-    budget, and 500-501 cycles per 25 s window in every arm (exactly 20 Hz,
-    none dropped). See `docs/reference/robocasa-carry-survey.md`.
-
-    The polygon this scores is the BARE chassis: Nav2 is base-only, and the
-    payload-growing publisher was removed because its 2-D projection forbade
-    the place poses the tasks require while protecting against nothing. Flip
-    this test and `config/nav2_panda_mobile.yaml`'s comment together, never
-    separately.
+    Scores the BARE chassis (Nav2 is base-only); the payload-growing
+    publisher was removed (its 2-D projection forbade required place poses
+    while protecting against nothing). Flip this test and
+    `config/nav2_panda_mobile.yaml`'s comment together, never separately.
     """
     for path in (_CONFIG_PATH, _VISUAL_CONFIG_PATH):
         data = yaml.safe_load(path.read_text())

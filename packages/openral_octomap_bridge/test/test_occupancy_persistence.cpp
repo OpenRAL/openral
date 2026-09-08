@@ -1,23 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-// Why a self-filtered depth ray must still reach OctoMap.
+// A self-filtered depth ray must still reach OctoMap as a clearing ray.
 //
-// The deploy-sim launch (`packages/openral_rskill_ros/launch/sim_e2e.launch.py`)
-// tunes octomap_server for exact simulated depth: `occupancy_thres 0.8` so one
-// hit can never make a safety voxel (a transient needs a second frame to
-// confirm it), and `sensor_model.max 0.85` so ONE clearing ray can retire a
-// confirmed hit. Both halves of that bargain assume the ray exists.
+// Deploy-sim tuning (`packages/openral_rskill_ros/launch/sim_e2e.launch.py`):
+// `occupancy_thres 0.8` (one hit never makes a safety voxel; needs a second
+// frame to confirm), `sensor_model.max 0.85` (one clearing ray retires a
+// confirmed hit). Pre-fix bug: the bridge built octomap's cloud from the depth
+// raster, whose `0.0` means "no measurement", and the self-filter collapsed
+// "ray hit the robot's own arm" onto that same `0.0` — no ray, so the arm's
+// silhouette became a write-only map region. Matches the 2026-08-14
+// `panda_link1` stop against `voxel_76001` (no physical geometry backed it).
 //
-// It did not. The bridge builds octomap's cloud from the depth RASTER, whose
-// `0.0` means "no measurement" — and the self-filter used to collapse "the only
-// thing this ray hit was the robot's own arm" onto that same `0.0`. So every
-// pixel covering the robot contributed NO ray, the arm's silhouette became a
-// write-only region of the map, and a cell marked inside it survived every
-// later frame: exactly the shape of the 2026-08-14 `panda_link1` stop against
-// `voxel_76001`, which no physical geometry backed.
-//
-// These tests pin both properties on a real `octomap::OcTree` with the deploy
-// numbers: the transient rejection the threshold exists for, and the clearing
-// that the restored ray makes possible.
+// Pins both the transient-rejection threshold and the restored-ray clearing
+// on a real `octomap::OcTree` with the deploy numbers.
 
 #include <gtest/gtest.h>
 #include <octomap/OcTree.h>
@@ -82,10 +76,8 @@ TEST(OccupancyPersistence, TwoHitsConfirmASafetyVoxel) {
 }
 
 TEST(OccupancyPersistence, AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt) {
-  // The pre-fix bridge: the robot's own body fills these pixels, the raster
-  // reads 0.0, no ray is inserted at all. Ten frames of "the sensor said
-  // nothing" leave the phantom exactly where it was — this is the leak, stated
-  // as a property rather than a story.
+  // Pre-fix bridge: no ray inserted for pixels covering the robot's own body.
+  // Ten frames of "the sensor said nothing" leave the phantom in place.
   octomap::OcTree tree = deploy_sim_tree();
   insert_return(tree, kCell);
   insert_return(tree, kCell);
@@ -100,11 +92,9 @@ TEST(OccupancyPersistence, AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt) {
   const auto grid = bridge::rasterize_octree_to_grid(
       tree, tf2::Transform::getIdentity(),
       [] {
-        // Covers the stretch of the ray's bearing this test cares about. It
-        // used to be a 16x1x1 strip; the covered volume is a ball now (the
-        // grid's axes are the map's, so only a ball is invariant to them), and
-        // the count below is unaffected because this scene has exactly one
-        // occupied cell anywhere near it.
+        // Covers the stretch of the ray's bearing this test cares about. The
+        // covered volume is a ball (grid axes are the map's); only one
+        // occupied cell exists anywhere near it, so the count is unaffected.
         bridge::GridSpec s;
         s.center[0] = 0.45;
         s.center[1] = 0.0;
@@ -121,9 +111,8 @@ TEST(OccupancyPersistence, AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt) {
 }
 
 TEST(OccupancyPersistence, OneRestoredClearingRayRetiresAConfirmedVoxel) {
-  // …and with the self-filter's clearing ray back on the cloud (an endpoint at
-  // max range along the same bearing), a single frame retires it. That is what
-  // `sensor_model.max 0.85` was tuned for.
+  // Self-filter's clearing ray (endpoint at max range, same bearing) restored:
+  // a single frame retires it — what `sensor_model.max 0.85` was tuned for.
   octomap::OcTree tree = deploy_sim_tree();
   insert_return(tree, kCell);
   insert_return(tree, kCell);

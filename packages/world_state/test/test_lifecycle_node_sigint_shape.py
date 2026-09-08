@@ -1,27 +1,16 @@
 """world_state lifecycle_node SIGINT teardown contract — structural guard.
 
 Mirrors ``packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py``
-(landed in abd594f) and the runtime_node guard from caae96f. ROS 2 Jazzy
-installs a SIGINT signal handler in :func:`rclpy.init` that:
+(abd594f) and the runtime_node guard (caae96f). ROS 2 Jazzy's SIGINT handler
+(installed by :func:`rclpy.init`) shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of :func:`rclpy.spin`. A bare ``rclpy.shutdown()``
+in the teardown ``finally`` then raises ``RCLError: failed to shutdown:
+rcl_shutdown already called`` on every Ctrl-C, masking the
+``KeyboardInterrupt`` and stalling the launch shutdown supervisor into a
+SIGKILL.
 
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
-
-Before this guard, ``lifecycle_node.main`` wrapped ``rclpy.spin(node)`` in a
-bare ``try/finally`` and called plain ``rclpy.shutdown()`` in the finally. On
-every operator Ctrl-C during ``openral deploy sim`` that finally then crashed
-with::
-
-    rclpy._rclpy_pybind11.RCLError: failed to shutdown:
-    rcl_shutdown already called on the given context
-
-which (a) replaced the ``KeyboardInterrupt`` with a confusing traceback and
-(b) stalled the launch shutdown supervisor past the grace window, forcing a
-SIGKILL of the deploy graph.
-
-This test parses the world_state ``lifecycle_node.py`` as Python and asserts
-the *shape* of the SIGINT-handling contract so a future refactor can't
-silently revert to the broken pattern.
+Parses ``lifecycle_node.py`` as Python and asserts the SIGINT-handling shape
+so a refactor can't revert to the broken pattern.
 """
 
 from __future__ import annotations

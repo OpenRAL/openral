@@ -1,129 +1,40 @@
 #!/usr/bin/env python3
-"""Drop the carried payload's own returns out of the ``/scan`` Nav2 costmaps read.
+"""Drop the payload's and the robot's own returns from ``/scan`` before Nav2's costmaps read it.
 
-Two halves, and Nav2 being **base-only** is why both matter.
+Nav2 is base-only (bare-chassis footprint); arm + payload belong to the 3-D safety kernel.
+Unfiltered payload returns look like a moving obstacle (the failure `collision_monitor` already
+disables a polygon over); unfiltered self-returns mark the costmap and never clear.
 
-*The payload half.* A carried object is not part of Nav2's robot — the
-costmaps' footprint is the manifest's bare chassis, and the arm and payload
-belong to the 3-D safety kernel. So if the payload's own returns reach the
-scan, Nav2 sees an obstacle that moves with the robot: one it can never drive
-away from, leaving the base permanently 1.2 s from colliding with the thing it
-is holding. That is the ``collision_monitor`` failure the panda_mobile config
-already had to disable a polygon over. Removing the returns is what keeps the
-payload out of Nav2's world entirely, which is the whole point of base-only.
+Feeds: not ``/octomap_binary``. Lidar profile's ``voxel_layer``/``obstacle_layer``/
+``collision_monitor`` take ``LaserScan`` on ``/scan`` (``config/nav2_panda_mobile.yaml``); visual
+profile takes ``OccupancyGrid`` on ``/map``. Node: ``/scan`` in, minus payload/self, out.
 
-*The self half.* Same argument, one layer in: a real 2-D lidar sees the robot's
-own chassis, and those returns mark the costmap and never clear.
+Payload half: removed by its exact collision primitives (the kernel's own composition). Self half:
+removed by the bare-chassis footprint polygon (never the payload-grown hull) — the same polygon
+``obstacle_layer.footprint_clearing_enabled`` (default ``True``, verified against the Jazzy binary)
+frees each update and ``collision_monitor`` reads; the kernel's per-link OBBs are conservative
+over-approximations, unused here. ``footprint_clearing_enabled`` is a second, independent defense,
+not a substitute (misses a cell straddling the polygon boundary; ``collision_monitor`` reads the
+raw scan with no costmap at all).
 
-**What actually feeds the costmaps.** Not ``/octomap_binary``. The lidar
-profile's ``voxel_layer`` / ``obstacle_layer`` and the ``collision_monitor``
-all take ``sensor_msgs/LaserScan`` on ``/scan``
-(``config/nav2_panda_mobile.yaml``); the visual profile takes an
-``OccupancyGrid`` on ``/map``. So the honest seam for "robot + payload
-geometry must not reach the costmap" is the scan topic, and this node sits on
-it: ``/scan`` in, ``/scan`` minus the payload out, Nav2 pointed at the output.
+Sim: self half is redundant — ``openral_sim.backends.robocasa.synthesize_laser_scan_2d``
+(``mujoco.mj_ray`` + ``body_rootid`` comparison) already skips the robot's own kinematic tree; no
+real-hardware counterpart exists (no lidar driver, launch file, or manifest field for one). Until
+#194 the only real-hw knob was ``range_min_m: 0.55`` (deleted every obstacle inside 0.55 m); #194
+lowered it to the sensor minimum (0.05 m), so this node is now the ONLY hardware self-exclusion.
 
-**Two things get removed, for two different reasons.**
+Failure direction: every failure leaves MORE obstacles in the scan, never fewer — missing
+attach-link TF, a kernel-rejected primitive, or stale/absent world state (older than
+``attached_state_timeout_s``) republishes ``/scan`` unfiltered. Exception (#212): fail-open is not
+conservative for the self half at startup — one unfiltered ring during TF warm-up marks the chassis
+PERMANENTLY (measured: 32 cells survived 20 s of all-``inf`` filtered scans) — so while a
+self-polygon is configured and ``base_frame <- scan_frame`` has never resolved, this node publishes
+NOTHING, bounded by ``self_tf_grace_s``; the gate arms once, a later TF gap fails open.
 
-*The payload*, by its exact collision primitives — the geometry the kernel is
-already tracking, placed by the kernel's own composition.
-
-*The robot's own body*, by the chassis footprint polygon. In sim this half is
-redundant: ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` skips
-every hit whose body shares the robot's kinematic-tree root and re-casts past
-it, so a chassis return never enters ``/scan`` at all. That mechanism is
-``mujoco.mj_ray`` with a MuJoCo ``body_rootid`` comparison — it has no
-real-hardware counterpart, and this repo has no lidar driver, no lidar launch
-file and no manifest field that could carry one. On real hardware a 2-D lidar
-mounted on the base *does* see the chassis, the mast and the arm, and an
-unfiltered self-return becomes a costmap obstacle that never clears: the base
-ends up believing it is surrounded by itself. Until #194 the only knob in the repo
-was ``panda_mobile``'s ``range_min_m: 0.55``, a blunt radial cutoff that also
-deleted every real obstacle inside 0.55 m in every direction. This node
-replaced it with a shaped one, and #194 then lowered that field to the sensor
-minimum (0.05 m) — so this filter is now the ONLY self-exclusion on the
-hardware path, and its fail-closed behaviour is what the near field rests on.
-
-**The two halves fail in opposite-looking directions, and that is the point.**
-For the payload, the dangerous mistake is *not removing* — a payload left in
-the costmap only makes Nav2 more cautious, so bad input keeps it. For a
-self-return the dangerous mistake is the other one: dropping a real obstacle
-because we mistook it for the robot. So the self-filter removes only returns it
-can *prove* are the robot, and on a missing TF, an unreadable manifest or a
-degenerate polygon it removes **nothing**.
-
-Both statements are the same invariant seen from two sides: **every failure
-mode in this node leaves more obstacles in the scan, never fewer.**
-
-**Why the chassis polygon is a proof and the arm's link boxes would not be.**
-A return whose endpoint lies inside the chassis outline is either the chassis
-itself or an object standing where the chassis already is — which is not a
-place an object can be. Nav2 agrees: that polygon is precisely what this
-package publishes as *the robot*, ``obstacle_layer``'s
-``footprint_clearing_enabled`` (default ``True``, verified against the Jazzy
-binary) frees those cells on every update, and ``collision_monitor`` reads the
-same polygon. So removing those returns takes away nothing Nav2 could have
-acted on — it only stops ``collision_monitor``, which reads the raw scan with
-no costmap in between, from braking for the robot's own chassis. The kernel's
-per-link OBBs in ``link_collision`` are the opposite case: they are documented
-as *conservative* bounds, i.e. deliberate over-approximations, and the air
-between a link and its box is air a real obstacle can occupy. Over-bounding is
-the right direction for a collision check and the wrong one for deleting sensor
-returns, so this node does not use them.
-
-The region is the **bare chassis** polygon, never the payload-grown one the
-footprint publisher emits: the convex hull that joins chassis to payload spans
-free air in between, and the payload's own primitives already cover the payload
-exactly.
-
-**And Nav2 clears its own footprint too** — ``obstacle_layer``'s
-``footprint_clearing_enabled`` defaults to ``True`` (verified against the Jazzy
-binary), so cells inside the published polygon are freed on every update. That
-is a *second* line, not a substitute: it only reaches cells inside the current
-polygon, it is a costmap-layer setting a future config change could flip, and
-the ``collision_monitor`` reads the raw scan without any costmap in between.
-Removing the returns at the source covers all three.
-
-**Failure is pass-through.** Missing attach-link TF, a primitive the kernel
-itself would reject, a world state older than ``attached_state_timeout_s``, or
-no world state at all republishes the scan **unfiltered**. That leaves the
-payload in the costmap, which makes Nav2 more cautious, never less — and it
-keeps the output topic alive, because a costmap whose only observation source
-went silent is a costmap that stops seeing the room.
-
-**Except at startup, where pass-through is not conservative** (#212). Fail-open
-reasons about one scan at a time, and for the payload half that is the whole
-story — a payload return that reaches the grid is cleared by the next scan's
-ray along the same bearing. The *self* half has no such next scan: once the
-filter starts working it removes exactly the beam whose ray would have cleared
-the cell it let through, so a single unfiltered ring published during the TF
-warm-up marks the chassis into the cost grid **permanently**. Measured: 32
-cells survived 20 s of all-``inf`` filtered scans and cleared only when real
-returns were put on the same bearings. Nav2's own ``footprint_clearing_enabled``
-(default ``True``) frees the cells whose *centre* falls inside the published
-polygon and is the standing mitigation in the shipped config, but it does not
-reach a cell straddling the boundary, and ``collision_monitor`` has no costmap
-at all.
-
-So while a self-polygon is configured and ``base_frame <- scan_frame`` has
-never yet resolved, this node publishes **nothing**: an observation source that
-has not started is strictly better than one that starts by lying. That window
-is bounded by ``self_tf_grace_s`` — after it the node reverts to pass-through
-and says so loudly, because a permanently blind Nav2 (a mistyped
-``base_frame``, say) is the worse failure of the two. The gate arms once: a TF
-gap *after* the first successful resolve still fails open, which is the
-one-scan-at-a-time case the paragraph above covers.
-
-What this node deliberately does **not** do is make the map self-healing by
-writing ``range_max`` for a dropped beam so Nav2 raytraces it clear. That
-reverses the fail direction in a way that is worse than the phantom it removes:
-Nav2 clears the whole ray out to ``raytrace_max_range`` (3.0 m in the shipped
-config), and a bearing on which the chassis returns is a bearing the sensor is
-*permanently* occluded on — so the erased cells are ones marked from other
-robot poses, which nothing on that bearing can ever re-mark. Measured, in
-``tests/integration/test_nav2_scan_filter_live.py``: a real obstacle 0.25 m
-past the chassis edge is deleted from the cost grid by one such beam. A dropped
-beam stays ``inf``.
+Does not synthesize ``range_max`` for a dropped beam: Nav2 raytraces the whole ray out to
+``raytrace_max_range`` (3.0 m shipped), permanently erasing real obstacles marked from other poses
+on a permanently occluded bearing (measured in ``tests/integration/test_nav2_scan_filter_live.py``:
+a real obstacle 0.25 m past the chassis edge deleted by one such beam).
 """
 
 from __future__ import annotations
@@ -236,19 +147,12 @@ def points_in_convex_polygon(
 ) -> Any:
     """Boolean mask of which ``points_xy`` lie inside a CCW convex polygon.
 
-    Half-plane test: for a counter-clockwise convex polygon a point is inside
-    exactly when it is left of (or on) every directed edge. ``margin_m`` offsets
-    each edge's half-plane outward by that distance, which mitres the corners
-    rather than rounding them — the resulting region is a *superset* of the true
-    offset polygon, i.e. it removes slightly more than asked near a corner. That
-    is the dangerous direction for a self-filter, which is why the node's
-    default margin is zero.
-
-    Convexity and winding are **verified, not assumed**: the caller's polygon
-    comes from :func:`~openral_nav2_bringup._footprint_geometry.convex_hull_2d`
-    and so is always CCW convex, but a hand-supplied concave outline would make
-    the half-plane test claim the concavities are robot. Anything that fails the
-    check raises, and the node's self-filter then removes nothing.
+    Half-plane test: inside iff left of (or on) every directed edge. ``margin_m`` offsets each edge
+    outward (mitres corners, a superset of the true offset region); default is zero, the safe
+    direction for a self-filter. Convexity/winding is verified, not assumed — the caller's polygon
+    comes from :func:`~openral_nav2_bringup._footprint_geometry.convex_hull_2d` (always CCW convex),
+    but a bad hand-supplied outline would misclassify concavities as robot; failing the check raises
+    and the self-filter removes nothing.
 
     Args:
         points_xy: ``(N, 2)`` array of points in the polygon's own frame.

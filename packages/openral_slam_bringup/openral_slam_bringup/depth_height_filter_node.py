@@ -106,14 +106,12 @@ def _urdf_root_seed(
 ) -> tuple[str, tuple[tuple[tuple[float, float, float], ...], tuple[float, float, float]]] | None:
     """The manifest's declared ``base_frame -> urdf root`` bridge, if it has one.
 
-    ``joints`` enumerates the robot's *movable* joints, so a manifest whose URDF
-    root differs from ``base_frame`` (UR's ``ur5e_base_link`` over the upstream
-    ``base_link``, Franka's ``base_link`` over ``panda_link0``) leaves that root
-    outside the chain. It is not undeclared, though: ``assets.urdf.root_frame``
-    plus ``assets.urdf.base_to_root_xyz_rpy`` carry exactly that transform, and
-    ``sim_e2e.launch.py`` publishes it as the static ``base_frame -> root_frame``
-    TF the live tree uses. Reading the same pair here keeps the derived band
-    consistent with the TF the node shifts it by at runtime.
+    ``joints`` only enumerates *movable* joints, so a manifest whose URDF root
+    differs from ``base_frame`` (UR's ``ur5e_base_link`` over ``base_link``,
+    Franka's ``base_link`` over ``panda_link0``) leaves that root outside the
+    chain. ``assets.urdf.root_frame`` + ``assets.urdf.base_to_root_xyz_rpy``
+    carry that transform — the same static TF ``sim_e2e.launch.py`` publishes,
+    kept consistent with the band derivation here.
     """
     assets = getattr(description, "assets", None)
     urdf = getattr(assets, "urdf", None) if assets is not None else None
@@ -187,30 +185,19 @@ def _shape_z_span_m(
 ) -> tuple[float, float]:
     """Exact world-frame ``(z_min, z_max)`` of one convex collision primitive.
 
-    Every member of ``openral_core.CollisionShape`` projects onto the world z
-    axis in closed form, so the band never has to approximate a primitive by
-    "a radius":
+    Closed-form projection onto world z, no radius approximation:
 
     * ``sphere`` — ``center_z +/- radius_m``, orientation-free.
-    * ``capsule`` — the central segment runs along the primitive's local +Z, so
-      its half-span on world z is ``|R[2][2]| * length_m / 2``, then the radius
-      caps both ends.
-    * ``box`` — the standard OBB support projection,
-      ``sum_k |R[2][k]| * half_extents_m[k]``.
+    * ``capsule`` — half-span ``|R[2][2]| * length_m / 2 + radius_m`` along local +Z.
+    * ``box`` — OBB support projection ``sum_k |R[2][k]| * half_extents_m[k]``.
 
-    A box has no radius at all, and neither surrogate is safe to substitute.
-    The inscribed radius (``min(half_extents)``) *shrinks* the band and hides
-    obstacles at body height; the circumscribed radius (``|half_extents|``)
-    *grows* it, which does not merely add ceiling clutter — the lower edge is
-    derived from this same extent, so an inflated minimum drags the band down
-    through the floor and the node re-marks the floor it exists to remove.
-    No single scalar is conservative at both edges, so the exact span is the
-    only correct reading.
+    A box has no radius; the inscribed surrogate hides obstacles (shrinks the
+    band), the circumscribed one drags the lower edge through the floor
+    (grows it) — hence the exact span.
 
     Raises:
-        ROSConfigError: If ``shape`` is not a shape this band understands.
-            Never falls back to a default span — a silently wrong height band
-            drops real obstacles out of ``/map`` with no diagnostic.
+        ROSConfigError: If ``shape`` is not a shape this band understands —
+            never falls back to a default span (would silently drop obstacles).
     """
     kind = str(getattr(shape, "shape", ""))
     if kind == "sphere":
@@ -284,32 +271,20 @@ def derive_robot_relative_height_band(
 ) -> RobotRelativeHeightBand:
     """Derive the depth-retention band from robot measurements.
 
-    The lower edge is the robot-relative floor plus a small clearance so floor
-    pixels do not become occupied cells. The upper edge is the measured body
-    height from the manifest footprint and collision/link geometry. The result
-    is relative to ``base_frame``; the ROS node shifts it into ``global_frame``
-    using live TF for every frame.
-
-    Each collision primitive contributes its exact world-frame z span (see
-    :func:`_shape_z_span_m`) — spheres, capsules and boxes alike — placed by
-    :func:`_link_transforms_at_zero`, which walks the manifest's ``joints``
-    from ``base_frame`` and additionally seeds the declared
-    ``assets.urdf.root_frame`` bridge.
-
-    ``min_body_height_m`` is the floor for a manifest that declares **no**
-    collision geometry, which is a normal thing for a manifest to do; it is not
-    a fallback for geometry that failed to place.
+    Lower edge = robot-relative floor + ``floor_clearance_m``. Upper edge =
+    measured body height from footprint + collision/link geometry (each
+    shape's exact z span via :func:`_shape_z_span_m`, placed by
+    :func:`_link_transforms_at_zero`). Relative to ``base_frame``; the node
+    shifts it into ``global_frame`` via live TF per frame.
+    ``min_body_height_m`` is the floor for a manifest with **no** collision
+    geometry — not a fallback for geometry that failed to place.
 
     Raises:
         ValueError: If ``floor_clearance_m`` is negative, or
             ``min_body_height_m`` does not exceed it.
-        ROSConfigError: If the manifest declares a collision shape the band
-            cannot measure, or declares a collision volume on a link the band
-            cannot place. Refusing is the point in both cases: a band derived
-            from a guessed extent, or from the arbitrary subset of the robot
-            that happened to be reachable, silently drops obstacles out of the
-            occupancy grid while still reporting ``collision_geometry`` as its
-            source.
+        ROSConfigError: If the manifest declares an unmeasurable shape or an
+            unplaceable collision volume — refuses rather than silently
+            reporting a partial band as if it covered the whole robot.
     """
     if floor_clearance_m < 0.0:
         raise ValueError(f"floor_clearance_m must be non-negative, got {floor_clearance_m}")

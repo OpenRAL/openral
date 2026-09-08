@@ -1,35 +1,26 @@
 #!/usr/bin/env python3
 """PROTOTYPE — stand-alone launch for upstream ``foxglove_bridge``.
 
-Brings up ``foxglove_bridge`` as a **read-only** live visualisation
-surface for OpenRAL's "Bucket-1" topics (the data that Foxglove renders
-natively with no custom extension): camera images, the ``/map`` occupancy
-grid, the octomap point cloud, joint states, TF, and ``/robot_description``.
+Read-only live viz for OpenRAL's Bucket-1 topics (camera images, ``/map``
+occupancy grid, octomap point cloud, joint states, TF, ``/robot_description``).
 
-Two deliberate safety choices distinguish this from the upstream
-``foxglove_bridge_launch.xml`` defaults (CLAUDE.md §1.1 / §3 "Safety"):
+Safety choices vs the upstream ``foxglove_bridge_launch.xml`` defaults
+(CLAUDE.md §1.1 / §3 "Safety"):
 
-1. **Loopback by default.** ``address`` defaults to ``127.0.0.1`` (the
-   upstream default is ``0.0.0.0``), matching the dashboard's loopback-only
-   posture (issue #44). A viewer on another host must opt in explicitly.
-2. **Read-only capabilities.** ``capabilities`` is restricted to
-   ``[connectionGraph, assets]`` — the upstream default additionally
-   advertises ``clientPublish`` and ``services``, which would let a Foxglove
-   client *publish topics and call services* (e.g. trigger an E-stop reset
-   or inject an action). This surface MUST NOT be able to actuate the robot.
-   Re-enabling those capabilities is a safety-WG decision, not a flag flip.
+1. ``address`` defaults to ``127.0.0.1`` (upstream: ``0.0.0.0``), matching the
+   dashboard's loopback posture (issue #44).
+2. ``capabilities`` restricted to ``[connectionGraph, assets]`` (upstream also
+   advertises ``clientPublish``/``services``, which would let a client publish
+   topics or call services). Re-enabling those is a safety-WG decision.
 
-The ``topic_whitelist`` is an explicit allowlist: anything not matched —
-including ``/openral/estop``, ``/openral/safe_action``, the failure bus —
-is invisible to the bridge. This is a feasibility spike; graduating it
-past prototype requires safety-WG sign-off.
+``topic_whitelist`` is an explicit allowlist — ``/openral/estop``,
+``/openral/safe_action``, the failure bus, and anything unmatched stay
+invisible. Feasibility spike; graduating past prototype needs safety-WG
+sign-off.
 
-Run:
-    ros2 launch openral_foxglove_bringup foxglove.launch.py
-
-Then open https://app.foxglove.dev (or the desktop app), choose
-"Open connection → Foxglove WebSocket → ws://localhost:8765", and import
-``config/openral_layout.json``.
+Run: ``ros2 launch openral_foxglove_bringup foxglove.launch.py``, then open
+https://app.foxglove.dev → Open connection → Foxglove WebSocket →
+ws://localhost:8765 → import ``config/openral_layout.json``.
 """
 
 from __future__ import annotations
@@ -83,12 +74,10 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         # --- /tf + robot-model rendering ----------------------------------
-        # deploy-sim publishes /joint_states but NOT dynamic /tf (no
-        # robot_state_publisher in its graph), so Foxglove's 3D panel has no
-        # frames and can't draw the robot. Opt in to a robot_state_publisher
-        # that turns /joint_states + a URDF into /tf + /tf_static +
-        # /robot_description — all already Bucket-1-whitelisted, so the model
-        # renders read-only with no other change.
+        # deploy-sim publishes /joint_states but not dynamic /tf, so the 3D
+        # panel can't draw the robot. Opt in to a robot_state_publisher: turns
+        # /joint_states + URDF into /tf + /tf_static + /robot_description
+        # (already Bucket-1-whitelisted).
         DeclareLaunchArgument(
             "with_robot_state_publisher",
             default_value="false",
@@ -120,11 +109,10 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         # --- Compressed-image transport ---------------------------------
-        # Raw sensor_msgs/Image is ~9 MB/s per camera; a multi-camera arm can
-        # saturate a laptop link and Foxglove's send buffer. The republisher
-        # below converts selected raw camera topics to sensor_msgs/CompressedImage
-        # via image_transport, bringing bandwidth down ~10×. Default OFF so the
-        # raw path stays the default and no extra nodes run in CI.
+        # Raw sensor_msgs/Image is ~9 MB/s per camera and can saturate a
+        # laptop link + Foxglove's send buffer. Republishes selected topics
+        # as sensor_msgs/CompressedImage via image_transport (~10× smaller).
+        # Default off — no extra nodes run in CI.
         DeclareLaunchArgument(
             "republish_compressed",
             default_value="false",
@@ -180,11 +168,9 @@ def generate_launch_description() -> LaunchDescription:
         "include_hidden": False,
     }
 
-    # `topic_whitelist` can't be branched in Python (it depends on a launch
-    # arg resolved at runtime), so we gate two mutually-exclusive Nodes on
-    # `expose_all_topics`. Same node name — exactly one ever runs. Neither
-    # re-enables clientPublish/services; the escape hatch only widens which
-    # topics are *read*.
+    # `topic_whitelist` depends on a launch arg resolved at runtime, so two
+    # mutually-exclusive Nodes are gated on `expose_all_topics` (same node
+    # name — exactly one runs). Neither re-enables clientPublish/services.
     bridge_safe = Node(
         package="foxglove_bridge",
         executable="foxglove_bridge",

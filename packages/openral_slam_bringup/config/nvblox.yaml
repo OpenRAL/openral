@@ -1,25 +1,15 @@
-# Default parameter set for NVIDIA Isaac ROS nvblox
-# under OpenRAL's `/openral/nvblox` namespace.
-#
-# nvblox fuses a DEPTH image + camera_info + POSE (from cuVSLAM's map→odom
-# TF) into an occupancy map, and publishes a 2D `nav_msgs/OccupancyGrid`
-# that `nvblox.launch.py` remaps `~/static_occupancy_grid → /map` — the
-# backend-agnostic `/map` that Nav2's static_layer (`nav2_visual.yaml`),
-# the dashboard SlamMapBridge, and the reasoner all consume regardless of
-# lidar vs visual origin (Decision §5). This is what gives a lidar-less
-# robot a navigable cost map: cuVSLAM provides localization (map→odom),
-# nvblox provides the obstacle map cuVSLAM does not.
-#
-# The depth image is supplied by the monocular metric-depth provider
-# (DA3-Small by default — measured 0.27 GB / ~27 Hz on an 8 GB Ada) when
-# the robot has no real depth sensor; a RealSense/RGB-D rig can feed
-# nvblox directly.
-#
-# Only the stable, documented essentials are pinned; everything else
-# falls back to upstream nvblox defaults. Mapper/ESDF knobs are
-# version-sensitive — confirm against the installed Isaac ROS release.
-# nvblox is a precompiled NVIDIA binary OpenRAL does not bundle
-# (NVIDIA license guard).
+# Default params for NVIDIA Isaac ROS nvblox under `/openral/nvblox`.
+# Fuses depth + camera_info + pose (cuVSLAM's map→odom TF) into an occupancy
+# map, publishing 2D `nav_msgs/OccupancyGrid`; `nvblox.launch.py` remaps
+# `~/static_occupancy_grid → /map` — consumed by Nav2's static_layer
+# (`nav2_visual.yaml`), the dashboard SlamMapBridge, and the reasoner
+# regardless of lidar vs. visual origin (Decision §5).
+# Depth from the monocular metric-depth provider (DA3-Small default,
+# 0.27 GB / ~27 Hz on an 8 GB Ada) when no real depth sensor; a
+# RealSense/RGB-D rig can feed nvblox directly.
+# Only stable, documented essentials pinned; rest falls back to upstream
+# defaults. Mapper/ESDF knobs version-sensitive — confirm against installed
+# release. Precompiled NVIDIA binary, not bundled (NVIDIA license guard).
 
 /**:
   ros__parameters:

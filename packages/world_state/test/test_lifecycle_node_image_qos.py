@@ -2,18 +2,14 @@
 
 Mirrors the AST-shape pattern of ``test_lifecycle_node_sigint_shape.py``.
 
-ROS 2 QoS request-vs-offered matching is asymmetric: a BEST_EFFORT
-subscription receives from BOTH a RELIABLE publisher (the sim HAL
-bridges) and a BEST_EFFORT publisher (the real-mode GStreamer
-``ros_tee`` / ``SensorRosPublisher`` camera readers, which follow the
-CLAUDE.md §2 sensor-stream profile). A RELIABLE subscription only
-matches RELIABLE publishers — with the real-camera publishers it
-silently never connects, so WorldState receives zero frames and the
-policy is starved of images on real hardware (`openral deploy run`).
+QoS matching is asymmetric: a BEST_EFFORT sub receives from both the sim
+HAL bridges (RELIABLE) and the real-mode GStreamer ``ros_tee`` /
+``SensorRosPublisher`` readers (BEST_EFFORT, per CLAUDE.md §2). A RELIABLE
+sub only matches RELIABLE publishers, so it silently never connects on real
+hardware — zero frames, policy starved.
 
-This test parses ``lifecycle_node.py`` and asserts the per-camera image
-``QoSProfile`` requests BEST_EFFORT reliability so a future refactor
-can't silently reintroduce the mismatch.
+Parses ``lifecycle_node.py`` and asserts the per-camera image
+``QoSProfile`` requests BEST_EFFORT so a refactor can't reintroduce it.
 """
 
 from __future__ import annotations

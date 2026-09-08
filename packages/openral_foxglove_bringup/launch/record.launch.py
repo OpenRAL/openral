@@ -11,27 +11,16 @@ Usage::
     ros2 launch openral_foxglove_bringup record.launch.py output_dir:=my_session
     ros2 launch openral_foxglove_bringup record.launch.py use_sim_time:=true
 
-Safety scope
-------------
-Recording is **read-only** — this launch publishes and commands nothing.  The
-scope mirrors the Bucket-1 allowlist: the safety/e-stop/action topics
-(``/openral/estop``, ``/openral/safe_action``, ``/openral/candidate_action``,
-``/openral/failure/*``) are absent from the allowlist and are therefore never
+Read-only — publishes/commands nothing. Scope mirrors the Bucket-1 allowlist:
+safety/e-stop/action topics (``/openral/estop``, ``/openral/safe_action``,
+``/openral/candidate_action``, ``/openral/failure/*``) are absent and never
 recorded.
 
-Regex semantics note
---------------------
-``ros2 bag record --regex`` / ``-e`` uses Python ``re.search`` partial-match
-semantics (matches if the pattern is found *anywhere* in the topic name).
-This differs from ``foxglove_bridge``'s ``topic_whitelist``, which applies
-``std::regex_match`` (full-string anchored match).  The patterns in
-``BUCKET1_TOPIC_WHITELIST`` are written as full-string anchors (e.g.
-``r"/map"``), so under ``re.search`` they still only match ``/map`` and not
-``/mapping/something`` because the anchor ``^`` is implicit at the start of a
-``re.search`` on a full topic string — however the correct guard is that the
-pattern ``r"/map"`` will also accidentally match ``/something/map_thing``.
-Operators reviewing the recorded bag should confirm no unexpected topics are
-captured; the patterns deliberately avoid wildcards on security-sensitive
+Regex semantics: ``ros2 bag record -e`` uses Python ``re.search`` (partial
+match), while ``foxglove_bridge``'s ``topic_whitelist`` uses
+``std::regex_match`` (full-string). A pattern like ``r"/map"`` can therefore
+also match ``/something/map_thing`` under ``-e`` — verify the recorded bag
+captures no unexpected topics. Patterns avoid wildcards on security-sensitive
 prefixes.
 """
 
@@ -69,11 +58,8 @@ def generate_launch_description() -> LaunchDescription:
 
     output_dir = LaunchConfiguration("output_dir")
 
-    # Build the --regex argument as a single alternation string:
-    # ``ros2 bag record -e`` expects one pattern that is OR-ed internally.
-    # Joining with ``|`` mirrors what the CLI accepts; each individual pattern
-    # comes from the single source of truth in ``topics.py`` and is never
-    # edited here directly.
+    # ``ros2 bag record -e`` expects one OR-ed pattern; patterns come from the
+    # single source of truth in ``topics.py``, never edited here.
     _regex_alternation = "|".join(BUCKET1_TOPIC_WHITELIST)
 
     recorder = ExecuteProcess(

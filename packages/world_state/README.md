@@ -101,31 +101,24 @@ just test-integration # PYTHONPATH-aware pytest run for the launch tests
 
 ## Object-lift — 2D→3D spatial memory
 
-When `object_lift_enabled` is `True` (the default), the node also subscribes the
-object-detector output and a depth source, lifts each 2D detection to a
-`map`-frame 3D centre via `VoxelFrustumLifter`, and maintains a temporal `ObjectMemory`.
-Results are written into `WorldStateAggregator.update_detected_objects()` so
-`WorldState.detected_objects` is non-empty for the first time.
+When `object_lift_enabled` is `True` (default), the node subscribes the object-detector
+output and a depth source, lifts each 2D detection to a `map`-frame 3D centre via
+`VoxelFrustumLifter`, and maintains a temporal `ObjectMemory`, writing results into
+`WorldStateAggregator.update_detected_objects()`.
 
-The depth source is the 3D occupancy voxel grid (`object_voxels_topic`) when a fresh
-one is available; otherwise — per the depth-fallback amendment (#11) — the node **falls back to the
-depth camera point cloud** (`object_depth_points_topic`) decoded by
-`depth_cloud_to_centers_base`. This decouples the lift from octomap, so spatial-memory
-ingest (and `recall_object`) work even with `--no-enable-octomap`.
+Depth source: `object_voxels_topic` when fresh, else — depth-fallback amendment #11 —
+`object_depth_points_topic` decoded by `depth_cloud_to_centers_base`. Decouples the lift
+from octomap, so spatial-memory ingest and `recall_object` work with `--no-enable-octomap`.
 
-**Best-effort contract:** a missing, empty, or stale depth source is a normal condition.
-When there is neither a usable voxel grid nor a usable depth cloud the node publishes
-`WorldState` with `detected_objects == []` — no error, no warning spam, no degradation.
-The node **never fabricates a pose**: any path lacking a truthful 3D lift (no `map` TF,
-no camera intrinsics, no in-frustum voxels, stale grid) silently skips the detection.
+**Best-effort:** missing/empty/stale depth source → `WorldState` publishes with
+`detected_objects == []`, no error/warning. Never fabricates a pose — any path lacking a
+truthful lift (no `map` TF, no intrinsics, no in-frustum voxels, stale grid) silently skips.
 
-**On the wire (landed):** the shared in-process `WorldStateAggregator` owns
-`WorldState.detected_objects`, and `openral_msgs/WorldStateStamped` now also carries them as
-`detected_object_*` parallel arrays (labels / confidences / `geometry_msgs/Point[]` positions /
-`int32[]` track ids (`-1` = unset) / frame), serialised by `_fill_detected_objects` inside
-`build_world_state_stamped_msg` and read back by `world_state_from_idl`. Separate-process
-consumers (e.g. a standalone reasoner node reading `/openral/world_state_slow`) now **do** see
-the spatial memory.
+**On the wire:** `openral_msgs/WorldStateStamped` carries `detected_object_*` parallel
+arrays (labels / confidences / `geometry_msgs/Point[]` positions / `int32[]` track ids
+(`-1` = unset) / frame), serialised by `_fill_detected_objects` in
+`build_world_state_stamped_msg` and read back by `world_state_from_idl` — so separate-process
+consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial memory too.
 
 ### Object-lift parameters
 

@@ -93,13 +93,9 @@ def test_frame_id_constants_match_research_doc() -> None:
     """
     assert PANDA_MOBILE_ODOM_FRAME_ID == "odom"
     assert PANDA_MOBILE_BASE_FRAME_ID == "base_link"
-    # The scan gets its OWN frame. It used to share `base_link` — a shortcut
-    # taken so slam_toolbox could transform scans without a static TF — and that
-    # shortcut silently threw the mount height away: the fan is cast 0.30 m above
-    # the floor while `base_link` is the platform frame at 0.700 m, so every
-    # return reached Nav2 and slam_toolbox 0.40 m too high. The manifest now
-    # carries the mount in `static_transform_xyz_rpy` and `sim_e2e.launch.py`
-    # publishes the `base_link -> base_scan` TF, so nothing has to share a frame
-    # to be transformable. Verified live: `base_link -> base_scan` z = -0.400 and
-    # `odom -> base_scan` z = 0.300, matching the cast.
+    # The scan has its OWN frame (not shared with base_link): the lidar fan casts
+    # 0.30 m above the floor vs. base_link's 0.700 m platform height, a 0.40 m
+    # offset the manifest carries in `static_transform_xyz_rpy`, published as
+    # `base_link -> base_scan` by `sim_e2e.launch.py`. Measured: base_link ->
+    # base_scan z = -0.400, odom -> base_scan z = 0.300.
     assert PANDA_MOBILE_SCAN_FRAME_ID == "base_scan"

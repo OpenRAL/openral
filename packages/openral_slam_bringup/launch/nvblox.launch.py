@@ -3,21 +3,19 @@
 
 nvblox turns cuVSLAM's pose (`map→odom` TF) plus a depth image into the 2D
 obstacle map a **lidar-less** robot needs for Nav2 — the occupancy half of
-SLAM that cuVSLAM alone does not provide. OpenRAL first filters depth pixels to
-a robot-measurement-derived body-height band so floor returns do not project
+SLAM cuVSLAM alone doesn't provide. OpenRAL first filters depth pixels to a
+robot-measurement-derived body-height band so floor returns don't project
 into `/map` as occupied cells, then remaps nvblox's `~/static_occupancy_grid`
 (`nav_msgs/OccupancyGrid`) to the backend-agnostic `/map`. nvblox can also
-publish a height-matched ESDF slice for deployments that use the `nvblox_nav2`
-costmap plugin.
+publish a height-matched ESDF slice for the `nvblox_nav2` costmap plugin.
 
-Depth comes either from a real RGB-D sensor or, for mono-only robots, from the
-monocular metric-depth provider (DA3-Small by default — measured 0.27 GB /
-~27 Hz on an 8 GB Ada; see `openral_perception_ros` + the depth sidecar).
+Depth comes from a real RGB-D sensor or, for mono-only robots, the monocular
+metric-depth provider (DA3-Small by default, 0.27 GB / ~27 Hz on an 8 GB Ada;
+see `openral_perception_ros` + the depth sidecar).
 
-Like cuVSLAM, nvblox's node is a **composable node** (`nvblox::NvbloxNode`),
-run inside a `ComposableNodeContainer`. The nvblox engine is a precompiled
-NVIDIA binary OpenRAL does not bundle (license guard); the operator
-installs `nvblox_ros` on the target GPU host.
+Like cuVSLAM, nvblox's node is a **composable node** (`nvblox::NvbloxNode`)
+run inside a `ComposableNodeContainer`. Precompiled NVIDIA binary, not
+bundled by OpenRAL (license guard); operator installs `nvblox_ros`.
 """
 
 from __future__ import annotations
@@ -157,9 +155,8 @@ def generate_launch_description() -> LaunchDescription:
         namespace="",
         parameters=[params_file, {"use_sim_time": use_sim_time}],
         # nvblox 4.4.0 subscribes camera-namespaced inputs `camera_0/depth/*`
-        # and publishes its grids on the node-private `~/...` namespace (both
-        # verified live via `ros2 node info`). Remap the depth inputs onto our
-        # bus and the static occupancy grid onto the shared `/map`.
+        # and publishes its grids on the node-private `~/...` namespace.
+        # Remap the depth inputs onto our bus and the occupancy grid to `/map`.
         remappings=[
             ("camera_0/depth/image", filtered_depth_image_topic),
             ("camera_0/depth/camera_info", filtered_depth_camera_info_topic),
