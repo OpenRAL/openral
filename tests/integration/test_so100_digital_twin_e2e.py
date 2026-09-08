@@ -1,9 +1,8 @@
 """End-to-end HIL (digital-twin) verification for the F1+F5+F8 graph rollout, step 1.
 
-Brings up the **full** F1 + F5 + F8 graph in one process against a real
-``SO100DigitalTwin`` (no USB hardware required) and asserts the action
-chunk reaches the twin's motors — i.e. the topic contract closes the
-loop:
+Brings up the full F1 + F5 + F8 graph in one process against a real ``SO100DigitalTwin`` (no
+USB hardware required) and asserts the action chunk reaches the twin's motors — the topic
+contract closes the loop:
 
     ExecuteRskill goal
         → rskill_runner_node.execute_cb
@@ -17,17 +16,15 @@ loop:
         → bridge publishes /joint_states (from twin.read_state)
         → world_state aggregator updates
 
-Per CLAUDE.md §1.11 / §5.4: real ``rclpy``, real
-``openral_msgs/ActionChunk``, real ``SO100DigitalTwin`` from lerobot,
-real ``rSkillBase`` subclass producing real joint-position targets.
-Skipped when ROS 2 is not sourced.
+Per CLAUDE.md §1.11 / §5.4: real ``rclpy``, real ``openral_msgs/ActionChunk``, real
+``SO100DigitalTwin`` from lerobot, real ``rSkillBase`` subclass producing real joint-position
+targets. Skipped when ROS 2 is not sourced.
 
 The ad-hoc HAL bridge node mirrors the relevant subset of
-``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py`` — but
-bypasses the production lifecycle ``on_configure`` (which opens a USB
-serial port to ``/dev/ttyUSB0``). The bridge is a real ROS node, not a
-mock; the production HAL lifecycle node's contract (`/joint_states`
-publication, `/openral/safe_action` consumption, `/openral/estop`
+``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py`` but bypasses the
+production lifecycle ``on_configure`` (which opens a USB serial port to ``/dev/ttyUSB0``). It
+is a real ROS node, not a mock; the production HAL lifecycle node's contract
+(``/joint_states`` publication, ``/openral/safe_action`` consumption, ``/openral/estop``
 latch) is exercised on the same topic surface.
 """
 
@@ -113,15 +110,11 @@ def _local_skill_resolver(*_args: Any, **_kwargs: Any) -> Any:
 def _make_hal_bridge_node(hal_adapter: Any) -> Any:
     """Build a tiny ``rclpy.Node`` that bridges the SO-100 HAL onto ROS.
 
-    Subscribes to ``/openral/safe_action`` and forwards the first chunk
-    row to ``hal_adapter.send_action``. Publishes ``/joint_states`` at
-    30 Hz from ``hal_adapter.read_state``. Subscribes to
-    ``/openral/estop`` to latch a brake state.
-
-    Mirrors the production
-    ``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py``
-    topic surface (the parts F1/F5 actually exercise) without opening
-    a USB port.
+    Subscribes to ``/openral/safe_action`` and forwards the first chunk row to
+    ``hal_adapter.send_action``; publishes ``/joint_states`` at 30 Hz from
+    ``hal_adapter.read_state``; subscribes to ``/openral/estop`` to latch a brake state.
+    Mirrors the production ``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py``
+    topic surface (the parts F1/F5 exercise) without opening a USB port.
     """
     from openral_core.schemas import Action, ControlMode
     from openral_msgs.msg import ActionChunk

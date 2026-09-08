@@ -1,23 +1,19 @@
 """Integration smoke tests for the HIL transport bridges.
 
-Exercises the round-trip publish + state-cache contract that the real-HW
-HIL tests rely on, without needing any vendor hardware.  Brings up
-in-process ``rclpy`` nodes, drives the bridge end-to-end, and asserts:
+Exercises the round-trip publish + state-cache contract the real-HW HIL tests rely on,
+without vendor hardware. Brings up in-process ``rclpy`` nodes, drives the bridge end-to-end,
+and asserts:
 
-1. :class:`tests.hil._ros_control_transport.RosControlHILTransport` caches
-   incoming ``sensor_msgs/JointState`` so ``state()`` reflects the latest
-   message.
-2. The same bridge publishes ``trajectory_msgs/JointTrajectory`` on the
-   command topic when ``publish()`` is called.
-3. :class:`tests.hil._aloha_ros_transport.AlohaHILTransport` dispatches
-   arm and gripper publishes to the matching topic with the right joint
-   layout.
+1. ``RosControlHILTransport`` caches incoming ``sensor_msgs/JointState`` so ``state()``
+   reflects the latest message.
+2. The same bridge publishes ``trajectory_msgs/JointTrajectory`` on the command topic when
+   ``publish()`` is called.
+3. ``AlohaHILTransport`` dispatches arm and gripper publishes to the matching topic with the
+   right joint layout.
 
-These tests guard against regressions in the bridge wiring itself; the
-per-robot HIL tests assume the bridge already works.
-
-Skip if ``ROS_DISTRO`` is not set (matches the gating pattern in
-``tests/integration/test_world_state_integration.py``).
+These guard against regressions in the bridge wiring itself; per-robot HIL tests assume the
+bridge already works. Skips if ``ROS_DISTRO`` is not set (matches
+``test_world_state_integration.py``'s gating pattern).
 """
 
 from __future__ import annotations

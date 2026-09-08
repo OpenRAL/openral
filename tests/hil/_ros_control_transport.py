@@ -1,28 +1,22 @@
 """Lab-runner-only ``rclpy`` bridge for single-controller real-HW HALs.
 
-The real-HW HAL adapters (``UR5eRealHAL`` / ``UR10eRealHAL`` /
-``FrankaPandaRealHAL`` / ``SawyerRealHAL``) do not import ``rclpy``
-themselves — the HAL Protocol is wire-format-free.  The transport is
-injected at construction time via ``publish_fn`` / ``state_fn`` callables.
+Real-HW HAL adapters (``UR5eRealHAL``/``UR10eRealHAL``/``FrankaPandaRealHAL``/
+``SawyerRealHAL``) don't import ``rclpy`` themselves — the HAL Protocol is wire-format-free;
+the transport is injected at construction time via ``publish_fn``/``state_fn`` callables.
 
 In production the transport is the per-HAL ROS 2 lifecycle node
-(``packages/openral_hal_<robot>/``).  Inside a HIL test we bring up a
-minimal ``rclpy`` node locally so the test can drive the real vendor
-``ros2_control`` controller end-to-end.
+(``packages/openral_hal_<robot>/``). Inside a HIL test a minimal ``rclpy`` node is brought up
+locally so the test can drive the real vendor ``ros2_control`` controller end-to-end.
 
-This module is HIL-only — it is imported by ``tests/hil/test_<robot>.py``
-after the test has confirmed both ``rclpy`` and the live driver are
-present.  The unit-lane conformance tests use
-:class:`openral_hal.sim_transport.SimTransport` instead and never
-touch ``rclpy``.
+HIL-only — imported by ``tests/hil/test_<robot>.py`` after the test confirms both ``rclpy``
+and the live driver are present. Unit-lane conformance tests use
+``openral_hal.sim_transport.SimTransport`` instead and never touch ``rclpy``.
 
-Defaults match ``ur_robot_driver``
-(``/scaled_joint_trajectory_controller/joint_trajectory``,
+Defaults match ``ur_robot_driver`` (``/scaled_joint_trajectory_controller/joint_trajectory``,
 ``/joint_states``); pass explicit topics for other controllers.
 
-Per CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in
-between.  The helper raises ``RuntimeError`` if it is imported on a host
-without ``rclpy`` so the caller has to guard with
+Per CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between. Raises
+``RuntimeError`` if imported on a host without ``rclpy``, so the caller must guard with
 ``importlib.util.find_spec``.
 """
 

@@ -1,37 +1,29 @@
 """Live ROS coverage for the dashboard's camera perception overlays.
 
-Two properties that only a real DDS graph can prove, because both are about
-**QoS matching and the spin thread** rather than about the decoding code the
-unit tests already cover:
+Two properties only a real DDS graph can prove (QoS matching and the spin thread, not the
+decoding code unit tests already cover):
 
-1. **The subscription actually matches the detector.**
-   `ros_image_detector_node` publishes BEST_EFFORT / VOLATILE / KEEP_LAST=5.
-   A RELIABLE subscriber never matches a BEST_EFFORT publisher, so a drifted
-   profile would leave the overlay permanently blank with nothing anywhere to
-   explain it — the same silent-mismatch trap `/openral/safety_status`
-   documents from the durability side. Only a real graph catches it: every
-   in-process test drives the callback directly and passes either way.
+1. The subscription actually matches the detector: ``ros_image_detector_node`` publishes
+   BEST_EFFORT/VOLATILE/KEEP_LAST=5. A RELIABLE subscriber never matches a BEST_EFFORT
+   publisher, so a drifted profile leaves the overlay blank with nothing to explain it — the
+   same silent-mismatch trap ``/openral/safety_status`` documents from the durability side.
+   In-process tests drive the callback directly and pass either way.
+2. The message survives the whole path into ``/api/state``: real ``PromptStamped`` on the
+   real topic → real ``PerceptionOverlaySubscriber`` spin thread → real ``TelemetryStore`` →
+   a real ASGI app instance — the path the browser reads, crossing a thread boundary unit
+   tests do not.
 
-2. **The message survives the whole path into `/api/state`.**
-   Real `PromptStamped` on the real topic → the real `PerceptionOverlaySubscriber`
-   spin thread → the real `TelemetryStore` → a real ASGI app instance. That is
-   the path the browser reads, and it crosses a thread boundary the unit tests
-   do not.
+The segmenter half is covered too, from a real ``sensor_msgs/Image`` mono8 mask built exactly
+as ``openral_msgs/srv/SegmentInView`` returns them, driven into the decode + store seam. Its
+live producer path (segmenter node's diagnostic ``openral_msgs/SegmentMasks`` topic) is
+exercised in ``test_segment_in_view_service.py``; this pins that the decode + store half is
+written against the real ROS message, not a bytes literal.
 
-The segmenter half is covered here too, from a real `sensor_msgs/Image` mono8
-mask built exactly as `openral_msgs/srv/SegmentInView` returns them, driven
-straight into the decode + store seam. Its live producer path — the segmenter
-node's diagnostic `openral_msgs/SegmentMasks` topic through the real
-subscription — is exercised in `tests/integration/test_segment_in_view_service.py`,
-next to the producer; what this pins is that the decode + store half is written
-against the real ROS message rather than a bytes literal.
+Real components (CLAUDE.md §1.11): production subscriber, production store, production ASGI
+app, real generated messages. No mocks.
 
-Real components throughout (CLAUDE.md §1.11): the production subscriber, the
-production store, the production ASGI app, real generated messages. No mocks.
-
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the sibling live tests, and listed in
-``scripts/ros_live_tests.sh``. CI runs it inside ``openral:x86`` (the
-``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. CI runs it in
+``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash

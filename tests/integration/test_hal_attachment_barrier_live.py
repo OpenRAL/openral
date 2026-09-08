@@ -1,34 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live-ROS regression: a place-witness revision must release the action barrier.
 
-Round 6 (``robocasa_sink_cup``) aborted a goal whose place had *succeeded*. The
-shape, from the field log:
+Round 6 (``robocasa_sink_cup``) aborted a goal whose place had succeeded. Field log:
+attachment revision 2 published at ``1786728108.893`` (ADR-0097 place witness — re-publishes
+the same carried object under a bumped revision with a ``support_contact`` attestation);
+``deferring action_applied tick=180 for attachment perception`` (HAL held the tick because
+``SimSensorBridge.attachment_action_ack_ready()`` was False); no
+``attachment perception barrier waiting for N ... depth frames`` line ever appeared
+(applied-revision handler tested object-id addition only, witness added none, so nothing
+armed/released); ``action group tick 180 was not applied within 8 s`` → goal abort.
 
-* attachment revision 2 published at ``1786728108.893`` — the ADR-0097 place
-  witness, which re-publishes the SAME carried object under a bumped revision
-  with a ``support_contact`` attestation attached;
-* ``deferring action_applied tick=180 for attachment perception`` — the HAL
-  lifecycle node held the completed tick because
-  ``SimSensorBridge.attachment_action_ack_ready()`` was False while that
-  revision sat in ``_attachment_pending``;
-* no ``attachment perception barrier waiting for N ... depth frames`` line ever
-  — the bridge's applied-revision handler tested *object-id addition*, the
-  witness added no object id, so nothing armed and nothing released;
-* ``action group tick 180 was not applied within 8 s`` → goal abort.
+Barrier exists so motion waits for new masked geometry; a witness-only re-publish masks
+nothing new, so it releases immediately (guarded by ``attachment_action_ack_ready`` so an
+earlier revision's outstanding depth/voxel frames are never skipped).
 
-The barrier exists so motion waits until perception reflects **new masked
-geometry**. A witness-only re-publish masks nothing new, so the fix releases it
-immediately (guarded by ``attachment_action_ack_ready`` so an earlier
-revision's outstanding depth/voxel frames are never skipped).
-
-This is the live half: the production ``ManifestHALLifecycleNode`` on a real
-``SimAttachedHAL`` (the real ``tabletop_push`` rollout — a real compiled
-``MjModel`` with a free ``cube`` body), its real ``SimSensorBridge``, real
-``openral_msgs`` on the wire, and the release observed as a real
+Live half: production ``ManifestHALLifecycleNode`` on a real ``SimAttachedHAL`` (real
+``tabletop_push`` rollout, compiled ``MjModel`` with a free ``cube`` body), real
+``SimSensorBridge``, real ``openral_msgs`` on the wire, release observed via a real
 ``/openral/action_applied`` message. No mocks (CLAUDE.md §1.11).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` and listed in ``scripts/ros_live_tests.sh``.
-Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
@@ -291,36 +282,25 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
 def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     """Both barrier holders wired: the tick clears only when BOTH have settled.
 
-    Landing the vision attachment leg on master put two holders on one barrier
-    for the first time, and the two behaviours it joins pull in opposite
-    directions:
+    Landing the vision attachment leg put two holders on one barrier, pulling opposite ways:
+    master's ``SimSensorBridge`` releases on an ``(object_id, evidence_ref)`` revision masking
+    no new geometry (the ADR-0097 attestation-only re-publish, else a successful place aborts
+    its own goal — the test above); the vision leg holds the same barrier across a bounded
+    ``SegmentInView`` round trip, since unmeasured geometry must not be driven around.
 
-    * master's ``SimSensorBridge`` releases on an ``(object_id, evidence_ref)``
-      revision that masks **no new geometry** — the ADR-0097 attestation-only
-      re-publish — because otherwise a *successful* place aborted its own goal
-      (the test above);
-    * the vision leg holds the same barrier across a bounded ``SegmentInView``
-      round trip, because a payload whose geometry has not been measured yet
-      must not be driven around.
+    Merging them textually would let the first release win. This pins the resolution:
+    ``_on_attachment_perception_ready`` re-checks every holder, each re-issues its own notify
+    when it settles, so the last one to finish releases and neither behaviour is lost.
 
-    Merging them textually would have let the first release win: the sim
-    bridge's notify would have published a tick while the vision holder still
-    had nothing to say about the thing in the jaws. This pins the resolution —
-    ``_on_attachment_perception_ready`` re-checks **every** holder, and each
-    holder re-issues its own notify when it settles, so the last one to finish
-    is the one that releases, and neither behaviour is lost.
+    Real components: production ``ManifestHALLifecycleNode`` with ``vision_attachment_enabled``,
+    real ``VisionAttachmentBridge`` and ``SegmentInView`` client, real depth frame, real tf2,
+    real ``openral_msgs`` on the wire, release observed via a real ``/openral/action_applied``
+    message.
 
-    Real components throughout: the production ``ManifestHALLifecycleNode`` with
-    ``vision_attachment_enabled``, its real ``VisionAttachmentBridge`` and real
-    ``SegmentInView`` client, a real depth frame, real tf2, real
-    ``openral_msgs`` on the wire, and the release observed as a real
-    ``/openral/action_applied`` message.
-
-    The vision holder settles here on its own **deadline** — the bounded-wait
-    property the leg is built on — driven by a service that is offered and never
-    answered. That is a real DDS peer at a process boundary, not a substituted
-    OpenRAL component (CLAUDE.md §1.11), and it is exactly the wedged-perception
-    case the deadline exists for.
+    Vision holder settles here on its own deadline (the bounded-wait property the leg is built
+    on), driven by a service offered and never answered — a real DDS peer at a process
+    boundary, not a substitute (CLAUDE.md §1.11), the wedged-perception case the deadline
+    exists for.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("mujoco")

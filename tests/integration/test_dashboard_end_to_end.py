@@ -59,10 +59,9 @@ def _fetch_state(port: int) -> dict[str, Any]:
 def _pynvml_available() -> bool:
     """Return ``True`` iff a live NVIDIA driver answers via pynvml.
 
-    The system_metrics sampler runs the same probe internally; we replicate
-    it here so the integration test can decide whether to additionally
-    assert against the GPU bucket. Failing imports or a missing driver both
-    legitimately yield ``False`` and the assertion path is skipped.
+    The system_metrics sampler runs the same probe internally; replicated here so the test
+    can decide whether to also assert against the GPU bucket. A failed import or missing
+    driver both yield ``False``, and the assertion path is skipped.
     """
     try:
         import pynvml  # type: ignore[import-not-found]  # reason: optional probe
@@ -177,13 +176,12 @@ def test_dashboard_receives_real_otlp_http_debug_log() -> None:
 
 
 def test_dashboard_system_health_card_receives_gpu_cpu_ram() -> None:
-    """`configure_observability` must boot the host sampler so the dashboard's
-    System health card surfaces CPU / RAM (and GPU when available).
+    """``configure_observability`` must boot the host sampler for the dashboard's System
+    health card (CPU/RAM, GPU when available).
 
-    Regression for "System health in dashboard not showing GPU usage" — the
-    sampler used to be defined but never invoked outside its own unit test,
-    so the topic bucket the UI reads stayed empty for the lifetime of the
-    process.
+    Regression for "System health in dashboard not showing GPU usage": the sampler was
+    defined but never invoked outside its own unit test, so the topic bucket the UI reads
+    stayed empty.
     """
     pytest.importorskip("psutil")  # sampler no-ops without psutil/pynvml.
     from openral_observability import (
@@ -193,15 +191,13 @@ def test_dashboard_system_health_card_receives_gpu_cpu_ram() -> None:
     )
     from openral_observability._sdk import _ENV_METRIC_INTERVAL_MS
 
-    # Isolate from any prior observability test that installed an OTel meter
-    # provider and left OTel's set-once guard tripped. A stale global provider
-    # makes the `configure_observability` call below silently no-op its
-    # `set_meter_provider` (the SDK warns and keeps the old provider), so the
-    # host sampler's gauges never reach *this* test's dashboard exporter and the
-    # System card stays empty — the exact intermittent CI failure this test hit
-    # when an earlier observability test ran first. The teardown already resets
-    # this for the *next* test; reset up front too so we aren't the victim of
-    # the *previous* one.
+    # Isolate from any prior observability test that installed an OTel meter provider and
+    # left OTel's set-once guard tripped: a stale global provider makes
+    # `configure_observability` silently no-op `set_meter_provider` (SDK warns, keeps old
+    # provider), so the host sampler's gauges never reach this test's exporter and the System
+    # card stays empty — the intermittent CI failure this test hit when an earlier
+    # observability test ran first. Teardown resets this for the next test; reset up front too
+    # so we aren't the victim of the previous one.
     from opentelemetry.metrics import _internal as metrics_internal
 
     trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset

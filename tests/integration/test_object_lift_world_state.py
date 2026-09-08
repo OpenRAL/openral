@@ -1,24 +1,20 @@
 """E2E integration tests for the object-lift path in the world-state lifecycle node.
 
-Task 8: drives the real ``_WorldStateLifecycleNode`` object-lift pipeline
-with real components (real node, real VoxelFrustumLifter + ObjectMemory, real
-TF2 transforms, real OccupancyVoxels + PromptStamped messages).
+Task 8: drives the real ``_WorldStateLifecycleNode`` object-lift pipeline with real
+components (real node, real VoxelFrustumLifter + ObjectMemory, real TF2 transforms, real
+OccupancyVoxels + PromptStamped messages).
 
-Scenario overview
------------------
-All tests share a simple scene: ``base_link`` == ``head_rgb_optical`` == ``map``
-(identity transforms).  A 5×5×5 voxel cube at (0,0,2) in base_link projects
-to pixel ≈(50,50) on a 100×100 fx=fy=100 cx=cy=50 camera, and lands inside
-the detection box (40,40,60,60).
+All tests share a simple scene: ``base_link`` == ``head_rgb_optical`` == ``map`` (identity
+transforms). A 5x5x5 voxel cube at (0,0,2) in base_link projects to pixel ≈(50,50) on a
+100x100 fx=fy=100 cx=cy=50 camera, landing inside the detection box (40,40,60,60).
 
-1. **happy_path** — voxels + detection → object remembered in map frame at z≈2.
-2. **best_effort_no_voxels** — lift enabled, no voxel grid published → snapshot
-   detected_objects stays empty (best-effort proof).
-3. **eviction** — happy path object is remembered (topic-driven, so the detection
-   camera enters ``_seen_sensor_ids``); then the producer goes silent (the real
-   detector publishes NOTHING when it detects nothing) and a memory tick alone —
-   no new detection message — evicts the track because the camera FOV (built from
-   the camera pose every tick) still covers the object yet it was not re-detected.
+1. happy_path — voxels + detection → object remembered in map frame at z≈2.
+2. best_effort_no_voxels — lift enabled, no voxel grid published → detected_objects stays
+   empty (best-effort proof).
+3. eviction — happy-path object remembered (topic-driven, so the detection camera enters
+   ``_seen_sensor_ids``); producer goes silent (real detector publishes nothing when it
+   detects nothing) and a memory tick alone evicts the track, since the camera FOV (rebuilt
+   from the camera pose every tick) still covers the object yet it was not re-detected.
 
 All tests skip cleanly when the ROS overlay is not sourced.
 """
@@ -306,14 +302,10 @@ def _object_lift_harness(
 def test_object_lift_happy_path() -> None:
     """Voxel grid + detection → object remembered in map frame at z≈2.
 
-    Publishes one OccupancyVoxels grid + one PromptStamped detection on
-    the real ROS topics, waits for the memory tick, and asserts that
-    snapshot().detected_objects contains a cup at z≈2 in the map frame.
-
-    The node is configured with ``max_misses=5`` so a single detection
-    survives the assert window: once the camera enters ``_seen_sensor_ids``
-    the in-FOV eviction would otherwise drop the track after one missed
-    tick, which would race the assertion.
+    Publishes one OccupancyVoxels + one PromptStamped detection, waits for the memory tick,
+    and asserts ``snapshot().detected_objects`` has a cup at z≈2 in the map frame. Node uses
+    ``max_misses=5`` so a single detection survives the assert window (in-FOV eviction would
+    otherwise drop the track after one missed tick, racing the assertion).
     """
     with _object_lift_harness(max_misses=5) as (executor, node, helper, vox_pub, det_pub):
         # Publish the voxel grid first, then the detection.
@@ -372,23 +364,18 @@ def test_object_lift_no_voxels_best_effort() -> None:
 def test_object_lift_eviction() -> None:
     """A remembered object is evicted when the silent detector stops re-detecting it.
 
-    This models the REAL producer contract: ``perception_tee`` publishes NOTHING
-    when ``postprocess_rtdetr`` returns no detections. So once an object leaves
-    the scene, zero messages arrive — yet the track must still be evicted because
-    the camera that saw it is still pointed at the (now empty) region.
+    Real producer contract: ``perception_tee`` publishes nothing when ``postprocess_rtdetr``
+    returns no detections, so once an object leaves the scene, zero messages arrive — yet the
+    track must still be evicted since the camera that saw it is still pointed at the (now
+    empty) region.
 
-    Approach (no synthetic empty-detection message — the real detector never
-    sends one):
-
-    1. **Establish** the object topic-driven (publish voxels + one detection).
-       This routes through the real ``_on_objects`` callback, which records
-       ``head_rgb`` in ``_seen_sensor_ids``.
-    2. **Go silent** — publish no further detections.
-    3. **Tick** the real ``_on_memory_tick`` directly (deterministic, no ROS
-       timing race). The in-FOV predicate is rebuilt from ``head_rgb``'s current
-       pose alone (identity TF → object at z≈2 projects to ≈(50,50), inside the
-       100×100 image), so the object is judged in-view, was not re-detected, and
-       with ``max_misses=1`` is evicted on this single missed tick.
+    No synthetic empty-detection message (the real detector never sends one): (1) establish
+    the object topic-driven (publish voxels + one detection, routing through the real
+    ``_on_objects`` callback, which records ``head_rgb`` in ``_seen_sensor_ids``); (2) go
+    silent — no further detections; (3) tick the real ``_on_memory_tick`` directly
+    (deterministic, no ROS timing race) — the in-FOV predicate rebuilds from ``head_rgb``'s
+    current pose alone (identity TF → object at z≈2 projects to ≈(50,50), inside the 100x100
+    image), so with ``max_misses=1`` the object is evicted on this single missed tick.
     """
     with _object_lift_harness(max_misses=1) as (executor, node, helper, vox_pub, det_pub):
         # --- Phase 1: establish the object (topic-driven) ---

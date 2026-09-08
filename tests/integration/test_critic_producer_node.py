@@ -1,21 +1,19 @@
 """Live ROS integration test for the Tier-C critic producer.
 
-Stands up the **real** ``CriticProducerNode`` and ``ReasonerNode`` on one
-executor, publishes a stalled ``openral_msgs/CriticScore`` series on
-``/openral/critic/score``, and asserts the full path:
+Stands up the real ``CriticProducerNode`` and ``ReasonerNode`` on one executor, publishes a
+stalled ``openral_msgs/CriticScore`` series on ``/openral/critic/score``, and asserts the
+full path:
 
     CriticScore (stalled) → CriticWatchdogGroup stall → FailureTrigger
     (KIND_CRITIC / SEVERITY_FAIL) on /openral/failure/critic → reasoner
     forced Tier-C tick → EmitPromptTool dispatched on /openral/prompt.
 
-This is the deterministic counterpart of the live ``deploy sim`` run: it
-"enforces a trigger" by feeding below-threshold scores, then checks the new
-elements actually fire end-to-end. The only test double is the
-``FakeToolUseClient`` at the LLM process boundary (CLAUDE.md §1.11).
+Deterministic counterpart of the live ``deploy sim`` run: feeds below-threshold scores, then
+checks the new elements fire end-to-end. Only test double: ``FakeToolUseClient`` at the LLM
+process boundary (CLAUDE.md §1.11).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the sibling reasoner integration
-tests, and listed in the live-ROS suite (``scripts/ros_live_tests.sh``). CI runs
-it inside ``openral:x86`` (the ``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. CI runs it in
+``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash

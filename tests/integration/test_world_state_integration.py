@@ -1,33 +1,21 @@
 """Integration tests for the World State ROS 2 lifecycle node.
 
-These tests drive the real
-``openral_world_state_ros.lifecycle_node._WorldStateLifecycleNode``
-through ``rclpy`` (the ``launch_testing``-equivalent in-process pattern
-that ``test_lifecycle_node_launch`` established) and verify the
-F2 typed-topic contract at the integration boundary: the typed
-``WorldStateStamped`` publication on the fast (30 Hz) and slow (5 Hz)
-topics, QoS profiles, lifecycle transitions, and the ``/joint_states``
-→ aggregator → typed message round-trip.
+Drives the real ``openral_world_state_ros.lifecycle_node._WorldStateLifecycleNode`` through
+``rclpy`` (in-process pattern from ``test_lifecycle_node_launch``) and verifies the F2
+typed-topic contract: ``WorldStateStamped`` on the fast (30 Hz) and slow (5 Hz) topics, QoS,
+lifecycle transitions, and the ``/joint_states`` → aggregator → typed round-trip. The JSON
+``/world_state`` topic is removed by F2 — typed is the only path now.
 
-The five scenarios below mirror the structure of the older JSON-based
-integration tests (the JSON ``/world_state`` topic is removed by the
-F2 typed-topic contract — typed is the only path now):
+Five scenarios:
 
-1. **Fast/slow rate ratio** — drive ``/joint_states`` at 30 Hz; assert
-   the fast topic publishes ≥6× as often as the slow topic over a 2 s
-   window (matches the ``round(30/5) = 6`` divider).
-2. **30 Hz pipeline → DIAG_OK** — drive at 30 Hz; the latest fast
-   message reports ``DIAG_OK`` for ``joint_state`` in the parallel
-   diagnostic arrays.
-3. **Joint-state dropout** → ``DIAG_STALE`` within one staleness
-   window.
-4. **Recovery** → ``DIAG_OK`` again once fresh updates resume.
-5. **High-load consistency** — 8 concurrent publishers; every typed
-   snapshot's ``joint_state.position`` length is internally consistent.
+1. Fast/slow ratio: ≥6x as many fast msgs as slow over 2 s (round(30/5) = 6).
+2. 30 Hz pipeline → DIAG_OK for joint_state.
+3. Joint-state dropout → DIAG_STALE within one staleness window.
+4. Recovery → DIAG_OK once fresh updates resume.
+5. High-load: 8 concurrent publishers, every snapshot's joint_state.position length consistent.
 
-All tests skip if ROS 2 is not sourced. CI runs them in the
-``hal-integration`` job (``.github/workflows/hal.yml``) which colcon-builds
-``openral_msgs`` and ``openral_world_state`` first.
+Skips if ROS 2 is not sourced. CI: ``hal-integration`` job (``.github/workflows/hal.yml``),
+colcon-builds ``openral_msgs`` / ``openral_world_state`` first.
 """
 
 from __future__ import annotations
@@ -68,10 +56,9 @@ def _lifecycle_harness(
 ) -> Iterator[tuple[Any, Any, Any, list[Any], list[Any]]]:
     """Bring up a ``_WorldStateLifecycleNode`` + helper publisher node.
 
-    Yields ``(executor, helper_node, joint_pub, fast_msgs, slow_msgs)``.
-    The ``fast_msgs`` / ``slow_msgs`` lists are appended to by
-    subscriptions on the two F2 typed topics. Cleanly tears down on
-    exit.
+    Yields ``(executor, helper_node, joint_pub, fast_msgs, slow_msgs)``: ``fast_msgs``/
+    ``slow_msgs`` are appended to by subscriptions on the two F2 typed topics. Tears down
+    cleanly on exit.
     """
     import rclpy  # type: ignore[import-untyped]
     from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
@@ -502,13 +489,11 @@ def test_dashboard_flip_180_never_touches_the_policy_frame(
 ) -> None:
     """OPENRAL_DASHBOARD_FLIP_180 flips the dashboard thumbnail, NOT the policy frame.
 
-    Regression: the flip was once applied to ``SensorFrame.data`` itself, which
-    the rSkill runner reads (``_decode_image_frames``) to build the VLA's
-    observation. Combined with the adapter's own ``image_preprocessing.flip_180``
-    that double-flipped the policy input upside-down and collapsed the rollout
-    (the robot stopped picking). The flip must stay display-only: the aggregated
-    frame fed to the policy is byte-identical to the raw publisher frame, while
-    the dashboard thumbnail is the 180°-rotated copy.
+    Regression: the flip was once applied to ``SensorFrame.data`` itself (read by the rSkill
+    runner's ``_decode_image_frames``), which combined with the adapter's own
+    ``image_preprocessing.flip_180`` to double-flip the policy input and collapse the rollout
+    (robot stopped picking). Flip must stay display-only: policy frame is byte-identical to
+    the raw publisher frame; only the dashboard thumbnail is 180°-rotated.
     """
     import numpy as np
     import rclpy

@@ -1,35 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """Lab-runner-only ``rclpy`` bridge for the bimanual OpenArm v2 real-HW HAL.
 
-:class:`openral_hal.openarm_real.OpenArmRealHAL` fans one 16-DoF
-:class:`openral_core.Action` across **four** ``ros2_control`` controllers —
-left arm, left gripper, right arm, right gripper (``openarm_bringup``'s
-bimanual configuration). This is the HIL counterpart of
-:mod:`tests.hil._aloha_ros_transport` for that fan-out.
+``openral_hal.openarm_real.OpenArmRealHAL`` fans one 16-DoF ``openral_core.Action`` across
+four ``ros2_control`` controllers — left arm, left gripper, right arm, right gripper
+(``openarm_bringup``'s bimanual configuration). HIL counterpart of
+``tests.hil._aloha_ros_transport`` for that fan-out.
 
-Simpler than the ALOHA bridge, because the OpenArm HAL puts ``joint_names``
-**in the message it publishes** (ADR-0102). The ALOHA bridge has to carry its
-own slice table to know which joints each publisher owns; here the message
-says so, and the transport just forwards it. That also means the transport
-cannot silently disagree with the HAL about joint order — there is no second
-copy of the mapping to drift.
+Simpler than the ALOHA bridge: the OpenArm HAL puts ``joint_names`` in the message it
+publishes (ADR-0102), so the transport just forwards it rather than carrying its own slice
+table — no second copy of the mapping to drift.
 
-Those names are in the **ros2_control namespace**
-(``openarm_left_joint1``), not the manifest's (``left_joint1``); the adapter
-translates, and ``/joint_states`` is keyed the same way. Build this transport
-from :meth:`OpenArmRealHAL.ros2_control_joint_names`, never from
+Names are in the ros2_control namespace (``openarm_left_joint1``), not the manifest's
+(``left_joint1``); the adapter translates, and ``/joint_states`` is keyed the same way. Build
+this transport from ``OpenArmRealHAL.ros2_control_joint_names``, never from
 ``description.joints``.
 
-``time_from_start`` is a **constructor argument** here, unlike the 100 ms the
-production transports hardcode. A ``JointTrajectoryController`` given an
-absolute target and a 100 ms deadline moves at ``(target - current) / 0.1s``,
-so on a first powered run the rate is set by how wrong the command is — which
-is the quantity under test. A longer window bounds the rate by construction.
-Tests that care about production timing must say so and pass 0.1.
+``time_from_start`` is a constructor argument here, unlike the 100 ms the production
+transports hardcode: a ``JointTrajectoryController`` given an absolute target and a 100 ms
+deadline moves at ``(target - current) / 0.1s``, so on a first powered run the rate is set by
+how wrong the command is — the quantity under test. A longer window bounds the rate by
+construction; tests caring about production timing must pass 0.1 explicitly.
 
-This module is HIL-only and shares the import-time ``rclpy`` guard from
-:mod:`tests.hil._ros_control_transport` (CLAUDE.md §1.11: real component or
-``pytest.skip`` — nothing in between).
+HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
+(CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations

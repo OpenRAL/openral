@@ -1,38 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live-ROS: a world-voxel stop must be able to say what backs its cell.
 
-The pure classification is unit-tested against compiled ``MjModel``s in
-``tests/unit/test_sim_estop_voxel_backing.py``. What only a live graph can pin
-is the wiring that gets the question asked at all, because it spans two topics
-that meet nowhere else:
+Pure classification is unit-tested against compiled ``MjModel``s in
+``tests/unit/test_sim_estop_voxel_backing.py``. Only a live graph can pin the wiring that gets
+the question asked at all, spanning two topics that meet nowhere else: ``/openral/failure/safety``
+names the cell as an index (``b=voxel_76001`` in the field logs) and nothing more;
+``/openral/world_voxels`` carries the grid that index addresses, and the kernel never
+republishes it alongside the evidence.
 
-* ``/openral/failure/safety`` names the cell as an **index** — ``b=voxel_76001``
-  in the field logs — and nothing more;
-* ``/openral/world_voxels`` carries the grid that index addresses, and the
-  kernel never republishes it alongside the evidence.
+Until they are joined, an evidence index is not a position and the record cannot look at the
+map — exactly how the 2026-08-22 round adjudicated two stops as false positives on ground
+truth that had never examined the cell.
 
-Until they are joined, an evidence index is not a position and the record
-cannot look at the map at all — which is exactly how the 2026-08-22 round
-adjudicated two stops as false positives on ground truth that had never
-examined the cell.
+Second half is ordering, where the join was actually being lost: kernel publishes the failure
+trigger and E-stop on different topics with no guaranteed delivery order, and the snapshot is
+deliberately never delayed for the evidence. When the evidence loses the race the located cell
+doesn't exist yet, and the map-side half of the record used to drop silently — 14 of 15 stops
+in the 2026-08-26 five-round battery recorded no backing at all. The record must instead say
+nothing while it knows nothing (never attribute the previous stop's cell to this one) and emit
+the backing on the late line.
 
-The second half of this test is the **ordering**, which is where the join was
-actually being lost. The kernel publishes the failure trigger and the E-stop on
-different topics with no guaranteed delivery order, and the snapshot is
-deliberately never delayed for the evidence. So when the evidence loses the
-race the located cell does not exist yet, and the map-side half of the record
-used to be dropped without a word — 14 of the 15 stops in the 2026-08-26
-five-round battery recorded no backing at all. The record must instead say
-nothing while it knows nothing (never attribute the *previous* stop's cell to
-this one) and then emit the backing on the late line.
+Live half: production ``ManifestHALLifecycleNode`` on a real ``SimAttachedHAL`` (real
+``tabletop_push`` rollout, real compiled ``MjModel``), real ``SimSensorBridge``, real
+``openral_msgs`` on the wire. No mocks (CLAUDE.md §1.11).
 
-This is the live half: the production ``ManifestHALLifecycleNode`` on a real
-``SimAttachedHAL`` (the real ``tabletop_push`` rollout, a real compiled
-``MjModel``), its real ``SimSensorBridge``, and real ``openral_msgs`` on the
-wire. No mocks (CLAUDE.md §1.11).
-
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` and listed in ``scripts/ros_live_tests.sh``.
-Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash

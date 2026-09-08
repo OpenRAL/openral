@@ -1,27 +1,22 @@
 """Lab-runner-only ``rclpy`` bridge for the ALOHA bimanual real-HW HAL.
 
-The :class:`openral_hal.aloha.AlohaHAL` adapter splits a single 14-D
-:class:`openral_core.Action` across **four** ``ros2_control``
-controllers — left arm, right arm, left gripper, right gripper.  This
-bridge is the HIL counterpart of :mod:`tests.hil._ros_control_transport`
-for the bimanual fan-out: it owns four ``trajectory_msgs/JointTrajectory``
-publishers + one aggregated ``sensor_msgs/JointState`` subscriber and
-dispatches by topic match.
+``openral_hal.aloha.AlohaHAL`` splits a single 14-D ``openral_core.Action`` across four
+``ros2_control`` controllers — left arm, right arm, left gripper, right gripper. This bridge
+is the HIL counterpart of ``tests.hil._ros_control_transport`` for the bimanual fan-out: it
+owns four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
+``sensor_msgs/JointState`` subscriber and dispatches by topic match.
 
-All four publishers use ``trajectory_msgs/JointTrajectory`` because each
-ALOHA controller (arms and grippers alike) is a
-``joint_trajectory_controller/JointTrajectoryController`` instance — the
-grippers are 1-DOF JointTrajectoryControllers.  The standalone
-``parallel_gripper_action_controller/GripperActionController`` (action
-interface, ``control_msgs/action/GripperCommand``) and Trossen's native
-``interbotix_xs_msgs/JointSingleCommand`` are deliberately not used here:
-they would not match the AlohaHAL's ``publish_fn(topic, msg)`` contract,
-which fans out via ``self._publish_fn(...)`` four times per
-``send_action()`` (see ``python/hal/src/openral_hal/aloha.py``).
+All four publishers use ``trajectory_msgs/JointTrajectory`` because every ALOHA controller
+(arms and grippers alike) is a ``joint_trajectory_controller/JointTrajectoryController``
+instance — grippers are 1-DOF JointTrajectoryControllers. The standalone
+``parallel_gripper_action_controller/GripperActionController`` (action interface,
+``control_msgs/action/GripperCommand``) and Trossen's native
+``interbotix_xs_msgs/JointSingleCommand`` are deliberately not used: neither matches
+AlohaHAL's ``publish_fn(topic, msg)`` contract, which fans out via ``self._publish_fn(...)``
+four times per ``send_action()`` (see ``python/hal/src/openral_hal/aloha.py``).
 
-This module is HIL-only and shares the import-time ``rclpy`` guard from
-:mod:`tests.hil._ros_control_transport` (CLAUDE.md §5.4: real component or
-``pytest.skip`` — nothing in between).
+HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
+(CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations

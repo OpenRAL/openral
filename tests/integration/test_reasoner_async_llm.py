@@ -1,26 +1,21 @@
 """Acceptance tests for the async LLM phase (issue #21).
 
-A blocking ``select_tool`` used to run on the single-threaded rclpy
-executor, so every other callback — action goal results, deadline
-("patience") timers, Tier-A safety preemptions — queued behind the LLM
-round-trip (live evidence: a 10 s patience timer fired at 76 s). The LLM
-phase now runs on a worker thread; these tests pin the acceptance
-criteria from the issue with an artificially slow
+A blocking ``select_tool`` used to run on the single-threaded rclpy executor, queuing every
+other callback (goal results, deadline/"patience" timers, Tier-A safety preemptions) behind
+the LLM round-trip (live evidence: a 10 s patience timer fired at 76 s). LLM phase now runs
+on a worker thread; these tests pin the issue's acceptance criteria with an artificially slow
 :class:`FakeToolUseClient`:
 
-(a) a goal result callback lands < 1 s after the server terminates, while
-    an LLM call is still in flight;
-(b) a skill deadline timer fires within 1 s of its deadline, while an LLM
-    call is still in flight;
-(c) a Tier-A safety failure is ingested during the in-flight call and its
-    forced tick runs immediately after that call returns;
+(a) goal result callback lands <1 s after server terminates, LLM call still in flight;
+(b) skill deadline timer fires within 1 s of deadline, LLM call still in flight;
+(c) Tier-A safety failure ingested during the in-flight call, forced tick runs immediately
+    after that call returns;
+
 plus a bounded dispatch/abort soak over the multithreaded executor.
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like
-``test_reasoner_node_end_to_end.py`` (rclpy + DDS init clash with glib
-pulled in by torch/pyarrow in the regular pytest invocation). Part of the
-live-ROS suite (``scripts/ros_live_tests.sh``); CI runs it inside
-``openral:x86`` (the ``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (same as ``test_reasoner_node_end_to_end.py``: rclpy +
+DDS init clash with glib pulled in by torch/pyarrow). Part of ``scripts/ros_live_tests.sh``;
+CI runs it in ``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
@@ -417,11 +412,10 @@ def test_tier_a_failure_is_ingested_mid_call_and_ticks_right_after() -> None:
 def test_async_llm_soak_dispatch_abort_cycles() -> None:
     """Bounded soak: repeated dispatch/abort cycles with a delayed client, no stuck state.
 
-    Every goal aborts server-side; the failure feedback forces the next
-    tick, which redispatches (unique prompt per attempt so the retry cap
-    never suppresses). The pass criterion is throughput: several full
-    cycles complete and the single-flight window is released at the end —
-    a starved/stuck trampoline stalls the cycle count instead.
+    Every goal aborts server-side; failure feedback forces the next tick, which redispatches
+    (unique prompt per attempt so the retry cap never suppresses). Pass criterion is
+    throughput: several full cycles complete and the single-flight window is released at the
+    end — a starved/stuck trampoline stalls the cycle count instead.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")

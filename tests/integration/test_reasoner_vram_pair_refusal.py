@@ -1,23 +1,20 @@
 """Live ROS integration test for the VLA+reward VRAM pair refusal.
 
-A VLA emits no success signal of its own, so it must run with its reward model
-resident alongside it. When the pair does not fit GPU VRAM, the
-reasoner must refuse the ``execute_rskill`` dispatch *before* the goal is sent —
-publishing a ``FailureTrigger`` (so the reasoner sees it and bounds retries →
-handoff) instead of OOMing mid-run or running the policy blind.
+A VLA emits no success signal of its own, so it must run with its reward model resident
+alongside it. When the pair doesn't fit GPU VRAM, the reasoner must refuse the
+``execute_rskill`` dispatch before the goal is sent — publishing a ``FailureTrigger`` (so the
+reasoner bounds retries → handoff) instead of OOMing mid-run or running blind.
 
-This drives a real reasoner node + a real ``ExecuteRskill`` ``ActionServer`` and
-asserts that, with a deliberately-too-small GPU budget, the action server is
-NEVER called and a ``vram_insufficient`` ``FailureTrigger`` is published. The only
-doubles are ``FakeToolUseClient`` at the LLM boundary (CLAUDE.md §1.11) and the
-three guard inputs set directly on the node (``__init__`` reads the reward /
-gpu-total params at construction, before a test can set them — the param→attr
-plumbing is covered live by the VRAM-pair-refusal ARMED log).
+Drives a real reasoner node + real ``ExecuteRskill`` ``ActionServer``, asserting that with a
+deliberately-too-small GPU budget, the action server is never called and a
+``vram_insufficient`` ``FailureTrigger`` is published. Only doubles: ``FakeToolUseClient`` at
+the LLM boundary (CLAUDE.md §1.11) and the three guard inputs set directly on the node
+(``__init__`` reads reward/gpu-total params at construction, before a test can set them —
+param→attr plumbing covered live by the VRAM-pair-refusal ARMED log).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
-(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
-``docker-build`` workflow) — this file is the falsification test for issue #46:
-a structurally dead ``_refuse_unfittable_vla`` turns it red. Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (``scripts/ros_live_tests.sh``). CI runs it in
+``openral:x86`` (docker-build workflow) — falsification test for issue #46: a structurally
+dead ``_refuse_unfittable_vla`` turns it red. Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
@@ -127,21 +124,13 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         # params, so set the attributes the guard reads directly):
         reasoner._reward_manifest = reward_manifest
         reasoner._gpu_total_vram_gb = 4.0  # < 4.8 GB pair → must refuse
-        # Prime the manifest cache the way `_seed_palette` does, rather than
-        # replacing `_manifest_for_rskill` itself.
-        #
-        # This line used to read:
-        #     reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest
-        # which stubbed out the very method that was broken in production, so
-        # the test could only ever exercise the refusal *arithmetic*. It could
-        # not see that the real lookup returned `None` — it consulted the
-        # install registry (`~/.local/share/openral/rskills.json`), which a
-        # search-path-seeded palette never populates — and that `None` makes
-        # `_refuse_unfittable_vla` return `False` and let the dispatch through.
-        # A structurally dead gate passed this test for as long as it existed;
-        # a real deploy caught it on 2026-08-04 when molmoact2 (4.0 + 5.5 GB on
-        # an 8 GB card) was dispatched anyway and reported as a 20 s timeout.
-        # Injecting at the cache keeps the production lookup in the assertion.
+        # Prime the manifest cache like `_seed_palette` does, not by replacing
+        # `_manifest_for_rskill`. A lambda stub here once bypassed the broken production
+        # lookup, which consults the install registry (~/.local/share/openral/rskills.json,
+        # unpopulated by a search-path-seeded palette) and returned None — letting
+        # `_refuse_unfittable_vla` return False and dispatch through. Caught live 2026-08-04:
+        # molmoact2 (4.0+5.5 GB on an 8 GB card) dispatched anyway as a 20 s timeout. Injecting
+        # at the cache keeps the production lookup in the assertion.
         reasoner._manifests_by_id[_VLA_ID] = vla_manifest
         assert reasoner._manifest_for_rskill(_VLA_ID) is vla_manifest
 

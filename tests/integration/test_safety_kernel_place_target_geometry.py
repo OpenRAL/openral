@@ -1,30 +1,27 @@
 """The declared target's own geometry, fired deterministically (ADR-0098).
 
-The sibling ``test_safety_kernel_place_allowance_band.py`` drives ADR-0097's
-blanket allowance on this same rig. This file drives the half that replaces the
-guess: when the declaration also ships the target's **own** primitives, a cell is
-adjudicated against the modelled receptacle instead of against the 25 mm cube it
-was quantised into, and the gate for that pair moves from the payload's standoff
-margin to the surface itself.
+The sibling ``test_safety_kernel_place_allowance_band.py`` drives ADR-0097's blanket
+allowance on this same rig. This file drives the half that replaces the guess: when the
+declaration ships the target's own primitives, a cell is adjudicated against the modelled
+receptacle instead of the 25 mm cube it was quantised into, moving the gate from the
+payload's standoff margin to the surface itself.
 
-Why a live test rather than gtests alone: #188's graded-velocity band shipped as
-dead code that three unit tests failed to catch, because the fixture and the
-logic were written from the same wrong picture. The same near-miss happened here
-— the first implementation kept the standoff margin against the declared body,
-which the collision gtests could not see because they run at margin 0, where
-gating at ``margin`` and gating at ``0`` are algebraically identical. This runs
-the real ``safety_kernel_node`` binary at the **deployed** margin, where they
-are not.
+Why a live test, not gtests alone: #188's graded-velocity band shipped as dead code that
+three unit tests missed because the fixture and logic shared the same wrong picture. Same
+near-miss here — the first implementation kept the standoff margin against the declared body,
+invisible to collision gtests run at margin 0 (where gating at ``margin`` and at ``0`` are
+algebraically identical). This runs the real ``safety_kernel_node`` binary at the deployed
+margin, where they are not.
 
-The rig is the sibling's, unchanged, so the two files differ in one field:
+Rig is the sibling's, unchanged; the two files differ in one field:
 
     payload sphere centre  = (q, 0, 0),          radius 20 mm
     occupied voxel centre  = (0.1, 0, 0),    half-edge 12.5 mm
     modelled shelf face    = x = 0.100                       <- ADR-0098
 
-so the cube over-states the shelf's surface by exactly 12.5 mm — half a cell,
-which is what marking the cell that *contains* a ray endpoint costs on average.
-Against the 50 mm attached margin and the 37.5 mm blanket allowance:
+so the cube over-states the shelf's surface by exactly 12.5 mm (half a cell — the average
+cost of marking the cell containing a ray endpoint). Against the 50 mm attached margin and
+37.5 mm blanket allowance:
 
 ===============  ==========  ==========  ==================  =====================
 q (m)            d_cell (m)  d_body (m)  declared, box only  declared + geometry
@@ -34,17 +31,14 @@ q (m)            d_cell (m)  d_body (m)  declared, box only  declared + geometry
 0.0950           −0.0275     −0.0150     REFUSED, latched    REFUSED, latched
 ===============  ==========  ==========  ==================  =====================
 
-Row 1 is the decision: the blanket allowance refuses a payload with 17.5 mm of
-**measured** clearance from the receptacle, because it is judging a cube whose
-face is not where the shelf is. Row 3 is the bound: past the advisory band the
-stop is the latched one it always was, and the evidence names ``place:<target>``
-rather than ``voxel_<n>`` — quoting the body's distance under the cell's identity
-is the defect class #187 landed to stop.
+Row 1: blanket allowance refuses a payload with 17.5 mm measured clearance because it's
+judging a cube whose face isn't where the shelf is. Row 3: past the advisory band the stop is
+the latched one it always was, evidence naming ``place:<target>`` rather than ``voxel_<n>``
+— quoting the body's distance under the cell's identity is the defect class #187 stopped.
 
-Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + the
-colcon-built kernel, on a sourced workspace. ``scripts/ros_live_tests.sh`` is the
-only runner (``just test-ros-live``, and the docker-build workflow), and
-``tests/unit/test_ros_live_targets.py`` keeps this file in its TARGETS list.
+Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + colcon-built kernel.
+``scripts/ros_live_tests.sh`` is the only runner (``just test-ros-live``, docker-build
+workflow); ``tests/unit/test_ros_live_targets.py`` keeps this file in TARGETS.
 
 CLAUDE.md §1.11 — real kernel binary, real IDL, real DDS, no mocks.
 """
@@ -245,11 +239,11 @@ def test_the_declared_targets_geometry_decides_the_verdict_and_names_the_body() 
                 def publish_attachment(*, with_geometry: bool) -> None:
                     """One carried payload, one live declaration, one variable.
 
-                    ``attachment_revision`` never changes, so the payload model,
-                    its attach-time occupancy baseline and its (absent) support
-                    witness are byte-identical across every phase. The region box
-                    is identical too — the ONLY difference between the two arms
-                    of phase 1 is whether the declaration carries the shelf.
+                    ``attachment_revision`` never changes, so the payload model, its
+                    attach-time occupancy baseline, and its (absent) support witness are
+                    byte-identical across every phase; the region box is identical too — the
+                    only difference between the two arms of phase 1 is whether the
+                    declaration carries the shelf.
                     """
                     prim = AttachedCollisionPrimitive()
                     prim.shape_type = AttachedCollisionPrimitive.SHAPE_SPHERE
