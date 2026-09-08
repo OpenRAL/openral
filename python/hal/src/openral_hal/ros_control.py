@@ -125,7 +125,76 @@ class RosControlHAL(HALBase):
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
+        # Set by `attach_transport` to the transport's real per-message arrival
+        # clock. While it is None the HAL has no way to know how old its state
+        # is (see `read_state`).
+        self._stamp_fn: Callable[[], float] | None = None
         self._joint_names: list[str] = [j.name for j in description.joints]
+
+    # ── Transport wiring ───────────────────────────────────────────────────────
+
+    def attach_transport(
+        self,
+        publish_fn: _PublishFn,
+        state_fn: Callable[[], dict[str, object]],
+        stamp_fn: Callable[[], float] | None = None,
+    ) -> None:
+        """Bind this HAL to a live transport after construction.
+
+        ``build_hal`` constructs the HAL from the manifest alone, before any ROS
+        node exists, so a real deployment cannot pass ``publish_fn``/``state_fn``
+        to ``__init__``. The lifecycle node calls this once it has a node to
+        create publishers on — which is what makes a real ros2_control robot
+        work without any per-robot wiring code.
+
+        Args:
+            publish_fn: Sends one command dict to a controller topic.
+            state_fn: Returns the newest joint state as a raw dict.
+            stamp_fn: Returns the ``time.monotonic()`` timestamp of the newest
+                joint state. Without it ``read_state`` can only measure age from
+                ``connect()``, which is not a freshness check at all.
+
+        Raises:
+            ROSConfigError: If ``stamp_fn`` is given but is not callable.
+        """
+        # Checked here rather than at first use: `stamp_fn` feeds the staleness
+        # watchdog, so a caller that passes a *value* (a property read once at
+        # wire-up, say) instead of a callable would otherwise fail deep in the
+        # hot path, on hardware, with the robot already connected.
+        if stamp_fn is not None and not callable(stamp_fn):
+            raise ROSConfigError(
+                f"attach_transport(stamp_fn=...) needs a callable returning the newest "
+                f"joint state's time.monotonic() timestamp, got {type(stamp_fn).__name__}. "
+                "A property must be wrapped, e.g. `lambda: transport.last_stamp`."
+            )
+        self._publish_fn = publish_fn
+        self._state_fn = state_fn
+        self._stamp_fn = stamp_fn
+        self._last_state_time = time.monotonic()
+
+    def command_topics(self) -> list[str]:
+        """Return every controller topic this HAL publishes to.
+
+        One topic for a single-controller arm; robots whose controllers are
+        split (the bimanual OpenArm's arm+gripper per side) override this. A
+        transport builds one publisher per entry, so it never needs to know
+        which robot it is serving.
+        """
+        return [self._command_topic]
+
+    def ros2_control_joint_names(self) -> list[str]:
+        """Return the joint names in ros2_control's namespace, in action order.
+
+        Defaults to the manifest's own names; robots whose URDF names differ
+        from the manifest's (again, OpenArm) override it. ``/joint_states`` is
+        keyed by these, so a transport matches on them.
+        """
+        return list(self._joint_names)
+
+    @property
+    def joint_state_topic(self) -> str:
+        """The aggregated ``sensor_msgs/JointState`` topic this HAL reads."""
+        return self._joint_state_topic
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -161,7 +230,18 @@ class RosControlHAL(HALBase):
             Latest ``JointState`` for all joints in ``description.joints``.
         """
         self._require_connected("read_state")
-        age = time.monotonic() - self._last_state_time
+        # With a transport attached, age is measured from the arrival of the
+        # newest joint state — the only thing that actually says whether the
+        # robot is still talking to us. Without one, the best available
+        # reference is `connect()`; that is a liveness floor, not a freshness
+        # check, and it is why a transport must supply `stamp_fn` on real
+        # hardware. A transport that has received nothing yet reports 0.0,
+        # which must read as "infinitely stale", never as "fresh at epoch".
+        if self._stamp_fn is not None:
+            last = self._stamp_fn()
+            age = float("inf") if last <= 0.0 else time.monotonic() - last
+        else:
+            age = time.monotonic() - self._last_state_time
         if age > self._staleness_limit_s:
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
@@ -195,9 +275,13 @@ class RosControlHAL(HALBase):
         self._require_connected("send_action")
         self._validate_action(action)
 
+        # `joint_names` travels with the command so the transport forwards what
+        # the HAL chose rather than keeping a second copy of the mapping that
+        # can drift from it (the rule ADR-0102 set for the OpenArm fan-out).
         msg: dict[str, object] = {
             "control_mode": action.control_mode,
             "horizon": action.horizon,
+            "joint_names": self.ros2_control_joint_names(),
             "joint_targets": action.joint_targets,
             "stamp_ns": action.stamp_ns,
         }

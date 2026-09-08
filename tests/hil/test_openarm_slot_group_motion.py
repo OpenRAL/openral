@@ -135,7 +135,15 @@ def test_one_slot_dispatched_tick_moves_only_the_joint_it_addresses(
             command_topics=list(probe.command_topics()),
             time_from_start_s=0.8,
         )
-        hal = OpenArmRealHAL(robot, publish_fn=transport.publish, state_fn=transport.state)
+        hal = OpenArmRealHAL(robot)
+        # `attach_transport` rather than the `publish_fn=`/`state_fn=` constructor
+        # arguments, because only it carries the third callable: the transport's real
+        # per-message arrival clock. Without it `read_state()` measures age from
+        # `connect()`, so the multi-second wait for a complete joint state below would
+        # itself push the HAL past its 0.5 s staleness limit and this test could never
+        # reach the motion it exists to check. `last_stamp` is a property, so it is
+        # wrapped: `attach_transport` wants a callable it can re-read every tick.
+        hal.attach_transport(transport.publish, transport.state, lambda: transport.last_stamp)
         hal.connect()
 
         # Gate on a COMPLETE joint state. A partial one zero-fills into a
