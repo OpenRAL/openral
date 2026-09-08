@@ -61,6 +61,39 @@ def test_real_mode_shells_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert "sim_robot_yaml" not in inv.hal_params
 
 
+def test_real_mode_forwards_foxglove_and_initial_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, LaunchInvocation] = {}
+
+    def _fake_run(invocation: LaunchInvocation, *, run_preflight: bool = True) -> int:
+        captured["inv"] = invocation
+        return 0
+
+    monkeypatch.setattr(_deploy_sim, "run_launch_invocation", _fake_run)
+    config = _write_deploy_scene_yaml(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--config",
+            str(config),
+            "--foxglove",
+            "--foxglove-port",
+            "9876",
+            "--initial-task",
+            "restock-shelf-from-front-box",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    inv = captured["inv"]
+    assert inv.enable_foxglove is True
+    assert inv.foxglove_port == 9876
+    assert inv.initial_task_prompt == "restock-shelf-from-front-box"
+
+
 def test_real_mode_dry_run_prints_launch_without_shelling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
