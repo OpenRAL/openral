@@ -120,7 +120,7 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 
     Example:
         >>> normalized_joint_index(["robot0_joint1", "gripper0_finger_joint1"])
-        {'robot0_joint1': 0, 'joint1': 0, 'gripper0_finger_joint1': 1, 'finger_joint1': 1}
+        {'robot0_joint1': 0, 'gripper0_finger_joint1': 1, 'joint1': 0, 'finger_joint1': 1}
     """
     exact: dict[str, int] = {name: i for i, name in enumerate(model_joint_names)}
     index: dict[str, int] = dict(exact)

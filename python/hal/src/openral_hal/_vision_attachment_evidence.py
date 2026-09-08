@@ -257,6 +257,10 @@ def backproject_masked_depth(
         ROSConfigError: If ``mask`` and ``depth_m`` shapes disagree, or the
             intrinsics resolution does not match the frame.
 
+    Rays leave pixel *centres* (``col + 0.5``), unlike
+    :func:`openral_hal.depth_cloud.points_from_depth_grid`, which inverts the depth synth's
+    own corner-indexed projection.
+
     Example:
         >>> import numpy as np
         >>> from openral_core import IntrinsicsPinhole
@@ -266,7 +270,7 @@ def backproject_masked_depth(
         >>> d = np.full((2, 4), 0.5)
         >>> pts, frac = backproject_masked_depth(m, d, k, min_depth_m=0.1, max_depth_m=1.0)
         >>> pts.round(3).tolist()
-        [[0.0, 0.0, 0.5]]
+        [[0.125, 0.125, 0.5]]
         >>> frac
         1.0
     """

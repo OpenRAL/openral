@@ -265,28 +265,8 @@ test-doctest:
         python/cli/src/openral_cli \
         python/sensors/src/openral_sensors \
         python/world_state/src/openral_world_state \
-        python/hal/src/openral_hal/protocol.py \
-        python/hal/src/openral_hal/sim_transport.py \
-        python/hal/src/openral_hal/_real_description.py \
-        python/hal/src/openral_hal/franka_panda.py \
-        python/hal/src/openral_hal/franka_panda_real.py \
-        python/hal/src/openral_hal/sawyer_real.py \
-        python/hal/src/openral_hal/aloha.py \
-        python/hal/src/openral_hal/ur.py \
-        python/hal/src/openral_hal/ur_real.py \
-        python/hal/src/openral_hal/so100_sim.py \
-        python/hal/src/openral_hal/lifecycle.py \
-        python/hal/src/openral_hal/so100_follower.py \
-        python/hal/src/openral_hal/ros_control.py \
-        python/rskill/src/openral_rskill/backend_registry.py \
-        python/rskill/src/openral_rskill/base.py \
-        python/rskill/src/openral_rskill/engine_cache.py \
-        python/rskill/src/openral_rskill/loader.py \
-        python/rskill/src/openral_rskill/quantization.py \
-        python/rskill/src/openral_rskill/runtime.py \
-        python/rskill/src/openral_rskill/runtime_onnx.py \
-        python/rskill/src/openral_rskill/runtime_pytorch.py \
-        python/rskill/src/openral_rskill/smolvla.py \
+        python/hal/src/openral_hal \
+        python/rskill/src/openral_rskill \
         python/reasoner/src/openral_reasoner \
         python/wam/src/openral_wam
 

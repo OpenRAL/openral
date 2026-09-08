@@ -22,7 +22,7 @@ Example:
     >>> hal.connect()
     >>> state = hal.read_state()
     >>> len(state.position)
-    10
+    11
 """
 
 from __future__ import annotations
