@@ -253,13 +253,6 @@ def hal() -> AnvilOpenArmV2MujocoHAL:
     return AnvilOpenArmV2MujocoHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: AnvilOpenArmV2MujocoHAL) -> AnvilOpenArmV2MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _action(target: list[float]) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,

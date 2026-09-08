@@ -12,30 +12,9 @@ no mocks of ``configure_observability``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
 from openral_cli.main import app
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from typer.testing import CliRunner
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    """Swap the global TracerProvider for one backed by an in-memory exporter."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
 
 
 def test_ral_sim_list_runs_under_cli_command_span(memory_exporter: InMemorySpanExporter) -> None:

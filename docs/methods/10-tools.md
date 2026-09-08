@@ -68,6 +68,7 @@ _The four-scene collision-stack validation matrix as one versioned command. Reco
 - `SCENE_RUNTIME_PIN: tuple[tuple[str, bool], ...]` — `enable_reasoner=False`: the one pinned knob with **no CLI flag**, spliced into the resolved scene copy because `deploy sim` reads it from the scene and defaults it to `True`. (L169)
 - `LEGACY_SCENE_DIRS: tuple[tuple[str, tuple[str, ...]], ...]` — Scene key → the directory names the pre-harness rounds used (`bag1`, `sink1`, `fridge1`, `utensil1`), so `import-round` needs no hand-mapping. (L196)
 - `quantization_budget_m(grid_resolution_m: float) -> float` — Half the voxel's body diagonal; the largest kernel-vs-ground-truth discrepancy a correct grid can produce. (L207)
+- `collision_scale_env() -> dict[str, float]` — The #188 graded-velocity band the round will run with, read from the `OPENRAL_COLLISION_SCALE_*` env vars that `sim_e2e.launch.py` consumes. Recorded rather than refused, because `assert_no_safety_overrides` inspects argv and cannot see them, and arming the band is the point of the A/B battery. (L1470)
 - `parse_kernel_collision(lines) -> ValidationStopEvidence | None` — Transcribe the first `safety.collision` line verbatim. (L227)
 - `parse_json_log_line(lines, event) -> dict[str, Any] | None` — Payload of the first `<event> {...}` line (`sim.task_success_final`, `sim.estop_ground_truth_snapshot`, `sim.estop_initial_configuration`). (L285)
 - `read_monitor(path) -> list[dict[str, Any]]` — Load a monitor JSONL, skipping non-object lines. (L319)
@@ -207,6 +208,7 @@ _Package and publish a local rSkill directory to the HF Hub._
 ### `tools/generate_tight_geometry.py` (additions)
 
 - `refine_dop_to_budget(points, dop_lo, dop_hi, budget) -> Points` — a ≤`budget`-vertex convex envelope strictly tighter than the 26-DOP, for a link whose exact hull is over `MAX_TIGHT_HULL_VERTICES`. Starts from the DOP and intersects it with the exact hull's own face planes, worst-violation first, skipping any plane that would overrun the budget. Every candidate plane is tangent to `conv(mesh)`, so containment stays definitional and the result is `⊆ DOP ⊆ box` by construction — which a subset-then-expand approach cannot guarantee (expansion escapes the DOP slabs; `panda_link1`'s DOP has 0.083 mm of room inside its box). Refuses rather than emit an envelope that cuts its mesh. On `panda_link1`: 0.18 mm median / 0.65 mm max support gap against the DOP's 4.52 / 25.68 mm. Measured, but **not shipped** — under a live battery that tightening moved link1's stops by 0.0003 mm, so no manifest declares a refined envelope; the routine is here for a link where the measurement comes out differently.
+- `link_mesh_faces(xml_path: Path, geom_name: str) -> Points` — Triangle indices for `geom_name`'s mesh, local to its own vertex block; indexes the same vertex order `link_mesh_in_box_frame` returns, so the two together describe one consistent triangle mesh. (L124)
 - `_OVERHANG_BATCH: int`, `_OVERHANG_MAX_SAMPLES: int` — bound `hull_overhang_m`'s peak memory and total sample count. The single-call form asked for 57.8 GiB on a 320-vertex envelope over a 12k-triangle mesh. Coarsening lowers a sampled lower bound, and `_check` fails only when a declared overhang is *below* a fresh resample, so it can only make that gate more permissive, never wrongly fail a correct manifest.
 
 ### `tools/stop_excess.py`
@@ -331,3 +333,16 @@ Detects and repairs `$LIBERO_CONFIG_PATH/config.yaml` (default `~/.libero/config
 - `_render_yaml(payload) -> str` — Render the same flat layout. (L61)
 - `_locate_active_libero() -> Path` — `import libero` and return its package directory; raises `RuntimeError` with a clear message when LIBERO is absent (caller treats as no-op). (L66)
 - `main() -> int` — argparse entry point; flags `--dry-run`, `--verbose`. Returns 0 when the config matches or after rewriting. (L91)
+
+### `tools/refresh_methods_linenos.py`
+_Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check` reports drift and exits 1._
+
+- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]` — Rewrite one inventory file's markers; returns the changed-marker count and the unresolved-entry descriptions. (L148)
+
+### `tools/topreward_per_frame_demo.py`
+_Per-frame TOPReward progress over one recorded episode, rendered as an overlay video. NF4 on an 8 GB GPU._
+
+- `class NF4TOPRewardModel(TOPRewardModel)` — TOPReward whose Qwen3-VL backbone loads in NF4 to fit 8 GB; overrides lerobot's `__init__`, which hard-codes `model_kwargs` with no quantization knob. (L56)
+- `per_frame_progress(*, dataset_repo_id, episode, vlm_name, image_key, ...) -> NDArray` — Score every frame of one episode. (L85)
+- `render_overlay(frame, value, task) -> NDArray[np.uint8]` — Draw a progress bar, the value and the task caption under an RGB frame. (L157)
+- `write_media(frames, progress, task, media_dir) -> None` — Write `progress.mp4` plus start/mid/end stills carrying the overlay. (L191)

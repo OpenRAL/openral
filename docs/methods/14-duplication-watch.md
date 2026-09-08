@@ -724,3 +724,37 @@ contributor should look at before adding similar code.
 extraction whenever a module is added or renamed; this file is hand-edited
 afterwards. If a future contributor automates regeneration, mirror the
 pattern in `tools/schema_export.py`.*
+
+24. **Test-tier fixture duplication — *resolved.*** `memory_exporter`,
+    `memory_metric_reader`, `exporter`, the rclpy context, the span-capture
+    processor, `_CylinderShape`, the RT-DETR ONNX writer and the fake OpenAI
+    client now live once in `tests/unit/conftest.py`; the MuJoCo
+    `connected_hal` / `hal` pair and the LIBERO / RoboCasa / Isaac availability
+    probes live once in `tests/sim/conftest.py`. Per-file copies that shadowed
+    those fixtures were removed. **Add a new tier-wide fixture to the tier's
+    conftest, not to the test file that needs it first.**
+
+25. **Deliberately not consolidated.** Each of these is a repeated body that
+    consolidation would make worse, not better:
+    - `camera_info_from_intrinsics` — `openral_hal.depth_cloud` and
+      `openral_perception_ros.depth_convert`. The ROS package does not depend
+      on `openral_hal` (`package.xml`), so the import would be illegal.
+    - `UsbDevice` / `UsbDeviceRecord` — a `NamedTuple` in `openral_cli` and a
+      Pydantic model in `openral_detect`. Same fields, different contracts
+      (CLAUDE.md §2: Pydantic at boundaries, dataclass inside a module).
+    - The MJCF compile trio — `sim` / `_compiled` / `_model_data` in
+      `test_sim_attachment_evidence.py`, `test_sim_estop_payload_slop.py`,
+      `test_sim_estop_voxel_backing.py`. Four identical lines, each bound to
+      its own module's `_MJCF`; sharing needs a parameter every call site must
+      then pass.
+    - `_wait_until` — `test_hal_attachment_barrier_live.py` and
+      `test_estop_voxel_backing_live.py`. A seven-line spin-wait; hoisting it
+      costs a 21-call-site refactor of live-ROS tests.
+    - `isolated_ros` — `test_ros2_image_sensor_reader.py` (domain 91) and
+      `tests/hil/test_openarm_ros_transport.py` (domain 92). The differing
+      domain is the point.
+    - Per-package ROS test clones (`captured_spans`, `_spin_until`, the
+      `*_sigint_shape.py` families, the `openral_hal_*` lifecycle tests, the
+      `slam_bringup` launch tests). colcon builds and tests each package
+      standalone, so a shared helper would need a new shared package.
+

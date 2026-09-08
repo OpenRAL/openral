@@ -12,9 +12,7 @@ allow jitter rather than demanding an exact count.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
 
-import pytest
 from openral_core import Action, ControlMode, SensorFrame
 from openral_core.schemas import FrameEncoding, WorldState
 from openral_hal.so100_follower import SO100FollowerHAL
@@ -23,9 +21,6 @@ from openral_observability import semconv
 from openral_rskill.base import rSkillBase
 from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
@@ -84,20 +79,6 @@ class _NoOpSkill(rSkillBase):
             joint_targets=[[0.0] * 6],
             confidence=1.0,
         )
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
 
 
 def _build_runner(*, readers: list[_SyntheticRgbReader]) -> tuple[DeployRunner, _NoOpSkill]:

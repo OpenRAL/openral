@@ -172,13 +172,6 @@ def hal() -> AlohaMujocoHAL:
     return AlohaMujocoHAL(gravity_enabled=False, settle_steps=3000)
 
 
-@pytest.fixture()
-def connected_hal(hal: AlohaMujocoHAL) -> AlohaMujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 # The gym-aloha MJCF keyframe defines a self-collision-free "home" pose
 # the ALOHA bring-up procedure rests at.  Tests command small deltas from
 # this pose because commanding "all zeros" pulls the arms through a
