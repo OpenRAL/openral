@@ -1,53 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """Simulated depth camera → point cloud, via MuJoCo CPU ray-casting.
 
-The 3-D analogue of
-:func:`openral_sim.backends.robocasa.synthesize_laser_scan_2d`. Casts one
-``mj_ray`` per (strided) pixel through a pinhole model anchored on
-a named MJCF camera, and returns the hit points in the camera *optical*
-frame (REP-103: ``+x`` right, ``+y`` down, ``+z`` forward — the ROS camera
-convention).
+3-D analogue of :func:`openral_sim.backends.robocasa.synthesize_laser_scan_2d`.
+Casts one ``mj_ray`` per (strided) pixel through a pinhole model anchored on a
+named MJCF camera; returns hits in the camera *optical* frame (REP-103: +x
+right, +y down, +z forward). Uses MuJoCo's analytic ray-caster, not a GL
+renderer, so no display/EGL and deterministic in CI; robot-agnostic (any MJCF
+camera works), which lets deploy-sim feed ``octomap_server`` from any robot,
+not just panda_mobile.
 
-Like the 2-D lidar synth this uses MuJoCo's analytic ray-caster, **not** a
-GL renderer — so it needs no display / EGL context and runs deterministically
-in CI. It is robot-agnostic: any camera declared in any robot's MJCF works,
-which is what lets the deploy-sim HAL feed an ``octomap_server`` (and thus the
-world-collision kernel check) from any robot, not just panda_mobile.
+Cost scales with rays x geoms; ``stride`` is the lever. 1200-geom
+RoboCasa-kitchen-scale clutter scene, 256x256 camera: ~60 ms/cast at
+stride=4 (4096 rays), ~240 ms at stride=2 (16384 rays). Deploy-sim depth timer
+runs on single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` (default
+10 Hz, 100 ms period; manifest ``SensorSpec.rate_hz`` is not read). ``stride``
+subsamples the *rendered*, not nominal, resolution
+(``openral_hal.depth_cloud.depth_synth_kwargs`` rescales intrinsics to the
+scene's ``observation_width``/``height``) — RoboCasa scenes vary 16x: the five
+task scenes (baguette, sink_cup, fridge_drawer, drawer_utensil, deliver_straw)
+render 512x512 (stride=4 -> 16384 rays); ``robocasa_vslam*`` render 256x256
+(4096 rays); ``robocasa_pnp``/``robocasa_navigate`` render 128x128 (1024
+rays). Measured on the four validation-matrix scenes at those settings
+(q-laptop, CPU): 83-129 ms/pass, up to the whole 100 ms budget; a payload
+frame casts the bundle twice.
 
-The returned cloud is the dense, bounded input perception lowers into an
-OctoMap; the kernel never sees it directly ("perception proposes, the kernel
-disposes").
-
-Cost scales with rays x geoms, and the caller's ``stride`` is the lever.
-Measured on a synthetic 1200-geom clutter scene (RoboCasa-kitchen scale) with a
-256x256 camera: **one** cast costs ~60 ms at ``stride=4`` (4096 rays) and
-~240 ms at ``stride=2`` (16384 rays). The deploy-sim depth timer runs on the
-single-threaded ``rclpy.spin`` at ``depth_publish_rate_hz`` — default **10 Hz**,
-a 100 ms period (the manifest ``SensorSpec.rate_hz`` is not read by the
-bridge).
-
-**Do not read 4096 rays as the deploy load.** ``stride`` subsamples the
-*rendered* resolution, not the manifest's nominal one:
-``openral_hal.depth_cloud.depth_synth_kwargs`` rescales the intrinsics to the
-scene's ``observation_width``/``height`` first, so the ray count follows the
-*scene*, and the RoboCasa deploy scenes disagree by 16x:
-
-* the five task scenes (baguette, sink_cup, fridge_drawer, drawer_utensil,
-  deliver_straw) render at 512x512, so ``stride=4`` casts 128x128 =
-  **16 384** rays — four times the count above;
-* ``robocasa_vslam*`` render at the manifest's 256x256 → 4 096 rays;
-* ``robocasa_pnp`` / ``robocasa_navigate`` render at 128x128 → 1 024 rays.
-
-Measured on the four validation-matrix scenes at exactly those settings
-(q-laptop, CPU cast): one pass costs **83-129 ms**, i.e. it can consume the
-whole 100 ms period on its own, and a frame with an attached payload casts the
-bundle twice. ``stride`` and the scene's render size are both levers, and the
-budget belongs to the pair.
-
-Budget one cast per camera per frame: derive every output from that single
-raster rather than calling both synths, which casts each ray twice for numbers
-that are equal by construction (``openral_hal.sim_sensor_bridge`` publishes the
-``PointCloud2`` via ``openral_hal.depth_cloud.points_from_depth_grid``).
+Budget one cast per camera per frame — derive cloud and image from a single
+raster (``openral_hal.sim_sensor_bridge`` publishes ``PointCloud2`` via
+``openral_hal.depth_cloud.points_from_depth_grid``) rather than double-casting.
 """
 
 from __future__ import annotations
@@ -68,16 +47,12 @@ _GEOMGROUP_ALL = np.ones(6, dtype=np.uint8)
 def noncollidable_geom_ids(model: Any) -> NDArray[np.int64]:
     """Geom ids MuJoCo can never collide with — decoration, markers, sites.
 
-    A geom with **neither** ``contype`` nor ``conaffinity`` is excluded from
-    every contact pair MuJoCo forms, so no physics can ever touch it. It is
-    still *visible*, which is the whole asymmetry #174 is about: the depth
-    synth would strike it, OctoMap would integrate it, and the safety kernel
-    would E-stop on a cell no body can occupy — while the ground-truth probe
-    that adjudicates that same stop is required (since #149) to ignore it.
-
-    The test is MuJoCo's own collision predicate, not a scene convention, so
-    it holds for any MJCF: robosuite/RoboCasa's group-0/group-1 split is a
-    *rendering* convention and says nothing about what can be touched.
+    A geom with neither ``contype`` nor ``conaffinity`` is excluded from every
+    contact pair, so no physics touches it, yet it is still *visible*: the
+    depth synth would strike it and the safety kernel could E-stop on a cell
+    no body occupies (#174), so the ground-truth probe is required (#149) to
+    ignore it. MuJoCo's own collision predicate, not a scene convention —
+    robosuite/RoboCasa's group-0/group-1 split is a rendering convention only.
     """
     contype = np.asarray(model.geom_contype, dtype=np.int64)
     conaffinity = np.asarray(model.geom_conaffinity, dtype=np.int64)
@@ -222,66 +197,39 @@ def _cast_depth_rays(
     distances = np.full(n_rays, -1.0, dtype=np.float64)
     transparent_hits: NDArray[np.bool_] = np.zeros(n_rays, dtype=np.bool_)
 
-    # One `mj_ray` per pixel, NOT the batched `mj_multiRay`. `mj_multiRay`
-    # applies broad-phase culling `mj_ray` does not, and on real scenes that
-    # culling drops surfaces which are really there: the ray then reports
-    # whatever solid sits behind them. `mj_ray` runs the plain linear scan over
-    # every visible geom, matching what the GL depth renderer draws.
+    # One `mj_ray` per pixel, NOT batched `mj_multiRay`: multiRay's broad-phase
+    # culling drops real surfaces on real scenes; `mj_ray` linear-scans every
+    # visible geom, matching the GL depth renderer.
     #
-    # #180 conjectured that the cull only ever mis-skipped `contype=0
-    # conaffinity=0` decoration, so that filtering decoration out of the cast
-    # (which it did — see `intangible` below) would make the batched call safe
-    # and hand back its cost premium. #195 measured that instead of adopting
-    # it, on all four validation-matrix scenes at the deploy stride, both
-    # casters seeing the identical filtered world
-    # (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`, which
-    # casts through THIS function so a swap fails it; table in
-    # docs/reference/world-map-fidelity.md). The conjecture is FALSE:
-    #
-    #   * The batched cast disagrees on 4 113 of 65 536 rays, and every geom
-    #     it skips is COLLIDABLE — not one is the decoration #180 removed. On
-    #     the baguette scene it walks straight through
-    #     `counter_1_left_group_top_left_0` and `_1`, `contype=1
-    #     conaffinity=1` countertop slabs, on 3 815 rays, and answers with the
-    #     cabinet stack and the wall behind them.
-    #   * Every disagreement is in the unsafe direction: up to 480 mm too FAR
-    #     and never too near, on the cloud the world-collision voxel grid is
-    #     built from. An independent analytic ray/box intersection agrees with
-    #     `mj_ray` on 200 of 200 sampled disputed rays and with `mj_multiRay`
-    #     on 0 — the batched call is wrong, not merely different.
-    #
-    # The MECHANISM is not established, and #111's account of it — "the body's
-    # BVH is built from collision geoms only, so a visual geom outside the
-    # collision extent is skipped" — does not survive the measurement, twice
-    # over. Every geom skipped here is collidable and therefore inside its own
-    # body's collision extent; and the batched cast still returns 184 rays on
-    # `counter_1_left_group_main`, so it is not culling that body wholesale
-    # either. #195 also failed to reproduce the skip in a hand-written MJCF —
-    # far-outlier collision geoms in the same body, body yaw and geom yaw were
-    # all tried and all agree ray for ray — which is why the gate has to run on
-    # the real scenes and there is no unit-tier version of it. Do not restate
-    # a mechanism here until someone has isolated it.
-    #
-    # So the premium stays paid, and it is larger than #111 thought: 4.2-6.2x
-    # on those scenes, because whatever fires the skip fires far more often on
-    # a real kitchen than on the clutter scene #111 measured (~1.9x). Size the
-    # budget from a measurement, not a multiplier. The depth stream is a
+    # #180 conjectured the cull only mis-skips `contype=0 conaffinity=0`
+    # decoration (filtered below as `intangible`) — filtering it out would
+    # make multiRay safe. #195 measured FALSE on all four validation-matrix
+    # scenes at deploy stride, both casters over the identical filtered world
+    # (tests/sim/safety/test_depth_multiray_equivalence_robocasa.py; table in
+    # docs/reference/world-map-fidelity.md): multiRay disagrees on 4113/65536
+    # rays, every skipped geom COLLIDABLE (baguette scene: walks through
+    # `counter_1_left_group_top_left_0`/`_1`, contype=1/conaffinity=1, on
+    # 3815 rays). Every disagreement is unsafe — up to 480 mm too far, never
+    # too near (an independent ray/box check agrees with `mj_ray` 200/200,
+    # `mj_multiRay` 0/200). Mechanism unestablished: #111's "BVH from
+    # collision geoms only" theory fails — skipped geoms ARE collidable,
+    # multiRay still returns 184 rays on `counter_1_left_group_main`; #195
+    # could not reproduce it in a hand-written MJCF. Premium 4.2-6.2x here vs
+    # #111's ~1.9x on synthetic clutter — budget from measurement, not a
+    # multiplier. The depth stream is a
     # strided, rate-limited sim sensor, and a wrong surface is worse than a
     # slower one.
     geomid_out = np.zeros(1, dtype=np.int32)
     bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
 
-    # Intangible geometry is filtered from EVERY pass. A geom the physics can
-    # never touch is not world the map is allowed to contain, and #174
-    # measured the cost of keeping it: 713 of 1714 geoms in the RoboCasa
-    # fridge scene are non-collidable decoration, and 18.8% of one live map's
-    # occupied cells were backed by nothing else — obstacles no policy can be
-    # trained or evaluated against, and phantom E-stops the ground-truth probe
-    # is required to call unbacked. Filtering can only move a return FARTHER
-    # along its ray or remove it: a collidable surface stays hittable, so no
-    # touchable geometry can leave the map. On hardware the term does not
-    # exist at all — a visible object is solid — so this is the sim matching
-    # the world it stands in for.
+    # Intangible geometry filtered from EVERY pass: #174 measured 713/1714
+    # geoms in the RoboCasa fridge scene as non-collidable decoration, backing
+    # 18.8% of one live map's occupied cells — obstacles no policy trains or
+    # evaluates against, phantom E-stops the ground-truth probe must call
+    # unbacked. Filtering can only move a return farther along its ray or
+    # remove it — a collidable surface stays hittable, so no touchable
+    # geometry leaves the map. On hardware a visible object is solid; this
+    # makes sim match that.
     intangible = noncollidable_geom_ids(model)
 
     if exclude_body_ids:
@@ -433,23 +381,15 @@ def synthesize_depth_frame(
 ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
     """One ray-cast, both of its products: the depth raster **and** its clearing mask.
 
-    :func:`synthesize_depth_image` alone cannot carry the self-filter's whole
-    result. A pixel whose only return was a self-filtered body (the robot's own
-    link, an acknowledged payload) has *no depth* — the raster must read
-    ``0.0`` there or nvblox integrates a surface that is not in the world — but
-    it does carry information: the ray is **free** all the way out, and OctoMap
-    needs that ray to clear the cells the robot is standing in front of.
-    Collapsing both onto ``0.0`` makes the robot's own silhouette a write-only
-    region of the map: cells inside it can be marked but never unmarked, so a
-    stale voxel there survives every subsequent frame and eventually stops the
-    arm against nothing.
-
-    So the two meanings travel separately. The raster is the sensor's ``0.0 =
-    no measurement`` contract, unchanged; the boolean mask marks the pixels
-    that are "free to ``max_range_m``", which
-    :func:`openral_hal.depth_cloud.points_from_depth_grid` turns back into the
-    max-range endpoints :func:`synthesize_depth_pointcloud` has always emitted.
-    Still exactly one ``mj_ray`` per pixel per frame.
+    A pixel whose only return is a self-filtered body (robot's own link, an
+    acknowledged payload) has no depth (``0.0``, else nvblox integrates a
+    false surface) but the ray is free to ``max_range_m``, which OctoMap needs
+    to clear cells the robot occludes — collapsing both onto ``0.0`` would
+    make the robot's silhouette write-only, leaving stale voxels forever. The
+    raster keeps the sensor's ``0.0 = no measurement`` contract; the mask
+    feeds :func:`openral_hal.depth_cloud.points_from_depth_grid`, which
+    :func:`synthesize_depth_pointcloud` already emits as max-range endpoints.
+    Still one ``mj_ray`` per pixel per frame.
 
     Args:
         model: Live ``mujoco.MjModel``.
@@ -527,28 +467,22 @@ def synthesize_depth_image(
 ) -> NDArray[np.float32]:
     """Ray-cast a dense ``32FC1`` depth image from a named MJCF camera.
 
-    The image counterpart of :func:`synthesize_depth_pointcloud`, sharing the
-    same pinhole ray-cast (:func:`_cast_depth_rays`) but keeping **every** pixel
-    — a dense raster nvblox's projective depth integrator consumes
-    directly (it rejects the sparse, hit-only cloud, whose unorganised layout
-    matches no camera/lidar intrinsic model). Each pixel holds the *perpendicular
-    optical-Z* depth in metres (``range · ẑ`` — the ROS depth-image convention,
-    **not** the Euclidean range), with ``0.0`` where the ray missed, fell out of
-    ``[min_range_m, max_range_m]``, or struck a self-filtered body (the standard
-    "no measurement" sentinel nvblox skips).
+    Image counterpart of :func:`synthesize_depth_pointcloud`, sharing the same
+    ray-cast (:func:`_cast_depth_rays`) but keeping every pixel — nvblox's
+    projective integrator needs a dense raster, not the sparse hit-only cloud.
+    Each pixel is *perpendicular optical-Z* depth in metres (``range · ẑ``,
+    the ROS depth-image convention, not Euclidean range); ``0.0`` = no
+    measurement (miss, out of ``[min_range_m, max_range_m]``, or self-filtered
+    body).
 
-    **Do not build an OctoMap cloud from this alone.** ``0.0`` is lossy: it
-    cannot distinguish "no return" from "the only return was the robot's own
-    body, so this ray is free to ``max_range_m``", and OctoMap needs the second
-    one to clear the cells the robot occludes. Use
-    :func:`synthesize_depth_frame`, which returns this same raster **plus** the
-    clearing mask, and hand both to
-    ``openral_hal.depth_cloud.points_from_depth_grid``.
+    **Do not build an OctoMap cloud from this alone** — ``0.0`` can't
+    distinguish "no return" from "free to ``max_range_m``" (self-filtered
+    body), which OctoMap needs to clear occluded cells; use
+    :func:`synthesize_depth_frame` for both raster and clearing mask.
 
-    The raster is at the **strided** resolution: shape ``(ceil(height / stride),
-    ceil(width / stride))``. The matching ``CameraInfo`` must scale the
-    intrinsics by ``1 / stride`` (see
-    ``openral_hal.depth_cloud.camera_info_from_intrinsics``).
+    Raster is at the **strided** resolution: ``(ceil(height/stride),
+    ceil(width/stride))``; matching ``CameraInfo`` must scale intrinsics by
+    ``1/stride`` (``openral_hal.depth_cloud.camera_info_from_intrinsics``).
 
     Args:
         model: Live ``mujoco.MjModel``.

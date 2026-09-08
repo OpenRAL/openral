@@ -1,51 +1,32 @@
 """Compose the OpenArm v2 tabletop pick-and-place MJCF.
 
-The upstream ``enactic/openarm_mujoco`` v2 bimanual MJCF ships with
-``<position>`` actuators (internal PD, gains tuned per joint class).
-That works for behaviour-cloning rollouts where the policy commands
-joint angles directly — but a robosuite OSC controller produces
-**torques**, so the scene we hand it must expose direct ``<motor>``
-actuators on every joint.
+The upstream ``enactic/openarm_mujoco`` v2 bimanual MJCF ships ``<position>``
+actuators (internal PD); a robosuite OSC controller produces **torques**, so
+this module emits a composite XML with direct ``<motor>`` actuators instead.
 
-This module produces a single composite XML string that:
+Steps: (1) wrap the upstream MJCF as a ``<worldbody>`` snippet (strip outer
+``<mujoco>``, the ``<actuator>`` block, and the trailing ``</worldbody>``);
+(2) re-anchor the OpenArm base above a robosuite ``TableArena``-style table;
+(3) add three coloured cubes (red/green/blue), a passive prismatic drawer,
+and three RGB cameras (``top``, ``wrist_left``, ``wrist_right``) at the
+resolutions the pi05 LoRA was trained on; (4) emit ``<motor>`` actuators for
+all 16 joints (7 arm + 1 finger per side), inheriting the upstream
+``<equality>`` constraint yoking the second finger to the first; (5) preserve
+``meshdir="assets"`` so the cached MJCF's sibling ``assets/`` still resolves.
+Fed to ``mujoco.MjModel.from_xml_string`` with an ``asset_root`` callback so
+OpenArm meshes load from the upstream cache without copying.
 
-1. Wraps the upstream MJCF as a ``<worldbody>`` snippet by reading it
-   and splicing out (a) its outer ``<mujoco>`` tag, (b) the
-   ``<actuator>`` block, and (c) the trailing ``</worldbody>``;
-2. Re-anchors the OpenArm base in a known frame above a robosuite
-   ``TableArena``-style table top;
-3. Adds the manipulation scene: three coloured cubes
-   (red / green / blue), a passive parallel-jaw drawer (prismatic
-   joint), and three RGB cameras (``top``, ``wrist_left``,
-   ``wrist_right``) at the resolutions the pi05 LoRA was trained on;
-4. Emits ``<motor>`` actuators for all 16 joints (7 arm + 1 finger per
-   side), inheriting the upstream ``<equality>`` constraint that
-   yokes the second finger to the first;
-5. Preserves the upstream ``meshdir="assets"`` so the cached MJCF's
-   sibling ``assets/`` directory still resolves at compile time.
+The actuator inventory + ctrlrange/forcerange numbers, and the "top" camera
+placement, are derived from a loaded :class:`openral_core.RobotDescription`
+(:func:`actuator_specs_from_description`,
+:attr:`RobotDescription.scene_defaults.top_camera`) — no module-level copy of
+either; the YAML's ``scene.backend_options.top_camera_*`` keys still override.
 
-The resulting string is fed to :func:`mujoco.MjModel.from_xml_string`
-with an ``asset_root`` callback so the OpenArm meshes load from the
-upstream cache without copying them.
-
-The actuator inventory + per-joint ctrlrange / forcerange numbers are
-**derived from a loaded** :class:`openral_core.RobotDescription` (see
-:func:`actuator_specs_from_description`) — there is no module-level
-copy of the openarm joint table anymore. Same for the "top" overview
-camera placement: the default ``pos`` / ``target`` / ``fovy`` come from
-:attr:`RobotDescription.scene_defaults.top_camera` on the supplied
-description, with the YAML's ``scene.backend_options.top_camera_*``
-keys still overriding when set.
-
-Honest scope note
------------------
-Only the **structural** composition is exercised today (smoke-tested
-by ``tests/sim/test_openarm_scene_pnp.py``). The motor-actuator
-control-range numbers (``effort_limit`` in
-``robots/openarm/robot.yaml``) are passed through as ``forcerange`` /
-``ctrlrange``; whether they need per-joint tuning to keep robosuite
-OSC stable on this rig will surface the first time we close the loop
-with a real VLA chunk.
+Honest scope note: only the structural composition is exercised today
+(``tests/sim/test_openarm_scene_pnp.py``). The motor ctrlrange/forcerange
+numbers (from ``robots/openarm/robot.yaml``'s ``effort_limit``) pass through
+untuned; whether they need per-joint tuning for robosuite OSC stability
+surfaces the first time this closes the loop with a real VLA chunk.
 """
 
 from __future__ import annotations
@@ -316,18 +297,12 @@ def _inject_base_center_sites(xml: str) -> str:
 def _lift_robot_bases(xml: str, z_offset: float, x_offset: float = 0.0) -> str:
     """Shift both OpenArm base bodies' ``pos`` attributes.
 
-    The upstream MJCF mounts the bases at ``pos="0 ±0.031 0"`` (floor
-    level, x=0). With the table also at z=0 in the scene splice, the
-    arms naturally hang straight down below the table top and never
-    reach the objects sitting on it. Lifting the bases by ~0.5 m parks
-    the robot above the table edge so the arms can sweep down onto the
-    cubes / drawer.
-
-    The ``x_offset`` knob is the horizontal equivalent: the cubes sit at
-    x≈0.45–0.55 m, which is at the limit of the 0.6 m arm reach from a
-    base at x=0. Sliding the bases forward by ~0.2 m brings the picking
-    targets to the centre of the workspace where the policy has the
-    most demonstrations.
+    The upstream MJCF mounts the bases at ``pos="0 ±0.031 0"`` (floor level,
+    x=0), so with the table also at z=0 the arms hang below the table top and
+    never reach it; lifting ~0.5 m parks the robot above the table edge.
+    ``x_offset`` is the horizontal equivalent: cubes sit at x≈0.45–0.55 m, at
+    the limit of the 0.6 m arm reach from x=0, so sliding forward ~0.2 m
+    centres the picking targets in the workspace with the most demonstrations.
     """
     if z_offset == 0.0 and x_offset == 0.0:
         return xml
@@ -361,18 +336,14 @@ _WHITE_SKYBOX_ASSET = (
 def _rename_upstream_wrist_cameras(xml: str) -> str:
     """Rename upstream ``camera_wrist_{left,right}`` → ``wrist_{left,right}``.
 
-    The upstream OpenArm v2 MJCF already provides wrist-mounted camera tags
-    parented inside each ``openarm_*_ee_base_link`` body. Per the scene's
-    canonical camera-naming convention the canonical HAL/sensor name is
-    ``wrist_left`` / ``wrist_right``, so the
-    composer preserves the upstream camera IDs and only renames them. The
-    rollout renderer may re-aim those named cameras at runtime when the
-    physical hand-mounted view is occluded by the tabletop reset pose.
+    The upstream MJCF already provides wrist-mounted camera tags parented
+    inside each ``openarm_*_ee_base_link`` body; the scene's canonical
+    HAL/sensor name is ``wrist_left``/``wrist_right``, so the composer only
+    renames the IDs. The rollout renderer may re-aim those cameras at runtime
+    when the hand-mounted view is occluded by the tabletop reset pose.
 
-    No-op if the upstream camera names ever change — the caller still
-    gets a syntactically valid MJCF, the wrist render path just won't
-    expose ``wrist_left`` / ``wrist_right`` and the world-state
-    aggregator will surface that as a stale-sensor warning.
+    No-op if the upstream camera names ever change — still syntactically
+    valid MJCF, but the world-state aggregator surfaces a stale-sensor warning.
     """
     xml = xml.replace('name="camera_wrist_left"', 'name="wrist_left"')
     xml = xml.replace('name="camera_wrist_right"', 'name="wrist_right"')

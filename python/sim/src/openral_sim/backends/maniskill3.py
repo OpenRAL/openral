@@ -263,18 +263,12 @@ class _ManiSkill3Sim:
     def viewer_render(self) -> None:
         """Pump the SAPIEN live viewer; promotes to ``human`` mode on first call.
 
-        Picked up by :func:`openral_sim.sim_runner._open_viewer_and_pacing`
-        as the engine-owns-the-viewer hook (returns a
-        ``_SapienViewerProxy`` that the runner ``.sync()``-s after each
-        applied step). The first call lazily promotes
-        ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` —
-        MS3's ``render_human`` (``sapien_env.py``) then creates the
-        SAPIEN viewer + runs ``_setup_viewer`` against the
-        already-populated scene. Deferring window creation until the
-        first ``viewer_render()`` call (i.e. after the runner has built
-        the policy and started ticking) prevents the WM from marking an
-        empty unresponsive window "Not Responding" during the multi-
-        second policy load. Mirrors the simpler_env backend.
+        Picked up by :func:`openral_sim.sim_runner._open_viewer_and_pacing` as
+        the engine-owns-the-viewer hook. The first call promotes
+        ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` (MS3's
+        ``render_human`` then creates the SAPIEN viewer), deferred until after
+        the policy has loaded so the WM never marks an empty window "Not
+        Responding". Mirrors the simpler_env backend.
         """
         if self._view_pending:
             self._env.unwrapped.render_mode = "human"
@@ -442,37 +436,29 @@ def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
         ) from exc
 
     env_id = _task_id_for_env(env_cfg)
-    # Single-env eval — the harness expects one Observation per step, and
-    # the per-(task, seed) outer loop in run_benchmark is the right place
-    # to parallelise (clear semantics, OTel spans per episode).
-    # ``state_dict+rgb`` exposes ``agent.qpos`` / ``agent.qvel`` as nested
-    # dicts (what :func:`_extract_state` reads). The flat ``rgb+state``
-    # mode collapses those into a single top-level tensor, which the
-    # adapter would surface as an empty state vector.
-    # robot_uids selects the MS3 agent variant — the default `panda` agent
-    # carries a single `base_camera`; multi-camera rSkills (e.g. SmolVLA
-    # with wrist + overhead views) need `panda_wristcam`, which adds the
-    # `hand_camera` mount. Passed through only when set so the default
-    # PickCube behaviour for single-camera configs is preserved.
+    # Single-env eval: harness expects one Observation per step; run_benchmark's
+    # per-(task, seed) outer loop parallelises (OTel spans per episode).
+    # obs_mode="state_dict+rgb" exposes agent.qpos/qvel as nested dicts (read by
+    # _extract_state); the flat "rgb+state" mode collapses them, so the adapter
+    # would see an empty state vector.
+    # robot_uids selects the MS3 agent variant: default `panda` has one
+    # `base_camera`; multi-camera rSkills (e.g. SmolVLA wrist+overhead) need
+    # `panda_wristcam`, which adds `hand_camera`. Passed through only when set.
     #
-    # Deferred-window mode: when ``OPENRAL_SIM_VIEW=1`` (set by
-    # :meth:`SimRunner.activate` for ``openral sim run --view``) we still
-    # construct with ``render_mode=None`` and stash a ``_view_pending``
-    # flag on the adapter. The first :meth:`viewer_render` call promotes
-    # ``env.unwrapped.render_mode`` to ``"human"`` and lazily opens the
-    # SAPIEN window — after the policy has loaded, so the WM never sees
-    # an empty unresponsive window. Mirrors PR #160's simpler_env path.
+    # Deferred-window mode (mirrors PR #160's simpler_env path): when
+    # OPENRAL_SIM_VIEW=1 (set by SimRunner.activate for `openral sim run --view`)
+    # construct with render_mode=None and stash _view_pending; the first
+    # viewer_render() call promotes render_mode to "human" and opens the SAPIEN
+    # window after the policy has loaded, so the WM never sees an empty window.
     view_pending = os.environ.get(_VIEW_ENV) == "1"
     make_kwargs: dict[str, Any] = {
         "num_envs": 1,
         "obs_mode": env_cfg.scene.backend_options.get("obs_mode", "state_dict+rgb"),
         "control_mode": env_cfg.scene.backend_options.get("control_mode", "pd_ee_delta_pose"),
         "render_mode": None,
-        # MS3's gym.register pins PickCube-v1 (and most tabletop tasks)
-        # to max_episode_steps=50, which truncates rollouts at step 50
-        # regardless of the YAML's task.max_steps. Forward the YAML's
-        # value so long-horizon configs aren't silently clipped. Same
-        # pattern as PR #160 for simpler_env.
+        # MS3's gym.register pins PickCube-v1 (and most tabletop tasks) to
+        # max_episode_steps=50, ignoring the YAML's task.max_steps; forward it
+        # explicitly (same pattern as PR #160 for simpler_env).
         "max_episode_steps": env_cfg.task.max_steps,
         "sensor_configs": {
             "width": env_cfg.scene.observation_width,
@@ -481,9 +467,8 @@ def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
     }
     robot_uids = env_cfg.scene.backend_options.get("robot_uids")
     if robot_uids is not None:
-        # Reconcile against the task's SUPPORTED_ROBOTS: accept registered
-        # camera-variants of a supported base (silencing MS3's false warning),
-        # raise ROSCapabilityMismatch for genuinely-unsupported robots.
+        # Reconcile against SUPPORTED_ROBOTS: accept registered camera-variants
+        # of a supported base, raise ROSCapabilityMismatch otherwise.
         _reconcile_robot_uids(env_id, str(robot_uids))
         make_kwargs["robot_uids"] = robot_uids
     with _suppress_unsupported_robot_warning():
