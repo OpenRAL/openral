@@ -213,7 +213,7 @@ below). The conversion that produced these weights is reproducible in shape but
 not byte-for-byte:
 
 ```bash
-# q-research, policies/openpi/convert — Stage 1 only.
+# Upstream conversion tooling (openpi convert) — Stage 1 only.
 ACTION_HORIZON=35 ./convert_finetune.sh   # openpi JAX/orbax -> PyTorch
 ```
 

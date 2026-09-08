@@ -72,14 +72,31 @@ sensors_required:
 # (left [0, 0.7854], right [-0.7854, 0]) — independent confirmation of the
 # convention.
 #
-# `control_mode_semantics` is a declaration only — the OpenRAL runner does not
-# integrate deltas into absolute targets; lerobot PI05 does it via
-# `use_relative_actions`, the q-research openpi bridge does it server-side.
-# Driving via lerobot REQUIRES `config.json`'s `action_feature_names` (dims 7/15
-# named with "gripper") or it relativizes all 16 dims silently — measured: with
-# names absent, gripper dim 7 comes out [0.4738, 0.9445] vs trained
-# [0, 0.7852]; with names present, [-0.0023, 0.4673]. Arm dims look identical
-# either way, so nothing announces the failure.
+# Those two gripper ranges reproduce `robots/openarm/robot.yaml`'s hinge
+# limits exactly (left [0, 0.7854], right [-0.7854, 0]), which is independent
+# evidence that the checkpoint was trained in this manifest's joint
+# convention. This matters because the converted checkpoint ships no
+# `metadata.pt`, so nothing else in the artifact records the delta split.
+#
+# NOTE: `control_mode_semantics` is a *declaration*, not an implementation —
+# nothing in the OpenRAL runner integrates deltas into absolute targets today.
+# Whoever drives this policy owns that reconstruction. lerobot's PI05 does it
+# natively via `use_relative_actions`, so the published `config.json` sets it;
+# an openpi serving bridge does it server-side.
+#
+# ⚠ If you drive this through lerobot, `config.json` MUST also carry
+# `action_feature_names` — the 16 training feature names, with the word
+# "gripper" in dims 7 and 15. lerobot resolves `relative_exclude_joints:
+# ["gripper"]` by substring-matching those names, and with them absent it
+# cannot identify the gripper dims, so it relativizes all 16 and adds the
+# current state onto the two absolute gripper channels.
+#
+# That failure is quiet, and it was measured on this checkpoint: with the
+# names absent, gripper dim 7 came out in [0.4738, 0.9445] against its trained
+# [0.0000, 0.7852] — the state mean (0.4707) added straight on. With them
+# present: [-0.0023, 0.4673]. The arm dims look identical either way, so
+# nothing in the chunk announces the problem. openpi derives the same mask by
+# the same rule (`"gripper" not in name.lower()`).
 actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
