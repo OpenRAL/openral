@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from enum import StrEnum
 
 import structlog
 from openral_core.exceptions import (
@@ -50,7 +51,43 @@ from openral_core.schemas import Action, JointState, RobotDescription
 
 from openral_hal._base import HALBase, _raw_floats
 
-__all__ = ["RosControlHAL"]
+__all__ = ["ControllerKind", "RosControlHAL"]
+
+
+class ControllerKind(StrEnum):
+    """Which ros2_control controller sits behind one command topic.
+
+    A command topic is not self-describing: the topic name says nothing about
+    the message type the controller expects, and publishing the wrong type is
+    *silent* — DDS simply never delivers it, so the arm does not move and
+    nothing anywhere logs an error. That is the same class of failure as the
+    no-op transport this layer already had to fix once, so the wire format is
+    declared rather than assumed.
+
+    A HAL names the kind per topic in `command_bindings`; `RosControlTransport`
+    builds the matching publisher and message from it. Adding a robot whose
+    controllers differ therefore means declaring a kind, not writing transport
+    code.
+
+    Only kinds this transport can actually build a message for belong here —
+    an unlisted controller must fail loudly at wire-up rather than be
+    approximated by a neighbouring one.
+    """
+
+    #: `joint_trajectory_controller/JointTrajectoryController`, commanded via
+    #: `trajectory_msgs/JointTrajectory` on `~/joint_trajectory`. Every
+    #: ros2_control robot in this repo uses this, grippers included (OpenArm's
+    #: are 1-DoF instances of it).
+    JOINT_TRAJECTORY = "joint_trajectory"
+
+    #: The `forward_command_controller` family — `ForwardCommandController`,
+    #: `position_controllers/JointGroupPositionController` and siblings —
+    #: commanded via `std_msgs/Float64MultiArray` on `~/commands`. No robot in
+    #: this repo uses one yet; it is here because it is the other type a
+    #: ros2_control arm is commonly configured with, and because two kinds are
+    #: what make the dispatch real rather than a rename of an assumption.
+    FORWARD_COMMAND = "forward_command"
+
 
 log = structlog.get_logger(__name__)
 
@@ -172,15 +209,27 @@ class RosControlHAL(HALBase):
         self._stamp_fn = stamp_fn
         self._last_state_time = time.monotonic()
 
-    def command_topics(self) -> list[str]:
-        """Return every controller topic this HAL publishes to.
+    def command_bindings(self) -> dict[str, ControllerKind]:
+        """Return each controller topic this HAL publishes to, with its kind.
 
-        One topic for a single-controller arm; robots whose controllers are
-        split (the bimanual OpenArm's arm+gripper per side) override this. A
-        transport builds one publisher per entry, so it never needs to know
-        which robot it is serving.
+        One entry for a single-controller arm; robots whose controllers are
+        split (the bimanual OpenArm's arm+gripper per side) override this.
+        Insertion order is the fan-out order `send_action` uses, so it is
+        load-bearing.
+
+        This is the override point for a new robot: declaring the topic *and*
+        the message type its controller speaks is what lets the transport
+        publish without guessing, so adding a robot needs no transport code.
         """
-        return [self._command_topic]
+        return {self._command_topic: ControllerKind.JOINT_TRAJECTORY}
+
+    def command_topics(self) -> list[str]:
+        """Return every controller topic this HAL publishes to, in fan-out order.
+
+        Derived from `command_bindings` so the topic list and the declared wire
+        formats cannot drift apart. Override `command_bindings`, not this.
+        """
+        return list(self.command_bindings())
 
     def ros2_control_joint_names(self) -> list[str]:
         """Return the joint names in ros2_control's namespace, in action order.

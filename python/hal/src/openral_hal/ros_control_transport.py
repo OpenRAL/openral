@@ -12,15 +12,17 @@ the gap went unnoticed.
 This transport is robot-agnostic on purpose. It is built entirely from what the
 HAL already reports about itself:
 
-* `command_topics()` — one `JointTrajectory` publisher per entry, so a
-  single-controller UR and the four-controller bimanual OpenArm are the same
-  code path.
+* `command_bindings()` — one publisher per entry, typed by the entry's
+  `ControllerKind`, so a single-controller UR and the four-controller bimanual
+  OpenArm are the same code path.
 * `ros2_control_joint_names()` — the names `/joint_states` is keyed by.
 * `joint_state_topic` — the aggregated state topic.
 
 Adding a robot therefore needs no transport code at all: give its HAL those
 three (the base class already answers all of them) and the lifecycle node wires
-this automatically.
+this automatically. A robot whose controllers speak a format not yet in
+`ControllerKind` is the one case that needs a change here — and it fails loudly
+at wire-up rather than publishing a type DDS will silently drop.
 
 Joint state is merged **by name, never by index**. Independently publishing
 controllers give no ordering guarantee, and on a robot whose controllers are
@@ -39,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from openral_hal.ros_control import ControllerKind
+
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
     from rclpy.node import Node
 
@@ -49,20 +53,18 @@ __all__ = ["RosControlDrivable", "RosControlTransport"]
 class RosControlDrivable(Protocol):
     """What a HAL must expose to be driven by `RosControlTransport`.
 
-    Membership is **structural, not by ancestry**. `RosControlHAL` and its
-    subclasses satisfy it, but so does any other HAL that grows these four
-    members — which matters because the repo already has a real ros2_control
-    robot that is not a `RosControlHAL` subclass (`AlohaHAL`, which reimplements
-    the same fan-out on `HALBase`). Gating the lifecycle node's wiring on
-    inheritance would silently leave such a robot with no transport at all,
-    which is the failure this whole surface exists to prevent.
+    Membership is **structural, not by ancestry**, so a HAL that reimplements
+    the ros2_control fan-out on `HALBase` rather than inheriting still gets
+    wired. Gating the lifecycle node on `isinstance(..., RosControlHAL)` would
+    leave such a robot with no transport and no error — the failure this whole
+    surface exists to prevent.
 
     A HAL opts in by answering these; the base class answers all four, so for
     most robots that is automatic.
     """
 
-    def command_topics(self) -> list[str]:
-        """Controller topics this HAL publishes to; one publisher per entry."""
+    def command_bindings(self) -> dict[str, ControllerKind]:
+        """Controller topics this HAL publishes to, each with its wire format."""
         ...
 
     def ros2_control_joint_names(self) -> list[str]:
@@ -106,6 +108,10 @@ class RosControlTransport:
         joint_names: ros2_control joint names, from
             `hal.ros2_control_joint_names()`.
         joint_state_topic: Aggregated state topic, from `hal.joint_state_topic`.
+        command_kinds: Wire format per topic, from `hal.command_bindings()`.
+            A topic absent from the mapping defaults to
+            `ControllerKind.JOINT_TRAJECTORY`, which is what every
+            ros2_control robot in this repo runs.
 
     Raises:
         ROSConfigError: If no command topic or no joint name was given — a HAL
@@ -120,6 +126,7 @@ class RosControlTransport:
         command_topics: list[str],
         joint_names: list[str],
         joint_state_topic: str = "/joint_states",
+        command_kinds: dict[str, ControllerKind] | None = None,
     ) -> None:
         """Create one publisher per command topic and subscribe to the state topic."""
         # `openral_hal` must import without a ROS 2 install (unit tests, docs
@@ -138,6 +145,17 @@ class RosControlTransport:
                 "reported none, so incoming /joint_states could not be matched."
             )
 
+        kinds = dict(command_kinds or {})
+        unknown = sorted(set(kinds) - set(command_topics))
+        if unknown:
+            raise ROSConfigError(
+                f"RosControlTransport was given controller kinds for topic(s) {unknown} "
+                f"that are not in command_topics {sorted(command_topics)}. A kind that "
+                "names no topic silently governs nothing, which is how a controller ends "
+                "up commanded with the wrong message type."
+            )
+        self._kinds = {t: kinds.get(t, ControllerKind.JOINT_TRAJECTORY) for t in command_topics}
+
         from rclpy.qos import (  # noqa: PLC0415  # reason: rclpy is a ROS-only dep; the HAL package must import without it
             DurabilityPolicy,
             HistoryPolicy,
@@ -145,7 +163,6 @@ class RosControlTransport:
             ReliabilityPolicy,
         )
         from sensor_msgs.msg import JointState as RosJointState  # noqa: PLC0415
-        from trajectory_msgs.msg import JointTrajectory  # noqa: PLC0415  # reason: ROS-only dep
 
         self._node = node
         self._joint_names = list(joint_names)
@@ -159,8 +176,12 @@ class RosControlTransport:
             history=HistoryPolicy.KEEP_LAST,
             depth=_COMMAND_DEPTH,
         )
+        # One publisher per topic, typed by the kind the HAL declared. Getting
+        # this wrong is invisible at runtime — DDS drops a mismatched type
+        # without delivering it and without erroring — so the type is chosen
+        # here, once, from the declaration rather than assumed at publish time.
         self._pubs = {
-            topic: node.create_publisher(JointTrajectory, topic, command_qos)
+            topic: node.create_publisher(_message_type(self._kinds[topic]), topic, command_qos)
             for topic in command_topics
         }
 
@@ -183,7 +204,12 @@ class RosControlTransport:
     # ── Injected callables ────────────────────────────────────────────────────
 
     def publish(self, topic: str, msg: dict[str, object]) -> None:
-        """Send one HAL command dict to its controller as a `JointTrajectory`.
+        """Send one HAL command dict to its controller in that controller's format.
+
+        The message type follows the `ControllerKind` the HAL declared for this
+        topic in `command_bindings` — `trajectory_msgs/JointTrajectory` for a
+        `JointTrajectoryController`, `std_msgs/Float64MultiArray` for the
+        forward-command family.
 
         The message's own `joint_names` are used verbatim, so this cannot
         misroute a value the HAL placed correctly; it falls back to the full
@@ -222,9 +248,10 @@ class RosControlTransport:
         if "joint_targets" not in msg:
             raise ROSConfigError(
                 f"RosControlTransport cannot express the command {sorted(msg)} sent to "
-                f"{topic!r}: it publishes trajectory_msgs/JointTrajectory and so requires "
-                "'joint_targets'. Teach this transport that controller's message type "
-                "rather than letting the command be dropped."
+                f"{topic!r}: every ControllerKind it publishes is commanded from "
+                f"'joint_targets', and this one ({self._kinds[topic].value}) is no "
+                "exception. Add the kind that controller speaks to ControllerKind rather "
+                "than letting the command be dropped."
             )
         targets = msg.get("joint_targets")
         if not isinstance(targets, list) or not targets:
@@ -244,6 +271,19 @@ class RosControlTransport:
                 f"chunk's final step has "
                 f"{len(last_step) if isinstance(last_step, list) else 'a non-list'}."
             )
+
+        kind = self._kinds[topic]
+        if kind is ControllerKind.FORWARD_COMMAND:
+            from std_msgs.msg import Float64MultiArray  # noqa: PLC0415  # reason: ROS-only dep
+
+            # A forward controller takes a bare vector in the order its own
+            # `joints` parameter declares — there is no room in the message for
+            # names, so the HAL's ordering is the whole contract. The length
+            # check above is therefore the only guard available.
+            command = Float64MultiArray()
+            command.data = [float(v) for v in last_step]
+            publisher.publish(command)
+            return
 
         from trajectory_msgs.msg import (  # noqa: PLC0415  # reason: ROS-only dep
             JointTrajectory,
@@ -328,3 +368,31 @@ class RosControlTransport:
 #: Default trajectory deadline. Matches the 100 ms the production HALs assume
 #: for a single-step command; overridden per message via `time_from_start_s`.
 _DEFAULT_TIME_FROM_START_S = 0.1
+
+
+def _message_type(kind: ControllerKind) -> type:
+    """Return the ROS message class one `ControllerKind` is commanded with.
+
+    Imported at call time so this module still imports without a ROS 2
+    installation (unit tests, docs builds, CI lanes with no rclpy).
+
+    Raises:
+        ROSConfigError: For a kind with no message mapping. Unreachable while
+            the enum and this function agree; it exists so that adding a member
+            without teaching this function fails at wire-up rather than
+            publishing a plausible-but-wrong type onto the actuation path.
+    """
+    from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
+    if kind is ControllerKind.JOINT_TRAJECTORY:
+        from trajectory_msgs.msg import JointTrajectory  # noqa: PLC0415  # reason: ROS-only dep
+
+        return JointTrajectory
+    if kind is ControllerKind.FORWARD_COMMAND:
+        from std_msgs.msg import Float64MultiArray  # noqa: PLC0415  # reason: ROS-only dep
+
+        return Float64MultiArray
+    raise ROSConfigError(  # pragma: no cover - guarded by test_every_controller_kind_maps
+        f"RosControlTransport has no message type for ControllerKind {kind!r}. "
+        "Add one here in the same change that adds the enum member."
+    )

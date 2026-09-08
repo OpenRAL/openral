@@ -84,3 +84,16 @@ rate ~600 Hz).
 Only then start this package's lifecycle node with `hal_mode:=real`. It attaches
 its `RosControlTransport` automatically and leaves the global `/joint_states` to
 the controller's own `joint_state_broadcaster`.
+
+### Checking the transport without the arm
+
+`tests/sim/test_openarm_hal_ros2_control.py` stands the same stack up over
+`mock_components/GenericSystem` — real `controller_manager`, real
+`joint_trajectory_controller`, real `joint_state_broadcaster`, fake motors — and
+drives it through the production `RosControlHAL` + `RosControlTransport`. Run it
+before touching the rig: it catches a mistyped command topic, a wrong
+`ControllerKind` or a joint-name mismatch in seconds, with no power on the arm.
+It needs only `ros-$ROS_DISTRO-ros2-control` and
+`ros-$ROS_DISTRO-ros2-controllers`, not the vendor stack, and skips where those
+are absent. What it cannot check is anything physical — following error, CAN
+timing, bus health — which is why the checks above still matter.

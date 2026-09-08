@@ -75,7 +75,7 @@ from openral_hal._real_description import make_real_description
 from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group
 from openral_hal.openarm import OPENARM_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
-from openral_hal.ros_control import RosControlHAL
+from openral_hal.ros_control import ControllerKind, RosControlHAL
 
 __all__ = [
     "OPENARM_REAL_DESCRIPTION",
@@ -262,15 +262,20 @@ class OpenArmRealHAL(RosControlHAL):
         """
         return list(self._ros2_names)
 
-    def command_topics(self) -> list[str]:
-        """Return the four command topics this adapter publishes to.
+    def command_bindings(self) -> dict[str, ControllerKind]:
+        """Return the four command topics this adapter publishes to, with kinds.
+
+        All four are `JointTrajectoryController` instances — `openarm_bringup`
+        configures each gripper as a 1-DoF one rather than a gripper action
+        server, so the grippers take the same `trajectory_msgs/JointTrajectory`
+        the arms do.
 
         Example:
             >>> from openral_hal.openarm_real import OpenArmRealHAL
             >>> OpenArmRealHAL(require_can_links=False).command_topics()[1]
             '/left_gripper_controller/joint_trajectory'
         """
-        return [topic for topic, _, _ in self._command_groups]
+        return {topic: ControllerKind.JOINT_TRAJECTORY for topic, _, _ in self._command_groups}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
