@@ -51,7 +51,16 @@ DEFAULT_CAMERAS: tuple[str, ...] = _layout.DEFAULT_CAMERAS
 
 #: Foxglove panel types that can write to the robot. None may appear in a
 #: layout this package ships or generates.
-_WRITE_CAPABLE_PANELS = ("Publish", "Teleop", "CallService", "Parameters")
+#:
+#: Cross-checked against ``foxglove-sdk``'s layout panel inventory
+#: (``python/foxglove/layouts/__init__.py``), which names the write-capable
+#: panels ``Teleop``, ``Publish``, ``Parameters`` and ``ServiceCall``. The SDK
+#: is a *different* serialisation from the ``configById`` format this layout
+#: uses — it writes the 3D panel as ``ThreeDee`` where ``configById`` writes
+#: ``3D`` — so its spellings are not authoritative for our prefixes. Both
+#: spellings of the service-call panel are therefore listed: whichever the
+#: viewer's format uses, the guard trips.
+_WRITE_CAPABLE_PANELS = ("Publish", "Teleop", "Parameters", "ServiceCall", "CallService")
 
 
 def _referenced_topics(layout: dict[str, Any]) -> set[str]:

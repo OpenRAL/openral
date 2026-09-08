@@ -173,15 +173,43 @@ matches an arbitrary `/openral/…` topic, and the command/safety plane
 (`estop`, `estop_reset`, `execute_rskill`, `prompt`, `safe_action`,
 `candidate_action`, `safety_status`) stays unmatched.
 
-**Not verified — needs a live Foxglove client** (this environment still has no
+### Cross-checked against `foxglove-sdk` (2026-09-08)
+
+`foxglove/foxglove-sdk` @ `3e59568`, `python/foxglove/layouts/__init__.py`, is
+the public inventory of Foxglove's panels and their config schemas. Read
+against it, the **panel config dicts this layout emits are exact**:
+
+| Panel | Config keys confirmed against the SDK |
+|---|---|
+| Log | `searchTerms`, `minLogLevel`, `topicToRender` |
+| Diagnostics summary | `minLevel`, `pinnedIds`, `topicToRender`, `hardwareIdFilter`, `sortByLevel` |
+| State Transitions | `paths`, `isSynced` |
+| Plot | `paths`, `showLegend`, `xAxisVal`, `followingViewWidth` |
+| Image | `imageMode.imageTopic` |
+
+It also confirms the write-capable panel set the read-only guard must exclude:
+`Teleop`, `Publish`, `Parameters`, `ServiceCall` — the last of which the guard
+was missing (it listed `CallService`) and now covers under both spellings.
+
+**The SDK is NOT authoritative for the panel type prefixes**, and this is the
+trap worth writing down: it is a *different serialisation*. The SDK emits a
+nested `{"type":"panel","panelType":…}` tree; this layout uses the app's
+`configById` format keyed `"<PanelType>!<id>"`, and the two disagree — the SDK
+writes the 3D panel as **`ThreeDee`** where every real `configById` layout
+(ours, and e.g. `husarion/foxglove-docker`'s `FoxgloveDefaultLayout.json`)
+writes **`3D`**. So the SDK's `Log` / `DiagnosticsSummary` do **not** mean our
+`RosOut` / `DiagnosticSummary` are wrong; the systematic rename is consistent
+with the app format having kept the legacy strings.
+
+**Still not verified — needs a live Foxglove client** (this environment has no
 installable browser, see the 2026-06-16 row):
 
-- **Panel type ids.** `3D`, `Image`, `Plot`, `RawMessages` and `Tab` were
-  present in the previously-verified layout. `RosOut` (Log),
-  `DiagnosticSummary`, `StateTransitions` and `TopicGraph` are new here and
-  their id strings are unconfirmed against a running client. A wrong id
-  degrades to an "unknown panel" tile in that slot only — the rest of the
-  layout still loads.
+- **Panel type prefixes.** `3D`, `Image`, `Plot`, `RawMessages` and `Tab` are
+  corroborated by real `configById` layouts. `RosOut` (Log),
+  `DiagnosticSummary`, `StateTransitions` and `TopicGraph` are this layout's
+  best reading of the legacy app strings and remain unconfirmed against a
+  running client. A wrong prefix degrades to an "unknown panel" tile in that
+  slot only — the rest of the layout still loads.
 - **Message-path slicing.** `/joint_states.position[:]` replaces six
   hard-coded indices so the plot fits any DOF count; the `[:]` slice syntax is
   unconfirmed here.
