@@ -1,41 +1,35 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
-# Wraps: OpenRAL/lingbot-vla-4b-robotwin-nf4     (NF4 pre-quantized mirror of
+# Wraps: OpenRAL/lingbot-vla-4b-robotwin-nf4 (NF4 pre-quantized mirror of
 #        robbyant/lingbot-vla-4b-posttrain-robotwin, Apache-2.0 code + weights)
-# Source: https://github.com/robbyant/lingbot-vla @ 4eb34b7
+# Source: github.com/robbyant/lingbot-vla @ 4eb34b7
 # Paper:  "A Pragmatic VLA Foundation Model" (arXiv 2601.18692)
 #
-# Robbyant LingBot-VLA 1.0 (4B): a Qwen2.5-VL-3B backbone with a *dense* Qwen2
+# Robbyant LingBot-VLA 1.0 (4B): Qwen2.5-VL-3B backbone with a DENSE Qwen2
 # flow-matching action expert (10 denoising steps), pre-trained on 20k h of
-# real-world dual-arm data (9 configs) and POST-TRAINED on RoboTwin for the
-# AgileX "Cobot Magic" dual-arm embodiment. Unlike the v2 6B *foundation*
-# checkpoint (which mean-collapses zero-shot), this post-train reproduces GT
-# actions: open-loop MAE 0.023 vs GT RoboTwin lift_pot ep0 (see README).
+# real-world dual-arm data (9 configs), POST-TRAINED on RoboTwin for the
+# AgileX "Cobot Magic" embodiment. Unlike the v2 6B foundation checkpoint
+# (mean-collapses zero-shot), this post-train reproduces GT actions: open-loop
+# MAE 0.023 vs GT RoboTwin lift_pot ep0 (README).
 #
-# Routed via the SAME out-of-process `lingbot_vla2` adapter as the v2 model
-# (openral_sim.policies.lingbot_vla2, policy id `lingbot_vla`): the upstream
-# `lingbotvla` V1 package pins torch==2.8.0 / transformers==4.51.3 / lerobot==0.4.2
-# (flat layout), incompatible with the openral torch>=2.9 / transformers>=5
-# workspace (CLAUDE.md §3), so the model runs in an auto-provisioned Python 3.12
-# ZMQ sidecar (tools/lingbot_vla2_sidecar.py --variant v1 +
-# tools/_lingbot_vla2_server.py --variant v1).
+# Routed via the SAME out-of-process `lingbot_vla2` adapter as v2
+# (openral_sim.policies.lingbot_vla2, policy id `lingbot_vla`): upstream
+# `lingbotvla` V1 pins torch==2.8.0/transformers==4.51.3/lerobot==0.4.2 (flat
+# layout), incompatible with the openral torch>=2.9/transformers>=5 workspace
+# (CLAUDE.md §3), so it runs in an auto-provisioned Python 3.12 ZMQ sidecar
+# (tools/lingbot_vla2_sidecar.py --variant v1 + tools/_lingbot_vla2_server.py --variant v1).
 #
-# Contract (verified against the upstream configs/robot_configs/robotwin.yaml +
-# assets/norm_stats/robotwin_50.json + the shipped lingbotvla_cli.yaml):
-#   3 cameras cam_high / cam_left_wrist / cam_right_wrist (HWC uint8, resized to
-#     224×224 server-side by the model's FeatureTransform)
-#   observation.state 14-D  [arm_l(6) grip_l(1) arm_r(6) grip_r(1)]
-#   action            14-D per step (arm.position 12 + effector.position 2)
-#   chunk_size 50; the adapter replays 25 before re-inferring.
+# Contract (verified against upstream configs/robot_configs/robotwin.yaml +
+# assets/norm_stats/robotwin_50.json + lingbotvla_cli.yaml): 3 cameras
+# cam_high/cam_left_wrist/cam_right_wrist (HWC uint8, resized to 224x224
+# server-side); observation.state 14-D [arm_l(6) grip_l(1) arm_r(6) grip_r(1)];
+# action 14-D/step (arm.position 12 + effector.position 2); chunk_size 50,
+# adapter replays 25 before re-inferring.
 #
-# Camera-name mapping
-# -------------------
-# The aloha_agilex RobotDescription declares three sensors named
-# top / wrist_left / wrist_right with frozen vla_feature_keys
-# observation.images.camera1 / camera2 / camera3 (so the compatibility check
-# below resolves against camera1/2/3). The runtime wire mapping is handled by the
-# adapter, NOT a lerobot rename_map: it aligns the scene's first three camera keys
-# positionally onto the upstream origin keys cam_high → cam_left_wrist →
-# cam_right_wrist.
+# Camera-name mapping: aloha_agilex RobotDescription declares three sensors
+# top/wrist_left/wrist_right with frozen vla_feature_keys camera1/2/3 (so the
+# compat check resolves against those). Runtime wiring is handled by the
+# adapter, NOT a lerobot rename_map: it aligns the scene's first three camera
+# keys positionally onto cam_high -> cam_left_wrist -> cam_right_wrist.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

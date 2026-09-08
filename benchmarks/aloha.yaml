@@ -1,23 +1,22 @@
 # ALOHA benchmark suite — both gym-aloha bimanual tasks in one suite.
 #
-# Unifies the former aloha_transfer_cube.yaml + aloha_insertion.yaml into a
-# single suite (suite id = "aloha"). The two tasks are distinct gym-aloha envs
-# (AlohaTransferCube-v0 / AlohaInsertion-v0) with their own scene.id, which a
-# suite allows — only robot_id / n_episodes / seed / metadata must be uniform
-# (raise_on_invalid_suite). Each task has its OWN ACT checkpoint, so the
-# benchmark runner's evaluated_tasks auto-filter routes per rSkill:
+# Unifies former aloha_transfer_cube.yaml + aloha_insertion.yaml (suite id
+# "aloha"). Two distinct gym-aloha envs (AlohaTransferCube-v0/AlohaInsertion-v0)
+# with their own scene.id — a suite allows this, only robot_id/n_episodes/
+# seed/metadata must be uniform (raise_on_invalid_suite). Each task has its
+# own ACT checkpoint, so evaluated_tasks auto-filters per rSkill:
 #   openral benchmark run --suite aloha --rskill act-aloha            # transfer only
 #   openral benchmark run --suite aloha --rskill act-aloha-insertion  # insertion only
 #   openral benchmark run --suite aloha --rskill act-aloha --task aloha_insertion/0  # explicit
-# (act-aloha declares evaluated_tasks=["aloha_transfer_cube"], so the insertion
-# task is skipped+logged; and vice-versa.)
+# (act-aloha declares evaluated_tasks=["aloha_transfer_cube"] so insertion is
+# skipped+logged, and vice versa.)
 #
 # Protocol: ACT paper (Zhao et al., 2304.13705) — episode_len 400, 50 eval
-# rollouts per task. gym-aloha's TimeLimit default is 300; the scene adapter
-# honours task.max_steps to lift it to the paper's 400.
+# rollouts/task (gym-aloha's TimeLimit default is 300; scene adapter honours
+# task.max_steps to lift it to 400).
 #
-# Shape: bare list of BenchmarkScenes. Per-scene metadata is uniform
-# via the &meta anchor so raise_on_invalid_suite's metadata-equality check passes.
+# Shape: bare list of BenchmarkScenes; per-scene metadata uniform via the
+# &meta anchor for raise_on_invalid_suite's metadata-equality check.
 
 - scene:
     id: aloha_transfer_cube

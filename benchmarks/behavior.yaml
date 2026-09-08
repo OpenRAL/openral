@@ -1,31 +1,30 @@
 # BEHAVIOR-1K 2026 challenge suite — all 100 public challenge tasks.
 #
 # BEHAVIOR-1K (Li et al., 2403.09227) defines 1,000 household activities; the
-# 2026 challenge (and its OmniGibson evaluator) exposes this 100-task subset
-# on the Galaxea R1 Pro. Per-task max_steps is the official cap the evaluator
-# computes itself: int(1.5 x mean human-demo length), read from the installed
-# challenge human-demo stats. Instance 0 of the public_test split per task.
+# 2026 challenge (OmniGibson evaluator) exposes this 100-task subset on the
+# Galaxea R1 Pro. Per-task max_steps = the official cap the evaluator computes
+# itself, int(1.5 x mean human-demo length), from installed challenge stats.
+# Instance 0 of the public_test split per task.
 #
 # Run (auto-filters to the rSkill's evaluated_tasks, like maniskill3_panda):
 #   openral benchmark run --suite behavior --rskill rskills/gr00t-n17-b1k-turning-on-radio
 #
-# Setup: OmniGibson owns the scene physics in its official Python 3.10
-# environment (never vendored); the scene runs out-of-process through
-# tools/behavior_scene_sidecar.py (OPENRAL_BEHAVIOR_SIDECAR_PYTHON). Policy
-# checkpoints from the pinned wensi-ai/Isaac-GR00T runtime run in their own
-# sidecar (tools/behavior_groot_sidecar.py, whole-model NF4 on 8 GB).
+# Setup: OmniGibson owns scene physics in its own Python 3.10 env (never
+# vendored), running out-of-process via tools/behavior_scene_sidecar.py
+# (OPENRAL_BEHAVIOR_SIDECAR_PYTHON). Checkpoints on the pinned
+# wensi-ai/Isaac-GR00T runtime run in their own sidecar
+# (tools/behavior_groot_sidecar.py, whole-model NF4 on 8 GB).
 #
-# env_wrapper: the official DefaultWrapper (rgb-only, 224x224) — the wrapper
-# every verified rollout used. RGBDFullResWrapper crashes at boot on the
-# pinned OmniGibson build (reads joint state before og.sim.update_handles()).
+# env_wrapper: official DefaultWrapper (rgb-only, 224x224) — the wrapper every
+# verified rollout used; RGBDFullResWrapper crashes at boot on the pinned
+# OmniGibson build (reads joint state before og.sim.update_handles()).
 #
-# Protocol: the official evaluator scores partial credit (q_score) over final
-# goal predicates averaged across public instances; OpenRAL's runner records
-# the binary `is_success` from the same evaluator wrapper.
+# Protocol: official evaluator scores partial credit (q_score) over final goal
+# predicates averaged across public instances; OpenRAL's runner records the
+# binary `is_success` from the same wrapper.
 #
 # GENERATED from the evaluator's own load_available_tasks() +
-# load_human_stats() (cap = int(1.5 x mean human-demo length)); regenerate
-# from those helpers rather than hand-editing task rows.
+# load_human_stats(); regenerate from those helpers, don't hand-edit rows.
 
 - scene: &scene
     id: behavior

@@ -1,23 +1,20 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
 #
-# Wraps: gabrycina/so101-passing-pen-policy (Apache-2.0) — ACT (Zhao et al.,
-#        2023) finetuned from scratch on a real SO-101 "pass the pen"
-#        pick-and-place teleop dataset (gabrycina/so101-passing-pen,
-#        ~22.4k frames), recorded with TWO cameras: an arm-mounted view
-#        ("wrist") and a front/overview view ("front").
-# Paper: arxiv:2304.13705 — Action Chunking with Transformers.
+# Wraps gabrycina/so101-passing-pen-policy (Apache-2.0): ACT (Zhao et al.,
+# 2023, arxiv:2304.13705) trained from scratch on gabrycina/so101-passing-pen
+# (real SO-101 "pass the pen" teleop, ~22.4k frames), two cameras: arm-mounted
+# ("wrist") and front/overview ("front").
 #
-# WHY "-better": the sibling rskills/smolvla-so101-pen wraps a SmolVLA
-# checkpoint on the same task. This ACT policy (resnet18 backbone, VAE,
-# chunk_size=100) is a smaller, faster, ONNX/TRT-friendly alternative — a
-# plain CNN+transformer with no VLM/flow-matching, so it exports whole-model
-# to a single ONNX graph (see rskills/act-so101-pen/README.md, "ONNX / TensorRT").
+# Sibling rskills/smolvla-so101-pen wraps a SmolVLA checkpoint on the same
+# task; this ACT policy (resnet18 backbone, VAE, chunk_size=100) is a smaller,
+# faster, ONNX/TRT-friendly alternative — plain CNN+transformer, no
+# VLM/flow-matching, exports whole-model to a single ONNX graph (see
+# rskills/act-so101-pen/README.md, "ONNX / TensorRT").
 #
-# UNITS — degrees: trained on LeRobot SO-101 teleop recorded in joint
-# DEGREES (normalizer observation.state / action stats span ±100; MEAN_STD
-# normalization). The runner's _detect_joint_units_are_degrees handles the
-# deg↔rad conversion at the HAL boundary; declared explicitly below so it
-# does NOT rely on the stats-magnitude heuristic.
+# UNITS — degrees: trained on LeRobot SO-101 teleop in joint DEGREES
+# (normalizer state/action stats span ±100, MEAN_STD). Runner's
+# `_detect_joint_units_are_degrees` handles deg<->rad at the HAL boundary;
+# declared explicitly to skip the stats-magnitude heuristic.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -34,25 +31,17 @@ model_family: "act"
 embodiment_tags:
   - "so101_follower"
 
-# Two RGB streams. BOTH were trained at 640x480 — the checkpoint's
-# config.json declares observation.images.front and observation.images.wrist
-# as shape [3, 480, 640] (verified against the cached checkpoint snapshot).
-# Unlike smolvla / pi05 / gr00t, ACT does NOT resize: lerobot's
-# modeling_act.py has no resize step and this checkpoint's
-# policy_preprocessor.json is rename→batch→device→normalize only (no resize
-# stage), so the ResNet-18 backbone consumes each frame at whatever
-# resolution the sensor delivers. The minima below are therefore a real
-# in-distribution gate, not a nominal floor.
-#
-# The runner matches each entry against the robot's SensorSpec.vla_feature_key
-# declared in robots/so101_follower/robot.yaml (top→camera1, wrist→camera2).
-# BOTH are now pinned to the full 640x480 training resolution: the `top` OAK-D
-# Pro and the `wrist` icSpring rig each deliver 640x480 (v4l2-ctl confirms, and
-# scenes/deploy/so101_bench.yaml binds both at 640x480). camera2 previously
-# declared 256x256 only because robot.yaml's wrist intrinsics were stale at
-# 256x256 and a higher floor would have failed rSkill.check_sensors against
-# this skill's own robot; that manifest now records the measured resolution, so
-# the honest in-distribution gate can be declared directly.
+# Two RGB streams, BOTH trained at 640x480 (checkpoint's config.json declares
+# observation.images.front/wrist as [3, 480, 640]). Unlike smolvla/pi05/gr00t,
+# ACT does NOT resize (no resize step in lerobot's modeling_act.py or this
+# checkpoint's policy_preprocessor.json), so the ResNet-18 backbone consumes
+# whatever resolution the sensor delivers — these minima are a real
+# in-distribution gate, not a nominal floor. Runner matches each entry against
+# robots/so101_follower/robot.yaml's SensorSpec.vla_feature_key
+# (top->camera1, wrist->camera2); both pinned to the full 640x480 training
+# resolution now that the wrist manifest records its measured resolution
+# (was stale at 256x256, which used to be the only value that passed
+# rSkill.check_sensors against this skill's own robot).
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"

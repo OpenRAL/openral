@@ -1,39 +1,32 @@
 # OpenArm + ZED-M depth into the world map — REAL camera, SIMULATED HAL.
 #
 # Answers one question end to end: does a StereoLabs ZED reach the dashboard's
-# POINTCLOUD card through OpenRAL's octomap leg? Everything on the perception
-# side is real — ZED SDK stereo matching on the host GPU, zed_wrapper's
-# registered PointCloud2, octomap_server, openral_octomap_bridge,
-# WorldCloudBridge — and only the HAL is the MuJoCo twin, so no motor is ever
-# commanded and it does not matter whether the arms are powered.
+# POINTCLOUD card through OpenRAL's octomap leg? Perception side is all real
+# (ZED SDK stereo on host GPU, zed_wrapper's PointCloud2, octomap_server,
+# openral_octomap_bridge, WorldCloudBridge); only the HAL is the MuJoCo twin,
+# so no motor is ever commanded regardless of arm power state.
 #
-# The camera's MOUNT is not here: `head_zed` in robots/openarm/robot.yaml owns
-# it, because the ZED is bolted to the robot rather than to the workcell. This
-# scene only declares posture.
+# Camera MOUNT lives in `head_zed` (robots/openarm/robot.yaml), since the ZED
+# is bolted to the robot, not the workcell — this scene only declares posture.
 #
 # Bring up the camera driver on the SAME ROS_DOMAIN_ID first, then:
-#
 #     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
 #         publish_tf:=false publish_map_tf:=false
 #     openral deploy sim --config scenes/deploy/openarm_zed_octomap.yaml \
 #         --hal viewer_enabled=false
+# `publish_tf:=false` matters: otherwise zed_wrapper publishes its own
+# odom->zed_camera_link from VO while the manifest also parents
+# zed_camera_link to the arm — two parents, tf2 lookups go order-dependent,
+# octomap_server silently drops clouds. The camera is bolted to the rig, so
+# its pose belongs to the robot's tree, not VO. `--hal viewer_enabled=false`
+# is only needed headless; MuJoCo's offscreen renderer also wants
+# MUJOCO_GL=egl over ssh.
 #
-# `publish_tf:=false` matters: with it on, zed_wrapper publishes its own
-# odom -> zed_camera_link from visual odometry, and the manifest ALSO parents
-# zed_camera_link to the arm. A frame with two parents is not a tree — tf2
-# keeps whichever static arrived last, so lookups go order-dependent and
-# octomap_server starts silently dropping clouds. The camera is bolted to the
-# rig, so its pose belongs to the robot's tree, not to VO.
-#
-# `--hal viewer_enabled=false` is only needed headless (no DISPLAY); MuJoCo's
-# offscreen renderer additionally wants MUJOCO_GL=egl over ssh.
-#
-# ── Verified on the lab Jetson AGX Orin (qorin1), 2026-09-07 ───────────────
-#   ZED SDK 5.4.1 (L4T 39.2 / CUDA 13.2), ZED-M S/N 18970159, HD1080,
-#   NEURAL_LIGHT depth. /octomap_point_cloud_centers ~5 Hz,
-#   /openral/world_voxels ~10 Hz, dashboard card 5330 points @ range 4.0 m in
-#   frame openarm_base. Arms UNPOWERED and the graph structurally
-#   non-actuating (see `enable_reasoner` below).
+# Verified on the lab Jetson AGX Orin (qorin1), 2026-09-07: ZED SDK 5.4.1
+# (L4T 39.2/CUDA 13.2), ZED-M S/N 18970159, HD1080, NEURAL_LIGHT depth.
+# /octomap_point_cloud_centers ~5 Hz, /openral/world_voxels ~10 Hz, dashboard
+# card 5330 points @ range 4.0 m in frame openarm_base. Arms UNPOWERED,
+# graph structurally non-actuating (see `enable_reasoner` below).
 
 robot_id: "openarm"
 

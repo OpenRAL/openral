@@ -1,33 +1,19 @@
 # RobotDescription — Unitree G1 humanoid (physical embodiment, sim baseline).
 #
-# This manifest mirrors `G1_DESCRIPTION` in
-# python/hal/src/openral_hal/g1.py (drift guarded by
-# tests/unit/test_robot_manifests_match_hal_constants.py).  Joint
-# limits come from the upstream Unitree G1 URDF / mujoco_menagerie
-# (the Menagerie pins them to the published Unitree spec).
+# Mirrors `G1_DESCRIPTION` in python/hal/src/openral_hal/g1.py (drift guarded
+# by tests/unit/test_robot_manifests_match_hal_constants.py). Joint limits
+# come from the upstream Unitree G1 URDF / mujoco_menagerie.
 #
-# The MuJoCo digital twin (`G1MujocoHAL`) is the only execution path
-# available today.  A real-HW HAL over `unitree_sdk2` is the M2
-# milestone (CLAUDE.md §6.2) and requires a C++ S0 cerebellar
-# controller before a Python HAL becomes useful.
+# `G1MujocoHAL` is the only execution path today; real-HW HAL over
+# `unitree_sdk2` is the M2 milestone (CLAUDE.md §6.2), needs a C++ S0
+# cerebellar controller first. Without S0 balance the digital twin is a
+# contract validator only (falls over under gravity) — tests/sim/test_g1_hal_mujoco.py
+# runs with gravity_enabled=False for that reason.
 #
-# Without an S0 balance controller the digital twin is a contract
-# validator only — it falls over under gravity.  The closed-loop
-# sim tests in tests/sim/test_g1_hal_mujoco.py run with
-# gravity_enabled=False for that reason.
-#
-# Joint inventory (29 actuated joints):
-#   - left leg  : hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll
-#   - right leg : same
-#   - waist     : yaw, roll, pitch
-#   - left arm  : shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
-#                 wrist_roll, wrist_pitch, wrist_yaw
-#   - right arm : same
-# Total: 6 + 6 + 3 + 7 + 7 = 29.
-#
-# The floating-base joint at qpos[0..6] is implicit world state and is
-# NOT enumerated here — the HAL contract surface is the 29 actuated
-# joints only.
+# 29 actuated joints: legs 6+6 (hip_pitch/roll/yaw, knee, ankle_pitch/roll),
+# waist 3 (yaw, roll, pitch), arms 7+7 (shoulder_pitch/roll/yaw, elbow,
+# wrist_roll/pitch/yaw). Floating-base qpos[0..6] is implicit world state, NOT
+# enumerated — HAL contract surface is the 29 actuated joints only.
 
 name: "g1"
 embodiment_kind: "humanoid"

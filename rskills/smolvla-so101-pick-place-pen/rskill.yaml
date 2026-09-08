@@ -1,37 +1,33 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
 #
-# Wraps: nota-gmbh/so101_pick_place_pen_smolvla (Apache-2.0) — SmolVLA
-#        finetuned from lerobot/smolvla_base (40k steps, 53 episodes) on a real
-#        SO-101 pen pick-and-place teleop dataset
-#        (nota-gmbh/pick_and_place_pen_so101), recorded with TWO cameras: a
-#        fixed overview ("fixed", 640x480) and an arm-mounted view
-#        ("handy", 1920x1080).
-# Base:  lerobot/smolvla_base (arxiv:2506.01844)
+# Wraps nota-gmbh/so101_pick_place_pen_smolvla (Apache-2.0): SmolVLA finetuned
+# from lerobot/smolvla_base (arxiv:2506.01844; 40k steps, 53 episodes) on
+# nota-gmbh/pick_and_place_pen_so101 (real SO-101 pen pick-and-place teleop),
+# two cameras: fixed overview ("fixed", 640x480) + arm-mounted ("handy",
+# 1920x1080).
 #
-# CAMERA COUNT — TWO, not three. smolvla_base ships 3 camera slots
+# CAMERA COUNT — TWO, not three: smolvla_base ships 3 slots
 # (observation.images.camera1/2/3) and this checkpoint's config.json inherits
-# all three, but it trained on only 2 cameras and sets `empty_cameras: 0`.
-# lerobot `prepare_images` therefore DROPS the unfilled camera3 at inference
-# (present cameras only, no black padding) — native inference runs on 2
-# cameras. The split-ONNX/TRT engine is exported for the deploy's *resolved*
-# camera count (this manifest's 2 sensors_required), so it never attends a
-# phantom camera3. Verified: a 2-camera export reproduces native torch
-# `sample_actions` on a real dataset frame to 1.7e-06 (fp32), whereas a
-# 3-camera export (black camera3, attended) diverges. See
-# tests/integration/test_smolvla_pen_camera_parity.py.
+# all three, but trained on only 2 and sets `empty_cameras: 0`. lerobot
+# `prepare_images` DROPS the unfilled camera3 at inference (no black padding),
+# so native inference runs on 2 cameras; the split-ONNX/TRT engine is exported
+# for the deploy's resolved camera count (2 sensors_required) so it never
+# attends a phantom camera3. Verified: 2-camera export matches native torch
+# `sample_actions` to 1.7e-06 (fp32); 3-camera export (black camera3,
+# attended) diverges. See tests/integration/test_smolvla_pen_camera_parity.py.
 #
-# UNITS — degrees: the normalizer observation.state/action stats span
-# ~[-103, +168] (MEAN_STD), i.e. joint DEGREES (radians would be ±3.14). The
-# runner converts deg<->rad at the HAL boundary; declared explicitly below so
-# it does not rely on the stats-magnitude heuristic.
+# UNITS — degrees: normalizer state/action stats span ~[-103, +168]
+# (MEAN_STD), i.e. joint DEGREES (radians would be ±3.14). Runner converts
+# deg<->rad at the HAL boundary; declared explicitly to skip the
+# stats-magnitude heuristic.
 #
-# PROVENANCE — weights are the OpenRAL mirror `OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16`
-# (byte-identical to upstream `nota-gmbh/so101_pick_place_pen_smolvla`, Apache-2.0).
-# The upstream config.json carried a stray `pretrained_revision` key that lerobot
-# 0.5.1's draccus `SmolVLAConfig` rejects — and which forced an offline-breaking
-# revision re-fetch on load. The mirror strips that one key AT REST, so
-# `SmolVLAPolicy.from_pretrained` loads cleanly (incl. HF_HUB_OFFLINE=1) with NO
-# runtime config-sanitize — identical to the proven SmolVLA deploy path.
+# PROVENANCE — weights mirrored at OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16
+# (byte-identical to upstream nota-gmbh/so101_pick_place_pen_smolvla,
+# Apache-2.0). Upstream config.json carried a stray `pretrained_revision` key
+# lerobot 0.5.1's draccus `SmolVLAConfig` rejects (forcing an offline-breaking
+# revision re-fetch); the mirror strips it AT REST, so
+# `SmolVLAPolicy.from_pretrained` loads cleanly (incl. HF_HUB_OFFLINE=1) with
+# no runtime config-sanitize.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

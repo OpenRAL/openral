@@ -1,27 +1,22 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
 #
-# Wraps: OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4 (NF4-quantized from
-#        allenai/MolmoAct2-LIBERO via tools/quantize_rskill.py)
-# Base:  allenai/MolmoAct2 (Ai2 action reasoning model, Molmo2-ER VLM +
-#        flow-matching action expert) — arXiv:2605.02881
+# Wraps: OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4
+#        (NF4-quantized from allenai/MolmoAct2-LIBERO via tools/quantize_rskill.py)
+# Base:  allenai/MolmoAct2 (Ai2, Molmo2-ER VLM + flow-matching action expert) —
+#        arXiv:2605.02881
 #
-# Why NF4: bf16 MolmoAct2 (~5.5 B params, ~11 GiB) OOMs an 8 GiB consumer
-# GPU. NF4 quantization of every Linear with >=4M weight elements brings
-# the working set to ~3.5 GiB, comfortably under the 8 GiB ceiling while
-# preserving paper-faithful behaviour (Molmo2-ER backbone + DiT-style
-# action expert). The OpenRAL molmoact2 adapter detects the upstream
-# repo's quantization_metadata.json sentinel and loads the pre-quantized
-# weights via load_prequantized_state_for_rskill (no on-the-fly
-# quantization cost at startup).
+# Why NF4: bf16 (~5.5B params, ~11 GiB) OOMs an 8 GiB GPU. NF4 on every Linear
+# >=4M elements brings it to ~3.5 GiB. Adapter detects the upstream
+# `quantization_metadata.json` sentinel and loads pre-quantized weights via
+# `load_prequantized_state_for_rskill` (no on-the-fly quant cost at startup).
 #
-# Provenance (lerobot 0.6.0): the model graph is built from lerobot's in-tree
-# MolmoAct2ForConditionalGeneration class (this NF4 pack loads into it
-# key-for-key, verified bit-exact) — NOT via a trust_remote_code AutoModel.
-# source_repo below supplies only the config + processor + norm_stats.json.
+# Provenance (lerobot 0.6.0): model graph built from lerobot's in-tree
+# `MolmoAct2ForConditionalGeneration` (loads key-for-key, verified bit-exact) —
+# NOT trust_remote_code. `source_repo` supplies only config + processor +
+# norm_stats.json.
 #
-# LICENSE (CLAUDE.md §7.4): Apache-2.0 (code + weights). MolmoAct2 is a
-# fully open release from Ai2 — weights, training code, and data are all
-# Apache-2.0. Commercial use is permitted.
+# LICENSE (CLAUDE.md §7.4): Apache-2.0, code + weights, fully open Ai2
+# release. Commercial use permitted.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

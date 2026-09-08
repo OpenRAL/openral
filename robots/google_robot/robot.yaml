@@ -1,22 +1,16 @@
 # RobotDescription — Google Everyday Robot (sim-only embodiment).
 #
-# Per the sim-only pseudo-embodiment exception to the robot/sim split convention, every robot.yaml is supposed
-# to describe a *physical* embodiment, but Google Robot is the same
-# exception as pusht_2d: there is no openly available real-hardware
-# adapter — the robot was internal to Google. This manifest exists so
-# SimEnvironment configs targeting ManiSkill3's GoogleRobot envs and
-# SimplerEnv's google_robot_* envs can round-trip through the schema
-# (which requires a robot_id) — it is the canonical "sim embodiment"
-# of the RT-1 / RT-2 / Octo / OpenVLA real-to-sim correlator setups,
-# not a real-deploy target.
+# Sim-only pseudo-embodiment exception (like pusht_2d): no open real-hardware
+# adapter exists (internal to Google). Exists so SimEnvironment configs
+# targeting ManiSkill3's GoogleRobot envs and SimplerEnv's google_robot_* envs
+# can round-trip through the schema (which requires a robot_id) — the
+# canonical sim embodiment for RT-1/RT-2/Octo/OpenVLA real-to-sim correlator
+# setups, not a real-deploy target.
 #
-# Kinematics are a coarse 7-DoF arm + mobile-base approximation
-# matching what ManiSkill3 and SimplerEnv expose. Joint limits are
-# placeholder, not from a vendor data sheet (none is public). The
-# IO contract (state shape, action shape, camera resolution) lives in
-# the matching scene adapter under
-# python/sim/src/openral_sim/adapters/{maniskill3,simpler_env}.py,
-# not here.
+# Kinematics: coarse 7-DoF arm + mobile-base approximation matching
+# ManiSkill3/SimplerEnv. Joint limits are placeholder (no public vendor sheet).
+# IO contract (state/action shape, camera res) lives in the scene adapter
+# under python/sim/src/openral_sim/adapters/{maniskill3,simpler_env}.py, not here.
 
 name: "google_robot"
 embodiment_kind: "mobile_manipulator"

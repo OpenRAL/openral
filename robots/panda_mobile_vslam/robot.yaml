@@ -31,30 +31,23 @@ footprint_radius: 0.35
 footprint_polygon: [[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]
 base_kinematics: "omni"
 
-# robot_state_publisher wiring. sim_e2e.launch.py reads
-# `assets.urdf.ref` (the `rd:panda_description` form below resolved via
-# the `robot_descriptions` Python package so we don't ship a 500-line
-# URDF into the repo) and the launch starts robot_state_publisher with
-# that URDF, then a static_transform_publisher to bridge
-# base_link → panda_link0.
-# Once active the per-link arm TF (panda_link0 → … → panda_hand) is
-# on /tf for openral_state_adapter's human300_16d assembler.
-# Self-collision ACM source for the offline lowering tool. Vendored
-# Franka MoveIt SRDF; regenerate `allowed_collision_pairs` via
-# `openral collision lower --robot robots/panda_mobile/robot.yaml --acm-only`.
+# robot_state_publisher wiring: sim_e2e.launch.py reads `assets.urdf.ref`
+# (`rd:panda_description`, resolved via `robot_descriptions` so we don't ship
+# the URDF into the repo), starts robot_state_publisher with it, then a
+# static_transform_publisher bridging base_link -> panda_link0. Once active,
+# per-link arm TF (panda_link0 -> ... -> panda_hand) is on /tf for
+# openral_state_adapter's human300_16d assembler. Self-collision ACM source:
+# vendored Franka MoveIt SRDF; regenerate via
+# `openral collision lower --robot robots/panda_mobile_vslam/robot.yaml --acm-only`.
 #
-# Unified asset block (URDF / SRDF). ``base_to_root_xyz_rpy``:
-# Franka mount offset on robocasa's OmronMobileBase. Identity in
-# both translation and rotation: post-6DoF-base-publish fix in
-# ``openral_hal.SimAttachedHAL.base_pose_6dof``, the HAL publishes
-# ``odom → base_link`` with the FULL RoboCasa ``robot0_base_pos``
-# (z ≈ 0.70 m, the chassis-floor + platform stack), so ``base_link``
-# IS the arm-mount frame -- no additional z offset belongs in the
-# URDF static transform. The previous 0.40 m offset assumed
-# ``base_link`` was at ground level (the planar-base joint output)
-# and was double-counted on top of the 6DoF base z, pushing the
-# assembled ``base_to_eef.z`` to ~1.10 m vs sim_run's ~0.61 m and
-# making the policy reach 49 cm above the actual target.
+# `base_to_root_xyz_rpy` is IDENTITY (translation and rotation): post-6DoF-
+# base-publish fix in `openral_hal.SimAttachedHAL.base_pose_6dof`, the HAL
+# publishes `odom -> base_link` with the FULL RoboCasa `robot0_base_pos`
+# (z ~= 0.70 m), so `base_link` IS the arm-mount frame — no extra z offset
+# belongs here. The old 0.40 m offset assumed base_link was at ground level
+# (planar-base joint output) and double-counted on top of the 6DoF base z,
+# pushing `base_to_eef.z` to ~1.10 m vs sim_run's ~0.61 m (policy reaching
+# 49 cm above the actual target).
 assets:
   urdf:
     ref: "rd:panda_description"
@@ -78,31 +71,25 @@ base_joints:
 # bookkeeping correctly. Limits mirror robosuite's PandaMobile MJCF:
 # https://github.com/robocasa/robocasa/blob/main/robocasa/models/robots/manipulators/panda_mobile_robot.py
 joints:
-  # The `sim_joint_name` overrides below carry the **exact MJCF joint
-  # names** robosuite's OmronMobileBase + Panda compositions emit
-  # under the `robocasa/<task>` kitchen scenes (auto-prefixed with
-  # `mobilebase0_` for the base, `robot0_` for the arm). The HAL +
-  # the openral_sim ray-cast helpers read these from the loaded
-  # description rather than hardcoding the names — see
-  # `synthesize_laser_scan_2d` and `read_panda_mobile_base_velocity`
-  # in `python/sim/src/openral_sim/backends/robocasa.py`, and
+  # `sim_joint_name` overrides carry the exact MJCF joint names robosuite's
+  # OmronMobileBase + Panda compositions emit under `robocasa/<task>` kitchen
+  # scenes (auto-prefixed `mobilebase0_`/`robot0_`); HAL + openral_sim ray-cast
+  # helpers read these from the loaded description rather than hardcoding
+  # names — see `synthesize_laser_scan_2d` / `read_panda_mobile_base_velocity`
+  # in python/sim/src/openral_sim/backends/robocasa.py, and
   # `_PandaMobileLifecycleNode._compute_scan_ranges` in
-  # `packages/openral_hal_panda_mobile/`.
-  # Per the hybrid mobile-base composite convention — note on base velocity_limit:
-  # When a JOINT_VELOCITY rSkill (rldx-rc365, pi05-human300) targets
-  # these joints, the policy emits NORMALIZED values in [-1, +1]; the
-  # robosuite ``HybridMobileBase`` controller does the physical scaling
-  # internally (using MJCF velocity ranges). The safety kernel's
-  # per-joint check ``|v| <= envelope.joint_velocity_max[i]`` runs
-  # against these normalized chunk values; the envelope is built as
-  # ``velocity_limit * safety.max_joint_speed_factor`` (see
-  # ``openral_safety/envelope_loader.py:_extract_joint_limits``).
-  # With factor=0.5 below, we set ``velocity_limit: 2.0`` so the
-  # effective cap = 1.0 accepts the full normalized range. Real-HW
-  # deployment of panda_mobile would need to either (a) scale chunk
-  # values to physical m/s before publishing and restore physical
-  # limits here, or (b) keep the normalized contract and apply
-  # scaling at the ros2_control hardware interface.
+  # packages/openral_hal_panda_mobile/.
+  #
+  # base velocity_limit: a JOINT_VELOCITY rSkill (rldx-rc365, pi05-human300)
+  # emits NORMALIZED [-1,+1] on these joints; robosuite's `HybridMobileBase`
+  # does physical scaling internally. Safety kernel checks
+  # `|v| <= envelope.joint_velocity_max[i]` against those normalized values,
+  # where envelope = `velocity_limit * safety.max_joint_speed_factor`
+  # (openral_safety/envelope_loader.py:_extract_joint_limits). factor=0.5
+  # below => velocity_limit: 2.0 gives effective cap 1.0 (full normalized
+  # range). Real-HW deployment needs either (a) scale chunks to physical m/s
+  # and restore physical limits here, or (b) keep the normalized contract and
+  # scale at the ros2_control hardware interface.
   - name: "base_x"
     joint_type: "prismatic"
     parent_link: "world"
@@ -329,27 +316,19 @@ safety:
   max_base_linear_speed_m_s: 1.0
   max_base_angular_speed_rad_s: 1.5
 
-# Three-camera convention -- robosuite's left and right agent-view
-# cameras plus the in-hand wrist camera. RoboCasa renders these via
-# the `robot0_agentview_left_image` / `robot0_agentview_right_image` /
-# `robot0_eye_in_hand_image` observation keys; the
-# openral_sim.adapters.robocasa adapter surfaces them with the canonical
-# HAL-facing names `shoulder_left` / `shoulder_right` / `wrist`, per the
-# canonical HAL-facing sensor-naming convention.
-# Their `vla_feature_key` stays camera1/2/3 (checkpoint-frozen). The
-# RC365 rSkill (rldx1-ft-rc365-nf4) consumes all three; single-camera
-# rSkills (pi05, smolvla) just bind `shoulder_left`.
-#
-# NOTE on orientation -- these are robosuite robot-mounted cameras
-# (parent_body=mobilebase0_support in robocasa's camera_utils.py),
-# DELIBERATELY angled forward-and-down for manipulation. On the
-# navigate-kitchen scene they show the robot's wheel + counter edge,
-# not a third-person scene view. That's by-design: pi05 / rldx1 were
-# trained on this exact perspective and swapping in a different camera
-# (e.g. robot0_agentview_center) would break those checkpoints'
-# observation-key contracts. For a third-person view of the scene,
-# enable the MuJoCo passive viewer via the HAL's ``viewer_enabled``
-# ROS parameter (auto-on for ``openral deploy sim`` on panda_mobile).
+# Three-camera convention: robosuite's left/right agent-view cameras + in-hand
+# wrist camera. RoboCasa renders via `robot0_agentview_left_image` /
+# `_right_image` / `robot0_eye_in_hand_image`; openral_sim.adapters.robocasa
+# surfaces them as `shoulder_left`/`shoulder_right`/`wrist` (HAL-facing
+# convention). `vla_feature_key` stays camera1/2/3 (checkpoint-frozen). RC365
+# (rldx1-ft-rc365-nf4) consumes all three; single-camera rSkills (pi05,
+# smolvla) bind `shoulder_left`. These are robosuite robot-mounted cameras
+# (parent_body=mobilebase0_support), DELIBERATELY angled forward-and-down for
+# manipulation — on the navigate-kitchen scene they show wheel + counter edge,
+# not third-person, by design (pi05/rldx1 trained on this exact perspective;
+# swapping cameras breaks their observation-key contracts). For third-person
+# view, enable the MuJoCo passive viewer via `viewer_enabled` (auto-on for
+# `openral deploy sim` on panda_mobile).
 sensors:
   - name: "shoulder_left"
     modality: "rgb"
@@ -412,35 +391,20 @@ sensors:
   # broadcasts each camera's ``base_link -> <optical_frame>`` TF, which the
   # PyCuVSLAM node reads as the per-camera rig extrinsic (multi-camera mode).
   # Depth camera the panda_mobile HAL ray-casts from MuJoCo
-  # (``openral_sim.backends.depth_camera.synthesize_depth_image``, once per
-  # frame; the cloud is that raster back-projected, not a second cast)
-  # and publishes as ``sensor_msgs/PointCloud2`` on
-  # ``/openral/cameras/front_depth/points`` for octomap_server → the C++
-  # safety kernel's world-collision voxel check. ``metadata.mjcf_camera``
-  # names the underlying robosuite ``<camera>`` (distinct from this ROS
-  # sensor name); ``frame_id`` is the REP-103 optical frame the HAL
-  # broadcasts a live ``base_link ->`` TF for. ``range_max_m`` bounds the
-  # octree working volume. Reuses the forward agentview-left viewpoint so the
-  # cloud covers the arm's reach + the obstacles in front of the base.
-  #
-  # ``range_min_m`` is NOT the self-filter, despite how it used to read here.
-  # The robot leaves the cloud by IDENTITY, not by distance: the depth synth
-  # makes every body in ``openral_hal.depth_cloud.robot_self_body_ids`` — the
-  # whole kinematic tree, arm and base and mount and gripper — transparent to
-  # the ray-cast, and emits a max-range CLEARING endpoint on any ray that hit
-  # nothing but the robot, so the robot's silhouette is cleared out of the
-  # OctoMap instead of mapped into it. That runs BEFORE this gate.
-  # ``range_min_m`` is then a blanket cutoff applied to whatever the
-  # transparent cast returned: ANY return closer than it — self or WORLD —
-  # fails the accept mask and collapses onto the raster's ``0.0`` "no
-  # measurement", and it becomes a clearing ray only if that ray had struck the
-  # robot (which is what arms the clearing endpoint), never merely by being
-  # near. Accepted consequence: an obstacle closer than 0.3 m to this camera is
-  # neither marked nor cleared while it stays that close, so the map neither
-  # learns it nor retires a stale cell standing where it is.
-  # The value is retained deliberately at 0.3 — tested, behaving as intended
-  # (management hazard log Entry 012, 2026-08-22). Only the description was
-  # wrong.
+  # (`synthesize_depth_image`, once/frame), publishes PointCloud2 on
+  # `/openral/cameras/front_depth/points` for octomap_server -> the C++ safety
+  # kernel's world-collision voxel check. `metadata.mjcf_camera` names the
+  # robosuite <camera>; `frame_id` is the REP-103 optical frame the HAL
+  # broadcasts base_link-> TF for; `range_max_m` bounds the octree volume;
+  # reuses the forward agentview-left viewpoint (arm reach + obstacles ahead).
+  # `range_min_m` is NOT the self-filter: self-exclusion runs first by
+  # IDENTITY (every body in `robot_self_body_ids` is ray-cast-transparent, a
+  # robot-only hit emits a max-range CLEARING endpoint). `range_min_m` is then
+  # a blanket cutoff on the transparent cast's result — any return closer than
+  # it (self or world) collapses to "no measurement", clearing only if it
+  # struck the robot. Accepted consequence: an obstacle <0.3 m is neither
+  # marked nor cleared while that close. Deliberately retained at 0.3 — tested,
+  # intended (hazard log Entry 012, 2026-08-22); only the old description was wrong.
   - name: "front_depth"
     modality: "depth"
     frame_id: "front_depth_optical_frame"

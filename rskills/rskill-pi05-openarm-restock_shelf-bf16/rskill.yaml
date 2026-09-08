@@ -4,48 +4,29 @@
 # trained to restock boxes onto a shelf. 16-DoF (7 arm + 1 gripper per side),
 # three RGB views, 30 fps.
 #
-# ── Where these weights come from, and what cannot be verified ─────────────
+# Upstream JAX/orbax checkpoint `qualiadev/pi05-openarm-restock-sequences`
+# @7f96e610b6cb446e55301928f3d118b6591cded0 and its dataset
+# `qualiadev/openarm-restock-sequences-canonical-30fps`
+# @f3415357965c8b97a4f99c4fffe4f4b90080c68a NEITHER RESOLVE ON THE HUB anymore
+# (404). `source_repo` below is a provenance record, not a fetchable location;
+# run config/episode/step counts are absent rather than guessed (CLAUDE.md
+# §1.2). First-hand facts (revision ids, obs/action contract, converted-model
+# hashes, TRT gates) come from conversion provenance records on the lab Thor
+# (`~/engines/openarm-restock-sequences/*.engine.provenance.json`); 16-D norm
+# stats ship inside the checkpoint itself.
 #
-# The upstream JAX/orbax checkpoint was `qualiadev/pi05-openarm-restock-sequences`
-# at revision 7f96e610b6cb446e55301928f3d118b6591cded0, and its training dataset
-# was `qualiadev/openarm-restock-sequences-canonical-30fps` at revision
-# f3415357965c8b97a4f99c4fffe4f4b90080c68a. **Neither repo resolves on the Hub
-# any more** — both return 404 to an authenticated read. So unlike every other
-# manifest in this directory, `source_repo` below is a provenance record, not a
-# fetchable location, and the run config / episode count / step count that a
-# model card would normally supply could not be read. They are therefore absent
-# here rather than guessed (CLAUDE.md §1.2).
+# openpi's Stage-1 JAX->PyTorch conversion is NOT byte-deterministic: the same
+# source revision produced 3 different `converted_model_sha256` across 3 runs
+# here. Benign — 811/812 tensors are byte-identical; the sole diff is
+# `paligemma_with_expert.gemma_expert.lm_head.weight` [257152, 1024]
+# (mean~0, std=0.020, range ±0.115 — freshly random-init, unused since the
+# action expert exits through `action_out_proj`, never token prediction).
+# 0.263B of 3.617B total (7.3%, 0.49 GiB), kept only for key compatibility.
 #
-# What *is* first-hand: the revision ids, the observation/action contract, the
-# converted-model hashes and the TensorRT fidelity/latency gates all come from
-# the conversion provenance records written on the lab Thor at conversion time
-# (`~/engines/openarm-restock-sequences/*.engine.provenance.json`), and the
-# 16-D normalization statistics ship inside the checkpoint itself.
-#
-# ── The one tensor that differs between conversion runs ────────────────────
-#
-# openpi's Stage-1 JAX→PyTorch conversion is **not** byte-deterministic, which
-# is why the same source revision produced three different
-# `converted_model_sha256` values across three runs on this host. That looks
-# alarming and is not: comparing the three 6.74 GiB artifacts tensor by tensor,
-# 811 of 812 tensors are byte-identical, and the sole difference is
-# `paligemma_with_expert.gemma_expert.lm_head.weight` [257152, 1024], where
-# ~99.91% of elements differ. Its statistics in every copy are mean ≈ 0,
-# std = 0.020, symmetric range ±0.115 — a freshly random-initialized tensor.
-# The action expert never does token prediction (actions leave through
-# `action_out_proj`), so the JAX checkpoint carries no trained lm_head and the
-# converter initializes one that inference never reads. It is 0.263 B of the
-# 3.617 B total (7.3%, 0.49 GiB) and is retained only so loaders that expect
-# the key still work.
-#
-# LICENSE WARNING (CLAUDE.md §7.4):
-#   Code: Apache-2.0.
-#   Weights: derived from Physical Intelligence π0.5 (`pi05_base`) under PI's
-#   "permissive research" terms — NOT Apache-2.0. Commercial deployment is
-#   prohibited without a separate agreement with Physical Intelligence. The
-#   loader derives is_commercial_use_allowed=False from
-#   license=permissive_research; activating commercially additionally requires
-#   OPENRAL_ALLOW_NONCOMMERCIAL=1 plus that agreement.
+# LICENSE (CLAUDE.md §7.4): code Apache-2.0; weights derived from PI π0.5
+# (`pi05_base`) under PI's "permissive research" terms — commercial deployment
+# needs a separate PI agreement. Loader derives is_commercial_use_allowed=False
+# from license=permissive_research; OPENRAL_ALLOW_NONCOMMERCIAL=1 + agreement required.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -83,39 +64,22 @@ sensors_required:
     min_width: 224
     min_height: 224
 
-# Output side. The arm joints are per-step DELTAS and the grippers are
-# ABSOLUTE — a split that is not merely asserted here but readable off the
-# checkpoint's own normalization statistics:
+# Arm joints are per-step DELTAS, grippers ABSOLUTE — read off the checkpoint's
+# own norm stats (no metadata.pt ships): dims 0-6,8-14 (arm) mean~0.00-0.06,
+# std 0.07-0.41 -> delta; dim 7 (left gripper) mean 0.438, q01 0, q99 0.7852 ->
+# absolute; dim 15 (right gripper) mean -0.453, q01 -0.7854, q99 -0.0002 ->
+# absolute. Those ranges match robots/openarm/robot.yaml's hinge limits exactly
+# (left [0, 0.7854], right [-0.7854, 0]) — independent confirmation of the
+# convention.
 #
-#   dims 0-6, 8-14 (arm)   mean ~= 0.00-0.06, std 0.07-0.41  -> delta
-#   dim 7  (left gripper)  mean 0.438, q01 0.0000, q99 0.7852 -> absolute
-#   dim 15 (right gripper) mean -0.453, q01 -0.7854, q99 -0.0002 -> absolute
-#
-# Those two gripper ranges reproduce `robots/openarm/robot.yaml`'s hinge
-# limits exactly (left [0, 0.7854], right [-0.7854, 0]), which is independent
-# evidence that the checkpoint was trained in this manifest's joint
-# convention. This matters because the converted checkpoint ships no
-# `metadata.pt`, so nothing else in the artifact records the delta split.
-#
-# NOTE: `control_mode_semantics` is a *declaration*, not an implementation —
-# nothing in the OpenRAL runner integrates deltas into absolute targets today.
-# Whoever drives this policy owns that reconstruction. lerobot's PI05 does it
-# natively via `use_relative_actions`, so the published `config.json` sets it;
-# the q-research openpi bridge does it server-side.
-#
-# ⚠ If you drive this through lerobot, `config.json` MUST also carry
-# `action_feature_names` — the 16 training feature names, with the word
-# "gripper" in dims 7 and 15. lerobot resolves `relative_exclude_joints:
-# ["gripper"]` by substring-matching those names, and with them absent it
-# cannot identify the gripper dims, so it relativizes all 16 and adds the
-# current state onto the two absolute gripper channels.
-#
-# That failure is quiet, and it was measured on this checkpoint: with the
-# names absent, gripper dim 7 came out in [0.4738, 0.9445] against its trained
-# [0.0000, 0.7852] — the state mean (0.4707) added straight on. With them
-# present: [-0.0023, 0.4673]. The arm dims look identical either way, so
-# nothing in the chunk announces the problem. openpi derives the same mask by
-# the same rule (`"gripper" not in name.lower()`).
+# `control_mode_semantics` is a declaration only — the OpenRAL runner does not
+# integrate deltas into absolute targets; lerobot PI05 does it via
+# `use_relative_actions`, the q-research openpi bridge does it server-side.
+# Driving via lerobot REQUIRES `config.json`'s `action_feature_names` (dims 7/15
+# named with "gripper") or it relativizes all 16 dims silently — measured: with
+# names absent, gripper dim 7 comes out [0.4738, 0.9445] vs trained
+# [0, 0.7852]; with names present, [-0.0023, 0.4673]. Arm dims look identical
+# either way, so nothing announces the failure.
 actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
@@ -139,20 +103,15 @@ min_vram_gb:
 weights_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
-# Self-hosted in this rSkill's own repo (same posture as pi05-libero-int8),
-# because the upstream checkpoint they would otherwise be fetched from no
-# longer exists. They are NOT shipped by the openpi Stage-1 conversion — that
-# writes only `config.json` + `model.safetensors` + `assets/norm_stats.json`
-# — so they are generated from the checkpoint's own norm_stats with
+# Self-hosted (same posture as pi05-libero-int8) since the upstream checkpoint
+# is gone; openpi's Stage-1 conversion ships no processors, so these are
+# generated from the checkpoint's own norm_stats via
 # `lerobot.policies.pi05.processor_pi05.make_pi05_pre_post_processors`.
-#
-# The normalization mode is QUANTILES for STATE and ACTION (lerobot
-# PI05Config's default, and what openpi's `use_quantile_norm = model_type !=
-# PI0` selects for pi05). The two implementations agree algebraically:
-# openpi computes (x - q01)/(q99 - q01 + 1e-6)*2 - 1, lerobot computes
-# 2*(x - q01)/(q99 - q01) - 1 with eps substituted only when the denominator
-# is exactly zero. Getting this wrong — mean/std instead of quantiles —
-# silently mis-scales every commanded action, so it is pinned here explicitly.
+# Normalization is QUANTILES for state and action (lerobot PI05Config default;
+# openpi's `use_quantile_norm = model_type != PI0` agrees algebraically:
+# openpi (x-q01)/(q99-q01+1e-6)*2-1 vs lerobot 2*(x-q01)/(q99-q01)-1, eps only
+# at exact-zero denominator). Pinned explicitly — mean/std instead of
+# quantiles silently mis-scales every commanded action.
 processors:
   preprocessor_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16/policy_preprocessor.json"
   postprocessor_uri: "hf://OpenRAL/rskill-pi05-openarm-restock_shelf-bf16/policy_postprocessor.json"

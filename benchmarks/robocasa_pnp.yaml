@@ -1,37 +1,25 @@
 # RoboCasa atomic pick-and-place benchmark suite.
 #
-# Mirrors the pick-and-place axis of the RoboCasa kitchen suite
-# (Nasiriany et al., 2024 — arXiv:2406.02523). Picks the canonical
-# counter→cabinet pick-and-place task (`PickPlaceCounterToCabinet` in
-# robosuite's robocasa env catalogue, registered as scene id
-# `robocasa/PickPlaceCounterToCabinet` by
-# python/sim/src/openral_sim/backends/robocasa.py) and sweeps it across
-# multiple seeds.
+# Mirrors the pick-and-place axis of the RoboCasa kitchen suite (Nasiriany et
+# al., 2024, arXiv:2406.02523): the canonical counter->cabinet task
+# (`PickPlaceCounterToCabinet`, scene id `robocasa/PickPlaceCounterToCabinet`
+# in python/sim/src/openral_sim/backends/robocasa.py), swept across seeds.
 #
-# Shape: bare list of BenchmarkScenes; suite id = filename
-# stem ("robocasa_pnp"). Only the VLA (rSkill) varies across runs.
-# Consumed by `openral benchmark run`; writes a
-# RSkillEvalResult JSON to rskills/<vla>/eval/robocasa_pnp.json with
-# reproduced_locally=true AND updates `benchmarks.robocasa_pnp` in the
-# matching rskill.yaml with the headline avg_success_rate. Suite-level
-# invariants are enforced by :func:`openral_core.raise_on_invalid_suite`.
+# Shape: bare list of BenchmarkScenes; suite id = filename stem
+# ("robocasa_pnp"). Consumed by `openral benchmark run`; writes
+# RSkillEvalResult to rskills/<vla>/eval/robocasa_pnp.json
+# (reproduced_locally=true) and updates `benchmarks.robocasa_pnp` in the
+# rskill.yaml with avg_success_rate. Invariants enforced by
+# `openral_core.raise_on_invalid_suite`.
 #
-# Protocol: 1 task × 10 episodes. Lighter than the 50-ep paper protocol
-# so the suite finishes in ~30 min on a single GPU; raise n_episodes for
-# a paper-equivalent reproduction.
+# Protocol: 1 task x 10 episodes (lighter than the 50-ep paper protocol,
+# ~30 min on one GPU; raise n_episodes for paper-equivalent reproduction).
+# Robot: panda_mobile (canonical RoboCasa embodiment; scene factory pins
+# `fixed_robot="panda_mobile"`). Success key: `is_success`, written by the
+# RoboCasa adapter as `info["is_success"] = env._check_success()`
+# (backends/robocasa.py L201).
 #
-# Robot: panda_mobile — the Franka Panda mounted on a wheeled base, the
-# canonical RoboCasa embodiment. The scene factory pins
-# `fixed_robot="panda_mobile"` so any other robot_id is rejected at
-# adapter build time.
-#
-# Success key: `is_success` — the RoboCasa adapter writes
-# `info["is_success"] = env._check_success()` at every step (see
-# backends/robocasa.py L201).
-#
-# Run:
-#   openral benchmark run --suite robocasa_pnp \
-#       --rskill rldx1-ft-rc365-nf4
+# Run: openral benchmark run --suite robocasa_pnp --rskill rldx1-ft-rc365-nf4
 
 - scene:
     id: robocasa/PickPlaceCounterToCabinet
