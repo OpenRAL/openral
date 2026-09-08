@@ -33,10 +33,11 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
 
 from openral_core import ObjectDetection2D, ObjectsMetadata
 from openral_core.exceptions import ROSConfigError
+
+from ._zmq_sidecar import ZmqSidecarMixin
 
 # ``<ref>label</ref>`` or a 4-coord ``<box>`` (point boxes have 2 coords and are
 # ignored for object detection). Matched together so each box binds to the most
@@ -146,7 +147,7 @@ def _find_sidecar_script() -> Path:
     )
 
 
-class LocateAnythingDetector:
+class LocateAnythingDetector(ZmqSidecarMixin):
     """ZMQ client + auto-managed lifecycle for the LocateAnything sidecar.
 
     Mirrors the RLDX-1 adapter pattern: ping the server, auto-spawn the sidecar
@@ -191,9 +192,9 @@ class LocateAnythingDetector:
         # cheap and side-effect-free — the dispatch path (build_manifest_detector)
         # and tests can build the backend without a running sidecar or a GPU.
         # `Any` mirrors the rldx adapter: pyzmq attrs aren't typed under strict.
-        self._zmq: Any = None
-        self._ctx: Any = None
-        self._sock: Any = None
+        self._zmq = None
+        self._ctx = None
+        self._sock = None
         self._child: subprocess.Popen[bytes] | None = None
 
     # -- wire ---------------------------------------------------------------
@@ -225,45 +226,6 @@ class LocateAnythingDetector:
                     "and auto_spawn=False"
                 )
             self._spawn_and_wait(self._boot_timeout_s)
-
-    def _connect(self) -> None:
-        if self._sock is not None:
-            self._sock.close(linger=0)
-        sock = self._ctx.socket(self._zmq.REQ)
-        sock.setsockopt(self._zmq.LINGER, 0)
-        sock.setsockopt(self._zmq.RCVTIMEO, self._request_timeout_ms)
-        sock.setsockopt(self._zmq.SNDTIMEO, 5000)
-        sock.connect(f"tcp://{self._host}:{self._port}")
-        self._sock = sock
-
-    def _rpc(self, req: dict[str, object], *, recv_timeout_ms: int | None = None) -> dict[str, Any]:
-        """Send one request and return the decoded reply.
-
-        Recreates the (strict REQ/REP) socket on timeout so a missed reply
-        can't wedge it.
-        """
-        import msgpack  # type: ignore[import-not-found,import-untyped,unused-ignore]  # noqa: PLC0415 — lazy: only needed when the sidecar is used
-
-        assert self._sock is not None
-        if recv_timeout_ms is not None:
-            self._sock.setsockopt(self._zmq.RCVTIMEO, recv_timeout_ms)
-        try:
-            self._sock.send(msgpack.packb(req, use_bin_type=True))
-            reply: dict[str, Any] = msgpack.unpackb(self._sock.recv(), raw=False)
-        except self._zmq.error.Again:
-            self._connect()  # REQ can't recover from a missed reply; reset it
-            raise
-        finally:
-            if recv_timeout_ms is not None:
-                self._sock.setsockopt(self._zmq.RCVTIMEO, self._request_timeout_ms)
-        return reply
-
-    def _try_ping(self, *, recv_timeout_ms: int = 1000) -> bool:
-        try:
-            reply = self._rpc({"op": "ping"}, recv_timeout_ms=recv_timeout_ms)
-        except self._zmq.error.Again:
-            return False
-        return bool(reply.get("ok"))
 
     def _spawn_and_wait(self, boot_timeout_s: float) -> None:
         import sys  # noqa: PLC0415 — lazy: only needed on the auto-spawn path

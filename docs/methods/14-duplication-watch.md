@@ -857,4 +857,18 @@ pattern in `tools/schema_export.py`.*
     module reachable from both, which the no-new-top-level-modules rule
     forbids. Two copies, below the threshold to justify that module.
     module both imported (for `sim_time_ns_from_mujoco_handles`).
+40. **`_connect` / `_rpc` / `_try_ping` (`LocateAnythingDetector` vs.
+    `QwenSceneVlm`, both in `backends/gstreamer/`) — *resolved.*** All three
+    were byte-identical ZMQ REQ/REP transport methods (~30 lines) across two
+    production classes. Moved to a new private
+    `backends/gstreamer/_zmq_sidecar.py::ZmqSidecarMixin`, which both classes
+    now inherit; `_spawn_and_wait`, `_ensure_ready` and `close` stay on each
+    class since they genuinely differ (boot command, port, error text).
+41. **`close` (`omdet_turbo_detector.py::OmDetTurboDetector` vs.
+    `sam2_segmenter.py::Sam2Segmenter`) — *left alone, deliberate keep.***
+    Byte-identical six-line in-process CUDA teardown (drop model, drop
+    processor, `torch.cuda.empty_cache()`), but the two classes share no
+    other structure (one is a detector sidecar-less transformers wrapper,
+    the other a promptable segmenter) — a shared base for six lines would
+    cost more to read than the duplication it removes.
 
