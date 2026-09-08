@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 METHODS_DIR = REPO_ROOT / "docs" / "methods"
 
 _HEADING_RE = re.compile(r"^#{3,4} .*?`((?:python|packages|tools|tests)/[^`]+\.py)`")
-_MARKER_RE = re.compile(r"\((?:([\w./-]+\.py) )?L(\d+)(?:[–-](\d+))?\)")
+_MARKER_RE = re.compile(r"\((?:`?([\w./-]+\.py)`? )?L(\d+)(?:[–-](\d+))?\)")
 # A `### `packages/foo/`` heading names a package directory rather than one module, so
 # its bullets carry the file inline: `` `SYMBOL` (bucket2_markers.py L58) ``. Without
 # this the tool never sets a file context for them and skips them silently.
@@ -167,7 +167,17 @@ def _resolve_inline_path(rel: str, base_dir: Path | None) -> Path | None:
         matches = sorted(base_dir.rglob(Path(rel).name))
         if len(matches) == 1:
             return matches[0]
-    return None
+    # Last resort: a heading may name a dotted module (`openral_runner.backends.reward`)
+    # rather than a path, so there is no base directory. Accept a repo-wide suffix match
+    # only when it is unique.
+    skip = {".git", ".venv", "build", "install", "log", "site", "__pycache__", ".claude"}
+    suffix = tuple(Path(rel).parts)
+    hits = [
+        candidate
+        for candidate in REPO_ROOT.rglob(Path(rel).name)
+        if not skip & set(candidate.parts) and candidate.parts[-len(suffix) :] == suffix
+    ]
+    return hits[0] if len(hits) == 1 else None
 
 
 def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
@@ -267,7 +277,12 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
             unresolved.append(f"{md_path.name}:{i + 1}: cannot locate `{span_match.group(1)}`")
             continue
         lo, hi = min(resolved), max(resolved)
-        prefix = f"{inline_rel} " if inline_rel else ""
+        # Reproduce the entry's own quoting: some bullets write the path in backticks.
+        if inline_rel:
+            quoted = f"`{inline_rel}`" in line
+            prefix = f"`{inline_rel}` " if quoted else f"{inline_rel} "
+        else:
+            prefix = ""
         span_text_marker = f"L{lo}–{hi}" if (len(resolved) > 1 and hi != lo) else f"L{lo}"
         new_marker = f"({prefix}{span_text_marker})"
         marker = markers[-1]

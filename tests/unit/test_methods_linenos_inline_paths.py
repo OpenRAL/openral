@@ -76,6 +76,19 @@ def test_marker_regex_accepts_both_marker_shapes() -> None:
         "30",
         None,
     )
+    # Some bullets write the path in backticks; the tool skipped those silently
+    # until the pattern learned to see them.
+    assert _MARKER_RE.search("(`backends/reward/topreward_reward.py` L216)").groups() == (
+        "backends/reward/topreward_reward.py",
+        "216",
+        None,
+    )
+
+
+def test_resolve_inline_path_falls_back_to_a_unique_suffix_match() -> None:
+    """A heading naming a dotted module sets no base dir, so the suffix must resolve."""
+    assert _resolve_inline_path("backends/reward/topreward_reward.py", None) is not None
+    assert _resolve_inline_path("no/such/module.py", None) is None
 
 
 def test_resolve_inline_path_finds_module_under_its_package() -> None:
