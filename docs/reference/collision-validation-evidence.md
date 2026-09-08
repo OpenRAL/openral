@@ -2309,6 +2309,53 @@ host-specific: Cyclone, a real network, or SHM tuning could all move it, and the
 probe reports which RMW it measured for that reason.
 
 
+### 2026-09-08 — the arm is slow, so the resolution lever's staleness barely costs anything
+
+The wire measurement above turned the 25 → 15 mm lever from a free win into a
+trade: **+8.66 mm** of static quantisation against **+15 ms median / +50–60 ms
+p99** of map age. Age is millimetres too, at `speed × staleness`, so the trade is
+settled by one number — how fast the arm is actually moving when the kernel stops
+it. Measured with `tools/stop_ee_speed.py` from each round's own
+`robot_joint_state`, pushed through the real Panda body Jacobian at `link7`, the
+body the payload attaches to:
+
+| stop class | n | median | max |
+| --- | ---: | ---: | ---: |
+| **carry phase** (`attached_payload`) | 5 | **0.051 m/s** | **0.265 m/s** |
+| **start state** (`robot_world`) | 7 | **0.000 m/s** | **0.000 m/s** |
+
+The mobile base contributes at most **0.0013 m/s** at any of these stops, so arm
+speed is world speed here and the two do not need separating.
+
+**The start-state class is free.** All seven are at exactly zero: the arm is
+stopped at reset, before it has moved. Staleness costs nothing at a stationary
+arm, so those stops take the full 8.66 mm with no offset at all. That is 43 % of
+the battery's stops.
+
+**The carry class is net positive at every measured speed but one corner:**
+
+| | median stop (0.051 m/s) | fastest stop (0.265 m/s) |
+| --- | ---: | ---: |
+| median staleness (+15 ms) | **+7.89 mm** | **+4.68 mm** |
+| p99 staleness (+55 ms) | **+5.84 mm** | **−5.93 mm** |
+
+Three of four corners favour the finer grid, and the median case favours it by
+almost the whole 8.66 mm. Only the worst-case combination — the fastest stop
+observed *and* a p99-latency grid — is adverse, and it is adverse by 5.9 mm.
+
+**So the lever is worth pulling, and this is the first time that has been said
+about it on evidence rather than on an estimate.** Every one of the three cost
+terms is now measured: kernel 0.825 ms, rasterize 1.60 ms, wire +15/+55 ms — and
+the arm is slow enough that the last one does not eat the gain.
+
+**What would change this.** A faster policy. These speeds are what the XR-1
+checkpoint does on these scenes; a policy that carries at 0.3 m/s or more moves
+the p99 corner from marginal to routine. The break-even is 0.16 m/s at p99
+staleness and 0.58 m/s at the median, so the margin is roughly 3× at the median
+stop and gone at the fastest. **n = 5 carry-phase stops**, which is thin — this
+is the measurement to widen before a manifest edit, not the one to skip.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts

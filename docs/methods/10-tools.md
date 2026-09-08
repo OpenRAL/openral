@@ -222,6 +222,17 @@ _Package and publish a local rSkill directory to the HF Hub._
 
 Measures the third cost term on the 25 → 15 mm lever — the dense `uint8[]` on the wire, 0.61 MB → 2.80 MB per publish at 10 Hz — as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
 
+### `tools/stop_ee_speed.py`
+
+- `EE_BODY: str` — `link7`, the body the payload attaches to, so its linear velocity is the carried object's.
+- `QUANTISATION_GAIN_M: float` — what 25 → 15 mm recovers (the two cells' half-diagonal difference), the figure staleness cost is weighed against.
+- `StopSpeed(NamedTuple)` — `round_id`, `stop_class`, `ee_speed_mps`, `base_speed_mps`; `.is_carry` selects `attached_payload`, `.world_speed_mps` adds the base contribution worst-case-aligned.
+- `collect(round_dirs) -> list[StopSpeed]` — end-effector speed at each stop, from the round's recorded `robot_joint_state` through `mj_jacBody` on the real Panda model. Matches arm joints on their trailing index (`panda_jointN` → `jointN`) and **raises** if none matched, because a silent mismatch reads as a perfectly stationary arm.
+- `summarise(stops) -> dict[str, Any]` / `render(stops, summary) -> str` — per-class medians and maxima, and the net millimetres at the two staleness figures the wire probe measured.
+- CLI: `uv run python tools/stop_ee_speed.py <round dirs...> [--json]`. Needs MuJoCo and the robosuite Panda assets; reads recorded artifacts only.
+
+Settles the 25 → 15 mm trade: carry-phase stops are 0.051 m/s median / 0.265 m/s max, start-state stops exactly 0.
+
 ### `tools/stop_excess.py`
 
 - `half_diagonal(resolution_m: float) -> float` — half a cubic cell's body diagonal, the grid's worst-case error.
