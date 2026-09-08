@@ -33,6 +33,11 @@ SCENE_TOPICS: list[str] = [
     r"/odom",  # nav_msgs/Odometry — optional trajectory
     r"/joint_states",  # sensor_msgs/JointState — joint plot/URDF
     r"/robot_description",  # std_msgs/String (URDF) — 3D robot model
+    # The manifest URDF when a vendor bringup owns `/robot_description`
+    # (real deploys — see `deploy_e2e.launch.py`). Same robot, same joint
+    # names; it carries the manifest-only frames (`openarm_base`, sensor
+    # mounts) the vendor description does not describe.
+    r"/openral/robot_description",  # std_msgs/String (URDF)
     r"/tf",  # tf2_msgs/TFMessage — frames
     r"/tf_static",  # tf2_msgs/TFMessage — static frames
 ]

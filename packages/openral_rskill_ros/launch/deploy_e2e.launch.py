@@ -381,13 +381,20 @@ def _build_real_bringup_include(hal_package: str) -> object | None:
     handler would buy a quieter log and nothing else.
 
     A vendor bringup typically also spawns its own ``robot_state_publisher``,
-    alongside the one this file derives from ``assets.urdf``. That duplication
-    is deliberate rather than an oversight: the manifest URDF is load-bearing
-    (for OpenArm it carries ``openarm_base``, the ``world`` bridge and the
-    sensor mounts, none of which the vendor xacro knows about), the two trees
-    are additive on ``/tf``, and both were observed coexisting on the real cell.
-    The cost is two nodes sharing the name ``robot_state_publisher``;
-    suppressing either loses frames something downstream reads.
+    alongside the one this file derives from ``assets.urdf``. Both are kept: the
+    manifest URDF is load-bearing (for OpenArm it carries ``openarm_base``, the
+    ``world`` bridge and the sensor mounts, none of which the vendor xacro
+    describes), so suppressing it loses frames something downstream reads.
+
+    Their ``/tf`` output is additive only because both now spell joints and
+    links the same way. It was not: the vendored OpenArm URDF used to strip the
+    ``openarm_`` prefix, and two spellings of one robot on ``/robot_description``
+    empty out ``joint_state_broadcaster`` (its ``use_urdf_to_filter`` publishes
+    only joints the URDF also names) while freezing this node's tree at the rest
+    pose, since none of its joint names match the arm's ``/joint_states``. Both
+    failures are silent. The names are standardised upstream-side now, and the
+    caller additionally keeps this node off ``/robot_description`` whenever a
+    vendor bringup owns it — see the remapping at the node itself.
     """
     from ament_index_python.packages import (
         PackageNotFoundError,
@@ -1359,10 +1366,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # Vendor ros2_control bringup, on the real path only — see
     # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
     # single graph with a single /joint_states publisher.
+    vendor_owns_robot_description = False
     if hal_mode == "real":
         real_bringup = _build_real_bringup_include(hal_package)
         if real_bringup is not None:
             extra_nodes.append(real_bringup)
+            vendor_owns_robot_description = True
 
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
@@ -1377,6 +1386,22 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     name="robot_state_publisher",
                     namespace="",
                     output="log",
+                    # When a vendor bringup is in the graph it publishes its own
+                    # `/robot_description`, and `controller_manager` reads that
+                    # topic on Jazzy. Ours describes the same robot under the
+                    # same names but declares `mock_components/GenericSystem`
+                    # where the vendor declares the real hardware plugin — so a
+                    # controller_manager that latched ours would come up with
+                    # mock hardware: controllers active, `/joint_states`
+                    # plausible, and the arm never moving. Step off the topic
+                    # rather than race for it. `/tf` is unaffected (that is this
+                    # node's actual job here) and the manifest URDF stays
+                    # readable at the `/openral/` name.
+                    remappings=(
+                        [("robot_description", "/openral/robot_description")]
+                        if vendor_owns_robot_description
+                        else []
+                    ),
                     parameters=[
                         {
                             "robot_description": robot_description_xml,
