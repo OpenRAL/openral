@@ -1,5 +1,5 @@
 # Pinned external ROS sources for the OpenArm v2 real-hardware bringup
-# (`launch/openarm_real_bringup.launch.py`). Sim needs none of this — the MuJoCo twin
+# (`launch/real_bringup.launch.py`). Sim needs none of this — the MuJoCo twin
 # (`openral_hal.openarm.OpenArmMujocoHAL`) is pure Python.
 #
 # These SHAs are the combination validated together on real CAN hardware (Jetson Thor and

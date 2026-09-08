@@ -10,7 +10,7 @@ runs at 400 Hz+, and belongs under a vendor bringup launch, not under a Python H
 Before this file, nothing in this repo started that graph on real CAN hardware: an operator had
 to bring it up out-of-band from a separate workspace, and OpenRAL simply assumed it was there.
 This file is a standalone include of upstream's ``openarm_bringup``, so
-``ros2 launch openral_hal_openarm openarm_real_bringup.launch.py`` is sufficient on a provisioned
+``ros2 launch openral_hal_openarm real_bringup.launch.py`` is sufficient on a provisioned
 rig — no other repo's overlay needs to be sourced.
 
 Provisioning ``openarm_bringup`` itself (the vendor package this include resolves via
@@ -20,7 +20,7 @@ OpenRAL only ships the glue" posture as the Franka/UR real adapters.
 
 Defaults match ``OpenArmRealHAL``'s constants exactly (``_LEFT_CAN_INTERFACE`` /
 ``_RIGHT_CAN_INTERFACE`` = ``openarm_left`` / ``openarm_right``, the udev names the OpenArm CAN
-setup assigns) so a bare ``ros2 launch openral_hal_openarm openarm_real_bringup.launch.py`` and
+setup assigns) so a bare ``ros2 launch openral_hal_openarm real_bringup.launch.py`` and
 the HAL agree without any argument overrides; ``tests/hil/test_openarm_bringup_agreement.py``
 guards the controller/joint side of that agreement, and
 ``tests/unit/test_openarm_real_bringup_launch.py`` guards this file's defaults against drifting
@@ -28,7 +28,7 @@ from those constants.
 
 Usage::
 
-    ros2 launch openral_hal_openarm openarm_real_bringup.launch.py \
+    ros2 launch openral_hal_openarm real_bringup.launch.py \
         left_can_interface:=openarm_left right_can_interface:=openarm_right
 """
 

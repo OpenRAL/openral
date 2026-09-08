@@ -305,6 +305,74 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
+#: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
+#: A HAL package that ships ``launch/<this>`` declares, by that fact alone, the
+#: controller graph its real HAL publishes to — no manifest field and no
+#: per-robot branch in this launch file. ``hal_package`` is already threaded in
+#: from ``resolve_launch_invocation``, so the package is known here for free.
+REAL_BRINGUP_LAUNCH = "real_bringup.launch.py"
+
+
+def _build_real_bringup_include(hal_package: str) -> object | None:
+    """Include ``hal_package``'s vendor ros2_control bringup, if it ships one.
+
+    Every real-hardware HAL in this repo publishes to controllers it does not
+    start: ``controller_manager`` is C++ at 400 Hz+ and belongs under a vendor
+    bringup launch, not under a Python HAL (CLAUDE.md §1.5). Until this include
+    existed, ``deploy run`` assumed that graph was already up, so an operator
+    brought it up out-of-band from a second terminal — which put a *second*
+    ``/joint_states`` publisher on the bus and tripped the shared-graph guard
+    (``openral_cli._dds_scope``, #227) on the documented bring-up path. Starting
+    it here keeps that guard meaningful: one graph, one publisher, and no
+    ``OPENRAL_ALLOW_SHARED_GRAPH`` escape hatch needed to deploy a real robot.
+
+    Returns ``None`` when the package ships no such file — the case for every
+    HAL whose controller graph is started elsewhere (a vendor daemon, a
+    robot-side controller) and for every sim-only HAL. Callers must only reach
+    here on ``hal_mode == "real"``.
+
+    No launch arguments are forwarded. The vendor launch's own defaults are
+    required to agree with the HAL's constants already — that agreement is what
+    ``tests/hil/test_openarm_bringup_agreement.py`` guards — so passing a second
+    copy of the CAN interface names through here would create a way for the two
+    to disagree without any test noticing.
+
+    The include starts concurrently with the HAL lifecycle node, not before it.
+    The HAL's ``connect()`` preflights the CAN links (up regardless of
+    controllers) and does not block on ``/joint_states``, so for the few seconds
+    the controllers take to spawn it logs ``read_state failed: Joint state is
+    N s old`` and then recovers once the broadcaster is active. That is
+    warn-only and self-healing; sequencing it behind a controller-active event
+    handler would buy a quieter log and nothing else.
+
+    A vendor bringup typically also spawns its own ``robot_state_publisher``,
+    alongside the one this file derives from ``assets.urdf``. That duplication
+    is deliberate rather than an oversight: the manifest URDF is load-bearing
+    (for OpenArm it carries ``openarm_base``, the ``world`` bridge and the
+    sensor mounts, none of which the vendor xacro knows about), the two trees
+    are additive on ``/tf``, and both were observed coexisting on the real cell.
+    The cost is two nodes sharing the name ``robot_state_publisher``;
+    suppressing either loses frames something downstream reads.
+    """
+    from ament_index_python.packages import (
+        PackageNotFoundError,
+        get_package_share_directory,
+    )
+    from launch.actions import IncludeLaunchDescription
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+    try:
+        share = get_package_share_directory(hal_package)
+    except PackageNotFoundError:
+        # A pure-Python HAL package has no share directory. Not an error: it
+        # simply ships no bringup.
+        return None
+    bringup_path = os.path.join(share, "launch", REAL_BRINGUP_LAUNCH)
+    if not os.path.isfile(bringup_path):
+        return None
+    return IncludeLaunchDescription(PythonLaunchDescriptionSource(bringup_path))
+
+
 def _build_nav2_include(
     robot_yaml: str, *, use_sim_time: bool, slam_backend: str = "lidar"
 ) -> object:
@@ -1251,6 +1319,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
     #   it, so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list = []
+
+    # Vendor ros2_control bringup, on the real path only — see
+    # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
+    # single graph with a single /joint_states publisher.
+    if hal_mode == "real":
+        real_bringup = _build_real_bringup_include(hal_package)
+        if real_bringup is not None:
+            extra_nodes.append(real_bringup)
+
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
