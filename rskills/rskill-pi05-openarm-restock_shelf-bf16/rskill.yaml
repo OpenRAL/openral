@@ -101,7 +101,7 @@ sensors_required:
 # nothing in the OpenRAL runner integrates deltas into absolute targets today.
 # Whoever drives this policy owns that reconstruction. lerobot's PI05 does it
 # natively via `use_relative_actions`, so the published `config.json` sets it;
-# the q-research openpi bridge does it server-side.
+# an openpi serving bridge does it server-side.
 #
 # ⚠ If you drive this through lerobot, `config.json` MUST also carry
 # `action_feature_names` — the 16 training feature names, with the word
