@@ -2255,6 +2255,60 @@ kernel's own deadline has been measured, and it is now the only unquantified
 term left between here and a 15 mm manifest edit.
 
 
+### 2026-09-08 — the wire, the third cost on the resolution lever, and the one that binds
+
+Both compute halves of the 25 → 15 mm lever are measured and cheap: the kernel
+consuming a 15 mm grid is p99 **0.825 ms**, and the bridge producing one is
+**1.60 ms** against a 100 ms period. The term neither of those touches is the
+message. `OccupancyVoxels.occupancy` is a **dense** `uint8[]`, so the same change
+takes one publish from 0.61 MB to 2.80 MB, ten times a second.
+
+Measured with `tools/voxel_transport_probe.py` — two processes over real DDS,
+real `openral_msgs`, at the deployed 10 Hz, under the kernel's own QoS for
+`/openral/world_voxels` (`RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`), grid sizes from
+the shipped 1.05 m coverage radius. Two runs on `q-laptop`, Fast-DDS:
+
+| resolution | MB | delivered | latency p50 | latency p99 |
+| ---: | ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 0.61 | 30/30, 35/35 | ~14 ms | **19–23 ms** |
+| 20 mm | 1.19 | 30/30, 35/35 | ~20–25 ms | 36–43 ms |
+| **15 mm** | 2.80 | 30/30, 35/35 | ~28–30 ms | **68–83 ms** |
+
+**Nothing is dropped and the rate holds.** `RELIABLE` delivered every message at
+every size, and the achieved rate is ~8.6–8.9 Hz at all three — the shortfall is
+the probe's own sleep loop, identical across resolutions, not backpressure. The
+naive failure mode this was expected to find is not there.
+
+**What is there is staleness.** That latency is the age of the world when the
+kernel reads it, and it roughly triples at 15 mm: **+15 ms at the median, +50 to
++60 ms at p99.** Age is also millimetres. The lever buys 8.66 mm of static
+quantisation (21.65 → 12.99 mm half-diagonal) and pays for it in map age, so the
+two are directly comparable:
+
+| | extra staleness | break-even end-effector speed |
+| --- | ---: | ---: |
+| median | ~15 ms | **0.58 m/s** |
+| p99 | ~55 ms | **0.16 m/s** |
+
+Above those speeds the finer grid is a **net loss in the same units it was meant
+to improve** — the map is older by more millimetres of arm travel than the
+smaller cell saves. Those break-evens sit inside the arm's kinematic range
+(`panda_mobile`'s joint 1 alone is limited at 2.175 rad/s), so this is not a
+corner case.
+
+**This does not re-strike the lever, and it must not be read as doing so.** It
+converts it from a free win into a **trade**, and the trade is settled by one
+number nobody has measured: the actual end-effector speed during the carry phase,
+where 71 % of the stops happen. If the policy creeps at 0.1 m/s the lever is
+still worth pulling; at 0.5 m/s it is not. Measuring that from the battery's
+recorded joint states is the next step, and — given this programme's record —
+it should be measured rather than assumed.
+
+**Scope.** Fast-DDS on one shared laptop over localhost. Transport-specific and
+host-specific: Cyclone, a real network, or SHM tuning could all move it, and the
+probe reports which RMW it measured for that reason.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts

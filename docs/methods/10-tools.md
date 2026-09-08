@@ -211,6 +211,17 @@ _Package and publish a local rSkill directory to the HF Hub._
 - `refine_dop_to_budget(points, dop_lo, dop_hi, budget) -> Points` — a ≤`budget`-vertex convex envelope strictly tighter than the 26-DOP, for a link whose exact hull is over `MAX_TIGHT_HULL_VERTICES`. Starts from the DOP and intersects it with the exact hull's own face planes, worst-violation first, skipping any plane that would overrun the budget. Every candidate plane is tangent to `conv(mesh)`, so containment stays definitional and the result is `⊆ DOP ⊆ box` by construction — which a subset-then-expand approach cannot guarantee (expansion escapes the DOP slabs; `panda_link1`'s DOP has 0.083 mm of room inside its box). Refuses rather than emit an envelope that cuts its mesh. On `panda_link1`: 0.18 mm median / 0.65 mm max support gap against the DOP's 4.52 / 25.68 mm. Measured, but **not shipped** — under a live battery that tightening moved link1's stops by 0.0003 mm, so no manifest declares a refined envelope; the routine is here for a link where the measurement comes out differently.
 - `_OVERHANG_BATCH: int`, `_OVERHANG_MAX_SAMPLES: int` — bound `hull_overhang_m`'s peak memory and total sample count. The single-call form asked for 57.8 GiB on a 320-vertex envelope over a 12k-triangle mesh. Coarsening lowers a sampled lower bound, and `_check` fails only when a declared overhang is *below* a fresh resample, so it can only make that gate more permissive, never wrongly fail a correct manifest.
 
+### `tools/voxel_transport_probe.py`
+
+- `RADIUS_M: float` — the shipped coverage radius (1.05 m), so grid sizes are the deployed ones.
+- `qos() -> QoSProfile` — the kernel's own `/openral/world_voxels` profile: `RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`.
+- `per_axis(res: float) -> int` / `make_msg(res: float) -> tuple[Any, int]` — cells per axis and a full-size `OccupancyVoxels` at that resolution.
+- `run_pub(res, count)` / `run_sub(res, count)` — one role each, emitting JSON; run as separate **processes** so intra-process short-circuiting cannot hide the transport.
+- `run_sweep(resolutions, count) -> int` — drives both roles per resolution and prints the table, reporting the RMW measured.
+- CLI: `uv run python tools/voxel_transport_probe.py sweep [--resolutions ...] [--count N]`. Needs a sourced ROS 2 overlay.
+
+Measures the third cost term on the 25 → 15 mm lever — the dense `uint8[]` on the wire, 0.61 MB → 2.80 MB per publish at 10 Hz — as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
+
 ### `tools/stop_excess.py`
 
 - `half_diagonal(resolution_m: float) -> float` — half a cubic cell's body diagonal, the grid's worst-case error.
