@@ -7,11 +7,8 @@ level (native MuJoCo ``Renderer`` -> SIGABRT) or raises (robosuite's EGL path ->
 ``eglQueryString`` AttributeError), so every render-dependent test must skip
 when no off-screen renderer is available.  The ``robosuite``/``libero``
 ``importorskip``s alone are not enough: a host can have them installed and
-still lack a working GL/EGL stack.
-
-This module previously existed as five byte-identical copies (one per test
-module).  Hoisting it here also means the subprocess probe runs **once** per
-pytest session instead of once per module.
+still lack a working GL/EGL stack.  The subprocess probe runs once per pytest
+session.
 
 Import it via the ``sys.path`` shim in this directory's ``conftest.py``::
 
@@ -24,24 +21,19 @@ import os
 
 import pytest
 
-# Force EGL (off-screen) rendering so hosts without a display don't abort.
-# The classic renderer calls glXOpenDisplay() and raises SIGABRT on headless
-# runners; EGL avoids the display requirement entirely.  This must happen
-# before anything imports ``mujoco``, hence module scope.
+# Force EGL (off-screen) rendering: the classic renderer calls glXOpenDisplay()
+# and SIGABRTs on headless runners. Must happen before ``mujoco`` is imported,
+# hence module scope.
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 
 def mujoco_renderer_probe_error() -> str | None:
     """Return ``None`` if a MuJoCo off-screen renderer can be created, else a reason.
 
-    Creating a ``mujoco.Renderer`` on a headless host without a working GL/EGL
-    stack calls ``abort()`` at the C level (SIGABRT), which a Python
-    ``try/except`` cannot catch — an in-process probe therefore crashes pytest
-    outright (``Fatal Python error: Aborted``) and takes the whole partition
-    down with it. Running the probe in a subprocess turns that abort into a
-    non-zero exit code we can detect and convert into a clean skip reason,
-    leaving collection alive. Mirrors ``tests/sim/conftest`` (a sibling test
-    root we cannot import across).
+    Runs in a subprocess: an in-process probe on a headless host without GL/EGL
+    calls ``abort()`` (SIGABRT), which Python cannot catch and which crashes
+    pytest outright. Mirrors ``tests/sim/conftest`` (a sibling test root we
+    cannot import across).
     """
     import subprocess
     import sys

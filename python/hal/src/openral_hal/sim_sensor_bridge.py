@@ -39,32 +39,18 @@ _RGB_CHANNELS = 3
 _DEGENERATE_QUAT_NORM = 1e-12
 
 # -- E-stop ground-truth snapshot bounds --
-# Near-miss probe: the kernel stops on a *margin* (a few mm to a few cm), so
-# at the stop instant MuJoCo's contact list is usually EMPTY — the honest
-# ground truth of "how close was it really" is the signed geom distance.
-# Probed only for geom pairs whose bounding spheres are within this gap,
-# ranked closest-first, and truncated to the closest few.
-#
-# The caps were 256/8 in the first field round and produced a nearly WRONG
-# verdict: on a mobile manipulator all 8 slots saturated on
-# mobilebase↔floor pairs at 0-2 mm (the robot merely standing on the
-# ground) and hid an arm that was 17-30 mm inside a freezer door. The
-# structural fix is scoping the probe to the links the kernel actually
-# checks (:func:`kernel_checked_body_ids`); these wider caps are the belt to
-# that braces.
-#
-# The exact distance is `openral_hal.convex_distance.convex_geom_distance`,
-# NOT ``mujoco.mj_geomDistance`` — that call is unreliable for exactly the
-# pairs this probe adjudicates (a RoboCasa fixture geom against a panda
-# collision mesh), in two distinct silent modes, and the module docstring
-# carries the measurements. The certified instrument costs ~2-4 ms per pair
-# against ~9 us, so the round-robin candidate set is first thinned by a
-# CERTIFIED window rejection (`distmax_m=`, a separating-axis bound that
-# proves a pair is outside the window): on the four RoboCasa matrix scenes
-# that leaves 1-24 pairs actually solved out of 74-259 candidates, and a
-# whole three-probe snapshot at ~0.1-0.7 s. That is three orders of magnitude
-# above the old cost and it is affordable for the same reason the probe
-# exists at all: it runs once, at a terminal event, off the actuation path.
+# Near-miss probe: kernel stops on a mm-cm margin, so MuJoCo's contact list is
+# usually empty; ground truth is signed geom distance for pairs whose
+# bounding spheres are within this gap, closest-first, truncated to a few.
+# Old caps (256/8) saturated on mobilebase-floor pairs at 0-2mm and hid an
+# arm 17-30mm inside a freezer door; fixed by scoping to
+# kernel_checked_body_ids(), these caps are the backup.
+# Distance = convex_distance.convex_geom_distance, not mj_geomDistance (two
+# silent failure modes on RoboCasa-fixture/panda-mesh pairs — see that
+# module's docstring). Costs ~2-4ms/pair vs ~9us, so candidates are
+# pre-thinned by a certified distmax_m (separating-axis) window: 1-24 of
+# 74-259 candidates solved, ~0.1-0.7s/snapshot on the 4 RoboCasa matrix
+# scenes.
 _NEAREST_PROBE_DISTMAX_M = 0.10
 _NEAREST_PROBE_MAX_CALLS = 4096
 _NEAREST_PROBE_MAX_PAIRS = 32

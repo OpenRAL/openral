@@ -1877,10 +1877,8 @@ class RobotDescription(BaseModel):
     Attributes:
         name: Robot name, e.g. "so100_follower".
         embodiment_kind: Top-level kinematic class.
-        assets: Unified URDF / MJCF / SRDF reference block.
-            Refs share the :func:`openral_core.assets.resolve_asset`
-            grammar; the URDF's ``robot_state_publisher`` wiring lives on
-            :attr:`AssetRefs.urdf`. Empty by default.
+        assets: Unified URDF / MJCF / SRDF reference block
+            (:func:`openral_core.assets.resolve_asset` grammar). Empty by default.
         base_frame: Base link tf2 frame name.
         odom_frame: Odometry tf2 frame name.
         map_frame: Map tf2 frame name.
@@ -1894,52 +1892,24 @@ class RobotDescription(BaseModel):
         middleware: ROS 2 middleware selection.
         onboard_compute: Onboard compute descriptors.
         sdk_kind: Whether the SDK is open or closed.
-        hal: Simulation + real-hardware HAL import strings. ``deploy sim``
-            constructs ``hal.sim`` (or derives ``MujocoArmHAL`` from
-            :attr:`sim`); ``deploy run`` constructs ``hal.real``.
+        hal: Simulation + real-hardware HAL import strings (``deploy sim`` uses ``hal.sim``,
+            ``deploy run`` uses ``hal.real``).
         observation_spec: VLA observation configuration.
         action_spec: VLA action configuration.
-        sim: Optional MuJoCo wiring consumed by
-            :class:`openral_hal.MujocoArmHAL`.  When set, the HAL can be
-            constructed entirely from the manifest via
-            :meth:`MujocoArmHAL.from_description`; no per-robot Python
-            subclass is required.
-        scene_defaults: Optional per-robot scene rendering defaults.
-            Today carries :class:`TopCameraDefaults` consumed by the
-            ``openarm_tabletop_pnp`` MJCF composer (see
-            :mod:`openral_sim.backends.openarm_robosuite._assets`).
-            Added in openral-core 0.6.0 to replace the dataset-specific
-            module-level constants that previously lived in the sim
-            backend.
-        base_joints: Optional ordered list of :attr:`JointSpec.name`
-            references identifying the **planar mobile base** joints.
-            When the robot has a holonomic / differential / omnidirectional
-            base, the three entries are conventionally ``[forward_axis,
-            side_axis, yaw_axis]``. Consumed by the generic ray-cast
-            helpers in :mod:`openral_sim.backends.robocasa` and the
-            ROS HAL lifecycle nodes to resolve MJCF joint names without
-            hardcoding robot-specific conventions. ``None`` for
-            fixed-base manipulators.
-        collision_geometry: Per-link convex collision primitives
-            (capsules / spheres) the safety kernel uses for self- and
-            world-collision checking. Empty by default.
-        allowed_collision_pairs: Link-name pairs excluded from
-            self-collision (adjacent links touch by design); the
-            allowed-collision matrix. On real robots this is sourced from
-            the SRDF ``disable_collisions`` block (named by
-            :attr:`AssetRefs.srdf`).
-        compute_edge: Compute spec for the on-robot accelerator (e.g. Jetson
-            AGX Orin SoC).  Populated by ``openral detect`` when a Jetson /
-            embedded SoC is found.  Falls back to ``compute_local`` when
-            ``None`` (tethered robot, SoC not yet probed).
-        compute_local: Compute spec for the workstation / laptop directly
-            attached to the robot.  Populated by ``openral detect`` for
-            discrete NVIDIA GPUs, Apple Silicon, or CPU-only hosts.
+        sim: Optional MuJoCo wiring for :class:`openral_hal.MujocoArmHAL`; lets the HAL build
+            entirely from the manifest.
+        scene_defaults: Optional per-robot scene rendering defaults (:class:`TopCameraDefaults`).
+        base_joints: Optional ordered ``[forward, side, yaw]`` :attr:`JointSpec.name` refs for a
+            planar mobile base; ``None`` for fixed-base manipulators.
+        collision_geometry: Per-link convex collision primitives (capsules / spheres) for the safety
+            kernel. Empty by default.
+        allowed_collision_pairs: Link-name pairs excluded from self-collision (from the SRDF
+            ``disable_collisions`` block on real robots).
+        compute_edge: Compute spec for the on-robot accelerator; falls back to ``compute_local``
+            when ``None``.
+        compute_local: Compute spec for the attached workstation / laptop.
         compute_cloud: Optional remote compute endpoint (SSH or HTTPS).
-            Set manually or via ``openral detect --target cloud``.
-        schema_version: On-disk schema version for migration tooling.
-            ``"0.1"`` is the current format (three-slot compute layout).
-            Existing manifests without this field load with the default.
+        schema_version: On-disk schema version for migration tooling; ``"0.1"`` is current.
 
     Example:
         >>> desc = RobotDescription(
@@ -2665,62 +2635,35 @@ class PlaceRegion(BaseModel):
 class PlaceDeclaration(BaseModel):
     """Dispatch's typed statement that a place phase is active for a payload.
 
-    The pick-phase support-contact witness (ADR-0092 D6) exempts the contact a
-    payload keeps with the surface it was picked from, and its anti-scope is
-    deliberate: a *new* contact against any other surface mid-carry is never
-    exempt, because nothing in World State or the safety kernel distinguishes
-    "the payload arrived at its declared destination" from "the payload grazed
-    a wall." This declaration is that distinction (ADR-0097), and the only
-    thing that supplies it — it is **never** inferred from motion and never
-    from simulator introspection.
-
-    A declaration on its own exempts nothing. It permits a producer to attest
-    a second, place-phase :class:`SupportContactWitness` when the payload
-    actually comes into fresh bounded contact **on the declared target**; the
-    kernel then exempts exactly that witness's patch, under the identical
-    bounds, fail-closed rules and hysteresis the pick witness is under.
-    Measured contact with no declaration exempts nothing either — unchanged
-    pre-ADR-0097 behaviour.
-
-    The declaration is scoped to one goal execution and dies three ways
-    (HZ-0097-3): explicit retraction (``active=False``) on goal end, goal
-    cancel, and E-stop; and, independently of any retraction arriving,
-    :attr:`timeout_s` after :attr:`stamp_ns` — the backstop that keeps a
-    dispatcher crash from leaving an exemption armed for a later, unrelated
-    skill execution. Consumers apply both; whichever fires first wins.
+    The ADR-0097 distinction between "arrived at its declared destination"
+    and "grazed a wall" mid-carry — never inferred from motion or simulator
+    introspection. On its own it exempts nothing: it only lets a producer
+    attest a place-phase :class:`SupportContactWitness` on the declared
+    target, which the kernel then exempts under the pick witness's own
+    bounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on
+    retraction, goal end/cancel, E-stop, or :attr:`timeout_s` after
+    :attr:`stamp_ns`, whichever fires first (HZ-0097-3).
 
     Attributes:
-        target_id: Identity of the declared place target (e.g.
-            ``"sim:cab_1_left_group_main"``). A place witness may only be
-            attested for support contact on this target — the attested
-            ``support_id`` names it, or names a surface that is part of it.
-        object_id: Payload the declaration is scoped to (an
-            :attr:`AttachedCollisionObject.object_id`). Empty means "whichever
-            payload is carried", the direct-dispatch case where the grasped
-            object's identity is only discovered at attach time.
+        target_id: Identity of the declared place target, e.g.
+            ``"sim:cab_1_left_group_main"``; an attested ``support_id`` must
+            name it or a surface of it.
+        object_id: Payload the declaration scopes to
+            (:attr:`AttachedCollisionObject.object_id`); empty = whichever
+            payload is carried.
         rskill_id: Dispatching skill, for attributability (HZ-0097-2).
         trace_id: OTel trace id, for attributability (HZ-0097-2).
-        timeout_s: Backstop expiry window in seconds after ``stamp_ns``. Capped
+        timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped
             at :attr:`MAX_TIMEOUT_S`.
-        stamp_ns: Dispatcher timestamp. With :attr:`active` this is the whole
+        stamp_ns: Dispatcher timestamp; with :attr:`active` this is the whole
             liveness key.
         active: ``False`` retracts the declaration.
-        contact_force_threshold_n: Per-declaration bound on the contact force
-            this place may reach (ADR-0100). ``0.0`` — the default — means no
-            force gate at all, which is the pre-ADR-0100 behaviour. Above zero,
-            a live :class:`ContactForceWitness` on this payload attesting a
-            *calibrated* magnitude past it refuses the configuration. Never read
-            from :attr:`SafetyEnvelope.contact_force_threshold_n`: that number is
-            robot-wide, while published budgets for one body region span an
-            order of magnitude, so the dispatching skill supplies it per place.
-        region: Producer-measured bounded region of the declared target
-            (ADR-0097's 2026-08-14 amendment), or ``None``. Dispatch always
-            publishes ``None`` — it names a target, it cannot measure where that
-            target *is* — and the evidence producer fills it in when it resolves
-            the target. ``None`` means **no approach allowance**: exactly the
-            margins the kernel used before the amendment. The allowance lives and
-            dies inside the declaration, so retraction, timeout, goal end/cancel
-            and E-stop all take the region with them.
+        contact_force_threshold_n: Per-declaration contact-force bound
+            (ADR-0100); ``0.0`` = no force gate. Never read from the
+            robot-wide :attr:`SafetyEnvelope.contact_force_threshold_n`.
+        region: Producer-measured bounded region of the target (ADR-0097's
+            2026-08-14 amendment); ``None`` = no approach allowance
+            (pre-amendment margins). Dies with the declaration.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -2986,60 +2929,32 @@ class SupportContactWitness(BaseModel):
 class ContactForceWitness(BaseModel):
     """Bounded attestation of a MEASURED contact force on the declared target.
 
-    The second observable on the place path (ADR-0100, survey Path C).
-    ADR-0097/0098 discriminate on position, and at the instant of a place the
-    true clearance *is* zero: no geometric margin at any resolution passes "set
-    the object down in the cabinet" while stopping "crush it against the
-    cabinet." Force is the axis that separates the two, and the one every
-    power-and-force-limiting standard uses (ISO 10218-2:2025, which absorbed
-    ISO/TS 15066's PFL content).
-
-    **The gate this feeds only ever adds a refusal.** A witness never licenses a
-    contact the geometry refuses, never widens an ADR-0097 allowance and never
-    moves a margin (ADR-0100 §1). It can turn an accepted configuration into a
-    refused one, and nothing else.
-
-    ``magnitude_n`` is in Newtons **only** when :attr:`magnitude_calibrated`.
-    That is not defensive boilerplate: no published work validates MuJoCo
-    contact-force magnitudes against real force-torque measurements (survey
-    §21.7), MuJoCo documents its contact model as an approximation resting on
-    ``solref`` / ``solimp`` choices, and FORGE (arXiv:2408.04587) re-tunes its
-    threshold on hardware across more than a thousand real trials — which is
-    itself the finding. A simulator magnitude is a calibration knob, never an
-    equivalence claim (CLAUDE.md §1.2). :attr:`direction_in_object` carries no
-    such caveat: arXiv:2602.14174 argues from that same magnitude gap that
-    direction is the component which survives transfer.
-
-    Absence of a witness is **not** evidence of no contact. The MuJoCo producer
-    reads the solver's contact list, which ``contype`` / ``conaffinity``
-    suppression can leave empty under a payload demonstrably in contact. Absence
-    only ever means the gate does not arm and geometry decides alone.
+    The second observable on the place path (ADR-0100, Path C): force is what
+    distinguishes "set down" from "crush" once position clearance hits zero.
+    The gate this feeds only ever adds a refusal — never widens an ADR-0097
+    allowance or moves a margin. ``magnitude_n`` is Newtons only when
+    :attr:`magnitude_calibrated` (no published work validates MuJoCo contact
+    force against real F/T measurements; FORGE arXiv:2408.04587 re-tunes on
+    hardware); :attr:`direction_in_object` has no such caveat (arXiv:2602.14174).
+    Absence of a witness is never evidence of no contact — ``contype``/
+    ``conaffinity`` suppression can empty the solver's contact list under a
+    payload demonstrably in contact.
 
     Attributes:
-        target_id: Surface the measured contact is against. The gate arms only
-            when this names the live declaration's target, or a surface that is
-            part of it.
+        target_id: Surface the measured contact is against; the gate arms
+            only when this names the live declaration's target or a surface of it.
         direction_in_object: Unit contact-force direction in the attached
-            object's frame, pointing from the support into the payload. Object
-            frame for the same reason the support witness's geometry is: base
-            frame quantities decorrelate as a mobile base drives while the
-            physical contact persists.
-        magnitude_n: Contact force magnitude. Newtons only when
-            :attr:`magnitude_calibrated`; otherwise an uncalibrated producer
-            number the kernel ignores entirely.
-        magnitude_calibrated: ``False`` (the default for any producer that has
-            not been calibrated against a real force-torque measurement) means
-            the force gate does not arm.
+            object's frame (not base frame — decorrelates as a mobile base drives).
+        magnitude_n: Contact force magnitude; Newtons only when
+            :attr:`magnitude_calibrated`, else an ignored uncalibrated number.
+        magnitude_calibrated: ``False`` (default, uncalibrated) means the force gate does not arm.
         calibration_ref: Names the calibration ``magnitude_n`` was produced
-            under. Required when :attr:`magnitude_calibrated`; the kernel
-            refuses to arm on a calibrated witness that cannot name it.
+            under; required when :attr:`magnitude_calibrated`.
         confidence: Witness confidence in ``[0, 1]``.
-        evidence_kind: Source that measured the force. The MuJoCo producer
+        evidence_kind: Source that measured the force; the MuJoCo producer
             attests :attr:`AttachmentEvidenceKind.SIM_CONTACT_FORCE`.
         evidence_ref: Optional trace / producer reference.
-        stamp_ns: Producer timestamp. With ``target_id`` this keys the kernel's
-            re-arm check, so a witness that died on separation stays dead until
-            a genuinely new contact is attested.
+        stamp_ns: Producer timestamp; with ``target_id`` keys the kernel's re-arm check.
 
     Example:
         >>> witness = ContactForceWitness(
@@ -5266,33 +5181,17 @@ def task_space_compatible(
 ) -> TaskSpaceMatch:
     """Check an rSkill's :class:`TaskSpace` is executable on a robot.
 
-    The single cross-layer gate that subsumes today's implicit wiring
-    (``embodiment_tags`` string match + raw dim equality + adapter magic). A skill
-    is compatible when, for every segment:
-
-    * the segment's ``control_mode`` is executable on the chosen ``hal_mode`` —
-      mirroring the reasoner deploy gate ``_action_executable``:
-
-      - ``"sim"`` → the mode is in :data:`SIM_EXECUTABLE_CONTROL_MODES` (a
-        robosuite OSC / composite controller synthesises cartesian + gripper +
-        base goals into joint commands, so a Franka that advertises only
-        ``joint_position`` still runs a ``cartesian_delta`` LIBERO skill in sim);
-      - ``"real"`` → the robot advertises the mode in
-        ``capabilities.supported_control_modes`` (real hardware needs the actual
-        controller — no hidden OSC translation).
-
-    * ``CARTESIAN_*`` / ``GRIPPER_*`` / ``DEX_HAND_JOINT`` segments name a real
-      ``end_effector`` (when ``target`` is set) — physical fact, both modes;
-    * the total joint-segment width does not exceed the robot's joint count —
-      physical fact, both modes.
+    The single cross-layer gate replacing implicit ``embodiment_tags``/dim
+    matching. Compatible when every segment's ``control_mode`` is executable
+    for ``hal_mode`` (``"sim"``: :data:`SIM_EXECUTABLE_CONTROL_MODES`;
+    ``"real"``: the robot's ``capabilities.supported_control_modes``), every
+    ``CARTESIAN_*``/``GRIPPER_*``/``DEX_HAND_JOINT`` segment names a real
+    end-effector, and the total joint-segment width fits the robot's joint count.
 
     Args:
-        skill_space: The task space the rSkill emits
-            (:meth:`TaskSpace.from_action_contract`).
+        skill_space: The task space the rSkill emits (:meth:`TaskSpace.from_action_contract`).
         robot: The target robot description.
-        hal_mode: ``"sim"`` (default-sim OSC packers) or ``"real"`` (hardware
-            controllers). Selects which control-mode set the segments are
-            checked against — the same split the reasoner palette gate uses.
+        hal_mode: ``"sim"`` (default-sim OSC packers) or ``"real"`` (hardware controllers).
 
     Returns:
         A :class:`TaskSpaceMatch` — ``ok`` plus a reason per incompatibility.
@@ -6668,158 +6567,61 @@ class PlaybookContract(BaseModel):
 class RSkillManifest(BaseModel):
     """Pydantic model of the ``rskill.yaml`` package manifest (V1).
 
-    On-disk schema for an rSkill HF Hub repo. An rSkill is loaded by
-    capability-checking against a :class:`RobotDescription`, selecting a
-    runtime + quantization, then constructing a runtime
-    :class:`~openral_rskill.Skill` instance.
-
-    Validated constraints: ``name`` / ``fallback_skill_id`` must be
-    HF-Hub-shaped (``<owner>/<repo>``); ``version`` is SemVer; ``weights_uri``
-    is restricted to ``hf://`` or ``local://``; ``embodiment_tags`` is closed
-    to the in-tree robot set (plus ``"custom"``, which requires
-    :attr:`embodiment_extra`); ``benchmarks`` is a typed dict of canonical
-    suite id → success rate. Commercial-use posture is derived from
+    On-disk schema for an rSkill HF Hub repo; loaded by capability-checking
+    against a :class:`RobotDescription`, then constructing a runtime
+    :class:`~openral_rskill.Skill`. Commercial-use posture is derived from
     :attr:`license` via :attr:`is_commercial_use_allowed`.
 
     Attributes:
-        schema_version: On-disk format version. ``"0.1"`` today.
-            Backward-compatible extensions evolved
-            the surface in place; now the repo is published, a
-            backward-incompatible change bumps this and ships a migrator
-            (CLAUDE.md §1.6).
-        name: HF Hub identifier, e.g. ``"openral/rskill-pick-cube-so100"``.
-            Must match ``<owner>/<repo>``.
-        version: SemVer string of the rSkill package itself (not the
-            wrapped weights).
-        license: License posture (surfaced at install time).
-            Drives :attr:`is_commercial_use_allowed`.
-        role: rSkill slot. ``"s1"`` for fast policies (the only slot
-            currently loaded via :func:`rSkill.from_yaml` — 100% of
-            in-tree skills); ``"s0"`` reserved for cerebellar realtime
-            (humanoid balance, C++ only); ``"s2"`` reserved for slow
-            reasoning.
-        model_family: Closed VLA / policy family. Drives the runner's
-            adapter dispatch.
-        embodiment_tags: Robot embodiments this rSkill targets. Must
-            intersect a robot's ``RobotCapabilities.embodiment_tags`` for
-            the loader to accept. Restricted to the canonical set
-            (:data:`EmbodimentTag`) so typos / framework hints cannot
-            silently always-miss. ``"custom"`` is the explicit hatch
-            (see :attr:`embodiment_extra`).
-        embodiment_extra: When ``"custom"`` is in
-            :attr:`embodiment_tags`, declares the sensor + actuator
-            surface of the custom rig so the loader's compat check
-            still has something to match against. MUST be ``None`` when
-            ``"custom"`` is not present.
-        capabilities_required: Per-flag capability requirements (subset of
-            :class:`RobotCapabilities` boolean fields). The loader rejects
-            installation on a robot that does not satisfy every flag.
-        sensors_required: Sensor inputs the policy expects from the
-            robot. See :class:`SensorRequirement`.
-        actuators_required: Symmetric output-side
-            contract: at least one :class:`ActuatorRequirement`
-            entry. The loader matches each entry's :attr:`kind` against
-            :attr:`RobotDescription.action_spec.control_mode` and
-            auto-fills :attr:`ActuatorRequirement.n_dof` /
-            :attr:`vla_action_key` from the canonical robot YAML
-            (predefined embodiments only — for ``"custom"`` they must
-            be set on the manifest).
+        schema_version: On-disk format version; ``"0.1"`` today (CLAUDE.md §1.6).
+        name: HF Hub identifier ``<owner>/<repo>``, e.g. ``"openral/rskill-pick-cube-so100"``.
+        version: SemVer string of the rSkill package (not the wrapped weights).
+        license: License posture surfaced at install time; drives :attr:`is_commercial_use_allowed`.
+        role: rSkill slot — ``"s1"`` fast policy (the only slot loaded today),
+            ``"s0"`` cerebellar realtime (reserved), ``"s2"`` slow reasoning (reserved).
+        model_family: Closed VLA / policy family; drives the runner's adapter dispatch.
+        embodiment_tags: Robot embodiments targeted; must intersect the robot's tags.
+            ``"custom"`` requires :attr:`embodiment_extra`.
+        embodiment_extra: Sensor + actuator surface for ``"custom"``; required
+            iff ``"custom"`` is tagged, ``None`` otherwise.
+        capabilities_required: Per-flag :class:`RobotCapabilities` requirements
+            the target robot must satisfy.
+        sensors_required: Sensor inputs the policy expects. See :class:`SensorRequirement`.
+        actuators_required: At least one :class:`ActuatorRequirement`; matched
+            against the robot's ``action_spec.control_mode``.
         runtime: Preferred inference runtime.
         quantization: Default :class:`QuantizationConfig` for this rSkill.
-        weights_uri: HF Hub revision-pinned URI to weights or local
-            path reference. Production deployments pin a SHA
-            (CLAUDE.md operating principle 8).
-        chunk_size: Action-chunk length the policy emits per
-            :meth:`Skill.step`. Drives the ChunkedExecutor's overlap
-            schedule and shows up in the trace surface.
-        latency_budget: Latency contract enforced by CI on the reference
-            host (CLAUDE.md §7.4).
-        min_vram_gb: Optional minimum VRAM (GB) the skill needs per
-            quantization dtype. Informational — the loader uses it for
-            ``ral skill check`` / ``openral doctor``; the actually-applied
-            dtype is still pinned by ``quantization.dtype`` (CLAUDE.md
-            §11 forbids silent downcast).
-        fallback_skill_id: rSkill id to substitute if this one fails
-            (RFC §8.3 replanning ladder). HF Hub shape.
-        benchmarks: Map of canonical benchmark suite id → success rate
-            (``[0.0, 1.0]``) as measured for this skill. Keys
-            constrained to :data:`BenchmarkName`. The full per-task
-            breakdown lives in the matching
-            ``rskills/<id>/eval/<key>.json`` validated against
-            :class:`RSkillEvalResult`.
-        evaluated_tasks: Benchmark task ids / families this checkpoint was
-            trained or validated for (e.g. ``["libero_spatial"]`` covering
-            ``libero_spatial/0..9``, or ``["maniskill3/PickCube-v1"]``). The
-            benchmark runner gates a scene's ``task.id`` against this list: a
-            non-empty list that does not cover the scene's task is refused with
-            :class:`ROSCapabilityMismatch` (prevents running a checkpoint on a
-            task it was not trained for — e.g. a LiftCube policy on PickCube).
-            Empty (default) is permissive: legacy rSkills run with a warning.
-            Matching: exact ``task.id``, a ``"<scene>/<...>"`` prefix family,
-            or the bare ``scene.id``.
-        sim_env_control_mode: Optional simulator controller mode this policy
-            expects the env to run in, when the scene itself does not pin one.
-            Currently consumed by the LIBERO backend (``"relative"`` = OSC
-            delta-EE, the default for SmolVLA / π0.5 / rldx1 / molmoact2 /
-            GR00T; ``"absolute"`` = OSC absolute-EE, required by xVLA which
-            emits absolute end-effector targets). Lets an absolute-control
-            policy run on the canonical ``libero_spatial.yaml`` without a
-            duplicate per-policy scene; ``scene.backend_options.control_mode``
-            still overrides it. ``None`` (default) → backend default.
-        policy_extras: Adapter-owned runtime knobs copied from the rSkill
-            manifest into :class:`VLASpec.extra` during CLI composition.
-            Used for family-specific generation, sampling, replay, or
-            transform settings that are part of the checkpoint contract but
-            should not become top-level manifest schema fields.
+        weights_uri: HF Hub revision-pinned URI or local path to weights;
+            production deployments pin a SHA (CLAUDE.md operating principle 8).
+        chunk_size: Action-chunk length emitted per :meth:`Skill.step`.
+        latency_budget: Latency contract enforced by CI on the reference host (CLAUDE.md §7.4).
+        min_vram_gb: Optional minimum VRAM (GB) per quantization dtype; informational only.
+        fallback_skill_id: rSkill id to substitute on failure (RFC §8.3 replanning ladder).
+        benchmarks: Canonical suite id → success rate ``[0.0, 1.0]``; full
+            per-task breakdown lives in the matching ``eval/<key>.json``.
+        evaluated_tasks: Benchmark task ids / families trained or validated on;
+            gates a scene's ``task.id`` against it (empty = permissive).
+        sim_env_control_mode: Optional simulator controller override
+            (``"relative"``/``"absolute"``); ``None`` = backend default.
+        policy_extras: Adapter-owned runtime knobs copied into :class:`VLASpec.extra`
+            at CLI composition.
         paper_url: Canonical paper URL for this skill / family.
         dataset_uri: HF Hub URI for the training dataset.
-        source_repo: HF Hub URI for the upstream weights repo (often
-            the same as :attr:`weights_uri`'s prefix).
-        description: REQUIRED. Short (1-500 char) human-readable summary
-            surfaced by ``ral skill list`` and, more importantly, by the
-            reasoner's per-skill LLM tool description (see
-            :func:`openral_reasoner.palette.build_tool_palette`). The LLM
-            scores tools primarily on this text; keep it specific to what
-            the skill does (objects, scenes, task type), not how it was
-            trained.
-        default_prompt: Optional. The exact task string (VERBATIM, typos
-            included) this checkpoint was trained on; single-task finetunes
-            degrade on a paraphrase. The runner falls back to this field when
-            the goal's ``prompt`` is empty. Leave unset for generalist
-            checkpoints that take arbitrary instructions. Not a substitute
-            for :attr:`description` (LLM-facing skill-selection prose) — this
-            is the literal conditioning string fed to the policy.
-        actions: REQUIRED. Closed-vocabulary list (≥1) of high-level
-            action verbs this skill performs (see :class:`RSkillAction`).
-            Generalist / foundation checkpoints declare ``[GENERALIST]``;
-            specialist checkpoints list the verbs they were trained on
-            (e.g. ``[PICK, PLACE]``). Surfaced to the reasoner LLM
-            alongside :attr:`description` so it can pick the right skill
-            for a given goal.
-        objects: Optional free-form keywords for the objects this skill
-            manipulates (e.g. ``["cube"]``, ``["pipe"]``, ``["drawer"]``).
-            Discriminative hints for the LLM; the long tail (RoboCasa-365
-            has hundreds of categories) makes a closed enum impractical.
-        scenes: Optional free-form keywords for the scenes / environments
-            this skill targets (e.g. ``["tabletop"]``, ``["kitchen"]``).
-            Same rationale as :attr:`objects`.
-        processors: Per-file URIs for the lerobot ``PolicyProcessorPipeline``
-            artefacts (Gap 1 + Gap 3 of the rSkill self-containment audit).
-            REQUIRED when ``model_family`` is one of ``smolvla``, ``pi05``,
-            ``xvla``, ``diffusion``, or ``rldx``; OPTIONAL for ``act`` (the
-            legacy norm-stats-in-safetensors path is allowed there).
-        image_preprocessing: Per-checkpoint image-side knobs that cannot be
-            encoded in the processor JSONs (flip, camera renames).
-            Optional; ``None`` means schema defaults apply.
-        state_contract: Per-checkpoint proprioception layout (named layouts
-            for RoboCasa; explicit ``dim`` for everything else).
-        action_contract: Per-checkpoint action vector contract (dim +
-            optional representation). Consumed by the dataset
-            bridge to bind the LeRobot v3 ``action`` feature shape
-            without consulting the runtime adapter.
-        n_action_steps: Replay cadence (how many actions to consume from a
-            chunk before re-inferring). Omit when equal to ``chunk_size``;
-            the adapter falls through to its family default.
+        source_repo: HF Hub URI for the upstream weights repo.
+        description: REQUIRED. Short (1-500 char) summary surfaced to operators
+            and the reasoner's tool palette.
+        default_prompt: Optional verbatim task string the checkpoint was
+            trained on; fallback when the goal's ``prompt`` is empty.
+        actions: REQUIRED. Closed-vocabulary action verbs (≥1); see :class:`RSkillAction`.
+        objects: Optional free-form object keywords (discriminative hints for the LLM).
+        scenes: Optional free-form scene / environment keywords.
+        processors: Per-file lerobot ``PolicyProcessorPipeline`` URIs; required
+            for modern families (``smolvla``/``pi05``/``xvla``/``diffusion``/``rldx``).
+        image_preprocessing: Per-checkpoint image knobs (flip, camera renames);
+            ``None`` = schema defaults.
+        state_contract: Per-checkpoint proprioception layout.
+        action_contract: Per-checkpoint action vector contract (dim + optional representation).
+        n_action_steps: Replay cadence; omit when equal to ``chunk_size``.
 
     Example:
         >>> m = RSkillManifest(
@@ -8340,63 +8142,42 @@ class ValidationGroundTruthAdjudication(BaseModel):
 
     Attributes:
         verdict: The adjudication.
-        stop_class: The probe's own class for the stop (``"robot_world"``,
-            ``"attached_payload"``).
+        stop_class: The probe's own class for the stop (``"robot_world"``, ``"attached_payload"``).
         sim_time_s: Simulator time at the stop.
-        grid_resolution_m: Occupancy-grid edge length, read from the monitor's
-            ``world_voxels`` records. Sets the quantization budget.
-        quantization_budget_m: Half the grid cell's body diagonal — the largest
-            discrepancy a correctly-behaving voxel grid can produce. This is
-            only the *voxel* term; it is not the whole admissible gap.
-        admissible_gap_m: The budget actually applied to ``discrepancy_m``.
-            Preferred source is the HAL's own
-            ``adjudication_budget.admissible_gap_m``, which adds the collision
-            model's corner slop (the kernel measures OBB-to-voxel, the probe
-            measures mesh-to-mesh) to the voxel term — 88.2 mm against a
-            25 mm grid's 21.7 mm on the 2026-08-23 rounds. Falls back to
-            ``quantization_budget_m`` for a snapshot recorded before the HAL
-            published a budget.
+        grid_resolution_m: Occupancy-grid edge length; sets the quantization budget.
+        quantization_budget_m: Half the grid cell's body diagonal — the voxel-only
+            term, not the whole admissible gap.
+        admissible_gap_m: Budget applied to ``discrepancy_m``; prefers the HAL's
+            own ``adjudication_budget.admissible_gap_m`` (88.2 mm vs. a 25 mm
+            grid's 21.7 mm voxel-only term on the 2026-08-23 rounds), else
+            ``quantization_budget_m`` for a pre-budget snapshot.
         budget_source: Where ``admissible_gap_m`` came from —
-            ``"hal-adjudication-budget"``, ``"grid-quantization"``, or ``""``
-            when no budget was available at all. The distinction is
-            load-bearing, not informational: ``"grid-quantization"`` is only a
-            *lower bound* on the real gap (it omits ``corner_slop(link)``, the
-            larger term), so it can establish ``within-quantization`` but never
-            ``false-positive``. Rounds before #144 published no budget, and two
-            of their verdicts were over-convicted on that term alone.
-        probe_collidability_filtered: Whether the recorded probe attests that
-            **both** of its sides were restricted to solid geoms
-            (``contype``/``conaffinity`` non-zero). ``False`` on a snapshot
-            recorded before that filter existed, where a 0 m pair may be a
-            purely visual mesh and therefore cannot support ``real-contact``.
-        probe_distance_certified: Whether every distance in the recorded probe
-            carries its own proof of correctness
-            (``openral_hal.convex_distance``). ``False`` on a snapshot recorded
-            on ``mujoco.mj_geomDistance``, which returns confidently wrong
-            values for RoboCasa-fixture-vs-panda-mesh pairs in two silent
-            modes — including ``0.000 m`` readings whose certified values are
-            ``+14.8``, ``+82.2`` and ``+107.9 mm`` in the rounds checked in
-            under ``tests/unit/fixtures/validation_matrix/``. No verdict may
-            rest on such a probe, so the stop is withdrawn to
-            ``unadjudicated``; it is **not** reversed, and nothing about an
-            uncertified probe shows the kernel was wrong.
-        unadjudicated_reason: Why the verdict is ``unadjudicated``, in words.
-            Empty for every other verdict. A missing grid resolution because
-            the monitor received nothing reads differently from one because the
-            run stopped early, and the difference is a harness fault versus a
-            run fact.
-        nearest_any_m: Distance of the closest probed pair of any kind.
+            ``"hal-adjudication-budget"``, ``"grid-quantization"`` (a lower
+            bound only: can prove ``within-quantization``, never
+            ``false-positive``), or ``""`` (no budget; rounds before #144
+            published none and two verdicts were over-convicted on that alone).
+        probe_collidability_filtered: Whether both probe sides were
+            solid-geom-restricted; ``False`` on pre-filter snapshots (a 0 m
+            pair may be a visual mesh, so cannot support ``real-contact``).
+        probe_distance_certified: Whether every probe distance is
+            proof-certified (``openral_hal.convex_distance``); ``False`` on
+            ``mujoco.mj_geomDistance`` snapshots, which read confidently wrong
+            ``0.000 m`` for pairs whose certified value is ``+14.8``/``+82.2``/
+            ``+107.9 mm`` — such a probe withdraws the verdict to
+            ``unadjudicated`` rather than reversing it.
+        unadjudicated_reason: Why the verdict is ``unadjudicated`` (empty
+            otherwise) — distinguishes a harness fault from a run fact.
+        nearest_any_m: Distance of the closest probed pair of any kind;
             ``None`` when nothing was within ``distmax_m``.
-        nearest_tripping_party_m: Distance of the closest pair whose subject is
-            the party the kernel named. ``None`` when nothing was in range.
+        nearest_tripping_party_m: Distance of the closest pair naming the
+            kernel's tripping party; ``None`` when out of range.
         nearest_pair: Bodies/geoms of the closest probed pair, verbatim.
         discrepancy_m: ``nearest_tripping_party_m`` minus the kernel's
-            ``min_distance_m`` — how much clearance the kernel did not see.
+            ``min_distance_m`` — clearance the kernel did not see.
         probed_pairs: Pairs the probe actually measured.
-        probe_truncated: Whether the probe hit its call budget. A truncated
-            probe can never support ``false-positive``.
-        distmax_m: The probe's cutoff distance; an untruncated probe that
-            returns no pair proves the nearest geometry is beyond it.
+        probe_truncated: Whether the probe hit its call budget (a truncated
+            probe can never support ``false-positive``).
+        distmax_m: The probe's cutoff distance.
         payload_contacts: MuJoCo contact count involving the payload.
 
     Example:
@@ -8544,24 +8325,19 @@ class ValidationSceneVerdict(BaseModel):
 class ValidationRoundMetadata(BaseModel):
     """What was executed, on what, from what — the reproducibility half.
 
-    Every field here exists because a past round could not be reproduced
-    without it. ``executed_sha`` + ``worktree_clean`` answer "which code ran";
-    ``overlay_built_at_ns`` answers "was the compiled overlay actually built
-    from that code"; ``sync_groups`` answers "which dependency set"; and
-    ``launcher_path`` answers "which checkout's entry point" — a round has been
-    lost to each of those questions.
+    Every field answers a "why couldn't we reproduce a past round" question:
+    which code ran, whether the overlay was built from it, which dependency
+    set, which entry point.
 
     Attributes:
-        round_id: Directory name of the round (``2026-08-22-master-1``).
+        round_id: Directory name of the round, e.g. ``"2026-08-22-master-1"``.
         started_at: ISO-8601 UTC timestamp the round began.
         host: Hostname of the validation runner.
         executed_sha: Full git SHA of the checkout that ran.
-        worktree_clean: Whether ``git status --porcelain`` was empty. ``None``
-            only for a round imported from before the harness recorded it —
-            ``run`` refuses to start on a dirty worktree, so a round it produced
-            is always ``True``.
-        overlay_built_at_ns: Modification time of the built ROS overlay, used
-            to prove it is not older than the checked-out sources.
+        worktree_clean: Whether ``git status --porcelain`` was empty; ``None``
+            only for pre-harness imports (``run`` refuses a dirty worktree).
+        overlay_built_at_ns: Modification time of the built ROS overlay, to
+            prove it isn't older than the sources.
         launcher_path: Absolute path of the ``openral`` entry point invoked.
         repo_root: Absolute path exported as ``OPENRAL_REPO_ROOT``.
         robot_manifest_path: Repo-relative path of the resolved robot manifest.
@@ -8569,36 +8345,23 @@ class ValidationRoundMetadata(BaseModel):
         sync_groups: Dependency groups the environment was synced with.
         stack_argv: The launch argv shared by every scene, verbatim.
         safety_overrides_absent: ``True`` only when the composed argv was
-            checked and found to contain no safety-knob override. A round is
-            refused rather than recorded with this ``False``.
-        collision_scale: The #188 graded-velocity band the kernel actually ran
-            with, when a round armed it. Empty means the shipped default —
-            disabled. This is recorded rather than refused, unlike an argv
-            safety-knob override, because arming the band *is* the point of the
-            A/B battery: what must never happen is a round that armed it and
-            cannot be told apart afterwards from one that did not. The band
-            arrives through ``OPENRAL_COLLISION_SCALE_*`` env vars, which
-            ``assert_no_safety_overrides`` cannot see — it inspects argv.
+            checked and carries no safety-knob override; a round is refused
+            rather than recorded ``False``.
+        collision_scale: The #188 graded-velocity band the kernel ran with,
+            when armed; empty = shipped default (disabled). Arrives via
+            ``OPENRAL_COLLISION_SCALE_*`` env vars, invisible to argv inspection.
         gpu_name: GPU the round ran on, when ``nvidia-smi`` was available.
         notes_path: Round-relative path of the human-readable notes.
-        scene_dirs: Scene key → the round-relative directory holding that
-            scene's artifacts. Empty means "same name as the scene key", which
-            is what the harness itself writes; a round imported from the
-            pre-harness layout carries the alias it was found under
-            (``{"baguette": "bag1"}``).
-        seed: The scene seed the whole round pinned. Read with
-            ``executed_sha``: two rounds are a *reproducibility* pair only when
-            both match — a seed-1-vs-seed-2 comparison at one SHA is a
-            before/after, and was once mislabelled as reproducibility.
-        artifact_stem: Filename stem of every per-scene artifact
-            (``run_deploy.log`` → ``"run"``). Pre-harness rounds used
-            ``"seed1"``.
-        imported_from: Absolute path of the pre-harness round directory this
-            round was imported from, when it was not produced by ``run``.
-        scene_pins: Scene ``runtime:`` keys the round pinned into its resolved
-            scene copies, because they have no CLI flag to pin them with —
-            ``{"enable_reasoner": False}`` for every round to date. Read with
-            ``stack_argv``: together they are the whole executed stack.
+        scene_dirs: Scene key → round-relative artifact directory; empty =
+            same name as the scene key.
+        seed: The scene seed the round pinned; read with ``executed_sha`` for
+            a true reproducibility pair (a seed mismatch is a before/after).
+        artifact_stem: Filename stem of every per-scene artifact; pre-harness
+            rounds used ``"seed1"``.
+        imported_from: Absolute path of the pre-harness round this was
+            imported from, if any.
+        scene_pins: Scene ``runtime:`` keys the round pinned (no CLI flag
+            exists for them); read with ``stack_argv`` for the whole executed stack.
 
     Example:
         >>> m = ValidationRoundMetadata(
