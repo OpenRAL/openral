@@ -499,11 +499,15 @@ Four things had to be discovered to make it run at all, each worth keeping:
       conservative first landing: ship the model as observability with
       suppression **off** and measure how often it *would* have explained a stop
       before giving up any protection.
-- [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
-      the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
-      cost dwarfs the drop it was chasing. The alternative is re-scoping it to
-      the single remaining suspect (#202's ACM retirement) rather than a full
-      bisect. Needs a human call.
+- [x] **Decide #217** — **done: closed COMPLETED 2026-09-06**, before this item
+      was written, which is why it lingered here. The #204 A/B ran at the size
+      the power analysis specified (60 runs per arm, alternating rounds) and came
+      back **null with teeth**: success 5.0 % vs 10.0 %, Fisher p = 0.491, at
+      0.85 power against a 25 %→5 % effect. #204 converted an *instrument* off
+      `mj_geomDistance` and never had a mechanism by which it would move
+      completions; it is off the suspect list. The closing comment carries the
+      full table.
+
 - [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`
       stops (94 %) would be recovered, median true clearance 16.2 mm; the 3 that
       correctly still stop are real penetration (−0.25, −2.02, −2.76 mm).
@@ -658,11 +662,24 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] ~~**NEW: the residual may be map inflation, not geometry.**~~ **Struck the
       same day it was raised** — the tripping cells contain the true surface
       point, so they are not displaced toward the sensor.
-- [ ] **Half of these scenes never reach the kernel.** Five of thirteen rounds
-      ended `deadline-no-grasp` — the policy never picked the object up. With
-      the ceiling result (0 % for `baguette` gate-off), this bounds how much of
-      the scorecard collision work can move at all, and argues for scene
-      selection being part of the programme rather than a fixed input.
+- [x] **Half of these scenes never reach the kernel — quantified 2026-09-08.**
+      Counted across all 26 rounds by where the round ends: `utensil` reaches the
+      carry phase in **27 %** of rounds (6/15 never grasp, 5/15 stop at reset),
+      `fridge` in **18 %** (7/11 never grasp). The carry phase holds 71 % of
+      stops and every stop ADR-0101 targets.
+
+      **This is a measurement-cost finding and it sizes every battery from here
+      on.** `utensil` yields 4 payload stops per 15 rounds, so ADR-0101's ~10
+      payload stops is **≈38 rounds, ~6 h wall clock** — budgeting that by round
+      count instead of by yield is exactly how a battery ends up underpowered,
+      which has happened on this page more than once.
+
+      Two things follow that are not collision work: the start-state class is
+      *cheaper* to measure than the carry class (18-33 % vs 18-27 %), so anything
+      testable there should be; and `deadline-no-grasp` is the biggest lever on
+      measurement throughput but is a **policy** property — no collision change
+      will ever be observed in those 40-64 % of rounds.
+
 - [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
       ADR's 94 % should be re-derived from post-fix rounds before implementation

@@ -2356,6 +2356,41 @@ stop and gone at the fastest. **n = 5 carry-phase stops**, which is thin — thi
 is the measurement to widen before a manifest edit, not the one to skip.
 
 
+### 2026-09-08 — the battery's carry-phase yield is 18–27 %, which is what every payload measurement really costs
+
+Across all 26 rounds on disk, counted by where the round actually ends:
+
+| scene | rounds | never grasped | stopped at reset | **reached carry** | completed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fridge` | 11 | 7 (64 %) | 2 (18 %) | **2 (18 %)** | 1 |
+| `utensil` | 15 | 6 (40 %) | 5 (33 %) | **4 (27 %)** | 0 |
+
+**Only one round in four reaches the phase the programme is about.** The carry
+phase holds 71 % of stops and every stop ADR-0101 targets, and a round arrives
+there only after the policy grasps *and* the arm clears its own start pose.
+
+This is a **measurement-cost** finding, not a collision one, and it explains why
+`n` has stayed thin through every battery on this page. Sizing follows directly:
+`utensil` yields **4 payload stops per 15 rounds**, so the ~10 payload stops
+ADR-0101's live-map re-derivation needs is **≈38 rounds**, about 6 hours of wall
+clock at ~10 min each. Budgeting that battery by round count rather than by
+yield is how it ends up underpowered.
+
+Three consequences worth separating:
+
+* **The start-state class is cheap to measure** — 18–33 % of rounds produce one,
+  against 18–27 % for carry. Anything testable against start-state stops should
+  be measured there first.
+* **`deadline-no-grasp` is the largest lever on measurement throughput**, and it
+  is a *policy* property, not a kernel one. 40–64 % of rounds spend ~7 minutes
+  each to tell us nothing about collision. Nothing in the collision programme
+  can reduce it, and no collision change will be observed in those rounds.
+* **`fridge` grasps worse than `utensil` (36 % vs 60 %) but completes better**
+  (1 vs 0). Neither scene is a good instrument on its own; `utensil` is the one
+  that reaches the carry phase most often and is where carry-phase batteries
+  should be weighted.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
