@@ -344,6 +344,58 @@ contributor should look at before adding similar code.
     OBB narrow phase, quietly losing the tightening), while raising it only in
     C++ leaves the extra budget unreachable.
 
+16. **`_load_manifest_for_spec` — *resolved.*** `backends/libero.py` carried an
+    identical copy of `policies/act.py`'s helper; `libero.py` now imports it
+    from `act.py` (both eagerly loaded by `openral_sim/__init__.py`, so no new
+    import-order cost). `_policy_loading.load_manifest_for_spec` stays the
+    separate canonical helper for `smolvla`/`gr00t`/`openvla`/`pi05`/`rldx` —
+    not touched, since it treats an empty `weights_uri` differently (`None`
+    vs. falling through to `load_rskill_manifest("")`).
+17. **`_coerce_sim_time_ns` / `_opt_num` — *resolved.*** Identical copies in
+    `backends/isaac_sim.py` and `backends/robotwin.py` promoted to
+    `sidecar.py::coerce_sim_time_ns` (decodes a sidecar wire reply — fits the
+    module's existing `require_key`/`SidecarClient` charter) and
+    `_sidecar_common.py::opt_num` (decodes `backend_options` launch config,
+    alongside the module's other sidecar-provisioning helpers).
+18. **`_env_bool` — *resolved.*** Identical copies in `policies/gr00t.py` and
+    `policies/rldx.py`; `rldx.py` now imports it from `gr00t.py` (no cycle —
+    both are leaf policy modules already eagerly registered together).
+19. **`_sensor_name_to_slot` / `_sensor_name_to_vla_slot` — *resolved.***
+    Identical bodies in `openral_runner.dataset_recorder_bridge` and
+    `openral_rskill_ros.rskill_runner_node`; the ROS package already
+    `exec_depend`s `python3-openral-runner`, so `rskill_runner_node` now
+    imports the runner's copy instead of carrying its own.
+20. **`UsbDevice` / `UsbDeviceRecord` — *not consolidated, deliberately
+    different types.*** `openral_cli.autodetect.UsbDevice` is a `NamedTuple`
+    (lightweight, hot in OS-probing loops); `openral_detect.report.UsbDeviceRecord`
+    is a Pydantic `BaseModel` (CLAUDE.md §2's contract for the JSON/YAML report
+    boundary). Same fields, same reason to stay two types.
+21. **`camera_info_from_intrinsics` — *not consolidated, illegal import.***
+    `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry
+    near-identical builders, but `openral_perception_ros/package.xml` does not
+    depend on `openral_hal` (only `python3-openral-runner`), so the ROS
+    package cannot legally import the HAL's copy without a new dependency.
+22. **Test scaffolding — *resolved via fixtures.*** `_av` (3 copies,
+    `python/observability/tests/`), `_find_metric` (2 copies, same dir),
+    `_zero_frame` (2 copies, `python/dataset/tests/`), `_build_so101_hal` (2
+    copies, `python/hal/tests/`) each moved into their tier's `conftest.py` as
+    a fixture returning the callable (`--import-mode=importlib` blocks
+    `from conftest import x`). `_import_launch_module` (2 of 7 copies —
+    `test_kernel_params_no_empty_lists.py` / `test_no_dashboard_otlp_env.py`
+    only, per scope) moved to a new same-package
+    `packages/openral_rskill_ros/test/_launch_test_common.py` +
+    sys.path-injecting `conftest.py`, mirroring `python/hal/tests/conftest.py`.
+    Five more `_import_launch_module` copies remain in sibling
+    `test_sim_e2e_*.py` files — out of this pass's scope, worth a follow-up.
+
+23. **Reward-monitor `assess()` — *resolved.*** `RobometerInProcessReward.assess`
+    (`backends/reward/robometer_reward.py`) and `TOPRewardMonitor.assess`
+    (`backends/reward/topreward_reward.py`) carried identical bodies (and each
+    its own copy of `_STALL_TREND_EPS = 0.002`). Both now call
+    `frame_source.assess_from_score(progress, success, *, success_threshold,
+    frames_seen)`, the module `trend` already lived in and both files already
+    imported from.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer

@@ -67,9 +67,10 @@ def _sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]
     """Map each RGB sensor NAME to its VLA slot (``camera1`` / ``camera2`` / ...).
 
     The aggregator keys ``image_frames`` by sensor name; the dataset sink
-    keys images by the slot (``vla_feature_key`` suffix). Mirrors
-    ``rskill_runner_node._sensor_name_to_vla_slot`` but kept local so the
-    Layer-5 runner package does not import the Layer-3 ROS skill package.
+    keys images by the slot (``vla_feature_key`` suffix). Canonical copy —
+    ``rskill_runner_node`` imports this (``openral_rskill_ros`` already
+    depends on ``openral_runner``); the reverse direction stays forbidden
+    (CLAUDE.md §3).
     """
     if description is None:
         return {}

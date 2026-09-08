@@ -38,11 +38,11 @@ Run::
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 
 import pytest
+from _launch_test_common import import_launch_module as _import_launch_module
 
 # ── Guards ───────────────────────────────────────────────────────────────────
 
@@ -69,26 +69,9 @@ _FIXED_BASE_ROBOTS = ["openarm", "so101_follower", "franka_panda"]
 _MOBILE_BASE_ROBOTS = ["panda_mobile"]
 
 
-def _import_launch_module() -> object:
-    """Load ``sim_e2e.launch.py`` as a Python module via importlib.
-
-    The launch file lives outside the package's importable Python tree (it
-    is installed to ``share/openral_rskill_ros/launch/`` by ament_python),
-    so a normal ``from openral_rskill_ros.launch.sim_e2e import …`` is not
-    available. Load the source file directly — this is the same pattern
-    ``test_franka_scene_attach.launch.py`` follows for its launch-side
-    imports.
-    """
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch", _LAUNCH_FILE)
-    assert spec is not None and spec.loader is not None, f"failed to spec {_LAUNCH_FILE}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
     """Digital twins use exact overlap; real hardware retains the 2 cm margin."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._world_voxel_margin_m("sim") == 0.0
     assert module._world_voxel_margin_m("real") == 0.02
@@ -96,7 +79,7 @@ def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
 
 def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     """Sim rejects one-frame voxels; real mapping keeps its current threshold."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._octomap_occupancy_threshold("sim") == 0.8
     assert module._octomap_occupancy_threshold("real") == 0.6
@@ -104,7 +87,7 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
 
 def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
     """Sim has an attachment heartbeat; real remains off until its manager lands."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._attached_collision_enabled("sim") is True
     assert module._attached_collision_enabled("real") is False
@@ -125,7 +108,7 @@ def _make_launch_context(robot_yaml: Path) -> object:
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
     # The required (default-less) arguments must be present before the
@@ -167,7 +150,7 @@ def _safety_kernel_params(robot_id: str) -> dict[str, object]:
     from launch_ros.actions import LifecycleNode
     from launch_ros.utilities import evaluate_parameters
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
     entities = module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
 
@@ -262,7 +245,7 @@ def test_collision_scale_is_absent_unless_the_operator_asks(
     disables the band and reproduces the pre-#188 republish exactly. This
     launch must not quietly supply some other value.
     """
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", raising=False)
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
@@ -274,7 +257,7 @@ def test_collision_scale_params_are_forwarded_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The A/B battery's seam: the three env vars reach the kernel as floats."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0.05")
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_K", "20")
@@ -296,7 +279,7 @@ def test_an_unparseable_collision_scale_arms_nothing(
     silently arming an enforcement surface at a number nobody chose is worse
     than leaving it off.
     """
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0,05")
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)

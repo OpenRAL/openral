@@ -43,12 +43,12 @@ Run::
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _launch_test_common import import_launch_module as _import_launch_module
 
 # ── Guards ───────────────────────────────────────────────────────────────────
 
@@ -73,26 +73,12 @@ _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_
 _REPRESENTATIVE_ROBOT = "openarm"
 
 
-def _import_launch_module() -> Any:
-    """Load ``sim_e2e.launch.py`` as a Python module via importlib.
-
-    Duplicated from ``test_kernel_params_no_empty_lists.py`` to keep
-    each test file self-contained; consolidation into a shared helper
-    can wait until a third test file needs the same scaffolding.
-    """
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch", _LAUNCH_FILE)
-    assert spec is not None and spec.loader is not None, f"failed to spec {_LAUNCH_FILE}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _make_launch_context(*, enable_dashboard: bool, enable_reasoner: bool = True) -> Any:
     """Return a launch context populated from the launch's own declarations."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
     # Required CLI-provided arguments have no defaults.
@@ -128,7 +114,7 @@ def _collect_additional_envs(*, enable_dashboard: bool) -> list[tuple[str, dict[
     from launch.utilities import perform_substitutions
     from launch_ros.actions import LifecycleNode, Node
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(enable_dashboard=enable_dashboard)
     entities = module.compose_runtime_graph(ctx)
 
@@ -212,7 +198,7 @@ def test_reasoner_uses_model_first_env() -> None:
 def test_direct_rskill_mode_omits_reasoner_and_prompt_router() -> None:
     from launch_ros.actions import LifecycleNode, Node
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(enable_dashboard=False, enable_reasoner=False)
     entities = module.compose_runtime_graph(ctx)
     packages = {

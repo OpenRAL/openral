@@ -33,6 +33,28 @@ import shutil
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TypeVar
+
+_Num = TypeVar("_Num", int, float)
+
+
+def opt_num(
+    opts: dict[str, object], key: str, default: _Num, cast: Callable[[int | float | str], _Num]
+) -> _Num:
+    """Coerce a ``backend_options`` value (typed ``object``) via ``cast``, else default.
+
+    Returns ``default`` for a missing key, a ``bool`` (an ``int`` subclass we do
+    not want silently accepted), a non-scalar type, OR an unparseable scalar
+    (e.g. ``port: "auto"`` → ``ValueError`` → ``default``) — never raises.
+    """
+    value = opts.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        return cast(value)
+    except (ValueError, TypeError):
+        return default
+
 
 # Where each booted sidecar records *what* it is serving, so the openral-side
 # adapter can refuse to silently reuse a sidecar that belongs to a different

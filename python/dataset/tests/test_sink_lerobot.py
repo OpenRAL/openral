@@ -45,22 +45,14 @@ pytest.importorskip(
 )
 
 
-def _zero_frame(robot: RobotDescription) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
-    state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
-    action = np.zeros(robot.action_spec.dim, dtype=np.float32)
-    # Frame shape MUST match SensorSpec.intrinsics — SO-100
-    # declares 256x256 for both cameras.
-    images = {
-        "camera1": np.zeros((256, 256, 3), dtype=np.uint8),
-        "camera2": np.zeros((256, 256, 3), dtype=np.uint8),
-    }
-    return state, images, action
+_ZeroFrame = Callable[[RobotDescription], tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
 
 
 def test_sink_round_trip_two_episodes(
     so100_robot: RobotDescription,
     tmp_path: Path,
     require_video_decode: Callable[[], None],
+    _zero_frame: _ZeroFrame,
 ) -> None:
     """Write two episodes (one success, one failure) and reload."""
     root = tmp_path / "ds"
@@ -123,7 +115,9 @@ def test_sink_round_trip_two_episodes(
     assert float(row2["next.reward"].item()) == pytest.approx(2.0)
 
 
-def test_sink_writes_dataset_success_rate(so100_robot: RobotDescription, tmp_path: Path) -> None:
+def test_sink_writes_dataset_success_rate(
+    so100_robot: RobotDescription, tmp_path: Path, _zero_frame: _ZeroFrame
+) -> None:
     """meta/info.json carries the dataset-level success rate aggregate."""
     import json
 
@@ -151,7 +145,7 @@ def test_sink_writes_dataset_success_rate(so100_robot: RobotDescription, tmp_pat
 
 
 def test_sink_camera_shape_comes_from_intrinsics(
-    so100_robot: RobotDescription, tmp_path: Path
+    so100_robot: RobotDescription, tmp_path: Path, _zero_frame: _ZeroFrame
 ) -> None:
     """Camera shapes are taken from SensorSpec.intrinsics, not the first frame.
 
@@ -243,7 +237,7 @@ def _read_parquet_rows(root: Path) -> list[dict[str, object]]:
 
 
 def test_sink_writes_per_frame_trace_and_span_ids(
-    so100_robot: RobotDescription, tmp_path: Path
+    so100_robot: RobotDescription, tmp_path: Path, _zero_frame: _ZeroFrame
 ) -> None:
     """ISSUE-109: a written LeRobotDataset frame carries the producing tick's ids.
 
@@ -285,7 +279,7 @@ def test_sink_writes_per_frame_trace_and_span_ids(
 
 
 def test_sink_writes_dataset_and_episode_level_trace_pointers(
-    so100_robot: RobotDescription, tmp_path: Path
+    so100_robot: RobotDescription, tmp_path: Path, _zero_frame: _ZeroFrame
 ) -> None:
     """ISSUE-109 follow-up: meta carries dataset- and episode-level trace pointers.
 

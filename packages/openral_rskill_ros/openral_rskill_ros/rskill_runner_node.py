@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from openral_runner.dataset_recorder_bridge import _sensor_name_to_slot as _sensor_name_to_vla_slot
 
 if TYPE_CHECKING:
     from openral_core.schemas import RobotDescription
@@ -2364,36 +2365,6 @@ def make_local_skill_resolver(
         )
 
     return _resolver
-
-
-def _sensor_name_to_vla_slot(description: RobotDescription | None) -> dict[str, str]:
-    """Map each RGB sensor's NAME to its VLA observation slot.
-
-    Deploy-sim keys ``WorldState.image_frames`` (and the topic basename
-    ``/openral/cameras/<name>/image``) by the manifest sensor NAME, but
-    VLA adapters look up ``obs["images"]`` by the VLA slot — ``camera1``
-    / ``camera2`` / ... — the LIBERO convention ``openral sim run`` and the
-    rldx adapter already use. This map realigns the two so a manifest
-    whose RGB sensors are descriptively named (franka: ``agentview`` /
-    ``wrist``) still feeds the adapter ``camera1`` / ``camera2``.
-
-    The slot is the ``vla_feature_key`` suffix
-    (``observation.images.camera1`` -> ``camera1``); sensors without a
-    ``vla_feature_key`` fall back to their own name (robocasa real-name
-    keys, where the sensor name already IS the slot). Mirrors
-    ``openral_hal.sim_sensor_bridge._obs_key_for_sensor`` — kept local
-    because a Layer-3 skill package must not import the Layer-0 HAL
-    (CLAUDE.md §3).
-    """
-    if description is None:
-        return {}
-    out: dict[str, str] = {}
-    for sensor in description.sensors:
-        if getattr(sensor, "modality", None) != "rgb":
-            continue
-        vfk = getattr(sensor, "vla_feature_key", None)
-        out[sensor.name] = str(vfk).rsplit(".", 1)[-1] if vfk else sensor.name
-    return out
 
 
 def _vla_camera_slots(description: RobotDescription | None) -> tuple[str, ...]:

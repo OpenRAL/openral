@@ -54,19 +54,20 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import opt_num as _opt_num
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
 from openral_sim.sidecar import SidecarClient
+from openral_sim.sidecar import coerce_sim_time_ns as _coerce_sim_time_ns
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription, SceneSpec, SensorSpec, SimEnvironment, TaskSpec
@@ -160,22 +161,6 @@ _MAX_PHYSICAL_GRIPPER_TRAVEL_M = 0.1
 
 
 # ── SimRollout adapter ────────────────────────────────────────────────────────
-
-
-def _coerce_sim_time_ns(value: object) -> int | None:
-    """Coerce an optional wire ``sim_time_ns`` (int / float / None) to ``int | None``.
-
-    The sidecar's msgpack reply carries sim time as a plain number (or omits it
-    on an older protocol); anything non-numeric degrades to ``None`` so the HAL
-    simply publishes no ``/clock`` rather than crashing.
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return None
 
 
 @dataclass
@@ -295,27 +280,6 @@ class _IsaacSimSidecar:
 
 
 # ── factory ───────────────────────────────────────────────────────────────────
-
-
-_Num = TypeVar("_Num", int, float)
-
-
-def _opt_num(
-    opts: dict[str, object], key: str, default: _Num, cast: Callable[[int | float | str], _Num]
-) -> _Num:
-    """Coerce a ``backend_options`` value (typed ``object``) via ``cast``, else default.
-
-    Returns ``default`` for a missing key, a ``bool`` (an ``int`` subclass we do
-    not want silently accepted), a non-scalar type, OR an unparseable scalar
-    (e.g. ``port: "auto"`` → ``ValueError`` → ``default``) — never raises.
-    """
-    value = opts.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return default
-    try:
-        return cast(value)
-    except (ValueError, TypeError):
-        return default
 
 
 def _provision_isaac_venv() -> Path:

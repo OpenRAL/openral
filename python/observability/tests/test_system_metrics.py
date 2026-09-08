@@ -11,6 +11,7 @@ least ``psutil`` so CI runners install it.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import pytest
 from openral_observability import semconv
@@ -23,20 +24,9 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 pytest.importorskip("psutil")
 
 
-def _find_metric(reader: InMemoryMetricReader, name: str) -> object | None:
-    data = reader.get_metrics_data()
-    if data is None:
-        return None
-    for resource_metric in data.resource_metrics:
-        for scope_metric in resource_metric.scope_metrics:
-            for metric in scope_metric.metrics:
-                if metric.name == name:
-                    return metric
-    return None
-
-
 def test_collector_emits_cpu_and_ram_gauges(
     memory_metric_reader: InMemoryMetricReader,
+    _find_metric: Callable[[InMemoryMetricReader, str], object | None],
 ) -> None:
     """The sampler updates the ``openral.system.cpu`` / ``ram`` gauges within ~1.5 s."""
     started = start_system_metrics_collector(interval_s=0.1)
@@ -140,6 +130,7 @@ def _instruments() -> dict[str, object]:
 
 def test_unsupported_memory_query_does_not_cost_the_gpu_util_metric(
     memory_metric_reader: InMemoryMetricReader,
+    _find_metric: Callable[[InMemoryMetricReader, str], object | None],
 ) -> None:
     """An unsupported memory query must not take utilisation down with it.
 

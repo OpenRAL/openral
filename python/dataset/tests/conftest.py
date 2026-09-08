@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pytest
 from openral_core import RobotDescription
 
@@ -49,6 +50,31 @@ def aloha_robot(repo_root: Path) -> RobotDescription:
     SO-100-specific.
     """
     return RobotDescription.from_yaml(str(repo_root / "robots" / "aloha_bimanual" / "robot.yaml"))
+
+
+_ZeroFrame = Callable[[RobotDescription], tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
+
+
+@pytest.fixture
+def _zero_frame() -> _ZeroFrame:
+    """Return a builder for an all-zero (state, images, action) frame for ``robot``.
+
+    Camera frame shape (256x256) MUST match ``SensorSpec.intrinsics`` — SO-100
+    declares 256x256 for both cameras.
+    """
+
+    def _zero_frame(
+        robot: RobotDescription,
+    ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+        state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
+        action = np.zeros(robot.action_spec.dim, dtype=np.float32)
+        images = {
+            "camera1": np.zeros((256, 256, 3), dtype=np.uint8),
+            "camera2": np.zeros((256, 256, 3), dtype=np.uint8),
+        }
+        return state, images, action
+
+    return _zero_frame
 
 
 @pytest.fixture

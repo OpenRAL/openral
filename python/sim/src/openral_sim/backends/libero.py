@@ -28,6 +28,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
+from openral_sim.policies.act import _load_manifest_for_spec
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
 
@@ -41,21 +42,6 @@ if TYPE_CHECKING:
 
 
 _LIBERO_SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
-
-
-def _load_manifest_for_spec(spec: Any) -> Any:
-    """Load the rSkill manifest from ``spec.weights_uri`` (bare rSkill reference).
-
-    Mirrors :func:`openral_sim.policies.act._load_manifest_for_spec`. Returns
-    ``None`` for explicit-scheme URIs (``hf://`` etc.) which carry no local
-    manifest, so a raw-repo VLASpec still works.
-    """
-    weights_uri = str(getattr(spec, "weights_uri", "") or "")
-    if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
-        return None
-    from openral_rskill.loader import load_rskill_manifest
-
-    return load_rskill_manifest(weights_uri)
 
 
 def _resolve_control_mode(env_cfg: SimEnvironment) -> str:

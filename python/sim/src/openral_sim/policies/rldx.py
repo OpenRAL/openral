@@ -128,6 +128,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
 
 from openral_sim.policies._policy_loading import load_manifest_for_spec
+from openral_sim.policies.gr00t import _env_bool
 from openral_sim.registry import POLICIES
 
 if TYPE_CHECKING:
@@ -1760,14 +1761,6 @@ def _rldx_gripper_to_libero(gripper: NDArray[np.float32]) -> NDArray[np.float32]
     g = np.asarray(gripper, dtype=np.float32)
     out: NDArray[np.float32] = (-np.sign(2.0 * g - 1.0)).astype(np.float32)
     return out
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    """Parse a permissive bool env var (``1`` / ``true`` / ``yes``)."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Back-compat alias: the adapter was named for RLDX-1 (which landed first) before

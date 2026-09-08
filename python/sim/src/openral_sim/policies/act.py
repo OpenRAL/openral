@@ -53,9 +53,9 @@ if TYPE_CHECKING:
 def _load_manifest_for_spec(spec: Any) -> Any:
     """Load the rSkill manifest from ``spec.weights_uri`` (bare rSkill reference).
 
-    Mirrors :func:`openral_sim.policies.smolvla._load_manifest_for_spec`.
-    Returns ``None`` for explicit-scheme URIs (``hf://``, ``local://``,
-    etc.) so legacy tests that construct such a ``weights_uri`` still work.
+    Also used by :mod:`openral_sim.backends.libero`. Returns ``None`` for
+    explicit-scheme URIs (``hf://``, ``local://``, etc.) so legacy tests that
+    construct such a ``weights_uri`` still work.
     """
     weights_uri = str(getattr(spec, "weights_uri", "") or "")
     if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):

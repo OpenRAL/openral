@@ -140,6 +140,22 @@ def require_key(reply: dict[str, Any], key: str, *, name: str) -> Any:
     return reply[key]
 
 
+def coerce_sim_time_ns(value: object) -> int | None:
+    """Coerce an optional wire ``sim_time_ns`` (int / float / None) to ``int | None``.
+
+    Anything non-numeric (or an omitted, older-protocol field) degrades to
+    ``None`` so a HAL backed by this sidecar simply publishes no ``/clock``
+    rather than crashing.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
 @dataclass
 class SidecarClient:
     """Owns a ZMQ REQ socket + an optional child sidecar process.
