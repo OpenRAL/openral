@@ -11,6 +11,7 @@ No mocks (CLAUDE.md §1.11). The CLI is exercised via Typer's
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -2497,11 +2498,23 @@ def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
 
     Anchors on the indented runtime keys, which appear once each; the same
     words also occur in the scene's comment header and must stay untouched.
+
+    Both the enable flag and any pinned ``octomap_cloud_topic`` are rewritten
+    from whatever the committed scene currently says, rather than replacing one
+    known literal. These tests assert what ``resolve_launch_invocation`` does
+    with a *given* octomap posture, so they must set that posture outright: when
+    the fixture anchored on ``enable_octomap: false`` and the scene was later
+    turned on with a pinned cloud topic, the replace silently no-ops and the
+    "unpinned" case inherited the scene's pin — failing a test about the
+    resolver for a reason that had nothing to do with the resolver.
     """
     text = (_REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml").read_text(
         encoding="utf-8"
     )
-    text = text.replace("\n  enable_octomap: false\n", f"\n  enable_octomap: true\n{extra}")
+    text = re.sub(r"\n  octomap_cloud_topic:[^\n]*\n", "\n", text)
+    text = re.sub(
+        r"\n  enable_octomap: (?:true|false)\n", f"\n  enable_octomap: true\n{extra}", text
+    )
     scene = tmp_path / "openarm_octomap.yaml"
     scene.write_text(text, encoding="utf-8")
     return scene
