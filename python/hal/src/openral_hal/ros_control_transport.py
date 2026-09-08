@@ -374,7 +374,10 @@ def _message_type(kind: ControllerKind) -> type:
     """Return the ROS message class one `ControllerKind` is commanded with.
 
     Imported at call time so this module still imports without a ROS 2
-    installation (unit tests, docs builds, CI lanes with no rclpy).
+    installation (unit tests, docs builds, CI lanes with no rclpy). Each class is
+    bound to an explicitly annotated local on the way out: with no ROS 2 install
+    to import from, mypy sees these as `Any`, and returning `Any` from a
+    `-> type` function is exactly what `--strict` rejects.
 
     Raises:
         ROSConfigError: For a kind with no message mapping. Unreachable while
@@ -384,14 +387,17 @@ def _message_type(kind: ControllerKind) -> type:
     """
     from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
 
+    message_type: type
     if kind is ControllerKind.JOINT_TRAJECTORY:
         from trajectory_msgs.msg import JointTrajectory  # noqa: PLC0415  # reason: ROS-only dep
 
-        return JointTrajectory
+        message_type = JointTrajectory
+        return message_type
     if kind is ControllerKind.FORWARD_COMMAND:
         from std_msgs.msg import Float64MultiArray  # noqa: PLC0415  # reason: ROS-only dep
 
-        return Float64MultiArray
+        message_type = Float64MultiArray
+        return message_type
     raise ROSConfigError(  # pragma: no cover - guarded by test_every_controller_kind_maps
         f"RosControlTransport has no message type for ControllerKind {kind!r}. "
         "Add one here in the same change that adds the enum member."
