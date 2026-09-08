@@ -426,10 +426,29 @@ Four things had to be discovered to make it run at all, each worth keeping:
       Not sufficient alone (the two clear start-state stops are +22 to +23 mm)
       and it composes with lever 2 rather than competing.
 
-      **Not yet actionable.** What is measured is the kernel *consuming* a grid.
-      `packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
-      resolution is unmeasured, and it is the other half of the cost. That
-      measurement is the next step on this lever, not a manifest edit.
+      **Producer measured 2026-09-08 — it is not the obstacle either.**
+      `test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`, real
+      octree, real rasterizer: **1.60 ms at 15 mm** against a 100 ms publish
+      period, from 0.88 ms at 25 mm. Nearly flat, for the same reason the
+      consumer was — the marking loop iterates occupied leaves, a *surface*,
+      while only the dense buffer scales with volume. **12.5 mm is refused
+      outright** by `octree_to_grid.cpp`'s `kMaxCells = 4 000 000` guard, so it
+      needs that raised; 15 mm does not.
+
+      **And a correction to this item, which was also mine.** The un-strike
+      claimed 15 mm "needs no change to `world_voxel_max_cells`; it is 376 680
+      cells", dismissing §5's 2.8 M as a whole-kitchen grid. Both halves wrong:
+      the ball is sized by the arm's reach (`_octomap_coverage_radius` measures
+      1016 mm, ships 1.05 m), so 15 mm needs **141³ = 2 803 221** cells and §5's
+      original figure was right. The cap consequence is real — a kernel still
+      reserving 614 125 rejects every grid, which reads as "no world" and is a
+      **fail-open on the world check**. `_world_voxel_max_cells` now derives the
+      cap from the resolution, which is what makes the lever safe to pull.
+
+      **One term left: message size.** 2.8 M cells is a 2.8 MB dense `uint8[]`
+      per publish at 10 Hz — 28 MB/s over DDS against 6 MB/s today. Neither the
+      transport cost nor its effect on the kernel's own deadline is measured.
+      That is the last thing between here and a manifest edit.
 - [x] **Drop `baguette` from the collision scorecard** — recorded 2026-09-07 in
       the ceiling entry of `docs/reference/collision-validation-evidence.md`:
       0/11 with the gate **off**, so it is policy-bound and cannot report on
