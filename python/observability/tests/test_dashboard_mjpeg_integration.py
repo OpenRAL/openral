@@ -43,7 +43,10 @@ def _wait_healthy(timeout: float = 10.0) -> bool:
             resp = urllib.request.urlopen(f"{_BASE}/healthz", timeout=0.5)
             if resp.status == 200:
                 return True
-        except Exception:
+        except OSError:
+            # Connection refused / reset / timed out while uvicorn is still
+            # coming up — urlopen wraps all of these in OSError subclasses
+            # (URLError, HTTPError, socket.timeout).
             pass
         time.sleep(0.1)
     return False

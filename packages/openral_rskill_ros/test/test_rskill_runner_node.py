@@ -201,7 +201,9 @@ def _compose_harness(
                 node.trigger_deactivate()
                 node.trigger_cleanup()
                 node.trigger_shutdown()
-            except Exception:  # reason: best-effort teardown
+            except RuntimeError:
+                # RCLError/InvalidHandle from a transition attempted after
+                # an earlier failure — best-effort teardown.
                 pass
         executor.shutdown()
         helper.destroy_node()

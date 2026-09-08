@@ -269,7 +269,9 @@ def _digital_twin_harness() -> Iterator[tuple[Any, Any, Any, Any, Any, list[Any]
                 node.trigger_deactivate()
                 node.trigger_cleanup()
                 node.trigger_shutdown()
-            except Exception:
+            except RuntimeError:
+                # RCLError/InvalidHandle from a transition attempted after an
+                # earlier failure — both subclass RuntimeError; best-effort teardown.
                 pass
         with suppress(Exception):
             hal_adapter.disconnect()

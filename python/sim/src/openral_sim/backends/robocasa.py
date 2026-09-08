@@ -845,8 +845,13 @@ class _RoboCasaSim:
                     env_lang = em.get("lang")
                     if isinstance(env_lang, str) and env_lang.strip():
                         task_lang = env_lang
-            except Exception:  # reason: defensive — never crash obs assembly on lang lookup
-                pass
+            except Exception as exc:
+                # reason: defensive — RoboCasa's get_ep_meta() has no
+                # documented exception contract; never crash obs assembly
+                # on lang lookup.
+                import structlog
+
+                structlog.get_logger(__name__).debug("robocasa_get_ep_meta_failed", error=repr(exc))
         obs: Observation = {
             "images": images,
             "state": state,

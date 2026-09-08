@@ -110,7 +110,9 @@ def _lifecycle_harness(
         try:
             node.trigger_deactivate()
             node.trigger_cleanup()
-        except Exception:
+        except RuntimeError:
+            # RCLError/InvalidHandle from a transition attempted after an
+            # earlier failure — both subclass RuntimeError; best-effort teardown.
             pass
         executor.remove_node(helper)
         helper.destroy_node()
@@ -465,7 +467,9 @@ def test_on_image_emits_sensors_read_latest_span(
         try:
             node.trigger_deactivate()
             node.trigger_cleanup()
-        except Exception:
+        except RuntimeError:
+            # RCLError/InvalidHandle from a transition attempted after an
+            # earlier failure — both subclass RuntimeError; best-effort teardown.
             pass
         executor.remove_node(helper)
         helper.destroy_node()
@@ -558,7 +562,9 @@ def test_dashboard_flip_180_never_touches_the_policy_frame(
         try:
             node.trigger_deactivate()
             node.trigger_cleanup()
-        except Exception:
+        except RuntimeError:
+            # RCLError/InvalidHandle from a transition attempted after an
+            # earlier failure — both subclass RuntimeError; best-effort teardown.
             pass
         executor.remove_node(helper)
         helper.destroy_node()

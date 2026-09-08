@@ -286,7 +286,9 @@ def _object_lift_harness(
         try:
             node.trigger_deactivate()
             node.trigger_cleanup()
-        except Exception:
+        except RuntimeError:
+            # RCLError/InvalidHandle from a transition attempted after an
+            # earlier failure — both subclass RuntimeError; best-effort teardown.
             pass
         executor.remove_node(helper)
         helper.destroy_node()

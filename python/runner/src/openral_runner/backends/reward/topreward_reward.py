@@ -23,11 +23,14 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_runner.backends.reward.frame_source import Frame
+
+log = structlog.get_logger(__name__)
 
 
 class TOPRewardMonitor:
@@ -200,8 +203,10 @@ class TOPRewardMonitor:
                 import torch  # noqa: PLC0415
 
                 torch.cuda.empty_cache()
-            except Exception:  # pragma: no cover — torch optional / no CUDA
-                pass
+            except Exception as exc:  # pragma: no cover — torch optional / no CUDA
+                # torch's CUDA teardown has no documented exception contract
+                # (RuntimeError, or AttributeError mid interpreter shutdown).
+                log.debug("topreward_reward.close_failed", error=repr(exc))
 
 
 def build_topreward_monitor(manifest: RSkillManifest, *, device: str = "cuda") -> TOPRewardMonitor:
