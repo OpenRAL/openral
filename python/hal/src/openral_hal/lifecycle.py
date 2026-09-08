@@ -365,6 +365,9 @@ if _ROS2_AVAILABLE:
             self._timer: Any = None
             self._publisher: Any = None
             self._joint_state_pub: Any = None
+            #: Live ros2_control bridge for a real-HW `RosControlHAL`; None for
+            #: sim HALs and for robots that own their own bus (SO-100/SO-101).
+            self._ros_control_transport: Any = None
             self._policy_state_pub: Any = None
             # Identity of the last ProprioFrame whose policy_state was
             # published. Frames are immutable and freshly constructed per
@@ -1496,6 +1499,7 @@ if _ROS2_AVAILABLE:
             service — the call site falls back to its no-op exactly as today.
             """
             assert self._hal is not None
+            self._attach_ros_control_transport()
             if not callable(getattr(self._hal, "reset_to_pose", None)):
                 return TransitionCallbackReturn.SUCCESS
             from pathlib import Path
@@ -1521,6 +1525,56 @@ if _ROS2_AVAILABLE:
             )
             self.get_logger().info(f"ResetToPose service ready at {topic}")
             return TransitionCallbackReturn.SUCCESS
+
+        def _attach_ros_control_transport(self) -> None:
+            """Give a real ros2_control HAL the live transport it cannot build itself.
+
+            ``build_hal`` runs before any ROS node exists, so a real
+            ``RosControlHAL`` is constructed with no ``publish_fn``/``state_fn``
+            and would otherwise publish into ``_default_publish``, a no-op
+            logger — commands dropped, state read back as zeros. Reflecting on
+            the HAL here (the same idiom ``on_configure_post_hal`` uses for
+            ``reset_to_pose``) wires every robot in that family at once:
+            OpenArm, UR5e, UR10e, Franka, Sawyer, and any future one, with no
+            per-robot code. The serial arms (SO-100/SO-101) own their bus and
+            are correctly skipped by the isinstance check.
+            """
+            from openral_hal.ros_control import RosControlHAL
+
+            hal = self._hal
+            if not isinstance(hal, RosControlHAL):
+                return
+            hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
+            if hal_mode != "real":
+                return
+
+            from openral_hal.ros_control_transport import RosControlTransport
+
+            transport = RosControlTransport(
+                self,
+                command_topics=hal.command_topics(),
+                joint_names=hal.ros2_control_joint_names(),
+                joint_state_topic=hal.joint_state_topic,
+            )
+            hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
+            self._ros_control_transport = transport
+
+            # The vendor's `joint_state_broadcaster` owns the global
+            # `/joint_states` on real hardware, and the transport now reads it.
+            # Echoing the HAL's own view back onto the same topic would both
+            # feed this node its own output and let a zero-filled state
+            # overwrite the real robot's for every other subscriber (the
+            # world_state aggregator reads exactly this topic). Drop the global
+            # publisher and keep the namespaced `~/joint_states`, which
+            # collides with nothing.
+            if self._joint_state_pub is not None:
+                self.destroy_publisher(self._joint_state_pub)
+                self._joint_state_pub = None
+            self.get_logger().info(
+                f"ros2_control transport attached: {len(hal.command_topics())} command "
+                f"topic(s), reading {hal.joint_state_topic}; global /joint_states left to "
+                "the controller's joint_state_broadcaster."
+            )
 
         def _handle_reset_to_pose(self, request: object, response: object) -> object:
             """Forward ``request.pose`` to ``self._hal.reset_to_pose``.

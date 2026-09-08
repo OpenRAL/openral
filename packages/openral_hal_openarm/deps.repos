@@ -1,0 +1,27 @@
+# Pinned external ROS sources for the OpenArm v2 real-hardware bringup
+# (`launch/openarm_real_bringup.launch.py`). Sim needs none of this — the MuJoCo twin
+# (`openral_hal.openarm.OpenArmMujocoHAL`) is pure Python.
+#
+# These SHAs are the combination validated together on real CAN hardware (Jetson Thor and
+# Orin, 2026-09-08) — do not bump one without re-validating on hardware.
+# `openarm_description` also needs `patches/0001-openarm-v20-forward-can-interface-args.patch`
+# applied after checkout (see this package's README); it is not yet upstreamed.
+#
+# Import into a colcon workspace's `src/` with:
+#   vcs import src < packages/openral_hal_openarm/deps.repos
+#   git apply --directory=src/openarm_description \
+#       packages/openral_hal_openarm/patches/0001-openarm-v20-forward-can-interface-args.patch
+#   colcon build --packages-up-to openarm_bringup
+repositories:
+  openarm_description:
+    type: git
+    url: https://github.com/enactic/openarm_description.git
+    version: 6c7b720f1ba48e8bafa3a3dc752c45f397b42221
+  openarm_ros2:
+    type: git
+    url: https://github.com/enactic/openarm_ros2.git
+    version: 4e837e1d0dae692ff67b560b69d8d281d7a8d4ed
+  openarm_can:
+    type: git
+    url: https://github.com/enactic/openarm_can.git
+    version: b001148e69e6752b6ec2c8480903b94ad95200b4
