@@ -64,7 +64,41 @@ if TYPE_CHECKING:
 from lifecycle_msgs.msg import Transition
 from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+def _resolve_repo_root() -> pathlib.Path:
+    """Locate the repo root from wherever this launch file is running.
+
+    ``parents[3]`` is correct only from the source tree
+    (``<repo>/packages/openral_rskill_ros/launch/``). ``ros2 launch`` resolves
+    the file through the ament index, so it normally runs from the *installed*
+    copy at ``<repo>/install/share/openral_rskill_ros/launch/`` — where the same
+    index lands on ``<repo>/install`` and every path built from it
+    (``tools/lifecycle_autostart.py``, ``rskills/``, ``.venv/bin/openral``)
+    points at a directory that does not exist. A `--symlink-install` layout
+    resolves back through the symlink to the source tree and hides this, which
+    is why it survived: it only bites on a copied install, i.e. after a clean
+    build.
+
+    The consequence was not a launch failure. The graph came up and the
+    per-node autostart processes died individually with exit code 2 (python:
+    no such file), leaving the safety kernel and the reasoner parked
+    unconfigured while every other node reported healthy.
+
+    Reuses ``openral_rskill.loader._find_repo_root_from`` — the repo already
+    has this search (``pyproject.toml`` + ``rskills/``), and a second copy here
+    would be a second thing to keep true. Falls back to the old arithmetic when
+    no marked ancestor exists, which is the genuinely-installed-elsewhere case
+    where none of these repo-relative paths are meaningful anyway.
+    """
+    here = pathlib.Path(__file__).resolve()
+    try:
+        from openral_rskill.loader import _find_repo_root_from
+    except ImportError:  # pragma: no cover  # reason: workspace not on the path
+        return here.parents[3]
+    return _find_repo_root_from(here) or here.parents[3]
+
+
+_REPO_ROOT = _resolve_repo_root()
 _RSKILLS_DIR = str(_REPO_ROOT / "rskills")
 
 _VENV_RAL = _REPO_ROOT / ".venv" / "bin" / "openral"
