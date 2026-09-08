@@ -125,7 +125,7 @@ independently absurd: the door panel is 48 mm thick.
 > certified value instead. The full characterisation, including that the native
 > failure is a knife-edge degenerate configuration (a **1 picometre**
 > displacement returns the right answer) rather than a distance regime, is the
-> [2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
+> [2026-08-25 correction](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves).
 
 A second, distinct failure of the same function was found on
 `robocasa_sink_cup` layout 1: `robot0_link1_collision` vs `sink_main_group_g2`
@@ -560,7 +560,7 @@ threshold was changed. In rough order of cost:
    above — and re-measuring the checked-in validation rounds found four
    recorded `0.000 m` readings whose certified values are +14.8 / +82.2 / +98.8
    / +107.9 mm. See the
-   [2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
+   [2026-08-25 correction](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves).
 
 ## What was not measured
 

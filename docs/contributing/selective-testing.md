@@ -84,7 +84,7 @@ suite.
    The default cheap lane may still skip those tests; CI then reruns the matching
    targets with the named group installed and fails if the lane produces no
    passing tests **or any skip that is not a declared capability gap** (see
-   [Lane policy](#lane-policy--what-a-skip-is-allowed-to-mean) below). This is
+   [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean) below). This is
    what prevents “selected but skipped because `gym_aloha` is absent” from going
    green. The `sim` lane also installs the `dataset` extra because its
    dataset-emission target writes and reloads a real LeRobot dataset. Wire-only
@@ -218,10 +218,10 @@ The mechanism is a **declared capability allowlist**, not a blanket tolerance:
   cannot run here": that would be a second source of truth that rots, while the
   per-skip classification derives the verdict from evidence every run.
 
-Batched and isolated targets are now judged by the **same** rule.  Isolated
-files used to be graded on exit code alone, so a skip inside one was invisible —
-an asymmetry a real gap could hide in. Every skip they emit today is explained
-by a declared gap, so closing the hole costs nothing.
+Batched and isolated targets are now judged by the **same** rule — previously
+isolated files were graded on exit code alone, so a skip inside one was
+invisible. Every skip they emit today is explained by a declared gap, so
+closing the hole costs nothing.
 
 ### Vacuous green is a failure, not a result
 
@@ -300,7 +300,7 @@ paid for runs that select zero tests:
    installed. If one does, CI reruns just those targets under `uv run
    --all-packages --group sim ...` and requires passing tests, with no skip
    beyond the declared capability gaps (see
-   [Lane policy](#lane-policy--what-a-skip-is-allowed-to-mean)).
+   [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean)).
 5. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
    true` stops any in-progress run on the same branch the moment a new push
    arrives.

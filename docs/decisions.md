@@ -16,8 +16,7 @@ bare id. Prose around a citation is written to stand on its own, so a
 reader without access can follow *what* the behavior is even when they
 cannot read *why it was chosen*.
 
-Two consequences worth stating plainly rather than leaving a reader to
-discover:
+Two consequences:
 
 - **The number is a handle, not a coordinate.** The ADR log is append-only
   but not gap-free, and cross-references inside it use filenames rather
@@ -45,8 +44,8 @@ that implements it.
 ## Licensing & commercial boundary
 
 Two of those decisions define OpenRAL's public/private boundary and are
-worth stating here in full, since the maintainer wants this posture visible
-even though the decision record that established it is now private:
+stated here in full — the maintainer wants this posture visible even though
+the decision record that established it is now private:
 
 - **The public `OpenRAL/openral` repo is uniformly Apache-2.0.** Every
   package in this repo ships under a single permissive license — no

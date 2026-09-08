@@ -434,7 +434,7 @@ of Pinocchio 3.
   from) → `computeDistances` per active pair
   ([Pinocchio collisions example](https://gepettoweb.laas.fr/doc/stack-of-tasks/pinocchio/devel/doxygen-html/md_doc_b-examples_e-collisions.html)).
 
-Worth stating for perspective: the kernel already *has* an in-house convex-hull
+The kernel already *has* an in-house convex-hull
 GJK with certified conservative fallbacks
 (`cpp/openral_safety_kernel/README.md`, staged narrow phase), and the HAL has a
 certified separating-axis instrument (`openral_hal.convex_distance`). coal is
@@ -1135,7 +1135,7 @@ tuning knobs anywhere (community: "very difficult/impossible to tune" since
    *Risk:* **do not delete outright.** The non-latching-drop path and the severity
    ranking are the two hard parts of Path A and PR #179 already built and tested them;
    deleting them would mean rebuilding them. The right move is to widen the five
-   bounds rather than remove the mechanism — and note that the band has never had its
+   bounds rather than remove the mechanism — the band has never had its
    safety-WG reviewer, hazard entry or sign-off, so any change here re-enters that
    queue regardless. `place_advisory_max_consecutive: 0` is the documented exact
    rollback if the WG wants it off meanwhile.
@@ -1417,8 +1417,8 @@ successors found (Neural NMPC through SDF encoding,
 are navigation/MPC-flavoured, with no mm claim and no verified permissive repo.
 
 **Verdict: irrelevant.** Neural *scene* SDF fusion is currently a navigation
-accuracy class, not a near-contact one. Worth stating plainly, because it is the
-direction that sounds most promising and is not.
+accuracy class, not a near-contact one — the direction that sounds most
+promising and is not.
 
 ---
 
@@ -1763,7 +1763,7 @@ the mobile base's world; keep it out of the manipulation volume.
   abstract, no code found**) and **DB-TSDF**
   (<https://arxiv.org/abs/2509.20081>, CPU TSDF whose cost is claimed constant
   in voxel resolution — **no repo, no licence found**). Both **unverified**.
-- An independent corroboration of the diagnosis, worth recording: CADGrasp
+- An independent corroboration of the diagnosis: CADGrasp
   (<https://arxiv.org/abs/2601.15039>) reports *docs claim* an ablation
   choosing 5 mm voxels, with 2.5 mm giving "only marginal gains" and 10 mm
   causing "a clear performance drop". **10 mm is already too coarse for
@@ -2042,7 +2042,7 @@ found anywhere in this pass that makes a *moving* obstacle a first-class part
 of the constraint rather than a re-plan trigger — directly relevant to (b).
 Defaults in `examples/neo.py`: influence 0.3 m, stop 0.05 m.
 
-**2026 update worth recording**: `spatialgeometry` now dispatches to **coal**,
+**2026 update**: `spatialgeometry` now dispatches to **coal**,
 not PyBullet — *source shows* (`CollisionShape.py` imports `coal`, holds a
 `coal.CollisionObject`, `closest_point()` returns `(d, p1, p2)`). So NEO's
 damper already rides the same GJK/EPA family the kernel uses.
@@ -2335,8 +2335,8 @@ inpainting the transition between chunks "may be arbitrarily discontinuous and
 out-of-distribution". §3.2's soft masking ramps guidance weight from 1 to 0
 across the frozen prefix; hard masking underperforms, especially at small `d`.
 
-Latency numbers from the paper, worth recording because they bound any
-in-kernel design: π0 (3B) spends **46 ms on KV-cache prefill alone** on an
+Latency numbers from the paper bound any in-kernel design: π0 (3B) spends
+**46 ms on KV-cache prefill alone** on an
 RTX 4090 against a 20 ms tick; the real-robot setup (π0.5, H=50, Δt=20 ms,
 5 denoising steps) measures **76 ms baseline / 97 ms RTC** model latency, LAN
 adding 10–20 ms, giving **d ≈ 6**.

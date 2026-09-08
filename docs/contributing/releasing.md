@@ -194,8 +194,8 @@ default), which publishes to TestPyPI without confirmation. Use it to validate
 packaging without burning a version number — `skip-existing` means re-running
 it against an already-published version is a no-op, so it costs nothing.
 
-It is worth doing before any release that changes packaging metadata, because
-it is the only way to see what installers will actually read. After it runs,
+Do this before any release that changes packaging metadata — it is the only
+way to see what installers will actually read. After it runs,
 check the published requirements rather than the source:
 
 ```sh
