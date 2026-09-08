@@ -3576,16 +3576,12 @@ def _summarize_results(results: dict[str, object]) -> str:
 
 
 # ── sim sub-app ───────────────────────────────────────────────────────────────
-#
-# Mounts the ``openral sim`` Typer group exported by ``openral_sim.cli`` so
-# users can invoke the sim eval runner as ``openral sim run …``.
-#
-# Lazy-import discipline: importing `openral_sim.cli` at module load is
-# light (only the Typer option metadata + a couple of pydantic / structlog
-# imports). The heavy sim dependencies (torch, mujoco, gymnasium, lerobot)
-# load inside `openral_sim.runner` and the per-adapter modules under
-# `openral_sim.policies/backends`, which `_run()` imports lazily.
-# `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light` guards this.
+# Mounts the ``openral sim`` Typer group from ``openral_sim.cli`` (`openral sim
+# run …`). Lazy-import discipline: `openral_sim.cli` at module load is light
+# (Typer option metadata + pydantic/structlog); heavy deps (torch, mujoco,
+# gymnasium, lerobot) load inside `openral_sim.runner` and the per-adapter
+# modules under `openral_sim.policies/backends`, imported lazily by `_run()`.
+# Guarded by `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light`.
 app.add_typer(sim_app, name="sim")
 
 # `openral behavior serve` — expose an rSkill through the official BEHAVIOR

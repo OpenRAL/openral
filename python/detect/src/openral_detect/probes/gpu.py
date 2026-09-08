@@ -257,15 +257,12 @@ def _probe_nvmm_available(*, search_paths: Sequence[Path] | None = None) -> bool
 # ── Unified-memory hosts ──────────────────────────────────────────────────────
 #
 # On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor) there is no discrete
-# VRAM pool to report: ``nvmlDeviceGetMemoryInfo`` returns
-# NVML_ERROR_NOT_SUPPORTED and ``nvidia-smi`` prints ``[N/A]`` for
-# memory.total / memory.free. Measured on a DGX Spark (GB10, driver 580.126.09,
-# CUDA 13.0): every other NVML call — count, name, compute capability (12, 1),
-# PCI info — succeeds. The GPU is real and fully usable, so we fall back to the
-# system RAM figure, which is genuinely what the GPU can address.
-#
-# Caveat this deliberately accepts: that pool is shared with the OS and the page
-# cache, so `vram_total_mib` on such a host is "addressable", not "dedicated".
+# VRAM pool: ``nvmlDeviceGetMemoryInfo`` returns NVML_ERROR_NOT_SUPPORTED and
+# ``nvidia-smi`` prints ``[N/A]`` for memory.total / memory.free. Measured on a
+# DGX Spark (GB10, driver 580.126.09, CUDA 13.0): every other NVML call —
+# count, name, compute capability (12, 1), PCI info — succeeds, so we fall
+# back to the system RAM figure. Caveat: that pool is shared with the OS, so
+# `vram_total_mib` on such a host is "addressable", not "dedicated".
 
 
 def _system_memory_mib() -> tuple[int, int] | None:

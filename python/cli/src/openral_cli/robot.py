@@ -1,31 +1,27 @@
 """``openral robot vendor-urdf <id>`` — expand an upstream xacro to a flat URDF.
 
-The flat, committed URDF means end users need no xacro tooling at runtime.
-The xacro-only arms (ur5e/ur10e/rizon4) ship a ``XACRO_PATH`` in
-``robot_descriptions``; we let ``robot_descriptions``' ``yourdfpy`` loader run
-``xacrodoc`` to expand every ``${…}`` substitution, then serialize the resulting
-flat URDF with a provenance header. ``openarm`` ships only MJCF upstream, so its
-flattened URDF is cloned separately and passed as a ``file:`` upstream; the
-``--rename`` hook strips the ``openarm_`` joint/link prefix to the OpenRAL HAL
-convention (``left_joint1..7`` / ``right_joint1..7``).
+Xacro-only arms (ur5e/ur10e/rizon4) ship a ``XACRO_PATH`` in
+``robot_descriptions``; its ``yourdfpy`` loader runs ``xacrodoc`` to expand
+every ``${…}``, then the result is serialized with a provenance header.
+``openarm`` ships only MJCF upstream, so its flattened URDF is cloned
+separately and passed as a ``file:`` upstream; ``--rename`` strips the
+``openarm_`` joint/link prefix to the HAL convention (``left_joint1..7`` /
+``right_joint1..7``).
 
 **Portable mesh refs.** The yourdfpy round-trip absolutizes every mesh
-``filename`` into the vendoring machine's ``robot_descriptions`` cache — paths
-that resolve nowhere else, which once broke collision lowering for the whole
-xacro fleet in CI (empty ACMs). For ``rd:`` upstreams the round-trip output is
-therefore post-processed by :func:`_portable_mesh_refs`: cache-absolute paths
-become ``rd:<module>:<path-relative-to-repository>`` refs, expanded at load
-time by ``openral_safety.urdf_lowering`` through the same pinned clone.
+``filename`` into the vendoring machine's ``robot_descriptions`` cache (once
+broke collision lowering fleet-wide in CI — empty ACMs). For ``rd:``
+upstreams, :func:`_portable_mesh_refs` rewrites cache-absolute paths to
+``rd:<module>:<path-relative-to-repository>``, expanded at load time by
+``openral_safety.urdf_lowering`` through the same pinned clone.
 
-**Raw-text mode** (``raw_text=True``). The same yourdfpy round-trip also
-mangles ``package://`` mesh paths, which is fatal for already-flat upstream
-URDFs that ship relative or ``package://`` meshes (so100/so101/gr1/h1). For
-those we copy the upstream text verbatim and apply joint-name renames with
-``re.sub`` directly on the raw XML — preserving every mesh path byte-for-byte.
-The renames target **joint names only** (``<joint name="X"`` and any
-``joint="X"`` mimic/transmission references); link names are never touched. A
-:class:`list` of ``(pattern, repl)`` pairs is applied in order, so so100/so101
-take six numeric renames and gr1/h1 take one ``_joint``-suffix strip.
+**Raw-text mode** (``raw_text=True``). The yourdfpy round-trip also mangles
+``package://`` mesh paths, fatal for already-flat upstream URDFs
+(so100/so101/gr1/h1). Those are copied verbatim with joint-name-only renames
+(``<joint name="X"`` / mimic/transmission ``joint="X"`` refs; links untouched)
+applied via ``re.sub`` on the raw XML. A :class:`list` of ``(pattern, repl)``
+pairs is applied in order: so100/so101 take six numeric renames, gr1/h1 take
+a ``_joint``-suffix strip.
 """
 
 from __future__ import annotations
@@ -52,16 +48,14 @@ _SO_ARM_JOINT_NAMES: tuple[str, ...] = (
 )
 
 # Per-robot raw-text joint renames (regex pattern, replacement), applied in
-# order. Patterns are scoped to the joint-name context so no <link …> is hit:
-#  * so100/so101: rewrite ``name="N"`` (only ever a <joint> in these URDFs;
-#    links are semantic, transmissions are ``N_trans`` / ``motorN``).
-#  * gr1/h1: strip the ``_joint`` suffix from every ``name="…_joint"`` (no link
-#    ends in ``_joint`` in either URDF — verified).
-#  * gr1 also collapses ``*_elbow_pitch`` → ``*_elbow`` to match the manifest's
-#    HAL joint name (the upstream URDF spells the single-DoF elbow joint
-#    ``*_elbow_pitch_joint``; the manifest/control contract calls it ``*_elbow``).
-#    Applied AFTER the ``_joint`` strip; link-safe (no ``*_elbow_pitch`` link
-#    exists — only the two ``*_elbow_pitch_joint`` joints — verified).
+# order, scoped to the joint-name context so no <link …> is hit:
+#  * so100/so101: rewrite ``name="N"`` (only <joint> in these URDFs; links
+#    are semantic, transmissions are ``N_trans``/``motorN``).
+#  * gr1/h1: strip ``_joint`` suffix from ``name="…_joint"`` (no link ends
+#    in ``_joint`` in either URDF — verified).
+#  * gr1 also collapses ``*_elbow_pitch`` → ``*_elbow`` (manifest/control
+#    contract name; upstream spells it ``*_elbow_pitch_joint``), applied
+#    AFTER the ``_joint`` strip — link-safe, verified.
 _RAW_RENAMES: dict[str, list[tuple[str, str]]] = {
     "so100_follower": [
         (rf'name="{n}"', f'name="{sem}"') for n, sem in enumerate(_SO_ARM_JOINT_NAMES, start=1)

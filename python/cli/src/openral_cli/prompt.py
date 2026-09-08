@@ -1,23 +1,21 @@
 """``openral prompt`` CLI adapter.
 
 Publishes a one-shot ``openral_msgs/PromptStamped`` onto
-``/openral/prompt_in/cli`` and exits. The ``prompt_router_node``
-(``packages/openral_prompt_router``) fans the message out onto
-``/openral/prompt`` after stamping ``{"source": "cli", "priority": 100}``
-onto ``metadata_json``; the F4 reasoner consumes ``/openral/prompt``.
+``/openral/prompt_in/cli`` and exits. ``prompt_router_node``
+(``packages/openral_prompt_router``) fans it out onto ``/openral/prompt``
+after stamping ``{"source": "cli", "priority": 100}`` onto
+``metadata_json``; the F4 reasoner consumes ``/openral/prompt``.
 
 Wire shape:
 
 * QoS: ``RELIABLE + VOLATILE + KEEP_LAST=10`` (matches the router's
-  subscription so the message survives a one-shot publish-and-exit
-  even if the router was a hair late to subscribe).
-* ``metadata_json``: ``{"source_cli": true}`` (plus ``"new_goal": true``
-  under ``--new-goal`` — the reasoner's mission-replacement escape hatch,
-  see ``openral_reasoner.node_policy.should_rebuild_mission``); the router
-  appends the canonical ``source`` / ``priority`` fields.
+  subscription so a one-shot publish survives even a late-subscribing router).
+* ``metadata_json``: ``{"source_cli": true}``, plus ``"new_goal": true`` under
+  ``--new-goal`` (see ``openral_reasoner.node_policy.should_rebuild_mission``);
+  the router appends ``source`` / ``priority``.
 
-``rclpy`` is imported lazily inside the typer command so ``openral --help``
-stays sub-second even when ROS is not sourced.
+``rclpy`` is imported lazily inside the command so ``openral --help`` stays
+sub-second when ROS is not sourced.
 """
 
 from __future__ import annotations
@@ -110,15 +108,11 @@ def prompt_command(
         metadata = {"source_cli": True} | ({"new_goal": True} if new_goal else {})
         msg.metadata_json = json.dumps(metadata, sort_keys=True)
 
-        # Spin until a subscriber matches so the one-shot publish is
-        # not delivered into the void. 0.5 s was too tight on hosts
-        # where the shared-memory transport falls back to UDP
-        # discovery (we saw `RTPS_TRANSPORT_SHM Error: Failed init_port`
-        # on this box, which adds ~1 s before UDP picks up the
-        # prompt_router subscription). 5 s covers normal interactive
-        # use; cold-boot deploys (where the prompt is sent within the
-        # same shell session as the launch start) can need 10-15 s,
-        # exposed via ``--discovery-wait-s``.
+        # Spin until a subscriber matches so the one-shot publish isn't lost.
+        # SHM can fall back to UDP discovery (`RTPS_TRANSPORT_SHM Error:
+        # Failed init_port`, ~1 s added); 5 s default covers normal
+        # interactive use, cold-boot deploys can need 10-15 s
+        # (`--discovery-wait-s`).
         deadline = time.monotonic() + discovery_wait_s
         while time.monotonic() < deadline and pub.get_subscription_count() == 0:
             rclpy.spin_once(node, timeout_sec=0.05)

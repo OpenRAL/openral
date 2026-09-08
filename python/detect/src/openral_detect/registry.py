@@ -32,18 +32,11 @@ __all__ = [
 ]
 
 
-# The workspace root is found by walking up from this module, so the index
-# works whether the package is consumed from a checkout or from an installed
-# wheel sitting next to a `robots/` tree.
-#
-# This was previously a hard-coded ``parents[5]``, which overshot the root by
-# one level (this file is 4 deep: ``python/detect/src/openral_detect/``, and
-# ``openral_core.assets`` uses ``parents[4]`` at the identical depth). The
-# index therefore never resolved from the package at all — every successful
-# lookup was coming from the CWD fallback, so running ``openral detect``
-# from anywhere but the repo root silently produced an empty scaffold for a
-# robot the probes had already identified. An upward search is used instead
-# of a fixed index so moving this module cannot silently break it again.
+# The workspace root is found by walking up from this module (rather than a
+# fixed `parents[N]`) so it works from a checkout or an installed wheel and a
+# module move cannot silently break it. This file is 4 deep under the root
+# (`python/detect/src/openral_detect/`), same depth `openral_core.assets`
+# resolves via `parents[4]`.
 #
 # Both markers are required: a bare `robots/` directory is a plausible name
 # for unrelated user content, while `robots/` beside `python/` is this

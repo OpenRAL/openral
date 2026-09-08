@@ -10,11 +10,6 @@ Two backends, tried in order:
 2. **``v4l2-ctl --list-devices``** — used when sysfs yields nothing (an
    unusual kernel layout), and as the enrichment source for ``bus_info``
    strings on hosts that have ``v4l-utils`` installed.
-
-The previous implementation shelled out to ``v4l2-ctl`` only, which meant a
-host without ``v4l-utils`` reported *zero* cameras while several were plugged
-in — a silent false negative on exactly the provisioning path that is
-supposed to find them.
 """
 
 from __future__ import annotations
