@@ -20,11 +20,13 @@ Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import site
 import subprocess
 import sys
+import tempfile
 import uuid
 
 # `ros2 launch` runs under the system Python by default; the launch's
@@ -341,6 +343,36 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
         f"/openral/cameras/{right}/image",
         f"/openral/cameras/{right}/camera_info",
     )
+
+
+def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:
+    """Generate a Foxglove layout for the cameras this deploy actually publishes.
+
+    The shipped ``config/openral_layout.json`` is generated for
+    ``layout.DEFAULT_CAMERAS``, which is a guess: camera slots are sensor names
+    out of the robot manifest and the deploy scene, and they differ per robot
+    (``top`` / ``context`` / ``wrist_left`` / ``camera1``…). A panel pointed at a
+    slot this deploy has no publisher for renders "Image topic does not exist",
+    which looks exactly like a dead camera.
+
+    A layout is imported client-side, so no launch argument can push one into
+    the viewer — but the launch is the only place that knows the answer, so it
+    writes the correct layout to a file and logs the path for the operator to
+    import once. Returns that path, or ``None`` when there is nothing to
+    generate or the write fails (a viz convenience must never take the graph
+    down with it).
+    """
+    if not cameras:
+        return None
+    try:
+        from openral_foxglove_bringup.layout import build_layout
+
+        path = pathlib.Path(tempfile.gettempdir()) / f"openral_layout_{robot_id}.json"
+        path.write_text(json.dumps(build_layout(cameras), indent=2), encoding="utf-8")
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"[deploy_e2e] could not write a scene-matched Foxglove layout: {exc!r}", flush=True)
+        return None
+    return str(path)
 
 
 #: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
@@ -1172,7 +1204,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # to the legacy triple if the manifest declares no RGB sensors (e.g. pure-base robots).
     rgb_camera_names = [s.name for s in description.sensors if s.modality == "rgb"]
     if not rgb_camera_names:
-        rgb_camera_names = ["top", "left_wrist", "right_wrist"]
+        # `wrist_left`/`wrist_right` is how `robots/*/robot.yaml` spells these;
+        # the transposed `left_wrist` this used to fall back to matched no
+        # camera on any robot in the repo.
+        rgb_camera_names = ["top", "wrist_left", "wrist_right"]
     # Workcell-mounted cameras (DeployScene.sensors) publish on the same
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
     # leg — WorldState must subscribe to them too.
@@ -1185,6 +1220,20 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
         ]
         rgb_camera_names = [*rgb_camera_names, *scene_rgb]
+
+    # Cameras that will actually publish on a real deploy: a declared RGB sensor
+    # only gets a reader (and therefore a topic) when it carries a
+    # `deploy_binding`. `robots/openarm` declares a `top` camera for sim with no
+    # binding, so on the real cell `/openral/cameras/top/image` has zero
+    # publishers and a Foxglove panel pointed at it reads "Image topic does not
+    # exist" — indistinguishable from a broken camera. The Foxglove layout is
+    # generated from this list rather than a hardcoded default, which cannot
+    # know the scene (see `_write_foxglove_layout`).
+    bound_rgb_camera_names = [
+        s.name
+        for s in (*description.sensors, *scene_sensors)
+        if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
+    ]
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",
@@ -2104,6 +2153,35 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             ],
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
+
+        layout_path = _write_foxglove_layout(bound_rgb_camera_names, description.name)
+        if layout_path is not None:
+            print(
+                f"[deploy_e2e] foxglove: ws://127.0.0.1:{foxglove_port} — import the "
+                f"scene-matched layout from {layout_path} "
+                f"(cameras: {', '.join(bound_rgb_camera_names)})",
+                flush=True,
+            )
+
+        # Bucket-2 converter. The layout's collision/voxel panels read
+        # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,
+        # which are `visualization_msgs` / `sensor_msgs` re-publications of the
+        # custom `openral_msgs` world types — Foxglove renders the standard
+        # types natively and the custom ones not at all. Nothing else in the
+        # graph produces them, so without this the panels sit empty on every
+        # deploy while the underlying world state is perfectly healthy.
+        # Read-only viz: it subscribes two topics and publishes two, and
+        # actuates nothing.
+        nodes.append(
+            Node(
+                package="openral_foxglove_bringup",
+                executable="bucket2_markers",
+                name="openral_bucket2_markers",
+                output="log",
+                parameters=[{"use_sim_time": use_sim_time}],
+                additional_env=otel_env,
+            )
+        )
 
     return [*nodes, *autostart]
 
