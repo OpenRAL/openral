@@ -47,6 +47,14 @@ _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 /
   - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate `super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, …))` dance. Subclasses keep their typed `__init__(*, mjcf_path, settle_steps, gravity_enabled, staleness_limit_s)` signature (so IDEs still surface the four user-tunable knobs) and forward straight to here. (L997)
   - private: `_require_connected`, `_validate_action`, `_last_arm_targets`, `_apply_arm_targets`, `_apply_gripper_target`, `_read_gripper_normalised`, `_effective_actuator_index_for`
 
+### `python/hal/src/openral_hal/_base.py`
+_Shared HAL mixin — `_connected` flag, validation helpers, and a default `disconnect`._
+
+- `class HALBase` — Non-ABC mixin every adapter subclasses. (L22)
+  - `disconnect() -> None` — Flag-and-log default (guard on `_connected`, `log.info("hal.disconnect", ...)`, clear the flag). Idempotent. Adapters holding a real resource (SDK handle, MuJoCo buffers, USB port) override it; `AlohaHAL` and `RosControlHAL` use the default as-is.
+  - private: `_require_connected`, `_require_control_mode`, `_validate_action_dims`
+- `_raw_floats(raw: dict[str, object], key: str, width: int) -> list[float]` [private] — Shared `read_state` decode: `raw[key]` as floats if it's a list, else `width` zeros. Used by `AlohaHAL.read_state` and `RosControlHAL.read_state`.
+
 ### `python/hal/src/openral_hal/_camera_rig.py`
 _Generic sim camera rig — splice manifest cameras into a bare-arm MJCF for deploy sim._
 
@@ -132,15 +140,15 @@ _HAL adapter for the Trossen ALOHA bimanual setup (issue #58) + the MuJoCo digit
 - `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. (L332)
   - `__init__(*, left_arm_controller='left_arm/arm_controller', right_arm_controller='right_arm/arm_controller', left_gripper_controller='left_arm/gripper_controller', right_gripper_controller='right_arm/gripper_controller', joint_state_topic='/joint_states', estop_topic='/aloha/estop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L380)
   - `connect() -> None` (L411)
-  - `disconnect() -> None` (L428)
-  - `read_state() -> JointState` (L435)
-  - `send_action(action) -> None` — Splits the 14-D action 4-ways across per-arm + per-gripper controllers. (L467)
-  - `estop() -> None` (L531)
+  - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
+  - `read_state() -> JointState` (L428)
+  - `send_action(action) -> None` — Splits the 14-D action 4-ways across per-arm + per-gripper controllers. (L454)
+  - `estop() -> None` (L518)
   - private: `_require_connected`
-- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L568)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L603)
+- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L555)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L590)
 - `_aloha_joint_specs() -> list[JointSpec]` (L147)
-- `_default_publish(topic, msg) -> None` (L556)
+- `_default_publish(topic, msg) -> None` (L543)
 - const `ALOHA_DESCRIPTION = RobotDescription(...)` (L191) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.aloha:AlohaMujocoHAL"` + `hal.real="openral_hal.aloha:AlohaHAL"`.
 - const `ALOHA_REAL_DESCRIPTION = make_real_description(ALOHA_DESCRIPTION, sdk_kind="closed_with_api")` (L303) — inherits the shared `hal`; what `robots/aloha_bimanual/robot.yaml` mirrors.
 
@@ -555,10 +563,10 @@ _RosControlHAL — `ros2_control`-backed HAL adapter._
 - `class RosControlHAL` — `ros2_control`-backed HAL adapter. (L72)
   - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=0.5)` (L101)
   - `connect() -> None` (L132)
-  - `disconnect() -> None` (L150)
-  - `read_state() -> JointState` (L162)
-  - `send_action(action) -> None` — Publish JointTrajectory. (L199)
-  - `estop() -> None` (L230)
+  - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
+  - `read_state() -> JointState` (L152)
+  - `send_action(action) -> None` — Publish JointTrajectory. (L183)
+  - `estop() -> None` (L214)
   - private: `_require_connected`, `_validate_action`
 - `_default_publish(topic, msg) -> None` — No-op publish when no real ROS 2 node. (L62)
 

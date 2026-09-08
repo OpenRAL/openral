@@ -76,7 +76,7 @@ from openral_core.schemas import (
     SimGripperDescription,
 )
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, _raw_floats
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._real_description import make_real_description
 
@@ -425,13 +425,6 @@ class AlohaHAL(HALBase):
         self._connected = True
         self._last_state_time = time.monotonic()
 
-    def disconnect(self) -> None:
-        """Close the transport.  Idempotent."""
-        if not self._connected:
-            return
-        log.info("hal.disconnect", robot=self.description.name)
-        self._connected = False
-
     def read_state(self) -> JointState:
         """Return the latest joint state for all 14 description joints.
 
@@ -450,17 +443,11 @@ class AlohaHAL(HALBase):
         n = len(self._joint_names)
         raw: dict[str, object] = {} if self._state_fn is None else self._state_fn()
 
-        def _floats(key: str) -> list[float]:
-            val = raw.get(key)
-            if isinstance(val, list):
-                return [float(v) for v in val]
-            return [0.0] * n
-
         return JointState(
             name=list(self._joint_names),
-            position=_floats("position"),
-            velocity=_floats("velocity"),
-            effort=_floats("effort"),
+            position=_raw_floats(raw, "position", n),
+            velocity=_raw_floats(raw, "velocity", n),
+            effort=_raw_floats(raw, "effort", n),
             stamp_ns=int(time.time_ns()),
         )
 

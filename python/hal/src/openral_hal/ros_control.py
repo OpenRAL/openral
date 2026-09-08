@@ -48,7 +48,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import Action, JointState, RobotDescription
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, _raw_floats
 
 __all__ = ["RosControlHAL"]
 
@@ -147,16 +147,6 @@ class RosControlHAL(HALBase):
         self._connected = True
         self._last_state_time = time.monotonic()
 
-    def disconnect(self) -> None:
-        """Close the connection and release all resources.
-
-        Idempotent — calling on an already-disconnected HAL is a no-op.
-        """
-        if not self._connected:
-            return
-        log.info("hal.disconnect", robot=self.description.name)
-        self._connected = False
-
     # ── Hot path ───────────────────────────────────────────────────────────────
 
     def read_state(self) -> JointState:
@@ -182,17 +172,11 @@ class RosControlHAL(HALBase):
         if self._state_fn is not None:
             raw = self._state_fn()
 
-        def _floats(key: str) -> list[float]:
-            val = raw.get(key)
-            if isinstance(val, list):
-                return [float(v) for v in val]
-            return [0.0] * n
-
         return JointState(
             name=self._joint_names,
-            position=_floats("position"),
-            velocity=_floats("velocity"),
-            effort=_floats("effort"),
+            position=_raw_floats(raw, "position", n),
+            velocity=_raw_floats(raw, "velocity", n),
+            effort=_raw_floats(raw, "effort", n),
             stamp_ns=int(time.time_ns()),
         )
 
