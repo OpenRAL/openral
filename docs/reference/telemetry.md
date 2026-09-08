@@ -324,7 +324,7 @@ fixture geoms against `panda_mobile` collision meshes in two silent modes, and
 a reader must be able to tell a defensible distance from an undefendable one
 without re-running the round. A verdict may rest only on a certified pair
 (`tools/validation_matrix.py::probe_is_distance_certified`); see
-[the 2026-08-25 correction](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves).
+[the 2026-08-25 correction](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves).
 
 The third line exists because the first one, read alone, is indistinguishable
 from an ordinary mid-task stop. `SimAttachedHAL.last_action_ns` is `0` until the

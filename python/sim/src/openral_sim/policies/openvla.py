@@ -1,20 +1,20 @@
 r"""OpenVLA / OpenVLA-OFT policy adapter.
 
 Wraps the `OpenVLA <https://openvla.github.io>`_ family — a Prismatic VLM
-(DINOv2 + SigLIP fused vision backbone + Llama-2 7B) with a discrete
-action head — and its OFT fine-tuning recipe (arXiv:2502.19645). The first
-in-tree checkpoint is ``RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood``: an
-OpenVLA-OFT bridge policy RL-tuned (PPO) on ManiSkill3 ``PutOnPlateInScene25``,
-run here on the SimplerEnv WidowX put-on-plate tasks it actually solves
-(``unnorm_key=bridge_orig``), since the bridge_orig norm stats are WidowX-specific
-and do not transfer to the Panda embodiment.
+(DINOv2 + SigLIP fused vision backbone + Llama-2 7B) with a discrete action
+head — and its OFT fine-tuning recipe (arXiv:2502.19645). The first in-tree
+checkpoint is ``RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood``: an
+OpenVLA-OFT bridge policy RL-tuned (PPO) on ManiSkill3
+``PutOnPlateInScene25``, run here on the SimplerEnv WidowX put-on-plate
+tasks it actually solves (``unnorm_key=bridge_orig``) since the bridge_orig
+norm stats are WidowX-specific and don't transfer to the Panda embodiment.
 
 Like MolmoAct2 (and unlike the lerobot adapters), OpenVLA is **not** a lerobot
 policy. It ships as a transformers *custom-code* model (``trust_remote_code``,
 ``auto_map`` → ``OpenVLAForActionPrediction``) and is driven through its own
 ``predict_action`` API rather than lerobot's ``select_action`` queue:
 
-- The eval-layer :class:`~openral_sim.rollout.Observation` (a flat ``state`` +
+- The eval-layer ``Observation`` (a flat ``state`` +
   ``images`` dict) is turned into a single 224×224 RGB + the prompt
   ``In: What action should the robot take to {instruction.lower()}?\nOut: `` and
   passed to ``predict_action(**inputs, unnorm_key=...)``. The RLinf checkpoint
@@ -26,16 +26,16 @@ policy. It ships as a transformers *custom-code* model (``trust_remote_code``,
   (``bridge_orig``: 6 EE deltas rescaled, gripper passed through). For
   checkpoints whose custom code returns *normalized* tokens instead, set
   ``vla.extra['openvla_actions_prenormalized']=True`` and the adapter applies
-  :func:`_unnormalize_action` itself.
+  ``_unnormalize_action`` itself.
 - The returned chunk (OFT: 8 × 7-D; base OpenVLA: a single 7-D action) is
   replayed one step at a time and re-inferred when the queue empties — the same
   closed-loop replay MolmoAct2 / the lerobot adapters get.
 
 NF4 quantization reuses the adapter-agnostic helpers in
-:mod:`openral_sim._quantization`; the 7.5 B bf16 backbone is ~16 GB and OOMs an
+``openral_sim._quantization``; the 7.5 B bf16 backbone is ~16 GB and OOMs an
 8 GB consumer GPU, so int4 (~7 GB, matching bf16 accuracy per the OpenVLA paper
 Table 2) brings it into reach. The CUDA expandable-segments allocator
-(:func:`_enable_expandable_segments`) keeps the inference peak placeable on a
+(``_enable_expandable_segments``) keeps the inference peak placeable on a
 tight 8 GB card, mirroring the MolmoAct2 recipe.
 
 This module imports torch / transformers lazily so installing ``openral-sim``
@@ -234,7 +234,7 @@ def _enable_expandable_segments() -> None:
     """Enable the CUDA expandable-segments allocator before the OpenVLA load.
 
     Sets ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` via
-    :meth:`os.environ.setdefault` semantics (an operator export wins) **before
+    ``os.environ.setdefault`` semantics (an operator export wins) **before
     the first CUDA allocation** in this process. The caching allocator reads the
     variable lazily on its first allocation, so setting it at the top of the
     build — ahead of the model's device placement — takes effect even though
@@ -607,7 +607,7 @@ class _OpenVLAAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the model frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()

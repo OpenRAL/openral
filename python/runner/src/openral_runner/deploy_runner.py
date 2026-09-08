@@ -1,10 +1,8 @@
 """Hardware inference runner.
 
-:class:`DeployRunner` is the first concrete subclass of
-:class:`~openral_runner.InferenceRunnerBase` and closes the
-inference loop end-to-end on real hardware (or a digital twin):
-
-::
+``DeployRunner`` is the first concrete
+``InferenceRunnerBase`` subclass, closing the inference
+loop end-to-end on real hardware (or a digital twin)::
 
     for each tick at rate_hz:
         for each SensorReader:
@@ -20,22 +18,19 @@ inference loop end-to-end on real hardware (or a digital twin):
             record on TickResult.safety_violations
             do NOT call hal.send_action — set action_applied=False
 
-The runner does not manage the :class:`~openral_rskill.Skill`
-lifecycle: callers must :meth:`Skill.configure` + :meth:`Skill.activate`
-before constructing the runner. The runner does manage HAL connection
-and SensorReader open/close as part of its own
-:meth:`activate` / :meth:`deactivate`.
+The runner does not manage ``Skill`` lifecycle —
+callers must ``Skill.configure`` + ``Skill.activate`` first. It
+does manage HAL connection and SensorReader open/close via its own
+``activate`` / ``deactivate``.
 
-In-process image frames flow through the inference hot path
-unchanged (``SensorReader.read_latest()`` → ``WorldState.image_frames``
-via the aggregator). When a host needs the same frames on a ROS topic
-— for the rosbag2 recorder, Foxglove, or
-``rqt_image_view`` — :class:`openral_sensors.ros_publisher.SensorRosPublisher`
-runs as a *parallel* consumer of the same reader from its own thread.
-The GStreamer backend additionally provides a zero-copy tee via
-:class:`openral_runner.backends.gstreamer.ros_tee.RosImagePublisher`;
-the sensors-side publisher is the universal-but-copying fallback for
-OpenCV / RealSense / mock readers.
+In-process frames flow ``SensorReader.read_latest()`` →
+``WorldState.image_frames`` unchanged. For a ROS topic (rosbag2, Foxglove,
+``rqt_image_view``), ``openral_sensors.ros_publisher.SensorRosPublisher``
+runs as a parallel consumer; the GStreamer backend also provides a
+zero-copy tee via
+``openral_runner.backends.gstreamer.ros_tee.RosImagePublisher`` (the
+sensors-side publisher is the universal-but-copying fallback for
+OpenCV / RealSense / mock readers).
 """
 
 from __future__ import annotations
@@ -78,40 +73,40 @@ class DeployRunner(InferenceRunnerBase):
     """Compose HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient.
 
     Mirrors the simulator runner (``openral_sim.SimRunner``) but
-    drives real hardware via a :class:`HAL` adapter instead of a sim env.
-    Subclass of :class:`InferenceRunnerBase` so the rate-limited loop,
-    ``rskill.tick`` OTel parent span, and :class:`RunResult` aggregation
+    drives real hardware via a ``HAL`` adapter instead of a sim env.
+    Subclass of ``InferenceRunnerBase`` so the rate-limited loop,
+    ``rskill.tick`` OTel parent span, and ``RunResult`` aggregation
     come for free.
 
     The runner is the safety-supervisor boundary for the inference loop
-    (CLAUDE.md §10): when :meth:`SafetyClient.check_action` raises
-    :class:`ROSSafetyViolation`, the runner records the violation on the
-    :class:`TickResult` and skips the :meth:`HAL.send_action` call; the
+    (CLAUDE.md §10): when ``SafetyClient.check_action`` raises
+    ``ROSSafetyViolation``, the runner records the violation on the
+    ``TickResult`` and skips the ``HAL.send_action`` call; the
     exception is **not** re-raised because the runner already mitigated
     by withholding the action. Future PRs hook this into the real
     E-stop / incident-log path when the C++ safety kernel lands.
 
     Args:
-        hal: A :class:`~openral_hal.protocol.HAL` adapter. The runner
-            calls :meth:`HAL.connect` in :meth:`activate` and
-            :meth:`HAL.disconnect` in :meth:`deactivate`.
-        skill: A :class:`~openral_rskill.Skill` instance that is
+        hal: A ``HAL`` adapter. The runner
+            calls ``HAL.connect`` in ``activate`` and
+            ``HAL.disconnect`` in ``deactivate``.
+        skill: A ``Skill`` instance that is
             **already configured + activated**. The runner does not
             re-load weights (that is the caller's responsibility — weight
             loading is heavy and not idempotent).
-        aggregator: The :class:`WorldStateAggregator` instance the runner
+        aggregator: The ``WorldStateAggregator`` instance the runner
             feeds joint state + sensor topic refs into each tick.
-        sensor_readers: Sequence of :class:`SensorReader` instances. The
-            runner opens each in :meth:`activate` and closes in
-            :meth:`deactivate`. Frames whose carry-mode is ``topic`` are
-            forwarded to :meth:`WorldStateAggregator.update_image`; frames
+        sensor_readers: Sequence of ``SensorReader`` instances. The
+            runner opens each in ``activate`` and closes in
+            ``deactivate``. Frames whose carry-mode is ``topic`` are
+            forwarded to ``WorldStateAggregator.update_image``; frames
             carrying inline ``data`` or ``handle`` are noted but not yet
             attached to the snapshot (follow-up).
-        safety_client: Optional :class:`SafetyClient`. Defaults to a
-            :class:`NullSafetyClient` so digital-twin runs still emit
+        safety_client: Optional ``SafetyClient``. Defaults to a
+            ``NullSafetyClient`` so digital-twin runs still emit
             ``safety.check`` spans even without the C++ kernel.
         **base_kwargs: Forwarded to
-            :class:`InferenceRunnerBase.__init__` (``rate_hz``,
+            ``InferenceRunnerBase.__init__`` (``rate_hz``,
             ``deadline_overrun_policy``, ``runner_name``,
             ``latency_budget_ms``, ``save_dir``).
     """
@@ -127,11 +122,11 @@ class DeployRunner(InferenceRunnerBase):
         recorder: object | None = None,
         **base_kwargs: object,
     ) -> None:
-        """Initialise the runner; does not open any I/O until :meth:`activate`.
+        """Initialise the runner; does not open any I/O until ``activate``.
 
         ``recorder`` is an optional
-        :class:`openral_dataset.RolloutRecorder`. When set,
-        :meth:`episode_start` / :meth:`episode_end` drive the recorder's
+        ``openral_dataset.RolloutRecorder``. When set,
+        ``episode_start`` / ``episode_end`` drive the recorder's
         lifecycle and (PR3 follow-up wiring inside ``_tick_impl``) every
         per-tick state + frame + action lands on the attached sinks.
         Typed as ``object`` here so ``openral_runner`` does not import
@@ -176,10 +171,10 @@ class DeployRunner(InferenceRunnerBase):
     # ── Episode boundary API ────────────────────────────────────────────────
 
     def episode_start(self, task_string: str) -> int:
-        """Open a new episode on the attached :class:`RolloutRecorder`.
+        """Open a new episode on the attached ``RolloutRecorder``.
 
         Idempotent within an episode: a second call without
-        :meth:`episode_end` raises :class:`RuntimeError` (the same
+        ``episode_end`` raises ``RuntimeError`` (the same
         contract the recorder enforces internally).
 
         Args:
@@ -210,7 +205,7 @@ class DeployRunner(InferenceRunnerBase):
 
         Raises:
             RuntimeError: When called without a matching
-                :meth:`episode_start`.
+                ``episode_start``.
         """
         if self._recorder is None:
             return
@@ -232,7 +227,7 @@ class DeployRunner(InferenceRunnerBase):
     def activate(self) -> None:
         """Open HAL connection + every SensorReader. Asserts Skill is active.
 
-        Idempotent: re-activating after :meth:`deactivate` re-opens
+        Idempotent: re-activating after ``deactivate`` re-opens
         everything. Subclasses may override; call ``super().activate()``
         first so the tick counter is reset and the active flag is set.
         """
@@ -323,8 +318,8 @@ class DeployRunner(InferenceRunnerBase):
     ) -> TickResult:
         """Read sensors + HAL, run Skill, gate on safety, dispatch action.
 
-        Per-stage wall-times are recorded into the :class:`TickResult`;
-        :class:`InferenceRunnerBase.tick` lifts them onto the
+        Per-stage wall-times are recorded into the ``TickResult``;
+        ``InferenceRunnerBase.tick`` lifts them onto the
         ``rskill.tick`` OTel parent span.
         """
         tick_start = time.perf_counter()
@@ -350,14 +345,11 @@ class DeployRunner(InferenceRunnerBase):
                     # wall-clock to get the freshness budget.
                     age_ms = (tick_wall_ns - frame.stamp_wall_ns) / 1e6
                     modality = _modality_for_encoding(frame.encoding)
-                    # Per-camera thumbnail gate (dashboard preview): encode +
-                    # attach a JPEG only when due at the private cadence, so most
-                    # ticks carry zero image bytes and skip the encode — the
-                    # trace path stays light while the dashboard refreshes at
-                    # ~25 Hz. ``encode_frame_thumbnail`` returns None for
-                    # unrenderable frames (DEPTH16/CUDA_NV12/RAW) or topic-ref /
-                    # GPU-handle frames; the gate has already advanced, so a
-                    # non-renderable camera does not retry the encode each tick.
+                    # Per-camera thumbnail gate (dashboard preview): encode + attach
+                    # a JPEG only when due at ~25 Hz, so most ticks skip the encode.
+                    # ``encode_frame_thumbnail`` returns None for unrenderable frames
+                    # (DEPTH16/CUDA_NV12/RAW) or topic-ref/GPU-handle frames; the gate
+                    # has already advanced, so a non-renderable camera doesn't retry.
                     thumb_bytes = (
                         ral_producer.encode_frame_thumbnail(frame)
                         if self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())

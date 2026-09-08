@@ -3,42 +3,29 @@
 # Base:  lerobot/smolvla_base                (arxiv:2506.01844)
 # Dataset: lerobot/robotwin_unified (== pepijn223/robotwin_unified_v3, renamed)
 #
-# Official LeRobot SmolVLA finetune on the RoboTwin 2.0 unified dataset
-# (Chen et al., arXiv 2506.18088). Multi-task across the 50 dual-arm
-# tasks on the aloha-agilex embodiment. Routed via the in-tree `smolvla`
-# adapter (model_family: smolvla).
+# Official LeRobot SmolVLA finetune on the RoboTwin 2.0 unified dataset (Chen
+# et al., arXiv 2506.18088). Multi-task across 50 dual-arm tasks on
+# aloha-agilex. Routed via the in-tree `smolvla` adapter.
 #
-# Wired from the checkpoint's config.json (the inference authority):
-#   type: smolvla
-#   input_features:
-#     observation.state              shape (6,)         — see STATE NOTE below
-#     observation.images.camera1     shape (3,256,256)  — head / overhead
-#     observation.images.camera2     shape (3,256,256)  — left wrist
-#     observation.images.camera3     shape (3,256,256)  — right wrist
-#   output_features:
-#     action                          shape (14,)        — 14-DoF dual-arm joints
-#   chunk_size: 50  n_action_steps: 50  flow-matching steps: 10
-#   normalization: STATE/ACTION MEAN_STD, VISUAL IDENTITY
+# Wired from the checkpoint's config.json (inference authority): type smolvla;
+# input observation.state (14,) (see STATE NOTE), observation.images.camera1/2/3
+# (3,256,256) = head/overhead, left wrist, right wrist; output action (14,) =
+# 14-DoF dual-arm joints; chunk_size 50, n_action_steps 50, flow-matching
+# steps 10; normalization STATE/ACTION MEAN_STD, VISUAL IDENTITY.
 #
-# Camera-name mapping
-# -------------------
-# RoboTwin's native LeRobot env cameras are head_camera / left_camera /
-# right_camera. The sidecar (tools/robotwin_sidecar.py) re-keys them, in fixed
-# head→left→right order, to the SCENE's camera names — the aloha_agilex canonical
-# sensor names top / wrist_left / wrist_right, NOT camera1/2/3. The
-# checkpoint expects observation.images.camera1/2/3, so the sim adapter needs a
-# rename from the scene names to the checkpoint keys. That rename is declared per
-# skill in `image_preprocessing.aliases` below — the same mechanism smolvla-libero
-# uses ({top: image}) — because the camera→feature-key mapping is a property of
-# THIS checkpoint, not the robot. (A robot-level derive from each sensor's
-# vla_feature_key was considered, but it would silently remap cameras for every
-# other no-alias sim skill on a mismatch robot — franka/widowx/gr1/sawyer — so the
-# explicit per-skill alias is kept.)
+# Camera-name mapping: RoboTwin's native LeRobot env cameras are
+# head_camera/left_camera/right_camera. The sidecar (tools/robotwin_sidecar.py)
+# re-keys them (fixed head->left->right order) to the SCENE's camera names
+# (aloha_agilex's top/wrist_left/wrist_right, NOT camera1/2/3), so the sim
+# adapter renames scene names to the checkpoint's camera1/2/3 via
+# `image_preprocessing.aliases` below (same mechanism smolvla-libero uses,
+# {top: image}) — a per-checkpoint mapping, not a robot-level one (a
+# robot-level derive from vla_feature_key was considered but would silently
+# remap cameras for every other no-alias sim skill on a mismatched robot).
 #
-# STATE NOTE: the RoboTwin sidecar reset returns a 14-D aloha-agilex state
-# vector, and the official policy_preprocessor.json normalization stats also
-# expect observation.state shape (14,). `state_contract.dim` therefore follows
-# the live env + processor contract.
+# STATE NOTE: RoboTwin sidecar reset returns a 14-D aloha-agilex state vector,
+# matching the official policy_preprocessor.json norm stats; `state_contract.dim`
+# follows the live env + processor contract.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

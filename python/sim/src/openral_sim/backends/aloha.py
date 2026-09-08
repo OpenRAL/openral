@@ -1,6 +1,6 @@
 """gym-aloha scene adapter — wraps ``gym_aloha/AlohaTransferCube-v0``.
 
-Driven by a :class:`openral_core.SimEnvironment` config, this adapter is
+Driven by a ``openral_core.SimEnvironment`` config, this adapter is
 the canonical entry point for gym-aloha rollouts (used by
 ``tests/sim/test_aloha_bimanual_act_aloha.py``).
 
@@ -42,7 +42,7 @@ _ALOHA_SCENES: dict[str, str] = {
 
 @dataclass
 class _AlohaSim:
-    """Thin :class:`SimRollout` wrapper around a ``gym_aloha`` env."""
+    """Thin ``SimRollout`` wrapper around a ``gym_aloha`` env."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -88,17 +88,8 @@ class _AlohaSim:
         whose ``.ptr`` is the underlying ``mujoco.MjModel`` / ``MjData``.
         Returns ``None`` if the chain is broken.
 
-        Note on ``--view``: the historical failure mode here was a
-        viewer window opening blank (``GLFWError 65546: cannot swap
-        buffers``) because dm_control monopolised GLFW for its
-        offscreen pixel-rendering pipeline. The fix lives in
-        :func:`_build_aloha_scene` below: it forces ``MUJOCO_GL=egl``
-        before importing gym_aloha so dm_control renders offscreen
-        via EGL, leaving GLFW free for ``mujoco.viewer``'s onscreen
-        window. ``mujoco.viewer.launch_passive`` ignores the
-        ``MUJOCO_GL`` plugin selector for its own window creation
-        (it calls ``glfw.init()`` directly), so the viewer paints
-        cleanly even when offscreen rendering is on EGL.
+        ``--view`` needs ``MUJOCO_GL=egl`` set before ``gym_aloha`` imports
+        (else the viewer window paints blank) — see ``_build_aloha_scene``.
         """
         env = getattr(self._env, "unwrapped", self._env)
         inner = getattr(env, "_env", None)
@@ -114,7 +105,7 @@ class _AlohaSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads dm_control's ``MjData.time`` off :meth:`mujoco_handles`. Monotonic
+        Reads dm_control's ``MjData.time`` off ``mujoco_handles``. Monotonic
         within an episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -147,27 +138,20 @@ class _AlohaSim:
 
 
 def _build_aloha_scene(env_cfg: SimEnvironment) -> _AlohaSim:
-    """Lazily import ``gym_aloha`` and build a :class:`_AlohaSim`.
+    """Lazily import ``gym_aloha`` and build a ``_AlohaSim``.
 
     Forces ``MUJOCO_GL=egl`` before importing gym_aloha so dm_control's
-    ``Physics`` offscreen pixel pipeline runs on EGL rather than
-    monopolising GLFW. Without this, ``mujoco.viewer.launch_passive``
-    creates a window whose OpenGL context never binds — the symptom
-    is a blank window over the desktop background, no scene ever
-    paints (``GLFWError 65546: cannot swap buffers of a window that
-    has no OpenGL or OpenGL ES context``). The viewer itself still
-    uses GLFW for its onscreen window because
-    ``mujoco.viewer.launch_passive`` calls ``glfw.init()`` directly
-    and ignores ``MUJOCO_GL`` for its own context — the two backends
-    coexist as long as dm_control gets EGL.
+    ``Physics`` offscreen pipeline runs on EGL rather than monopolising GLFW —
+    without it ``mujoco.viewer.launch_passive`` opens a window whose OpenGL
+    context never binds (``GLFWError 65546: cannot swap buffers``).
+    ``mujoco.viewer.launch_passive`` still uses GLFW for its own onscreen
+    window (calls ``glfw.init()`` directly, ignoring ``MUJOCO_GL``), so the
+    two backends coexist as long as dm_control gets EGL.
 
-    The override is unconditional rather than ``--view``-gated because
-    (a) the scene factory does not see the CLI flag, (b) EGL works
-    fine for offscreen-only runs too, and (c) it neutralises the
-    upstream ``_resolve_view`` egl→glfw override in
-    ``openral_sim.cli`` for this specific backend (which is correct
-    for every other MuJoCo-backed scene but actively harmful for
-    aloha).
+    Unconditional (not ``--view``-gated): the factory doesn't see the CLI
+    flag, EGL works fine offscreen too, and it neutralises
+    ``openral_sim.cli``'s ``_resolve_view`` egl→glfw override, which is
+    correct for other MuJoCo scenes but harmful for aloha.
     """
     if env_cfg.scene.id not in _ALOHA_SCENES:
         raise ROSConfigError(

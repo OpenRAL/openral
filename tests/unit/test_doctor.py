@@ -696,10 +696,9 @@ def test_doctor_exits_0_on_all_ok() -> None:
 def test_doctor_exits_0_on_tier0_host() -> None:
     """A Tier-0 install (curl-bash: no sudo, no apt, so no ROS 2) is healthy.
 
-    `scripts/install.sh` advertises `openral doctor` as the first quick-start
-    command, so exiting non-zero here turned the documented
-    `curl … | bash && openral doctor` sequence red in CI on a host where
-    nothing is actually wrong. Regression test for that: ROS 2 and colcon are
+    Regression: `scripts/install.sh` advertises `openral doctor` as the first
+    quick-start command, so exiting non-zero here turned the documented
+    `curl … | bash && openral doctor` sequence red in CI. ROS 2/colcon are
     opt-in escalations (`openral install ros`), not failures.
     """
     with patch("openral_cli.main.shutil.which", return_value=None):
@@ -721,10 +720,9 @@ def test_doctor_exits_0_on_tier0_host() -> None:
 def test_doctor_and_factory_share_one_preset_table() -> None:
     """Doctor must consume the factory's endpoint presets, not a mirror.
 
-    A hand-mirrored copy in openral_cli.main drifted twice (2fe732a: doctor
-    rejected valid named endpoints; 131a489: doctor passed a dialect clash
-    the factory refuses). The table now lives in openral_core and both sides
-    import THE SAME object, so a third drift is impossible by construction.
+    A hand-mirrored copy in openral_cli.main drifted twice (2fe732a: rejected
+    valid named endpoints; 131a489: passed a dialect clash the factory refuses).
+    The table now lives in openral_core; both sides import the same object.
     """
     from openral_core import REASONER_ENDPOINT_PRESETS
     from openral_reasoner.tool_use import _ENDPOINT_PRESETS

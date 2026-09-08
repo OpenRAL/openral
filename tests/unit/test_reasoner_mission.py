@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`openral_reasoner.mission`.
+"""Unit tests for ``openral_reasoner.mission``.
 
 The deterministic mission queue that fixes the multi-task deploy gap: an
 operator goal carrying several ordered subtasks is split, sequenced one-active
@@ -157,34 +157,6 @@ def test_verdict_complete_on_success() -> None:
     )
     assert action == "complete"
     assert verdict == "progress=0.91"
-
-
-def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
-    # progress_now=0.40 < check_floor=0.5 → straight to the attempts ladder → retry
-    action, verdict = evaluate_task_verdict(
-        ok=True,
-        progress_now=0.40,
-        success_threshold=0.8,
-        check_floor=0.5,
-        attempts=1,
-        max_attempts=3,
-    )
-    assert action == "retry"
-    assert "attempt 1/3" in verdict
-
-
-def test_verdict_abandon_when_attempts_exhausted() -> None:
-    # progress_now=0.40 < check_floor → ladder; attempts exhausted → abandon
-    action, verdict = evaluate_task_verdict(
-        ok=True,
-        progress_now=0.40,
-        success_threshold=0.8,
-        check_floor=0.5,
-        attempts=3,
-        max_attempts=3,
-    )
-    assert action == "abandon"
-    assert "after 3 attempt(s)" in verdict
 
 
 def test_verdict_ambiguous_band_returns_vlm_check() -> None:

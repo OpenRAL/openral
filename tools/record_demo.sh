@@ -1,27 +1,16 @@
 #!/usr/bin/env bash
-# record_demo.sh — thin, reusable screen recorder for sim + dashboard demo clips.
+# record_demo.sh — screen recorder for sim + dashboard demo clips.
 #
-# Captures the full X11 display (:1 by default) to recordings/<name>.mp4 using
-# ffmpeg x11grab + libx264 (CPU encode, to leave the 8 GB GPU for the policy and
-# MuJoCo/Isaac render). Optionally tiles the sim viewer + the chromium dashboard
-# window side-by-side first (best-effort via xdotool; never fatal).
+# Captures X11 display :1 (default) to recordings/<name>.mp4 via ffmpeg
+# x11grab + libx264 (CPU encode, leaves the 8 GB GPU for the policy/render).
+# --tile best-effort tiles the sim viewer + chromium side-by-side (xdotool;
+# never fatal). Stops on a sentinel file or duration elapsed, then SIGINTs
+# ffmpeg to finalize the MP4.
 #
-# It records until EITHER a stop sentinel file appears OR the duration elapses,
-# then sends SIGINT to ffmpeg so the MP4 is finalised cleanly.
-#
-# Usage:
-#   tools/record_demo.sh <name> [duration_s] [--tile]
-#
-#   <name>        output basename -> recordings/<name>.mp4
-#   [duration_s]  max record seconds (default 300 = 5 min)
-#   --tile        best-effort: tile a MuJoCo/Isaac viewer + chromium side-by-side
-#
-# Stop early from another shell:
-#   touch recordings/.<name>.stop
-#
-# Env:
-#   REC_DISPLAY   X display to grab (default :1)
-#   REC_FPS       capture framerate (default 15 — sim is slow, keeps CPU sane)
+# Usage: tools/record_demo.sh <name> [duration_s=300] [--tile]
+# Stop early: touch recordings/.<name>.stop
+# Env: REC_DISPLAY (default :1), REC_FPS (default 15, sim is slow, keeps CPU
+#      sane), REC_REGION "WxH+X+Y"
 set -euo pipefail
 
 NAME="${1:?usage: record_demo.sh <name> [duration_s] [--tile]}"

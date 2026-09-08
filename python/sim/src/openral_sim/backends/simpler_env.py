@@ -2,7 +2,7 @@
 
 SimplerEnv is opt-in via the ``simpler-env`` dependency group
 (``just sync --all-packages --group simpler-env``); without it this module still imports
-fine but the scene factory raises a typed :class:`ROSConfigError` with
+fine but the scene factory raises a typed ``ROSConfigError`` with
 the install hint.
 
 The metric SimplerEnv targets is the real-to-sim correlation (MMRV /
@@ -11,7 +11,7 @@ WidowX setups used by RT-1, RT-2, Octo and OpenVLA. On the upstream
 ``maniskill3`` branch the eval envs are now ManiSkill3-registered
 gymnasium environments (``mani_skill.envs.tasks.digital_twins.*``), so
 this adapter shares the obs / state extraction helpers with
-:mod:`openral_sim.backends.maniskill3`.
+``openral_sim.backends.maniskill3``.
 
 Task ID convention
 ------------------
@@ -58,9 +58,9 @@ if TYPE_CHECKING:
     from openral_sim.rollout import Observation
 
 
-# Set to "1" by :meth:`openral_sim.SimRunner.activate` for the duration
+# Set to "1" by ``openral_sim.SimRunner.activate`` for the duration
 # of the scene build when ``openral sim run --view`` is on. See the same
-# constant in :mod:`openral_sim.sim_runner`. We read it here to decide
+# constant in ``openral_sim.sim_runner``. We read it here to decide
 # whether to advertise ``render_mode='human'`` to ``gym.make`` — that
 # is the toggle that tells SAPIEN to build a live window. Reading an
 # env var (rather than threading a kwarg through every SCENES factory)
@@ -268,20 +268,16 @@ def _resolve_gripper_qpos(flat: Any) -> float:
 
 @dataclass
 class _SimplerEnvSim:
-    """Thin :class:`SimRollout` wrapper around a SimplerEnv-via-MS3 gym env."""
+    """Thin ``SimRollout`` wrapper around a SimplerEnv-via-MS3 gym env."""
 
     scene: SceneSpec
     task: TaskSpec
     _env: Any  # ManiSkill3-registered gym env (lazy-imported)
-    # When True, the env was constructed with ``render_mode=None`` and
-    # we need to promote it to ``"human"`` (and lazily open the SAPIEN
-    # viewer) on the first :meth:`viewer_render` call. This is the
-    # deferred-window mode used by ``openral sim run --view`` so the live
-    # SAPIEN window doesn't open during the slow rldx sidecar boot
-    # (during which the runner's main thread is blocked and the WM
-    # would mark the empty window "Not Responding"). Set by
-    # :func:`_build_simpler_env_scene` when ``OPENRAL_SIM_VIEW=1`` and
-    # cleared on first promotion.
+    # Deferred-window mode (``openral sim run --view``): True until the first
+    # ``viewer_render`` call promotes ``render_mode`` to ``"human"`` and
+    # opens the SAPIEN viewer -- keeps the window from opening during the
+    # slow rldx sidecar boot (WM would mark it "Not Responding"). Set by
+    # ``_build_simpler_env_scene`` when ``OPENRAL_SIM_VIEW=1``.
     _view_pending: bool = False
     _last_image: NDArray[np.uint8] | None = None
 
@@ -319,20 +315,13 @@ class _SimplerEnvSim:
     def viewer_render(self) -> None:
         """Pump the SAPIEN live viewer; promotes to ``human`` mode on first call.
 
-        Picked up by :func:`openral_sim.sim_runner._open_viewer_and_pacing`
-        as the engine-owns-the-viewer hook (returns a
-        ``_SapienViewerProxy`` that the runner ``.sync()``-s after each
-        applied step). The first call lazily promotes
-        ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` —
-        MS3's ``render_human`` (``sapien_env.py:1355``) then creates
-        the SAPIEN viewer + runs ``_setup_viewer`` against the
-        already-populated scene (env was reset during ``gym.make``'s
-        ``__init__``, so the carrot/plate/robot are present from
-        construction). Doing this lazily here, rather than at
-        ``gym.make`` time, lets the SAPIEN window open *after* the
-        slow rldx sidecar boot — the runner's first viewer_render()
-        call fires from inside ``_step_tick``, post-policy-build, so
-        the WM never sees an empty unresponsive window.
+        Picked up by ``openral_sim.sim_runner._open_viewer_and_pacing`` as
+        the engine-owns-the-viewer hook. The first call promotes
+        ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` (MS3's
+        ``render_human``, ``sapien_env.py:1355``, then creates the SAPIEN
+        viewer against the already-populated scene -- reset already ran during
+        ``gym.make``'s ``__init__``), deferred until after the rldx sidecar has
+        booted so the WM never marks an empty window "Not Responding".
         """
         if self._view_pending:
             self._env.unwrapped.render_mode = "human"
@@ -373,9 +362,9 @@ class _SimplerEnvSim:
 
 @SCENES.register(_SIMPLER_ENV_SCENE_ID)
 def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
-    """Lazily import ``simpler_env`` and build a :class:`_SimplerEnvSim`.
+    """Lazily import ``simpler_env`` and build a ``_SimplerEnvSim``.
 
-    Delegates the install chain to :func:`openral_sim._deps.ensure_backend_deps`
+    Delegates the install chain to ``openral_sim._deps.ensure_backend_deps``
     (`backend_id="simpler_env"`) so the first-use UX mirrors LIBERO /
     RoboCasa: one Rich banner + ``typer.confirm`` (bypassed by
     ``OPENRAL_AUTO_INSTALL_DEPS=1``) and the upstream git package gets
@@ -411,23 +400,12 @@ def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
     # with the resolved kwargs keeps the adapter forward-compatible with
     # whatever the registered env actually supports.
     obs_mode = env_cfg.scene.backend_options.get("obs_mode", _DEFAULT_OBS_MODE)
-    # SAPIEN/ManiSkill3 opens its viewer eagerly inside the env's
-    # ``__init__`` (line ~327 of ``sapien_env.py``: ``self.reset(...)``
-    # is called during construction, which calls ``_reconfigure``,
-    # which then ``create_viewer`` whenever ``render_mode == "human"``).
-    # That means passing ``render_mode='human'`` to ``gym.make`` here
-    # would surface the SAPIEN window during the (slow, blocking)
-    # rldx sidecar boot — the WM marks the unresponsive window "Not
-    # Responding" and may force-close it.
-    #
-    # Deferred-window mode: when ``OPENRAL_SIM_VIEW=1`` we construct
-    # with ``render_mode=None`` (no viewer) and stash a
-    # ``_view_pending`` flag on the adapter. The first
-    # ``viewer_render()`` call — which fires only after the runner has
-    # built the policy and started ticking — promotes
-    # ``env.unwrapped.render_mode`` to ``"human"`` and triggers
-    # ``render_human()``, which lazily opens the SAPIEN viewer against
-    # the already-populated scene.
+    # SAPIEN/ManiSkill3 opens its viewer eagerly inside the env's __init__
+    # (``sapien_env.py:327``: reset() -> _reconfigure() -> create_viewer()
+    # whenever render_mode == "human"), so passing render_mode='human' here
+    # would surface the window during the slow rldx sidecar boot and the WM
+    # would mark it "Not Responding". So always construct with render_mode=None
+    # and defer promotion to ``_SimplerEnvSim.viewer_render`` (see there).
     view_pending = os.environ.get(_VIEW_ENV) == "1"
     # MS3 registers each bridge / fractal env with a canonical
     # ``max_episode_steps`` (60 for the carrot/spoon/cube tasks, 120 for

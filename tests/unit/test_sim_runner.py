@@ -1,18 +1,18 @@
-"""Unit tests for :class:`openral_sim.SimRunner` (amendment 1).
+"""Unit tests for ``openral_sim.SimRunner`` (amendment 1).
 
 Exercises the per-step tick model against the real built-in ``mock``
 scene and ``zero`` / ``random`` policies — no mocks, no stubs, no
-patches. All assertions are on real :class:`TickResult` / :class:`EpisodeResult`
+patches. All assertions are on real ``TickResult`` / ``EpisodeResult``
 shapes (CLAUDE.md §1.11).
 
 Pins:
 
-* Protocol conformance against the structural :class:`InferenceRunner`.
+* Protocol conformance against the structural ``InferenceRunner``.
 * Reset-tick vs step-tick semantics (action_applied flag, inference_ms,
   episode_idx, step_idx).
-* :meth:`SimRunner._should_terminate` stops :meth:`run` once
+* ``SimRunner._should_terminate`` stops ``run`` once
   ``n_episodes`` are emitted, regardless of the ``max_ticks`` ceiling.
-* Trailing-episode flush on :meth:`deactivate`.
+* Trailing-episode flush on ``deactivate``.
 * Per-episode seeding (``seed + episode_idx``).
 * Deactivate idempotence.
 """
@@ -271,11 +271,9 @@ def test_tick_results_increment_tick_idx() -> None:
 
 # ── Per-step instruction precedence (--instruction override) ─────────────────
 #
-# Regression for the silent `--instruction` override loss: a scene whose
-# env exposes a per-episode `obs["task"]` language (for example, RoboCasa
-# sampled object name) used to unconditionally beat the user's explicit
-# `--instruction`. An explicit override MUST win; the env language must still
-# win when the user passed nothing.
+# Regression: a scene's per-episode obs["task"] language (e.g. RoboCasa's sampled
+# object name) used to unconditionally beat an explicit --instruction. Priority:
+# explicit override > env language > static YAML instruction.
 
 
 def test_explicit_override_beats_env_language() -> None:

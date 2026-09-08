@@ -1,21 +1,19 @@
 """Test helpers for skill latency-budget enforcement (CLAUDE.md §5.4).
 
 CLAUDE.md §5.4 requires *"latency budgets declared per skill; CI fails if
-exceeded on the reference host"*.  Sim tests already *measure* warm-step and
-cached-pop latency (see ``tests/sim/test_smolvla_so100.py`` and friends),
-but until now they only printed measurements — there was no helper that
-asserted the manifest contract.  This module supplies that helper.
+exceeded on the reference host"*. Sim tests measure warm-step and
+cached-pop latency (``tests/sim/test_smolvla_so100.py`` and friends); this
+module supplies the assertion helper against the manifest contract.
 
 Public surface
 --------------
-- :func:`assert_within_budget` — assert that a measured per-step latency is
-  within the manifest's :class:`openral_core.RSkillLatencyBudget`.
-- :class:`LatencyBudgetExceededError` — raised on overrun.
+- ``assert_within_budget`` — assert a measured per-step latency is
+  within the manifest's ``openral_core.RSkillLatencyBudget``.
+- ``LatencyBudgetExceededError`` — raised on overrun.
 
-The helper is intentionally a plain ``AssertionError`` subclass (not
-``ROSRuntimeError``).  At test time we want a crisp pytest failure with the
-budget delta, not the operational exception that the safety supervisor would
-catch.
+A plain ``AssertionError`` subclass (not ``ROSRuntimeError``): a crisp
+pytest failure with the budget delta, not the operational exception the
+safety supervisor would catch.
 
 Example:
     >>> from openral_core import RSkillLatencyBudget
@@ -42,9 +40,9 @@ _Stage = Literal["per_chunk", "warmup", "load"]
 
 
 class LatencyBudgetExceededError(AssertionError):
-    """Raised by :func:`assert_within_budget` when a measurement exceeds the budget.
+    """Raised by ``assert_within_budget`` when a measurement exceeds the budget.
 
-    Inherits from :class:`AssertionError` so pytest reports it as a normal
+    Inherits from ``AssertionError`` so pytest reports it as a normal
     test failure with the diff in the failure message.
 
     Attributes:

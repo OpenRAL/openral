@@ -478,7 +478,7 @@ distinction for every leg the builder emits: `nvvidconv` is bridged as
 extra CPU colour conversion. The choice is made on the resolved **element
 name**, not on a platform guess.
 
-Note that the NVMM policy leg itself (`video/x-raw(memory:NVMM)` caps, the
+The NVMM policy leg itself (`video/x-raw(memory:NVMM)` caps, the
 default for `PipelineSpec.enable_nvmm`) still needs the private
 `openral-pro-trt` package to consume the `NvBufSurface`; without it the reader
 reports a bus error by design (no silent fallback — CLAUDE.md §1.4). Pass

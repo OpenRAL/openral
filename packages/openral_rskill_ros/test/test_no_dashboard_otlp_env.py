@@ -1,38 +1,22 @@
 """Regression test: ``--no-dashboard`` skips OTLP endpoint forwarding.
 
-Asserts that :func:`sim_e2e.launch.compose_runtime_graph` builds every
-spawned node's ``additional_env`` **without** ``OTEL_EXPORTER_OTLP_ENDPOINT``
-/ ``OTEL_EXPORTER_OTLP_PROTOCOL`` when ``enable_dashboard=false`` — and
-*with* them when ``enable_dashboard=true``.
+Asserts ``sim_e2e.launch.compose_runtime_graph`` builds every spawned node's
+``additional_env`` WITHOUT ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_PROTOCOL``
+when ``enable_dashboard=false``, WITH them when ``true``.
 
-Why this matters: the OpenTelemetry SDK in
-``python/observability/src/openral_observability/_sdk.py:configure_observability``
-short-circuits to no-op when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is absent
-(``_sdk.py:145``). With it set, every node installs a BatchSpanProcessor /
-PeriodicExportingMetricReader / BatchLogRecordProcessor that retries
-against the configured endpoint at SIGINT shutdown. Before this guard,
-``openral deploy sim --no-dashboard`` always set the endpoint to
-``http://127.0.0.1:<dashboard_port>`` even though no dashboard was
-running there, so every node blocked for ~30s on connection retries
-during teardown. That stalled every headless caller — CI runs, the
-``tools/audit_sim_configs.py`` deploy probe, batch scripts — and
-manifested as the audit's ``fail-timeout`` status (exit -9, SIGKILL'd
-after ``shutdown-grace`` elapsed) on launches that were otherwise
-perfectly healthy. The guard at ``sim_e2e.launch.py:433-454`` is what
-this test pins.
+Why: ``configure_observability`` (``_sdk.py:145``) no-ops with no endpoint set; with one set,
+every node installs exporters that retry against it at SIGINT shutdown. Before the guard at
+``sim_e2e.launch.py:433-454``, ``--no-dashboard`` still pointed nodes at
+``http://127.0.0.1:<dashboard_port>`` with nothing listening, so teardown blocked ~30s per
+node — stalling CI and ``tools/audit_sim_configs.py``, surfacing as the audit's
+``fail-timeout`` (exit -9, SIGKILL'd after ``shutdown-grace``) on otherwise-healthy launches.
 
-``OTEL_RESOURCE_ATTRIBUTES`` (dashboard run id / mode / git sha) stays
-forwarded under both modes — it is cheap, harmless when no exporter is
-wired, and useful if the operator points the parent shell at an
-external OTLP collector.
+``OTEL_RESOURCE_ATTRIBUTES`` (run id / mode / git sha) stays forwarded in both modes — cheap,
+harmless, useful if the operator points the parent shell at an external collector.
 
-Per CLAUDE.md §1.11: no mocks. Real :class:`openral_core.RobotDescription`
-loaded from ``robots/openarm/robot.yaml``; real ``LaunchContext``
-exercising the real ``compose_runtime_graph`` opaque function. The
-test walks the resulting list of entities and inspects each
-``Node``/``LifecycleNode``'s ``additional_env`` directly (private
-attribute access matches the pattern in
-``test_kernel_params_no_empty_lists.py``).
+Per CLAUDE.md §1.11: no mocks — real ``RobotDescription`` (``robots/openarm/robot.yaml``),
+real ``LaunchContext``, real ``compose_runtime_graph``; inspects each entity's
+``additional_env`` directly (matches ``test_kernel_params_no_empty_lists.py``).
 
 Run::
 
@@ -43,12 +27,12 @@ Run::
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _launch_test_common import import_launch_module as _import_launch_module
 
 # ── Guards ───────────────────────────────────────────────────────────────────
 
@@ -73,26 +57,12 @@ _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_
 _REPRESENTATIVE_ROBOT = "openarm"
 
 
-def _import_launch_module() -> Any:
-    """Load ``sim_e2e.launch.py`` as a Python module via importlib.
-
-    Duplicated from ``test_kernel_params_no_empty_lists.py`` to keep
-    each test file self-contained; consolidation into a shared helper
-    can wait until a third test file needs the same scaffolding.
-    """
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch", _LAUNCH_FILE)
-    assert spec is not None and spec.loader is not None, f"failed to spec {_LAUNCH_FILE}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _make_launch_context(*, enable_dashboard: bool, enable_reasoner: bool = True) -> Any:
     """Return a launch context populated from the launch's own declarations."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
     # Required CLI-provided arguments have no defaults.
@@ -117,7 +87,7 @@ def _collect_additional_envs(*, enable_dashboard: bool) -> list[tuple[str, dict[
     Walks the entities ``compose_runtime_graph`` returns, picks the
     ``Node`` / ``LifecycleNode`` instances, and resolves each one's
     ``additional_env`` (a list of ``(key_substitutions, value_substitutions)``
-    tuples) via :func:`launch.utilities.perform_substitutions` against
+    tuples) via ``launch.utilities.perform_substitutions`` against
     the launch context — the same call ``ros2 launch`` makes before
     handing env to subprocess.Popen.
 
@@ -128,7 +98,7 @@ def _collect_additional_envs(*, enable_dashboard: bool) -> list[tuple[str, dict[
     from launch.utilities import perform_substitutions
     from launch_ros.actions import LifecycleNode, Node
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(enable_dashboard=enable_dashboard)
     entities = module.compose_runtime_graph(ctx)
 
@@ -212,7 +182,7 @@ def test_reasoner_uses_model_first_env() -> None:
 def test_direct_rskill_mode_omits_reasoner_and_prompt_router() -> None:
     from launch_ros.actions import LifecycleNode, Node
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(enable_dashboard=False, enable_reasoner=False)
     entities = module.compose_runtime_graph(ctx)
     packages = {

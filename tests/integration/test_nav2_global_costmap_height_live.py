@@ -1,38 +1,30 @@
-"""Live proof that Nav2's **global** costmap marks anything at all (issue #211).
+"""Live proof that Nav2's global costmap marks anything at all (issue #211).
 
-The global costmap was empty. Not sparse — empty: `0` non-zero cells and a
-maximum cost of `0` over 101 published samples across two deploy scenes, while
-the local costmap on the same graph, the same second and the same scan topic
-peaked at `254` with ~2000 non-zero cells. `NavfnPlanner` planned every accepted
-`NavigateToPose` goal against a blank 20 x 20 m grid, and nothing warned: a cloud
-emptied by the height filter is indistinguishable from a scan with no returns.
+The global costmap was empty: 0 non-zero cells, max cost 0 over 101 published samples across
+two deploy scenes, while the local costmap (same graph, same second, same scan topic) peaked
+at 254 with ~2000 non-zero cells. NavfnPlanner planned every accepted NavigateToPose goal
+against a blank 20x20 m grid, and nothing warned: a cloud emptied by the height filter is
+indistinguishable from a scan with no returns.
 
-The cause is that nav2 filters observation z in the costmap's **own**
-`global_frame`, and the two costmaps do not share one. `map`'s z origin is not
-the floor — slam_toolbox scan-matches in 2-D and publishes the `map -> odom` z
-that flattens `base_link` to 0, and `base_link` is the arm mount 0.700 m up the
-pedestal (ADR-0095). So the lidar plane sits at **+0.300 m** in `odom` and
-**-0.400 m** in `map`, and a floor of `0.0` keeps every return in the local
-costmap and discards every one in the global.
+Cause: nav2 filters observation z in the costmap's own global_frame, and the two costmaps
+don't share one. map's z origin isn't the floor — slam_toolbox scan-matches in 2-D and
+publishes the map -> odom z that flattens base_link to 0, and base_link is the arm mount
+0.700 m up the pedestal (ADR-0095). So the lidar plane sits at +0.300 m in odom and -0.400 m
+in map, and a floor of 0.0 keeps every return in the local costmap and discards every one in
+the global.
 
-Two tests, and neither means anything without the other:
+Two tests, neither meaningful without the other: the shipped config/nav2_panda_mobile.yaml
+global block marks a real obstacle in the map frame; the same rig with the pre-#211 height
+gate restored marks nothing anywhere — the regression this PR closes, and proof the height
+gate is what the first test measured, not an incidental difference.
 
-* the shipped `config/nav2_panda_mobile.yaml` global block marks a real
-  obstacle in the `map` frame;
-* the same rig with the **pre-#211** height gate restored marks nothing
-  anywhere — the regression this PR closes, and the proof that the height gate
-  is what the first test measured rather than some incidental difference.
+Real components (CLAUDE.md §1.11): upstream nav2_costmap_2d (ros-${ROS_DISTRO}-nav2-bringup),
+the shipped config file read off disk (not a copy), real robots/panda_mobile/robot.yaml for
+the base_link -> base_scan mount. Nothing here constructs a parameter the production graph
+doesn't use.
 
-Real components (CLAUDE.md §1.11): the upstream `nav2_costmap_2d` node from
-`ros-${ROS_DISTRO}-nav2-bringup`, the **shipped** config file read off disk
-rather than a copy of it, and the real `robots/panda_mobile/robot.yaml` for the
-`base_link -> base_scan` mount. Nothing here constructs a parameter the
-production graph does not use.
-
-The scan filter is deliberately absent. #211 is about a gate applied after the
-observation reaches the buffer, so the filter that decides which beams get there
-is not part of the claim — `tests/integration/test_nav2_scan_filter_live.py`
-owns that half.
+Scan filter is deliberately absent: #211 is about a gate applied after the observation
+reaches the buffer, not which beams get there — test_nav2_scan_filter_live.py owns that half.
 """
 
 from __future__ import annotations
@@ -110,16 +102,13 @@ def _scan_mount_z() -> float:
 def _global_costmap_params(*, pre_211_height_gate: bool) -> str:
     """The shipped global costmap block, as a params file for the standalone node.
 
-    Read off `config/nav2_panda_mobile.yaml` so the fix under test is the one
-    that ships. Four values are overridden and none of them touches height: the
-    grid is shrunk from 20 m to 6 m and run at 5 Hz instead of 1 Hz so the test
-    fits the integration budget.
+    Read off `config/nav2_panda_mobile.yaml` so the fix under test is the one that ships.
+    Four values overridden, none touching height: grid shrunk from 20 m to 6 m, run at 5 Hz
+    instead of 1 Hz to fit the integration budget.
 
-    With ``pre_211_height_gate`` the four height keys are set back to what the
-    graph ran before this PR — layer-level `min`/`max` unset (nav2 defaults
-    `0.0` / `2.0`) and source-level `0.0` / `2.0`. That is a restoration, not a
-    mutilation: it is the exact configuration the empty costmaps were measured
-    on.
+    With ``pre_211_height_gate``, the four height keys are restored to what the graph ran
+    before this PR — layer-level min/max unset (nav2 defaults 0.0/2.0), source-level 0.0/2.0
+    — the exact configuration the empty costmaps were measured on.
     """
     raw = yaml.safe_load(_NAV2_CONFIG.read_text())
     params = copy.deepcopy(raw["global_costmap"]["global_costmap"]["ros__parameters"])

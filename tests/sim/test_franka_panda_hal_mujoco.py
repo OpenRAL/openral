@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.FrankaPandaHAL` against real MuJoCo.
+"""Sim tests for ``openral_hal.FrankaPandaHAL`` against real MuJoCo.
 
 The Panda HAL exposes 8 joints: 7 revolute arm joints + 1 synthetic gripper
 channel reported in ``[0, 1]`` (0 = closed, 1 = fully open).  Internally the
@@ -106,13 +106,6 @@ class TestPandaDescription:
 @pytest.fixture()
 def hal() -> FrankaPandaHAL:
     return FrankaPandaHAL(gravity_enabled=False, settle_steps=1500)
-
-
-@pytest.fixture()
-def connected_hal(hal: FrankaPandaHAL) -> FrankaPandaHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _make_action(targets: list[float]) -> Action:

@@ -2,8 +2,8 @@
 
 Single-scene benchmark sibling of ``openral benchmark run --suite``. The
 ``scene`` subcommand accepts exactly one ``BenchmarkScene`` YAML and
-delegates the rollout to :func:`openral_sim.benchmark.run_benchmark_scene`,
-emitting a validated :class:`RSkillEvalResult` JSON in the same shape as
+delegates the rollout to ``openral_sim.benchmark.run_benchmark_scene``,
+emitting a validated ``RSkillEvalResult`` JSON in the same shape as
 the multi-task suite runner so paper-comparison reports stay uniform.
 
 End-to-end coverage of the typer wiring only — the runtime aggregation
@@ -37,7 +37,7 @@ def test_benchmark_scene_rejects_simscene_yaml() -> None:
 
     ``scenes/sim/tabletop_cube_push.yaml`` carries only ``honest_scope``
     in its metadata — no ``paper`` field — so it cannot satisfy
-    :class:`BenchmarkMetadata` and is the canonical "one-tier-too-thin"
+    ``BenchmarkMetadata`` and is the canonical "one-tier-too-thin"
     rejection case for ``benchmark scene``.
     """
     assert _SIM_SCENE.is_file(), f"missing fixture: {_SIM_SCENE}"
@@ -123,7 +123,7 @@ def test_benchmark_scene_dry_run_resolves_the_rskill() -> None:
     """``--dry-run`` must parse ``--rskill``, not echo it as-typed.
 
     Regression: the dry-run branch returned before
-    :func:`openral_cli.main._parse_rskill_cli_arg`, so a broken manifest or a
+    ``openral_cli.main._parse_rskill_cli_arg``, so a broken manifest or a
     non-VLA kind passed the exact check the flag exists to perform. The
     resolved adapter id in the output is the proof it was parsed.
     """
@@ -168,7 +168,7 @@ def test_benchmark_scene_dry_run_applies_the_task_gate() -> None:
 
     ``rskills/diffusion-pusht`` declares ``evaluated_tasks: [pusht]``; the
     LIBERO-spatial benchmark scene is outside it, so
-    :func:`openral_sim.benchmark.check_benchmark_task_compatibility` rejects
+    ``openral_sim.benchmark.check_benchmark_task_compatibility`` rejects
     the pairing at real-run time. The dry run must predict that, not print a
     plan that cannot execute.
     """

@@ -30,7 +30,7 @@ RSkillFamily = Literal["act", "smolvla", "pi05", "xvla", "diffusion"]
 _CHW_DIMS = 2
 
 #: The five families OpenRAL ships sim policy adapters for. Mirrors
-#: the keys of :data:`openral_sim.registry.POLICIES` minus the mock
+#: the keys of ``openral_sim.registry.POLICIES`` minus the mock
 #: entries (``zero`` / ``random``) which are scene-side aids, not
 #: packageable skills.
 RSKILL_FAMILIES: tuple[RSkillFamily, ...] = ("act", "smolvla", "pi05", "xvla", "diffusion")

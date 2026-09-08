@@ -1,31 +1,23 @@
 # MetaWorld MT50 benchmark suite — 50 manipulation tasks.
 #
-# Mirrors the MT50 setting from Yu et al., 2019 (arXiv:1910.10897). The
-# 50 task names match lerobot's TASK_NAME_TO_ID (see
-# .venv/lib/python3.12/site-packages/lerobot/envs/metaworld_config.json)
-# which in turn matches MetaWorld v3 (post-2024 Metaworld 3.x).
+# Mirrors the MT50 setting from Yu et al., 2019 (arXiv:1910.10897). 50 task
+# names match lerobot's TASK_NAME_TO_ID
+# (.venv/lib/python3.12/site-packages/lerobot/envs/metaworld_config.json),
+# which matches MetaWorld v3 (post-2024 Metaworld 3.x): assembly,
+# button-press, drawer, faucet, hammer, insertion, lever, peg, pick-place,
+# plate, push, reach, sweep, window, etc.
 #
-# Shape: bare list of 50 BenchmarkScenes (one per task); suite
-# id = filename stem ("metaworld_mt50"). All share the same scene,
-# robot, episode budget and provenance — the YAML uses an anchor
-# (&mw_scene) to keep the file compact. Each task overrides only its
-# id + instruction. Suite-level invariants are enforced by
-# :func:`openral_core.raise_on_invalid_suite`.
+# Shape: bare list of 50 BenchmarkScenes; suite id = filename stem
+# ("metaworld_mt50"). All share scene/robot/episode budget/provenance via the
+# `&mw_scene` anchor; each task overrides only id + instruction. Invariants
+# enforced by `openral_core.raise_on_invalid_suite`.
 #
-# Protocol: 5 episodes per task = 250 total rollouts. This is lighter
-# than the 50-ep/task default in the original paper so the suite finishes
-# in under 4h on a single GPU; raise n_episodes to scale up.
+# Protocol: 5 episodes/task = 250 total (lighter than the paper's 50/task, so
+# the suite finishes in under 4h on one GPU; raise n_episodes for
+# paper-equivalent reproduction). Success key is "success" (info["success"],
+# not info["is_success"]).
 #
-# Notes: 50 manipulation tasks (assembly, button-press, drawer, faucet,
-# hammer, insertion, lever, peg, pick-place, plate, push, reach, sweep,
-# window, …). Lighter than the paper protocol (5 seeds/task vs 50) to
-# keep the runtime within ~4h on a single GPU; bump n_episodes for a
-# paper-equivalent reproduction. The success key is "success" — the
-# metaworld env reports it under info["success"], not info["is_success"].
-#
-# Run:
-#   openral benchmark run --suite metaworld_mt50 \
-#       --rskill smolvla-metaworld
+# Run: openral benchmark run --suite metaworld_mt50 --rskill smolvla-metaworld
 
 - &mw_scene
   scene:

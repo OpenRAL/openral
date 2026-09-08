@@ -11,7 +11,7 @@ moves. This script re-derives each marker from the current source tree:
   backticked code span (``class X(...)``, ``def``-style ``name(args) -> ret``,
   ``@dataclass X``, ``const X: ...``, ``prop a, b, c``). Indented bullets
   resolve inside the enclosing top-level ``class`` entry's scope.
-* Symbols are located with :mod:`ast`; unresolved entries are reported and
+* Symbols are located with ``ast``; unresolved entries are reported and
   left untouched (a stale entry is a defect to fix by hand, not to guess).
 
 Usage::
@@ -34,7 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 METHODS_DIR = REPO_ROOT / "docs" / "methods"
 
 _HEADING_RE = re.compile(r"^#{3,4} .*?`((?:python|packages|tools|tests)/[^`]+\.py)`")
-_MARKER_RE = re.compile(r"\(L(\d+)(?:[–-](\d+))?\)")
+_MARKER_RE = re.compile(r"\((?:`?([\w./-]+\.py)`? )?L(\d+)(?:[–-](\d+))?\)")
+# A `### `packages/foo/`` heading names a package directory rather than one module, so
+# its bullets carry the file inline: `` `SYMBOL` (bucket2_markers.py L58) ``. Without
+# this the tool never sets a file context for them and skips them silently.
+_DIR_HEADING_RE = re.compile(r"^#{3,4} .*?`((?:python|packages|tools|tests)/[^`]+/)`")
 _BULLET_RE = re.compile(r"^(\s*)- (.*)$")
 _CODE_SPAN_RE = re.compile(r"`([^`]+)`")
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
@@ -145,6 +149,37 @@ def _resolve(symbols: list[str], scope: str | None, index: dict[str, int]) -> li
     return lines
 
 
+def _resolve_inline_path(rel: str, base_dir: Path | None) -> Path | None:
+    """Locate a module named inline in a bullet, e.g. ``(bucket2_markers.py L58)``.
+
+    Tried in order: relative to the section's package directory, then the
+    repo root, then a search by basename within the package directory.
+    Returns ``None`` when nothing matches.
+    """
+    candidates = []
+    if base_dir is not None:
+        candidates.append(base_dir / rel)
+    candidates.append(REPO_ROOT / rel)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    if base_dir is not None:
+        matches = sorted(base_dir.rglob(Path(rel).name))
+        if len(matches) == 1:
+            return matches[0]
+    # Last resort: a heading may name a dotted module (`openral_runner.backends.reward`)
+    # rather than a path, so there is no base directory. Accept a repo-wide suffix match
+    # only when it is unique.
+    skip = {".git", ".venv", "build", "install", "log", "site", "__pycache__", ".claude"}
+    suffix = tuple(Path(rel).parts)
+    hits = [
+        candidate
+        for candidate in REPO_ROOT.rglob(Path(rel).name)
+        if not skip & set(candidate.parts) and candidate.parts[-len(suffix) :] == suffix
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
     """Rewrite the markers in one inventory file.
 
@@ -152,6 +187,7 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
     """
     lines = md_path.read_text(encoding="utf-8").splitlines(keepends=True)
     current_file: Path | None = None
+    base_dir: Path | None = None
     file_index: dict[str, int] = {}
     import_names: set[str] = set()
     scope: str | None = None
@@ -159,8 +195,21 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
     unresolved: list[str] = []
 
     for i, line in enumerate(lines):
+        dir_heading = _DIR_HEADING_RE.match(line)
+        if dir_heading and not _HEADING_RE.match(line):
+            candidate_dir = REPO_ROOT / dir_heading.group(1)
+            base_dir = candidate_dir if candidate_dir.is_dir() else None
+            if base_dir is None:
+                unresolved.append(
+                    f"{md_path.name}:{i + 1}: package directory missing: {dir_heading.group(1)}"
+                )
+            current_file = None
+            scope = None
+            continue
+
         heading = _HEADING_RE.match(line)
         if heading:
+            base_dir = None
             rel = Path(heading.group(1))
             candidate = REPO_ROOT / rel
             if candidate.exists():
@@ -173,6 +222,7 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
             continue
         if line.startswith("#"):
             current_file = None
+            base_dir = None
             scope = None
             continue
 
@@ -191,10 +241,25 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
                         scope = name_match.group(0)
 
         markers = list(_MARKER_RE.finditer(line))
-        if not markers or current_file is None or span_match is None:
+        if not markers or span_match is None:
             continue
+
+        # A bullet under a package-directory heading names its own module inline.
+        inline_rel = markers[-1].group(1)
+        bullet_file, bullet_index, bullet_imports = current_file, file_index, import_names
+        if inline_rel:
+            resolved_path = _resolve_inline_path(inline_rel, base_dir)
+            if resolved_path is None:
+                unresolved.append(f"{md_path.name}:{i + 1}: source file missing: {inline_rel}")
+                continue
+            bullet_file = resolved_path
+            bullet_index, bullet_imports = _index_python_file(resolved_path)
+        if bullet_file is None:
+            continue
+        file_index_for_line, import_names_for_line = bullet_index, bullet_imports
+
         symbols = _symbols_from_span(span_match.group(1))
-        resolved = _resolve(symbols, scope if indent else None, file_index)
+        resolved = _resolve(symbols, scope if indent else None, file_index_for_line)
         if not resolved:
             # Fallback for spans like `SCENES.register("x")(_build_x_scene)`:
             # try the other identifiers in the span (return annotation stripped)
@@ -203,16 +268,23 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
             span_text = span_match.group(1)
             allow_imports = span_text.lstrip().startswith(("from ", "import "))
             for ident in _IDENT_RE.findall(span_text.split("->")[0]):
-                if "." in ident or (ident in import_names and not allow_imports):
+                if "." in ident or (ident in import_names_for_line and not allow_imports):
                     continue
-                if ident in file_index:
-                    resolved = [file_index[ident]]
+                if ident in file_index_for_line:
+                    resolved = [file_index_for_line[ident]]
                     break
         if not resolved:
             unresolved.append(f"{md_path.name}:{i + 1}: cannot locate `{span_match.group(1)}`")
             continue
         lo, hi = min(resolved), max(resolved)
-        new_marker = f"(L{lo}–{hi})" if (len(resolved) > 1 and hi != lo) else f"(L{lo})"
+        # Reproduce the entry's own quoting: some bullets write the path in backticks.
+        if inline_rel:
+            quoted = f"`{inline_rel}`" in line
+            prefix = f"`{inline_rel}` " if quoted else f"{inline_rel} "
+        else:
+            prefix = ""
+        span_text_marker = f"L{lo}–{hi}" if (len(resolved) > 1 and hi != lo) else f"L{lo}"
+        new_marker = f"({prefix}{span_text_marker})"
         marker = markers[-1]
         if marker.group(0) != new_marker:
             changed += 1

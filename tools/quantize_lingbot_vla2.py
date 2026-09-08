@@ -1,41 +1,25 @@
 r"""Pre-quantize LingBot-VLA 2.0 to an NF4 pack for the OpenRAL rSkill.
 
-The LingBot-VLA 2.0 sidecar (``tools/_lingbot_vla2_server.py``) normally NF4-
-quantizes the Qwen3-VL backbone *at load time*: it reads the 25.5 GB fp32
-checkpoint, casts bf16, rewrites the backbone ``Linear`` layers to
-``bnb.nn.Linear4bit`` shells, and lets bitsandbytes pack them to nf4 on the first
-``.to(cuda)`` (~30 s). This script does that pack **once, ahead of time** and
-serialises the result, so downstream deploys download ~7 GB instead of 25.5 GB
-and skip the per-boot conversion.
+The sidecar (``tools/_lingbot_vla2_server.py``) normally NF4-quantizes the
+Qwen3-VL backbone at load time (25.5 GB fp32 -> bf16 -> ``bnb.nn.Linear4bit``,
+packed to nf4 on the first ``.to(cuda)``, ~30 s). This script does that pack
+once ahead of time, so deploys download ~7 GB instead of 25.5 GB and skip
+the per-boot conversion. It runs in the sidecar venv (torch 2.9 /
+transformers 4.57.3 / bitsandbytes) and imports the server module's own
+helpers, so the pack matches the runtime shells byte-for-byte — LingBot's
+graph only exists inside the upstream ``lingbotvla`` package, so it can't
+go through ``tools/quantize_rskill.py`` (lerobot/transformers policies only).
 
-It is the LingBot-specific counterpart of ``tools/quantize_rskill.py`` (which
-handles first-class lerobot / transformers policies). LingBot cannot use that
-tool: its inference graph only exists inside the upstream ``lingbotvla`` package,
-reconstructed exactly as the sidecar server does (config from the repo's
-``configs/vla/robotwin/robotwin.yaml``, a ``lerobot`` import stub, and the
-flash-attention fallback patch). So this script **runs in the sidecar venv**
-(torch 2.9 / transformers 4.57.3 / bitsandbytes) and imports the server module's
-helpers, guaranteeing the produced pack is byte-for-byte what the runtime
-``_nf4_backbone_in_place`` would have built.
+Output (same shape ``_detect_prequantized``/``_overlay_prequantized``
+consume as ``quantize_rskill.py``): ``model.safetensors`` (packed nf4
+backbone + bf16 remainder), ``quantization_metadata.json``, and the source
+repo's small sidecars.
 
-Output layout (the house nf4 pack format ``_detect_prequantized`` /
-``_overlay_prequantized`` consume; identical shape to ``quantize_rskill.py``)::
-
-    <out>/model.safetensors            packed nf4 backbone + bf16 remainder
-    <out>/quantization_metadata.json   scheme=nf4 sentinel + provenance
-    <out>/config.json, tokenizer*, …   the source repo's small sidecars
-
-Two constraints shape the implementation, both because a co-resident job may be
-running on the same 8 GB GPU / 62 GB host:
-
-* **GPU-frugal.** The 8 GB bf16 backbone will not fit alongside a sim, so we never
-  move the whole model to CUDA. Each backbone ``Linear4bit`` is streamed to CUDA
-  on its own (bitsandbytes packs it, ~<1 GB transient), then moved straight back
-  to CPU keeping the packed uint8 + quant_state. Peak GPU stays a few hundred MB.
-* **RAM-frugal.** The upstream ``load_model_weights`` merges all six fp32 shards
-  into one 25.5 GB dict *and* holds the 25.5 GB model — a ~51 GB peak. We replace
-  it with a shard-streaming load (one ~5 GB shard resident at a time), so the peak
-  is the fp32 model (~25.5 GB) + one shard (~5 GB) ≈ 30 GB.
+Frugal for a co-resident job on an 8 GB GPU / 62 GB host: each backbone
+Linear4bit streams to CUDA (bnb packs it, <1 GB transient) and back to CPU
+one at a time (GPU peak stays a few hundred MB), and fp32 shards load one at
+a time (~5 GB each, vs. the upstream's merge-then-load ~51 GB peak); peak
+here is ~25.5 GB model + one ~5 GB shard ~= 30 GB.
 
 Usage (in the sidecar venv)::
 
@@ -44,8 +28,8 @@ Usage (in the sidecar venv)::
         --out    /path/to/lingbot-vla-v2-6b-nf4    \
         --qwen   /path/to/Qwen3-VL-4B-Instruct
 
-The upload to the Hub is a separate step (``hf upload`` — see the rSkill README /
-the model-card publish flow); this script only writes the local pack.
+Upload to the Hub (``hf upload``) is a separate step; this only writes the
+local pack.
 """
 
 from __future__ import annotations
@@ -94,6 +78,7 @@ def _frugal_load_model_weights(self: Any, path: str, strict: bool = True) -> Non
     seen: set[str] = set()
     for shard_path in files:
         shard: dict[str, Any] = {}
+        # reason: safetensors ships no type stubs for safe_open
         with safe_open(shard_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
             for key in f.keys():  # noqa: SIM118  # reason: safe_open is not a dict; no __contains__
                 shard[key] = f.get_tensor(key)
@@ -361,11 +346,10 @@ def main(argv: list[str]) -> int:
     )
     args = p.parse_args(argv)
 
-    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
-    # and warns on every run when the old spelling is present; resolve it from
-    # metadata rather than hardcoding either name, since this script runs in the
-    # same sidecar venv as both LingBot variants and they sit on opposite sides
-    # of the rename (v2 torch 2.9.1, v1 held at 2.8 by lerobot's cap).
+    # torch renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on
+    # the old spelling); resolved from metadata since this venv serves both
+    # variants and they sit on opposite sides of the rename (v2 torch 2.9.1,
+    # v1 held at 2.8 by lerobot's cap).
     _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
     _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
     os.environ.setdefault(_alloc_var, "expandable_segments:True")

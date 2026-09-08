@@ -1,19 +1,16 @@
-"""Typed tool-call dispatch, per-skill tool palette — :class:`ToolPalette` + builder.
+"""Typed tool-call dispatch, per-skill tool palette — ``ToolPalette`` + builder.
 
 The palette is the *closed set* of choices the LLM sees on every
-:meth:`ToolUseClient.select_tool` call. It is built at reasoner
-lifecycle ``configure`` time from the local rSkill registry filtered
-by the active robot's :class:`~openral_core.RobotCapabilities`, and
-refreshed when ``/openral/skill_registry_changed`` fires (fired by
-``ral skill install|remove``).
+``ToolUseClient.select_tool`` call: the LLM cannot dispatch a skill
+that isn't installed, isn't capability-matched, or isn't licensed for
+the deployment. Built at reasoner lifecycle ``configure`` time from the
+local rSkill registry filtered by the active robot's
+``RobotCapabilities``, and refreshed when
+``/openral/skill_registry_changed`` fires (``ral skill install|remove``).
+This module enforces the "installed + capability-matched" half; license
+posture is checked downstream by the action server (defense in depth).
 
-Tool palette built at lifecycle configure: the LLM cannot dispatch a
-skill that isn't installed, isn't capability-matched, or isn't
-licensed for the deployment. This module enforces the "installed +
-capability-matched" half; license posture is checked downstream by the
-action server (defense in depth) when the goal is accepted.
-
-The palette carries per-skill metadata (:class:`RSkillToolEntry`) so
+The palette carries per-skill metadata (``RSkillToolEntry``) so
 the LLM tool schema can present each skill as its own tool with a real
 description + action verbs + object / scene discriminators, instead of
 a single ``execute_rskill`` tool with an opaque list of ids.
@@ -64,7 +61,7 @@ def task_space_disagreement(
     ``rskill_publisher`` both run the legacy mode check (``_action_executable`` /
     ``control_modes_for_representation``) to decide whether a VLA skill is
     offered / publishable. This helper runs the canonical
-    :func:`task_space_compatible` gate over the same (skill, robot, hal_mode)
+    ``task_space_compatible`` gate over the same (skill, robot, hal_mode)
     and returns a human-readable warning **only when the two disagree** — so the
     caller can surface cross-layer mismatches the mode-set check misses (an
     EE-addressed slot naming an end-effector the robot does not declare; a joint
@@ -121,7 +118,7 @@ class ContinuousDetectorEntry(BaseModel):
     (deliberately a compact summary, not the full label list).
 
     Attributes:
-        rskill_id: The detector rSkill's :attr:`RSkillManifest.name`.
+        rskill_id: The detector rSkill's ``RSkillManifest.name``.
         description: The manifest ``description`` — the coverage summary.
         objects: Free-form object/category keywords from the manifest.
         scenes: Free-form scene keywords from the manifest.
@@ -144,7 +141,7 @@ def detector_alias(rskill_name: str) -> str:
     ``"OpenRAL/rskill-omdet_turbo-any-locator-fp16"`` → ``"omdet_turbo-any-locator-fp16"``.
     This is the value the reasoner passes in ``LocateInViewTool.detector`` and
     the basis for the per-detector service namespace (see
-    :func:`detector_service_segment`).
+    ``detector_service_segment``).
     """
     short = rskill_name.rsplit("/", 1)[-1]
     return short[len("rskill-") :] if short.startswith("rskill-") else short
@@ -182,14 +179,14 @@ class OnDemandDetectorEntry(BaseModel):
     """A ``mode: on_demand`` open-vocab locator, surfaced as a locate_in_view option.
 
     On-demand locators are prompt-able **read-only** tools: the reasoner picks one
-    by :attr:`alias` in ``LocateInViewTool.detector`` and asks it "is object X in
+    by ``alias`` in ``LocateInViewTool.detector`` and asks it "is object X in
     view right now?". Unlike continuous detectors they are not background
     producers; unlike VLAs they carry no actuation authority.
 
     Attributes:
-        rskill_id: The detector rSkill's :attr:`RSkillManifest.name`.
+        rskill_id: The detector rSkill's ``RSkillManifest.name``.
         alias: Short selector the reasoner passes as ``detector``
-            (see :func:`detector_alias`).
+            (see ``detector_alias``).
         description: The manifest ``description`` — the capability hint the LLM
             scores when choosing between locators.
     """
@@ -204,19 +201,19 @@ class OnDemandDetectorEntry(BaseModel):
 class RSkillToolEntry(BaseModel):
     """Per-skill metadata surfaced to the reasoner LLM as one tool.
 
-    The reasoner constructs one tool per :class:`RSkillToolEntry`
-    in :attr:`ToolPalette.skills` so the LLM can pick a skill by what it
+    The reasoner constructs one tool per ``RSkillToolEntry``
+    in ``ToolPalette.skills`` so the LLM can pick a skill by what it
     does (description + actions + objects + scenes) rather than by
     inferring meaning from a slug.
 
     Attributes:
         rskill_id: HF Hub id, e.g. ``"OpenRAL/rskill-pi05-..."``.
-            Matches :attr:`RSkillManifest.name`.
+            Matches ``RSkillManifest.name``.
         description: Short NL summary, mirrored from
-            :attr:`RSkillManifest.description`. Primary signal the LLM
+            ``RSkillManifest.description``. Primary signal the LLM
             scores tools on; keep specific (objects, scenes, task type).
         actions: Action verbs the skill performs
-            (:class:`~openral_core.RSkillAction`). At least one entry.
+            (``RSkillAction``). At least one entry.
         objects: Free-form object keywords (``"cube"``, ``"pipe"``, …).
         scenes: Free-form scene keywords (``"tabletop"``, ``"kitchen"``).
         goal_params_schema: Per-skill JSON-Schema 7 / OpenAPI shape
@@ -243,17 +240,17 @@ class RSkillToolEntry(BaseModel):
 class ToolPalette(BaseModel):
     """Closed-set tool palette presented to the reasoner's LLM each tick.
 
-    Three of the four :data:`~openral_core.ReasonerToolCall` variants
+    Three of the four ``ReasonerToolCall`` variants
     are always available (``reload_gst_pipeline``,
     ``lifecycle_transition``, ``emit_prompt``); only
-    :class:`~openral_core.ExecuteRskillTool` is gated, because it can
+    ``ExecuteRskillTool`` is gated, because it can
     actually drive actuators via the ``rskill_runner_node`` action
     server (F1).
 
-    When :attr:`skills` is populated the reasoner emits one
+    When ``skills`` is populated the reasoner emits one
     LLM tool per skill (named ``execute_rskill__<slug>``) carrying the
     skill's description + actions + objects + scenes. When only
-    :attr:`execute_rskill_ids` is populated (e.g. synthetic test
+    ``execute_rskill_ids`` is populated (e.g. synthetic test
     palettes or the default empty palette in ``reasoner_node``), the
     reasoner falls back to a single ``execute_rskill`` tool with the id
     set as an enum constraint.
@@ -263,7 +260,7 @@ class ToolPalette(BaseModel):
             entry — the primary tool surface.
         execute_rskill_ids: Set of skill ids the LLM may pass to
             ``ExecuteRskillTool.rskill_id``. Auto-derived from
-            :attr:`skills` when ``skills`` is non-empty; may also be
+            ``skills`` when ``skills`` is non-empty; may also be
             set directly for palettes without per-skill metadata
             (synthetic test palettes; the default empty palette).
         sensor_ids: Set of sensor ids the LLM may pass to
@@ -386,38 +383,37 @@ def build_tool_palette(
     task_progress_available: bool = False,
     memory_available: bool = False,
 ) -> ToolPalette:
-    """Build a :class:`ToolPalette` from the installed-skill registry.
+    """Build a ``ToolPalette`` from the installed-skill registry.
 
-    A skill is included in the palette iff:
+    A skill is included iff:
 
     1. Every flag in ``skill.capabilities_required`` is set on
        ``robot_capabilities``.
     2. ``skill.embodiment_tags`` intersects
        ``robot_capabilities.embodiment_tags``.
     3. ``role == "s1"`` — only S1 skills are dispatchable via
-       ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots are
-       reserved and have separate dispatch paths) — **and**
-       ``kind not in {"detector", "segmenter"}``: both are S1-rate perception
-       producers, not ExecuteRskill-dispatchable; they activate as the
-       perception ROS node / GStreamer tee consumer.
+       ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots have
+       separate dispatch paths) — and ``kind not in {"detector",
+       "segmenter"}``: both are S1-rate perception producers, not
+       ExecuteRskill-dispatchable; they activate as the perception ROS
+       node / GStreamer tee consumer.
     4. If ``commercial_deployment`` is ``True``, the skill's license
        posture allows commercial use
-       (:attr:`RSkillManifest.is_commercial_use_allowed`). Defense in
+       (``RSkillManifest.is_commercial_use_allowed``). Defense in
        depth: ``ral skill install`` gates at install time too
        (CLAUDE.md §1.9), but the palette filter prevents a smuggled
        weights cache from reaching production.
 
-    Each included skill is materialised as a :class:`RSkillToolEntry`
-    carrying the manifest's ``description`` + ``actions`` + ``objects``
-    + ``scenes``, so the reasoner LLM sees one tool per skill with a
-    real description.
+    Each included skill becomes an ``RSkillToolEntry`` carrying the
+    manifest's ``description`` + ``actions`` + ``objects`` + ``scenes``,
+    so the reasoner LLM sees one tool per skill with a real description.
 
     Args:
         installed_skills: Iterable of every installed
-            :class:`RSkillManifest`.
+            ``RSkillManifest``.
         robot_capabilities: The active robot's capabilities.
         sensor_ids: Sensor ids known to the active runtime; forwarded
-            verbatim into :attr:`ToolPalette.sensor_ids`.
+            verbatim into ``ToolPalette.sensor_ids``.
         node_ids: Lifecycle-peer node ids known to the deployment;
             forwarded verbatim.
         commercial_deployment: When ``True`` filters out non-commercial
@@ -441,7 +437,7 @@ def build_tool_palette(
             ``MEMORY.md`` is wired via the ``memory_md_path`` param.
 
     Returns:
-        A frozen :class:`ToolPalette`.
+        A frozen ``ToolPalette``.
 
     Example:
         >>> from openral_core import RobotCapabilities

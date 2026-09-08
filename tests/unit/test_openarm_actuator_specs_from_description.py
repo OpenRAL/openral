@@ -4,7 +4,7 @@ The openarm_robosuite scene composer used to carry its own copy of the
 16-row ``_JOINT_SPECS`` table — the file's own comment admitted it
 "Mirrors robots/openarm/robot.yaml::joints[*].effort_limit". Two
 sources of truth. The table is now derived at use time from a loaded
-:class:`openral_core.RobotDescription`, so the manifest is the only
+``openral_core.RobotDescription``, so the manifest is the only
 place a joint limit can drift.
 
 CLAUDE.md §1.11: real schemas, real fixture under ``robots/openarm/``,

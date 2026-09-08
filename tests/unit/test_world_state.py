@@ -1,17 +1,5 @@
-"""Unit tests for WorldStateAggregator.
-
-Tests cover:
-- Fresh snapshot before any updates (zeroed joint state, all stale diagnostics)
-- Joint state update → snapshot reflects data and marks ``"ok"``
-- Staleness detection for joint state and sensors
-- Image topic tracking
-- EE pose tracking
-- Base pose + twist
-- Battery percentage
-- Forced error latching and clearing
-- Thread safety: concurrent updates + snapshots don't corrupt state
-- Snapshot rate: 30 Hz nominal (clock injection)
-"""
+"""Unit tests for WorldStateAggregator: snapshot state, per-component staleness,
+forced error latching, thread safety, and clock injection."""
 
 from __future__ import annotations
 

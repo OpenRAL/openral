@@ -5,7 +5,7 @@ Subscribes one or more camera ``sensor_msgs/Image`` streams, caches each
 camera's latest frame, and serves ``/openral/perception/query_scene``
 (``openral_msgs/srv/QueryScene``): a read-only, on-demand "answer this question
 about camera Y's current view" backed by a ``kind: "vlm"`` rSkill (Qwen3.5-4B
-NF4) running in the out-of-process sidecar (:mod:`tools.qwen_vlm_sidecar`).
+NF4) running in the out-of-process sidecar (``tools.qwen_vlm_sidecar``).
 
 Driven by the reasoner's ``query_scene`` tool: the reasoner asks
 open-ended scene-state questions for its replanning ladder — task progress and
@@ -13,7 +13,7 @@ success/failure verification ("has the robot grasped the mug?", "is the bowl on
 the shelf?", "did we drop the object?").
 
 This is the scene-reasoning counterpart of the object-localization detector node
-(:mod:`openral_perception_ros.ros_image_detector_node`, which serves
+(``openral_perception_ros.ros_image_detector_node``, which serves
 ``locate_in_view``). They are separate nodes because a scene VLM is a reasoning
 aid, not a detector: it returns text, publishes nothing continuously, and runs
 on-demand only.
@@ -57,7 +57,7 @@ def main(args: Any = None) -> None:
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class SceneVlmNode(Node):  # type: ignore[misc]
+    class SceneVlmNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Subscribe camera Image(s), cache frames, serve query_scene."""
 
         def __init__(self) -> None:

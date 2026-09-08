@@ -1,7 +1,7 @@
 """Uvicorn entry point for the dashboard.
 
 Wrapped in its own module so ``openral dashboard`` can ``import`` and call
-:func:`run_dashboard` without pulling FastAPI / uvicorn into the
+``run_dashboard`` without pulling FastAPI / uvicorn into the
 critical-path of every ``openral`` invocation.
 """
 
@@ -37,7 +37,7 @@ def _exposure_warning(host: str) -> str | None:
     a non-loopback bind must be surfaced loudly rather than happen silently.
 
     Args:
-        host: The bind address passed to :func:`run_dashboard`.
+        host: The bind address passed to ``run_dashboard``.
 
     Returns:
         A human-readable warning string for a non-loopback bind, or ``None``
@@ -79,7 +79,7 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
             ``openral dashboard --inprocess -- openral sim run
             --config foo.yaml --rskill rskills/<id>``
             in one terminal.
-        store: Optional pre-built :class:`TelemetryStore`. A fresh one
+        store: Optional pre-built ``TelemetryStore``. A fresh one
             is created when ``None`` — supplying one is useful for
             tests that want to assert against the store after a run.
         log_level: uvicorn log level. ``warning`` is quiet enough for a

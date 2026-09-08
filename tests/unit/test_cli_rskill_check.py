@@ -178,13 +178,11 @@ class TestCompatibleHost:
     """Compatible host yields exit 0 with every blocking section green."""
 
     def test_so100_skill_against_so100_host_exits_zero(self, so100_robot_yaml: Path) -> None:
-        # Pick an in-tree so100_follower skill the bare host can actually run.
-        # ``so100_robot_yaml`` is a camera-less host (USB arm + GPU, no rgb
-        # sensor), so a deployable candidate must declare no ``sensors_required``
-        # — the so100-tagged VLAs (pi05/molmoact2) and the RT-DETR ``detector``
-        # rSkills all require an rgb camera this host lacks and would (correctly)
-        # report incompatible. Iterate sorted for a deterministic choice that
-        # doesn't depend on filesystem ``iterdir`` order.
+        # Pick an in-tree so100_follower skill the bare host can run: so100_robot_yaml
+        # is a camera-less host (USB arm + GPU, no rgb sensor), so the candidate must
+        # declare no ``sensors_required`` — the so100-tagged VLAs (pi05/molmoact2) and
+        # the RT-DETR ``detector`` rSkills need an rgb camera this host lacks. Sorted
+        # iteration gives a deterministic choice, independent of iterdir order.
         so100_rskills = sorted(
             child.name
             for child in (REPO_ROOT / "rskills").iterdir()

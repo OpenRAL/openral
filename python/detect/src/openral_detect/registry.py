@@ -2,7 +2,7 @@
 
 Two small registries:
 
-- :func:`canonical_robot_path` — given a ``bh_robot_type`` produced by
+- ``canonical_robot_path`` — given a ``bh_robot_type`` produced by
   ``openral_cli.autodetect`` (USB VID/PID match, SocketCAN interface-name
   match, or DDS topic-prefix inference), return the path to the canonical
   ``robots/<name>/robot.yaml``.
@@ -11,9 +11,9 @@ Two small registries:
   ``RobotDescription.from_yaml(...)``, with detected sensors and compute
   spliced on top — the assembler never re-synthesises a known robot.
 
-- :func:`signature_for_realsense` / :func:`signature_for_v4l2` /
-  :func:`signature_for_usb_uvc` — convenience helpers that build the
-  matching :class:`openral_sensors.SensorSignature` for each probe
+- ``signature_for_realsense`` / ``signature_for_v4l2`` /
+  ``signature_for_usb_uvc`` — convenience helpers that build the
+  matching ``openral_sensors.SensorSignature`` for each probe
   output kind.  Centralised here so probes don't import the catalog and
   the assembler doesn't grow ad-hoc helpers.
 """
@@ -32,18 +32,11 @@ __all__ = [
 ]
 
 
-# The workspace root is found by walking up from this module, so the index
-# works whether the package is consumed from a checkout or from an installed
-# wheel sitting next to a `robots/` tree.
-#
-# This was previously a hard-coded ``parents[5]``, which overshot the root by
-# one level (this file is 4 deep: ``python/detect/src/openral_detect/``, and
-# ``openral_core.assets`` uses ``parents[4]`` at the identical depth). The
-# index therefore never resolved from the package at all — every successful
-# lookup was coming from the CWD fallback, so running ``openral detect``
-# from anywhere but the repo root silently produced an empty scaffold for a
-# robot the probes had already identified. An upward search is used instead
-# of a fixed index so moving this module cannot silently break it again.
+# The workspace root is found by walking up from this module (rather than a
+# fixed `parents[N]`) so it works from a checkout or an installed wheel and a
+# module move cannot silently break it. This file is 4 deep under the root
+# (`python/detect/src/openral_detect/`), same depth `openral_core.assets`
+# resolves via `parents[4]`.
 #
 # Both markers are required: a bare `robots/` directory is a plausible name
 # for unrelated user content, while `robots/` beside `python/` is this
@@ -102,7 +95,7 @@ def canonical_robot_path(bh_robot_type: str) -> Path | None:
     """Resolve a ``bh_robot_type`` slug to a committed ``robots/<name>/robot.yaml``.
 
     Resolution is two-step: the slug is first translated through
-    :data:`_OPENRAL_ROBOT_TYPE_TO_DIR` (``"so100"`` → ``"so100_follower"``);
+    ``_OPENRAL_ROBOT_TYPE_TO_DIR`` (``"so100"`` → ``"so100_follower"``);
     if it is not a known alias the slug is tried **verbatim** as a
     ``robots/<slug>/`` directory name. The second step lets an explicit
     ``openral detect --robot <name>`` override target any committed robot by

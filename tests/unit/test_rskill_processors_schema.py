@@ -3,12 +3,12 @@
 Covers the additions made to close Gap 1, Gap 2, and Gap 3 of the rSkill
 self-containment audit:
 
-- :class:`RSkillProcessors` — per-file URIs for the lerobot
+- ``RSkillProcessors`` — per-file URIs for the lerobot
   ``PolicyProcessorPipeline`` preprocessor + postprocessor artefacts.
-- :class:`ControlModeSemantics` — required nested block on every
-  :class:`ActuatorRequirement` declaring absolute-vs-delta, gripper
+- ``ControlModeSemantics`` — required nested block on every
+  ``ActuatorRequirement`` declaring absolute-vs-delta, gripper
   convention (when applicable), and reference frame (when cartesian).
-- :class:`RSkillManifest` model_validator that forces modern lerobot
+- ``RSkillManifest`` model_validator that forces modern lerobot
   families (``smolvla`` / ``pi05`` / ``xvla`` / ``diffusion`` / ``rldx``)
   to ship a ``processors`` block; only ``act`` may omit it.
 

@@ -1,23 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reusable, robot-agnostic depth-camera → PointCloud2 plumbing.
 
-A deploy-sim HAL node turns each depth ``SensorSpec`` on its robot into a
-``sensor_msgs/PointCloud2`` that ``octomap_server`` lifts into the 3-D
-OctoMap feeding the safety kernel's world-collision check. This module holds
-the pieces shared across robots so a node only has to wire publishers/timers:
+A deploy-sim HAL node turns each depth ``SensorSpec`` into a
+``sensor_msgs/PointCloud2`` that ``octomap_server`` lifts into the OctoMap
+feeding the safety kernel's world-collision check. Shared pieces so a node
+only wires publishers/timers:
 
-* :func:`is_depth_sensor` / :func:`mjcf_camera_name` / :func:`depth_synth_kwargs`
+* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs``
   — pure SensorSpec adapters (no ROS / MuJoCo import).
-* :func:`camera_optical_tf_to_base` — the live camera-optical-frame → base
-  transform, from the MuJoCo camera/body poses (so TF can place the cloud).
-* :func:`points_from_depth_grid` — back-project a metric-depth raster into an
-  ``(N, 3)`` optical-frame cloud, so one ray-cast feeds both the depth image
-  and the cloud (see :func:`openral_hal.sim_sensor_bridge`'s depth timer).
-* :func:`pointcloud2_from_points_xyz` — pack an ``(N, 3)`` array into a
-  ``sensor_msgs/PointCloud2`` (``sensor_msgs`` imported lazily).
+* ``camera_optical_tf_to_base`` — camera-optical-frame → base transform
+  from the live MuJoCo poses.
+* ``points_from_depth_grid`` — back-project a depth raster into an
+  ``(N, 3)`` optical-frame cloud (one ray-cast feeds both depth image and
+  cloud; see ``openral_hal.sim_sensor_bridge``).
+* ``pointcloud2_from_points_xyz`` — pack an ``(N, 3)`` array into a
+  ``sensor_msgs/PointCloud2``.
 
-The synth itself lives in
-:func:`openral_sim.backends.depth_camera.synthesize_depth_image`.
+Synth: ``openral_sim.backends.depth_camera.synthesize_depth_image``.
 """
 
 from __future__ import annotations
@@ -73,17 +72,13 @@ def depth_synth_kwargs(
 
     Pulls width/height/fx/fy/cx/cy from the pinhole intrinsics and the range
     gates from ``range_min_m`` / ``range_max_m`` (falling back to
-    ``max_range_default`` when ``range_max_m`` is unset).
+    ``max_range_default`` when ``range_max_m`` is unset). Ray-cast pinhole
+    model: ``(u-cx)/fx, (v-cy)/fy``.
 
-    When ``render_size`` is given (the scene's
-    ``observation_width``/``height``), the intrinsics are first rescaled to that
-    resolution via :func:`openral_core.scale_intrinsics_to`. The depth synth
-    ray-casts a pixel grid sized by ``width``/``height`` through the
-    ``(u-cx)/fx, (v-cy)/fy`` pinhole model, so for the back-projected cloud to
-    match the RGB the env rendered (same MuJoCo camera, possibly at a non-default
-    resolution), the focal length and principal point must track the render
-    resolution. Leaving ``render_size`` ``None`` keeps the manifest's nominal
-    intrinsics unchanged.
+    When ``render_size`` is given (the scene's ``observation_width``/``height``),
+    intrinsics are rescaled to it first via ``openral_core.scale_intrinsics_to``
+    so the back-projected cloud matches the RGB the env rendered at that
+    resolution. ``None`` keeps the manifest's nominal intrinsics.
     """
     from openral_core import scale_intrinsics_to
 
@@ -108,14 +103,15 @@ def depth_synth_kwargs(
 def robot_self_body_ids(model: Any, sim_joint_names: Any) -> frozenset[int]:
     """Resolve the robot's own MJCF body ids, for depth self-filtering.
 
-    A base-mounted depth camera sees the arm, so without this the robot is
-    voxelised into its own world map and the kernel's world-collision check
-    flags the arm against itself. Returns every body whose name shares a prefix
-    (first ``_``-delimited token) with one of the robot's ``sim_joint_name``s —
-    e.g. ``mobilebase0`` / ``robot0`` / ``gripper0`` in a robosuite/robocasa
-    scene — then includes every descendant of those matched roots. Robosuite
-    names some nested arm bodies generically, so prefix matching alone leaves
-    robot geoms in the depth cloud and voxelises the arm into its own world map.
+    Returns every body whose name shares a prefix (first ``_``-delimited
+    token) with one of the robot's ``sim_joint_name``s — e.g. ``mobilebase0``
+    / ``robot0`` / ``gripper0`` in a robosuite/RoboCasa scene — plus every
+    descendant of those matched roots (needed because robosuite names some
+    nested arm bodies generically).
+
+    Why: without this a base-mounted depth camera voxelises the robot's own
+    arm into the world map and the kernel's world-collision check flags it
+    against itself.
     """
     import mujoco  # reason: defer optional sim dep
 
@@ -139,22 +135,20 @@ def robot_self_body_ids(model: Any, sim_joint_names: Any) -> frozenset[int]:
 def resolve_base_body_name(model: Any, *, description: Any = None) -> str | None:
     """Resolve the MJCF body backing a robot's ``base_frame``, or ``None``.
 
-    Robosuite/RoboCasa scenes name the base body after the first base joint's
-    prefix with a ``_base`` tail (``mobilebase0_base`` under a composed
-    kitchen), so when a ``RobotDescription`` is given we derive that candidate
-    first (mirroring the depth/TF base resolution). We then try the common bare
-    names, returning the first that exists in ``model``:
+    When a ``RobotDescription`` is given, derives ``<prefix>_base`` from the
+    first base joint's prefix first, then tries these bare names in order,
+    returning the first that exists in ``model``:
 
-    * ``mobilebase0_base`` — the real mobile base of a robosuite/RoboCasa mobile
-      manipulator. Tried **before** ``robot0_base`` because in those composed
-      scenes ``robot0_base`` is a placeholder mount left at a fixed offset
-      (e.g. ``(10, 10, 0)``) — locking the camera onto it frames empty space.
+    * ``mobilebase0_base`` — real mobile base of a robosuite/RoboCasa mobile
+      manipulator. Tried before ``robot0_base``: in those composed scenes
+      ``robot0_base`` is a placeholder mount at a fixed offset (e.g.
+      ``(10, 10, 0)``), so locking onto it frames empty space.
     * ``base`` — synthetic / single-body twins.
     * ``robot0_base`` — fixed-arm robosuite (LIBERO etc.), where it *is* the base.
     * ``base_link`` — generic fallback.
 
-    Returns ``None`` when no candidate body is present, so callers can fall back
-    (e.g. the viewer camera centres on the model bounds instead).
+    Returns ``None`` when no candidate exists, so callers (e.g. the viewer
+    camera) can fall back to the model bounds.
     """
     import mujoco  # reason: defer optional sim dep
     from openral_core import extract_base_sim_joint_names
@@ -177,29 +171,25 @@ def resolve_base_body_name(model: Any, *, description: Any = None) -> str | None
 def resolve_base_frame_body_name(model: Any, *, description: Any = None) -> str | None:
     """Resolve the MJCF body whose pose the robot's ``base_frame`` TF carries.
 
-    This is **not** always :func:`resolve_base_body_name`. That one resolves the
+    Not always ``resolve_base_body_name`` (ADR-0095). That resolves the
     chassis *root* — the right anchor for the depth self-filter's
-    ``mj_multiRay`` body-exclude and for the viewer's follow camera. This one
-    resolves the body ``base_frame`` actually *denotes* on ``/tf``, which is
-    what any extrinsic published as ``base_frame -> <child>`` must be measured
-    against.
+    ``mj_multiRay`` body-exclude and the viewer's follow camera. This resolves
+    the body ``base_frame`` denotes on ``/tf``, which any extrinsic published
+    as ``base_frame -> <child>`` must be measured against. Tries
+    ``<prefix>_support`` first, then falls back to
+    ``resolve_base_body_name``'s chassis candidates. Fixed-base arms
+    (LIBERO franka, ur5e, …) have no ``_support`` body and resolve unchanged.
 
-    They differ on robosuite/RoboCasa **mobile manipulators** (ADR-0095). The
-    OmronMobileBase stacks a geomless ground-level root (``mobilebase0_base``,
-    world z 0) under a 0.70 m pedestal whose top plate (``mobilebase0_support``)
-    carries the arm and the robot-mounted cameras. ``base_link`` on ``/tf`` is
-    the **pedestal top**: :class:`~openral_hal.mobile_base_bridge.MobileBaseBridge`
-    publishes ``odom -> base_link`` from the HAL's ``base_pose_6dof()``, i.e.
-    RoboCasa's ``robot0_base_pos``, whose z is that 0.70 m — and the pi05 / rldx
-    / XR-1 state assemblers were trained against that convention. Measuring a
-    camera extrinsic against the ground-level root instead put the whole depth
-    cloud, the OctoMap lowered from it and the kernel's world-voxel grid 0.70 m
-    out for every TF consumer (Nav2, SLAM, the dashboard).
-
-    So the arm-mount candidate ``<prefix>_support`` is tried first, then the
-    chassis candidates of :func:`resolve_base_body_name`. Fixed-base arms
-    (LIBERO franka, ur5e, …) have no ``_support`` body and resolve exactly as
-    before.
+    Why they differ: on robosuite/RoboCasa mobile manipulators, OmronMobileBase
+    stacks a geomless ground-level root (``mobilebase0_base``, world z 0) under
+    a 0.70 m pedestal whose top plate (``mobilebase0_support``) carries the arm
+    and cameras. ``base_link`` on ``/tf`` is that pedestal top —
+    ``MobileBaseBridge`` publishes
+    ``odom -> base_link`` from ``base_pose_6dof()`` (RoboCasa's
+    ``robot0_base_pos``, z = 0.70 m), the convention the pi05 / rldx / XR-1
+    state assemblers were trained against. Measuring against the ground-level
+    root instead put the depth cloud, the OctoMap and the kernel's world-voxel
+    grid 0.70 m out for every TF consumer.
 
     Returns ``None`` when no candidate body is present.
     """
@@ -217,11 +207,10 @@ def resolve_base_frame_body_name(model: Any, *, description: Any = None) -> str 
     return resolve_base_body_name(model, description=description)
 
 
-# Substrings of a 3rd-person "workspace overview" camera, in preference order:
-# robosuite/RoboCasa ``robot0_agentview_*``, gym-aloha ``top``, then the generic
-# ``frontview`` / ``front`` 3rd-person cams. ``top`` is ranked above bare
-# ``front`` so aloha picks its top-down overview rather than its ``front_close``
-# zoom. Matched case-insensitively as substrings of the model's camera names.
+# Substrings of a 3rd-person "workspace overview" camera, preference order:
+# robosuite/RoboCasa robot0_agentview_*, gym-aloha top, then frontview/front.
+# `top` ranks above bare `front` so aloha picks its top-down overview over
+# `front_close`. Matched case-insensitively against model camera names.
 _VIEWER_CAMERA_PREFS: tuple[str, ...] = ("agentview", "top", "frontview", "front")
 
 
@@ -230,16 +219,13 @@ def preferred_viewer_camera_id(
 ) -> int:
     """Pick a named MJCF camera for the viewer to open on; ``-1`` if none.
 
-    Scene cameras are authored to frame the action, so opening the viewer on one
-    avoids the free orbit camera's occlusion problems in cluttered scenes (a
-    base-centred orbit in a RoboCasa kitchen ends up staring at a wall). Returns:
+    Returns the id of the first camera whose name contains a ``prefer``
+    substring, else the first declared camera, else ``-1`` (caller falls back
+    to ``base_aligned_free_camera``).
 
-    * the id of the first camera whose name contains a ``prefer`` substring — a
-      3rd-person workspace view (``robot0_agentview_left``, ``top``, ``agentview``);
-    * else the first declared camera (e.g. a wrist / eye-in-hand cam), so the
-      viewer still opens on an authored vantage when no overview cam exists;
-    * else ``-1`` when the model declares no cameras, so the caller falls back to
-      the base-aligned free camera (:func:`base_aligned_free_camera`).
+    Why: scene cameras are authored to frame the action, avoiding the free
+    orbit camera's occlusion in cluttered scenes (a base-centred orbit in a
+    RoboCasa kitchen ends up staring at a wall).
 
     Example:
         >>> import mujoco
@@ -271,19 +257,15 @@ def preferred_viewer_camera_id(
 def apply_robosuite_visual_geomgroups(opt: Any, model: Any) -> bool:
     """Hide collision shells in a robosuite/RoboCasa model so textures show.
 
-    Robosuite/RoboCasa put **collision** geoms in group 0 (rendered as flat
-    colours — RoboCasa's dark-red kitchen, the green robot capsules) and the
-    **textured visual** geoms in group 1; their offscreen renderer shows only
-    group 1, but ``mujoco.viewer`` shows every group by default, so the viewer
-    looks like a red collision box. This sets ``opt.geomgroup`` to hide group 0
-    and show group 1.
+    Sets ``opt.geomgroup`` to hide group 0 (collision) and show group 1
+    (textured visual). Gated on a robosuite signature — a ``robot0_`` /
+    ``gripper0_`` / ``mobilebase0_`` body, or an ``agentview`` / ``frontview``
+    camera — not on geom counts, since gym/dm_control scenes (gym-aloha) put
+    their *visual* geoms in group 0. Returns ``True`` when it acted.
 
-    Gated on a robosuite signature — a ``robot0_`` / ``gripper0_`` /
-    ``mobilebase0_`` body, **or** an ``agentview`` / ``frontview`` camera (which
-    catches custom robosuite compositions that don't use the ``robot0_`` prefix)
-    — **not** on geom counts, because dm_control / gym scenes (gym-aloha) put
-    their *visual* geoms in group 0, so blindly hiding it would blank them.
-    Returns ``True`` when it acted, ``False`` (no-op) otherwise.
+    Why: robosuite/RoboCasa's offscreen renderer shows only group 1, but
+    ``mujoco.viewer`` shows every group by default, so the viewer otherwise
+    looks like a flat-coloured collision box.
     """
     import mujoco  # reason: defer optional sim dep
 
@@ -315,37 +297,30 @@ def base_aligned_free_camera(
 ) -> tuple[tuple[float, float, float], float, float, float]:
     """Free-camera framing centred on the robot base, aligned to its frame.
 
-    Returns ``(lookat_xyz, distance, azimuth_deg, elevation_deg)`` for a MuJoCo
-    free camera (an ``MjvCamera`` with ``type = mjCAMERA_FREE``).
+    Points the camera at the base body's world origin (``lookat`` = base
+    position) and offsets the azimuth by the base frame's world yaw, so the
+    opening view is framed the same relative to the robot's forward (+X) axis
+    regardless of world placement.
 
-    MuJoCo's world frame is immutable and the orbit camera's azimuth/elevation
-    are world-relative, so the viewer cannot be re-rooted onto ``base_link``.
-    Instead this points the camera at the base body's world origin
-    (``lookat`` = base position) and offsets the azimuth by the base frame's
-    world yaw, so the opening view is framed identically relative to the robot's
-    own forward (+X) axis no matter where or how the base is placed in the world
-    — i.e. "centred on and aligned with the base reference frame".
+    Why: MuJoCo's world frame is immutable and the orbit camera's
+    azimuth/elevation are world-relative, so the viewer cannot be re-rooted
+    onto ``base_link``.
 
     Args:
         model: Live ``mujoco.MjModel``.
         data: Live ``mujoco.MjData`` (read for the base body's current pose).
         base_body_name: MJCF body backing the robot's ``base_frame``. When
-            ``None`` or absent from the model, the camera falls back to the
-            model's bounding centre (``model.stat.center``) with no yaw offset,
-            so the helper is safe on any model.
+            ``None`` or absent, falls back to ``model.stat.center`` with no
+            yaw offset.
         azimuth_offset_deg: Bearing of the camera relative to the base +X axis.
-            Only the fallback when a scene has no authored camera (see
-            :func:`preferred_viewer_camera_id`), so it targets open single-robot
-            twins rather than cluttered scenes.
+            Only used as the fallback when a scene has no authored camera (see
+            ``preferred_viewer_camera_id``).
         elevation_deg: Camera elevation (negative looks down).
         distance_scale: Orbit distance as a multiple of ``model.stat.extent``.
-        max_distance_m: Hard cap on the orbit distance. ``model.stat.extent`` is
-            the whole-model bound, which for a composed scene (a RoboCasa
-            kitchen is ~20 m across) would push the camera tens of metres away
-            and shrink the robot to a speck. Since the camera frames the *robot*
-            (not the scene), the distance is capped to keep the robot ~screen-
-            filling; small scenes (a tabletop ~1-2 m) stay below the cap and are
-            unaffected.
+        max_distance_m: Hard cap on the orbit distance, since ``model.stat.extent``
+            is the whole-model bound (a RoboCasa kitchen is ~20 m across) and
+            would otherwise shrink the robot to a speck; small scenes (a
+            tabletop ~1-2 m) stay below the cap.
 
     Returns:
         ``(lookat_xyz, distance, azimuth_deg, elevation_deg)``.
@@ -397,22 +372,18 @@ def initial_viewer_camera(
 ) -> tuple[tuple[float, float, float], float, float, float]:
     """Opening **free-camera** pose for the viewer ``(lookat, distance, az, el)``.
 
-    The viewer always uses a *free* camera (``mjCAMERA_FREE``) so the user keeps
-    full mouse control — drag to orbit, scroll to zoom; we only set the initial
-    viewpoint. A ``mjCAMERA_FIXED`` lock would have frozen those controls.
+    The viewer always uses a *free* camera (``mjCAMERA_FREE``, not
+    ``mjCAMERA_FIXED``) so the user keeps mouse control (drag to orbit, scroll
+    to zoom); this only sets the initial viewpoint. When the scene ships an
+    authored overview camera (``preferred_viewer_camera_id``), the eye is
+    placed at that camera's world position with the orbit pivot on the robot
+    base, so the opening view matches the authored vantage while staying
+    interactive. Otherwise falls back to ``base_aligned_free_camera``.
 
-    When the scene ships an authored overview camera
-    (:func:`preferred_viewer_camera_id`), the eye is placed at that camera's
-    world position with the orbit pivot on the robot base — so the opening view
-    matches the authored vantage (``agentview`` / ``top`` / …) yet stays
-    interactive, and dragging orbits around the robot. Otherwise falls back to
-    :func:`base_aligned_free_camera`.
-
-    The returned ``(lookat, distance, azimuth_deg, elevation_deg)`` reproduce the
-    eye exactly: MuJoCo places the eye at ``lookat - distance · f`` where the
-    unit forward ``f = (cos el cos az, cos el sin az, sin el)`` — so a camera at
-    ``eye`` looking at ``lookat`` recovers ``distance = ‖lookat - eye‖``,
-    ``azimuth = atan2(fy, fx)``, ``elevation = asin(fz)``.
+    MuJoCo places the eye at ``lookat - distance · f`` where the unit forward
+    ``f = (cos el cos az, cos el sin az, sin el)``; the returned tuple recovers
+    it via ``distance = ‖lookat - eye‖``, ``azimuth = atan2(fy, fx)``,
+    ``elevation = asin(fz)``.
     """
     import mujoco  # reason: defer optional sim dep
 
@@ -553,7 +524,7 @@ def depth_image_from_grid(
 
     The dense, organised depth image nvblox's projective depth integrator
     consumes — produced by
-    :func:`openral_sim.backends.depth_camera.synthesize_depth_image`. Pixels are
+    ``openral_sim.backends.depth_camera.synthesize_depth_image``. Pixels are
     perpendicular optical-Z metres, ``0.0`` = no measurement (nvblox skips them).
 
     Args:
@@ -595,42 +566,33 @@ def points_from_depth_grid(
     The inverse of the pinhole projection the depth synth casts: a pixel
     ``(col, row)`` holding perpendicular optical-Z ``z`` becomes
     ``((col - cx) / fx · z, (row - cy) / fy · z, z)`` in the camera optical
-    frame (REP-103). Pixels reading exactly ``0.0`` — the "no measurement"
-    sentinel — are dropped.
+    frame (REP-103). Pixels reading exactly ``0.0`` (the "no measurement"
+    sentinel) are dropped.
 
-    ``clearing`` restores the half of the self-filter the raster cannot carry.
-    A pixel whose only return was a self-filtered body (the robot's own link,
-    an acknowledged payload) has no depth, but the ray behind it is **free**:
-    the cloud synth emits a ``max_range_m`` endpoint there so OctoMap clears
-    the cells the robot occludes instead of leaving them frozen at whatever
-    they last held. Pass the mask
-    :func:`openral_sim.backends.depth_camera.synthesize_depth_frame` returns
-    alongside the raster and the result is byte-for-byte the cloud
-    :func:`~openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
-    would have cast separately — same points, same row-major ray order, one
-    cast.
-
-    This is what lets the deploy-sim depth timer pay for **one** ray-cast per
-    camera per frame: it synthesises the dense raster once, publishes it as the
-    ``32FC1`` image nvblox integrates, and back-projects that same raster into
-    the ``PointCloud2`` octomap_server consumes. Casting a second time (once per
-    output) doubled the cost of the frame for numbers that are identical by
-    construction.
+    ``clearing`` marks pixels whose only return was a self-filtered body (own
+    link, an acknowledged payload): no depth, but the ray behind is free, so
+    a ``max_range_m`` endpoint is emitted there, letting OctoMap clear
+    occluded cells instead of leaving them frozen. Passing the mask
+    ``openral_sim.backends.depth_camera.synthesize_depth_frame`` returns
+    reproduces what
+    ``synthesize_depth_pointcloud``
+    would cast separately, from one ray-cast — one cast per camera per frame
+    instead of two (depth image + cloud).
 
     Args:
         depth: ``(H, W)`` float32 depth raster in metres (optical-Z), ``0.0``
             where there is no measurement — i.e. what
-            :func:`openral_sim.backends.depth_camera.synthesize_depth_image`
-            returns and :func:`depth_image_from_grid` packs.
+            ``openral_sim.backends.depth_camera.synthesize_depth_image``
+            returns and ``depth_image_from_grid`` packs.
         fx: Focal length x **of this raster** (pixels) — for a strided synth the
             stride-scaled value, the same one the companion ``CameraInfo``
-            advertises (see :func:`camera_info_from_intrinsics`).
+            advertises (see ``camera_info_from_intrinsics``).
         fy: Focal length y of this raster (pixels).
         cx: Principal point x of this raster (pixels).
         cy: Principal point y of this raster (pixels).
         clearing: ``(H, W)`` bool mask of self-filtered rays with no farther
             surface, from
-            :func:`openral_sim.backends.depth_camera.synthesize_depth_frame`.
+            ``openral_sim.backends.depth_camera.synthesize_depth_frame``.
             ``None`` (the default) emits measured returns only.
         max_range_m: Euclidean range the clearing endpoints are placed at.
             Required when ``clearing`` marks any pixel.
@@ -700,7 +662,7 @@ def points_from_depth_grid(
 def depth_grid_from_image(msg: Any) -> NDArray[np.float64]:
     """Decode a ``sensor_msgs/Image`` depth frame into an ``(H, W)`` metre raster.
 
-    The inverse of :func:`depth_image_from_grid`, and the reader half the HAL's
+    The inverse of ``depth_image_from_grid``, and the reader half the HAL's
     vision attachment bridge needs: on real hardware the wrist depth arrives
     from a camera driver, not from the simulator that produced it here. Both
     REP-118 depth encodings are accepted, because both are shipped by drivers
@@ -758,7 +720,7 @@ def camera_info_from_intrinsics(
     """Build a pinhole ``sensor_msgs/CameraInfo`` for a synthesised depth image.
 
     The intrinsics are those of the **rasterised** image — for a strided depth
-    synth (:func:`openral_sim.backends.depth_camera.synthesize_depth_image`) the
+    synth (``openral_sim.backends.depth_camera.synthesize_depth_image``) the
     caller passes the stride-scaled values (``fx / stride`` … ``cy / stride``,
     ``width``/``height`` = the strided raster dims) so the model is consistent
     with the image nvblox receives.

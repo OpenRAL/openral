@@ -1,29 +1,20 @@
 """Live ROS 2 subscriber for the latched `/openral/safety_status` (ADR-0096).
 
-Everything else on the dashboard's Safety surface is inferred from OTel
-`safety.check` spans: a `violation` sets the e-stop latch flag, an `info` pass
-clears it. That inference only works *while chunks are flowing*. A latched
-kernel stops publishing safe actions, so the chunk stream dries up and the
-dashboard is left showing whatever it last inferred — and an operator who
-opens the page after the stop sees nothing at all, because spans are a stream,
-not a state.
+Everything else on the Safety surface is inferred from OTel `safety.check`
+spans (`violation` sets the e-stop latch, `info` clears it), which only works
+while chunks are flowing — a latched kernel stops publishing safe actions, so
+the stream dries up and a dashboard opened mid-mission sees nothing.
 
-ADR-0096 gives the graph a typed, latched answer to "what is safety doing
-right now": `openral_msgs/SafetyStatus` on `/openral/safety_status`, published
-RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 by both the C++ safety kernel and
-`SafetyPassthroughNode`. TRANSIENT_LOCAL is the load-bearing part here: a
-dashboard opened mid-mission receives the current value on connect, without
-having witnessed the transition.
+ADR-0096 adds a typed, latched answer: `openral_msgs/SafetyStatus` on
+`/openral/safety_status`, published RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1
+by both the C++ safety kernel and `SafetyPassthroughNode`. TRANSIENT_LOCAL is
+load-bearing: a dashboard opened mid-mission receives the current value on
+connect without having witnessed the transition.
 
-This is the dashboard's first rclpy *subscriber* (`estop_publisher.py` is its
-first publisher) and it follows that module's shape exactly: one node, created
-at launch, spun on a daemon thread, and inert-but-harmless when rclpy / the
-`openral_msgs` overlay is unavailable — a standalone dashboard with no ROS
-workspace sourced keeps working and simply shows the Safety Status card as
-"waiting".
-
-Read-only by construction: it subscribes and writes into the store. It holds
-no publisher, no service client, and no authority over the robot.
+The dashboard's first rclpy subscriber (`estop_publisher.py` is its first
+publisher); same shape — one node, created at launch, spun on a daemon
+thread, inert when rclpy / `openral_msgs` is unavailable. Read-only: no
+publisher, no service client, no authority over the robot.
 """
 
 from __future__ import annotations
@@ -80,7 +71,7 @@ class SafetyStatusSubscriber:
 
         Args:
             store: The dashboard's telemetry store; every received status is
-                written to it via :meth:`TelemetryStore.set_safety_status`.
+                written to it via ``TelemetryStore.set_safety_status``.
         """
         self._store = store
         self._node: Any = None

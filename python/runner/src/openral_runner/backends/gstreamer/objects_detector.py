@@ -1,10 +1,10 @@
 """CPU-tier object detector for the perception event tee.
 
 This module implements the **CPU (ONNXRuntime, system-memory BGR)** tier of
-the perception-tee object detector. It implements the :class:`EventDetector` protocol
-defined in :mod:`openral_runner.backends.gstreamer.perception_tee`, and so
-plugs directly into the existing :class:`PerceptionEventPublisher` — pass an
-:class:`ObjectsDetector` instance in the ``detectors`` list and it publishes
+the perception-tee object detector. It implements the ``EventDetector`` protocol
+defined in ``openral_runner.backends.gstreamer.perception_tee``, and so
+plugs directly into the existing ``PerceptionEventPublisher`` — pass an
+``ObjectsDetector`` instance in the ``detectors`` list and it publishes
 ``openral_msgs/PromptStamped`` on ``/openral/perception/objects``.
 
 The detector expects an RT-DETR / D-FINE-style ONNX export: two outputs named
@@ -13,28 +13,28 @@ pre-sigmoid and **boxes** ``(1, N, 4)`` cx/cy/w/h normalised ``[0, 1]``.
 
 Tier selection
 --------------
-:func:`select_detector_tier` probes the local GStreamer plugin registry to
+``select_detector_tier`` probes the local GStreamer plugin registry to
 decide whether a DeepStream ``nvinfer`` element is available, then falls back
 to the platform-detection logic from
-:mod:`openral_runner.backends.gstreamer.pipeline`.  :func:`make_objects_detector`
+``openral_runner.backends.gstreamer.pipeline``.  ``make_objects_detector``
 dispatches the resolved tier:
 
-* :attr:`DetectorTier.CPU_ONNX` → :class:`ObjectsDetector` (ONNXRuntime,
+* ``DetectorTier.CPU_ONNX`` → ``ObjectsDetector`` (ONNXRuntime,
   system-memory BGR frames).
-* :attr:`DetectorTier.NVMM_AGGREGATOR` → resolved via the
+* ``DetectorTier.NVMM_AGGREGATOR`` → resolved via the
   ``openral.detector_tiers`` entry-point group: the clean-room
   zero-copy NVMM path ships in the private ``openral-pro-trt`` package, not
-  here. A miss raises a typed :exc:`~openral_core.exceptions.ROSConfigError`
+  here. A miss raises a typed ``ROSConfigError``
   naming it.
-* :attr:`DetectorTier.NVINFER` is the spike-gated DeepStream follow-up
+* ``DetectorTier.NVINFER`` is the spike-gated DeepStream follow-up
   and raises a clear
-  :exc:`~openral_core.exceptions.ROSConfigError`.
+  ``ROSConfigError``.
 
 Lazy import
 -----------
-``onnxruntime`` is imported lazily inside :meth:`ObjectsDetector.__init__`
+``onnxruntime`` is imported lazily inside ``ObjectsDetector.__init__``
 (mirroring the ``_import_ort`` pattern in
-:mod:`openral_rskill.runtime_onnx`) so that ``import objects_detector``
+``openral_rskill.runtime_onnx``) so that ``import objects_detector``
 succeeds on hosts where the wheel is not installed.
 """
 
@@ -91,13 +91,13 @@ class DetectorTier(str, Enum):
         VLM_SIDECAR: Out-of-process open-vocabulary VLM detector (e.g.
             LocateAnything-3B) reached over ZMQ. Selected for ``runtime:
             pytorch`` detector manifests; consumes the same system-memory BGR
-            appsink branch as :attr:`CPU_ONNX`.
+            appsink branch as ``CPU_ONNX``.
         ZEROSHOT_HF: In-process Transformers open-vocabulary detector
             (``AutoModelForZeroShotObjectDetection`` — e.g. OmDet-Turbo) run
             against a **fixed** class vocabulary, so it behaves as an unprompted
             large closed-vocabulary detector. Selected for manifests whose
             ``detector.engine`` is ``zeroshot_hf``; consumes the same
-            system-memory BGR appsink branch as :attr:`CPU_ONNX`.
+            system-memory BGR appsink branch as ``CPU_ONNX``.
 
     Example:
         >>> DetectorTier.CPU_ONNX.value
@@ -128,23 +128,23 @@ def select_detector_tier(platform: Platform | None = None) -> DetectorTier:
     Decision order (first match wins):
 
     1. If ``gst-inspect-1.0 nvinfer`` succeeds, DeepStream is present →
-       :attr:`DetectorTier.NVINFER`.
-    2. Else if the resolved platform is :attr:`Platform.TEGRA` →
-       :attr:`DetectorTier.NVMM_AGGREGATOR` (NVMM without DeepStream).
-    3. Otherwise → :attr:`DetectorTier.CPU_ONNX`.
+       ``DetectorTier.NVINFER``.
+    2. Else if the resolved platform is ``Platform.TEGRA`` →
+       ``DetectorTier.NVMM_AGGREGATOR`` (NVMM without DeepStream).
+    3. Otherwise → ``DetectorTier.CPU_ONNX``.
 
     Note:
         The ``nvinfer`` probe always wins over any explicit ``platform``
         argument — if DeepStream is installed, ``NVINFER`` is returned even on
         ``Platform.CPU_ONLY``.  To force ``CPU_ONNX`` unconditionally, pass
-        ``tier=DetectorTier.CPU_ONNX`` to :func:`make_objects_detector`.
+        ``tier=DetectorTier.CPU_ONNX`` to ``make_objects_detector``.
 
     Args:
         platform: Override the platform detection.  ``None`` calls
-            :func:`~openral_runner.backends.gstreamer.pipeline.detect_platform`.
+            ``detect_platform``.
 
     Returns:
-        The selected :class:`DetectorTier`.
+        The selected ``DetectorTier``.
 
     Example:
         >>> # Safe on any host: DetectorTier.CPU_ONNX membership test
@@ -259,7 +259,7 @@ def postprocess_rtdetr(
     frame_width: int,
     frame_height: int,
 ) -> ObjectsMetadata | None:
-    """Decode RT-DETR / D-FINE raw outputs into :class:`ObjectsMetadata`.
+    """Decode RT-DETR / D-FINE raw outputs into ``ObjectsMetadata``.
 
     Tier-agnostic: CPU (ONNXRuntime), NVMM aggregator (TRT), and nvinfer
     (tensor-meta) all call this with already-identified ``logits`` / ``boxes``
@@ -277,7 +277,7 @@ def postprocess_rtdetr(
         frame_height: Pixel height the normalised boxes scale to.
 
     Returns:
-        :class:`ObjectsMetadata` sorted by descending confidence, or ``None`` if
+        ``ObjectsMetadata`` sorted by descending confidence, or ``None`` if
         no detection passes the threshold.
 
     Example:
@@ -350,9 +350,9 @@ def postprocess_rtdetr(
 class ObjectsDetector:
     """CPU-tier object detector wrapping an RT-DETR / D-FINE ONNX model.
 
-    Implements :class:`~openral_runner.backends.gstreamer.perception_tee.EventDetector`;
+    Implements ``EventDetector``;
     plug it into
-    :class:`~openral_runner.backends.gstreamer.perception_tee.PerceptionEventPublisher`
+    ``PerceptionEventPublisher``
     to publish ``openral_msgs/PromptStamped`` on ``/openral/perception/objects``.
 
     The expected ONNX export signature is **two outputs** (in any order):
@@ -360,13 +360,8 @@ class ObjectsDetector:
     * **logits** — shape ``(1, N, num_classes)`` — pre-sigmoid class scores.
     * **boxes** — shape ``(1, N, 4)`` — normalised cxcywh in ``[0, 1]``.
 
-    The two outputs are identified at session-load time by shape: among all
-    3-D outputs (ndim == 3), the output whose last dimension is exactly 4 is
-    boxes; the other is logits.  When ``num_classes == 4`` both 3-D outputs
-    have the same last dimension, so index order is used as a tiebreaker
-    (index 0 = logits, index 1 = boxes), which matches the standard RT-DETR /
-    D-FINE export convention.  Outputs with ndim != 3 (e.g. an ``images``
-    passthrough) are ignored during identification.
+    The two outputs are identified at session-load time by shape — see
+    ``identify_rtdetr_outputs``.
 
     ``onnxruntime`` is lazy-imported at construction time so importing this
     module does not fail on hosts without the wheel.
@@ -375,7 +370,7 @@ class ObjectsDetector:
         onnx_path: Path to the ``*.onnx`` model file.
         labels: List of class-name strings.  Must be non-empty.  Index ``i``
             must correspond to class ``i`` in the model's output logits.
-        model_id: Identifier embedded in every emitted :class:`ObjectsMetadata`
+        model_id: Identifier embedded in every emitted ``ObjectsMetadata``
             (e.g. ``"rtdetr-coco-r18"``).
         input_size: ``(height, width)`` to resize frames to before inference.
             Default ``(640, 640)``.
@@ -471,10 +466,10 @@ class ObjectsDetector:
             frame_bgr: Raw BGR bytes from the GStreamer appsink (``width * height * 3`` bytes).
             width: Frame width in pixels.
             height: Frame height in pixels.
-            sensor_id: Sensor name forwarded to the emitted :class:`ObjectsMetadata`.
+            sensor_id: Sensor name forwarded to the emitted ``ObjectsMetadata``.
 
         Returns:
-            :class:`~openral_core.ObjectsMetadata` with detections sorted by
+            ``ObjectsMetadata`` with detections sorted by
             descending confidence, or ``None`` if zero detections survive the
             score threshold.
         """
@@ -515,16 +510,16 @@ class ObjectsDetector:
         )
 
     def summarise(self, metadata: object) -> str:
-        """Return a human-readable summary of an :class:`ObjectsMetadata` event.
+        """Return a human-readable summary of an ``ObjectsMetadata`` event.
 
         Args:
-            metadata: Must be an :class:`~openral_core.ObjectsMetadata` instance.
+            metadata: Must be an ``ObjectsMetadata`` instance.
 
         Returns:
             A one-line string such as ``"objects: 1x car, 1x person on head_rgb"``.
 
         Raises:
-            TypeError: If ``metadata`` is not an :class:`ObjectsMetadata`.
+            TypeError: If ``metadata`` is not an ``ObjectsMetadata``.
 
         Example:
             >>> from openral_core import ObjectDetection2D, ObjectsMetadata
@@ -570,26 +565,26 @@ def make_objects_detector(
         labels: Class-name list (must match model output class count).
         model_id: Detector identifier embedded in emitted metadata.
         tier: Explicit tier override.  ``None`` calls
-            :func:`select_detector_tier` to auto-select.  Pass
+            ``select_detector_tier`` to auto-select.  Pass
             ``DetectorTier.CPU_ONNX`` to force the CPU path regardless of
             platform.
-        **kwargs: Extra keyword arguments forwarded to :class:`ObjectsDetector`
+        **kwargs: Extra keyword arguments forwarded to ``ObjectsDetector``
             (``input_size``, ``score_threshold``, ``device``) or to the
             NVMM_AGGREGATOR tier's constructor (``input_size``,
             ``score_threshold``, ``device_index``, ``quantization``).
 
     Returns:
-        An :class:`ObjectsDetector` for :attr:`DetectorTier.CPU_ONNX`. For
-        :attr:`DetectorTier.NVMM_AGGREGATOR`, whatever class the
+        An ``ObjectsDetector`` for ``DetectorTier.CPU_ONNX``. For
+        ``DetectorTier.NVMM_AGGREGATOR``, whatever class the
         ``openral.detector_tiers`` entry point constructs — this module
         cannot name that type statically since it lives in a package this
         one does not depend on.
 
     Raises:
-        ROSConfigError: For :attr:`DetectorTier.NVMM_AGGREGATOR` when no
+        ROSConfigError: For ``DetectorTier.NVMM_AGGREGATOR`` when no
             ``openral.detector_tiers`` entry point named ``"nvmm_aggregator"``
             is installed — names ``openral-pro-trt``.
-        ROSConfigError: For :attr:`DetectorTier.NVINFER` — the DeepStream
+        ROSConfigError: For ``DetectorTier.NVINFER`` — the DeepStream
             ``nvinfer`` tier is spike-gated; pass
             ``tier=DetectorTier.NVMM_AGGREGATOR`` for the clean-room zero-copy
             path or ``tier=DetectorTier.CPU_ONNX`` for the CPU path.

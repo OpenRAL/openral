@@ -18,7 +18,7 @@ Conventions
 - An env-var bypass (``OPENRAL_ALLOW_ROBOCASA_ASSETS=1`` for
   RoboCasa) skips the prompt for CI.
 
-Refusal raises :class:`ROSConfigError` with the manual-fetch command so
+Refusal raises ``ROSConfigError`` with the manual-fetch command so
 users can authorise the download out-of-band.
 """
 
@@ -127,12 +127,11 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
             upstream downloader fails (with the exact subprocess
             stderr embedded so the user can debug).
     """
-    # Variant-scoped sentinel. A previous shared `<cache>/robocasa/.openral-ready`
-    # was incorrect: the kitchen and GR1 variants ship different `models/assets/`
-    # trees and live in different `import robocasa` paths, so a sentinel
-    # touched by the GR1 short-circuit (line ~152) silently masked a
-    # missing kitchen asset bundle on the next swap to the kitchen
-    # backend — and vice versa. Per-variant cache dirs decouple them.
+    # Variant-scoped sentinel: the kitchen and GR1 variants ship different
+    # `models/assets/` trees and live in different `import robocasa` paths, so
+    # a single shared `<cache>/robocasa/.openral-ready` would let a sentinel
+    # touched by one variant's short-circuit mask the other's missing asset
+    # bundle on a backend swap. Per-variant cache dirs decouple them.
     variant = _detect_robocasa_variant()
     target = _cache_home() / f"robocasa_{variant}"
     sentinel = target / _READY_SENTINEL
@@ -292,9 +291,9 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     # `models/assets/` directory (not `target`); we touch the sentinel
     # under `target` afterwards as a readiness marker.
     #
-    # robocasa's download scripts ``import robocasa``, which used to hard-assert
-    # exact mujoco/numpy/robosuite micro versions at import. The install plan now
-    # relaxes those asserts in the editable clone at provision time
+    # robocasa's download scripts ``import robocasa``, which hard-asserts exact
+    # mujoco/numpy/robosuite micro versions at import; the install plan relaxes
+    # those asserts in the editable clone at provision time
     # (``_deps._relax_robocasa_version_asserts_step``), so the download runs on
     # the workspace's real versions with NO version spoof -- a plain ``runpy``
     # shim suffices. Only the procedural ``download_*_assets`` target differs by

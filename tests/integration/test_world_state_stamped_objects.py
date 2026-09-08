@@ -198,13 +198,11 @@ def test_attachment_state_callback_applies_multiple_objects_atomically() -> None
 
 
 def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
-    # The round-7 clock-domain regression, end to end over the real IDL:
-    # AttachmentState stamped in SIMULATOR time (~1.2e9 ns) carrying a
-    # sim-stamped declaration -> the node callback -> an aggregator on its
-    # PRODUCTION clock (wall `time.time_ns`, exactly how `on_configure` builds
-    # it) -> snapshot -> WorldStateStamped. The kernel only ever sees the last
-    # hop, so a declaration dropped anywhere along it is a region the kernel
-    # never receives and an approach allowance that can never arm.
+    # Round-7 clock-domain regression, end to end over the real IDL: AttachmentState stamped
+    # in SIMULATOR time (~1.2e9 ns) carrying a sim-stamped declaration -> node callback -> an
+    # aggregator on its PRODUCTION clock (wall time.time_ns, as on_configure builds it) ->
+    # snapshot -> WorldStateStamped. Kernel only sees the last hop, so a declaration dropped
+    # anywhere along it is a region the kernel never receives and an allowance that never arms.
     sim_arm_ns = 1_240_000_000
     declaration = PlaceDeclaration(
         target_id="sim:cab_1_left_group_main",
@@ -273,14 +271,12 @@ def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
 
 
 def test_support_contact_witness_round_trips_over_the_idl() -> None:
-    # The wire half of ADR-0092 D6. An attachment that attests support contact
-    # must arrive at the safety kernel with the attestation intact; one that
-    # does not must arrive with support_contact_valid False, because a lost
-    # witness would silently re-open the false stop and an invented one would
-    # silently license real penetration.
-    # The 2026-08-14 acceptance run's attested baguette, verbatim — including
-    # the evidence kind the MuJoCo producer actually emits, which is the signed
-    # distance probe and not the solver's contact list.
+    # Wire half of ADR-0092 D6: an attachment attesting support contact must arrive at the
+    # safety kernel with the attestation intact; one that doesn't must arrive with
+    # support_contact_valid False — a lost witness would silently re-open the false stop, an
+    # invented one would silently license real penetration.
+    # 2026-08-14 acceptance run's attested baguette, verbatim — including the evidence kind
+    # the MuJoCo producer actually emits (signed distance probe, not the solver's contact list).
     witness = SupportContactWitness(
         support_id="robocasa:counter_main",
         contact_point_in_object=(0.0, 0.0, -0.025),

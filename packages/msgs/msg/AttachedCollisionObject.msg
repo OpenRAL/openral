@@ -1,16 +1,14 @@
 # Collision object rigidly attached to one robot link.
 #
-# The same object must be absent from world occupancy while attached, and the
-# perception side is what makes that true: openral_octomap_bridge subscribes
-# this array on /openral/world_state_fast and clears every occupancy cell the
-# payload's own primitives explain out of the /openral/world_voxels grid it
-# publishes, in the payload's live pose, for as long as it appears here. Its
-# geometry remains collision-active as robot payload; only touch_links may
-# contact it. One object keeps a single identity, attach link, and touch-link
-# set, but may carry several collision primitives
-# (AttachedCollisionPrimitive[]), each posed in the object frame. The object's
-# pose_in_link places the object frame in the attach-link frame; every
-# primitive's pose_in_object composes on top of it.
+# Must be absent from world occupancy while attached: openral_octomap_bridge
+# subscribes this array on /openral/world_state_fast and clears every occupancy
+# cell the payload's own primitives explain out of the /openral/world_voxels
+# grid, at the payload's live pose, for as long as it appears here. Geometry
+# stays collision-active as robot payload; only touch_links may contact it.
+# One identity/attach-link/touch-link set may carry several primitives
+# (AttachedCollisionPrimitive[]), each posed in the object frame: pose_in_link
+# places the object frame in the attach-link frame, then each primitive's
+# pose_in_object composes on top.
 
 string object_id
 string attach_link

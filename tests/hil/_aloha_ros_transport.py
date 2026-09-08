@@ -1,33 +1,27 @@
 """Lab-runner-only ``rclpy`` bridge for the ALOHA bimanual real-HW HAL.
 
-The :class:`openral_hal.aloha.AlohaHAL` adapter splits a single 14-D
-:class:`openral_core.Action` across **four** ``ros2_control``
-controllers — left arm, right arm, left gripper, right gripper.  This
-bridge is the HIL counterpart of :mod:`tests.hil._ros_control_transport`
-for the bimanual fan-out: it owns four ``trajectory_msgs/JointTrajectory``
-publishers + one aggregated ``sensor_msgs/JointState`` subscriber and
-dispatches by topic match.
+``openral_hal.aloha.AlohaHAL`` splits a single 14-D ``openral_core.Action`` across four
+``ros2_control`` controllers — left arm, right arm, left gripper, right gripper. This bridge
+is the HIL counterpart of ``tests.hil._ros_control_transport`` for the bimanual fan-out: it
+owns four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
+``sensor_msgs/JointState`` subscriber and dispatches by topic match.
 
-All four publishers use ``trajectory_msgs/JointTrajectory`` because each
-ALOHA controller (arms and grippers alike) is a
-``joint_trajectory_controller/JointTrajectoryController`` instance — the
-grippers are 1-DOF JointTrajectoryControllers.  The standalone
-``parallel_gripper_action_controller/GripperActionController`` (action
-interface, ``control_msgs/action/GripperCommand``) and Trossen's native
-``interbotix_xs_msgs/JointSingleCommand`` are deliberately not used here:
-they would not match the AlohaHAL's ``publish_fn(topic, msg)`` contract,
-which fans out via ``self._publish_fn(...)`` four times per
-``send_action()`` (see ``python/hal/src/openral_hal/aloha.py``).
+All four publishers use ``trajectory_msgs/JointTrajectory`` because every ALOHA controller
+(arms and grippers alike) is a ``joint_trajectory_controller/JointTrajectoryController``
+instance — grippers are 1-DOF JointTrajectoryControllers. The standalone
+``parallel_gripper_action_controller/GripperActionController`` (action interface,
+``control_msgs/action/GripperCommand``) and Trossen's native
+``interbotix_xs_msgs/JointSingleCommand`` are deliberately not used: neither matches
+AlohaHAL's ``publish_fn(topic, msg)`` contract, which fans out via ``self._publish_fn(...)``
+four times per ``send_action()`` (see ``python/hal/src/openral_hal/aloha.py``).
 
-This module is HIL-only and shares the import-time ``rclpy`` guard from
-:mod:`tests.hil._ros_control_transport` (CLAUDE.md §5.4: real component or
-``pytest.skip`` — nothing in between).
+HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
+(CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations
 
 import importlib.util
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -43,7 +37,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState as RosJointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from tests.hil._ros_control_transport import _make_trajectory_publisher
+from tests.hil._ros_control_transport import _make_trajectory_publisher, _PolledJointStateMixin
 
 __all__ = ["AlohaHILTransport", "make_aloha_hil_transport"]
 
@@ -57,14 +51,14 @@ _CONTROL_QOS = QoSProfile(
 # (left arm 6, left gripper 1, right arm 6, right gripper 1).  See
 # ``python/hal/src/openral_hal/aloha.py`` and
 # ``ALOHA_REAL_DESCRIPTION.joints`` — re-derived from the public manifest
-# by :func:`make_aloha_hil_transport`.
+# by ``make_aloha_hil_transport``.
 _LEFT_ARM_SLICE = slice(0, 6)
 _LEFT_GRIPPER_INDEX = 6
 _RIGHT_ARM_SLICE = slice(7, 13)
 _RIGHT_GRIPPER_INDEX = 13
 
 
-class AlohaHILTransport:
+class AlohaHILTransport(_PolledJointStateMixin):
     """4-way ``rclpy`` bridge for the bimanual ALOHA HIL test.
 
     Owns one ``JointTrajectory`` publisher per controller (two arms + two
@@ -146,34 +140,8 @@ class AlohaHILTransport:
         else:
             raise ValueError(f"AlohaHILTransport: unknown topic {topic!r}")
 
-    def state(self) -> dict[str, object]:
-        positions: list[float] = []
-        velocities: list[float] = []
-        efforts: list[float] = []
-        for name in self._joint_names:
-            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
-            positions.append(p)
-            velocities.append(v)
-            efforts.append(e)
-        return {"position": positions, "velocity": velocities, "effort": efforts}
-
-    # -- Helpers --------------------------------------------------------------
-
-    def spin_once(self, timeout_sec: float = 0.05) -> None:
-        rclpy.spin_once(self._node, timeout_sec=timeout_sec)
-
-    @property
-    def last_stamp(self) -> float:
-        return self._last_stamp
-
-    def wait_for_first_state(self, deadline_s: float = 2.0) -> bool:
-        """Return True once at least one joint-state message has been received."""
-        start = time.monotonic()
-        while time.monotonic() - start < deadline_s:
-            self.spin_once(timeout_sec=0.05)
-            if self._latest:
-                return True
-        return False
+    # state/spin_once/last_stamp/wait_for_first_state come from
+    # _PolledJointStateMixin.
 
     # -- Internal publish helpers --------------------------------------------
 
@@ -210,19 +178,7 @@ class AlohaHILTransport:
         traj.points.append(point)
         publisher.publish(traj)
 
-    # -- Internal callbacks ---------------------------------------------------
-
-    def _on_joint_state(self, msg: Any) -> None:
-        names = list(getattr(msg, "name", []))
-        positions = list(getattr(msg, "position", []))
-        velocities = list(getattr(msg, "velocity", []))
-        efforts = list(getattr(msg, "effort", []))
-        for i, name in enumerate(names):
-            p = positions[i] if i < len(positions) else 0.0
-            v = velocities[i] if i < len(velocities) else 0.0
-            e = efforts[i] if i < len(efforts) else 0.0
-            self._latest[name] = (p, v, e)
-        self._last_stamp = time.monotonic()
+    # _on_joint_state comes from _PolledJointStateMixin.
 
 
 def make_aloha_hil_transport(

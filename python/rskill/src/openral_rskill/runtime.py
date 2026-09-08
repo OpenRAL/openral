@@ -32,7 +32,7 @@ class Runtime(Protocol):
     instantiable.
 
     Properties:
-        is_loaded: ``True`` after :meth:`load` completes successfully.
+        is_loaded: ``True`` after ``load`` completes successfully.
         device: PyTorch-style device string, e.g. ``"cpu"`` or ``"cuda:0"``.
     """
 

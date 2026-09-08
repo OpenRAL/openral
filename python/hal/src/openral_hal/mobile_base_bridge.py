@@ -1,6 +1,6 @@
 """Generic mobile-base ROS wiring for the manifest-driven HAL lifecycle node.
 
-Sibling of :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`. Where the
+Sibling of ``SimSensorBridge``. Where the
 sensor bridge owns cameras / depth / scan / viewer, this bridge owns the
 **planar mobile base** streams every wheeled/holonomic robot needs:
 
@@ -11,16 +11,16 @@ sensor bridge owns cameras / depth / scan / viewer, this bridge owns the
    Nav2 resolve frames through TF).
 3. **``/cmd_vel`` → ``BODY_TWIST``** — Nav2 / teleop publish
    ``geometry_msgs/Twist``; the bridge maps each message to a 6-vec BODY_TWIST
-   :class:`~openral_core.schemas.Action` and applies it via the node's
+   ``Action`` and applies it via the node's
    ``_send_action_traced`` (out-of-scope: this path intentionally
    bypasses the OpenRAL safety supervisor — Nav2's ``velocity_smoother`` caps
    velocity).
 
-The manifest-driven :class:`~openral_hal.lifecycle.ManifestHALLifecycleNode`
+The manifest-driven ``ManifestHALLifecycleNode``
 attaches this bridge in ``on_activate_post_subs`` **iff the manifest declares
 ``base_joints``** — so adding a mobile robot needs only that manifest field, no
 per-robot lifecycle subclass (issue #191 Phase 3). Frame ids come from the
-robot's :class:`~openral_core.RobotDescription` (``odom_frame`` / ``base_frame``)
+robot's ``RobotDescription`` (``odom_frame`` / ``base_frame``)
 so nothing is hardcoded (CLAUDE.md §2 — TF2 is the only source of frames).
 
 Lifted verbatim from the panda_mobile bespoke node's ``_publish_odom`` /
@@ -41,8 +41,8 @@ def describes_mobile_base(description: RobotDescription) -> bool:
     """Whether ``description`` declares a planar mobile base.
 
     The single predicate behind "does something already own ``odom ->
-    base_frame``?". :class:`ManifestHALLifecycleNode` attaches a
-    :class:`MobileBaseBridge` on exactly this condition, so anything that must
+    base_frame``?". ``ManifestHALLifecycleNode`` attaches a
+    ``MobileBaseBridge`` on exactly this condition, so anything that must
     NOT publish a second parent for the base frame (the sim sensor bridge's
     static ``world -> base_frame`` root) has to ask the same question — a
     divergent test (e.g. reading ``footprint_radius``, a Nav2 tuning knob a
@@ -67,7 +67,7 @@ class MobileBaseBridge:
     """Owns ``/odom`` + ``odom->base_link`` TF + ``/cmd_vel``→BODY_TWIST for a node.
 
     Attach from a lifecycle node's ``on_activate_post_subs`` when the robot has a
-    planar base (``RobotDescription.base_joints``); call :meth:`teardown` from
+    planar base (``RobotDescription.base_joints``); call ``teardown`` from
     ``on_deactivate_pre_teardown``. The HAL must expose ``base_pose``
     (``(x, y, yaw)``); ``base_pose_6dof()`` and ``base_twist`` are used when
     present and degrade gracefully when absent.
@@ -83,13 +83,13 @@ class MobileBaseBridge:
         cmd_vel_topic: str = "/cmd_vel",
         proprio: Any = None,
     ) -> None:
-        """Bind node + HAL + manifest; opens no publishers until :meth:`setup`.
+        """Bind node + HAL + manifest; opens no publishers until ``setup``.
 
         ``proprio``: when supplied (sim-attached HALs), odom is NOT
         published from a timer on the executor thread — that thread is busy
         stepping/rendering the sim, which starved ``odom->base_link`` to ~1.8 Hz.
         Instead the node's dedicated publisher thread calls
-        :meth:`publish_from_snapshot`, which reads this plain-data snapshot rather
+        ``publish_from_snapshot``, which reads this plain-data snapshot rather
         than the simulator. ``None`` (real HALs) keeps the legacy odom timer
         reading ``hal.base_pose`` directly.
         """
@@ -121,7 +121,7 @@ class MobileBaseBridge:
         self._odom_pub = self._node.create_publisher(Odometry, "/odom", odom_qos)
         self._tf_broadcaster = TransformBroadcaster(self._node)
         # Sim-attached HALs publish odom from the node's dedicated
-        # thread (:meth:`publish_from_snapshot`); only the legacy (real-HAL /
+        # thread (``publish_from_snapshot``); only the legacy (real-HAL /
         # in-process-twin) path drives it from a timer on the executor thread.
         if self._proprio is None:
             self._odom_timer = self._node.create_timer(
@@ -164,7 +164,7 @@ class MobileBaseBridge:
         """Publish one ``/odom`` + TF sample (dedicated-thread entry).
 
         Called from the node's publisher thread for sim-attached HALs; reads the
-        proprio snapshot, never the simulator. Thin alias over :meth:`_publish_odom`
+        proprio snapshot, never the simulator. Thin alias over ``_publish_odom``
         (which already branches on ``self._proprio``) so the threading contract is
         explicit at the call site.
         """

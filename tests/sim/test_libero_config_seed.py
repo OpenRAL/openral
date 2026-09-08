@@ -6,7 +6,7 @@ prompting via ``input()`` when it is absent. Under pytest's captured stdin (and
 any subprocess with a closed stdin — a deploy-sim launch, a cron CI runner) that
 ``input()`` raises ``OSError: reading from stdin while output is captured``,
 crashing the very first ``from lerobot.envs.libero import LiberoEnv`` inside
-:func:`openral_sim.backends.libero._build_libero_scene`.
+``openral_sim.backends.libero._build_libero_scene``.
 
 ``_seed_libero_config_if_absent`` writes the config non-interactively before
 that import so the prompt never fires. This test reproduces the exact failure

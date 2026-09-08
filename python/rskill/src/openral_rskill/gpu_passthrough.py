@@ -2,7 +2,7 @@
 
 A minimal no-op rSkill that exercises the GPU sensor-frame path. Designed to
 prove the "rSkill processes the frame on GPU" half of the M8 end-to-end
-demo: when the GStreamer sensor reader hands a CPU :class:`SensorFrame`
+demo: when the GStreamer sensor reader hands a CPU ``SensorFrame``
 to this skill's ``step()``, the skill uploads the frame to a torch
 CUDA tensor exactly once and runs a tiny convolutional reduction
 on the GPU, returning the per-channel mean intensity as the action
@@ -102,7 +102,7 @@ class GpuPassthroughSkill(rSkillBase):
 
     @property
     def step_count(self) -> int:
-        """Number of times :meth:`step` has been called successfully."""
+        """Number of times ``step`` has been called successfully."""
         return self._step_count
 
     # ── Hook overrides ────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ class GpuPassthroughSkill(rSkillBase):
 
         On each step:
 
-        1. Pull the latest :class:`~openral_core.SensorFrame` for
+        1. Pull the latest ``SensorFrame`` for
            ``sensor_id`` from ``world_state.image_frames``.
         2. Decode the raw bytes into a (H, W, C) ``uint8`` tensor (CPU).
         3. Slice / downsample to ``_REDUCTION_SIZE`` and upload to the GPU

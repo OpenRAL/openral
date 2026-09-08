@@ -122,10 +122,10 @@ def test_openarm_tabletop_deploy_scene_builds_through_loader() -> None:
     ``scenes/deploy/*.yaml`` through ``build_sim_env_from_yaml``) closes
     the coverage gap that let the bug ship.
 
-    Mirrors :func:`test_openarm_tabletop_scene_builds_through_loader` but
+    Mirrors ``test_openarm_tabletop_scene_builds_through_loader`` but
     points at the env-only ``scenes/deploy/openarm_tabletop.yaml`` sibling
     (no ``task:`` block — exercises the DeployScene branch of
-    ``_load_scene_for_hal``, which synthesises a noop :class:`TaskSpec`).
+    ``_load_scene_for_hal``, which synthesises a noop ``TaskSpec``).
     The HAL's ``SimAttachedHAL`` never reads ``task.id`` / ``.instruction``
     / ``.max_steps`` / ``.success_key`` (it drives ``env.step`` directly),
     so the noop task is invisible at runtime — the openarm env itself

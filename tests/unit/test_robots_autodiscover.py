@@ -7,7 +7,7 @@ in any ``SimEnvironment`` config. This test pins the contract.
 Coverage
 --------
 - Every directory under ``robots/`` with a ``robot.yaml`` is registered
-  under :data:`openral_sim.ROBOTS`.
+  under ``openral_sim.ROBOTS``.
 - ``$OPENRAL_ROBOTS_DIR`` overrides the in-tree scan (out-of-tree
   manifests).
 - A drop-in YAML inside an override directory shows up after the module

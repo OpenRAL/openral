@@ -1,16 +1,13 @@
 """Unit tests for the NVIDIA GR00T-N1.7 rSkill contract (in-process backend).
 
-GR00T-N1.7 now loads **in-process** via lerobot 0.6.0's native ``GrootPolicy``
-(``openral_sim.policies.gr00t``), NF4-quantized like pi05 — there is no longer a
-Python-3.10 ZMQ sidecar on the default path. The live in-process backend (load,
-8 GiB NF4 fit, real action chunk) is exercised by the sim-tier
+GR00T-N1.7 loads in-process via lerobot 0.6.0's native ``GrootPolicy``
+(``openral_sim.policies.gr00t``), NF4-quantized like pi05 — no Python-3.10 ZMQ
+sidecar. Live load / 8 GiB NF4 fit / real action chunk is exercised by
 ``tests/sim/test_franka_groot_libero.py`` on a GPU host.
 
-This unit test pins only the GPU-free contract: the shipped manifest validates
-and carries the right family/license posture. (The legacy sidecar behaviour
-tests were removed together with ``tools/gr00t_sidecar.py`` — GR00T-N1.7 no
-longer runs out-of-process; the in-process backend is gated by its 5/5
-LIBERO-spatial rollout instead of a numerical parity harness.)
+This unit test pins only the GPU-free contract: manifest validates with the
+right family/license posture. The in-process backend itself is gated by its
+5/5 LIBERO-spatial rollout, not a numerical parity harness.
 """
 
 from __future__ import annotations

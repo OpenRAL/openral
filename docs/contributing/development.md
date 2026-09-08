@@ -1,6 +1,6 @@
 # Development setup
 
-This page walks you through getting a working OpenRAL development environment from scratch — whether on a local Ubuntu machine, inside a dev container, or in a GitHub Codespace. It also covers the day-to-day commands you'll use while contributing.
+Getting a working OpenRAL development environment from scratch — local Ubuntu, dev container, or GitHub Codespace — plus the day-to-day commands.
 
 ---
 
@@ -42,15 +42,13 @@ just lint            # ruff + mypy --strict; expect no errors
 uv run openral doctor     # diagnose host environment
 ```
 
-`just test` should run the full unit suite and complete in well under
-30 s. The current inventory (file + LOC counts, gaps, follow-ups) is in
+Test inventory (file + LOC counts, gaps, follow-ups):
 [`tests/README.md`](https://github.com/OpenRAL/openral/blob/master/tests/README.md).
 
-`uv run openral doctor` is the canonical environment probe — see the
-[README's "Quick start" section](https://github.com/OpenRAL/openral/blob/master/README.md#quick-start)
-for a sample output table; that one is the single source of truth.
-Each row will read `ok` / `info` / `absent` / `missing` depending on
-which deps you have installed.
+`uv run openral doctor` is the canonical environment probe — sample output
+table in the [README's "Quick start" section](https://github.com/OpenRAL/openral/blob/master/README.md#quick-start).
+Each row reads `ok` / `info` / `absent` / `missing` depending on which deps
+are installed.
 
 ---
 
@@ -230,10 +228,9 @@ runner that has to `rm -rf` dotnet, android and CodeQL to reclaim its ~14 GB.
 Even a trimmed set (fixtures + textures + one object bundle, ~8 GB) is past
 that runner's whole disk. No GPU is needed, so the constraint is disk alone.
 
-*Security.* A self-hosted runner was built, registered, and then removed. It is
-not a safe option for this repository, and the reasoning is worth keeping
-because it is easy to get wrong: **a runner label is a routing request made by
-a workflow, not an access control enforced by the runner.** A repository-scoped
+*Security.* A self-hosted runner was built, registered, and then removed: it is
+not a safe option for this repository. **A runner label is a routing request
+made by a workflow, not an access control enforced by the runner.** A repository-scoped
 self-hosted runner accepts jobs from *any* workflow in that repository naming
 its labels, and for a `pull_request` event GitHub executes the workflow
 definition from the **fork's** ref. `OpenRAL/openral` is public and has three

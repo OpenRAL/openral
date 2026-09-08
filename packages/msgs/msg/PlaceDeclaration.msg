@@ -1,26 +1,21 @@
 # Dispatch's typed statement that a place phase is active for a payload, and
 # which target the payload is being placed into (ADR-0097).
 #
-# The pick-phase support-contact witness (ADR-0092 D6) exempts the contact a
-# payload has with the surface it was picked from. Its anti-scope is
-# deliberate: a NEW contact against any other surface mid-carry is never
-# exempt, because nothing distinguishes "the payload arrived at its declared
-# destination" from "the payload grazed a wall." This declaration is that
-# distinction, and it is the ONLY thing that supplies it — it is never
-# inferred from motion, and never from simulator introspection.
+# The pick-phase support-contact witness (ADR-0092 D6) exempts contact with the
+# pick surface only; a NEW contact against any other surface mid-carry is never
+# exempt, since nothing else distinguishes "arrived at declared destination"
+# from "grazed a wall." This declaration is the ONLY source of that
+# distinction — never inferred from motion or simulator introspection.
 #
-# A declaration alone exempts NOTHING. It only permits a producer to attest a
-# second, place-phase SupportContactWitness when the payload actually comes
-# into fresh bounded contact with the declared target; the safety kernel then
-# exempts exactly the patch that witness describes, under the identical bounds,
+# A declaration alone exempts NOTHING: it only permits a producer to attest a
+# second, place-phase SupportContactWitness on fresh bounded contact with the
+# declared target, which the kernel then exempts under the identical bounds,
 # fail-closed rules and hysteresis the pick witness is under. Measured contact
-# without a declaration exempts nothing either — that is unchanged pre-ADR-0097
-# behaviour.
+# without a declaration exempts nothing (unchanged pre-ADR-0097 behaviour).
 #
-# The declaration is scoped to one goal execution. It MUST be retracted
-# (active=false) on goal end, goal cancel, and E-stop, and every consumer MUST
-# additionally expire it on timeout_s so a dispatcher that dies mid-goal cannot
-# leave an exemption armed for a later, unrelated skill execution.
+# Scoped to one goal execution. MUST be retracted (active=false) on goal
+# end/cancel and E-stop; every consumer MUST also expire it on timeout_s so a
+# dispatcher dying mid-goal cannot leave an exemption armed.
 
 # Identity of the declared place target (e.g. "sim:cab_1_left_group_main").
 # A producer may attest a place witness only for support contact ON this
@@ -63,18 +58,15 @@ bool region_valid
 PlaceRegion region
 
 # Per-declaration bound on the contact force this place is permitted to reach
-# (ADR-0100, survey Path C). Scoped to the one goal execution and dead with the
-# declaration, the same three ways everything else here is.
+# (ADR-0100, survey Path C). Dead with the declaration, same as everything else
+# here.
 #
-# <= 0 — THE DEFAULT — means NO force gate: exactly today's behaviour. Above 0,
-# a live ContactForceWitness on the declared payload that attests a CALIBRATED
-# magnitude past this value refuses the configuration. The gate only ever adds a
-# refusal; it never licenses a contact the geometry refuses (ADR-0100 §1).
+# <= 0 — THE DEFAULT — means NO force gate. Above 0, a live ContactForceWitness
+# on the declared payload attesting a CALIBRATED magnitude past this value
+# refuses the configuration; the gate only ever adds a refusal (ADR-0100 §1).
 #
-# This is deliberately NOT read from SafetyEnvelope.contact_force_threshold_n.
-# That field is robot-wide and its 30.0 N default predates the ISO reading, while
-# published energy budgets for one body region span an order of magnitude —
-# SARA-shield 0.49 J for a constrained-blunt hand against PACS HANDOVER's
-# 0.014 J. A budget that varies that much with the task cannot live in a robot
-# manifest; the dispatching skill supplies it per place.
+# NOT read from SafetyEnvelope.contact_force_threshold_n (robot-wide, 30.0 N
+# default, predates the ISO reading): published per-region energy budgets span
+# an order of magnitude (SARA-shield 0.49 J for a constrained-blunt hand vs
+# PACS HANDOVER's 0.014 J), so the dispatching skill supplies it per place.
 float64 contact_force_threshold_n

@@ -3,29 +3,23 @@
 # margin is reduced by min(1.5 x voxel, 40 mm) so it can physically reach the
 # support contact the place witness is earned by.
 #
-# Why a region is needed at all: a payload inserted into an ENCLOSED target
-# passes within margin distance of voxel-quantised walls, and at 25 mm cells that
-# quantisation inflates thin cabinet geometry enough to close the opening's
-# predicted clearance before the payload arrives. Round-6 measured that as an
-# E-stop 22-30 mm short of the shelf. Open-top targets never hit it. Without the
-# region there is no way to distinguish "approaching the declared receptacle"
-# from "approaching anything else", so there would be no way to bound the
-# relaxation — which is exactly what makes it acceptable.
+# Needed because a payload inserted into an ENCLOSED target passes within
+# margin distance of voxel-quantised walls: at 25 mm cells that quantisation
+# closes a thin cabinet opening's predicted clearance before the payload
+# arrives (round-6 measured an E-stop 22-30 mm short of the shelf; open-top
+# targets never hit it). Without the region there is no way to bound the
+# relaxation to "approaching the declared receptacle."
 #
-# PRODUCER-SUPPLIED, and producer-specific: sim computes it from the declared
-# body's MuJoCo model subtree; real hardware obtains it from the perception
-# stack (a detector/segmenter rSkill) through a seam that is NOT YET
-# IMPLEMENTED, so no allowance is applied on real hardware today. The safety
-# kernel is producer-agnostic: it consumes this box the same way regardless of
-# which producer measured it, and it never derives one itself.
+# PRODUCER-SUPPLIED: sim computes it from the declared body's MuJoCo model
+# subtree; real hardware's perception-stack seam is NOT YET IMPLEMENTED, so no
+# allowance applies on real hardware today. The kernel is producer-agnostic and
+# never derives one itself.
 #
-# The region is an ORIENTED box, not an axis-aligned one. A receptacle has an
-# orientation, and the axis-aligned hull of a rotated one is strictly larger,
-# i.e. strictly more permissive.
+# ORIENTED box, not axis-aligned — the axis-aligned hull of a rotated
+# receptacle is strictly larger, i.e. strictly more permissive.
 #
-# Absent (PlaceDeclaration.region_valid == false) means NO allowance — the
-# pre-amendment margin, unchanged. Degenerate and over-large regions are refused
-# by every consumer for the same reason.
+# Absent (PlaceDeclaration.region_valid == false) means NO allowance, the
+# pre-amendment margin unchanged. Degenerate/over-large regions are refused.
 
 # The frame `pose` is expressed in. This MUST be the robot base frame — the same
 # frame OccupancyVoxels is published in — and the safety kernel refuses a region
@@ -50,28 +44,21 @@ string evidence_ref
 int64 stamp_ns
 
 # The declared target's OWN collision geometry (ADR-0098, collision-safety
-# survey Path B), each primitive posed in `frame_id` — the same frame as `pose`,
-# not relative to the region box. Empty is the default and the backward
-# compatible case: the region then behaves exactly as it did before ADR-0098.
+# survey Path B), each primitive posed in `frame_id` — same frame as `pose`,
+# not relative to the region box. Empty = pre-ADR-0098 behaviour (backward
+# compatible default).
 #
-# Why the box alone is not enough: mm-scale discrimination is impossible against
-# 25 mm voxels, and the region grants the SAME blanket allowance to every cell
-# inside itself whether or not the declared body is actually there. These
-# primitives ARE the declared body, so a cell can be adjudicated against the
-# modelled surface instead of against the cube that quantised it.
+# Box alone can't discriminate at mm scale against 25 mm voxels and grants the
+# same blanket allowance whether or not the declared body is actually there;
+# these primitives ARE the declared body, so a cell adjudicates against the
+# modelled surface instead. Never more permissive than box-only: the kernel
+# uses the modelled distance only within the blanket allowance the cell would
+# get anyway, falling back to blanket otherwise.
 #
-# This can never be more permissive than shipping only the box: the kernel uses
-# the modelled distance only while it is within the blanket allowance that cell
-# would have been granted anyway, and falls back to the blanket allowance
-# otherwise. More accurate, never looser.
+# PRODUCER-SUPPLIED, same terms as the box: sim measures the MuJoCo model
+# subtree; real hardware's perception-stack seam is NOT YET IMPLEMENTED. A
+# producer that cannot measure geometry publishes an empty list, never a guess.
 #
-# PRODUCER-SUPPLIED, on the same terms as the box: sim measures the declared
-# body's MuJoCo model subtree; real hardware fills it from the perception stack
-# through a seam that is NOT YET IMPLEMENTED. A producer that cannot measure
-# geometry publishes an empty list, never a guess.
-#
-# The kernel enforces its own primitive cap and refuses the WHOLE region — no
-# allowance at all, not a downgrade to box-only — when the list overflows that
-# cap or carries a malformed shape. A producer that cannot describe the target
-# it declared is not one whose region is trusted either (#142/#146 posture).
+# The kernel refuses the WHOLE region (not a box-only downgrade) when the list
+# overflows its primitive cap or carries a malformed shape (#142/#146 posture).
 AttachedCollisionPrimitive[] geometry

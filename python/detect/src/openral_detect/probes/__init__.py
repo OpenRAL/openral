@@ -1,7 +1,7 @@
 """Per-domain hardware probes for ``openral detect``.
 
 Each probe is a pure function returning a typed Pydantic record from
-:mod:`openral_detect.report`.  Probes never raise on missing
+``openral_detect.report``.  Probes never raise on missing
 optional deps or absent hardware — they return empty records and append
 a one-line message to the parent ``DetectionReport.warnings``.
 """

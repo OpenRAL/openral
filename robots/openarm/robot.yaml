@@ -1,29 +1,24 @@
 # RobotDescription — Enactic OpenArm v2 bimanual arm (sim baseline).
 #
-# This manifest mirrors `OPENARM_DESCRIPTION` in
-# python/hal/src/openral_hal/openarm.py (drift guarded by
-# tests/unit/test_robot_manifests_match_hal_constants.py).
+# Mirrors `OPENARM_DESCRIPTION` in python/hal/src/openral_hal/openarm.py
+# (drift guarded by tests/unit/test_robot_manifests_match_hal_constants.py).
 #
-# Joint limits + per-joint kp/kv (in the MJCF) + symmetric finger
-# gains come from the upstream `enactic/openarm_mujoco` v2 bimanual
-# MJCF — see PR #19 on master.  v2 dropped v1's
-# software-PD-on-top-of-torque-motors complexity in favour of
-# native <position> actuators with per-class PD gains
-# (DM8009: kp=230 kv=2.7; DM4340: kp=190 kv=2.2; DM4310: kp=30 kv=1.5;
-# fingers: kp=30 kv=0.2), proper ctrlrange / forcerange, and a
-# single driven finger per side (the follower finger tracks via an
-# <equality> constraint inside the MJCF).
+# Joint limits + per-joint kp/kv (MJCF) + symmetric finger gains come from
+# upstream `enactic/openarm_mujoco` v2 bimanual MJCF (PR #19). v2 dropped v1's
+# software-PD-on-torque-motors in favour of native <position> actuators with
+# per-class PD gains (DM8009 kp=230 kv=2.7; DM4340 kp=190 kv=2.2; DM4310
+# kp=30 kv=1.5; fingers kp=30 kv=0.2), proper ctrlrange/forcerange, and a
+# single driven finger per side (follower tracks via MJCF <equality>).
 #
-# The HAL fetches the v2 MJCF lazily via
+# HAL fetches the v2 MJCF lazily via
 # `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` because
-# the `robot_descriptions` package still pins to a pre-v2 commit;
-# the helper can be removed once upstream bumps.
+# `robot_descriptions` still pins a pre-v2 commit; removable once upstream bumps.
 #
-# The real-hardware path shares this manifest. `hal.real` is
-# `OpenArmRealHAL`, which commands `openarm_bringup`'s four ros2_control
-# controllers (per-side arm + gripper); the C++ `openarm_hardware`
-# SystemInterface below them drives the Damiao CAN FD motor buses at
-# 400 Hz. Python never touches the motors directly (CLAUDE.md §1.5).
+# Real-hardware path shares this manifest: `hal.real` is `OpenArmRealHAL`,
+# commanding `openarm_bringup`'s four ros2_control controllers (per-side
+# arm+gripper); the C++ `openarm_hardware` SystemInterface below them drives
+# the Damiao CAN FD motor buses at 400 Hz. Python never touches motors
+# directly (CLAUDE.md §1.5).
 
 name: "openarm_v2"
 embodiment_kind: "bimanual"
@@ -42,33 +37,21 @@ base_frame: "openarm_base"
 assets:
   urdf:
     ref: "file:openarm.urdf"
-    # openarm.urdf roots at `world`, NOT at this manifest's `base_frame`
-    # (`openarm_base`), so without this bridge nothing on /tf ever publishes
-    # `openarm_base` and every consumer that looks it up fails: sensor mounts
-    # (_sensor_wiring defaults `parent_frame` to base_frame), SlamMapBridge,
-    # and — once the octomap frames are manifest-derived — octomap_server and
-    # the world-cloud bridge.
-    #
-    # `root_frame` must be the URDF's ROOT (`world`), not the visually obvious
-    # `body_link0`: robot_state_publisher already publishes world->body_link0,
-    # so bridging onto body_link0 would give it two parents, and a frame with
-    # two parents is not a tree — tf2 lookups become order-dependent and start
-    # silently dropping data.
-    #
-    # The offset follows from the two mount points, which describe the SAME
-    # physical link (this file's note below: `openarm_*_link0` IS the MJCF's
-    # `openarm_*_base_link`, i.e. the URDF's `left_base_link`):
-    #
-    #   openarm_base -> openarm_left_link0  = [0, 0.031, 0]      (fixed_attachments)
-    #   body_link0   -> left_base_link      = [0, 0.031, 0.698]  (openarm.urdf)
-    #   world        -> body_link0          = identity           (openarm.urdf)
-    #   => openarm_base sits 0.698 m ABOVE world, so world expressed in
-    #      openarm_base is z = -0.698.
-    #
-    # This is additive TF only: `base_frame` is unchanged, so the MJCF-derived
-    # collision geometry and every existing origin in this manifest keep their
-    # frame. It is the mechanism UrdfAsset already documents for exactly this
-    # case ("Franka's panda_link0 mounted onto a base_link mobile platform").
+    # openarm.urdf roots at `world`, NOT this manifest's `base_frame`
+    # (`openarm_base`), so without this bridge nothing on /tf publishes
+    # `openarm_base` and every consumer fails (sensor mounts, SlamMapBridge,
+    # eventually octomap_server/world-cloud bridge). `root_frame` must be the
+    # URDF's ROOT (`world`), not `body_link0`: robot_state_publisher already
+    # publishes world->body_link0, so bridging onto body_link0 gives it two
+    # parents and tf2 lookups become order-dependent, silently dropping data.
+    # Offset derived from two mounts of the SAME physical link
+    # (`openarm_*_link0` == MJCF's `openarm_*_base_link` == URDF's
+    # `left_base_link`): openarm_base->openarm_left_link0 = [0,0.031,0]
+    # (fixed_attachments); body_link0->left_base_link = [0,0.031,0.698]
+    # (openarm.urdf); world->body_link0 = identity => openarm_base sits
+    # 0.698 m above world, so world in openarm_base is z=-0.698. Additive TF
+    # only — base_frame and all existing origins keep their frame (same
+    # mechanism UrdfAsset documents for Franka's panda_link0-on-mobile-base).
     root_frame: "world"
     base_to_root_xyz_rpy: [0.0, 0.0, -0.698, 0.0, 0.0, 0.0]
   mjcf: "openarm:bimanual"
@@ -318,26 +301,18 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: true
-  # `gripper_position` is executable here ONLY inside a slot group (ADR-0102).
-  # `rskill_runner_node._dispatch_slots` emits a gripper slot as
-  # `Action(GRIPPER_POSITION, gripper=[v], ee_name=..., joint_targets=None)`,
-  # which is not a whole-robot command on its own; `OpenArmRealHAL` stages the
-  # tick's four slots (left arm / left gripper / right arm / right gripper) and
-  # composes them into the single 16-DoF joint vector the four bimanual
-  # controllers are commanded from. A STANDALONE gripper action has nowhere to
-  # go and is refused loudly — never dropped silently, which is what the
-  # pre-ADR-0102 `if action.joint_targets is None: return` did.
-  #
-  # NOTE the digital twin does NOT yet do this: `OpenArmMujocoHAL` inherits
-  # `_mujoco_arm._validate_action`, which calls `_require_control_mode(action,
-  # JOINT_POSITION)` and raises on a gripper slot. `deploy sim` admits this
-  # skill regardless (the sim gate uses SIM_EXECUTABLE_CONTROL_MODES, not this
-  # list), so the twin needs the same staging before it can run the contract.
-  #
-  # Do not add a mode the HAL cannot place:
-  # `tests/unit/test_openarm_real_hal.py` pins this list against what
-  # `send_action` actually dispatches, so an over-declaration fails there
-  # rather than on hardware.
+  # `gripper_position` is executable here ONLY inside a slot group (ADR-0102):
+  # `rskill_runner_node._dispatch_slots` emits a gripper slot with
+  # `joint_targets=None`, not a whole-robot command on its own; `OpenArmRealHAL`
+  # stages a tick's four slots (per-side arm+gripper) into one 16-DoF joint
+  # vector. A standalone gripper action is refused loudly — never silently
+  # dropped, unlike the pre-ADR-0102 `if action.joint_targets is None: return`.
+  # Digital twin does NOT yet do this staging (`OpenArmMujocoHAL` raises on a
+  # gripper slot via `_require_control_mode`); `deploy sim` admits it anyway
+  # (sim gate uses SIM_EXECUTABLE_CONTROL_MODES, not this list) — twin needs
+  # the same staging before it can run the contract. Don't add a mode the HAL
+  # can't place: tests/unit/test_openarm_real_hal.py pins this list against
+  # what `send_action` actually dispatches.
   supported_control_modes:
     - "joint_position"
     - "gripper_position"
@@ -429,58 +404,36 @@ hal:
 # ``top``: overhead workspace overview (mddoai dataset POV).
 # ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
-  # ── head_zed — the ZED Mini head camera's SDK depth, and its MOUNT ───────
-  # Robot-parented, so it lives here and not in a DeployScene: the sensor
-  # leg's own rule is "the robot manifest for robot-mounted cameras (wrist /
-  # head), DeployScene.sensors for workcell-mounted ones (overhead / front)".
-  # Enactic model it the same way — openarm_zed_wrapper.xacro bolts the camera
-  # to a body link via `mount_origin`, and reference_points.yaml classes it
-  # `kind: sensor_mount`.
+  # ── head_zed — ZED Mini head camera SDK depth + mount ────────────────────
+  # Robot-parented per the sensor-leg rule (robot manifest for wrist/head
+  # cams, DeployScene.sensors for overhead/front); Enactic mounts it the same
+  # way (openarm_zed_wrapper.xacro `mount_origin`, reference_points.yaml
+  # `kind: sensor_mount`). No `deploy_binding`: manifest owns geometry, scene
+  # owns host binding (merge_deploy_sensors merges field-wise) — pixels/cloud
+  # arrive on zed_wrapper's own topics since the ZED SDK computes depth on the
+  # host GPU and the device only emits a side-by-side UVC stream.
   #
-  # No `deploy_binding` here: the manifest owns the geometry, a scene owns the
-  # host binding, and merge_deploy_sensors now merges the two field-wise. The
-  # pixels and the cloud arrive on zed_wrapper's own topics anyway — the ZED
-  # SDK computes depth on the host GPU and the device emits only a
-  # side-by-side UVC stream, so an `opencv_thread` binding would fight the SDK
-  # for the single UVC node the camera exposes.
+  # POSE/INTRINSICS UNCALIBRATED by operator decision (no vendor extrinsic
+  # exists; Stereolabs ship mount as a xacro param, Enactic leave theirs
+  # commented "tune before hardware"). Pose is the stated approximation:
+  # 0.20 m above the shoulder midpoint (= `openarm_base`, since both arm
+  # mounts sit at (0,+/-0.031,0)), pitched 45deg down. fx/fy from StereoLabs'
+  # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
+  # same basis as `context` in scenes/deploy/openarm_restock_shelf.yaml). Good
+  # enough to prove the pipeline; run `openral calibrate camera` before
+  # projecting anything geometric.
   #
-  # ⚠ POSE AND INTRINSICS ARE UNCALIBRATED, by operator decision. There is no
-  # vendor extrinsic to adopt: Stereolabs ship the mount as a xacro PARAMETER
-  # and Enactic leave their camera reference point commented out with "Tune
-  # this pose from CAD or calibration before using it on hardware". The pose
-  # is the stated approximation — 0.20 m above the midpoint of the two
-  # shoulders, pitched 45 deg down. `openarm_base` IS that midpoint (both arm
-  # mounts sit at (0, ±0.031, 0) below), which is why the number reads as the
-  # measurement rather than needing arithmetic. fx/fy follow from StereoLabs'
-  # published 90 deg horizontal FOV at the HD1080 depth stream
-  # (fx = (1920/2)/tan(45 deg) = 960), the same basis as the `context` entry in
-  # scenes/deploy/openarm_restock_shelf.yaml.
+  # A depth sensor with intrinsics auto-enables the octomap leg, so every
+  # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
+  # set `octomap_cloud_topic` (this cloud comes from the SDK topic, not raycast).
+  # Optional hardware: entry is inert (no device/topic) on cells without the
+  # stereo camera.
   #
-  # Good enough to prove the pipeline and to look at; NOT good enough to
-  # project against. Run `openral calibrate camera` before this cloud informs
-  # anything geometric.
-  #
-  # Declaring a depth sensor WITH intrinsics auto-enables the octomap leg
-  # (deploy_sim.py: "a camera the HAL can ray-cast a PointCloud2 from"). That
-  # is why every in-tree OpenArm scene now pins `runtime.enable_octomap`
-  # explicitly: this camera's cloud comes from the SDK on a topic, so a scene
-  # that wants the map must also set `octomap_cloud_topic` or it maps silence.
-  #
-  # Optional hardware: OpenArm ships with or without the top stereo camera. On
-  # a cell without one this entry publishes a frame nothing populates, which is
-  # inert — no device is opened and no topic is expected.
-  #
-  # Known cost in SIM, accepted: this manifest is shared by the MuJoCo twin,
-  # and the OpenArm MJCF has no `head_zed` camera. SimSensorBridge creates the
-  # depth publishers, `synthesize_depth_pointcloud` raises ROSConfigError
-  # ("camera 'head_zed' not found in the MuJoCo model"), and the bridge catches
-  # it, logs ONE warning and adds the sensor to `_depth_disabled` for the rest
-  # of the run. So a `deploy sim` on OpenArm carries one startup warning and
-  # three publishers that never publish. Bounded and self-limiting, not a
-  # crash. The clean upgrade is to add a `head_zed` <camera> to the tabletop
-  # MJCF composer at this same mount, which would give the twin a synthetic
-  # head depth stream; until someone does, `metadata.mjcf_camera` can also
-  # point this at an existing MJCF camera if a twin-side stand-in is wanted.
+  # SIM cost, accepted: MuJoCo twin's MJCF has no `head_zed` camera, so
+  # SimSensorBridge's `synthesize_depth_pointcloud` raises ROSConfigError once,
+  # the bridge logs one warning and disables the sensor for the run — bounded,
+  # not a crash. Clean fix: add a `head_zed` <camera> to the tabletop MJCF
+  # composer at this mount, or point `metadata.mjcf_camera` at an existing one.
   - name: "head_zed"
     modality: "depth"
     frame_id: "zed_camera_link"
@@ -598,31 +551,19 @@ sim:
 # manifest now describes only the robot; the scene describes the scene; the
 # rSkill is separate. (Was `scene_defaults`, reworked in issue #191 Phase 3b.)
 
-# Rigid, zero-DoF links of the collision tree. NOT `joints` — that list is
-# consumed unfiltered as the action-vector width, the sim qpos map, the
-# reasoner's state-contract filter and the runner's joint permutation, so a
-# zero-DoF entry there would corrupt all four.
-#
-# Both arm pedestals mount on `base_frame` (openarm_base). Without these the
-# two arms are separate trees and each is lowered onto the base origin —
-# i.e. superimposed on each other, which is the one thing a bimanual
-# self-collision model exists to prevent.
-#
-# Source: `openarm:bimanual` MJCF openarm_v20_bimanual.xml L173-174 / L259 —
-# `<worldbody>` directly contains `<body name="openarm_left_base_link"
-# pos="0 0.031 0">` and `<body name="openarm_right_base_link" pos="0 -0.031 0">`,
-# both without a `quat` (identity rotation).
-#
-# Naming + frame note: this manifest is MJCF-derived (see the ACM block's
-# `source: mjcf` marker), and its `openarm_*_link0` is the MJCF's
-# `openarm_*_base_link` — confirmed by left_joint1's origin [0, 0.0625, 0]
-# matching that body's child `<body name="openarm_left_link1" pos="0 0.0625 0">`
-# exactly. `openarm_base` is therefore the MJCF worldbody frame. The vendored
-# openarm.urdf describes a *different* assembly (a `body_link0` pedestal that
-# raises both arms to z=0.698, and links named `left_base_link` / `left_link1`
-# with no `openarm_` prefix); its z is deliberately NOT used here, because
-# every other origin in this manifest is in the MJCF's frame and mixing the
-# two would misplace both arms by 0.698 m.
+# Rigid, zero-DoF links of the collision tree. NOT `joints` (consumed
+# unfiltered as action-vector width/sim qpos map/state-contract filter/joint
+# permutation — a zero-DoF entry there would corrupt all four). Both arm
+# pedestals mount on `base_frame` (openarm_base); without them the two arms
+# are separate trees, each lowered superimposed on the base origin. Source:
+# `openarm:bimanual` MJCF openarm_v20_bimanual.xml L173-174/L259 — worldbody
+# directly contains `openarm_left_base_link pos="0 0.031 0"` /
+# `openarm_right_base_link pos="0 -0.031 0"`, no quat (identity). This
+# manifest is MJCF-derived (`openarm_*_link0` == MJCF's `openarm_*_base_link`,
+# confirmed by left_joint1 origin matching); the vendored openarm.urdf
+# describes a DIFFERENT assembly (body_link0 pedestal raising arms to
+# z=0.698) — deliberately unused here to avoid mixing frames and misplacing
+# both arms by 0.698 m.
 fixed_attachments:
   - name: "openarm_left_base_mount"
     parent_link: "openarm_base"

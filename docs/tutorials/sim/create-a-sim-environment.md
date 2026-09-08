@@ -736,7 +736,7 @@ What that config wires together:
   fixed_robot="panda_mobile")` so an accidental `--robot franka_panda`
   fails fast with `ROSConfigError`.
 - `scene.backend_options.mode: prebuilt` -- validated through
-  :class:`openral_core.RoboCasaBackendOptions` (prebuilt-vs-procedural
+  ``openral_core.RoboCasaBackendOptions`` (prebuilt-vs-procedural
   XOR).
 - `--rskill rskills/rldx1-ft-rc365-nf4` -- the verified RoboCasa-365
   manifest that declares the embodiment tags / sensor requirements the

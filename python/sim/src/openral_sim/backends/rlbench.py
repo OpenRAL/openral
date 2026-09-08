@@ -7,10 +7,10 @@ via PyRep. CoppeliaSim is the heaviest sim dependency in the tree — a propriet
 CoppeliaSim 4.1.0 install, and the released 3D policies pin the
 ``MohitShridhar/RLBench@peract`` fork. None of that can live in the openral
 py3.12 workspace, so — exactly like the Isaac Sim backend
-(:mod:`openral_sim.backends.isaac_sim`) — we run RLBench in its own venv and talk
+(``openral_sim.backends.isaac_sim``) — we run RLBench in its own venv and talk
 to it over ZMQ REQ/REP framed by msgpack.
 
-This module is the **openral side**: a thin :class:`SimRollout` that marshals
+This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar
 (``tools/rlbench_sidecar.py``) and unwraps the responses. The sidecar owns
 CoppeliaSim, the RLBench task, and the keyframe motion executor.
@@ -27,7 +27,7 @@ Licensing (CLAUDE.md §1.9): CoppeliaSim is proprietary and NEVER vendored — i
 an externally-provisioned dependency the user installs (free EDU license). RLBench
 and PyRep are open source. The sidecar venv is provisioned out of band (there is
 no auto-install plan for a multi-GB proprietary simulator); ``_sidecar_python``
-raises a typed :class:`ROSConfigError` carrying the exact provisioning commands
+raises a typed ``ROSConfigError`` carrying the exact provisioning commands
 when it is absent.
 """
 
@@ -100,7 +100,7 @@ def _opt_int(value: object, default: int) -> int:
 
 @dataclass
 class _RLBenchSidecar:
-    """:class:`SimRollout` proxying an RLBench task over the sidecar."""
+    """``SimRollout`` proxying an RLBench task over the sidecar."""
 
     scene: SceneSpec
     task: TaskSpec

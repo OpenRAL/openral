@@ -1,10 +1,10 @@
 """Lifecycle smoke test for ``openral_hal_rizon4``.
 
 Drives the standard managed-lifecycle transition path against the
-generic ``_HALLifecycleNode`` from :mod:`openral_hal.lifecycle` using
+generic ``_HALLifecycleNode`` from ``openral_hal.lifecycle`` using
 the real ``Rizon4MujocoHAL`` factory. The HAL pulls its MJCF lazily (typically
 from ``robot_descriptions``) and ships its canonical
-:class:`openral_core.RobotDescription` (``RIZON4_DESCRIPTION``).
+``openral_core.RobotDescription`` (``RIZON4_DESCRIPTION``).
 
 The test is gated on ``rclpy``, ``openral_hal``, ``mujoco`` and
 ``robot_descriptions`` being importable; in lint-only environments

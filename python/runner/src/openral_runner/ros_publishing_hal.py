@@ -1,28 +1,25 @@
 """HAL adapter that publishes ``ActionChunk`` on ROS.
 
-`ROSPublishingHAL` satisfies the existing
-:class:`openral_hal.protocol.HAL` Protocol but **does not drive motors
-directly**. Instead:
+`ROSPublishingHAL` satisfies ``openral_hal.protocol.HAL`` but **does
+not drive motors directly**:
 
-* ``send_action`` serialises the :class:`openral_core.Action` into
-  ``openral_msgs/ActionChunk`` and publishes it on
+* ``send_action`` serialises the ``openral_core.Action`` into
+  ``openral_msgs/ActionChunk`` and publishes on
   ``/openral/candidate_action`` with RELIABLE / VOLATILE / KL=1 QoS.
-* ``read_state`` returns the most recent ``JointState`` cached from a
-  ``/joint_states`` subscription opened on a host
-  ``rclpy.lifecycle.LifecycleNode``.
-* ``connect`` / ``disconnect`` open / close the publisher and
-  subscription on that host node — the adapter holds no rclpy node of
-  its own (composing into the host's executor keeps QoS / lifecycle /
-  shutdown in one place per CLAUDE.md §6.1).
+* ``read_state`` returns the latest ``JointState`` cached from a
+  ``/joint_states`` subscription on a host ``rclpy.lifecycle.LifecycleNode``.
+* ``connect`` / ``disconnect`` open / close that publisher + subscription
+  on the host node — the adapter holds no rclpy node of its own (composing
+  into the host's executor keeps QoS / lifecycle / shutdown in one place
+  per CLAUDE.md §6.1).
 
-This is the **single change** to the in-process hot path:
-``DeployRunner._tick_impl`` keeps calling
-``hal.send_action(action)`` — only the sink moves from motors to a ROS
-topic, behind which sits ``safety_node`` → ``<robot>_hal_node``.
+Single change to the in-process hot path: ``DeployRunner._tick_impl`` still
+calls ``hal.send_action(action)`` — only the sink moves from motors to a
+ROS topic, behind which sits ``safety_node`` → ``<robot>_hal_node``.
 
-`trace_id` is sourced from the active OTel context;
-``rskill_id`` / ``rskill_revision`` are set per goal by the
-``rskill_runner_node`` (an injected getter avoids tight-coupling).
+``trace_id`` is sourced from the active OTel context; ``rskill_id`` /
+``rskill_revision`` are set per goal by ``rskill_runner_node`` (an
+injected getter avoids tight-coupling).
 """
 
 from __future__ import annotations
@@ -68,7 +65,7 @@ def _flatten_rows(rows: list[list[float]] | None, horizon: int) -> tuple[list[fl
     """Flatten ``list[list[float]]`` rows + return ``(flat, n_dof, horizon)``.
 
     Slot-dispatch helper for ROSPublishingHAL._action_to_chunk dispatch on
-    joint-mode payloads. Raises :class:`ROSConfigError` when the
+    joint-mode payloads. Raises ``ROSConfigError`` when the
     payload is empty (a joint action with no target is a programming
     error — the slot dispatcher / legacy path always populates it).
     """
@@ -115,7 +112,7 @@ from openral_core import CONTROL_MODE_TO_UINT8 as _CONTROL_MODE_TO_UINT8  # noqa
 class ROSPublishingHAL:
     """HAL adapter that publishes ``ActionChunk`` and caches ``/joint_states``.
 
-    Implements the structural :class:`openral_hal.protocol.HAL` Protocol
+    Implements the structural ``openral_hal.protocol.HAL`` Protocol
     without inheriting from it (the Protocol is ``runtime_checkable`` —
     any class with the right shape passes).
 
@@ -123,7 +120,7 @@ class ROSPublishingHAL:
         node: The host ``rclpy.lifecycle.LifecycleNode`` that owns the
             adapter's publisher / subscription. ``connect`` /
             ``disconnect`` are no-ops outside this node's lifecycle.
-        description: The :class:`RobotDescription` for the robot this
+        description: The ``RobotDescription`` for the robot this
             adapter represents. Surfaced via the ``HAL.description``
             attribute consumed by `DeployRunner` for span attributes
             and per-joint limit lookups.
@@ -168,7 +165,7 @@ class ROSPublishingHAL:
         safety_abort_getter: Callable[[], str | None] = lambda: None,
         action_applied_timeout_s: float = 5.0,
     ) -> None:
-        """Store references; opens no ROS resources until :meth:`connect`."""
+        """Store references; opens no ROS resources until ``connect``."""
         self._node = node
         self.description = description
         self._skill_id_getter = skill_id_getter
@@ -310,15 +307,14 @@ class ROSPublishingHAL:
                 deadline and no safety stop is latched.
 
         Note:
-            This is a **grouped-dispatch** wait: an action with
-            ``tick_group_size <= 1`` returns below without blocking, so a
-            single-surface policy never reaches the safety check here at all.
-            Reading the seam on the ungrouped path is the owning node's job —
-            ``rskill_runner_node`` polls the same
-            :meth:`~RskillRunnerNode._safety_abort_reason` before each
-            inference tick. Do not add a check to the early return: this
-            adapter must stay a sink, and a per-publish safety gate here would
-            duplicate the kernel's own decision.
+            Grouped-dispatch wait only: ``tick_group_size <= 1`` returns
+            below without blocking, so a single-surface policy never reaches
+            this safety check. The ungrouped path's seam is polled by
+            ``rskill_runner_node`` via
+            ``RskillRunnerNode._safety_abort_reason`` before each tick;
+            don't add a check to the early return — this adapter stays a
+            sink, and a per-publish gate here would duplicate the kernel's
+            own decision.
         """
         group_size = int(action.tick_group_size)
         if group_size <= 1:
@@ -406,7 +402,7 @@ class ROSPublishingHAL:
 
         The wire format is mode-agnostic (``flat`` +
         ``n_dof`` + ``control_mode``); this dispatcher chooses the
-        per-mode source field on the Pydantic :class:`Action` and
+        per-mode source field on the Pydantic ``Action`` and
         flattens it into the ActionChunk's ``flat`` array. The HAL
         decodes the flat array per its ``control_mode`` (the
         panda_mobile HAL already does this for JOINT_POSITION +
@@ -452,9 +448,9 @@ class ROSPublishingHAL:
 
         Centralises the per-mode shape rules so the test
         surface lives next to the serialiser. Raises
-        :class:`ROSConfigError` for modes without a defined
+        ``ROSConfigError`` for modes without a defined
         serialisation (today: ``CARTESIAN_POSE`` carries a
-        :class:`Pose6D` not a flat tuple — encode separately when the
+        ``Pose6D`` not a flat tuple — encode separately when the
         first consumer needs it; ``FOOT_PLACEMENT`` /
         ``DEX_HAND_JOINT`` deferred to humanoid work).
         """

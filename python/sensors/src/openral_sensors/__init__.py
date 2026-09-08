@@ -1,7 +1,7 @@
 """openral Sensors — sensor adapters, catalog and launch generators.
 
 Public surface:
-- ``CATALOG``: global :class:`SensorCatalog` populated by every vendor module
+- ``CATALOG``: global ``SensorCatalog`` populated by every vendor module
   on import. Used by ``openral sensor list / show`` and
   ``SensorSpec.catalog_id`` provenance on robot-mounted sensors.
 - ``SensorCatalog``, ``SensorCatalogEntry``: the registry types.

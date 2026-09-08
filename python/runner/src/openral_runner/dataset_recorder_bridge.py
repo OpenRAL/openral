@@ -1,17 +1,17 @@
 """Bus-attached LeRobot/rosbag recorder for the deploy graph.
 
-:class:`DatasetRecorderBridge` is the deploy-side counterpart to the
+``DatasetRecorderBridge`` is the deploy-side counterpart to the
 ``SimRunner`` recording path. It mirrors
-:class:`openral_runner.world_cloud_bridge.WorldCloudBridge`: constructed
+``openral_runner.world_cloud_bridge.WorldCloudBridge``: constructed
 against an existing ``rclpy.node.Node`` so its subscriptions share the
 runtime's executor (no second spin), and it owns no actuation logic — it
 only *observes* the bus the ``rskill_runner_node`` already publishes.
 
 Per tick it joins three already-on-the-graph signals into one
-:class:`openral_dataset.DatasetFrame`:
+``openral_dataset.DatasetFrame``:
 
 * **proprioception + camera frames** — read from the shared
-  :class:`~openral_world_state.WorldStateAggregator` snapshot
+  ``WorldStateAggregator`` snapshot
   (``joint_state`` + ``image_frames``), the same in-process snapshot the
   runner feeds the policy. No separate camera-topic publisher is required.
 * **action** — the per-tick action, reassembled from the
@@ -31,7 +31,7 @@ Per tick it joins three already-on-the-graph signals into one
 
 The bridge is **embodiment-agnostic**: every shape is derived from the
 recorded data + the injected ``RobotDescription`` — nothing here is
-robot-specific. It writes through a :class:`openral_dataset.Rosbag2Sink`
+robot-specific. It writes through a ``openral_dataset.Rosbag2Sink``
 (no ``features_from_robot`` / ``observation_spec`` requirement at record
 time), so it works for robots whose proprio layout lives only in the
 active rSkill's ``state_contract`` rather than ``RobotDescription``;
@@ -67,9 +67,10 @@ def _sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]
     """Map each RGB sensor NAME to its VLA slot (``camera1`` / ``camera2`` / ...).
 
     The aggregator keys ``image_frames`` by sensor name; the dataset sink
-    keys images by the slot (``vla_feature_key`` suffix). Mirrors
-    ``rskill_runner_node._sensor_name_to_vla_slot`` but kept local so the
-    Layer-5 runner package does not import the Layer-3 ROS skill package.
+    keys images by the slot (``vla_feature_key`` suffix). Canonical copy —
+    ``rskill_runner_node`` imports this (``openral_rskill_ros`` already
+    depends on ``openral_runner``); the reverse direction stays forbidden
+    (CLAUDE.md §3).
     """
     if description is None:
         return {}
@@ -83,23 +84,23 @@ def _sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]
 
 
 class DatasetRecorderBridge:
-    """rclpy → :class:`RolloutRecorder` bridge for the deploy graph.
+    """rclpy → ``RolloutRecorder`` bridge for the deploy graph.
 
     Args:
         node: Host ``rclpy.node.Node``; subscriptions are created on it so
-            they share the runtime executor. :meth:`destroy` releases them.
-        robot: The runtime's :class:`RobotDescription` (sensor → slot map).
-        aggregator: The shared :class:`WorldStateAggregator` the runner
+            they share the runtime executor. ``destroy`` releases them.
+        robot: The runtime's ``RobotDescription`` (sensor → slot map).
+        aggregator: The shared ``WorldStateAggregator`` the runner
             feeds; read (never written) for proprio + image frames.
-        recorder: A configured :class:`openral_dataset.RolloutRecorder`
-            (typically fronting a :class:`openral_dataset.Rosbag2Sink`).
+        recorder: A configured ``openral_dataset.RolloutRecorder``
+            (typically fronting a ``openral_dataset.Rosbag2Sink``).
         output_path: Where the recorder's sink writes, echoed in the
             armed / summary log lines so the operator can find (or fail to
             find) the artefact by path. Purely informational.
         action_topic: ``ActionChunk`` topic. Defaults to
-            :data:`ACTION_TOPIC_DEFAULT`.
+            ``ACTION_TOPIC_DEFAULT``.
         episode_topic: ``Episode`` marker topic. Defaults to
-            :data:`EPISODE_TOPIC_DEFAULT`.
+            ``EPISODE_TOPIC_DEFAULT``.
     """
 
     def __init__(

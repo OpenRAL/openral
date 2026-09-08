@@ -1,32 +1,23 @@
-"""GStreamer-backed :class:`SensorReader` (CPU appsink path).
+"""GStreamer-backed ``SensorReader`` (CPU appsink path).
 
-The :class:`GStreamerSensorReader` runs a user-supplied (or
-:class:`PipelineSpec`-generated) GStreamer pipeline that terminates
-in an ``appsink``. It mirrors the latest-only contract of
-:class:`~openral_runner.backends.opencv_thread.OpenCVThreadSensorReader`:
+``GStreamerSensorReader`` runs a user-supplied (or
+``PipelineSpec``-generated) pipeline terminating in ``appsink``,
+mirroring the latest-only contract of
+``OpenCVThreadSensorReader``:
+``open`` sets PLAYING, connects ``new-sample``, and spawns a daemon
+thread draining the bus for ERROR/EOS; the callback latches the latest
+mapped frame (monotonic + wall-clock stamps) under a ``Lock``;
+``read_latest`` is non-blocking, raising ``ROSPerceptionStale``
+when stale or unset.
 
-* :meth:`open` parses the pipeline, sets it to PLAYING, connects the
-  appsink's ``new-sample`` signal to a Python callback, and spawns a
-  daemon thread that drains the GStreamer bus for ERROR / EOS messages.
-* The callback latches the latest mapped frame into a ``Lock``-guarded
-  slot and updates monotonic + wall-clock timestamps.
-* :meth:`read_latest` is non-blocking: returns the freshest slot, or
-  raises :class:`ROSPerceptionStale` when no frame has arrived or the
-  freshest is older than ``max_age_ms``.
+Imports ``gi.repository`` at module load — requires the ``gstreamer``
+extra (``pip install openral-runner[gstreamer]``);
+``openral_runner.backends.gstreamer.pipeline`` has no such requirement.
 
-This module imports ``gi.repository`` at module load and therefore
-requires the ``gstreamer`` optional-extra (``pip install
-openral-runner[gstreamer]``). The
-:mod:`openral_runner.backends.gstreamer.pipeline` module — which
-the reader's factory uses to build pipeline strings — has no such
-requirement and is import-safe everywhere.
-
-The CPU path here delivers system-memory frames as
-:class:`~openral_core.SensorFrame` with ``data=bytes`` and
-``encoding`` ∈ {BGR8, RGB8, MONO8}. The NVMM / CUDA zero-copy path
-(commit #3) populates ``handle`` + ``encoding`` ∈ {CUDA_NV12 on Tegra,
-CUDA_RGBA on x86 DeepStream} instead and is grafted into
-:meth:`_on_new_sample` without changing the Protocol surface.
+CPU path delivers ``SensorFrame`` with ``data=bytes``,
+``encoding`` ∈ {BGR8, RGB8, MONO8}. NVMM/CUDA zero-copy (commit #3) populates
+``handle`` + ``encoding`` ∈ {CUDA_NV12 Tegra, CUDA_RGBA x86 DeepStream} via
+``_on_new_sample``, same Protocol surface.
 """
 
 from __future__ import annotations
@@ -43,28 +34,13 @@ import structlog
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402  # gi requires version-pin before import
 
-# Initialise GStreamer at module load time, NOT inside open() — and
-# IMMEDIATELY after the ``gi.repository`` import, BEFORE any other
-# import.
-#
-# Why eager: when ``rclpy`` is imported into the same interpreter before
-# ``Gst.init()`` runs, ``rclpy.Node()`` segfaults inside Fast DDS thread
-# setup (observed reliably inside the x86-ros image and reproducible with
-# a minimal probe — see PR I/8 investigation). Calling ``Gst.init()`` here
-# guarantees that any later ``import rclpy`` (lazy or eager) sees an
-# already-initialised GStreamer process state, which is the only ordering
-# we have found that does not segfault. ``Gst.init()`` is idempotent and
-# safe to call from a non-main thread, so re-imports / fork-safe wrappers
-# elsewhere remain valid.
-#
-# Why immediately after the gi import: letting ANY other import run
-# between ``from gi.repository import …`` and ``Gst.init()`` re-opens the
-# same crash on x86 Ubuntu 24.04 hosts (system PyGObject 3.48 / GStreamer
-# 1.24 / ROS Jazzy Fast-DDS): with the openral_core import chain loaded
-# in that gap, a later ``rclpy.create_node()`` SIGSEGVs inside
-# ``_rclpy.Node`` even though Gst.init ran "eagerly". Bisected
-# empirically (2026-07-02, SO-101 deploy bring-up): gi import →
-# Gst.init → other imports is the only safe statement order.
+# Gst.init() must run at module load, immediately after the gi import and
+# before any other import (incl. openral_core) — not inside open(). Any gap
+# lets a later rclpy.create_node() SIGSEGV inside Fast DDS thread setup /
+# _rclpy.Node (x86 Ubuntu 24.04: PyGObject 3.48 / GStreamer 1.24 / ROS Jazzy
+# Fast-DDS; see PR I/8; bisected 2026-07-02, SO-101 deploy bring-up). gi
+# import -> Gst.init -> other imports is the only order found that doesn't
+# segfault. Gst.init() is idempotent and thread-safe.
 Gst.init(None)
 
 from openral_core import FrameEncoding, SensorFrame  # noqa: E402
@@ -107,7 +83,7 @@ _GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]] = {
 
 
 class GStreamerSensorReader:
-    """:class:`SensorReader` backed by a GStreamer pipeline.
+    """``SensorReader`` backed by a GStreamer pipeline.
 
     Two construction modes:
 
@@ -115,7 +91,7 @@ class GStreamerSensorReader:
        GStreamer string terminating in an ``appsink``. The reader
        ensures the appsink is named (default ``bh_sink``) so it can
        look it up.
-    2. *Generated from spec*. Pass ``spec=`` (a :class:`PipelineSpec`)
+    2. *Generated from spec*. Pass ``spec=`` (a ``PipelineSpec``)
        and optionally ``platform=`` to override platform detection.
        The reader materialises the pipeline string itself.
 
@@ -123,15 +99,15 @@ class GStreamerSensorReader:
 
     Args:
         sensor_id: Sensor name used by the runner to correlate frames
-            with :class:`~openral_core.SensorReaderConfig`.
+            with ``SensorReaderConfig``.
         pipeline: Full GStreamer pipeline string (explicit mode).
-        spec: :class:`PipelineSpec` to materialise (generated mode).
+        spec: ``PipelineSpec`` to materialise (generated mode).
         platform: Override platform detection for generated mode.
         appsink_name: Name of the openral appsink. Defaults to
             ``bh_sink``; only override when supplying an explicit
             ``pipeline`` whose appsink uses a different name.
         default_max_age_ms: Default staleness budget applied when
-            :meth:`read_latest` is called with ``max_age_ms=None``.
+            ``read_latest`` is called with ``max_age_ms=None``.
 
     Raises:
         ROSConfigError: When both / neither of ``pipeline`` / ``spec``
@@ -154,7 +130,7 @@ class GStreamerSensorReader:
         ros_rate_hz: float | None = None,
         default_max_age_ms: int = _DEFAULT_MAX_AGE_MS,
     ) -> None:
-        """Stash configuration; no GStreamer I/O until :meth:`open`."""
+        """Stash configuration; no GStreamer I/O until ``open``."""
         if (pipeline is None) == (spec is None):
             raise ROSConfigError(
                 f"GStreamerSensorReader({sensor_id!r}) requires exactly one of "
@@ -371,14 +347,14 @@ class GStreamerSensorReader:
     # ── Hot path ────────────────────────────────────────────────────────────
 
     def read_latest(self, max_age_ms: int | None = None) -> SensorFrame:
-        """Return the most recent buffered frame as a :class:`SensorFrame`.
+        """Return the most recent buffered frame as a ``SensorFrame``.
 
         Args:
             max_age_ms: Maximum acceptable frame age. ``None`` falls back to
                 the constructor's ``default_max_age_ms``.
 
         Returns:
-            A populated :class:`SensorFrame` whose ``data`` field holds
+            A populated ``SensorFrame`` whose ``data`` field holds
             the pixel bytes and ``encoding`` reflects the negotiated
             caps format.
 
@@ -523,7 +499,7 @@ class GStreamerSensorReader:
         return int(Gst.FlowReturn.OK)
 
     def _handle_nvmm_buffer(self, buffer: Any, structure: Any) -> int:  # noqa: ANN401  # reason: Gst.Buffer / Gst.Structure — duck-typed
-        """NVMM zero-copy path: map → wrap as :class:`NvBufSurfaceHandle` → latch ``handle``.
+        """NVMM zero-copy path: map → wrap as ``NvBufSurfaceHandle`` → latch ``handle``.
 
         Holds a reference to the GStreamer buffer for the lifetime of
         the latched slot (released when the next frame arrives) so the
@@ -676,9 +652,9 @@ class GStreamerSensorReader:
     def _wrap_in_pipeline(element: Gst.Element) -> Gst.Pipeline:
         """Wrap a bare element returned by parse_launch in a Pipeline bin.
 
-        ``Gst.parse_launch`` returns a single :class:`Gst.Element` only when
+        ``Gst.parse_launch`` returns a single ``Gst.Element`` only when
         the string is a single element (e.g. ``"appsink"``). For our multi-
-        element pipelines it returns a :class:`Gst.Pipeline` already, so this
+        element pipelines it returns a ``Gst.Pipeline`` already, so this
         helper is hit only by edge-case tests / single-element specs.
         """
         pipeline = Gst.Pipeline.new(None)

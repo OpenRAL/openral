@@ -1,20 +1,16 @@
 """Unit tests for the deploy-path-aware action-mode palette gate.
 
-Exercises the two module-level pure helpers in
-:mod:`openral_reasoner_ros.reasoner_node`:
+Exercises two pure helpers in ``openral_reasoner_ros.reasoner_node``:
 
-* :func:`_required_control_modes` — the :class:`ControlMode` s a skill's
+* ``_required_control_modes`` — the ``ControlMode`` s a skill's
   ``action_contract`` demands of the target robot.
-* :func:`_action_executable` — whether the deploy path (``real`` vs
-  ``sim``) can execute those modes.
+* ``_action_executable`` — whether the deploy path (``real`` vs ``sim``) can
+  execute those modes.
 
-All inputs are **real** fixtures (CLAUDE.md §1.11): real
-``RobotDescription`` manifests from ``robots/`` and real
-``RSkillManifest`` manifests from ``rskills/``. No mocks/stubs.
-
-The ``reasoner_node`` module imports ``rclpy`` and ``openral_msgs`` at
-import time, so both are required to import the pure helpers — guarded
-below so a host without the ROS environment skips rather than errors.
+All inputs are real fixtures (CLAUDE.md §1.11): ``RobotDescription`` manifests from
+``robots/``, ``RSkillManifest`` manifests from ``rskills/`` — no mocks. The
+``reasoner_node`` module imports ``rclpy``/``openral_msgs`` at import time, so both are
+required; guarded below to skip rather than error on hosts without the ROS environment.
 """
 
 from __future__ import annotations
@@ -87,12 +83,9 @@ def _rldx_robocasa() -> RSkillManifest:
 
 
 def _cartesian_pi05() -> RSkillManifest:
-    """pi05 LIBERO with an explicit cartesian representation set.
-
-    Task 5 will declare this on disk; here we set it on the loaded real
-    manifest so the gate's cartesian branch is exercised against a real
-    fixture without a placeholder skill.
-    """
+    """pi05 LIBERO with an explicit cartesian representation set — applied
+    programmatically to the loaded manifest (no on-disk fixture yet) so the gate's
+    cartesian branch is exercised against a real fixture, not a placeholder skill."""
     m = _pi05_libero()
     assert m.action_contract is not None
     return m.model_copy(
@@ -192,13 +185,10 @@ def test_required_modes_robocasa_composite_slots() -> None:
 
 
 def test_composite_skill_executable_on_sim() -> None:
-    """The RoboCasa composite skill IS executable in sim.
-
-    ``composite_mode`` is the sim robosuite-composite (HybridMobileBase)
-    multiplexer the deploy path runs — excluding it dropped pi05 / rldx
-    robocasa VLAs at boot even though SimAttachedHAL executes them (the
-    regression this amendment fixes).
-    """
+    """The RoboCasa composite skill IS executable in sim. ``composite_mode`` is the
+    robosuite-composite (HybridMobileBase) multiplexer the deploy path runs; excluding
+    it dropped pi05/rldx robocasa VLAs at boot even though SimAttachedHAL executes them
+    — the regression this fixes."""
     m = _rldx_robocasa()
     panda_mobile = _panda_mobile()
     assert _action_executable(m, panda_mobile, "sim") is True

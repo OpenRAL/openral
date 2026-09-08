@@ -1,34 +1,27 @@
 """Robometer reward scorer, loaded in ``reward_monitor_node``.
 
-Native LeRobot backend (lerobot >= 0.6.0). The reward model is
-``lerobot.rewards.robometer.RobometerRewardModel`` — a vanilla
-``AutoModelForImageTextToText`` (Qwen3-VL-4B) with three prediction heads, loaded
-with plain ``transformers`` (no ``robometer`` git package, no ``auto_map``, no
-pinned ``transformers==4.57.1``). To fit an 8 GB GPU we keep OpenRAL's NF4
-pre-quantized checkpoint (``OpenRAL/rskill-robometer_4b-any-general-nf4``, ~3.3 GB resident)
-and load its packed 4-bit weights DIRECTLY into the native ``nn.Module``:
+Native LeRobot backend (lerobot >= 0.6.0): ``lerobot.rewards.robometer.
+RobometerRewardModel``, a vanilla ``AutoModelForImageTextToText`` (Qwen3-VL-4B,
+3 prediction heads) loaded via plain ``transformers`` — no ``robometer`` git
+package, no ``auto_map``, no pinned ``transformers==4.57.1``. To fit an 8 GB
+GPU it loads OpenRAL's NF4 checkpoint
+(``OpenRAL/rskill-robometer_4b-any-general-nf4``, ~3.3 GB resident) directly
+into the native module: meta-build the skeleton (empty architecture from
+``lerobot/Robometer-4B``'s baked ``vlm_config``, no Qwen download), drop the
+dead-weight ``lm_head`` (Robometer reads only hidden states), install empty
+``Linear4bit`` shells, remap upstream keys (``model.language_model.*`` /
+``model.visual.*`` -> ``model.model.*``) and ``Params4bit.from_prequantized``
+them, then assign the folded rotary buffers.
 
-  * build the native skeleton on the ``meta`` device (no Qwen weight download —
-    the empty Qwen3-VL architecture comes from ``lerobot/Robometer-4B``'s baked
-    ``vlm_config``);
-  * drop the LM vocab projection (``lm_head``) — Robometer reads only hidden
-    states, so the 388M-param tied head is dead weight;
-  * install empty ``bitsandbytes`` ``Linear4bit`` shells on the large Linears;
-  * remap the upstream RBM backbone keys (``model.language_model.*`` /
-    ``model.visual.*``) onto the native ``AutoModelForImageTextToText`` nesting
-    (``model.model.*``) and ``Params4bit.from_prequantized`` the packed weights;
-  * assign the folded non-persistent rotary buffers.
+``RobometerRewardModel.compute_reward`` returns only the last-frame scalar;
+the reasoner's trend/plateau/stall logic needs the full per-frame series, so
+this calls ``_compute_rbm_logits`` + ``decode_progress_outputs`` directly. The
+progress head is 10 bins wide (checked against the published checkpoint);
+``decode_progress_outputs`` derives bin count from logit width, so the wire
+``num_bins`` field is advisory only.
 
-Per-frame decode: the native ``RobometerRewardModel.compute_reward`` returns only
-the LAST-frame scalar. OpenRAL needs the full per-frame progress[]/success[]
-series (for the reasoner's trend / plateau / stall logic), so we call the
-lower-level ``_compute_rbm_logits`` + module-level ``decode_progress_outputs``
-directly. The progress head is 10 bins wide (verified against the published
-checkpoint); ``decode_progress_outputs`` derives the bin count from the logit
-width, so the ``num_bins`` wire field is advisory only (kept for wire compat).
-
-Imported lazily by ``openral_runner.backends.reward.robometer_reward`` so normal
-package imports still avoid torch / transformers.
+Imported lazily by ``openral_runner.backends.reward.robometer_reward`` so
+normal package imports still avoid torch / transformers.
 """
 
 from __future__ import annotations

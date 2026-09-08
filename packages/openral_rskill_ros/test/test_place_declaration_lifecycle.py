@@ -117,7 +117,9 @@ def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]
                 node.trigger_deactivate()
                 node.trigger_cleanup()
                 node.trigger_shutdown()
-            except Exception:  # reason: best-effort teardown
+            except RuntimeError:
+                # RCLError/InvalidHandle from a transition attempted after
+                # an earlier failure — best-effort teardown.
                 pass
         executor.shutdown()
         helper.destroy_node()
@@ -359,7 +361,9 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
                 node.trigger_deactivate()
                 node.trigger_cleanup()
                 node.trigger_shutdown()
-            except Exception:  # reason: best-effort teardown
+            except RuntimeError:
+                # RCLError/InvalidHandle from a transition attempted after
+                # an earlier failure — best-effort teardown.
                 pass
         executor.shutdown()
         helper.destroy_node()

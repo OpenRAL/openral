@@ -3,12 +3,12 @@
 
 Bridges a hardware estop source (GPIO relay via libgpiod, or a USB HID
 pendant via /dev/input) onto ``/openral/estop``. Polls the device at
-:attr:`poll_rate_hz` (default 100 Hz) and publishes
+``poll_rate_hz`` (default 100 Hz) and publishes
 ``std_msgs/Empty`` + ``FailureTrigger(KIND_HUMAN, SEVERITY_ABORT,
 HumanEvidence(channel="hardware_pendant"))`` on the rising edge.
 
 The actual device driver is opaque to this node — the
-:meth:`HardwareEstopNode._read_pressed` hook is overridden by per-vendor
+``HardwareEstopNode._read_pressed`` hook is overridden by per-vendor
 subclasses (or by tests that simulate the device). The base class
 implements the polling loop, edge detection, and ROS publication.
 """
@@ -32,7 +32,7 @@ DEFAULT_POLL_RATE_HZ = 100.0
 class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """Lifecycle node bridging a hardware pendant onto /openral/estop.
 
-    Subclasses override :meth:`_read_pressed` to talk to a real device.
+    Subclasses override ``_read_pressed`` to talk to a real device.
     The base class — used in tests — reads from an injected state
     callable; this keeps the polling / publication logic exercised by
     unit tests without requiring real hardware on CI runners.
@@ -118,7 +118,7 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
     def _read_pressed(self) -> bool:
         """Return whether the hardware pendant is currently pressed.
 
-        Default implementation uses :attr:`read_pressed_hook` if set,
+        Default implementation uses ``read_pressed_hook`` if set,
         otherwise returns ``False`` (no estop). Subclasses override to
         read a real GPIO pin or HID device.
         """

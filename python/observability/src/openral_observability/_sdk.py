@@ -3,8 +3,8 @@
 ``configure_observability`` is idempotent: calling it twice with the same
 arguments is a no-op.  Calling it with no endpoint (the default when the
 ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var is unset) leaves the no-op default
-:class:`~opentelemetry.trace.TracerProvider` /
-:class:`~opentelemetry.metrics.MeterProvider` in place — span and metric
+``TracerProvider`` /
+``MeterProvider`` in place — span and metric
 helpers still work, they just emit nothing.
 
 This is required behaviour: CI runs without an OTLP collector and must
@@ -12,7 +12,7 @@ not fail. CLAUDE.md §9 calls out "observability as a hard dependency of
 the actuation path" as an anti-pattern; the no-op fallback enforces that.
 
 ``shutdown_observability`` flushes all three providers and shuts them
-down. It is registered via :mod:`atexit` on first successful
+down. It is registered via ``atexit`` on first successful
 configuration so even short-lived scripts that forget to call it
 explicitly will still drain the BatchSpanProcessor /
 PeriodicExportingMetricReader / BatchLogRecordProcessor before the
@@ -236,23 +236,23 @@ def configure_worker_observability(
 ) -> bool:
     """Bootstrap observability in a spawned worker so it joins the parent trace.
 
-    The cross-process counterpart of :func:`configure_observability` for a
+    The cross-process counterpart of ``configure_observability`` for a
     subprocess (the dispatcher, the future fleet supervisor). It does two
     things in order:
 
-    1. Calls :func:`configure_observability` so the worker gets its own OTLP
-       pipeline **and** the structlog→OTel log bridge (logs and spans both
+    1. Calls ``configure_observability`` so the worker gets its own OTLP
+       pipeline and the structlog→OTel log bridge (logs and spans both
        ship to the collector with the worker's ``service.name``).
     2. Calls
-       :func:`openral_observability.propagation.attach_traceparent_from_env`
+       ``openral_observability.propagation.attach_traceparent_from_env``
        so the worker's root OTel context is the parent process's span —
-       every span the worker opens, and every log line it stamps, carries
-       the parent's ``trace_id``.
+       every span the worker opens, and every log line it stamps,
+       carries the parent's ``trace_id``.
 
-    The parent **must** propagate its active context into the child's
-    environment. Spawn the worker with
-    ``env={**os.environ, **traceparent_env()}`` (see
-    :func:`openral_observability.propagation.traceparent_env`); otherwise
+    The parent must propagate its active context into the child's
+    environment: spawn the worker with ``env={**os.environ,
+    **traceparent_env()}`` (see
+    ``openral_observability.propagation.traceparent_env``); otherwise
     step 2 is a no-op and the worker starts a fresh, uncorrelated trace.
 
     Args:
@@ -260,16 +260,16 @@ def configure_worker_observability(
             give it a distinct value (e.g. ``"openral-dispatcher"``) so its
             spans are filterable from the parent's.
         endpoint: OTLP endpoint, forwarded to
-            :func:`configure_observability`. ``None`` falls back to the
+            ``configure_observability``. ``None`` falls back to the
             ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var (inherited from the
             parent), then to no-op mode.
         sample_ratio: Optional head-based sampling ratio, forwarded to
-            :func:`configure_observability`. ``ParentBased`` sampling means
+            ``configure_observability``. ``ParentBased`` sampling means
             the worker inherits the parent's sampling decision when the
             attached context carries one.
 
     Returns:
-        Whatever :func:`configure_observability` returns — ``True`` if
+        Whatever ``configure_observability`` returns — ``True`` if
         exporters were installed, ``False`` for the no-op path. (The
         context attach in step 2 happens regardless, so trace correlation
         works even before an endpoint is configured.)
@@ -377,7 +377,7 @@ def _resolve_metric_interval_ms() -> int:
 def _resolve_span_schedule_delay_ms() -> int:
     """Resolve the BatchSpanProcessor flush interval in milliseconds.
 
-    Defaults to :data:`_DEFAULT_SPAN_SCHEDULE_DELAY_MS` (30 ms, ~33 Hz) so a
+    Defaults to ``_DEFAULT_SPAN_SCHEDULE_DELAY_MS`` (30 ms, ~33 Hz) so a
     local dashboard refreshes at ~25 Hz instead of the OTel default 5 s
     batching. The flush rate is set ~1.3x the thumbnail rate (not equal to it):
     the dashboard keeps only the latest frame per batch, so a flush period equal
@@ -386,7 +386,7 @@ def _resolve_span_schedule_delay_ms() -> int:
     Production/cloud deployments that prefer coarser batching (less export
     traffic) raise ``OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS``. Invalid /
     non-positive values fall back to the default (mirrors
-    :func:`_resolve_metric_interval_ms`).
+    ``_resolve_metric_interval_ms``).
     """
     raw = os.environ.get(_ENV_SPAN_SCHEDULE_DELAY_MS)
     if raw is None:
@@ -399,7 +399,7 @@ def _resolve_span_schedule_delay_ms() -> int:
 
 
 def shutdown_observability() -> None:
-    """Flush and shut down the OTel providers installed by :func:`configure_observability`.
+    """Flush and shut down the OTel providers installed by ``configure_observability``.
 
     Idempotent and safe to call when no exporter was installed (e.g. when
     ``OTEL_EXPORTER_OTLP_ENDPOINT`` was unset). Drains the

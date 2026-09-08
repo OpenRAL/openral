@@ -1,4 +1,4 @@
-"""Real-schema plumbing tests for :class:`NullWorldModel`.
+"""Real-schema plumbing tests for ``NullWorldModel``.
 
 Constructs **real** ``WorldState`` / ``Action`` instances from
 ``openral_core`` (per CLAUDE.md §1.11 — no mocks).

@@ -1,4 +1,4 @@
-"""Tests for :mod:`openral_observability.dashboard.vad_assets`.
+"""Tests for ``openral_observability.dashboard.vad_assets``.
 
 The offline tests exercise the real download/verification code path via
 ``file://`` URLs against real temp files (CLAUDE.md §1.11 — no mocks; a

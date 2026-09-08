@@ -7,7 +7,7 @@ as enforcement; this module answers "which nearby pose is free *and* sees the
 object?" as a proposal. A refined pose still crosses every downstream check.
 
 ROS-free by design (like the rest of ``openral_world_state``):
-:meth:`OccupancyGridIndex.from_msg` duck-types the message, so units tests run
+``OccupancyGridIndex.from_msg`` duck-types the message, so units tests run
 on plain objects and the live caller passes the real subscription payload.
 
 Occupancy semantics follow ``nav_msgs/OccupancyGrid``: ``-1`` unknown,
@@ -190,14 +190,14 @@ def refine_approach_pose(
     min_standoff_m: float | None = None,
     max_standoff_m: float | None = None,
 ) -> ApproachViewpoint | None:
-    """Snap an :class:`~openral_core.ApproachViewpoint` to the occupancy grid.
+    """Snap an ``ApproachViewpoint`` to the occupancy grid.
 
     Returns the viewpoint unchanged when its pose already sits on a free cell
     (under ``inflation_m``) with line-of-sight to the target. Otherwise ring-
     searches outward (at grid resolution) for the nearest point that is free,
     keeps the standoff within ``[min_standoff_m, max_standoff_m]`` (default
     0.5x / 2.0x the ideal standoff), and still sees the target — and re-aims
-    the yaw from there via :func:`compute_approach_viewpoint`. Returns ``None``
+    the yaw from there via ``compute_approach_viewpoint``. Returns ``None``
     when nothing qualifies inside ``max_radius_m``: the caller reports "no
     reachable viewpoint" rather than fabricating one.
 

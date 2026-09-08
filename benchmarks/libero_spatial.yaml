@@ -1,34 +1,28 @@
 # LIBERO-Spatial benchmark suite — fixed (robot, scenes, tasks, protocol).
 #
-# Only the VLA (rSkill) varies across runs. Consumed by `openral benchmark run`
-# writes a RSkillEvalResult JSON to
-# rskills/<vla>/eval/libero_spatial.json with reproduced_locally=true.
+# Only the VLA (rSkill) varies. Consumed by `openral benchmark run`; writes
+# RSkillEvalResult to rskills/<vla>/eval/libero_spatial.json
+# (reproduced_locally=true).
 #
-# Protocol mirrors the official LIBERO/OpenVLA eval (run_libero_eval):
-# 10 tasks, 50 episodes per task, success_key is_success, max_steps 220
-# for the Spatial suite (object 280 / goal 300 / long 520).
+# Protocol mirrors the official LIBERO/OpenVLA eval (run_libero_eval): 10
+# tasks, 50 episodes/task, success_key is_success, max_steps 220 for Spatial
+# (object 280 / goal 300 / long 520).
 #
-# Render resolution is 256x256 — matches the canonical lerobot LIBERO
-# pipeline the smolvla-libero / pi05-libero-int8 rSkills were finetuned
-# against. SmolVLA's `resize_with_pad` always upsamples to 512x512
-# inside the policy regardless of env render size (see
-# lerobot/policies/smolvla/modeling_smolvla.py:421); rendering at 512x512
-# natively was attempted in PR #83 and reverted — sharp 512x512 frames
-# turned out to be out-of-distribution for the shipped checkpoint
-# (libero_spatial avg dropped from 0.64 → 0.39 on the local repro).
+# Render resolution 256x256 — matches the canonical lerobot LIBERO pipeline
+# smolvla-libero/pi05-libero-int8 were finetuned against. SmolVLA's
+# `resize_with_pad` always upsamples to 512x512 regardless of env render size
+# (lerobot/policies/smolvla/modeling_smolvla.py:421); native 512x512 rendering
+# was tried in PR #83 and reverted — sharp 512x512 frames were OOD for the
+# shipped checkpoint (libero_spatial avg dropped 0.64 -> 0.39 locally).
 #
-# Shape: bare list of BenchmarkScenes; suite id = filename
-# stem ("libero_spatial"). The first scene fully spells out the per-task
-# fields; subsequent scenes merge it via the `<<: *libero_scene` YAML
-# anchor and override only the task id. Per-scene `metadata` is
-# uniform across the suite via the anchor inheritance — that means
-# `display_name` / `simulator` set on the first scene propagate to all
-# 10 scenes. Suite-level invariants (uniform robot_id / n_episodes /
-# seed / metadata, unique task ids, non-empty) are enforced by
-# :func:`openral_core.raise_on_invalid_suite`.
-#
-# Notes: per-task instructions are baked into the LIBERO suite itself
-# (env.task_description) and override TaskSpec.instruction at runtime.
+# Shape: bare list of BenchmarkScenes; suite id = filename stem
+# ("libero_spatial"). First scene fully spells out per-task fields;
+# subsequent scenes merge via `<<: *libero_scene` and override only the task
+# id (metadata like display_name/simulator propagates via anchor
+# inheritance). Invariants (uniform robot_id/n_episodes/seed/metadata, unique
+# task ids, non-empty) enforced by `openral_core.raise_on_invalid_suite`.
+# Per-task instructions come from LIBERO itself (env.task_description),
+# overriding TaskSpec.instruction at runtime.
 
 - &libero_scene
   scene: &scene_block

@@ -1,22 +1,16 @@
 # LIBERO-10 (LIBERO-Long) benchmark suite — long-horizon manipulation.
 #
-# The SmolVLA / pi0.5 papers report this suite as "LIBERO-Long". In
-# lerobot the suite id is libero_10 (10 long-horizon tasks). Max steps
-# raised to 520 to match the upstream lerobot LiberoEnv default for the
-# long suite (src/lerobot/envs/libero.py).
+# SmolVLA/pi0/pi0.5/xVLA papers call this suite "LIBERO-Long"; lerobot's suite
+# id is libero_10 (10 long-horizon tasks). Max steps raised to 520 to match
+# the upstream lerobot LiberoEnv default for the long suite
+# (src/lerobot/envs/libero.py).
 #
-# Shape: bare list of BenchmarkScenes; suite id = filename
-# stem ("libero_10"). See libero_spatial.yaml for the canonical
-# commentary on the anchor pattern and suite invariants.
+# Shape: bare list of BenchmarkScenes; suite id = filename stem ("libero_10").
+# See libero_spatial.yaml for the canonical anchor-pattern/invariants
+# commentary. Per-task instructions come from LIBERO itself
+# (env.task_description), overriding TaskSpec.instruction at runtime.
 #
-# Notes: the SmolVLA / pi0 / xVLA papers call this suite "LIBERO-Long";
-# the lerobot bundle calls it libero_10. Same 10 long-horizon tasks.
-# Per-task instructions are baked into the LIBERO suite itself
-# (env.task_description) and override TaskSpec.instruction at runtime.
-#
-# Run:
-#   openral benchmark run --suite libero_10 \
-#       --rskill smolvla-libero
+# Run: openral benchmark run --suite libero_10 --rskill smolvla-libero
 
 - &libero_scene
   scene:

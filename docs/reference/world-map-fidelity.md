@@ -102,7 +102,7 @@ surface gap with error bounded by the step.
 > wherever they have been compared. It is the better instrument for any future
 > pass, and it removes the step-size caveat above. The two studies converge:
 > this page names the *mechanism* behind the displaced cells, and
-> [the validation-evidence ledger](collision-validation-evidence.md#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves)
+> [the validation-evidence ledger](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves)
 > eliminates the competing explanation for them by certifying the distances —
 > including reaching this page's own conclusion about the fridge `0.000 m`
 > reading independently.
@@ -303,8 +303,8 @@ kernel stops on it. The two halves of the stack disagree about what counts as
 world geometry — the adjudicator is *required* to ignore a surface the
 perception leg is *required* to voxelise.
 
-It is worth naming as simulation-specific: on real hardware everything a depth
-camera sees *is* physical, so this term has no hardware counterpart. It cuts in
+This term is simulation-specific: on real hardware everything a depth
+camera sees *is* physical, so it has no hardware counterpart. It cuts in
 the conservative direction, so nothing is unsafe today. What it does distort is
 every sim-derived number the collision programme rests on — a sim round's stop
 rate is not a prediction of a hardware round's stop rate, which is exactly what
@@ -439,8 +439,8 @@ worse than a late one — is asserted separately at zero.
 
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
-Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it turns out
-to hold 48 % of the live stops measured below, which is why it gets its own
+Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it holds
+48 % of the live stops measured below, which is why it gets its own
 issue rather than a line in this page.
 
 `rasterize_octree_to_grid` (`octree_to_grid.cpp`) marks a base-frame cell when

@@ -6,14 +6,7 @@ completion gate (amendment C).
 
 §1.11 rule: the ONLY doubles are the ``anthropic`` / ``openai`` SDK objects
 at the network boundary — tiny ``SimpleNamespace`` fakes returning canned
-responses.  Real JPEG bytes are produced via ``PIL.Image``.
-
-Run with::
-
-    WT=/home/allopart/workspace/openral/.claude/worktrees/vlm-completion
-    PYTHONPATH=$WT/python/reasoner/src:$WT/python/core/src \\
-      /home/allopart/workspace/openral/.venv/bin/python \\
-      -m pytest tests/unit/test_tool_use_describe_image.py -v
+responses. Real JPEG bytes are produced via ``PIL.Image``.
 """
 
 from __future__ import annotations

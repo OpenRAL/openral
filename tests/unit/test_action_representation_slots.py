@@ -1,10 +1,10 @@
 """Unit tests for the representation → ControlMode + canonical-slot helpers.
 
-Covers :func:`openral_core.schemas.control_modes_for_representation` and
-:func:`openral_core.schemas.canonical_slots_for_representation`, the single
+Covers ``openral_core.schemas.control_modes_for_representation`` and
+``openral_core.schemas.canonical_slots_for_representation``, the single
 source of truth that both the skill_runner (action dispatch) and the
 reasoner (palette gate) use to map a VLA's declared
-:class:`ActionRepresentation` onto control modes + a typed slot layout.
+``ActionRepresentation`` onto control modes + a typed slot layout.
 
 Validated against the real ``robots/franka_panda/robot.yaml`` fixture —
 no mocks (CLAUDE.md §1.11).

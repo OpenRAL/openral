@@ -1,11 +1,11 @@
 """Policy adapter protocol — the contract every VLA backend must satisfy.
 
-A :class:`PolicyAdapter` is the eval-layer wrapper around a VLA / scripted
+A ``PolicyAdapter`` is the eval-layer wrapper around a VLA / scripted
 policy / mock. It hides the differences between SmolVLA, π0.5, xVLA, and
 random/zero baselines behind a uniform interface so the runner does not need
 to know which one is in use.
 
-Implementations live under :mod:`openral_sim.{policies,backends}`.
+Implementations live under ``openral_sim.{policies,backends}``.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class PolicyAdapter(Protocol):
     """Uniform VLA / policy interface used by the runner.
 
     Attributes:
-        spec: The :class:`openral_core.VLASpec` this adapter was built for.
+        spec: The ``openral_core.VLASpec`` this adapter was built for.
         device: Resolved torch / numpy device string (``"cuda:0"``, ``"cpu"``).
     """
 
@@ -46,7 +46,7 @@ class PolicyAdapter(Protocol):
         Args:
             observation: Adapter-specific observation dict produced by the env.
             instruction: Natural-language task string from
-                :attr:`openral_core.TaskSpec.instruction`.
+                ``openral_core.TaskSpec.instruction``.
 
         Returns:
             1-D float32 NumPy array of length ``action_dim``. Adapters must
@@ -64,4 +64,4 @@ class PolicyAdapter(Protocol):
     #
     # The runner checks for this method via ``getattr`` so scripted /
     # mock policies don't need to implement it. See
-    # :class:`openral_sim.SimRunner`.
+    # ``openral_sim.SimRunner``.

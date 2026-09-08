@@ -4,37 +4,31 @@ Sibling of ``openral deploy run``: where ``deploy run`` drives a tight Python
 tick loop against a HAL + ``SafetyClient``, ``deploy sim`` shells
 ``ros2 launch openral_rskill_ros sim_e2e.launch.py`` so the operator gets
 dashboard + C++ safety kernel + reasoner + prompt router + runtime
-(world_state + skill_runner) + HAL in one command, running against the
-HAL's digital-twin (MuJoCo viewer) mode.
+(world_state + skill_runner) + HAL in one command, against the HAL's
+digital-twin (MuJoCo viewer) mode.
 
 The launch graph is robot-agnostic — one ``sim_e2e.launch.py`` for every
-robot. The CLI's job is to resolve everything robot-specific:
+robot; the CLI resolves everything robot-specific: the manifest at
+``robots/<robot_id>/robot.yaml``, and the HAL package/executable/node
+name/default params looked up by ``robot_id`` in ``_ROBOT_HAL_REGISTRY``
+(the lookup asserts the HAL's ``supported_robot_names`` matches the
+manifest's ``name``, so a mis-wired HAL fails loud).
 
-* The robot manifest at ``robots/<robot_id>/robot.yaml``.
-* The HAL package + executable + node name + per-robot default
-  parameter dict, looked up by ``robot_id`` in ``_ROBOT_HAL_REGISTRY``.
-  The lookup asserts the HAL's declared ``supported_robot_names`` matches
-  the manifest's ``name`` field — a mismatch (someone wires
-  ``openarm`` to the so100 HAL by accident) fails loud.
+No envelope YAML file on either side: the robot manifest is the single
+source of truth for the safety kernel envelope.
+``sim_e2e.launch.py``'s ``compose_runtime_graph`` callback loads
+``robot.yaml`` via Pydantic at launch time, calls
+``openral_safety.envelope_loader.compute_intersection(robot, skill=None)``
++ ``kernel_params_from_envelope(...)``, and forwards each field of the
+resulting ``EnvelopeIntersection`` as a ROS parameter on the kernel
+node (``cpp/openral_safety_kernel/src/envelope.cpp`` — `n_dof`,
+`joint_position_min/max`, `joint_velocity_max`, `joint_torque_max`, scalar
+caps, deadman flag). The legacy ``envelope_file:=PATH`` path was removed.
 
-No envelope YAML file is involved on either side:
-
-* The robot manifest is the single source of truth for the safety
-  kernel envelope. ``sim_e2e.launch.py``'s ``compose_runtime_graph``
-  callback loads ``robot.yaml`` via Pydantic at launch time, calls
-  ``openral_safety.envelope_loader.compute_intersection(robot, skill=None)``
-  + ``kernel_params_from_envelope(...)``, and forwards each field of
-  the resulting :class:`EnvelopeIntersection` as a ROS parameter on
-  the kernel node (see ``cpp/openral_safety_kernel/src/envelope.cpp``
-  — `n_dof`, `joint_position_min/max`, `joint_velocity_max`,
-  `joint_torque_max`, scalar caps, deadman flag). The legacy
-  ``envelope_file:=PATH`` path was removed.
-
-The reasoner is NOT preselected: it walks the in-tree ``rskills/`` and
-filters by the robot's capabilities at on_configure. ``openral deploy sim``
-intentionally does not accept ``--rskill`` because the reasoner picks
-the active rSkill dynamically and switching skills is its job, not the
-operator's bring-up command.
+The reasoner is NOT preselected: it walks ``rskills/`` and filters by the
+robot's capabilities at on_configure, so ``deploy sim`` intentionally takes
+no ``--rskill`` — switching skills is the reasoner's job, not the operator's
+bring-up command.
 """
 
 from __future__ import annotations
@@ -111,16 +105,14 @@ class _HalSpec:
     # manifest path + `hal_mode="sim"`; `openral deploy run` injects
     # `hal_mode="real"`.
     manifest_driven: bool = False
-    # issue #191 Phase 2 — a manifest-driven arm that builds a *bare* MuJoCo
-    # twin (`MujocoArmHAL.from_description`) in sim rather than scene-attaching:
-    # A manifest-driven arm that builds its OWN sim MJCF rather than
-    # scene-attaching: so100 / so101 derive a bare `MujocoArmHAL` twin from the
-    # manifest's `sim:` block; openarm composes a tabletop MJCF from
-    # `scene_defaults.composition` (issue #191 Phase 3b). When True, the
-    # manifest-driven injection below skips `sim_env_yaml` so the node builds the
-    # explicit `hal.sim` HAL (with the composed mjcf threaded in) instead of a
-    # scene-attached `SimAttachedHAL`. Other manifest arms leave it False and
-    # scene-attach.
+    # issue #191 Phase 2/3b — a manifest-driven arm that builds its OWN sim
+    # MJCF rather than scene-attaching: so100/so101 derive a bare
+    # `MujocoArmHAL` twin from the manifest's `sim:` block; openarm composes a
+    # tabletop MJCF from `scene_defaults.composition`. When True, the
+    # manifest-driven injection below skips `sim_env_yaml` so the node builds
+    # the explicit `hal.sim` HAL (with the composed mjcf threaded in) instead
+    # of a scene-attached `SimAttachedHAL`. Other manifest arms leave it
+    # False and scene-attach.
     bare_twin_sim: bool = False
 
 
@@ -167,17 +159,15 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         bare_twin_sim=True,
     ),
     "so101_follower": _HalSpec(
-        # The SO-101 is a hardware revision of the SO-100: identical 6-DoF
-        # kinematic chain driven by the same lerobot Feetech STS3215 serial
-        # backend, so it reuses the ``openral_hal_so100`` ROS lifecycle node
-        # (now manifest-driven) verbatim. ``openral deploy sim`` injects this
-        # robot's manifest + ``hal_mode="sim"`` and the node builds a bare
-        # ``MujocoArmHAL.from_description`` from ``robots/so101_follower/
-        # robot.yaml`` (``assets.mjcf`` → ``so101_new_calib``). The SAME node
-        # serves so100 (``so_arm100``) and so101 (``so101_new_calib``) from
-        # their own MJCF, so no dedicated ``openral_hal_so101`` package exists
-        # or is needed (CLAUDE.md §1.13). The robot-name guard below keeps this
-        # entry bound to the so101 manifest.
+        # The SO-101 is a hardware revision of the SO-100 (same 6-DoF chain,
+        # same lerobot Feetech STS3215 backend), so it reuses the
+        # ``openral_hal_so100`` ROS lifecycle node (manifest-driven) verbatim
+        # — no dedicated ``openral_hal_so101`` package (CLAUDE.md §1.13).
+        # ``deploy sim`` injects this manifest + ``hal_mode="sim"``; the node
+        # builds a bare ``MujocoArmHAL.from_description`` from
+        # ``robots/so101_follower/robot.yaml`` (``assets.mjcf`` →
+        # ``so101_new_calib``; so100 uses ``so_arm100``). The robot-name
+        # guard below binds this entry to so101.
         package="openral_hal_so100",
         executable="lifecycle_node.py",
         node_name="openral_hal_so100",
@@ -331,7 +321,7 @@ _ROBOT_HAL_REGISTRY["panda_mobile_vslam"] = replace(
 class LaunchInvocation:
     """Resolved ``ros2 launch`` argv + the metadata that built it.
 
-    Returned by :func:`resolve_launch_invocation` so the dispatcher can
+    Returned by ``resolve_launch_invocation`` so the dispatcher can
     pretty-print under ``--dry-run`` and the unit tests can assert on
     the resolved fields without touching ``subprocess``.
     """
@@ -473,7 +463,7 @@ class LaunchInvocation:
     enable_reward_monitor: bool
     """Whether the Robometer reward monitor is brought up
     co-active with the VLA. When true the deploy preflight checks the VLA↔reward
-    VRAM pairing (:func:`_preflight_reward_vram_fit`) before bringing up ROS."""
+    VRAM pairing (``_preflight_reward_vram_fit``) before bringing up ROS."""
     reward_monitor_manifest: str
     """The RESOLVED reward-monitor manifest path. Defaults from the
     capability-matched VLA palette's ``reward_rskill_name`` (the pairing the
@@ -657,7 +647,7 @@ def _omdet_runtime_available() -> bool:
     (``openral_runner.backends.gstreamer.omdet_turbo_detector.OmDetTurboDetector``)
     needs ``transformers`` + ``timm`` — the ``omdet`` dependency group. When they
     are absent (a checkout that only synced the base group),
-    :func:`resolve_launch_invocation` gracefully falls back to the in-tree
+    ``resolve_launch_invocation`` gracefully falls back to the in-tree
     RT-DETR COCO ONNX so ``deploy sim`` still brings up a detector instead of the
     node hard-failing at backend build.
 
@@ -674,7 +664,7 @@ def _object_detector_onnx_present(path: Path) -> bool:
 
     The weights (``rskills/rtdetr-coco-r18/model.onnx``, ~2 MB) are gitignored, so
     they are present on a weights-fetched dev host but absent in a bare CI
-    checkout. :func:`resolve_launch_invocation` downgrades the detector leg off
+    checkout. ``resolve_launch_invocation`` downgrades the detector leg off
     when neither omdet deps nor these weights can build a backend. Factored out so
     tests can exercise the fallback-selection logic without the gitignored binary.
     """
@@ -805,7 +795,7 @@ def _capability_matched_manifests(
 
     Loads every ``rskills/*/rskill.yaml`` and runs the same
     capability/role/license filter the reasoner seeds at ``on_configure``
-    (:func:`openral_reasoner.palette.build_tool_palette`), returning the matched
+    (``openral_reasoner.palette.build_tool_palette``), returning the matched
     manifests. ``openral deploy sim`` does not preselect a VLA — the reasoner picks
     one at runtime from exactly this set — so reward resolution + the VRAM
     preflight both reason over it (the "VLA known at launch" is the *palette*, not a
@@ -917,10 +907,10 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
     resident alongside it. The reasoner enforces this per-VLA at
     dispatch (``_refuse_unfittable_vla``) — but only *after* ROS is up. This is the
     pre-LAUNCH gate: build the same capability-matched VLA palette the reasoner
-    will, and run :func:`openral_core.schemas.assert_vla_reward_fits` for each VLA
+    will, and run ``openral_core.schemas.assert_vla_reward_fits`` for each VLA
     against the reward model + the GPU budget.
 
-    The contract mirrors :func:`_preflight_palette_deps`: it is advisory per-VLA
+    The contract mirrors ``_preflight_palette_deps``: it is advisory per-VLA
     (the reasoner drops a non-fitting VLA from dispatch anyway) and a HARD gate only
     when the palette would be empty of *runnable* policies — i.e. **no** matched VLA
     can dispatch with the reward model resident. In that case the deploy could
@@ -1231,16 +1221,14 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "simulation-only. Use `openral deploy sim` instead of `openral deploy run`."
         )
 
-    # SLAM is ON BY DEFAULT for every robot that *can* run it:
-    # i.e. one that declares a lidar (the scan source slam_toolbox needs). This
-    # is the firm default — a SLAM-capable robot always brings up the `map` frame
-    # the object lift / spatial-memory ingest depend on, unless the operator
-    # opts out with `--no-enable-slam`. Fixed-base arms (no mobile base, no lidar)
-    # correctly stay off — there is no base to localise and nothing to map.
-    # `enable_slam is None` means "auto": honour the manifest; an explicit flag wins.
-    # SLAM is on for any robot that can localise/map: a lidar
-    # (slam_toolbox) OR camera-based visual SLAM (cuVSLAM+nvblox, for
-    # lidar-less robots). Fixed-base arms with neither correctly stay off.
+    # SLAM is ON BY DEFAULT for any robot that can localise/map: a lidar
+    # (slam_toolbox) or camera-based visual SLAM (cuVSLAM+nvblox, for
+    # lidar-less robots). A SLAM-capable robot always brings up the `map`
+    # frame the object lift / spatial-memory ingest depend on, unless the
+    # operator opts out with `--no-enable-slam`. Fixed-base arms with
+    # neither stay off — no base to localise, nothing to map.
+    # `enable_slam is None` means "auto": honour the manifest; an explicit
+    # flag wins.
     if enable_slam is None:
         enable_slam = bool(
             description.capabilities.has_lidar or description.capabilities.has_vision_slam
@@ -1627,12 +1615,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 def _alloc_conf_var() -> str:
     """Return the allocator-config env var name this workspace's torch reads.
 
-    torch renamed ``PYTORCH_CUDA_ALLOC_CONF`` to ``PYTORCH_ALLOC_CONF`` in 2.9.
-    The old name still works there but logs a deprecation warning at every
-    process start, so setting both spellings — which is what this did
-    previously — bought cross-version safety at the cost of permanent noise on
-    every launch. Resolved from installed metadata rather than by importing
-    torch, which would add seconds to CLI startup for one string.
+    torch renamed ``PYTORCH_CUDA_ALLOC_CONF`` to ``PYTORCH_ALLOC_CONF`` in
+    2.9; the old name still works there but logs a deprecation warning at
+    every process start. Resolved from installed metadata rather than by
+    importing torch, which would add seconds to CLI startup for one string.
 
     Falls back to the old spelling when torch is absent or its version is
     unparseable: every torch that reads either name understands that one, so the
@@ -1649,57 +1635,36 @@ def _alloc_conf_var() -> str:
 def _ros2_argv_head() -> list[str]:
     """Return the argv prefix that runs ``ros2`` under the **workspace venv** interpreter.
 
-    ``/opt/ros/<distro>/bin/ros2`` carries a ``#!/usr/bin/python3`` shebang, so
-    a bare ``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system*
-    interpreter. :func:`_prepare_launch_env` puts the venv site directory on
-    ``PYTHONPATH``, which is enough for the launch file to import
-    ``openral_core`` — but ``PYTHONPATH`` only *prepends*: every distribution
-    the venv does NOT carry still resolves out of
-    ``/usr/lib/python3/dist-packages``. Mixing an apt distribution's compiled
-    extensions with the venv's NumPy is an ABI coin-flip.
+    ``/opt/ros/<distro>/bin/ros2`` has a ``#!/usr/bin/python3`` shebang, so a
+    bare ``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system*
+    interpreter. ``_prepare_launch_env`` puts the venv site dir on
+    ``PYTHONPATH``, but ``PYTHONPATH`` only prepends — any distribution the
+    venv does not carry still resolves out of ``/usr/lib/python3/dist-packages``,
+    an ABI risk when mixing apt-compiled extensions with the venv's NumPy.
 
-    That is not hypothetical. On a Jetson AGX Thor with ``python3-pandas``
-    installed, ``openral deploy run`` aborted the whole launch with::
-
-        ValueError: numpy.dtype size changed, may indicate binary
-        incompatibility. Expected 96 from C header, got 88 from PyObject
-
-    …from ``openral_hal.sim_bringup`` → ``lerobot`` → ``deepdiff`` →
-    ``import pandas``, which resolved to the apt build (compiled against NumPy
-    1.26) inside a process that had already imported the venv's NumPy 2.2.
-    ``deepdiff`` guards that import with ``except ImportError``, so a
-    ``ValueError`` sails straight through the guard and out of the launch.
+    Measured on a Jetson AGX Thor with ``python3-pandas`` installed:
+    ``openral deploy run`` aborted with ``ValueError: numpy.dtype size
+    changed, may indicate binary incompatibility. Expected 96 from C header,
+    got 88 from PyObject`` via ``openral_hal.sim_bringup`` → ``lerobot`` →
+    ``deepdiff`` → ``import pandas`` (apt build against NumPy 1.26, inside a
+    process that had already imported the venv's NumPy 2.2); ``deepdiff``'s
+    ``except ImportError`` guard does not catch the resulting ``ValueError``.
 
     Running the launch parser under ``sys.executable`` makes the venv's
-    ``pyvenv.cfg`` (``include-system-site-packages = false``) actually apply, so
-    ``dist-packages`` is off ``sys.path`` entirely and the whole class of
-    apt-shadowing failures goes away — pandas today, anything else tomorrow.
-    ROS's own Python packages are unaffected: they arrive via the
-    ``/opt/ros/<distro>`` entry that ``PYTHONPATH`` already carries.
+    ``pyvenv.cfg`` (``include-system-site-packages = false``) actually apply,
+    taking ``dist-packages`` off ``sys.path`` entirely. ROS's own Python
+    packages are unaffected — they arrive via the ``/opt/ros/<distro>`` entry
+    ``PYTHONPATH`` already carries.
 
-    Wrapping is conditional on two things, because getting either wrong turns
-    a working install into a hard failure:
-
-    1. **``sys.executable`` must be able to import ``ros2cli``.** The shebang
-       only says *some* interpreter owns the script; it does not say ours can
-       run it. On a deb ROS this holds — ``PYTHONPATH`` carries
-       ``/opt/ros/<distro>/lib/python3.12/site-packages`` whenever the install
-       is sourced, and :func:`_prepare_launch_env` passes that through. Where
-       ROS came from conda/RoboStack or a pip install into another environment
-       it does not: the shebang names *that* interpreter, its site-packages are
-       not on ``PYTHONPATH``, and the wrap would die with
-       ``PackageNotFoundError: ros2cli`` on a host where the bare ``ros2``
-       worked. The CLI inherits the same ``PYTHONPATH`` it hands the
-       subprocess, so an in-process ``find_spec`` answers this exactly.
-    2. **``ros2`` must actually be a Python script.** ``ros2cli`` installs it
-       as a console-script entry point (``#!/usr/bin/python3`` on a Jazzy deb),
-       but that is a property of the installation, not a guarantee — a distro
-       or container shipping a shell wrapper would be broken by exec-ing it
-       under an interpreter. So the shebang is read too.
-
-    Anything else (no ``ros2`` on ``PATH``, ``ros2cli`` not importable here, an
-    unreadable file, a non-Python shebang) falls back to the bare ``["ros2"]``
-    this function replaced, so the worst case is the pre-existing behaviour.
+    Wrapping requires both: (1) ``sys.executable`` can import ``ros2cli`` —
+    true for a sourced deb ROS (``PYTHONPATH`` carries its site-packages);
+    false for ROS from conda/RoboStack/pip elsewhere, where wrapping would
+    raise ``PackageNotFoundError: ros2cli`` — checked via ``find_spec`` rather
+    than assumed. (2) ``ros2`` is actually a Python script (a console-script
+    entry point, not a shell wrapper) — verified by reading its shebang. Any
+    check failing (no ``ros2`` on PATH, ``ros2cli`` not importable, unreadable
+    file, non-Python shebang) falls back to the bare ``["ros2"]`` this
+    function replaced.
 
     Returns:
         ``[sys.executable, "<abs path to ros2>"]`` when ``ros2`` is a Python
@@ -1744,7 +1709,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
       process start, which is noise on every launch.
     * Clean stale Fast-DDS SHM (``_apply_rmw_default``).
     * **Confine a sim to its own host and DDS domain** (``hal_mode="sim"``,
-      :func:`~openral_cli._dds_scope.confine_sim_scope`). A sim graph lives on
+      ``confine_sim_scope``). A sim graph lives on
       one host; left on the default domain 0 with subnet discovery it joins
       whatever else is on the LAN, which on 2026-09-05 was a live OpenArm
       (#227). ``deploy run`` is deliberately **not** confined — a real robot's
@@ -1783,16 +1748,13 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
     """
     if run_preflight:
         repo_root = _repo_root_from(Path(__file__))
-        # Same preflight sequence, and the same order, as the ``deploy sim``
-        # block: overlay check → orphan reap → palette extras → VRAM pair.
-        # These two used to run on the sim path ONLY, which made a crashed
-        # ``deploy run`` uniquely expensive to recover from: its orphaned
-        # graph processes kept holding GPU memory and ``/dev/shm/fastrtps_*``
-        # lockfiles until someone happened to run ``deploy sim``, and the
-        # next ``deploy run`` failed with a terse ``Failed init_port
-        # fastrtps_port7000`` instead of reaping them. Real hardware is the
-        # path where a stale HAL matters most, so it should not be the one
-        # missing the cleanup.
+        # Same preflight sequence, and order, as ``deploy sim``: overlay
+        # check → orphan reap → palette extras → VRAM pair. Runs here too
+        # (not sim-only) because a crashed ``deploy run`` leaves orphaned
+        # graph processes holding GPU memory + ``/dev/shm/fastrtps_*``
+        # lockfiles, surfacing on the next launch as ``Failed init_port
+        # fastrtps_port7000`` — real hardware is where a stale HAL matters
+        # most.
         try:
             assert_ros2_packages_discoverable(_required_ros2_packages(invocation))
         except ROSConfigError as exc:
@@ -1856,10 +1818,10 @@ def _assert_graph_unoccupied_or_exit(env: dict[str, str], *, hal_mode: str) -> N
     """Refuse the launch when another robot is already on this ROS graph.
 
     Thin CLI wrapper: the rule and its wording live in
-    :mod:`openral_cli._dds_scope`; this turns the typed refusal into the exit
+    ``openral_cli._dds_scope``; this turns the typed refusal into the exit
     code the operator sees. Kept out of ``run_preflight`` on purpose — it has to
     run against ``venv_env``, the scope actually about to be used, which does
-    not exist until :func:`_prepare_launch_env` has confined it.
+    not exist until ``_prepare_launch_env`` has confined it.
     """
     from openral_cli._dds_scope import assert_graph_unoccupied  # reason: deferred
 
@@ -1967,26 +1929,19 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "/lib/nav2_collision_monitor/",
     "/lib/opennav_docking/",
     "/lib/nav2_lifecycle_manager/",
-    # TF chain spawned by ``sim_e2e.launch.py``. These were the
-    # silent gap that caused the rldx-rc365 "arm reaches 40 cm high" bug:
-    # a ``static_transform_publisher`` orphaned from a run *before* the
-    # URDF mount-z was zeroed kept publishing the stale ``base_link →
-    # panda_link0 z=0.4`` on the TRANSIENT_LOCAL ``/tf_static`` topic, and
-    # the next launch's correct ``z=0.0`` publisher couldn't override it
-    # (tf2 picks non-deterministically among same-name static frames).
-    # Reaping the renamed static publisher (``static_<base>_to_<root>``)
-    # and the URDF ``robot_state_publisher`` closes that hole.
+    # TF chain spawned by ``sim_e2e.launch.py``. A `static_transform_publisher`
+    # orphaned before the URDF mount-z was zeroed kept publishing stale
+    # `base_link → panda_link0 z=0.4` on TRANSIENT_LOCAL `/tf_static`; tf2
+    # picks non-deterministically among same-name static frames, so the next
+    # launch's `z=0.0` publisher couldn't override it (rldx-rc365 "arm
+    # reaches 40cm high" bug). Reaping the renamed static publisher
+    # (`static_<base>_to_<root>`) + `robot_state_publisher` closes the hole.
     #
-    # These two are TUPLES — every element must be present — because the
-    # executable path alone is NOT ours. `zed_wrapper` runs the very same
-    # ``/lib/robot_state_publisher/robot_state_publisher`` under the same
-    # user for its own ``zed_state_publisher``; reaping it left the ZED node
-    # alive with its optical frames gone, so ``octomap_server`` rejected
-    # every cloud for an unknown source frame and the map stayed empty while
-    # the graph reported healthy. Observed on hardware 2026-09-07. Pairing
-    # the executable with the node name this launch actually assigns keeps
-    # the sweep to our own TF chain, which is what the previous comment here
-    # claimed but could not deliver.
+    # TUPLES — every element required — because the executable path alone
+    # isn't ours: `zed_wrapper` runs the same `robot_state_publisher` binary
+    # for its own `zed_state_publisher`; reaping it broke ZED's optical
+    # frames and silently emptied `octomap_server` (observed on hardware
+    # 2026-09-07). Pairing executable + node name scopes the sweep to our TF chain.
     ("/lib/tf2_ros/static_transform_publisher", "__node:=static_"),
     (
         "/lib/robot_state_publisher/robot_state_publisher",
@@ -2014,7 +1969,7 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     """Return True when ``cmdline`` matches an openral deploy-graph process.
 
     Pure predicate over a space-joined ``/proc/<pid>/cmdline`` string so
-    the needle set (:data:`_ORPHAN_GRAPH_NEEDLES`) is unit-testable
+    the needle set (``_ORPHAN_GRAPH_NEEDLES``) is unit-testable
     without spawning real processes.
 
     A tuple needle matches only when EVERY element is present, which is how
@@ -2220,7 +2175,7 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     exactly that: its evidence monitor attached ~6 ms after the
     deploy started, and every one of the 24 ``run_monitor.jsonl``
     files contains two lines. The purge is therefore *announced*:
-    :data:`DDS_TRANSPORT_READY_MARKER` is printed on the line after
+    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after
     it, so a co-process can wait for it and create its participant on
     the far side. It is printed on the Cyclone/Zenoh paths too, where
     nothing was purged — a waiter needs the signal either way.
@@ -2265,7 +2220,7 @@ def _clean_stale_fastrtps_shm() -> int:
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
     """Build the package-list the preflight discovery check must validate.
 
-    Pulled out of :func:`deploy_sim_command` for line-count hygiene
+    Pulled out of ``deploy_sim_command`` for line-count hygiene
     and so future opt-in bringup wrappers extend a single list.
     """
     pkgs = ["openral_rskill_ros", invocation.hal.package]
@@ -2312,42 +2267,29 @@ def assert_ros2_packages_discoverable(
 def _preflight_scene_assets(config: Path | None) -> None:
     """Provision the scene's sim backend BEFORE ``ros2 launch``.
 
-    Several backends do genuinely slow out-of-tree setup on their first run —
-    RoboCasa clones a fork and downloads ~11 GB of assets, Isaac Sim and
-    RoboTwin build multi-GB sidecar venvs, RLBench / BEHAVIOR / VLABench
-    demand an externally-provisioned install and raise a recipe when it is
-    absent. All of it happens inside the scene factory, which the HAL calls
-    from ``on_configure`` — a callback ``tools/lifecycle_autostart.py`` bounds
-    at 300 s, while the nav2 palette re-seed helper alongside it waits only
-    120 s for ``/navigate_to_pose``.
+    Some backends do slow first-run setup (RoboCasa clones+downloads ~11 GB;
+    Isaac Sim/RoboTwin build multi-GB sidecar venvs; RLBench/BEHAVIOR/VLABench
+    need an externally-provisioned install). That work normally happens
+    inside the scene factory, called from the HAL's ``on_configure`` —
+    bounded at 300 s by ``tools/lifecycle_autostart.py``, while the nav2
+    palette re-seed helper alongside it waits only 120 s for
+    ``/navigate_to_pose``. On a fresh machine both helpers time out before a
+    tens-of-minutes download finishes: the HAL never reaches ACTIVE and the
+    reasoner's palette silently loses ``navigate_to_pose``, with no reported
+    cause.
 
-    On a fresh machine that race is unwinnable. The download runs for tens of
-    minutes, so both helpers time out and exit non-zero: the HAL never reaches
-    ACTIVE, and the reasoner's palette permanently loses
-    ``navigate_to_pose`` — for a scene whose whole point is find → navigate →
-    grab. Nothing reports the actual cause; you get two dead helper processes
-    and a quietly reduced skill palette while the download carries on in the
-    background. The backends that only *refuse* are no better off: their
-    actionable "run ./setup.sh" error reads as a bare lifecycle timeout.
+    Running it here, before the launch, makes it an ordinary foreground
+    download against a TTY (so license banners / ``typer.confirm()`` are
+    reachable) instead of hidden work on a lifecycle deadline.
 
-    Doing it here moves that work in front of the launch, where it is an
-    ordinary foreground download against a TTY rather than hidden work inside
-    a lifecycle callback on a deadline. It also puts each backend's license
-    banner and ``typer.confirm()`` somewhere the operator can actually see and
-    answer; inside the ROS node the prompt had no reachable terminal.
-
-    Which scenes need it is the backend's own declaration, not a table here:
-    each one passes ``provision=`` to ``SCENES.register`` and the same
-    callable runs on the build path, so preflight and build cannot drift. A
-    scene with no hook (LIBERO, MetaWorld, ManiSkill3, the native MuJoCo
-    scenes — pip installs, nothing to fetch) is a no-op.
-
-    Idempotent and near-free once warm: every hook short-circuits on an
-    install probe or readiness sentinel, so later launches pay a couple of
-    ``stat()`` calls. Advisory by design — a provisioning failure is reported
-    and the launch continues, because the backend will retry at
-    ``on_configure`` and raise its own typed error with the full upstream
-    context.
+    Which scenes need it is the backend's own declaration: each passes
+    ``provision=`` to ``SCENES.register``, and the same callable runs on the
+    build path, so preflight and build cannot drift. A scene with no hook
+    (LIBERO, MetaWorld, ManiSkill3, native MuJoCo — pip installs, nothing to
+    fetch) is a no-op. Idempotent and near-free once warm (each hook
+    short-circuits on an install probe/readiness sentinel). Advisory: a
+    provisioning failure is reported and the launch continues — the backend
+    retries at ``on_configure`` and raises its own typed error there.
 
     Args:
         config: DeployScene YAML path, or None when the caller resolved the
@@ -2400,27 +2342,24 @@ _HEAD_CAM_FEATURE_KEY = "observation.images.head"
 def _apply_palette_head_cam(matched: Iterable[RSkillManifest]) -> bool:
     """Enable the synthetic RoboCasa ``head`` camera when the palette needs it.
 
-    The RoboCasa backend synthesises a forward egocentric ``head`` camera for
-    navigation policies (``openral_sim.backends.robocasa.render_head_view``),
-    gated on ``OPENRAL_ROBOCASA_HEAD_CAM`` because the robosuite scenes own no
-    such camera and every manipulation run would otherwise pay for a second
-    offscreen render. Nothing used to set it, so pairing
-    ``scenes/deploy/robocasa_navigate.yaml`` with the InternVLA-N1 VLN rSkill
-    silently produced no ``observation.images.head`` at all (issue #91).
+    RoboCasa synthesises a forward egocentric ``head`` camera for navigation
+    policies (``openral_sim.backends.robocasa.render_head_view``), gated on
+    ``OPENRAL_ROBOCASA_HEAD_CAM`` because the robosuite scenes own no such
+    camera and every manipulation run would otherwise pay for a second
+    offscreen render — unset by default, which silently starved
+    ``scenes/deploy/robocasa_navigate.yaml`` + InternVLA-N1 of
+    ``observation.images.head`` (issue #91).
 
-    Derive it from the palette instead of per-scene bookkeeping: if any rSkill
-    the reasoner may dispatch declares ``observation.images.head`` in its
-    ``sensors_required``, the run needs that camera, so turn it on. The launch
-    env is ``os.environ.copy()`` (:func:`_prepare_launch_env`), so setting it
-    here carries into the HAL process that renders it.
+    Derived from the palette, not per-scene bookkeeping: if any
+    capability-matched rSkill declares ``observation.images.head`` in
+    ``sensors_required``, turn it on (setting ``os.environ`` here carries into
+    the HAL via ``_prepare_launch_env``'s ``os.environ.copy()``). Matched
+    against the capability-matched set rather than the post-drop dispatchable
+    one — a nav skill blocked on missing extras costs one wasted render per
+    step, cheaper than one that boots blind.
 
-    Derived from the capability-matched set, not the post-drop dispatchable
-    one: a nav skill blocked on missing extras costs one wasted render per
-    step, which is cheaper than a nav skill that boots blind.
-
-    An operator-set ``OPENRAL_ROBOCASA_HEAD_CAM`` always wins — including
-    ``=0``, so the render can still be forced off. Returns True iff this call
-    turned it on.
+    An operator-set ``OPENRAL_ROBOCASA_HEAD_CAM`` always wins (including
+    ``=0``, to force it off). Returns True iff this call turned it on.
     """
     if _HEAD_CAM_ENV in os.environ:
         return False
@@ -2446,10 +2385,10 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
 ) -> None:
     """Prompt to install missing extras before the reasoner palette empties.
 
-    Mirrors :meth:`ReasonerNode._maybe_seed_palette_from_search_paths`:
+    Mirrors ``ReasonerNode._maybe_seed_palette_from_search_paths``:
     loads ``<repo_root>/rskills/*/rskill.yaml``, builds the
-    capability-filtered :class:`~openral_reasoner.palette.ToolPalette`
-    against the robot's :class:`~openral_core.RobotCapabilities`, then
+    capability-filtered ``ToolPalette``
+    against the robot's ``RobotCapabilities``, then
     probes each capability-matching manifest's ``model_family`` for
     importability. Surfaces missing extras *before* the launch
     instead of letting the reasoner silently drop them at
@@ -2458,7 +2397,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
 
     This is ADVISORY, not a gate. The reasoner ALREADY drops
     unimportable rSkills at ``on_configure``
-    (:func:`openral_sim.policy_deps.filter_importable_manifests`) and
+    (``openral_sim.policy_deps.filter_importable_manifests``) and
     runs the importable remainder. The palette is robot-WIDE — a single
     franka config matches six model families (act / molmoact2 / pi05 /
     rldx / smolvla / xvla), so a partially-installed venv is the common
@@ -2471,7 +2410,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
     * default / ``OPENRAL_AUTO_INSTALL_DEPS=1`` → install the union of
       missing groups via ``just sync --all-packages --group …``
       (cwd=repo_root), re-probe, and continue. Same env var honoured by
-      :mod:`openral_sim._assets` / :mod:`openral_sim._deps`. A non-zero
+      ``openral_sim._assets`` / ``openral_sim._deps``. A non-zero
       ``just sync`` is a real failure → ``typer.Exit``.
     * ``OPENRAL_AUTO_INSTALL_DEPS=0`` on a TTY → ``typer.confirm`` the
       same install; on yes install+re-probe; on no → drop blocked skills.
@@ -2556,31 +2495,25 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
         groups_argv: list[str] = []
         for g in sorted(install_groups):
             groups_argv.extend(["--group", g])
-        # Route through ``just sync`` (not bare ``uv sync``) for two
-        # reasons:
-        #   1. ``--all-packages`` is REQUIRED so the workspace members
-        #      (openral-core, openral-cli, ...) survive the install.
-        #      ``uv sync --group <X>`` without ``--all-packages``
-        #      uninstalls every workspace member — the next ROS launch
-        #      then fails with ``No module named 'openral_core'``
-        #      (the exact symptom the preflight is meant to prevent).
-        #   2. The libero/robocasa groups pull in ``hf-libero==0.1.3``,
-        #      whose sdist installs both modern and legacy uninstall
-        #      metadata. The ``just sync`` recipe repairs that
-        #      before+after via ``scripts/repair_hf_libero_install.py``
-        #      so the next ``uv sync --all-packages`` doesn't bail out
-        #      with ``Unable to uninstall hf-libero==0.1.3``.
-        #   3. ``--inexact`` makes the install ADDITIVE. Without it, ``uv
-        #      sync --group <X>`` is exact-match on the dependency-group set
-        #      and uninstalls every package not in group ``X`` — including
-        #      run-critical packages from sibling groups: the OmDet-Turbo
-        #      detector's ``timm`` (group ``omdet``), ``robosuite`` (group
-        #      ``robocasa``), rldx's ``pyzmq``/``msgpack``. The observed
-        #      failure: installing the ``rldx`` palette extras wiped ``timm``,
-        #      so the detector ImportError'd on every frame and
-        #      ``/openral/perception/objects`` stayed empty (issue #12). The
-        #      robocasa AUTO_INSTALL plan already uses ``--inexact`` for this
-        #      exact reason (openral_sim._deps._robocasa_kitchen_plan).
+        # Route through ``just sync`` (not bare ``uv sync``):
+        #   1. ``--all-packages`` is required — without it ``uv sync --group
+        #      <X>`` uninstalls the workspace members (openral-core, ...) and
+        #      the next ROS launch fails with ``No module named
+        #      'openral_core'`` (the exact symptom this preflight prevents).
+        #   2. The libero/robocasa groups pull in ``hf-libero==0.1.3``, whose
+        #      sdist installs both modern and legacy uninstall metadata;
+        #      ``just sync`` repairs that via
+        #      ``scripts/repair_hf_libero_install.py`` so the next
+        #      ``uv sync --all-packages`` doesn't bail with ``Unable to
+        #      uninstall hf-libero==0.1.3``.
+        #   3. ``--inexact`` makes the install additive — without it, ``uv
+        #      sync --group <X>`` exact-matches the group set and uninstalls
+        #      run-critical packages from sibling groups (``timm``/omdet,
+        #      ``robosuite``/robocasa, rldx's ``pyzmq``/``msgpack``). Observed:
+        #      installing the rldx extras wiped ``timm``, breaking the OmDet
+        #      detector every frame — ``/openral/perception/objects`` stayed
+        #      empty (issue #12). ``openral_sim._deps._robocasa_kitchen_plan``
+        #      already uses ``--inexact`` for the same reason.
         install_cmd = ["just", "sync", "--all-packages", "--inexact", *groups_argv]
 
     # Install by default; set OPENRAL_AUTO_INSTALL_DEPS=0 to prompt on a
@@ -3175,7 +3108,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     # Provision the scene's sim backend now, not inside the HAL's
     # ``on_configure``. Deliberately AFTER the overlay check above, so a
     # missing ``openral_rskill_ros`` fails in a second instead of after an
-    # 11 GB download. See :func:`_preflight_scene_assets`.
+    # 11 GB download. See ``_preflight_scene_assets``.
     _preflight_scene_assets(config)
 
     _reap_orphans_with_log()
@@ -3234,19 +3167,14 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         _console.print(f"  hal_params_tmp:{hal_params_tmp.name}")
         _console.print(f"  argv: {shlex.join(argv)}")
 
-        # `ros2 launch` runs under the system Python by default; the
-        # launch's deferred imports (openral_core, openral_safety) live
-        # in the workspace venv (the one `uv run` is using right now).
-        # The launch file processes editable-install ``.pth`` files via
-        # ``site.addsitedir`` keyed on ``OPENRAL_VENV_SITE``; export
-        # that env var alongside PYTHONPATH so both the launch parser
-        # and the spawned Python nodes import openral_core correctly.
-        # Also prepend the venv's bin dir to PATH so ``#!/usr/bin/env
-        # python3`` shebangs on spawned node executables resolve to the
-        # venv interpreter — that's the only interpreter that processes
-        # the editable ``.pth`` files via site.py at startup. PYTHONPATH
-        # alone is not enough: .pth files in PYTHONPATH directories are
-        # never processed by Python's site module.
+        # `ros2 launch` runs under the system Python by default; deferred
+        # imports (openral_core, openral_safety) live in the workspace venv.
+        # Export `OPENRAL_VENV_SITE` (the launch file processes editable
+        # .pth files via `site.addsitedir` keyed on it) alongside PYTHONPATH,
+        # and prepend the venv's bin dir to PATH so `#!/usr/bin/env python3`
+        # shebangs on spawned nodes resolve to the venv interpreter — the
+        # only one that processes .pth files via site.py at startup
+        # (PYTHONPATH alone does not trigger that).
         venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
         # Both directions, one rule — see the twin call in
         # ``run_launch_invocation``. Runs against ``venv_env`` because that is
@@ -3255,10 +3183,9 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
 
         # The dashboard child is spawned by ``sim_e2e.launch.py`` itself
         # (gated on ``enable_dashboard:=true`` forwarded from ``dashboard``
-        # above), so this wrapper just runs the launch. The earlier
-        # design wrapped this in ``attached_dashboard(enabled=dashboard,
-        # ...)``, but that would double-spawn the dashboard and trip
-        # ``[Errno 98] address already in use``.
+        # above) — do not also wrap this in ``attached_dashboard(...)``,
+        # which double-spawns it and trips ``[Errno 98] address already in
+        # use``.
         #
         # ``_run_launch`` (not a bare ``subprocess.run``) puts the launch
         # in its own session and forwards SIGINT/SIGTERM to the group so

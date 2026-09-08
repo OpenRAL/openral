@@ -4,7 +4,7 @@ robocasa's ``__init__`` imports ``PandaOmron`` / ``PandaMobile`` from robosuite,
 which exist only in the robocasa-pinned robosuite fork. The LIBERO dependency
 group installs an older robosuite that shadows it, so running a robocasa scene
 after a libero sync fails with a cryptic ``cannot import name 'PandaOmron'``.
-:func:`_robosuite_conflict_hint` turns that into an actionable resync error while
+``_robosuite_conflict_hint`` turns that into an actionable resync error while
 leaving a genuine ``No module named 'robocasa'`` (real absence) to the normal
 ``ensure_backend_deps`` install path.
 """

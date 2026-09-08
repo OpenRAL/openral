@@ -7,15 +7,15 @@ at view time and emits a single chronological timeline keyed by
 
 Three pieces:
 
-* :func:`read_bag` — iterate an mcap-backed rosbag2 directory or a bare
-  ``.mcap`` file and yield :class:`BagMessage` records, surfacing the
+* ``read_bag`` — iterate an mcap-backed rosbag2 directory or a bare
+  ``.mcap`` file and yield ``BagMessage`` records, surfacing the
   ``trace_id`` field that lives on every typed ROS message
   (``ActionChunk``, ``FailureTrigger``, ``WorldStateStamped``,
   ``PromptStamped`` and the ``ExecuteRskill`` action goal/feedback/result).
-* :class:`DashboardTraceClient` — HTTP client over the receiver's
+* ``DashboardTraceClient`` — HTTP client over the receiver's
   ``/api/traces`` + ``/api/spans/{trace_id}`` endpoints.
-* :func:`build_timeline` — merge bag messages with spans for the given
-  ``trace_id`` and return a sorted list of :class:`TimelineEntry`.
+* ``build_timeline`` — merge bag messages with spans for the given
+  ``trace_id`` and return a sorted list of ``TimelineEntry``.
 
 Per CLAUDE.md §1.11 the bag reader uses a real ``mcap`` reader against a
 real recorded file; no message-stream mocks. Tests build a one-off mcap

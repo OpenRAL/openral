@@ -27,7 +27,7 @@ class _Geom:
     ``derive_robot_relative_height_band`` takes ``description: Any`` on purpose
     (the node must not import ``openral_core`` to compute a band), so this is
     the real calling contract, not a stand-in for ``LinkCollisionGeometry``. It
-    exists to place a *real* :class:`openral_core.BoxShape` at an orientation no
+    exists to place a *real* ``openral_core.BoxShape`` at an orientation no
     shipped manifest happens to use, and to carry the one shape kind the schema
     cannot express yet.
     """
@@ -159,13 +159,10 @@ def test_derive_height_band_bridges_the_declared_urdf_root(
     """UR manifests place their arm through ``assets.urdf.root_frame``.
 
     ``joints`` enumerates only movable joints, so UR's upstream URDF root
-    (``base_link``) is not a child of any of them — every collision volume
-    hangs off a link the ``base_frame`` (``ur5e_base_link``) chain alone cannot
-    reach. The manifest is not missing the transform: it declares it as
-    ``assets.urdf.root_frame`` + ``base_to_root_xyz_rpy``, the same pair
-    ``sim_e2e.launch.py`` publishes as a static TF. Reading it is what makes
-    the band cover the arm instead of collapsing onto the
-    ``min_body_height_m`` floor.
+    (``base_link``) is not a child of any of them; the bridge is
+    ``assets.urdf.root_frame`` + ``base_to_root_xyz_rpy`` — the same pair
+    ``sim_e2e.launch.py`` publishes as a static TF. Reading it keeps the band
+    covering the arm instead of collapsing onto the ``min_body_height_m`` floor.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))
     assert description.assets is not None
@@ -185,17 +182,11 @@ def test_derive_height_band_bridges_the_declared_urdf_root(
 def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
     """Declared geometry that cannot be placed refuses; it is never skipped.
 
-    Partial and total placement failure get the same answer on purpose: a band
-    covering an arbitrary reachable subset of the robot is not a measurement of
-    the robot, and the partial case is the more dangerous one — it keeps
-    reporting ``collision_geometry`` as its source, so nothing downstream can
-    tell a measured band from a truncated one.
-
-    ``franka_panda``, ``g1`` and ``openarm`` used to reach this refusal, because
-    their manifests could not place a rigid mount. That was a defect in the
-    manifests, not in the robots, and it is fixed — they now measure real bands
-    (see the test below). So the case is reproduced the only honest way left:
-    a real manifest with its declared mount taken away.
+    Partial and total placement failure get the same answer: a band covering
+    an arbitrary reachable subset of the robot is not a measurement of the
+    robot, and still reports ``collision_geometry`` as its source — nothing
+    downstream can tell a measured band from a truncated one. Reproduced with
+    a real manifest with its declared mount removed.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
     assert description.collision_geometry
@@ -213,13 +204,10 @@ def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
 @pytest.mark.parametrize(
     ("robot_id", "recovered_link", "expected_max_z_m"),
     [
-        # 1 of 9 volumes was unplaceable: the gripper at the top of the chain.
+        # 1 of 9 volumes unplaceable: the gripper at the chain's top.
         ("franka_panda", "panda_hand", 1.175),
-        # 15 of 27 — every arm link plus the torso. The band was [-0.72, -0.02] m,
-        # a humanoid whose entire upper body sat outside its own "measured"
-        # navigation height; it now reaches above the pelvis. The top is set by
-        # the torso volume, so it is stated in the URDF's waist convention
-        # (torso_link at z=0.054) — the model this manifest is lowered from.
+        # 15 of 27 — every arm link plus the torso. Top set by the torso volume,
+        # stated in the URDF's waist convention (torso_link at z=0.054).
         ("g1", "torso_link", 0.518),
         # 16 of 16 — total. Both arms hang off ``openarm_*_link0``.
         ("openarm", "openarm_left_link1", 0.150),

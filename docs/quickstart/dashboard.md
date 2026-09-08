@@ -12,9 +12,8 @@ exporter, so instrumented workloads stay decoupled from the debug UI.
 
 The dashboard is a `openral` subcommand. The HTTP port serves the UI, the
 SSE event stream, **and** an embedded OTLP/HTTP receiver. The default
-port is **4318** (the OTLP/HTTP standard); it used to be `8000`, but
-that collided with `mkdocs serve` (`just docs`) and most FastAPI
-demos — see issue #132.
+port is **4318** (the OTLP/HTTP standard) — `8000` collided with
+`mkdocs serve` (`just docs`) and most FastAPI demos (issue #132).
 
 ```bash
 openral dashboard            # binds 127.0.0.1:4318 by default

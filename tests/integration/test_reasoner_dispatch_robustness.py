@@ -2,35 +2,28 @@
 
 Three seams from the PR #19 xhigh code review, all on the busy-latch path:
 
-1. **Dispatch-phase watchdog** — `_rskill_inflight` latches BEFORE the async
-   send, but rclpy futures never time out on their own: an action server that
-   dies (or stops spinning) after the readiness probe never sends a goal
-   response, so nothing would ever release the latch and every future dispatch
-   is refused as busy. The watchdog (``dispatch_watchdog_s`` param) bounds the
-   send→goal-response window: on expiry it releases the latch and emits a
-   ``KIND_CONTROLLER`` FailureTrigger (state=dispatch_timeout).
+1. Dispatch-phase watchdog — ``_rskill_inflight`` latches before the async send, but rclpy
+   futures never time out: a server that dies after the readiness probe never sends a goal
+   response, so nothing releases the latch and every future dispatch is refused as busy. The
+   watchdog (``dispatch_watchdog_s`` param) bounds send→response; on expiry it releases the
+   latch and emits a ``KIND_CONTROLLER`` FailureTrigger (state=dispatch_timeout).
+2. Resident-VLA probe exemption — the live free-VRAM probe compares free VRAM to the
+   manifest's declared footprint, but after a goal ends the runner keeps the policy warm, so
+   its own residency falsely refused re-dispatch of the same skill. Probe is skipped when
+   ``call.rskill_id`` matches the last accepted skill.
+3. Dispatch generations — a goal response arriving after its watchdog expired must be
+   canceled as stale; it cannot cancel a newer watchdog or overwrite the newer goal's
+   in-flight state.
 
-2. **Resident-VLA probe exemption** — the live free-VRAM probe compares free
-   VRAM against the manifest's declared footprint, but after a goal ends the
-   runner keeps the policy warm: its own residency is why free is low, so a
-   re-dispatch of the SAME skill was falsely refused. The probe is skipped
-   when ``call.rskill_id`` matches the last accepted skill.
-3. **Dispatch generations** — a goal response arriving after its watchdog
-   expired must be canceled as stale; it cannot cancel a newer watchdog or
-   overwrite the newer goal's in-flight state.
+Real reasoner node + real ``ExecuteRskill`` ActionServer + real DDS graph (CLAUDE.md §1.11);
+test 1's wedge is a real server whose node is never spun — endpoints match (readiness probe
+passes) but no goal response is ever produced, the died-after-probe failure mode. Only
+doubles: free-VRAM reading pinned via monkeypatch (process boundary — ``nvidia-smi``), and
+the fixture manifest injected at the guard's seam.
 
-Real reasoner node + real ``ExecuteRskill`` ActionServer + real DDS graph
-(CLAUDE.md §1.11); the wedge in test 1 is produced by a real server whose node
-is simply never spun — endpoints match on the graph (the readiness probe
-passes) but no goal response is ever produced, exactly the died-after-probe
-failure mode. The only doubles: the free-VRAM reading is pinned via
-monkeypatch (process boundary — ``nvidia-smi``) and the fixture manifest is
-injected at the guard's seam.
-
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
-(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
-``docker-build`` workflow); locally, after ``just ros2-build &&
-source install/setup.bash``, run ``just test-ros-live`` (``-k <expr>`` narrows).
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (``scripts/ros_live_tests.sh``). CI runs it in
+``openral:x86`` (docker-build workflow); locally, after ``just ros2-build && source
+install/setup.bash``, run ``just test-ros-live`` (``-k <expr>`` narrows).
 """
 
 from __future__ import annotations
@@ -68,11 +61,10 @@ def _spin_until(executor: Any, predicate: Any, timeout_s: float) -> bool:
 def test_dispatch_watchdog_releases_a_wedged_busy_latch() -> None:
     """A server that never answers must not wedge the actuation path forever.
 
-    The server node exists on the graph (so ``server_is_ready`` passes and the
-    goal is actually sent) but is never added to an executor — the goal-request
-    service callback never runs and the ``send_goal_async`` future never
-    resolves. Before the watchdog, ``_rskill_inflight`` stayed latched forever
-    and the reasoner refused every subsequent dispatch as busy.
+    Server node exists on the graph (``server_is_ready`` passes, goal is sent) but is never
+    added to an executor — the goal-request callback never runs, ``send_goal_async`` never
+    resolves. Before the watchdog, ``_rskill_inflight`` stayed latched forever and every
+    dispatch was refused as busy.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")

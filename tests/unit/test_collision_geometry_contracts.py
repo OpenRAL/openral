@@ -66,12 +66,9 @@ def test_collision_shape_discriminates_capsule_vs_sphere() -> None:
 def test_collision_shape_refuses_an_untagged_mapping() -> None:
     """A shape mapping without the ``shape`` tag is refused, not guessed.
 
-    Before ``CollisionShape`` carried ``Field(discriminator="shape")`` this
-    mapping was *accepted*: pydantic's smart union matched it structurally and
-    silently produced a ``SphereShape``. A manifest that omitted the tag
-    therefore got a real primitive that nobody had written down. The tag has
-    always been the documented contract, so the only correct outcome is a
-    named refusal.
+    Before the discriminator, pydantic's smart union silently matched an untagged
+    mapping to ``SphereShape`` — a manifest that omitted the tag got a real
+    primitive nobody wrote down.
     """
     try:
         LinkCollisionGeometry.model_validate({"link_name": "link_1", "shape": {"radius_m": 0.05}})
@@ -170,10 +167,9 @@ def test_collision_evidence_dispatches_through_failure_union() -> None:
 def test_kernel_reactive_collision_evidence_validates() -> None:
     """A REAL kernel-emitted reactive payload (``horizon_step: -1``) validates.
 
-    Regression: the field used to be ``Field(ge=0)``, which rejected every
-    reactive (measured-state) hit the kernel publishes — and every Cartesian
-    control mode reaches the reactive check first, so an attached-payload stop
-    always landed there. The reasoner then silently fell back to raw-JSON
+    Regression: the field used to be ``Field(ge=0)``, rejecting every reactive
+    (measured-state) hit — every Cartesian control mode reaches the reactive
+    check first, so this always fired, and the reasoner fell back to raw-JSON
     truncation instead of a structured summary.
     """
     payload = _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
@@ -194,18 +190,11 @@ def test_kernel_reactive_collision_evidence_validates() -> None:
 def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -> None:
     """A REAL predictive payload carries the *predicted* configuration, exactly.
 
-    A predicted step's configuration is the kernel's own damped-least-squares
-    integration of the chunk, at its lambda and its seed dt — it exists in no
-    other artifact. Without it a predictive stop can only be adjudicated
-    against the measured joints, which is a different pose: the drawer-opening
-    run that motivated this reported ``panda_link2`` vs ``panda_link5`` at
-    -5.34 mm while offline mesh adjudication at the recorded joints put the
-    same pair +53 mm clear.
-
-    The precision assertion is the second half of the contract. The kernel
-    serializes at ``max_digits10``; the default 6 significant digits would
-    round these angles to ~1e-6 rad, millimetres of end-effector error at a
-    metre of reach — the scale the evidence exists to adjudicate at.
+    That configuration exists nowhere else (the kernel's own damped-least-squares
+    integration at its lambda/seed dt): the motivating drawer-opening run reported
+    panda_link2 vs panda_link5 at -5.34 mm predicted vs +53 mm at the measured
+    joints. Precision pin: the kernel serializes at ``max_digits10``; the default
+    6 significant digits would round to ~1e-6 rad, i.e. mm-scale error at 1 m reach.
     """
     payload = _KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
     decoded = TypeAdapter(FailureEvidence).validate_json(payload)
@@ -215,11 +204,9 @@ def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -
     assert decoded.joint_positions_rad == [0.29982877677088093, 1.2524345104800854]
     # Not the measured seed the chunk started from — that config passed.
     assert decoded.joint_positions_rad[1] != 1.57079632679
-    # The precision pin. Comparing the parsed payload to the parsed model would
-    # be a tautology — both sides run the same correctly-rounded strtod, so it
-    # passes just as happily on a six-digit payload. What has to be shown is
-    # that the recorded text carries information the old serializer destroyed:
-    # every value differs from its own six-significant-digit rounding.
+    # Comparing parsed payload to parsed model would be a tautology (same
+    # strtod rounding both sides); this asserts the recorded text differs from
+    # its own 6-sig-digit rounding, proving max_digits10 precision survives.
     for value in [*decoded.joint_positions_rad, decoded.min_distance_m]:
         assert float(f"{value:.6g}") != value, (
             f"{value!r} survives a 6-significant-digit round trip, so this "
@@ -339,13 +326,11 @@ _PANDA_CAPSULE_JUNCTION_EXTRAS: frozenset[frozenset[str]] = frozenset()
 def test_panda_mobile_collision_fk_starts_at_the_arm_mount() -> None:
     """Both PandaMobile manifests measure joint 1 from the arm-mount ``base_link``.
 
-    ADR-0095. ``base_link`` is RoboCasa's ``mobilebase0_support`` — the top of
-    the 0.70 m pedestal, the pose ``odom -> base_link`` carries and the frame
-    ``/openral/world_voxels`` is expressed in. Joint 1 is therefore the plain
-    Franka URDF transform. PR #103 briefly folded the pedestal in here as well,
-    to cancel a producer-side frame bug *inside* the kernel; the producer is
-    fixed at source now, so double-counting it would put the collision capsules
-    0.70 m above the obstacles they are checked against (hazard HZ-0095-1).
+    ADR-0095. ``base_link`` = RoboCasa's ``mobilebase0_support``, top of the 0.70 m
+    pedestal; joint 1 is the plain Franka URDF transform. PR #103 briefly folded the
+    pedestal in here too (working around a now-fixed producer-side frame bug); doing
+    so again would double-count it and put capsules 0.70 m above their obstacles
+    (hazard HZ-0095-1).
     """
     desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     vslam_desc = RobotDescription.from_yaml("robots/panda_mobile_vslam/robot.yaml")

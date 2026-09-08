@@ -8,7 +8,7 @@ not-connected error paths, and structural checks — so refactors of the
 shared base fail the unit lane (<2 s) instead of the slow sim lane.
 
 Per CLAUDE.md §5.4 unit tests must "mock all I/O".  ``MujocoArmHAL`` only
-imports ``mujoco`` inside :meth:`connect`, so every test in this file
+imports ``mujoco`` inside ``connect``, so every test in this file
 constructs the HAL but never connects.
 """
 
@@ -176,7 +176,7 @@ def test_disconnect_when_never_connected_is_noop() -> None:
 def test_estop_always_raises_estoprequested_even_if_not_connected() -> None:
     """``estop()`` is the safety-supervisor boundary; it raises unconditionally.
 
-    Per :class:`HAL` Protocol docstring, ``estop`` raises ``ROSEStopRequested``
+    Per ``HAL`` Protocol docstring, ``estop`` raises ``ROSEStopRequested``
     every time.  This test exercises the not-connected branch (``self._data
     is None``) — that branch must still raise so a panicked caller's E-stop
     propagates regardless of HAL state.

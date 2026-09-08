@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // The grasped payload must leave world occupancy — and only the payload.
 //
-// `openral_msgs/AttachedCollisionObject` has always said "The same object must
-// be absent from world occupancy while attached", and nothing enforced it.
-// Before the grasp the object IS world occupancy: honest sensor returns marked
-// its cells. At the attach transition those cells stop describing the world and
-// start describing the robot's own payload — which the kernel re-checks as
-// collision-active attached geometry — but they stayed in the map, and on the
-// 2026-08-14 acceptance run the arm stopped 1.8 mm off the surface of the
-// object it was holding, +32 mm above the attested support plane (so the
-// support-contact witness correctly refused to exempt it).
+// `openral_msgs/AttachedCollisionObject` contract: "the same object must be
+// absent from world occupancy while attached." Unenforced before this: on the
+// 2026-08-14 acceptance run the arm stopped 1.8 mm off the held object's
+// surface, +32 mm above the attested support plane (witness correctly
+// refused to exempt it).
 //
-// The depth self-filter's transparency (8149344 + f02fe7d) clears the payload's
-// silhouette only where a ray still crosses it: a cell the camera cannot reach
-// — occluded, outside the frustum, or simply between two rays — is never
-// touched, and `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrosses
-// It` (test_occupancy_persistence.cpp) pins what happens to it: nothing, for
-// ever. So the transition needs an explicit removal, which is what these tests
-// pin, on a real `octomap::OcTree` seeded through real rays with the deploy-sim
-// parameters.
+// The depth self-filter's transparency (8149344 + f02fe7d) only clears cells
+// a ray still crosses; an occluded/out-of-frustum/between-rays cell is never
+// touched (`OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`,
+// test_occupancy_persistence.cpp). So the transition needs explicit removal —
+// pinned here on a real `octomap::OcTree` seeded through real rays with the
+// deploy-sim parameters.
 
 #include <algorithm>
 #include <cmath>
@@ -62,15 +56,12 @@ const tf2::Vector3 kPayloadCenter(0.40, 0.0, 0.35);
 const tf2::Vector3 kPayloadHalfExtents(0.04, 0.04, 0.10);
 
 // The covered volume around the payload. The grid lands on the octree's own
-// lattice by construction now — a grid cell centre and an octree voxel centre
-// are the same point because they are the same cell — so this only has to say
-// WHERE to cover, not how to phase it. The radius covers the box this used to
-// name explicitly (min (0.30, -0.15, 0.25), 12 cells of 25 mm on a side).
+// lattice by construction, so this only has to say WHERE to cover, not how
+// to phase it. Radius covers the box this used to name explicitly
+// (min (0.30, -0.15, 0.25), 12 cells of 25 mm on a side).
 //
 // These tests drive `clear_attached_payload_cells`, not the rasterizer, and
-// every one of them uses an identity `base_to_octomap` — so the grids here are
-// identity-oriented and the base-frame cell arithmetic in the helpers below
-// stays exactly right.
+// every one uses an identity `base_to_octomap`.
 bridge::GridSpec grid_spec() {
   bridge::GridSpec spec;
   spec.center[0] = 0.45;
@@ -224,13 +215,11 @@ std::size_t clear_with(openral_msgs::msg::OccupancyVoxels& grid, const Placed& p
 
 // ── the support-contact partition fixture (ADR-0092 D6) ──────────────────────
 //
-// A payload RESTING on a counter, which is the situation the two mechanisms
-// collide in. The counter's top face is at z = 0.3593 in the base frame and
-// the lattice phases the surface cell's centre 3.2 mm ABOVE it — the exact
-// phase of the 2026-08-13 baguette run, where a ~1 mm physical contact read as
-// 15.7 mm of cube penetration. The payload's bottom face sits on that face, so
-// its bottom cell layer IS the counter's top cell layer: a clearing that knows
-// only the payload's volume takes the counter with it.
+// A payload RESTING on a counter — the situation the two mechanisms collide
+// in. Counter top face z = 0.3593 (base frame), lattice phases the surface
+// cell's centre 3.2 mm above it (2026-08-13 baguette run's exact phase, ~1 mm
+// physical contact reading as 15.7 mm cube penetration). Payload's bottom
+// cell layer IS the counter's top cell layer.
 
 constexpr double kSupportFaceZ = 0.3593;
 const tf2::Vector3 kRestingHalfExtents(0.04, 0.04, 0.05);
@@ -333,14 +322,11 @@ std::vector<std::size_t> cleared_indices(const openral_msgs::msg::OccupancyVoxel
 
 // ── the kernel's side of the mirror ──────────────────────────────────────────
 //
-// `support_contact_exempts`, transcribed TERM FOR TERM from
-// `cpp/openral_safety_kernel/src/collision.cpp` (the safety kernel is a separate
-// colcon package this one must not depend on — Layer 2 does not link Layer 6 —
-// so the mirror is deliberate and tracked as item 8 of
-// `docs/methods/14-duplication-watch.md`). It is the SPECIFICATION that
-// `support_patch_withholds` claims to implement with `slack = 0`; the tests
-// below evaluate the two on the same cells, so a drift on either side of the
-// mirror fails here instead of in the field.
+// `support_contact_exempts`, transcribed term for term from
+// `cpp/openral_safety_kernel/src/collision.cpp` (Layer 2 must not link
+// Layer 6, so the mirror is deliberate — `docs/methods/14-duplication-watch.md`
+// item 8). Specification that `support_patch_withholds` implements at
+// `slack = 0`; tests below evaluate both on the same cells.
 bool kernel_support_contact_exempts(const bridge::SupportPatch& patch, const tf2::Vector3& center,
                                     double resolution, double slack) {
   if (!(patch.patch_radius > 0.0) || resolution <= 0.0) {
@@ -358,10 +344,8 @@ bool kernel_support_contact_exempts(const bridge::SupportPatch& patch, const tf2
   if (lateral_sq > reach * reach) {
     return false;
   }
-  // The fourth term is the kernel's one voxel of co-planar headroom (hazard log
-  // Entry 012, "Calibration 2026-08-15"). It is transcribed here for the same
-  // reason the rest of the predicate is: this function is the SPECIFICATION the
-  // bridge is checked against, so it has to move when the kernel moves.
+  // Fourth term is the kernel's one voxel of co-planar headroom (hazard log
+  // Entry 012, "Calibration 2026-08-15") — must move when the kernel moves.
   return height <= normal_half_width + patch.max_penetration + slack + resolution;
 }
 
@@ -391,41 +375,33 @@ bridge::SupportPatch grid_frame_patch(const tf2::Vector3& point, const tf2::Vect
 
 // ── the 2026-08-14 round-5 residue class ─────────────────────────────────────
 //
-// Field run spark:/home/allopart/openral-runs/2026-08-14-round5/baguette/: a
-// cell +35.8 mm ALONG THE OUTWARD SUPPORT NORMAL, laterally well inside the
-// attested patch — inside the patch CYLINDER — reported as withheld, while the
-// kernel correctly refused to exempt it (its bound here is the cube's projected
-// half-width, 12.5 mm, plus the 1.37 mm of attested physical depth). A withhold
-// shaped like the cylinder rather than like the support HALF-SPACE SLAB does
-// exactly that, and it resurrects the residue 21ecf82 eliminated. The offset is
-// carried as a constant so the class is pinned by its field number.
+// Field run (2026-08-14-round5/baguette/): a cell +35.8 mm along the outward
+// support normal, laterally inside the attested patch cylinder, reported as
+// withheld while the kernel refused to exempt it (bound: cube projected
+// half-width 12.5 mm + 1.37 mm attested physical depth). A cylinder-shaped
+// withhold (vs. the support half-space slab) resurrects the residue 21ecf82
+// eliminated.
 constexpr double kFieldResidueOffset = 0.0358;
 
-// A cell above the WIDENED slab (21.65 + 10 + 25 = 56.65 mm for the widest
-// attestation the kernel would accept). +60 mm is the offset that plays the role
-// +35.8 mm played before the 2026-08-15 co-planar-headroom calibration: outside
-// the slab for every wire message the kernel would take.
+// A cell above the widened slab (21.65 + 10 + 25 = 56.65 mm for the widest
+// attestation the kernel would accept). +60 mm plays the role +35.8 mm played
+// before the 2026-08-15 co-planar-headroom calibration.
 constexpr double kAboveWidenedSlabOffset = 0.060;
 
-// The same resting payload, lowered so that its attested support plane sits
-// `kFieldResidueOffset` BELOW an occupancy cell-centre layer: the field cell is
-// then a real cell of a real grid, inside the payload's own volume and inside
-// the patch cylinder, and the along-normal bound is the only thing that decides
-// it. Plane at 0.3625 − 0.0358 = 0.3267 m.
+// Resting payload lowered so its attested support plane sits
+// `kFieldResidueOffset` below an occupancy cell-centre layer: plane at
+// 0.3625 − 0.0358 = 0.3267 m.
 const double kFieldPlaneZ = kSupportLayerZ - kFieldResidueOffset;
 const tf2::Vector3 kFieldCenter(0.40, 0.0, kFieldPlaneZ + kRestingHalfExtents.z());
 
 // ── the 2026-08-14 round-6 attach-transition residue ─────────────────────────
 //
-// Round-5 forensics, verified: baguette r1's E-stop cell `voxel_91633` sat
-// 22.13 mm from the payload's own primitive surface at resolution 0.025 — 0.48
-// mm OUTSIDE the clearing's reach (0.5·res·√3 = 21.65 mm), so it was never a
-// clearing candidate at all. It is stale PRE-ATTACH silhouette: the object was
-// legitimately mapped before the grasp, by a sensor that saw the real object,
-// and the clearing measures against a fitted convex primitive — the fit error
-// plus lattice quantization leaves a thin residue past one circumradius. The
-// fix widens the reach of the ONE sweep that runs at the attach transition, and
-// leaves the steady-state reach exactly where it was.
+// Round-5 forensics: baguette r1's E-stop cell `voxel_91633` sat 22.13 mm from
+// the payload's own primitive surface at resolution 0.025 — 0.48 mm outside
+// the clearing's reach (0.5·res·√3 = 21.65 mm). Stale pre-attach silhouette:
+// fit error + lattice quantization leaves residue past one circumradius. Fix
+// widens the one sweep that runs at the attach transition; steady-state reach
+// unchanged.
 constexpr double kFieldRound6Distance = 0.02213;
 // One voxel, the `attach_sweep_padding_m` default.
 constexpr double kAttachSweepPadding = kResolution;
@@ -594,12 +570,10 @@ TEST(PayloadClearing, ClearingFollowsThePayloadPoseEveryFrame) {
 }
 
 TEST(PayloadClearing, DetachReturnsThePayloadToWorldOccupancyImmediately) {
-  // Released, the object is a real obstacle again. The clearing carries no
-  // state of its own — it is derived from the attachment set on the wire — so
-  // the frame after the object leaves that set is already the frame that
-  // publishes it. (Re-marking a cell the transparency rays cleared costs the
-  // two-hit confirmation octomap's tuning buys; that latency is octomap's, and
-  // is pinned by test_occupancy_persistence.)
+  // Clearing carries no state of its own — derived from the attachment set on
+  // the wire — so the frame after the object leaves that set already
+  // publishes it as an obstacle. Re-marking costs octomap's two-hit
+  // confirmation latency (pinned by test_occupancy_persistence).
   octomap::OcTree tree = deploy_sim_tree();
   insert_confirmed(tree, object_returns());
   auto grid = lowered(tree);
@@ -721,26 +695,21 @@ TEST(PayloadClearing, AMalformedGridIsLeftAlone) {
 
 // ── the partition against the support-contact witness (ADR-0092 D6) ──────────
 //
-// The clearing above and the kernel's support-contact witness are each correct
-// on their own and destroy each other when combined. The witness stays alive
-// only while some OCCUPIED cell it would exempt is still touching the payload
-// (`update_support_contact_witnesses`), and the cells that satisfy that are the
-// counter's own top layer — which is inside the resting payload's volume and so
-// was being cleared away. Observed 2/2 on 2026-08-14 (baguette+counter,
-// cup+island): witness arms, the clearing removes the support cells,
-// `support_witness_separated live=0x0 was=0x1` fires 2.7 s later with ground
-// truth still touching at +0.000 mm, and the same contact then re-trips
-// unexempted (`sweep_min == min_distance`: nothing was exempted at all).
+// Clearing and the kernel's support-contact witness each correct alone,
+// destroy each other combined: the witness stays alive only while some
+// occupied cell it would exempt still touches the payload
+// (`update_support_contact_witnesses`), and that cell is the counter's own
+// top layer, inside the resting payload's volume. Observed 2/2 on 2026-08-14
+// (baguette+counter, cup+island): `support_witness_separated live=0x0
+// was=0x1` fires 2.7 s after the clearing removes the support cells, ground
+// truth still touching at +0.000 mm, contact re-trips unexempted.
 //
-// The fix is a partition. Within the payload's reach every cell is either
-// cleared here or exempted by the kernel, never neither and never both: the
-// cells inside the attested support patch are the counter, and they stay.
+// Fix: a partition. Within the payload's reach every cell is either cleared
+// here or exempted by the kernel — never neither, never both.
 
 TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
-  // The defect, and the fix, in one assertion set. The payload's own silhouette
-  // goes; the counter it is resting on stays — with its cells still occupied,
-  // still describing the counter, and still available to the kernel's witness
-  // as the evidence that the payload has not left its support.
+  // Payload's own silhouette goes; the counter it rests on stays occupied,
+  // available to the kernel's witness.
   auto grid = resting_grid();
   ASSERT_EQ(occupied_cells(grid), 29U) << "12 payload cells + 16 counter cells + 1 obstacle";
 
@@ -758,11 +727,9 @@ TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
       EXPECT_EQ(grid.occupancy[cell_index(grid, 0.3625, y, z)], 0)
           << "payload silhouette cell (" << y << ", " << z << ") must go";
     }
-    // The +28.2 mm layer is the co-planar band the 2026-08-15 calibration
-    // widened the kernel's envelope to cover, so the mirror withholds it here:
-    // it stays in the map, and the kernel exempts it for the object that
-    // attested the patch. `withheld` grew; `cleared` shrank; nothing moved from
-    // withheld to neither.
+    // +28.2 mm layer is the co-planar band the 2026-08-15 calibration widened
+    // the kernel's envelope to cover: withheld here, stays in the map,
+    // exempted by the kernel for the attesting object.
     EXPECT_NE(grid.occupancy[cell_index(grid, 0.3625, y, kCoplanarBandLayerZ)], 0)
         << "co-planar band cell (" << y << ") is withheld, not cleared";
   }
@@ -773,13 +740,10 @@ TEST(PayloadClearing, TheAttestedSupportSurfaceSurvivesTheClearing) {
 }
 
 TEST(PayloadClearing, WithoutTheAttestationTheSupportSurfaceIsClearedAway) {
-  // The counterfactual, kept as a fact: the same payload with no support
-  // attestation on the wire — the honest default of a producer that cannot
-  // measure support contact — clears the counter out from under itself. That is
-  // the pre-partition behaviour and the mechanism of the 2026-08-14 defect. It
-  // is also the correct behaviour for a payload nobody has attested support
-  // for: the kernel exempts nothing there, so leaving those cells would stop
-  // the robot against them.
+  // Same payload, no support attestation on the wire (honest default of a
+  // producer that can't measure support contact): clears the counter out from
+  // under itself — pre-partition behaviour, the 2026-08-14 defect mechanism,
+  // and correct for an un-attested payload (kernel exempts nothing there).
   auto grid = resting_grid();
   WireObject unattested = resting_payload();
   unattested.support_contact_valid = false;
@@ -795,19 +759,13 @@ TEST(PayloadClearing, WithoutTheAttestationTheSupportSurfaceIsClearedAway) {
 }
 
 TEST(PayloadClearing, APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs) {
-  // ADR-0097 rollout item 4, verified rather than assumed. The place-phase
-  // witness rides the SAME `AttachedCollisionObject.support_contact` field as
-  // the pick witness, and `place_attached_object` / `support_patch_withholds`
-  // read only the geometry on that field — never `support_id`, never
-  // `evidence_kind`, never anything that could tell the two phases apart.
-  //
-  // So the claim to prove is an identity, not an approximation: the same
-  // payload, the same pose, the same map, attested against the cabinet shelf it
-  // is being PLACED on instead of the counter it was PICKED from, must produce
-  // a bit-identical partition. If it did not, the place witness would arrive at
-  // the kernel with its supporting occupancy cleared out from under it — the
-  // exact 2026-08-14 defect this partition exists to fix, re-opened for the
-  // phase the fix was not written against.
+  // ADR-0097 rollout item 4. Place-phase witness rides the same
+  // `AttachedCollisionObject.support_contact` field as the pick witness;
+  // `place_attached_object` / `support_patch_withholds` read only that
+  // field's geometry, never `support_id`/`evidence_kind`. Claim: same
+  // payload/pose/map attested against a place target must produce a
+  // bit-identical partition to the pick case — else the 2026-08-14 defect
+  // reopens for the place phase.
   WireObject place = resting_payload();
   place.support_contact.support_id = "sim:cab_1_left_group_main";
 
@@ -834,10 +792,8 @@ TEST(PayloadClearing, APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs) {
 }
 
 TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
-  // The conservatism argument, mechanised. Withholding can only ever SKIP a
-  // clear, so the cells the partitioned clearing removes are a strict subset of
-  // the cells the un-partitioned one removed: this change hands occupancy back
-  // to the map and never takes any away, from the kernel or from Nav2.
+  // Withholding can only ever skip a clear: cells the partitioned clearing
+  // removes are a strict subset of what the un-partitioned one removed.
   const auto before = resting_grid();
 
   auto partitioned = before;
@@ -855,13 +811,10 @@ TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
         << "cell " << idx << " is cleared with the patch but not without it";
   }
 
-  // …and the other half of the same claim, which is the safety-relevant one:
-  // every cell the partition WITHHELD (cleared without the patch, kept with it)
-  // is a cell the kernel's own exemption predicate accepts at ZERO slack. A
-  // withheld cell outside that set is a cell nothing exempts and the payload
-  // still reaches — the class that tripped the E-stop on the 2026-08-14 round-5
-  // run — so the property is asserted against the kernel predicate itself
-  // rather than against the bridge's paraphrase of it.
+  // Safety-relevant half: every cell the partition WITHHELD (cleared without
+  // the patch, kept with it) is exempt under the kernel's own predicate at
+  // zero slack — asserted against the kernel predicate itself, not the
+  // bridge's paraphrase.
   const Placed p = placed(resting_payload());
   ASSERT_EQ(p.patches.size(), 1U);
   std::size_t withheld = 0;
@@ -882,20 +835,14 @@ TEST(PayloadClearing, WithholdingOnlyEverPutsOccupancyBack) {
 }
 
 TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
-  // The mirror, probed rather than asserted in prose. Across the along-normal
-  // axis (the axis the round-5 field cell lives on), across the lateral radius,
-  // and across attested geometries the kernel would accept, the bridge's
-  // withhold predicate agrees CELL FOR CELL with the kernel's exemption
-  // predicate at zero slack — and every cell it withholds is still exempt once
-  // the kernel adds its 1 mm of physical tolerance, which is the containment
-  // the partition rests on.
+  // Bridge's withhold predicate agrees cell for cell with the kernel's
+  // exemption predicate at zero slack, over the along-normal axis, the
+  // lateral radius, and attested geometries the kernel would accept; every
+  // withheld cell is still exempt once the kernel adds its 1 mm tolerance.
   //
-  // The along-normal probe reaches ±90 mm rather than ±60 since the 2026-08-15
-  // height calibration (hazard log Entry 012): the widest slab the kernel would
-  // accept now reaches 21.65 + 10 + 25 = 56.65 mm above the plane, so a ±60 mm
-  // sweep would barely straddle the new ceiling and would prove agreement mostly
-  // where both predicates trivially withhold. The band the calibration opened is
-  // probed on both sides of its edge.
+  // Along-normal probe reaches ±90 mm (not ±60) since the 2026-08-15 height
+  // calibration (hazard log Entry 012): widest slab the kernel accepts now
+  // reaches 21.65 + 10 + 25 = 56.65 mm above the plane.
   const std::vector<tf2::Vector3> normals{
       tf2::Vector3(0.0, 0.0, 1.0),  tf2::Vector3(0.0, 0.0, -1.0), tf2::Vector3(0.0, -1.0, 0.0),
       tf2::Vector3(1.0, 1.0, 1.0),  tf2::Vector3(0.2, -0.3, 0.9), tf2::Vector3(-0.6, 0.1, 0.8),
@@ -943,19 +890,14 @@ TEST(PayloadClearing, WithholdingIsTheKernelsExemptionPredicateAtZeroSlack) {
 }
 
 TEST(PayloadClearing, NoAttestationTheKernelAcceptsWithholdsACellAboveTheWidenedSlab) {
-  // The ceiling as a bound rather than as one example: at 25 mm cells the
-  // withhold ceiling is at most half·(|n.x|+|n.y|+|n.z|) + attested depth + one
-  // voxel = 21.65 mm (a cube diagonal normal) + 10 mm (the kernel's
-  // `support_witness_max_penetration_m`) + 25 mm (the 2026-08-15 co-planar
-  // headroom) = 56.65 mm above the attested plane. `kAboveWidenedSlabOffset` is
-  // outside it for EVERY attestation the kernel would accept, so no wire message
-  // can make the bridge withhold that cell — which is what makes
-  // "withheld ⊂ exempt" a property of the predicate rather than of the fixture.
-  //
-  // Before the calibration the ceiling was 31.65 mm and the field offset the
-  // round-5 run reported (+35.8 mm) was the cell outside it. That cell is now
-  // INSIDE the band, by decision, and
-  // `TheRoundFiveResidueCellIsWithheldInTheCoplanarBand` is where it moved to.
+  // Ceiling as a bound, not one example: at 25 mm cells, withhold ceiling ≤
+  // half·(|n.x|+|n.y|+|n.z|) + attested depth + one voxel = 21.65 mm (cube
+  // diagonal normal) + 10 mm (`support_witness_max_penetration_m`) + 25 mm
+  // (2026-08-15 co-planar headroom) = 56.65 mm above the plane.
+  // `kAboveWidenedSlabOffset` is outside it for every attestation the kernel
+  // accepts. Before the calibration the ceiling was 31.65 mm and round-5's
+  // +35.8 mm cell was outside it; now inside — see
+  // `TheRoundFiveResidueCellIsWithheldInTheCoplanarBand`.
   const tf2::Vector3 origin(0.40, 0.0, kSupportFaceZ);
   const double ceiling =
       0.5 * kResolution * 1.7320508075688772 + kKernelMaxPenetration + kResolution;
@@ -979,20 +921,15 @@ TEST(PayloadClearing, NoAttestationTheKernelAcceptsWithholdsACellAboveTheWidened
 }
 
 TEST(PayloadClearing, TheRoundFiveResidueCellIsWithheldInTheCoplanarBand) {
-  // The same thing on a real grid, because a predicate that is right in
-  // isolation and a clearing that never asks it are indistinguishable in the
-  // field. The payload rests on its attested plane 35.8 mm below an occupancy
-  // cell-centre layer, so three cell layers of its own silhouette sit above the
-  // plane, all of them deep inside the attested patch cylinder (53 mm of lateral
-  // offset against a 60 + 21.65 mm reach).
+  // Same predicate on a real grid. Payload rests on its attested plane
+  // 35.8 mm below an occupancy cell-centre layer; three silhouette layers
+  // above the plane, all inside the attested patch cylinder (53 mm lateral
+  // offset vs. 60 + 21.65 mm reach).
   //
   // Since the 2026-08-15 calibration the slab ceiling for this attestation is
-  // 12.5 + 1.37 + 25 = 38.87 mm, so the +35.8 mm layer the round-5 run reported
-  // is INSIDE the band and is withheld rather than cleared — the deliberate,
-  // recorded consequence of widening the kernel's envelope by one voxel, mirrored
-  // here so `withheld ⊆ exempt` still holds by construction. What still clears is
-  // the layer above it, at +60.8 mm. Withholding only ever puts occupancy back,
-  // so this direction is the conservative one for Nav2 and the arm alike.
+  // 12.5 + 1.37 + 25 = 38.87 mm, so the +35.8 mm layer round-5 reported is
+  // now inside the band and withheld, not cleared. The layer above it
+  // (+60.8 mm) still clears.
   auto grid = lowered(deploy_sim_tree());
   const std::size_t support_cell = cell_index(grid, 0.40, 0.0, kFieldPlaneZ + 0.0108);
   const std::size_t field_cell = cell_index(grid, 0.40, 0.0, kSupportLayerZ);
@@ -1032,13 +969,10 @@ TEST(PayloadClearing, TheRoundFiveResidueCellIsWithheldInTheCoplanarBand) {
 }
 
 TEST(PayloadClearing, WithholdingStopsAtTheProjectedCubeHalfWidth) {
-  // The height bound, to the millimetre, and it is the kernel's: the cube's
-  // half-width projected on the support normal, plus the ATTESTED PHYSICAL
-  // depth, plus the one voxel of co-planar headroom the kernel gained on
-  // 2026-08-15 and this predicate mirrors. A cell centre a millimetre below that
-  // ceiling is support face or co-planar band seen through the lattice and is
-  // withheld; one a millimetre above it is solid genuinely higher than the
-  // attested face and clears.
+  // Height bound (the kernel's): cube half-width projected on the support
+  // normal, plus attested physical depth, plus the one voxel of co-planar
+  // headroom gained 2026-08-15. A millimetre below the ceiling is withheld;
+  // a millimetre above clears.
   const Placed p = placed(resting_payload());
   ASSERT_EQ(p.patches.size(), 1U);
   const auto& patch = p.patches[0];
@@ -1070,12 +1004,10 @@ TEST(PayloadClearing, WithholdingIsBoundedLaterallyByTheAttestedPatch) {
 }
 
 TEST(PayloadClearing, TheLiftLeavesTheCounterAloneAndWithholdsNothing) {
-  // Genuine separation. The attestation is in the object frame, so the patch
-  // rides up with the payload — and the counter cells it used to protect are
-  // now out of the payload's reach anyway. Nothing is cleared, nothing is
-  // withheld, and the counter stands in the map exactly as it did: the kernel
-  // then finds no exempt cell still touching the payload and lets the witness
-  // die, which is the separation it is supposed to detect.
+  // Genuine separation: attestation is in the object frame, so the patch
+  // rides up with the payload, and the counter cells are now out of reach.
+  // Nothing cleared, nothing withheld; kernel finds no exempt cell touching
+  // the payload and lets the witness die.
   auto grid = resting_grid();
   WireObject lifted = resting_payload();
   lifted.pose_in_link.position.z += 0.10;
@@ -1094,11 +1026,9 @@ TEST(PayloadClearing, TheLiftLeavesTheCounterAloneAndWithholdsNothing) {
 }
 
 TEST(PayloadClearing, TheAttestedPlaneIsCarriedInTheObjectFrame) {
-  // The witness geometry is stated in the attached object's own frame and must
-  // be TRANSFORMED, not assumed to point at base +z. Rolled 90° about base x,
-  // the payload hangs off a vertical wall: the attested normal becomes base −y,
-  // the support half-space becomes y >= the contact plane, and the withheld
-  // cells move with it.
+  // Witness geometry is in the object's own frame and must be transformed.
+  // Rolled 90° about base x: attested normal becomes base −y, support
+  // half-space becomes y >= the contact plane, withheld cells move with it.
   WireObject rolled = resting_payload();
   rolled.pose_in_link.position.x = 0.40 - kAttachLinkOrigin.x();
   rolled.pose_in_link.position.y = 0.0;
@@ -1133,17 +1063,13 @@ TEST(PayloadClearing, TheAttestedPlaneIsCarriedInTheObjectFrame) {
 }
 
 TEST(PayloadClearing, OneObjectsAttestationGuardsEveryObjectsClearing) {
-  // The one place the withheld set is NOT a subset of what the kernel exempts,
-  // stated as a fact so it cannot be lost: withholding here is per-MESSAGE
-  // (every patch guards every object's clearing) while the kernel's exemption is
-  // per-OBJECT — `check_attached_voxel_collision` only ever tests object i's
-  // cells against object i's own witness. So with two payloads attached, a cell
-  // inside the FIRST object's attested slab but reached only by the SECOND
-  // object's volume stays in the map and is not exempt for the object that
-  // reaches it. It is deliberate (a second payload's volume must not erase the
-  // first one's support evidence) and it is conservative in the map — occupancy
-  // stays — but it is a stop the kernel can still take, so it is not covered by
-  // the "no withheld cell can be the cell that stops the robot" claim.
+  // The one place the withheld set is NOT a subset of what the kernel
+  // exempts: withholding is per-message (every patch guards every object's
+  // clearing) while the kernel's exemption is per-object
+  // (`check_attached_voxel_collision`). With two payloads attached, a cell
+  // inside the first object's attested slab but reached only by the second
+  // object's volume stays in the map and is not exempt for that object —
+  // deliberate and conservative (occupancy stays), but still a kernel stop.
   auto grid = lowered(deploy_sim_tree());
   // 62.5 mm off the attested patch axis: inside the patch cylinder (60 + 21.65
   // mm) and 3.2 mm above the plane, but 22.5 mm clear of the resting payload's
@@ -1186,10 +1112,9 @@ TEST(PayloadClearing, OneObjectsAttestationGuardsEveryObjectsClearing) {
 }
 
 TEST(PayloadClearing, AMalformedAttestationClearsNothingAtAll) {
-  // Fail-closed, and closed on the WHOLE object — the kernel's own
-  // `ingest_attached_objects` rule. Downgrading a malformed witness to "no
-  // witness" would be the worst of both: the bridge would clear the support
-  // surface away while the kernel refused the attachment set outright.
+  // Fail-closed on the whole object (the kernel's own
+  // `ingest_attached_objects` rule) — downgrading to "no witness" would clear
+  // the support surface while the kernel refused the attachment set.
   std::vector<bridge::PayloadPrimitive> out;
   std::vector<bridge::SupportPatch> patches;
 
@@ -1226,28 +1151,23 @@ TEST(PayloadClearing, AMalformedAttestationClearsNothingAtAll) {
 
 // ── the attach-transition sweep (2026-08-14 round 6) ─────────────────────────
 //
-// The partition above decides WHICH cells within the reach are the payload's.
-// This decides how far the reach goes, and it is not the same answer at the
-// attach transition as it is while carrying. Before the grasp the object's
-// cells were marked by a sensor that saw the REAL object; the clearing measures
-// against a fitted convex primitive. Fit error plus lattice quantization leaves
-// a thin residue of that pre-attach silhouette just outside one circumradius —
-// `voxel_91633`, 22.13 mm out at 25 mm cells — and nothing ever removes it,
-// because no ray reaches an occluded cell either
+// The partition above decides which cells within the reach are the payload's;
+// this decides how far the reach goes, and it differs at the attach
+// transition vs. while carrying. Pre-grasp cells were marked by a sensor
+// seeing the real object; clearing measures against a fitted convex
+// primitive — fit error + lattice quantization leaves a residue just outside
+// one circumradius (`voxel_91633`, 22.13 mm out at 25 mm cells), never
+// removed since no ray reaches an occluded cell
 // (`OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`).
 //
-// So a payload sweeps one voxel wider for as long as it is still ON that
-// silhouette, and at exactly the reach it always did afterwards. "Still on it"
-// is a POSITION and not a frame count, because the grid is re-rasterized from
-// the octree every tick: a one-shot sweep clears the residue from one published
-// grid and the octree hands it straight back. The field E-stop fired 28 grids
-// after the attach.
+// A payload sweeps one voxel wider while still on that silhouette (a
+// position, not a frame count — the grid re-rasterizes every tick, so a
+// one-shot sweep loses the residue back next tick). Field E-stop fired 28
+// grids after the attach.
 
 TEST(PayloadClearing, TheRoundSixFieldCellSurvivesTheSteadyReachAndGoesOnTheAttachSweep) {
-  // The field geometry, as a fact about the reach rather than about a fixture:
-  // 22.13 mm is 0.48 mm past the 21.65 mm circumradius, so the steady-state
-  // clearing never even considered it — and it is the payload's own stale
-  // silhouette, which is why widening the transition's reach is the fix.
+  // 22.13 mm is 0.48 mm past the 21.65 mm circumradius — steady-state
+  // clearing never considered it (payload's own stale silhouette).
   EXPECT_GT(kFieldRound6Distance, kCircumradius);
   EXPECT_NEAR(kFieldRound6Distance - kCircumradius, 0.00048, 1e-5);
 
@@ -1268,14 +1188,11 @@ TEST(PayloadClearing, TheRoundSixFieldCellSurvivesTheSteadyReachAndGoesOnTheAtta
 }
 
 TEST(PayloadClearing, TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids) {
-  // The field timeline, as a test. The E-stop fired 2.78 s after the attach
-  // sweep — ~28 published grids at 10 Hz — with the payload still on its stale
-  // silhouette. The bridge re-rasterizes the grid from the octree every tick and
-  // nothing retires an occluded cell, so the residue is re-supplied on EVERY one
-  // of those grids. The loop below is inclusive of both ends — 29 grids, the
-  // attach frame plus the 28 that elapsed before the stop — so a sweep that
-  // widened its reach only on the first would have published the remaining 28
-  // carrying the cell that stopped the robot.
+  // E-stop fired 2.78 s after the attach sweep (~28 published grids at
+  // 10 Hz), payload still on its stale silhouette. Grid re-rasterizes every
+  // tick and nothing retires an occluded cell, so the residue re-supplies
+  // every grid. Loop is inclusive of both ends: 29 grids (attach frame + 28
+  // that elapsed before the stop).
   bridge::AttachSweepLedger ledger;
   const bridge::PayloadPrimitive payload =
       payload_at_distance(lowered(deploy_sim_tree()), kFieldRound6Distance);
@@ -1297,11 +1214,10 @@ TEST(PayloadClearing, TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids) {
 }
 
 TEST(PayloadClearing, TheAttachWindowClosesOnceThePayloadHasMovedAVoxel) {
-  // …and it does close. Once the payload has translated further than the sweep
-  // padding, every cell the padding covered is either inside the steady reach
-  // (the payload moved toward it) or outside the padded one (it moved away), so
-  // the widened reach is no longer doing work the steady reach cannot — and a
-  // cell 22.13 mm from where the payload USED to be is the world's again.
+  // Once translated further than the sweep padding, every cell the padding
+  // covered is either inside the steady reach (moved toward it) or outside
+  // the padded one (moved away) — a cell 22.13 mm from the old pose is the
+  // world's again.
   bridge::AttachSweepLedger ledger;
   const bridge::PayloadPrimitive at_attach_pose =
       payload_at_distance(lowered(deploy_sim_tree()), kFieldRound6Distance);
@@ -1332,10 +1248,9 @@ TEST(PayloadClearing, TheAttachWindowClosesOnceThePayloadHasMovedAVoxel) {
 }
 
 TEST(PayloadClearing, AClosedAttachWindowDoesNotReopenWhenThePayloadComesBack) {
-  // Closing latches. A payload carried away and brought back does not get the
-  // widened reach a second time: the map around its old pose is by then evidence
-  // gathered while the payload was somewhere else, and re-widening would clear
-  // it on the strength of a silhouette that is long gone.
+  // Closing latches: a payload carried away and back does not get the
+  // widened reach a second time — the map around its old pose is by then
+  // evidence gathered while the payload was elsewhere.
   bridge::AttachSweepLedger ledger;
   const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
 
@@ -1345,10 +1260,9 @@ TEST(PayloadClearing, AClosedAttachWindowDoesNotReopenWhenThePayloadComesBack) {
 }
 
 TEST(PayloadClearing, ANewObjectRevisionOpensANewAttachWindow) {
-  // `attachment_revision` is the producer's own counter, bumped once per atomic
-  // attachment-set change and never per frame, so it is exactly the identity
-  // this ledger needs: a re-grasp, a second payload, and a release-then-grasp
-  // each open a window, while carrying one payload does not re-open one.
+  // `attachment_revision`: producer's own counter, bumped once per atomic
+  // attachment-set change, never per frame. Re-grasp / second payload /
+  // release-then-grasp each open a window; carrying one payload does not.
   bridge::AttachSweepLedger ledger;
   const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
   const tf2::Vector3 moved = kAttachPose + tf2::Vector3(0.30, 0.0, 0.0);
@@ -1369,33 +1283,28 @@ TEST(PayloadClearing, ANewObjectRevisionOpensANewAttachWindow) {
 }
 
 TEST(PayloadClearing, AFrameThatClearsNothingLeavesTheWindowExactlyAsItWas) {
-  // The ledger is swept only on a frame that actually cleared. A stale
-  // attachment state, a missing attach-link TF, or a payload the bridge refuses
-  // to place all clear NOTHING, and none of them may advance the window —
-  // otherwise the fix would evaporate on exactly the runs where perception is
-  // already having a bad time. The refused frames are simply absent here,
-  // because the node never calls `sweep` on them.
+  // Ledger is swept only on a frame that actually cleared: stale attachment
+  // state, a missing attach-link TF, or an unplaceable payload clear nothing
+  // and never advance the window (the node never calls `sweep`).
   bridge::AttachSweepLedger ledger;
   const double open_reach = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
 
   // 30 grids' worth of refusals: the ledger never learns the payload exists.
   EXPECT_EQ(ledger.size(), 0U);
 
-  // The first frame that does clear is still the attach transition, and the
-  // payload having drifted during the outage does not close a window that was
-  // never anchored — it anchors HERE.
+  // The first frame that does clear is still the attach transition; drift
+  // during the outage does not close a window that was never anchored — it
+  // anchors here.
   const tf2::Vector3 drifted = kAttachPose + tf2::Vector3(0.30, 0.0, 0.0);
   EXPECT_EQ(padding_for(ledger, kCarried, drifted), open_reach);
   EXPECT_EQ(padding_for(ledger, kCarried, drifted), open_reach) << "still at its anchor";
 }
 
 TEST(PayloadClearing, ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch) {
-  // The partition is not weakened by the wider reach. The attach sweep reaches
-  // a voxel further into the counter the payload is resting on, and every cell
-  // it newly reaches inside the attested patch is withheld exactly as the
-  // footprint is — so the kernel's witness keeps its evidence and the
-  // 2026-08-14 defect is not re-opened by the round-6 fix. What the padding
-  // buys is the payload-SIDE residue, and only that.
+  // Partition is not weakened by the wider reach: cells the attach sweep
+  // newly reaches inside the attested patch are withheld exactly as the
+  // footprint is, so the round-6 fix does not reopen the 2026-08-14 defect.
+  // The padding only buys the payload-side residue.
   const double padding = bridge::attach_transition_padding(0.0, kAttachSweepPadding);
 
   auto grid = resting_grid();

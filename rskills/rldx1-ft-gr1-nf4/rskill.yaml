@@ -5,26 +5,20 @@
 # LICENSE: RLWRLD Model License v1.0 (non-commercial). See
 # rskills/rldx1-ft-libero-nf4/README.md for the full posture.
 #
-# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack). Shared
-# with the rest of the rldx1-ft-* family. The openral adapter forks
-# tools/rldx_sidecar.py transparently on first observation; user
-# workflow is one command:
-#
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack), shared with
+# the rldx1-ft-* family. Adapter forks tools/rldx_sidecar.py transparently on
+# first observation:
 #   openral sim run --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
-#               --rskill rskills/rldx1-ft-gr1-nf4 \
 #               --rskill rskills/rldx1-ft-gr1-nf4
 #
-# The adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (the model
-# card's own inference example) which exposes the Fourier-native 5-key
-# state contract (right_arm 7 + left_arm 7 + waist 3 + right_hand 6 +
-# left_hand 6 = 29-D) — override via vla.extra.embodiment_tag or
-# OPENRAL_RLDX_EMBODIMENT_TAG if needed.
+# Adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (model card's own
+# inference example), exposing the Fourier-native 5-key state contract
+# (right_arm 7 + left_arm 7 + waist 3 + right_hand 6 + left_hand 6 = 29-D) —
+# override via vla.extra.embodiment_tag or OPENRAL_RLDX_EMBODIMENT_TAG.
 #
-# Manual boot (debug / shared host) — set OPENRAL_RLDX_AUTO_SPAWN=0
-# and start the sidecar yourself:
+# Manual boot (debug/shared host, OPENRAL_RLDX_AUTO_SPAWN=0):
 #   python tools/rldx_sidecar.py --model RLWRLD/RLDX-1-FT-GR1 \
-#       --port 5555 --quantization nf4 \
-#       --embodiment-tag GENERAL_EMBODIMENT
+#       --port 5555 --quantization nf4 --embodiment-tag GENERAL_EMBODIMENT
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

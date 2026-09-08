@@ -81,17 +81,15 @@ enum class EnvelopeLoadStatus : std::uint8_t {
 
 /// Build the envelope from this node's ROS parameters.
 ///
-/// The Python `sim_e2e.launch.py` unpacks `robots/<id>/robot.yaml` via
-/// Pydantic at launch-time, calls
-/// `openral_safety.envelope_loader.kernel_params_from_envelope`, and
-/// forwards each canonical field as a ROS parameter on this kernel
-/// node. The loader reads them back here, validates the joint-array
-/// shapes against `n_dof`, and populates `out`.
+/// Python sim_e2e.launch.py unpacks robots/<id>/robot.yaml via Pydantic at
+/// launch time, calls
+/// openral_safety.envelope_loader.kernel_params_from_envelope, and forwards
+/// each canonical field as a ROS parameter here. This loader reads them
+/// back, validates joint-array shapes against n_dof, and populates out.
 ///
-/// Returns `kOk` on success. `kInvalidShape` if joint arrays disagree
-/// with `n_dof`. `kUnconfigured` if `n_dof` is 0 (no envelope was
-/// supplied — caller MUST refuse to activate the node). `out` is reset
-/// on entry so a stale partial value can never leak into the
+/// Returns kOk on success; kInvalidShape if joint arrays disagree with
+/// n_dof; kUnconfigured if n_dof is 0 (caller MUST refuse to activate).
+/// out is reset on entry so a stale partial value can never leak into the
 /// validator. CLAUDE.md §1.4 — explicit failure, no fallback.
 EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::LifecycleNode& node,
                                                      EnvelopeIntersection& out,

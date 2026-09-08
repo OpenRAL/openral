@@ -237,14 +237,11 @@ class TestSimplerChunkAssembly:
 class TestWidowXStickyGripper:
     """Pin the per-step WidowX sticky-gripper state machine.
 
-    The state machine is applied in ``_RLDXSidecarAdapter.step`` (not
-    in chunk assembly) so it spans replan boundaries cleanly. nf4
-    quantisation makes the policy's gripper_close output noisy near
-    the 0.5 binarisation threshold, which caused the gripper to
-    oscillate every step and never hold closed long enough to grasp.
-    The sticky machine locks transitions for 15 steps after each
-    confident (>0.75 or <0.25) command, mirroring the upstream Google
-    fractal env's ``_postprocess_gripper`` contract.
+    Applied in ``_RLDXSidecarAdapter.step`` (spans replan boundaries, not chunk
+    assembly). nf4 quantisation makes gripper_close noisy near 0.5, causing
+    oscillation instead of a confident grasp hold; locks transitions for 15 steps
+    after each confident (>0.75 or <0.25) command, per the upstream Google fractal
+    env's ``_postprocess_gripper`` contract.
     """
 
     def test_initial_state_is_open(self) -> None:
@@ -278,11 +275,9 @@ class TestLayoutToEmbodimentTag:
     def test_simpler_layouts_dispatch_correctly(self) -> None:
         from openral_sim.policies.rldx import _RLDX_LAYOUT_TO_EMBODIMENT_TAG
 
-        # The published FT-SIMPLER-* checkpoints' `processor_config.json`
-        # only ship `bridge_orig` / `fractal20220817_data` modality
-        # buckets; the unused OXE_WIDOWX / OXE_GOOGLE enum names crash
-        # PolicyLoader.load with KeyError. Use OXE_BRIDGE_ORIG /
-        # OXE_FRACTAL — the names whose `.value` matches a real bucket.
+        # FT-SIMPLER-* checkpoints' processor_config.json only ship bridge_orig /
+        # fractal20220817_data buckets; OXE_WIDOWX / OXE_GOOGLE crash PolicyLoader.load
+        # with KeyError — use OXE_BRIDGE_ORIG / OXE_FRACTAL instead (`.value` matches).
         assert _RLDX_LAYOUT_TO_EMBODIMENT_TAG["simpler_widowx"] == "OXE_BRIDGE_ORIG"
         assert _RLDX_LAYOUT_TO_EMBODIMENT_TAG["simpler_google"] == "OXE_FRACTAL"
         # LIBERO / GR1 / RC365 keep GENERAL_EMBODIMENT (no regression).

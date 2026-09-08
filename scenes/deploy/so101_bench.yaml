@@ -1,22 +1,19 @@
 # SO-101 laptop bench rig — converted from the retired
 # deployments/so101.yaml RobotEnvironment.
 #
-# The `sensors:` entries are deploy-time bindings for the robot manifest's own
-# `top` / `wrist` cameras (same names → scene entry wins; the manifest stays
-# authoritative for frames/intrinsics). Host-specific by nature — retune the
-# /dev/video* paths per host with `openral detect --deployment`.
+# `sensors:` entries are deploy-time bindings for the robot manifest's own
+# `top`/`wrist` cameras (same names -> scene entry wins; manifest stays
+# authoritative for frames/intrinsics). Host-specific — retune /dev/video*
+# paths per host with `openral detect --deployment`.
 #
 # HAL facts (serial port + lerobot calibration identity) live in the `hal:`
-# binding below — the HAL analogue of a sensor `deploy_binding` — so
-# this scene is self-contained and needs no `--hal` overrides:
-#
-#   openral deploy run --config scenes/deploy/so101_bench.yaml
-#
-# The calibration is COMMITTED next to this scene
-# (scenes/deploy/calibration/so_follower.json) so the deploy owns it instead of
-# depending on whatever `<id>.json` is in the ambient HF cache; a relative
-# `calibration_dir` resolves against THIS file's directory. `--hal` still wins
-# over these for one-off host overrides (precedence: --hal > scene hal > robot.yaml).
+# binding below (the HAL analogue of a sensor `deploy_binding`), so this scene
+# is self-contained: `openral deploy run --config scenes/deploy/so101_bench.yaml`.
+# Calibration is COMMITTED next to this scene
+# (scenes/deploy/calibration/so_follower.json) so the deploy owns it instead
+# of the ambient HF cache; relative `calibration_dir` resolves against this
+# file's directory. `--hal` still wins for one-off overrides (precedence:
+# --hal > scene hal > robot.yaml).
 scene:
   id: so101_bench
 robot_id: so101_follower
@@ -32,27 +29,20 @@ hal:
     calibration_dir: "calibration"
     calibrate_on_connect: false
 sensors:
-  # Cameras use the `opencv_thread` backend (cv2.VideoCapture) — the open
-  # host-camera path with no GStreamer/pygobject dependency. The gstreamer +
-  # NVMM zero-copy sensor fast path (nvjpegdec → NVMM, DeepStream container)
-  # lives in OpenRAL Pro; this open scene must run on a bare host where `gi`/Gst
-  # is absent. cv2 negotiates the MJPG cameras (both bench cams deliver MJPG)
-  # itself, so no explicit jpeg-decode knob is needed. To run the NVMM tier,
-  # re-bind these to `backend: gstreamer` (source/jpeg params) under Pro.
+  # Cameras use `opencv_thread` (cv2.VideoCapture) — open host-camera path, no
+  # GStreamer/pygobject dependency (the gstreamer + NVMM zero-copy fast path
+  # lives in OpenRAL Pro; re-bind to `backend: gstreamer` there). cv2
+  # negotiates MJPG itself (both bench cams deliver MJPG), no decode knob needed.
   #
-  # DEVICE PATHS: use the kernel's STABLE `/dev/v4l/*` symlinks, never a raw
-  # `/dev/videoN` number — the number is assigned in USB enumeration order, so
-  # unplugging/replugging a cam (or a reboot) silently renumbers it and the
-  # bare node points at nothing (v4l2src dies with `streaming stopped (-5)`).
-  # These paths are host-specific by nature; retune per host with
-  # `ls -l /dev/v4l/by-id /dev/v4l/by-path` (or `openral detect --deployment`).
-  #  * wrist → `by-id` keys on the camera's USB serial, so it follows the
-  #    icspring across ANY port or re-enumeration. `-video-index0` is the
-  #    capture node (index1 is the metadata node).
-  #  * top → `by-path` keys on the physical USB port + interface. The built-in
-  #    Integrated Camera can't use `by-id`: its `by-id` symlink resolves to the
-  #    interface-1.2 GREY *IR* sensor (video2), not the interface-1.0 RGB node
-  #    (video0). `by-path` pins interface 1.0 correctly.
+  # DEVICE PATHS: use kernel STABLE `/dev/v4l/*` symlinks, never raw
+  # `/dev/videoN` (USB-enumeration-order assigned, silently renumbers on
+  # replug/reboot, v4l2src dies with "streaming stopped (-5)"). Host-specific
+  # — retune with `ls -l /dev/v4l/by-id /dev/v4l/by-path` or `openral detect
+  # --deployment`. wrist uses `by-id` (keys on USB serial, follows the
+  # icspring across ports; `-video-index0` is the capture node). top uses
+  # `by-path` (built-in Integrated Camera's `by-id` wrongly resolves to the
+  # interface-1.2 GREY IR sensor, not the interface-1.0 RGB node; `by-path`
+  # pins interface 1.0 correctly).
   - name: top
     modality: rgb
     frame_id: world

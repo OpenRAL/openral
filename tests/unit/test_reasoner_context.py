@@ -1,4 +1,4 @@
-"""Unit tests for :class:`openral_reasoner.ContextRenderer`.
+"""Unit tests for ``openral_reasoner.ContextRenderer``.
 
 Real Pydantic schemas + real ContextRenderer — no mocks. Tests assert
 deterministic rendering, rolling-buffer behaviour, and the drain-once
@@ -130,11 +130,9 @@ def test_renders_ee_pose() -> None:
 def test_renders_detected_scene_objects() -> None:
     """Lifted scene objects surface as ``scene_objects[<frame>]: label@(x,y,z), …``.
 
-    Without this the LLM only ever learns a goal noun is "not in memory" — it
-    never sees the labels the perception lift actually placed (e.g. "bread"), so
-    it cannot apply its own semantics to map a goal ("baguette") onto a detected
-    object. Surfacing the labels is what lets the reasoner bridge that gap
-    (#14). Deduped by label (the open-vocab detector emits overlapping boxes).
+    Lets the LLM map a goal noun ("baguette") onto a detected label ("bread")
+    instead of only learning "not in memory" (#14). Deduped by label (the
+    open-vocab detector emits overlapping boxes).
     """
     from openral_core import DetectedObject
 
@@ -221,30 +219,24 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     """A REAL kernel reactive-collision payload takes the STRUCTURED path.
 
     ``_summarise_evidence_json`` falls back to ``evidence=<raw-json-truncated>``
-    when the payload does not decode against the ``FailureEvidence``
-    discriminator. The kernel's reactive check reports ``horizon_step: -1``,
-    which the schema used to reject — so the reasoner saw a raw-JSON dump
-    instead of the decoded fields. This pins the structured path: the summary
-    must be the sorted ``model_dump()`` (no ``kind`` key, keys unquoted-sorted)
-    rather than the verbatim publisher JSON.
+    when the payload doesn't decode against the ``FailureEvidence`` discriminator.
+    The kernel's reactive check reports ``horizon_step: -1``, which the schema
+    used to reject, so the reasoner saw a raw dump instead of decoded fields.
+    Pins the structured path: sorted ``model_dump()`` (no ``kind`` key), not the
+    verbatim publisher JSON.
     """
     payload = _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
     # Sanity: the fixture really is the kernel's reactive shape.
     assert json.loads(payload)["horizon_step"] == CollisionEvidence.REACTIVE_HORIZON_STEP
 
     summary = _summarise_evidence_json(payload)
-    # Pinned against literal expected content, NOT against a second
-    # `model_dump()` of the same object: an expectation computed the same way
-    # the code computes it agrees with any regression the code makes. That is
-    # how a field added to `CollisionEvidence` was able to push `link_a`,
-    # `link_b_or_object` and `min_distance_m` out of this very line while this
-    # test stayed green.
-    # Note the missing closing brace: the object renders at 121 characters and
-    # the 120-char truncation already clips it. That is how little headroom
-    # there is, and why a bulk field cannot be allowed to render inline here.
-    # The `+joint_positions_rad[0]` marker sits AFTER the truncation, so it
-    # costs the identity fields nothing and still says the field was there and
-    # empty — which is what a record predating #187 looks like.
+    # Pinned against literal expected content, not a second model_dump() of the
+    # same object, so a regression that drops a field (as happened to link_a/
+    # link_b_or_object/min_distance_m here) can't silently agree with itself.
+    # Missing closing brace: the object renders at 121 chars and the 120-char
+    # truncation clips it. The `+joint_positions_rad[0]` marker sits AFTER the
+    # truncation — discloses the field was present-but-empty (CLAUDE.md §1.4),
+    # which is what a record predating #187 looks like.
     assert summary == (
         'evidence={"collision_kind": "world", "horizon_step": -1, "link_a": "ee", '
         '"link_b_or_object": "voxel_189", "min_distance_m": -0.05'
@@ -274,12 +266,10 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
 def test_failure_summary_keeps_identities_for_the_shipped_predictive_fixture() -> None:
     """The REAL kernel payload in ``tests/unit/fixtures/`` keeps its identities.
 
-    Regression on the first attempt at the fix below, which dropped the joint
-    vector only when it rendered past a 48-character budget. That was a proxy
-    for the wrong property: this fixture — the kernel's own 2-dof predictive
-    payload, the one this repo ships — renders 41 characters, sailed under the
-    threshold, and still evicted ``link_a`` from the line. The exclusion is by
-    role, not by length, and this is the case that proves it.
+    Regression: an earlier fix dropped the joint vector only past a 48-char
+    budget (a proxy for the wrong property). This fixture's 2-dof predictive
+    payload renders at 41 chars, under that threshold, yet still evicted
+    ``link_a`` — the exclusion is by role, not by length.
     """
     payload = (
         Path(__file__).parent / "fixtures" / "kernel_predictive_collision_evidence.json"
@@ -311,16 +301,12 @@ def test_failure_summary_discloses_an_empty_joint_vector_rather_than_hiding_it()
 def test_failure_summary_keeps_identities_when_evidence_carries_a_joint_vector() -> None:
     """A 7-dof adjudication vector must not push the identities off the line.
 
-    ``_summarise_evidence_json`` sorts its keys and truncates at 120
-    characters. ``joint_positions_rad`` sorts *before* ``link_a``, and on a
-    real arm at ``max_digits10`` it renders ~130 characters on its own — the
-    entire budget. Rendered inline it took ``link_a``,
-    ``link_b_or_object`` and ``min_distance_m`` with it, leaving the bounded
-    replanning ladder (``ReasonerCore``: retry / param-tweak /
-    substitute-skill / goal-replan) a joint vector and no idea what collided.
-
-    The vector is an offline-adjudication field. It is disclosed as a count
-    after the truncation, never inside it.
+    ``joint_positions_rad`` sorts before ``link_a`` and at ``max_digits10``
+    renders ~130 chars on its own, the entire 120-char truncation budget —
+    rendered inline it would take ``link_a``/``link_b_or_object``/
+    ``min_distance_m`` with it, leaving the replanning ladder (``ReasonerCore``)
+    a joint vector and no idea what collided. Disclosed as a count after the
+    truncation instead, never inside it.
     """
     payload = CollisionEvidence(
         collision_kind="self",
@@ -679,10 +665,10 @@ def _located_basket() -> ObjectsMetadata:
 
 
 def test_note_located_survives_continuous_in_view_clobber() -> None:
-    """The deploy locate-loop fix: a goal noun the reasoner confirmed via
-    open-vocab locate_in_view (``basket``) must persist on the ``located`` line even
-    after the fixed-vocab continuous detector overwrites ``in_view`` (which never
-    carries ``basket``), so the LLM can decompose/dispatch instead of re-locating."""
+    """A goal noun confirmed via open-vocab locate_in_view (``basket``) must persist
+    on the ``located`` line even after the fixed-vocab continuous detector
+    overwrites ``in_view`` (which never carries ``basket``), so the LLM can
+    decompose/dispatch instead of re-locating."""
     r = ContextRenderer()
     r.note_located(_located_basket())
     assert "located[top]: basket @px(150,350)" in r.render(world_state=_world_state())

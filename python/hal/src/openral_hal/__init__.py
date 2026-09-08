@@ -2,76 +2,59 @@
 
 Public surface:
 - ``HAL``: structural Protocol every adapter must satisfy (RFC §8.2).
-- ``LifecycleEStopHAL`` / ``ResettableLifecycleEStopHAL``: optional typed
-  lifecycle e-stop propagation and recovery contracts.
-- ``HALHealthProvider`` / ``HALHealthReport``: optional cached diagnostics
-  contract for the generic lifecycle heartbeat.
+- ``LifecycleEStopHAL`` / ``ResettableLifecycleEStopHAL``: typed lifecycle
+  e-stop propagation and recovery contracts.
+- ``HALHealthProvider`` / ``HALHealthReport``: cached-diagnostics contract
+  for the generic lifecycle heartbeat.
 - ``RosControlHAL``: ros2_control-backed adapter.
-- ``SO100FollowerHAL``: lerobot SO-100 follower arm adapter.
-- ``SO100_DESCRIPTION`` / ``so100_with_sensors``: canonical SO-100 description
-  and a catalog-backed factory that resolves a sensor loadout (issue #23).
-- ``SO100DigitalTwin`` / ``SO100DigitalTwinConfig``: in-process simulator.
-- ``UR5eHAL`` / ``UR5e_DESCRIPTION`` / ``ur5e_with_sensors``.
-- ``UR10eHAL`` / ``UR10e_DESCRIPTION`` / ``ur10e_with_sensors``.
-- ``UR5eRealHAL`` / ``UR5e_REAL_DESCRIPTION``: real-hardware UR5e via
-  ``ros2_control`` + ``ur_robot_driver`` (URCap / RTDE).
-- ``UR10eRealHAL`` / ``UR10e_REAL_DESCRIPTION``: real-hardware UR10e via
-  the same driver.
-- ``FrankaPandaHAL`` / ``FRANKA_PANDA_DESCRIPTION`` / ``franka_panda_with_sensors``.
-- ``FrankaPandaRealHAL`` / ``FRANKA_PANDA_REAL_DESCRIPTION``: real-hardware
-  adapter over franka_ros2 / FCI (issue #56).
-- ``SawyerRealHAL`` / ``SAWYER_DESCRIPTION`` / ``SAWYER_REAL_DESCRIPTION``:
-  real-hardware adapter over intera_sdk / sawyer_robot (issue #57).
-- ``AlohaHAL`` / ``ALOHA_DESCRIPTION`` / ``ALOHA_REAL_DESCRIPTION``:
-  real-hardware adapter over the Trossen Interbotix XS SDK (issue #58).
-- ``AlohaMujocoHAL``: MuJoCo-backed digital twin for the bimanual ALOHA,
-  driving gym-aloha's ``bimanual_viperx_transfer_cube.xml`` with the same
-  14-DoF action layout as ``AlohaHAL``.
-- ``SO100MujocoHAL``: MuJoCo-backed digital twin for the SO-100 follower,
-  driving the ``mujoco_menagerie`` MJCF with the same 6-DoF action layout
-  as ``SO100FollowerHAL``.
-- ``G1MujocoHAL`` / ``G1_DESCRIPTION``: MuJoCo-backed digital twin for the
-  Unitree G1 humanoid (29-DoF; ADR-0087 glide by default, optional ADR-0089
-  pretrained walking controller in sim). Real-HW G1 HAL is planned
-  under the M2 milestone (CLAUDE.md §6.2).
-- ``H1MujocoHAL`` / ``H1_DESCRIPTION``: MuJoCo-backed digital twin for the
-  Unitree H1 humanoid (19-DoF — predecessor to the G1 with a simpler 5-DoF
-  per leg, 1-DoF torso, 4-DoF per arm layout).  Same contract-validator
-  scope as ``G1MujocoHAL``; real-HW H1 HAL also waits on the M2 S0
-  cerebellum.
-- ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: MuJoCo-backed digital twin
-  for the Flexiv Rizon 4 (7-DoF cobot with whole-body force sensitivity).
-  Structurally identical to the UR / Franka sim HALs.
-- ``OpenArmMujocoHAL`` / ``OPENARM_DESCRIPTION``: MuJoCo-backed digital
-  twin for the Enactic OpenArm v2 bimanual (2 x (7-DoF arm + 1 gripper) =
-  16-DoF action).  Fresh ``HALBase`` subclass because the bimanual
-  layout doesn't fit ``MujocoArmHAL``, but otherwise trivial — v2's
-  native ``<position>`` actuators (per-class PD baked into the MJCF)
-  let the HAL just write target → ctrl and step.  The v2 MJCF is
-  fetched lazily by ``openral_hal._openarm_v2_assets``; will simplify
-  back to ``robot_descriptions`` once upstream bumps its pin.
-- ``OpenArmRealHAL`` / ``OPENARM_REAL_DESCRIPTION``: real-hardware adapter
-  for the same arm.  Commands the four ``openarm_bringup`` ros2_control
-  controllers (per-side arm + gripper) that drive the Damiao CAN FD motor
-  buses from C++ at 400 Hz; ``connect()`` refuses a bus that is not up.
-- ``AnvilOpenArmV2MujocoHAL`` / ``ANVIL_OPENARM_V2_DESCRIPTION``: MuJoCo-backed
-  digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured
-  variant of the standard OpenArm v2 (same 16-DoF surface).  Differs
-  from the Enactic v2 arm in exactly two documented ranges (J1 clamped
-  to +/-135 deg; J6 radial deviation widened to -45..+70 deg) plus the
-  wrist support bracket that enables it (visual-only CAD meshes in the
-  MJCF).
-  Thin manifest-driven subclass like ``OpenArmMujocoHAL``; the MJCF is
-  fetched at a pinned SHA from ``bensonlee5/anvil-openarm-mujoco`` by
+- ``SO100FollowerHAL`` / ``SO100_DESCRIPTION`` / ``so100_with_sensors``
+  (catalog-backed sensor loadout, issue #23); ``SO100DigitalTwin`` /
+  ``SO100DigitalTwinConfig`` in-process sim; ``SO100MujocoHAL`` MuJoCo
+  twin, ``mujoco_menagerie`` MJCF, same 6-DoF action layout.
+- ``UR5eHAL`` / ``UR10eHAL`` (+ ``*_DESCRIPTION``, ``*_with_sensors``);
+  real ``UR5eRealHAL`` / ``UR10eRealHAL`` via ``ros2_control`` +
+  ``ur_robot_driver`` (URCap / RTDE).
+- ``FrankaPandaHAL`` / ``FRANKA_PANDA_DESCRIPTION`` /
+  ``franka_panda_with_sensors``; real ``FrankaPandaRealHAL`` over
+  franka_ros2 / FCI (issue #56).
+- ``SawyerRealHAL`` / ``SAWYER_DESCRIPTION`` / ``SAWYER_REAL_DESCRIPTION``
+  over intera_sdk / sawyer_robot (issue #57).
+- ``AlohaHAL`` / ``ALOHA_DESCRIPTION`` / ``ALOHA_REAL_DESCRIPTION`` over
+  the Trossen Interbotix XS SDK (issue #58); ``AlohaMujocoHAL`` MuJoCo
+  twin, gym-aloha's ``bimanual_viperx_transfer_cube.xml``, same 14-DoF
+  action layout.
+- ``G1MujocoHAL`` / ``G1_DESCRIPTION``: Unitree G1, 29-DoF (ADR-0087 glide
+  default, optional ADR-0089 pretrained walking controller in sim);
+  real-HW G1 planned M2 (CLAUDE.md §6.2).
+- ``H1MujocoHAL`` / ``H1_DESCRIPTION``: Unitree H1, 19-DoF (predecessor to
+  G1: 5-DoF/leg, 1-DoF torso, 4-DoF/arm); same validator scope as
+  ``G1MujocoHAL``; real-HW also waits on the M2 S0 cerebellum.
+- ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: Flexiv Rizon 4, 7-DoF
+  cobot, whole-body force sensitivity; structurally like the UR/Franka
+  sim HALs.
+- ``OpenArmMujocoHAL`` / ``OPENARM_DESCRIPTION``: Enactic OpenArm v2
+  bimanual, 2 x (7-DoF arm + 1 gripper) = 16-DoF; fresh ``HALBase``
+  subclass (bimanual doesn't fit ``MujocoArmHAL``); native
+  ``<position>`` actuators write target → ctrl directly; MJCF fetched
+  lazily by ``openral_hal._openarm_v2_assets``.
+- ``OpenArmRealHAL`` / ``OPENARM_REAL_DESCRIPTION``: real adapter for the
+  same arm; commands the four ``openarm_bringup`` ros2_control
+  controllers (per-side arm + gripper) driving Damiao CAN FD motor buses
+  from C++ at 400 Hz; ``connect()`` refuses a bus that is not up.
+- ``AnvilOpenArmV2MujocoHAL`` / ``ANVIL_OPENARM_V2_DESCRIPTION``: MuJoCo
+  twin for the Anvil OpenARM 2.0, same 16-DoF surface; differs in J1
+  clamp (+/-135 deg) and J6 radial deviation (-45..+70 deg) plus a
+  visual-only wrist bracket; MJCF pinned at a SHA from
+  ``bensonlee5/anvil-openarm-mujoco`` via
   ``openral_hal._anvil_openarm_v2_assets`` (``openarm:anvil_v2_bimanual``).
 - ``SimTransport``: typed in-memory ros2_control transport for unit tests.
-- ``GalaxeaA1HAL`` / ``GALAXEA_A1_DESCRIPTION``: real Galaxea A1 through an
-  isolated ROS 1 Noetic sidecar (the vendor SDK remains operator-provided).
+- ``GalaxeaA1HAL`` / ``GALAXEA_A1_DESCRIPTION``: real Galaxea A1 via an
+  isolated ROS 1 Noetic sidecar (vendor SDK operator-provided).
 
-Where a sim sibling exists, ``*_REAL_DESCRIPTION`` constants are derived via
-``openral_hal._real_description.make_real_description`` and share its HAL
-entrypoints. Real-only platforms such as the Galaxea A1 publish one description
-directly until a licensed digital-twin asset is available.
+Where a sim sibling exists, ``*_REAL_DESCRIPTION`` constants derive from
+``openral_hal._real_description.make_real_description`` and share its
+HAL entrypoints. Real-only platforms (Galaxea A1) publish one
+description directly until a licensed digital-twin asset is available.
 """
 
 from openral_hal.aloha import (

@@ -1,6 +1,6 @@
 """Unit tests for the shared sidecar interpreter environment.
 
-:func:`openral_sim._sidecar_common.make_isolated_env` builds the env handed to
+``openral_sim._sidecar_common.make_isolated_env`` builds the env handed to
 the gr00t / rldx model server before ``exec``. It must default the CUDA
 caching-allocator to ``expandable_segments:True`` so the 3B NF4 checkpoint load
 co-exists with the main process's sim render context on an 8 GB GPU — without

@@ -2,31 +2,29 @@
 
 The physical ALOHA is two ViperX 300 6-DoF arms with parallel grippers
 mounted side-by-side, exposing a 14-DoF joint-position action space
-(2 * (6 arm + 1 gripper)).  The gym-aloha simulator uses an MJCF that mirrors
-the same kinematics and scene layout, so the manifest and the in-code
-:data:`ALOHA_DESCRIPTION` describe both the real robot and the simulator
-one-to-one (CLAUDE.md robot/sim split).
+(2 * (6 arm + 1 gripper)). The gym-aloha simulator uses an MJCF
+mirroring the same kinematics and scene layout, so the manifest and the
+in-code ``ALOHA_DESCRIPTION`` describe both the real robot and the
+simulator one-to-one (CLAUDE.md robot/sim split).
 
 This module wires the **real-hardware** Layer-0 path; the gym-aloha sim
-path is owned by ``openral_sim.backends.aloha`` and invokes the
-gym ``MjModel`` directly.
+path is owned by ``openral_sim.backends.aloha`` and invokes the gym
+``MjModel`` directly.
 
-Driver landscape
-----------------
-The reference ROS 2 driver is
-`Interbotix/interbotix_ros_manipulators`_, which provides a
+Driver landscape: the reference ROS 2 driver is
+`Interbotix/interbotix_ros_manipulators`_, providing a
 ``ros2_control`` joint trajectory controller (default name
 ``"arm_controller"``) per arm and a gripper position controller per
-gripper.  ALOHA bring-up launches two robot namespaces (``"left_arm"`` /
-``"right_arm"``) and we expose a single 14-DoF action by interleaving
-left arm + left gripper, then right arm + right gripper, in the same
-order as :data:`ALOHA_DESCRIPTION.joints`.
+gripper. ALOHA bring-up launches two robot namespaces (``"left_arm"`` /
+``"right_arm"``); we expose a single 14-DoF action by interleaving left
+arm + left gripper, then right arm + right gripper, in the same order
+as ``ALOHA_DESCRIPTION.joints``.
 
 Per CLAUDE.md §7.4 the Trossen Interbotix XS SDK is BSD-3 / Apache-2.0
 (fully compatible) but ships as vendor-distributed packages, so the
-real-hardware manifest (:data:`ALOHA_REAL_DESCRIPTION`, derived from
-:data:`ALOHA_DESCRIPTION` via :func:`make_real_description`) declares
-``sdk_kind: "closed_with_api"``.  Both share the same ``hal`` block:
+real-hardware manifest (``ALOHA_REAL_DESCRIPTION``, derived from
+``ALOHA_DESCRIPTION`` via ``make_real_description``) declares
+``sdk_kind: "closed_with_api"``. Both share the same ``hal`` block:
 ``hal.sim = "openral_hal.aloha:AlohaMujocoHAL"`` and
 ``hal.real = "openral_hal.aloha:AlohaHAL"``; the sim baseline keeps
 ``sdk_kind: "open"``. ``deploy sim`` / ``deploy run`` pick the HAL via
@@ -76,7 +74,7 @@ from openral_core.schemas import (
     SimGripperDescription,
 )
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, _raw_floats
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._real_description import make_real_description
 
@@ -356,12 +354,12 @@ class AlohaHAL(HALBase):
             the per-arm torque-disable service.
         publish_fn: Callable forwarding messages to ROS 2 topics.
             Production use injects the lifecycle node's publisher; tests
-            inject :class:`SimTransport.publish`.
+            inject ``SimTransport.publish``.
         state_fn: Callable returning the latest raw joint state as a dict.
             Production use injects the lifecycle node's subscriber
-            callback; tests inject :class:`SimTransport.state`.
+            callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
-            before :class:`ROSPerceptionStale` is raised.
+            before ``ROSPerceptionStale`` is raised.
 
     Example:
         >>> from openral_hal.aloha import AlohaHAL
@@ -425,13 +423,6 @@ class AlohaHAL(HALBase):
         self._connected = True
         self._last_state_time = time.monotonic()
 
-    def disconnect(self) -> None:
-        """Close the transport.  Idempotent."""
-        if not self._connected:
-            return
-        log.info("hal.disconnect", robot=self.description.name)
-        self._connected = False
-
     def read_state(self) -> JointState:
         """Return the latest joint state for all 14 description joints.
 
@@ -450,17 +441,11 @@ class AlohaHAL(HALBase):
         n = len(self._joint_names)
         raw: dict[str, object] = {} if self._state_fn is None else self._state_fn()
 
-        def _floats(key: str) -> list[float]:
-            val = raw.get(key)
-            if isinstance(val, list):
-                return [float(v) for v in val]
-            return [0.0] * n
-
         return JointState(
             name=list(self._joint_names),
-            position=_floats("position"),
-            velocity=_floats("velocity"),
-            effort=_floats("effort"),
+            position=_raw_floats(raw, "position", n),
+            velocity=_raw_floats(raw, "velocity", n),
+            effort=_raw_floats(raw, "effort", n),
             stamp_ns=int(time.time_ns()),
         )
 
@@ -560,21 +545,21 @@ def _default_publish(topic: str, msg: dict[str, object]) -> None:  # pragma: no 
 
 # ── MuJoCo HAL (digital twin) ────────────────────────────────────────────────
 # The gym-aloha bimanual sim twin is a thin
-# :class:`MujocoArmHAL` subclass — all wiring (MJCF URI, joint→qpos/
+# ``MujocoArmHAL`` subclass — all wiring (MJCF URI, joint→qpos/
 # actuator maps, two passthrough grippers with mirror_actuator_index,
-# keyframe seeding) lives in :data:`ALOHA_DESCRIPTION.sim`.
+# keyframe seeding) lives in ``ALOHA_DESCRIPTION.sim``.
 
 
 class AlohaMujocoHAL(MujocoArmHAL):
     """HAL adapter for the Trossen ALOHA bimanual setup (MuJoCo digital twin).
 
-    Thin manifest-driven wrapper around :class:`MujocoArmHAL`; all wiring
+    Thin manifest-driven wrapper around ``MujocoArmHAL``; all wiring
     (MJCF URI, joint→qpos/actuator maps, two ``PASSTHROUGH`` grippers with
     ``mirror_actuator_index`` for the antisymmetric finger pair, keyframe
-    seeding) lives in :data:`ALOHA_DESCRIPTION.sim`.
+    seeding) lives in ``ALOHA_DESCRIPTION.sim``.
 
-    Public surface mirrors :class:`AlohaHAL`: a 14-DoF
-    :class:`openral_core.Action` with the
+    Public surface mirrors ``AlohaHAL``: a 14-DoF
+    ``openral_core.Action`` with the
     ``left arm 6 + left gripper 1 + right arm 6 + right gripper 1``
     layout.  Gripper values are positive-finger metres in
     ``[0.021, 0.057]`` (passthrough); MuJoCo's ``ctrlrange`` clips
@@ -583,9 +568,9 @@ class AlohaMujocoHAL(MujocoArmHAL):
     Args:
         mjcf_path: Optional override for the MJCF file.  When ``None``,
             the file is resolved through the ``gym_aloha:`` URI scheme
-            from :data:`ALOHA_DESCRIPTION.assets.mjcf`.
+            from ``ALOHA_DESCRIPTION.assets.mjcf``.
         settle_steps: Number of MuJoCo physics steps per
-            :meth:`send_action` call.
+            ``send_action`` call.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.

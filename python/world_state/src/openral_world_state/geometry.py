@@ -1,6 +1,6 @@
 """Shared gaze geometry — re-export shim.
 
-The look-at math now lives in :mod:`openral_core.geometry` so every layer —
+The look-at math now lives in ``openral_core.geometry`` so every layer —
 including the layer-0 HAL camera rig — can compute camera orientations from one
 source without a backward dependency on world-state (layer 2). This module
 re-exports it verbatim so existing ``from openral_world_state.geometry import …``

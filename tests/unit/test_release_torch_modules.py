@@ -118,11 +118,9 @@ def test_cuda_memory_is_actually_reclaimed() -> None:
 def test_cuda_allocated_mb_tracks_a_real_allocation() -> None:
     """The probe the skill runner logs its `freed_mb` from.
 
-    An eviction that frees nothing is the failure mode a live run cannot
-    otherwise see — `empty_cache()` returns only already-free blocks, so an
-    adapter that flushes without dropping its reference reports success
-    while the card stays full. This is the measurement that makes that
-    visible.
+    An eviction that frees nothing is invisible without this: `empty_cache()`
+    only returns already-free blocks, so a flush-without-drop reports success
+    while the card stays full.
     """
     import importlib
 

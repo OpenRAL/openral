@@ -1,14 +1,13 @@
 """Integration test: franka manifest-driven HAL, scene-attached, publishes over ROS.
 
-Exercises deploy-sim scene-attach end-to-end at the ROS level — :class:`_ManifestHALLifecycleNode`
-is driven through ``configure → activate``, attaches to a real MuJoCo scene, and
-the test asserts:
+Exercises deploy-sim scene-attach end-to-end at the ROS level: ``_ManifestHALLifecycleNode``
+is driven through ``configure → activate``, attaches to a real MuJoCo scene, and asserts:
 
-* ``/joint_states`` carries a :class:`sensor_msgs/JointState` with
+* ``/joint_states`` carries a ``sensor_msgs/JointState`` with
   ``len(position) == 8`` (7 panda arm joints + 1 gripper) within a timeout —
   positions come from the scene's live MJCF qpos via the joint-name mapping.
 * ``viewer_enabled=true`` with ``MUJOCO_GL=egl`` (no DISPLAY) must NOT fail
-  activation — the :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
+  activation — the ``SimSensorBridge``
   catches the GL/display failure and continues headless.
 
 **Test A** — native tabletop_push scene (always runs, no LIBERO).
@@ -86,7 +85,7 @@ def test_franka_tabletop_push_joint_states() -> None:
     Asserts:
     * Lifecycle configure + activate return SUCCESS.
     * ``viewer_enabled=true`` + ``MUJOCO_GL=egl`` (no DISPLAY) does NOT fail
-      activation — :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
+      activation — ``SimSensorBridge``
       catches GL/display failures and continues headless.
     * ``/joint_states`` publishes with ``len(position) == 8`` and the canonical
       panda joint names within ``_JOINT_STATE_TIMEOUT_S`` seconds.

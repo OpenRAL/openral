@@ -1,18 +1,17 @@
 """Regression: the non-composite packer merges the split arm+gripper action.
 
 A single VLA policy step on a non-composite sim env (LIBERO OSC_POSE franka,
-SimplerEnv widowx — every ``delta_ee_6d_plus_gripper`` rSkill) is dispatched as
-TWO typed Actions, CARTESIAN_DELTA (arm) then GRIPPER_POSITION (finger), and the
-HAL ``env.step``\\s each one. Before the fix the stateless ``pack_action_for_env``
-built a fresh zero vector per Action, so the arm stepped with gripper=0 and the
-gripper stepped with arm=0 — the arm advanced only every other env step with a
-flickering gripper and never coordinated a grasp (env.step received all-zero arm
-commands; the reward sat flat). The composite path already merged via
+SimplerEnv widowx — every ``delta_ee_6d_plus_gripper`` rSkill) dispatches as
+TWO typed Actions (CARTESIAN_DELTA then GRIPPER_POSITION), each its own
+``env.step``. Before the fix the stateless ``pack_action_for_env`` built a
+fresh zero vector per Action, so each step zeroed the other's command — the
+arm advanced only every other step with a flickering gripper, never
+coordinating a grasp. The composite path already merged via
 ``_last_env_action``; this brings the same merge to the legacy packer.
 
-These pin the merge at the packer level (the live two-``env.step`` flow is
-exercised by the deploy-sim run); they drive the REAL ``pack_action_for_env``
-with the REAL franka manifest (CLAUDE.md §1.11 — no mocks).
+Pins the merge at the packer level with the REAL ``pack_action_for_env`` and
+REAL franka manifest (CLAUDE.md §1.11 — no mocks); the live two-``env.step``
+flow is exercised by the deploy-sim run.
 """
 
 from __future__ import annotations

@@ -104,7 +104,7 @@ def test_deploy_runner_satisfies_inference_runner_protocol(
     aggregator: WorldStateAggregator,
     active_skill: _NoOpTestSkill,
 ) -> None:
-    """Structural ``isinstance`` against :class:`InferenceRunner` succeeds."""
+    """Structural ``isinstance`` against ``InferenceRunner`` succeeds."""
     runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
     assert isinstance(runner, InferenceRunner)
 
@@ -265,7 +265,7 @@ def test_re_activate_after_deactivate(
     aggregator: WorldStateAggregator,
     active_skill: _NoOpTestSkill,
 ) -> None:
-    """The runner can be re-activated for a second :meth:`run`."""
+    """The runner can be re-activated for a second ``run``."""
     runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
     runner.activate()
     r1 = runner.run(max_ticks=2)

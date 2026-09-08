@@ -47,18 +47,17 @@ class LifecycleKernelTest : public ::testing::Test {
 protected:
   void SetUp() override {
     // Isolate this process from every other DDS participant on the host
-    // (#222). The kernel subscribes to `/openral/estop`, a global topic, and
-    // nothing else pins a domain: a concurrent `openral deploy sim` on the
-    // default domain asserted an E-stop and latched the node under test,
-    // failing `StateUnavailableDropAndRecoveryPublishSafetyStatus` with a
-    // `DROP_EXTERNAL_ESTOP` the test never sent. Measured 19/20 pass on the
-    // shared domain with that sim live, 20/20 with discovery off.
+    // (#222). The kernel subscribes to /openral/estop (global); nothing else
+    // pins a domain, and a concurrent `openral deploy sim` on the default
+    // domain once asserted an E-stop and latched the node under test.
+    // Measured 19/20 pass on the shared domain with that sim live, 20/20
+    // with discovery off.
     //
     // OFF is stronger than a per-process ROS_DOMAIN_ID: every node these
-    // tests need lives in this process, and OFF removes the domain-uniqueness
-    // gamble entirely rather than shrinking it. Overwrites a caller's value
-    // on purpose — a test that can be contaminated by the environment is the
-    // defect, not the environment.
+    // tests need lives in this process, so OFF removes the domain-uniqueness
+    // gamble entirely. Overwrites a caller's value on purpose — a test that
+    // can be contaminated by the environment is the defect, not the
+    // environment.
     setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "OFF", 1);
     rclcpp::init(0, nullptr);
   }
@@ -585,18 +584,15 @@ TEST_F(LifecycleKernelTest, VelocityChunkReactiveCheckCatchesCollision) {
       << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
 }
 
-// DETERMINISTIC proof of the mobile-base world (voxel) path: the
-// panda_mobile "arm hits the table" scenario. The model is a planar base
-// (prismatic-x, dof 0) carrying a one-link arm (revolute-z, dof 1) whose capsule
-// sits 0.3 m ahead of base_link. The measured seed places the BASE at x=5 m in
-// the world, but `collision_base_dofs=[0]` makes the kernel zero the base dof
-// before FK so the arm is evaluated in the base_link frame — where a
-// base-relative occupancy grid has an occupied wall at x>=0.2 m. With the
-// base-frame fix the arm capsule lands in an occupied voxel and the kernel must
-// estop; WITHOUT it the arm would be placed at x~5.3 m, outside the local grid,
-// and nothing would ever be caught. This is the exact regression the dropped
-// test missed: the discriminator is the base-dof zeroing, and the geometry is
-// hand-verified (capsule centre (0.3,0,0), grid x in [0,0.8]).
+// DETERMINISTIC proof of the mobile-base world (voxel) path: panda_mobile
+// "arm hits the table". Model: planar base (prismatic-x, dof 0) carrying a
+// one-link arm (revolute-z, dof 1), capsule 0.3 m ahead of base_link. Seed
+// places BASE at x=5 m world; collision_base_dofs=[0] zeroes the base dof
+// before FK so the arm is evaluated in base_link frame, where a base-relative
+// occupancy grid has an occupied wall at x>=0.2 m. With the fix the capsule
+// lands in the occupied voxel and estops; without it the arm would sit at
+// x~5.3 m, outside the local grid, and nothing would be caught. Geometry
+// hand-verified: capsule centre (0.3,0,0), grid x in [0,0.8].
 TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
   rclcpp::NodeOptions opts;
   opts.parameter_overrides({
@@ -733,17 +729,14 @@ std::string evidence_field(const std::string& json, const std::string& key) {
 
 }  // namespace
 
-// The E-stop evidence must describe ONE cell: the voxel named in
-// `link_b_or_object` is the voxel `min_distance_m` measures. The two used to
-// come from different cells — the identity from the first cell to trip, the
-// distance from the sweep-wide minimum — so a shallow graze could be published
-// carrying a deep cell's number (the attached-payload residue report that sent
-// diagnosis after a penetration that never existed).
+// E-stop evidence must describe ONE cell: `link_b_or_object` names the voxel
+// `min_distance_m` measures — never a shallow-graze identity paired with a
+// deeper cell's distance.
 //
 // Geometry (hand-computed, single occupied row on the capsule's own axis):
-// the arm capsule sits at (0.3, 0, 0), r=0.1, half-length 0.1 along +z. The
-// grid is 4x1x1 at 0.1 m from origin (0.02, -0.05, -0.05), so cell centres run
-// x = 0.07 / 0.17 / 0.27 / 0.37 at y=z=0. Two cells are occupied:
+// arm capsule at (0.3, 0, 0), r=0.1, half-length 0.1 along +z. Grid 4x1x1 at
+// 0.1 m from origin (0.02, -0.05, -0.05); cell centres x = 0.07/0.17/0.27/0.37
+// at y=z=0. Two cells occupied:
 //   cell 1 (x=0.17): surface distance (0.13 - 0.05) - 0.1 = -0.02  ← trips first
 //   cell 2 (x=0.27): the capsule axis is inside it        = -0.10  ← deepest
 // Both trip; the evidence must name cell 2 and quote -0.10 for it.
@@ -1084,20 +1077,17 @@ openral_msgs::msg::OccupancyVoxels wall_voxels() {
 
 }  // namespace
 
-// A PREDICTIVE stop's verdict is about a configuration that exists in no other
-// artifact: it is the kernel's own damped-least-squares integration of the
-// chunk, at the kernel's lambda and its seed dt. Adjudicating such a stop
-// against the measured joints therefore reads geometry the kernel never
-// checked — the drawer-opening run that motivated this reported two links
-// -5.34 mm apart while offline mesh adjudication at the *recorded* joints put
-// the same pair +53 mm clear, and the disagreement was the artifact's, not the
-// kernel's.
+// A PREDICTIVE stop's verdict is about a configuration in no other artifact:
+// the kernel's own damped-least-squares integration of the chunk, at the
+// kernel's lambda and seed dt. Adjudicating against measured joints instead
+// reads geometry the kernel never checked (the drawer-opening run: two links
+// -5.34 mm apart in the report vs +53 mm clear at the *recorded* joints under
+// offline mesh adjudication — an artifact disagreement, not a kernel one).
 //
-// So the evidence must carry the configuration it was measured at, and carry
-// it exactly. The proof runs in the kernel's own arithmetic rather than a
-// reimplementation of it: replay the captured configuration through a second,
-// identically configured kernel as a JOINT_POSITION row, and require the same
-// pair and the same distance to 1e-8.
+// So evidence must carry the exact configuration it was measured at. Proof
+// runs in the kernel's own arithmetic: replay the captured configuration
+// through a second, identically configured kernel as a JOINT_POSITION row,
+// require the same pair and distance to 1e-8.
 TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItAdjudicated) {
   const auto vox = wall_voxels();
 
@@ -1373,24 +1363,23 @@ struct MultiStepPredictiveRun {
   std::string evidence{};  ///< first CollisionEvidence JSON, if any
 };
 
-/// Drive a MULTI-STEP CARTESIAN_DELTA chunk at the planar 2R arm the predictive
-/// tests above use, against a voxel wall whose near face sits at `wall_face_y`.
-/// Everything except that face is identical between the two cases below, so the
-/// pair isolates one variable: how far the predicted trajectory stays from the
-/// obstacle.
+/// Drives a MULTI-STEP CARTESIAN_DELTA chunk at the planar 2R arm the
+/// predictive tests above use, against a voxel wall at `wall_face_y`. The two
+/// call sites below differ only in that face, isolating one variable: how far
+/// the predicted trajectory stays from the obstacle.
 ///
-/// Geometry, hand-computed (metres, base frame; the arm is 1 m + 1 m, the EE is
-/// the fixed link at the tip):
+/// Geometry, hand-computed (metres, base frame; arm 1 m + 1 m, EE = fixed tip
+/// link):
 ///   start EE      y = 1.00        (q = [0, +90°])
 ///   EE capsule    r = 0.05
 ///   per step      Δy = +0.05      (no cartesian_delta_scale → raw = physical)
 ///   horizon       6 steps         → predicted y_s = 1.00 + 0.05·(s+1)
 ///   voxel margin  0.00
-///   growth        0.05 per look-ahead step, so the step-s check runs at
-///                 margin + growth·s = 0.05·s — step 0 gets NO inflation
-///                 (the horizon-1 case pinned by the test above).
-/// The capsule-to-cell distance at step s is d_s = wall_face_y − y_s − 0.05, and
-/// the kernel stops when d_s ≤ 0.05·s, i.e. when wall_face_y ≤ 1.10 + 0.10·s.
+///   growth        0.05 per look-ahead step → step-s check at
+///                 margin + growth·s = 0.05·s (step 0: no inflation, per the
+///                 horizon-1 test above).
+/// d_s = wall_face_y − y_s − 0.05; kernel stops when d_s ≤ 0.05·s, i.e. when
+/// wall_face_y ≤ 1.10 + 0.10·s.
 void run_multistep_cartesian_predict(const std::string& node_name, double wall_face_y,
                                      MultiStepPredictiveRun* out) {
   rclcpp::NodeOptions opts;
@@ -1541,18 +1530,17 @@ void run_multistep_cartesian_predict(const std::string& node_name, double wall_f
 
 }  // namespace
 
-// The predictive Cartesian look-ahead must NOT reject a MULTI-STEP chunk whose
-// whole predicted horizon stays clear — the false-positive direction. 0884101
-// repurposed the original test for this case into the horizon-1 margin test
-// above, leaving the multi-step accept uncovered; this restores it.
+// Predictive Cartesian look-ahead must NOT reject a MULTI-STEP chunk whose
+// whole predicted horizon stays clear (false-positive direction; restores
+// multi-step-accept coverage dropped when 0884101 repurposed this test into
+// the horizon-1 margin test above).
 //
-// Wall face at y = 1.75, so the tightest step is the last one, s=5:
-//   d_5 = 1.75 − (1.00 + 0.05·6) − 0.05 = 0.40  vs a threshold of 0.05·5 = 0.25
-// → clear by 0.15 m, and every earlier step is clearer still (the slack
-// d_s − 0.05·s = 0.65 − 0.10·s only shrinks with s). That 0.15 m is far more
-// than the DLS reconstruction's residual over six steps of a well-conditioned
-// 2R arm (the elbow sits at 90°, nowhere near a singularity), so an accept here
-// means the trajectory really is clear, not that the fixture got lucky.
+// Wall face at y = 1.75, tightest step is s=5:
+//   d_5 = 1.75 − (1.00 + 0.05·6) − 0.05 = 0.40  vs threshold 0.05·5 = 0.25
+// → clear by 0.15 m; slack d_s − 0.05·s = 0.65 − 0.10·s only shrinks with s,
+// so every earlier step is clearer. 0.15 m exceeds the DLS reconstruction's
+// residual over six steps of a well-conditioned 2R arm (elbow at 90°, far
+// from singular), so an accept here means the trajectory is really clear.
 TEST_F(LifecycleKernelTest, CartesianDeltaMultiStepPredictivePassesWhenTrajectoryStaysClear) {
   MultiStepPredictiveRun run;
   run_multistep_cartesian_predict("kernel_cart_predict_multistep_clear", 1.75, &run);
@@ -2108,34 +2096,29 @@ TEST_F(LifecycleKernelTest, LateSubscriberReceivesTheLatchedSafetyStatus) {
   EXPECT_EQ(spy.all().front().drop_reason, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP);
 }
 
-// ── Declaration liveness in the kernel's own clock domain ────────────────────
+// ── declaration liveness in the kernel's own clock domain ───────────────────
+// 2026-08-14 clock-domain fix moved declaration-expiry-on-a-dead-stream off
+// World State onto two existing kernel-side gates: the attachment freshness
+// deadline (attached_collision_deadline_s — refuses candidates while the
+// payload model is stale) and the per-candidate place_declaration_live()
+// backstop (drops the allowance once the declaration's own timeout passes
+// without a retraction). Neither was tested; these two tests are that test.
 //
-// The 2026-08-14 clock-domain fix moved declaration-expiry-on-a-dead-stream off
-// World State and onto two kernel-side gates that were already there: the
-// attachment freshness deadline (`attached_collision_deadline_s`, which refuses
-// every candidate action while the payload model is stale) and the per-candidate
-// `place_declaration_live()` backstop (which drops the allowance once the
-// declaration's own timeout passes without a retraction). Both were argued in
-// comments and neither was tested. The two tests below are that test.
-//
-// Fixture geometry, hand-computed so the amendment's two margins land on either
-// side of one true clearance — which is what makes "is the allowance in force?"
-// directly observable on /openral/safe_action:
-//
-//   link0        revolute about +z at the origin, capsule r = 10 mm (never near
-//                the wall: 130 mm of clearance in every configuration tested)
-//   payload      box, half-extents 20 mm, attached to link0 at (0.10, 0, 0),
-//                so its +x face sits at x = 0.120 m
+// Fixture geometry, hand-computed so the amendment's two margins land on
+// either side of one true clearance (making "is the allowance in force?"
+// observable on /openral/safe_action):
+//   link0        revolute about +z at origin, capsule r = 10 mm (130 mm
+//                clearance to the wall in every tested configuration)
+//   payload      box, half-extents 20 mm, attached to link0 at (0.10,0,0),
+//                +x face at x = 0.120 m
 //   occupancy    one 25 mm cell, cube x in [0.140, 0.165], y/z in +/-12.5 mm
-//   true surface distance payload -> cell                       = 0.020 m
-//   attached margin                                    0.030 m  -> STOP
-//   attached margin - min(1.5 x resolution, 40 mm)   -0.0075 m  -> CLEAR
-//
-// The reduced margin was 0.005 m until ADR-0097's Second Amendment raised the
-// allowance from min(one voxel, 2.5 cm) to min(1.5 x voxel, 4 cm) on
-// 2026-08-15; both values sit on the CLEAR side of the same 0.020 m clearance,
-// so what these two tests observe — allowance in force or withdrawn — is
-// unchanged by the calibration.
+//   true surface distance payload -> cell               = 0.020 m
+//   attached margin                            0.030 m  -> STOP
+//   attached margin - min(1.5 x resolution, 40 mm)  -0.0075 m  -> CLEAR
+// Reduced margin was 0.005 m until ADR-0097's Second Amendment (2026-08-15)
+// raised the allowance from min(one voxel, 2.5 cm) to min(1.5 x voxel, 4 cm);
+// both values sit CLEAR of the same 0.020 m clearance, so what these tests
+// observe (allowance in force or withdrawn) is unchanged by the calibration.
 namespace {
 
 std::vector<rclcpp::Parameter> place_declaration_params() {
@@ -2195,19 +2178,16 @@ openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
 }
 
 // One carried payload plus the live place declaration scoped to it.
-// `attachment_stamp_ns` is the *stream's* stamp (what the freshness deadline
-// measures) and `declaration_stamp_ns` is the *declaration's* (what the backstop
-// measures) — that they are separate clocks' business is the whole fix.
-// `carrying == false` is the pre-grasp / post-release beat: the declaration is
-// published for the whole goal, so it rides every heartbeat whether or not a
-// payload is attached yet.
+// attachment_stamp_ns is the *stream's* stamp (freshness deadline);
+// declaration_stamp_ns is the *declaration's* (backstop) — separate clocks
+// is the whole fix. carrying == false is the pre-grasp/post-release beat:
+// the declaration rides every heartbeat for the whole goal, attached or not.
 //
-// `target_face_x` is ADR-0098's half: 0.0 publishes a region with no geometry
-// (every pre-ADR-0098 test), anything else publishes the declared target as a
-// 100 mm box whose -x face — the one the payload approaches — sits there. The
-// cell spans x in [0.140, 0.165], so a face at 0.155 is a shelf the 25 mm
-// lattice over-states by 15 mm, which is the whole quantisation error the
-// blanket allowance was guessing at.
+// target_face_x is ADR-0098's half: 0.0 publishes a region with no geometry
+// (pre-ADR-0098 tests); anything else publishes the declared target as a
+// 100 mm box whose -x face (the one approached) sits there. Cell spans x in
+// [0.140, 0.165], so a face at 0.155 is a shelf the 25 mm lattice over-states
+// by 15 mm — the quantisation error the blanket allowance was guessing at.
 openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachment_stamp_ns,
                                                           std::int64_t declaration_stamp_ns,
                                                           double timeout_s, bool carrying = true,
@@ -2764,17 +2744,16 @@ TEST_F(LifecycleKernelTest, CleanDetachDropsTheRegionOnceInsteadOfRejectingIt) {
       << logs.joined();
 }
 
-// ── The advisory band, end to end (#176) ─────────────────────────────────────
+// ── advisory band, end to end (#176) ──────────────────────────────────────────
+// Difference the geometry tests can't see: what the NODE does with an
+// advisory hit. A latched stop asserts /openral/estop and needs an operator
+// /openral/estop_reset; an advisory refusal drops the chunk and leaves the
+// kernel able to accept the next one.
 //
-// The band's whole purpose is a difference the geometry tests cannot see: what
-// the NODE does with an advisory hit. A latched stop asserts /openral/estop and
-// requires an operator to call /openral/estop_reset; an advisory refusal drops
-// the chunk and leaves the kernel able to accept the next one.
-//
-// Both tests share the declared-carry fixture and move the payload from its
-// approach pose (`payload_x` 0.10, face 20 mm clear of the cell) to an arrived
-// one (0.130, face 10 mm inside it). At the fixture's 30 mm attached margin and
-// 37.5 mm allowance the gate sits at −7.5 mm and the band floor at −12.5 mm, so
+// Both tests share the declared-carry fixture, moving the payload from
+// approach (payload_x 0.10, face 20 mm clear of the cell) to arrived (0.130,
+// face 10 mm inside it). At the fixture's 30 mm attached margin and 37.5 mm
+// allowance the gate sits at -7.5 mm and the band floor at -12.5 mm, so
 // 10 mm of penetration is inside the band — the 2026-08-26 baguette case.
 namespace {
 
@@ -2909,22 +2888,19 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
 
 TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) {
   // ADR-0098 end to end, through the real node: the declared target's own
-  // geometry rides the same `WorldStateStamped` the region does, arms with it,
+  // geometry rides the same WorldStateStamped the region does, arms with it,
   // and changes both halves of the verdict.
   //
-  // The lattice cell spans x in [0.140, 0.165]; the shelf's face is at 0.155, so
-  // the cube over-states the surface by 15 mm. The payload's +x face is at
-  // `payload_x + 0.02`, the standoff is 30 mm and the blanket allowance 37.5 mm:
-  //
-  //   * payload_x 0.130 -> face 0.150, 5 mm CLEAR of the shelf. The blanket
-  //     allowance refuses this (it is measuring the cube, and the cube says
-  //     10 mm inside) — that is exactly what
-  //     `AnArrivedPlaceRefusesTheChunkWithoutLatching` pins at the same pose.
-  //     With geometry it passes, because 5 mm of measured clearance is not a
-  //     collision.
-  //   * payload_x 0.145 -> face 0.165, 10 mm INTO the shelf. Past the advisory
-  //     band, so it is the latched stop it always was — and the evidence names
-  //     the body it was measured against, not the cell.
+  // Lattice cell spans x in [0.140, 0.165]; shelf face at 0.155 (cube
+  // over-states surface by 15 mm). Payload +x face at payload_x + 0.02,
+  // standoff 30 mm, blanket allowance 37.5 mm:
+  //   * payload_x 0.130 -> face 0.150, 5 mm CLEAR of the shelf. Blanket
+  //     allowance refuses this (measures the cube: 10 mm inside) — pinned by
+  //     AnArrivedPlaceRefusesTheChunkWithoutLatching at the same pose. With
+  //     geometry it passes: 5 mm of measured clearance is not a collision.
+  //   * payload_x 0.145 -> face 0.165, 10 mm INTO the shelf. Past the
+  //     advisory band: the latched stop it always was, evidence naming the
+  //     body it was measured against, not the cell.
   rclcpp::NodeOptions opts;
   opts.parameter_overrides(place_declaration_params());
   auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_place_geometry", opts);
@@ -3181,16 +3157,14 @@ std::vector<rclcpp::Parameter> scale_band_params(double proximity_m) {
 }
 
 // A TEN-cell row along x with exactly one occupied cell, near face at x = 0.25.
-//
-// The width is load-bearing, not scenery. The broad-phase cell window is sized
-// by the gate margin, and `rng()` CLAMPS its indices into the grid — so on a
-// one-cell grid every query is forced onto that cell no matter how far away it
-// is. The first version of this test used a one-cell grid and passed for
-// exactly that reason, while on any real map the band was dead: a cell 20 mm
-// clear was never visited, never folded into `sweep_min_distance`, and the
-// scale went 1.0 → E-stop with nothing in between (a panda_mobile scene run is
-// what caught it — `tests/sim/safety/test_kernel_graded_scaling_approach.py`).
-// With ten cells the occupied one is only reached if the window is genuinely
+// Width is load-bearing: the broad-phase cell window is sized by the gate
+// margin, and rng() CLAMPS indices into the grid, so a one-cell grid forces
+// every query onto that cell regardless of distance — a one-cell version of
+// this test passed for that reason while on a real map the band was dead
+// (cell 20 mm clear never visited, never folded into sweep_min_distance,
+// scale jumped 1.0 -> E-stop with nothing between; caught by a panda_mobile
+// scene run, tests/sim/safety/test_kernel_graded_scaling_approach.py). With
+// ten cells the occupied one is reached only if the window is genuinely
 // widened by the band, so this fails if that regresses.
 openral_msgs::msg::OccupancyVoxels one_cell_at_x_025() {
   openral_msgs::msg::OccupancyVoxels vox;
@@ -3449,19 +3423,17 @@ TEST_F(LifecycleKernelTest, GradedScalingNeverTouchesAnAbsolutePositionTarget) {
   EXPECT_EQ(out.scaled, 0U);
 }
 
-// CARTESIAN_DELTA is the mode every real VLA arm policy here uses, and it was
-// the one mode the first version of these tests never exercised. Two things
-// have to hold and neither is visible from a joint-velocity chunk:
-//
-//   1. Row layout. Only the leading 6-vector twist is a rate. A trailing
+// CARTESIAN_DELTA is the mode every real VLA arm policy here uses. Two
+// things hold, neither visible from a joint-velocity chunk:
+//   1. Row layout. Only the leading 6-vector twist is a rate; a trailing
 //      column is not, and scaling it would corrupt whatever it carries.
-//   2. NORMALIZED chunks must be clamped before they are scaled. Native OSC
-//      controllers apply `clamp(raw, -1, 1) * range`, and the validator puts no
-//      per-axis bound on CARTESIAN_DELTA, so |raw| > 1 is admissible. Scaling
-//      2.5 by 0.37 gives 0.92 — a real slowdown — whereas scaling without the
-//      clamp gives 0.92 only by luck and, for a bigger raw value, would still
-//      clip to 1.0 downstream: the identical motion, reported as a slowdown
-//      that never happened.
+//   2. NORMALIZED chunks must be clamped before scaling. Native OSC
+//      controllers apply clamp(raw, -1, 1) * range, and the validator puts no
+//      per-axis bound on CARTESIAN_DELTA, so |raw| > 1 is admissible: scaling
+//      2.5 by 0.37 gives 0.92 (a real slowdown) vs scaling without the clamp,
+//      which gives 0.92 only by luck and for a bigger raw value would still
+//      clip to 1.0 downstream — identical motion reported as a slowdown that
+//      never happened.
 TEST_F(LifecycleKernelTest, GradedScalingClampsThenScalesOnlyTheTwistColumns) {
   openral_msgs::msg::ActionChunk cart;
   cart.control_mode = 5;  // CARTESIAN_DELTA

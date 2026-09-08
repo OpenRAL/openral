@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """E-stop ground truth for UNATTACHED (pre-grasp) stops, not just carried payloads.
 
-The 2026-08-13 post-fix matrix stopped four times; three were pre-grasp
-arm↔world stops (``panda_link7`` −15.06 mm at predicted-horizon step 0,
-``panda_link7`` −4.79 mm reactive, ``panda_link1`` −17.28 mm reactive) and the
-snapshot early-returned on all three because nothing was attached — so none of
-them could be adjudicated real-vs-false.
+The 2026-08-13 post-fix matrix stopped four times; three were pre-grasp arm↔world
+stops (``panda_link7`` −15.06 mm predicted-horizon, ``panda_link7`` −4.79 mm
+reactive, ``panda_link1`` −17.28 mm reactive) that the snapshot early-returned on
+because nothing was attached, so none could be adjudicated real-vs-false.
 
-These tests drive :func:`openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot`
-against a real compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11) in the
-three shapes a stop actually takes: an arm already inside a fixture, an arm a few
-millimetres away from one (the margin stop, where MuJoCo reports NO contact at
-all), and a carried payload (the pre-existing attached case, which must keep
-reporting exactly what it did).
+Drives ``openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot`` against a
+real compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11) across the three
+shapes a stop takes: arm inside a fixture, arm a few mm away (margin stop, no
+MuJoCo contact), and carried payload (pre-existing case, unchanged).
 """
 
 from __future__ import annotations
@@ -269,21 +266,18 @@ def test_candidate_chunk_digest_flags_a_shape_mismatch() -> None:
     assert "ticks" not in digest
 
 
-# ── near-miss probe coverage (the 2026-08-14 drawer_utensil adjudication) ─────
+# ── near-miss probe coverage (2026-08-14 drawer_utensil adjudication) ─────────
 #
-# The ``panda_link1`` −17.28 mm stop was adjudicated FALSE on the strength of a
-# silence: the snapshot's 47 near-miss pairs named ``mobilebase0_*`` and
-# ``robot0_link0`` but never ``robot0_link1``, so "nothing physical within
-# 100 mm of link1" was read straight off the report. That silence was an
-# artifact. A RoboCasa kitchen ships FOUR plane geoms (``floor_1_room_g0`` and
-# ``floor_1_backing_room_g0``, each with a ``_vis`` twin) and MuJoCo gives a
-# plane ``geom_rbound == 0``; the probe treated that as an infinite radius, so
-# every robot↔floor pair scored ``-inf`` and sorted ahead of every finite pair.
-# With ~70 geoms on a robosuite mobile Panda that is ~280 pairs against a
-# 256-call budget: the arm's real near-misses were never probed at all.
+# panda_link1 −17.28 mm was adjudicated FALSE on a silence: the snapshot's 47
+# near-miss pairs named mobilebase0_*/robot0_link0 but never robot0_link1. The
+# silence was an artifact: RoboCasa ships 4 plane geoms (floor_1_room_g0,
+# floor_1_backing_room_g0, each with a _vis twin) with geom_rbound == 0, treated
+# as infinite radius so every robot↔floor pair scored -inf and outranked every
+# finite pair. ~70 geoms on a mobile Panda → ~280 pairs vs a 256-call budget:
+# the arm's real near-misses were never probed.
 #
-# The fixture below is that shape in miniature — planes plus a cabinet panel a
-# known 20 mm off ``robot0_link1`` — and it is a real compiled ``MjModel``.
+# Fixture below is that shape in miniature — planes + a cabinet panel a known
+# 20 mm off robot0_link1 — a real compiled MjModel.
 
 _ROOM_PLANES = ("floor_1_room_g0", "floor_1_room_g0_vis", "floor_1_backing_room_g0")
 _PANEL_GAP_M = 0.020
@@ -313,8 +307,7 @@ _KITCHEN_MJCF_TAIL = """
 def _kitchen_model_data(*, n_filler_geoms: int) -> tuple[object, object]:
     """A real ``MjModel`` with RoboCasa's plane count and a panel 20 mm off link1.
 
-    ``n_filler_geoms`` stands in for the visual geoms robosuite hangs off the
-    base (``robot0_g8_vis`` … ``mobilebase0_g7_vis``): they matter here only
+    ``n_filler_geoms`` stands in for robosuite's base visual geoms — matters only
     because each one multiplies the robot↔plane pair count.
     """
     planes = "\n".join(
@@ -353,9 +346,9 @@ def _kitchen_snapshot(model: object, data: object, *, max_calls: int) -> dict[st
 def test_near_miss_probe_reports_link1_when_planes_outnumber_the_budget() -> None:
     """The arm's real near-miss survives a budget the scene's planes could eat.
 
-    Twelve robot geoms against three planes is 36 pairs that a radius-``inf``
-    ranking puts first; a 36-call budget then leaves nothing for the panel
-    20 mm off ``robot0_link1``. The probe must still report it.
+    12 robot geoms × 3 planes = 36 pairs a radius-``inf`` ranking puts first,
+    consuming a 36-call budget that would otherwise starve the panel 20 mm off
+    ``robot0_link1``.
     """
     model, data = _kitchen_model_data(n_filler_geoms=10)
     snapshot = _kitchen_snapshot(model, data, max_calls=36)
@@ -390,9 +383,9 @@ def test_near_miss_probe_reports_its_own_coverage() -> None:
 def test_scene_planes_no_longer_outrank_every_finite_pair() -> None:
     """A plane is bounded exactly, so it competes on distance like any other geom.
 
-    ``geom_rbound == 0`` means "no bounding sphere", not "infinitely large":
-    the exact plane-to-sphere bound is ``|n·(c-p)| - r``. Without this a floor
-    5 m away outranks a cabinet 20 mm away and consumes the probe budget.
+    ``geom_rbound == 0`` means "no bounding sphere", not "infinitely large": the
+    exact plane-to-sphere bound is ``|n·(c-p)| - r``. Without this a floor 5 m
+    away outranks a cabinet 20 mm away.
     """
     import numpy as np
     from openral_hal.sim_sensor_bridge import _pair_distance_lower_bound

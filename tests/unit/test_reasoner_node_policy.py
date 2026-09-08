@@ -27,9 +27,8 @@ from openral_reasoner.node_policy import (
     sorted(CASCADE_PROMPT_SOURCES),
 )
 def test_every_cascade_source_is_recognised(source: str) -> None:
-    """Every cascade frame_id — including detector/reward_monitor/mission —
-    is classified as cascade (the pre-fix reset guard matched only
-    ``spatial_memory``)."""
+    """Every cascade frame_id — including detector/reward_monitor/mission — is
+    classified as cascade (the pre-fix reset guard matched only ``spatial_memory``)."""
     assert source in CASCADE_PROMPT_SOURCES
 
 

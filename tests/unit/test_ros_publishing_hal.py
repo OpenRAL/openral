@@ -1,23 +1,16 @@
-"""Unit tests for :class:`openral_runner.ROSPublishingHAL`.
+"""Unit tests for ``openral_runner.ROSPublishingHAL``.
 
-The adapter is the single change to the in-process hot path — it
-replaces a motor-driving HAL with a publisher of
-``openral_msgs/ActionChunk`` on ``/openral/candidate_action`` while
-keeping the existing `DeployRunner._tick_impl` contract intact.
+Replaces a motor-driving HAL with a publisher of ``openral_msgs/ActionChunk`` on
+``/openral/candidate_action``, keeping ``DeployRunner._tick_impl``'s contract intact.
 
-Two test tiers (mirrors ``tests/unit/test_diagnostics_heartbeat.py``):
+Two tiers (mirrors ``tests/unit/test_diagnostics_heartbeat.py``):
 
-* **Construction / validation** — no rclpy required. Asserts read /
-  send before connect raise typed errors and the chunk-row → flat
-  serialisation respects the row-major contract.
-* **Live publish/subscribe** — gated on rclpy. Drives a real adapter
-  attached to a real ``LifecycleNode``, publishes one ``Action``, opens
-  an rclpy subscriber in the same process, and asserts the typed
-  ``ActionChunk`` arrives with the right ``flat`` / ``n_dof`` /
-  ``rskill_id`` / ``trace_id`` fields.
+* **Construction / validation** — no rclpy. Read/send before connect raise typed
+  errors; chunk-row → flat serialisation respects the row-major contract.
+* **Live publish/subscribe** — rclpy-gated. Real adapter on a real ``LifecycleNode``,
+  publishes an ``Action``, asserts the ``ActionChunk`` fields on a live subscriber.
 
-Per CLAUDE.md §1.11 — no mocks. All Pydantic schemas are real,
-``RobotDescription`` comes from a real fixture.
+Per CLAUDE.md §1.11 — no mocks; real Pydantic schemas, real ``RobotDescription`` fixture.
 """
 
 from __future__ import annotations
@@ -41,7 +34,7 @@ from openral_runner.ros_publishing_hal import ROSPublishingHAL, _row_major_flatt
 
 
 def _so100_like_description() -> RobotDescription:
-    """Real :class:`RobotDescription` with six revolute joints (SO-100-shaped)."""
+    """Real ``RobotDescription`` with six revolute joints (SO-100-shaped)."""
     joints = [
         JointSpec(
             name=f"j{i}",
@@ -351,12 +344,8 @@ def test_read_state_caches_joint_states() -> None:
     reason="rclpy / openral_msgs not on PYTHONPATH",
 )
 def test_send_action_rejects_unsupported_control_mode() -> None:
-    """cartesian_pose / foot_placement / dex_hand_joint are still out of the F1 wire.
-
-    cartesian_delta / cartesian_twist / body_twist / gripper / composite_mode
-    are wired onto the typed ActionChunk, so those are now accepted; only
-    cartesian_pose, foot_placement and dex_hand_joint remain unserialised.
-    Assert one of the still-unsupported modes is rejected.
+    """cartesian_delta/twist, body_twist, gripper, composite_mode are wired onto
+    ActionChunk; cartesian_pose, foot_placement, dex_hand_joint remain unserialised.
     """
     import rclpy
     from rclpy.lifecycle import LifecycleNode

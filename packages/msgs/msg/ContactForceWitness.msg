@@ -1,29 +1,23 @@
 # Layer 2's bounded attestation that an attached payload is in MEASURED contact
 # with its declared place target, and how hard (ADR-0100, survey Path C).
 #
-# This is the second observable on the place path. ADR-0097/0098 discriminate on
-# position, and at the instant of a place the true clearance IS zero — no
-# geometric margin at any resolution passes "set the object down" while stopping
-# "crush the object against the shelf." Force is the axis that separates them,
-# and the axis every power-and-force-limiting standard uses (ISO 10218-2:2025,
-# which absorbed ISO/TS 15066's PFL content).
+# Second observable on the place path: ADR-0097/0098 discriminate on position,
+# but at the instant of a place true clearance is zero, so force (the axis ISO
+# 10218-2:2025 / ISO-TS-15066 PFL uses) is what separates "set down" from
+# "crush against the shelf."
 #
-# THE GATE THIS FEEDS ONLY ADDS REFUSALS. A witness never licenses a contact the
-# geometry refuses, never widens an ADR-0097 allowance, and never moves a margin.
-# It can turn an accepted configuration into a refused one and nothing else.
-# That direction is the whole safety argument (ADR-0100 §1) — do not extend this
-# message in a way that inverts it without a new ADR.
+# THE GATE THIS FEEDS ONLY ADDS REFUSALS (ADR-0100 §1) — never licenses a
+# contact geometry refuses, never widens an ADR-0097 allowance, never moves a
+# margin. Do not extend this message in a way that inverts that without a new
+# ADR.
 #
-# The kernel arms the gate only when ALL FOUR hold: a place declaration is live
-# for this payload; that declaration carries contact_force_threshold_n > 0; a
-# witness is live for the same payload and names the declared target; and the
-# witness attests magnitude_calibrated. Any one absent means no gate at all —
-# geometry decides exactly as it does today. Four independent fail-toward-shipped
-# conditions, none satisfiable by accident.
+# The kernel arms the gate only when ALL FOUR hold: a live place declaration
+# for this payload with contact_force_threshold_n > 0; a live witness for the
+# same payload naming the declared target; and magnitude_calibrated attested.
+# Any one absent = no gate, geometry decides as today.
 #
-# Liveness follows ADR-0092 D6 exactly: the witness dies on separation and is
-# re-armed only by a FRESH attestation, keyed on payload id + target_id +
-# stamp_ns, so a heartbeated snapshot cannot resurrect a dead contact.
+# Liveness follows ADR-0092 D6: dies on separation, re-armed only by a FRESH
+# attestation keyed on payload id + target_id + stamp_ns.
 
 # Identity of the surface the measured contact is against. The gate arms only
 # when this names the live declaration's target_id, or a surface that is part of
@@ -43,16 +37,12 @@ string target_id
 geometry_msgs/Vector3 direction_in_object
 
 # Contact force magnitude. UNITS ARE ONLY NEWTONS WHEN magnitude_calibrated IS
-# TRUE. A producer that has not been calibrated against a real force-torque
-# measurement must publish magnitude_calibrated=false, and the kernel then
-# ignores this field entirely rather than reading it as Newtons.
-#
-# This caveat is not defensive boilerplate. No published work validates MuJoCo
-# contact-force MAGNITUDES against real F/T sensors (survey §21.7); MuJoCo's own
-# docs frame the contact model as an approximation resting on solref/solimp
-# choices; and FORGE (arXiv:2408.04587) re-tunes its threshold on hardware across
-# >1000 real trials, which is itself the finding. A sim magnitude is a
-# calibration knob, never an equivalence claim (CLAUDE.md §1.2).
+# TRUE; an uncalibrated producer must publish magnitude_calibrated=false and
+# the kernel then ignores this field. No published work validates MuJoCo
+# contact-force magnitudes against real F/T sensors (survey §21.7); FORGE
+# (arXiv:2408.04587) re-tunes its threshold on hardware across >1000 real
+# trials. A sim magnitude is a calibration knob, never an equivalence claim
+# (CLAUDE.md §1.2).
 float64 magnitude_n
 
 # False — THE DEFAULT, and what every uncalibrated producer must publish — means

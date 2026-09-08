@@ -543,7 +543,7 @@ def _resolve_view(flag: bool | None) -> tuple[bool, bool]:
         sees why their env var was clobbered.
 
         When ``DISPLAY`` is unset on linux there is no display to draw
-        on; ``--view`` raises :class:`ROSConfigError` rather than
+        on; ``--view`` raises ``ROSConfigError`` rather than
         silently degrading to offscreen (the original "attempt anyway"
         path swallowed the request).
       * ``False`` → user passed ``--no-view``: off.
@@ -589,13 +589,13 @@ def _resolve_view(flag: bool | None) -> tuple[bool, bool]:
 
 
 def _maybe_build_recorder(args: SimpleNamespace, env_cfg: SimEnvironment) -> Any | None:
-    """Build a :class:`openral_dataset.RolloutRecorder` when ``--dataset-out`` was set.
+    """Build a ``openral_dataset.RolloutRecorder`` when ``--dataset-out`` was set.
 
     Returns ``None`` (no recorder) when the flag was absent. Returns
     ``None`` (with a logged warning) when ``openral_dataset`` /
     ``lerobot`` are not importable — the sim continues, just without
     dataset emission. Constructing the recorder raises
-    :class:`openral_core.exceptions.ROSConfigError` when the robot
+    ``openral_core.exceptions.ROSConfigError`` when the robot
     manifest isn't usable for dataset binding; we let that propagate
     so the user sees the failure clearly.
     """

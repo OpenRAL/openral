@@ -1,6 +1,6 @@
 """ACT (Action Chunking Transformer) policy adapter.
 
-Wraps :class:`lerobot.policies.act.modeling_act.ACTPolicy` (Zhao et al.,
+Wraps ``lerobot.policies.act.modeling_act.ACTPolicy`` (Zhao et al.,
 2023). ACT's IO contract differs from SmolVLA / π0.5:
 
 - One observation key per camera (``observation.images.<name>``);
@@ -53,9 +53,9 @@ if TYPE_CHECKING:
 def _load_manifest_for_spec(spec: Any) -> Any:
     """Load the rSkill manifest from ``spec.weights_uri`` (bare rSkill reference).
 
-    Mirrors :func:`openral_sim.policies.smolvla._load_manifest_for_spec`.
-    Returns ``None`` for explicit-scheme URIs (``hf://``, ``local://``,
-    etc.) so legacy tests that construct such a ``weights_uri`` still work.
+    Also used by ``openral_sim.backends.libero``. Returns ``None`` for
+    explicit-scheme URIs (``hf://``, ``local://``, etc.) so legacy tests that
+    construct such a ``weights_uri`` still work.
     """
     weights_uri = str(getattr(spec, "weights_uri", "") or "")
     if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
@@ -184,7 +184,7 @@ class _ACTAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
 
         The TRT/NVMM device executor is released first and explicitly — its
         engine + activation workspace live outside torch's caching allocator,
@@ -393,24 +393,19 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
             maybe_compile_chunk_forward(policy, spec.extra, device, torch)
 
     # Two ACT shapes coexist in tree:
-    #
-    # - **Modern** (`manifest.processors is not None`): the upstream
-    #   checkpoint ships ``policy_preprocessor.json`` /
-    #   ``policy_postprocessor.json`` sidecars (e.g.
-    #   ``Deepkar/libero-test-act`` wrapped by ``rskills/act-libero``).
-    #   We materialize them via per-file ``hf_hub_download`` (driven by
-    #   ``manifest.processors``) and let the lerobot factory compose the
-    #   pipeline. This is the "rSkill self-containment audit Gap 1+3"
-    #   path — no implicit snapshot_download.
-    #
-    # - **Legacy** (`manifest.processors is None`): the
-    #   ``lerobot/act_aloha_sim_transfer_cube_human`` / `_insertion_human`
-    #   checkpoints pre-date the PolicyProcessorPipeline migration and
-    #   carry their norm stats inside ``model.safetensors``. The schema
-    #   permits these to omit the processors block; the existing
-    #   ``_try_load_act_norm_stats`` path below reads the safetensors
-    #   directly. ``rskills/act-aloha`` / ``act-aloha-insertion`` keep
-    #   working unchanged.
+    # - Modern (`manifest.processors is not None`): upstream ships
+    #   `policy_preprocessor.json`/`policy_postprocessor.json` sidecars
+    #   (e.g. `Deepkar/libero-test-act` wrapped by `rskills/act-libero`),
+    #   materialized via per-file `hf_hub_download` (driven by
+    #   `manifest.processors`) and composed by the lerobot factory — the
+    #   "rSkill self-containment audit Gap 1+3" path, no implicit
+    #   snapshot_download.
+    # - Legacy (`manifest.processors is None`): `lerobot/act_aloha_sim_
+    #   transfer_cube_human`/`_insertion_human` pre-date the
+    #   PolicyProcessorPipeline migration and carry norm stats inside
+    #   `model.safetensors`; the schema permits omitting `processors`, and
+    #   `_try_load_act_norm_stats` below reads the safetensors directly
+    #   (`rskills/act-aloha`/`act-aloha-insertion`).
     preprocessor: Any | None = None
     postprocessor: Any | None = None
 
@@ -528,12 +523,12 @@ def _apply_temporal_ensemble(policy: Any, spec_extra: dict[str, Any]) -> float |
     enables ensembling; ``None`` falls back to plain chunked execution.
 
     Paper default is ``0.01``; the published
-    ``lerobot/act_aloha_sim_transfer_cube_human`` checkpoint ships with
-    the field set to ``None`` so plain chunked execution wins by default
-    — that's the difference between the harness's previous 0.46 and the
-    paper's 0.95 on aloha_transfer_cube. This helper restores the paper
-    value unless ``vla.extra.temporal_ensemble_coeff`` overrides; pass
-    ``null`` (YAML) / ``None`` (Python) to disable.
+    ``lerobot/act_aloha_sim_transfer_cube_human`` checkpoint ships with the
+    field set to ``None`` so plain chunked execution wins by default — 0.46
+    on aloha_transfer_cube vs. the paper's 0.95 with ensembling enabled.
+    This helper restores the paper value unless
+    ``vla.extra.temporal_ensemble_coeff`` overrides; pass ``null`` (YAML) /
+    ``None`` (Python) to disable.
 
     Args:
         policy: A lerobot ACTPolicy with a ``config.temporal_ensemble_coeff``
@@ -607,6 +602,7 @@ def _try_load_act_norm_stats(
 
     out: dict[str, Any] = {"image_mean": {}, "image_std": {}}
     try:
+        # reason: safetensors ships no type stubs for safe_open
         with safe_open(weights, framework="pt") as f:  # type: ignore[no-untyped-call]
             available = set(f.keys())
 

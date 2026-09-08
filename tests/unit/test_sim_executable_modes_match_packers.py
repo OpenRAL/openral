@@ -1,47 +1,30 @@
 """Lockstep proof: ``SIM_EXECUTABLE_CONTROL_MODES`` == the sim HAL packers.
 
-Amended 2026-06-04. The reasoner's ``hal_mode="sim"`` palette
-gate admits a VLA rSkill only when every :class:`ControlMode` its action
-contract demands is in :data:`openral_core.SIM_EXECUTABLE_CONTROL_MODES`.
-That constant is only safe if it is *exactly* the set of modes the default
-sim HAL action-packers can execute — admit a mode no packer implements and
-the skill boots fine, then E-stops mid-run when the first chunk of that
-mode hits a packer ``else`` branch.
+The reasoner's ``hal_mode="sim"`` palette gate admits a VLA rSkill only when
+every ``ControlMode`` its action contract demands is in
+``openral_core.SIM_EXECUTABLE_CONTROL_MODES``. That constant is only safe
+if it exactly matches what the default sim HAL packers can execute — admit a
+mode no packer implements and the skill boots, then E-stops mid-run.
 
-This test pins the two sides together, **both directions**, against the
-REAL packers in :mod:`openral_hal.sim_attached` (CLAUDE.md §1.11 — no
-mocks; pure-numpy packers driven with real :class:`Action` chunks and real
-:class:`RobotDescription` manifests loaded from ``robots/``):
+Pins both directions against the REAL packers in ``openral_hal.sim_attached``
+(CLAUDE.md §1.11 — no mocks): ``pack_action_for_env`` (free-function packer),
+``SimAttachedHAL._pack_with_composite_split`` (robosuite composite-slot
+packer), and BODY_TWIST's direct-qpos interception in
+``SimAttachedHAL.send_action`` (not a packer ``else`` branch).
 
-* :func:`pack_action_for_env` — the default free-function packer.
-* :meth:`SimAttachedHAL._pack_with_composite_split` — the robosuite
-  composite-slot packer.
-* The ``BODY_TWIST`` direct-qpos path intercepted in
-  :meth:`SimAttachedHAL.send_action` (NOT a packer ``else`` branch — see
-  the BODY_TWIST note below).
+A mode counts as **handled** by a packer when a representative chunk does NOT
+raise the packer's unsupported-mode ``ROSConfigError`` (message contains
+``"unsupported control_mode"``); a *different* ``ROSConfigError`` (e.g.
+"composite has no 'right' part") still means the mode reached its own branch,
+so it counts as handled too. Every representative chunk also carries a
+``joint_targets`` row so an unhandled mode falls through to the real
+``else`` instead of tripping the earlier empty-payload guard.
 
-A mode is classified **handled** by a packer when driving a representative
-chunk of that mode does *not* raise the packer's unsupported-mode
-``ROSConfigError`` (the one carrying ``"unsupported control_mode"``). A
-*different* ``ROSConfigError`` (e.g. "composite has no 'right' part" when
-no live env is bound) still means the mode *reached its own branch* — i.e.
-the packer knows how to execute it — so it counts as handled. Only the
-closing ``else`` (``"unsupported control_mode"``) marks a mode as
-**rejected**.
-
-To make the discrimination clean, every representative chunk also carries a
-``joint_targets`` row: ``pack_action_for_env`` guards ``not joint_targets``
-*before* the closing ``else``, so without a row an unsupported mode would
-raise the empty-payload guard rather than the unsupported-mode ``else``.
-Populating both fields lets every unsupported mode fall through to the real
-``else``.
-
-The union of the two packers' handled sets must equal
-``SIM_EXECUTABLE_CONTROL_MODES`` exactly. The four latent false-admits
-removed by this amendment (JOINT_TORQUE, JOINT_TRAJECTORY, CARTESIAN_POSE,
-GRIPPER_BINARY) and the three never-admitted modes (CARTESIAN_TWIST,
-FOOT_PLACEMENT, DEX_HAND_JOINT) must be rejected by BOTH packers AND absent
-from the constant.
+The union of both packers' handled sets must equal
+``SIM_EXECUTABLE_CONTROL_MODES`` exactly. Four false-admits removed
+(JOINT_TORQUE, JOINT_TRAJECTORY, CARTESIAN_POSE, GRIPPER_BINARY) and three
+never-admitted modes (CARTESIAN_TWIST, FOOT_PLACEMENT, DEX_HAND_JOINT) must
+be rejected by BOTH packers AND absent from the constant.
 """
 
 from __future__ import annotations
@@ -108,7 +91,7 @@ def _panda_mobile() -> RobotDescription:
 
 
 def _representative_action(mode: ControlMode) -> Action:
-    """A real :class:`Action` of ``mode`` whose payload reaches the mode's branch.
+    """A real ``Action`` of ``mode`` whose payload reaches the mode's branch.
 
     Widths are chosen so a handled mode passes its in-branch shape guard
     (so it never raises for the wrong reason); for the unhandled modes the

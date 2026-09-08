@@ -1,6 +1,6 @@
 """gym-pusht scene adapter — wraps ``gym_pusht/PushT-v0``.
 
-Driven by a :class:`openral_core.SimEnvironment` config, this adapter is
+Driven by a ``openral_core.SimEnvironment`` config, this adapter is
 the canonical entry point for PushT (pymunk 2-D rigid-body) rollouts (used
 by ``tests/sim/test_pusht_2d_diffusion_pusht.py``).
 
@@ -33,7 +33,7 @@ _PUSHT_ENV_ID = "gym_pusht/PushT-v0"
 
 @dataclass
 class _PushTSim:
-    """Thin :class:`SimRollout` wrapper around ``gym_pusht/PushT-v0``."""
+    """Thin ``SimRollout`` wrapper around ``gym_pusht/PushT-v0``."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -157,7 +157,7 @@ class _PushTSim:
 
 
 def _build_pusht_scene(env_cfg: SimEnvironment) -> _PushTSim:
-    """Lazily import ``gym_pusht`` and build a :class:`_PushTSim`."""
+    """Lazily import ``gym_pusht`` and build a ``_PushTSim``."""
     if env_cfg.scene.id != _PUSHT_SCENE_ID:
         raise ROSConfigError(
             f"pusht scene id must be {_PUSHT_SCENE_ID!r}, got {env_cfg.scene.id!r}"

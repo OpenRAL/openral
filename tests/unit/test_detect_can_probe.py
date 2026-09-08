@@ -1,14 +1,13 @@
 """SocketCAN discovery — the transport that finds a CAN-attached arm.
 
-Per CLAUDE.md §1.11 there are no mocks here.  The enumeration reads a real
-directory tree in the shapes the kernel produces; ``openral_core.can.SYSFS_NET`` is
-redirected at that tree with ``monkeypatch.setattr`` so the code under test
-is the production code, reading real files.
+Per CLAUDE.md §1.11, no mocks: enumeration reads a real directory tree shaped
+like the kernel's; ``openral_core.can.SYSFS_NET`` is redirected there via
+``monkeypatch.setattr`` so the code under test is production code reading
+real files.
 
-Fixture shape mirrors a provisioned OpenArm cell: two PCAN-USB Pro FD
-channels renamed by udev to ``openarm_left`` / ``openarm_right``, plus the
-carrier board's unused onboard ``can0`` and an ordinary Ethernet link that
-must not be mistaken for a CAN bus.
+Fixture mirrors a provisioned OpenArm cell: two PCAN-USB Pro FD channels
+renamed by udev to ``openarm_left``/``openarm_right``, the carrier board's
+unused onboard ``can0``, and an Ethernet link that must not be mistaken for CAN.
 """
 
 from __future__ import annotations

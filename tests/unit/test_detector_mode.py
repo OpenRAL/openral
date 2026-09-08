@@ -1,14 +1,13 @@
 """Detector invocation mode (continuous background vs on-demand locator).
 
-Drives the **real** in-tree detector manifests through the **real** palette
-builder + tool-schema renderer (no mocks, CLAUDE.md §1.11):
+Drives real in-tree detector manifests through the real palette builder +
+tool-schema renderer (no mocks, CLAUDE.md §1.11):
 
-* the schema default + the four detector manifests' declared modes,
-* `build_tool_palette` collecting `mode: continuous` detectors into
-  `continuous_detectors` (and never as ExecuteSkill `skills`), while the
-  `on_demand` locator is excluded,
-* the `locate_in_view` tool description becoming coverage-aware so the LLM is
-  told which classes are already tracked in world state.
+* schema default + the four detector manifests' declared modes,
+* `build_tool_palette` puts `mode: continuous` detectors into
+  `continuous_detectors` (never ExecuteSkill `skills`); `on_demand` excluded,
+* `locate_in_view`'s tool description is coverage-aware, naming classes
+  already tracked in world state.
 """
 
 from __future__ import annotations

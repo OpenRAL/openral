@@ -1,16 +1,16 @@
 """SensorReader Protocol.
 
-The :class:`SensorReader` Protocol is the seam between a sensor's physical
+The ``SensorReader`` Protocol is the seam between a sensor's physical
 capture backend (OpenCV / ROS image topic / GStreamer pipeline) and the
 inference runner. Each tick the runner asks every configured reader for
-its freshest frame; the reader returns a :class:`SensorFrame` whose
+its freshest frame; the reader returns a ``SensorFrame`` whose
 ``data | topic | handle`` carry-mode reflects the backend's transport.
 
 The Protocol is intentionally narrow: ``open / close / read_latest``.
 ``open`` may start background capture threads or pipelines; ``close`` is
 idempotent. ``read_latest`` is non-blocking — it returns the most recent
 frame the backend has buffered, or raises
-:class:`~openral_core.exceptions.ROSPerceptionStale` when the
+``ROSPerceptionStale`` when the
 freshest frame is older than the caller's ``max_age_ms`` budget.
 
 See the OpenRAL architecture docs for the SensorReader design.
@@ -31,22 +31,22 @@ class SensorReader(Protocol):
 
     Four concrete backends live under ``openral_runner.backends``:
 
-    - :class:`OpenCVThreadSensorReader` — default, per-camera background
+    - ``OpenCVThreadSensorReader`` — default, per-camera background
       thread on top of ``cv2.VideoCapture`` (mirrors lerobot's pattern).
-    - :class:`Ros2ImageSensorReader` — subscribes to a ROS 2 image topic
+    - ``Ros2ImageSensorReader`` — subscribes to a ROS 2 image topic
       published by a vendor driver, for streams an SDK computes rather than a
       device emits (ZED stereo depth, RealSense aligned depth). Converts
       ``32FC1`` metre depth to the ``DEPTH16`` uint16-millimetre layout.
-    - :class:`GStreamerSensorReader` — pipeline
+    - ``GStreamerSensorReader`` — pipeline
       string from config; appsink delivers frames. NVMM / DMA-BUF
       zero-copy on Jetson when ``nvv4l2decoder`` is present.
     - ``galaxea_a1_camera_bridge`` — the external A1 Runtime's paired
       raw-frame service.
 
     Attributes:
-        sensor_id: Sensor name; matches :attr:`SensorReaderConfig.sensor_id`
+        sensor_id: Sensor name; matches ``SensorReaderConfig.sensor_id``
             in the robot/deploy configuration.
-        is_open: ``True`` between :meth:`open` and :meth:`close`.
+        is_open: ``True`` between ``open`` and ``close``.
     """
 
     sensor_id: str
@@ -57,7 +57,7 @@ class SensorReader(Protocol):
 
         Idempotent: calling ``open`` on an already-open reader is a no-op.
         After this returns the backend may not yet have a frame
-        available; :meth:`read_latest` will raise until one arrives.
+        available; ``read_latest`` will raise until one arrives.
         """
         ...
 
@@ -77,11 +77,11 @@ class SensorReader(Protocol):
             max_age_ms: Maximum acceptable frame age in milliseconds,
                 measured from ``time.monotonic_ns()`` at capture time. When
                 ``None`` the reader's configured default
-                (:attr:`SensorReaderConfig.max_age_ms`, default 100 ms) is
+                (``SensorReaderConfig.max_age_ms``, default 100 ms) is
                 applied.
 
         Returns:
-            A populated :class:`~openral_core.SensorFrame`.
+            A populated ``SensorFrame``.
 
         Raises:
             ROSPerceptionStale: When no frame has been captured yet, or the

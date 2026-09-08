@@ -165,7 +165,7 @@ def test_pipeline_spec_is_frozen() -> None:
     """Specs are immutable so they can be cached / hashed safely."""
     spec = PipelineSpec(source=Source.TESTSRC)
     with pytest.raises(ValueError):
-        spec.fps = 60  # type: ignore[misc]
+        spec.fps = 60  # type: ignore[misc]  # reason: pydantic frozen fields are read-only
 
 
 # ── build_pipeline_string ────────────────────────────────────────────────────

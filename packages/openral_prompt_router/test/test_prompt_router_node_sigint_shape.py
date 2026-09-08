@@ -1,30 +1,21 @@
 """prompt_router_node SIGINT teardown contract — structural regression guard.
 
 Mirrors ``packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py``
-(landed in abd594f for the reasoner_node) and the original runtime_node guard
-(caae96f). ROS 2 Jazzy installs a SIGINT signal handler in :func:`rclpy.init`
-that:
-
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
-
-Before this guard, ``prompt_router_node.main`` wrapped ``rclpy.spin(node)`` in
-a bare ``try/finally`` and called plain ``rclpy.shutdown()`` in the outer
-``finally`` block. On every operator Ctrl-C during ``openral deploy sim`` the
-finally then crashed with::
+(landed in abd594f) and the original runtime_node guard (caae96f). ROS 2 Jazzy
+installs a SIGINT handler in ``rclpy.init`` that shuts down the rclpy
+context and raises ``KeyboardInterrupt`` out of ``rclpy.spin``. A bare
+``rclpy.shutdown()`` called after that raises::
 
     rclpy._rclpy_pybind11.RCLError: failed to shutdown:
     rcl_shutdown already called on the given context
 
-which (a) replaced the ``KeyboardInterrupt`` with a confusing traceback in
-stderr and (b) stalled the launch shutdown supervisor's wait-for-children past
-the 30 s ``shutdown_grace`` window, forcing a SIGKILL of the deploy graph
-(``ros2 launch`` exit 250).
+on every operator Ctrl-C, replacing ``KeyboardInterrupt`` with a confusing
+traceback and stalling the launch shutdown supervisor past its 30 s
+``shutdown_grace`` window (SIGKILL of the deploy graph, ``ros2 launch``
+exit 250).
 
-This test is the structural counterpart to the behavioural deploy probe: it
-parses ``prompt_router_node.py`` as Python and asserts the *shape* of the
-SIGINT-handling contract, so a future refactor can't silently revert to the
-broken pattern.
+This parses ``prompt_router_node.py`` as Python and asserts the *shape* of
+the SIGINT-handling contract, so a refactor can't silently revert to it.
 """
 
 from __future__ import annotations
@@ -79,7 +70,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in prompt_router_node.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     """
     bare_calls: list[int] = []

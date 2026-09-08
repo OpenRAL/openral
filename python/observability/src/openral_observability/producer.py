@@ -8,7 +8,7 @@ evolve the schema (rounding, list-truncation, thumbnail size) in one
 place.
 
 All helpers are safe to call on a no-op span (the default before
-:func:`configure_observability` runs); they're additive, never raise on
+``configure_observability`` runs); they're additive, never raise on
 missing optional fields, and silently truncate over-long lists so a
 24-DoF arm doesn't blow up the span size.
 """
@@ -25,7 +25,7 @@ from opentelemetry import trace
 from openral_observability import semconv
 
 #: Channel count identifying an RGB/BGR frame — the only layout the
-#: display-flip in :func:`emit_sensor_frame_span` knows how to rotate.
+#: display-flip in ``emit_sensor_frame_span`` knows how to rotate.
 _RGB_CHANNELS = 3
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ _MODALITY_BY_ENCODING: dict[str, str] = {
 
 
 def modality_for_encoding(encoding: object) -> str:
-    """Map a :class:`openral_core.FrameEncoding` (or its string value) to a modality label.
+    """Map a ``openral_core.FrameEncoding`` (or its string value) to a modality label.
 
     The dashboard's Perception card groups frames by modality
     (``rgb`` / ``mono`` / ``depth`` / ``raw``) — keep the mapping
@@ -71,25 +71,18 @@ def modality_for_encoding(encoding: object) -> str:
 # stay readable in Jaeger and the dashboard ring stays bounded.
 _MAX_JOINTS = 64
 _MAX_EE_FRAMES = 8
-# Thumbnail target. This is a DASHBOARD CARD, not a policy input — no VLA
-# ever reads it (policies get frames in-process from the aggregator), so it
-# is sized for the UI and nothing else.
+# Thumbnail target — a DASHBOARD CARD only, no VLA ever reads it (policies
+# get frames in-process from the aggregator).
 #
-# Previously 640x480 @ q90, justified by "emitted at a throttled rate ...
-# not faster than tick rate". That assumption did not hold: WorldState's
-# `_on_image` encodes on EVERY camera callback with no throttle, so on the
-# SO-101 bench this ran at 60 frames/s (2 cameras x 30 Hz) — and because
-# `PIL.thumbnail` only ever SHRINKS, a 640x480 target was a no-op resize on
-# a 640x480 camera. Every frame went out at full resolution, q90, then
-# base64 (+33%). Measured on a representative frame:
-#
+# WorldState's `_on_image` encodes on EVERY camera callback with no
+# throttle (60 fps on the SO-101 bench: 2 cameras x 30 Hz), and
+# `PIL.thumbnail` only ever shrinks, so a former 640x480 q90 target was a
+# no-op resize on a 640x480 camera — full resolution, q90, then base64
+# (+33%), every frame. Measured on a representative frame:
 #   640x480 q90 -> 99.0 KiB JPEG -> 132.0 KiB base64 -> 8.11 MB/s at 60/s
 #   320x240 q60 ->  3.2 KiB JPEG ->   4.2 KiB base64 -> 0.26 MB/s at 60/s
-#
-# i.e. ~31x less OTLP traffic, plus the PIL encode itself gets far cheaper —
-# and that encode runs in the deploy process, under the GIL, competing with
-# model loads and inference. q60 matches what this module's own docstrings
-# already claimed ("~60").
+# ~31x less OTLP traffic; the PIL encode (in the deploy process, under the
+# GIL, competing with model loads/inference) also gets far cheaper.
 _THUMB_MAX_WIDTH = 320
 _THUMB_MAX_HEIGHT = 240
 _THUMB_JPEG_QUALITY = 60
@@ -114,9 +107,9 @@ def record_joint_state(
 ) -> None:
     """Attach per-joint robot-state attributes to a ``hal.read_state`` span.
 
-    Lists are truncated to :data:`_MAX_JOINTS` and rounded to 3 decimals
+    Lists are truncated to ``_MAX_JOINTS`` and rounded to 3 decimals
     (~1 mrad on revolute joints — plenty for a debug pane). Limits are
-    pulled from :class:`openral_core.JointSpec`; pass ``None`` per joint
+    pulled from ``openral_core.JointSpec``; pass ``None`` per joint
     when a robot exposes a free axis.
     """
     if names is not None:
@@ -184,7 +177,7 @@ def record_ee_poses(span: Span, ee_poses: Any) -> None:
 
     Accepts a mapping of ``ee_name → Pose6D``-like object (any object
     that yields ``xyz`` as a 3-tuple and ``quat_xyzw`` as a 4-tuple —
-    matches :class:`openral_core.Pose6D`). Poses are flattened as
+    matches ``openral_core.Pose6D``). Poses are flattened as
     ``openral.hal.ee.pose.<name>`` → ``[x, y, z, qx, qy, qz, qw]``.
     """
     if not ee_poses:
@@ -226,7 +219,7 @@ def record_sensor_frame_attrs(
     2.42 ms/frame at 320x240 q60 with Pillow dropping the GIL) — keep new
     callers within that envelope, since every thumbnail also transits the
     OTLP exporter. When set, the value is base64-encoded inline; downstream
-    consumers (including :mod:`openral_observability.dashboard`) decode it
+    consumers (including ``openral_observability.dashboard``) decode it
     for display.
     """
     if modality is not None:
@@ -259,18 +252,18 @@ def emit_sensor_frame_span(
 ) -> None:
     """Emit ONE dashboard ``sensors.read_latest`` span for a camera frame.
 
-    THE shared producer for the dashboard's camera tiles — the deploy sensor
+    Shared producer for the dashboard's camera tiles — the deploy sensor
     pump (``openral_rskill_ros.sensor_leg``) and WorldState's ``_on_image``
-    both route through it, so the flip handling, span shape and thumbnail
-    encode can never drift between pump-fed and tee-fed cameras (they were
-    two hand-mirrored copies before, and had already drifted).
+    both route through it (previously two hand-mirrored copies that had
+    already drifted), so flip handling, span shape and thumbnail encoding
+    stay identical.
 
-    ``flip_180`` (the ``OPENRAL_DASHBOARD_FLIP_180`` convention) rotates a
-    **display copy** only — the caller's ``frame`` object is never mutated,
-    because the raw frame is what reaches the policy and a flipped policy
-    input double-flips against the VLA adapter's own
-    ``image_preprocessing.flip_180``. Applied only to 3-channel frames whose
-    buffer length matches their geometry; anything else displays unflipped.
+    ``flip_180`` (``OPENRAL_DASHBOARD_FLIP_180``) rotates a **display copy**
+    only — the caller's ``frame`` is never mutated, since the raw frame
+    also reaches the policy and a flipped policy input would double-flip
+    against the VLA adapter's own ``image_preprocessing.flip_180``. Applied
+    only to 3-channel frames whose buffer length matches their geometry;
+    anything else displays unflipped.
 
     Args:
         frame: A ``SensorFrame``-shaped object (``width`` / ``height`` /
@@ -338,7 +331,7 @@ def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
 
 
 def encode_frame_thumbnail(frame: Any) -> bytes | None:
-    """Encode a :class:`openral_core.SensorFrame` as a small JPEG thumbnail.
+    """Encode a ``openral_core.SensorFrame`` as a small JPEG thumbnail.
 
     Handles the encodings the dashboard knows how to render:
 
@@ -353,11 +346,9 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
     importable — the call site stays unconditional and gracefully
     skips the thumbnail attribute.
 
-    The whole encode pipeline runs in a few ms per frame at typical
-    sensor resolutions (2.42 ms measured at 320x240 q60), and Pillow
-    drops the GIL for the resize/encode. Callers range from the
-    runner's throttled thumbnail cadence to the deploy sensor pump's
-    full ~30 Hz reader rate.
+    Runs in a few ms/frame (2.42 ms measured at 320x240 q60); Pillow drops
+    the GIL for resize/encode. Callers range from the runner's throttled
+    cadence to the deploy sensor pump's full ~30 Hz reader rate.
     """
     try:
         from PIL import Image

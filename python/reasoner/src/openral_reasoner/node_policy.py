@@ -1,16 +1,12 @@
 """Pure prompt-handling policy for the reasoner node (no rclpy).
 
-``openral_reasoner_ros.reasoner_node._on_prompt`` makes two consequential
-decisions per inbound ``PromptStamped``: whether the prompt is a *new
-operator goal* (rebuild the mission queue, reset the search bounds and call
-streak) or a *cascade response* the reasoner's own tools produced (feed it
-to the next tick, keep every bound accumulating). Both decisions were inline
-in the ROS callback — and the search-bound reset compared against the single
-literal ``"spatial_memory"`` while the cascade actually spans six sources,
-so every ``detector`` / ``reward_monitor`` / ``mission`` / ``memory`` /
-``scene_vlm`` re-prompt silently reset the very budget its dispatch had just
-charged (the locate-miss budget could never exceed 1). This module makes the
-policy pure, single-sourced, and unit-testable without a ROS install.
+``openral_reasoner_ros.reasoner_node._on_prompt`` decides, per inbound
+``PromptStamped``, whether the prompt is a *new operator goal* (rebuild
+the mission queue, reset the search bounds and call streak) or a
+*cascade response* the reasoner's own tools produced (feed it to the
+next tick, keep every bound accumulating). The cascade spans six
+sources (``CASCADE_PROMPT_SOURCES``). This module makes the policy
+pure, single-sourced, and unit-testable without a ROS install.
 """
 
 from __future__ import annotations

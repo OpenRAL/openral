@@ -37,73 +37,57 @@ _LOGGER = structlog.get_logger(__name__)
 _DEGENERATE_NORM = 1e-9
 
 # -- Support-contact probe bounds --
-# The producer measures support with signed geom distances, not with the
-# solver's contact list. That is not a refinement, it is a correctness fix:
-# MuJoCo's ``contype``/``conaffinity`` bitmasks suppress whole geom pairs, and a
-# payload flush on a counter can produce ZERO contact records (2026-08-14
-# acceptance: a cup resting on a RoboCasa island at 0.000 mm generated none,
-# while a baguette on a counter generated six, purely because the second pair's
-# bitmasks happened to meet). A signed distance sees both.
+# Support is measured with signed geom distances (openral_hal.convex_distance.
+# convex_geom_distance), NOT the solver's contact list or `mj_geomDistance`:
+# MuJoCo's contype/conaffinity bitmasks can suppress a touching pair entirely
+# (2026-08-14 acceptance: a cup flush on a RoboCasa island at 0.000 mm produced
+# ZERO contact records) and mj_geomDistance measured confidently wrong values
+# on RoboCasa-fixture-vs-panda_mobile-mesh pairs, always toward *closer* (#170).
+# Only a certified measurement produces a hit — an uncertified pair (a plane,
+# an over-budget hull) attests nothing, so the failure direction is a missing
+# exemption, never a false one (#190).
 #
-# The distance is ``openral_hal.convex_distance.convex_geom_distance``, NOT
-# ``mujoco.mj_geomDistance``. #170 measured that call returning confidently
-# wrong values on RoboCasa-fixture-vs-``panda_mobile``-mesh pairs in two silent
-# modes, always toward *closer* — which on this path would attest a contact
-# that is not there, and a witness earns a kernel exemption. Only a certified
-# measurement produces a hit; an uncertified pair (a plane, an over-budget
-# hull) attests nothing, so the failure direction is a missing exemption, never
-# a false one (#190).
-#
-# A payload separated by more than this is not resting on anything: the number
-# is the safety kernel's own ``attached_contact_tolerance_m`` — physical slack
-# for FK and pose noise, deliberately not the occupancy resolution.
+# Beyond this gap nothing is resting on anything — the safety kernel's own
+# `attached_contact_tolerance_m` (FK/pose-noise slack, not occupancy resolution).
 _SUPPORT_PROBE_GAP_M = 0.001
-# The safety kernel's ``support_witness_max_penetration_m`` and
-# ``support_witness_max_patch_radius_m``. A claim past either fails the WHOLE
-# attachment message closed on the kernel side, so the producer must never
-# construct one; a payload deeper than the cap is a collision, not a support
-# contact, and attesting a clamped depth would launder it into an exemption.
+# The safety kernel's `support_witness_max_penetration_m` /
+# `support_witness_max_patch_radius_m`. A claim past either fails the WHOLE
+# attachment message on the kernel side, so the producer never constructs one:
+# deeper than the cap is a collision, not support, and clamping would launder
+# it into an exemption.
 _SUPPORT_MAX_PENETRATION_M = 0.01
 _SUPPORT_MAX_PATCH_RADIUS_M = 0.5
-# Exact-distance call budget for one attestation. This runs at attach, and
-# then on EVERY tick of a live place declaration until one attests (the
-# hysteresis in ``_place_witness`` short-circuits only after a success) — so
-# the per-tick worst case, not the per-attach cost, is what this cap bounds. Measured on the shipped
-# ``robocasa_baguette`` kitchen (2383 geoms, 16 payload geoms, 1358 support
-# candidates): 353 pairs pass the 1 mm bounding-sphere prefilter, the certified
-# window rejection discards 234 of them unsolved, 119 are solved, and the whole
-# attestation costs ~0.21 s — ~1.7 ms per solved mesh pair against
-# ``mj_geomDistance``'s ~0.8 us, the price of an answer that is proved. The
-# place phase measures against the DECLARED TARGET's bodies only, which is what
-# keeps a per-tick re-probe affordable.
-# ponytail: hulls are re-decoded per call (~0.1 s of the 0.46 s); cache them
-# per (model, mesh) if attach latency ever matters.
+# Exact-distance call budget for one attestation (runs at attach and on every
+# tick of a live place declaration until one attests). Measured on the shipped
+# `robocasa_baguette` kitchen (2383 geoms, 16 payload geoms, 1358 support
+# candidates): 353 pairs pass the 1 mm bounding-sphere prefilter, 234 rejected
+# unsolved, 119 solved, whole attestation ~0.21 s (~1.7 ms/solved pair vs
+# mj_geomDistance's ~0.8 us). Place phase measures only the declared target's
+# bodies, keeping a per-tick re-probe affordable.
+# ponytail: hulls are re-decoded per call (~0.1 s of 0.46 s); cache per
+# (model, mesh) if attach latency ever matters.
 _SUPPORT_PROBE_MAX_CALLS = 1024
-# ADR-0100 contact-force gate. MuJoCo reports a contact's force in the contact's
-# own frame via ``mj_contactForce``; this scalar maps that magnitude to the
-# number a place declaration's ``contact_force_threshold_n`` is compared against.
+# ADR-0100 contact-force gate: maps `mj_contactForce`'s magnitude to the number
+# a place declaration's `contact_force_threshold_n` is compared against.
 #
-# IT IS A CALIBRATION KNOB, NOT AN EQUIVALENCE CLAIM (CLAUDE.md 1.2). No
-# published work validates MuJoCo contact-force MAGNITUDES against real
-# force-torque measurements (survey 21.7): MuJoCo documents its contact model as
-# an approximation whose physical validity rests on ``solref`` / ``solimp``
-# choices, FORGE (arXiv:2408.04587) re-tunes its threshold on hardware across
-# >1000 real trials, and arXiv:2602.14174 argues from that same gap that only
-# force DIRECTION survives sim-to-real. So the producer publishes
-# ``magnitude_calibrated=False`` unless an operator has explicitly asserted a
-# calibration, and the kernel then refuses to read the magnitude at all.
-#
-# 1.0 is the identity mapping, and deliberately not a claim that one MuJoCo
-# force unit is one newton. Set both env vars together to arm the gate.
+# CALIBRATION KNOB, NOT AN EQUIVALENCE CLAIM (CLAUDE.md 1.2) — no published
+# work validates MuJoCo contact-force magnitudes against real force-torque
+# measurements (survey 21.7): MuJoCo's contact model is `solref`/`solimp`-
+# dependent, FORGE (arXiv:2408.04587) re-tunes its threshold on >1000 real
+# trials, and arXiv:2602.14174 argues only force DIRECTION survives sim-to-real.
+# So the producer publishes `magnitude_calibrated=False` unless an operator
+# explicitly asserts a calibration (both env vars set together), and the
+# kernel then refuses to read the magnitude at all. 1.0 is the identity
+# mapping, not a claim that one MuJoCo force unit is one newton.
 _CONTACT_FORCE_SCALE_ENV = "OPENRAL_SIM_CONTACT_FORCE_N_PER_UNIT"
 _CONTACT_FORCE_CALIBRATION_REF_ENV = "OPENRAL_SIM_CONTACT_FORCE_CALIBRATION_REF"
 _CONTACT_FORCE_DEFAULT_SCALE = 1.0
-# A surface normal and the instrument's own contact direction more than 60
-# degrees apart do not describe the same plane. Rather than pick one, attest
-# neither (fail closed). This runs at EVERY hit, flush ones included, because
-# ``convex_geom_distance`` reports its direction directly rather than leaving
-# it to be recovered from two witness points that coincide at a resting
-# contact — the case that matters (the field cup sat at 0.000 mm).
+# A surface normal and the instrument's own contact direction disagreeing by
+# more than 60 degrees means they don't describe the same plane — fail closed
+# (attest neither). Checked on EVERY hit (flush ones included) because
+# `convex_geom_distance` reports its direction directly, unlike differencing
+# two witness points that coincide at a resting contact (the case that
+# matters — the field cup at 0.000 mm).
 _NORMAL_AGREEMENT_MIN = 0.5
 
 
@@ -169,7 +153,7 @@ def _matrix_to_quat_xyzw(matrix: NDArray[np.float64]) -> tuple[float, float, flo
 def _quat_xyzw_to_matrix(quat_xyzw: tuple[float, float, float, float]) -> NDArray[np.float64]:
     """Unit quaternion ``(x, y, z, w)`` to a 3x3 rotation matrix.
 
-    The inverse of :func:`_matrix_to_quat_xyzw`, and needed for the same reason
+    The inverse of ``_matrix_to_quat_xyzw``, and needed for the same reason
     that function is: the declared place target's primitives (ADR-0098) are
     measured once in the target body's own frame and re-posed into the robot
     base frame on every publication, which is a rotation composition and not a
@@ -738,20 +722,16 @@ def _probe_support_hits(
             geom_id=support_geom,
             world_point=support_point,
         )
-        # The instrument reports the support→payload direction itself, on both
-        # of its branches, and — unlike differencing the two witness points —
-        # it is still defined at a flush contact, which is precisely the case
-        # this module exists for. So the cross-check runs ALWAYS, and never
-        # degrades to trusting one source alone.
-        #
-        # That matters because the SAT witness on ``b`` lies in the support's
-        # supporting *plane*, not necessarily within its face: on a tessellated
-        # counter a payload flush on one strip yields, for a neighbouring
-        # strip, a support point metres outside it, where the box face normal
-        # comes back LATERAL. Averaged into the group by ``_dominant_support``
-        # that tilted the attested plane by up to 45 degrees — a wrong support
-        # plane handed to the kernel as an exemption. Checked against the
-        # instrument's own direction, those hits are dropped (#190).
+        # The instrument reports the support→payload direction itself on both
+        # branches, and (unlike differencing the two witness points) stays
+        # defined at a flush contact — the case this module exists for — so
+        # the cross-check always runs, never degrading to trusting one source.
+        # It matters because the SAT witness on `b` lies in the support's
+        # plane but not necessarily its face: on a tessellated counter a
+        # neighbouring strip's face normal can come back LATERAL, and
+        # `_dominant_support` averaging that in tilted the attested plane up
+        # to 45 degrees — a wrong support plane as a kernel exemption. Checked
+        # against the instrument's own direction, those hits are dropped (#190).
         if surface_normal is None:
             continue  # unanalysable surface (mesh, heightfield, SDF): measure nothing
         if float(np.dot(surface_normal, probe_normal)) < _NORMAL_AGREEMENT_MIN:
@@ -900,28 +880,16 @@ def support_contact_witness(
 ) -> SupportContactWitness | None:
     """Attest one payload's bounded support contact from certified signed distances.
 
-    A grasped object is routinely still resting on the counter it was picked
-    from. That contact is real, legitimate, and — once the payload is checked
-    as robot geometry — indistinguishable to the safety kernel from driving the
-    payload through a wall. This produces the attestation that tells the two
-    apart, from ground truth the simulator already has (ADR-0092 D6).
-
-    Support is measured with ``openral_hal.convex_distance`` (the certified
-    instrument #170 put on the evidence path — never ``mj_geomDistance``, see
-    the module header), **not** with the solver's contact list. The contact
-    list is not a proximity oracle: ``contype`` /
-    ``conaffinity`` suppression empties whole geom pairs, so on the 2026-08-14
-    acceptance run a cup resting on an island at 0.000 mm produced no contact
-    record at all — no attestation, no exemption, and an E-stop on the real
-    support contact — while a baguette on a counter produced six, purely
-    because that pair's bitmasks happened to meet. Signed distance sees both.
-
-    Only a *non-free* environment body counts as a support: the world, a
-    counter, a cabinet. Another free-floating object is not something the
-    kernel may be told to ignore, and neither is the gripper holding the
-    payload (that is what ``touch_links`` covers). ``None`` — nothing within
-    touching distance, nothing load-bearing, or a claim the kernel's caps would
-    not accept — is the honest answer and yields no exemption.
+    A grasped object routinely still rests on the counter it was picked from;
+    once the payload is checked as robot geometry that contact is otherwise
+    indistinguishable from driving the payload through a wall. This produces
+    the attestation that tells the two apart, from ground truth the simulator
+    already has (ADR-0092 D6). Only a non-free environment body counts as a
+    support (world / counter / cabinet) — another free-floating object is not
+    something the kernel may be told to ignore, and the gripper holding the
+    payload is covered by ``touch_links`` instead. See the module header for
+    why this uses ``openral_hal.convex_distance``, not the solver's contact
+    list or ``mj_geomDistance``.
 
     Args:
         model: Live ``mujoco.MjModel``.
@@ -929,15 +897,16 @@ def support_contact_witness(
         root_body_id: Root body of the payload.
         robot_body_ids: Every body belonging to the robot.
         stamp_ns: Producer timestamp for the witness.
-        support_roots: Restrict eligible supports to these roots. ``None`` (the
-            pick-phase default) admits any eligible environment surface; the
-            place phase passes the declared target's own body subtree, so the
-            only contact that can ever be attested under a place declaration is
-            contact **on the declared target** (ADR-0097). Contact with
-            anything else measures the same and attests nothing.
+        support_roots: Restrict eligible supports to these roots. ``None``
+            (the pick-phase default) admits any eligible environment surface;
+            the place phase passes the declared target's own body subtree, so
+            the only contact attestable under a place declaration is contact
+            **on the declared target** (ADR-0097).
 
     Returns:
-        The witness, or ``None`` when no eligible support contact exists.
+        The witness, or ``None`` when no eligible support contact exists
+        (nothing within touching distance, nothing load-bearing, or a claim
+        past the kernel's caps).
     """
     payload_bodies = _body_subtree(model, root_body_id)
     payload_geoms = _collision_geoms(model, payload_bodies)
@@ -1035,8 +1004,8 @@ def contact_force_calibration() -> tuple[float, bool, str | None]:
 
     Returns:
         ``(scale, calibrated, reference)``. ``calibrated`` is ``True`` only when
-        an operator has set **both** :data:`_CONTACT_FORCE_SCALE_ENV` to a
-        finite positive scale and :data:`_CONTACT_FORCE_CALIBRATION_REF_ENV` to
+        an operator has set **both** ``_CONTACT_FORCE_SCALE_ENV`` to a
+        finite positive scale and ``_CONTACT_FORCE_CALIBRATION_REF_ENV`` to
         a non-empty name for it. Anything else — neither set, one set, an
         unparseable or non-positive scale — yields the identity scale,
         ``calibrated=False`` and no reference, which leaves the ADR-0100 force
@@ -1087,22 +1056,19 @@ def probe_contact_force(
 
     Walks MuJoCo's solver contact list for pairs with one geom on the payload
     and the other on the declared target's subtree, and reports the **total**
-    normal load over them — a box resting on a shelf makes four corner contacts
-    each carrying a quarter of its weight, so any single one understates the
-    press by the size of the solver's contact manifold. The direction is the
-    dominant contact's normal, expressed in the payload's own frame.
-
-    **Absence of a return value is not evidence of absent contact.** This reads
-    the solver's contact list, and ``contype`` / ``conaffinity`` exclusions can
-    suppress a pair entirely — field-observed at 30 mm of interpenetration with
-    ``ncon == 0``. A ``None`` here only ever means the ADR-0100 gate does not
-    arm, and geometry decides exactly as it does today. That is why this
-    producer feeds a check which can only *add* a refusal: a blind spot in it
-    can never remove one.
-
-    The magnitude is Newtons only under an explicit operator calibration
-    (:func:`contact_force_calibration`); otherwise the witness carries
+    normal load over them (a box on a shelf makes four corner contacts each
+    carrying a quarter of its weight, so any single one understates the
+    press). Direction is the dominant contact's normal, in the payload's own
+    frame. Magnitude is Newtons only under an explicit operator calibration
+    (``contact_force_calibration``); otherwise the witness carries
     ``magnitude_calibrated=False`` and the kernel does not read it.
+
+    **Absence of a return value is not evidence of absent contact**: reading
+    the solver's contact list, ``contype``/``conaffinity`` exclusions can
+    suppress a pair entirely (field-observed at 30 mm of interpenetration with
+    ``ncon == 0``). ``None`` here only means the ADR-0100 gate does not arm and
+    geometry decides as it does today — this producer can only *add* a
+    refusal, never remove one.
 
     Args:
         model: MuJoCo ``MjModel``.
@@ -1558,25 +1524,20 @@ class SimAttachmentEvidenceTracker:
     ) -> PlaceDeclaration | None:
         """The live declaration, with its region posed in the robot base frame.
 
-        This is the producer half of the amendment's Condition 2: sim measures
-        the declared body's model subtree, and the safety kernel consumes the
-        resulting box without knowing or caring which producer measured it. Real
-        hardware will fill the same field from the perception stack through a
-        seam that does not exist yet, which is why no allowance is applied on
-        real hardware today.
+        Producer half of the amendment's Condition 2: sim measures the
+        declared body's model subtree, and the safety kernel consumes the box
+        without knowing which producer measured it. Real hardware fills the
+        same field via a perception-stack seam that doesn't exist yet, so no
+        allowance applies there today.
 
-        Every path that yields no region — a dead declaration, an unresolved
-        target, a subtree with no collision geometry, a degenerate hull, an
-        unresolvable base frame, or a region the schema's own bounds reject —
-        returns a declaration with ``region=None``, i.e. exactly the margins the
-        kernel used before the amendment. That includes the case where the
-        *incoming* declaration already carried a region: dispatch cannot measure
-        geometry, so a region it supplied is overwritten when this producer can
-        measure one and dropped when it cannot. The region the kernel reads is
-        therefore always this producer's own measurement, never a relayed claim
-        (HZ-0097-2/4). Dispatch is stripped upstream too — the rSkill runner
-        drops the field before publishing — and this is the same rule enforced
-        where it is load-bearing, on the message the kernel actually consumes.
+        Every path yielding no region (dead declaration, unresolved target,
+        no collision geometry, degenerate hull, unresolvable base frame, or a
+        region the schema's bounds reject) returns ``region=None`` — the
+        pre-amendment margins. An *incoming* declaration's own region is
+        always overwritten when this producer can measure one, dropped when
+        it cannot — the kernel only ever reads this producer's own
+        measurement, never a relayed claim (HZ-0097-2/4); the rSkill runner
+        strips the field upstream too.
 
         Args:
             data: Live ``mujoco.MjData``.

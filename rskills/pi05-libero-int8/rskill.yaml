@@ -2,51 +2,33 @@
 # Wraps: lerobot/pi05_libero_finetuned_v044 with int8 runtime packing.
 # Base:  lerobot/pi05_base (Physical Intelligence π0.5)
 #
-# Why int8 (not NF4): bf16 π0.5 peaks at 8.06 GB of device memory, which does
-# not fit an 8 GB consumer GPU once the driver takes its cut. NF4 4-bit fits
-# but is *too lossy* for the 3.4 B π0.5 backbone — it destroys competence
-# (0/5 on libero_spatial with NF4 4-bit). LLM.int8 (bitsandbytes Linear8bitLt
-# on every Linear ≥4M elements) restores the policy AND fits, at 6.35 GB. The
-# pi05 adapter loads the bf16 source, rewraps Linears to Linear8bitLt, then
-# packs to int8 on the device move (accelerate-free meta-init fast path).
+# Why int8, not NF4: bf16 π0.5 peaks at 8.06 GB device memory, doesn't fit an
+# 8 GB card after driver overhead. NF4 4-bit fits but is too lossy (0/5 on
+# libero_spatial). LLM.int8 (bitsandbytes Linear8bitLt on Linear >=4M elements)
+# restores competence and fits at 6.35 GB; adapter loads bf16, rewraps, packs
+# to int8 on device move.
 #
-# ⚠️ int8 is a *memory* fit, not a free one. Measured on a GB10 — LIBERO-Spatial
-# tasks 0/1/2, seed 42, max_steps 220, n=50 per task per arm (300 episodes
-# total). Same episodes, same protocol; the only difference is
-# quantization.dtype:
+# int8 is a memory fit, not a free one. GB10, LIBERO-Spatial tasks 0/1/2, seed
+# 42, max_steps 220, n=50/task/arm (300 episodes), quantization.dtype the only
+# variable:
+#            task 0    task 1    task 2    total            step time
+#     bf16     98%       94%       94%     143/150 = 95%    9.6 ms
+#     int8     76%       22%       82%      93/150 = 62%   24.8 ms
+# ~33-point cost overall (Fisher exact p=4e-13), ~2.6x slower/step, and
+# TASK-DEPENDENT (22-82% swing) — a single-task spot-check can look fine while
+# task 1 nearly fails; the variance is the real hazard.
 #
-#            task 0    task 1    task 2    total
-#     bf16     98%       94%       94%     143/150 = 95%   9.6 ms/step
-#     int8     76%       22%       82%      93/150 = 62%  24.8 ms/step
+# int8 exists only to buy the 1.7 GB an 8 GB card needs; 62% beats not running.
+# On >=9 GB prefer bf16 (`--vla-extra dtype=bf16`, no manifest edit). TensorRT
+# FP8 (openral-pro, OPENRAL_PI05_TRT=1, OPENRAL_PI05_TRT_PRECISION=fp8_bf16_attn)
+# is better again: 78.9 ms/call vs bf16 eager's 190 ms, bf16-identical success.
+# Older "0.5-0.7 at n=10" figure (still in eval/scene_libero_spatial.json) is
+# unusable, not wrong: binomial SD ~0.16 at that n covers most of the spread above.
 #
-# int8 costs ~33 points of task success overall (Fisher exact p=4e-13) *and*
-# runs ~2.6x slower per step — LLM.int8's mixed-precision decomposition is
-# slower than a plain bf16 GEMM.
-#
-# Read the per-task row, not just the total. bf16 is steady (98/94/94) while
-# int8 swings 22–82%. The damage is **task-dependent**, so a single-task
-# spot-check can easily land on 82% and look acceptable; task 1 is where this
-# policy nearly stops working. That variance is the real hazard, more than the
-# average.
-#
-# What int8 buys is 1.7 GB, and that is the whole reason it exists: on an 8 GB
-# card bf16 will not load at all, and 62% beats not running. **On any host with
-# ≳9 GB, prefer bf16** — no manifest edit needed, just `--vla-extra dtype=bf16`.
-# With TensorRT an FP8 engine is better again: 78.9 ms/call vs bf16 eager's
-# 190 ms, at bf16-identical task success (openral-pro, OPENRAL_PI05_TRT=1,
-# OPENRAL_PI05_TRT_PRECISION=fp8_bf16_attn).
-#
-# The older "0.5–0.7 across 10-episode runs" figure is not wrong so much as
-# unusable: at n=10 the binomial SD is ~0.16, wide enough to cover most of the
-# spread above. eval/scene_libero_spatial.json still records that n=10 run.
-#
-# LICENSE WARNING (CLAUDE.md §7.4):
-#   Code: Apache-2.0
-#   Weights: Physical Intelligence "permissive research" license — NOT full Apache-2.0.
-#   Commercial deployment is prohibited without a separate agreement with Physical Intelligence.
-#   The OpenRAL loader derives is_commercial_use_allowed=False from
-#   license=permissive_research; activating commercially still requires
-#   OPENRAL_ALLOW_NONCOMMERCIAL=1 plus a vendor agreement.
+# LICENSE (CLAUDE.md §7.4): code Apache-2.0; weights Physical Intelligence
+# "permissive research" — commercial deployment needs a separate PI agreement.
+# Loader derives is_commercial_use_allowed=False from license=permissive_research;
+# activating commercially needs OPENRAL_ALLOW_NONCOMMERCIAL=1 + vendor agreement.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -95,29 +77,13 @@ quantization:
   # quantization runs at startup from the bf16 checkpoint below.
   dtype: "int8"
   backend: "pytorch"
-# Informational VRAM ceilings, used by `ral skill check` / `openral doctor`.
-# CLAUDE.md §11 still forbids silent downcast — the actually-applied dtype
-# stays pinned by quantization.dtype.
-#
-# These are **peak device memory for a full rollout**, measured on a GB10
-# (torch `max_memory_reserved`, i.e. what the caching allocator took from the
-# driver — the number that decides whether a load OOMs), not weight size:
-#
-#     int8    6.35 GB   (5.90 allocated)
-#     bf16    8.06 GB   (7.91 allocated)
-#     fp32   16.10 GB   (15.76 allocated)
-#
-# All three previous figures were **understated** — by 0.4, 1.1 and 2.1 GB
-# respectively. The bf16 one is what made this manifest look self-contradictory:
-# 7.0 reads as "fits an 8 GB card", while the header says bf16 OOMs there. The
-# header is right. bf16 peaks at 8.06 GB and an 8 GB GPU has less than that free
-# once the driver takes its cut; int8's 1.7 GB saving is what buys the headroom.
-#
-# Do not confuse these with **host** RSS during load, which reaches ~13 GiB
-# while the checkpoint is materialized on CPU before the device move. That is
-# host RAM, not VRAM, and it is the same order of magnitude for every dtype
-# here — which is exactly how "~13.6 GiB peak" ended up being read as a bf16
-# *VRAM* figure.
+# Informational VRAM ceilings (`ral skill check` / `openral doctor`); actual
+# dtype stays pinned by quantization.dtype (CLAUDE.md §11 forbids silent
+# downcast). Peak device memory for a full rollout, GB10, torch
+# max_memory_reserved (allocated in parens): int8 6.35 GB (5.90), bf16 8.06 GB
+# (7.91), fp32 16.10 GB (15.76) — matches the header's "bf16 OOMs on 8 GB".
+# Not to be confused with host RSS during load (~13 GiB, same order for every
+# dtype — the source of an earlier mistaken "bf16 VRAM" reading).
 min_vram_gb:
   fp32: 16.1
   bf16: 8.1

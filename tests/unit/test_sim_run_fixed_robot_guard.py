@@ -1,22 +1,18 @@
 """Tests for the scene-fixed-robot guard in ``openral sim run``.
 
-When a sim backend hard-wires a single robot (LIBERO → Franka,
-MetaWorld → Sawyer, PushT → 2-D pusher, gym-aloha → bimanual,
-RoboCasa → PandaMobile), passing ``--robot`` on the CLI or carrying
-``robot_id:`` in the YAML used to silently let the adapter swap robots
-underneath the user. After the ``feat(core,sim): SceneEnvironment +
-openral sim run --rskill, no legacy`` commit the CLI raises a typed
-:class:`ROSConfigError` at config-build time, before any rollout
-starts.
+Sim backends that hard-wire a single robot (LIBERO → Franka, MetaWorld →
+Sawyer, PushT → 2-D pusher, gym-aloha → bimanual, RoboCasa → PandaMobile) used
+to let ``--robot`` / ``robot_id:`` silently swap robots underneath the user.
+The CLI now raises a typed ``ROSConfigError`` at config-build time, before
+any rollout starts.
 
-The canonical invocation is::
+Canonical invocation::
 
     openral sim run --config FILE.yaml --rskill rskills/<id> [--robot R]
 
-CLAUDE.md §1.11 — real components only: the tests load real registered
-scenes through the real CLI / loader, no mocks. The guard fires at
-config-build time, so we don't need to install LIBERO / MetaWorld /
-gym-aloha to exercise it.
+CLAUDE.md §1.11: real registered scenes through the real CLI/loader, no mocks.
+The guard fires at config-build time, so no LIBERO/MetaWorld/gym-aloha install
+is needed to exercise it.
 """
 
 from __future__ import annotations

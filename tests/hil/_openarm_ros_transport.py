@@ -1,35 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """Lab-runner-only ``rclpy`` bridge for the bimanual OpenArm v2 real-HW HAL.
 
-:class:`openral_hal.openarm_real.OpenArmRealHAL` fans one 16-DoF
-:class:`openral_core.Action` across **four** ``ros2_control`` controllers —
-left arm, left gripper, right arm, right gripper (``openarm_bringup``'s
-bimanual configuration). This is the HIL counterpart of
-:mod:`tests.hil._aloha_ros_transport` for that fan-out.
+``openral_hal.openarm_real.OpenArmRealHAL`` fans one 16-DoF ``openral_core.Action`` across
+four ``ros2_control`` controllers — left arm, left gripper, right arm, right gripper
+(``openarm_bringup``'s bimanual configuration). HIL counterpart of
+``tests.hil._aloha_ros_transport`` for that fan-out.
 
-Simpler than the ALOHA bridge, because the OpenArm HAL puts ``joint_names``
-**in the message it publishes** (ADR-0102). The ALOHA bridge has to carry its
-own slice table to know which joints each publisher owns; here the message
-says so, and the transport just forwards it. That also means the transport
-cannot silently disagree with the HAL about joint order — there is no second
-copy of the mapping to drift.
+Simpler than the ALOHA bridge: the OpenArm HAL puts ``joint_names`` in the message it
+publishes (ADR-0102), so the transport just forwards it rather than carrying its own slice
+table — no second copy of the mapping to drift.
 
-Those names are in the **ros2_control namespace**
-(``openarm_left_joint1``), not the manifest's (``left_joint1``); the adapter
-translates, and ``/joint_states`` is keyed the same way. Build this transport
-from :meth:`OpenArmRealHAL.ros2_control_joint_names`, never from
+Names are in the ros2_control namespace (``openarm_left_joint1``), not the manifest's
+(``left_joint1``); the adapter translates, and ``/joint_states`` is keyed the same way. Build
+this transport from ``OpenArmRealHAL.ros2_control_joint_names``, never from
 ``description.joints``.
 
-``time_from_start`` is a **constructor argument** here, unlike the 100 ms the
-production transports hardcode. A ``JointTrajectoryController`` given an
-absolute target and a 100 ms deadline moves at ``(target - current) / 0.1s``,
-so on a first powered run the rate is set by how wrong the command is — which
-is the quantity under test. A longer window bounds the rate by construction.
-Tests that care about production timing must say so and pass 0.1.
+``time_from_start`` is a constructor argument here, unlike the 100 ms the production
+transports hardcode: a ``JointTrajectoryController`` given an absolute target and a 100 ms
+deadline moves at ``(target - current) / 0.1s``, so on a first powered run the rate is set by
+how wrong the command is — the quantity under test. A longer window bounds the rate by
+construction; tests caring about production timing must pass 0.1 explicitly.
 
-This module is HIL-only and shares the import-time ``rclpy`` guard from
-:mod:`tests.hil._ros_control_transport` (CLAUDE.md §1.11: real component or
-``pytest.skip`` — nothing in between).
+HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
+(CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations
@@ -49,12 +42,16 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState as RosJointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from tests.hil._ros_control_transport import _CONTROL_QOS, _make_trajectory_publisher
+from tests.hil._ros_control_transport import (
+    _CONTROL_QOS,
+    _JointStateCache,
+    _make_trajectory_publisher,
+)
 
 __all__ = ["OpenArmHILTransport"]
 
 
-class OpenArmHILTransport:
+class OpenArmHILTransport(_JointStateCache):
     """4-way ``rclpy`` bridge for the bimanual OpenArm HIL tests.
 
     Owns one ``JointTrajectory`` publisher per controller plus one
@@ -66,10 +63,10 @@ class OpenArmHILTransport:
         node: A live ``rclpy`` node owned by the caller (teardown is the
             caller's responsibility).
         joint_names: All 16 joint names in **ros2_control** order — i.e.
-            :meth:`OpenArmRealHAL.ros2_control_joint_names`, which is what
+            ``OpenArmRealHAL.ros2_control_joint_names``, which is what
             ``/joint_states`` is keyed by.
         command_topics: The four controller command topics, from
-            :meth:`OpenArmRealHAL.command_topics`.
+            ``OpenArmRealHAL.command_topics``.
         joint_state_topic: Aggregated ``sensor_msgs/JointState`` topic.
         time_from_start_s: Trajectory deadline for every published point. See
             the module docstring — this bounds the motion rate.
@@ -154,17 +151,7 @@ class OpenArmHILTransport:
         traj.points.append(point)
         publisher.publish(traj)
 
-    def state(self) -> dict[str, object]:
-        """Latest joint state in the transport's joint-name order."""
-        positions: list[float] = []
-        velocities: list[float] = []
-        efforts: list[float] = []
-        for name in self._joint_names:
-            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
-            positions.append(p)
-            velocities.append(v)
-            efforts.append(e)
-        return {"position": positions, "velocity": velocities, "effort": efforts}
+    # state() comes from _JointStateCache.
 
     # -- Helpers --------------------------------------------------------------
 
@@ -219,8 +206,8 @@ class OpenArmHILTransport:
     def wait_for_every_joint(self, deadline_s: float = 5.0) -> bool:
         """Block until every expected joint has been reported at least once.
 
-        Not "any message": :meth:`state` zero-fills an unreported joint, and
-        :class:`OpenArmRealHAL` builds a full 16-DoF vector regardless. A
+        Not "any message": ``state`` zero-fills an unreported joint, and
+        ``OpenArmRealHAL`` builds a full 16-DoF vector regardless. A
         partial ``/joint_states`` therefore reads as a *plausible pose* with
         zeros in it, which is the one input a motion test must never act on.
 

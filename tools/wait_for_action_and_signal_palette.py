@@ -1,27 +1,15 @@
 #!/usr/bin/env python3
 """Wait for a ROS 2 action server to appear, then fire skill_registry_changed.
 
-This is a follow-up fix for skill-palette re-seeding. Background:
-
-The reasoner_node seeds its rSkill palette at ``on_configure``, which
-runs as part of the early launch autostart (a few seconds after
-``ros2 launch``). Wrapped-ROS rSkills (``kind: ros_action`` /
-``ros_service``) include a graph-availability filter that drops a
-skill whose ``interface_name`` is not yet advertised on the ROS
-graph — preventing the reasoner from dispatching a goal to a server
-that hasn't fully come up. The check is correct in spirit but
-unfortunately too eager for Nav2: Nav2's lifecycle dance takes
-15-30 s, so ``/navigate_to_pose`` only becomes available LONG
-after the reasoner has built (and frozen) its palette.
-
-The reasoner already supports re-seeding the palette: an ``Empty``
-message on ``/openral/skill_registry_changed`` triggers
-``_maybe_seed_palette_from_search_paths`` to run again. This script
-is the producer: it polls
-``rclpy.node.Node.get_action_names_and_types()`` until the target
-action name appears, then publishes the Empty trigger. After signal
-emission the script exits 0 so the launch tree doesn't carry an
-orphan process.
+The reasoner seeds its rSkill palette at ``on_configure`` (early launch
+autostart); wrapped-ROS rSkills (``kind: ros_action``/``ros_service``) drop
+from the palette when their ``interface_name`` isn't yet advertised — but
+Nav2's lifecycle dance takes 15-30s, so ``/navigate_to_pose`` appears long
+after the palette is frozen. The reasoner re-seeds on an ``Empty`` message
+on ``/openral/skill_registry_changed``
+(``_maybe_seed_palette_from_search_paths``); this script polls
+``get_action_names_and_types()`` until the action appears, then publishes
+the trigger.
 
 Usage::
 
@@ -29,10 +17,8 @@ Usage::
         --action /navigate_to_pose \\
         --timeout-s 60.0
 
-Exits non-zero only when the action never appeared within the
-timeout — that's a real configuration failure (Nav2 didn't start,
-network partitioned, …) and worth surfacing as an error. Times out
-silently with exit 0 otherwise.
+Exits 0 once the trigger is published; exits 1 if the action never appears
+within ``--timeout-s``.
 """
 
 from __future__ import annotations
@@ -55,13 +41,9 @@ from std_msgs.msg import Empty
 def _action_on_graph(node: Any, action_name: str) -> bool:
     """Return True when ``action_name`` is advertised on the ROS graph.
 
-    ``rclpy.action.get_action_names_and_types`` enumerates every
-    action server the DDS layer has discovered (the helper is a
-    free function in ``rclpy.action``, NOT a method on
-    ``rclpy.node.Node`` — that one only knows topics + services).
-    The action_name match is exact (leading slash + canonical name)
-    to mirror what the rSkill manifest's ``interface_name`` field
-    declares.
+    ``get_action_names_and_types`` is a free function in ``rclpy.action``,
+    not a ``Node`` method (which only knows topics + services). Matches the
+    exact name to mirror the rSkill manifest's ``interface_name`` field.
     """
     from rclpy.action import get_action_names_and_types
 
@@ -72,11 +54,10 @@ def _action_on_graph(node: Any, action_name: str) -> bool:
 def _lifecycle_active(node: Any, lifecycle_node_name: str, timeout_s: float = 30.0) -> bool:
     """Block until ``<lifecycle_node_name>/get_state`` returns ACTIVE (=3).
 
-    A managed action server (Nav2 bt_navigator, MoveIt move_group with
-    lifecycle, etc.) only accepts goals once its lifecycle is in the
-    ACTIVE state — discoverability on the graph is necessary but not
-    sufficient. Per ``lifecycle_msgs/msg/State`` the numeric constant for
-    PRIMARY_STATE_ACTIVE is 3. Returns False on timeout.
+    A managed action server (Nav2 bt_navigator, MoveIt move_group, etc.)
+    only accepts goals once ACTIVE — graph discoverability alone isn't
+    enough. ``lifecycle_msgs/msg/State.PRIMARY_STATE_ACTIVE`` is 3. Returns
+    False on timeout.
     """
     from lifecycle_msgs.srv import GetState
 
@@ -106,10 +87,8 @@ def _lifecycle_active(node: Any, lifecycle_node_name: str, timeout_s: float = 30
 def _publish_signal_qos() -> QoSProfile:
     """QoS that matches the reasoner's ``/openral/skill_registry_changed`` sub.
 
-    Per ``reasoner_node.py`` the topic is RELIABLE + TRANSIENT_LOCAL +
-    KEEP_LAST=1: a rare event whose latest value the reasoner wants
-    even on a late subscribe. Our publisher mirrors that so the
-    durability handshake actually delivers.
+    Per ``reasoner_node.py``: RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1, so a
+    late subscriber still gets the latest value via the durability handshake.
     """
     return QoSProfile(
         history=QoSHistoryPolicy.KEEP_LAST,
@@ -175,12 +154,8 @@ def main() -> int:
                 # be a few hundred ms behind discovery. Sleep once so
                 # the next ``send_goal_async`` doesn't race the bond.
                 time.sleep(0.5)
-                # Wait for at least one subscriber — without this the
-                # publish leaves the writer history on a publisher
-                # process that immediately exits, and the reasoner
-                # never sees the trigger. The subscriber should be
-                # the ReasonerNode itself (subscribed at on_configure,
-                # well before this helper fires).
+                # Wait for a subscriber: publish-then-exit before one attaches
+                # means the reasoner (subscribed at on_configure) never sees it.
                 sub_deadline = time.monotonic() + 5.0
                 while publisher.get_subscription_count() == 0 and time.monotonic() < sub_deadline:
                     rclpy.spin_once(node, timeout_sec=0.05)

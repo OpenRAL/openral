@@ -1,29 +1,26 @@
-r"""Benchmark runner — loop a ``list[BenchmarkScene]`` and emit a :class:`RSkillEvalResult`.
+r"""Benchmark runner — loop a ``list[BenchmarkScene]`` and emit a ``RSkillEvalResult``.
 
-This runner later dropped an earlier ``BenchmarkSpec`` wrapper class, so a
-benchmark suite is now a bare ``list[BenchmarkScene]`` on disk
-(``benchmarks/<suite_id>.yaml``) and in
-memory. The suite id is the filename stem. The runner is the **only**
-way to produce a ``rskills/<vla>/eval/<suite_id>.json`` with
-``reproduced_locally=true``; hand-edited JSONs continue to be valid but
-they carry ``reproduced_locally=false`` and a ``reproduction_cli`` that
-points back at ``openral benchmark run`` so users can close the loop
-locally.
+A benchmark suite is a bare ``list[BenchmarkScene]`` on disk
+(``benchmarks/<suite_id>.yaml``) and in memory; the suite id is the
+filename stem. The runner is the **only** way to produce a
+``rskills/<vla>/eval/<suite_id>.json`` with ``reproduced_locally=true``;
+hand-edited JSONs remain valid but carry ``reproduced_locally=false`` and
+a ``reproduction_cli`` pointing back at ``openral benchmark run``.
 
-The runner is intentionally a thin layer over :class:`SimRunner`:
+The runner is intentionally a thin layer over ``SimRunner``:
 
 * For every (``scene``, ``seed``) tuple in
   ``scenes × range(seed, seed + n_episodes)``, build a one-episode
-  :class:`SimEnvironment` and drive it with a fresh :class:`SimRunner`
+  ``SimEnvironment`` and drive it with a fresh ``SimRunner``
   (sim and hardware share the same
-  :class:`InferenceRunner` Protocol). Each :class:`BenchmarkScene`
+  ``InferenceRunner`` Protocol). Each ``BenchmarkScene``
   carries its own ``robot_id``, ``task``, ``n_episodes``, ``seed``, and
   paper provenance (suite-level invariants — uniformity of robot_id /
   n_episodes / seed / metadata, unique task ids, non-empty — are
-  validated by :func:`openral_core.raise_on_invalid_suite`).
+  validated by ``openral_core.raise_on_invalid_suite``).
 * Aggregate per-task success rates + the overall average into a
-  :class:`RSkillEvalResult`. The numbers are computed inside
-  :func:`_aggregate_results` so callers (CLI + tests) share the same
+  ``RSkillEvalResult``. The numbers are computed inside
+  ``_aggregate_results`` so callers (CLI + tests) share the same
   rolled-up shape.
 
 Example::
@@ -126,7 +123,7 @@ def check_benchmark_task_compatibility(
 def _manifest_for_filter(vla: VLASpec) -> RSkillManifest | None:
     """Load the rSkill manifest used for suite auto-filtering, or ``None``.
 
-    Mirrors the gate guard in :func:`run_benchmark_scene`: the built-in mock
+    Mirrors the gate guard in ``run_benchmark_scene``: the built-in mock
     policies and raw ``hf://`` URIs have no local manifest, so they are
     unfilterable and the suite runner keeps every scene (permissive).
     """
@@ -146,14 +143,13 @@ def filter_scenes_for_skill(
 ) -> tuple[list[BenchmarkScene], list[BenchmarkScene]]:
     """Partition suite scenes by the rSkill's declared ``evaluated_tasks``.
 
-    The suite analogue of :func:`check_benchmark_task_compatibility`: instead of
+    The suite analogue of ``check_benchmark_task_compatibility``: instead of
     raising on a single mismatched scene, a suite run keeps the scenes the
     rSkill is trained for and skips the rest (the caller logs the skips and
-    raises only when *nothing* matches). This both delivers "run my rSkill
-    against everything it supports" in one command and closes the
-    task-compatibility gate's suite-path gap (mismatched tasks were
-    previously run and silently scored 0, because the suite path never
-    called the gate).
+    raises only when *nothing* matches). Delivers "run my rSkill against
+    everything it supports" in one command, and closes the task-compatibility
+    gate's suite-path gap — the suite path never called the gate, so a
+    mismatched task ran and silently scored 0.
 
     Args:
         scenes: The suite's scenes (pre-validated by ``raise_on_invalid_suite``).
@@ -192,12 +188,12 @@ def run_benchmark(
 
     A benchmark suite is a bare ``list[BenchmarkScene]`` plus a
     ``suite_id`` (typically ``Path("benchmarks/<id>.yaml").stem``). Callers
-    that load from disk should use :func:`openral_core.load_benchmark_suite`
-    and :func:`openral_core.raise_on_invalid_suite` before calling this
+    that load from disk should use ``openral_core.load_benchmark_suite``
+    and ``openral_core.raise_on_invalid_suite`` before calling this
     function; the runner does not re-validate suite invariants.
 
     Args:
-        scenes: The list of :class:`BenchmarkScene`s to evaluate. Each
+        scenes: The list of ``BenchmarkScene``s to evaluate. Each
             entry carries its own scene, task, robot, episode count, and
             seed offset. Suite-level invariants (uniformity of robot_id /
             n_episodes / seed / metadata, unique task ids, non-empty) are
@@ -210,13 +206,13 @@ def run_benchmark(
         device: Optional torch device override applied to every rollout
             (``"cpu"``, ``"cuda:0"``, ``"mps"``, ``"auto"``). ``None``
             keeps the manifest's preferred device.
-        save_dir: Optional directory written to each :class:`SimEnvironment`
+        save_dir: Optional directory written to each ``SimEnvironment``
             for adapter-side artefacts (videos, traces). Unrelated to where
-            the final :class:`RSkillEvalResult` JSON lives — that path is
-            chosen by the caller (see :func:`default_output_path`).
+            the final ``RSkillEvalResult`` JSON lives — that path is
+            chosen by the caller (see ``default_output_path``).
         video_dir: When set, record per-step world frames and write one MP4
             per episode into this directory via
-            :func:`openral_sim._website_video.write_world_videos`
+            ``openral_sim._website_video.write_world_videos``
             (named ``<task>[_seed<n>]_<rskill>_<success|fail>.mp4`` plus a
             merged ``videos.json``). Frames are written and freed after each
             episode so multi-hundred-episode suites don't accumulate
@@ -224,15 +220,15 @@ def run_benchmark(
 
     Returns:
         A pair ``(result, episodes)`` where ``result`` is a validated
-        :class:`RSkillEvalResult` ready to be written to
+        ``RSkillEvalResult`` ready to be written to
         ``rskills/<vla>/eval/<suite_id>.json`` and ``episodes`` is the
-        flat per-(task, seed) list of :class:`EpisodeResult` objects for
+        flat per-(task, seed) list of ``EpisodeResult`` objects for
         callers that want fine-grained data (e.g. unit tests asserting on
         latency).
 
     Raises:
         openral_core.exceptions.ROSConfigError: Any error propagated
-            from :class:`SimRunner` — typically a missing rSkill
+            from ``SimRunner`` — typically a missing rSkill
             manifest, an incompatible robot, or an unresolvable rSkill
             reference. The runner does not catch them; the whole suite
             fails so partial JSONs never reach disk.
@@ -354,20 +350,20 @@ def _aggregate_results(
     per_task: dict[str, list[bool]],
     episodes: list[EpisodeResult],
 ) -> RSkillEvalResult:
-    """Roll up per-task booleans into a :class:`RSkillEvalResult`.
+    """Roll up per-task booleans into a ``RSkillEvalResult``.
 
-    Pulled out of :func:`run_benchmark` so the same aggregation shape is
+    Pulled out of ``run_benchmark`` so the same aggregation shape is
     exercised by unit tests that build synthetic per-task lists without
     paying for a full rollout.
 
     Paper-comparison display strings (``display_name``,
     ``simulator``) and the optional arxiv URL all flow from the per-scene
-    :class:`BenchmarkMetadata` block (suite-uniform by invariant). The
+    ``BenchmarkMetadata`` block (suite-uniform by invariant). The
     ``RSkillEvalBenchmark.name`` falls back to ``suite_id`` and
     ``RSkillEvalBenchmark.simulator`` falls back to ``scenes[0].scene.id``
     when the optional metadata fields are not set; the arxiv URL is
     auto-derived from the paper field when the URL contains
-    ``arxiv.org/`` (mirrors :func:`_aggregate_scene_results`).
+    ``arxiv.org/`` (mirrors ``_aggregate_scene_results``).
     """
     from openral_core import (
         RSkillEvalBenchmark,
@@ -418,9 +414,9 @@ def _aggregate_results(
 
     # Per-scene metadata is the single source of truth. ``paper``
     # is the canonical per-scene provenance (required by
-    # :class:`BenchmarkMetadata`); the arxiv URL is auto-derived from it
+    # ``BenchmarkMetadata``); the arxiv URL is auto-derived from it
     # when the URL contains ``arxiv.org/`` — matches the per-scene
-    # :func:`_aggregate_scene_results` and means a suite eval JSON has
+    # ``_aggregate_scene_results`` and means a suite eval JSON has
     # the same ``source.arxiv`` policy as a single-scene eval JSON.
     paper = first.metadata.paper
     arxiv = paper if "arxiv.org/" in paper else None
@@ -470,13 +466,13 @@ def run_benchmark_scene(
     view: bool | None = None,
     record_video: bool = False,
 ) -> tuple[RSkillEvalResult, list[EpisodeResult]]:
-    """Run a :class:`BenchmarkScene` end-to-end against one rSkill.
+    """Run a ``BenchmarkScene`` end-to-end against one rSkill.
 
-    Single-scene counterpart of :func:`run_benchmark` — the rollout loop
+    Single-scene counterpart of ``run_benchmark`` — the rollout loop
     that backs ``openral benchmark scene`` (sibling of ``openral benchmark
     run --suite``). Iterates ``range(scene.seed, scene.seed + scene.n_episodes)``
     against the one ``(scene, task)`` pair carried by the
-    :class:`BenchmarkScene` and emits the same :class:`RSkillEvalResult`
+    ``BenchmarkScene`` and emits the same ``RSkillEvalResult``
     JSON shape so paper-comparison reports stay uniform.
 
     Args:
@@ -487,13 +483,13 @@ def run_benchmark_scene(
             must be a bare rSkill reference; the strict runner rejects
             raw ``hf://`` URIs.
         device: Optional torch device override applied to every rollout.
-        save_dir: Optional directory written to each :class:`SimEnvironment`
+        save_dir: Optional directory written to each ``SimEnvironment``
             for adapter-side artefacts (videos, traces).
         config_path: Optional path to the BenchmarkScene YAML this scene
             was loaded from — embedded into ``RSkillEvalSource.reproduction_cli``
             so reviewers can re-run the exact eval from disk.
         record_video: When True, capture per-step world frames into each
-            :class:`EpisodeResult.frames` so callers can write clean
+            ``EpisodeResult.frames`` so callers can write clean
             website MP4s (``openral benchmark scene --save-video``). Off by
             default — eval/CI runs stay allocation-light.
         view: Tri-state viewer flag, identical in meaning to ``openral sim
@@ -502,19 +498,19 @@ def run_benchmark_scene(
             and CI/deploy runs are unaffected. ``True`` opens a passive
             ``mujoco.viewer`` window per episode and streams the rollout
             (strict — raises on a missing display); ``False`` forces
-            offscreen. Resolved through :func:`openral_sim.cli._resolve_view`
+            offscreen. Resolved through ``openral_sim.cli._resolve_view``
             so the ``MUJOCO_GL`` / ``DISPLAY`` semantics match ``sim run``.
 
     Returns:
         A pair ``(result, episodes)`` where ``result`` is a validated
-        :class:`RSkillEvalResult` ready to be written to
+        ``RSkillEvalResult`` ready to be written to
         ``rskills/<vla>/eval/scene_<scene_id>.json``.
 
     Raises:
         openral_core.exceptions.ROSConfigError: When ``scene.robot_id`` is
-            ``None`` (the runner cannot construct a :class:`SimEnvironment`
+            ``None`` (the runner cannot construct a ``SimEnvironment``
             without an embodiment), or for any error propagated from
-            :class:`SimRunner`.
+            ``SimRunner``.
     """
     from openral_core import SimEnvironment
     from openral_core.exceptions import ROSConfigError
@@ -612,9 +608,9 @@ def _aggregate_scene_results(
     episodes: list[EpisodeResult],
     config_path: str | None,
 ) -> RSkillEvalResult:
-    """Roll up a per-episode list into a :class:`RSkillEvalResult`.
+    """Roll up a per-episode list into a ``RSkillEvalResult``.
 
-    Single-scene counterpart of :func:`_aggregate_results`. Shares the
+    Single-scene counterpart of ``_aggregate_results``. Shares the
     output schema so ``openral benchmark report`` does not need to
     distinguish ``run --suite`` JSONs from ``scene --config`` JSONs.
     """
@@ -646,7 +642,7 @@ def _aggregate_scene_results(
         latencies = [e.mean_step_latency_ms for e in episodes if e.mean_step_latency_ms is not None]
         if latencies:
             results["mean_step_latency_ms_avg"] = sum(latencies) / len(latencies)
-        # PushT special-case — same handling as :func:`_aggregate_results`,
+        # PushT special-case — same handling as ``_aggregate_results``,
         # since the same scene id can ship as either a SuiteSpec or a
         # BenchmarkScene.
         if scene.scene.id == "pusht":
@@ -702,10 +698,10 @@ def default_output_path(weights_uri: str, benchmark_id: str) -> str:
     A weights ref like ``rskills/smolvla-libero`` resolves to
     ``rskills/smolvla-libero/eval/<benchmark_id>.json``. The caller is
     responsible for ``mkdir -p`` of the parent directory and for actually
-    writing the JSON (typically via :meth:`RSkillEvalResult.model_dump_json`).
+    writing the JSON (typically via ``RSkillEvalResult.model_dump_json``).
 
     Args:
-        weights_uri: The bare rSkill reference from :attr:`VLASpec.weights_uri`.
+        weights_uri: The bare rSkill reference from ``VLASpec.weights_uri``.
         benchmark_id: The benchmark suite id (the YAML filename stem) — used
             as the JSON filename stem so re-running the same suite
             overwrites the same eval JSON.
@@ -747,7 +743,7 @@ def update_rskill_benchmarks(
     """Persist a benchmark headline rate back into a skill's ``rskill.yaml``.
 
     The benchmark runner is the only canonical producer of the headline
-    rates that land in :attr:`RSkillManifest.benchmarks`; this helper closes
+    rates that land in ``RSkillManifest.benchmarks``; this helper closes
     the loop so ``openral benchmark run`` finalisation actually updates the
     manifest field that downstream tools (``openral benchmark report``,
     skill_catalog, the hosted dashboard) read from.
@@ -755,8 +751,8 @@ def update_rskill_benchmarks(
     The on-disk edit is a *surgical* replacement of the top-level
     ``benchmarks:`` block — every other line in ``rskill.yaml`` (comments,
     ordering, blank lines) is left untouched. The merged manifest is then
-    re-validated through :class:`RSkillManifest` so an unknown
-    ``benchmark_id`` (one not in the :data:`BenchmarkName` literal) or an
+    re-validated through ``RSkillManifest`` so an unknown
+    ``benchmark_id`` (one not in the ``BenchmarkName`` literal) or an
     out-of-range ``score`` fails loud before the bytes hit disk.
 
     Args:
@@ -764,18 +760,18 @@ def update_rskill_benchmarks(
             ``rskill.yaml``). Accepts either ``Path`` or string forms.
         benchmark_id: The benchmark suite id (the YAML filename stem) whose
             headline rate to record. MUST be a member of the
-            :data:`openral_core.BenchmarkName` literal — the manifest
+            ``openral_core.BenchmarkName`` literal — the manifest
             schema rejects everything else.
         score: Headline success rate in ``[0.0, 1.0]``. Typically the
-            ``avg_success_rate`` from :class:`RSkillEvalResult.results`.
+            ``avg_success_rate`` from ``RSkillEvalResult.results``.
 
     Returns:
-        The :class:`pathlib.Path` of the ``rskill.yaml`` that was written.
+        The ``pathlib.Path`` of the ``rskill.yaml`` that was written.
 
     Raises:
         FileNotFoundError: If ``<skill_dir>/rskill.yaml`` does not exist.
         openral_core.exceptions.ROSConfigError: If the merged manifest
-            fails :class:`RSkillManifest` validation (unknown
+            fails ``RSkillManifest`` validation (unknown
             ``benchmark_id``, score out of range, malformed YAML).
     """
     import yaml
@@ -844,7 +840,7 @@ def update_rskill_benchmarks_from_uri(
     benchmark_id: str,
     score: float,
 ) -> Path:
-    """Convenience wrapper that delegates to :func:`update_rskill_benchmarks`.
+    """Convenience wrapper that delegates to ``update_rskill_benchmarks``.
 
     Callers (the ``openral benchmark run`` finaliser, future
     ``openral benchmark report --update`` paths) can pass the same

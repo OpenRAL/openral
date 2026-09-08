@@ -1,7 +1,7 @@
 """Regression test: the historical ``policy_id`` field is gone.
 
 The rSkill self-containment audit F1 follow-up dropped the
-redundant ``policy_id`` field on :class:`RSkillManifest` — every reader
+redundant ``policy_id`` field on ``RSkillManifest`` — every reader
 now dispatches the policy adapter via ``manifest.model_family``.
 Carrying a stale ``policy_id:`` line on a user-side manifest would
 silently parse before the change (str-typed unused field); after the

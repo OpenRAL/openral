@@ -1,7 +1,7 @@
 """Camera-space 2D detection tracker.
 
-Pure, ROS-free, stateful. The 2D analog of :class:`ObjectMemory`:
-assigns a **stable per-camera `det_id`** to each :class:`ObjectDetection2D` by
+Pure, ROS-free, stateful. The 2D analog of ``ObjectMemory``:
+assigns a **stable per-camera `det_id`** to each ``ObjectDetection2D`` by
 greedy same-label 2D-AABB IoU association across frames, so an object can be
 referred to and de-duplicated **even when the 3D lift cannot run** (RGB-only / no
 depth). One tracker instance per camera; identity is camera-space, not a world

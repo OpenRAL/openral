@@ -1,18 +1,14 @@
 """Every shipped robot's collision links must form exactly one connected tree.
 
-``RobotDescription.joints`` enumerates only *movable* joints, so a robot with a
-rigid mount — a Franka hand bolted to the flange, a bimanual rig's two arm
-pedestals — has links that no joint reaches. The envelope loader used to treat
-each such link as a second base and place it, and its whole subtree, at the
-robot's origin. That is silently wrong in both directions: it fabricates
-contacts that cannot happen, and (far worse) it leaves the subtree's real swept
-volume completely unmodelled, so a genuine self-collision goes undetected.
+``RobotDescription.joints`` enumerates only *movable* joints, so a rigid mount
+(a Franka hand on the flange, a bimanual rig's arm pedestals) has links no joint
+reaches. Regression: the envelope loader placed each such link as a second base
+at the robot's origin, fabricating contacts that can't happen and leaving the
+subtree's real swept volume unmodelled, so a genuine self-collision goes
+undetected. Pins the fix — one root, or no collision model at all — across
+every manifest in ``robots/``.
 
-These tests pin the invariant that replaced it — one root, or no collision model
-at all — across every manifest in ``robots/``, so a future robot cannot
-reintroduce the defect by omitting its rigid mounts.
-
-CLAUDE.md §1.11 — real manifests from ``robots/``, real schemas, no mocks.
+CLAUDE.md §1.11 — real manifests, real schemas, no mocks.
 """
 
 from __future__ import annotations
@@ -66,12 +62,11 @@ def test_shipped_manifest_lowers_to_a_single_rooted_tree(manifest: pathlib.Path)
 def test_geometry_free_manifests_cannot_go_live_disconnected(manifest: pathlib.Path) -> None:
     """A manifest we cannot connect yet must stay geometry-free.
 
-    ``r1pro`` ships no ``assets`` block at all, so there is no URDF or MJCF on
-    disk to source its four missing mounts from — and inventing them is not an
-    option. It is safe only because it declares no collision geometry, so the
-    loader never builds a model for it. This asserts that pairing holds: the day
-    someone adds geometry to a still-disconnected manifest, the loader refuses
-    and this suite says why, rather than a wrong envelope shipping quietly.
+    ``r1pro`` ships no ``assets`` block, so its four missing rigid mounts can't be
+    sourced from a URDF/MJCF — it's safe only because it declares no collision
+    geometry, so the loader never builds a model. Guards that pairing: geometry
+    added to a still-disconnected manifest must make the loader refuse, not ship a
+    wrong envelope quietly.
     """
     robot = RobotDescription.from_yaml(str(manifest))
     if not robot.collision_geometry:
@@ -84,10 +79,8 @@ def test_geometry_free_manifests_cannot_go_live_disconnected(manifest: pathlib.P
 def test_disconnected_graph_is_refused_not_guessed() -> None:
     """Dropping a real robot's rigid mount makes the loader refuse, loudly.
 
-    Uses the real Franka manifest with its one ``fixed_attachments`` entry
-    removed — exactly the state every shipped Franka manifest was in before this
-    fix. The old loader lowered this silently, placing ``panda_hand`` inside the
-    base.
+    Uses the real Franka manifest with its ``fixed_attachments`` entry removed.
+    Regression: the old loader silently placed ``panda_hand`` inside the base.
     """
     robot = RobotDescription.from_yaml(str(_ROBOTS_DIR / "franka_panda" / "robot.yaml"))
     assert robot.fixed_attachments, "fixture precondition: the manifest declares a mount"
@@ -143,9 +136,9 @@ def test_cyclic_chain_is_refused() -> None:
 def test_franka_hand_is_placed_on_the_flange_not_the_base() -> None:
     """The regression in numbers: the hand hangs off ``panda_link7``.
 
-    Before the fix ``panda_hand``'s parent index was ``-1`` (a phantom second
-    base at the origin). The gripper capsule therefore sat inside the robot's
-    own pedestal instead of ~0.93 m up at the flange.
+    Regression: ``panda_hand``'s parent index was ``-1`` (a phantom second base at
+    the origin), so the gripper capsule sat inside the pedestal instead of ~0.93 m
+    up at the flange.
     """
     robot = RobotDescription.from_yaml(str(_ROBOTS_DIR / "franka_panda" / "robot.yaml"))
     params = collision_params_from_description(robot)
@@ -187,8 +180,8 @@ def test_openarm_arms_are_not_superimposed() -> None:
 def test_g1_upper_body_hangs_off_the_waist_not_the_pelvis() -> None:
     """``torso_link`` is the waist-pitch child; the G1 has no ``waist_pitch_link``.
 
-    The manifest used to name a link that exists in no real model file, which
-    orphaned the torso and both arms — 15 links, 15 collision volumes — onto the
+    Regression: the manifest named a link absent from any real model file,
+    orphaning the torso and both arms (15 links, 15 collision volumes) onto the
     pelvis origin.
     """
     robot = RobotDescription.from_yaml(str(_ROBOTS_DIR / "g1" / "robot.yaml"))

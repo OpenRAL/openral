@@ -1,34 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """A state layout must say *why* it cannot be assembled, not raise ``KeyError``.
 
-Every layout assembler indexed ``joint_positions[...]`` unguarded. When the
-bound joint was absent it died with a bare ``KeyError`` from inside a layout
-file, which the skill runner's catch-all converted into ``deadline-no-grasp`` —
-a crash on the first policy step that reads in the artifacts exactly like a
-policy timeout, with no hint of what was actually in the frame.
+Regression for #227: on 2026-09-05, a sim on ``spark`` with ``ROS_DOMAIN_ID``
+unset joined DDS domain 0 and picked up ``/joint_states`` from a live bimanual
+OpenArm on another host. The unguarded ``joint_positions[...]`` index died
+with a bare ``KeyError: 'panda_gripper'``, which the skill runner's catch-all
+turned into an uninformative ``deadline-no-grasp``. The typed error below
+prints what the robot *does* publish, which is what identified the foreign
+robot.
 
-What was actually in the frame, on 2026-09-05, was **another robot**: a sim on
-``spark`` with ``ROS_DOMAIN_ID`` unset joined DDS domain 0, multicast discovery
-reached a live bimanual OpenArm on a different host, ``/joint_states`` had two
-publishers, and the assembler read ``openarm_left_joint1 … openarm_right_joint7``
-where it wanted ``panda_gripper``. ``KeyError: 'panda_gripper'`` said none of
-that. The typed error below did — it prints what the robot *does* publish, and
-that line is what identified the foreign robot (#227).
+Two faults, told apart:
+* an **empty** frame (nothing arrived yet) → ``ROSPerceptionStale``;
+* a **populated** frame lacking the bound joint → ``ROSConfigError`` naming
+  the joints it saw (wrong manifest, or another robot's frame).
 
-So the guard has to tell two faults apart, and the message for the second has
-to name the joints it saw:
+The empty-frame case has not been observed live but is kept distinct on
+principle; a readiness wait built on the assumption it *was* the observed
+case was removed after ten clean rounds never fired it.
 
-* an **empty** frame — nothing has arrived — is ``ROSPerceptionStale``;
-* a **populated** frame that lacks the bound joint is ``ROSConfigError``: either
-  the manifest is wrong for this robot, or the frame is some other robot's.
-
-The first case is kept distinct on principle (it says nothing about the
-manifest); it has not been observed live. A readiness wait built on the
-assumption that it *was* the observed case was removed after ten clean rounds
-showed it never fired.
-
-No mocks (CLAUDE.md §1.11) — the real registry, the real layout assembler, and
-the bindings read from the real shipped rSkill manifest.
+No mocks (CLAUDE.md §1.11) — real registry, real layout assembler, bindings
+read from the real shipped rSkill manifest.
 """
 
 from __future__ import annotations

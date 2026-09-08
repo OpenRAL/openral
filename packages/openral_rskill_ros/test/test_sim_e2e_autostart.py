@@ -2,15 +2,14 @@
 
 Guards single-resident-skill VRAM eviction (unload-on-switch).
 
-``_autostart_lifecycle`` drives a node UNCONFIGURED → INACTIVE → ACTIVE at boot.
-The activate handler must be scoped to the **configure** transition
-(``start_state="configuring"``), NOT a bare ``goal_state="inactive"`` — otherwise
-it also re-fires on a *runtime* deactivate (``active → deactivating → inactive``)
-and immediately re-activates the node. That fights single-resident-skill VRAM
-eviction: the
-reasoner deactivates the object detector to free its VRAM before a VLA, and an
-auto-reactivate reloads the detector model and OOMs an 8 GB card (observed live
-2026-06-12). This test pins the scoping so the bug can't silently return.
+``_autostart_lifecycle`` drives a node UNCONFIGURED → INACTIVE → ACTIVE at boot. The
+activate handler must be scoped to the **configure** transition
+(``start_state="configuring"``), NOT a bare ``goal_state="inactive"`` — otherwise it also
+re-fires on a *runtime* deactivate (``active → deactivating → inactive``) and immediately
+re-activates the node. That fights single-resident-skill VRAM eviction: the reasoner
+deactivates the object detector to free its VRAM before a VLA, and an auto-reactivate
+reloads the detector model and OOMs an 8 GB card (observed live 2026-06-12). This test pins
+the scoping so the bug can't silently return.
 
 Hermetic — only ``launch`` / ``launch_ros`` are needed; the module's heavy
 imports are deferred inside ``compose_runtime_graph``. Skips cleanly without a

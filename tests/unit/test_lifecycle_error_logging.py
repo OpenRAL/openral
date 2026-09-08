@@ -1,20 +1,19 @@
-"""Unit tests for :func:`openral_observability.log_lifecycle_errors`.
+"""Unit tests for ``openral_observability.log_lifecycle_errors``.
 
 Regression guard for the opaque ``runtime_node`` exit-code-4 failure: when a
-``LifecycleNode`` transition callback (``on_configure`` / ``on_activate`` / …)
-raises, rclpy's ``LifecycleNodeMixin.__execute_callback`` catches the exception
-and returns ``TransitionCallbackReturn.ERROR`` **without logging it** (see the
-literal ``# TODO(ivanpauno): log sth here`` in rclpy). The host then prints only
-the return code, so the real traceback is lost and the operator sees nothing but
-``exit code 4``.
+``LifecycleNode`` transition callback raises, rclpy's
+``LifecycleNodeMixin.__execute_callback`` catches it and returns
+``TransitionCallbackReturn.ERROR`` without logging it (see the literal
+``# TODO(ivanpauno): log sth here`` in rclpy) — the host prints only the exit
+code, losing the traceback.
 
-:func:`log_lifecycle_errors` closes that gap: it wraps the callback so any
-uncaught exception is logged with its full traceback via the node's ROS logger
-(``get_logger()`` → ``/rosout`` → the launch console) and converted to a clean
+``log_lifecycle_errors`` closes the gap: wraps the callback so any
+uncaught exception is logged with its traceback via the node's ROS logger
+(``get_logger()`` → ``/rosout`` → launch console) and converted to a clean
 ``TransitionCallbackReturn.FAILURE``.
 
-Per CLAUDE.md §1.11 — no mocks. The decorated callbacks run on a real
-``rclpy.lifecycle.LifecycleNode`` driven through a real ``trigger_configure``.
+No mocks (CLAUDE.md §1.11): decorated callbacks run on a real
+``rclpy.lifecycle.LifecycleNode`` via a real ``trigger_configure``.
 """
 
 from __future__ import annotations
@@ -104,12 +103,11 @@ def test_successful_configure_passes_through_unchanged(capfd: pytest.CaptureFixt
 def test_transition_emits_a_bringup_span_with_node_and_transition() -> None:
     """The decorator times every transition, not just failures.
 
-    Nothing measured bringup before this: the "HAL ``on_configure`` takes
-    ~6 s, or ~27 s on a cold robocasa kitchen" figures that justify the
-    300 s lifecycle-autostart timeouts lived only in launch-file comments,
-    so they could neither be verified nor detected when they regressed.
-    Instrumenting the shared decorator covers every node that already uses
-    it without touching a single call site.
+    Nothing measured bringup before this: the "~6 s, ~27 s on cold robocasa
+    kitchen" figures behind the 300 s lifecycle-autostart timeouts lived only
+    in launch-file comments, unverifiable and undetectable if they regressed.
+    Instrumenting the shared decorator covers every node using it already,
+    with no call-site changes.
     """
     import rclpy
     from openral_observability import log_lifecycle_errors, semconv

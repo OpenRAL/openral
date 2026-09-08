@@ -1,23 +1,14 @@
 """Unit tests for ``openral_sim.factory`` and the eval-layer Protocol contracts.
 
-Companion to ``tests/unit/test_eval_registry_and_runner.py`` — that file covers
-the registry semantics and the runner's happy path against the mock adapters.
-This file pins the **error paths** of ``make_env`` / ``make_policy`` /
-``make_robot`` and the **runtime conformance** of the mock adapters against
-the ``SimRollout`` and ``PolicyAdapter`` ``runtime_checkable`` Protocols, so a
-typo or signature drift in either Protocol is caught at the unit lane rather
-than waiting for a sim-test failure.
+Companion to ``test_eval_registry_and_runner.py`` (registry semantics + runner
+happy path). This file covers error paths of ``make_env``/``make_policy``/
+``make_robot`` and runtime conformance of the mock adapters against the
+``SimRollout``/``PolicyAdapter`` ``runtime_checkable`` Protocols, so a typo or
+signature drift is caught at the unit lane, not a sim-test failure.
 
-Coverage
---------
-- ``make_env``    raises ``ROSConfigError`` on an unknown scene id and the
-  message lists the registered ids (so the runner's CLI shows a helpful hint).
-- ``make_policy`` raises ``ROSConfigError`` on an unknown vla id.
-- ``make_robot``  returns ``None`` when the robot is not registered and a
-  ``RobotDescription`` when it is.
-- Mock scene satisfies the :class:`SimRollout` Protocol at runtime.
-- Mock zero / random policies satisfy the :class:`PolicyAdapter` Protocol.
-- ``EpisodeResult.summary()`` formats the expected fields.
+Covers: ``make_env``/``make_policy`` raise ``ROSConfigError`` with the known-id
+list on an unknown id; ``make_robot`` returns ``None``/``RobotDescription``;
+mock scene/policies satisfy their Protocols; ``EpisodeResult.summary()`` format.
 """
 
 from __future__ import annotations

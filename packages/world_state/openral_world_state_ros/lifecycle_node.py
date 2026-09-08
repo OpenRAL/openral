@@ -1,27 +1,14 @@
 r"""openral_world_state ROS 2 lifecycle node.
 
-Wraps :class:`openral_world_state.WorldStateAggregator` as a managed
-lifecycle node. Subscribes to ``/joint_states`` and publishes a typed
-:class:`openral_msgs.msg.WorldStateStamped` snapshot
-on two topics:
+Wraps ``openral_world_state.WorldStateAggregator``. Subscribes
+``/joint_states``; publishes typed ``openral_msgs.msg.WorldStateStamped``
+on ``/openral/world_state_fast`` (30 Hz) and ``/openral/world_state_slow``
+(5 Hz), both RELIABLE+VOLATILE+KL=1, same payload built once per fast tick —
+the slow topic re-publishes every Nth fast tick, ``N = round(fast_hz /
+slow_hz)``. Legacy JSON ``/world_state`` is removed (capability review F2).
 
-- ``/openral/world_state_fast`` (30 Hz, ``RELIABLE+VOLATILE+KL=1``) —
-  dashboards, observability, fast consumers.
-- ``/openral/world_state_slow`` (5 Hz, ``RELIABLE+VOLATILE+KL=1``) —
-  the reasoner.
-
-Both topics carry the same payload built from a single in-memory
-snapshot per fast tick (the slow topic re-publishes the same message
-every Nth fast tick where ``N = round(fast_hz / slow_hz)``). The
-legacy JSON publication on ``/world_state`` is removed by this PR —
-typed is the only path (capability review F2).
-
-Lifecycle transitions
----------------------
-- ``configure``  → initialise aggregator + subscriptions + publishers
-- ``activate``   → start fast publish timer (drives both topics)
-- ``deactivate`` → stop timer
-- ``cleanup``    → destroy subscriptions and aggregator
+Lifecycle: ``configure`` inits aggregator/subs/pubs; ``activate`` starts the
+fast timer; ``deactivate`` stops it; ``cleanup`` destroys subs/aggregator.
 
 Usage (after colcon build + source install/setup.bash)::
 
@@ -30,20 +17,10 @@ Usage (after colcon build + source install/setup.bash)::
           -p publish_rate_hz_fast:=30.0 \\
           -p publish_rate_hz_slow:=5.0
 
-Parameters
-----------
-robot_name (str)
-    Short robot identifier used to build the RobotDescription stub.
-    Default: ``"robot"``.
-publish_rate_hz_fast (float)
-    Fast-topic snapshot rate (``/openral/world_state_fast``).
-    Default: ``30.0``.
-publish_rate_hz_slow (float)
-    Slow-topic snapshot rate (``/openral/world_state_slow``).
-    Default: ``5.0``.
-staleness_limit_s (float)
-    Age threshold after which a sensor is marked stale. Default: ``0.5``
-    (0.1 s equals the 10 Hz camera period and made diagnostics flap).
+Parameters: robot_name (str, default ``"robot"``), publish_rate_hz_fast
+(float, default ``30.0``), publish_rate_hz_slow (float, default ``5.0``),
+staleness_limit_s (float, default ``0.5`` — 0.1 s equals the 10 Hz camera
+period and made diagnostics flap).
 """
 
 from __future__ import annotations
@@ -81,10 +58,8 @@ def main() -> None:
 
     from openral_observability import configure_observability
 
-    # Idempotent + no-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset. Lets
-    # ``sensors.read_latest`` + ``world_state.snapshot`` spans flow when
-    # the node is launched standalone (the composed ``runtime_node``
-    # already calls this, so spans flow there regardless).
+    # Idempotent no-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset; enables
+    # sensors.read_latest / world_state.snapshot spans when run standalone.
     configure_observability(service_name="openral.world_state")
 
     rclpy.init()
@@ -101,16 +76,13 @@ def main() -> None:
 
 
 if _ROS2_AVAILABLE:
-    # Module-level constants — keep on the same source so tests and
-    # downstream consumers (rqt adapters, F4 reasoner) can import them
-    # without depending on the generated IDL.
+    # Kept here so tests + downstream consumers (rqt adapters, F4 reasoner)
+    # can import without depending on the generated IDL.
     TOPIC_FAST = "/openral/world_state_fast"
     TOPIC_SLOW = "/openral/world_state_slow"
 
-    # Diagnostic status enum mirroring ``WorldStateStamped.DIAG_*``. The
-    # generated message ships the constants too, but exposing them here
-    # lets the snapshot builder run without a round-trip through the
-    # IDL when constructing the parallel arrays.
+    # Mirrors WorldStateStamped.DIAG_*; avoids an IDL round-trip when
+    # building the parallel arrays.
     _DIAG_STATUS = {
         "ok": 0,
         "warn": 1,
@@ -118,7 +90,7 @@ if _ROS2_AVAILABLE:
         "error": 3,
     }
 
-    class _WorldStateLifecycleNode(LifecycleNode):  # type: ignore[misc]
+    class _WorldStateLifecycleNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Managed lifecycle node for the World State aggregator.
 
         Parameters (ROS 2 node params):
@@ -145,13 +117,9 @@ if _ROS2_AVAILABLE:
                     against a stub ``RobotDescription``.
             """
             super().__init__("openral_world_state")
-            # Dashboard-only: rotate camera frames 180° before the thumbnail so the
-            # operator sees them upright. LIBERO (and other bottom-up MuJoCo
-            # renders) publish the raw frame the VLA wants — the VLA flips it via
-            # its manifest ``image_preprocessing.flip_180`` — but the dashboard
-            # shows that raw frame upside-down. Set OPENRAL_DASHBOARD_FLIP_180=1 to
-            # match the VLA's view. Display-only: the published topic the VLA reads
-            # is untouched.
+            # Dashboard-only: rotate camera thumbnails 180° so bottom-up
+            # MuJoCo/LIBERO renders show upright to the operator. The topic the
+            # VLA reads is untouched. Set OPENRAL_DASHBOARD_FLIP_180=1 to enable.
             import os  # reason: deploy-time display toggle, mirrors other env-gated flags
 
             self._dashboard_flip_180 = os.environ.get(
@@ -170,30 +138,23 @@ if _ROS2_AVAILABLE:
             # legitimately steps at ~1 s wall). See
             # WorldStateAggregator.DEFAULT_POLICY_STATE_STALENESS_S.
             self.declare_parameter("policy_state_staleness_limit_s", 5.0)
-            # Camera image topics to subscribe to. Each entry yields a
-            # `sensor_msgs/Image` subscription that lands the bytes on
-            # `WorldStateAggregator.update_image_frame(<name>, ...)`
-            # so the aggregator's snapshot carries pixels into the
-            # rSkill. Names match the keys the rSkill's
-            # `image_preprocessing.aliases` expects (e.g. `top`,
+            # Each entry -> a `sensor_msgs/Image` sub landing on
+            # `WorldStateAggregator.update_image_frame(<name>, ...)`. Names match
+            # the rSkill's `image_preprocessing.aliases` keys (e.g. `top`,
             # `left_wrist`, `right_wrist`).
             self.declare_parameter("camera_names", [""])
             self.declare_parameter("camera_topic_prefix", "/openral/cameras")
             self.declare_parameter("attachment_state_topic", "/openral/attachment_state")
-            # Sensors whose frames the co-located sensor
-            # leg writes straight into the shared aggregator (zero-copy NVMM
-            # handles intact). ``_on_image`` keeps serving observability
-            # (thumbnail span) for them but must NOT double-write the
-            # aggregator with its handle-less reconstruction.
+            # Cameras the co-located sensor leg writes directly (zero-copy NVMM
+            # handles intact); ``_on_image`` keeps their thumbnail span but must
+            # not double-write the aggregator.
             self.declare_parameter("direct_image_frame_sensors", [""])
             self.declare_parameter("object_lift_enabled", True)
             self.declare_parameter("object_detections_topic", "/openral/perception/objects")
             self.declare_parameter("object_voxels_topic", "/openral/world_voxels")
-            # Depth point cloud used as the lift's
-            # depth source when no octomap voxel grid is available (octomap is
-            # often disabled in dense scenes to avoid kernel false positives, yet
-            # the lift still needs depth to place a 2D box in 3D). Empty disables
-            # the fallback.
+            # Depth-cloud fallback for the lift when no octomap voxel grid exists
+            # (octomap is often disabled in dense scenes to avoid kernel false
+            # positives). Empty disables the fallback.
             self.declare_parameter(
                 "object_depth_points_topic", "/openral/cameras/front_depth/points"
             )
@@ -273,11 +234,10 @@ if _ROS2_AVAILABLE:
                 or "/joint_states"
             )
 
-            # Per the supervisor-graph design — `WorldStateAggregator` is the only subscriber of
-            # the HAL joint-state topic. When an aggregator was supplied at
-            # construction (compose_so100_runtime path), reuse it; otherwise
-            # build the standalone-mode stub-backed aggregator preserved for
-            # back-compat.
+            # WorldStateAggregator is the sole subscriber of the HAL joint-state
+            # topic (supervisor-graph design). Reuse an aggregator supplied at
+            # construction (compose_so100_runtime path); else build the
+            # standalone stub-backed one.
             if self._aggregator is None:
                 from openral_core import (
                     ControlMode,
@@ -348,14 +308,11 @@ if _ROS2_AVAILABLE:
                 attachment_qos,
             )
 
-            # Per-camera image subscriptions on `<prefix>/<name>/image`.
-            # BEST_EFFORT per CLAUDE.md §2 (sensor streams): a BEST_EFFORT
-            # subscription matches BOTH publisher reliabilities, so it
-            # receives from the sim HAL bridges (RELIABLE) and from the
-            # real-mode GStreamer ros_tee / SensorRosPublisher readers
-            # (BEST_EFFORT). The previous RELIABLE profile silently
-            # never matched the BEST_EFFORT real-camera publishers —
-            # zero frames, policy starved of images on real hardware.
+            # Per-camera subs on `<prefix>/<name>/image`. BEST_EFFORT (CLAUDE.md
+            # §2 sensor streams) matches both the sim HAL bridges (RELIABLE) and
+            # real-mode GStreamer ros_tee/SensorRosPublisher readers
+            # (BEST_EFFORT) — a RELIABLE profile never matched the real-camera
+            # publishers, leaving real hardware with zero frames.
             from sensor_msgs.msg import Image as RosImage
 
             camera_names_raw = list(
@@ -598,7 +555,7 @@ if _ROS2_AVAILABLE:
             Emits a ``sensors.read_latest`` OTel span per frame so the
             dashboard's Perception card populates (modality, encoding,
             geometry, age, JPEG thumbnail). The span name + attribute
-            shape mirror :meth:`DeployRunner._tick_impl`'s sensor read
+            shape mirror ``DeployRunner._tick_impl``'s sensor read
             so a single dashboard consumer handles both topologies.
             """
             from openral_core.schemas import FrameEncoding, SensorFrame
@@ -607,11 +564,9 @@ if _ROS2_AVAILABLE:
             if self._aggregator is None:
                 return
 
-            # Pump-fed cameras (zero-copy vision path) are handled end-to-end by
-            # the sensor leg: it writes the aggregator directly AND emits this
-            # span itself, at the reader's full cadence. This ROS tee is
-            # rate-capped, so re-emitting here would only add a slower,
-            # redundant copy of a span the dashboard already has.
+            # Pump-fed cameras (zero-copy path): the sensor leg already writes
+            # the aggregator and emits this span at full cadence; this
+            # rate-capped ROS tee would only add a slower, redundant copy.
             if sensor_name in self._direct_image_frame_sensors():
                 return
 
@@ -640,18 +595,14 @@ if _ROS2_AVAILABLE:
                 return
 
             data = bytes(getattr(msg, "data", b"") or b"")
-            # ROS clock, NOT time.time_ns(): under deploy-sim every node runs on
-            # use_sim_time and the camera's header.stamp is sim time, so a wall
-            # `now` minus a sim stamp yields a nonsensical age (~1e8-1e12 ms on the
-            # dashboard). get_clock() is sim time under use_sim_time and wall on a
-            # real robot — the same domain as the publisher's stamp either way, so
-            # the age is correct in both. Matches this node's other stamps (voxels,
-            # depth points, world-state ticks).
+            # ROS clock, not time.time_ns(): under deploy-sim every node runs on
+            # use_sim_time, so a wall `now` minus the camera's sim-time stamp
+            # would be nonsensical (~1e8-1e12 ms). get_clock() matches the
+            # publisher's domain (sim or wall) either way, like this node's
+            # other stamps (voxels, depth points, world-state ticks).
             now_ns = self.get_clock().now().nanoseconds
-            # Source-stamp the frame: pull header.stamp when present so
-            # the perception age reflects the publisher's clock, not the
-            # subscriber's. Falls back to the ROS clock when the publisher
-            # leaves the stamp empty.
+            # Pull header.stamp when present so age reflects the publisher's
+            # clock, not the subscriber's; falls back to the ROS clock if empty.
             header = getattr(msg, "header", None)
             stamp_ros = getattr(header, "stamp", None) if header is not None else None
             stamp_sec = int(getattr(stamp_ros, "sec", 0) or 0)
@@ -668,14 +619,12 @@ if _ROS2_AVAILABLE:
                 data=data,
             )
             age_ms = max(0.0, (now_ns - stamp_wall_ns) / 1e6)
-            # Dashboard span + thumbnail via the SHARED producer helper —
-            # `OPENRAL_DASHBOARD_FLIP_180` rotates only the display copy
-            # inside it (LIBERO/robosuite render bottom-up); the raw `frame`
-            # fed to the aggregator (and from there to the policy via
-            # `_decode_image_frames`) MUST keep the publisher orientation,
-            # because the VLA adapter applies its own
-            # `image_preprocessing.flip_180` and flipping here too would
-            # double-flip the policy input. Display-only; never actuation.
+            # Dashboard span via the SHARED producer helper — flip_180 rotates
+            # only this display copy (LIBERO/robosuite render bottom-up). The
+            # raw `frame` fed to the aggregator (-> policy via
+            # `_decode_image_frames`) keeps publisher orientation: the VLA
+            # applies its own `image_preprocessing.flip_180`, so flipping here
+            # too would double-flip. Display-only; never actuation.
             ral_producer.emit_sensor_frame_span(
                 frame,
                 sensor_name=sensor_name,
@@ -772,11 +721,9 @@ if _ROS2_AVAILABLE:
 
             #11 — fallback depth source for the object lift when no octomap voxel
             grid is published (e.g. ``--no-enable-octomap``). Decodes the latest
-            ``sensor_msgs/PointCloud2``, drops non-finite returns, subsamples to a
-            bounded count, and transforms it from the cloud's optical frame into
-            the robot base frame (where the lifter expects ``occupied_centers``).
-            Returns ``None`` on a missing/stale cloud or unavailable TF — the lift
-            then simply skips, exactly as it does without voxels.
+            PointCloud2, drops non-finite returns, subsamples to a bounded count,
+            and transforms into the base frame. ``None`` on a missing/stale cloud
+            or unavailable TF — the lift then skips, same as without voxels.
             """
             from openral_world_state import depth_cloud_to_centers_base
 
@@ -965,22 +912,16 @@ _IDL_DIAG_TO_STR: dict[int, str] = {
 def world_state_from_idl(msg: object) -> object:
     """Translate an ``openral_msgs.msg.WorldStateStamped`` → ``openral_core.WorldState``.
 
-    Symmetric inverse of :func:`build_world_state_stamped_msg`. Used by
-    the reasoner_node to feed real joint / ee / diagnostic state into
-    its ``ContextRenderer`` instead of the previous
-    ``world_state=None`` placeholder.
-
-    The IDL carries image topic refs (parallel arrays) but no inline
-    pixel bytes, so the returned ``WorldState.image_frames`` is always
-    ``None`` — the colocated skill_runner picks up frames from the
-    shared aggregator instance, and the cross-process reasoner does
-    not need pixels for context rendering.
+    Symmetric inverse of ``build_world_state_stamped_msg``; feeds the
+    reasoner_node's ``ContextRenderer``. ``WorldState.image_frames`` is always
+    ``None`` — the co-located skill_runner reads frames from the shared
+    aggregator, and the cross-process reasoner never needs pixels.
 
     Args:
         msg: An ``openral_msgs.msg.WorldStateStamped`` instance.
 
     Returns:
-        A populated :class:`openral_core.WorldState`.
+        A populated ``openral_core.WorldState``.
     """
     from openral_core.schemas import DetectedObject, JointState, Pose6D, WorldState
 
@@ -1083,7 +1024,7 @@ def world_state_from_idl(msg: object) -> object:
 
 
 def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
-    """Convert ``geometry_msgs/Pose`` (position + orientation) → :class:`Pose6D`."""
+    """Convert ``geometry_msgs/Pose`` (position + orientation) → ``Pose6D``."""
     from openral_core.schemas import Pose6D
 
     return Pose6D(
@@ -1124,16 +1065,16 @@ def _place_declaration_from_idl(msg: object) -> object | None:
 
 
 def build_world_state_stamped_msg(node: object, world_state: object) -> object:
-    """Translate a Pydantic :class:`WorldState` into ``WorldStateStamped``.
+    """Translate a Pydantic ``WorldState`` into ``WorldStateStamped``.
 
     Pure-Python translation: parallel arrays are deterministic-ordered
     (sorted by key) so two consumers comparing snapshots at the same
     timestamp see the same byte layout.
 
     Args:
-        node: The publishing :class:`rclpy.lifecycle.LifecycleNode`. Only
+        node: The publishing ``rclpy.lifecycle.LifecycleNode``. Only
             used to stamp ``header.stamp`` via ``node.get_clock().now()``.
-        world_state: An :class:`openral_core.WorldState` snapshot.
+        world_state: An ``openral_core.WorldState`` snapshot.
 
     Returns:
         A populated ``openral_msgs.msg.WorldStateStamped``.
@@ -1181,7 +1122,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
 
 
 def _build_joint_state_msg(js: object, stamp: object, ros_joint_state_cls: type) -> object:
-    """Build a ``sensor_msgs/JointState`` from an :class:`openral_core.JointState`."""
+    """Build a ``sensor_msgs/JointState`` from an ``openral_core.JointState``."""
     ros_js = ros_joint_state_cls()
     ros_js.header.stamp = stamp
     ros_js.name = list(js.name)  # type: ignore[attr-defined]
@@ -1250,12 +1191,10 @@ def _fill_ee_and_images(
 def _fill_diagnostics(msg: object, world_state: object) -> None:
     """Populate the diagnostic + staleness parallel arrays.
 
-    Staleness data lives only on the aggregator's internal ``_emit_*``
-    path; the public WorldState surfaces it via ``diagnostics`` (ok /
-    stale / error). The typed message therefore carries the categorical
-    status (mandatory) and an empty ``staleness_*`` array by default —
-    the F2 follow-up that surfaces per-component ages in the snapshot
-    will land them here without an IDL bump.
+    Staleness lives only on the aggregator's internal ``_emit_*`` path; the
+    public WorldState exposes only categorical status (ok/stale/error), so
+    ``staleness_keys``/``staleness_ms`` are empty here — the F2 follow-up
+    will populate them without an IDL bump.
     """
     diag_items = sorted(world_state.diagnostics.items())  # type: ignore[attr-defined]
     msg.diagnostic_keys = [k for k, _ in diag_items]  # type: ignore[attr-defined]
@@ -1318,9 +1257,9 @@ def _fill_attached_objects(msg: object, world_state: object) -> None:
 def _fill_place_declaration(msg: object, world_state: object) -> None:
     """Relay the live place declaration (and its region) to the safety kernel.
 
-    This is the kernel's only source for the declared target's region, so an
-    absent declaration must publish as ``place_declaration_valid = False`` rather
-    than as a stale leftover — that flag is what turns the approach allowance off.
+    The kernel's only source for the declared target's region — an absent
+    declaration must publish ``place_declaration_valid=False`` (not a stale
+    leftover), since that flag disables the approach allowance.
     """
     from openral_msgs.msg import (  # reason: ROS import at call time
         AttachedCollisionPrimitive as RosAttachedCollisionPrimitive,
@@ -1338,13 +1277,13 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:
-    """Convert an :class:`openral_core.Pose6D` to ``geometry_msgs/Pose``.
+    """Convert an ``openral_core.Pose6D`` to ``geometry_msgs/Pose``.
 
     Pose6D already carries a quaternion (xyzw), so this is a straight
     field copy — no rpy↔quat math, no tf_transformations dependency.
 
     Args:
-        pose: The :class:`openral_core.Pose6D` to convert.
+        pose: The ``openral_core.Pose6D`` to convert.
         pose_cls: The injected ``geometry_msgs/Pose`` class (passed in
             so this helper stays importable without rclpy).
         quat_cls: The injected ``geometry_msgs/Quaternion`` class.

@@ -46,17 +46,14 @@ through the `assets.urdf.root_frame` + `base_to_root_xyz_rpy` bridge that
 `sim_e2e.launch.py` publishes as a static TF (this is how UR manifests reach
 their upstream `base_link` root, which no movable joint has as a child).
 
-`joints` lists only *movable* joints, so a rigidly mounted link — the Franka's
-hand on its flange, the bimanual openarm's two arm pedestals — is placed by
-`fixed_attachments`. That is the same union the safety kernel builds its
-collision tree from (`openral_safety.envelope_loader`), which is what keeps
-this band measuring the robot the kernel actually checks.
+`joints` lists only *movable* joints, so a rigidly mounted link (the Franka's
+hand on its flange, the bimanual openarm's two arm pedestals) is placed by
+`fixed_attachments` — the same union the safety kernel builds its collision
+tree from (`openral_safety.envelope_loader`).
 A manifest that declares a volume on a link neither of those reaches makes
 the node **refuse at startup** with `ROSConfigError` naming the links, rather
-than measure the subset it can reach: a band covering an arbitrary part of the
-robot still reports `collision_geometry` as its source, so nothing downstream
-could tell it apart from a real measurement, and `/map` would claim free space
-at the heights the omitted links occupy.
+than measure a partial band that would still report `collision_geometry` as
+its source with no way for downstream to tell it apart from a real one.
 
 A manifest that declares **no** collision geometry is not that case — it falls
 back to `min_body_height_m` (0.30 m) as documented. If a robot's placement gap

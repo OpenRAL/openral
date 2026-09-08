@@ -237,12 +237,12 @@ class SawyerRealHAL:
             ``estop()``.  Defaults to ``"/robot/set_super_stop"``.
         publish_fn: Callable forwarding messages to ROS 2 topics.
             Production use injects the lifecycle node's publisher; tests
-            inject :class:`SimTransport.publish`.
+            inject ``SimTransport.publish``.
         state_fn: Callable returning the latest raw joint state as a dict.
             Production use injects the lifecycle node's subscriber
-            callback; tests inject :class:`SimTransport.state`.
+            callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
-            before :class:`ROSPerceptionStale` is raised.  Defaults to
+            before ``ROSPerceptionStale`` is raised.  Defaults to
             ``0.2 s`` (Sawyer's intera_sdk feedback rate is ~100 Hz).
 
     Raises:
@@ -300,7 +300,7 @@ class SawyerRealHAL:
 
     @property
     def description(self) -> RobotDescription:
-        """Normative :class:`RobotDescription` for the Sawyer."""
+        """Normative ``RobotDescription`` for the Sawyer."""
         return self._inner.description
 
     @property
@@ -355,7 +355,7 @@ class SawyerRealHAL:
         """Trigger an emergency stop on the Sawyer.
 
         Publishes to the legacy intera_sdk halt topic, marks the inner
-        adapter disconnected, and raises :class:`ROSEStopRequested`.
+        adapter disconnected, and raises ``ROSEStopRequested``.
 
         Raises:
             ROSEStopRequested: Always.

@@ -2,15 +2,15 @@
 
 Importing this package as a side effect:
 
-* registers :class:`~.model.SO100` in robosuite's robot factory so
+* registers ``SO100`` in robosuite's robot factory so
   ``robosuite.make(robots=["SO100"])`` (and downstream env constructors)
   works;
-* registers :class:`~.model.SO100Gripper` in robosuite's gripper factory
+* registers ``SO100Gripper`` in robosuite's gripper factory
   so ``gripper_types="default"`` (or an explicit ``"SO100Gripper"``)
   resolves cleanly.
 
 The XMLs robosuite consumes are generated lazily from the upstream
-DeepMind ``mujoco_menagerie`` MJCF — see :mod:`._assets` for the
+DeepMind ``mujoco_menagerie`` MJCF — see ``._assets`` for the
 rewrite. Tests under ``tests/sim/test_so100_robosuite_lift.py`` exercise
 the full pipeline end-to-end.
 

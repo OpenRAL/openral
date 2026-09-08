@@ -14,18 +14,15 @@ open.
 
 The attached-payload collision work (issue #102, PRs
 [#128](https://github.com/OpenRAL/openral/pull/128)–[#135](https://github.com/OpenRAL/openral/pull/135))
-is calibrated against measurements taken on a real host, not against
-first-principles constants. Those measurements are cited all over the tree —
-`spark:~/openral-runs/2026-08-15-final-battery/`, "round-8 r2", "the 2/5
-battery" — but until now the ledger they refer to lived only in PR
-descriptions and in a run store on one machine. That is a reproducibility gap
-(CLAUDE.md §1.8): a reader could see a constant justified by a run they had no
-way to look up, and a future maintainer could not tell which conclusions were
-still current.
+is calibrated against measurements taken on a real host. Those measurements
+are cited all over the tree — `spark:~/openral-runs/2026-08-15-final-battery/`,
+"round-8 r2", "the 2/5 battery" — but the ledger they refer to lived only in
+PR descriptions and a run store on one machine: a reproducibility gap
+(CLAUDE.md §1.8).
 
-This page is the in-tree ledger. It records **what each round measured and
-concluded**, with the artifact path, and it is deliberate about the difference
-between a number a file states and an inference drawn from several.
+This page is the in-tree ledger: **what each round measured and concluded**,
+with the artifact path, distinguishing a number a file states from an
+inference drawn from several.
 
 Every round **from 2026-08-22 onward** is produced by the in-tree harness —
 [`just validation-matrix`](../contributing/validation-matrix.md) — which writes
@@ -508,8 +505,8 @@ flight; until it lands, the ADR-0097 place path is exercised only by
 hand-authored scenes.
 
 **Update (#142 + the follow-up correction).** The three RoboCasa place scenes
-now carry a declaration, and the live seed-1 introspection that validated them
-is worth recording because two of the three shipped names were wrong:
+now carry a declaration; the live seed-1 introspection that validated them
+found two of the three shipped names were wrong:
 
 - `robocasa_baguette` → `sim:cab_1_left_group_main` **confirmed**. The name
   resolves, the evidence producer measures the declared subtree at half-extents
@@ -580,7 +577,7 @@ fridge and utensil stops reproduce the 08-22 `master-1` pairs and depths exactly
 and are now *classified* as initial-configuration stops, which #139's
 `sim.estop_initial_configuration` line made visible.
 
-The utensil verdict is `unadjudicated` for a mechanical reason worth recording:
+The utensil verdict is `unadjudicated` for a mechanical reason:
 the scene stopped at sim t≈4.7 s, before the monitor — which attached five
 seconds ahead of dispatch, minutes later — had seen a single `world_voxels`
 record, so the round had no grid resolution and therefore no quantization budget
@@ -915,8 +912,7 @@ surviving one by reconstructing the map — and neither could have concluded it
 alone. A certified +106.456 mm with a phantom cell of unknown origin is still
 two unknowns; with the origin named it is one finding.
 
-Two smaller convergences worth recording, because both are independent
-confirmations rather than restatements:
+Two smaller, independent confirmations (not restatements):
 
 * **#171 reached the same verdict on the fridge `0.000 m` reading, by a
   different method.** It measures mesh gaps by dense surface sampling and never
@@ -1221,10 +1217,10 @@ is **off in the default configuration, deliberately**: `collision_scale_proximit
 declares at `0.0` (`lifecycle_kernel.cpp:303`), zero disables the mechanism and
 reproduces the pre-#198 republish exactly, and the header states the reason —
 "this is a WG-gated enforcement surface and the A/B battery is what turns it
-on" (`lifecycle_kernel.hpp:358`). That is a design decision, not an oversight,
-but it has a consequence worth stating plainly: **a battery run on master
-measures Path B alone**, and any reading of §10's "A + B" gate from the default
-arm alone would be measuring one path and naming two. The second arm sets the
+on" (`lifecycle_kernel.hpp:358`). That is a design decision, not an oversight;
+the consequence: **a battery run on master measures Path B alone**, and any
+reading of §10's "A + B" gate from the default arm alone would be measuring
+one path and naming two. The second arm sets the
 band through the `OPENRAL_COLLISION_SCALE_PROXIMITY_M` seam
 (`sim_e2e.launch.py:126`) at the same `0.05 m / k=20 / min=0.1` the #188 A/B
 used, and `verdicts.json` records `collision_scale` per round so which arm a
@@ -1430,7 +1426,7 @@ tighter of the two at a 20 mm standoff, and each binds on the link the census
 named. Reproducing the live verdict needs the whole deploy graph, which is
 #102's separate end-to-end item.
 
-**Two properties worth recording.** Adding non-collidable world geometry to the
+**Two properties.** Adding non-collidable world geometry to the
 occupancy criterion raises the cell count from 4 702 → 7 923 (layout 30) and
 5 638 → 9 217 (layout 47), bracketing the live captures' 5 435 and 9 112 — and
 moves the reported minimum by **0.00 mm on both layouts**. The binding cells are
@@ -1742,7 +1738,7 @@ measures **p99 1.7 ms on 7 427 cells** against a 33 ms ceiling.
 
 **A correction to an earlier draft of this entry, kept rather than silently
 edited.** It first said the backing record was "present on only 8 of 91 stops".
-That was wrong, and the way it was wrong is worth recording. The record is
+That was wrong: the record is
 present on **82** stops — the 8 in `run_gt_snapshot.json` (the in-snapshot path)
 plus 74 more in `run_gt_evidence.json`, which is #177's *late* path. But the
 late path is not usable on this battery:
@@ -2239,7 +2235,7 @@ themselves rather than inferred:
    which the real gap could be reconstructed. This is a **second, independent**
    reason older link-class verdicts are not citable, and it bites in the
    opposite direction from caveat 5: that one withdraws stops called *real*,
-   this one withdraws stops called *false*. Asymmetry worth keeping straight:
+   this one withdraws stops called *false*. The asymmetry:
    a discrepancy **within** the voxel term is still sound (within a lower bound
    implies within the true gap), so `within-quantization` from an old round
    stands.
@@ -2280,7 +2276,7 @@ themselves rather than inferred:
    `tools/validation_matrix.py::probe_is_distance_certified` is what a future
    round's verdict rests on. Full characterisation, scope, cost, the
    re-measured stops and the instrument-vs-map partition are in
-   [the 2026-08-25 correction](#2026-08-25--the-ruler-was-wrong-and-here-is-what-it-moves)
+   [the 2026-08-25 correction](#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves)
    above; the older account is in
    [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
 
@@ -2327,9 +2323,9 @@ themselves rather than inferred:
     and the one true contact (−2.32 mm) is preserved.
 
     This inverts the single measurement the collision programme exists to make.
-    It is also self-limiting in one respect worth stating plainly: it can only
-    ever turn a false positive into an apparent real contact, never the reverse,
-    so nothing was ever wrongly *cleared*. Verdicts are re-derivable offline —
+    It is also self-limiting: it can only ever turn a false positive into an
+    apparent real contact, never the reverse, so nothing was ever wrongly
+    *cleared*. Verdicts are re-derivable offline —
     `validation_matrix.py verdicts <round>` — so affected rounds should be
     re-adjudicated rather than re-run.
 

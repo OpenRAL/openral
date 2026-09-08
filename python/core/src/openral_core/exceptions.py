@@ -90,11 +90,9 @@ class ROSForceLimitExceeded(ROSSafetyViolation):
 class ROSCollisionImminent(ROSSafetyViolation):
     """A proposed motion would self-collide or strike a world obstacle.
 
-    Raised on the safety path when geometric checking finds a
-    chunk whose forward-kinematic sweep brings a robot link within its
-    clearance of another link or a world primitive. Like every
-    :class:`ROSSafetyViolation`, it is caught only at the safety supervisor
-    boundary, where it triggers an E-stop and a structured incident log.
+    Raised on the safety path when geometric checking finds a chunk whose
+    forward-kinematic sweep brings a robot link within clearance of another
+    link or a world primitive.
     """
 
 
@@ -152,13 +150,13 @@ class ROSRskillGoalSatisfied(ROSError):
     """A wrapped-ROS rSkill has finished its goal successfully.
 
     Used as a typed completion signal raised by
-    :meth:`openral_rskill.ros_action_rskill.ROSActionRskill._step_impl` after
+    ``openral_rskill.ros_action_rskill.ROSActionRskill._step_impl`` after
     the last waypoint of a one-shot planner (e.g. MoveIt) has been emitted,
     or after a result-only wrapped action (e.g. Nav2 ``NavigateToPose``)
     reports success. The ``ExecuteRskill`` action server catches this
     specifically and closes the goal with ``success=True``.
 
-    This is NOT an error — it inherits :class:`ROSError` only to stay
+    This is NOT an error — it inherits ``ROSError`` only to stay
     inside the OpenRAL exception surface so it is greppable and discoverable
     via the standard hierarchy. It must be caught ONLY at the
     ``rskill_runner_node`` execute-callback boundary; everywhere else it is

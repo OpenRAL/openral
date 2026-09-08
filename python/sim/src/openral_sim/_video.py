@@ -66,10 +66,10 @@ def save_episode_mp4(
     fps: int = 20,
     title: str | None = None,
 ) -> Path:
-    """Write a 3-panel debug MP4 for one :class:`EpisodeResult`.
+    """Write a 3-panel debug MP4 for one ``EpisodeResult``.
 
     Args:
-        result: An :class:`EpisodeResult` produced by :class:`SimRunner` with
+        result: An ``EpisodeResult`` produced by ``SimRunner`` with
             ``record_video=True``. ``vla_input_frames`` populates the top
             panel when present; otherwise ``frames`` (rollout/world) is used
             as the fallback. ``joint_positions`` populates the bottom plot.

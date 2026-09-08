@@ -1,9 +1,9 @@
 """Action-chunk executor — overlap inference for chunk N+1 with execution of chunk N.
 
-This module provides :class:`ChunkedExecutor`, a background-thread pre-fetcher
-for lerobot action-chunk policies exposing ``predict_action_chunk`` and
-``config.n_action_steps`` — or, via ``chunk_fn``, for any adapter whose forward
-is not a bare ``predict_action_chunk`` call.
+Provides ``ChunkedExecutor``, a background-thread pre-fetcher for lerobot
+action-chunk policies exposing ``predict_action_chunk`` and
+``config.n_action_steps`` — or, via ``chunk_fn``, any adapter whose
+forward is not a bare ``predict_action_chunk`` call.
 
 Architecture
 ------------
@@ -28,20 +28,20 @@ Architecture
                                                           │
                                               Action (joint_targets, 1 step)
 
-Timing contract (RTX 4070 reference host, SmolVLA-base)
--------------------------------------------------------
+Timing contract (RTX 4070 reference host, SmolVLA-base):
 - Full chunk inference: ~313 ms (measured range 313–600 ms).
 - Queue pop: ~3 ms.
-- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 20),
-  giving ~667 ms at a 30 Hz controller — enough to cover the measured
-  313–600 ms chunk inference without a boundary pause. (5 gave ~165 ms and
-  stalled every boundary; 15 covered the 313 ms case but not the 600 ms tail.)
-- Result: the background thread always finishes before the queue drains,
-  keeping per-step latency in the cached-pop regime for all but the very first
-  inference of a session.
+- Pre-fetch trigger at ``prefetch_at`` steps before chunk end (default
+  20), giving ~667 ms at a 30 Hz controller — enough to cover the
+  313–600 ms measured range without a boundary pause (5 gave ~165 ms
+  and stalled every boundary; 15 covered the 313 ms case but not the
+  600 ms tail).
+- Result: the background thread always finishes before the queue
+  drains, keeping per-step latency in the cached-pop regime for all but
+  the first inference of a session.
 
-The executor owns its action deque. It calls the lerobot
-``predict_action_chunk`` surface directly; it never resets or consumes the
+The executor owns its action deque, calling lerobot's
+``predict_action_chunk`` directly; it never resets or consumes the
 policy's internal ``select_action`` queue from two threads.
 
 With an enabled lerobot ``RTCConfig`` the deque becomes a Real-Time-Chunking
@@ -91,7 +91,7 @@ class ChunkedExecutor:
                 whose forward is not a bare ``policy.predict_action_chunk``
                 (extra autocast contexts, chunk-level decode/postprocessing,
                 non-lerobot APIs). The payload is whatever
-                :meth:`select_action` was given — the executor treats it
+                ``select_action`` was given — the executor treats it
                 opaquely, so it need not be a lerobot batch dict. The chunk
                 may be a ``(batch, chunk, dof)`` tensor OR any sequence of
                 per-step actions. Instrumented by the same

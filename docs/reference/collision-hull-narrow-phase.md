@@ -351,8 +351,7 @@ stop the ideal-grid census never saw: the live map reads **−1.94 mm**, and the
 same state under exact geometry reads **+20.01 mm**. #171 calls it *entirely
 link-side* and names this PR as removing it with no scene change.
 
-That is worth stating precisely rather than banking, because **the stop is on
-`panda_link1`, the link that ships stage 1 only.** #171's EXACT column is the
+But **the stop is on `panda_link1`, the link that ships stage 1 only.** #171's EXACT column is the
 convex-hull surface — what stage 2 reaches — and `link1` does not get stage 2
 here. So the question is whether the **26-DOP alone** clears it.
 

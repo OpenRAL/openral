@@ -1,29 +1,26 @@
 """Typed tool-call dispatch — typed LLM tool-use client + concrete provider implementations.
 
 Every reasoner tick the LLM picks exactly one of the four
-:data:`~openral_core.ReasonerToolCall` variants (ExecuteRskill,
+``ReasonerToolCall`` variants (ExecuteRskill,
 ReloadGstPipeline, LifecycleTransition, EmitPrompt) and the reasoner
 node routes it onto the ROS graph.
 
-This module ships:
+Ships:
 
-- :class:`ToolUseClient` — structural Protocol every provider satisfies.
-- :class:`AnthropicToolUseClient` — wraps the Anthropic Python SDK's
-  tool-use API. Lazy-imported; selected by a curated model with
-  ``dialect="anthropic"``.
-- :class:`OpenAICompatibleToolUseClient` — wraps the OpenAI Python SDK
-  pointed at any OpenAI-compatible endpoint (cloud OpenAI, local vLLM,
-  Ollama-OpenAI, etc.). Lazy-imported; selected by a curated model with
-  ``dialect="openai"`` or the explicit uncurated escape hatch.
-- :class:`build_tool_use_client_from_env` — factory that reads the
-  model-first deployment env and resolves :data:`openral_core.REASONER_MODELS`.
-  No cloud lock-in: the open-core path defaults to "no model configured";
-  endpoint location is independently overrideable.
+- ``ToolUseClient`` — structural Protocol every provider satisfies.
+- ``AnthropicToolUseClient`` — wraps the Anthropic SDK's tool-use
+  API (curated model, ``dialect="anthropic"``); lazy-imported.
+- ``OpenAICompatibleToolUseClient`` — wraps the OpenAI SDK against
+  any OpenAI-compatible endpoint (cloud OpenAI, local vLLM,
+  Ollama-OpenAI, …); curated ``dialect="openai"`` or the uncurated
+  escape hatch; lazy-imported.
+- ``build_tool_use_client_from_env`` — factory over the
+  model-first deployment env and ``openral_core.REASONER_MODELS``;
+  defaults to "no model configured", endpoint independently overrideable.
 
-Per CLAUDE.md §1.11 a deterministic :class:`FakeToolUseClient` lives
-under :mod:`tests.integration.fakes.fake_llm` — it is the only test
-double we allow at this process boundary, named explicitly, and used
-exclusively in tests.
+Per CLAUDE.md §1.11, ``FakeToolUseClient``
+(``tests.integration.fakes.fake_llm``) is the only test double
+allowed at this process boundary.
 """
 
 from __future__ import annotations
@@ -87,9 +84,9 @@ log = structlog.get_logger(__name__)
 # Default system prompt — the robot-agnostic operating brief. Factual and
 # intentionally non-anthropomorphising: the reasoner is a scheduler, not a
 # chatbot. ``ReasonerNode`` composes the live prompt via
-# :func:`resolve_reasoner_system_prompt`, which lets a deployment replace
+# ``resolve_reasoner_system_prompt``, which lets a deployment replace
 # this base via the ``OPENRAL_REASONER_SYSTEM_PROMPT`` env var and appends a
-# per-robot ``## THIS ROBOT`` block (:func:`render_robot_context_prompt`).
+# per-robot ``## THIS ROBOT`` block (``render_robot_context_prompt``).
 # ``ReasonerCore(system_prompt=...)`` can also override it directly.
 DEFAULT_SYSTEM_PROMPT: str = (
     # ── Role ──────────────────────────────────────────────────────────
@@ -326,9 +323,9 @@ def render_robot_context_prompt(
 ) -> str:
     """Append a ``## THIS ROBOT`` body-awareness block to the system prompt.
 
-    The base :data:`DEFAULT_SYSTEM_PROMPT` is robot-agnostic. At reasoner
+    The base ``DEFAULT_SYSTEM_PROMPT`` is robot-agnostic. At reasoner
     lifecycle ``configure`` time the active robot's
-    :class:`~openral_core.RobotCapabilities` is known (from the
+    ``RobotCapabilities`` is known (from the
     ``robot_yaml`` manifest or the constructor), so the node calls this
     to give the LLM standing knowledge of the body it is driving: its
     embodiment tags, whether it can locomote (which gates the base
@@ -344,7 +341,7 @@ def render_robot_context_prompt(
         capabilities: The active robot's capabilities, or ``None`` when
             no robot manifest has been loaded.
         base_prompt: The system prompt to extend. Defaults to
-            :data:`DEFAULT_SYSTEM_PROMPT`.
+            ``DEFAULT_SYSTEM_PROMPT``.
 
     Returns:
         ``base_prompt`` with a trailing ``## THIS ROBOT`` section, or
@@ -426,10 +423,10 @@ def render_robot_context_prompt(
 
 
 # Env var that overrides the base system prompt (the operating brief). When
-# set non-empty it replaces :data:`DEFAULT_SYSTEM_PROMPT`; the per-robot
+# set non-empty it replaces ``DEFAULT_SYSTEM_PROMPT``; the per-robot
 # ``## THIS ROBOT`` block is still appended on top, so a custom brief keeps
 # the factual body description it cannot hardcode. Honoured by
-# :func:`resolve_reasoner_system_prompt` (called from ``ReasonerNode``).
+# ``resolve_reasoner_system_prompt`` (called from ``ReasonerNode``).
 SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"
 
 
@@ -440,11 +437,11 @@ def resolve_reasoner_system_prompt(
 ) -> str:
     """Compose the reasoner system prompt from the env override + robot block.
 
-    The base operating brief is :data:`DEFAULT_SYSTEM_PROMPT`, unless the
-    deployment sets :data:`SYSTEM_PROMPT_ENV_VAR`
+    The base operating brief is ``DEFAULT_SYSTEM_PROMPT``, unless the
+    deployment sets ``SYSTEM_PROMPT_ENV_VAR``
     (``OPENRAL_REASONER_SYSTEM_PROMPT``) to a non-empty value, which
     replaces it. The per-robot ``## THIS ROBOT`` block
-    (:func:`render_robot_context_prompt`) is then appended to whichever
+    (``render_robot_context_prompt``) is then appended to whichever
     base is in effect, so a custom brief still carries the factual body
     description (embodiment, locomotion, payload, …) it cannot know
     ahead of time.
@@ -486,7 +483,7 @@ class ToolUseClient(Protocol):
     Concrete implementations call into Anthropic's ``tools`` API, an
     OpenAI-compatible ``tool_calls`` payload, or any other provider
     that can emit a typed tool selection. The reasoner consumes a
-    fully-validated :data:`~openral_core.ReasonerToolCall`; parsing /
+    fully-validated ``ReasonerToolCall``; parsing /
     validation lives behind this Protocol.
 
     Attributes:
@@ -497,7 +494,7 @@ class ToolUseClient(Protocol):
     Optional (not part of the Protocol, read via ``getattr``): an
     implementation that can see provider usage may expose
     ``last_prompt_tokens: int | None`` — the prompt tokens of its most recent
-    :meth:`select_tool` call — and the reasoner records it on the tick span.
+    ``select_tool`` call — and the reasoner records it on the tick span.
     """
 
     model_id: str
@@ -509,22 +506,22 @@ class ToolUseClient(Protocol):
         palette: ToolPalette,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> ReasonerToolCall:
-        """Pick exactly one :data:`ReasonerToolCall` for ``context_text``.
+        """Pick exactly one ``ReasonerToolCall`` for ``context_text``.
 
         Args:
             context_text: The reasoner-built structured text snapshot
                 (no pixels). Built by
-                :class:`~openral_reasoner.context.ContextRenderer`.
+                ``ContextRenderer``.
             palette: The currently-valid tool palette built from the
                 local rSkill registry filtered by
-                :class:`RobotCapabilities`. The LLM is restricted to
+                ``RobotCapabilities``. The LLM is restricted to
                 skill ids that appear in
-                :attr:`ToolPalette.execute_rskill_ids`.
+                ``ToolPalette.execute_rskill_ids``.
             system_prompt: System message; defaults to
-                :data:`DEFAULT_SYSTEM_PROMPT`.
+                ``DEFAULT_SYSTEM_PROMPT``.
 
         Returns:
-            A validated :data:`ReasonerToolCall` variant.
+            A validated ``ReasonerToolCall`` variant.
 
         Raises:
             ROSReasonerInvalidPlan: When the provider returns a payload
@@ -585,7 +582,7 @@ def _prompt_tokens(response: object) -> int | None:
     counters, and the reasoner enables prompt caching, so summing is what
     keeps the number comparable across providers and across ticks.
 
-    :class:`~openral_reasoner.core.ReasonerCore` picks this up off the client
+    ``ReasonerCore`` picks this up off the client
     (``last_prompt_tokens``) to record how prompt size tracks tick latency.
     """
     usage = getattr(response, "usage", None)
@@ -605,16 +602,13 @@ def _prompt_tokens(response: object) -> int | None:
 def _openai_choices(response: object) -> list[Any]:
     """``response.choices``, or a legible error when the provider sent none.
 
-    An OpenAI-compatible *gateway* that fails upstream — OpenRouter when the
-    backing provider rate-limits, 5xxs, or times out — still answers HTTP 200
-    with ``choices: null`` and the real reason under a non-standard ``error``
-    key. The SDK models that as ``choices=None``, so ``list(response.choices)``
-    raised ``TypeError: 'NoneType' object is not iterable``, the provider-SDK
-    boundary re-wrapped *that* as the tick error, and the operator saw
-    ``OpenAI-compatible call failed: 'NoneType' object is not iterable``
-    instead of "rate-limited upstream" (observed live on a free OpenRouter
-    model, 2026-08-04). The failure is transient and provider-side; the
-    message has to say so.
+    An OpenAI-compatible *gateway* (e.g. OpenRouter) that fails upstream —
+    rate-limited, 5xx, timeout — still answers HTTP 200 with ``choices:
+    null`` and the real reason under a non-standard ``error`` key; the SDK
+    models that as ``choices=None``, so a bare ``list(response.choices)``
+    raises ``TypeError: 'NoneType' object is not iterable`` instead of
+    surfacing "rate-limited upstream" (observed live on a free OpenRouter
+    model, 2026-08-04).
     """
     choices = getattr(response, "choices", None)
     if choices is not None:
@@ -633,16 +627,16 @@ _ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = REASONER_ENDPOINT_PRESETS
 
 
 def build_tool_use_client_from_env() -> ToolUseClient:
-    """Build a :class:`ToolUseClient` from the model-first env (ADR-0088).
+    """Build a ``ToolUseClient`` from the model-first env (ADR-0088).
 
     Env vars:
 
     * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
-      (:data:`~openral_core.REASONER_MODELS`: ``claude-opus-4-8`` / ``gpt-5.5``
+      (``REASONER_MODELS``: ``claude-opus-4-8`` / ``gpt-5.5``
       / ``gpt-5.6`` / ``cosmos3-edge``), or a raw model id for the uncurated
       escape hatch.
     * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
-      (:data:`_ENDPOINT_PRESETS`: ``openrouter`` / ``ollama`` / ``vllm`` /
+      (``_ENDPOINT_PRESETS``: ``openrouter`` / ``ollama`` / ``vllm`` /
       ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``anthropic``), a
       URL, the ``managed`` sentinel, or unset (the model's registry default).
       The only axis that carries local-vs-cloud, and it does so literally.
@@ -660,7 +654,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     calling).
 
     Returns:
-        A constructed :class:`ToolUseClient`.
+        A constructed ``ToolUseClient``.
 
     Raises:
         ROSConfigError: When no model is selected, an uncurated model lacks its
@@ -708,7 +702,7 @@ def _env_int(name: str) -> int | None:
     """An int env override, or ``None`` when unset/empty.
 
     Raises:
-        ROSConfigError: When set but not parseable (see :func:`_env_float`).
+        ROSConfigError: When set but not parseable (see ``_env_float``).
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -743,21 +737,19 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
     """Build the client for a registry model from its resolved properties."""
     api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
     raw_endpoint = os.environ.get(REASONER_ENDPOINT_ENV, "").strip() or None
-    # A named endpoint resolves the same way here as on the uncurated path;
-    # otherwise `ENDPOINT=ollama` would be handed to the SDK as a literal URL.
-    #
-    # It contributes its ENDPOINT properties — url, tool_choice, cold-start
-    # timeout, auth posture — while the registry keeps the MODEL properties:
-    # served id, dialect, token cap. That split is what "the endpoint is the
-    # orthogonal axis" means. Taking only `preset.url` (as this did at first)
-    # silently dropped the other four, so `gpt-5.5` on the HF router was built
-    # with `tool_choice="required"` — the exact 400 the preset exists to avoid —
-    # and a cold `ollama` got the 10 s cloud timeout instead of 60 s.
+    # A named endpoint resolves the same way as on the uncurated path
+    # (otherwise `ENDPOINT=ollama` would be handed to the SDK as a literal
+    # URL). It contributes its ENDPOINT properties — url, tool_choice,
+    # cold-start timeout, auth posture — while the registry keeps the MODEL
+    # properties: served id, dialect, token cap ("the endpoint is the
+    # orthogonal axis"). Using only `preset.url` drops the other four: e.g.
+    # `gpt-5.5` on the HF router built with `tool_choice="required"` (a 400)
+    # and a cold `ollama` on the 10 s cloud timeout instead of 60 s.
     preset = _ENDPOINT_PRESETS.get(raw_endpoint.lower()) if raw_endpoint else None
     if preset is not None and preset.dialect != entry.dialect:
-        # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai). Previously this
-        # built an Anthropic client pointed at an OpenAI-only server: it
-        # configured cleanly and then failed on every single tick.
+        # e.g. claude-opus-4-8 (anthropic) on `ollama` (openai): building an
+        # Anthropic client against an OpenAI-only server configures cleanly
+        # and then fails on every single tick.
         raise ROSConfigError(
             f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r} speaks the "
             f"{preset.dialect!r} dialect but model {entry.id!r} speaks "
@@ -818,7 +810,7 @@ def _build_managed_local(
 ) -> ToolUseClient:
     """Build the managed-local (autostart) client for a ``managed_local`` model.
 
-    Today the only such model is ``cosmos3-edge`` → :class:`Cosmos3ToolUseClient`.
+    Today the only such model is ``cosmos3-edge`` → ``Cosmos3ToolUseClient``.
     An explicit endpoint URL (anything but the ``managed`` sentinel) is a
     bring-your-own server: autostart disengages inside the client for
     non-loopback / explicit URLs.
@@ -856,7 +848,7 @@ def _build_managed_local(
 def _build_uncurated_model(model_key: str) -> ToolUseClient:
     """Escape hatch: a non-registry model id + a named or raw endpoint.
 
-    ``OPENRAL_REASONER_ENDPOINT`` takes either a :data:`_ENDPOINT_PRESETS` name
+    ``OPENRAL_REASONER_ENDPOINT`` takes either a ``_ENDPOINT_PRESETS`` name
     (``openrouter`` / ``ollama`` / ``vllm`` / ``anthropic`` / …), which carries
     its own URL, dialect, auth posture and cold-start timeout, or a bare URL —
     which nothing can classify, so that spelling still needs
@@ -1007,7 +999,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             # path then guides the LLM to emit a well-formed object;
             # ``_decode_tool_payload`` JSON-stringifies it back to the
             # wire-format ``str`` field before constructing
-            # :class:`ExecuteRskillTool`. Skills without a schema fall
+            # ``ExecuteRskillTool``. Skills without a schema fall
             # through to the freeform string surface (today's behaviour).
             tool_schema = per_skill_schema
             if entry.goal_params_schema is not None:
@@ -1270,7 +1262,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
 def _tool_palette_to_openai_tools(palette: ToolPalette) -> list[dict[str, object]]:
     """Render the palette as OpenAI ``tools`` function schemas.
 
-    Same tool surface as :func:`_tool_palette_to_anthropic_tools`, re-keyed to
+    Same tool surface as ``_tool_palette_to_anthropic_tools``, re-keyed to
     the OpenAI wire shape: Anthropic's ``input_schema`` becomes the function's
     ``parameters`` and MUST NOT also ride along under its original key —
     strict endpoints 400 on the unknown field and lenient ones silently
@@ -1345,7 +1337,7 @@ def _decode_tool_payload(
     Per-skill tool names (``execute_rskill__<slug>``) are
     resolved back to the canonical ``execute_rskill`` discriminator
     here, with ``rskill_id`` looked up from
-    :attr:`ToolPalette.skills`. The LLM's own ``rskill_id`` (if any) is
+    ``ToolPalette.skills``. The LLM's own ``rskill_id`` (if any) is
     overridden by the lookup result so the tool name is the authority.
     """
     resolved_name = tool_name
@@ -1414,13 +1406,13 @@ def _anthropic_response_text(response: Any) -> str:  # noqa: ANN401  # reason: p
 
 
 class AnthropicToolUseClient:
-    """Anthropic SDK-backed :class:`ToolUseClient` (typed tool-call dispatch).
+    """Anthropic SDK-backed ``ToolUseClient`` (typed tool-call dispatch).
 
     Lazy-imports the ``anthropic`` Python SDK at first use so this
     module is importable on hosts without the SDK installed. Pulls
     structured tool selections via ``Anthropic.messages.create`` with
     a ``tools=[...]`` payload derived from the active
-    :class:`ToolPalette`.
+    ``ToolPalette``.
 
     Args:
         model_id: Anthropic model identifier (e.g. ``claude-opus-4-7``,
@@ -1445,7 +1437,7 @@ class AnthropicToolUseClient:
         max_tokens: int = 1024,
         timeout_s: float = 10.0,
     ) -> None:
-        """Stash configuration; no SDK import until :meth:`select_tool`."""
+        """Stash configuration; no SDK import until ``select_tool``."""
         if not api_key:
             raise ROSConfigError("AnthropicToolUseClient: api_key is required")
         self.model_id = model_id
@@ -1455,7 +1447,7 @@ class AnthropicToolUseClient:
         self._timeout_s = timeout_s
         self.last_prompt_tokens: int | None = None
         """Prompt tokens (cache reads included) the provider reported for the
-        most recent :meth:`select_tool` call; read by
+        most recent ``select_tool`` call; read by
         ``ReasonerCore.run_prepared_llm``."""
         # SDK client built once on first use and reused across ticks —
         # rebuilding per call throws away the HTTP connection pool and pays
@@ -1575,7 +1567,7 @@ class AnthropicToolUseClient:
 
 
 class OpenAICompatibleToolUseClient:
-    """OpenAI-compatible SDK-backed :class:`ToolUseClient`.
+    """OpenAI-compatible SDK-backed ``ToolUseClient``.
 
     Wraps the ``openai`` Python SDK pointed at any
     OpenAI-protocol-compatible endpoint — cloud OpenAI, vLLM, Ollama
@@ -1618,7 +1610,7 @@ class OpenAICompatibleToolUseClient:
         tool_choice: str = "required",
         max_tokens: int | None = None,
     ) -> None:
-        """Stash configuration; no SDK import until :meth:`select_tool`."""
+        """Stash configuration; no SDK import until ``select_tool``."""
         self.model_id = model_id
         self._api_key = api_key
         self._base_url = base_url
@@ -1627,7 +1619,7 @@ class OpenAICompatibleToolUseClient:
         self._max_tokens = max_tokens
         self.last_prompt_tokens: int | None = None
         """Prompt tokens the endpoint reported for the most recent
-        :meth:`select_tool` call; read by ``ReasonerCore.run_prepared_llm``."""
+        ``select_tool`` call; read by ``ReasonerCore.run_prepared_llm``."""
         # SDK client built once on first use and reused across ticks (see
         # AnthropicToolUseClient._client for the rationale).
         self._sdk_client: Any = None

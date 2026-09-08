@@ -5,7 +5,7 @@ Skipped automatically in pure-Python CI.
 
 Scenario: spawn ``ros2 topic pub /lowstate std_msgs/msg/String`` in a
 separate subprocess (Unitree G1 signature topic), then call
-:func:`scan_dds_topics` and verify that :func:`infer_robot_from_topics`
+``scan_dds_topics`` and verify that ``infer_robot_from_topics``
 maps the discovered topic to ``"unitree_g1"``.
 
 The publisher runs as a separate ``ros2`` subprocess (instead of an

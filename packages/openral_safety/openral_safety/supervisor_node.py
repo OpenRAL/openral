@@ -3,44 +3,35 @@
 
 Owns the chunk-rate safety boundary on the OpenRAL graph:
 
-* Subscribes to ``/openral/candidate_action`` (``openral_msgs/ActionChunk``).
-* Publishes ``/openral/safe_action`` (same type) when the envelope checks
-  pass.
+* Subscribes ``/openral/candidate_action`` (``openral_msgs/ActionChunk``).
+* Publishes ``/openral/safe_action`` (same type) when envelope checks pass.
 * Publishes ``/openral/estop`` (``std_msgs/Empty``) when they fail.
-* Subscribes to ``/openral/estop`` (defense in depth, CLAUDE.md §1.5) —
+* Subscribes ``/openral/estop`` (defense in depth, CLAUDE.md §1.5) — an
   external estop latches the node so subsequent candidates are dropped
   until reset.
-* Exposes ``/openral/estop_reset`` (``std_srvs/Trigger``) — explicit
-  recovery only; ``ROSEStopRequested`` is never auto-cleared
-  (CLAUDE.md §10).
+* Exposes ``/openral/estop_reset`` (``std_srvs/Trigger``) — explicit recovery
+  only; ``ROSEStopRequested`` is never auto-cleared (CLAUDE.md §10).
 * Publishes 1 Hz ``/diagnostics`` via
-  :class:`openral_observability.DiagnosticsHeartbeat`.
+  ``openral_observability.DiagnosticsHeartbeat``.
 
-This node is the topic-shape lock for the safety boundary's first
-increment: the topic contract is real and tested; the envelope checks
-are deliberately minimal so the C++ kernel that lands later can
-replace internals **behind the same topic surface** without
-renegotiating the graph. Per
-CLAUDE.md §1.5 ("Python proposes, C++ disposes") and §7.7 (safety
-working-group review), any addition of enforcement beyond what is in
-this file requires safety-WG sign-off.
+Topic-shape lock for the safety boundary's first increment: the topic
+contract is real and tested; envelope checks are deliberately minimal so the
+C++ kernel that lands later can replace internals **behind the same topic
+surface**. Per CLAUDE.md §1.5 ("Python proposes, C++ disposes") and §7.7
+(safety working-group review), any addition of enforcement beyond this file
+requires safety-WG sign-off.
 
-Day-1 envelope checks (stubbed but real):
+Day-1 envelope checks (stubbed but real): ``n_dof`` mismatch vs the
+``n_dof`` parameter (default ``-1`` = no enforcement), and first-row joint
+targets vs configured per-joint position limits.
 
-* ``n_dof`` mismatch vs ``--ros-args -p n_dof:=N`` parameter (``n_dof``
-  defaults to ``-1`` meaning "do not enforce" so a launch without an
-  explicit value passes through).
-* First-row joint targets vs configured per-joint position limits.
+On violation: (1) drop the candidate (no republish on ``/openral/safe_action``);
+(2) publish ``std_msgs/Empty`` on ``/openral/estop``; (3) latch internal estop
+state until ``/openral/estop_reset`` is called AND
+``>=estop_reset_cooldown_s`` (default 500 ms) have passed since the last
+estop publish.
 
-On envelope violation:
-
-1. Drop the candidate (do not republish on ``/openral/safe_action``).
-2. Publish ``std_msgs/Empty`` on ``/openral/estop``.
-3. Latch internal estop state until ``/openral/estop_reset`` is called
-   AND ≥``estop_reset_cooldown_s`` (default 500 ms) have passed since
-   the last estop publish.
-
-Stub for velocity / force / workspace lands when the C++ kernel does.
+Stub for velocity/force/workspace lands when the C++ kernel does.
 """
 
 from __future__ import annotations
@@ -689,7 +680,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
         Despite the historical wording, this does **not** clamp: it returns a
         ``gripper_range`` violation, which the caller routes to
-        :meth:`_handle_violation` — drop the chunk and fire the e-stop. That
+        ``_handle_violation`` — drop the chunk and fire the e-stop. That
         is the deny-by-default contract (CLAUDE.md §3); nothing in OpenRAL
         silently corrects an out-of-range command into range, which is also
         why ``safety.clamped`` is a literal ``False`` at every site and

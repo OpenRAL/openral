@@ -1,34 +1,26 @@
 """The declaration-scoped place-approach allowance, fired deterministically.
 
-ADR-0097's 2026-08-14 amendment (as recalibrated by its Second Amendment,
-2026-08-15) reduces a declared payload's world-collision margin by
-``min(1.5 x voxel, 4 cm)`` for occupancy cells whose centre lies inside the
-producer-measured region of the declared place target. Every validation round so
-far armed the allowance correctly (``safety.place_region_armed ...
-allowance_m=0.0375``) but almost never *fired* it: XR-1's stochastic
-trajectories only rarely put the payload in the narrow band between the reduced
-and the unreduced margin, so the allowance's effect on an actual verdict rested
-on counterfactual arithmetic rather than on an observed accept.
+ADR-0097's 2026-08-14 amendment (recalibrated by its Second Amendment, 2026-08-15) reduces a
+declared payload's world-collision margin by ``min(1.5 x voxel, 4 cm)`` for occupancy cells
+inside the producer-measured place-target region. Prior validation rounds armed the allowance
+correctly (``safety.place_region_armed ... allowance_m=0.0375``) but rarely fired it — XR-1's
+stochastic trajectories rarely landed the payload in the narrow band between reduced and
+unreduced margin. This test removes the policy and drives the band directly.
 
-This test removes the policy — and with it the stochasticity — and drives the
-band directly. Everything else is real: the real ``safety_kernel_node`` lifecycle
-node, the real ``openral_msgs`` IDL, a real dense occupancy grid on
-``/openral/world_voxels``, a real attached payload plus a real
-``PlaceDeclaration``/``PlaceRegion`` on ``/openral/world_state_fast``, and real
-``ActionChunk`` candidates on ``/openral/candidate_action``. No mocks, no
-simulator, no GPU (CLAUDE.md §1.11).
+Real throughout: real ``safety_kernel_node`` lifecycle node, real ``openral_msgs`` IDL, a real
+dense occupancy grid on ``/openral/world_voxels``, a real attached payload plus a real
+``PlaceDeclaration``/``PlaceRegion`` on ``/openral/world_state_fast``, real ``ActionChunk``
+candidates on ``/openral/candidate_action``. No mocks, no simulator, no GPU (CLAUDE.md §1.11).
 
-The rig is a one-DoF prismatic carriage so a chunk's single joint value *is* the
-payload's x position, which makes the payload-to-obstacle distance exact and the
-band a matter of arithmetic rather than luck:
+One-DoF prismatic carriage, so a chunk's single joint value *is* the payload's x position:
 
     payload sphere centre  = (q, 0, 0),         radius 20 mm
     occupied voxel centre  = (0.1, 0, 0),   half-edge 12.5 mm
     surface distance d(q)  = 0.0875 - q - 0.020 = 0.0675 - q
 
-At the sim grid's 25 mm resolution the allowance is ``min(1.5 x 0.025, 0.04) =
-0.0375 m``, so against the 50 mm attached margin the band is
-``0.0125 m < d <= 0.05 m``. Three chunks pin the three regimes:
+At the sim grid's 25 mm resolution the allowance is ``min(1.5 x 0.025, 0.04) = 0.0375 m``, so
+against the 50 mm attached margin the band is ``0.0125 m < d <= 0.05 m``. Three chunks pin
+the three regimes:
 
 ===============  ======  ==================  =====================================
 q (m)            d (m)   undeclared          declared
@@ -38,20 +30,15 @@ q (m)            d (m)   undeclared          declared
 0.0625           0.005   REFUSED             REFUSED, ``place_allowance_active=1``
 ===============  ======  ==================  =====================================
 
-The last row is the disclosure the merge package quotes: the hard stop behind the
-reduced margin is untouched, and when it fires the kernel says so. The middle row
-is the thing that had never been observed.
+Last row: the hard stop behind the reduced margin is untouched and disclosed. Middle row is
+the previously-unobserved accept, sized to break if the allowance is reduced, not just
+deleted: 20 mm is below the pre-Second-Amendment cap (``min(one voxel, 2.5 cm)`` = 25 mm), so
+reverting ``kPlaceApproachAllowanceVoxels`` (1.5 -> 1.0) or ``kMaxPlaceApproachAllowanceM``
+(0.04 -> 0.025) turns that accept back to refusal.
 
-The middle row is also deliberately sized to break if the allowance is *reduced*,
-not only if it is deleted: 20 mm sits below the 25 mm the pre-Second-Amendment
-cap (``min(one voxel, 2.5 cm)``) would have left, so reverting either
-``kPlaceApproachAllowanceVoxels`` (1.5 -> 1.0) or ``kMaxPlaceApproachAllowanceM``
-(0.04 -> 0.025) turns that accept back into a refusal and this test red.
-
-Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + the
-colcon-built kernel, on a sourced workspace. ``scripts/ros_live_tests.sh`` is the
-only runner (``just test-ros-live``, and the docker-build workflow), and
-``tests/unit/test_ros_live_targets.py`` keeps this file in its TARGETS list.
+Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + colcon-built kernel.
+``scripts/ros_live_tests.sh`` is the only runner (``just test-ros-live``, docker-build
+workflow); ``tests/unit/test_ros_live_targets.py`` keeps this file in TARGETS.
 """
 
 from __future__ import annotations
@@ -146,12 +133,9 @@ _RSKILL_ID = "openral/place-approach-band"
 def _carriage_rig() -> RobotDescription:
     """A 1-DoF prismatic carriage that translates the payload along +x.
 
-    The link's own capsule sits 300 mm *behind* the carriage frame so the arm
-    never approaches the occupied cell itself: the only geometry that can reach
-    the obstacle is the attached payload, which is the geometry the allowance
-    applies to. Arm-vs-world voxel checking stays enabled throughout and is
-    never granted an allowance — the kernel only reduces the margin inside
-    ``check_attached_voxel_collision``.
+    The link's capsule sits 300 mm behind the carriage frame so only the attached payload can
+    reach the obstacle. Arm-vs-world voxel checking stays enabled and never gets an allowance
+    — the kernel only reduces the margin inside ``check_attached_voxel_collision``.
     """
     return RobotDescription(
         name="place_allowance_carriage",
@@ -207,7 +191,9 @@ def _kernel_params() -> dict[str, object]:
 _COLLISION_LINE = re.compile(r"safety\.collision .*place_allowance_active=(\d)")
 
 
-def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
+def test_place_allowance_band_accepts_only_with_a_live_declaration(
+    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+) -> None:
     """The allowance decides a verdict, and discloses itself when it does not.
 
     Four phases against one unchanging payload, grid and margin — the only thing
@@ -296,42 +282,31 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                     executor.spin_once(timeout_sec=0.05)
 
                 # ── The world the kernel checks against ──────────────────────
+                # Shared with the sibling test_safety_kernel_place_target_geometry.py
+                # via tests/integration/conftest.py (byte-identical closures).
                 def publish_grid() -> None:
-                    grid = OccupancyVoxels()
-                    grid.header.frame_id = "base"
-                    grid.header.stamp = helper.get_clock().now().to_msg()
-                    grid.origin = Point(x=_GRID_ORIGIN_M, y=_GRID_ORIGIN_M, z=_GRID_ORIGIN_M)
-                    # A synthetic base-aligned lattice. `OccupancyVoxels` is an
-                    # oriented grid, and its unset orientation is the all-zero
-                    # quaternion, which every consumer refuses rather than
-                    # reading as identity — so say identity.
-                    grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-                    grid.resolution = _RESOLUTION_M
-                    grid.size_x = _GRID_N
-                    grid.size_y = _GRID_N
-                    grid.size_z = _GRID_N
-                    occupancy = [0] * (_GRID_N**3)
-                    occupancy[_OCC_INDEX] = 1
-                    grid.occupancy = occupancy
-                    voxel_pub.publish(grid)
-                    spin(0.4)
+                    publish_occupancy_grid(
+                        voxel_pub,
+                        helper,
+                        spin,
+                        grid_origin_m=_GRID_ORIGIN_M,
+                        resolution_m=_RESOLUTION_M,
+                        grid_n=_GRID_N,
+                        occ_index=_OCC_INDEX,
+                    )
 
                 def publish_joint_state() -> None:
-                    js = JointState()
-                    js.header.stamp = helper.get_clock().now().to_msg()
-                    js.name = ["carriage"]
-                    js.position = [0.0]
-                    joint_pub.publish(js)
-                    spin(0.2)
+                    publish_carriage_joint_state(
+                        joint_pub, helper, spin, joint_names=["carriage"], positions=[0.0]
+                    )
 
                 def publish_attachment(*, declared: bool) -> None:
                     """One carried payload; the declaration is the only variable.
 
-                    ``attachment_revision`` never changes, so the payload model,
-                    its attach-time occupancy baseline and its (absent) support
-                    witness are byte-identical across every phase — the accept
-                    and the refusal below differ in the declaration and nothing
-                    else.
+                    ``attachment_revision`` never changes, so the payload model, its
+                    attach-time occupancy baseline, and its (absent) support witness are
+                    byte-identical across every phase — accept vs. refusal below differs
+                    only in the declaration.
                     """
                     prim = AttachedCollisionPrimitive()
                     prim.shape_type = AttachedCollisionPrimitive.SHAPE_SPHERE
@@ -386,10 +361,9 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                 def send(trace: str, q: float, *, expect_accept: bool) -> None:
                     """Publish one candidate chunk and wait for the kernel's verdict.
 
-                    Waits on the *outcome*, not on a fixed duration: a bare sleep
-                    makes "no estop arrived" and "the estop has not arrived yet"
-                    the same observation, which is how a refusal assertion passes
-                    for the wrong reason on a loaded host.
+                    Waits on the outcome, not a fixed duration: a bare sleep makes "no estop
+                    arrived" and "the estop has not arrived yet" the same observation, letting
+                    a refusal assertion pass for the wrong reason on a loaded host.
                     """
                     seen_failures = len(failures)
                     chunk = ActionChunk()
@@ -410,15 +384,7 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                     spin(0.4)  # settle: a late accept/estop must still be visible
 
                 def reset_estop() -> None:
-                    assert reset_client.wait_for_service(timeout_sec=5.0)
-                    spin(0.3)  # clear the reset cooldown
-                    future = reset_client.call_async(Trigger.Request())
-                    end = time.time() + 5.0
-                    while time.time() < end and not future.done():
-                        executor.spin_once(timeout_sec=0.02)
-                    assert future.done() and future.result().success, "estop reset refused"
-                    estops.clear()
-                    spin(0.3)
+                    reset_kernel_estop(reset_client, executor, spin, estops)
 
                 def new_disclosures(seen: int) -> list[int]:
                     """`place_allowance_active` flags of collision lines past ``seen``."""

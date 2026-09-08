@@ -1,22 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """A kernel stop that fires before the robot is ever commanded is a SCENE defect.
 
-The 2026-08-22 ``robocasa/PickPlaceFridgeShelfToDrawer`` round (seed 1) E-stopped
-at sim ``t=4.85 s`` with ``panda_link7`` 24.7 mm inside ``voxel_169769``, having
-applied exactly zero action chunks: the MuJoCo ground truth put ``robot0_link6``
-at 0.000 m and ``robot0_link7`` at 2.5 mm from ``fridge_main_group_freezer_door``
-while every joint velocity was ~0. The robot had not moved — the scene reset
-*spawned* it interpenetrating the open freezer door. The kernel was right to
-refuse it, but the only artifact naming the stop read exactly like a mid-task
-one, and the round was spent debugging a policy that never got to act.
+Field repro: 2026-08-22 ``robocasa/PickPlaceFridgeShelfToDrawer`` (seed 1)
+E-stopped at sim ``t=4.85 s`` with ``panda_link7`` 24.7 mm inside
+``voxel_169769``, zero action chunks applied — ``robot0_link7`` was 2.5 mm
+from ``fridge_main_group_freezer_door`` (joint velocity ~0). The scene reset
+had *spawned* the robot interpenetrating the freezer door; the kernel was
+right to refuse it, but the stop record read like an ordinary mid-task one.
 
-These tests drive
-:func:`openral_hal.sim_sensor_bridge.initial_configuration_stop_record` against a
-snapshot produced by the real :func:`~openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot`
-over a real compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11), in the
-two shapes that matter: a stop with nothing ever applied (the fridge case) and a
-stop after the HAL has actuated (an ordinary mid-task stop, which must stay
-unclassified).
+Drives ``initial_configuration_stop_record``
+against a snapshot from the real
+``estop_ground_truth_snapshot`` over a
+compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11): a stop with
+nothing applied (must classify) vs. after the HAL has actuated (must not).
 """
 
 from __future__ import annotations
@@ -124,9 +120,8 @@ def test_stop_after_an_applied_action_is_not_classified() -> None:
 def test_a_rejected_chunk_still_counts_as_never_applied() -> None:
     """Candidates the kernel refused were never applied — the pose is still the spawn one.
 
-    ``candidate_chunks_seen`` is reported for context but must not gate: a chunk
-    the kernel rejected never reached ``send_action``, so the configuration is
-    still exactly the one the scene reset produced.
+    ``candidate_chunks_seen`` is reported for context but must not gate: a
+    rejected chunk never reached ``send_action``.
     """
     record = initial_configuration_stop_record(
         _snapshot(), stop_seq=3, last_action_ns=0, candidate_chunks_seen=2

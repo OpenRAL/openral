@@ -56,7 +56,7 @@ _DEFAULT_POSITIONS: dict[str, float] = {
 
 
 @dataclass(kw_only=True)
-class SO100DigitalTwinConfig(RobotConfig):  # type: ignore[misc]
+class SO100DigitalTwinConfig(RobotConfig):  # type: ignore[misc]  # reason: lerobot is untyped
     """Configuration for the SO-100 digital twin.
 
     Args:
@@ -73,7 +73,7 @@ class SO100DigitalTwinConfig(RobotConfig):  # type: ignore[misc]
     initial_positions: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_POSITIONS))
 
 
-class SO100DigitalTwin(Robot):  # type: ignore[misc]
+class SO100DigitalTwin(Robot):  # type: ignore[misc]  # reason: lerobot ships no py.typed marker
     """In-process digital twin for the SO-100 follower arm.
 
     Implements the full lerobot ``Robot`` interface without any serial port.

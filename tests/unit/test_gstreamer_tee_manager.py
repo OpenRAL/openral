@@ -2,7 +2,7 @@
 
 No mocks (CLAUDE.md §1.11): these drive a **real** GStreamer pipeline
 (``videotestsrc ! tee`` set to PLAYING) and exercise real dynamic pad
-add / remove via :class:`TeeManager`. Skipped when ``gi`` (the
+add / remove via ``TeeManager``. Skipped when ``gi`` (the
 ``openral-runner[gstreamer]`` extra) is not importable, or when the core
 ``videotestsrc`` / ``tee`` plugins are absent.
 """

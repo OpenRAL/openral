@@ -1,19 +1,17 @@
 """SAFETY regression: panda_mobile + robocasa → /scan + depth PointCloud2 + /odom survive
 the SimSensorBridge refactor (Phase 2 / T13).
 
-**What this test proves** — "at-least-as-conservative" evidence for the Phase 2
-safety claim.  Before T13, the panda_mobile lifecycle node published ``/scan``
-(ray-cast), ``/openral/cameras/front_depth/points`` (depth cloud → octomap input),
-and ``/odom`` directly in its own timers.  T13 delegated the first two streams to the
-shared :class:`openral_hal.sim_sensor_bridge.SimSensorBridge`; ``/odom`` remained in
-the node.  If that refactor silently broke any of those three topics, the nav stack
-and safety kernel would be blind to obstacles or lose odometry — a **regression**.
+Before T13, panda_mobile's lifecycle node published ``/scan`` (ray-cast),
+``/openral/cameras/front_depth/points`` (depth cloud → octomap input), and
+``/odom`` directly in its own timers. T13 delegated the first two to the shared
+``openral_hal.sim_sensor_bridge.SimSensorBridge``; ``/odom`` stayed in the
+node. A silent break on any of the three would blind the nav stack / safety
+kernel or lose odometry.
 
-Concretely asserted:
-* ``sensor_msgs/LaserScan`` on ``/scan``
-  – ``len(ranges) > 0`` and at least one finite (non-inf, non-NaN) range.
-* ``sensor_msgs/PointCloud2`` on ``/openral/cameras/front_depth/points``
-  – ``width * height > 0`` (non-empty cloud; the octomap input MUST NOT be empty).
+Asserted:
+* ``sensor_msgs/LaserScan`` on ``/scan`` — ``len(ranges) > 0``, ≥1 finite range.
+* ``sensor_msgs/PointCloud2`` on ``/openral/cameras/front_depth/points`` —
+  ``width * height > 0`` (octomap input MUST NOT be empty).
 * ``nav_msgs/Odometry`` on ``/odom``.
 
 Run::
@@ -24,8 +22,8 @@ Run::
         --timeout=600
 
 Per CLAUDE.md §1.11: no mocks. Real ``_PandaMobileLifecycleNode``, real robocasa
-MuJoCo scene, real ROS IDL.  Skips cleanly when robocasa or the kitchen assets are
-unavailable — see guard section below.
+MuJoCo scene, real ROS IDL. Skips cleanly when robocasa/kitchen assets are
+unavailable (guards below).
 """
 
 from __future__ import annotations
@@ -68,16 +66,11 @@ _ODOM_TIMEOUT_S = 5.0
 def _robosuite_compatible() -> str:
     """Return an empty string when robosuite >= 1.5.2 is present, else the skip reason.
 
-    ``robocasa`` imports ``robosuite.utils.get_elements`` which was added in
-    1.5.2; PyPI's 1.5.1 wheel ships without it.
-
-    NOTE: the uv workspace venv **cannot** reach robosuite>=1.5.2 — ``lerobot``
-    (0.5.1, required workspace-wide) caps robosuite at <=1.5.1, so
-    ``robosuite>=1.5.2`` makes the lock unsatisfiable. This is the same
-    mutual-exclusion shape as the libero⊥robocasa conflict. So this
-    test runs in a **dedicated robocasa environment** (e.g. the conda/miniforge
-    env that ships robosuite>=1.5.2 without lerobot), or CI provisioned with it
-    — never via ``just sync --group robocasa`` in the uv venv.
+    ``robocasa`` imports ``robosuite.utils.get_elements``, added in 1.5.2; PyPI's
+    1.5.1 wheel lacks it. The uv workspace venv cannot reach robosuite>=1.5.2 —
+    ``lerobot`` 0.5.1 caps robosuite at <=1.5.1 (same mutual-exclusion shape as
+    libero⊥robocasa) — so this test needs a dedicated robocasa env (or CI
+    provisioned with one), never ``just sync --group robocasa``.
     """
     if importlib.util.find_spec("robosuite") is None:
         return "robosuite not installed — run this test in a robocasa env with robosuite>=1.5.2"
@@ -191,25 +184,20 @@ def test_panda_mobile_robocasa_sensor_bridge_regression() -> None:
     """Phase 2 safety regression: SimSensorBridge preserves /scan + /points + /odom.
 
     Brings up ``_PandaMobileLifecycleNode`` with
-    ``sim_env_yaml=scenes/sim/robocasa_panda_mobile_kitchen.yaml``,
-    drives configure → activate (allow 300 s for the robocasa kitchen build on
-    first run), then asserts within per-topic timeouts:
+    ``sim_env_yaml=scenes/sim/robocasa_panda_mobile_kitchen.yaml``, drives
+    configure → activate (300 s allowance for a first-run robocasa kitchen
+    build), then asserts within per-topic timeouts:
 
-    1. ``/scan`` (LaserScan) — ``len(ranges) > 0``; at least one finite range
-       value confirming the SimSensorBridge ray-cast is live (not all-NaN / empty).
+    1. ``/scan`` (LaserScan) — ``len(ranges) > 0``, ≥1 finite range.
+    2. ``/openral/cameras/front_depth/points`` (PointCloud2) —
+       ``width*height > 0`` (empty would starve the C++ safety kernel's
+       octomap input).
+    3. ``/odom`` (Odometry) — message received.
 
-    2. ``/openral/cameras/front_depth/points`` (PointCloud2) — ``width*height > 0``
-       (non-empty cloud confirms depth is being synthesised from the MJCF;
-       an empty cloud would mean the octomap input to the C++ safety kernel is dark).
-
-    3. ``/odom`` (Odometry) — message received (odometry must survive the
-       refactor for Nav2 + slam_toolbox).
-
-    Guard:  if configure fails (robocasa build failures, missing kitchen assets,
-    network unavailable), the test calls ``pytest.skip`` with the exact error
-    rather than failing loudly — the test is evidence that the refactor is safe,
-    not a robocasa infrastructure test.  CI / HIL with pre-pulled assets will
-    always reach the assertions.
+    Guard: on configure failure (robocasa build/asset/network issues) calls
+    ``pytest.skip`` rather than failing — evidence the refactor is safe, not a
+    robocasa infrastructure test. CI/HIL with pre-pulled assets reaches the
+    assertions.
     """
     # Import rclpy only inside the function body — the module-level skip guards
     # above prevent reaching this point without ROS 2 available.

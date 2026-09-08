@@ -1,24 +1,21 @@
 """Unit tests for ``tools/lifecycle_autostart.py:_drive_transition``.
 
 Regression coverage for the robocasa-kitchen ``openral deploy sim`` boot
-crash: the HAL's ``on_configure`` runs synchronously on its executor
-and on a first-boot blocks for over a minute (MuJoCo + robosuite import
-+ ``env.reset``, plus a ``uv`` build of the robocasa editable package).
-The autostart previously hardcoded a 30 s ``spin_until_future_complete``
-on each transition, so it timed out mid-configure: ``future.result()``
-returned ``None`` and the immediate ``get_state`` read returned ``''``
-(executor still busy), and a transition that was about to succeed was
-reported as ``did not advance the FSM`` — the process exited 1 and the
-whole launch died. The fix makes the per-transition spin budget a
-``--transition-timeout-s`` parameter (default 300 s; the HAL autostart
-passes it explicitly) and polls the post-call state for a short grace
-window before declaring failure.
+crash: ``on_configure`` runs synchronously on its executor and on first boot
+blocks over a minute (MuJoCo + robosuite import + ``env.reset``, plus a
+``uv`` build of the robocasa editable package). Autostart previously
+hardcoded a 30 s ``spin_until_future_complete`` per transition, so it timed
+out mid-configure — ``future.result()`` returned ``None``, the immediate
+``get_state`` read returned ``''`` (executor still busy), and a
+near-successful transition was reported as ``did not advance the FSM``: the
+process exited 1 and the launch died. Fix: the per-transition spin budget is
+now a ``--transition-timeout-s`` parameter (default 300 s), with a short
+grace poll of post-call state before declaring failure.
 
-The lifecycle ``change_state`` / ``get_state`` services are a ROS
-process/network boundary, so faking the service clients here is allowed
-under CLAUDE.md §1.11 (doubles permitted at process/network boundaries).
-``rclpy`` + ``lifecycle_msgs`` are imported by the tool at module scope;
-when ROS 2 isn't installed (pure-Python CI) the whole module is skipped.
+The lifecycle ``change_state``/``get_state`` services are a ROS
+process/network boundary, so faking the service clients is allowed under
+CLAUDE.md §1.11. ``rclpy`` + ``lifecycle_msgs`` are imported at module scope;
+the whole module skips when ROS 2 isn't installed.
 """
 
 from __future__ import annotations

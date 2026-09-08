@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_reasoner.build_tool_palette`.
+"""Unit tests for ``openral_reasoner.build_tool_palette``.
 
 Loads **real** ``rskill.yaml`` manifests from ``rskills/`` (CLAUDE.md
 §1.11 — real components, no mocks) and asserts the palette filter
@@ -53,13 +53,9 @@ def test_palette_includes_capability_matched_skill() -> None:
 def test_palette_excludes_unresolved_scaffold_template() -> None:
     """The ``rskills/template/`` scaffold is never offered as a dispatchable skill.
 
-    Regression: the in-tree ``rskills/*/rskill.yaml`` glob picks up
+    Regression: without the ``RSkillManifest.is_scaffold_placeholder`` gate,
     ``rskills/template/rskill.yaml`` (``name: TEMPLATE_ORG/rskill-TEMPLATE_ID``,
-    ``role: s1``). Without the :meth:`RSkillManifest.is_scaffold_placeholder`
-    gate it entered the palette as a "valid" id, so a weak reasoner LLM picked
-    it (the decode guard can't reject an id that IS in the palette) and
-    dispatched a non-existent skill. The template parses as a real manifest but
-    must never be dispatchable.
+    ``role: s1``) parsed as a valid manifest and got dispatched by the reasoner.
     """
     template = _load_manifest("template")
     real = _load_manifest("smolvla-libero")
@@ -116,12 +112,10 @@ def test_palette_is_frozen() -> None:
 
 
 def test_commercial_deployment_excludes_rldx_noncommercial_skill() -> None:
-    """Explicit assertion: commercial_deployment=True drops RLDX-1 non-commercial weights.
+    """commercial_deployment=True drops RLDX-1's non-commercial weights (CLAUDE.md §1.9).
 
-    ``rskills/rldx1-ft-libero-nf4`` carries RLDX's non-commercial
-    license posture (``RSkillLicensePosture.RLWRLD_NON_COMMERCIAL``).
-    CLAUDE.md §1.9 requires the loader / palette / action server to
-    refuse these in a commercial deployment.
+    ``rskills/rldx1-ft-libero-nf4`` carries
+    ``RSkillLicensePosture.RLWRLD_NON_COMMERCIAL``.
     """
     manifest = _load_manifest("rldx1-ft-libero-nf4")
     if manifest.is_commercial_use_allowed:
@@ -140,9 +134,7 @@ def test_commercial_deployment_excludes_rldx_noncommercial_skill() -> None:
         robot_capabilities=capabilities,
         commercial_deployment=True,
     )
-    # Research deployment: the skill is in the palette.
     assert manifest.name in research_palette.execute_rskill_ids
-    # Commercial deployment: the skill is filtered out.
     assert manifest.name not in commercial_palette.execute_rskill_ids
 
 
@@ -160,10 +152,8 @@ def test_palette_excludes_noncommercial_skill_under_commercial_deployment() -> N
         robot_capabilities=capabilities,
         commercial_deployment=True,
     )
-    # Research deployment allows the skill; commercial drops it iff the
-    # license posture blocks commercial use. If this particular fixture
-    # is Apache-licensed the filter is a no-op; if it's a non-commercial
-    # weights repo (e.g. RLDX), the commercial palette is strictly smaller.
+    # Commercial deployment drops the skill iff its license blocks commercial use
+    # (a no-op for an Apache skill, but real for RLDX's non-commercial weights).
     assert manifest.name in research.execute_rskill_ids
     if not manifest.is_commercial_use_allowed:
         assert manifest.name not in commercial.execute_rskill_ids

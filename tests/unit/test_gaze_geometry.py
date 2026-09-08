@@ -107,9 +107,9 @@ def test_compute_gaze_pose_carries_frame_and_position() -> None:
 def test_matches_sim_composer_behaviour() -> None:
     """Regression pin: outputs captured from the pre-refactor so101_box composer.
 
-    The three sim composers' ``_look_at_quat`` now alias this helper, so the pin
-    uses literal values captured from the original implementation (2026-06-10,
-    pre shared-gaze-geometry refactor) — not a re-import that would be tautological.
+    The three sim composers' ``_look_at_quat`` now alias this helper; values are
+    literals from the original implementation (2026-06-10), not a re-import,
+    to avoid a tautological test.
     """
     cases = [
         (

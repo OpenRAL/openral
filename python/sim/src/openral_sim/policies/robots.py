@@ -1,9 +1,9 @@
 """Robot manifest adapters — register ``robots/<id>/robot.yaml`` factories.
 
-The eval layer needs a :class:`openral_core.RobotDescription` to perform
-the rSkill compatibility check inside :class:`openral_sim.SimRunner`.
+The eval layer needs a ``openral_core.RobotDescription`` to perform
+the rSkill compatibility check inside ``openral_sim.SimRunner``.
 This module wires every ``robot.yaml`` shipped under the top-level
-``robots/`` directory to the :data:`openral_sim.ROBOTS` registry.
+``robots/`` directory to the ``openral_sim.ROBOTS`` registry.
 
 Search path
 -----------

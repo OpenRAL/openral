@@ -208,8 +208,8 @@ def bundle_to_node_params(bundle: SensorBundle, serial_no: str = "") -> NodePara
     ``SensorSpec`` found in the bundle.
 
     Args:
-        bundle: A ``SensorBundle`` produced by :func:`realsense_d435_bundle`,
-            :func:`realsense_d435i_bundle`, or :func:`realsense_d415_bundle`.
+        bundle: A ``SensorBundle`` produced by ``realsense_d435_bundle``,
+            ``realsense_d435i_bundle``, or ``realsense_d415_bundle``.
         serial_no: Device serial number.  Overrides any value stored in
             sensor metadata.
 
@@ -429,7 +429,7 @@ def realsense_d435i_bundle(
     """Build a ``SensorBundle`` for an Intel RealSense D435i.
 
     The D435i is a D435 with an integrated Bosch BMI085 IMU; the existing
-    :func:`realsense_d435_bundle` already includes the IMU sensor, so this
+    ``realsense_d435_bundle`` already includes the IMU sensor, so this
     factory delegates to it and stamps ``model="RealSense D435i"`` on each
     constituent ``SensorSpec``.
 

@@ -1,25 +1,19 @@
 # RobotDescription — Franka Emika Panda (sim today; real-HW HAL planned).
 #
-# Mirrors FRANKA_PANDA_DESCRIPTION in
-# python/hal/src/openral_hal/franka_panda.py:168 — the YAML form is
-# the source of truth for eval-layer robot resolution
-# (openral_sim.adapters.robots) and for downstream tools that consume
-# RobotDescription via from_yaml(). The HAL constant remains the source of
-# truth for the runtime adapter; this file is kept aligned (drift fails the
-# regression test in tests/unit/test_robot_manifests_match_hal_constants.py).
+# Mirrors FRANKA_PANDA_DESCRIPTION in python/hal/src/openral_hal/franka_panda.py:168
+# — YAML is source of truth for eval-layer robot resolution
+# (openral_sim.adapters.robots) / from_yaml() consumers; the HAL constant
+# remains the runtime-adapter source of truth (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py).
 #
-# This manifest describes the *physical* Panda only — kinematic chain,
-# actuator limits, end-effector, capabilities, safety envelope.
-# Sim-imposed observation/action contracts (LIBERO's 8-D state, 7-D
-# delta-EEF action, 180° image flip; RoboCasa's 4-D agent_pos; etc.) live
-# in the matching scene adapter under
-# python/eval/src/openral_sim/adapters/<sim>.py — not here. This
-# follows the robot/sim split convention.
+# Describes the *physical* Panda only (kinematics, actuator limits, EE,
+# capabilities, safety envelope). Sim-imposed contracts (LIBERO's 8-D state,
+# 7-D delta-EEF action, 180deg flip; RoboCasa's 4-D agent_pos; etc.) live in
+# the scene adapter under python/eval/src/openral_sim/adapters/<sim>.py, not here.
 #
-# Joint / EE limits taken from the Franka FR3 / Panda data sheet:
-# https://frankaemika.github.io/docs/control_parameters.html
-# The MJCF used for sim (mujoco_menagerie franka_emika_panda/panda.xml)
-# mirrors the same numbers.
+# Joint/EE limits from the Franka FR3/Panda data sheet
+# (frankaemika.github.io/docs/control_parameters.html); the sim MJCF
+# (mujoco_menagerie franka_emika_panda/panda.xml) mirrors the same numbers.
 
 name: "franka_panda"
 embodiment_kind: "manipulator"
@@ -188,20 +182,14 @@ safety:
   max_torque_nm: 87.0
   deadman_required: true
 
-# Two RGB camera streams that mirror LIBERO's `agentview` and
-# `eye_in_hand` observations (renamed to `image` / `image2` by the
-# stored SmolVLA preprocessor and surfaced as `top` / `wrist` by
-# the openral_sim LIBERO scene adapter, per the canonical HAL-facing
-# sensor-naming convention). Declared here so the
-# rSkill compatibility check on a `openral sim run --config <libero>.yaml`
-# rollout matches `observation.images.camera{1,2}` against a real
-# SensorSpec on the robot — same pattern as aloha_bimanual's `top`.
-# The HAL-facing sensor name (`top`, `wrist`) is canonical per that same convention;
-# the checkpoint-facing `vla_feature_key` stays camera1/2 since it is
-# frozen per checkpoint.
-# Drift-guard intentionally does not assert sensors against the HAL
-# constant (see tests/unit/test_robot_manifests_match_hal_constants.py
-# header — sim-side sensor wiring is owned by the eval adapter).
+# Two RGB streams mirroring LIBERO's `agentview`/`eye_in_hand` (renamed to
+# `image`/`image2` by the stored SmolVLA preprocessor, surfaced as `top`/`wrist`
+# by the openral_sim LIBERO scene adapter). Declared so the rSkill compat check
+# on `openral sim run --config <libero>.yaml` matches
+# `observation.images.camera{1,2}` (checkpoint-facing, frozen per checkpoint)
+# against a real SensorSpec — same pattern as aloha_bimanual's `top`.
+# Drift-guard intentionally does not assert sensors against the HAL constant
+# (sim-side sensor wiring is owned by the eval adapter).
 sensors:
   - name: "top"
     modality: "rgb"

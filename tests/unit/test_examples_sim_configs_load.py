@@ -1,16 +1,12 @@
 """Every YAML under ``scenes/`` must load as its tier's typed schema.
 
-This is the cheap, per-PR guard that catches stale example configs
-(missing ``vla:`` block removal, schema drift, etc.) without requiring
-the GPU rollout that ``tools/audit_sim_configs.py`` performs. CLAUDE.md
-§1.11 — real schemas, no mocks; we load the real YAMLs that ship in the
-tree.
+Cheap per-PR guard for stale example configs (missing ``vla:`` block, schema
+drift) without the GPU rollout ``tools/audit_sim_configs.py`` performs.
+CLAUDE.md §1.11 — real schemas, no mocks; loads the real in-tree YAMLs.
 
-Scenes live in three tiers — ``scenes/deploy/`` loads as
-:class:`DeployScene`, ``scenes/sim/`` as :class:`SimScene`,
-``scenes/benchmark/`` as :class:`BenchmarkScene`. A failure here means
-the YAML carries a key the schema no longer recognises, or a required
-key was removed, or a legacy ``vla:`` block was reintroduced.
+Three tiers: ``scenes/deploy/`` → ``DeployScene``, ``scenes/sim/`` →
+``SimScene``, ``scenes/benchmark/`` → ``BenchmarkScene``. A failure
+means an unrecognized/missing key, or a legacy ``vla:`` block reintroduced.
 """
 
 from __future__ import annotations
@@ -39,7 +35,7 @@ def _yamls(subdir: str) -> list[Path]:
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
 def test_deploy_yaml_loads_as_deploy_scene(yaml_path: Path) -> None:
-    """Each ``scenes/deploy/`` YAML validates as :class:`DeployScene`.
+    """Each ``scenes/deploy/`` YAML validates as ``DeployScene``.
 
     Deploy scenes are env-only (no task, no eval config) — the reasoner
     picks the rSkill at runtime.
@@ -53,7 +49,7 @@ def test_deploy_yaml_loads_as_deploy_scene(yaml_path: Path) -> None:
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
 def test_sim_yaml_loads_as_sim_scene(yaml_path: Path) -> None:
-    """Each ``scenes/sim/`` YAML validates as :class:`SimScene`.
+    """Each ``scenes/sim/`` YAML validates as ``SimScene``.
 
     Sim scenes carry an optional task for ``openral sim run`` smoke
     tests and tutorials; eval-specific fields are optional.
@@ -67,10 +63,10 @@ def test_sim_yaml_loads_as_sim_scene(yaml_path: Path) -> None:
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
 def test_benchmark_yaml_loads_as_benchmark_scene(yaml_path: Path) -> None:
-    """Each ``scenes/benchmark/`` YAML validates as :class:`BenchmarkScene`.
+    """Each ``scenes/benchmark/`` YAML validates as ``BenchmarkScene``.
 
     Benchmark scenes require ``n_episodes``, ``seed``, structured
-    :class:`BenchmarkMetadata` (paper + honest_scope), and a task with
+    ``BenchmarkMetadata`` (paper + honest_scope), and a task with
     both ``max_steps`` and ``success_key`` so a leaderboard number can
     be reproduced from the YAML alone.
     """
@@ -103,7 +99,7 @@ def test_robocasa_scene_backend_options_validate(yaml_path: Path) -> None:
     ``RoboCasaBackendOptions.model_validate(scene.backend_options)`` at
     scene-factory time, so a YAML that omits a required key (e.g. a
     ``mode='prebuilt'`` scene with no ``prebuilt_task``) loads as a
-    :class:`SimScene` but blows up the instant ``openral sim run`` /
+    ``SimScene`` but blows up the instant ``openral sim run`` /
     ``deploy sim`` builds the env. This guard catches that at unit speed.
     """
     scene = _TIER_LOADERS[_tier_of(yaml_path)].from_yaml(str(yaml_path))

@@ -4,16 +4,16 @@ r"""3D Diffuser Actor policy adapter — RLBench keyframe inference via a sideca
 end-effector keyposes for RLBench by diffusion. Its released PerAct 18-task
 checkpoint pins an older stack (the ``MohitShridhar/RLBench@peract`` fork + CLIP
 + an Ada-compatible torch build) incompatible with the openral py3.12 workspace,
-so — like the RLDX-1 adapter (:mod:`openral_sim.policies.rldx`) — it runs in its
+so — like the RLDX-1 adapter (``openral_sim.policies.rldx``) — it runs in its
 own venv as a long-lived process driven over ZMQ. This module is the **openral
-side**: a :class:`PolicyAdapter` that marshals each observation to the sidecar
+side**: a ``PolicyAdapter`` that marshals each observation to the sidecar
 (``tools/rlbench_3dda_sidecar.py``) and returns the 8-D keyframe the RLBench
 scene backend executes.
 
 Selected by the rSkill manifest ``model_family: "diffuser_actor"``.
 
 The action is an 8-D keyframe ``[x y z qx qy qz qw gripper_open]`` consumed by
-:mod:`openral_sim.backends.rlbench` (whose sidecar plans+executes it). The policy
+``openral_sim.backends.rlbench`` (whose sidecar plans+executes it). The policy
 keeps a 3-step observation history server-side, so this adapter is thin.
 """
 
@@ -89,7 +89,7 @@ def _default_checkpoint() -> Path:
 
 @dataclass
 class _Diffuser3DActorAdapter:
-    """:class:`PolicyAdapter` proxying the 3D Diffuser Actor policy sidecar."""
+    """``PolicyAdapter`` proxying the 3D Diffuser Actor policy sidecar."""
 
     spec: VLASpec
     device: str

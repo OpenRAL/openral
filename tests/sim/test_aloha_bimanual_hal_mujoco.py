@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.AlohaMujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.AlohaMujocoHAL`` against real MuJoCo physics.
 
 These tests load gym-aloha's ``bimanual_viperx_transfer_cube.xml`` and
 exercise the full HAL lifecycle — connect → read_state → send_action →
@@ -10,7 +10,7 @@ The point of this suite is the bimanual "real hardware first day"
 contract (CLAUDE.md §1.11): if these tests pass, the 14-DoF
 ``left arm 6 + left gripper 1 + right arm 6 + right gripper 1``
 action layout — which is the same layout
-:class:`openral_hal.AlohaHAL` forwards to the four Interbotix XS
+``openral_hal.AlohaHAL`` forwards to the four Interbotix XS
 ``ros2_control`` controllers — is guaranteed to drive the physical
 ALOHA the same way on first connect.  Remaining failure surface is
 the Interbotix USB / DXL driver level (HIL territory).
@@ -127,7 +127,7 @@ class TestAlohaDescription:
 class TestMjcfSchema:
     """Guard against silent ``gym-aloha`` MJCF schema drift.
 
-    The :class:`AlohaMujocoHAL` indexing assumes the actuator / qpos
+    The ``AlohaMujocoHAL`` indexing assumes the actuator / qpos
     layout documented in ``aloha.py`` — if a future gym-aloha upgrade
     reorders joints, this guard fails before the closed-loop tests do.
     """
@@ -170,13 +170,6 @@ def hal() -> AlohaMujocoHAL:
     """Fresh bimanual HAL with gravity off and enough settle steps for the
     position controllers to converge to the commanded pose."""
     return AlohaMujocoHAL(gravity_enabled=False, settle_steps=3000)
-
-
-@pytest.fixture()
-def connected_hal(hal: AlohaMujocoHAL) -> AlohaMujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 # The gym-aloha MJCF keyframe defines a self-collision-free "home" pose
@@ -416,9 +409,9 @@ class TestClosedLoopMujoco:
     def test_action_index_split_matches_real_hal_layout(
         self, connected_hal: AlohaMujocoHAL
     ) -> None:
-        """The 6/1/6/1 split must match :class:`AlohaHAL.send_action` exactly.
+        """The 6/1/6/1 split must match ``AlohaHAL.send_action`` exactly.
 
-        :class:`AlohaHAL` splits the 14-D action as ``[0:6][6][7:13][13]``
+        ``AlohaHAL`` splits the 14-D action as ``[0:6][6][7:13][13]``
         — see ``aloha.py`` ``send_action`` ~lines 420-423.  If this HAL
         ever drifts (e.g. a future refactor swaps left/right), commands
         validated against the twin won't drive the real ALOHA the same

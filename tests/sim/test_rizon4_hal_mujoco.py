@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.Rizon4MujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.Rizon4MujocoHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` Flexiv Rizon 4 MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →
@@ -178,13 +178,6 @@ def hal() -> Rizon4MujocoHAL:
     """Fresh Rizon 4 HAL with gravity off and enough settle steps for
     the position controllers to converge to the commanded pose."""
     return Rizon4MujocoHAL(gravity_enabled=False, settle_steps=2000)
-
-
-@pytest.fixture()
-def connected_hal(hal: Rizon4MujocoHAL) -> Rizon4MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _zero_action(horizon: int = 1) -> Action:

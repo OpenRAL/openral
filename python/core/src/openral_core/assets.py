@@ -153,10 +153,10 @@ def _resolve_openarm(variant: str, kind: AssetKind) -> Path:
 
     * ``bimanual`` — the Enactic OpenArm v2 bimanual MJCF, out-pinned
       past the ``robot_descriptions`` commit by
-      :func:`openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf`.
+      ``openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf``.
     * ``anvil_v2_bimanual`` — the Anvil OpenARM 2.0 bimanual MJCF (v2 plus
       Anvil's J1/J6 range deltas and the wrist support bracket), fetched by
-      :func:`openral_hal._anvil_openarm_v2_assets.ensure_anvil_openarm_v2_mjcf`.
+      ``openral_hal._anvil_openarm_v2_assets.ensure_anvil_openarm_v2_mjcf``.
     """
     if kind != "mjcf":
         raise AssetRefError(f"openarm:{variant} is mjcf-only, not {kind}")

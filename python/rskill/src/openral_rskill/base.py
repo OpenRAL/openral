@@ -17,30 +17,26 @@ State machine
                                    any ──shutdown()──► finalized
                                    any ──on_error()──► error
 
-Sub-states (visible in :class:`~openral_core.schemas.RSkillInfo`)
+Sub-states (visible in ``RSkillInfo``)
 -----------------------------------------------------------------------
 While in ``inactive`` or ``active``, three boolean flags refine the
 sub-state reported on ``/skill/<name>/info``:
 
-- ``weights_loaded`` — set by :meth:`on_load_weights`
-- ``quantized``      — set by :meth:`on_quantize`
-- ``warmed_up``      — set by :meth:`on_warmup`
+- ``weights_loaded`` — set by ``on_load_weights``
+- ``quantized``      — set by ``on_quantize``
+- ``warmed_up``      — set by ``on_warmup``
 
 Concrete subclasses override the hook methods; the base class enforces the
-allowed transitions and updates :class:`RSkillInfo` atomically.
+allowed transitions and updates ``RSkillInfo`` atomically.
 
 Hot path
 --------
-:meth:`step` is the only hot-path method.  It is called by the ROS 2 action
-server at the skill's control frequency.  Override :meth:`_step_impl` in
-subclasses; do not override :meth:`step` directly.
+``step`` is the only hot-path method.  It is called by the ROS 2 action
+server at the skill's control frequency.  Override ``_step_impl`` in
+subclasses; do not override ``step`` directly.
 
-Concrete subclasses implement five hooks (`_configure_impl`,
-`_activate_impl`, `_deactivate_impl`, `_shutdown_impl`, `_step_impl`)
-and may override the optional `on_load_weights` / `on_quantize` /
-`on_warmup` hooks. See `openral_rskill.gpu_passthrough` for a
-minimal real example and `openral_rskill.smolvla.SmolVLAAdapter`
-for a production VLA wiring.
+See `openral_rskill.gpu_passthrough` for a minimal real example and
+`openral_rskill.smolvla.SmolVLAAdapter` for a production VLA wiring.
 """
 
 from __future__ import annotations
@@ -74,25 +70,25 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
 
     Subclasses must implement:
 
-    - :meth:`_configure_impl` — load config, parse manifest, etc.
-    - :meth:`_activate_impl`  — final pre-execution setup (e.g. warm-up).
-    - :meth:`_deactivate_impl` — pause execution without unloading weights.
-    - :meth:`_shutdown_impl`  — release all resources.
-    - :meth:`_step_impl`      — one inference step; returns an ``Action``.
+    - ``_configure_impl`` — load config, parse manifest, etc.
+    - ``_activate_impl``  — final pre-execution setup (e.g. warm-up).
+    - ``_deactivate_impl`` — pause execution without unloading weights.
+    - ``_shutdown_impl``  — release all resources.
+    - ``_step_impl``      — one inference step; returns an ``Action``.
 
     Subclasses may optionally override:
 
-    - :meth:`on_load_weights` — called during ``configure`` to load model
+    - ``on_load_weights`` — called during ``configure`` to load model
       weights.  Sets ``info.weights_loaded = True`` on return.
-    - :meth:`on_quantize`     — called after weight loading to quantize.
+    - ``on_quantize``     — called after weight loading to quantize.
       Sets ``info.quantized = True`` on return.
-    - :meth:`on_warmup`       — called during ``activate`` to run a dummy
+    - ``on_warmup``       — called during ``activate`` to run a dummy
       inference.  Sets ``info.warmed_up = True`` on return.
 
     Args:
         name: Skill name, used as the ROS 2 node name and in
             ``/skill/<name>/info``.
-        version: SemVer string, forwarded to :class:`RSkillInfo`.
+        version: SemVer string, forwarded to ``RSkillInfo``.
         role: Skill slot — ``"s0"``, ``"s1"``, or ``"s2"``.
         embodiment_tags: Embodiment tags for capability matching.
         latency_budget_ms: Maximum allowed inference latency.  Exceeded
@@ -124,7 +120,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
 
     @property
     def info(self) -> RSkillInfo:
-        """Current :class:`~openral_core.schemas.RSkillInfo` snapshot.
+        """Current ``RSkillInfo`` snapshot.
 
         Returns a copy — mutating the returned object has no effect.
         """
@@ -146,8 +142,8 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def configure(self) -> None:
         """Transition ``unconfigured → inactive``.
 
-        Calls :meth:`on_load_weights`, then :meth:`on_quantize`, then
-        :meth:`_configure_impl` in order.
+        Calls ``on_load_weights``, then ``on_quantize``, then
+        ``_configure_impl`` in order.
 
         Raises:
             ROSRuntimeError: If the current state does not allow this
@@ -171,7 +167,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def activate(self) -> None:
         """Transition ``inactive → active``.
 
-        Calls :meth:`on_warmup`, then :meth:`_activate_impl`.
+        Calls ``on_warmup``, then ``_activate_impl``.
 
         Raises:
             ROSRuntimeError: If the current state does not allow this
@@ -241,16 +237,16 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
         ``latency_budget_ms``.
 
         Args:
-            world_state: Current :class:`~openral_core.schemas.WorldState`
+            world_state: Current ``WorldState``
                 snapshot from the aggregator.
 
         Returns:
-            Either a single :class:`~openral_core.schemas.Action` chunk
+            Either a single ``Action`` chunk
             (the legacy single-control-surface path used by every skill
             shipped before multi-surface action dispatch was introduced) OR
-            a list of :class:`Action` chunks (multi-surface action dispatch — used by skills
+            a list of ``Action`` chunks (multi-surface action dispatch — used by skills
             whose manifest declares an ``action_contract.slots`` block;
-            each slot in the manifest becomes one :class:`Action` in
+            each slot in the manifest becomes one ``Action`` in
             the returned list, all routed by the HAL according to their
             individual ``control_mode``).
 
@@ -283,15 +279,15 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def on_load_weights(self) -> None:
         """Load model weights into memory.
 
-        Called during :meth:`configure` before :meth:`on_quantize`.
+        Called during ``configure`` before ``on_quantize``.
         Default is a no-op; override to load ``safetensors`` / ONNX files.
         """
 
     def on_unload_weights(self) -> None:
         """Release model weights from memory.
 
-        Symmetric with :meth:`on_load_weights`. Called by :meth:`shutdown`
-        when ``weights_loaded`` is set (before :meth:`_shutdown_impl`), so the
+        Symmetric with ``on_load_weights``. Called by ``shutdown``
+        when ``weights_loaded`` is set (before ``_shutdown_impl``), so the
         skill runner's single-resident eviction frees GPU VRAM before the next
         skill loads. Default is a no-op; override to drop model references and
         call ``torch.cuda.empty_cache()`` (or terminate an inference sidecar).
@@ -300,14 +296,14 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def on_quantize(self) -> None:
         """Apply quantization to loaded weights.
 
-        Called during :meth:`configure` after :meth:`on_load_weights`.
+        Called during ``configure`` after ``on_load_weights``.
         Default is a no-op; override to apply INT8 / INT4 / NVFP4.
         """
 
     def on_warmup(self) -> None:
         """Run a dummy inference to warm up the model.
 
-        Called during :meth:`activate` before :meth:`_activate_impl`.
+        Called during ``activate`` before ``_activate_impl``.
         Default is a no-op; override to call the model once with dummy input.
         """
 
@@ -317,7 +313,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def _configure_impl(self) -> None:
         """Skill-specific configuration logic.
 
-        Called at the end of :meth:`configure`, after weights are loaded and
+        Called at the end of ``configure``, after weights are loaded and
         quantized.  Raise any exception to abort the transition and enter
         ``error`` state.
         """
@@ -326,21 +322,21 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
     def _activate_impl(self) -> None:
         """Skill-specific activation logic.
 
-        Called at the end of :meth:`activate`, after warm-up.
+        Called at the end of ``activate``, after warm-up.
         """
 
     @abc.abstractmethod
     def _deactivate_impl(self) -> None:
         """Skill-specific deactivation logic.
 
-        Called by :meth:`deactivate`.  Weights remain loaded.
+        Called by ``deactivate``.  Weights remain loaded.
         """
 
     @abc.abstractmethod
     def _shutdown_impl(self) -> None:
         """Release all resources held by the skill.
 
-        Called by :meth:`shutdown`.  Must not raise — exceptions are caught
+        Called by ``shutdown``.  Must not raise — exceptions are caught
         and logged, then the state is set to ``finalized`` regardless.
         """
 
@@ -352,7 +348,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
             world_state: Current world state snapshot.
 
         Returns:
-            An :class:`~openral_core.schemas.Action` chunk.
+            An ``Action`` chunk.
         """
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -367,7 +363,7 @@ class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official packa
         self._info = self._info.model_copy(update={**kwargs, "stamp_ns": time.time_ns()})
 
     def _require_transition(self, target: RSkillState) -> None:
-        """Raise :class:`ROSRuntimeError` if *target* is not reachable."""
+        """Raise ``ROSRuntimeError`` if *target* is not reachable."""
         allowed = _TRANSITIONS.get(self._info.state, frozenset())
         if target not in allowed:
             raise ROSRuntimeError(

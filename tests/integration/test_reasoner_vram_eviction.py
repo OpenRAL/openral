@@ -1,20 +1,18 @@
 """Live ROS integration test for VRAM eviction on VLA dispatch.
 
-The reasoner, before dispatching a GPU-heavy ``execute_rskill`` (a VLA policy),
-must deactivate its configured GPU lifecycle peers — the object-detector
-``LifecycleNode`` is the canonical one — so their VRAM is released *before* the
-policy loads, then reactivate them once the skill finishes. Without this, on an
-8 GB card the detector (~1.3 GB) co-resident with a VLA (~4.5 GB) OOMs at load
-(observed live 2026-06-12: ``rldx_sidecar_died_during_boot`` /
+The reasoner, before dispatching a GPU-heavy ``execute_rskill`` (a VLA policy), must
+deactivate its configured GPU lifecycle peers — the object-detector ``LifecycleNode`` is the
+canonical one — so their VRAM is released before the policy loads, then reactivate them once
+the skill finishes. Without this, on an 8 GB card the detector (~1.3 GB) co-resident with a
+VLA (~4.5 GB) OOMs at load (observed live 2026-06-12: ``rldx_sidecar_died_during_boot`` /
 ``torch.OutOfMemoryError``).
 
-This exercises the real reasoner node + a real active ``LifecycleNode`` standing
-in for the detector + a real ``ExecuteRskill`` ``ActionServer``; the only test
-double is ``FakeToolUseClient`` at the LLM process boundary (CLAUDE.md §1.11).
+Exercises the real reasoner node + a real active ``LifecycleNode`` standing in for the
+detector + a real ``ExecuteRskill`` ``ActionServer``; only test double is
+``FakeToolUseClient`` at the LLM process boundary (CLAUDE.md §1.11).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
-(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
-``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (``scripts/ros_live_tests.sh``). CI runs it in
+``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
@@ -41,18 +39,14 @@ _LIVE_ROS_REASON = (
 def test_execute_rskill_frees_vram_peer_before_dispatch_then_reactivates() -> None:
     """A GPU lifecycle peer is deactivated BEFORE the VLA runs and reactivated after.
 
-    Sequence asserted (by monotonic timestamp, all on one executor):
+    Sequence asserted (by monotonic timestamp, all on one executor): (1) ``deactivate`` — the
+    peer (stand-in detector) leaves ACTIVE, releasing VRAM, before (2) ``execute`` —
+    ``ExecuteRskill``'s execute callback runs (policy would load here), and after the skill
+    result (3) ``activate`` — peer is reactivated.
 
-    1. ``deactivate`` — the peer (a stand-in detector) leaves ACTIVE, releasing
-       VRAM, *before* …
-    2. ``execute`` — the ``ExecuteRskill`` action server's execute callback runs
-       (the policy would load here), and *after the skill result* …
-    3. ``activate`` — the peer is reactivated.
-
-    The ordering ``deactivate < execute`` is the crux: it proves the detector's
-    VRAM is freed before the policy loads (the fix for the 8 GB OOM). The
-    trailing ``activate`` proves the detector is restored for the next perception
-    cycle.
+    ``deactivate < execute`` ordering is the crux: proves detector VRAM is freed before the
+    policy loads (the 8 GB OOM fix). Trailing ``activate`` proves the detector is restored for
+    the next perception cycle.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")

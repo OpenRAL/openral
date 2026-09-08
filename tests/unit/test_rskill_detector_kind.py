@@ -1,16 +1,8 @@
 """Tests for the ``kind: "detector"`` rSkill manifest variant.
 
-Covers:
-- :class:`~openral_core.schemas.DetectorContract` Hypothesis round-trip +
-  JSON-Schema validation.
-- Contract test: load ``rskills/rtdetr-coco-r18/rskill.yaml`` via
-  :meth:`~openral_core.schemas.RSkillManifest.model_validate` and assert
-  the key guarantees.
-- Validator boundary tests: each required/forbidden field rule raises
-  :exc:`pydantic.ValidationError` exactly.
-
-Run with:
-    uv run pytest tests/unit/test_rskill_detector_kind.py -v
+``DetectorContract`` Hypothesis round-trip + JSON
+Schema validation, the real ``rskills/rtdetr-coco-r18`` fixture, and the
+validator boundary rules for each required/forbidden field.
 """
 
 from __future__ import annotations

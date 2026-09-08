@@ -1,28 +1,20 @@
 """All-robots asset resolution + URDF/MJCF/SRDF validity.
 
-The user's explicit "test everything for all robots": every ``robots/*/robot.yaml``
-is parametrized through :func:`openral_core.assets.resolve_asset` and its declared
-assets are loaded with the real parser for their kind (``yourdfpy`` for URDF,
-``mujoco`` for MJCF, the safety-kernel SRDF parser for SRDF).
+Every ``robots/*/robot.yaml`` is parametrized through
+``openral_core.assets.resolve_asset``; declared assets are loaded with the
+real parser for their kind (``yourdfpy`` URDF, ``mujoco`` MJCF, the
+safety-kernel SRDF parser).
 
-Principled skips/xfails only — no faked passes:
+Skip/xfail policy — no faked passes:
 
-* MJCF that needs an absent optional sim dep → ``pytest.skip`` (never faked).
-* ``menagerie:`` refs are not yet wired (Task 1 YAGNI); ``widowx``'s MJCF
-  therefore *must* raise :class:`AssetRefError`, which the test asserts rather
-  than skipping (the honest outcome).
-* h1, so100_follower, so101_follower left this table under the standardized
-  asset-resolution grammar — each ships a vendored, joint-name-patched URDF
-  (``robots/<id>/<id>.urdf``) whose joints
-  match the manifest, so all three PASS the cross-check with no safety-lowering
-  drift. h1's ``package://h1_description`` meshes resolve location-independently;
-  so100/so101 use *relative* mesh paths, so their Apache-2.0 mesh assets are
-  vendored alongside under ``robots/<id>/assets/`` (with the upstream LICENSE) —
-  the lowering re-fits identically from the vendored meshes.
-* gr1 still :data:`xfail`: its upstream (Wiki-GRx-Models) URDF is **GPL-3.0**, a
-  copy-left license that CLAUDE.md §1.9 rejects from open-core without TSC
-  review, so it cannot be vendored into the repo. It keeps its ``_joint``-suffix
-  xfail and its ``rd:`` ref.
+* MJCF needing an absent optional sim dep → ``pytest.skip``.
+* ``menagerie:`` refs are unwired (Task 1 YAGNI); ``widowx``'s MJCF asserts
+  ``AssetRefError`` rather than skipping.
+* h1, so100_follower, so101_follower ship a vendored, joint-name-patched URDF
+  matching the manifest (so100/so101 also vendor their Apache-2.0 meshes under
+  ``robots/<id>/assets/`` with the upstream LICENSE) — no xfail needed.
+* gr1 stays ``xfail``: upstream (Wiki-GRx-Models) URDF is GPL-3.0,
+  copy-left, rejected from open-core without TSC review (CLAUDE.md §1.9).
 """
 
 from __future__ import annotations
@@ -39,13 +31,9 @@ from openral_core.schemas import RobotDescription
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFESTS = sorted((_REPO_ROOT / "robots").glob("*/robot.yaml"))
 
-# Robots whose declared URDF uses joint names that diverge from the manifest's
-# HAL/control-contract names. h1, so100_follower and so101_follower left this
-# table under the standardized asset-resolution grammar — each ships a
-# vendored, joint-name-patched URDF whose joints match the manifest
-# (so100/so101 vendor their Apache-2.0 meshes too).
-# Only gr1 remains, for a documented, auditable reason:
-#  * gr1 — upstream URDF is GPL-3.0, copy-left, rejected from open-core (§1.9).
+# Robots whose URDF joint names diverge from the manifest's HAL contract.
+# h1/so100/so101 left this table (vendored joint-patched URDF matches manifest).
+# gr1 remains: upstream URDF is GPL-3.0, copy-left, rejected from open-core (§1.9).
 _URDF_JOINT_NAME_MISMATCH: dict[str, str] = {
     "gr1": "rd:gr1_description URDF suffixes every joint with '_joint' "
     "(waist_yaw_joint); manifest drops the suffix (waist_yaw). Not vendorable: "
@@ -57,14 +45,10 @@ def _load(mf: Path) -> RobotDescription:
     return RobotDescription.model_validate(yaml.safe_load(mf.read_text()))
 
 
-#: Floor for the robot-manifest glob. A LOWER BOUND, not an exact count: the
-#: failure this guards against is the glob silently matching nothing (wrong
-#: cwd, moved/renamed ``robots/``), which collapses every parametrized test
-#: below into zero cases. Pinning the exact number instead turned every added
-#: robot into a red CI run on an unrelated PR — it did, three times over, which
-#: is how this comment came to exist. Raise the floor when a batch of robots
-#: lands; deliberately removing one is a reviewed act, not something a magic
-#: number should police.
+#: Lower bound, not an exact count — guards against the glob silently matching
+#: zero manifests (wrong cwd, moved/renamed ``robots/``). Pinning an exact
+#: count caused red CI on unrelated PRs when a robot was added; raise this
+#: when a batch of robots lands.
 _MIN_ROBOT_MANIFESTS = 21
 
 
@@ -112,8 +96,8 @@ def test_declared_urdf_parses_and_matches_hal_joints(mf: Path) -> None:
     The check is narrowed to non-gripper / non-base joints: gripper and virtual
     base DoFs (``base_x``/``base_y``/``base_yaw``) are part of the HAL contract
     but are deliberately absent from the arm URDF. Robots whose upstream URDF
-    uses an entirely different joint-naming convention are :data:`xfail`-ed with
-    a documented reason (see :data:`_URDF_JOINT_NAME_MISMATCH`).
+    uses an entirely different joint-naming convention are ``xfail``-ed with
+    a documented reason (see ``_URDF_JOINT_NAME_MISMATCH``).
     """
     pytest.importorskip("yourdfpy")
     import yourdfpy

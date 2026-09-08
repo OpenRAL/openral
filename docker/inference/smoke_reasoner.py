@@ -27,10 +27,9 @@ prompt fan-in end-to-end without pytest / conftest / torch in the loop:
      the active ``reasoner.tick`` span (the tracing contract).
 
 Exits 0 on success, non-zero with an error message otherwise. Uses
-``os._exit(rc)`` to skip Python's teardown so the
-pydantic-Rust / rclpy / cyclonedds C-extension teardown segfault
-seen across the other docker smokes can't mask a successful
-round-trip.
+``os._exit(rc)`` to skip Python's teardown, so the pydantic-Rust / rclpy /
+cyclonedds C-extension teardown segfault seen across the other docker
+smokes can't mask a successful round-trip.
 
 Designed to run as::
 

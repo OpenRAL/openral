@@ -199,7 +199,9 @@ def test_gpu_policy_inference_feeds_safety_kernel_cleanly() -> None:
                     try:
                         log_contents = log_path.read_text()
                         print(f"\n=== kernel log ===\n{log_contents}\n==================")
-                    except Exception:
+                    except (OSError, UnicodeDecodeError):
+                        # Best-effort debug dump — a missing/unreadable log
+                        # file must not mask the real assertion failure below.
                         pass
 
                 # 4. Assertions: every GPU action republished, no

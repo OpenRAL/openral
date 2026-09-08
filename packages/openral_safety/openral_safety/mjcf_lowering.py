@@ -231,7 +231,7 @@ def _body_joint(mj: Any, model: Any, body: int) -> tuple[int, _Vec]:
 
     The ``dof_index`` (the commanded-joint column this link tracks) is NOT
     decided here — it is assigned by movable-joint order in
-    :func:`lower_collision_params`, because the MJCF's own joint names do not
+    ``lower_collision_params``, because the MJCF's own joint names do not
     match the manifest's (e.g. ``Rotation`` vs ``shoulder_pan``); matching by
     name silently froze every link's FK at the rest pose (see
     ``tests/sim/safety/test_mjcf_lowering_dof_index.py``).
@@ -285,7 +285,7 @@ def lower_collision_params(
         no lowerable collision geometry (every collidable geom is a mesh/plane,
         e.g. the SO-101 ``new_calib`` MJCF), in which case it returns just
         ``{"self_collision_enabled": False}`` (same disabled sentinel as
-        :func:`collision_params_from_description`) so the kernel runs its scalar
+        ``collision_params_from_description``) so the kernel runs its scalar
         envelope check and the launch never forwards an empty-list ROS param.
     """
     import mujoco as mj
@@ -345,17 +345,12 @@ def lower_collision_params(
             capsule_half_length.append(half_length)
             capsule_origin_xyzrpy.extend([gpos[0], gpos[1], gpos[2], groll, gpitch, gyaw])
 
-    # A mesh-only MJCF (every collidable geom is a mesh/plane, which this
-    # lowering doesn't approximate — see ``_first_collidable_geom``) yields zero
-    # capsules. With no capsule geometry the self-collision check has nothing to
-    # test, so claiming ``self_collision_enabled: True`` would be dishonest; and
-    # emitting the empty ``capsule_*`` lists as ROS parameters crashes
-    # ``ros2 launch`` (launch_ros normalises an empty list to ``()``, which
-    # ``ensure_argument_type`` rejects with "got '()' of type tuple"). Fall back
-    # to the same ``{self_collision_enabled: False}`` contract as the
-    # manifest-geometry path (:func:`collision_params_from_description`): the
-    # kernel runs its scalar envelope check exactly as before. Full mesh coverage
-    # is a future revision (module docstring).
+    # A mesh-only MJCF (every collidable geom is a mesh/plane — see `_first_collidable_geom`)
+    # yields zero capsules: claiming `self_collision_enabled: True` with nothing to test would
+    # be dishonest, and emitting empty `capsule_*` lists crashes `ros2 launch` (launch_ros
+    # normalises `[]` to `()`, which `ensure_argument_type` rejects). Fall back to the same
+    # `{self_collision_enabled: False}` contract as the manifest-geometry path
+    # (`collision_params_from_description`); full mesh coverage is a future revision.
     if not capsule_link:
         return {"self_collision_enabled": False}
 

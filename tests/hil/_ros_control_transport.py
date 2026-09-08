@@ -1,28 +1,22 @@
 """Lab-runner-only ``rclpy`` bridge for single-controller real-HW HALs.
 
-The real-HW HAL adapters (``UR5eRealHAL`` / ``UR10eRealHAL`` /
-``FrankaPandaRealHAL`` / ``SawyerRealHAL``) do not import ``rclpy``
-themselves — the HAL Protocol is wire-format-free.  The transport is
-injected at construction time via ``publish_fn`` / ``state_fn`` callables.
+Real-HW HAL adapters (``UR5eRealHAL``/``UR10eRealHAL``/``FrankaPandaRealHAL``/
+``SawyerRealHAL``) don't import ``rclpy`` themselves — the HAL Protocol is wire-format-free;
+the transport is injected at construction time via ``publish_fn``/``state_fn`` callables.
 
 In production the transport is the per-HAL ROS 2 lifecycle node
-(``packages/openral_hal_<robot>/``).  Inside a HIL test we bring up a
-minimal ``rclpy`` node locally so the test can drive the real vendor
-``ros2_control`` controller end-to-end.
+(``packages/openral_hal_<robot>/``). Inside a HIL test a minimal ``rclpy`` node is brought up
+locally so the test can drive the real vendor ``ros2_control`` controller end-to-end.
 
-This module is HIL-only — it is imported by ``tests/hil/test_<robot>.py``
-after the test has confirmed both ``rclpy`` and the live driver are
-present.  The unit-lane conformance tests use
-:class:`openral_hal.sim_transport.SimTransport` instead and never
-touch ``rclpy``.
+HIL-only — imported by ``tests/hil/test_<robot>.py`` after the test confirms both ``rclpy``
+and the live driver are present. Unit-lane conformance tests use
+``openral_hal.sim_transport.SimTransport`` instead and never touch ``rclpy``.
 
-Defaults match ``ur_robot_driver``
-(``/scaled_joint_trajectory_controller/joint_trajectory``,
+Defaults match ``ur_robot_driver`` (``/scaled_joint_trajectory_controller/joint_trajectory``,
 ``/joint_states``); pass explicit topics for other controllers.
 
-Per CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in
-between.  The helper raises ``RuntimeError`` if it is imported on a host
-without ``rclpy`` so the caller has to guard with
+Per CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between. Raises
+``RuntimeError`` if imported on a host without ``rclpy``, so the caller must guard with
 ``importlib.util.find_spec``.
 """
 
@@ -58,22 +52,90 @@ _CONTROL_QOS = QoSProfile(
 def _make_trajectory_publisher(node: Node, command_topic: str) -> Publisher:
     """Create a ``trajectory_msgs/JointTrajectory`` publisher with the HIL QoS.
 
-    Shared with :mod:`tests.hil._aloha_ros_transport` so the per-arm and
+    Shared with ``tests.hil._aloha_ros_transport`` so the per-arm and
     per-gripper publishers in the bimanual bridge use the same QoS profile
     as the single-controller bridge.
     """
     return node.create_publisher(JointTrajectory, command_topic, _CONTROL_QOS)
 
 
-class RosControlHILTransport:
+class _JointStateCache:
+    """Latest per-joint ``(position, velocity, effort)`` cache, shared by every HIL bridge.
+
+    Every bridge merges an incoming ``sensor_msgs/JointState`` into
+    ``self._latest`` by joint name (never by index — independently
+    publishing controllers give no ordering guarantee) and projects it onto
+    ``self._joint_names`` order for ``read_state()``. Subclasses must set
+    both attributes before calling ``state()``.
+    """
+
+    _joint_names: list[str]
+    _latest: dict[str, tuple[float, float, float]]
+
+    def state(self) -> dict[str, object]:
+        positions: list[float] = []
+        velocities: list[float] = []
+        efforts: list[float] = []
+        for name in self._joint_names:
+            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
+            positions.append(p)
+            velocities.append(v)
+            efforts.append(e)
+        return {"position": positions, "velocity": velocities, "effort": efforts}
+
+
+class _PolledJointStateMixin(_JointStateCache):
+    """Adds the single-``rclpy.spin_once``-poll ``_on_joint_state``/``wait_for_first_state`` pair.
+
+    Shared by ``RosControlHILTransport`` and ``AlohaHILTransport``, whose
+    ``/joint_states`` merge-by-name callback and "has anything arrived yet"
+    poll are byte-identical. ``OpenArmHILTransport`` keeps its own
+    ``_on_joint_state``/``spin_once`` (it drives its own ``rclpy.Context``-bound
+    executor and polls ``wait_for_every_joint`` — all 16, not just one
+    message) so it inherits only ``_JointStateCache``.
+    """
+
+    _node: Node
+    _last_stamp: float
+
+    def spin_once(self, timeout_sec: float = 0.05) -> None:
+        rclpy.spin_once(self._node, timeout_sec=timeout_sec)
+
+    @property
+    def last_stamp(self) -> float:
+        return self._last_stamp
+
+    def wait_for_first_state(self, deadline_s: float = 2.0) -> bool:
+        """Return True once at least one joint-state message has been received."""
+        start = time.monotonic()
+        while time.monotonic() - start < deadline_s:
+            self.spin_once(timeout_sec=0.05)
+            if self._latest:
+                return True
+        return False
+
+    def _on_joint_state(self, msg: Any) -> None:
+        names = list(getattr(msg, "name", []))
+        positions = list(getattr(msg, "position", []))
+        velocities = list(getattr(msg, "velocity", []))
+        efforts = list(getattr(msg, "effort", []))
+        for i, name in enumerate(names):
+            p = positions[i] if i < len(positions) else 0.0
+            v = velocities[i] if i < len(velocities) else 0.0
+            e = efforts[i] if i < len(efforts) else 0.0
+            self._latest[name] = (p, v, e)
+        self._last_stamp = time.monotonic()
+
+
+class RosControlHILTransport(_PolledJointStateMixin):
     """Tiny ``rclpy`` bridge for HIL tests against a live ``ros2_control`` driver.
 
     Subscribes to ``joint_state_topic`` and re-publishes commanded
     trajectories on ``command_topic``.  The most recent joint state is
-    cached and surfaced via :meth:`state` so the HAL's ``read_state()`` can
+    cached and surfaced via ``state`` so the HAL's ``read_state()`` can
     return it without blocking.
 
-    The class is intended to be used as a fixture; call :meth:`spin_once`
+    The class is intended to be used as a fixture; call ``spin_once``
     inside the test loop to drain incoming joint-state messages.
 
     Args:
@@ -132,48 +194,8 @@ class RosControlHILTransport:
         traj.points.append(point)
         self._publisher.publish(traj)
 
-    def state(self) -> dict[str, object]:
-        positions: list[float] = []
-        velocities: list[float] = []
-        efforts: list[float] = []
-        for name in self._joint_names:
-            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
-            positions.append(p)
-            velocities.append(v)
-            efforts.append(e)
-        return {"position": positions, "velocity": velocities, "effort": efforts}
-
-    # -- Helpers --------------------------------------------------------------
-
-    def spin_once(self, timeout_sec: float = 0.05) -> None:
-        rclpy.spin_once(self._node, timeout_sec=timeout_sec)
-
-    @property
-    def last_stamp(self) -> float:
-        return self._last_stamp
-
-    def wait_for_first_state(self, deadline_s: float = 2.0) -> bool:
-        """Return True once at least one joint-state message has been received."""
-        start = time.monotonic()
-        while time.monotonic() - start < deadline_s:
-            self.spin_once(timeout_sec=0.05)
-            if self._latest:
-                return True
-        return False
-
-    # -- Internal callbacks ---------------------------------------------------
-
-    def _on_joint_state(self, msg: Any) -> None:
-        names = list(getattr(msg, "name", []))
-        positions = list(getattr(msg, "position", []))
-        velocities = list(getattr(msg, "velocity", []))
-        efforts = list(getattr(msg, "effort", []))
-        for i, name in enumerate(names):
-            p = positions[i] if i < len(positions) else 0.0
-            v = velocities[i] if i < len(velocities) else 0.0
-            e = efforts[i] if i < len(efforts) else 0.0
-            self._latest[name] = (p, v, e)
-        self._last_stamp = time.monotonic()
+    # state/spin_once/last_stamp/wait_for_first_state/_on_joint_state come
+    # from _PolledJointStateMixin.
 
 
 def make_hil_transport(

@@ -1,23 +1,18 @@
 """GStreamer pipeline-string builder + platform detection.
 
-This module is import-safe on hosts without GStreamer or PyGObject: it
-does **not** import ``gi`` at module load. All it does is
+Import-safe on hosts without GStreamer or PyGObject: never imports ``gi`` at
+module load. Responsibilities:
 
-1. Detect what kind of NVIDIA platform we are on
-   (:class:`Platform`) by reading ``/etc/nv_tegra_release`` and
-   probing ``gst-inspect-1.0`` for the presence of specific elements
-   (``nvarguscamerasrc`` on Tegra, ``nvh264dec`` on desktop NVIDIA).
-2. Build a GStreamer pipeline string from a typed
-   :class:`PipelineSpec`, selecting the right source / decoder /
-   format-converter elements for the detected platform.
-3. Ensure the trailing ``appsink`` element carries a known name
-   (default ``bh_sink``) so the reader can fetch it via
-   ``Gst.Bin.get_by_name``.
+1. Detect the NVIDIA platform (``Platform``) via ``/etc/nv_tegra_release``
+   and ``gst-inspect-1.0`` probes for ``nvarguscamerasrc`` (Tegra) /
+   ``nvh264dec`` (desktop NVIDIA).
+2. Build a pipeline string from a typed ``PipelineSpec``, selecting
+   source / decoder / converter elements per platform.
+3. Ensure the trailing ``appsink`` carries a known name (default
+   ``bh_sink``) via ``Gst.Bin.get_by_name``.
 
-The output is fed verbatim to ``Gst.parse_launch`` inside the reader.
-Keeping the builder a pure-Python
-string transformer means every code path can be unit-tested on
-stock Ubuntu without NVIDIA plugins or PyGObject.
+Output is fed verbatim to ``Gst.parse_launch`` in the reader; the pure-Python
+string builder is unit-testable without NVIDIA plugins or PyGObject.
 """
 
 from __future__ import annotations
@@ -63,7 +58,7 @@ TEE_NAME: Final[str] = "openral_cam_tee"
 # Per-branch leaky queue. Every tee branch is prefixed with this so a slow or
 # crashing consumer drops its own frames rather than backpressuring the policy
 # leg (isolation invariant). Defined once and shared by the static
-# builder (:func:`leaky_branch`) and the runtime ``TeeManager`` so a dynamically
+# builder (``leaky_branch``) and the runtime ``TeeManager`` so a dynamically
 # attached branch carries the identical isolation policy.
 LEAKY_BRANCH_QUEUE: Final[str] = "queue leaky=downstream max-size-buffers=2"
 
@@ -80,7 +75,7 @@ def leaky_branch(elements: str, *, tee_name: str = TEE_NAME) -> str:
         elements: The branch body downstream of the leaky queue (e.g. an
             ``appsink``, or a ``nvvidconv ! ... ! appsink`` chain).
         tee_name: Name of the upstream ``tee`` to branch from. Defaults to
-            :data:`TEE_NAME`.
+            ``TEE_NAME``.
 
     Returns:
         A pipeline-string fragment beginning ``<tee_name>. ! queue ...``.
@@ -102,7 +97,7 @@ _TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")
 _GST_INSPECT_TIMEOUT_S: Final[float] = 5.0
 
 # The two NVMM-aware colour converters, named once because the choice between
-# them is load-bearing for caps negotiation (see :func:`bgr_convert_chain`).
+# them is load-bearing for caps negotiation (see ``bgr_convert_chain``).
 _NVVIDEOCONVERT: Final[str] = "nvvideoconvert"  # DeepStream
 _NVVIDCONV: Final[str] = "nvvidconv"  # Tegra / L4T multimedia stack
 _VIDEOCONVERT: Final[str] = "videoconvert"  # stock, system memory / CPU
@@ -115,37 +110,28 @@ _NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"
 class Platform(str, Enum):
     """The kind of host the runner is executing on.
 
-    ``TEGRA`` (Jetson / Spark) uses NVIDIA's L4T multimedia stack:
-    ``nvarguscamerasrc`` for MIPI CSI, ``nvv4l2decoder`` for H.264 /
-    HEVC, ``nvvidconv`` for NVMM-aware colour conversion. Buffers
-    flow in ``video/x-raw(memory:NVMM)`` caps and can be lifted to
+    ``TEGRA`` (Jetson / Spark): L4T multimedia stack — ``nvarguscamerasrc``
+    (MIPI CSI), ``nvv4l2decoder`` (H.264/HEVC), ``nvvidconv`` (NVMM-aware
+    colour convert). Buffers are ``video/x-raw(memory:NVMM)``, liftable to
     CUDA zero-copy via ``libnvbufsurface.so``.
 
-    ``NVIDIA_DEEPSTREAM`` is x86_64 with a full DeepStream install —
-    the OpenRAL Pro image (``openral-pro``'s ``docker/Dockerfile.pro``,
-    which ``FROM``s the GStreamer-free ``openral:x86`` and installs the
-    DeepStream + NVMM + TensorRT stack; shipped as
-    ``openral:x86-deepstream-latest``). Detected by the presence of
-    **both** ``nvjpegdec`` and ``nvvideoconvert``. On this tier the main
-    reader pipeline is NVMM-native: ``nvjpegdec`` decodes
-    MJPG **directly into** ``video/x-raw(memory:NVMM)`` (the decoded
-    frame is born in GPU memory; only the compressed JPEG crosses PCIe)
-    and ``nvvideoconvert`` colour-converts on-GPU, so the appsink
-    receives NVMM buffers the reader lifts to a CUDA device pointer via
+    ``NVIDIA_DEEPSTREAM``: x86_64 with DeepStream (the OpenRAL Pro image,
+    ``docker/Dockerfile.pro`` FROMs ``openral:x86`` + DeepStream/NVMM/TensorRT,
+    tagged ``openral:x86-deepstream-latest``). Detected by **both**
+    ``nvjpegdec`` and ``nvvideoconvert`` present. ``nvjpegdec`` decodes MJPG
+    directly into ``video/x-raw(memory:NVMM)`` (only the compressed JPEG
+    crosses PCIe); ``nvvideoconvert`` colour-converts on-GPU; the appsink
+    receives NVMM buffers lifted to a CUDA device pointer via
     ``libnvbufsurface.so``.
 
-    ``NVIDIA_DESKTOP`` is x86_64 with an NVIDIA GPU and the
-    ``gstreamer1.0-plugins-bad`` ``nvcodec`` family installed but **no**
-    DeepStream. nvcodec ships the H.264 / H.265 / AV1 dec/enc family
-    (``nvh264dec``, ``nvh264enc``, …) and ``cudaupload`` /
-    ``cudadownload``, but not ``nvvideoconvert``. The pipeline builder
-    (``_build_convert``) falls back to stock ``videoconvert`` on this
-    branch; the GPU path covers decode/encode only, and no element in
-    the reader pipeline produces ``memory:NVMM`` caps.
+    ``NVIDIA_DESKTOP``: x86_64 with an NVIDIA GPU and
+    ``gstreamer1.0-plugins-bad`` ``nvcodec`` (``nvh264dec``, ``nvh264enc``,
+    ``cudaupload``/``cudadownload``) but no DeepStream, hence no
+    ``nvvideoconvert``. ``_build_convert`` falls back to stock
+    ``videoconvert``; no element in the reader pipeline produces
+    ``memory:NVMM`` caps.
 
-    ``CPU_ONLY`` is the fallback: stock GStreamer plugins, no
-    NVIDIA-specific elements. Frames flow in system memory; the
-    NVMM path is unavailable.
+    ``CPU_ONLY``: stock GStreamer plugins only, system memory, no NVMM path.
     """
 
     TEGRA = "tegra"
@@ -157,8 +143,8 @@ class Platform(str, Enum):
 class Source(str, Enum):
     """What kind of upstream feeds the pipeline.
 
-    The :class:`Source` selects the head element of the pipeline; the
-    :class:`Platform` selects which NVIDIA-accelerated variant of
+    The ``Source`` selects the head element of the pipeline; the
+    ``Platform`` selects which NVIDIA-accelerated variant of
     decoder / converter follows it.
     """
 
@@ -181,16 +167,16 @@ class Source(str, Enum):
 class PipelineSpec(BaseModel):
     """Validated description of a GStreamer ingest pipeline.
 
-    A :class:`PipelineSpec` is a *structured* alternative to passing a
+    A ``PipelineSpec`` is a *structured* alternative to passing a
     raw GStreamer pipeline string through
     ``SensorReaderConfig.backend_params["pipeline"]``. The reader's
     factory accepts either form: when the YAML supplies ``pipeline``
     directly the string is passed through (with the appsink name
     ensured); when the YAML supplies ``source / device / ...`` we
-    materialise a :class:`PipelineSpec` and build the string here.
+    materialise a ``PipelineSpec`` and build the string here.
 
     Args:
-        source: The upstream element family (see :class:`Source`).
+        source: The upstream element family (see ``Source``).
         device: Source-specific device locator. ``int`` for v4l2 device
             indices, ``str`` for paths (``/dev/video0``, ``/path/to/file.mp4``,
             ``rtsp://...``, etc.). Ignored when ``source == TESTSRC``.
@@ -206,19 +192,19 @@ class PipelineSpec(BaseModel):
             UVC compressed mode; e.g. the icspring wrist cam exposes no
             raw modes at all). Inserts an ``image/jpeg`` capsfilter +
             JPEG decoder after ``v4l2src``: ``nvjpegdec`` on
-            :attr:`Platform.NVIDIA_DEEPSTREAM` (decodes straight into
+            ``Platform.NVIDIA_DEEPSTREAM`` (decodes straight into
             NVMM), stock ``jpegdec`` elsewhere. USB source
             only; mutually exclusive with ``encoded``.
         enable_nvmm: Hint to keep frames in ``memory:NVMM`` caps for
             NVMM→CUDA handoff. Honored only when the platform is
-            :attr:`Platform.TEGRA` or :attr:`Platform.NVIDIA_DESKTOP`.
+            ``Platform.TEGRA`` or ``Platform.NVIDIA_DESKTOP``.
         enable_ros_tee: When ``True``, the builder inserts a ``tee`` so
             a second branch can feed a ROS 2 publisher (commit #4).
         enable_event_tee: When ``True``, the builder adds a third
             ``tee`` branch terminating in ``event_appsink_name``. The
             event branch lifts frames to system memory and rate-limits
-            via ``videorate`` to :attr:`event_rate_hz`; the
-            :class:`PerceptionEventPublisher` runs
+            via ``videorate`` to ``event_rate_hz``; the
+            ``PerceptionEventPublisher`` runs
             detectors on its samples and publishes
             ``PromptStamped`` on ``/openral/perception/<kind>``. Policy
             and event legs share the ``cuda_context`` shared CUDA
@@ -290,20 +276,20 @@ def detect_platform() -> Platform:
 
     1. If ``/etc/nv_tegra_release`` exists, this is a Tegra host
        (Jetson Nano / NX / AGX / Thor / Spark). Return
-       :attr:`Platform.TEGRA`.
+       ``Platform.TEGRA``.
     2. Else, if ``gst-inspect-1.0`` reports **both** ``nvjpegdec`` and
        ``nvvideoconvert``, this is an x86 DeepStream install (the
-       ``ds-on`` image). Return :attr:`Platform.NVIDIA_DEEPSTREAM`.
+       ``ds-on`` image). Return ``Platform.NVIDIA_DEEPSTREAM``.
     3. Else, if ``gst-inspect-1.0`` reports the ``nvh264dec`` element
        present, this is a desktop NVIDIA host with the ``nvcodec``
-       plugin family installed. Return :attr:`Platform.NVIDIA_DESKTOP`.
-    4. Otherwise return :attr:`Platform.CPU_ONLY`.
+       plugin family installed. Return ``Platform.NVIDIA_DESKTOP``.
+    4. Otherwise return ``Platform.CPU_ONLY``.
 
     The result is cached for the lifetime of the Python process via
-    :func:`functools.lru_cache`; platform never changes mid-run.
+    ``functools.lru_cache``; platform never changes mid-run.
 
     Returns:
-        The detected :class:`Platform`.
+        The detected ``Platform``.
 
     Example:
         >>> detect_platform() in {Platform.TEGRA, Platform.NVIDIA_DESKTOP, Platform.CPU_ONLY}
@@ -321,7 +307,7 @@ def detect_platform() -> Platform:
 def inspect_element_present(element_name: str) -> bool:
     """Return ``True`` when ``gst-inspect-1.0 <element_name>`` succeeds.
 
-    Used by :func:`detect_platform` to probe for ``nvh264dec``,
+    Used by ``detect_platform`` to probe for ``nvh264dec``,
     ``nvarguscamerasrc``, etc. Falls back to ``False`` when
     ``gst-inspect-1.0`` is not on ``$PATH`` (i.e. GStreamer not
     installed at all).
@@ -371,37 +357,30 @@ def nvmm_convert_element() -> str | None:
 def bgr_convert_chain(convert: str) -> str:
     """Return ``convert`` extended so the chain can emit system-memory ``BGR``.
 
-    The two NVMM-aware converters do **not** advertise the same system-memory
-    src caps, so "which element did we resolve" decides how ``format=BGR`` has
-    to be negotiated:
+    The two NVMM-aware converters diverge on system-memory src caps:
 
-    * DeepStream's ``nvvideoconvert`` lists packed 3-byte ``BGR``, so
-      ``nvvideoconvert ! video/x-raw,format=BGR`` links directly — no extra
-      CPU copy is inserted on a DeepStream host.
-    * The Tegra/L4T ``nvvidconv`` does **not**. Its system-memory
-      ``video/x-raw`` src template on a Jetson AGX Thor (plain L4T, no
-      DeepStream) is::
+    * DeepStream's ``nvvideoconvert`` lists packed 3-byte ``BGR`` — links
+      directly, no extra CPU copy.
+    * Tegra/L4T ``nvvidconv`` does not. Its system-memory ``video/x-raw`` src
+      template on a Jetson AGX Thor (plain L4T, no DeepStream) is::
 
           {I420, UYVY, YUY2, YVYU, NV12, NV16, NV24, GRAY8, BGRx, RGBA, Y42B, Y444}
 
-      ``BGRx`` is offered, plain ``BGR`` is not, so pinning ``format=BGR``
-      straight onto ``nvvidconv`` fails at ``Gst.parse_launch`` time with
-      ``could not link nvvconv0 to <sink>, nvvconv0 can't handle caps``.
-      The fix is to land on ``BGRx`` and let a stock ``videoconvert`` drop the
-      padding byte.
+      ``BGRx`` is offered, ``BGR`` is not — pinning ``format=BGR`` directly
+      fails at ``Gst.parse_launch`` with ``could not link nvvconv0 to <sink>,
+      nvvconv0 can't handle caps``. Fix: land on ``BGRx``, let stock
+      ``videoconvert`` drop the padding byte.
 
-    The decision is made on the resolved element **name**, never on a guess
-    about the platform, so a host that happens to have both elements gets the
-    chain matching whichever one :func:`nvmm_convert_element` (or the
-    platform table) actually picked.
+    Decision is made on the resolved element **name**, matching whichever
+    ``nvmm_convert_element`` picked.
 
     Args:
         convert: The colour-convert element already resolved for this host —
-            e.g. the return of :func:`nvmm_convert_element`, or stock
+            e.g. the return of ``nvmm_convert_element``, or stock
             ``videoconvert``.
 
     Returns:
-        Either ``convert`` unchanged (it can emit ``BGR`` itself) or a
+        Either ``convert`` unchanged, or a
         ``<convert> ! video/x-raw,format=BGRx ! videoconvert`` chain. The
         caller appends its own ``! video/x-raw,format=BGR[,...]`` capsfilter
         either way.
@@ -430,14 +409,14 @@ def ensure_appsink_name(pipeline: str, name: str = _DEFAULT_APPSINK_NAME) -> str
     If the pipeline already names its trailing appsink (e.g.
     ``... ! appsink name=my_sink``), the string is returned unchanged
     — the caller is expected to pass the same name to
-    :class:`GStreamerSensorReader` via ``appsink_name``.
+    ``GStreamerSensorReader`` via ``appsink_name``.
 
     Args:
         pipeline: GStreamer pipeline string. Must end in an ``appsink``
             element (case-sensitive). A trailing ``!`` separator is
             allowed but not required.
         name: The name to set on the appsink. Validated by
-            :class:`PipelineSpec`.
+            ``PipelineSpec``.
 
     Returns:
         The (possibly rewritten) pipeline string.
@@ -472,7 +451,7 @@ def ensure_appsink_name(pipeline: str, name: str = _DEFAULT_APPSINK_NAME) -> str
 
 
 def build_pipeline_string(spec: PipelineSpec, platform: Platform | None = None) -> str:
-    """Materialise a GStreamer pipeline string from a :class:`PipelineSpec`.
+    """Materialise a GStreamer pipeline string from a ``PipelineSpec``.
 
     Element selection is platform-aware:
 
@@ -486,11 +465,11 @@ def build_pipeline_string(spec: PipelineSpec, platform: Platform | None = None) 
       NVIDIA, ``avdec_h264`` on CPU-only.
     * Colour convert: ``nvvidconv`` on Tegra; ``nvvideoconvert`` on the
       DeepStream tier (on-GPU, NVMM-native); ``videoconvert`` on desktop
-      NVIDIA (open-core bundles no DeepStream — H.264 dec stays on the
-      GPU but colour conversion runs on the CPU) and CPU-only. When the
-      leg terminates in system-memory ``BGR``, ``nvvidconv`` is bridged
-      via ``BGRx`` + ``videoconvert`` (it advertises no packed ``BGR``);
-      see :func:`bgr_convert_chain`.
+      NVIDIA (open-core bundles no DeepStream — H.264 dec stays on the GPU
+      but colour conversion runs on the CPU) and CPU-only. When the leg
+      terminates in system-memory ``BGR``, ``nvvidconv`` bridges via
+      ``BGRx`` + ``videoconvert`` (it advertises no packed ``BGR``); see
+      ``bgr_convert_chain``.
     * Memory: ``video/x-raw(memory:NVMM)`` caps when
       ``spec.enable_nvmm`` AND the platform supports it (Tegra → NV12,
       DeepStream → RGBA); ``video/x-raw`` (system memory) otherwise.
@@ -498,14 +477,14 @@ def build_pipeline_string(spec: PipelineSpec, platform: Platform | None = None) 
       that lifts NVMM frames to system memory before the ROS-side appsink.
 
     Args:
-        spec: The validated :class:`PipelineSpec`.
+        spec: The validated ``PipelineSpec``.
         platform: Override platform detection. Used by tests to force
             CPU-only builds on a Tegra host or vice versa. ``None`` ⇒
-            call :func:`detect_platform`.
+            call ``detect_platform``.
 
     Returns:
         A GStreamer pipeline string. Always terminates in an ``appsink``
-        named per :attr:`PipelineSpec.appsink_name`.
+        named per ``PipelineSpec.appsink_name``.
 
     Raises:
         ValueError: When the requested ``source`` is incompatible with
@@ -636,7 +615,7 @@ def _platform_convert_element(platform: Platform) -> str:
 
     ``nvvidconv`` exists on Tegra (L4T multimedia stack, NVMM-aware).
     ``nvvideoconvert`` is a NVIDIA DeepStream element used on
-    :attr:`Platform.NVIDIA_DEEPSTREAM` (the ``ds-on`` image) —
+    ``Platform.NVIDIA_DEEPSTREAM`` (the ``ds-on`` image) —
     it converts on-GPU and negotiates ``memory:NVMM`` caps on x86. It is
     **not** in the open-source ``gstreamer1.0-plugins-bad`` ``nvcodec``
     plugin family; OpenRAL's open-core licensing deliberately rejects
@@ -646,7 +625,7 @@ def _platform_convert_element(platform: Platform) -> str:
 
     The result is the *element*, not a BGR-capable chain: callers that pin
     system-memory ``format=BGR`` downstream must pass it through
-    :func:`bgr_convert_chain` first.
+    ``bgr_convert_chain`` first.
     """
     if platform is Platform.TEGRA:
         return _NVVIDCONV
@@ -658,9 +637,9 @@ def _platform_convert_element(platform: Platform) -> str:
 def _use_nvmm(spec: PipelineSpec, platform: Platform) -> bool:
     """Return whether the policy leg negotiates ``memory:NVMM`` caps.
 
-    Single definition shared by :func:`_build_convert` (which needs to know
+    Single definition shared by ``_build_convert`` (which needs to know
     whether the converter has to reach system-memory ``BGR``) and
-    :func:`_build_caps` (which emits the caps themselves), so the two can
+    ``_build_caps`` (which emits the caps themselves), so the two can
     never disagree about which memory the appsink sees.
     """
     return spec.enable_nvmm and platform in (Platform.TEGRA, Platform.NVIDIA_DEEPSTREAM)
@@ -670,11 +649,11 @@ def _build_convert(spec: PipelineSpec, platform: Platform) -> str:
     """Return the colour-conversion stage for the policy leg.
 
     On the NVMM path the converter stays a single element: the caps
-    :func:`_build_caps` emits (``NV12`` on Tegra, ``RGBA`` on DeepStream) are
+    ``_build_caps`` emits (``NV12`` on Tegra, ``RGBA`` on DeepStream) are
     both on the platform converter's own src template.
 
     On the system-memory path the caps are ``BGR``, which ``nvvidconv`` cannot
-    produce — :func:`bgr_convert_chain` bridges via ``BGRx`` there and leaves
+    produce — ``bgr_convert_chain`` bridges via ``BGRx`` there and leaves
     every other element untouched.
     """
     convert = _platform_convert_element(platform)
@@ -690,7 +669,7 @@ def _build_caps(spec: PipelineSpec, platform: Platform) -> str:
     sees a known per-pixel encoding (the CPU branch of the reader rejects
     NV12 / I420). On NVMM paths the format is ``NV12`` on Tegra (what
     ``nvvidconv`` outputs by default and the NvBufSurface ctypes wrapper
-    expects) and ``RGBA`` on :attr:`Platform.NVIDIA_DEEPSTREAM` (what the
+    expects) and ``RGBA`` on ``Platform.NVIDIA_DEEPSTREAM`` (what the
     NVMM→CUDA consumers — ``TrtNvmmExecutor`` and the detector NVMM
     branch — take as input).
 
@@ -719,7 +698,7 @@ def _build_appsink(name: str, *, max_buffers: int) -> str:
     connects to. ``drop=true`` + ``max-buffers=1`` (configurable) keeps
     only the latest frame in the sink — older frames are discarded as
     soon as a newer one arrives, which is exactly the latest-only
-    contract :meth:`SensorReader.read_latest` needs.
+    contract ``SensorReader.read_latest`` needs.
 
     ``sync=false`` lets the appsink ingest as fast as upstream
     delivers, regardless of clock — we use monotonic timestamps from
@@ -754,7 +733,7 @@ def _build_event_tee_branch(spec: PipelineSpec, platform: Platform) -> str:
     in-pipeline ``nvinfer`` element runs upstream of this branch via a
     downstream patch and only the post-inference metadata reaches the
     appsink. A ``videorate`` cap pins the leg to
-    :attr:`PipelineSpec.event_rate_hz` so a 30 Hz policy leg coexists
+    ``PipelineSpec.event_rate_hz`` so a 30 Hz policy leg coexists
     with a 5 Hz detector loop.
     """
     convert = _lift_convert(platform)
@@ -780,7 +759,7 @@ def _lift_convert(platform: Platform) -> str:
     The two NVMM converters diverge on how they reach ``BGR``:
     ``nvvideoconvert`` emits it directly (verified against DS 9
     ``nvvideoconvert`` src caps), while the Tegra ``nvvidconv`` only offers
-    ``BGRx`` on its system-memory src pad. :func:`bgr_convert_chain` owns that
+    ``BGRx`` on its system-memory src pad. ``bgr_convert_chain`` owns that
     distinction so every leg negotiates it the same way.
     """
     return bgr_convert_chain(_platform_convert_element(platform))

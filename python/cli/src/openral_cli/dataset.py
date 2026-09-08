@@ -8,10 +8,8 @@ Subcommands:
   network call. ``--yes`` or ``OPENRAL_DATASET_CONSENT=1`` skips the
   prompt for CI / scripted invocations; ``--dry-run`` short-circuits
   the consent gate entirely and just validates the dataset.
-
-The PR4 ``from-bag`` subcommand will be added in the rosbag2 converter
-PR. ``push`` ships first because it has no ROS dependency surface and
-unblocks the dataset-flywheel demo regardless of rosbag2 readiness.
+* ``from-bag`` — convert an mcap rosbag2 written by ``Rosbag2Sink`` into a
+  LeRobotDataset v3.
 """
 
 from __future__ import annotations
@@ -54,7 +52,7 @@ dataset_app = typer.Typer(
 )
 
 
-# ── from-bag subcommand (PR4) ────────────────────────────────────────────────
+# ── from-bag subcommand ───────────────────────────────────────────────────────
 
 
 @dataset_app.command("from-bag")

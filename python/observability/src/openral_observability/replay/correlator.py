@@ -3,12 +3,12 @@
 The canonical message log lives in mcap; the canonical
 span log lives behind the observability dashboard receiver. This module
 opens both, joins on ``trace_id``, and emits one chronological list of
-:class:`TimelineEntry` records suitable for ``openral replay`` output or a
+``TimelineEntry`` records suitable for ``openral replay`` output or a
 dashboard scrub UI.
 
 The join is pure: it takes already-loaded iterables of bag messages and
 span dicts and returns a sorted timeline. The CLI layer
-(:mod:`openral_observability.replay.cli`) handles fetching them.
+(``openral_observability.replay.cli``) handles fetching them.
 """
 
 from __future__ import annotations
@@ -101,9 +101,9 @@ def build_timeline(
     """Merge ``bag_messages`` + ``spans`` into one sorted timeline.
 
     Args:
-        bag_messages: Records from :func:`read_bag`.
+        bag_messages: Records from ``read_bag``.
         spans: Span dicts as returned by ``/api/spans/{trace_id}``
-            (i.e. :meth:`TelemetryStore.lookup_trace`).
+            (i.e. ``TelemetryStore.lookup_trace``).
         trace_id: When set, both inputs are filtered down to this
             trace_id before merging — spans with a different trace_id
             are dropped, and bag messages with an empty trace_id are

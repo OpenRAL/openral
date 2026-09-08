@@ -838,15 +838,13 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
     const Vec3 v = simplex_closest(s, contains);
     const double vlen2 = dot(v, v);
     if (contains || vlen2 <= 1e-24) {
-      // The hulls OVERLAP. GJK proves that but does not measure how deep —
-      // penetration depth needs an expanding-polytope step this kernel does not
-      // run — so the OBB bound (<= 0 here) stands as the reported number.
-      //
-      // It is sound: the hull is contained in its box, so the box can only
-      // report MORE penetration than the truth, never less. It can also be far
-      // looser: -31.97 mm for a ~1.5 mm hull interpenetration on the
-      // `panda_link5` <-> `panda_link7` pair. Say so rather than let the caller
-      // read a box bound as a hull measurement.
+      // Hulls OVERLAP. GJK proves it but doesn't measure depth (needs an
+      // expanding-polytope step this kernel doesn't run), so the OBB bound
+      // (<= 0 here) stands as the reported number — sound (hull is contained
+      // in its box, so the box can only report MORE penetration, never
+      // less) but can be far looser: -31.97 mm for a ~1.5 mm hull
+      // interpenetration on panda_link5<->panda_link7. Say so rather than
+      // let the caller read a box bound as a hull measurement.
       if (depth_is_box_bound != nullptr) {
         *depth_is_box_bound = true;
       }
@@ -863,15 +861,15 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
     if (bound > lower) {
       lower = bound;
     }
-    // NOTE the absence of `hull_cell_distance`'s `lower > margin` early exit.
-    // There it is right: hundreds of cells are visited per step, only their
-    // minimum is reported, and a cell already proved clear needs no sharper
-    // number. Here the answer IS the reported one — `sweep_min_distance` feeds
-    // the distance-graded velocity scaling — and stopping at the first positive
-    // bound was measured returning 4.2 mm for a pair genuinely 60.0 mm apart,
-    // which is sound but would crawl the arm past a clear pose. A self-pair is
-    // checked at most once per configuration and only after the boxes already
-    // failed to clear it, so converging costs a handful of scans.
+    // No hull_cell_distance-style `lower > margin` early exit here: there
+    // it's right (hundreds of cells visited per step, only the minimum
+    // reported, a clear cell needs no sharper number); here the answer IS
+    // the reported one (sweep_min_distance feeds distance-graded velocity
+    // scaling), and stopping at the first positive bound was measured
+    // returning 4.2 mm for a pair genuinely 60.0 mm apart — sound but would
+    // crawl the arm past a clear pose. A self-pair is checked at most once
+    // per configuration, only after the boxes already failed to clear it,
+    // so converging costs a handful of scans.
     if (vlen - lower <= kGjkTolerance) {
       lower = vlen;  // converged on the exact surface distance
       break;
@@ -1001,31 +999,28 @@ namespace {
 
 // Fold one checked geometry pair into a sweep's evidence.
 //
-// `sweep_min` accumulates the minimum surface distance over EVERY pair a check
-// touches — pairs that never reach the margin and pairs the caller's gate
-// deliberately exempts included. `tripped` says whether this pair actually
-// tripped the check; only a tripped pair may become the reported evidence, and
-// it does so only while it is deeper than the pair already recorded. That keeps
-// `link_a` / `link_b` / `min_distance` describing one and the same (deepest)
-// tripping pair instead of pairing one cell's identity with another cell's
-// distance.
+// sweep_min accumulates the minimum surface distance over EVERY pair
+// checked, including pairs that never reached the margin and pairs the
+// caller's gate exempted. tripped says whether this pair tripped the
+// check; only a tripped pair can become the reported evidence, and only
+// while deeper than the pair already recorded — keeping link_a/link_b/
+// min_distance describing one and the same (deepest) tripping pair,
+// never one cell's identity paired with another's distance.
 //
-// Reporting only: `hit.hit` flips for exactly the same set of pairs as a plain
-// `if (tripped) hit.hit = true;` would.
-// `allowance_active` is carried alongside the pair it belongs to for the same
-// reason the distance is: the flag must describe the pair that is reported, not
-// whichever pair happened to be checked last.
-// Pairs are ranked by SEVERITY FIRST, then depth.
+// Reporting only: hit.hit flips for the same set of pairs as a plain
+// `if (tripped) hit.hit = true;` would. allowance_active travels with the
+// pair it belongs to, for the same reason: it must describe the reported
+// pair, not whichever was checked last.
 //
-// Depth alone would be wrong the moment `advisory` exists (#176): the gate
-// threshold is not the same for every pair in a sweep — a payload outside the
-// declared region trips at the plain margin, one inside it trips only past the
-// approach allowance — so the deepest tripping pair is not the most serious
-// one. A −5 mm hard trip on an undeclared payload and a −38 mm advisory reading
-// inside the declared receptacle can occur in the same sweep, and reporting the
-// deeper of the two would hand the caller an advisory hit and lose the latch
-// the −5 mm pair earned. A hard trip therefore outranks an advisory one at any
-// depth; within one severity, the deepest still wins.
+// Pairs are ranked SEVERITY FIRST, then depth. Depth alone is wrong once
+// advisory exists (#176): the gate threshold differs per pair in a sweep
+// (undeclared trips at the plain margin, declared trips only past the
+// approach allowance), so the deepest tripping pair isn't always the most
+// serious. A -5 mm hard trip on an undeclared payload and a -38 mm
+// advisory reading inside a declared receptacle can occur in the same
+// sweep; reporting the deeper one would hand the caller an advisory hit
+// and lose the latch the -5 mm pair earned. A hard trip outranks an
+// advisory one at any depth; within one severity, deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
                bool allowance_active = false, bool advisory = false,
                bool place_target_adjudicated = false,
@@ -1203,18 +1198,18 @@ CollisionHit check_world_collision(const CollisionModel& model, const CollisionS
 // ---------------------------------------------------------------------------
 // Working in GRID coordinates
 //
-// The grid's lattice is the source map's, so its axes are not `base_frame`'s
-// (see VoxelGrid::pose). Every routine that walks a grid therefore carries its
-// query geometry into the grid's axes ONCE, and from there the cells are
-// axis-aligned cubes at `voxel_center_local` exactly as they always were.
+// The grid's lattice is the source map's, not base_frame's (see
+// VoxelGrid::pose). Every routine that walks a grid carries its query
+// geometry into the grid's axes ONCE; from there cells are axis-aligned
+// cubes at voxel_center_local exactly as before.
 //
-// This is not merely tidier than rotating each cell: the staged tight-geometry
-// path REQUIRES it. `dop_cell_lower_bound` measures a cell against three
-// world-axis slabs using `half_side` directly, which is only a cube if the cell
-// is axis-aligned in the frame `tight_pose_init` was given.
+// Not merely tidier: the staged tight-geometry path REQUIRES it.
+// dop_cell_lower_bound measures a cell against three world-axis slabs using
+// half_side directly, only valid if the cell is axis-aligned in the frame
+// tight_pose_init was given.
 //
-// Distances are rigid-motion invariant, so the numbers are unchanged, and with
-// an identity `grid.pose.r` every routine reduces exactly to what it computed
+// Distances are rigid-motion invariant, so the numbers are unchanged; with
+// an identity grid.pose.r every routine reduces exactly to what it computed
 // before this became an oriented grid.
 // ---------------------------------------------------------------------------
 
@@ -1379,15 +1374,14 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                 d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
               }
               if (d <= margin) {
-                // Still stopping. Fold in the shipped bound before committing to
-                // that, because the DOP's 16 separating axes are NOT a superset
-                // of the OBB SAT's 15 -- the box's edge-cross axes beat every DOP
-                // axis at some cells, so the tighter *solid* can still yield the
-                // looser *bound*. The maximum of two lower bounds is a lower
-                // bound, so this costs no soundness and buys a strong property:
-                // the staged path can never stop where `box_box_distance` alone
-                // would not have. This change removes false stops; it must not be
-                // able to add one.
+                // Still stopping. Fold in the shipped bound first: the DOP's
+                // 16 separating axes are NOT a superset of the OBB SAT's 15 —
+                // the box's edge-cross axes beat every DOP axis at some
+                // cells, so the tighter SOLID can still yield the looser
+                // BOUND. Max of two lower bounds is a lower bound, so this
+                // costs no soundness and guarantees the staged path can
+                // never stop where box_box_distance alone would not have —
+                // this change removes false stops, it must not add one.
                 Transform voxel;
                 voxel.t = center;
                 const double shipped = box_box_distance(box_w, he, voxel, voxel_half);
@@ -1785,40 +1779,39 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             double d = d_cell;
             double cell_margin = margin - allowance + kGateTieEpsilonM;
             bool adjudicated = false;
-            // ADR-0098 (survey Path B). The blanket allowance above hands the
-            // SAME relief to every cell inside the declared box, whether or not
-            // the declared body is what put the cell there — it is a bound on
-            // quantisation error, applied blind, because the box says WHERE the
-            // receptacle is and never WHAT it is. When the producer ships the
-            // target's geometry the kernel does not have to be blind: it
-            // measures the payload against the receptacle itself.
+            // ADR-0098 (survey Path B). The blanket allowance hands the SAME
+            // relief to every cell inside the declared box, whether or not
+            // the declared body put the cell there — a bound on
+            // quantisation error, applied blind, since the box says WHERE
+            // the receptacle is, never WHAT it is. When the producer ships
+            // the target's geometry, the kernel isn't blind: it measures
+            // the payload against the receptacle itself.
             //
             // The gate then moves to the surface. A margin is a standoff for
-            // geometry the robot must not touch, and the declared target is the
-            // one body in the map it was dispatched to touch — so it is gated as
-            // an INTENDED-CONTACT pair at zero clearance, the contract
-            // Tesseract's negatable per-pair margins and MoveIt's `touch_links`
-            // both express (survey §17.2, §3.2). The advisory band below still
-            // covers the millimetres of arrival overshoot, and past the band the
-            // latched stop is exactly the one it always was.
+            // geometry the robot must not touch; the declared target is the
+            // one body it was dispatched to touch, so it's gated as an
+            // INTENDED-CONTACT pair at zero clearance — the contract
+            // Tesseract's negatable per-pair margins and MoveIt's
+            // touch_links both express (survey §17.2, §3.2). The advisory
+            // band below still covers arrival overshoot; past it the
+            // latched stop is unchanged.
             //
-            // Two bounds, and the whole safety argument is in them:
+            // Two bounds carry the safety argument:
+            //  1. Against TRUTH, strictly MORE conservative than the
+            //     blanket: the blanket lets the payload sit `allowance`
+            //     inside a cube whose near face may be a whole voxel in
+            //     front of the real surface (unknowable permission); this
+            //     permits zero penetration of the real body.
+            //  2. Against the CUBE, looser by exactly the amount the cube
+            //     over-stated the surface, never more than the blanket
+            //     allowance in force (the <= guard enforces this). A model
+            //     claiming more clearance than the map's quantisation could
+            //     explain (fitted-too-small primitive, stale articulated
+            //     door) is refused outright and falls back to the blanket
+            //     path bit for bit.
             //
-            //  1. Against TRUTH this is strictly MORE conservative than the
-            //     blanket. The blanket lets the payload sit `allowance` inside a
-            //     cube whose near face may be a whole voxel in front of the real
-            //     surface, so what it permits against the real body is
-            //     unknowable. This permits penetration of the real body of zero.
-            //  2. Against the CUBE it is looser, by exactly the amount the cube
-            //     over-stated the surface — and never by more than the blanket
-            //     allowance already in force, which is what the `<=` guard
-            //     enforces. A model claiming more clearance than the map's own
-            //     quantisation could explain (a primitive fitted too small, a
-            //     stale articulated door) is refused outright, and the pair falls
-            //     back to the blanket path bit for bit.
-            //
-            // Outside the branch — no geometry, or a model past that bound —
-            // nothing changes at all.
+            // Outside the branch (no geometry, or a model past that bound)
+            // nothing changes.
             if (allowance > 0.0 && target_distance <= d_cell + allowance) {
               d = target_distance;
               cell_margin = kGateTieEpsilonM;
@@ -1850,23 +1843,22 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 tripped = false;
               }
             }
-            // The advisory band (#176). A payload that has ARRIVED in its own
-            // declared receptacle reads deeper than the approach allowance for
-            // reasons that are map discretisation, not force: octomap marks the
-            // cell CONTAINING the ray endpoint (so the kernel's surface starts
-            // up to one resolution early), and the payload is a fitted convex
-            // primitive that bulges past the real object. The 2026-08-26
-            // baguette place read −38.22 mm at a −1.4 mm physical contact.
+            // Advisory band (#176). A payload ARRIVED in its own declared
+            // receptacle reads deeper than the approach allowance from map
+            // discretisation, not force: octomap marks the cell CONTAINING
+            // the ray endpoint (surface starts up to one resolution early),
+            // and the payload is a fitted convex primitive that bulges past
+            // the real object. 2026-08-26 baguette place read -38.22 mm at
+            // a -1.4 mm physical contact.
             //
-            // Inside the band the pair still TRIPS — it is a refusal, and the
-            // action is dropped. What the band changes is that the caller need
-            // not latch a fault and assert E-stop over it. Every condition is
-            // required, and each one alone restores today's latched stop:
-            // a live declaration covering THIS object (allowance > 0, which
-            // `place_approach_allowance` only returns for a cell inside the
-            // measured region), and a depth still within one voxel of the
-            // allowance. A robot link never reaches here at all — this is the
-            // attached-payload sweep.
+            // Inside the band the pair still TRIPS (a refusal, action
+            // dropped); the band only spares the caller a latched fault +
+            // E-stop over it. Every condition is required, each alone
+            // restores today's latched stop: a live declaration covering
+            // THIS object (allowance > 0, which place_approach_allowance
+            // only returns for a cell inside the measured region), and a
+            // depth still within one voxel of the allowance. A robot link
+            // never reaches here — this is the attached-payload sweep.
             const double advisory_floor =
                 cell_margin - place_advisory_depth(grid.resolution) - kGateTieEpsilonM;
             const bool advisory = tripped && allowance > 0.0 && d > advisory_floor;
@@ -2126,14 +2118,13 @@ bool support_contact_exempts(const AttachedObject& object, const Transform& obje
     return false;
   }
   // Fourth term: ONE VOXEL of co-planar headroom (hazard log Entry 012,
-  // "Calibration 2026-08-15", the 5-run baguette battery; approved by the
-  // maintainer alongside ADR-0097's Second Amendment). Cells of adjacent
-  // co-planar structure — a raised edge, a neighbouring stack on the same
-  // support surface — sit about one voxel above the attested plane while the
-  // payload is in genuine, continuing contact; round-8 r2 measured +42.9 mm
-  // against a ~15-19 mm envelope, an excess of one 25 mm voxel. This widens
-  // HEIGHT only, and only inside the lateral patch bound above, which is
-  // unchanged. Deepening past the widened bound still stops.
+  // "Calibration 2026-08-15", 5-run baguette battery; ADR-0097 Second
+  // Amendment). Cells of adjacent co-planar structure (a raised edge, a
+  // neighbouring stack on the same support surface) sit ~1 voxel above the
+  // attested plane during genuine contact; round-8 r2 measured +42.9 mm
+  // against a ~15-19 mm envelope, excess of one 25 mm voxel. Widens HEIGHT
+  // only, inside the unchanged lateral patch bound above. Deepening past
+  // the widened bound still stops.
   return height <= normal_half_width + object.support_max_penetration + slack + resolution;
 }
 

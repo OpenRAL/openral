@@ -1,32 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """A simulation and a real robot must not end up on one ROS graph.
 
-On 2026-09-05 they did. `openral deploy sim` set no DDS scope, so it inherited
-an unset `ROS_DOMAIN_ID` — domain 0, subnet-wide multicast discovery — and a sim
-on one host joined the ROS graph of a **live bimanual OpenArm** on another.
-`/joint_states` had two publishers; the sim's state assembler read
-`openarm_left_joint1 … openarm_right_joint7` where it wanted `panda_gripper`,
-and ten A/B rounds died in ~50 s each looking exactly like policy failures
-(#227).
+On 2026-09-05 they did (#227): `openral deploy sim` set no DDS scope, so it
+inherited an unset `ROS_DOMAIN_ID` (domain 0, subnet-wide multicast discovery)
+and joined a live bimanual OpenArm's graph on another host. `/joint_states` got
+two publishers, the sim's state assembler read `openarm_left_joint1..right_joint7`
+where it wanted `panda_gripper`, and ten A/B rounds died in ~50 s each looking
+like policy failures. Nothing actuated — luck, not design: the robot's stack
+used its own topic names and had no subscriber on `/openral/candidate_action`.
 
-Nothing actuated, and that was luck: the robot's stack used its own topic names
-and happened to have no subscriber on `/openral/candidate_action`.
+Two controls, covering different directions: **confinement** stops a sim
+reaching out to a robot; **the occupancy guard** stops a launch in *either*
+direction joining a graph a robot is already on (which confinement can't, since
+a real robot's graph legitimately spans machines). The guard's signature is a
+foreign `/joint_states` publisher — every robot has exactly one, real or sim.
 
-Two controls, tested here, because they cover different directions:
-
-* **confinement** stops a sim reaching out to a robot;
-* **the occupancy guard** stops a launch in *either* direction joining a graph a
-  robot is already on — which confinement cannot do, since a real robot's graph
-  legitimately spans machines and is never confined.
-
-The guard's signature is a foreign ``/joint_states`` publisher, chosen because
-every robot has exactly one whether it is real or simulated. One rule, both
-directions, and neither side has to recognise the other's node names.
-
-No mocks of OpenRAL code (CLAUDE.md §1.11): these drive the real
-:mod:`openral_cli._dds_scope` functions and the real typed exception. The graph
-*scan* is the one substituted seam — it is a subprocess boundary talking to a
-DDS network, which is exactly what §1.11 permits a double for.
+No mocks of OpenRAL code (CLAUDE.md §1.11): real `openral_cli._dds_scope`
+functions and the real typed exception. Only the graph *scan* (a subprocess
+boundary to a DDS network) is a substituted seam.
 """
 
 from __future__ import annotations

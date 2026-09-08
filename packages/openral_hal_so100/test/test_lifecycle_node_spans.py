@@ -93,10 +93,10 @@ def test_publish_joint_state_emits_hal_read_state_span(
         try:
             _publish_one_state(node)
         finally:
-            try:
-                node._hal.disconnect()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            # SO100FollowerHAL.disconnect() is documented idempotent and
+            # swallows its own robot.disconnect() errors internally — it
+            # cannot raise here (openral_hal/so100_follower.py).
+            node._hal.disconnect()  # type: ignore[attr-defined]
             node.destroy_node()  # type: ignore[attr-defined]
     finally:
         rclpy.shutdown()
@@ -128,10 +128,10 @@ def test_send_action_traced_emits_hal_send_action_span(
         try:
             node._send_action_traced(action, source="safe_action")  # type: ignore[attr-defined]
         finally:
-            try:
-                node._hal.disconnect()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            # SO100FollowerHAL.disconnect() is documented idempotent and
+            # swallows its own robot.disconnect() errors internally — it
+            # cannot raise here (openral_hal/so100_follower.py).
+            node._hal.disconnect()  # type: ignore[attr-defined]
             node.destroy_node()  # type: ignore[attr-defined]
     finally:
         rclpy.shutdown()

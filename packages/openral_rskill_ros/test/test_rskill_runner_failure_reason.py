@@ -1,24 +1,22 @@
 """Unit tests for the rskill_runner failure-reason/-kind + goal-finalize helpers.
 
-Also covers the ``ExecuteRskill.Result.failure_kind`` contract: the colcon-generated
-uint8 constants themselves, and ``_failure_kind_for_exception`` — the map from the
-CLAUDE.md §5 exception hierarchy onto them that every failure branch of
-``_execute_locked`` calls.
+Also covers the ``ExecuteRskill.Result.failure_kind`` contract: the colcon-generated uint8
+constants, and ``_failure_kind_for_exception`` — the map from the CLAUDE.md §5 exception
+hierarchy onto them that every failure branch of ``_execute_locked`` calls.
 
 Covers two deploy-sim robustness fixes:
 
-1. ``_label_runtime_failure`` — torch inference errors (CUDA OOM, dtype /
-   quantization mismatch) are raw ``RuntimeError``s, NOT ``ROSError`` subclasses,
-   so they used to escape ``_execute_cb`` uncaught and rclpy aborted the goal with
-   an EMPTY Result (the reasoner saw ``status=6 reason=''``). The label maps them
-   to a typed, reasoner-legible reason.
-2. ``_finalize_goal`` — a concurrent cancel / re-dispatch can move the goal out of
-   EXECUTING mid-tick, so ``abort()`` / ``succeed()`` / ``canceled()`` raise
-   ``RCLError: invalid transition``. The helper must swallow that (best-effort) so
-   the populated Result is still returned instead of an empty-reason abort.
+1. ``_label_runtime_failure`` — torch inference errors (CUDA OOM, dtype/quantization
+   mismatch) are raw ``RuntimeError``s, not ``ROSError`` subclasses, so they escape
+   ``_execute_cb`` uncaught and rclpy aborts the goal with an EMPTY Result (reasoner sees
+   ``status=6 reason=''``) unless labeled to a typed, reasoner-legible reason.
+2. ``_finalize_goal`` — a concurrent cancel/re-dispatch can move the goal out of EXECUTING
+   mid-tick, so ``abort()``/``succeed()``/``canceled()`` raise ``RCLError: invalid
+   transition``. Must swallow that (best-effort) so the populated Result still returns
+   instead of an empty-reason abort.
 
-Both helpers live on ``RskillRunnerNode`` (import requires rclpy), so the module
-is skipped without a sourced ROS 2 install.
+Both helpers live on ``RskillRunnerNode`` (import requires rclpy); module is skipped
+without a sourced ROS 2 install.
 """
 
 from __future__ import annotations

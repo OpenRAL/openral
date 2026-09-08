@@ -1,46 +1,46 @@
 """HAL-side client for the vision attachment-evidence path.
 
-The ROS wiring that turns :mod:`~openral_hal._grasp_trigger` events into
-``openral_msgs/srv/SegmentInView`` calls and feeds the replies to
-:class:`~openral_hal._vision_attachment_evidence.VisionAttachmentEvidenceProducer`,
-publishing the resulting ``AttachmentState`` the safety kernel already consumes.
+ROS wiring that turns ``_grasp_trigger`` events into
+``openral_msgs/srv/SegmentInView`` calls, feeds the replies to
+``VisionAttachmentEvidenceProducer``, and publishes the resulting
+``AttachmentState`` the safety kernel already consumes.
 
 The real-hardware sibling of the attachment leg in
-:mod:`~openral_hal.sim_sensor_bridge`, which reads MuJoCo ground truth. Enable
-it explicitly (``vision_attachment_enabled``); the two must not both drive
+``sim_sensor_bridge``, which reads MuJoCo ground truth. Enable it
+explicitly (``vision_attachment_enabled``); the two must not both drive
 ``/openral/attachment_state``.
 
-**Torch-free, by construction.** Everything model-shaped lives behind the
-service, in ``openral_perception_ros.segmenter_node``. This module imports
-numpy, rclpy and ``openral_core`` — never ``torch``, never ``transformers``, and
-never the runner's segmenter backend.
+**Torch-free, by construction.** Everything model-shaped lives behind
+the service, in ``openral_perception_ros.segmenter_node``. This module
+imports numpy, rclpy and ``openral_core`` — never ``torch``, never
+``transformers``, and never the runner's segmenter backend.
 
-The deferred-ack barrier
-------------------------
-
-The HAL already holds the ``action_applied`` acknowledgement of a grouped tick
-until attached-payload perception settles (``attachment_action_ack_ready`` /
-``_on_attachment_perception_ready``). In the simulator that wait is for a
-transparent depth frame — about 100 ms. Segmentation **rides inside that same
-wait**: a warmed SAM 2.1 call was measured at ~53 ms on the reference GPU, so on
-that host the barrier does not grow at all. This bridge exposes the same
-``attachment_action_ack_ready`` shape, so the node holds the tick for it exactly
-as it does for the simulator's depth frames.
+The deferred-ack barrier: the HAL already holds the ``action_applied``
+acknowledgement of a grouped tick until attached-payload perception
+settles (``attachment_action_ack_ready`` /
+``_on_attachment_perception_ready``). In the simulator that wait is for
+a transparent depth frame — about 100 ms. Segmentation rides inside
+that same wait: a warmed SAM 2.1 call was measured at ~53 ms on the
+reference GPU, so on that host the barrier does not grow at all. This
+bridge exposes the same ``attachment_action_ack_ready`` shape, so the
+node holds the tick for it exactly as it does for the simulator's depth
+frames.
 
 Three properties of that wait are non-negotiable:
 
 * **It is bounded.** Every request carries a deadline
-  (:attr:`VisionAttachmentConfig.deadline_s`). When it expires the attachment is
-  resolved from what is in hand — nothing — rather than waiting longer. A robot
-  that stalls because a perception node is wedged is a worse failure than a
-  conservatively-shaped payload.
-* **It never skips.** A timeout, a service failure, a missing depth frame and a
-  missing transform all end in the producer's conservative jaw-span box, stamped
-  :attr:`~openral_core.AttachmentEvidenceKind.GRIPPER_FORCE` at low confidence.
-  Something is in the jaws either way; the collision checker must see *some*
-  geometry.
-* **It is visible.** Every fallback logs its typed reason and every attachment
-  logs the gate report (CLAUDE.md §1.4). Nothing here degrades silently.
+  (``VisionAttachmentConfig.deadline_s``). When it expires the
+  attachment is resolved from what is in hand — nothing — rather than
+  waiting longer. A robot that stalls because a perception node is
+  wedged is a worse failure than a conservatively-shaped payload.
+* **It never skips.** A timeout, a service failure, a missing depth
+  frame and a missing transform all end in the producer's conservative
+  jaw-span box, stamped ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
+  confidence. Something is in the jaws either way; the collision
+  checker must see *some* geometry.
+* **It is visible.** Every fallback logs its typed reason and every
+  attachment logs the gate report (CLAUDE.md §1.4). Nothing here
+  degrades silently.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ _PromptContext = tuple[
 
 @dataclass(frozen=True)
 class VisionAttachmentConfig:
-    """Wiring for :class:`VisionAttachmentBridge`.
+    """Wiring for ``VisionAttachmentBridge``.
 
     Attributes:
         camera: Logical camera id — a ``SensorSpec`` name in the robot manifest,
@@ -159,7 +159,7 @@ def resolve_segment_outcome(
         mask_count: How many candidate masks the reply carried.
 
     Returns:
-        The :class:`SegmentOutcome`.
+        The ``SegmentOutcome``.
 
     Example:
         >>> late = resolve_segment_outcome(
@@ -339,7 +339,7 @@ class VisionAttachmentBridge:
     def attachment_action_ack_ready(self) -> bool:
         """Whether attached-payload perception has settled for this tick.
 
-        The same shape :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
+        The same shape ``SimSensorBridge``
         exposes, so the node's deferred-ack path treats both identically.
         """
         return not self._pending

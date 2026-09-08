@@ -11,7 +11,7 @@ What is asserted
   ``scenes/benchmark/maniskill_pick_cube.yaml``
   with ``robot_id: franka_panda`` (free-axis scene, no fixed_robot).
 * The adapter resets the env from a seed and emits a populated
-  :class:`Observation` (non-empty RGB + non-empty state vector under the
+  ``Observation`` (non-empty RGB + non-empty state vector under the
   ``state_dict+rgb`` obs mode).
 * A canonical zero-action step propagates through the env and returns
   finite reward / a typed info dict.
@@ -43,12 +43,8 @@ _CONFIG = _REPO_ROOT / "scenes" / "benchmark" / "maniskill_pick_cube.yaml"
 
 
 @pytest.fixture(scope="module")
-def scene_env():
-    from openral_core import BenchmarkScene, load_scene_strict
-
-    if not _CONFIG.exists():
-        pytest.skip(f"sim config not found at {_CONFIG}")
-    return load_scene_strict(str(_CONFIG), BenchmarkScene)
+def _scene_config() -> Path:
+    return _CONFIG
 
 
 @pytest.fixture(scope="module")

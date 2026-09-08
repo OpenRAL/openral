@@ -206,7 +206,7 @@ class _STTUnavailableError(RuntimeError):
 def _transcribe_sync(audio: bytes) -> tuple[str, str]:
     """Load (once, cached) the local Whisper model and transcribe ``audio``.
 
-    Blocking CPU work — call via :func:`asyncio.to_thread`, never on the event
+    Blocking CPU work — call via ``asyncio.to_thread``, never on the event
     loop. Returns ``(text, model_name)``. The model, device and compute type
     are env-selectable (``OPENRAL_STT_MODEL`` / ``_DEVICE`` / ``_COMPUTE``),
     defaulting to ``base.en`` on CPU with int8 quantization so it runs on any
@@ -348,13 +348,12 @@ async def _estop_reset_response(estop: Any = None) -> JSONResponse:
     # Trigger response renders as `success=True/False, message='…'`.
     accepted = "success=True" in stdout
     if accepted:
-        # The kernel service only clears the KERNEL latch; the HAL + runner latch
-        # independently on /openral/estop and had no reset path (they stayed
-        # latched until a node restart, so the robot never resumed). Now that the
-        # kernel's cooldown-gated reset has succeeded, broadcast
-        # /openral/estop_cleared so those nodes clear too — instantly via the
-        # persistent publisher when present, else the shell-out fallback. Best
-        # effort: a publish failure doesn't undo the kernel reset.
+        # The kernel service only clears the KERNEL latch; HAL + runner latch
+        # independently on /openral/estop and have no reset path of their own
+        # (they'd otherwise stay latched until a node restart). Broadcast
+        # /openral/estop_cleared so those clear too — instantly via the
+        # persistent publisher when present, else the shell-out fallback.
+        # Best effort: a publish failure doesn't undo the kernel reset.
         if estop is not None and estop.available:
             estop.clear()
         else:
@@ -399,12 +398,10 @@ async def _estop_trigger_response() -> JSONResponse:
     """Trigger a graph-wide safety e-stop by publishing to ``/openral/estop``.
 
     The C++ safety kernel AND every HAL subscribe to this ``std_msgs/Empty``
-    topic and latch immediately — dropping every in-flight and future chunk
-    until ``/openral/estop_reset``. This is the operator's "stop the robot NOW"
-    control; it mirrors the physical deadman / hardware-estop publishers. Like
-    the reset path the dashboard has no rclpy node, so it shells out to ``ros2
-    topic pub``. Published a few times because a freshly-spawned publisher must
-    first discover the already-running subscribers; e-stop is idempotent (a
+    topic and latch immediately, dropping every in-flight and future chunk
+    until ``/openral/estop_reset``. No rclpy node here, so it shells out to
+    ``ros2 topic pub``, published a few times since a freshly-spawned
+    publisher must first discover the subscribers; e-stop is idempotent (a
     latch), so repeats are harmless and this beats the discovery race.
     """
     ros2 = shutil.which("ros2")
@@ -457,13 +454,11 @@ async def _estop_trigger_response() -> JSONResponse:
 def _config_response() -> JSONResponse:
     """Dashboard-level config (Jaeger UI url, write-controls flag, …) sourced from env.
 
-    The UI fetches this once on load to decide whether to enable the
-    "open in jaeger" link, whether to reveal the guarded operator
-    write-controls panel, and whether the mic button's voice prompt is usable.
-    Returning ``""`` (the default) leaves the Jaeger link disabled with a
-    helpful tooltip — the previous behaviour of unconditionally linking to
-    ``localhost:16686`` produced a broken-link click for every user who
-    doesn't run Jaeger locally.
+    The UI fetches this once on load to decide whether to enable the "open in
+    jaeger" link, reveal the guarded write-controls panel, and enable the mic
+    button's voice prompt. Returning ``""`` (default) disables the Jaeger link
+    with a tooltip rather than linking unconditionally to a Jaeger that may
+    not be running locally.
     """
     from openral_observability.dashboard.vad_assets import vad_assets_available
 

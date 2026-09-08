@@ -182,9 +182,9 @@ Two things worth knowing before flipping it on a robot that moves:
   is what does that.
 - With `enable_octomap_kernel_check` left at its default, these voxels become a
   **safety input**: the C++ kernel rasterises the arm's capsules against them and
-  E-stops on overlap. That is the conservative posture and worth keeping, but it
-  means a noisy or mis-framed cloud surfaces as an E-stop rather than as a bad
-  picture. Bring the leg up with the arm unpowered and check the card first.
+  E-stops on overlap. That conservative posture means a noisy or mis-framed
+  cloud surfaces as an E-stop rather than as a bad picture. Bring the leg up
+  with the arm unpowered and check the card first.
 
 ## 2. Dry-run against a digital twin first
 

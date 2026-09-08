@@ -1,4 +1,4 @@
-"""Unit tests for :data:`openral_core.ReasonerToolCall`.
+"""Unit tests for ``openral_core.ReasonerToolCall``.
 
 Real Pydantic — no mocks. Tests cover the round-trip through the
 discriminated union, the rejection of unknown discriminators, and the
@@ -193,7 +193,7 @@ def test_variants_are_frozen() -> None:
     """Every variant is frozen=True so the LLM can't mutate routed calls."""
     src = EmitPromptTool(target_topic="/openral/prompt", text="x")
     with pytest.raises(ValidationError):
-        src.text = "y"  # type: ignore[misc]
+        src.text = "y"  # type: ignore[misc]  # reason: pydantic frozen fields are read-only
 
 
 def test_variants_forbid_extra_fields() -> None:

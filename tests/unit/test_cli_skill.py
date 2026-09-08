@@ -1,20 +1,13 @@
 """Unit tests for ``openral rskill install / list / search`` CLI commands.
 
-Only the HF Hub network boundary is doubled (CLAUDE.md §1.11) — manifests
-resolve to real in-tree ``rskills/`` fixtures and the real loader, license
-guard, and registry code paths execute. The local registry is isolated per
-test via tmp_path.
+Only the HF Hub network boundary is doubled (CLAUDE.md §1.11) — manifests resolve to
+real in-tree ``rskills/`` fixtures and the real loader, license guard, and registry
+code paths execute. Registry is isolated per test via tmp_path.
 
-Coverage
---------
-- ``openral rskill list``          — empty registry → informational message, exit 0
-- ``openral rskill list``          — populated registry → table with correct rows
-- ``openral rskill list --json``   — emits valid JSON array
-- ``openral rskill install``       — happy path (Apache license, real registry write)
-- ``openral rskill install``       — non-commercial license guard blocks by default
-- ``openral rskill install``       — proprietary license + --yes skips prompt
-- ``openral rskill install``       — --revision pins every Hub boundary call
-- ``openral rskill search``        — recorded org listing + real manifest fixtures
+Coverage: ``rskill list`` empty/populated/--json; ``rskill install`` happy path
+(Apache), non-commercial license guard block, proprietary + --yes skip-prompt,
+--revision pinning every Hub call; ``rskill search`` recorded org listing + real
+manifest fixtures.
 """
 
 from __future__ import annotations

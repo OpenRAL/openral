@@ -1,20 +1,17 @@
 """Live exercise of the reflective ``ResetToPose`` service (issue #191 Phase 2).
 
-``ManifestHALLifecycleNode`` opens ``/openral/<robot>/reset_to_pose`` **only**
-when the HAL it built exposes ``reset_to_pose`` — generalising the service that
-previously lived, hand-wired, only in the bespoke openarm node. Every
-``MujocoArmHAL`` sim arm gains it for free; a HAL without the
-method (panda_mobile's ``PandaMobileHAL``) gets no service.
+``ManifestHALLifecycleNode`` opens ``/openral/<robot>/reset_to_pose`` only when the HAL it
+built exposes ``reset_to_pose`` — generalising the service that previously lived hand-wired
+only in the bespoke openarm node. Every ``MujocoArmHAL`` sim arm gains it for free; a HAL
+without the method (panda_mobile's ``PandaMobileHAL``) gets no service.
 
-These tests bring the node up for real and assert:
+Brings the node up for real and asserts: franka_panda (sim → ``MujocoArmHAL``) exposes the
+service, and calling it with a target pose actually snaps the simulator (streamed
+``/joint_states`` reflect the new joint angle); panda_mobile (sim → ``PandaMobileHAL``, no
+``reset_to_pose``) gets no service.
 
-* franka_panda (sim → ``MujocoArmHAL``) exposes the service, and calling it with
-  a target pose actually snaps the simulator (the streamed ``/joint_states``
-  reflect the new joint angle);
-* panda_mobile (sim → ``PandaMobileHAL``, no ``reset_to_pose``) gets no service.
-
-Real ``RobotDescription`` + real HAL + real rclpy service round-trip — no mocks
-(CLAUDE.md §1.11). Skips cleanly without ROS / rclpy / mujoco.
+Real ``RobotDescription`` + real HAL + real rclpy service round-trip — no mocks (CLAUDE.md
+§1.11). Skips cleanly without ROS/rclpy/mujoco.
 """
 
 from __future__ import annotations

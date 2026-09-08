@@ -23,7 +23,7 @@ from openral_core.schemas import QuantizationConfig
 DEFAULT_CACHE_DIR: Path = Path.home() / ".cache" / "openral" / "engines"
 """Default filesystem path for compiled engine files.
 
-Override by passing a different *cache_dir* to :class:`EngineCache`.
+Override by passing a different *cache_dir* to ``EngineCache``.
 """
 
 
@@ -97,7 +97,7 @@ class EngineCache:
         """Return the cached engine path for *key*, or ``None`` on a miss.
 
         Args:
-            key: 16-character cache key from :meth:`cache_key`.
+            key: 16-character cache key from ``cache_key``.
 
         Returns:
             Path to the cached file if it exists, else ``None``.
@@ -115,7 +115,7 @@ class EngineCache:
         """Copy *engine_path* into the cache under *key*.
 
         Args:
-            key: 16-character cache key from :meth:`cache_key`.
+            key: 16-character cache key from ``cache_key``.
             engine_path: Source file to cache.  Must exist.
 
         Returns:
@@ -134,7 +134,7 @@ class EngineCache:
         """Remove the cached entry for *key* (no-op on a miss).
 
         Args:
-            key: 16-character cache key from :meth:`cache_key`.
+            key: 16-character cache key from ``cache_key``.
         """
         p = self._key_path(key)
         if p.exists():

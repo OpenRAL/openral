@@ -33,7 +33,7 @@ class SimTransport:
     """In-memory transport simulating a ros2_control joint trajectory controller.
 
     Published joint trajectory commands update internal joint positions, which
-    are then returned by :meth:`state`.  All published messages are recorded
+    are then returned by ``state``.  All published messages are recorded
     for assertion in tests.
 
     Args:
@@ -105,7 +105,7 @@ class SimTransport:
 
     @property
     def call_count(self) -> int:
-        """Number of times :meth:`publish` has been called."""
+        """Number of times ``publish`` has been called."""
         return len(self._published)
 
     @property

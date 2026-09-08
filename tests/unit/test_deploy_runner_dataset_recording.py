@@ -3,12 +3,12 @@
 Real components per CLAUDE.md §1.11:
   * Real SO100FollowerHAL backed by SO100DigitalTwin (no serial port).
   * Real WorldStateAggregator over the SO-100 description.
-  * Real ``RolloutRecorder`` + real :class:`Rosbag2Sink` writing a real
+  * Real ``RolloutRecorder`` + real ``Rosbag2Sink`` writing a real
     mcap bag to ``tmp_path``.
   * Real ``rSkillBase`` subclass driven through its full lifecycle.
 
 The covered surface:
-  * :meth:`DeployRunner.episode_start` / :meth:`episode_end` driving
+  * ``DeployRunner.episode_start`` / ``episode_end`` driving
     the recorder's episode lifecycle (and propagating through to the
     sink as PHASE_START / PHASE_END markers).
   * In-tick fan-out of state / action into the bag via the recorder's

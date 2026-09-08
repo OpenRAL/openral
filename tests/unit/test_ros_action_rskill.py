@@ -1,4 +1,4 @@
-""":class:`ROSActionRskill` adapter behaviour.
+"""``ROSActionRskill`` adapter behaviour.
 
 The hot-path tests use the adapter's existing fallback-setter and
 dotted-accessor implementations against synthetic message-shaped
@@ -371,11 +371,8 @@ def test_result_only_mode_raises_on_action_aborted() -> None:
     """Nav2 ABORTED must surface as a runtime failure.
 
     Before this check, ``_send_action_goal_and_await_result`` returned
-    ``wrapper.result`` regardless of ``wrapper.status``. A Nav2 goal
-    that aborted (planner failure, costmap rejection, controller
-    timeout) was indistinguishable from success: the wrapped action
-    completed, just with ``status=STATUS_ABORTED=6``, and the
-    reasoner logged ``execute_rskill succeeded`` on a failed nav.
+    ``wrapper.result`` regardless of ``wrapper.status``, so a Nav2 goal
+    aborted at status=STATUS_ABORTED=6 read as success in the reasoner log.
     """
     from openral_core.exceptions import ROSRuntimeError
 

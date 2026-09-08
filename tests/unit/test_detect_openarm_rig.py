@@ -1,25 +1,15 @@
-"""End-to-end assembly for a CAN-attached OpenArm cell.
+"""End-to-end assembly for a CAN-attached OpenArm cell: two PCAN-USB Pro FD
+channels (``openarm_left``/``openarm_right``), two Arducam B0495 cameras, a
+ZED Mini stereo head, assembled into a ``RobotDescription``.
 
-One coherent scenario rather than isolated units: the detection report a
-provisioned OpenArm cell actually produces — two PCAN-USB Pro FD channels
-named ``openarm_left`` / ``openarm_right``, two Arducam B0495 global-shutter
-cameras and a ZED Mini stereo head — assembled into a
-:class:`~openral_core.RobotDescription`.
+Real per CLAUDE.md §1.11: committed ``robots/openarm/robot.yaml``, the real
+``CATALOG``; device facts (VID/PIDs, product strings, CAN bitrates) read off
+hardware.
 
-Everything here is real per CLAUDE.md §1.11: the committed
-``robots/openarm/robot.yaml`` fixture and the real ``CATALOG`` populated by
-every vendor module on import.  The device facts (VID/PIDs, product strings,
-CAN bitrates) were read off the hardware, not invented.
-
-The regressions this pins:
-
-- A CAN-only robot used to be invisible.  USB-serial enumeration cannot see
-  it (a CAN adapter registers a *network* device), and DDS inference cannot
-  see it either (the bringup that would publish those topics is what detect
-  runs *before*), so ``openral detect`` scaffolded ``unknown_<hostname>``
-  while a fully-wired bimanual arm sat on the bench.
-- A stereo head resolved through V4L2 used to be forced into a single
-  ``SensorSpec``, dropping its depth and IMU streams.
+Regressions pinned: (1) a CAN-only robot was scaffolded as
+``unknown_<hostname>`` — USB-serial enumeration can't see a CAN net device,
+and DDS inference runs before bringup publishes topics. (2) a V4L2-resolved
+stereo head was flattened into one ``SensorSpec``, dropping depth/IMU.
 """
 
 from __future__ import annotations

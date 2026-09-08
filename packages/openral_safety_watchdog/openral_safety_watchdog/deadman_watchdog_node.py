@@ -2,7 +2,7 @@
 """ROS 2 reasoner + supervisor graph spec §5 bullet 4 — deadman_watchdog_node.
 
 Fires ``/openral/estop`` if no ``/openral/safe_action`` message arrives
-within :attr:`safe_action_deadline_s` (default 0.2 s — 6 chunks at the
+within ``safe_action_deadline_s`` (default 0.2 s — 6 chunks at the
 30 Hz baseline). Independent of the C++ safety kernel; runs in its own
 process so a kernel crash still triggers a brake event.
 
@@ -39,9 +39,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
     Parameters:
         ``safe_action_deadline_s``: Maximum age (seconds) for the most
             recent ``/openral/safe_action`` before estop fires. Default
-            :data:`DEFAULT_SAFE_ACTION_DEADLINE_S`.
+            ``DEFAULT_SAFE_ACTION_DEADLINE_S``.
         ``check_period_s``: Internal timer period. Default
-            :data:`DEFAULT_CHECK_PERIOD_S`.
+            ``DEFAULT_CHECK_PERIOD_S``.
         ``robot_name``: Tag for FailureTrigger evidence.
     """
 

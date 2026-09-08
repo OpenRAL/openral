@@ -1,7 +1,7 @@
 """Compose one whole-robot command from a tick's slot-dispatched actions.
 
 ADR-0102. ``rskill_runner_node._dispatch_slots`` splits a policy's flat action
-vector into **one typed** :class:`~openral_core.schemas.Action` **per
+vector into **one typed** ``Action`` **per
 non-discard slot** — four for the OpenArm v2 bimanual restock contract (left
 arm, left gripper, right arm, right gripper) — each carrying the tick's shared
 ``tick_index`` / ``tick_group_size`` and each published separately through the
@@ -14,7 +14,7 @@ than an inline branch:
 * **Atomicity.** A group whose slot the safety kernel rejected must never
   commit its surviving slots — that would leave one arm driven from the new
   chunk while the other holds an older setpoint. Mirrors
-  :meth:`openral_hal.sim_attached.SimAttachedHAL._stage_action_group`, which
+  ``openral_hal.sim_attached.SimAttachedHAL._stage_action_group``, which
   established this contract for the simulator side.
 * **Addressing by name, not position.** ``JOINT_*`` slots are zero-padded to
   full dof (the C++ kernel enforces ``chunk.n_dof == envelope.n_dof``), so a

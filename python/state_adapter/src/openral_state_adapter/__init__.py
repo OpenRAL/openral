@@ -2,7 +2,7 @@
 
 Importing this package registers every shipped layout in the registry.
 Consumers (skill_runner, reasoner palette filter) call
-:func:`assemble_state` / :func:`registered_layouts`.
+``assemble_state`` / ``registered_layouts``.
 """
 
 from importlib.metadata import version as _pkg_version

@@ -4,12 +4,11 @@
 
 An rSkill is an executable robot-policy package (weights + a Pydantic-validated
 ``rskill.yaml`` contract + license/capability gates), **not** a prose agent
-skill. This tool emits a derived ``SKILL.md`` so tools that read the standard
-agent-skill format (`name` + `description` YAML frontmatter) can *discover* and
-reason about OpenRAL rSkills. The ``rskill.yaml`` manifest remains the single
-source of truth (CLAUDE.md §1.3); the generated ``SKILL.md`` is discovery-only
-and never executes a policy — that always goes through ``rSkill.from_pretrained``
-and the robot HAL.
+skill. This tool emits a derived ``SKILL.md`` so tools reading the standard
+agent-skill format (`name`/`description` YAML frontmatter) can discover
+OpenRAL rSkills. ``rskill.yaml`` stays the single source of truth (CLAUDE.md
+§1.3); ``SKILL.md`` is discovery-only and never executes a policy — that
+goes through ``rSkill.from_pretrained`` + the robot HAL.
 
 Usage::
 

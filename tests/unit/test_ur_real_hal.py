@@ -1,7 +1,7 @@
 """Unit tests for ``openral_hal.ur_real`` — UR5eRealHAL / UR10eRealHAL.
 
 These tests exercise the real-hardware UR HAL adapters against an injected
-:class:`~openral_hal.sim_transport.SimTransport` (a closed-loop in-memory
+``SimTransport`` (a closed-loop in-memory
 ``ros2_control`` transport) — no ``rclpy``, no MuJoCo, no live robot.  Per
 CLAUDE.md §5.4: real component or ``pytest.skip``; ``SimTransport`` is the
 real RTDE-shaped fixture used here, not a mock.

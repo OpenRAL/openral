@@ -50,13 +50,6 @@ class _StubChunk:
     cartesian_delta_scale: list[float] | None = None
 
 
-@pytest.fixture(scope="module")
-def ros_init() -> Any:
-    rclpy.init()
-    yield
-    rclpy.shutdown()
-
-
 @pytest.fixture
 def node(ros_init: None) -> Any:
     n = SafetyPassthroughNode(node_name=f"sup_per_mode_{id(object())}")

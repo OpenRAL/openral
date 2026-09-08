@@ -4,7 +4,7 @@ The RoboCasa backend is opt-in via the ``robocasa`` dependency
 group (`just sync --all-packages --group robocasa` + a manual ``uv pip install
 "robocasa @ git+https://github.com/robocasa/robocasa.git"`` per
 ``pyproject.toml`` comments). Without it this module still imports
-cleanly but the scene factories raise a typed :class:`ROSConfigError`
+cleanly but the scene factories raise a typed ``ROSConfigError``
 with the install hint.
 
 Scene-id conventions
@@ -14,13 +14,13 @@ Scene-id conventions
   to ``robosuite.make(env_name=<task>, robots=[...])`` so the full
   RoboCasa catalogue is reachable without per-task adapter edits.
 * ``"robocasa"`` (no slash) for the **procedural** scenario surface:
-  the user authors a kitchen via :class:`RoboCasaBackendOptions` inside
+  the user authors a kitchen via ``RoboCasaBackendOptions`` inside
   ``SceneSpec.backend_options`` (mode='procedural'), and this adapter
   resolves the (style x layout x fixtures x objects x task_verb) tuple
   into the matching robosuite env.
 
 In both cases the env's CC-BY-4.0 kitchen assets are fetched lazily on
-first use via :func:`openral_sim._assets.ensure_robocasa_assets`.
+first use via ``openral_sim._assets.ensure_robocasa_assets``.
 """
 
 from __future__ import annotations
@@ -54,15 +54,12 @@ _PROCEDURAL_SCENE_ID = "robocasa"
 def _canonicalize_quat_xyzw_np(q: NDArray[np.float32]) -> NDArray[np.float32]:
     """Force ``w >= 0`` hemisphere on a 4-vec ``(x, y, z, w)`` quaternion.
 
-    Mirror of ``openral_state_adapter.layouts.human300_16d.
-    _canonicalize_quat_xyzw`` but accepts / returns numpy float32 so
-    it fits straight into the obs-assembly path here. Apply at every
-    site that materialises a quaternion into the state vector the
-    policy sees (sim_run via this module AND deploy_sim via the
-    state assembler) so both paths emit byte-identical bytes for the
-    same physical rotation -- ``q`` and ``-q`` represent the same
-    rotation but encode differently, and the two paths were landing
-    on opposite hemispheres for ~half of the per-step quats.
+    Numpy float32 mirror of
+    ``openral_state_adapter.layouts.human300_16d._canonicalize_quat_xyzw``.
+    Applied at every site that puts a quaternion into the state vector (this
+    module's sim_run path AND deploy_sim's state assembler) so both emit
+    byte-identical bytes for the same rotation -- ``q``/``-q`` encode the same
+    rotation differently, and the two paths disagreed on ~half of per-step quats.
     """
     x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
     if w > 0.0:
@@ -99,20 +96,16 @@ def _arm_part_config(controller_name: str) -> dict[str, Any]:
     return _json.loads(fname.read_text())  # type: ignore[no-any-return]
 
 
-# Tasks registered with ``robocasa/<task>`` scene ids at import time.
-# Names match the keys robosuite uses for ``robosuite.make(env_name=...)``.
-# The PickPlace envs use their current upstream names, not the shorter PnP
-# aliases from the original issue draft.
+# Tasks registered with ``robocasa/<task>`` scene ids at import time. Names
+# match the keys robosuite uses for ``robosuite.make(env_name=...)``; PickPlace
+# envs use current upstream names, not the shorter PnP aliases from the
+# original issue draft. Sourced from
+# robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
 #
-# Keep this list curated so `openral sim list` stays legible; add tasks when
-# they become benchmark or integration targets.
-#
-# Sourced from robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
-# Keeping this list short keeps `openral sim list` legible; users who need a
-# different task can still pass `--scene robocasa/<task>` directly --
-# the adapter resolves any robosuite-registered env_name. Promote
-# additional entries here when they become benchmark targets. Sourced
-# from robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
+# Keep this list curated so `openral sim list` stays legible; any other task
+# is still reachable via `--scene robocasa/<task>` (the adapter resolves any
+# robosuite-registered env_name) -- promote it here when it becomes a
+# benchmark/integration target.
 _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "CloseBlenderLid",
     "PickPlaceCounterToCabinet",
@@ -123,24 +116,21 @@ _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "PickPlaceMicrowaveToCounter",
     "PickPlaceStoveToCounter",
     "PickPlaceCounterToBlender",
-    # Drawer-target pick-and-place. Both place into a drawer the robot
-    # must reach down into, which is the geometry the attached-object
-    # collision stack is checked against (scenes/deploy/*_drawer_*.yaml).
-    # `PickPlaceFridgeShelfToDrawer` picks and places entirely inside the
-    # fridge and declares EXCLUDE_STYLES for the side-by-side fridges that
-    # ship no drawer, so not every seed yields a constructible layout.
-    # It also has a KNOWN, UNFIXED initial-pose defect on some kitchens: the
-    # task opens the fridge door but leaves the FREEZER door closed and flush
-    # on the front face, while `init_robot_base_ref` parks the base ~0.30 m
-    # off that face with a fixed arm `init_qpos`. On a side-by-side fridge the
-    # full-height closed freezer half then sits at arm height. RoboCasa's own
-    # `set_robot_base` resample only clears MuJoCo *contacts*, and it does:
-    # the links end up a few mm clear, which is below the kernel's occupancy
-    # grid resolution, so the kernel legitimately refuses the reset pose. Pin
-    # `layout_ids` / `style_ids` (forwarded verbatim below) to choose a fridge
-    # whose arm-height geometry is the OPEN fridge door — see the KNOWN DEFECT
-    # block in `scenes/deploy/robocasa_fridge_drawer.yaml` for the layout map,
-    # the candidate fix, and the run that would confirm it.
+    # Drawer-target pick-and-place; both place into a drawer the robot must
+    # reach down into, the geometry the attached-object collision stack is
+    # checked against (scenes/deploy/*_drawer_*.yaml).
+    # `PickPlaceFridgeShelfToDrawer` picks/places entirely inside the fridge
+    # and declares EXCLUDE_STYLES for side-by-side fridges with no drawer, so
+    # not every seed yields a constructible layout. KNOWN, UNFIXED defect on
+    # some kitchens: the task opens the fridge door but leaves the freezer
+    # door closed and flush; `init_robot_base_ref` parks the base ~0.30 m off
+    # that face with a fixed arm `init_qpos`, so on a side-by-side fridge the
+    # closed freezer half sits at arm height. RoboCasa's `set_robot_base`
+    # resample only clears MuJoCo *contacts* -- links end up a few mm clear,
+    # below the kernel's occupancy grid resolution, so the kernel legitimately
+    # refuses the reset pose. Pin `layout_ids`/`style_ids` (forwarded verbatim
+    # below) to a fridge whose arm-height geometry is the OPEN door -- see the
+    # KNOWN DEFECT block in `scenes/deploy/robocasa_fridge_drawer.yaml`.
     "PickPlaceCounterToDrawer",
     "PickPlaceFridgeShelfToDrawer",
     "OpenDoor",
@@ -347,27 +337,19 @@ class _RoboCasaSim:
         """Record the kitchen this episode actually got, and enforce the pin.
 
         RoboCasa redraws ``(layout_id, style_id)`` from ``env.rng`` inside
-        ``Kitchen._load_model`` on EVERY reset, so the composition is a
-        property of the episode, not of the built env — which is why this
-        runs here rather than at factory time.
+        ``Kitchen._load_model`` on EVERY reset, so composition is a property
+        of the episode, not the built env -- hence this runs per-reset, not
+        at factory time. Two things happen:
 
-        Two things happen, in this order:
-
-        1. ``robocasa_scene_composition`` goes into the run artifacts naming
-           the effective layout and style. Without it a round's log never
-           states which of RoboCasa's 60 kitchens it ran, and a later reader
-           has no way to tell a layout-pinned round from an unpinned one.
-           Several conclusions in this repo were overturned for exactly that
-           reason.
-        2. When the scene YAML pinned exactly one layout / style, the
-           effective value is checked against it and a mismatch is a typed
-           ``ROSConfigError``. The pin can be silently overridden two ways
-           upstream — a task's ``EXCLUDE_LAYOUTS`` / ``EXCLUDE_STYLES`` filters
-           the pinned id out of the pool, or a replayed ``_ep_meta`` carries
-           its own ``layout_id`` / ``style_id`` and wins outright
-           (``Kitchen._load_model``). Both would otherwise run a DIFFERENT
-           kitchen than the YAML declares while every artifact still shows
-           the declared one.
+        1. ``robocasa_scene_composition`` goes into the run artifacts, naming
+           the effective layout and style (so a later reader can tell a
+           layout-pinned round from an unpinned one).
+        2. When the scene YAML pinned exactly one layout/style, the effective
+           value is checked against it; mismatch raises. The pin can be
+           silently overridden upstream: a task's ``EXCLUDE_LAYOUTS`` /
+           ``EXCLUDE_STYLES`` drops it from the pool, or a replayed
+           ``_ep_meta`` carries its own id and wins outright
+           (``Kitchen._load_model``).
 
         Raises:
             ROSConfigError: when a pinned layout / style is not what the env
@@ -480,31 +462,21 @@ class _RoboCasaSim:
     def task_success(self) -> bool | None:
         """Return the env's own task-success predicate, or ``None``.
 
-        This is RoboCasa/robosuite ground truth, not an estimate: every
-        ``robocasa.environments.kitchen`` task (and every GR1 tabletop
-        task in the fork) implements ``_check_success()`` against the
-        live MuJoCo state — "is the cup inside the sink basin", "is the
-        drawer closed" — and that predicate is what the benchmark scores.
-        Unlike the reward monitor's ``reward.score`` span (a VLM's
-        opinion), this cannot be wrong about the physics.
-
-        Two lookup paths, mirroring :meth:`mujoco_handles`:
-
-        * raw robosuite envs expose ``_check_success`` directly;
-        * the gymnasium-wrapped GR1 path hides it one level down at
-          ``env.unwrapped.env``.
+        RoboCasa/robosuite ground truth: every ``robocasa.environments.kitchen``
+        task (and GR1 tabletop task) implements ``_check_success()`` against
+        live MuJoCo state, unlike the reward monitor's ``reward.score`` (a
+        VLM's opinion). Two lookup paths (mirrors ``mujoco_handles``): raw
+        robosuite envs expose ``_check_success`` directly; the
+        gymnasium-wrapped GR1 path hides it at ``env.unwrapped.env``.
 
         Returns:
-            ``True`` / ``False`` from the env's predicate, or ``None``
-            when the backend exposes no ``_check_success`` at all
-            (the caller must NOT read ``None`` as failure — it means
-            "this env has no task-success predicate to read").
+            ``True``/``False`` from the env's predicate, or ``None`` when the
+            backend exposes no ``_check_success`` (not a failure signal).
 
         Note:
-            Deliberately NOT consulted by :meth:`step`. ``deploy sim``
-            runs with :meth:`enable_continuous` set, where reading a
-            success flag must never influence termination; callers poll
-            this for observability only.
+            Not consulted by ``step`` -- ``deploy sim`` runs with
+            ``enable_continuous`` set, where success must never influence
+            termination; callers poll this for observability only.
         """
         for candidate in (
             self._env,
@@ -590,33 +562,26 @@ class _RoboCasaSim:
     def refresh_obs(self) -> Observation | None:
         """Re-read observations + cameras WITHOUT advancing physics.
 
-        Used by :class:`openral_hal.sim_attached.SimAttachedHAL` after a
-        BODY_TWIST qpos write. The ``sim run`` path works correctly
-        because every iteration calls ``env.step(action)`` which
-        re-renders cameras through robosuite's standard pipeline; the
-        ``deploy sim`` BODY_TWIST path bypasses ``env.step``
-        entirely (because robocasa's BASIC composite controller does
-        NOT interpret the first 3 action slots as planar velocities
-        on OmronMobileBase — non-zero base ctrl is a no-op) so
+        Used by ``openral_hal.sim_attached.SimAttachedHAL`` after a
+        BODY_TWIST qpos write. The ``sim run`` path works correctly because
+        every iteration calls ``env.step(action)``, which re-renders cameras
+        through robosuite's standard pipeline; the ``deploy sim`` BODY_TWIST
+        path bypasses ``env.step`` entirely (robocasa's BASIC composite
+        controller does NOT interpret the first 3 action slots as planar
+        velocities on OmronMobileBase — non-zero base ctrl is a no-op), so
         cameras + state slots would otherwise never refresh.
 
-        This used to drive ``env.step`` with a ZERO action as a "tick the env"
-        call, on the reasoning that a zero action means no controller effort.
-        **That reasoning was wrong**, and it is why the base barely moved under
-        Nav2. A zero action is not "do nothing": robosuite's mobile-base
-        controller reads it as a command to hold its setpoint, so each step
-        regulated the base back toward where it sat *before* the qpos write.
-        Measured on the real ``robocasa_baguette`` scene, 40 commands at
-        0.5 m/s wrote 1.0000 m of displacement and kept 0.0396 m — 4.0% — with
-        per-command survival decaying 1.000 → 0.458 → 0.085 → 0.015 → 0.002 →
-        0.000 as the regulator caught up. Nav2's ``SimpleProgressChecker``
-        then aborted every goal with "Failed to make progress".
-
-        ``_get_observations(force_update=True)`` is robosuite's own
-        non-stepping refresh: it re-samples every observable (cameras
-        included, through the same renderer ``step`` uses) against the current
-        ``sim.data``, without running the controllers or integrating physics.
-        So the qpos write stands and the dashboard still updates per twist.
+        A zero action is not "do nothing": robosuite's mobile-base controller
+        reads it as a hold-setpoint command, regulating the base back toward
+        its pre-write pose. Measured on ``robocasa_baguette``: 40 commands at
+        0.5 m/s wrote 1.0000 m of displacement and kept 0.0396 m (4.0%), decay
+        1.000 → 0.458 → 0.085 → 0.015 → 0.002 → 0.000; Nav2's
+        ``SimpleProgressChecker`` aborted every goal with "Failed to make
+        progress". So this uses robosuite's own non-stepping refresh instead:
+        ``_get_observations(force_update=True)`` re-samples every observable
+        (cameras included, same renderer ``step`` uses) against current
+        ``sim.data`` without running controllers or integrating physics, so
+        the qpos write stands and the dashboard updates per twist.
 
         Returns ``None`` for backends exposing no such refresh — those paths
         keep the cached-from-last-step images.
@@ -712,9 +677,9 @@ class _RoboCasaSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. RoboCasa rewinds the
+        Reads ``MjData.time`` off ``mujoco_handles``. RoboCasa rewinds the
         clock to 0 on ``reset``, so the value is monotonic only within an
-        episode — :class:`~openral_hal.sim_attached.SimAttachedHAL.sim_time_ns`
+        episode — ``sim_time_ns``
         adds the cross-reset offset.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -742,20 +707,15 @@ class _RoboCasaSim:
         w = self.scene.observation_width
         scene_cams = list(self.scene.cameras)
         # MuJoCo's offscreen renderer emits images bottom-row-first (OpenGL
-        # convention). RoboCasa's upstream training pipeline
-        # (``gymnasium_basic.RoboCasaEnv.get_basic_observation``) flips
-        # them with ``np.copy(img[::-1, :, :])`` before passing to the
-        # policy AND before any downstream sensor consumer, so the
-        # checkpoints + the standard ROS image conventions
-        # (``sensor_msgs/Image`` rows top-down) all expect the flipped
-        # orientation. Mirror it here so EVERY consumer
-        # (dashboard, /openral/cameras/<name>/image publisher, rldx /
-        # pi05 policy adapters via ``observation.images.<name>``) gets a
-        # right-side-up frame. The per-rskill manifest
-        # ``image_preprocessing.flip_vertical`` flag thus describes
-        # "does the policy need ADDITIONAL flipping vs the standard
-        # orientation?" and stays ``false`` for any rskill trained on
-        # the standard robocasa pipeline.
+        # convention). RoboCasa's training pipeline
+        # (``gymnasium_basic.RoboCasaEnv.get_basic_observation``) flips with
+        # ``np.copy(img[::-1, :, :])`` before the policy, matching ROS's
+        # top-down ``sensor_msgs/Image`` convention -- mirror it here so every
+        # consumer (dashboard, /openral/cameras/<name>/image, rldx/pi05 via
+        # ``observation.images.<name>``) gets a right-side-up frame. The
+        # rskill manifest's ``image_preprocessing.flip_vertical`` flag means
+        # "needs flipping ON TOP of this" and stays ``false`` for rskills
+        # trained on the standard robocasa pipeline.
         for i, key in enumerate(self._camera_keys):
             value = raw.get(key)
             if value is not None:
@@ -871,15 +831,12 @@ class _RoboCasaSim:
 
         # RoboCasa's task language is episode-specific: the env samples a
         # particular object (e.g. "hot dog") and ``env.get_ep_meta()["lang"]``
-        # returns the canonical sentence with that name interpolated, which
-        # is exactly what the policy was trained on (per
-        # ``gymnasium_basic.get_basic_observation``:
+        # returns the canonical sentence with that name interpolated -- what
+        # the policy was trained on (``gymnasium_basic.get_basic_observation``:
         # ``raw_obs["language"] = self.env.get_ep_meta().get("lang", "")``).
-        # If we forward the static ``task.instruction`` from the YAML (e.g.
-        # "pick the object from the counter ...") the VLA never sees the
-        # actual target object name and degenerates to spinning the base
-        # while it searches. Prefer the env's lang when available; fall
-        # back to the YAML instruction otherwise.
+        # The static YAML ``task.instruction`` omits the object name, so the
+        # VLA degenerates to spinning the base while it searches. Prefer the
+        # env's lang when available; fall back to the YAML instruction.
         task_lang = self.task.instruction
         if hasattr(self._env, "get_ep_meta"):
             try:
@@ -888,24 +845,26 @@ class _RoboCasaSim:
                     env_lang = em.get("lang")
                     if isinstance(env_lang, str) and env_lang.strip():
                         task_lang = env_lang
-            except Exception:  # reason: defensive — never crash obs assembly on lang lookup
-                pass
+            except Exception as exc:
+                # reason: defensive — RoboCasa's get_ep_meta() has no
+                # documented exception contract; never crash obs assembly
+                # on lang lookup.
+                import structlog
+
+                structlog.get_logger(__name__).debug("robocasa_get_ep_meta_failed", error=repr(exc))
         obs: Observation = {
             "images": images,
             "state": state,
             "task": task_lang,
         }
-        # Preserve the raw RoboCasa proprio keys for downstream
-        # consumers that need authoritative base / eef pose (e.g.
-        # ``openral_hal.SimAttachedHAL.base_pose_6dof`` reads
-        # ``raw_proprio["robot0_base_pos"]`` to publish a faithful
-        # ``odom → base_link`` TF that mirrors what the policy was
-        # trained on, rather than the planar (x, y, yaw) projection
-        # the URDF joint chain produces — see the dump-diff regression
-        # in ``openral deploy sim`` that found ~0.70 m of base-z drop
-        # before this slot existed). Stored as a sub-dict (not at top
-        # level) so it doesn't pollute the Observation Protocol's
-        # documented surface.
+        # Preserve raw RoboCasa proprio keys for consumers needing
+        # authoritative base/eef pose (e.g. ``SimAttachedHAL.base_pose_6dof``
+        # reads ``raw_proprio["robot0_base_pos"]`` to publish a faithful
+        # ``odom -> base_link`` TF matching what the policy trained on, not
+        # the planar (x, y, yaw) URDF projection -- the dump-diff regression
+        # in ``openral deploy sim`` found ~0.70 m of base-z drop before this
+        # slot existed). Sub-dict, not top-level, to keep the Observation
+        # Protocol's documented surface unpolluted.
         proprio_keys = (
             "robot0_base_pos",
             "robot0_base_quat",
@@ -970,16 +929,14 @@ class _RoboCasaSim:
     def _has_mobile_base_robot(self) -> bool:
         """True iff one of the loaded robosuite robots is a mobile base.
 
-        Detection is structural (composition-name suffix `"Mobile"` or
-        the ``"Omron"`` mobile-base family) rather than a literal
-        `"PandaMobile"` check — so a future ``GR1Mobile`` / ``SpotMobile``
-        etc. light up the extras path automatically. RoboCasa's
-        ``RoboCasaBackendOptions`` canonicalises the scene's
-        ``PandaMobile`` request to the robosuite composition **``PandaOmron``**
-        (the OmronMobileBase-mounted Panda), so ``self._robots`` holds
-        ``"PandaOmron"`` at runtime — the ``"Omron"`` arm is what actually
-        matches on the deploy path; the ``"PandaMobile"`` literal stays as
-        an OR-arm so existing fixtures that key on the exact name work.
+        Detection is structural (name suffix ``"Mobile"`` or the ``"Omron"``
+        family) rather than a literal ``"PandaMobile"`` check, so a future
+        ``GR1Mobile``/``SpotMobile`` lights up the extras path automatically.
+        RoboCasa's ``RoboCasaBackendOptions`` canonicalises the scene's
+        ``PandaMobile`` request to composition ``PandaOmron``, so
+        ``self._robots`` holds ``"PandaOmron"`` at runtime -- the ``"Omron"``
+        match is what fires on the deploy path; the ``"PandaMobile"`` literal
+        stays as an OR-arm for fixtures keying on the exact name.
         """
         return any(name.endswith("Mobile") or "Omron" in name for name in self._robots) or (
             "PandaMobile" in self._robots
@@ -1050,12 +1007,11 @@ class _RoboCasaSim:
         * `annotation.human.coarse_action` text already prefixed with
           `"unlocked_waist: "` for ArmsAndWaist embodiments.
 
-        We pluck those, concatenate the five state arrays into the
-        openral 29-D order, and expose the camera under the scene's
-        first canonical camera name (e.g. ``head`` on
-        the GR1 tabletop scene; falls back to ``camera1``) plus
-        ``video.ego_view`` (the short canonical key the rldx adapter
-        sends to the FT-GR1 sidecar).
+        Concatenates the five state arrays into the openral 29-D order and
+        exposes the camera under the scene's first canonical camera name
+        (e.g. ``head`` on the GR1 tabletop scene; falls back to ``camera1``)
+        plus ``video.ego_view`` (the short key the rldx adapter sends to the
+        FT-GR1 sidecar).
         """
         state = np.concatenate(
             [
@@ -1114,14 +1070,11 @@ def _robot_id_for_robosuite_name(robosuite_name: str) -> str | None:
 def _load_robot_description_by_id(robot_id: str) -> Any:
     """Load ``robots/<robot_id>/robot.yaml`` from the workspace root.
 
-    Walks parents of this source file looking for a ``robots/<id>/robot.yaml``
-    fixture. Returns ``None`` when the file isn't reachable (the sim
-    adapter is being exercised in a hermetic test fixture without the
-    full workspace tree on disk). A malformed YAML raises the
-    underlying :class:`~openral_core.exceptions.ROSConfigError` — fail
-    loud rather than silently fall back to module-level joint-name
-    defaults, because a typo in a robot.yaml is the kind of bug that
-    "best-effort" used to hide.
+    Walks parents of this source file for a ``robots/<id>/robot.yaml``
+    fixture; returns ``None`` when unreachable (e.g. a hermetic test
+    fixture with no full workspace tree). A malformed YAML raises
+    ``ROSConfigError`` rather than silently
+    falling back to module-level joint-name defaults.
     """
     from pathlib import Path  # reason: stdlib defer
 
@@ -1137,16 +1090,13 @@ def _load_robot_description_by_id(robot_id: str) -> Any:
 
 # ── PandaMobile base-velocity + synthetic 2D LaserScan helpers ─────────────
 #
-# The robosuite ``OmronMobileBase`` MJCF declares three planar joints
-# named below — robosuite tracks their qpos / qvel automatically. The
-# adapter does not surface them via the `obs` dict by default, so a
-# downstream consumer that needs Nav2 / SLAM-grade base velocity or a
-# 2D laser scan would either have to (a) finite-difference qpos itself
-# or (b) bypass the adapter and reach into ``env.sim``. Both are
-# brittle. The two helpers below + the adapter's
-# ``_emit_panda_mobile_extras`` surface the data cleanly under
-# ``robot0_base_vel`` (3-vec, body-frame) and ``robot0_scan`` (range
-# array, body-frame), gated on ``"PandaMobile" in self._robots``.
+# The robosuite ``OmronMobileBase`` MJCF declares three planar joints named
+# below (robosuite tracks their qpos/qvel automatically) but the adapter
+# doesn't surface them via `obs` by default. The two helpers below +
+# ``_emit_panda_mobile_extras`` surface them as ``robot0_base_vel`` (3-vec,
+# body-frame) and ``robot0_scan`` (range array, body-frame), gated on
+# ``"PandaMobile" in self._robots`` -- instead of a consumer finite-
+# differencing qpos or reaching into ``env.sim`` directly.
 
 # Joint names in the robosuite ``OmronMobileBase`` MJCF
 # (``robosuite/models/assets/bases/omron_mobile_base.xml``). Order matches
@@ -1176,21 +1126,18 @@ _OMRON_BASE_JOINT_NAMES_FALLBACK: tuple[str, str, str] = (
 
 # ── Forward-facing "head" navigation camera ────────────────────────────────
 #
-# The robot-mounted robosuite cameras (agentview / frontview / eye_in_hand)
-# all point at the arm's manipulation workspace — useless for a VLN policy,
-# which needs an egocentric view down the base's travel direction. There is
-# no such camera in the MJCF, so we synthesize one with a MuJoCo free camera
-# placed just ahead of the mobile base, looking forward + slightly down. It
-# is surfaced as ``observation.images.head`` (and drives the
-# ``rskill-internvla_n1-...`` nav skill). Off by default so a manipulation run
-# never pays for the second offscreen render; ``openral deploy sim`` / ``run``
-# set ``OPENRAL_ROBOCASA_HEAD_CAM=1`` before launch when a capability-matched
-# rSkill declares ``observation.images.head``
-# (``openral_cli.deploy_sim._apply_palette_head_cam``), so a VLN run needs no
-# hand-exported env var. Camera geometry (mount height /
-# forward offset) comes from the robot.yaml ``head`` sensor's
-# ``metadata.height_m`` / ``metadata.forward_offset_m``; the constants
-# below are only the fallback for a robot.yaml that omits them.
+# robosuite's mounted cameras (agentview/frontview/eye_in_hand) all point at
+# the arm's workspace, useless for a VLN policy that needs an egocentric view
+# down the base's travel direction; there's no such camera in the MJCF, so
+# one is synthesized via a MuJoCo free camera ahead of the base, forward +
+# slightly down. Surfaced as ``observation.images.head`` (drives the
+# ``rskill-internvla_n1-...`` nav skill). Off by default (skips the second
+# offscreen render on manipulation runs); ``openral deploy sim``/``run`` set
+# ``OPENRAL_ROBOCASA_HEAD_CAM=1`` when a capability-matched rSkill declares
+# ``observation.images.head`` (``openral_cli.deploy_sim._apply_palette_head_cam``).
+# Geometry (height/forward offset) comes from robot.yaml's ``head`` sensor
+# ``metadata.height_m``/``metadata.forward_offset_m``; constants below are
+# only the fallback.
 _HEAD_CAM_ENV = "OPENRAL_ROBOCASA_HEAD_CAM"
 _HEAD_CAM_HEIGHT_M = 1.30
 _HEAD_CAM_FWD_OFFSET_M = 0.42
@@ -1278,10 +1225,10 @@ def _resolve_base_joint_qvel_addrs(
         model: Live ``mujoco.MjModel``.
         base_joint_names: Optional ``(forward, side, yaw)`` MJCF joint
             names. Supersedes the module-level
-            :data:`_OMRON_BASE_JOINT_NAMES` defaults — callers that
-            have access to a :class:`~openral_core.RobotDescription`
+            ``_OMRON_BASE_JOINT_NAMES`` defaults — callers that
+            have access to a ``RobotDescription``
             should read names from the per-joint
-            :attr:`~openral_core.JointSpec.sim_joint_name` field and
+            ``JointSpec.sim_joint_name`` field and
             pass them here so the helper never depends on hardcoded
             robosuite / robocasa naming conventions.
     """
@@ -1332,7 +1279,7 @@ def read_panda_mobile_base_velocity(
         model: Live ``mujoco.MjModel``.
         data: Live ``mujoco.MjData``.
         base_joint_names: Optional MJCF names override — see
-            :func:`_resolve_base_joint_qvel_addrs`.
+            ``_resolve_base_joint_qvel_addrs``.
 
     Raises:
         ROSConfigError: when the MJCF declares the base joints but one
@@ -1420,7 +1367,7 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
             looks up ``"base"`` (OmronMobileBase root); when that's also
             absent every beam is a no-op-exclude.
         base_joint_names: Optional MJCF joint-name triple override — see
-            :func:`_resolve_base_joint_qvel_addrs`.
+            ``_resolve_base_joint_qvel_addrs``.
         n_beams: Number of rays. 360 ≈ 1 deg resolution.
         max_range_m: Max sensor range. Beams with no hit return this
             value (NOT NaN, NOT inf).
@@ -1475,17 +1422,14 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
         if body_id_for_origin >= 0:
             origin[0] = float(data.xpos[body_id_for_origin][0])
             origin[1] = float(data.xpos[body_id_for_origin][1])
-            # Heading from the body's WORLD rotation, NOT the yaw-joint
-            # qpos. Same rationale as the world-frame origin above: under a
-            # composed kitchen scene the base body's spawn pose carries the
-            # robot's facing while the yaw joint reads only its offset from
-            # that spawn — so qpos[yaw] omits the spawn rotation and the
-            # scan fan comes out rotated relative to the published
-            # odom→base_link TF (which uses the body's true world
-            # orientation via robot0_base_quat). That constant rotation is
-            # what made the dashboard occupancy map appear turned relative
-            # to the simulated kitchen. atan2 of the world rotation
-            # matrix's first column recovers the planar yaw.
+            # Heading from the body's WORLD rotation, NOT the yaw-joint qpos:
+            # under a composed kitchen scene the base body's spawn pose
+            # carries the robot's facing while the yaw joint reads only its
+            # offset from spawn, so qpos[yaw] omits the spawn rotation and
+            # rotates the scan fan relative to the published odom→base_link
+            # TF (robot0_base_quat uses true world orientation) — this made
+            # the dashboard occupancy map appear turned vs the kitchen.
+            # atan2 of the world rotation matrix's first column recovers yaw.
             xmat = np.asarray(data.xmat[body_id_for_origin], dtype=np.float64).reshape(3, 3)
             yaw_world = float(math.atan2(xmat[1, 0], xmat[0, 0]))
         else:
@@ -1524,20 +1468,16 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
 
     geomgroup = np.array([1, 1, 1, 1, 1, 1], dtype=np.uint8)
 
-    # Self-exclusion must cover the ENTIRE robot kinematic tree, not just
-    # one body. ``mj_ray``/``mj_multiRay`` accept a single ``bodyexclude``,
-    # but on the OmronMobileBase the collision geometry lives on
-    # ``mobilebase0_wheeled_base`` — a child of the (geomless)
-    # ``mobilebase0_base`` root that the prefix lookup resolves. A lone
-    # exclude therefore let every beam terminate on the wheeled base at
-    # ~0.13-0.54 m (below the 0.55 m ``range_min`` of the day), starving
-    # slam_toolbox so it only ever published an empty 0x0 ``/map``.
-    #
-    # Fix: cast per-beam and skip any hit whose body shares the base
-    # body's kinematic-tree root (``model.body_rootid``), re-casting from
-    # just past the self-hit so the beam reports the real obstacle behind
-    # the robot. ``robot_rootid < 0`` (base unresolved) disables the skip
-    # and falls back to nearest-hit, matching the prior behaviour.
+    # Self-exclusion must cover the ENTIRE robot kinematic tree, not one body:
+    # ``mj_ray``/``mj_multiRay`` accept a single ``bodyexclude``, but the
+    # OmronMobileBase collision geometry lives on
+    # ``mobilebase0_wheeled_base``, a child of the (geomless)
+    # ``mobilebase0_base`` root the prefix lookup resolves -- a lone exclude
+    # let every beam terminate on the wheeled base at ~0.13-0.54 m (below the
+    # 0.55 m ``range_min`` of the day), starving slam_toolbox to an empty 0x0
+    # ``/map``. Fix: cast per-beam, skip any hit sharing the base body's
+    # kinematic-tree root (``model.body_rootid``), re-casting from just past
+    # the self-hit; ``robot_rootid < 0`` disables the skip (nearest-hit).
     robot_rootid = (
         int(model.body_rootid[base_body_id])
         if base_body_id is not None and base_body_id >= 0
@@ -1618,7 +1558,7 @@ def _single_scene_pin(ids: list[int] | int | None) -> int | None:
     legitimate but is not a pin and must not be enforced as one.
 
     Args:
-        ids: The field value straight off :class:`RoboCasaBackendOptions`.
+        ids: The field value straight off ``RoboCasaBackendOptions``.
 
     Returns:
         The pinned id, or ``None`` when the value denotes a pool.
@@ -1762,7 +1702,7 @@ def provision_robocasa(backend_id: str) -> None:
     """Install the fork and fetch its assets — the slow half of a first run.
 
     Clones + editable-installs the right ``robocasa`` fork and downloads the
-    ~11 GB asset bundle. Split out of :func:`_build_robocasa_sim` so
+    ~11 GB asset bundle. Split out of ``_build_robocasa_sim`` so
     ``openral deploy sim`` can run it in front of ``ros2 launch`` instead of
     letting it land inside the HAL's ``on_configure``, which
     ``tools/lifecycle_autostart.py`` bounds at 300 s — a deadline no fresh
@@ -1776,7 +1716,7 @@ def provision_robocasa(backend_id: str) -> None:
 
     Args:
         backend_id: ``"robocasa_kitchen"`` or ``"robocasa_gr1"`` — see
-            :func:`_robocasa_backend_id`.
+            ``_robocasa_backend_id``.
 
     Raises:
         ROSConfigError: When the install or the asset download fails, or
@@ -1934,22 +1874,17 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
     if is_gr1:
         # GR1 path uses the upstream `gr1_unified/<task>_<robot>_Env`
         # gymnasium wrapper, NOT raw `robosuite.make`. The wrapper:
-        #   * runs `gather_robot_observations(env)` and `KeyConverter.map_obs`
-        #     in `get_groot_observation` so the obs comes out with the
-        #     canonical `state.right_arm` / `state.left_arm` / `state.waist`
-        #     / `state.right_hand` / `state.left_hand` keys (matching
-        #     RLDX-1-FT-GR1's `general_embodiment` modality config);
-        #   * applies the upstream vertical-flip + pad-to-square +
-        #     256×256 resize via `RoboCasaEnv.get_basic_observation` →
-        #     `GrootRoboCasaEnv.process_img`, so the egoview frame
-        #     reaches the policy in its training-distribution
-        #     orientation;
-        #   * accepts a DICT action keyed `action.{waist,right_arm,
-        #     left_arm,right_hand,left_hand}` and translates back to
-        #     the per-controller flat 29-D robosuite expects.
-        # Bypassing the wrapper (the first attempt) silently fed the
-        # policy raw `robot0_joint_pos` slices and the env raw flat
-        # vectors — neither matched the training distribution.
+        #   * runs `gather_robot_observations(env)` + `KeyConverter.map_obs`
+        #     in `get_groot_observation`, giving canonical `state.right_arm`/
+        #     `state.left_arm`/`state.waist`/`state.right_hand`/`state.left_hand`
+        #     keys (matching RLDX-1-FT-GR1's `general_embodiment` config);
+        #   * applies the vertical-flip + pad-to-square + 256x256 resize via
+        #     `RoboCasaEnv.get_basic_observation` -> `GrootRoboCasaEnv.process_img`
+        #     so egoview reaches the policy in training-distribution orientation;
+        #   * accepts a DICT action keyed `action.{waist,right_arm,left_arm,
+        #     right_hand,left_hand}`, translated to the flat 29-D robosuite expects.
+        # Bypassing the wrapper feeds raw `robot0_joint_pos` slices / flat
+        # vectors that do not match the training distribution.
         import gymnasium as gym
 
         # Side-effect import: registers the `gr1_unified/...` gym env ids.

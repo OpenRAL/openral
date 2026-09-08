@@ -1,10 +1,9 @@
 """Integration tests for the ROS 2 reasoner/supervisor graph's ``rskill_runner_node``.
 
-Drives the real :class:`RskillRunnerNode` + the colocated
-:class:`_WorldStateLifecycleNode` + a real :class:`SafetyPassthroughNode`
-through ``rclpy`` (in-process equivalent of ``launch_testing`` per the
-existing repo convention) and asserts the end-to-end topic flow that
-the ROS 2 reasoner/supervisor graph's step 1 locks:
+Drives the real ``RskillRunnerNode`` + the colocated ``_WorldStateLifecycleNode``
++ a real ``SafetyPassthroughNode`` through ``rclpy`` (in-process equivalent of
+``launch_testing`` per the existing repo convention) and asserts the end-to-end topic flow
+that the ROS 2 reasoner/supervisor graph's step 1 locks:
 
 1. An ``ExecuteRskill`` goal accepted by ``rskill_runner_node``.
 2. ``ActionChunk`` lands on ``/openral/candidate_action``.
@@ -16,11 +15,11 @@ the ROS 2 reasoner/supervisor graph's step 1 locks:
    dispatch path actually raised (``FAILURE_NONE`` on success).
 
 Per CLAUDE.md §1.11 / §5.4: no mocks. The skill is a real
-:class:`rSkillBase` subclass (``_ConstantSkill``) that emits a constant
+``rSkillBase`` subclass (``_ConstantSkill``) that emits a constant
 six-DoF joint-position chunk — not a `MagicMock`. The
 `WorldStateAggregator` is the production class; the skill_runner_node
 calls ``aggregator.snapshot()`` in-process via the shared instance the
-:func:`compose_so100_runtime` factory hands it.
+``compose_so100_runtime`` factory hands it.
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _make_constant_skill() -> Any:
-    """Return a real :class:`rSkillBase` subclass — no mocks."""
+    """Return a real ``rSkillBase`` subclass — no mocks."""
     from openral_core.schemas import Action, ControlMode
     from openral_rskill.base import rSkillBase
 
@@ -202,7 +201,9 @@ def _compose_harness(
                 node.trigger_deactivate()
                 node.trigger_cleanup()
                 node.trigger_shutdown()
-            except Exception:  # reason: best-effort teardown
+            except RuntimeError:
+                # RCLError/InvalidHandle from a transition attempted after
+                # an earlier failure — best-effort teardown.
                 pass
         executor.shutdown()
         helper.destroy_node()
@@ -563,21 +564,18 @@ def _make_grouped_violating_skill() -> Any:
 def test_safety_latch_during_apply_wait_is_named_in_the_result() -> None:
     """A kernel latch mid-tick yields ``safety_estop``, not an apply-timeout.
 
-    The observability gap this pins (real Spark validation, RoboCasa sink
-    scene): when the safety layer latches while ``ROSPublishingHAL`` is
-    blocked waiting for an atomic action group to be applied,
-    ``/openral/action_applied`` simply goes silent — a latched supervisor
-    drops the chunk instead of republishing it on ``/openral/safe_action``.
-    The wait used to run out its full timeout and abort the goal with
-    ``ROSRuntimeError: ... was not applied within 5.0 s``, so the true cause
-    never reached the dispatcher, the reasoner's replanning ladder, or the
+    The observability gap this pins (real Spark validation, RoboCasa sink scene): when the
+    safety layer latches while ``ROSPublishingHAL`` is blocked waiting for an atomic action
+    group to be applied, ``/openral/action_applied`` simply goes silent — a latched supervisor
+    drops the chunk instead of republishing on ``/openral/safe_action``. The wait would run out
+    its full timeout and abort with ``ROSRuntimeError: ... was not applied within 5.0 s``, so
+    the true cause never reached the dispatcher, the reasoner's replanning ladder, or the
     operator (CLAUDE.md §1.4).
 
-    Real components throughout: the production ``SafetyPassthroughNode``
-    decides the violation and publishes ``/openral/estop`` itself, the real
-    ``RskillRunnerNode`` latches it through its existing subscription, and
-    the real ``ROSPublishingHAL`` blocks on the real topic. Nothing
-    publishes ``/openral/action_applied`` here because nothing applies the
+    Real components throughout: the production ``SafetyPassthroughNode`` decides the
+    violation and publishes ``/openral/estop`` itself, the real ``RskillRunnerNode`` latches it
+    through its existing subscription, and the real ``ROSPublishingHAL`` blocks on the real
+    topic. Nothing publishes ``/openral/action_applied`` here because nothing applies the
     action — which is precisely what a latched safety layer looks like.
     """
     import rclpy
@@ -674,18 +672,16 @@ def _await_result(handle: Any, executor: Any, *, timeout_s: float = 8.0) -> Any:
 def _drop_the_safety_publisher(executor: Any, safety: Any, *, settle_s: float) -> None:
     """Take the safety supervisor down and let its ``SafetyStatus`` go stale.
 
-    The real hazard behind ADR-0096's liveness rule (hazard log HZ-0096-1): the
-    node that decides whether a chunk may actuate stops proving it is alive
-    while a goal is in flight. Driven through the supervisor's OWN lifecycle
-    transition — a real ``deactivate``, which tears down its ``/openral/estop``
-    and ``/openral/safety_status`` publishers exactly as a crashed or
-    deliberately-stopped supervisor does.
+    The real hazard behind ADR-0096's liveness rule (hazard log HZ-0096-1): the node that
+    decides whether a chunk may actuate stops proving it is alive while a goal is in flight.
+    Driven through the supervisor's OWN lifecycle transition — a real ``deactivate``, which
+    tears down its ``/openral/estop`` and ``/openral/safety_status`` publishers exactly as a
+    crashed or deliberately-stopped supervisor does.
 
-    Nothing republishes ``/openral/safe_action`` afterwards, so every chunk the
-    policy emits is silently unactuated from here on. Note what is NOT set: no
-    ``/openral/estop`` is ever published, so the runner's estop latch stays
-    ``False`` — which is precisely why the pre-existing latch checks cannot see
-    this and the goal used to die of something else entirely.
+    Nothing republishes ``/openral/safe_action`` afterwards, so every chunk the policy emits
+    is silently unactuated from here on. Note: no ``/openral/estop`` is ever published, so the
+    runner's estop latch stays ``False`` — which is why the pre-existing latch checks alone
+    cannot see this.
 
     Args:
         executor: The harness executor to spin while the status ages.
@@ -703,20 +699,18 @@ def _drop_the_safety_publisher(executor: Any, safety: Any, *, settle_s: float) -
 def test_safety_loss_aborts_ungrouped_dispatch_instead_of_the_deadline() -> None:
     """A single-slot policy names the safety stop — it no longer dies of the budget.
 
-    The gap #115 could not reach. Its check lives inside
-    ``ROSPublishingHAL._wait_for_group_applied``, which is only entered by an
-    action carrying ``tick_group_size > 1``. Every single-surface policy in the
-    tree (SmolVLA, ACT, diffusion) emits ONE ``Action`` per tick, so
-    ``send_action`` publishes and returns without ever blocking, the safety seam
-    is never read, and a latched-or-dead safety layer is invisible: the loop
-    ticks happily into the void until the execution budget lapses and the goal
-    aborts as ``deadline_exceeded`` / ``FAILURE_DEADLINE_MISSED``. The reasoner's
-    replanning ladder then reads "too slow" and retries the same skill into the
-    same stopped safety layer.
+    The gap #115 could not reach: its check lives inside
+    ``ROSPublishingHAL._wait_for_group_applied``, entered only by an action carrying
+    ``tick_group_size > 1``. Every single-surface policy in the tree (SmolVLA, ACT, diffusion)
+    emits ONE ``Action`` per tick, so ``send_action`` publishes and returns without blocking,
+    the safety seam is never read, and a latched-or-dead safety layer is invisible: the loop
+    ticks into the void until the execution budget lapses and the goal aborts as
+    ``deadline_exceeded`` / ``FAILURE_DEADLINE_MISSED``. The reasoner's replanning ladder then
+    reads "too slow" and retries the same skill into the same stopped safety layer.
 
-    Real components throughout: the real ``SafetyPassthroughNode`` is taken down
-    by its own lifecycle transition, and the real ``RskillRunnerNode`` notices
-    through the ``/openral/safety_status`` liveness rule it already owns.
+    Real components throughout: the real ``SafetyPassthroughNode`` is taken down by its own
+    lifecycle transition, and the real ``RskillRunnerNode`` notices through the
+    ``/openral/safety_status`` liveness rule it already owns.
     """
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
@@ -775,22 +769,20 @@ def _make_starting_pose_skill() -> Any:
 def test_safety_loss_aborts_the_post_reset_joint_state_wait() -> None:
     """The starting-pose preamble's joint-state wait names the safety stop too.
 
-    The earliest wait on the dispatch path, and the second one a stopped safety
-    layer starves: after the ``starting_pose`` reset the runner blocks for a
-    ``/joint_states`` frame newer than the reset, because a policy whose first
-    observation is the PRE-reset pose is out of distribution. On a real robot a
-    latched HAL stops publishing ``/joint_states`` altogether
-    (``openral_hal.lifecycle._publish_joint_state`` returns early while
-    ``self._estopped``), so the wait sat out its full second, logged
-    ``post_reset_joint_state_timeout`` as if the frame were merely late, and
-    then started the policy regardless.
+    The earliest wait on the dispatch path, and the second one a stopped safety layer
+    starves: after the ``starting_pose`` reset the runner blocks for a ``/joint_states`` frame
+    newer than the reset, because a policy whose first observation is the PRE-reset pose is
+    out of distribution. On a real robot a latched HAL stops publishing ``/joint_states``
+    altogether (``openral_hal.lifecycle._publish_joint_state`` returns early while
+    ``self._estopped``), so the wait would sit out its full second, log
+    ``post_reset_joint_state_timeout`` as if the frame were merely late, and start the policy
+    regardless.
 
-    This harness has no HAL node, so the aggregator already holds a frame the
-    wait accepts immediately — what is under test is therefore the guard, not
-    the timeout: with a safety stop in effect the runner must refuse to enter
-    the policy at all, and must say which wait it refused at. Asserting the wait
-    by name matters because the rollout-loop guard would otherwise catch the
-    same condition one step later and hide which wait actually blocked.
+    This harness has no HAL node, so the aggregator already holds a frame the wait accepts
+    immediately — what is under test is the guard, not the timeout: with a safety stop in
+    effect the runner must refuse to enter the policy at all, and must say which wait it
+    refused at. Asserting the wait by name matters because the rollout-loop guard would
+    otherwise catch the same condition one step later and hide which wait actually blocked.
     """
     import rclpy
     from openral_msgs.action import ExecuteRskill

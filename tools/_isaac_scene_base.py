@@ -9,14 +9,14 @@ than a third copy of the skeleton.
 
 Subclasses implement the divergent parts:
 
-* :meth:`build` — construct the stage (robot, props, cameras, controllers);
-* :meth:`_apply_action` — translate one policy action into actuator commands;
-* :meth:`_images` — return the ``{name: HWC uint8}`` camera dict;
-* :meth:`_state` — return the 1-D float32 proprioception vector;
-* :meth:`_reward_terminated` — return ``(reward, terminated)`` for the step.
+* ``build`` — construct the stage (robot, props, cameras, controllers);
+* ``_apply_action`` — translate one policy action into actuator commands;
+* ``_images`` — return the ``{name: HWC uint8}`` camera dict;
+* ``_state`` — return the 1-D float32 proprioception vector;
+* ``_reward_terminated`` — return ``(reward, terminated)`` for the step.
 
-and may override :meth:`_on_reset` (per-episode randomization), the class
-attributes :data:`warmup_steps` / :data:`physics_substeps`, and set
+and may override ``_on_reset`` (per-episode randomization), the class
+attributes ``warmup_steps`` / ``physics_substeps``, and set
 ``self.action_dim`` in ``__init__``.
 """
 

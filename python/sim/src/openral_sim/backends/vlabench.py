@@ -1,9 +1,9 @@
-"""VLABench scene adapter — wraps :class:`lerobot.envs.configs.VLABenchEnv`.
+"""VLABench scene adapter — wraps ``lerobot.envs.configs.VLABenchEnv``.
 
 VLABench (ICCV 2025, OpenMOSS) is a MuJoCo + dm_control language-conditioned
 manipulation benchmark on a Franka Panda arm. lerobot 0.6.0 ships a native
 ``vlabench`` env config; this adapter drives it through OpenRAL's unbatched
-:class:`SimRollout` contract.
+``SimRollout`` contract.
 
 Env contract (``obs_type="pixels_agent_pos"``, ``n_envs=1``):
 - ``obs["pixels"]`` — dict of 3 RGB views ``image`` / ``second_image`` /
@@ -20,7 +20,7 @@ Task ID convention: ``"vlabench/<task-name>"`` (e.g. ``"vlabench/select_fruit"``
 ``scene.id`` MUST be ``"vlabench"``.
 
 Provisioning. The Python side (clone + editable install + numpy-2 sim
-deps + rrt-algorithms stub) is handled by :func:`ensure_backend_deps` under the
+deps + rrt-algorithms stub) is handled by ``ensure_backend_deps`` under the
 ``"vlabench"`` plan, auto-installed on first env build (``OPENRAL_AUTO_INSTALL_DEPS``).
 The plan pins MuJoCo 3.2.2 + dm_control 1.0.22, matching the upstream evaluator;
 newer loose pairs fail during dm_control model indexing.
@@ -126,7 +126,7 @@ def _unbatch(value: Any) -> NDArray[Any]:
 
 @dataclass
 class _VLABenchSim:
-    """Thin :class:`SimRollout` wrapper around a VLABench ``SyncVectorEnv``."""
+    """Thin ``SimRollout`` wrapper around a VLABench ``SyncVectorEnv``."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -238,7 +238,7 @@ def provision_vlabench() -> None:
 
     ``ensure_backend_deps`` clones + installs the package; the asset bundle is
     a separate Google-Drive pull we deliberately never automate, so
-    :func:`_check_vlabench_assets` only verifies it and raises the recipe when
+    ``_check_vlabench_assets`` only verifies it and raises the recipe when
     it is missing. Preflighting both means the operator reads that recipe on a
     terminal instead of hitting the HAL's 300 s ``on_configure`` bound.
 

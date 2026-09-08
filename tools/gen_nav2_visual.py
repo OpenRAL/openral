@@ -42,7 +42,7 @@ _STATIC_LAYER_ON_MAP = {
     "map_topic": "/map",
     # nvblox publishes /map RELIABLE+VOLATILE (live-updating), NOT latched — so
     # the static_layer must NOT request transient_local or the QoS mismatches and
-    # the layer never receives the map. Verified live (ros2 topic info /map).
+    # the layer never receives the map (ros2 topic info /map).
     "map_subscribe_transient_local": False,
 }
 

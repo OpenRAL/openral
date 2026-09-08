@@ -1,52 +1,43 @@
 """HAL adapter for the Enactic OpenArm v2 bimanual humanoid arm (MuJoCo digital twin).
 
 The Enactic OpenArm is an 8-DoF (7 revolute arm + 1 parallel-jaw
-gripper) per-side open-hardware humanoid arm.  This HAL drives the
+gripper) per-side open-hardware humanoid arm. This HAL drives the
 upstream ``enactic/openarm_mujoco`` **v2** bimanual MJCF (see
-:mod:`openral_hal._openarm_v2_assets`); v2 replaces v1's
-torque-mode arm motors with native ``<position>`` actuators carrying
-per-class PD gains, fixes v1's asymmetric LEFT-finger gain bug, and
-collapses the two-finger-per-side gripper to a single driven joint
-with a kinematic equality constraint coupling the follower finger.
+``openral_hal._openarm_v2_assets``); v2 replaces v1's torque-mode arm
+motors with native ``<position>`` actuators carrying per-class PD
+gains, fixes v1's asymmetric LEFT-finger gain bug, and collapses the
+two-finger-per-side gripper to a single driven joint with a kinematic
+equality constraint coupling the follower finger.
 
-That upstream cleanup deletes a meaningful pile of HAL workaround
-code that the v1 adapter required (software PD loop sized from
-``forcerange``, ``ctrllimited`` override, asymmetric-gain
-compensation, two-finger averaging) — see git history for context.
-This adapter is therefore a thin :class:`HALBase` subclass: read /
-write the 16-element action vector directly into MuJoCo's 16
-position-actuator ``ctrl`` slots and let the MJCF's own PD law
-handle dynamics.
+That upstream cleanup deletes the HAL workaround code v1 required
+(software PD loop sized from ``forcerange``, ``ctrllimited`` override,
+asymmetric-gain compensation, two-finger averaging — see git history).
+This adapter is a thin ``HALBase`` subclass: read/write the
+16-element action vector directly into MuJoCo's 16 position-actuator
+``ctrl`` slots and let the MJCF's own PD law handle dynamics.
 
-What this is — and what it isn't
---------------------------------
-Like the SO-100 / ALOHA / G1 / H1 / Rizon-4 twins, this HAL is a
-**digital-twin contract validator** (CLAUDE.md §1.11): if the sim
-tests pass, the 16-DoF action layout, lifecycle, joint indexing,
-and ``RobotDescription`` round-trip are guaranteed to match what
-:class:`openral_hal.openarm_real.OpenArmRealHAL` sees on the
-physical arm — the two share this module's
-:data:`OPENARM_DESCRIPTION`.  The remaining failure surfaces are
-below the adapter, in the ``openarm_hardware`` ros2_control plugin
-and the CAN FD bus itself (HIL territory).
+Like the SO-100/ALOHA/G1/H1/Rizon-4 twins, this HAL is a
+**digital-twin contract validator** (CLAUDE.md §1.11): if the sim tests
+pass, the 16-DoF action layout, lifecycle, joint indexing, and
+``RobotDescription`` round-trip are guaranteed to match what
+``openral_hal.openarm_real.OpenArmRealHAL`` sees on the physical arm —
+the two share this module's ``OPENARM_DESCRIPTION``. Remaining failure
+surfaces are below the adapter, in the ``openarm_hardware``
+ros2_control plugin and the CAN FD bus itself (HIL territory).
 
-Action layout
--------------
-16-DoF :class:`openral_core.Action` with the same shape as
-:class:`AlohaHAL` (just one extra arm joint per side, plus a
-hinge-mode gripper instead of a prismatic one):
+Action layout: 16-DoF ``openral_core.Action``, same shape as
+``AlohaHAL`` (one extra arm joint per side, hinge-mode gripper
+instead of prismatic):
 
 * ``target[0:7]``   — left arm joints (radians)
 * ``target[7]``     — left gripper position (rad, ``[0, 0.7854]``)
 * ``target[8:15]``  — right arm joints (radians)
 * ``target[15]``    — right gripper position (rad, ``[-0.7854, 0]``)
 
-The asymmetric gripper ctrlranges (left positive, right negative)
-come from the v2 MJCF — the mechanism mirrors physically and the
-upstream definitions reflect that.  Each gripper command drives
-*one* finger actuator; the second finger per side follows via the
-MJCF's ``<equality>`` constraint and does not need a separate
-command.
+The asymmetric gripper ctrlranges (left positive, right negative) come
+from the v2 MJCF, whose mechanism mirrors physically. Each gripper
+command drives one finger actuator; the second finger per side follows
+via the MJCF's ``<equality>`` constraint.
 
 Example:
     >>> from openral_hal import OpenArmMujocoHAL, OPENARM_DESCRIPTION
@@ -59,17 +50,17 @@ Example:
 
 .. seealso::
 
-   :mod:`openral_hal.openarm_real` — the real-hardware adapter for
+   ``openral_hal.openarm_real`` — the real-hardware adapter for
    this arm.
 
 .. note::
 
    Once ``robot_descriptions`` bumps its ``enactic/openarm_mujoco``
    pin past v2's introduction (PR #19), this module should drop
-   :func:`openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf`
+   ``openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf``
    and resolve the MJCF the same way every other sim HAL does
    (``from robot_descriptions import openarm_v2_mj_description``).
-   Tracked at the call site in :func:`_openarm_mjcf_path`.
+   Tracked at the call site in ``_openarm_mjcf_path``.
 """
 
 from __future__ import annotations
@@ -428,11 +419,11 @@ OPENARM_DESCRIPTION = RobotDescription(
 
 
 # ── HAL ──────────────────────────────────────────────────────────────────────
-# OpenArmMujocoHAL is a thin :class:`MujocoArmHAL` subclass.
+# OpenArmMujocoHAL is a thin ``MujocoArmHAL`` subclass.
 # v2 has 18 qpos (7 arm + 2 finger per side) but only 16 actuators — the
 # follower finger tracks via an MJCF ``<equality>`` constraint, so we
 # skip qpos 8 / qpos 17 via the explicit ``joint_qpos_addr`` on
-# :data:`OPENARM_DESCRIPTION.sim`.  ``seed_ctrl_from_qpos=True`` on the
+# ``OPENARM_DESCRIPTION.sim``.  ``seed_ctrl_from_qpos=True`` on the
 # manifest replaces the per-class ``connect()`` seeding loop the old
 # bespoke class used to do.
 
@@ -440,11 +431,11 @@ OPENARM_DESCRIPTION = RobotDescription(
 class OpenArmMujocoHAL(MujocoArmHAL):
     """HAL adapter for the Enactic OpenArm v2 (MuJoCo digital twin).
 
-    Thin manifest-driven wrapper around :class:`MujocoArmHAL`; all wiring
+    Thin manifest-driven wrapper around ``MujocoArmHAL``; all wiring
     (MJCF URI via the ``openarm_v2:`` scheme, joint→qpos map that skips
     the passive follower fingers, two ``PASSTHROUGH`` grippers,
     ``seed_ctrl_from_qpos`` to hold the initial pose under the v2 PD
-    actuators) lives in :data:`OPENARM_DESCRIPTION.sim`.
+    actuators) lives in ``OPENARM_DESCRIPTION.sim``.
 
     Public 16-DoF surface (7 arm + 1 gripper per side, left then right)
     matches what a future ``OpenArmRealHAL`` wrapping the LeRobot OpenArm
@@ -454,10 +445,10 @@ class OpenArmMujocoHAL(MujocoArmHAL):
     Args:
         mjcf_path: Optional override for the MJCF file path.  When
             ``None``, the v2 bimanual MJCF is fetched lazily through
-            :func:`openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf`
+            ``openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf``
             via the ``openarm_v2:bimanual`` URI scheme.
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.
+            ``send_action``.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -485,7 +476,7 @@ class OpenArmMujocoHAL(MujocoArmHAL):
         OpenArm has no per-robot ``connect()`` override: any starting pose
         a Skill needs is carried by the rSkill manifest's
         ``starting_pose:`` and applied by ``rskill_runner_node`` via
-        :meth:`MujocoArmHAL.reset_to_pose` before the first inference
+        ``MujocoArmHAL.reset_to_pose`` before the first inference
         tick (bimanual amendment).
         """
         self._init_from_description(

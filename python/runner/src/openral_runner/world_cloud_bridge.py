@@ -2,28 +2,24 @@
 """rclpy → OTLP bridge for the octomap occupied-voxel cloud.
 
 The OpenRAL dashboard is OTLP-only — it never subscribes to ROS topics
-directly. This module ships :class:`WorldCloudBridge`, a small consumer
-constructed against an existing ``rclpy.node.Node`` that subscribes to the
-``sensor_msgs/PointCloud2`` octomap_server publishes on
-``/octomap_point_cloud_centers`` (occupied voxel centers — the
-octomap world map the safety kernel gates on), transforms the points into the
-robot ``base_link`` frame via TF2, crops them to a local box, renders an
-oblique "chase-cam" perspective PNG colored by distance from the robot,
-and emits one ``world.pointcloud`` OTel span carrying the metadata + PNG
-as attributes.
-
-The dashboard store has a matching handler that populates
-``_topics["pointcloud"]`` from the span (see
+directly. ``WorldCloudBridge`` subscribes (given an existing
+``rclpy.node.Node``) to the ``sensor_msgs/PointCloud2`` octomap_server
+publishes on ``/octomap_point_cloud_centers`` (occupied voxel centers, the
+map the safety kernel gates on), transforms it into ``base_link`` via TF2,
+crops to a local box, renders an oblique "chase-cam" PNG colored by
+distance, and emits one ``world.pointcloud`` OTel span carrying the
+metadata + PNG as attributes. The dashboard store's matching handler
+populates ``_topics["pointcloud"]`` from the span (see
 ``openral_observability.dashboard.store``).
 
-The pure render functions (:func:`crop_points_to_box`,
-:func:`encode_world_cloud_png`, :func:`world_cloud_span_attributes`) take
+The pure render functions (``crop_points_to_box``,
+``encode_world_cloud_png``, ``world_cloud_span_attributes``) take
 plain ``(N, 3)`` arrays so the dashboard contract is testable without ROS.
 
-Composed into the existing ``RskillRunnerNode`` via
-``packages/openral_rskill_ros/openral_rskill_ros/compose.py`` so it shares
-the runner's rclpy executor; constructing it manually outside compose is
-supported for tests.
+Composed into ``RskillRunnerNode`` via
+``packages/openral_rskill_ros/openral_rskill_ros/compose.py`` to share the
+runner's rclpy executor; manual construction outside compose is supported
+for tests.
 """
 
 from __future__ import annotations
@@ -260,7 +256,7 @@ def _apply_transform(points: NDArray[np.float32], tf: Any) -> NDArray[np.float32
 class WorldCloudBridge:
     """rclpy → OTLP bridge for ``/octomap_point_cloud_centers``.
 
-    Mirrors :class:`openral_runner.slam_bridge.SlamMapBridge`: constructed
+    Mirrors ``openral_runner.slam_bridge.SlamMapBridge``: constructed
     against an existing ``rclpy.node.Node`` so the PointCloud2 subscription
     shares the runner's executor. On each accepted message it reads the
     cloud, transforms it into ``base_frame`` via TF2, crops, renders the
@@ -268,9 +264,9 @@ class WorldCloudBridge:
 
     Args:
         node: Host ``rclpy.node.Node``; the subscription + TF listener are
-            created on it. :meth:`destroy` releases the subscription.
+            created on it. ``destroy`` releases the subscription.
         topic: PointCloud2 topic. Defaults to
-            :data:`WORLD_CLOUD_TOPIC_DEFAULT`.
+            ``WORLD_CLOUD_TOPIC_DEFAULT``.
         base_frame: tf2 frame to express the cloud in (the robot frame).
         source_node_name: identifier surfaced on the dashboard card.
         publish_interval_s: minimum wall-clock interval between spans.

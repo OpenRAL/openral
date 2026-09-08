@@ -344,6 +344,58 @@ contributor should look at before adding similar code.
     OBB narrow phase, quietly losing the tightening), while raising it only in
     C++ leaves the extra budget unreachable.
 
+16. **`_load_manifest_for_spec` — *resolved.*** `backends/libero.py` carried an
+    identical copy of `policies/act.py`'s helper; `libero.py` now imports it
+    from `act.py` (both eagerly loaded by `openral_sim/__init__.py`, so no new
+    import-order cost). `_policy_loading.load_manifest_for_spec` stays the
+    separate canonical helper for `smolvla`/`gr00t`/`openvla`/`pi05`/`rldx` —
+    not touched, since it treats an empty `weights_uri` differently (`None`
+    vs. falling through to `load_rskill_manifest("")`).
+17. **`_coerce_sim_time_ns` / `_opt_num` — *resolved.*** Identical copies in
+    `backends/isaac_sim.py` and `backends/robotwin.py` promoted to
+    `sidecar.py::coerce_sim_time_ns` (decodes a sidecar wire reply — fits the
+    module's existing `require_key`/`SidecarClient` charter) and
+    `_sidecar_common.py::opt_num` (decodes `backend_options` launch config,
+    alongside the module's other sidecar-provisioning helpers).
+18. **`_env_bool` — *resolved.*** Identical copies in `policies/gr00t.py` and
+    `policies/rldx.py`; `rldx.py` now imports it from `gr00t.py` (no cycle —
+    both are leaf policy modules already eagerly registered together).
+19. **`_sensor_name_to_slot` / `_sensor_name_to_vla_slot` — *resolved.***
+    Identical bodies in `openral_runner.dataset_recorder_bridge` and
+    `openral_rskill_ros.rskill_runner_node`; the ROS package already
+    `exec_depend`s `python3-openral-runner`, so `rskill_runner_node` now
+    imports the runner's copy instead of carrying its own.
+20. **`UsbDevice` / `UsbDeviceRecord` — *not consolidated, deliberately
+    different types.*** `openral_cli.autodetect.UsbDevice` is a `NamedTuple`
+    (lightweight, hot in OS-probing loops); `openral_detect.report.UsbDeviceRecord`
+    is a Pydantic `BaseModel` (CLAUDE.md §2's contract for the JSON/YAML report
+    boundary). Same fields, same reason to stay two types.
+21. **`camera_info_from_intrinsics` — *not consolidated, illegal import.***
+    `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry
+    near-identical builders, but `openral_perception_ros/package.xml` does not
+    depend on `openral_hal` (only `python3-openral-runner`), so the ROS
+    package cannot legally import the HAL's copy without a new dependency.
+22. **Test scaffolding — *resolved via fixtures.*** `_av` (3 copies,
+    `python/observability/tests/`), `_find_metric` (2 copies, same dir),
+    `_zero_frame` (2 copies, `python/dataset/tests/`), `_build_so101_hal` (2
+    copies, `python/hal/tests/`) each moved into their tier's `conftest.py` as
+    a fixture returning the callable (`--import-mode=importlib` blocks
+    `from conftest import x`). `_import_launch_module` (2 of 7 copies —
+    `test_kernel_params_no_empty_lists.py` / `test_no_dashboard_otlp_env.py`
+    only, per scope) moved to a new same-package
+    `packages/openral_rskill_ros/test/_launch_test_common.py` +
+    sys.path-injecting `conftest.py`, mirroring `python/hal/tests/conftest.py`.
+    Five more `_import_launch_module` copies remain in sibling
+    `test_sim_e2e_*.py` files — out of this pass's scope, worth a follow-up.
+
+23. **Reward-monitor `assess()` — *resolved.*** `RobometerInProcessReward.assess`
+    (`backends/reward/robometer_reward.py`) and `TOPRewardMonitor.assess`
+    (`backends/reward/topreward_reward.py`) carried identical bodies (and each
+    its own copy of `_STALL_TREND_EPS = 0.002`). Both now call
+    `frame_source.assess_from_score(progress, success, *, success_threshold,
+    frames_seen)`, the module `trend` already lived in and both files already
+    imported from.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer
@@ -568,6 +620,12 @@ contributor should look at before adding similar code.
   ranges — do not write a JOINT_POSITION + custom-IK stack like
   the early `so100_robosuite` drafts did.
 
+16. **`NDArrayOrNone = Any` alias — *resolved.*** Was defined identically in
+    both `python/rskill/src/openral_rskill/pose_goal_rskill.py` and
+    `look_at_rskill.py`; the latter now imports it from
+    `pose_goal_rskill` (which it already imports `build_pose_constraints`
+    from) instead of redefining it.
+
 ### Watch list (not yet a problem, but worth tracking)
 
 - **Pinhole back-projection of a `32FC1` depth raster** now exists twice:
@@ -666,3 +724,151 @@ contributor should look at before adding similar code.
 extraction whenever a module is added or renamed; this file is hand-edited
 afterwards. If a future contributor automates regeneration, mirror the
 pattern in `tools/schema_export.py`.*
+
+24. **Test-tier fixture duplication — *resolved.*** `memory_exporter`,
+    `memory_metric_reader`, `exporter`, the rclpy context, the span-capture
+    processor, `_CylinderShape`, the RT-DETR ONNX writer and the fake OpenAI
+    client now live once in `tests/unit/conftest.py`; the MuJoCo
+    `connected_hal` / `hal` pair and the LIBERO / RoboCasa / Isaac availability
+    probes live once in `tests/sim/conftest.py`. Per-file copies that shadowed
+    those fixtures were removed. **Add a new tier-wide fixture to the tier's
+    conftest, not to the test file that needs it first.**
+
+25. **Deliberately not consolidated.** Each of these is a repeated body that
+    consolidation would make worse, not better:
+    - `camera_info_from_intrinsics` — `openral_hal.depth_cloud` and
+      `openral_perception_ros.depth_convert`. The ROS package does not depend
+      on `openral_hal` (`package.xml`), so the import would be illegal.
+    - `UsbDevice` / `UsbDeviceRecord` — a `NamedTuple` in `openral_cli` and a
+      Pydantic model in `openral_detect`. Same fields, different contracts
+      (CLAUDE.md §2: Pydantic at boundaries, dataclass inside a module).
+    - The MJCF compile trio — `sim` / `_compiled` / `_model_data` in
+      `test_sim_attachment_evidence.py`, `test_sim_estop_payload_slop.py`,
+      `test_sim_estop_voxel_backing.py`. Four identical lines, each bound to
+      its own module's `_MJCF`; sharing needs a parameter every call site must
+      then pass.
+    - `_wait_until` — `test_hal_attachment_barrier_live.py` and
+      `test_estop_voxel_backing_live.py`. A seven-line spin-wait; hoisting it
+      costs a 21-call-site refactor of live-ROS tests.
+    - `isolated_ros` — `test_ros2_image_sensor_reader.py` (domain 91) and
+      `tests/hil/test_openarm_ros_transport.py` (domain 92). The differing
+      domain is the point.
+    - Per-package ROS test clones (`captured_spans`, `_spin_until`, the
+      `*_sigint_shape.py` families, the `openral_hal_*` lifecycle tests, the
+      `slam_bringup` launch tests). colcon builds and tests each package
+      standalone, so a shared helper would need a new shared package.
+
+26. **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
+    (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
+    `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
+    `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
+    a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
+    The bodies differ in one reachable case: the shared version guards
+    `if not weights_uri`, so an empty `weights_uri` returns `None`; act's
+    falls through to `load_rskill_manifest("")` and raises `ROSConfigError`.
+    `VLASpec(id=..., weights_uri="")` is constructible, and
+    `libero._control_mode` calls the loader directly, so switching it would
+    turn a loud config error into a silent fall-back to `"relative"` control
+    mode. **Removing this duplicate is a behaviour change, not a refactor.**
+    Decide the empty-URI contract first (CLAUDE.md §1.4 favours the loud
+    version), then make all eleven call sites agree.
+
+27. **`disconnect()` / `_floats` in `AlohaHAL` / `RosControlHAL` — *resolved.***
+    Both were byte-identical (flag-and-log). `disconnect` moved to `HALBase`
+    as the default — subclasses with real teardown (`SO100FollowerHAL`,
+    `GalaxeaA1HAL`, `MujocoArmHAL`) still override it. The nested `_floats`
+    closure in each `read_state` became `_base.py::_raw_floats(raw, key, width)`.
+28. **`_connect` / `_rpc` in `locateanything_detector.py` / `qwen_scene_vlm.py`
+    — *not consolidated, no shared home.*** AST-identical ZMQ REQ-socket
+    bodies, but neither module imports from a shared `backends/gstreamer`
+    module, and the same shape also appears in `omdet_turbo_detector.py`,
+    `sam2_segmenter.py`, and the reward backends — a two-file extraction
+    would miss the real six-way duplication and force a new module for two
+    callers. Leave as-is; a future pass consolidating all sidecar clients
+    into one `ZmqSidecarClient` base should take all six at once.
+
+29. **Sidecar scene/socket duplication — *resolved.*** `_IsaacSimSidecar` and
+    `_RoboTwinSimSidecar` were the same dataclass with byte-identical
+    `reset`/`step`/`sim_time_ns`/`render`/`close`; both now subclass
+    `sidecar.SidecarSimRollout`, which owns those fields and methods (each
+    backend keeps only `_wrap_obs` and its docstring-carrying `action_dim`).
+    `SidecarClient._init_socket` and the RLDX-1 adapter's own `_init_socket`
+    (`policies/rldx.py`) were also byte-identical; both now call
+    `sidecar.open_req_socket`. `tabletop_push/env.py` and `so101_box/env.py`'s
+    `_render_named_rgb` were byte-identical too; both now call
+    `rollout.render_named_rgb_mujoco` — `rollout.py` was already the shared
+    module both imported (for `sim_time_ns_from_mujoco_handles`).
+
+30. **`connected_hal` leftover shadows — *resolved.*** `test_so100_follower_hal_mujoco.py`
+    and `test_openarm_hal_mujoco.py` each still defined the same
+    connect/disconnect wrapper `tests/sim/conftest.py:236` already provides.
+    Both local copies deleted; the conftest fixture resolves against each
+    file's own `hal` fixture.
+31. **HIL transport `state`/`_on_joint_state`/`wait_for_first_state` —
+    *resolved.*** Byte-identical across `_ros_control_transport.py`,
+    `_aloha_ros_transport.py`, `_openarm_ros_transport.py`. Split into
+    `_JointStateCache` (`state()`, all three) and `_PolledJointStateMixin`
+    (the other two, in `_ros_control_transport.py`) — OpenArm keeps its own
+    `_on_joint_state`/`spin_once` (executor-bound, waits for all 16 joints).
+32. **Safety-kernel place-\* live test harness `publish_grid` /
+    `publish_joint_state` / `reset_estop` — *resolved.*** Byte-identical
+    closures in the allowance-band and target-geometry live tests. Moved to
+    `tests/integration/conftest.py` as three factory fixtures
+    (`publish_occupancy_grid`, `publish_carriage_joint_state`,
+    `reset_kernel_estop`) returning callables; each test still owns its
+    `helper`/publishers/`spin` and passes them in explicitly — no change to
+    any topic, joint order, timeout or QoS.
+33. **`test_disconnect_idempotent` (Franka/Aloha/Sawyer real HALs) —
+    *resolved, was already redundant.*** `tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent`
+    already parametrizes over `HAL_BUILDERS`, which already includes
+    `FrankaPandaRealHAL`/`SawyerRealHAL`/`AlohaHAL` built with the same
+    args as each file's own `hal` fixture. Deleted the three per-file copies.
+34. **`test_after_estop_send_action_fails` (Franka/Sawyer real HALs) —
+    *resolved.*** No existing parametrized home (unlike #33), so added
+    `test_hal_send_action_after_estop_fails` to
+    `test_hal_protocol_conformance.py`, parametrized over just these two
+    names (not all of `HAL_BUILDERS` — the other builders were never proven
+    to share this "estop leaves send_action failing until reconnect" contract).
+35. **`test_manifest_has_latency_budget` (pusht/diffusion, franka_panda/smolvla/libero,
+    aloha/act sim suites) — *resolved.*** Same one-line manifest-contract
+    assertion three times. `tests/sim/conftest.py::assert_manifest_has_latency_budget`
+    is now the shared body; each file keeps its own test method (and its own
+    `skill_manifest` fixture loading its own rSkill), so a failure still
+    names the file/class it came from.
+36. **`test_send_action_holds_zero_pose` (H1/G1) / `test_hold_zero_pose`
+    (OpenArm) — *resolved.*** Identical "zero action → every joint stays
+    near zero" body. `tests/sim/conftest.py::assert_send_action_holds_zero_pose`
+    is now the shared assertion; each file still calls it with its own
+    `connected_hal` and `_zero_action()`, keeping its own test name/class.
+37. **`_expand` PEP 735 `include-group` walker — *resolved.*** Identical
+    recursive closure in `test_qwen_scene_vlm.py` and
+    `test_locateanything_detector.py`. Moved to
+    `tests/unit/conftest.py::expand_dependency_group`, a factory fixture
+    returning `expand(groups, name) -> list[str]`.
+38. **`_CaptureProcessor.__call__` in `test_reasoner_core.py` — *resolved,
+    leftover shadow.*** The whole class duplicated `tests/unit/conftest.py`'s
+    `_CaptureProcessor` (used by the `cap` fixture there). Deleted the local
+    class; `test_reasoner_core.py`'s `log_cap` fixture now imports the
+    conftest one and keeps its own extra `openral_reasoner.core.log` rebind.
+39. **`_find_metric` (`python/observability/tests/conftest.py` fixture vs.
+    `tests/unit/test_runner_observability.py` module function) — *left
+    alone, no shared home.*** Different installable-package test tiers, each
+    with its own `conftest.py`; a shared helper would need a new top-level
+    module reachable from both, which the no-new-top-level-modules rule
+    forbids. Two copies, below the threshold to justify that module.
+    module both imported (for `sim_time_ns_from_mujoco_handles`).
+40. **`_connect` / `_rpc` / `_try_ping` (`LocateAnythingDetector` vs.
+    `QwenSceneVlm`, both in `backends/gstreamer/`) — *resolved.*** All three
+    were byte-identical ZMQ REQ/REP transport methods (~30 lines) across two
+    production classes. Moved to a new private
+    `backends/gstreamer/_zmq_sidecar.py::ZmqSidecarMixin`, which both classes
+    now inherit; `_spawn_and_wait`, `_ensure_ready` and `close` stay on each
+    class since they genuinely differ (boot command, port, error text).
+41. **`close` (`omdet_turbo_detector.py::OmDetTurboDetector` vs.
+    `sam2_segmenter.py::Sam2Segmenter`) — *left alone, deliberate keep.***
+    Byte-identical six-line in-process CUDA teardown (drop model, drop
+    processor, `torch.cuda.empty_cache()`), but the two classes share no
+    other structure (one is a detector sidecar-less transformers wrapper,
+    the other a promptable segmenter) — a shared base for six lines would
+    cost more to read than the duplication it removes.
+

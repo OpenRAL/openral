@@ -1,30 +1,22 @@
 # MetaWorld MT10 benchmark suite — 10 manipulation tasks.
 #
-# Mirrors the MT10 setting from Yu et al., 2019 (arXiv:1910.10897). The
-# 10 task names are the canonical MetaWorld v3 MT10 set
-# (`metaworld.env_dict.MT10_V3`, post-2024 Metaworld 3.x) and are a
-# subset of benchmarks/metaworld_mt50.yaml — same scene, robot and
-# instructions, so the two suites stay byte-consistent per task.
+# Mirrors the MT10 setting from Yu et al., 2019 (arXiv:1910.10897). 10 task
+# names = canonical MetaWorld v3 MT10 set (`metaworld.env_dict.MT10_V3`,
+# post-2024 Metaworld 3.x), a subset of benchmarks/metaworld_mt50.yaml — same
+# scene/robot/instructions, so the two suites stay byte-consistent per task.
 #
-# Shape: bare list of 10 BenchmarkScenes (one per task); suite
-# id = filename stem ("metaworld_mt10"). All share the same scene,
-# robot, episode budget and provenance — the YAML uses an anchor
-# (&mw_scene) to keep the file compact. Each task overrides only its
-# id + instruction. Suite-level invariants are enforced by
-# :func:`openral_core.raise_on_invalid_suite`.
+# Shape: bare list of 10 BenchmarkScenes; suite id = filename stem
+# ("metaworld_mt10"). All share scene/robot/episode budget/provenance via the
+# `&mw_scene` anchor; each task overrides only id + instruction. Invariants
+# enforced by `openral_core.raise_on_invalid_suite`.
 #
-# Protocol: 10 episodes per task = 100 total rollouts. Lighter than the
-# original paper protocol (50 goals/task) but enough to score the
-# headline MT10 set in well under an hour on a single GPU; raise
-# n_episodes for a paper-equivalent reproduction.
+# Protocol: 10 episodes/task = 100 total (lighter than the paper's 50
+# goals/task, enough to score MT10 in well under an hour on one GPU; raise
+# n_episodes for paper-equivalent reproduction). Success key is "success"
+# (info["success"], not info["is_success"]); 500-step fixed horizon =
+# MetaWorld max_path_length.
 #
-# Notes: the success key is "success" — the metaworld env reports it
-# under info["success"], not info["is_success"]. 500-step fixed horizon
-# = MetaWorld max_path_length.
-#
-# Run:
-#   openral benchmark run --suite metaworld_mt10 \
-#       --rskill smolvla-metaworld
+# Run: openral benchmark run --suite metaworld_mt10 --rskill smolvla-metaworld
 
 - &mw_scene
   scene:

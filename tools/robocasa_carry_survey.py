@@ -1,44 +1,24 @@
 """Which RoboCasa tasks make the base drive while an object is carried?
 
-[Issue #108](https://github.com/OpenRAL/openral/issues/108) is blocked on one
-missing scene. `openral_nav2_bringup` publishes a payload-grown Nav2 footprint
-and filters the payload's and chassis's own lidar returns out of the scan
-(PR #143), and neither has ever run against a base that actually *translates*
-while carrying — so a working footprint and a decorative one look identical.
-Its README specifies the scene that would close #108 in four criteria, the
-first being **> ~1.0 m of required base displacement while an object is held**.
+[Issue #108](https://github.com/OpenRAL/openral/issues/108) needs a scene
+proving `openral_nav2_bringup`'s payload-grown Nav2 footprint (PR #143)
+against a base that actually translates while carrying: criterion 1 is
+> ~1.0 m of base displacement while holding an object.
 
-This tool answers "does any RoboCasa task already do that?" by **building the
-env and measuring it** — not by reading the source. That distinction is the
-whole point, and it is a correction:
+Measures rather than infers: RoboCasa's `ref=` keyword does NOT bound a
+fixture pair to 0.10 m as `Kitchen.get_fixture`'s docstring claims — the code
+ties-break among near-equidistant fixtures, so a `ref=`'d fixture (e.g.
+`DeliverStraw`'s `dining_counter` `ref=self.stool`) can sit metres away. This
+tool instead measures the straight-line distance from the base's start pose
+to each non-distractor object the task manipulates; a task qualifies when the
+furthest exceeds `REQUIRED_BASE_TRANSLATION_M`.
 
-* A first pass classified tasks statically, on the premise that RoboCasa's
-  `ref=` keyword bounds a fixture pair to 0.10 m ("if specified, will search for
-  fixture close to ref (within 0.10m)", `Kitchen.get_fixture`). **The docstring
-  does not describe the code.** The body keeps candidates within 0.10 m *of the
-  nearest one* — `[f for f, d in zip(cand, dists) if d - min_dist < 0.10]` —
-  which is a tie-break among near-equidistant fixtures, not a proximity bound.
-  A `ref=`'d fixture is the *nearest of its type*, and in a large kitchen that
-  can be metres away.
-* Linkage also need not involve the pair that matters. `DeliverStraw` registers
-  `dining_counter` with `ref=self.stool` — a third fixture — which says nothing
-  about how far it is from the drawer the base starts at.
-
-Both errors point the same way (they under-count qualifying tasks), and both
-vanish once the number is measured rather than inferred. What is measured here
-is the distance from the **base's start pose** to each object the task
-manipulates: a task qualifies when some non-distractor object sits further than
-`REQUIRED_BASE_TRANSLATION_M` from where the base begins, because the arm
-cannot bridge that and the base must drive.
-
-Needs RoboCasa provisioned (a GPU host; the env build is CPU MuJoCo but the
-install is the sim stack). Run::
+Needs RoboCasa provisioned (GPU host; env build is CPU MuJoCo). Run::
 
     uv run python tools/robocasa_carry_survey.py --seeds 1 2 3
     uv run python tools/robocasa_carry_survey.py --tasks DeliverStraw --json
 
-The result it recorded is in
-`docs/reference/robocasa-carry-survey.md`.
+Result recorded in `docs/reference/robocasa-carry-survey.md`.
 """
 
 from __future__ import annotations

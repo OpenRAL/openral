@@ -2,19 +2,19 @@
 
 Exercises the real ``mock`` scene + ``zero`` / ``random`` policies — no
 mocks, no stubs, no patches (CLAUDE.md §1.11 / §5.4). All assertions are
-on real :class:`SimRollout` / :class:`PolicyAdapter` instances built by
-the real :func:`openral_sim.factory.make_env` / :func:`make_policy`.
+on real ``SimRollout`` / ``PolicyAdapter`` instances built by
+the real ``openral_sim.factory.make_env`` / ``make_policy``.
 
 Pins:
 
 * Parallel path returns the same object types as the sequential path
-  for a real :class:`SimEnvironment`.
+  for a real ``SimEnvironment``.
 * ``OPENRAL_SIM_SEQUENTIAL_INIT=1`` selects the sequential path
   (verified via the structlog log output that the helper emits).
-* A factory error (real :class:`ROSConfigError` from
-  :func:`make_policy` on an unknown ``vla.id``) propagates verbatim
+* A factory error (real ``ROSConfigError`` from
+  ``make_policy`` on an unknown ``vla.id``) propagates verbatim
   out of the parallel helper.
-* A factory error in :func:`make_env` (unknown ``scene.id``) also
+* A factory error in ``make_env`` (unknown ``scene.id``) also
   propagates verbatim.
 """
 
@@ -50,7 +50,7 @@ def _mock_env(
     vla_id: str = "zero",
     scene_id: str = "mock",
 ) -> SimEnvironment:
-    """Real :class:`SimEnvironment` against the in-tree ``mock`` scene + policy."""
+    """Real ``SimEnvironment`` against the in-tree ``mock`` scene + policy."""
     return SimEnvironment(
         robot_id="so100_follower",
         scene=SceneSpec(
@@ -153,16 +153,16 @@ def test_sequential_and_parallel_paths_agree_on_type_shape() -> None:
 
 
 def test_parallel_init_propagates_unknown_vla_error() -> None:
-    """An unknown ``vla.id`` raises the real :class:`ROSConfigError` from make_policy."""
+    """An unknown ``vla.id`` raises the real ``ROSConfigError`` from make_policy."""
     env_cfg = _mock_env(vla_id="does-not-exist")
     with _env_var(_SEQUENTIAL_INIT_ENV, None), pytest.raises(ROSConfigError):
         _build_env_and_policy(env_cfg)
 
 
 def test_parallel_init_propagates_unknown_scene_error() -> None:
-    """An unknown ``scene.id`` raises the real :class:`ROSConfigError` from make_env.
+    """An unknown ``scene.id`` raises the real ``ROSConfigError`` from make_env.
 
-    Constructing the :class:`SimEnvironment` directly with an unknown
+    Constructing the ``SimEnvironment`` directly with an unknown
     scene id is rejected by Pydantic (scene id must match the
     registered ``mock`` for ``PhysicsBackend.MOCK``); to exercise the
     real registry-lookup failure we build a valid config and mutate the
@@ -177,7 +177,7 @@ def test_parallel_init_propagates_unknown_scene_error() -> None:
 
 
 def test_sequential_init_propagates_unknown_vla_error() -> None:
-    """Sequential path also propagates :class:`ROSConfigError` verbatim."""
+    """Sequential path also propagates ``ROSConfigError`` verbatim."""
     env_cfg = _mock_env(vla_id="does-not-exist")
     with _env_var(_SEQUENTIAL_INIT_ENV, "1"), pytest.raises(ROSConfigError):
         _build_env_and_policy(env_cfg)

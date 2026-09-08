@@ -1,37 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """What backs a world-voxel stop — the map-side half of the stop record.
 
-The 2026-08-22 validation round declared two of four stops FALSE POSITIVES and
-could not have been right about either, because nothing in the stack could
-answer the question a world-voxel stop actually turns on: *what is at the cell
-the kernel stopped on?* The near-miss probes measure MuJoCo against MuJoCo and
-never look at ``/openral/world_voxels`` at all, and their world side excludes
-exactly the two classes a map/world disagreement hides in — every robot body,
-and every non-collidable geom. So "zero pairs within 100 mm" was read as
-"nothing was there" when it could only ever mean "nothing SOLID and NOT the
-robot was within the window".
+The 2026-08-22 validation round called two of four stops false positives using probes that compare
+MuJoCo to MuJoCo, never touch ``/openral/world_voxels``, and exclude robot bodies and non-collidable
+geoms from the world side — so "no pairs within 100 mm" only ever meant "nothing solid and
+non-robot was in the window". Two defects pinned here:
 
-Two independent defects in that reading, both pinned here:
+1. Window too narrow: kernel distances are OBB-to-voxel, probe distances mesh-to-mesh. A box around
+   a rounded link is sub-mm on faces but 23-88 mm out at corners (measured against
+   ``panda_mj_description``); ``collision_model_mesh_slop`` makes that a number and the snapshot
+   widens the window by it.
+2. Robot body invisible to the probe: if the depth self-filter fails to keep the robot out of the
+   world map, the probe (which excludes robot bodies) reports nothing.
+   ``voxel_backing_record`` classifies against ALL geometry, so self-occupancy becomes a
+   verdict.
 
-1. **The window was too narrow to contain the answer.** Kernel distances are
-   OBB-to-voxel; probe distances are mesh-to-mesh. A box around a rounded link
-   is sub-millimetre on its faces and 23-88 mm out at its corners (measured
-   against ``panda_mj_description``), so the backing geometry of a legitimate
-   stop routinely sits outside a 100 mm mesh-to-mesh window.
-   :func:`collision_model_mesh_slop` makes that term a number and the snapshot
-   widens the window to it.
-2. **The robot's own body was invisible to the diagnostic.** The depth
-   self-filter is supposed to keep the robot out of its own world map; when it
-   fails there is no report, because the probe excludes robot bodies from its
-   world side on purpose. :func:`voxel_backing_record` classifies a cell
-   against ALL geometry, so self-occupancy becomes a verdict instead of
-   silence.
-
-The self-filter's coverage of the base and mount is pinned here too
-(``test_self_filter_covers_base_and_mount_including_unprefixed``): the
-2026-08-22 "base mapped as world occupancy" hypothesis was refuted by the
-round's own artifacts, and ``manipulator_mount`` — a robosuite body sharing no
-prefix with any joint — is the body that hypothesis turned on.
+``test_self_filter_covers_base_and_mount_including_unprefixed`` pins self-filter coverage of
+``manipulator_mount`` (unprefixed robosuite body) — refutes the 2026-08-22 "base mapped as world
+occupancy" hypothesis.
 
 Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11).
 """
@@ -51,16 +37,12 @@ from openral_hal.sim_sensor_bridge import (
 
 mujoco = pytest.importorskip("mujoco")
 
-# A robocasa-shaped mobile manipulator. The chassis, the pedestal and the arm
-# each carry a real solid geom, and `manipulator_mount` deliberately shares no
-# prefix with any joint name — robosuite names it exactly that way, and it is
-# reachable by the self-filter only through the parent-descendant closure.
-#
-# `pantry_side_panel` is a REAL obstacle standing beside the parked base: it is
-# what proves that removing the robot from world occupancy removes no
-# protection. `region_marker` carries neither contype nor conaffinity — a
-# RoboCasa placement region, which `mj_ray` strikes (and so does the depth
-# synth) but which the near-miss probe deliberately never measures.
+# A robocasa-shaped mobile manipulator. `manipulator_mount` deliberately shares no prefix with
+# any joint name (robosuite names it that way), reachable by the self-filter only through the
+# parent-descendant closure. `pantry_side_panel` is a real obstacle beside the parked base, proving
+# robot exclusion doesn't remove protection. `region_marker` has neither contype nor conaffinity —
+# a RoboCasa placement region that `mj_ray`/depth synth strike but the near-miss probe never
+# measures.
 _MJCF = """
 <mujoco model="estop_voxel_backing">
   <option gravity="0 0 0"/>
@@ -100,20 +82,18 @@ _MJCF = """
       <geom name="region_marker" type="box" size="0.02 0.3 0.3"
             contype="0" conaffinity="0"/>
     </body>
-    <!-- A RoboCasa-shaped fixture: a collidable slab wearing a non-collidable
-         visual shell, both inside ONE 50 mm cell, with the shell nearer the
-         probe's ray start. `counter_1_right` is exactly this shape and is what
-         the 2026-09-06 battery kept stopping on. -->
+    <!-- RoboCasa-shaped fixture: collidable slab wearing a non-collidable visual shell, both in
+         ONE 50 mm cell, shell nearer the probe's ray start. `counter_1_right` is this shape and
+         what the 2026-09-06 battery kept stopping on. -->
     <body name="counter_1_right_group" pos="0 -0.317 0.40">
       <geom name="counter_top" type="box" size="0.10 0.02 0.10" pos="0 0.027 0"/>
       <geom name="counter_top_visual" type="box" size="0.10 0.005 0.10" pos="0 -0.028 0"
             contype="0" conaffinity="0"/>
     </body>
-    <!-- The RoboCasa counter as `counter.py` ACTUALLY builds it: one full-span
-         non-collidable `*_top_visual` and collidable chunks tiling the SAME
-         volume, so the two share a surface exactly. Stepping past the shell's
-         face lands inside the chunk, where a ray reports no further entry —
-         which is why the coincident case needs more than the walk-past fix. -->
+    <!-- RoboCasa counter as `counter.py` actually builds it: one full-span non-collidable
+         `*_top_visual` and collidable chunks tiling the SAME volume (shared surface). Stepping
+         past the shell's face lands inside the chunk with no further ray entry — the coincident
+         case needs more than the walk-past fix. -->
     <body name="counter_2_right_group" pos="0.60 0 0.40">
       <geom name="counter2_top_visual" type="box" size="0.10 0.02 0.10"
             contype="0" conaffinity="0"/>
@@ -184,15 +164,9 @@ def _backing(
 
 
 def test_self_filter_covers_base_and_mount_including_unprefixed() -> None:
-    """The 2026-08-22 hypothesis, refuted: base and mount ARE self-filtered.
-
-    The round suspected the chassis/mount were mapped into the octomap as world
-    occupancy because they are not arm links. They are not: every one of them is
-    in the depth self-filter's body set, which is the same set the stop record
-    reports as ``probe_excluded_robot_bodies``. ``manipulator_mount`` is the
-    hard case — robosuite gives it no joint-shared prefix, so it is reachable
-    only through the parent-descendant closure, and it is exactly the body the
-    hypothesis named.
+    """Refutes the 2026-08-22 "chassis/mount mapped as world occupancy" hypothesis: both are in
+    the depth self-filter's body set (``probe_excluded_robot_bodies``), including the hard case
+    ``manipulator_mount``, reachable only through the parent-descendant closure.
     """
     model, _data = _model_data()
     names = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in _robot_bodies(model)}
@@ -211,18 +185,13 @@ def test_self_filter_covers_base_and_mount_including_unprefixed() -> None:
 
 
 def test_cell_on_the_robots_own_mount_is_self_occupancy_not_silence() -> None:
-    """A cell inside the robot's own base/mount reports, instead of nothing.
-
-    This is the failure mode the near-miss probe cannot see at all: its world
-    side excludes every robot body, so a robot mapped into its own world map
-    produces an empty pair list that reads as "nothing was there".
+    """A cell inside the robot's own base/mount reports self-occupancy instead of silence — the
+    failure mode the near-miss probe can't see (its world side excludes all robot bodies).
     """
     model, data = _model_data()
-    # The mount plate spans +-0.14 x +-0.14 x +-0.01 about base-frame z=0.15;
-    # this cell reaches its rim, where neither the pedestal (r=0.08) nor the
-    # arm base (r=0.06) can explain the return. `manipulator_mount` shares no
-    # prefix with any joint, so only the self-filter's descendant closure
-    # covers it — the exact body the refuted hypothesis named.
+    # Mount plate spans +-0.14 x +-0.14 x +-0.01 about base-frame z=0.15; this cell reaches its rim,
+    # where neither the pedestal (r=0.08) nor the arm base (r=0.06) explains the return —
+    # `manipulator_mount` only, covered via the self-filter's descendant closure.
     record = _backing(model, data, (0.115, 0.0, 0.145))
 
     assert record["verdict"] == "self_occupancy_suspect"
@@ -366,8 +335,8 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
     )
     # The cell offset from origin rotates: (dx, dy) -> (-dy, dx).
     ox, oy, _ = _GRID_ORIGIN
-    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]
-    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]
+    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
+    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
     assert pytest.approx(-(ay - oy) + ox, abs=1e-6) == rx
     assert pytest.approx((ax - ox) + oy, abs=1e-6) == ry
     assert pytest.approx(az, abs=1e-9) == rz

@@ -1,21 +1,21 @@
 """Offline verification of the SO-101 all-OBB self-collision model + tuned
 negative self-collision margin (issue #84).
 
-Story: a live ``openral deploy run`` on the real SO-101 latched ``/openral/estop``
-before any motion. Root cause chain (all evidence-backed, no hardware needed):
+A live ``openral deploy run`` on the real SO-101 latched ``/openral/estop``
+before any motion. Root cause chain (evidence-backed, no hardware needed):
 
-1. The base link is a near-cubic housing; a capsule over-reported its clearance
+1. The base link is near-cubic; a capsule over-reported its clearance
    (base↔lower_arm/wrist) → first false E-stop. Boxing the base fixed it.
-2. The arm links are rectangular 3D-printed brackets; a single capsule per link
-   over-reports ~7-9 cm at the arm's compact folded operating poses (shoulder↔
-   lower_arm etc.) → the next false E-stop. Boxing every link cuts the
-   over-report to ~1-4 cm.
-3. The pen VLA's whole training distribution is compact-folded, where the *true*
+2. Arm links are rectangular 3D-printed brackets; a single capsule per link
+   over-reports ~7-9 cm at compact folded operating poses (shoulder↔lower_arm
+   etc.) → the next false E-stop. Boxing every link cuts the over-report to
+   ~1-4 cm.
+3. The pen VLA's training distribution is compact-folded, where the *true*
    (fcl non-convex mesh) self-clearance is ≈ 0 — the arm operates in light
-   self-contact by design. A small negative ``self_collision_margin_m`` (−0.06)
-   lets that envelope pass while gross over-folds (far outside the VLA
-   distribution) still E-stop; real self-contact is protected by the force/torque
-   limits, and WORLD/voxel collision (its own positive margin) is unaffected.
+   self-contact by design. A small negative ``self_collision_margin_m``
+   (−0.06) lets that envelope pass while gross over-folds still E-stop; real
+   self-contact is protected by force/torque limits, and WORLD/voxel
+   collision (its own positive margin) is unaffected.
 
 Fully offline (no ROS, no hardware, no ``deploy run``). The C++ box distance math
 is unit-tested in ``cpp/openral_safety_kernel/test/test_collision.cpp``; this

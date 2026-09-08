@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 """Tier-C critic producer node (observability audit P1 R3).
 
-Subscribes the generic ``/openral/critic/score`` topic (``openral_msgs/CriticScore``)
-that reward models publish — the Robometer reward rSkill today, a
-future SARM, success classifiers — routes each self-describing
+Subscribes ``/openral/critic/score`` (``openral_msgs/CriticScore``, published by
+reward models — Robometer today, future SARM/success classifiers), routes each
 ``(critic_id, score, threshold)`` sample through a
-:class:`~openral_reasoner.CriticWatchdogGroup`, and on a **stall or success**
-publishes a Tier-C ``FailureTrigger`` (``KIND_CRITIC`` / ``SEVERITY_FAIL``, the
-emitted ``CriticEvidence``, ``trace_id`` propagated) on ``/openral/failure/critic``
-via :class:`~openral_observability.failure_bus.FailureBusPublisher`. The
-``reasoner_node`` maps that FAIL event onto a forced Tier-C tick
-(``ReasonerCore.tick(force=True, tier="C")``).
+``CriticWatchdogGroup``, and on a **stall or success**
+publishes a Tier-C ``FailureTrigger`` (``KIND_CRITIC``/``SEVERITY_FAIL``, the
+``CriticEvidence``, ``trace_id`` propagated) on ``/openral/failure/critic`` via
+``FailureBusPublisher``. ``reasoner_node``
+maps that FAIL event onto a forced Tier-C tick (``ReasonerCore.tick(force=True,
+tier="C")``).
 
-A **stall** fires when ``stall_patience`` consecutive sub-threshold,
-non-improving observations accumulate. A **success** fires the first time
-``score >= threshold`` per streak (reward-watcher), so the reasoner is
-woken the moment an attempt is likely done — not only after a subsequent stall.
+A **stall** fires after ``stall_patience`` consecutive sub-threshold,
+non-improving observations. A **success** fires the first time
+``score >= threshold`` per streak, waking the reasoner as soon as an attempt is
+likely done rather than waiting for a subsequent stall.
 
-The producer keys one watchdog per ``critic_id``, so several reward models share
-the single ``/openral/failure/critic`` source and each fires independently — no
-producer-side config to onboard a new model.
+One watchdog per ``critic_id``: several reward models share
+``/openral/failure/critic`` and each fires independently, no producer-side
+config needed to onboard a new model.
 
-Advisory only (CLAUDE.md §1.1): it produces a *planning* signal that drives
-replanning; it never actuates, never commands the C++ safety kernel, never
-touches E-stop.
+Advisory only (CLAUDE.md §1.1): a planning signal that drives replanning; never
+actuates, never commands the C++ safety kernel, never touches E-stop.
 
 Parameters:
     score_topic (str): critic-score topic to watch. Default ``/openral/critic/score``.

@@ -1,28 +1,25 @@
 """``openral collision lower|check`` — offline URDF/SRDF → manifest collision model.
 
-Lowers a robot's URDF (geometry) and SRDF (allowed-collision matrix, when present;
-random-pose sampling otherwise) into ``robot.yaml``'s ``collision_geometry`` +
-``allowed_collision_pairs`` — the blocks the C++ safety kernel consumes via
-``collision_params_from_description``. Because those manifests carry
-hand-written safety commentary, the writer splices **only** the two collision
-blocks, leaving every other line (and its comments) byte-for-byte intact.
+Lowers a robot's URDF (geometry) and SRDF (allowed-collision matrix, when
+present; random-pose sampling otherwise) into ``robot.yaml``'s
+``collision_geometry`` + ``allowed_collision_pairs`` — the blocks the C++
+safety kernel consumes via ``collision_params_from_description``. The writer
+splices **only** these two blocks; every other line/comment stays
+byte-for-byte intact.
 
-``lower`` prints a unified diff by default and mutates only with ``--write``; a
-regenerated ACM never changes silently (a safety input — CLAUDE.md §3). ``check``
-fails (exit 1) when any manifest drifts from its lowered model.
+``lower`` prints a unified diff by default, mutates only with ``--write``; a
+regenerated ACM never changes silently (safety input — CLAUDE.md §3).
+``check`` fails (exit 1) on any manifest drift from its lowered model.
 
 **A re-lower may not silently loosen a hand-tightened collision model.**
-``urdf_lowering.lower_link_geometry`` emits a PCA bounding capsule for any mesh
-collision — correct and conservative for onboarding, but strictly looser than a
-hand-fitted oriented box. ``panda_mobile`` carries boxes (#103); re-lowering it
-from ``rd:panda_description`` today would replace all seven with capsules of
-**1.9-3.7x the volume** and **1.4-1.5x the circumradius**, undoing that work in a
-block the writer stamps ``# GENERATED``. So ``lower`` measures the new geometry
-against what the manifest already carries (:func:`geometry_loosening`) and
-**refuses to write** a looser one. There is deliberately no override flag
-(CLAUDE.md §3, "never add a flag that disables safety"): abandoning tighter
-geometry means deleting it from the manifest first, which is a reviewable diff
-rather than a switch.
+``urdf_lowering.lower_link_geometry`` emits a PCA bounding capsule for any
+mesh collision — correct for onboarding, but looser than a hand-fitted
+oriented box. ``panda_mobile`` carries boxes (#103); re-lowering from
+``rd:panda_description`` would replace all seven with capsules of
+**1.9-3.7x the volume** and **1.4-1.5x the circumradius**. So ``lower``
+compares against the shipped geometry (``geometry_loosening``) and
+**refuses to write** a looser one — no override flag (CLAUDE.md §3): dropping
+tighter geometry means deleting it from the manifest first, a reviewable diff.
 """
 
 from __future__ import annotations
@@ -261,7 +258,7 @@ def geometry_loosening(
         lowered: what ``openral collision lower`` would write in its place.
 
     Returns:
-        One :class:`GeometryLoosening` per affected link, worst volume ratio
+        One ``GeometryLoosening`` per affected link, worst volume ratio
         first. Empty when nothing would get looser.
 
     Example:
@@ -391,7 +388,7 @@ def inject_joint_fk(text: str, joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]]) 
 
 
 def render_blocks(model: LoweredCollisionModel) -> tuple[str, str]:
-    """Render a :class:`LoweredCollisionModel` to ``(geometry_block, acm_block)`` YAML.
+    """Render a ``LoweredCollisionModel`` to ``(geometry_block, acm_block)`` YAML.
 
     Both blocks open with a generated-provenance comment so a reader knows the tool
     owns them; floats are rounded to 4 dp for a stable, reviewable diff.
@@ -470,7 +467,7 @@ def _lowered_text(
     into the on-disk text — touching only the requested block(s).
 
     The third element is the geometry-loosening report
-    (:func:`geometry_loosening`), computed here because this is the one place
+    (``geometry_loosening``), computed here because this is the one place
     that holds the committed manifest and the tool's replacement for it at the
     same time. It is empty whenever the geometry block would not be rewritten at
     all (``--acm-only``, or an MJCF-sourced robot whose hand geometry the tool

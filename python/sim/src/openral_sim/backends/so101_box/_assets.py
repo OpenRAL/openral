@@ -4,7 +4,7 @@ Everything that controls scene geometry — box dimensions, robot base
 pose, OAK-D Pro overhead camera placement, wrist camera placement,
 slotted block + tube dimensions — is sourced from a single typed
 ``BoxSceneOptions`` dataclass.  The dataclass is filled from the
-YAML's ``scene.backend_options`` block in :mod:`.env`, so any future
+YAML's ``scene.backend_options`` block in ``.env``, so any future
 "SO-101 in a box" variant is a pure YAML edit.
 
 The composer reads the upstream
@@ -149,18 +149,14 @@ class BoxSceneOptions:
     )
     spawn_min_separation: float = 0.10
 
-    # Insertion-success thresholds — read by :func:`_check_insertion`.
-    # ``insertion_xy_tol_m`` is the lateral slack on the tube tip's XY
-    # position relative to the hole centre at success time. The physical
-    # fit constraint (Ø 21.9 mm tube into a Ø 23 mm hole) is ±0.55 mm at
-    # the inscribed square's midpoints — but the depth check is what
-    # actually enforces "in the hole" (the tube cannot descend
-    # ``insertion_depth_m`` past the block top unless it geometrically
-    # fits). The XY tolerance therefore guards against false positives
-    # where the tube happens to be at the right height beside the block;
-    # 3 mm is well-aligned with "above the hole" intuition while
-    # absorbing the discrete-physics-step transient noise that a 0.55 mm
-    # threshold would clip out.
+    # Insertion-success thresholds — read by ``_check_insertion``.
+    # ``insertion_xy_tol_m`` is lateral slack on the tube tip's XY vs the hole
+    # centre at success time. Physical fit (Ø21.9mm tube into Ø23mm hole) is
+    # ±0.55mm at the inscribed square's midpoints, but the depth check is what
+    # actually enforces "in the hole" (tube can't descend insertion_depth_m
+    # past the block top unless it geometrically fits) — XY tolerance just
+    # guards false positives, so 3mm absorbs discrete-physics-step noise a
+    # 0.55mm threshold would clip.
     insertion_depth_m: float = 0.010
     insertion_axis_tol_deg: float = 10.0
     insertion_xy_tol_m: float = 0.003
@@ -217,7 +213,7 @@ def _resolve_robot_mjcf(description: RobotDescription) -> Path:
     The same ``assets.mjcf`` source ``build_hal(mode="sim")`` /
     ``MujocoArmHAL.from_description`` consume — so the manifest is the single
     robot-MJCF source across sim run, deploy sim, and deploy run. Resolved by the
-    one :func:`openral_core.assets.resolve_asset` grammar (``rd:`` for the SO-ARM
+    one ``openral_core.assets.resolve_asset`` grammar (``rd:`` for the SO-ARM
     family, ``file:`` / ``gym_aloha:`` / ``openarm:`` / ``menagerie:``).
 
     The composed scene splices its task world onto this robot MJCF via the
@@ -544,7 +540,7 @@ def compose_so101_box_mjcf(
 
     Args:
         options: Scene options. ``None`` falls back to all defaults
-            (matches :class:`BoxSceneOptions` field defaults).
+            (matches ``BoxSceneOptions`` field defaults).
         robot_description: Robot whose ``assets.mjcf`` provides the base arm
             MJCF. ``None`` falls back to the SO-101 MJCF, keeping the
             legacy call path byte-for-byte unchanged. The robot must share the

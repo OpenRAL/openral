@@ -1,7 +1,7 @@
 """Layout assemblers.
 
-Each module here implements one :data:`openral_core.StateLayout` value
-and calls :func:`openral_state_adapter._registry.register` at module
+Each module here implements one ``openral_core.StateLayout`` value
+and calls ``openral_state_adapter._registry.register`` at module
 load. Importing the package implicitly registers every layout.
 """
 

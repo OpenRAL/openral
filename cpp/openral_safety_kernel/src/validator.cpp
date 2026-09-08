@@ -31,15 +31,14 @@ Result<void, Violation> validate(const ChunkView& chunk,
         make_controller_violation(ControllerSubKind::kEnvelopeUnconfigured, "n_dof"));
   }
 
-  // 2. Decide whether ``chunk.n_dof`` is a JOINT-COUNT (must match the
+  // 2. Decide whether chunk.n_dof is a JOINT-COUNT (must match the
   // envelope) or a per-mode width (cartesian = 6, gripper = 1, etc.,
-  // which the openral_safety Python supervisor enforces per-mode).
-  // Without this split, every slot-dispatched per-mode
-  // chunk fails the n_dof equality check and trips an estop before
-  // the Python supervisor's per-mode bounds get to run — leaving the
-  // openral abstraction unable to dispatch any RoboCasa pi0.5 / rldx
-  // rSkill in deploy_sim. (Sim_run is unaffected; that path bypasses
-  // both safety nodes and drives env.step directly.)
+  // enforced per-mode by the openral_safety Python supervisor). Without
+  // this split, every slot-dispatched per-mode chunk fails the n_dof
+  // equality check and trips an estop before the supervisor's per-mode
+  // bounds run — leaving openral unable to dispatch any RoboCasa pi0.5/rldx
+  // rSkill in deploy_sim. (sim_run is unaffected: that path bypasses both
+  // safety nodes and drives env.step directly.)
   const auto mode = static_cast<ControlMode>(chunk.control_mode);
   const bool is_joint_mode =
       (mode == ControlMode::kJointPosition || mode == ControlMode::kJointVelocity ||
@@ -231,25 +230,19 @@ Result<void, Violation> validate(const ChunkView& chunk,
   case ControlMode::kGripperBinary:
   case ControlMode::kGripperPosition:
   case ControlMode::kCompositeMode: {
-    // Per-mode chunks. The C++ kernel intentionally
-    // delegates per-axis bound enforcement to the Python
-    // ``openral_safety/supervisor_node.py`` which knows the per-mode
-    // bounds declared on the robot manifest (``max_cartesian_step_m``,
-    // ``max_base_linear_speed_m_s``, ``max_base_angular_speed_rad_s``,
-    // ``gripper_min`` / ``gripper_max``, …). The kernel still ran
-    // shape + NaN checks above so the chunk is structurally sound;
-    // routing it through unrejected lets the supervisor do its job
-    // before the HAL applies. Without this case the per-mode chunks
-    // hit the default branch and trip an estop before the supervisor
-    // sees them. (Conservatism: net safety is strictly improved vs
-    // pre-change — we go from "reject every per-mode chunk" to
-    // "structural-validate then delegate to Python's per-mode bounds
-    // checker".)
+    // Per-mode chunks. The C++ kernel intentionally delegates per-axis
+    // bound enforcement to the Python openral_safety/supervisor_node.py,
+    // which knows the per-mode bounds on the robot manifest
+    // (max_cartesian_step_m, max_base_linear_speed_m_s,
+    // max_base_angular_speed_rad_s, gripper_min/max, ...). The kernel
+    // already ran shape + NaN checks above, so routing unrejected lets the
+    // supervisor do its job before the HAL applies; without this case
+    // per-mode chunks hit the default branch and estop before the
+    // supervisor sees them. Net safety strictly improves vs pre-change:
+    // "reject every per-mode chunk" -> "structural-validate then delegate".
     //
-    // ``kCompositeMode`` carries a single robosuite-
-    // specific multiplexer flag value in [-1, +1] (sim-only). No
-    // per-joint or workspace bound applies; the kernel validates
-    // shape + NaN/Inf above and passes through.
+    // kCompositeMode carries a single robosuite-specific multiplexer flag
+    // in [-1, +1] (sim-only); no per-joint/workspace bound applies.
     break;
   }
   case ControlMode::kFootPlacement:

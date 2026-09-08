@@ -50,16 +50,13 @@ composition:
     top_camera_fovy: 65.0
 
 # Committed deploy posture. Pinned explicitly because the OpenArm manifest now
-# declares `head_zed` — a depth SensorSpec WITH intrinsics — which flips
-# deploy's octomap auto-enable ("a camera the HAL can ray-cast a PointCloud2
-# from") to true. That camera's cloud is computed by the ZED SDK and arrives on
-# a topic, so an auto-enabled leg here would map silence: octomap_server would
-# subscribe to the launch default `/openral/cameras/front_depth/points`, which
-# only the sim sensor bridge publishes, and the octree, /openral/world_voxels
-# and the dashboard pointcloud card would all stay empty while every node
-# reported healthy.
-#
-# A scene that DOES want the map sets both keys together — see
-# scenes/deploy/openarm_zed_octomap.yaml.
+# declares `head_zed` (a depth SensorSpec with intrinsics), which flips
+# deploy's octomap auto-enable to true — but that camera's cloud is computed
+# by the ZED SDK and arrives on a topic, so auto-enabling here would map
+# silence: octomap_server subscribes to the launch default
+# `/openral/cameras/front_depth/points` (only the sim sensor bridge publishes
+# it), leaving the octree/world_voxels/pointcloud card empty while every node
+# reports healthy. A scene that DOES want the map sets both keys together —
+# see scenes/deploy/openarm_zed_octomap.yaml.
 runtime:
   enable_octomap: false

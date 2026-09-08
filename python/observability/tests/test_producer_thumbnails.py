@@ -1,6 +1,6 @@
-"""Tests for :func:`openral_observability.producer.encode_frame_thumbnail`.
+"""Tests for ``openral_observability.producer.encode_frame_thumbnail``.
 
-Feeds real :class:`openral_core.SensorFrame` instances with various
+Feeds real ``openral_core.SensorFrame`` instances with various
 encodings into the helper and asserts a valid JPEG byte string comes
 back (or ``None`` for the encodings the dashboard can't render). No
 mocks per CLAUDE.md §1.11; the helper goes through real Pillow.

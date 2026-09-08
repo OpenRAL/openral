@@ -1,4 +1,4 @@
-"""MetaWorld scene adapter — wraps :class:`lerobot.envs.metaworld.MetaworldEnv`.
+"""MetaWorld scene adapter — wraps ``lerobot.envs.metaworld.MetaworldEnv``.
 
 Wiring matches ``scenes/benchmark/metaworld_push.yaml``:
 1× RGB camera at 480×480 → resized to ``scene.observation_height/width``,
@@ -44,7 +44,7 @@ def _parse_task_id(task_id: str) -> str:
 
 @dataclass
 class _MetaworldSim:
-    """Thin :class:`SimRollout` wrapper around ``MetaworldEnv``."""
+    """Thin ``SimRollout`` wrapper around ``MetaworldEnv``."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -102,7 +102,7 @@ class _MetaworldSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -131,7 +131,7 @@ class _MetaworldSim:
 
 @SCENES.register(_METAWORLD_SCENE_ID, fixed_robot="sawyer")
 def _build_metaworld_scene(env_cfg: SimEnvironment) -> _MetaworldSim:
-    """Lazily import ``lerobot.envs.metaworld`` and build a :class:`_MetaworldSim`."""
+    """Lazily import ``lerobot.envs.metaworld`` and build a ``_MetaworldSim``."""
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("metaworld")

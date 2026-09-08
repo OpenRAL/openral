@@ -15,7 +15,7 @@ def image_to_bgr_bytes(msg: Any) -> tuple[bytes, int, int]:
     """Return ``(bgr_bytes, width, height)`` from an ``rgb8``/``bgr8`` Image.
 
     Only tightly-packed rows (``step == width * 3``) are supported; padded rows
-    raise :class:`ImageConvertError`. ``rgb8`` channels are reversed to BGR (the
+    raise ``ImageConvertError``. ``rgb8`` channels are reversed to BGR (the
     order ``ObjectsDetector.detect`` expects); ``bgr8`` passes through.
 
     Args:

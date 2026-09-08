@@ -1,43 +1,38 @@
 # SPDX-License-Identifier: Apache-2.0
 """The ``robocasa_fridge_drawer`` layout pin, checked against the real kernel.
 
-``scenes/deploy/robocasa_fridge_drawer.yaml`` pins ``layout_ids: [47]``, and the
-comment block above that pin carries the measurements it was chosen on — layout
-30 stopping at ``-23.47 mm`` on ``panda_link2`` while layout 47 clears at
-``+19.34 mm`` on ``panda_link1``. Until this file, **nothing executable held
-that claim**: the pin could be moved, ``panda_link2``'s OBB loosened, or the
-lowered kinematics shifted, and the only thing that would disagree was a YAML
-comment. This is issue #102's third acceptance item — "a regression for the
-nominal valid pose and a nearby genuinely colliding fixture pose" — with the
-pair the start-state census
-(:doc:`../../../docs/reference/robocasa-start-state-census`) identified.
+``scenes/deploy/robocasa_fridge_drawer.yaml`` pins ``layout_ids: [47]``: layout
+30 stops at ``-23.47 mm`` on ``panda_link2``, layout 47 clears at ``+19.34 mm``
+on ``panda_link1`` (the comment block above the pin). Until this file, only a
+YAML comment held that claim. This is issue #102's third acceptance item — "a
+regression for the nominal valid pose and a nearby genuinely colliding fixture
+pose" — using the pair the start-state census
+(``../../../docs/reference/robocasa-start-state-census``) identified.
 
 Three states, all on the real kitchen: the shipped pin at reset, the layout it
-replaced at reset, and — the colliding half of that acceptance item — the
-pinned layout with the arm moved into the fridge, at a depth certified before
-the kernel is asked (see WHAT MAKES THE COLLIDING POSE COLLIDING below).
+replaced at reset, and the pinned layout with the arm moved into the fridge at
+a depth certified before the kernel is asked (see WHAT MAKES THE COLLIDING
+POSE COLLIDING below). Real kitchen, real manifest, real kernel binary, no
+mocks (CLAUDE.md §1.11):
 
-Real kitchen, real manifest, real kernel binary, no mocks (CLAUDE.md §1.11):
-
-1. RoboCasa composes the scene at a pinned layout, at the scene's own seed, and
-   is read at reset with zero actions applied.
+1. RoboCasa composes the scene at a pinned layout, at the scene's own seed,
+   read at reset with zero actions applied.
 2. A 25 mm occupancy grid is built around the arm from that kitchen's own
-   geometry, cell by cell, through the shipped
-   :func:`openral_hal.sim_sensor_bridge.voxel_backing_record` — the same probe
-   the E-stop evidence path uses to ask what backs a cell. A cell is occupied
-   when a **solid** (collidable) world geom passes through it.
-3. The real ``safety_kernel_node`` is launched from
+   geometry via ``openral_hal.sim_sensor_bridge.voxel_backing_record`` — the
+   same probe the E-stop evidence path uses. A cell is occupied when a
+   **solid** (collidable) world geom passes through it.
+3. The real ``safety_kernel_node`` launches from
    ``robots/panda_mobile/robot.yaml``, seeded with the reset configuration on
    ``/joint_states`` and that grid on ``/openral/world_voxels``, and asked to
    pass a zero ``CARTESIAN_DELTA`` chunk — the RoboCasa arm mode.
 
 WHAT THIS GRID IS, AND WHAT IT IS NOT
 -------------------------------------
-This grid is built from true surfaces. The **live** grid is depth-camera
-derived through octomap, and the scene file's own note applies unchanged: the
-live map also holds non-collidable decoration and the octree->grid bridge
-dilates whatever it holds, so **the live map stops more often than this one,
-never less** (``docs/reference/world-map-fidelity.md``). Measured here, at
+Built from true surfaces, unlike the depth-camera-derived live octomap grid.
+The scene file's own note applies unchanged: the live map holds non-collidable
+decoration and the octree->grid bridge dilates it, so **the live map stops
+more often than this one, never less**
+(``docs/reference/world-map-fidelity.md``). Measured at
 ``world_voxel_margin_m = 0``:
 
     layout   this grid                      live octomap (scene file)
@@ -45,47 +40,44 @@ never less** (``docs/reference/world-map-fidelity.md``). Measured here, at
        47    +44.55 mm  ``panda_link1``     +19.34 mm  ``panda_link1``
        30    +19.09 mm  ``panda_link2``     -23.47 mm  ``panda_link2``
 
-Same dominant link on both layouts, same ordering, uniformly more generous.
-**So layout 30 clears at zero margin here and stops on the live map, and this
-file must not be read as clearing layout 30 for use.** The pin stays 47. What
-is pinned instead is the part that does not depend on how dense the map is: 47
-clears, 30 is the tighter of the two, and each is tight on the link the census
-named. Reproducing the live verdict itself needs the whole deploy graph, which
-is #102's separate end-to-end acceptance item, not this one.
+Same dominant link, same ordering, uniformly more generous. **Layout 30
+clears at zero margin here but stops on the live map — this file does not
+clear layout 30 for use.** The pin stays 47; what's pinned is the ordering
+that doesn't depend on map density: 47 clears, 30 is tighter, each tight on
+the link the census named. Reproducing the live verdict needs the whole
+deploy graph — #102's separate end-to-end acceptance item.
 
-The margin sweep is what makes the ordering quantitative. ``world_voxel_margin_m``
-is the kernel's own standoff, so raising it walks a known distance in from the
-surface: at ``0.020 m`` layout 30 trips and layout 47 does not, which is the
-pin's criterion stated as a test rather than as a comment.
+The margin sweep makes the ordering quantitative: raising
+``world_voxel_margin_m`` (the kernel's own standoff) to ``0.020 m`` trips
+layout 30 but not layout 47 — the pin's criterion as a test, not a comment.
 
 WHAT MAKES THE COLLIDING POSE COLLIDING
 ---------------------------------------
-Every refusal above is bought with ``world_voxel_margin_m``, and the only
-zero-margin refusal is the all-occupied control — an artificial grid. Neither
-shows the kernel stopping a real kitchen at its shipped standoff for a real
-reason, because on this grid the tighter layout *clears* at zero margin.
+Every refusal above is bought with margin; the only zero-margin refusal is the
+all-occupied control, an artificial grid — neither shows the kernel stopping a
+real kitchen at its shipped standoff for a real reason.
 
-``_COLLIDING_POSE_DEG`` is that missing case. It is not a stop the kernel is
-merely conservative about: ``estop_ground_truth_snapshot`` puts ``panda_link5``
-**−145.13 mm** inside ``fridgesidebyside_main_group_1_fridge_door``, certified,
-mesh↔mesh, and the test asserts that depth *before* it asks the kernel
-anything. Corner slop (66.98 mm on that link) and the cell half-diagonal
-(21.65 mm) cannot manufacture mesh interpenetration at any magnitude.
+``_COLLIDING_POSE_DEG`` is that missing case, not a merely-conservative stop:
+``estop_ground_truth_snapshot`` puts ``panda_link5`` **−145.13 mm** inside
+``fridgesidebyside_main_group_1_fridge_door``, certified, mesh↔mesh, asserted
+*before* the kernel is asked anything. Corner slop (66.98 mm on that link) and
+the cell half-diagonal (21.65 mm) cannot manufacture mesh interpenetration at
+any magnitude.
 
-A note for anyone extending the search that found the pose: the nearest
-link↔link pair reads −34.3 mm at *every* configuration including the reset
-pose, because adjacent links' collision meshes overlap at the joint and the
-kernel exempts them by adjacency. Filtering candidates on it rejects
-everything. Assert ``collision_kind == "world"`` instead.
+Note for anyone extending the search that found the pose: the nearest
+link↔link pair reads −34.3 mm at *every* configuration including reset,
+because adjacent links' collision meshes overlap at the joint and the kernel
+exempts them by adjacency — filtering candidates on it rejects everything.
+Assert ``collision_kind == "world"`` instead.
 
 The all-occupied control is not decoration. A grid that never reached the
 kernel, or landed in the wrong frame, would let *every* configuration through
-and every clearance assertion here would pass vacuously — the failure mode #183
-found in the Nav2 live tests. ``test_an_all_occupied_grid_is_refused`` fails if
-that happens.
+and every clearance assertion here would pass vacuously — the failure mode
+#183 found in the Nav2 live tests. ``test_an_all_occupied_grid_is_refused``
+fails if that happens.
 
-Gates: ROS_DISTRO + rclpy + openral_msgs on a sourced + colcon-built workspace,
-plus MuJoCo and the RoboCasa kitchen backend.
+Gates: ROS_DISTRO + rclpy + openral_msgs on a sourced + colcon-built
+workspace, plus MuJoCo and the RoboCasa kitchen backend.
 """
 
 from __future__ import annotations
@@ -278,13 +270,13 @@ def _pose_in_fixture(
     robot_bodies: frozenset[int],
     positions: list[float],
 ) -> tuple[list[float], str, float]:
-    """Move the arm to :data:`_COLLIDING_POSE_DEG` and certify that it is in the wood.
+    """Move the arm to ``_COLLIDING_POSE_DEG`` and certify that it is in the wood.
 
     The kernel refusals this file otherwise measures are envelope refusals —
     correct, but at 20-67 mm of corner slop they say nothing about whether any
     mesh is inside any fixture. This pose is, and the depth is measured before
     the kernel is asked, by the shipped
-    :func:`~openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` scoped to
+    ``estop_ground_truth_snapshot`` scoped to
     the kernel-checked links.
 
     The adjudicator is that probe's certified convex distance and **not**
@@ -340,9 +332,9 @@ def _build_grid(model: Any, data: Any, robot_bodies: frozenset[int]) -> tuple[An
     """A base-frame 25 mm occupancy grid over the arm's neighbourhood.
 
     Bounded by the seven kernel-checked links' own bounding spheres plus
-    :data:`_PAD`, so it holds the nearest cell of every link the kernel checks
+    ``_PAD``, so it holds the nearest cell of every link the kernel checks
     without rasterising a whole kitchen. Occupancy comes from
-    :func:`~openral_hal.sim_sensor_bridge.voxel_backing_record`, one call per
+    ``voxel_backing_record``, one call per
     cell, and a cell counts as occupied only for a ``solid_world`` backing —
     the census's criterion, and the one the near-miss probes use.
     """

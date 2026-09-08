@@ -82,16 +82,13 @@ def test_launch_module_pins_canonical_node_name() -> None:
 def test_launch_description_shape() -> None:
     """The generated launch description has the right action shape.
 
-    One ``LifecycleNode`` (the slam_toolbox node) and ZERO
-    ``EmitEvent`` actions — the slam_toolbox node is left in
-    ``UNCONFIGURED`` for the Reasoner to drive through
-    ``CONFIGURE → ACTIVATE`` via ``LifecycleTransitionTool``.
-    Auto-configure from the launch triggers slam_toolbox 2.8.4's
-    Jazzy race (on_configure returns SUCCESS but the change_state
-    service responds with ``success=false``, producing a spurious
-    ``Failed to make transition 'TRANSITION_CONFIGURE'`` ERROR from
-    ``launch_ros.utilities.lifecycle_event_manager``). Reasoner-driven
-    lifecycle dodges it.
+    One ``LifecycleNode``, ZERO ``EmitEvent`` actions — left ``UNCONFIGURED``
+    for the Reasoner to drive via ``LifecycleTransitionTool``. Auto-configure
+    from the launch triggers slam_toolbox 2.8.4's Jazzy race (on_configure
+    returns SUCCESS but change_state responds ``success=false``, producing a
+    spurious ``Failed to make transition 'TRANSITION_CONFIGURE'`` ERROR from
+    ``launch_ros.utilities.lifecycle_event_manager``); Reasoner-driven
+    lifecycle avoids it.
     """
     mod = _import_launch_module()
     from ament_index_python.packages import PackageNotFoundError, get_package_share_directory

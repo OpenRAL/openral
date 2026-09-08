@@ -120,12 +120,10 @@ def test_fully_gated_lane_is_declared_not_run_never_silently_green() -> None:
 def test_narrow_selection_of_a_gated_file_is_declared_not_run_not_failed() -> None:
     """A well-covered lane can still have every *selected* test gated.
 
-    Found by proof run 32815008771: a diff touching only `rskills/act-aloha/**`
-    selects one `sim` file whose six tests are all CUDA-gated, so the lane had
-    0 passed and 6 declared skips. `sim` yields 162 passing tests when all its
-    files are selected, but the verdict must be about what the diff SELECTED —
-    failing here would punish a PR merely for touching a GPU-only file, the
-    exact breakage this policy removes.
+    Proof run 32815008771: a diff touching only `rskills/act-aloha/**` selects
+    one `sim` file whose six tests are all CUDA-gated (0 passed, 6 skips),
+    though `sim` yields 162 passing tests when fully selected. Verdict must
+    track what the diff SELECTED, not the lane's full potential.
     """
     record = _record("sim", passed=0, skips=["x requires CUDA"] * 6)
     assert record.status == lane_report.STATUS_DECLARED_NOT_RUN
@@ -205,13 +203,11 @@ def test_reads_real_pytest_junit_including_module_level_skip(tmp_path: Path) -> 
             f"--junit-xml={xml}",
         ],
         cwd=tmp_path,
-        # A sourced ROS 2 overlay reaches the child through PYTHONPATH and
-        # breaks this test in both directions: `launch_testing`'s
-        # `pytest_pycollect_makemodule` hook no longer matches pytest's
-        # hookspec, so the child aborts during plugin registration and
-        # collects nothing; and `rclpy` becomes importable, so the
-        # module-level `importorskip` this test is *about* stops skipping.
-        # The child must see the interpreter this repo installs, nothing else.
+        # A sourced ROS 2 overlay reaches the child via PYTHONPATH and breaks
+        # this test both ways: launch_testing's pytest_pycollect_makemodule
+        # hook stops matching pytest's hookspec (child aborts, collects
+        # nothing), and rclpy becomes importable so the module-level
+        # importorskip this test is about stops skipping.
         env={**os.environ, "PYTHONPATH": ""},
         capture_output=True,
         check=False,
@@ -294,11 +290,9 @@ def test_attest_fails_on_a_failed_lane_record(tmp_path: Path) -> None:
 def test_no_lane_is_declared_with_an_empty_glob_list() -> None:
     """A lane with no globs can never run, and says nothing when it doesn't.
 
-    `rldx` was declared with an empty list, so `run_lane rldx` returned at its
-    `[ -z "$targets" ]` guard on every run since it was added — a lane that was
-    configured, wired into the workflow, and structurally incapable of
-    executing. Indistinguishable in the log from a lane that simply had nothing
-    selected, which is the same silent-degradation shape as #163 itself.
+    Regression: `rldx` was declared with an empty list, so `run_lane rldx` hit
+    its `[ -z "$targets" ]` guard on every run — configured and wired in, yet
+    structurally incapable of executing. Same silent-degradation shape as #163.
     """
     empty = sorted(name for name, globs in CONFIG.requirement_globs.items() if not globs)
     assert empty == [], f"lanes declared with no globs can never run: {empty}"

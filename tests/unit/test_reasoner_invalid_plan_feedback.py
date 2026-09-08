@@ -9,9 +9,9 @@ fix ``OpenAICompatibleToolUseClient.select_tool`` ran an unguarded
 
 These tests pin:
 - the guard converts a malformed / non-object payload into
-  :class:`ROSReasonerInvalidPlan` (a :class:`ROSPlanningError` the tick loop
+  ``ROSReasonerInvalidPlan`` (a ``ROSPlanningError`` the tick loop
   already handles), instead of a raw ``JSONDecodeError`` / ``dict()`` crash; and
-- :func:`reflect_on_invalid_plan` plus the ``## EXECUTION`` buffer carry the
+- ``reflect_on_invalid_plan`` plus the ``## EXECUTION`` buffer carry the
   decode error back into the next prompt so the model fixes its call.
 
 The only double is the ``openai`` SDK itself — a network boundary (CLAUDE.md
@@ -22,8 +22,6 @@ Run with:
 """
 
 from __future__ import annotations
-
-from types import SimpleNamespace
 
 import pytest
 from openral_core import RobotCapabilities
@@ -36,28 +34,7 @@ from openral_reasoner.context import (
 from openral_reasoner.palette import build_tool_palette
 from openral_reasoner.tool_use import OpenAICompatibleToolUseClient
 
-
-def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> None:
-    """Patch ``openai.OpenAI`` so ``create()`` returns one tool call with ``arguments``.
-
-    Mirrors the real SDK response graph
-    (``response.choices[0].message.tool_calls[0].function.{name,arguments}``)
-    with the LLM's argument string under our control.
-    """
-
-    def _create(**_kwargs: object) -> SimpleNamespace:
-        function = SimpleNamespace(name="emit_prompt", arguments=arguments)
-        tool_call = SimpleNamespace(function=function)
-        message = SimpleNamespace(tool_calls=[tool_call])
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs: object) -> None:
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
-
-    import openai  # reason: network-boundary double
-
-    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+from tests.unit.conftest import _install_fake_openai
 
 
 def _empty_palette() -> object:

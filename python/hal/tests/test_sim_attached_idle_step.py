@@ -1,10 +1,10 @@
 """Sim-only free-running idle stepper for deploy-sim.
 
 In ``openral deploy sim`` the MuJoCo env lives only in the HAL node via
-:class:`~openral_hal.sim_attached.SimAttachedHAL`, and ``env.step()`` runs only
+``SimAttachedHAL``, and ``env.step()`` runs only
 from ``send_action`` — reached only while a skill is executing. When idle the
 env froze, so camera frames went stale and the perception /
-object-detector bus saw a dead scene. :meth:`SimAttachedHAL.idle_step` advances
+object-detector bus saw a dead scene. ``SimAttachedHAL.idle_step`` advances
 the env one tick with a zero/HOLD action so cameras keep rendering.
 
 These tests exercise the real LIBERO (robosuite OSC_POSE) digital twin the way
@@ -13,6 +13,8 @@ These tests exercise the real LIBERO (robosuite OSC_POSE) digital twin the way
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -67,28 +69,6 @@ def _build_libero_hal() -> object:
     return hal
 
 
-def _build_so101_hal() -> object:
-    """Build a connected SimAttachedHAL over the native-MuJoCo so101 box scene.
-
-    A native (non-robosuite/non-libero) MuJoCo backend, so it runs in envs
-    without LIBERO. Its action width is not introspectable (the backend exposes
-    no ``action_dim``), so we pass ``env_action_dim=6`` explicitly — the
-    documented path the :class:`SimAttachedHAL` constructor supports for
-    non-introspectable envs (mirrors what the lifecycle node would resolve).
-    """
-    from openral_core import RobotDescription
-    from openral_hal.sim_attached import SimAttachedHAL
-    from openral_hal.sim_bringup import build_sim_env_from_yaml
-
-    env, seed = build_sim_env_from_yaml(
-        "scenes/sim/so101_tube_insertion.yaml", robot_id_fallback="so101_follower"
-    )
-    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-    hal = SimAttachedHAL(env, desc, env_reset_seed=seed, env_action_dim=6)
-    hal.connect()
-    return hal
-
-
 def _first_frame(images: dict[str, object]) -> np.ndarray:
     for arr in images.values():
         a = np.asarray(arr)
@@ -119,7 +99,9 @@ def test_idle_step_advances_render_and_changes_frame() -> None:
 
 
 @requires_renderer
-def test_idle_step_advances_render_native_so101() -> None:
+def test_idle_step_advances_render_native_so101(
+    _build_so101_hal: Callable[[], object],
+) -> None:
     """Idle → idle_step() advances the frame on the native-MuJoCo so101 backend.
 
     The same regression as the LIBERO test, against a backend that needs no
@@ -138,7 +120,9 @@ def test_idle_step_advances_render_native_so101() -> None:
 
 
 @requires_renderer
-def test_idle_step_suppressed_when_estop_latched_native_so101() -> None:
+def test_idle_step_suppressed_when_estop_latched_native_so101(
+    _build_so101_hal: Callable[[], object],
+) -> None:
     """Estop latched → idle_step() returns False, frame unchanged (native so101)."""
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
@@ -217,7 +201,7 @@ class _RecordingLogger:
 class _RecordingNode:
     """Minimal stand-in for the rclpy LifecycleNode (the framework boundary).
 
-    The HAL under test is a *real* :class:`SimAttachedHAL`; only the rclpy node
+    The HAL under test is a *real* ``SimAttachedHAL``; only the rclpy node
     (a process/framework boundary, CLAUDE.md §1.11) is stubbed, exposing just
     the ``create_timer`` / ``get_logger`` surface ``SimSensorBridge`` touches.
     """

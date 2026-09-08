@@ -28,19 +28,10 @@ skips (§1.12).
 from __future__ import annotations
 
 import importlib.util
-import os
-from pathlib import Path
 
 import pytest
 
-
-def _sidecar_python_available() -> bool:
-    override = os.environ.get("OPENRAL_ISAAC_SIDECAR_PYTHON")
-    if override:
-        return Path(override).is_file()
-    default = Path.home() / ".cache" / "openral" / "isaac-sidecar" / ".venv" / "bin" / "python"
-    return default.is_file()
-
+from tests.sim.conftest import _repo_root, _sidecar_python_available
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
 
@@ -55,14 +46,6 @@ pytestmark = [
         reason="Isaac Sim sidecar venv not provisioned (set OPENRAL_ISAAC_SIDECAR_PYTHON)",
     ),
 ]
-
-
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "pyproject.toml").is_file():
-            return ancestor
-    raise RuntimeError("could not locate repo root from test file")
 
 
 @pytest.fixture(scope="module")

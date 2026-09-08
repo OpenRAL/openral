@@ -1,7 +1,7 @@
-"""Sim tests for :class:`openral_hal.OpenArmMujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.OpenArmMujocoHAL`` against real MuJoCo physics.
 
 These tests load the upstream ``enactic/openarm_mujoco`` **v2**
-bimanual MJCF (via :mod:`openral_hal._openarm_v2_assets`) and
+bimanual MJCF (via ``openral_hal._openarm_v2_assets``) and
 exercise the full HAL lifecycle — connect → read_state →
 send_action → estop / disconnect — against a real ``mj_step``
 loop.  No mocks; the closed-loop behaviour comes from MuJoCo's own
@@ -143,7 +143,7 @@ class TestOpenArmDescription:
 class TestUpstreamSchema:
     """Guard against silent ``enactic/openarm_mujoco`` v2 schema drift.
 
-    The :class:`OpenArmMujocoHAL` indexing relies on the v2 MJCF's
+    The ``OpenArmMujocoHAL`` indexing relies on the v2 MJCF's
     18-joint / 16-actuator layout in a fixed order (left arm 7 +
     left fingers 2 + right arm 7 + right fingers 2).  If a future
     upstream upgrade reorders joints or flips an actuator's mode,
@@ -243,13 +243,6 @@ def hal() -> OpenArmMujocoHAL:
     """Fresh OpenArm v2 HAL with gravity off and enough settle steps
     for the MJCF's native position-actuator PD to converge."""
     return OpenArmMujocoHAL(gravity_enabled=False, settle_steps=2000)
-
-
-@pytest.fixture()
-def connected_hal(hal: OpenArmMujocoHAL) -> OpenArmMujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _zero_action(horizon: int = 1) -> Action:
@@ -372,11 +365,10 @@ class TestClosedLoopMujoco:
     budget).
     """
 
-    def test_hold_zero_pose(self, connected_hal: OpenArmMujocoHAL) -> None:
-        connected_hal.send_action(_zero_action())
-        state = connected_hal.read_state()
-        for i, q in enumerate(state.position):
-            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
+    def test_hold_zero_pose(
+        self, connected_hal: OpenArmMujocoHAL, assert_send_action_holds_zero_pose
+    ) -> None:
+        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     # 0.15 rad is the largest magnitude that fits inside every arm
     # joint's MJCF ctrlrange — ``left_joint2`` is bounded to

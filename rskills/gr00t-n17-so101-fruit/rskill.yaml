@@ -5,19 +5,18 @@
 # Base:  nvidia/GR00T-N1.7-3B (Cosmos-Reason2-2B VLM backbone + diffusion
 #        action head) — arXiv:2503.14734.
 #
-# GR00T embodiment: this checkpoint's experiment_cfg pins embodiment_tag
-# `new_embodiment` (id 10) with video modality keys `front` + `wrist`, a
-# `single_arm`+`gripper` 6-D state, and a `single_arm`+`gripper` 6-D absolute
-# action over a 16-step horizon (final_model_config: use_relative_action=false).
-# That tag is load-bearing — it selects the modality/normalization config; feed
-# the wrong one and the policy scores 0.
+# GR00T embodiment: checkpoint's experiment_cfg pins embodiment_tag
+# `new_embodiment` (id 10), video modality keys `front`+`wrist`,
+# `single_arm`+`gripper` 6-D state, `single_arm`+`gripper` 6-D absolute action
+# over a 16-step horizon (use_relative_action=false). Load-bearing tag — wrong
+# one selects the wrong modality/normalization config and scores 0.
 #
-# 8 GB VRAM: the model ships bf16 and the in-process `gr00t` adapter NF4-
-# quantizes it on load. This checkpoint's DiT action head is 32 layers (LIBERO's
-# is 16), so — unlike gr00t-n17-libero's backbone-only NF4 — it needs whole-model
-# NF4 (policy_extras.quantize_scope: "model"; the 4M-param threshold spares the
-# TimestepEncoder). GPU-verified: 5.8 GiB peak on an 8 GB RTX 4070. No separate
-# pre-packed NF4 artifact exists for this family — quantization is a runtime knob.
+# 8 GB VRAM: model ships bf16, in-process `gr00t` adapter NF4-quantizes on
+# load. This checkpoint's DiT action head is 32 layers (LIBERO's is 16), so
+# unlike gr00t-n17-libero's backbone-only NF4, it needs whole-model NF4
+# (policy_extras.quantize_scope: "model"; 4M-param threshold spares the
+# TimestepEncoder). GPU-verified 5.8 GiB peak on an 8 GB RTX 4070; no
+# pre-packed NF4 artifact exists, quantization is a runtime knob.
 #
 # License (CLAUDE.md §7.4): NVIDIA Open Model License (N1.7) — commercial use
 # permitted, unlike the OneWay Noncommercial license on N1/N1.5/N1.6.

@@ -1,23 +1,16 @@
 """Day-1 smoke test — the canonical pre-flight check.
 
-This file's role is **deliberately** distinct from
-``tests/unit/test_schemas_fuzz.py`` (hypothesis property tests) and
-``tests/unit/test_rskill_manifest.py`` (RSkillManifest-specific schema
-checks):
+Distinct from ``test_schemas_fuzz.py`` (hypothesis property tests) and
+``test_rskill_manifest.py`` (RSkillManifest-specific checks, ``tests/README.md``
+§4-A.7):
 
-- It is the first test contributors run (``pytest tests/unit/test_smoke.py``)
-  to verify the workspace installed correctly.
-- It uses **only the public ``import openral_core as core`` surface**,
-  catching regressions in the package re-exports without touching
-  internal modules.
-- It checks that ``__version__`` agrees with the installed distribution — the
-  package derives it from ``importlib.metadata``, so a failure here means the
-  install itself is broken, not that someone forgot a bump.
-  ``tests/unit/test_lockstep_versions.py`` owns the release-bump contract.
-
-Per the audit (``tests/README.md`` §4-A.7), this docstring documents the
-file's role so future readers don't fold its assertions into the fuzz
-suite by accident.
+- First test contributors run (``pytest tests/unit/test_smoke.py``) to verify
+  the workspace installed correctly.
+- Uses only the public ``import openral_core as core`` surface, catching
+  package re-export regressions without touching internal modules.
+- Checks ``__version__`` against the installed distribution
+  (``importlib.metadata``) — a failure here means the install is broken, not
+  a missed bump. ``test_lockstep_versions.py`` owns the release-bump contract.
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ geometric (cube centre within ``goal_radius`` of the goal, cube still on the
 table), so it makes no assumption about the robot's gripper or end-effector —
 the same criterion holds for every robot.
 
-The :class:`openral_sim.SimRollout` contract:
+The ``openral_sim.SimRollout`` contract:
 
 * ``reset(seed)`` randomises the cube spawn (on the table) and the goal-disc
   position, then settles the scene;
@@ -24,7 +24,7 @@ The :class:`openral_sim.SimRollout` contract:
 
 The action / state dimension is ``nu`` — read from the compiled model, not
 hardcoded — so it adapts to the loaded robot. Indices are 1:1 with the robot's
-MJCF actuator order, the same contract :meth:`openral_hal.MujocoArmHAL._sim_kwargs_for`
+MJCF actuator order, the same contract ``openral_hal.MujocoArmHAL._sim_kwargs_for``
 relies on (the appended task world never reorders the robot's actuators).
 """
 
@@ -43,7 +43,7 @@ from openral_sim.backends.tabletop_push._assets import (
     infer_wrist_camera_mount_body,
 )
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
+from openral_sim.rollout import StepResult, render_named_rgb_mujoco, sim_time_ns_from_mujoco_handles
 
 if TYPE_CHECKING:
     import mujoco
@@ -61,10 +61,10 @@ _SPAWN_ATTEMPTS = 32
 
 
 def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions:
-    """Build :class:`TabletopOptions` from the YAML ``scene.backend_options``.
+    """Build ``TabletopOptions`` from the YAML ``scene.backend_options``.
 
     Unknown keys are rejected loudly so typos surface immediately; every field
-    has a default on :class:`TabletopOptions`, so an empty block is valid.
+    has a default on ``TabletopOptions``, so an empty block is valid.
     """
     raw = dict(raw or {})
     valid = {f.name for f in TabletopOptions.__dataclass_fields__.values()}
@@ -299,7 +299,7 @@ class _TabletopPushRollout:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -354,16 +354,15 @@ class _TabletopPushRollout:
         return np.clip(cmd, lo, hi)
 
     def _render_named_rgb(self, camera_name: str) -> NDArray[np.uint8]:
-        import mujoco
-
-        if self._renderer_rgb is None:
-            self._renderer_rgb = mujoco.Renderer(
-                self._model,
-                height=self._render_height,
-                width=self._render_width,
-            )
-        self._renderer_rgb.update_scene(self._data, camera=camera_name)
-        return np.asarray(self._renderer_rgb.render(), dtype=np.uint8).copy()
+        self._renderer_rgb, rgb = render_named_rgb_mujoco(
+            self._renderer_rgb,
+            self._model,
+            self._data,
+            camera_name,
+            height=self._render_height,
+            width=self._render_width,
+        )
+        return rgb
 
     # ------------------------------------------------- spawn / pose utilities
 
@@ -386,7 +385,7 @@ class _TabletopPushRollout:
     ) -> tuple[float, float]:
         """Sample (x, y) until it is at least ``min_sep`` from ``other_xy``.
 
-        Caps at :data:`_SPAWN_ATTEMPTS`; falls back to the last draw if every
+        Caps at ``_SPAWN_ATTEMPTS``; falls back to the last draw if every
         attempt collides (a small cube in a roomy spawn range makes this a
         one-shot path in practice).
         """
@@ -430,9 +429,9 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
     """Build the robot-agnostic ``tabletop_push`` rollout (free-axis).
 
     The robot is a flag: ``env_cfg.robot_id`` (set from the YAML ``robot_id:`` or
-    ``--robot``) resolves a :class:`~openral_core.RobotDescription`, whose
+    ``--robot``) resolves a ``RobotDescription``, whose
     ``assets.mjcf`` provides the base arm MJCF. The table / cube / goal / camera
-    world is composed around it via :func:`compose_tabletop_mjcf`. The robot mount
+    world is composed around it via ``compose_tabletop_mjcf``. The robot mount
     honours ``env_cfg.base_pose`` (full 6-DOF) with the ``robot_base_xyz`` /
     ``robot_base_yaw_deg`` backend options as a yaw-only fallback.
 

@@ -1,4 +1,4 @@
-"""Schema validator tests for :class:`RoboCasaBackendOptions`.
+"""Schema validator tests for ``RoboCasaBackendOptions``.
 
 The RoboCasa scene adapter (issue #88 PR B, not yet on disk) consumes
 ``SceneSpec.backend_options`` via
@@ -171,25 +171,19 @@ def test_matrix_scene_ships_its_verified_layout_pin(
 ) -> None:
     """Both pinned matrix scenes carry the layout their header block justifies.
 
-    The fridge pin is a *fix*: unpinned, seed 1 draws a side-by-side kitchen and
-    parks ``robot0_link7_collision`` 2.8 mm from the closed freezer door, so the
-    kernel reports -24.75 mm and the run E-stops on the initial configuration
-    before applying a chunk. The pinned value is **47**, not the 30 #154
-    shipped: layout 30 was chosen against MESH clearance, which is not the
-    criterion the kernel applies, and it still stops at -23.47 mm on a live
-    octomap. Layout 47 clears by +19.34 mm. See the scene's header block and
+    Fridge pin is a *fix*: unpinned seed 1 parks the link 2.8 mm from the
+    freezer door (kernel: -24.75 mm, E-stops before the first chunk). Layout 30
+    (#154, chosen against mesh clearance, not the kernel's criterion) still
+    stops at -23.47 mm; layout 47 clears by +19.34 mm. See
     docs/reference/world-map-fidelity.md.
 
-    The utensil pin is a *reproducibility* pin — without it the kitchen is a
-    free draw off ``env.rng`` and two rounds at ``seed: 1`` are not comparable.
-    (Its start state is marginal on the live map at -1.94 mm, but that stop is
-    entirely link-side, so a re-pin is not the remedy; see its header block.)
+    Utensil pin is a *reproducibility* pin — without it the kitchen is a free
+    draw off ``env.rng``, so two ``seed: 1`` rounds aren't comparable (start
+    state is marginal at -1.94 mm, but that stop is link-side, not a re-pin
+    case).
 
-    Either way the value must survive the prebuilt/procedural XOR: the
-    scene-pool restrictors are deliberately independent of ``mode``, unlike the
-    procedural-only singular ``layout_id``. Driven off the real scene fixtures
-    (CLAUDE.md §1.11) so this breaks the moment a pin is "cleaned up" out of a
-    YAML, which is exactly the regression the header comments warn against.
+    Driven off real scene fixtures (CLAUDE.md §1.11) so a pin "cleaned up" out
+    of a YAML breaks this test.
     """
     from pathlib import Path
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -26,22 +25,9 @@ from openral_core.exceptions import ROSConfigError
 from openral_world_state import WorldStateAggregator
 from pydantic import ValidationError
 
+from tests.unit.conftest import _CylinderShape
+
 _ROBOT_YAML = "robots/panda_mobile/robot.yaml"
-
-
-@dataclass(frozen=True)
-class _CylinderShape:
-    """A fourth primitive kind — what a future ``CollisionShape`` member looks like.
-
-    ``CollisionShape`` is closed over sphere/capsule/box, so this is the only
-    way to reach the encoder's unknown-shape branch. Mirrors the stand-in in
-    ``tests/unit/test_collision_params.py`` and
-    ``packages/openral_slam_bringup/test/test_depth_height_filter.py``.
-    """
-
-    shape: str = "cylinder"
-    radius_m: float = 0.1
-    length_m: float = 0.4
 
 
 def _attachment(object_id: str = "baguette_seed1") -> AttachedCollisionObject:
@@ -250,21 +236,16 @@ def test_aggregator_preserves_producer_revision_and_timestamp() -> None:
 
 # -- Place declaration + its region, at the World State authority (ADR-0097) --
 #
-# HZ-0097-3 mitigation 2 makes expiry World State's responsibility rather than
-# the dispatcher's alone: a dispatcher that dies after issuing a declaration but
-# before retracting it must not leave one live. HZ-0097-4 mitigation 4 inherits
-# that verbatim for the approach allowance the declaration's region carries — the
-# allowance is live only while the declaration is.
+# HZ-0097-3 mitigation 2: expiry is World State's responsibility (a dead
+# dispatcher must not leave a live declaration). HZ-0097-4 mitigation 4: the
+# approach allowance is live only while the declaration is.
 #
-# These tests run the aggregator on its PRODUCTION default clock (no `clock_fn`,
-# i.e. wall `time.time_ns`) and stamp the stream in simulator time, because that
-# is the round-7 field configuration and the only one that can see a clock-domain
-# mismatch. An earlier revision injected `clock_fn` AND stamped from the same
-# injected clock, which made the two domains identical by construction and let a
-# wall-vs-sim comparison ship: the aggregator re-checked liveness against
-# `time.time_ns` (~1.79e18) while the declaration was stamped in sim time
-# (~1.2e9), so every published `WorldStateStamped` carried
-# `place_declaration=None` and the approach allowance could never arm.
+# Tests use the PRODUCTION default clock (no `clock_fn`, wall time.time_ns)
+# while the stream is stamped in simulator time (round-7 field config) — the
+# only setup that can see a clock-domain mismatch. An earlier revision
+# injected `clock_fn` for both, making the domains identical by construction:
+# wall (~1.79e18) vs sim (~1.2e9) comparison shipped and `place_declaration`
+# was always None.
 
 # 1.24 s of simulator time — the domain the sim producer, the rSkill runner and
 # the safety kernel all stamp in under `use_sim_time`.
@@ -567,14 +548,13 @@ def test_fill_idl_encodes_every_union_member(
 def test_fill_idl_refuses_a_shape_the_idl_cannot_carry() -> None:
     """An unencodable primitive raises instead of publishing an unset shape.
 
-    The branch chain had no ``else``, so the message went out with
-    ``shape_type`` at the IDL default 0 and no dimensions. Every consumer
-    already refuses tag 0 (the C++ kernel's attached ingest calls
+    Regression: the branch chain had no ``else``, so the message went out
+    with ``shape_type`` at the IDL default 0 and no dimensions. Every
+    consumer refuses tag 0 (C++ kernel's attached ingest calls
     ``fail_closed()``; the Nav2 payload scan filter raises), so this was a
-    diagnosability defect rather than a safety hole — but it pushed a
-    producer-side encoding failure across a process boundary, where it
-    resurfaced as an E-stop or an unrelated node's ``ValueError`` with the
-    shape's name nowhere in the report.
+    diagnosability defect, not a safety hole — but it crossed a process
+    boundary and resurfaced as an E-stop or an unrelated ``ValueError``
+    with the shape's name missing.
     """
     primitive = AttachedCollisionPrimitive.model_construct(
         shape=_CylinderShape(),  # type: ignore[arg-type]  # reason: future-variant stand-in

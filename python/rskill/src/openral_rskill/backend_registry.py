@@ -6,21 +6,20 @@ distributed package (``openral-pro-trt``) rather than in-tree. This module is
 the seam that lets those packages plug into the open ``openral-rskill`` /
 ``openral-runner`` stack without either side importing the other directly:
 
-- :func:`resolve_runtime_backend` — name → :class:`~openral_rskill.runtime.Runtime`
+- ``resolve_runtime_backend`` — name → ``Runtime``
   implementation class. Built-in backends (``pytorch``, ``onnx``, ``null``)
   resolve from an in-tree dict; anything else is looked up via the
   ``openral.runtime_backends`` entry-point group, so a privately installed
   package (e.g. ``openral-pro-trt`` registering ``tensorrt``) is discovered
   automatically. A backend that is neither built-in nor installed raises a
-  typed :exc:`~openral_core.exceptions.ROSConfigError` naming the package to
+  typed ``ROSConfigError`` naming the package to
   install (CLAUDE.md §1.4 — explicit, no silent fallback).
-- :func:`maybe_attach_pro_hooks` — generic "does OpenRAL Pro want to swap this
+- ``maybe_attach_pro_hooks`` — generic "does OpenRAL Pro want to swap this
   policy's inference path" lookup via the ``openral.policy_attach_hooks``
   entry-point group. Absent hook (open-source-only install) is a no-op with a
-  debug log; an attached hook logs at info level. Replaces the ad hoc
-  per-policy ``try: from openral_rskill.smolvla_trt import ...`` /
-  ``act_trt`` imports that used to live directly in
-  :mod:`openral_rskill.smolvla` and :mod:`openral_sim.policies.act`.
+  debug log; an attached hook logs at info level. Replaces the per-policy ad
+  hoc ``try: from openral_rskill.smolvla_trt import ...`` / ``act_trt``
+  imports in ``openral_rskill.smolvla`` and ``openral_sim.policies.act``.
 """
 
 from __future__ import annotations
@@ -66,7 +65,7 @@ def resolve_runtime_backend(kind: str) -> type[Runtime]:
             installed).
 
     Returns:
-        The :class:`~openral_rskill.runtime.Runtime`-conforming class
+        The ``Runtime``-conforming class
         (not an instance — callers construct it themselves, e.g.
         ``resolve_runtime_backend("pytorch")(device="cuda:0")``).
 
@@ -108,8 +107,8 @@ def maybe_attach_pro_hooks(policy_name: str, skill: Any, **kwargs: Any) -> bool:
     """Look up and invoke an OpenRAL Pro policy-attach hook, if installed.
 
     Replaces the per-policy ``try: from openral_rskill.<x>_trt import
-    maybe_attach_<x>_trt_from_env`` calls that used to be hardcoded in
-    :mod:`openral_rskill.smolvla` and :mod:`openral_sim.policies.act`. A hook
+    maybe_attach_<x>_trt_from_env`` calls hardcoded in
+    ``openral_rskill.smolvla`` and ``openral_sim.policies.act``. A hook
     registered under the ``openral.policy_attach_hooks`` entry-point group
     (name = *policy_name*, e.g. ``"smolvla"`` or ``"act"``) is loaded and
     called as ``hook(skill, **kwargs)``; its truthy/falsy return says whether

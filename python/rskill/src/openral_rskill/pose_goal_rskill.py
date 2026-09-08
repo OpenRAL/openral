@@ -1,14 +1,14 @@
 """``PoseGoalRskill`` — move the end-effector to a Cartesian pose via MoveGroup.
 
-A :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` whose goal is a
+A ``ROSActionRskill`` whose goal is a
 small ``pose`` block (target position + orientation for a constrained link),
 lowered at dispatch time into MoveGroup ``position_constraints`` +
 ``orientation_constraints``. The generic Cartesian sibling of
-:class:`~openral_rskill.look_at_rskill.LookAtRskill`: look-at computes its pose
+``LookAtRskill``: look-at computes its pose
 (camera gaze) and leaves optical roll free, whereas a generic pose is supplied
 directly and constrains all three axes.
 
-The pose→constraints lowering (:func:`build_pose_constraints`) is the **shared**
+The pose→constraints lowering (``build_pose_constraints``) is the **shared**
 implementation `LookAtRskill` also uses, so there is one place the link-offset
 math lives. Orientation is a quaternion array whose component
 order the manifest declares via ``quaternion_order`` (default ``"xyzw"``).
@@ -200,7 +200,7 @@ class PoseGoalRskill(ROSActionRskill):
 
     Consumes the merged goal's ``pose`` block (instead of raw constraints) and
     lowers it into a full-orientation MoveGroup pose goal on the first
-    :meth:`step`, then dispatches + replays exactly like the parent.
+    ``step``, then dispatches + replays exactly like the parent.
     """
 
     def _configure_impl(self) -> None:

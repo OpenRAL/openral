@@ -6,7 +6,7 @@ without a hand-typed endpoint, and (2) browse for other advertised OpenRAL
 services and surface them in the "Add Robot" panel.
 
 ``zeroconf`` is an optional dependency (the ``mdns`` extra). When it is not
-importable, :class:`Discovery` stays disabled and the dashboard runs exactly as
+importable, ``Discovery`` stays disabled and the dashboard runs exactly as
 before — discovery is additive, never load-bearing.
 """
 
@@ -87,7 +87,7 @@ class Discovery:
         """Initialise with an optional shared registry.
 
         Args:
-            registry: Existing :class:`RobotRegistry` to use; a fresh one is
+            registry: Existing ``RobotRegistry`` to use; a fresh one is
                 created when *None*.
         """
         self.registry = registry if registry is not None else RobotRegistry()

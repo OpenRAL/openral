@@ -8,14 +8,15 @@ GStreamer-free ``openral_runner`` detector backend, and publishes the detector's
 
 Backends, selected by ``manifest_path`` (2026-06-09 amendment):
 
-* **legacy / RT-DETR** — with no ``manifest_path``, builds an ``ObjectsDetector``
-  (RT-DETR ONNX) from ``onnx_path`` + ``labels`` (unchanged behaviour).
+* **legacy / RT-DETR** — with no ``manifest_path``, builds an
+  ``ObjectsDetector`` (RT-DETR ONNX) from ``onnx_path`` + ``labels``.
 * **manifest-driven** — with a ``manifest_path``, builds via
-  ``build_manifest_detector``: ONNX for ``runtime: onnx``, or the open-vocabulary
-  ``LocateAnythingDetector`` (``VLM_SIDECAR``) for ``runtime: pytorch``.
+  ``build_manifest_detector``: ONNX for ``runtime: onnx``, or the
+  open-vocabulary ``LocateAnythingDetector`` (``VLM_SIDECAR``) for
+  ``runtime: pytorch``.
 
-**Detector mode.** The manifest's ``detector.mode`` selects how the
-node wires the detector (via ``detector_node_wiring``):
+**Detector mode.** The manifest's ``detector.mode`` selects how the node
+wires the detector (via ``detector_node_wiring``):
 
 * ``continuous`` (default; RT-DETR, ``omdet-turbo-indoor``) — the **primary**
   camera runs the continuous detect+publish leg (streams ``ObjectsMetadata`` into
@@ -26,18 +27,18 @@ node wires the detector (via ``detector_node_wiring``):
   **not** publish continuously; every camera's latest frame is still cached so
   the service can answer about the current view.
 
-**Camera-agnostic.** The node does not bake in a camera name. The
-``cameras`` param maps logical camera ids to image topics; with none given it
-falls back to the single ``image_topic`` under id ``primary_camera``. The
-reasoner picks a viewpoint by camera id.
+**Camera-agnostic.** No camera name is baked in. The ``cameras`` param maps
+logical camera ids to image topics; with none given it falls back to the
+single ``image_topic`` under id ``primary_camera``. The reasoner picks a
+viewpoint by camera id.
 
 **locate_in_view service (on_demand only).** Offers
 ``/openral/perception/locate_in_view`` (``openral_msgs/srv/LocateInView``): a
-read-only "is object X visible in camera Y right now?" — runs a one-shot
-detection (``detect_with_query``, without disturbing the persistent query) on the
-requested camera's latest cached frame. Driven by the reasoner's
-``locate_in_view`` tool. The dynamic ``query_topic`` (std_msgs/String) retargets
-the persistent query via ``set_query``.
+read-only "is object X visible in camera Y right now?" — a one-shot detection
+(``detect_with_query``, without disturbing the persistent query) on the
+requested camera's latest cached frame, driven by the reasoner's
+``locate_in_view`` tool. The dynamic ``query_topic`` (std_msgs/String)
+retargets the persistent query via ``set_query``.
 
 Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Empty = a single
@@ -180,7 +181,7 @@ def main(args: Any = None) -> None:
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class RosImageObjectDetectorNode(LifecycleNode):  # type: ignore[misc]
+    class RosImageObjectDetectorNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Subscribe camera Image(s), detect objects, publish + serve queries.
 
         A *managed* lifecycle node. The (GPU-heavy) detector backend

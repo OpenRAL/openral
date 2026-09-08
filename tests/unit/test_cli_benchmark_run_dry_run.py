@@ -1,12 +1,10 @@
 """``openral benchmark run --dry-run`` must predict what the real run does.
 
-The dry run previously printed a plan straight from the suite YAML without
-applying :func:`openral_sim.benchmark.filter_scenes_for_skill` — the
-``evaluated_tasks`` filter ``run_benchmark`` applies before any rollout. A
-pairing the rSkill covers for zero tasks therefore dry-ran clean and then
-raised ``ROSCapabilityMismatch`` on the real invocation, and a partially
-covered suite reported an episode count several times larger than what would
-actually execute.
+Without applying ``openral_sim.benchmark.filter_scenes_for_skill`` (the
+``evaluated_tasks`` filter ``run_benchmark`` applies before any rollout), a
+zero-task pairing would dry-run clean then raise ``ROSCapabilityMismatch`` on
+the real run, and a partially covered suite would report an inflated episode
+count.
 
 Fixtures are the real in-tree suites and rSkill manifests (CLAUDE.md §1.11).
 """

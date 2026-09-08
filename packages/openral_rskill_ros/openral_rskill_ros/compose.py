@@ -1,29 +1,20 @@
 """Single-process composer for rskill_runner + world_state.
 
-This module locks the contract that ``WorldStateAggregator`` is the
-*only* subscriber of ``/joint_states`` and bridges them in-process via
-``.snapshot()`` to the rskill. That contract requires the world_state
-lifecycle node and the rskill_runner_node to share **one** aggregator
-instance in the same OS process so the rskill's snapshot call does not
-have to cross a ROS topic boundary.
+Locks the contract that ``WorldStateAggregator`` is the *only* subscriber of
+``/joint_states`` and bridges it in-process via ``.snapshot()`` to the rskill — which
+requires the world_state lifecycle node and the rskill_runner_node to share **one**
+aggregator instance in the same OS process so the snapshot call never crosses a ROS topic
+boundary.
 
-:func:`compose_runtime` is the single function the production launches
-and the integration tests both call. It:
+``compose_runtime`` is the single function both production launches and integration
+tests call. It loads the robot's ``RobotDescription`` from its on-disk ``robot.yaml``
+(CLAUDE.md §1.11 — real manifests under ``robots/``, never a placeholder), constructs one
+``WorldStateAggregator``, hands the same instance by reference to
+``_WorldStateLifecycleNode`` and ``RskillRunnerNode``, and returns both nodes for
+the caller to attach to an ``rclpy.executors.MultiThreadedExecutor``.
 
-1. Loads the target robot's ``RobotDescription`` from its on-disk
-   ``robot.yaml`` (CLAUDE.md §1.11 — real manifests under ``robots/``,
-   never a placeholder).
-2. Constructs **one** :class:`WorldStateAggregator`.
-3. Hands the same instance by reference to
-   :class:`_WorldStateLifecycleNode` (via its optional ``aggregator``
-   constructor argument) and :class:`RskillRunnerNode` (via its
-   ``aggregator`` kwarg).
-4. Returns both nodes so the caller can attach them to an
-   ``rclpy.executors.MultiThreadedExecutor``.
-
-The compose factory does **not** drive lifecycle transitions; the
-caller (launch file's ``runtime_node`` entry point or a test
-``trigger_configure`` sequence) configures + activates after composing.
+Does **not** drive lifecycle transitions itself; the caller (launch file's ``runtime_node``
+entry point or a test ``trigger_configure`` sequence) configures + activates after composing.
 """
 
 from __future__ import annotations
@@ -46,17 +37,17 @@ __all__ = ["ComposedRuntime", "compose_runtime", "compose_so100_runtime"]
 
 @dataclass
 class ComposedRuntime:
-    """Bundle returned by :func:`compose_runtime`.
+    """Bundle returned by ``compose_runtime``.
 
     Attributes:
-        description: The :class:`RobotDescription` shared by both
+        description: The ``RobotDescription`` shared by both
             nodes.
-        aggregator: The single :class:`WorldStateAggregator` shared
+        aggregator: The single ``WorldStateAggregator`` shared
             in-process.
         world_state_node: The colocated
-            :class:`_WorldStateLifecycleNode` (publishes the typed
+            ``_WorldStateLifecycleNode`` (publishes the typed
             ``/openral/world_state_*`` topics).
-        skill_runner_node: The colocated :class:`RskillRunnerNode` that
+        skill_runner_node: The colocated ``RskillRunnerNode`` that
             owns the ``ExecuteRskill`` action server.
     """
 
@@ -74,14 +65,14 @@ class ComposedRuntime:
     world_cloud_bridge: object | None = None
     """Optional rclpy → OTLP bridge subscribing to
     ``/octomap_point_cloud_centers``. Constructed when
-    :func:`compose_runtime` is called with
+    ``compose_runtime`` is called with
     ``enable_world_cloud_bridge=True``. ``None`` otherwise. Production
     launches enable it through the same ``--enable-octomap`` CLI flag
     that brings up octomap_server itself."""
     dataset_recorder_bridge: object | None = None
     """Optional bus-attached recorder writing a rosbag2 mcap of
     the deploy session (proprio + action + camera frames + episode
-    markers). Constructed when :func:`compose_runtime` is called with a
+    markers). Constructed when ``compose_runtime`` is called with a
     ``dataset_out`` path. ``None`` otherwise. Production launches enable it
     through the ``openral deploy sim/run --dataset-out`` CLI flag. The
     caller must invoke ``.destroy()`` on teardown so the bag is finalized."""
@@ -104,63 +95,50 @@ def compose_runtime(
     """Build the composed world_state + skill_runner runtime for any robot.
 
     Args:
-        robot_yaml: Path to a ``robots/<id>/robot.yaml``. Loaded via
-            :meth:`RobotDescription.from_yaml`, so the full Pydantic
-            validation runs. Both relative and absolute paths work; the
-            ``runtime_node`` script passes an absolute path from the
-            ROS parameter so the launched process need not share the
-            caller's cwd.
-        skill_resolver: Optional override of the default production
-            skill resolver. Tests pass a local-only resolver to avoid
-            HF Hub network access; production launches leave this
-            ``None`` so the default ``rSkill.from_pretrained``-shaped
-            resolver runs.
-        skill_resolver_factory: Optional factory ``(host_node) ->
-            SkillResolver`` used by the production runtime to build
-            a resolver that closes over the just-constructed
-            ``RskillRunnerNode``. Required for wrapped-ROS skills
-            whose adapter needs the host rclpy node to
-            create per-skill ActionClients on the same spin.
-            Mutually exclusive with ``skill_resolver``.
-        enable_world_cloud_bridge: when ``True``, attach a
-            :class:`~openral_runner.world_cloud_bridge.WorldCloudBridge`
-            to the composed ``RskillRunnerNode`` so the octomap occupied
-            voxel cloud (``/octomap_point_cloud_centers``) is rendered
-            into the dashboard via the ``world.pointcloud`` OTel span
-            family. Defaults to ``False`` so deployments without octomap
-            don't pay the subscription cost.
-        world_cloud_topic: PointCloud2 topic the world-cloud bridge
-            renders. Empty keeps octomap's latched centers default; the
-            mono visual-SLAM launch points it at nvblox's (VOLATILE)
-            ESDF voxel cloud.
-        slam_source_node: node name stamped on the dashboard SLAM
-            card's ``openral.slam.source_node`` attribute. Empty keeps
-            the ``openral_slam_toolbox`` default; the visual-SLAM
-            launch sets ``openral_nvblox`` when nvblox builds ``/map``.
-        dataset_out: when set, attach a
-            :class:`~openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`
-            that records the deploy session (proprio + action + camera
-            frames + episode markers) to this rosbag2 ``.mcap`` file (a
-            single file, not a bag directory; parent must exist, file must
-            not). Content is segmented by the ``/openral/episode`` markers an
-            *executing* rSkill emits, so a session in which no skill runs
-            writes nothing — the bridge reports that at ``destroy()``. The
-            caller must call ``runtime.dataset_recorder_bridge.destroy()``
-            on teardown to finalize the bag. ``None`` disables recording.
-        dataset_repo_id: repo_id stamped into the recorded frames /
-            eventual LeRobotDataset. Defaults to ``openral/dataset-<robot>``.
-        dataset_license: SPDX license carried into the offline
-            ``openral dataset from-bag`` conversion. Defaults to ``CC-BY-4.0``.
+        robot_yaml: Path to a ``robots/<id>/robot.yaml``, loaded via
+            ``RobotDescription.from_yaml`` (full Pydantic validation). Relative or
+            absolute; ``runtime_node`` passes an absolute path from the ROS parameter.
+        skill_resolver: Optional override of the default production skill resolver. Tests
+            pass a local-only resolver to avoid HF Hub network access; ``None`` runs the
+            default ``rSkill.from_pretrained``-shaped resolver.
+        skill_resolver_factory: Optional factory ``(host_node) -> SkillResolver`` for a
+            resolver that closes over the just-constructed ``RskillRunnerNode`` — required
+            for wrapped-ROS skills whose adapter needs the host rclpy node to create
+            per-skill ActionClients on the same spin. Mutually exclusive with
+            ``skill_resolver``.
+        enable_world_cloud_bridge: When ``True``, attach a
+            ``WorldCloudBridge`` so the octomap
+            occupied voxel cloud (``/octomap_point_cloud_centers``) renders into the
+            dashboard via the ``world.pointcloud`` OTel span family. ``False`` (default)
+            skips the subscription cost when octomap is off.
+        world_cloud_topic: PointCloud2 topic the world-cloud bridge renders. Empty keeps
+            octomap's latched centers default; the mono visual-SLAM launch points it at
+            nvblox's (VOLATILE) ESDF voxel cloud.
+        slam_source_node: Node name stamped on the dashboard SLAM card's
+            ``openral.slam.source_node`` attribute. Empty keeps the ``openral_slam_toolbox``
+            default; the visual-SLAM launch sets ``openral_nvblox`` when nvblox builds
+            ``/map``.
+        dataset_out: When set, attach a
+            ``DatasetRecorderBridge`` recording
+            the deploy session (proprio + action + camera frames + episode markers) to this
+            rosbag2 ``.mcap`` file (single file, not a bag directory; parent must exist, file
+            must not). Segmented by the ``/openral/episode`` markers an *executing* rSkill
+            emits, so a session with no skill run writes nothing (reported at ``destroy()``).
+            Caller must call ``runtime.dataset_recorder_bridge.destroy()`` on teardown to
+            finalize the bag. ``None`` disables recording.
+        dataset_repo_id: repo_id stamped into the recorded frames / eventual LeRobotDataset.
+            Defaults to ``openral/dataset-<robot>``.
+        dataset_license: SPDX license carried into the offline ``openral dataset from-bag``
+            conversion. Defaults to ``CC-BY-4.0``.
         dataset_fps: Recording cadence. Defaults to the robot's
             ``action_spec.control_freq_hz`` or 30.0.
-        image_staleness_limit_s: Camera-specific freshness window for the
-            shared world-state aggregator. ``None`` keeps its general default.
+        image_staleness_limit_s: Camera-specific freshness window for the shared world-state
+            aggregator. ``None`` keeps its general default.
 
     Returns:
-        A :class:`ComposedRuntime` bundle. The caller is responsible
-        for attaching both nodes to a single
-        ``rclpy.executors.MultiThreadedExecutor``, then driving the
-        managed-lifecycle transitions.
+        A ``ComposedRuntime`` bundle. The caller attaches both nodes to a single
+        ``rclpy.executors.MultiThreadedExecutor``, then drives the managed-lifecycle
+        transitions.
     """
     # Deferred import — keeps the module import-safe on hosts without
     # rclpy (matches CLAUDE.md §1.11 / §5.4 "real component or skip").
@@ -300,17 +278,17 @@ def compose_so100_runtime(
     *,
     skill_resolver: SkillResolver | None = None,
 ) -> ComposedRuntime:
-    """SO-100 convenience wrapper around :func:`compose_runtime`.
+    """SO-100 convenience wrapper around ``compose_runtime``.
 
     Resolves the in-tree ``robots/so100_follower/robot.yaml`` relative
     to this module so callers (tests, scripts) do not need to thread a
     repo-root path through. Production launches use
-    :func:`compose_runtime` directly via the ``runtime_node`` entry
+    ``compose_runtime`` directly via the ``runtime_node`` entry
     point with a ROS-parameter-supplied ``robot_yaml``.
 
     Args:
         skill_resolver: Optional skill resolver override (see
-            :func:`compose_runtime`).
+            ``compose_runtime``).
     """
     repo_root = pathlib.Path(__file__).resolve().parents[3]
     return compose_runtime(

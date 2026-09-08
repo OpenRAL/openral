@@ -13,7 +13,7 @@ What is asserted
 * The friendly task name ``widowx_carrot_on_plate`` resolves to
   ``PutCarrotOnPlateInScene-v1`` (auto-bumped from the upstream
   ENVIRONMENT_MAP's ``-v0`` suffix).
-* The adapter resets the env and emits a populated :class:`Observation`
+* The adapter resets the env and emits a populated ``Observation``
   (RGB from ``3rd_view_camera`` + agent.qpos/qvel state vector).
 * A canonical zero-action step propagates with finite reward and the
   Bridge-task ``success`` info field.
@@ -45,12 +45,8 @@ _CONFIG = _REPO_ROOT / "scenes" / "benchmark" / "widowx_carrot_on_plate.yaml"
 
 
 @pytest.fixture(scope="module")
-def scene_env():
-    from openral_core import BenchmarkScene, load_scene_strict
-
-    if not _CONFIG.exists():
-        pytest.skip(f"sim config not found at {_CONFIG}")
-    return load_scene_strict(str(_CONFIG), BenchmarkScene)
+def _scene_config() -> Path:
+    return _CONFIG
 
 
 @pytest.fixture(scope="module")

@@ -1,28 +1,24 @@
 """Live ROS integration coverage for the latched ``/openral/safety_status``.
 
-ADR-0096 / hazard-log HZ-0096-1. Two properties that only a real DDS graph
-can prove, because both are about **QoS durability** rather than about the
-publishing code:
+ADR-0096 / hazard-log HZ-0096-1. Two properties only a real DDS graph can prove (QoS
+durability, not the publishing code):
 
-1. **Late-subscriber correctness.** A subscriber that connects *after* a
-   latch still receives the current value. This is what TRANSIENT_LOCAL buys
-   and what ``/openral/estop`` and ``/openral/failure/safety`` — both
-   VOLATILE by design — cannot deliver: a dashboard tab opened mid-mission
-   or a runner reconnecting after a crash would otherwise see nothing at all
-   until the next transition.
-2. **The runner's consumption path.** The real ``RskillRunnerNode`` reads the
-   real ``SafetyPassthroughNode``'s status through the existing
-   ``safety_abort_getter`` seam (openral#115) and names the actual fault,
-   instead of collapsing every abort to ``"/openral/estop"``.
+1. Late-subscriber correctness: a subscriber connecting after a latch still receives the
+   current value — what TRANSIENT_LOCAL buys and what ``/openral/estop`` and
+   ``/openral/failure/safety`` (both VOLATILE by design) cannot: a dashboard tab opened
+   mid-mission or a runner reconnecting after a crash would otherwise see nothing until the
+   next transition.
+2. The runner's consumption path: the real ``RskillRunnerNode`` reads the real
+   ``SafetyPassthroughNode``'s status through the existing ``safety_abort_getter`` seam
+   (openral#115) and names the actual fault, instead of collapsing every abort to
+   ``"/openral/estop"``.
 
-Real components throughout (CLAUDE.md §1.11): the production
-``SafetyPassthroughNode`` decides the violation and publishes the status
-itself; the production ``RskillRunnerNode`` subscribes and answers. No
+Real components (CLAUDE.md §1.11): production ``SafetyPassthroughNode`` decides the violation
+and publishes the status itself; production ``RskillRunnerNode`` subscribes and answers. No
 mocks, no hand-built status messages standing in for a publisher.
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the sibling live tests, and listed
-in ``scripts/ros_live_tests.sh``. CI runs it inside ``openral:x86`` (the
-``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. CI runs it in
+``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash

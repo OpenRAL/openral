@@ -1,24 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """The OpenArm HIL transport, checked without the cell.
 
-:class:`tests.hil._openarm_ros_transport.OpenArmHILTransport` is the only
-thing between :class:`OpenArmRealHAL` and a physical arm, so its own
-behaviour should not first be exercised on a powered robot. Everything here
-runs on any host with ROS 2: real publishers, a real subscriber, real
-messages over DDS — just no controllers on the other end.
+``tests.hil._openarm_ros_transport.OpenArmHILTransport`` is the only thing between
+``OpenArmRealHAL`` and a physical arm, so its behaviour shouldn't first be exercised on a
+powered robot. Everything here runs on any host with ROS 2: real publishers, a real
+subscriber, real messages over DDS — just no controllers on the other end.
 
-**The graph is confined to its own DDS domain with LOCALHOST discovery.**
-That is not ceremony for a test that publishes on
-``/*_controller/joint_trajectory``: on 2026-09-05 a sim left on domain 0 with
-subnet multicast reached a **live bimanual OpenArm on another host** (#227).
-A test whose whole subject is arm command topics is exactly the one that must
-not repeat it.
+The graph is confined to its own DDS domain with LOCALHOST discovery — not ceremony for a
+test publishing on ``/*_controller/joint_trajectory``: on 2026-09-05 a sim left on domain 0
+with subnet multicast reached a live bimanual OpenArm on another host (#227). A test whose
+whole subject is arm command topics must not repeat that.
 
-The load-bearing case is :func:`test_a_partial_joint_state_is_reported_missing`:
-``state()`` zero-fills a joint it has never heard from, and ``OpenArmRealHAL``
-turns that into a full 16-DoF vector, so a half-populated ``/joint_states``
-reads downstream as a plausible pose with zeros in it. The motion test refuses
-to command anything until ``wait_for_every_joint`` passes, and this is what
+Load-bearing case: ``test_a_partial_joint_state_is_reported_missing`` — ``state()`` zero-fills
+a joint it has never heard from, and ``OpenArmRealHAL`` turns that into a full 16-DoF vector,
+so a half-populated ``/joint_states`` reads downstream as a plausible pose with zeros in it.
+The motion test refuses to command anything until ``wait_for_every_joint`` passes; this
 proves that gate actually detects the condition.
 """
 

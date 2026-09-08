@@ -97,7 +97,7 @@ def auto_select_quant(device_info: DeviceInfo) -> QuantizationConfig:
         device_info: Host compute snapshot.
 
     Returns:
-        A ``QuantizationConfig`` from :data:`QUANT_PRESETS`.
+        A ``QuantizationConfig`` from ``QUANT_PRESETS``.
 
     Example:
         >>> info = DeviceInfo(device_str="cpu", gpu_memory_bytes=0)

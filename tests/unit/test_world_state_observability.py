@@ -15,9 +15,6 @@ in design §4.3:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-import pytest
 from openral_core import (
     ControlMode,
     EmbodimentKind,
@@ -29,49 +26,13 @@ from openral_core import (
 )
 from openral_core.schemas import JointState, SensorBundle, SensorModality, SensorSpec
 from openral_observability import semconv
-from openral_observability.metrics import _reset_instrument_cache
 from openral_world_state import WorldStateAggregator
-from opentelemetry import metrics, trace
-from opentelemetry.metrics import _internal as metrics_internal
-from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
     HistogramDataPoint,
     InMemoryMetricReader,
     NumberDataPoint,
 )
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
-
-
-@pytest.fixture
-def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics.set_meter_provider(provider)
-    _reset_instrument_cache()
-    try:
-        yield reader
-    finally:
-        provider.shutdown()
-        _reset_instrument_cache()
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -180,11 +141,10 @@ def test_never_received_component_does_not_latch(
 ) -> None:
     """A component with no data yet is stale, but has not *latched*.
 
-    `world_state` subscribes before the HAL publishes its first `joint_state`,
-    so on a real SO-101 this fired a WARN at T+0.00 with the HAL activating
-    0.25 s later — on every single bringup, in the one severity band an
-    operator cannot filter away. "Never received" is not "went stale"; the
-    component is still surfaced through `diag` and the components_stale gauge.
+    `world_state` subscribes before the HAL publishes its first `joint_state`:
+    on a real SO-101 this fired a WARN at T+0.00, HAL activating 0.25s later,
+    on every bringup. "Never received" is not "went stale" — still surfaced
+    via `diag` and the components_stale gauge.
     """
     clock = _FakeClock()
     agg = WorldStateAggregator(

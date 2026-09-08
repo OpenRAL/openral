@@ -5,25 +5,19 @@
 # LICENSE: RLWRLD Model License v1.0 (non-commercial). See
 # rskills/rldx1-ft-libero-nf4/README.md for the full posture.
 #
-# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack). Shared
-# with the rest of the RLDX-1 family. The openral adapter forks
-# tools/rldx_sidecar.py transparently on first observation; user
-# workflow is one command:
-#
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack), shared with
+# the RLDX-1 family. Adapter forks tools/rldx_sidecar.py transparently on
+# first observation:
 #   openral sim run --config scenes/sim/robocasa_pnp.yaml \
-#               --rskill rskills/rldx1-ft-rc365-nf4 \
 #               --rskill rskills/rldx1-ft-rc365-nf4
 #
-# The adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (matches the
-# upstream model card's inference example). The general_embodiment slot
-# in this checkpoint is the PandaMobile / RoboCasa-365 contract (NOT
-# the cross-embodiment pretrain slot).
+# Adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (matches upstream model
+# card's inference example); the general_embodiment slot in this checkpoint is
+# the PandaMobile/RoboCasa-365 contract (NOT the cross-embodiment pretrain slot).
 #
-# Manual boot (debug / shared host) — set OPENRAL_RLDX_AUTO_SPAWN=0
-# and start the sidecar yourself:
+# Manual boot (debug/shared host, OPENRAL_RLDX_AUTO_SPAWN=0):
 #   python tools/rldx_sidecar.py --model RLWRLD/RLDX-1-FT-RC365 \
-#       --port 5555 --quantization nf4 \
-#       --embodiment-tag GENERAL_EMBODIMENT
+#       --port 5555 --quantization nf4 --embodiment-tag GENERAL_EMBODIMENT
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -84,21 +78,18 @@ weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365"
 processors:
   preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_preprocessor.json"
   postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_postprocessor.json"
-# RC365 was trained against the standard robocasa pipeline
-# (``gymnasium_basic.RoboCasaEnv.get_basic_observation``), whose
-# ``process_img`` does ``np.copy(img[::-1, :, :])`` — a vertical-only
-# flip — before passing every ``*_image`` field to the policy. The
-# openral RoboCasa scene adapter (``openral_sim.backends.robocasa.
-# _RoboCasaSim._wrap_obs``) now mirrors that flip at the source so
-# EVERY consumer (dashboard, /openral/cameras/<name>/image publisher,
-# this rldx adapter) sees the standard top-down orientation. No
-# additional flip needed in the rldx adapter — schema defaults apply.
+# RC365 trained against the standard robocasa pipeline
+# (`gymnasium_basic.RoboCasaEnv.get_basic_observation`), whose `process_img`
+# does `np.copy(img[::-1, :, :])` (vertical-only flip) before every `*_image`
+# field. The openral RoboCasa scene adapter
+# (`openral_sim.backends.robocasa._RoboCasaSim._wrap_obs`) mirrors that flip
+# at the source, so every consumer (dashboard, camera publisher, this
+# adapter) sees standard top-down orientation — no extra flip needed here;
 # image_preprocessing omitted intentionally.
-# RC365's general_embodiment state is 16-D laid out as
-# eef_pos_rel(3) + eef_rot_rel_quat(4) + gripper_qpos(2) + base_pos(3)
-# + base_rot_quat(4). The openral RoboCasa scene emits a 16-D
-# human300_16d state — same total dim but with gripper at the END;
-# the rldx adapter re-slices it into the RC365 5-key obs dict.
+# RC365's general_embodiment state is 16-D: eef_pos_rel(3) +
+# eef_rot_rel_quat(4) + gripper_qpos(2) + base_pos(3) + base_rot_quat(4). The
+# openral RoboCasa scene emits a 16-D human300_16d state (same total dim,
+# gripper at the END); the rldx adapter re-slices it into RC365's 5-key obs dict.
 state_contract:
   layout: "rc365"
   dim: 16
@@ -175,23 +166,18 @@ objects: []
 scenes:
   - "kitchen"
 
-# Per-checkpoint action contract (consumed by the dataset bridge
-# to bind the LeRobot v3 `action` feature shape).
-# RLDX-1 general_embodiment 12-D layout, cross-referenced
-# against the live ``robosuite.controllers.composite.HybridMobileBase
-# ._action_split_indexes`` for PandaOmron:
-#   [0:5]  end_effector_position+rotation  (6, delta, OSC_POSE arm)   → composite 'right'
-#   [6]    gripper_close                   (1, absolute, [-1, +1])    → composite 'right_gripper'
-#   [7:9]  base_motion[0:3]                (3, JOINT_VELOCITY base)   → composite 'base'
-#                                                                       (forward, side, yaw)
-#   [10]   base_motion[3]                  (1, padding — torso slot)  → composite 'torso'
-#                                                                       (std=0 in training; discarded)
-#   [11]   control_mode                    (1, composite mode flag)   → HAL hardcodes -1
-# A later action-contract amendment resolves the prior "4-D non-standard-base" workaround:
-# the trailing 4 dims of the policy's ``base_motion`` group are
-# 3 active base-velocity channels + 1 always-zero torso channel,
-# both of which map onto already-existing openral ControlModes
-# (JOINT_VELOCITY for the base, discard for the unused torso).
+# Per-checkpoint action contract (dataset bridge, LeRobot v3 `action` shape).
+# RLDX-1 general_embodiment 12-D layout, cross-referenced against live
+# `robosuite.controllers.composite.HybridMobileBase._action_split_indexes`
+# for PandaOmron:
+#   [0:5]  end_effector_position+rotation  (6, delta, OSC_POSE arm)   -> composite 'right'
+#   [6]    gripper_close                   (1, absolute, [-1, +1])    -> composite 'right_gripper'
+#   [7:9]  base_motion[0:3]                (3, JOINT_VELOCITY base, forward/side/yaw) -> composite 'base'
+#   [10]   base_motion[3]                  (1, padding/torso, std=0 in training, discarded) -> composite 'torso'
+#   [11]   control_mode                    (1, composite mode flag)   -> HAL hardcodes -1
+# Resolves the prior "4-D non-standard-base" workaround: the trailing 4 dims
+# of `base_motion` are 3 active base-velocity channels + 1 always-zero torso
+# channel, mapping onto existing openral ControlModes.
 action_contract:
   cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
   dim: 12

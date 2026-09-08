@@ -13,7 +13,7 @@ import gzip
 import os
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import httpx
@@ -42,45 +42,41 @@ from opentelemetry.proto.trace.v1.trace_pb2 import (
 )
 
 
-def _av(value: object) -> AnyValue:
-    if isinstance(value, bool):
-        return AnyValue(bool_value=value)
-    if isinstance(value, int):
-        return AnyValue(int_value=value)
-    if isinstance(value, float):
-        return AnyValue(double_value=value)
-    return AnyValue(string_value=str(value))
+@pytest.fixture
+def _otlp_traces_payload(av: Callable[[object], AnyValue]) -> Callable[[], bytes]:
+    def _otlp_traces_payload() -> bytes:
+        req = ExportTraceServiceRequest(
+            resource_spans=[
+                ResourceSpans(
+                    resource=Resource(attributes=[KeyValue(key="service.name", value=av("ral"))]),
+                    scope_spans=[
+                        ScopeSpans(
+                            spans=[
+                                Span(
+                                    trace_id=b"\x02" * 16,
+                                    span_id=b"\x02" * 8,
+                                    name="rskill.execute",
+                                    start_time_unix_nano=1_000_000_000_000_000_000,
+                                    end_time_unix_nano=1_000_000_000_023_000_000,
+                                    attributes=[
+                                        KeyValue(key="rskill.id", value=av("smolvla-libero")),
+                                    ],
+                                )
+                            ]
+                        )
+                    ],
+                )
+            ]
+        )
+        return req.SerializeToString()
 
-
-def _otlp_traces_payload() -> bytes:
-    req = ExportTraceServiceRequest(
-        resource_spans=[
-            ResourceSpans(
-                resource=Resource(attributes=[KeyValue(key="service.name", value=_av("ral"))]),
-                scope_spans=[
-                    ScopeSpans(
-                        spans=[
-                            Span(
-                                trace_id=b"\x02" * 16,
-                                span_id=b"\x02" * 8,
-                                name="rskill.execute",
-                                start_time_unix_nano=1_000_000_000_000_000_000,
-                                end_time_unix_nano=1_000_000_000_023_000_000,
-                                attributes=[
-                                    KeyValue(key="rskill.id", value=_av("smolvla-libero")),
-                                ],
-                            )
-                        ]
-                    )
-                ],
-            )
-        ]
-    )
-    return req.SerializeToString()
+    return _otlp_traces_payload
 
 
 @pytest.mark.asyncio
-async def test_post_traces_decodes_and_updates_state() -> None:
+async def test_post_traces_decodes_and_updates_state(
+    _otlp_traces_payload: Callable[[], bytes],
+) -> None:
     store = TelemetryStore()
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
@@ -101,31 +97,37 @@ async def test_post_traces_decodes_and_updates_state() -> None:
         assert card["duration_ms"] == 23.0
 
 
-def _otlp_logs_payload() -> bytes:
-    req = ExportLogsServiceRequest(
-        resource_logs=[
-            ResourceLogs(
-                resource=Resource(attributes=[KeyValue(key="service.name", value=_av("ral"))]),
-                scope_logs=[
-                    ScopeLogs(
-                        scope=InstrumentationScope(name="openral.world_state"),
-                        log_records=[
-                            LogRecord(
-                                time_unix_nano=1_000_000_000_000_000_000,
-                                severity_number=SeverityNumber.SEVERITY_NUMBER_DEBUG,
-                                body=_av("world_state.detected_objects count=0"),
-                            )
-                        ],
-                    )
-                ],
-            )
-        ]
-    )
-    return req.SerializeToString()
+@pytest.fixture
+def _otlp_logs_payload(av: Callable[[object], AnyValue]) -> Callable[[], bytes]:
+    def _otlp_logs_payload() -> bytes:
+        req = ExportLogsServiceRequest(
+            resource_logs=[
+                ResourceLogs(
+                    resource=Resource(attributes=[KeyValue(key="service.name", value=av("ral"))]),
+                    scope_logs=[
+                        ScopeLogs(
+                            scope=InstrumentationScope(name="openral.world_state"),
+                            log_records=[
+                                LogRecord(
+                                    time_unix_nano=1_000_000_000_000_000_000,
+                                    severity_number=SeverityNumber.SEVERITY_NUMBER_DEBUG,
+                                    body=av("world_state.detected_objects count=0"),
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+        return req.SerializeToString()
+
+    return _otlp_logs_payload
 
 
 @pytest.mark.asyncio
-async def test_post_logs_ingests_debug_line_into_event_log() -> None:
+async def test_post_logs_ingests_debug_line_into_event_log(
+    _otlp_logs_payload: Callable[[], bytes],
+) -> None:
     """issue #318 — /v1/logs now surfaces real log lines (incl. DEBUG)."""
     store = TelemetryStore()
     app = create_app(store)
@@ -161,7 +163,9 @@ async def test_post_logs_malformed_returns_400() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_traces_accepts_gzip_encoding() -> None:
+async def test_post_traces_accepts_gzip_encoding(
+    _otlp_traces_payload: Callable[[], bytes],
+) -> None:
     store = TelemetryStore()
     app = create_app(store)
     transport = httpx.ASGITransport(app=app)
@@ -252,12 +256,14 @@ async def test_api_config_reflects_env_url(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_subscriber_queue_receives_ingest_payload() -> None:
+async def test_subscriber_queue_receives_ingest_payload(
+    _otlp_traces_payload: Callable[[], bytes],
+) -> None:
     """The SSE wiring at the store level: subscribers see ingest deltas.
 
     The actual ``/api/stream`` HTTP framing is exercised in the
     integration test on a real uvicorn socket
-    (:mod:`tests.integration.test_dashboard_end_to_end`); httpx's
+    (``tests.integration.test_dashboard_end_to_end``); httpx's
     ``ASGITransport`` buffers the full response body so a streaming
     endpoint deadlocks against it. Here we validate the store-level
     publish channel that the SSE generator awaits on.
@@ -450,39 +456,45 @@ async def test_post_transcribe_real_audio(monkeypatch: pytest.MonkeyPatch) -> No
         assert "country" in body["text"].lower(), body["text"]
 
 
-def _otlp_camera_payload(source: str, thumb_b64: str) -> bytes:
-    from openral_observability import semconv
+@pytest.fixture
+def _otlp_camera_payload(av: Callable[[object], AnyValue]) -> Callable[[str, str], bytes]:
+    def _otlp_camera_payload(source: str, thumb_b64: str) -> bytes:
+        from openral_observability import semconv
 
-    return ExportTraceServiceRequest(
-        resource_spans=[
-            ResourceSpans(
-                resource=Resource(attributes=[KeyValue(key="service.name", value=_av("ral"))]),
-                scope_spans=[
-                    ScopeSpans(
-                        scope=InstrumentationScope(name="test"),
-                        spans=[
-                            Span(
-                                name=semconv.SPAN_SENSORS_READ_LATEST,
-                                trace_id=b"\x11" * 16,
-                                span_id=b"\x22" * 8,
-                                attributes=[
-                                    KeyValue(key=semconv.SENSORS_SOURCE, value=_av(source)),
-                                    KeyValue(
-                                        key=semconv.SENSORS_THUMBNAIL_JPEG_B64,
-                                        value=_av(thumb_b64),
-                                    ),
-                                ],
-                            )
-                        ],
-                    )
-                ],
-            )
-        ]
-    ).SerializeToString()
+        return ExportTraceServiceRequest(
+            resource_spans=[
+                ResourceSpans(
+                    resource=Resource(attributes=[KeyValue(key="service.name", value=av("ral"))]),
+                    scope_spans=[
+                        ScopeSpans(
+                            scope=InstrumentationScope(name="test"),
+                            spans=[
+                                Span(
+                                    name=semconv.SPAN_SENSORS_READ_LATEST,
+                                    trace_id=b"\x11" * 16,
+                                    span_id=b"\x22" * 8,
+                                    attributes=[
+                                        KeyValue(key=semconv.SENSORS_SOURCE, value=av(source)),
+                                        KeyValue(
+                                            key=semconv.SENSORS_THUMBNAIL_JPEG_B64,
+                                            value=av(thumb_b64),
+                                        ),
+                                    ],
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        ).SerializeToString()
+
+    return _otlp_camera_payload
 
 
 @pytest.mark.asyncio
-async def test_camera_stream_emits_jpeg_part() -> None:
+async def test_camera_stream_emits_jpeg_part(
+    _otlp_camera_payload: Callable[[str, str], bytes],
+) -> None:
     # httpx.ASGITransport buffers the full response body before returning,
     # so a true infinite MJPEG StreamingResponse deadlocks it (same limitation
     # noted in test_subscriber_queue_receives_ingest_payload for SSE). We

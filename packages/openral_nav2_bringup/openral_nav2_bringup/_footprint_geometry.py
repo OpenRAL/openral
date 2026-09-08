@@ -1,16 +1,12 @@
 """Footprint geometry shared by this package's nodes.
 
-Extracted from the former ``payload_footprint_node`` when Nav2 went base-only.
-That node grew the costmaps' footprint polygon over a carried object; it was
-removed because the growth projected 3-D geometry onto a 2-D costmap whose
-obstacles come from a single scan slice — forbidding exactly the place poses the
-tasks require (a payload entering a fridge projects onto the fixture the base
-must approach) while protecting against nothing. See this package's README,
-"Nav2 is base-only".
+Nav2 is base-only: costmap obstacles come from a single 2-D scan slice, so growing the footprint
+over a carried 3-D object would forbid valid task poses (e.g. a payload entering a fridge projects
+onto the fixture the base must approach) while protecting against nothing. See this package's
+README, "Nav2 is base-only".
 
-What survives is the geometry the scan filter still needs: the shape-type
-constants and the manifest's own chassis outline, which the filter uses to
-decide that a return is the robot itself.
+Provides the shape-type constants and the manifest's chassis outline that the scan filter uses to
+decide a return is the robot itself.
 """
 
 from __future__ import annotations

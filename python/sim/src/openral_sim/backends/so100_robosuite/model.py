@@ -7,7 +7,7 @@ Feetech servos. This module wires it into robosuite's
 ``robots=["SO100"]`` exactly like any other arm in the registry.
 
 The MJCF used here is generated from the upstream DeepMind
-``mujoco_menagerie`` SO-100 description by :mod:`._assets` — see that
+``mujoco_menagerie`` SO-100 description by ``._assets`` — see that
 module for the rewrite details (actuator type, body hierarchy, eef
 sites).
 """
@@ -31,7 +31,7 @@ class SO100Gripper(GripperModel):  # type: ignore[misc]  # reason: robosuite has
     """Parallel-jaw gripper for the Hugging Face SO-100.
 
     1 DOF (``Jaw``), driven by a single torque actuator. The
-    :class:`robosuite.controllers.parts.gripper.simple_grip.SimpleGripController`
+    ``robosuite.controllers.parts.gripper.simple_grip.SimpleGripController``
     (registered as ``"GRIP"``) maps a scalar in [-1, 1] to ± full
     actuator torque; positive closes the jaw, negative opens it.
     """
@@ -69,7 +69,7 @@ class SO100Gripper(GripperModel):  # type: ignore[misc]  # reason: robosuite has
     def _important_geoms(self) -> dict[str, list[str]]:
         """Fingerpad geom groups used by ``_check_grasp`` in the env.
 
-        Both jaws live in the gripper XML (see :func:`_assets._write_gripper_xml`
+        Both jaws live in the gripper XML (see ``_assets._write_gripper_xml``
         for why the static fixed jaw moved out of the arm), so both
         fingerpad groups resolve cleanly under the gripper's naming
         prefix.
@@ -106,7 +106,7 @@ register_gripper(SO100Gripper)
 class SO100(ManipulatorModel):  # type: ignore[misc]  # reason: robosuite has no type stubs
     """Hugging Face SO-100 follower — 5-DOF revolute arm.
 
-    The 6-DOF jaw motor moves to :class:`SO100Gripper`. The arm itself
+    The 6-DOF jaw motor moves to ``SO100Gripper``. The arm itself
     exposes 5 motor actuators (Rotation, Pitch, Elbow, Wrist_Pitch,
     Wrist_Roll) and a ``right_hand`` body inside the menagerie's
     ``Fixed_Jaw`` link, where the gripper merges.
@@ -132,7 +132,7 @@ class SO100(ManipulatorModel):  # type: ignore[misc]  # reason: robosuite has no
 
     @property
     def default_controller_config(self) -> dict[str, str]:
-        # We ship our own composite controller in :mod:`.env`; this just
+        # We ship our own composite controller in ``.env``; this just
         # keeps the base class happy if someone instantiates the model
         # standalone.
         return {"right": "default_so100"}

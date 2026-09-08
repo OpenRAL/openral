@@ -1,21 +1,17 @@
 """DatasetRecorderBridge records the deploy bus to a rosbag2 mcap.
 
-Drives :class:`openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`
-directly (no full ``ros2 launch``) with a minimal stand-in node, a REAL
-:class:`~openral_world_state.WorldStateAggregator` fed real
-:class:`~openral_core.JointState` + :class:`~openral_core.SensorFrame`, a
-REAL :class:`openral_dataset.Rosbag2Sink`, and synthetic
+Drives ``openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`` directly (no full
+``ros2 launch``) with a minimal stand-in node, a real ``WorldStateAggregator`` fed real
+``JointState`` + ``SensorFrame``, a real ``openral_dataset.Rosbag2Sink``, and synthetic
 ``openral_msgs/Episode`` + ``ActionChunk`` payloads.
 
-Per CLAUDE.md §1.11 — no mocked aggregator / sink / bag reader. The only
-stand-in is the rclpy node (its sole role here is to vend / release
-subscription handles; the bridge's callbacks are invoked directly, exactly
-as the executor would). Parametrised over TWO embodiments (SO-100 6-DoF and
-Franka 8-DoF) to prove the bridge is embodiment-agnostic — nothing in it is
-robot-specific.
+Per CLAUDE.md §1.11 — no mocked aggregator/sink/bag reader. Only stand-in is the rclpy node
+(vends/releases subscription handles; the bridge's callbacks are invoked directly, as the
+executor would). Parametrised over two embodiments (SO-100 6-DoF, Franka 8-DoF) to prove the
+bridge is embodiment-agnostic.
 
-Requires ``openral_msgs`` (built ROS workspace) for the ``ActionChunk`` /
-``Episode`` types the bridge imports; skips cleanly otherwise.
+Requires ``openral_msgs`` (built ROS workspace) for ``ActionChunk``/``Episode`` types; skips
+cleanly otherwise.
 """
 
 from __future__ import annotations
@@ -61,12 +57,10 @@ class _StandinNode:
 def bridge_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
     """Capture the bridge module's INFO+ structlog records.
 
-    The repo ``conftest.py`` filters below WARNING and caches bound loggers on
-    first use (to keep test stdout clean). Both have to be lifted here: the
-    armed / summary records are INFO, and the module-level logger is already
-    pinned to the filtering wrapper by the ``_on_episode`` debug call the other
-    tests in this file make. Rebinding the module's real ``structlog`` logger
-    (not a mock) under a permissive config is the smallest way to see them.
+    ``conftest.py`` filters below WARNING and caches bound loggers on first use; both must be
+    lifted here since armed/summary records are INFO and the module logger is already pinned
+    by ``_on_episode``'s debug call elsewhere in this file. Rebinds the module's real
+    ``structlog`` logger (not a mock) under a permissive config — the smallest way to see them.
     """
     from openral_runner import dataset_recorder_bridge as module
 

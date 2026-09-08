@@ -1,31 +1,24 @@
 #!/usr/bin/env python3
-"""Stand-alone launch for cuVSLAM under ``/openral/visual_slam``.
+"""Stand-alone launch for cuVSLAM (NVIDIA Isaac ROS Visual SLAM) under ``/openral/visual_slam``.
 
-NVIDIA Isaac ROS Visual SLAM (cuVSLAM).
-This is the camera-based SLAM backend for **lidar-less** robots: it
-fills the same ``map→odom`` TF edge that ``slam_toolbox`` fills on lidar
-robots, but from stereo / mono+IMU / RGB-D cameras instead of
-a ``/scan``. Composed into
-``packages/openral_rskill_ros/launch/sim_e2e.launch.py`` when the
-``slam_backend`` launch argument is ``visual`` (resolved from
-``RobotCapabilities.has_vision_slam`` — see ``deploy_sim.py``).
+Camera-based SLAM backend for **lidar-less** robots: fills the same
+``map→odom`` TF edge ``slam_toolbox`` fills on lidar robots, from
+stereo / mono+IMU / RGB-D cameras instead of ``/scan``. Composed into
+``sim_e2e.launch.py`` when ``slam_backend`` is ``visual`` (from
+``RobotCapabilities.has_vision_slam``, see ``deploy_sim.py``).
 
 Unlike ``slam_toolbox.launch.py``, cuVSLAM's ``VisualSlamNode`` is a
-**composable node**, not a ROS 2 lifecycle node, so there is no
-UNCONFIGURED→INACTIVE auto-transition and no Reasoner-driven
-CONFIGURE/ACTIVATE — the node is live once composed. It runs inside a
-``ComposableNodeContainer`` so the NITROS type-negotiated image topics
-stay intra-process zero-copy.
+**composable node**, not a lifecycle node — live once composed, no
+Reasoner-driven CONFIGURE/ACTIVATE. Runs inside a ``ComposableNodeContainer``
+so NITROS type-negotiated image topics stay intra-process zero-copy.
 
-The cuVSLAM engine ships as a precompiled NVIDIA library under an NVIDIA
-EULA — it is **not** bundled by OpenRAL (license guard). This
-launch only references the upstream ``isaac_ros_visual_slam`` package;
-the operator installs it on the target GPU host.
+cuVSLAM ships as a precompiled NVIDIA library under an NVIDIA EULA — **not**
+bundled by OpenRAL (license guard); the operator installs
+``isaac_ros_visual_slam`` on the target GPU host.
 
-Input topic remappings map OpenRAL's camera bus onto cuVSLAM's
-``visual_slam/image_{i}`` / ``visual_slam/camera_info_{i}`` (and
-``visual_slam/imu`` for visual-inertial rigs); pass them at launch via
-the matching arguments.
+Topic remappings map OpenRAL's camera bus onto cuVSLAM's
+``visual_slam/image_{i}`` / ``visual_slam/camera_info_{i}`` /
+``visual_slam/imu``; pass them via the matching launch arguments.
 """
 
 from __future__ import annotations

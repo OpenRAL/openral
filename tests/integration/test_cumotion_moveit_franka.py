@@ -170,14 +170,12 @@ def test_moveit_joints_rskill_plans_with_cumotion_pipeline() -> None:
 
             node = Node("test_cumotion_moveit_rskill_harness")
 
-            # Start the executor before configure() so that wait_for_server()
-            # and the subsequent send_goal_async() both run within the same
-            # executor context.  Calling configure() without a spinning executor
-            # causes rclpy to spin the node through a temporary internal
-            # executor; when a separate SingleThreadedExecutor later takes over
-            # the node, the ActionClient goal-accept future is never delivered
-            # (the callback is stuck in the stale context), producing the
-            # "wrapped goal-accept did not complete within 15.0s" timeout.
+            # Start the executor before configure() so wait_for_server() and send_goal_async()
+            # both run within the same executor context. Without a spinning executor,
+            # configure() spins the node through a temporary internal executor; when a
+            # SingleThreadedExecutor later takes over, the ActionClient goal-accept future is
+            # never delivered (stuck in the stale context), producing the "wrapped goal-accept
+            # did not complete within 15.0s" timeout.
             executor = SingleThreadedExecutor()
             executor.add_node(node)
             spin_thread = threading.Thread(target=executor.spin, daemon=True)

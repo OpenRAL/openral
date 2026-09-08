@@ -1,34 +1,17 @@
 """Lockstep versioning contract across the workspace.
 
-Every distributable package in this monorepo shares one SemVer number, and
-every inter-package dependency pins that exact number. Both halves matter:
+Every distributable package shares one SemVer number (what ``release-pypi.yml``
+publishes and a ``v*.*.*`` tag names), and every inter-package dependency pins
+that exact number with ``==`` — ``[tool.uv.sources]`` resolves siblings for
+local dev but is stripped at build time, so an unpinned sibling lets pip mix
+release versions. Both numbers are rewritten by release-please via the
+``x-release-please-*`` annotations; a package missing one, or absent from
+``extra-files``, silently stops being bumped.
 
-- The shared number is what ``release-pypi.yml`` publishes as a set and what
-  a ``v*.*.*`` tag names.
-- The ``==`` pins are the only thing that makes "lockstep" true *for an
-  installer*. ``[tool.uv.sources]`` resolves siblings to workspace members
-  for local development, but it is stripped at build time — an unpinned
-  ``openral-core`` in published metadata lets pip pair ``openral-cli 0.2.0``
-  with any future ``openral-core``.
-
-Both numbers are rewritten by release-please, never by hand — so the
-``x-release-please-*`` annotations that let it find them are part of the
-contract too. A package that loses an annotation, or that never reaches
-``extra-files``, silently stops being bumped and drifts out of lockstep at the
-next release.
-
-Coverage
---------
-- Root and every ``python/*`` package declare the same ``[project] version``.
-- Every ``openral-*`` dependency is pinned ``==`` to that version.
-- Every ``python/*`` package that ships a distribution appears in the
-  ``release-pypi.yml`` publish matrix.
-- Every ``python/*`` package is listed in ``release-please-config.json`` and
-  carries the annotations release-please needs.
-- The manifest agrees with the tree about the current version.
-- ``uv.lock`` records that same version for every workspace member.
-- No package hardcodes ``__version__`` — release-please only rewrites
-  ``pyproject.toml``, so source has to derive it.
+Coverage: root/``python/*`` ``[project] version`` match; ``openral-*`` deps
+pinned ``==``; every package in the ``release-pypi.yml`` publish matrix and in
+``release-please-config.json`` with its annotations; manifest/tree/``uv.lock``
+agree; no hardcoded ``__version__``.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Open-vocabulary text embedder for spatial memory.
 
-Provides a small :class:`TextEmbedder` Protocol and an :class:`OpenClipEmbedder`
-backed by **OpenCLIP ViT-B/32** (MIT code + weights). :class:`SpatialMemory`
+Provides a small ``TextEmbedder`` Protocol and an ``OpenClipEmbedder``
+backed by **OpenCLIP ViT-B/32** (MIT code + weights). ``SpatialMemory``
 takes an optional embedder so a free-text query ("the red wine") matches object
 nodes by CLIP cosine similarity, not just exact/substring labels — handling
 synonyms and paraphrases that label matching misses.

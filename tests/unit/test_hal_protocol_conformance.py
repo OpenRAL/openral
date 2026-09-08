@@ -1,36 +1,16 @@
 """HAL Protocol conformance — parametrized contract test for every concrete HAL.
 
-CLAUDE.md §5.1 says *"types are the contract"*; this file pins the runtime
-contract :class:`openral_hal.protocol.HAL` declares so a typo or
-signature drift in any HAL implementation fails the unit lane immediately
-instead of waiting for a sim or HIL run.
+Pins the runtime contract ``openral_hal.protocol.HAL`` declares
+(CLAUDE.md §5.1: "types are the contract") so a signature drift in any HAL
+implementation fails the unit lane immediately. One parametrized test per
+contract point, one entry in ``HAL_BUILDERS`` per HAL, so a Protocol
+change touches this file only instead of N HAL-specific ones.
 
-Why a parametrized test instead of per-HAL contract files?  Ten HALs ship
-today (`RosControlHAL`, `SO100FollowerHAL`, `UR5eHAL`, `UR10eHAL`,
-`FrankaPandaHAL`, `FrankaPandaRealHAL`, `SawyerRealHAL`, `AlohaHAL`,
-`UR5eRealHAL`, `UR10eRealHAL`); duplicating the same assertions across
-ten files would mean every Protocol change touches ten files.  Here a
-new HAL becomes a one-line entry in :data:`HAL_BUILDERS`.
-
-The five real-HW adapters (Franka FCI, Sawyer, ALOHA, UR5e, UR10e) are
-exercised against an injected
-:class:`~openral_hal.sim_transport.SimTransport` (a recorded RTDE-shaped
-fixture per CLAUDE.md §5.4); their live HIL runs live in
-``tests/hil/test_franka_panda.py``, ``test_sawyer.py``, ``test_aloha.py``,
-``test_ur5e.py`` and ``test_ur10e.py`` and are gated by the lab runner
-labels.
-
-Coverage (asserted against every HAL listed in :data:`HAL_BUILDERS`)
--------------------------------------------------------------------
-- ``description`` attribute is a populated :class:`RobotDescription`.
-- The instance is structurally a :class:`HAL` (``runtime_checkable``).
-- ``read_state`` / ``send_action`` before ``connect`` raise
-  :class:`ROSRuntimeError` (per :class:`HAL` docstring).
-- ``connect`` then ``read_state`` returns a :class:`JointState` whose
-  ``name`` matches ``description.joints``.
-- ``disconnect`` is idempotent (calling twice doesn't raise).
-- ``estop`` always raises :class:`ROSEStopRequested` (a
-  :class:`ROSSafetyViolation` subclass — never silently caught).
+The five real-HW adapters (Franka FCI, Sawyer, ALOHA, UR5e, UR10e) run
+against an injected ``SimTransport`` (a
+recorded RTDE-shaped fixture, CLAUDE.md §5.4); their HIL counterparts are
+``tests/hil/test_{franka_panda,sawyer,aloha,ur5e,ur10e}.py``, gated by lab
+runner labels.
 """
 
 from __future__ import annotations
@@ -146,12 +126,11 @@ def _franka_builder() -> tuple[HAL, Callable[[], None]]:
 
 
 def _franka_real_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build a :class:`FrankaPandaRealHAL` against an in-memory transport.
+    """Build a ``FrankaPandaRealHAL`` against an in-memory transport.
 
-    Real ``franka_ros2`` / ``libfranka`` are not part of the unit lane; the
-    transport is a real :class:`SimTransport` that records publishes and
-    feeds back zeroed joint state.  This exercises the full HAL Protocol
-    contract without any ROS 2 installation.
+    No ``franka_ros2`` / ``libfranka``: a real ``SimTransport`` records
+    publishes and feeds back zeroed joint state, exercising the full HAL
+    Protocol contract without a ROS 2 install.
     """
     from openral_hal.franka_panda_real import FrankaPandaRealHAL
 
@@ -172,7 +151,7 @@ def _franka_n_joints() -> list[str]:
 
 
 def _sawyer_real_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build a :class:`SawyerRealHAL` against an in-memory transport."""
+    """Build a ``SawyerRealHAL`` against an in-memory transport."""
     from openral_hal.sawyer_real import SAWYER_DESCRIPTION, SawyerRealHAL
 
     transport = SimTransport(n_joints=len(SAWYER_DESCRIPTION.joints))
@@ -185,7 +164,7 @@ def _sawyer_real_builder() -> tuple[HAL, Callable[[], None]]:
 
 
 def _aloha_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build an :class:`AlohaHAL` against an in-memory transport."""
+    """Build an ``AlohaHAL`` against an in-memory transport."""
     from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
 
     transport = SimTransport(n_joints=len(ALOHA_DESCRIPTION.joints))
@@ -199,9 +178,7 @@ def _aloha_builder() -> tuple[HAL, Callable[[], None]]:
 def _ur5e_real_builder() -> tuple[HAL, Callable[[], None]]:
     """Build a UR5eRealHAL backed by a SimTransport (recorded RTDE fixture).
 
-    Runs without a live UR5e or live ros2_control by injecting the same
-    typed in-memory transport the RosControlHAL unit tests use; the HIL
-    counterpart is ``tests/hil/test_ur5e.py``.
+    No live UR5e/ros2_control; HIL counterpart is ``tests/hil/test_ur5e.py``.
     """
     from openral_hal.ur_real import UR5eRealHAL
 
@@ -217,8 +194,7 @@ def _ur5e_real_builder() -> tuple[HAL, Callable[[], None]]:
 def _ur10e_real_builder() -> tuple[HAL, Callable[[], None]]:
     """Build a UR10eRealHAL backed by a SimTransport.
 
-    Same shape as :func:`_ur5e_real_builder`; HIL counterpart is
-    ``tests/hil/test_ur10e.py``.
+    Same shape as ``_ur5e_real_builder``; HIL counterpart is ``tests/hil/test_ur10e.py``.
     """
     from openral_hal.ur_real import UR10eRealHAL
 
@@ -303,7 +279,6 @@ def test_hal_connect_then_read_state_returns_joint_state(hal_name: str) -> None:
         hal.connect()
         state = hal.read_state()
         assert isinstance(state, JointState)
-        # Names must align with the description's joint inventory.
         assert state.name == [j.name for j in hal.description.joints]
         assert len(state.position) == len(state.name)
         hal.disconnect()
@@ -325,18 +300,46 @@ def test_hal_disconnect_is_idempotent(hal_name: str) -> None:
 
 @pytest.mark.parametrize("hal_name", list(HAL_BUILDERS.keys()))
 def test_hal_estop_always_raises_estoprequested(hal_name: str) -> None:
-    """The :class:`HAL` Protocol mandates that ``estop`` always raises.
+    """``estop`` always raises ``ROSEStopRequested`` (CLAUDE.md §10 / Protocol docstring).
 
-    Per CLAUDE.md §10 / Protocol docstring, ``ROSEStopRequested`` is the
-    exact exception type.  It MUST be a ``ROSSafetyViolation`` subclass
-    so the safety supervisor catches it at the boundary; that is asserted
-    structurally at the import site (one test).
+    Must be a ``ROSSafetyViolation`` subclass so the safety supervisor catches it
+    at the boundary; asserted structurally in the next test.
     """
     hal, cleanup = HAL_BUILDERS[hal_name]()
     try:
         hal.connect()
         with pytest.raises(ROSEStopRequested):
             hal.estop()
+    finally:
+        cleanup()
+
+
+@pytest.mark.parametrize("hal_name", ["FrankaPandaRealHAL", "SawyerRealHAL"])
+def test_hal_send_action_after_estop_fails(hal_name: str) -> None:
+    """After ``estop()`` raises, ``send_action`` fails without a reconnect.
+
+    Was two byte-identical per-file unit tests
+    (test_franka_panda_real.py / test_sawyer_real.py). Narrowly
+    parametrized rather than joining ``HAL_BUILDERS`` at large: only these
+    two adapters' own test files asserted this "estop leaves send_action
+    failing until reconnect" contract, and the other builders (sim HALs,
+    RosControlHAL) were never proven to share it.
+    """
+    from openral_core.schemas import Action  # reason: keep imports lazy
+
+    hal, cleanup = HAL_BUILDERS[hal_name]()
+    try:
+        n = len(hal.description.joints)
+        action = Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[[0.0] * n],
+        )
+        hal.connect()
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        with pytest.raises(ROSRuntimeError):
+            hal.send_action(action)
     finally:
         cleanup()
 

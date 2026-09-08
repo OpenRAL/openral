@@ -1,13 +1,13 @@
 """Span helpers for the openral layers.
 
-All helpers are safe to call before :func:`configure_observability` runs —
+All helpers are safe to call before ``configure_observability`` runs —
 in that case they create spans on the default no-op ``TracerProvider`` and
 emit nothing.
 
 The helpers are deliberately thin (``contextmanager`` over the standard
 ``Tracer.start_as_current_span``) so they cost <1 µs in the no-op path.
 
-Attribute keys come from :mod:`openral_observability.semconv` — never
+Attribute keys come from ``openral_observability.semconv`` — never
 hardcode a string at a call site. See CLAUDE.md §1.13 (no duplication)
 and design §3 (semantic-convention namespace).
 """
@@ -35,19 +35,16 @@ __all__ = [
     "traced",
 ]
 
-# The closed value set for the `kind` label on `rskill.chunk_inference` spans
-# and the `openral.inference.duration` histogram (design §9: labels are closed
-# sets). `kind` is a TIMING axis: was the compute on the control loop's critical
-# path (`foreground`), overlapped in a background thread (`prefetch`), or a
-# per-step eval adapter with no chunking at all (`single`)?
+# Closed value set (design §9) for `kind` on `rskill.chunk_inference` spans
+# and the `openral.inference.duration` histogram — a TIMING axis: control
+# loop critical path (`foreground`), background-thread overlap (`prefetch`),
+# or a per-step eval adapter with no chunking (`single`).
 #
-# There is deliberately no `"chunk"` member. Four adapters used to pass it via
-# the then-untyped `kind: str`, so mypy never saw the drift — and it conflated
-# a SHAPE axis (one action vs a chunk) into the timing label: a chunked adapter
-# computing on the critical path is `foreground` whether or not it routes
-# through `ChunkedExecutor`, and filtering `kind=foreground` silently excluded
-# four adapters doing exactly that. Chunk shape already rides the span as
-# `inference.chunk_size` / `inference.chunk_index`, where it belongs.
+# No `"chunk"` member: four adapters used to pass it through the
+# then-untyped `kind: str`, conflating chunk SHAPE into the timing label —
+# a chunked adapter on the critical path is `foreground` regardless of
+# `ChunkedExecutor`, so filtering `kind=foreground` silently excluded those
+# four. Chunk shape already rides `inference.chunk_size`/`chunk_index`.
 InferenceKind = Literal["foreground", "prefetch", "single"]
 
 _TRACER_NAME = "openral"
@@ -77,7 +74,7 @@ def rskill_span(
         **attrs: Extra attributes recorded with a ``skill.`` prefix.
 
     Yields:
-        The active :class:`opentelemetry.trace.Span`.
+        The active ``opentelemetry.trace.Span``.
     """
     tagged: dict[str, Any] = {}
     if rskill_id is not None:
@@ -100,21 +97,15 @@ def inference_span(
 ) -> Iterator[Span]:
     """Span around one VLA chunk inference — and its duration metric.
 
-    **The metric is emitted here, not by the caller.** ``openral.inference.
-    duration`` used to be recorded only by
-    :class:`openral_runner.InferenceRunnerBase`, which the ROS deploy graph
-    does not use — ``rskill_runner_node`` runs its own tick loop and opens
-    this span directly. The result was that a real `openral deploy run`
-    produced per-chunk inference *spans* but no inference *histogram*: no
-    p95, no threshold line, nothing in the Metrics panel, for the single
-    number an operator most wants. Measured live on an SO-101 before the
-    fix: the panel carried `openral.system.*` and the OTel SDK's own
-    counters, and not one latency instrument.
-
-    Emitting the histogram from the span helper makes the two impossible to
-    diverge: any code path that produces a `rskill.chunk_inference` span
-    necessarily produces the matching metric, on the eval path and the
-    deploy path alike.
+    **The metric is emitted here, not by the caller.** ``rskill_runner_node``
+    (the ROS deploy graph) opens this span directly rather than going
+    through ``openral_runner.InferenceRunnerBase``, which used to be
+    the only place ``openral.inference.duration`` was recorded — so a real
+    `openral deploy run` produced per-chunk spans but no histogram (measured
+    live on an SO-101: the Metrics panel carried only `openral.system.*` and
+    the OTel SDK's own counters, no latency instrument). Emitting the
+    histogram here means any `rskill.chunk_inference` span necessarily
+    produces the matching metric, eval and deploy alike.
 
     Args:
         name: Span name.
@@ -122,7 +113,7 @@ def inference_span(
         kind: Timing of the compute — ``"foreground"`` (on the control loop's
             critical path, chunked or not), ``"prefetch"`` (overlapped in a
             background thread), or ``"single"`` (per-step eval adapter). See
-            :data:`InferenceKind` for why there is no ``"chunk"``.
+            ``InferenceKind`` for why there is no ``"chunk"``.
         **attrs: Extra attributes recorded with an ``inference.`` prefix.
 
     Yields:
@@ -160,11 +151,11 @@ def safety_span(
 ) -> Iterator[Span]:
     """Span around one safety check.
 
-    The Python-side :class:`~openral_runner.safety.NullSafetyClient` uses
+    The Python-side ``NullSafetyClient`` uses
     this helper; the C++ safety kernel (planned at ``packages/safety/``)
     will emit a sibling ``safety.check`` span via ``opentelemetry-cpp``
     parented to the same ``rskill.tick`` via the W3C ``traceparent``
-    carried on ``ActionChunk.msg`` (see :mod:`openral_observability.propagation`).
+    carried on ``ActionChunk.msg`` (see ``openral_observability.propagation``).
 
     Args:
         name: Span name.
@@ -193,37 +184,37 @@ def reasoner_span(
     force: bool | None = None,
     **attrs: Any,
 ) -> Iterator[Span]:
-    """Span around one :meth:`openral_reasoner.ReasonerCore.tick`.
+    """Span around one ``openral_reasoner.ReasonerCore.tick``.
 
     Wraps the entire orchestrator pass — context render, LLM tool-use
     selection, retry-cap / min-interval gates, and dispatch routing on
-    the ROS side. The Python-side :class:`ReasonerCore` opens the span;
+    the ROS side. The Python-side ``ReasonerCore`` opens the span;
     the surrounding ``reasoner_node`` reads
-    :func:`openral_observability.propagation.current_traceparent` from
+    ``openral_observability.propagation.current_traceparent`` from
     inside this scope to stamp the outbound ``EmitPromptTool``
     PromptStamped's ``metadata_json`` (OTel context is
     the truth; ROS fields are set from it).
 
     Args:
-        name: Span name. Default :data:`semconv.SPAN_REASONER_TICK`.
+        name: Span name. Default ``semconv.SPAN_REASONER_TICK``.
         tick_idx: Monotonic tick counter; recorded as
             ``reasoner.tick.idx`` (sortable in trace search).
         model: LLM model identifier from the active
-            :attr:`ToolUseClient.model_id`; recorded as
+            ``ToolUseClient.model_id``; recorded as
             ``reasoner.model``.
         force: ``True`` when the tick was preempted by a high-severity
             ``FailureTrigger`` or a new ``PromptStamped``; recorded as
             ``reasoner.force``.
         **attrs: Extra attributes recorded with a ``reasoner.`` prefix.
             Callers should prefer the typed constants
-            (:data:`semconv.REASONER_TOOL`,
-            :data:`semconv.REASONER_RSKILL_ID`,
-            :data:`semconv.REASONER_SUPPRESSED_REASON`,
-            :data:`semconv.REASONER_ERROR_KIND`) and pass them via
+            (``semconv.REASONER_TOOL``,
+            ``semconv.REASONER_RSKILL_ID``,
+            ``semconv.REASONER_SUPPRESSED_REASON``,
+            ``semconv.REASONER_ERROR_KIND``) and pass them via
             ``span.set_attribute`` from inside the context.
 
     Yields:
-        The active :class:`opentelemetry.trace.Span`.
+        The active ``opentelemetry.trace.Span``.
 
     Example:
         >>> from openral_observability import reasoner_span
@@ -243,7 +234,7 @@ def _reasoner_attrs(
     force: bool | None,
     **attrs: Any,
 ) -> dict[str, Any]:
-    """Shared attribute tagging for :func:`reasoner_span` / :func:`start_reasoner_span`."""
+    """Shared attribute tagging for ``reasoner_span`` / ``start_reasoner_span``."""
     tagged: dict[str, Any] = {}
     if tick_idx is not None:
         tagged[semconv.REASONER_TICK_IDX] = tick_idx
@@ -264,14 +255,14 @@ def start_reasoner_span(
     force: bool | None = None,
     **attrs: Any,
 ) -> Span:
-    """Non-attaching variant of :func:`reasoner_span` for phased (async) ticks.
+    """Non-attaching variant of ``reasoner_span`` for phased (async) ticks.
 
-    Returns a started :class:`~opentelemetry.trace.Span` **without**
+    Returns a started ``Span`` **without**
     attaching it to the calling thread's context, so a tick split across
     prepare → off-thread LLM call → finish (see
-    :meth:`openral_reasoner.ReasonerCore.prepare_tick`) can carry the span
+    ``openral_reasoner.ReasonerCore.prepare_tick``) can carry the span
     between phases and re-attach per phase via
-    :func:`opentelemetry.trace.use_span`. Intermediate executor callbacks
+    ``opentelemetry.trace.use_span``. Intermediate executor callbacks
     never see it as current context. The caller owns ``span.end()``.
 
     Example:
@@ -290,8 +281,8 @@ def traced(
     """Decorator that wraps a sync function in a span named after it.
 
     The span name defaults to ``module.qualname`` of the wrapped function.
-    No attributes are auto-recorded; use :func:`rskill_span` /
-    :func:`inference_span` directly for richer instrumentation.
+    No attributes are auto-recorded; use ``rskill_span`` /
+    ``inference_span`` directly for richer instrumentation.
     """
 
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:

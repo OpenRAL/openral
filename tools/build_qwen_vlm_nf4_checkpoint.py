@@ -1,35 +1,29 @@
 """Build a pre-quantized NF4 checkpoint of Qwen3.5-4B for the scene-VLM rSkill.
 
-Why pre-quantize (vs quantizing at load): loading the raw bf16 model and letting
-bitsandbytes quantize on-GPU spikes VRAM to ~7.4 GB before it shrinks to the
-~3.3 GB NF4 resident — which OOMs an 8 GB card unless the transformers loader is
-forced serial. Saving the *already-4bit* weights once and loading
-that checkpoint skips the bf16 spike entirely: the 4-bit tensors load directly,
-so deployment on an 8 GB GPU "just works" with no loader workaround.
+Pre-quantizing avoids the on-GPU quantize spike: loading raw bf16 then
+letting bitsandbytes quantize spikes VRAM to ~7.4 GB before shrinking to the
+~3.3 GB NF4 resident, which OOMs an 8 GB card unless the loader is forced
+serial. Saving the already-4bit weights once skips that spike entirely.
 
-Why not ``tools/quantize_rskill.py``? That tool also packs NF4 with
-bitsandbytes, but it serialises a raw ``Params4bit`` state dict that is loaded
-back by ``openral_sim.policies.install_prequantized_linears`` — the *in-process*
-lerobot/π0.5 policy runtime. This scene VLM instead runs in an **isolated
-sidecar venv** (``tools/_qwen_vlm_server.py``) that cannot import
-``openral_sim`` and loads the model with plain ``transformers.from_pretrained``.
-That path needs the **transformers-native** layout this script writes —
-``save_pretrained`` with an embedded ``quantization_config`` in ``config.json``,
-which ``from_pretrained`` auto-detects. Same quantizer (bitsandbytes nf4),
-different serialization for a different loader.
+Not ``tools/quantize_rskill.py``: that tool serializes a raw ``Params4bit``
+state dict for the in-process lerobot/pi0.5 runtime
+(``install_prequantized_linears``). This VLM runs in an isolated sidecar venv
+(``tools/_qwen_vlm_server.py``) via plain ``transformers.from_pretrained``,
+which needs the transformers-native layout instead: ``save_pretrained`` with
+an embedded ``quantization_config`` in ``config.json`` that
+``from_pretrained`` auto-detects. Same quantizer (bitsandbytes nf4),
+different serialization.
 
-This is the reproducible recipe behind the published
-``OpenRAL/rskill-qwen35_4b-any-general-nf4`` weights. Run it INSIDE the sidecar venv (it
-needs the same transformers / bitsandbytes / qwen-vl-utils stack as
-``tools/_qwen_vlm_server.py``)::
+Recipe behind the published ``OpenRAL/rskill-qwen35_4b-any-general-nf4``
+weights. Run INSIDE the sidecar venv (same transformers / bitsandbytes /
+qwen-vl-utils stack as ``tools/_qwen_vlm_server.py``)::
 
     OPENRAL_QWEN_VLM_SIDECAR_VENV/bin/python tools/build_qwen_vlm_nf4_checkpoint.py \
         --source Qwen/Qwen3.5-4B \
         --out ~/.cache/openral/qwen35-4b-nf4-ckpt
 
-It writes the NF4 ``model.safetensors`` + config (with the embedded
-``quantization_config``) + processor files to ``--out``, then verifies the
-checkpoint reloads directly as 4-bit and answers a smoke query.
+Writes NF4 ``model.safetensors`` + config + processor files to ``--out``,
+then verifies the checkpoint reloads as 4-bit and answers a smoke query.
 """
 
 from __future__ import annotations
@@ -40,13 +34,10 @@ import os
 import sys
 from pathlib import Path
 
-# Same allocator + serial-loader settings as the sidecar server: the *build*
-# still loads the raw bf16 model once to quantize it, so it needs the 8 GB
-# headroom workaround. Must be set before torch initializes CUDA.
-#
-# torch renamed the var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
-# and warns on every run when the old spelling is present; resolve it from
-# metadata rather than hardcoding either name.
+# Same allocator + serial-loader workaround as the sidecar server (the build
+# also loads raw bf16 once); must be set before torch initializes CUDA. torch
+# renamed PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF in 2.9 (warns on the
+# old spelling), so resolve the name from metadata instead of hardcoding it.
 try:
     _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
     _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"

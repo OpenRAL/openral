@@ -1,21 +1,21 @@
-"""OpenCV-thread :class:`SensorReader` backend.
+"""OpenCV-thread ``SensorReader`` backend.
 
-This backend is the default :class:`~openral_runner.SensorReader`
+This backend is the default ``SensorReader``
 implementation. It mirrors the pattern lerobot uses in
 ``src/lerobot/cameras/opencv/camera_opencv.py``: one daemon
-:class:`threading.Thread` per camera continuously calls
+``threading.Thread`` per camera continuously calls
 ``cv2.VideoCapture.read()`` and posts each frame into a single
 ``latest_frame`` slot guarded by a ``Lock`` + ``Event``. The foreground
-reader calls :meth:`read_latest` to peek at that slot without blocking.
+reader calls ``read_latest`` to peek at that slot without blocking.
 
 When the freshest frame is older than the caller's ``max_age_ms`` budget,
-:meth:`read_latest` raises :class:`~openral_core.exceptions.ROSPerceptionStale`
+``read_latest`` raises ``ROSPerceptionStale``
 — this is the staleness contract the inference runner's `sensors.read`
 span uses to short-circuit a tick.
 
 OpenCV is gated as the ``opencv`` optional extra on
 ``openral-runner`` (``pip install openral-runner[opencv]``);
-this module imports ``cv2`` lazily inside :meth:`open` so the runner
+this module imports ``cv2`` lazily inside ``open`` so the runner
 remains importable on hosts without it.
 """
 
@@ -84,14 +84,14 @@ def _validated_crop(
 class OpenCVThreadSensorReader:
     """Per-camera background-thread reader wrapping ``cv2.VideoCapture``.
 
-    The constructor only records configuration. :meth:`open` performs the
+    The constructor only records configuration. ``open`` performs the
     expensive work (opens the device, configures FPS / dims, spawns the
-    background capture thread). :meth:`read_latest` is non-blocking and
+    background capture thread). ``read_latest`` is non-blocking and
     returns the most recently captured frame.
 
     Args:
         sensor_id: Sensor name used by the inference runner to correlate
-            frames with :class:`~openral_core.SensorReaderConfig`.
+            frames with ``SensorReaderConfig``.
         device: Camera index (``int``, e.g. ``0`` for ``/dev/video0``) or a
             file path / RTSP URL accepted by ``cv2.VideoCapture``.
         fps: Requested capture rate (best-effort; hardware may run slower).
@@ -102,7 +102,7 @@ class OpenCVThreadSensorReader:
             processes frames before they reach this reader.
         crop: Optional ``(x, y, width, height)`` region kept from each frame,
             applied in the capture thread before the frame reaches
-            :meth:`read_latest`. ``None`` (the default) keeps the full frame.
+            ``read_latest``. ``None`` (the default) keeps the full frame.
 
             This exists for side-by-side stereo cameras. A ZED Mini streams
             both lenses in one 1344x376 UVC frame, but a policy trained on the
@@ -111,7 +111,7 @@ class OpenCVThreadSensorReader:
             shape is still a valid image. Declaring the crop in the sensor
             binding keeps that slice next to the device it belongs to.
         default_max_age_ms: Default staleness budget applied when
-            :meth:`read_latest` is called with ``max_age_ms=None``.
+            ``read_latest`` is called with ``max_age_ms=None``.
             Defaults to ~3 frames at 30 Hz.
     """
 
@@ -130,7 +130,7 @@ class OpenCVThreadSensorReader:
         crop: tuple[int, int, int, int] | Sequence[int] | None = None,
         default_max_age_ms: int = 100,
     ) -> None:
-        """Stash configuration; no I/O until :meth:`open`."""
+        """Stash configuration; no I/O until ``open``."""
         if fps <= 0:
             raise ValueError(f"OpenCVThreadSensorReader.fps must be > 0; got {fps}")
         if default_max_age_ms <= 0:
@@ -245,15 +245,15 @@ class OpenCVThreadSensorReader:
     # ── Hot path ────────────────────────────────────────────────────────────
 
     def read_latest(self, max_age_ms: int | None = None) -> SensorFrame:
-        """Return the most recent buffered frame as a :class:`SensorFrame`.
+        """Return the most recent buffered frame as a ``SensorFrame``.
 
         Non-blocking. Snapshots the current ``latest_frame`` slot under a
-        lock and returns a fresh :class:`SensorFrame` with the captured
-        bytes inlined as ``data`` (encoded per :attr:`_encoding`).
+        lock and returns a fresh ``SensorFrame`` with the captured
+        bytes inlined as ``data`` (encoded per ``_encoding``).
 
         Args:
             max_age_ms: Maximum acceptable frame age. ``None`` falls back to
-                :attr:`_default_max_age_ms`.
+                ``_default_max_age_ms``.
 
         Raises:
             RuntimeError: When the reader is not open.
@@ -302,7 +302,7 @@ class OpenCVThreadSensorReader:
     def _apply_crop(self, frame: Any) -> Any:
         """Return the configured sub-rectangle of ``frame``, or ``None``.
 
-        :meth:`open` already validated the crop against the negotiated mode, so
+        ``open`` already validated the crop against the negotiated mode, so
         a mismatch here means the device changed resolution mid-stream. That is
         reported and the frame dropped rather than raised: killing the capture
         thread would leave the reader permanently stale with the reason only on

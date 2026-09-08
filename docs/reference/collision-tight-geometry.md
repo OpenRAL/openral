@@ -199,8 +199,8 @@ mesh.
 per link leaves 18.0–27.6 mm — worse than a 26-DOP built from 13 axis pairs. The
 reason is structural: the Panda's links are flanged, flat-faced blocks, and a
 union of balls cannot represent a flat face without an unbounded number of them.
-This is worth recording because cuRobo-style spherization is the reflexive answer
-to "many cheap primitives", and on this geometry it is the wrong basis.
+cuRobo-style spherization is the reflexive answer to "many cheap primitives",
+and on this geometry it is the wrong basis.
 
 The first attempt at this row was also wrong in an instructive way. Fitting
 spheres to *surface* triangle clusters produced numbers that got **worse** with
@@ -517,7 +517,7 @@ quantitatively: 93 % of the total available recovery lives in two links, and
 `link3`/`link4` contribute nothing at any representation because they stop
 nothing.
 
-Note that configuration B — a 26-DOP everywhere, the *cheapest and fastest*
+Configuration B — a 26-DOP everywhere, the *cheapest and fastest*
 option in §6 — recovers only 2/72 guaranteed. Speed is not the constraint;
 tightness is, and 25.7 mm is not tight enough.
 
@@ -628,8 +628,8 @@ stopping states, along the recovered `u*`:
 | exact hull | **0.0 mm** | **0.0 mm** |
 
 A split chosen explicitly for the stopping direction gains **0.2 mm on link2 and
-0.3 mm on link1**. The reason is geometric and worth stating because it
-generalises: the excess along `u*` is produced by the box's extent
+0.3 mm on link1**. The reason is geometric and generalises: the excess along
+`u*` is produced by the box's extent
 *perpendicular* to `u*` — the leading face's corner reach — and slicing the box
 along `u*` leaves every slab with a face in the same plane. You cannot cut away a
 corner by cutting perpendicular to the direction you are approaching from.
@@ -899,8 +899,8 @@ A third — the CLI's primitive measurement — **was** the same pattern and is 
 fail-closed: [PR #160](https://github.com/OpenRAL/openral/pull/160) rewrote it to
 `raise ROSConfigError` on an unrecognised shape
 (`python/cli/src/openral_cli/collision.py:188-190`). That is the pattern the
-other two should follow, and it is worth noting that it took a regression when
-`BoxShape` landed to motivate it.
+other two should follow — it took a regression when `BoxShape` landed to
+motivate it.
 
 ### 10.3 Wire format and the allocation constraint
 

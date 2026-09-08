@@ -1,32 +1,26 @@
-"""Perception event tee for :class:`GStreamerSensorReader`.
+"""Perception event tee for ``GStreamerSensorReader``.
 
-When a sensor's :class:`~openral_core.SensorReaderConfig` enables the
-event leg via :attr:`PipelineSpec.enable_event_tee`, the pipeline builder
-adds a third ``tee`` branch terminating in
-``appsink name=event_sink`` (default). Frames pulled from that appsink
-are fed to a list of :class:`EventDetector` instances; whenever a
-detector emits a :data:`~openral_core.PerceptionEventMetadata`, the
-publisher fans it out as a ``openral_msgs/PromptStamped`` on the
-per-kind topic ``/openral/perception/<kind>``.
+When ``PipelineSpec.enable_event_tee`` is set, the pipeline builder
+adds a third ``tee`` branch terminating in ``appsink name=event_sink``
+(default). Frames pulled from that appsink feed a list of
+``EventDetector`` instances; a detector's
+``PerceptionEventMetadata`` is fanned out as
+``openral_msgs/PromptStamped`` on ``/openral/perception/<kind>``.
 
-The contract is intentionally narrow:
-
-* Three legs (policy / observability / event) share the same upstream
-  GStreamer pipeline and, on hosts with the OpenRAL Pro NVMM plugin
-  installed, the same shared CUDA context singleton (``cuda_context`` —
-  moved to openral-pro). The
-  event leg lifts frames to system memory before the appsink — Python
-  detectors consume numpy arrays, never NVMM handles.
-* Per-kind topics, per capability review §3 (F6). The
-  topology is symmetric with :mod:`openral_observability.failure_bus`'s
-  ``/openral/failure/<source>`` layout.
-* Token-bucket rate-limit at each detector (default 5 Hz), so a noisy
-  motion source can't storm the reasoner. Dropped events are counted
-  but not summarised — the reasoner does not steer on perception
-  events the way it steers on failures (FailureBus owns the
-  ``KIND_SUPPRESSED_SUMMARY`` roll-up).
-* :mod:`rclpy` is lazy-imported inside :meth:`PerceptionEventPublisher.start`
-  so this module is import-safe on hosts without a sourced ROS env.
+* Three legs (policy / observability / event) share the upstream pipeline
+  and, with the OpenRAL Pro NVMM plugin, the shared ``cuda_context`` CUDA
+  singleton (moved to openral-pro). The event leg lifts frames to system
+  memory before the appsink — detectors consume numpy arrays, never NVMM
+  handles.
+* Per-kind topics, per capability review §3 (F6); symmetric with
+  ``openral_observability.failure_bus``'s ``/openral/failure/<source>``
+  layout.
+* Token-bucket rate-limit per detector (default 5 Hz). Dropped events are
+  counted but not summarised — the reasoner doesn't steer on perception
+  events the way it does on failures (FailureBus owns
+  ``KIND_SUPPRESSED_SUMMARY``).
+* ``rclpy`` is lazy-imported inside ``PerceptionEventPublisher.start``
+  so this module is import-safe without a sourced ROS env.
 """
 
 from __future__ import annotations
@@ -75,8 +69,8 @@ _DEFAULT_RATE_HZ: Final[float] = 5.0
 class EventDetector(Protocol):
     """A pluggable per-frame detector that maps a BGR frame to an event.
 
-    Implementations live in this module (:class:`MotionDetector`,
-    :class:`SceneChangeDetector`) or in a downstream package (e.g. an
+    Implementations live in this module (``MotionDetector``,
+    ``SceneChangeDetector``) or in a downstream package (e.g. an
     ``ObjectsDetector`` wrapping ``yolov8n``).
 
     Args:
@@ -84,8 +78,8 @@ class EventDetector(Protocol):
 
     Returns:
         ``None`` when the frame does not trip the detector's threshold.
-        Otherwise a :data:`~openral_core.PerceptionEventMetadata`
-        variant whose ``kind`` matches :attr:`EventDetector.kind`.
+        Otherwise a ``PerceptionEventMetadata``
+        variant whose ``kind`` matches ``EventDetector.kind``.
     """
 
     kind: str
@@ -108,10 +102,10 @@ class MotionDetector:
     """Frame-difference motion detector — pure-Python over a BGR appsink.
 
     Computes the mean absolute per-pixel difference between consecutive
-    frames in the luma channel (BT.601). Emits :class:`MotionMetadata`
-    when the magnitude crosses :attr:`threshold`.
+    frames in the luma channel (BT.601). Emits ``MotionMetadata``
+    when the magnitude crosses ``threshold``.
 
-    Numpy is lazy-imported inside :meth:`detect` so the module stays
+    Numpy is lazy-imported inside ``detect`` so the module stays
     import-safe on hosts that haven't pulled the openral-rskill ML
     stack — the detector itself requires numpy at runtime.
 
@@ -216,11 +210,11 @@ class SceneChangeDetector:
     """Grayscale-histogram scene-change detector — pure numpy, no cv2.
 
     Builds a 32-bin grayscale histogram per frame and emits
-    :class:`SceneChangeMetadata` when the chi-square distance to the
-    previous frame's histogram exceeds :attr:`threshold`. Cheap,
+    ``SceneChangeMetadata`` when the chi-square distance to the
+    previous frame's histogram exceeds ``threshold``. Cheap,
     illumination-tolerant, and good enough to wake a reasoner on a
     new scene without firing on per-pixel jitter the way
-    :class:`MotionDetector` does.
+    ``MotionDetector`` does.
 
     Args:
         threshold: Distance threshold in the detector's native units
@@ -302,7 +296,7 @@ class SceneChangeDetector:
 class _TokenBucket:
     """Lock-free-on-the-fast-path token bucket; one per (sensor, kind) pair.
 
-    Mirrors :class:`openral_observability.failure_bus._TokenBucket` in
+    Mirrors ``openral_observability.failure_bus._TokenBucket`` in
     spirit — independent implementation to keep ``perception_tee`` free
     of an observability-package dependency.
     """
@@ -335,14 +329,14 @@ class PerceptionEventPublisher:
     """Publishes detector outputs as ``PromptStamped`` on ``/openral/perception/<kind>``.
 
     One publisher owns the ``event_sink`` appsink for a single sensor;
-    it fans out to one :class:`rclpy.publisher.Publisher` per registered
+    it fans out to one ``rclpy.publisher.Publisher`` per registered
     detector ``kind``. Per-detector token buckets cap the per-kind topic
-    rate at :attr:`rate_hz` (default 5 Hz).
+    rate at ``rate_hz`` (default 5 Hz).
 
     Args:
         sensor_id: Sensor name; embedded in the ROS node name and the
             emitted metadata's ``sensor_id`` field.
-        appsink: The ``event_sink`` :class:`Gst.Element` (typed ``Any``
+        appsink: The ``event_sink`` ``Gst.Element`` (typed ``Any``
             here to avoid importing ``gi`` at module load).
         detectors: Ordered list of detectors to run on every frame.
         rate_hz: Per-detector topic rate cap in Hz. Defaults to
@@ -350,7 +344,7 @@ class PerceptionEventPublisher:
         node_name: Optional override for the ROS node name; defaults to
             ``openral_perception_tee_<sensor_id>``.
         qos_depth: KEEP_LAST depth on each publisher.
-        topic_prefix: ROS topic prefix. Defaults to :data:`TOPIC_PREFIX`
+        topic_prefix: ROS topic prefix. Defaults to ``TOPIC_PREFIX``
             (``/openral/perception``). The full topic is
             ``f"{topic_prefix}/{detector.kind}"``.
 
@@ -358,7 +352,7 @@ class PerceptionEventPublisher:
         ValueError: When two detectors declare the same ``kind`` (the
             per-kind topic would be ambiguous), or when ``rate_hz``
             is not positive.
-        RuntimeError: When :meth:`start` is called but ``rclpy`` is
+        RuntimeError: When ``start`` is called but ``rclpy`` is
             not importable.
 
     Example:
@@ -381,7 +375,7 @@ class PerceptionEventPublisher:
         qos_depth: int = _DEFAULT_QOS_DEPTH,
         topic_prefix: str = TOPIC_PREFIX,
     ) -> None:
-        """Validate detectors and stash configuration; no ROS I/O until :meth:`start`."""
+        """Validate detectors and stash configuration; no ROS I/O until ``start``."""
         if rate_hz <= 0:
             raise ValueError(
                 f"PerceptionEventPublisher.rate_hz must be > 0; got {rate_hz!r}",
@@ -422,7 +416,7 @@ class PerceptionEventPublisher:
 
     @property
     def is_started(self) -> bool:
-        """``True`` between :meth:`start` and :meth:`stop`."""
+        """``True`` between ``start`` and ``stop``."""
         return self._is_started
 
     @property

@@ -1,14 +1,13 @@
 """ADR-0101's recovery rate must be derivable, and must fail closed.
 
-The ADR cites "48 of 51 payload-vs-``voxel_`` stops (94 %) recovered" as the
-measurement that justifies building a **fail-open** mechanism. A number in that
-position needs a producer, and the producer needs a test — specifically a test
-that the *denominator* cannot be quietly inflated, because a recovery rate is
-only as honest as the set it divides by.
+The ADR cites "48 of 51 payload-vs-``voxel_`` stops (94 %) recovered" to
+justify a **fail-open** mechanism. That number needs a producer, and the
+producer needs a test that the *denominator* cannot be quietly inflated —
+a recovery rate is only as honest as the set it divides by.
 
 CLAUDE.md §1.11 — the round here is a real recorded battery artifact
-(``tests/unit/fixtures/validation_matrix/2026-08-23-master-s1``, provenance in
-that directory's ``SOURCE.txt``), copied verbatim, not a synthesized log.
+(``tests/unit/fixtures/validation_matrix/2026-08-23-master-s1``, provenance
+in that directory's ``SOURCE.txt``), copied verbatim, not synthesized.
 """
 
 from __future__ import annotations
@@ -54,16 +53,15 @@ def test_an_uncertified_probe_is_excluded_and_never_counted_as_a_recovery(
 ) -> None:
     """The 2026-08-23 payload stop is real, and must not reach the numerator.
 
-    That round's ``baguette`` scene recorded exactly the stop shape this tool
-    selects — ``kind=world``, ``party_a=attached:sim:obj_main``,
-    ``party_b=voxel_100273`` — but it predates the probe's distance
-    attestation (standing caveat 8 of the evidence ledger), so its
-    ``nearest_tripping_party_m`` is not certified.
+    That round's ``baguette`` scene recorded the exact stop shape this tool
+    selects (``kind=world``, ``party_a=attached:sim:obj_main``,
+    ``party_b=voxel_100273``) but predates the probe's distance attestation
+    (standing caveat 8 of the evidence ledger), so ``nearest_tripping_party_m``
+    is uncertified.
 
-    Counting it either way would be wrong, and the two errors are not
-    symmetric: silently dropping it shrinks the denominator and *inflates* the
-    rate, which is the direction that would overstate the case for a fail-open
-    mechanism. So it must appear in ``excluded``, by name and with a reason.
+    Silently dropping it would shrink the denominator and inflate the
+    recovery rate — the wrong direction for a fail-open case — so it must
+    appear in ``excluded``, by name and with a reason.
     """
     round_dir = _derived(ROUND_0823, tmp_path)
     stops, excluded = adr0101_recovery.collect([round_dir])
@@ -115,17 +113,14 @@ def test_touching_is_contact_not_clearance() -> None:
 def test_the_fixture_is_the_body_the_payload_was_near_not_the_nearest_pair_of_any_kind() -> None:
     """The by-fixture table must not name a robot link.
 
-    This is a regression test for a real defect in the first cut of this tool.
-    ``ground_truth.nearest_pair`` records the closest probed pair *of any kind*,
-    and for a carried payload that is routinely two robot links: on this very
-    round it reads ``robot0_link3`` vs ``robot0_link4`` at −36.3 mm, while the
-    payload itself sat 24.9 mm clear of a counter. Reading the fixture off that
-    field put ``robot0_link4`` into a table of kitchen fixtures — a robot link
-    presented as a static world body, in the record that argues for modelling
-    static world bodies.
+    Regression: ``ground_truth.nearest_pair`` records the closest probed pair
+    *of any kind*, which for a carried payload is routinely two robot links —
+    on this round, ``robot0_link3`` vs ``robot0_link4`` at −36.3 mm, while the
+    payload itself sat 24.9 mm clear of a counter. Reading the fixture off
+    that field put a robot link into a table of kitchen fixtures.
 
-    The attribution must instead come from the probe's payload-vs-world pair
-    list, and it must agree with the gap the stop was adjudicated on.
+    Attribution must instead come from the probe's payload-vs-world pair
+    list, agreeing with the gap the stop was adjudicated on.
     """
     stops, excluded = adr0101_recovery.collect([ROUND_LIVE])
 

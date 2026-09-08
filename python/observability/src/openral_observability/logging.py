@@ -4,25 +4,22 @@ Wires structlog so that:
 
 1. Every log record carries the active span's ``trace_id`` / ``span_id`` so
    logs and traces correlate in Jaeger.
-2. The final record is forwarded to a stdlib logger that has been attached
-   to an OTel ``LoggerProvider`` via ``LoggingHandler`` — i.e. logs ship as
-   OTLP log records to the same collector as the spans.
+2. The record is forwarded to a stdlib logger attached to an OTel
+   ``LoggerProvider`` via ``LoggingHandler`` — logs ship as OTLP log
+   records to the same collector as the spans.
 3. Records below the ``OPENRAL_LOG_LEVEL`` floor (default ``INFO``, see
-   :func:`resolve_log_level`) are dropped by the stdlib level check before
-   they are rendered or exported.
+   ``resolve_log_level``) are dropped by the stdlib level check before
+   render/export.
 
-The bridge itself is global and idempotent (see
-:func:`install_structlog_bridge`), so it works unchanged inside a spawned
-worker once that worker has run :func:`configure_observability` (or the
-convenience :func:`configure_worker_observability`). Multiprocess workers
-(the dispatcher, the future fleet supervisor) correlate their logs and
-spans to the parent trace by having the parent pass
-:func:`openral_observability.propagation.traceparent_env` into the child's
-environment and the worker attach it via
-:func:`configure_worker_observability` /
-:func:`openral_observability.propagation.attach_traceparent_from_env`; the
-``trace_context_processor`` then stamps the parent's ``trace_id`` /
-``span_id`` on every worker log line.
+The bridge is global and idempotent (``install_structlog_bridge``), so
+a spawned worker gets it unchanged after running ``configure_observability``
+(or ``configure_worker_observability``). Multiprocess workers (the
+dispatcher, the future fleet supervisor) correlate logs/spans to the parent
+trace via ``openral_observability.propagation.traceparent_env`` (parent
+env) and ``configure_worker_observability`` /
+``openral_observability.propagation.attach_traceparent_from_env``
+(worker attach); ``trace_context_processor`` then stamps the parent's
+``trace_id`` / ``span_id`` on every worker log line.
 """
 
 from __future__ import annotations
@@ -42,21 +39,15 @@ _BRIDGE_LOGGER_NAME = "openral.otel_bridge"
 _INSTALLED = False
 
 _LOG_LEVEL_ENV = "OPENRAL_LOG_LEVEL"
-# INFO, not DEBUG. Every record that clears this floor is JSON-rendered and
-# shipped to the collector as an OTLP log record; below it, the stdlib level
-# check short-circuits before either happens. The deploy graph has ~73 DEBUG
-# call sites and several fire per control tick — `world_state.*.updated` (7
-# sites in the aggregator), `skill.step`, `safety.null_check` — so at 30 Hz a
-# DEBUG floor pays serialisation plus export for a few hundred records a
-# second, on the same GIL the camera readers and the VLA weight load are
-# fighting over. That contention is not hypothetical here: it is the same
-# class of stall that stretched a 23 s import to 8+ minutes on the SO-101
-# bench.
-#
-# Set OPENRAL_LOG_LEVEL=DEBUG to get them back. Note this floor governs LOG
-# RECORDS only — dashboard span rows are banded separately in
-# `dashboard.store._is_headline_span`, so the Event Log's DEBUG chip still
-# shows the per-tick span stream at the default floor.
+# INFO, not DEBUG: every record clearing this floor is JSON-rendered and
+# OTLP-exported; below it, the stdlib check short-circuits first. ~73 DEBUG
+# call sites fire per control tick (`world_state.*.updated` x7, `skill.step`,
+# `safety.null_check`) — a DEBUG floor at 30 Hz costs serialisation + export
+# on the same GIL the camera readers and the VLA weight load contend for
+# (this stretched a 23 s import to 8+ min on the SO-101 bench).
+# Set OPENRAL_LOG_LEVEL=DEBUG to restore them. Dashboard span rows are
+# banded separately in `dashboard.store._is_headline_span`, so the Event
+# Log's DEBUG chip still shows the per-tick span stream at the default floor.
 _DEFAULT_LEVEL = logging.INFO
 
 
@@ -80,7 +71,7 @@ def resolve_log_level() -> int:
     """Resolve the OpenRAL log floor from ``OPENRAL_LOG_LEVEL``.
 
     Accepts a level name (``DEBUG`` / ``info`` / ``WARNING`` / …) or an
-    integer. Anything unparseable falls back to :data:`_DEFAULT_LEVEL`
+    integer. Anything unparseable falls back to ``_DEFAULT_LEVEL``
     rather than raising — a typo in an env var must not take down a
     deploy, and a too-quiet logger is easier to notice than a crash at
     bring-up.

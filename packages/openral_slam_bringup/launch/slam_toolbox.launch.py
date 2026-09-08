@@ -5,7 +5,7 @@ Includes the upstream ``slam_toolbox/async_slam_toolbox_node`` as a
 ``LifecycleNode`` parameterised from this package's
 ``config/slam_toolbox_2d.yaml``. The auto-transition stops at
 ``INACTIVE``; the Reasoner promotes to ``ACTIVE`` via
-:class:`~openral_core.LifecycleTransitionTool`, mirroring the
+``LifecycleTransitionTool``, mirroring the
 safety_kernel pattern in ``sim_e2e.launch.py:159``.
 
 Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py``
@@ -77,17 +77,14 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    # Leave slam_toolbox in UNCONFIGURED. The Reasoner
-    # promotes through CONFIGURE → ACTIVATE via
-    # ``LifecycleTransitionTool(node="/openral_slam_toolbox",
-    # transition=...)``. We deliberately do NOT auto-configure from
-    # the launch: slam_toolbox 2.8.4's ``on_configure`` returns
-    # SUCCESS at the end (``src/slam_toolbox_common.cpp:139``) but
-    # the change_state service response on Jazzy arrives with
-    # ``response.success=false`` even though the FSM does transition
-    # to INACTIVE — launch_ros logs a spurious
+    # Leave slam_toolbox in UNCONFIGURED; the Reasoner promotes through
+    # CONFIGURE → ACTIVATE via
+    # ``LifecycleTransitionTool(node="/openral_slam_toolbox", transition=...)``.
+    # Not auto-configured from launch: slam_toolbox 2.8.4's ``on_configure``
+    # returns SUCCESS (``src/slam_toolbox_common.cpp:139``) but the
+    # change_state response on Jazzy arrives ``response.success=false`` even
+    # though the FSM transitions to INACTIVE — launch_ros logs a spurious
     # ``Failed to make transition 'TRANSITION_CONFIGURE'`` ERROR.
-    # Reasoner-driven lifecycle dodges the upstream race entirely.
     return LaunchDescription([*args, slam_node])
 
 

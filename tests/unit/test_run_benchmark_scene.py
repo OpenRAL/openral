@@ -1,6 +1,6 @@
 """Unit tests for ``run_benchmark_scene`` — single-scene benchmark loop.
 
-Mirrors :mod:`tests.unit.test_benchmark_runner` but for the
+Mirrors ``tests.unit.test_benchmark_runner`` but for the
 ``BenchmarkScene``-based entrypoint that backs ``openral benchmark scene``.
 End-to-end coverage of the runtime aggregation against the mock scene +
 zero policy — no GPU, no HF Hub, no physics.
@@ -98,7 +98,7 @@ def test_run_benchmark_scene_seed_offset_propagates() -> None:
 
 
 def test_run_benchmark_scene_writes_validated_skill_eval_result(tmp_path: Path) -> None:
-    """The emitted JSON round-trips through :meth:`RSkillEvalResult.from_json`."""
+    """The emitted JSON round-trips through ``RSkillEvalResult.from_json``."""
     scene = _mini_scene(n_episodes=2, seed=0)
     result, _ = run_benchmark_scene(scene, _vla_zero())
 
@@ -200,7 +200,7 @@ def test_run_benchmark_scene_view_propagates(
 ) -> None:
     """An explicit ``view`` is resolved through ``_resolve_view`` and reaches SimRunner.
 
-    Mirrors :func:`test_run_benchmark_scene_base_pose_propagates` — confirms
+    Mirrors ``test_run_benchmark_scene_base_pose_propagates`` — confirms
     the opt-in viewer flag threads from ``run_benchmark_scene`` into every
     per-episode ``SimRunner``. ``view=False`` resolves to a strict-off,
     offscreen rollout on any host (no display required), so the assertion is

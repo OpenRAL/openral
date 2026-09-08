@@ -7,8 +7,8 @@ Public surface
 --------------
 - ``PyTorchRuntime``: ``Runtime``-compatible backend for ``*.pt`` / ``*.safetensors``
   weight files executed with ``torch.inference_mode()``. Use
-  :meth:`PyTorchRuntime.load_safetensors` (safe; no code execution) for new
-  skills; :meth:`PyTorchRuntime.load` unpickles a full module and is gated
+  ``PyTorchRuntime.load_safetensors`` (safe; no code execution) for new
+  skills; ``PyTorchRuntime.load`` unpickles a full module and is gated
   behind ``OPENRAL_ALLOW_UNSAFE_PICKLE`` (security audit 2026-06, C2).
 """
 
@@ -55,8 +55,8 @@ class PyTorchRuntime:
         device: PyTorch device string, e.g. ``"cpu"``, ``"cuda:0"``, ``"mps"``.
 
     Raises:
-        ROSRuntimeError: Propagated from :meth:`load`, :meth:`infer`,
-            :meth:`quantize`.
+        ROSRuntimeError: Propagated from ``load``, ``infer``,
+            ``quantize``.
 
     Example:
         >>> rt = PyTorchRuntime(device="cpu")
@@ -79,7 +79,7 @@ class PyTorchRuntime:
 
     @property
     def is_loaded(self) -> bool:
-        """True after :meth:`load` completes successfully."""
+        """True after ``load`` completes successfully."""
         return self._model is not None
 
     @property
@@ -92,7 +92,7 @@ class PyTorchRuntime:
 
         The file must have been saved with ``torch.save(model, path)`` (full
         model, not state-dict only).  For state-dict loading, subclass and
-        override :meth:`load`.
+        override ``load``.
 
         Security
         --------
@@ -148,7 +148,7 @@ class PyTorchRuntime:
     ) -> None:
         """Load a ``state_dict`` from a ``.safetensors`` file into *model*.
 
-        This is the **safe** counterpart to :meth:`load`. A ``.safetensors`` file
+        This is the **safe** counterpart to ``load``. A ``.safetensors`` file
         holds only tensors (a flat ``state_dict``) — never a pickled object — so
         loading it cannot execute code, and no ``OPENRAL_ALLOW_UNSAFE_PICKLE``
         acknowledgement is required. The caller supplies the architecture
@@ -265,7 +265,7 @@ class PyTorchRuntime:
             inputs: Dummy inputs with correct shapes (values are ignored).
 
         Raises:
-            ROSRuntimeError: Propagated from :meth:`infer`.
+            ROSRuntimeError: Propagated from ``infer``.
         """
         self.infer(inputs)
         log.debug("pytorch_runtime.warmed_up", device=self._device)

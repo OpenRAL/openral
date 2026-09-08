@@ -1,7 +1,7 @@
-"""End-to-end tests for :class:`openral_dataset.Rosbag2Sink`.
+"""End-to-end tests for ``openral_dataset.Rosbag2Sink``.
 
-Per CLAUDE.md §1.11 — uses a real :class:`mcap.writer.Writer` against a
-``tmp_path`` and re-reads with a real :func:`mcap.reader.make_reader`. No
+Per CLAUDE.md §1.11 — uses a real ``mcap.writer.Writer`` against a
+``tmp_path`` and re-reads with a real ``mcap.reader.make_reader``. No
 mocks. The bag format is identical to what ``rosbag2`` with the mcap
 backend writes; tests that need ``rosbag2_py`` (full ROS 2 integration)
 live in PR3's HIL gate and skip cleanly without rclpy.

@@ -3,19 +3,19 @@
 TOPReward (arXiv 2602.19313) is a **zero-shot** reward: it asks an off-the-shelf
 Qwen3-VL VLM ``P("True" | video, instruction)`` and reads the token log-prob as
 the signal. Unlike Robometer this needs **no fine-tuned checkpoint and no ZMQ
-sidecar** — lerobot's stock :class:`~lerobot.rewards.topreward.TOPRewardModel`
+sidecar** — lerobot's stock ``TOPRewardModel``
 loads the pre-quantized NF4 weights (``weights_uri``) 4-bit directly and runs in
 the node's own process (transformers 5.x, bitsandbytes).
 
-:class:`TOPRewardMonitor` mirrors
-:class:`~openral_runner.backends.reward.robometer_reward.RobometerInProcessReward`'s
+``TOPRewardMonitor`` mirrors
+``RobometerInProcessReward``'s
 ``score`` / ``assess`` / ``close`` surface, so ``reward_monitor_node`` and the
 Reasoner's ``query_task_progress`` path consume it unchanged. The clip-level
 scalar becomes a **per-frame** series via the same prefix sweep + per-window
 min-max normalization used by lerobot's offline TOPReward labeler.
 
 Nothing here imports torch / transformers at module load; the model is built
-lazily on the first :meth:`TOPRewardMonitor.score`.
+lazily on the first ``TOPRewardMonitor.score``.
 """
 
 from __future__ import annotations
@@ -23,13 +23,14 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_runner.backends.reward.frame_source import Frame
 
-_STALL_TREND_EPS = 0.002
+log = structlog.get_logger(__name__)
 
 
 class TOPRewardMonitor:
@@ -46,17 +47,17 @@ class TOPRewardMonitor:
         fps: float = 2.0,
         device: str = "cuda",
     ) -> None:
-        """Store config; the VLM is loaded lazily on first :meth:`score`.
+        """Store config; the VLM is loaded lazily on first ``score``.
 
         Args:
             model_id: Manifest name (for logs).
             weights_source: HF repo id / local dir of the pre-quantized NF4
                 checkpoint (``weights_uri`` with the ``hf://`` prefix stripped).
             success_threshold: Manifest ``reward.success_threshold`` — the
-                advisory bar stamped on ``succeeded`` in :meth:`assess`.
+                advisory bar stamped on ``succeeded`` in ``assess``.
             max_frames: Frames per forward (each prefix is tail-cropped to this),
                 to bound the Qwen3-VL activation on an 8 GB GPU.
-            num_samples: Prefix-sweep anchor count (forwards per :meth:`score`);
+            num_samples: Prefix-sweep anchor count (forwards per ``score``);
                 traded off against the S2 latency budget.
             fps: Frames-per-second metadata for the Qwen video processor.
             device: Torch device for the model.
@@ -184,21 +185,14 @@ class TOPRewardMonitor:
         """Score ``frames`` and summarize the window for the Reasoner.
 
         Same keys as
-        :meth:`~openral_runner.backends.reward.robometer_reward.RobometerInProcessReward.assess`.
+        ``RobometerInProcessReward.assess``.
         """
-        from openral_runner.backends.reward.frame_source import trend  # noqa: PLC0415
+        from openral_runner.backends.reward.frame_source import assess_from_score  # noqa: PLC0415
 
         progress, success = self.score(frames, task)
-        p_trend = trend(progress)
-        return {
-            "progress_now": progress[-1],
-            "success_now": success[-1],
-            "progress_trend": p_trend,
-            "success_trend": trend(success),
-            "stalled": abs(p_trend) < _STALL_TREND_EPS,
-            "succeeded": success[-1] >= self._success_threshold,
-            "frames_seen": len(frames),
-        }
+        return assess_from_score(
+            progress, success, success_threshold=self._success_threshold, frames_seen=len(frames)
+        )
 
     def close(self) -> None:
         """Release the in-process model + free CUDA memory."""
@@ -209,12 +203,14 @@ class TOPRewardMonitor:
                 import torch  # noqa: PLC0415
 
                 torch.cuda.empty_cache()
-            except Exception:  # pragma: no cover — torch optional / no CUDA
-                pass
+            except Exception as exc:  # pragma: no cover — torch optional / no CUDA
+                # torch's CUDA teardown has no documented exception contract
+                # (RuntimeError, or AttributeError mid interpreter shutdown).
+                log.debug("topreward_reward.close_failed", error=repr(exc))
 
 
 def build_topreward_monitor(manifest: RSkillManifest, *, device: str = "cuda") -> TOPRewardMonitor:
-    """Build a :class:`TOPRewardMonitor` from a ``reward.backend == "topreward"`` manifest."""
+    """Build a ``TOPRewardMonitor`` from a ``reward.backend == "topreward"`` manifest."""
     if manifest.kind != "reward" or manifest.reward is None:
         raise ROSConfigError(
             f"build_topreward_monitor requires a reward manifest, got {manifest.name!r}"

@@ -1,31 +1,30 @@
 """Persistent object-centric scene-graph spatial memory.
 
-:class:`SpatialMemory` accumulates the momentary
-``WorldState.detected_objects`` into a durable, queryable scene graph and
-answers the following read-only query contracts:
+``SpatialMemory`` accumulates the momentary
+``WorldState.detected_objects`` into a durable, queryable scene graph
+and answers two read-only query contracts:
 
-- :meth:`SpatialMemory.recall_object` — recall a remembered object by label/text,
-  with optional proximity/recency filters, returning the object's ``map``-frame
-  pose plus a **camera-facing approach viewpoint** (the standoff pose a mobile
-  base drives to so its gripper-mounted camera faces the object) and, when the
-  object sits inside an occluding container, the ``inside_container_id`` the
+- ``SpatialMemory.recall_object`` — recall a remembered object by
+  label/text, with optional proximity/recency filters, returning its
+  ``map``-frame pose plus a **camera-facing approach viewpoint** (the
+  standoff pose a mobile base drives to so its gripper-mounted camera
+  faces the object) and, when occluded, the ``inside_container_id`` the
   planner must open first.
-- :meth:`SpatialMemory.resolve_place` — resolve a place/room/agent reference
+- ``SpatialMemory.resolve_place`` — resolve a place/room/agent reference
   ("the kitchen", "where I was standing") to a navigation goal plus a
   ``traversable_to`` path.
 
-This is **advisory** Layer-2 world-model state consumed by the S2 Reasoner; it
-is never a safety input (CLAUDE.md §1.1) — the safety kernel gates only on the
-live, bounded geometric world. Object poses are anchored in the
-durable ``map`` frame (TF resolution happens upstream); the memory never stores
+Advisory Layer-2 world-model state consumed by the S2 Reasoner, never a
+safety input (CLAUDE.md §1.1) — the safety kernel gates only on the
+live, bounded geometric world. Object poses are anchored in the durable
+``map`` frame (TF resolution happens upstream); the memory never stores
 a raw transform.
 
-Persistence is the :class:`~openral_core.SceneGraph` JSON contract
-(:meth:`SpatialMemory.save` / :meth:`SpatialMemory.load`). The graph is small
-(hundreds-to-thousands of nodes for one robot), so traversal is a plain typed
-BFS — no graph-engine dependency. Open-vocabulary embedding retrieval and a
-``sqlite-vec`` store layer on top of this without
-changing the contract.
+Persistence is the ``SceneGraph`` JSON contract (``SpatialMemory.save``
+/ ``SpatialMemory.load``). The graph is small (hundreds-to-thousands of
+nodes per robot), so traversal is a plain typed BFS — no graph-engine
+dependency. Open-vocabulary embedding retrieval and a ``sqlite-vec``
+store layer on top of this without changing the contract.
 
 Example:
     >>> import time
@@ -116,7 +115,7 @@ def compute_approach_viewpoint(
         approach_from: Optional pose giving the side to approach from.
 
     Returns:
-        An :class:`~openral_core.ApproachViewpoint` in the target's frame.
+        An ``ApproachViewpoint`` in the target's frame.
     """
     tx, ty, tz = target.xyz
     if approach_from is not None:
@@ -209,7 +208,7 @@ class SpatialMemory:
         new node is created. Object poses are expected in the map frame.
 
         Args:
-            objects: Detections from a :class:`~openral_core.WorldState`.
+            objects: Detections from a ``WorldState``.
             now_ns: Observation timestamp in nanoseconds.
 
         Returns:
@@ -297,7 +296,7 @@ class SpatialMemory:
         ``query.near`` as a tiebreaker), and attaches a camera-facing approach
         viewpoint and any occluding container. Returns an empty result when
         nothing matches — the caller decides whether to raise
-        :class:`~openral_core.exceptions.ROSObjectNotInMemory` or search.
+        ``ROSObjectNotInMemory`` or search.
         """
         term = (query.label or query.text).strip().lower()
         query_text = (query.text or query.label).strip()
@@ -438,14 +437,14 @@ class SpatialMemory:
     # ── Serialization / persistence ─────────────────────────────────────────────
 
     def to_scene_graph(self) -> SceneGraph:
-        """Snapshot the memory as an immutable :class:`~openral_core.SceneGraph`."""
+        """Snapshot the memory as an immutable ``SceneGraph``."""
         return SceneGraph(nodes=list(self._nodes.values()), edges=list(self._edges.values()))
 
     @classmethod
     def from_scene_graph(
         cls, graph: SceneGraph, *, embedder: TextEmbedder | None = None
     ) -> SpatialMemory:
-        """Build a memory from a persisted :class:`~openral_core.SceneGraph`.
+        """Build a memory from a persisted ``SceneGraph``.
 
         Embeddings are not serialized; when an ``embedder`` is supplied, object
         labels are re-embedded here (cheap, deterministic) so open-vocab queries
@@ -465,7 +464,7 @@ class SpatialMemory:
 
     @classmethod
     def load(cls, path: str | Path, *, embedder: TextEmbedder | None = None) -> SpatialMemory:
-        """Load a memory from a JSON scene graph written by :meth:`save`."""
+        """Load a memory from a JSON scene graph written by ``save``."""
         graph = SceneGraph.model_validate_json(Path(path).read_text())
         return cls.from_scene_graph(graph, embedder=embedder)
 

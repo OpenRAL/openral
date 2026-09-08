@@ -1,9 +1,9 @@
 """Layout-adapter registry for per-checkpoint state-vector assembly.
 
-Single mapping from the closed :data:`openral_core.StateLayout` literal
-to an :class:`~openral_state_adapter._protocol.Assembler` function.
+Single mapping from the closed ``openral_core.StateLayout`` literal
+to an ``Assembler`` function.
 Layout files (one per literal value) register themselves at import via
-:func:`register`. The reasoner palette filter and the skill_runner both
+``register``. The reasoner palette filter and the skill_runner both
 consult this registry — when a layout is present, the wrapped-task-space
 drop flips to admit-with-adapter.
 """
@@ -31,7 +31,7 @@ def register(layout: StateLayout, assembler: Assembler) -> None:
     """Bind ``assembler`` to ``layout``. Overrides any prior registration.
 
     Layouts MUST be registered before
-    :meth:`openral_state_adapter.assemble_state` is invoked with that
+    ``openral_state_adapter.assemble_state`` is invoked with that
     layout — typically by importing the matching ``layouts/<layout>.py``
     module (each layout file calls ``register`` at module scope).
     """
@@ -66,7 +66,7 @@ def assemble_state(
     Raises:
         ROSConfigError: When no assembler is registered for ``layout`` —
             the skill_runner should pre-check via
-            :func:`registered_layouts` so the dispatch failure becomes
+            ``registered_layouts`` so the dispatch failure becomes
             a palette-time drop instead of a 5 Hz runtime error. Also when
             the robot is publishing joints but not the bound ones, which no
             amount of waiting will fix.

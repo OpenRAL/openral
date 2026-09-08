@@ -1,8 +1,8 @@
-"""Unit tests for :class:`openral_reasoner.ReasonerCore`.
+"""Unit tests for ``openral_reasoner.ReasonerCore``.
 
 Real ContextRenderer + real ToolPalette + real Pydantic tool calls;
 the LLM endpoint is replaced by the deterministic
-:class:`FakeToolUseClient` from
+``FakeToolUseClient`` from
 ``tests/integration/fakes/fake_llm.py`` (CLAUDE.md §1.11 — fakes are
 permitted at process boundaries when named explicitly and under
 ``tests/<tier>/fakes/``).
@@ -30,6 +30,7 @@ from openral_reasoner import (
 )
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
+from tests.unit.conftest import _CaptureProcessor
 
 
 def _palette(*skills: str) -> ToolPalette:
@@ -48,35 +49,14 @@ def _renderer_with_prompt(text: str = "pick the cube") -> ContextRenderer:
     return r
 
 
-class _CaptureProcessor:
-    """Minimal structlog processor that buffers events for assertion.
-
-    Drops every event (raises :exc:`structlog.DropEvent`) so test logs
-    don't pollute pytest output.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def __call__(self, logger: Any, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
-        del logger, method
-        name = str(event_dict.pop("event", ""))
-        self.events.append((name, dict(event_dict)))
-        raise structlog.DropEvent
-
-
 @pytest.fixture
 def log_cap() -> Any:
     """Install a structlog capture processor and restore defaults after.
 
-    Mirrors the fixture pattern in ``test_diagnostics_phase_timer.py``
-    (CLAUDE.md §1.11).
-
-    The fixture also rebinds the ``openral_reasoner.core.log`` module
-    attribute after reconfiguring structlog so the already-imported
-    module-level logger proxy picks up the capture processor even when
-    ``cache_logger_on_first_use=True`` had been set by conftest (i.e.
-    after the logger was cached on first use).
+    Mirrors ``test_diagnostics_phase_timer.py`` (CLAUDE.md §1.11). Also
+    rebinds ``openral_reasoner.core.log`` so the already-cached module-level
+    logger proxy picks up the new processor even under
+    ``cache_logger_on_first_use=True``.
     """
     import openral_reasoner.core as _core_mod
 
@@ -371,7 +351,7 @@ def test_force_bypasses_palette_empty_short_circuit() -> None:
     The contract of ``force=True`` is "an event demands attention,
     bypass the gating heuristics". A SEVERITY_FAIL preemption on a
     bare reasoner (no installed skills) must still reach the LLM so
-    it can pick :class:`EmitPromptTool` to escalate to the operator.
+    it can pick ``EmitPromptTool`` to escalate to the operator.
     """
     palette = ToolPalette(execute_rskill_ids=frozenset())
     client = FakeToolUseClient(
@@ -570,11 +550,13 @@ def test_tick_selected_log_includes_active_prompt(log_cap: _CaptureProcessor) ->
 
 
 def test_search_tools_are_transparent_to_the_retry_cap() -> None:
-    """Identical read-only search calls are never capped — their own budgets
-    (SearchProgress miss budget, TaskLocateBudget) bound those loops and must
-    reach the explicit human-handoff, which the cap's silent hold would preempt
-    (the live regression: the recall cascade stalled in retry_cap_hold before
-    the search budget could hand off)."""
+    """Identical read-only search calls are never capped.
+
+    Their own budgets (SearchProgress miss budget, TaskLocateBudget) bound
+    those loops and must reach human-handoff, which a retry_cap_hold would
+    preempt (regression: the recall cascade stalled in retry_cap_hold before
+    the search budget could hand off).
+    """
     from openral_core import RecallObjectTool
 
     palette = _palette()
@@ -589,9 +571,11 @@ def test_search_tools_are_transparent_to_the_retry_cap() -> None:
 
 
 def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
-    """Transparency, not reset: an alternating <same-call> / <search> pattern
-    still accumulates toward the cap — a genuine loop cannot launder its streak
-    through a read-only recall between repeats."""
+    """Transparency, not reset: alternating <same-call>/<search> still accumulates toward the cap.
+
+    A genuine loop cannot launder its streak through a read-only recall
+    between repeats.
+    """
     from openral_core import RecallObjectTool
 
     palette = _palette()
@@ -614,12 +598,13 @@ def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
 
 
 def test_wait_is_transparent_to_the_retry_cap() -> None:
-    """Consecutive waits are never capped — the system prompt INSTRUCTS the
-    model to keep picking wait during a nominal long skill execution, and every
-    wait is byte-identical (rationale is stripped from the call identity), so a
-    counted wait would trip the cap after retry_cap heartbeats of prescribed
-    behavior and inject a fabricated "retry ladder exhausted" failure into
-    context mid-run."""
+    """Consecutive waits are never capped.
+
+    The system prompt instructs the model to keep picking wait during a
+    nominal long skill execution, and every wait call is byte-identical
+    (rationale is stripped from call identity) — a counted wait would trip
+    the cap and inject a fabricated "retry ladder exhausted" failure mid-run.
+    """
     from openral_core import WaitTool
 
     palette = _palette()

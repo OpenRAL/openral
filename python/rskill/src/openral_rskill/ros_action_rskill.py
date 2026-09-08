@@ -1,19 +1,19 @@
-"""ROS-wrapping rSkill — wraps any ROS 2 action / service as an :class:`rSkillBase`.
+"""ROS-wrapping rSkill — wraps any ROS 2 action / service as an ``rSkillBase``.
 
-Bridges between OpenRAL's :class:`~openral_core.schemas.RSkillManifest` /
-:meth:`rSkillBase.step` lifecycle and an arbitrary upstream ROS 2 action
-server (MoveIt's :class:`moveit_msgs.action.MoveGroup`, Nav2's
-:class:`nav2_msgs.action.NavigateToPose`, …). One adapter, two operating
-modes selected by :attr:`RosIntegration.result_trajectory_field`:
+Bridges between OpenRAL's ``RSkillManifest`` /
+``rSkillBase.step`` lifecycle and an arbitrary upstream ROS 2 action
+server (MoveIt's ``moveit_msgs.action.MoveGroup``, Nav2's
+``nav2_msgs.action.NavigateToPose``, …). One adapter, two operating
+modes selected by ``RosIntegration.result_trajectory_field``:
 
 * **Trajectory mode** (``result_trajectory_field`` set, e.g. MoveIt):
-  on the first :meth:`~rSkillBase.step` call the adapter sends the goal,
+  on the first ``step`` call the adapter sends the goal,
   blocks on the result, extracts a
-  :class:`trajectory_msgs.msg.JointTrajectory` from the result, reorders
-  its joints into the host :class:`RobotDescription`'s joint order, and
+  ``trajectory_msgs.msg.JointTrajectory`` from the result, reorders
+  its joints into the host ``RobotDescription``'s joint order, and
   emits one waypoint per subsequent ``step()`` as an
-  :class:`~openral_core.schemas.Action` chunk. After the last waypoint
-  raises :class:`~openral_core.exceptions.ROSRskillGoalSatisfied`.
+  ``Action`` chunk. After the last waypoint
+  raises ``ROSRskillGoalSatisfied``.
 * **Result-only mode** (``result_trajectory_field is None``, e.g. Nav2):
   the wrapped action server drives actuators itself (Nav2 publishes
   ``/cmd_vel`` via its behaviour tree). The adapter just awaits the
@@ -21,7 +21,7 @@ modes selected by :attr:`RosIntegration.result_trajectory_field`:
   ``step()`` call.
 
 ROS imports (``rclpy``, the IDL package named in
-:attr:`RosIntegration.package`) are deferred to lifecycle hooks so that
+``RosIntegration.package``) are deferred to lifecycle hooks so that
 schema-level tests and tooling can import this module without an
 ``ament``-built workspace on ``$PYTHONPATH``.
 """
@@ -112,7 +112,7 @@ _GOAL_STATUS_LABELS: dict[int, str] = {
 def _merge_nested(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge ``overrides`` onto ``base``; return a new dict.
 
-    Used by :class:`ROSActionRskill._configure_impl` to merge
+    Used by ``ROSActionRskill._configure_impl`` to merge
     the LLM's ``goal_params_json`` over the manifest's
     ``ros_integration.default_goal_json``. Semantics:
 
@@ -151,7 +151,7 @@ def maybe_inject_cumotion_pipeline(
 
     cuMotion is a MoveIt planning-pipeline plugin selected per request via
     ``moveit_msgs/MotionPlanRequest.pipeline_id``. When the host
-    clears the cuMotion GPU floor (:meth:`ComputeSpec.supports_cumotion`)
+    clears the cuMotion GPU floor (``ComputeSpec.supports_cumotion``)
     and the wrapped action is ``MoveGroup``, this injects the cuMotion pipeline id
     into the goal's ``request`` block; otherwise the goal is returned unchanged so
     MoveIt uses its default pipeline (OMPL).
@@ -177,31 +177,29 @@ def build_joint_permutation_from_names(
     """Build the permutation that maps a wrapped server's joints onto the host robot.
 
     The wrapped action (MoveIt) returns a
-    :class:`trajectory_msgs.msg.JointTrajectory` whose ``joint_names``
-    list orders the per-point ``positions`` array. The
-    :class:`~openral_core.schemas.RobotDescription`'s ``joints`` list
-    orders the safety supervisor's envelope check and the HAL's wire
-    ``ActionChunk``. The two are not guaranteed to match — MoveIt uses
-    its ``JointModelGroup`` ordering, which is configuration-driven,
-    and the robot description typically carries additional joints the
-    planner doesn't move (gripper, head pan, …). Without a reorder
-    the supervisor checks the wrong joint against the wrong envelope
-    limit (``packages/openral_safety/openral_safety/supervisor_node.py``);
+    ``trajectory_msgs.msg.JointTrajectory`` whose ``joint_names`` list
+    orders the per-point ``positions`` array. The ``RobotDescription``'s
+    ``joints`` list orders the safety supervisor's envelope check and
+    the HAL's wire ``ActionChunk``. The two are not guaranteed to
+    match — MoveIt uses its configuration-driven ``JointModelGroup``
+    ordering, and the robot description typically carries additional
+    joints the planner doesn't move (gripper, head pan, …). Without a
+    reorder the supervisor checks the wrong joint against the wrong
+    envelope limit
+    (``packages/openral_safety/openral_safety/supervisor_node.py``);
     silently mis-applied joint targets would be a safety-critical bug.
 
     The wrapped server's joint list MUST be a (non-strict) subset of
-    the host's joint list. Slots in ``target_names`` that don't appear
-    in ``source_names`` are returned in the second tuple element so
-    the caller (typically
-    :meth:`ROSActionRskill._dispatch_and_cache_result`) knows which
-    slots to backfill from the host's current
-    :attr:`~openral_core.schemas.WorldState.joint_state` rather than
-    leaving them undefined.
+    the host's joint list. Slots in ``target_names`` absent from
+    ``source_names`` are returned in the second tuple element so the
+    caller (typically ``ROSActionRskill._dispatch_and_cache_result``)
+    knows which slots to backfill from the host's current
+    ``WorldState.joint_state`` rather than leaving them undefined.
 
     Args:
         source_names: Joint names in the wrapped server's order.
         target_names: Joint names in the host's
-            :class:`RobotDescription`'s order.
+            ``RobotDescription``'s order.
 
     Returns:
         A pair ``(perm, unmoved_indices)``:
@@ -253,10 +251,10 @@ def _resolve_dotted(obj: Any, dotted: str) -> Any:  # noqa: ANN401  # reason: wa
 
 
 def _import_action_or_service(integration: RosIntegration) -> tuple[type, str]:
-    """Lazy-import the IDL named in :attr:`RosIntegration.package`.
+    """Lazy-import the IDL named in ``RosIntegration.package``.
 
     Returns the type plus the import kind (``"action"`` or ``"service"``).
-    Raises :class:`ROSConfigError` quoting ``ros_dependencies`` when the
+    Raises ``ROSConfigError`` quoting ``ros_dependencies`` when the
     import fails.
     """
     for sub in ("action", "srv"):
@@ -317,7 +315,7 @@ class ROSActionRskill(rSkillBase):
             ``rclpy.node.Node`` in tests). Used to create the wrapped
             ``ActionClient`` / service client so its futures share the
             node's executor.
-        robot_description: The host robot's :class:`RobotDescription`.
+        robot_description: The host robot's ``RobotDescription``.
             Optional in test paths that skip joint reordering; in
             production this is the description the
             ``RskillRunnerNode`` was constructed with. Used to align
@@ -341,7 +339,7 @@ class ROSActionRskill(rSkillBase):
         prompt_metadata_json: str,
         goal_params_json: str = "",
     ) -> None:
-        """Initialise; defers all ROS-side work to :meth:`_configure_impl`."""
+        """Initialise; defers all ROS-side work to ``_configure_impl``."""
         if manifest.ros_integration is None:
             raise ROSConfigError(
                 f"ROSActionRskill requires manifest.ros_integration (kind={manifest.kind!r}); "
@@ -520,7 +518,7 @@ class ROSActionRskill(rSkillBase):
         awaiting the wrapped action's result), since no joint targets
         flow through OpenRAL's actuation path in that case.
 
-        Joints in the host :class:`RobotDescription` that the wrapped
+        Joints in the host ``RobotDescription`` that the wrapped
         planner does NOT move (e.g. the panda_gripper slot when MoveIt
         plans for the ``panda_arm`` group) are backfilled with their
         current positions from ``world_state.joint_state`` on the
@@ -561,7 +559,7 @@ class ROSActionRskill(rSkillBase):
         """Snapshot current joint positions for slots the wrapped planner won't move.
 
         Reads ``world_state.joint_state.position`` (a list of floats in
-        :attr:`RobotDescription.joints` order) when available; falls
+        ``RobotDescription.joints`` order) when available; falls
         back to all-zeroes when ``world_state`` is ``None`` (test path
         only — production always supplies a live snapshot).
         """
@@ -586,7 +584,7 @@ class ROSActionRskill(rSkillBase):
 
         Trajectory mode caches the reordered waypoint list in
         ``self._waypoints``. Result-only mode just confirms success and
-        returns. Any failure surfaces as :class:`ROSRuntimeError`.
+        returns. Any failure surfaces as ``ROSRuntimeError``.
         """
         if self._interface_kind == "action":
             result = self._send_action_goal_and_await_result()

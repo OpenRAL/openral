@@ -3,8 +3,8 @@
 ``env_cfg.base_pose`` is the only knob — there
 is no legacy ``backend_options`` fallback and no hand-tuned default.
 
-CLAUDE.md §1.11: no mocks. Real :class:`SimEnvironment` instances, the
-real resolver function, the real :class:`Pose6D` schema.
+CLAUDE.md §1.11: no mocks. Real ``SimEnvironment`` instances, the
+real resolver function, the real ``Pose6D`` schema.
 """
 
 from __future__ import annotations
@@ -59,9 +59,7 @@ def test_base_pose_extracts_translation() -> None:
 
 
 def test_canonical_default_pose_round_trips() -> None:
-    """The pose used in `scenes/sim/openarm_tabletop.yaml` (the
-    table-clearance defaults the old hand-tuned constants encoded) must
-    flow through the resolver as (0.55, 0.20)."""
+    """The pose in `scenes/sim/openarm_tabletop.yaml` must resolve to (0.55, 0.20)."""
     env = _env_with(base_pose=_pose((0.20, 0.0, 0.55)))
     lift_z, forward_x = _resolve_base_translation(env)
     assert lift_z == pytest.approx(0.55)

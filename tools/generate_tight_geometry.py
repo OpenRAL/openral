@@ -3,18 +3,15 @@
 
 The safety kernel's arm-link-vs-world-voxel check runs a staged 26-DOP → exact
 convex hull narrow phase for links that declare ``tight_geometry`` (see
-``docs/reference/collision-hull-narrow-phase.md``). This tool is where that
-geometry comes from. It is deliberately **not** a fit:
+``docs/reference/collision-hull-narrow-phase.md``); this tool derives that
+geometry, not fits it: the 26-DOP is the intersection of 26 tangent halfspaces
+``u·x <= h_mesh(u)`` (mesh inside by construction, no optimiser tolerance) and
+the hull is ``conv(mesh vertices)`` (containment definitional); both are in the
+manifest box's own frame, and the tool refuses to emit anything outside that box.
 
-* the 26-DOP is the intersection of 26 *tangent* halfspaces ``u·x <= h_mesh(u)``,
-  so the mesh is inside it by construction, with no optimiser tolerance anywhere;
-* the hull is ``conv(mesh vertices)``, so containment is definitional;
-* both are expressed in the manifest box's own local frame, and the tool refuses
-  to emit anything that does not sit inside that box.
-
-Mesh placement follows ``docs/reference/collision-tight-geometry.md`` §11: MuJoCo
-folds mesh recentring into the geom frame, so vertices are placed by the GEOM
-transform only. Applying ``mesh_pos`` as well double-counts it (PR #158 hit this).
+Mesh placement follows ``docs/reference/collision-tight-geometry.md`` §11:
+MuJoCo folds mesh recentring into the geom frame, so vertices are placed by the
+GEOM transform only — applying ``mesh_pos`` too double-counts it (PR #158).
 
 Usage::
 
@@ -127,7 +124,7 @@ def link_mesh_in_box_frame(
 def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
     """Triangle indices for ``geom_name``'s mesh, local to its own vertex block.
 
-    Indexes the same vertex order :func:`link_mesh_in_box_frame` returns, so
+    Indexes the same vertex order ``link_mesh_in_box_frame`` returns, so
     ``faces`` from this function and ``points`` from that one describe one
     consistent triangle mesh.
     """
@@ -157,27 +154,22 @@ def hull_overhang_m(
 ) -> float:
     """How far the hull's surface reaches past the real source mesh, in metres.
 
-    Containment (``mesh ⊆ hull``) is exact and definitional (facet halfspaces).
-    This is the other direction, and it has no equally cheap closed form: the
-    hull's own faces bridge over whatever concavities the real mesh has, and
-    the worst point of that bridge can fall anywhere on a facet, not only at a
-    hull vertex (which sits ON the mesh by construction and overhangs by
-    exactly 0). So this samples a barycentric grid on every hull facet and
-    measures each sample's distance to the real mesh surface, not merely to
-    the nearest mesh vertex.
+    Containment (``mesh ⊆ hull``) is exact and definitional. This is the other
+    direction: the hull's faces bridge over mesh concavities, and the worst
+    point can fall anywhere on a facet (not just at a hull vertex, which sits
+    ON the mesh). So this samples a barycentric grid per hull facet and
+    measures each sample's distance to the real mesh surface.
 
     Args:
         hull_points: The hull's own vertices, box-frame, the same array
             ``scipy.spatial.ConvexHull`` was built from.
-        mesh_points: Real mesh vertices, box-frame (:func:`link_mesh_in_box_frame`).
+        mesh_points: Real mesh vertices, box-frame (``link_mesh_in_box_frame``).
         mesh_faces: Real mesh triangle indices into ``mesh_points``
-            (:func:`link_mesh_faces`).
+            (``link_mesh_faces``).
         samples_per_edge: Barycentric grid resolution per hull facet (24 gives
-            325 samples/facet). The measured max keeps creeping up a couple of
-            percent per doubling on every panda link tried -- this is a
-            sampled lower bound on the true continuous supremum, never an
-            exact one, which is why the caller pads it (see ``_emit``) rather
-            than shipping it raw.
+            325 samples/facet). A sampled lower bound on the true continuous
+            supremum (measured max creeps up a couple % per doubling), which
+            is why the caller pads it (see ``_emit``) rather than shipping it raw.
 
     Returns:
         The sampled maximum distance, in metres, with NO margin applied.
@@ -192,19 +184,15 @@ def hull_overhang_m(
 
     mesh = _trimesh(mesh_points, mesh_faces)
     hull = ConvexHull(hull_points)
-    # Keep TOTAL samples bounded, not samples-per-facet. A 320-vertex refined
-    # envelope has ~636 facets against ~300 for a 152-vertex hull, and the query
-    # cost is (facets x samples-per-facet) x mesh-faces, so a fixed
-    # `samples_per_edge` makes the largest link minutes slower than the rest.
+    # Keep TOTAL samples bounded, not samples-per-facet: cost is
+    # (facets x samples-per-facet) x mesh-faces, and a 320-vertex envelope has
+    # ~636 facets vs ~300 for a 152-vertex hull, so a fixed `samples_per_edge`
+    # makes the largest link minutes slower than the rest.
     #
-    # Coarsening lowers the sampled maximum, and this function returns a sampled
-    # LOWER bound on a continuous supremum in the first place. That matters for
-    # the direction of the error: `_check` fails when the declared overhang is
-    # *below* a fresh resample, so a coarser resample can only make that gate
-    # more permissive — it can never fail a manifest that is actually correct,
-    # and it can never talk a caller into shipping a smaller number, because
-    # `_emit` pads whatever it measures. Declared values already in a manifest
-    # are not revised by this; they stay whatever the denser run produced.
+    # Coarsening only lowers the sampled maximum (a LOWER bound on the true
+    # supremum), and `_check` fails when the declared overhang is *below* a
+    # fresh resample — so a coarser resample can only make that gate more
+    # permissive, never pass a manifest that is actually wrong.
     n = samples_per_edge
     while n > 4 and len(hull.simplices) * (n + 1) * (n + 2) // 2 > _OVERHANG_MAX_SAMPLES:
         n -= 1
@@ -213,14 +201,11 @@ def hull_overhang_m(
     )
     tris = hull_points[hull.simplices]  # (n_facets, 3, 3)
     samples = np.einsum("fvc,sv->fsc", tris, bary).reshape(-1, 3)
-    # `closest_point` (and `mesh.nearest`) need `rtree`, an optional trimesh
-    # dependency this workspace does not pin. The naive brute-force query
-    # allocates a `samples x mesh-faces x 3` array, so it must be fed in
-    # batches: the largest panda link reaches ~207k samples against ~12k
-    # triangles, which is 57.8 GiB in one call and raised
-    # `numpy._core._exceptions._ArrayMemoryError`. Batching bounds the peak at
-    # `_OVERHANG_BATCH x faces x 3` regardless of link size, and the maximum
-    # over batches is the maximum over the whole set.
+    # `closest_point` (`mesh.nearest`) needs `rtree`, an optional trimesh dep
+    # this workspace does not pin, so query naive brute-force in batches: the
+    # largest panda link is ~207k samples x ~12k triangles = 57.8 GiB in one
+    # call (raised `numpy._core._exceptions._ArrayMemoryError`). Batching bounds
+    # peak memory at `_OVERHANG_BATCH x faces x 3` regardless of link size.
     worst = 0.0
     for start in range(0, len(samples), _OVERHANG_BATCH):
         batch = samples[start : start + _OVERHANG_BATCH]
@@ -238,38 +223,24 @@ def _trimesh(points: Points, faces: Points) -> Any:
 def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget: int) -> Points:
     """A ≤``budget``-vertex convex envelope strictly tighter than the 26-DOP.
 
-    ``panda_link1``'s exact hull is 1588 vertices against a 320-vertex kernel
-    budget, so it ships **stage-1 only** — the 26-DOP, whose support gap
-    against the real mesh is a median 4.52 mm and up to 25.68 mm. This routine
-    exists because "over the budget" need not mean "fall back to the DOP".
+    ``panda_link1``: exact hull is 1588 vertices vs a 320-vertex kernel budget,
+    so it ships stage-1 only (26-DOP: median 4.52 mm / max 25.68 mm support gap
+    vs the real mesh) — "over budget" need not mean "fall back to the DOP".
+    Not worth it for ``link1`` on the evidence: a live battery on 2026-09-07
+    moved the refined envelope's predicted stops by only 0.0003 mm (deficit was
+    against the box, already collected by the DOP — see
+    ``docs/reference/collision-validation-evidence.md``), so no manifest ships
+    a refined envelope without a fresh measurement.
 
-    It is not, on the evidence, worth spending on ``link1``: the envelope was
-    built and put under a live battery on 2026-09-07, and the stops it was
-    predicted to clear moved by **0.0003 mm**. The prediction failed because it
-    read a support-census deficit against the *box* and attributed the whole
-    deficit to the hull, when the DOP had already collected it. So no manifest
-    declares a refined envelope today, and none should without a fresh
-    measurement. See ``docs/reference/collision-validation-evidence.md``
-    (2026-09-07, "the link1 refined envelope does not move the stops it was
-    built for").
-
-    The construction is a **greedy halfspace refinement**, chosen over
-    subsetting the hull's vertices because containment must stay *definitional*
-    rather than fitted:
-
-    * every candidate plane is a face of ``conv(mesh)``, so it is **tangent to
-      the mesh** and adding it can never cut the mesh;
-    * the starting polytope is the DOP, so the result is ``⊆ DOP`` by
-      construction — which is exactly what the ``TightCollisionGeometry`` schema
-      requires, and what a subset-then-expand approach violates (expansion
-      pushes vertices out through the DOP slabs, and ``link1``'s DOP has only
-      0.083 mm of room inside its manifest box);
-    * planes are added worst-violation-first, and any plane that would push the
-      vertex count over budget is skipped rather than accepted.
-
-    So ``mesh ⊆ result ⊆ DOP ⊆ box`` holds at every step, and the result is
-    at-least-as-conservative as what shipped (CLAUDE.md §3). For ``link1`` it
-    reaches a 0.18 mm median / 0.65 mm max support gap with 162 planes.
+    Construction: greedy halfspace refinement, not hull-vertex subsetting,
+    because containment must stay definitional. Every candidate plane is a
+    face of ``conv(mesh)`` (tangent, can never cut the mesh); the starting
+    polytope is the DOP so the result is ``⊆ DOP`` by construction (what
+    ``TightCollisionGeometry`` requires; ``link1``'s DOP has only 0.083 mm of
+    room inside its manifest box); planes are added worst-violation-first and
+    skipped if they'd push the vertex count over budget. So
+    ``mesh ⊆ result ⊆ DOP ⊆ box`` holds throughout (CLAUDE.md §3). For
+    ``link1``: 162 planes, 0.18 mm median / 0.65 mm max support gap.
 
     Args:
         points: every mesh vertex, in the manifest box's frame.
@@ -336,7 +307,7 @@ def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget:
 def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> dict[str, Any]:
     """Build the DOP slabs and (when it fits the budget) the exact hull.
 
-    Returns a mapping ready for :class:`openral_core.schemas.TightCollisionGeometry`,
+    Returns a mapping ready for ``openral_core.schemas.TightCollisionGeometry``,
     plus the diagnostics a reviewer needs: vertex counts and the achieved inward
     margin of the DOP inside the shipped box.
     """

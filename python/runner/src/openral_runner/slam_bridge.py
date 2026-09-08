@@ -1,7 +1,7 @@
 """rclpy → OTLP bridge for slam_toolbox ``/map`` updates.
 
 The OpenRAL dashboard is OTLP-only — it never subscribes to ROS topics
-directly. This module ships :class:`SlamMapBridge`, a small
+directly. This module ships ``SlamMapBridge``, a small
 ``rclpy.node.Node`` that subscribes to ``nav_msgs/OccupancyGrid`` (the
 output of slam_toolbox once the Reasoner has driven it through
 ``LifecycleTransitionTool(node="openral_slam_toolbox", transition=
@@ -167,7 +167,7 @@ class SlamMapBridge:
        since the last emit (1 Hz default — matches slam_toolbox's
        canonical ``map_update_interval``).
     2. Rasterises the occupancy grid to a PNG via
-       :func:`encode_occupancy_grid_png`.
+       ``encode_occupancy_grid_png``.
     3. Emits a single ``slam.occupancy_grid`` OTel span carrying the
        metadata + the PNG as attributes (see store handler in
        ``openral_observability.dashboard.store``).
@@ -175,9 +175,9 @@ class SlamMapBridge:
     Args:
         node: Host ``rclpy.node.Node``. The subscription is created on
             this node; destroy_subscription on
-            :meth:`destroy` releases it.
+            ``destroy`` releases it.
         topic: Topic to subscribe to. Defaults to
-            :data:`SLAM_MAP_TOPIC_DEFAULT` (``/map``).
+            ``SLAM_MAP_TOPIC_DEFAULT`` (``/map``).
         base_frame: TF2 child frame whose pose in the map frame is
             looked up on each /map callback and emitted as
             ``openral.slam.robot_x/y/yaw`` span attributes. Defaults
@@ -225,16 +225,12 @@ class SlamMapBridge:
             QoSReliabilityPolicy,
         )
 
-        # `/map` is backend-agnostic: slam_toolbox publishes it
-        # TRANSIENT_LOCAL (latched), but the visual backend (nvblox) publishes it
-        # VOLATILE (not latched). A VOLATILE subscriber is compatible with BOTH
-        # (a TRANSIENT_LOCAL publisher offers more than a VOLATILE subscriber
-        # requests), whereas a TRANSIENT_LOCAL subscriber rejects nvblox's
-        # VOLATILE `/map` outright (durability mismatch -> no data, the dashboard
-        # SLAM card stuck on "waiting"). So subscribe VOLATILE to render either
-        # backend's map. Trade-off: on a late join we miss slam_toolbox's last
-        # latched grid and wait for its next update (~1 Hz) -- acceptable for a
-        # live dashboard. Mirrors the nav2 static_layer's
+        # `/map` is backend-agnostic: slam_toolbox publishes it TRANSIENT_LOCAL
+        # (latched), nvblox publishes it VOLATILE. A VOLATILE subscriber is
+        # compatible with both (a TRANSIENT_LOCAL sub rejects nvblox's VOLATILE
+        # `/map` outright — durability mismatch, dashboard stuck on "waiting").
+        # Trade-off: on a late join we miss slam_toolbox's last latched grid
+        # and wait for the next update (~1 Hz). Mirrors nav2 static_layer's
         # `map_subscribe_transient_local: False`.
         map_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,

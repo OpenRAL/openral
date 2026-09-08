@@ -1,33 +1,24 @@
 """Regression test: ``sim_e2e.launch.py`` produces no empty-list ROS params.
 
-Asserts that :func:`sim_e2e.launch.compose_runtime_graph` builds the
-``openral_safety_kernel`` LifecycleNode's parameter dict with NO empty
-list (or empty tuple) values for any robot in the in-tree catalogue.
+Asserts ``sim_e2e.launch.compose_runtime_graph`` builds the ``openral_safety_kernel``
+LifecycleNode's parameter dict with NO empty list/tuple values, for every robot in the
+in-tree catalogue.
 
-Why this matters: ``launch_ros.utilities.evaluate_parameters`` collapses
-an empty Python list to ``()`` and falls through to
-``ensure_argument_type(value, (float, int, str, bool, bytes), 'value')``,
-which raises::
+Why: ``launch_ros.utilities.evaluate_parameters`` collapses an empty Python list to ``()``
+and falls through to ``ensure_argument_type``, which raises::
 
     Expected 'value' to be one of [<class 'float'>, <class 'int'>, ...],
     but got '()' of type '<class 'tuple'>'
 
-That error fires at launch-time, **before any node logs**, so it
-manifests as an opaque "deploy sim crashed instantly" with no traceback
-visible without ``ros2 launch --debug``. The historical incident:
-``e591374`` (extending geometric collision checking to every control mode)
-added ``collision_base_dofs`` as an
-unconditional ROS param; the list is empty for every fixed-base arm
-(openarm, so101, franka_panda, ur5e, ur10e, sawyer, rizon4, …), which
-broke ``openral deploy sim`` for the majority of in-tree robots until
-the omit-when-empty guard at ``sim_e2e.launch.py:397`` was added.
+before any node logs — an opaque "deploy sim crashed instantly" with no traceback without
+``ros2 launch --debug``. Historical incident: ``e591374`` added ``collision_base_dofs`` as an
+unconditional param, empty for every fixed-base arm (openarm, so101, franka_panda, ur5e,
+ur10e, sawyer, rizon4, …) — broke deploy sim for most in-tree robots until the
+omit-when-empty guard at ``sim_e2e.launch.py:397``.
 
-Per CLAUDE.md §1.11: no mocks. Real
-:class:`openral_core.RobotDescription` loaded from a real
-``robots/<robot>/robot.yaml``; real ``LaunchContext`` exercising the
-real ``compose_runtime_graph`` opaque function; real
-``launch_ros.utilities.evaluate_parameters`` so the assertion exercises
-the exact code path ``ros2 launch`` would.
+Per CLAUDE.md §1.11: no mocks — real ``RobotDescription`` (``robots/<robot>/robot.yaml``),
+real ``LaunchContext``/``compose_runtime_graph``, real ``evaluate_parameters`` (exact
+``ros2 launch`` code path).
 
 Run::
 
@@ -38,11 +29,11 @@ Run::
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 
 import pytest
+from _launch_test_common import import_launch_module as _import_launch_module
 
 # ── Guards ───────────────────────────────────────────────────────────────────
 
@@ -69,26 +60,9 @@ _FIXED_BASE_ROBOTS = ["openarm", "so101_follower", "franka_panda"]
 _MOBILE_BASE_ROBOTS = ["panda_mobile"]
 
 
-def _import_launch_module() -> object:
-    """Load ``sim_e2e.launch.py`` as a Python module via importlib.
-
-    The launch file lives outside the package's importable Python tree (it
-    is installed to ``share/openral_rskill_ros/launch/`` by ament_python),
-    so a normal ``from openral_rskill_ros.launch.sim_e2e import …`` is not
-    available. Load the source file directly — this is the same pattern
-    ``test_franka_scene_attach.launch.py`` follows for its launch-side
-    imports.
-    """
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch", _LAUNCH_FILE)
-    assert spec is not None and spec.loader is not None, f"failed to spec {_LAUNCH_FILE}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
     """Digital twins use exact overlap; real hardware retains the 2 cm margin."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._world_voxel_margin_m("sim") == 0.0
     assert module._world_voxel_margin_m("real") == 0.02
@@ -96,7 +70,7 @@ def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
 
 def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     """Sim rejects one-frame voxels; real mapping keeps its current threshold."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._octomap_occupancy_threshold("sim") == 0.8
     assert module._octomap_occupancy_threshold("real") == 0.6
@@ -104,14 +78,14 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
 
 def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
     """Sim has an attachment heartbeat; real remains off until its manager lands."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     assert module._attached_collision_enabled("sim") is True
     assert module._attached_collision_enabled("real") is False
 
 
 def _make_launch_context(robot_yaml: Path) -> object:
-    """Return a :class:`launch.LaunchContext` populated from the launch itself.
+    """Return a ``launch.LaunchContext`` populated from the launch itself.
 
     The defaults come from executing the launch's own
     ``DeclareLaunchArgument`` entities, as ``test_no_dashboard_otlp_env.py``
@@ -125,7 +99,7 @@ def _make_launch_context(robot_yaml: Path) -> object:
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
     # The required (default-less) arguments must be present before the
@@ -167,7 +141,7 @@ def _safety_kernel_params(robot_id: str) -> dict[str, object]:
     from launch_ros.actions import LifecycleNode
     from launch_ros.utilities import evaluate_parameters
 
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
     entities = module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
 
@@ -234,7 +208,7 @@ def test_fixed_base_arm_kernel_params_have_no_empty_lists(robot_id: str) -> None
 def test_mobile_base_arm_kernel_params_have_collision_base_dofs(robot_id: str) -> None:
     """Mobile-base robots: ``collision_base_dofs`` is present and non-empty.
 
-    Pairs with :func:`test_fixed_base_arm_kernel_params_have_no_empty_lists`
+    Pairs with ``test_fixed_base_arm_kernel_params_have_no_empty_lists``
     so the symmetric "omit-when-empty, include-when-populated" contract is
     pinned end-to-end. panda_mobile declares ``base_joints`` in its
     manifest; the param must reach the kernel so the FK can zero the
@@ -262,7 +236,7 @@ def test_collision_scale_is_absent_unless_the_operator_asks(
     disables the band and reproduces the pre-#188 republish exactly. This
     launch must not quietly supply some other value.
     """
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", raising=False)
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
@@ -274,7 +248,7 @@ def test_collision_scale_params_are_forwarded_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The A/B battery's seam: the three env vars reach the kernel as floats."""
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0.05")
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_K", "20")
@@ -296,7 +270,7 @@ def test_an_unparseable_collision_scale_arms_nothing(
     silently arming an enforcement surface at a number nobody chose is worse
     than leaving it off.
     """
-    module = _import_launch_module()
+    module = _import_launch_module(_LAUNCH_FILE)
 
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0,05")
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)

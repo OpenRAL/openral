@@ -219,15 +219,13 @@ def test_safety_envelope_pins_known_limits() -> None:
 
 
 def test_sim_sdk_pointer_resolves_to_franka_panda_hal() -> None:
-    """``FRANKA_PANDA_DESCRIPTION`` is the *sim* baseline; its sdk pointer
-    resolves to the MuJoCo adapter.
+    """``FRANKA_PANDA_DESCRIPTION`` is the sim baseline; its sdk pointer resolves
+    to the MuJoCo adapter.
 
-    The manifest carries two pointers: a sim baseline (this constant) and a
-    real-HW companion (``FRANKA_PANDA_REAL_DESCRIPTION`` in
-    ``franka_panda_real.py``) derived via
-    :func:`openral_hal._real_description.make_real_description`.  The
-    pattern matches PR #60's UR adapters
-    (``UR5e_DESCRIPTION`` / ``UR5e_REAL_DESCRIPTION``).
+    Two pointers: sim baseline (this constant) and real-HW companion
+    (``FRANKA_PANDA_REAL_DESCRIPTION`` in ``franka_panda_real.py``) via
+    ``openral_hal._real_description.make_real_description`` — matches
+    PR #60's UR adapters (``UR5e_DESCRIPTION``/``UR5e_REAL_DESCRIPTION``).
     """
     assert FRANKA_PANDA_DESCRIPTION.sdk_kind == "open"
     assert FRANKA_PANDA_DESCRIPTION.hal.sim == "openral_hal.franka_panda:FrankaPandaHAL"
@@ -235,7 +233,7 @@ def test_sim_sdk_pointer_resolves_to_franka_panda_hal() -> None:
 
 def test_real_sdk_pointer_resolves_to_franka_panda_real_hal() -> None:
     """``FRANKA_PANDA_REAL_DESCRIPTION`` is what ``robots/franka_panda/robot.yaml``
-    pins to (closed-with-api → :class:`FrankaPandaRealHAL`, issue #56).
+    pins to (closed-with-api → ``FrankaPandaRealHAL``, issue #56).
 
     Kinematics + safety envelope + capabilities + ``hal`` entrypoints are
     inherited from the sim baseline via ``model_copy``; only ``sdk_kind``

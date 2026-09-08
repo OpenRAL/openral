@@ -10,11 +10,6 @@ Two backends, tried in order:
 2. **``v4l2-ctl --list-devices``** — used when sysfs yields nothing (an
    unusual kernel layout), and as the enrichment source for ``bus_info``
    strings on hosts that have ``v4l-utils`` installed.
-
-The previous implementation shelled out to ``v4l2-ctl`` only, which meant a
-host without ``v4l-utils`` reported *zero* cameras while several were plugged
-in — a silent false negative on exactly the provisioning path that is
-supposed to find them.
 """
 
 from __future__ import annotations
@@ -39,7 +34,7 @@ def probe_v4l2_cameras(*, warnings: list[str] | None = None) -> list[V4l2CameraI
         warnings: Optional list to append non-fatal probe issues to.
 
     Returns:
-        One :class:`V4l2CameraInfo` per camera *device* (a single node group;
+        One ``V4l2CameraInfo`` per camera *device* (a single node group;
         the lowest-numbered ``/dev/videoN`` is reported).  Empty on
         non-Linux hosts and on hosts with no camera attached.
     """

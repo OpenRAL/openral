@@ -13,13 +13,12 @@
 #   camera   — optional camera selector. Empty = the detector's primary/default
 #              camera; otherwise one of the detector's configured camera ids so
 #              the reasoner can choose a viewpoint. NOT a hardcoded name.
-#   detector — optional on-demand locator selector (rSkill id /
-#              short alias, e.g. "omdet-turbo-locator" or "locateanything-3b").
-#              Empty = the deployment's default locator. The reasoner routes the
-#              call to /openral/perception/<detector>/locate_in_view; per-detector
-#              service namespacing means several locators can co-exist and the
-#              reasoner picks the model. This field is informational on the server
-#              side (each node already owns one model); it is echoed back so the
+#   detector — optional on-demand locator selector (rSkill id / short alias,
+#              e.g. "omdet-turbo-locator" or "locateanything-3b"). Empty = the
+#              deployment's default locator. Routed to
+#              /openral/perception/<detector>/locate_in_view; per-detector
+#              namespacing lets several locators co-exist. Informational on the
+#              server side (each node owns one model); echoed back so the
 #              prompt cascade records which locator answered.
 #
 # Response:

@@ -1,18 +1,12 @@
-"""Unit tests for :class:`openral_observability.DiagnosticsHeartbeat`.
+"""Unit tests for ``openral_observability.DiagnosticsHeartbeat``.
 
-Two test tiers (mirrors ``tests/unit/test_sensor_ros_publisher.py``):
+Two tiers: construction/validation (no rclpy — rejects bad inputs, stays
+inert until ``create_publisher`` runs) and live publish/subscribe (gated on
+``pytest.importorskip("rclpy")`` — a real ``DiagnosticsHeartbeat`` on a real
+``rclpy.lifecycle.LifecycleNode``, a real subscriber in-process, asserting
+the round-trip ``hardware_id``/``component_name``/level).
 
-* **Construction / validation** — no rclpy required. Asserts the helper
-  rejects bad inputs and stays inert until ``create_publisher`` runs.
-* **Live publish/subscribe** — gated on rclpy via
-  ``pytest.importorskip``. Drives a real ``DiagnosticsHeartbeat``
-  attached to a real ``rclpy.lifecycle.LifecycleNode``, opens an rclpy
-  subscriber in the same process, and asserts the round-trip arrives
-  with the expected ``hardware_id`` / ``component_name`` / level.
-
-Per CLAUDE.md §1.11 — no mocks. The status callback is a real
-function; the LifecycleNode is a real ``rclpy`` lifecycle node; the
-subscriber is a real ``rclpy`` subscriber.
+Per CLAUDE.md §1.11 — no mocks anywhere in this file.
 """
 
 from __future__ import annotations

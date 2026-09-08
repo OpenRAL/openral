@@ -1,29 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """`OpenArmRealHAL` and `openarm_bringup` must agree, checked from the configs.
 
-The HAL names four controllers and the sixteen joints it hands them. Those
-names live in **`openarm_bringup`'s** controller YAML, in a different repo on
-a different release cadence. Nothing has ever compared the two: the HAL's
-table (`openarm_real._command_groups`) is a hand-copied transcription, and a
-rename upstream would leave it silently wrong.
+The HAL names four controllers and the sixteen joints it hands them. Those names live in
+`openarm_bringup`'s controller YAML, in a different repo on a different release cadence.
+Nothing compares the two: the HAL's table (`openarm_real._command_groups`) is a hand-copied
+transcription, and a rename upstream would leave it silently wrong.
 
-Silently is the operative word. A `JointTrajectoryController` handed joints it
-does not own **rejects the whole message**. There is no exception on the
-publisher side, nothing on `/joint_states` looks unusual, and the arm simply
-does not move — which is indistinguishable from a policy that chose to hold
-still. That is the same failure shape ADR-0102 was written to end, one layer
-further out.
+Silently is the operative word: a `JointTrajectoryController` handed joints it doesn't own
+rejects the whole message. No exception on the publisher side, nothing on `/joint_states`
+looks unusual, and the arm simply doesn't move — indistinguishable from a policy that chose
+to hold still. Same failure shape ADR-0102 was written to end, one layer further out.
 
-The gripper is where this is most likely to bite, and the reason this file
-exists: the bimanual bringup calls the gripper joint
-``openarm_left_finger_joint1``, **not** ``openarm_left_gripper``. Every
-plausible guess is wrong, so the only safe source is the config itself.
+The gripper is where this is most likely to bite, and why this file exists: the bimanual
+bringup calls the gripper joint `openarm_left_finger_joint1`, not `openarm_left_gripper`.
+Every plausible guess is wrong, so the only safe source is the config itself.
 
-Needs no hardware at all — not even the CAN links — only a host where
-``openarm_bringup`` is on the ament prefix path. It answers statically what
-would otherwise need a powered cell: bringing the controllers up to look at
-them calls ``OpenArmHW::on_activate`` → ``openarm_->enable_all()``, which
-energises all sixteen motors. Reading the config energises nothing.
+Needs no hardware at all — not even the CAN links — only a host where `openarm_bringup` is on
+the ament prefix path. It answers statically what would otherwise need a powered cell:
+bringing the controllers up calls `OpenArmHW::on_activate` → `openarm_->enable_all()`, which
+energises all sixteen motors; reading the config energises nothing.
 """
 
 from __future__ import annotations
