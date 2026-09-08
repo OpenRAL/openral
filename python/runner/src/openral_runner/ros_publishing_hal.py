@@ -311,7 +311,7 @@ class ROSPublishingHAL:
             below without blocking, so a single-surface policy never reaches
             this safety check. The ungrouped path's seam is polled by
             ``rskill_runner_node`` via
-            ``_safety_abort_reason`` before each tick;
+            ``RskillRunnerNode._safety_abort_reason`` before each tick;
             don't add a check to the early return — this adapter stays a
             sink, and a per-publish gate here would duplicate the kernel's
             own decision.

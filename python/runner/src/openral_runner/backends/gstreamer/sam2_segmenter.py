@@ -143,7 +143,7 @@ class Sam2Segmenter:
         model_id: Identifier recorded alongside every emitted mask.
         weights_source: HF repo id to load (``facebook/sam2.1-hiera-small``).
         max_prompt_points: Upper bound on prompt points per call, from the
-            manifest's ``max_prompt_points``.
+            manifest's ``SegmenterContract.max_prompt_points``.
         multimask: Ask for the three-hypothesis head instead of a single mask.
         min_mask_area_px: Candidates with fewer set pixels are dropped as
             degenerate.

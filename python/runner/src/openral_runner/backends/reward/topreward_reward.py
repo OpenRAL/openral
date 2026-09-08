@@ -182,7 +182,7 @@ class TOPRewardMonitor:
         """Score ``frames`` and summarize the window for the Reasoner.
 
         Same keys as
-        ``assess``.
+        ``RobometerInProcessReward.assess``.
         """
         from openral_runner.backends.reward.frame_source import assess_from_score  # noqa: PLC0415
 

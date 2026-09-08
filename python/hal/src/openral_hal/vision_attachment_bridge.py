@@ -36,7 +36,7 @@ Three properties of that wait are non-negotiable:
   conservatively-shaped payload.
 * **It never skips.** A timeout, a service failure, a missing depth frame and a
   missing transform all end in the producer's conservative jaw-span box, stamped
-  ``GRIPPER_FORCE`` at low confidence.
+  ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low confidence.
   Something is in the jaws either way; the collision checker must see *some*
   geometry.
 * **It is visible.** Every fallback logs its typed reason and every attachment

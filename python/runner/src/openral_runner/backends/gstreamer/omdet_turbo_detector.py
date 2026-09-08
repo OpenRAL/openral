@@ -6,7 +6,7 @@ is a first-class ``transformers`` architecture
 (``AutoModelForZeroShotObjectDetection``) that loads under the runtime's own
 ``transformers>=5``. It runs **in process** — no sidecar, no ZMQ — selected
 as
-``ZEROSHOT_HF``
+``DetectorTier.ZEROSHOT_HF``
 for manifests whose ``detector.engine`` is ``zeroshot_hf``.
 
 One backend, two modes, chosen by the manifest's ``detector.mode``:

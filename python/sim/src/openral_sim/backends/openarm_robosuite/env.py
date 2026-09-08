@@ -334,7 +334,7 @@ def _arm_joint_names_for_side(
 ) -> list[str]:
     """Return the 7 MJCF arm joint names for ``side``.
 
-    Reads ``sim_joint_name`` off every
+    Reads ``JointSpec.sim_joint_name`` off every
     ``robot.yaml`` joint whose ``name`` starts with ``"{side}_joint"``,
     falling back to the legacy hardcoded ``openarm_{side}_joint{i}``
     pattern when no description is passed (lets hermetic tests build

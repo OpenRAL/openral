@@ -1223,7 +1223,7 @@ def _resolve_base_joint_qvel_addrs(
             ``_OMRON_BASE_JOINT_NAMES`` defaults — callers that
             have access to a ``RobotDescription``
             should read names from the per-joint
-            ``sim_joint_name`` field and
+            ``JointSpec.sim_joint_name`` field and
             pass them here so the helper never depends on hardcoded
             robosuite / robocasa naming conventions.
     """

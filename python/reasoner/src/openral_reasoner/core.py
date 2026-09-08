@@ -91,7 +91,7 @@ class PreparedTick:
     (``seq``, ``prompts``, ``started``, the open OTel span). The ``seq`` and
     ``prompts`` snapshots matter: events that arrive while the LLM call is in
     flight were **not** rendered into the model's context, so
-    ``finish_tick`` must mark seen / drain only what the
+    ``ReasonerCore.finish_tick`` must mark seen / drain only what the
     model actually saw.
     """
 
@@ -107,8 +107,8 @@ class PreparedTick:
     tier: str
     llm_s: float = 0.0
     """Wall-clock of the LLM round-trip alone, written by
-    ``run_prepared_llm`` (the only field the LLM phase
-    mutates) and read back by ``finish_tick``. Split out
+    ``ReasonerCore.run_prepared_llm`` (the only field the LLM phase
+    mutates) and read back by ``ReasonerCore.finish_tick``. Split out
     from the tick's ``elapsed_s`` because a slow tick is otherwise
     unattributable: provider time and reasoner overhead look identical."""
     prompt_tokens: int | None = None

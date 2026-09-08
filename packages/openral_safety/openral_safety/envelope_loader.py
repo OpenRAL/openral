@@ -473,7 +473,7 @@ class _Edge:
     ``dof_index`` is the edge's column in ``RobotDescription.joints`` for a
     movable joint, or ``-1`` for a rigid ``FixedAttachment``
     (which has no commanded column). ``joint_type`` is
-    ``FIXED`` for an attachment, so the existing
+    ``JointType.FIXED`` for an attachment, so the existing
     ``_JOINT_KIND_CODE`` lookup already lowers it to the kernel's static kind.
     """
 
@@ -612,8 +612,8 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     """Flatten a robot's collision geometry into safety_kernel ROS parameters.
 
     Lowers ``RobotDescription.collision_geometry`` +
-    ``allowed_collision_pairs`` + the kinematic chain
-    (``joints`` **and** ``fixed_attachments``, with their
+    ``RobotDescription.allowed_collision_pairs`` + the kinematic chain
+    (``joints`` **and** ``RobotDescription.fixed_attachments``, with their
     ``origin_xyz``/``origin_rpy``/``axis_xyz``) into the flat parallel arrays
     the C++ kernel's ``load_collision_model`` reads. The manifest stays the
     normative kinematic source; this never parses URDF/MJCF (the offline
@@ -630,7 +630,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     envelope joint arrays and ``ActionChunk.flat``).
 
     A boxed link declaring
-    ``tight_geometry`` also
+    ``LinkCollisionGeometry.tight_geometry`` also
     lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget,
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
     these drive the kernel's staged arm-link-vs-world-voxel narrow phase; the

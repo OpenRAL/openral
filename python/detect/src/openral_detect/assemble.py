@@ -67,8 +67,8 @@ def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeS
     Args:
         gpu: The GPU probe result (nvidia, jetson, apple_silicon fields).
         report: The full ``DetectionReport``; its
-            ``derived_runtimes`` /
-            ``derived_dtypes`` methods are used to derive
+            ``DetectionReport.derived_runtimes`` /
+            ``DetectionReport.derived_dtypes`` methods are used to derive
             the runtime + dtype lists.
 
     Returns:

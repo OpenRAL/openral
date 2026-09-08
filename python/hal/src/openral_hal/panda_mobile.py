@@ -9,10 +9,10 @@ Protocol* surface (``connect``/``disconnect``/``read_state``/
 and dashboard can be exercised without a robosuite/MuJoCo install.
 
 Maintains 11-DoF state: base ``base_x``/``base_y`` (m), ``base_yaw`` (rad)
-via ``BODY_TWIST`` (six-float
+via ``ControlMode.BODY_TWIST`` (six-float
 ``joint_targets``; only vx/vy/wz honoured, per the planar-base convention
 on ``BODY_TWIST``); arm
-``panda_joint1..7`` via ``JOINT_POSITION``
+``panda_joint1..7`` via ``ControlMode.JOINT_POSITION``
 (seven floats); gripper (1 DoF) via
 ``GRIPPER_POSITION``.
 

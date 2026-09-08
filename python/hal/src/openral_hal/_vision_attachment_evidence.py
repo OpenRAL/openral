@@ -29,7 +29,7 @@ depth-validity fraction; the mask score is only recorded, as
 **On gate failure the attachment is not skipped**: ``on_grasp`` always
 returns an ``AttachedCollisionObject`` — a rejected
 mask degrades to a conservative jaw-span box stamped
-``GRIPPER_FORCE`` at low
+``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
 confidence, which is strictly safer than an invisible payload.
 
 Honest limitations — what this does NOT fix
@@ -168,7 +168,7 @@ class VisionGateConfig:
             same missing-schema-field reason as
             ``max_payload_extents_m``. ``0.05`` m.
         max_primitives: Bounded primitive count, matching
-            ``primitives``' own
+            ``AttachedCollisionObject.primitives``' own
             ``max_length`` and the simulator producer's contract.
     """
 
@@ -617,7 +617,7 @@ class VisionAttachmentEvidenceProducer:
 
         **Always returns an attachment.** A rejected grasp yields the
         conservative jaw-span box stamped
-        ``GRIPPER_FORCE`` at low
+        ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
         confidence — never ``None``, never a silent skip; the report names
         every failed gate so the fallback is visible in the trace
         (CLAUDE.md §1.4).

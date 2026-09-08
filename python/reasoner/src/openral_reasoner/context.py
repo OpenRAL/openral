@@ -1016,7 +1016,7 @@ class ContextRenderer:
         Args:
             seen: When given, drain **only** these records (matched by
                 identity) and keep the rest. Used by the phased tick
-                (``finish_tick``): a
+                (``ReasonerCore.finish_tick``): a
                 prompt that arrived while the LLM call was in flight was
                 never rendered into the model's context, so it must
                 survive for the next tick. ``None`` (default) drains

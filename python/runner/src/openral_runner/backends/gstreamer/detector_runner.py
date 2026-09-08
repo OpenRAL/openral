@@ -10,9 +10,9 @@ caller-supplied sink callback.
 
 The branch is chosen by tier:
 
-* ``CPU_ONNX`` → ``videoconvert !
+* ``DetectorTier.CPU_ONNX`` → ``videoconvert !
   video/x-raw,format=BGR ! appsink`` — system-memory CPU path.
-* ``NVMM_AGGREGATOR`` → ``<conv> !
+* ``DetectorTier.NVMM_AGGREGATOR`` → ``<conv> !
   video/x-raw(memory:NVMM),format=RGBA ! appsink`` — zero-copy NVMM path, where
   ``<conv>`` is the platform's NVMM converter (``nvvideoconvert`` on DeepStream /
   ``nvvidconv`` on Tegra), resolved by
@@ -156,11 +156,11 @@ class DetectorRunner:
     def start(self) -> None:
         """Attach the tier-appropriate branch to the live tee and connect the signal.
 
-        For ``CPU_ONNX``: builds a
+        For ``DetectorTier.CPU_ONNX``: builds a
         ``videoconvert ! video/x-raw,format=BGR ! appsink`` branch (system-memory CPU
         tier) and wires ``new-sample`` to ``_on_sample_bgr``.
 
-        For ``NVMM_AGGREGATOR``: builds a
+        For ``DetectorTier.NVMM_AGGREGATOR``: builds a
         ``<conv> ! video/x-raw(memory:NVMM),format=RGBA ! appsink`` branch
         (zero-copy NVMM tier), where ``<conv>`` is the platform's NVMM converter
         (``nvvideoconvert`` on DeepStream / ``nvvidconv`` on Tegra), resolved by

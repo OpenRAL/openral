@@ -114,7 +114,7 @@ class Ros2ImageSensorReader:
 
     Args:
         sensor_id: Sensor name, matching
-            ``sensor_id``.
+            ``SensorReaderConfig.sensor_id``.
         topic: Topic the vendor driver publishes on, e.g.
             ``/zed/depth/depth_registered``.
         default_max_age_ms: Staleness budget applied when ``read_latest``

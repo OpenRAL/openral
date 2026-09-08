@@ -2237,8 +2237,8 @@ def extract_base_sim_joint_names(
     """Return ``(forward, side, yaw)`` MJCF joint names from any mobile-base description.
 
     Generic, robot-agnostic helper. Consumes the
-    ``RobotDescription.base_joints`` declaration + each referenced
-    ``JointSpec``'s ``sim_joint_name`` override.
+    ``RobotDescription.base_joints`` declaration + each referenced joint's
+    ``JointSpec.sim_joint_name`` override.
     Works for any robot whose ``robot.yaml`` declares both fields:
 
     * ``base_joints: [<forward>, <side>, <yaw>]`` at the top level.

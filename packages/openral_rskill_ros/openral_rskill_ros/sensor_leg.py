@@ -1,9 +1,9 @@
 """Real-mode camera leg: open every deploy-bound sensor and publish to ROS.
 
 Real hardware has no camera publisher (unlike the sim HAL, which publishes frames itself).
-Physical ``/dev/video*`` devices are described by ``deploy_binding``
+Physical ``/dev/video*`` devices are described by ``SensorSpec.deploy_binding``
 — on the robot manifest for robot-mounted cameras (wrist/head), on
-``sensors`` for workcell-mounted ones (overhead/front).
+``DeployScene.sensors`` for workcell-mounted ones (overhead/front).
 
 ``open_deploy_sensor_readers`` opens one reader per bound spec and publishes to
 ``<topic_prefix>/<name>/image`` (BEST_EFFORT QoS, matching WorldState's subscription):
@@ -516,7 +516,7 @@ def open_deploy_sensor_readers(
 
     Args:
         sensors: Robot-manifest sensors plus ``DeployScene.sensors`` (caller concatenates).
-            Specs without a ``deploy_binding`` are skipped.
+            Specs without a ``SensorSpec.deploy_binding`` are skipped.
         topic_prefix: WorldState's ``camera_topic_prefix``. Final topic is
             ``<topic_prefix>/<spec.name>/image``.
         aggregator: The composed runtime's shared ``WorldStateAggregator``. When set, each

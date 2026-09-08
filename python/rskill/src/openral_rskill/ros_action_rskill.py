@@ -195,7 +195,7 @@ def build_joint_permutation_from_names(
     the caller (typically
     ``ROSActionRskill._dispatch_and_cache_result``) knows which
     slots to backfill from the host's current
-    ``joint_state`` rather than
+    ``WorldState.joint_state`` rather than
     leaving them undefined.
 
     Args:

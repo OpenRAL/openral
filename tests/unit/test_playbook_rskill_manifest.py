@@ -4,7 +4,7 @@ Covers:
 - ``PlaybookContract`` Hypothesis round-trip +
   JSON-Schema validation + field guards.
 - Contract test: load ``rskills/find-object/rskill.yaml`` via
-  ``from_yaml`` and assert the key
+  ``RSkillManifest.from_yaml`` and assert the key
   guarantees.
 - Validator boundary tests: each required/forbidden rule for ``kind=playbook``
   raises ``pydantic.ValidationError`` exactly, and a non-playbook kind that
