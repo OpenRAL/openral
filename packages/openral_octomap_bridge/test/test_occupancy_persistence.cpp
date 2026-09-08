@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // A self-filtered depth ray must still reach OctoMap as a clearing ray.
 //
-// Deploy-sim tuning (`packages/openral_rskill_ros/launch/sim_e2e.launch.py`):
+// Deploy-sim tuning (`packages/openral_rskill_ros/launch/deploy_e2e.launch.py`):
 // `occupancy_thres 0.8` (one hit never makes a safety voxel; needs a second
 // frame to confirm), `sensor_model.max 0.85` (one clearing ray retires a
 // confirmed hit). Pre-fix bug: the bridge built octomap's cloud from the depth

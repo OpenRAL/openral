@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """`deploy run` must start its robot's vendor ros2_control graph itself.
 
-Before `_build_real_bringup_include`, `sim_e2e.launch.py` assumed the
+Before `_build_real_bringup_include`, `deploy_e2e.launch.py` assumed the
 `controller_manager` graph was already up, so a real bring-up meant launching it
 by hand from a second terminal. That put a second `/joint_states` publisher on
 the bus, which is exactly what `openral_cli._dds_scope` refuses to launch over
@@ -28,11 +28,11 @@ import sys
 import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-_LAUNCH_PATH = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_e2e.launch.py"
+_LAUNCH_PATH = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
 
-def _load_sim_e2e() -> object:
-    """Import sim_e2e.launch.py by path.
+def _load_deploy_e2e() -> object:
+    """Import deploy_e2e.launch.py by path.
 
     Guard on ``launch.actions`` rather than bare ``launch``: several packages ship
     an unpackaged ROS ``launch/`` directory that resolves as an implicit namespace
@@ -41,11 +41,11 @@ def _load_sim_e2e() -> object:
     """
     pytest.importorskip("launch.actions")
     pytest.importorskip("ament_index_python.packages")
-    # sim_e2e.launch.py imports the bringup packages at module top; they exist
+    # deploy_e2e.launch.py imports the bringup packages at module top; they exist
     # only with the OpenRAL overlay sourced, as under ament_cmake_pytest.
     pytest.importorskip("openral_foxglove_bringup")
     pytest.importorskip("launch_ros.actions")
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch", _LAUNCH_PATH)
+    spec = importlib.util.spec_from_file_location("deploy_e2e_launch", _LAUNCH_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -65,7 +65,7 @@ def test_openarm_hal_package_ships_the_conventional_bringup() -> None:
         _REPO_ROOT / "packages" / "openral_hal_openarm" / "launch" / "real_bringup.launch.py"
     )
     assert conventional.is_file(), (
-        f"{conventional} is the name sim_e2e.launch.py looks for; "
+        f"{conventional} is the name deploy_e2e.launch.py looks for; "
         "renaming it disables the automatic real bringup"
     )
 
@@ -77,9 +77,9 @@ def test_bringup_name_is_the_one_the_launch_looks_for() -> None:
     resolves it through the constant the launch file actually reads, so the two
     cannot drift apart silently.
     """
-    sim_e2e = _load_sim_e2e()
+    deploy_e2e = _load_deploy_e2e()
     shipped = (
-        _REPO_ROOT / "packages" / "openral_hal_openarm" / "launch" / sim_e2e.REAL_BRINGUP_LAUNCH  # type: ignore[attr-defined]  # reason: module loaded by path
+        _REPO_ROOT / "packages" / "openral_hal_openarm" / "launch" / deploy_e2e.REAL_BRINGUP_LAUNCH  # type: ignore[attr-defined]  # reason: module loaded by path
     )
     assert shipped.is_file()
 
@@ -92,14 +92,14 @@ def test_missing_package_yields_no_include() -> None:
     by a vendor daemon legitimately has nothing to include. Raising here would
     break `deploy run` for every one of them.
     """
-    sim_e2e = _load_sim_e2e()
-    assert sim_e2e._build_real_bringup_include("no_such_hal_package_exists") is None  # type: ignore[attr-defined]  # reason: as above
+    deploy_e2e = _load_deploy_e2e()
+    assert deploy_e2e._build_real_bringup_include("no_such_hal_package_exists") is None  # type: ignore[attr-defined]  # reason: as above
 
 
 def test_package_without_a_bringup_yields_no_include() -> None:
     """A package that resolves but ships no `real_bringup.launch.py` returns None."""
-    sim_e2e = _load_sim_e2e()
+    deploy_e2e = _load_deploy_e2e()
     # `openral_msgs` is an installed package with a share directory and no
     # bringup launch — the "resolves, but nothing to include" branch.
     pytest.importorskip("openral_msgs")
-    assert sim_e2e._build_real_bringup_include("openral_msgs") is None  # type: ignore[attr-defined]  # reason: as above
+    assert deploy_e2e._build_real_bringup_include("openral_msgs") is None  # type: ignore[attr-defined]  # reason: as above

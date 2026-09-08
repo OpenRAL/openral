@@ -48,7 +48,7 @@ GPU after load: **1676 MiB** (SmolVLA only). Teardown returned the card to
 
 ### The headline: the 300 s timeouts are ~1000× the real cost
 
-`sim_e2e.launch.py` gives the HAL and reasoner a **300 s** transition timeout,
+`deploy_e2e.launch.py` gives the HAL and reasoner a **300 s** transition timeout,
 justified in a comment by "HAL `on_configure` takes ~6 s, or ~27 s on a cold
 robocasa kitchen". For an SO-101 the measured cost is **267 ms in sim and
 112 ms on the real arm**. The comment is not wrong — it describes robocasa —

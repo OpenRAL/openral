@@ -7,7 +7,7 @@
 # dense 2-D occupancy grid (`/map`) + 3-D voxel map — the lidar-less,
 # stereo-less path for a camera-only mobile robot.
 #
-# `slam_mono_camera: shoulder_left` drives the wiring: sim_e2e auto-composes
+# `slam_mono_camera: shoulder_left` drives the wiring: deploy_e2e auto-composes
 # the DA3 depth provider (RGB -> 32FC1 metric depth at the camera's optical
 # frame) and nvblox (cuVSLAM pose + depth -> occupancy grid + voxels).
 # Dashboard SLAM card (slam.occupancy_grid) and pointcloud card

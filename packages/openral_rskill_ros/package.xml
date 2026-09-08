@@ -36,7 +36,7 @@
        deploy-sim runtime graph by the `openral deploy sim` foxglove flag. -->
   <exec_depend>foxglove_bridge</exec_depend>
   <exec_depend>openral_foxglove_bringup</exec_depend>
-  <!-- `sim_e2e.launch.py` spawns octomap_server itself (the world map the
+  <!-- `deploy_e2e.launch.py` spawns octomap_server itself (the world map the
        octomap bridge lowers into /openral/world_voxels). Undeclared, it was
        invisible to scripts/check_ros_build_deps.sh — which derives its set
        from these files — so a host without it launched, dropped the whole

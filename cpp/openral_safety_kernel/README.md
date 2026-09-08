@@ -235,7 +235,7 @@ the policy's output destroys the task.
 **It ships disabled.** This is a WG-gated enforcement surface, and what earns
 it a non-zero band is the A/B five-round battery on the validation-matrix
 scenes, not the parameter's existence. `OPENRAL_COLLISION_SCALE_PROXIMITY_M`
-(plus `_K` / `_MIN`) is the seam `sim_e2e.launch.py` reads, so the band can be
+(plus `_K` / `_MIN`) is the seam `deploy_e2e.launch.py` reads, so the band can be
 swept across rounds without a rebuild; the round records which values it ran
 with (`ValidationRoundMetadata.collision_scale`), so an armed round and a
 baseline round can be told apart from their own artifacts.
@@ -744,7 +744,7 @@ Both removals move cases from no-stop to stop.
 
 `attached_contact_tolerance_m` survives with its name's meaning restored:
 physical slack for FK and pose noise, defaulting to 1 mm. It is no longer
-overridden to the octomap resolution in `sim_e2e.launch.py` (hazard
+overridden to the octomap resolution in `deploy_e2e.launch.py` (hazard
 **HZ-0095-2**), because the quantisation it was standing in for is now handled
 geometrically by the witness predicate.
 

@@ -51,7 +51,7 @@ def generate_launch_description() -> LaunchDescription:
         # Stereo camera topics. Like the sibling ``cuvslam.launch.py`` (which
         # owns its ``image_0/1_topic`` remaps), this launch owns the topic
         # defaults so a scene's ``slam_stereo_cameras`` can retarget the rig
-        # via ``sim_e2e.launch.py`` without editing a params file. Passed as
+        # via ``deploy_e2e.launch.py`` without editing a params file. Passed as
         # parameter overrides above ``params_file``.
         DeclareLaunchArgument(
             "left_image_topic",

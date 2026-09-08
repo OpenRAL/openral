@@ -1,6 +1,6 @@
-"""Regression test: ``sim_e2e.launch.py`` produces no empty-list ROS params.
+"""Regression test: ``deploy_e2e.launch.py`` produces no empty-list ROS params.
 
-Asserts ``sim_e2e.launch.compose_runtime_graph`` builds the ``openral_safety_kernel``
+Asserts ``deploy_e2e.launch.compose_runtime_graph`` builds the ``openral_safety_kernel``
 LifecycleNode's parameter dict with NO empty list/tuple values, for every robot in the
 in-tree catalogue.
 
@@ -14,7 +14,7 @@ before any node logs — an opaque "deploy sim crashed instantly" with no traceb
 ``ros2 launch --debug``. Historical incident: ``e591374`` added ``collision_base_dofs`` as an
 unconditional param, empty for every fixed-base arm (openarm, so101, franka_panda, ur5e,
 ur10e, sawyer, rizon4, …) — broke deploy sim for most in-tree robots until the
-omit-when-empty guard at ``sim_e2e.launch.py:397``.
+omit-when-empty guard at ``deploy_e2e.launch.py:397``.
 
 Per CLAUDE.md §1.11: no mocks — real ``RobotDescription`` (``robots/<robot>/robot.yaml``),
 real ``LaunchContext``/``compose_runtime_graph``, real ``evaluate_parameters`` (exact
@@ -51,7 +51,7 @@ pytestmark = pytest.mark.skipif(
 
 # parents[3]: test/ → openral_rskill_ros/ → packages/ → <repo-root>
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
 # Fixed-base arms (no ``base_joints`` in robot.yaml) exhibit the bug; mobile
 # bases (panda_mobile) do not. Cover at least one of each so a future
@@ -181,7 +181,7 @@ def test_fixed_base_arm_kernel_params_have_no_empty_lists(robot_id: str) -> None
     with ``"Expected 'value' to be one of [float,int,str,bool,bytes], "
     "but got '()' of type 'tuple'"``. Asserting "no empty list in
     kernel_params" pins the omit-when-empty contract from
-    ``sim_e2e.launch.py:397`` (mirrors ``lifecycle_peer_node_ids``
+    ``deploy_e2e.launch.py:397`` (mirrors ``lifecycle_peer_node_ids``
     guard at line 482 and ``workspace_box_min_xyz`` omission in
     ``kernel_params_from_envelope``).
     """

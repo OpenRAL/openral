@@ -131,7 +131,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # Render the octomap occupied-voxel cloud
     # (``/octomap_point_cloud_centers``) into the dashboard's
     # ``world.pointcloud`` span family. Off by default; the
-    # ``sim_e2e.launch.py`` flips this on when ``enable_octomap:=true``
+    # ``deploy_e2e.launch.py`` flips this on when ``enable_octomap:=true``
     # so the robot-view pointcloud card populates as octomap_server runs.
     bootstrap.declare_parameter("enable_world_cloud_bridge", False)
     # PointCloud2 topic the world-cloud bridge renders into world.pointcloud.

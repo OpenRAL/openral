@@ -590,7 +590,7 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
     try:
         path = resolve_asset(ref, "urdf", manifest_dir=manifest_dir)
     except AssetRefError as exc:
-        print(f"[sim_e2e] could not resolve urdf ref {ref!r}: {exc}", flush=True)
+        print(f"[deploy_e2e] could not resolve urdf ref {ref!r}: {exc}", flush=True)
         return None
     return None if path is None else str(path)
 
@@ -843,13 +843,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 collision_params = mjcf_params
             else:
                 print(
-                    "[sim_e2e] MJCF has no primitive collision geometry; "
+                    "[deploy_e2e] MJCF has no primitive collision geometry; "
                     "keeping the manifest self-collision model.",
                     flush=True,
                 )
         except Exception as exc:  # never let a geometry hiccup block the boot
             print(
-                f"[sim_e2e] MJCF self-collision lowering failed: {exc!r}; using manifest geometry",
+                f"[deploy_e2e] MJCF self-collision lowering failed: {exc!r}; "
+                "using manifest geometry",
                 flush=True,
             )
     if workcell is not None and workcell.extra_allowed_collision_pairs:
@@ -860,7 +861,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         after = list(collision_params.get("collision_allowed_pairs", []))
         if len(after) > len(before):
             for a, b in workcell.extra_allowed_collision_pairs:
-                print(f"[sim_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
+                print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas

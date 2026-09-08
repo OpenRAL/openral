@@ -2,7 +2,7 @@
 
 ROS 2 lifecycle-node wrapper around the `panda_mobile` HAL (a Franka 7-DoF arm
 on a holonomic 3-DoF planar base) so the RoboCasa mobile-manipulator embodiment
-can participate in the `openral deploy sim` graph (`sim_e2e.launch.py` → C++
+can participate in the `openral deploy sim` graph (`deploy_e2e.launch.py` → C++
 safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot panda_mobile` via

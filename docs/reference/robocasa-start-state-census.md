@@ -63,7 +63,7 @@ over 6 face normals and 9 edge-edge cross products, which is a *lower* bound on
 true surface distance and is why the kernel never under-reports a collision.
 Each occupied cell is treated as an axis-aligned cube of 12.5 mm half-extent, as
 `check_voxel_collision` does. `world_voxel_margin_m` is `0.0` in sim
-(`packages/openral_rskill_ros/launch/sim_e2e.launch.py`), so *stops* means
+(`packages/openral_rskill_ros/launch/deploy_e2e.launch.py`), so *stops* means
 `SAT ≤ 0`.
 
 Two things were self-tested rather than assumed:

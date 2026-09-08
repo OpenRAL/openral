@@ -5,7 +5,7 @@ End-to-end proof of the base-relative frame fix (HZ-0040-1) on the actual
 manifest (the robocasa deploy-sim robot). It is the deploy-graph analogue of the
 unit test ``LifecycleKernelTest.MobileBaseArmCaughtAgainstVoxelWall``:
 
-1. The kernel is configured from the manifest exactly as ``sim_e2e.launch.py``
+1. The kernel is configured from the manifest exactly as ``deploy_e2e.launch.py``
    does — envelope + collision model + ``collision_base_dofs`` (the planar base)
    + ``collision_joint_names`` + ``collision_ee_link_index``.
 2. ``/joint_states`` seeds the BASE far out in the world (x=y=5 m) and the arm at
@@ -76,7 +76,7 @@ def _kernel_params() -> dict[str, object]:
             "world_voxel_margin_m": 0.0,
             "world_voxel_deadline_ms": 5000.0,
             "world_voxel_max_cells": _SX * _SY * _SZ,
-            # Exactly what sim_e2e.launch.py emits for this robot.
+            # Exactly what deploy_e2e.launch.py emits for this robot.
             "collision_joint_names": [j.name for j in desc.joints],
             "collision_base_dofs": [
                 i for i, j in enumerate(desc.joints) if j.name in set(desc.base_joints or [])

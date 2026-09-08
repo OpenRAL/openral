@@ -402,7 +402,7 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
     The C++ safety kernel (``cpp/openral_safety_kernel/``) reads its envelope
     exclusively from per-field ROS parameters (added 2026-05-24). Canonical
     Python → ROS-params converter, used by ``openral deploy sim``'s
-    ``sim_e2e.launch.py`` (feeding ``robots/<id>/robot.yaml``), by
+    ``deploy_e2e.launch.py`` (feeding ``robots/<id>/robot.yaml``), by
     ``kernel_only`` launches, and by every C++/Python kernel test fixture.
 
     Workspace-box corners are *omitted* (not empty arrays) when unset —
@@ -774,7 +774,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     # ensure_argument_type rejects it. An all-box robot (SO-101) has zero
     # capsules; a capsule-only robot has zero boxes; both are valid. The kernel
     # declares its own ``[]`` default for each (same guard as
-    # ``collision_base_dofs`` in sim_e2e.launch.py).
+    # ``collision_base_dofs`` in deploy_e2e.launch.py).
     if capsule_link:
         params["collision_capsule_link"] = capsule_link
         params["collision_capsule_radius"] = capsule_radius

@@ -85,7 +85,7 @@ _LETHAL_THRESHOLD = 253
 def _scan_mount_z() -> float:
     """`base_link -> base_scan` z, from the manifest that owns that geometry.
 
-    Read rather than hardcoded because `sim_e2e.launch.py` publishes this exact
+    Read rather than hardcoded because `deploy_e2e.launch.py` publishes this exact
     field as the static TF; a test that duplicated the number could keep passing
     after the mount moved.
     """

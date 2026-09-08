@@ -121,7 +121,7 @@ TEST(OctreeToGrid, TransformShiftsTheQuery) {
 
 namespace {
 
-// The deploy-sim octomap_server parameters (sim_e2e.launch.py), as the other
+// The deploy-sim octomap_server parameters (deploy_e2e.launch.py), as the other
 // two suites in this package use them.
 constexpr double kRes = 0.025;
 constexpr double kOccupancyThres = 0.8;

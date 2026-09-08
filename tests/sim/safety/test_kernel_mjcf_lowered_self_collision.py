@@ -2,7 +2,7 @@
 enforces self-collision through the real kernel (the dof_index fix, end to end).
 
 ``openral deploy sim`` prefers the MJCF-lowered collision model
-(``sim_e2e.launch.py`` → ``openral_safety.mjcf_lowering.lower_collision_params``)
+(``deploy_e2e.launch.py`` → ``openral_safety.mjcf_lowering.lower_collision_params``)
 over the manifest one. Before the dof_index fix that lowering keyed its
 joint→column map by the *manifest* joint names but read the *MJCF* joint names;
 real robots name them differently, so every ``collision_dof_index`` collapsed to

@@ -2,12 +2,12 @@
 
 Sibling of ``openral deploy run``: where ``deploy run`` drives a tight Python
 tick loop against a HAL + ``SafetyClient``, ``deploy sim`` shells
-``ros2 launch openral_rskill_ros sim_e2e.launch.py`` so the operator gets
+``ros2 launch openral_rskill_ros deploy_e2e.launch.py`` so the operator gets
 dashboard + C++ safety kernel + reasoner + prompt router + runtime
 (world_state + skill_runner) + HAL in one command, against the HAL's
 digital-twin (MuJoCo viewer) mode.
 
-The launch graph is robot-agnostic — one ``sim_e2e.launch.py`` for every
+The launch graph is robot-agnostic — one ``deploy_e2e.launch.py`` for every
 robot; the CLI resolves everything robot-specific: the manifest at
 ``robots/<robot_id>/robot.yaml``, and the HAL package/executable/node
 name/default params looked up by ``robot_id`` in ``_ROBOT_HAL_REGISTRY``
@@ -16,7 +16,7 @@ manifest's ``name``, so a mis-wired HAL fails loud).
 
 No envelope YAML file on either side: the robot manifest is the single
 source of truth for the safety kernel envelope.
-``sim_e2e.launch.py``'s ``compose_runtime_graph`` callback loads
+``deploy_e2e.launch.py``'s ``compose_runtime_graph`` callback loads
 ``robot.yaml`` via Pydantic at launch time, calls
 ``openral_safety.envelope_loader.compute_intersection(robot, skill=None)``
 + ``kernel_params_from_envelope(...)``, and forwards each field of the
@@ -74,7 +74,7 @@ class _HalSpec:
     """Per-robot HAL spawn descriptor.
 
     ``package`` / ``executable`` / ``node_name`` parameterise the HAL
-    ``LifecycleNode`` in ``sim_e2e.launch.py``. ``supported_robot_names``
+    ``LifecycleNode`` in ``deploy_e2e.launch.py``. ``supported_robot_names``
     is the set of ``RobotDescription.name`` values this HAL is willing
     to drive — the CLI asserts the loaded manifest's name is in this
     set so a mis-paired registry entry (openarm HAL routed at an so100
@@ -709,7 +709,7 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
 
 
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
-    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir.
+    """Derive the deploy_e2e.launch.py bundle args from a deploy memory-bundle dir.
 
     The bundle is a directory holding any of ``MEMORY.md`` (semantic memory),
     ``scene_graph.json`` (3D world-state graph), and ``map.yaml`` (2D occupancy grid).
@@ -740,7 +740,7 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
 
 # the in-tree directory of the default reward/progress-monitor rSkill
 # the deploy pairs with a VLA when nothing names one. Mirrors the reasoner's
-# launch default (``rskills/robometer-4b/rskill.yaml``, sim_e2e.launch.py).
+# launch default (``rskills/robometer-4b/rskill.yaml``, deploy_e2e.launch.py).
 _DEFAULT_REWARD_RSKILL_DIR = "robometer-4b"
 
 
@@ -1422,7 +1422,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         *_ros2_argv_head(),
         "launch",
         "openral_rskill_ros",
-        "sim_e2e.launch.py",
+        "deploy_e2e.launch.py",
         f"robot_yaml:={robot_yaml}",
         f"hal_package:={hal.package}",
         f"hal_executable:={hal.executable}",
@@ -1636,7 +1636,7 @@ def _ros2_argv_head() -> list[str]:
     """Return the argv prefix that runs ``ros2`` under the **workspace venv** interpreter.
 
     ``/opt/ros/<distro>/bin/ros2`` has a ``#!/usr/bin/python3`` shebang, so a
-    bare ``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system*
+    bare ``ros2 launch`` parses ``deploy_e2e.launch.py`` under the *system*
     interpreter. ``_prepare_launch_env`` puts the venv site dir on
     ``PYTHONPATH``, but ``PYTHONPATH`` only prepends — any distribution the
     venv does not carry still resolves out of ``/usr/lib/python3/dist-packages``,
@@ -1901,7 +1901,7 @@ def _reap_orphans_with_log() -> None:
 #: across a cmdline, e.g. an executable path before ``--ros-args`` and the node
 #: remap after it.
 _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
-    "sim_e2e.launch.py",
+    "deploy_e2e.launch.py",
     "openral_rskill_ros/runtime_node",
     "install/lib/openral_hal_",
     "openral_reasoner_ros/reasoner_node.py",
@@ -1929,7 +1929,7 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "/lib/nav2_collision_monitor/",
     "/lib/opennav_docking/",
     "/lib/nav2_lifecycle_manager/",
-    # TF chain spawned by ``sim_e2e.launch.py``. A `static_transform_publisher`
+    # TF chain spawned by ``deploy_e2e.launch.py``. A `static_transform_publisher`
     # orphaned before the URDF mount-z was zeroed kept publishing stale
     # `base_link → panda_link0 z=0.4` on TRANSIENT_LOCAL `/tf_static`; tf2
     # picks non-deterministically among same-name static frames, so the next
@@ -1954,7 +1954,7 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     # GR00T/RLDX weights resident and starves the GPU (~6.5 GiB) of the
     # next run. The cache dir is openral-specific, so this is unambiguous.
     "/.cache/openral/rldx-sidecar/",
-    # Perception / critic graph nodes spawned by ``sim_e2e.launch.py``. These
+    # Perception / critic graph nodes spawned by ``deploy_e2e.launch.py``. These
     # were absent from the sweep, so under a heavy graph whose graceful
     # shutdown doesn't finish within ``grace_s`` they orphaned (the reward
     # monitor holds the sidecar; the detector holds its model). Scoped to the
@@ -3181,7 +3181,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # the scope the launch will actually use (#227).
         _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
 
-        # The dashboard child is spawned by ``sim_e2e.launch.py`` itself
+        # The dashboard child is spawned by ``deploy_e2e.launch.py`` itself
         # (gated on ``enable_dashboard:=true`` forwarded from ``dashboard``
         # above) — do not also wrap this in ``attached_dashboard(...)``,
         # which double-spawns it and trips ``[Errno 98] address already in

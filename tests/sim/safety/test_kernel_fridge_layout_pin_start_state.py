@@ -145,7 +145,7 @@ _RETIRED_LAYOUT = 30
 #: The kernel's own world-voxel resolution in the deploy graph. Overridable so
 #: the resolution sweep in `docs/reference/collision-validation-evidence.md`
 #: (2026-09-07) is reproducible from the shipped test rather than from a probe
-#: that duplicates it -- the default is what `sim_e2e.launch.py` emits and what
+#: that duplicates it -- the default is what `deploy_e2e.launch.py` emits and what
 #: every assertion in this file is pinned against.
 _RES = float(os.environ.get("OPENRAL_FRIDGE_GRID_RES_M", "0.025"))
 #: Padding around the arm's own extent. The widest corner slop in this model is
@@ -380,7 +380,7 @@ def _build_grid(model: Any, data: Any, robot_bodies: frozenset[int]) -> tuple[An
 
 
 def _kernel_params(desc: RobotDescription, margin_m: float) -> dict[str, object]:
-    """The parameters ``sim_e2e.launch.py`` emits for this robot, at ``margin_m``."""
+    """The parameters ``deploy_e2e.launch.py`` emits for this robot, at ``margin_m``."""
     collision = collision_params_from_description(desc)
     params: dict[str, object] = dict(kernel_params_from_envelope(compute_intersection(desc, None)))
     params.update(collision)

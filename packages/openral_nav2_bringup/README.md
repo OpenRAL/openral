@@ -359,7 +359,7 @@ sampled the world at one height and told Nav2 the returns came from another,
 
 Fixed by giving both the same number: `robots/panda_mobile/robot.yaml` gives
 the lidar its own `base_scan` frame with the mount in
-`static_transform_xyz_rpy` (−0.40 m from `base_link`); `sim_e2e.launch.py`
+`static_transform_xyz_rpy` (−0.40 m from `base_link`); `deploy_e2e.launch.py`
 publishes that as the `base_link → base_scan` static TF;
 `SimSensorBridge._scan_world_height_m` adds the same offset to the base's own
 world z when casting — so the ray and the frame can no longer disagree,

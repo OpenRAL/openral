@@ -25,11 +25,11 @@ from types import ModuleType
 
 import pytest
 
-_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 
 
 def _import_launch_module() -> ModuleType:
-    """Import ``sim_e2e.launch.py`` by absolute path.
+    """Import ``deploy_e2e.launch.py`` by absolute path.
 
     Same pattern as ``test_nav2_launch`` / ``test_slam_toolbox_launch``:
     load via ``spec_from_file_location`` and skip when the ROS 2 launch
@@ -42,7 +42,7 @@ def _import_launch_module() -> ModuleType:
     if not os.environ.get("ROS_DISTRO"):
         pytest.skip("ROS_DISTRO not set — launch_ros requires a sourced ROS 2 install.")
 
-    spec = importlib.util.spec_from_file_location("openral_sim_e2e_under_test", _LAUNCH_FILE)
+    spec = importlib.util.spec_from_file_location("openral_deploy_e2e_under_test", _LAUNCH_FILE)
     if spec is None or spec.loader is None:
         pytest.fail(f"failed to build module spec for {_LAUNCH_FILE}")
     mod = importlib.util.module_from_spec(spec)

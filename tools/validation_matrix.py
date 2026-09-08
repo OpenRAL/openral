@@ -1471,7 +1471,7 @@ def collision_scale_env() -> dict[str, float]:
     """The #188 graded-velocity band this round will actually run with.
 
     The band reaches the kernel through ``OPENRAL_COLLISION_SCALE_*`` env vars
-    (``sim_e2e.launch.py`` reads them), which ``assert_no_safety_overrides``
+    (``deploy_e2e.launch.py`` reads them), which ``assert_no_safety_overrides``
     cannot see — it inspects argv. Recorded rather than refused: arming the band
     *is* the point of the A/B battery, and what must never happen is a round
     that armed it and cannot afterwards be told apart from one that did not.

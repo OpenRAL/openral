@@ -4,7 +4,7 @@
 Camera-based SLAM backend for **lidar-less** robots: fills the same
 ``map→odom`` TF edge ``slam_toolbox`` fills on lidar robots, from
 stereo / mono+IMU / RGB-D cameras instead of ``/scan``. Composed into
-``sim_e2e.launch.py`` when ``slam_backend`` is ``visual`` (from
+``deploy_e2e.launch.py`` when ``slam_backend`` is ``visual`` (from
 ``RobotCapabilities.has_vision_slam``, see ``deploy_sim.py``).
 
 Unlike ``slam_toolbox.launch.py``, cuVSLAM's ``VisualSlamNode`` is a

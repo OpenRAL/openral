@@ -163,7 +163,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::int64_t>>("cpu_affinity", std::vector<std::int64_t>{});
 
   // Parameter-based envelope source (2026-05-24). The
-  // Python `sim_e2e.launch.py` unpacks `robots/<id>/robot.yaml` via
+  // Python `deploy_e2e.launch.py` unpacks `robots/<id>/robot.yaml` via
   // Pydantic, calls
   // `openral_safety.envelope_loader.kernel_params_from_envelope`, and
   // forwards each field as a ROS parameter here. There is exactly one
@@ -359,7 +359,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   otel::initialize_tracing();
 
   // Load envelope from ROS parameters. The Python
-  // `sim_e2e.launch.py` populates each field from
+  // `deploy_e2e.launch.py` populates each field from
   // `robots/<id>/robot.yaml` via Pydantic +
   // `openral_safety.envelope_loader.kernel_params_from_envelope`.
   // CLAUDE.md §1.4 — explicit failure, no fallback: when `n_dof=0` the

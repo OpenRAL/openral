@@ -2,7 +2,7 @@
 
 ROS 2 lifecycle-node wrapper around `openral_hal.OpenArmMujocoHAL` so the
 Enactic **OpenArm v2** 16-DoF bimanual arm can participate in the
-`openral deploy sim` graph (`sim_e2e.launch.py` → C++ safety kernel → HAL).
+`openral deploy sim` graph (`deploy_e2e.launch.py` → C++ safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot openarm` via
 `_ROBOT_HAL_REGISTRY["openarm"]` (see
@@ -66,7 +66,7 @@ them toward zero), `openral deploy run` starts this graph itself:
 openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml
 ```
 
-`sim_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
+`deploy_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
 `hal_mode:=real` and the HAL package ships that file — the file name *is* the
 declaration, so nothing names it in a manifest. Do not also launch it by hand:
 a second copy puts a second `/joint_states` publisher on the graph, and

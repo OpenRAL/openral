@@ -110,7 +110,7 @@ def _urdf_root_seed(
     differs from ``base_frame`` (UR's ``ur5e_base_link`` over ``base_link``,
     Franka's ``base_link`` over ``panda_link0``) leaves that root outside the
     chain. ``assets.urdf.root_frame`` + ``assets.urdf.base_to_root_xyz_rpy``
-    carry that transform — the same static TF ``sim_e2e.launch.py`` publishes,
+    carry that transform — the same static TF ``deploy_e2e.launch.py`` publishes,
     kept consistent with the band derivation here.
     """
     assets = getattr(description, "assets", None)

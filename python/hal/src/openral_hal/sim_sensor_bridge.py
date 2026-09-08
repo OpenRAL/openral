@@ -2915,7 +2915,7 @@ class SimSensorBridge:
 
         Both now come from one number. The manifest declares the lidar's mount
         in ``static_transform_xyz_rpy`` (published as the ``base_link ->
-        base_scan`` static TF by ``sim_e2e.launch.py``), and this adds it to the
+        base_scan`` static TF by ``deploy_e2e.launch.py``), and this adds it to the
         base frame's own world z, so the cast follows the robot instead of
         sitting at a fixed world height — which also means a base that changes
         height (a ramp, a lift column) no longer casts through the floor.

@@ -80,7 +80,7 @@ def test_bh_deploy_sim_dry_run_openarm() -> None:
     assert "manifest.name=openarm_v2" in flat
     assert "hal_package=openral_hal_openarm" in flat
     assert "hal_node_name=openral_hal_openarm" in flat
-    assert "sim_e2e.launch.py" in flat
+    assert "deploy_e2e.launch.py" in flat
     assert "robots/openarm/robot.yaml" in flat
     # Envelope is synthesised at launch time from robot.yaml — never a file.
     assert "synthesised at launch time" in flat
@@ -139,7 +139,7 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     assert invocation.argv_template[_head : _head + 3] == [
         "launch",
         "openral_rskill_ros",
-        "sim_e2e.launch.py",
+        "deploy_e2e.launch.py",
     ]
     assert "envelope_file:=" not in joined  # no file path of any kind
     assert "HAL_PARAMS_FILE_PLACEHOLDER" in joined

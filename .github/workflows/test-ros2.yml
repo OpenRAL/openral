@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # `ros-base` omits these. octomap/octomap-msgs are octomap_bridge's build
-      # deps; octomap-server is what sim_e2e.launch.py spawns at runtime.
+      # deps; octomap-server is what deploy_e2e.launch.py spawns at runtime.
       # protobuf-{dev,compiler} are opentelemetry_cpp_vendor's — without them
       # its otel-cpp ExternalProject fails to configure, which has previously
       # been misread as a protobuf VERSION conflict. It is not: it is absence.

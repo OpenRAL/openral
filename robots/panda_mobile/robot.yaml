@@ -31,7 +31,7 @@ footprint_radius: 0.35
 footprint_polygon: [[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]
 base_kinematics: "omni"
 
-# robot_state_publisher wiring: sim_e2e.launch.py reads `assets.urdf.ref`
+# robot_state_publisher wiring: deploy_e2e.launch.py reads `assets.urdf.ref`
 # (`rd:panda_description`, resolved via `robot_descriptions` so we don't ship
 # the URDF into the repo), starts robot_state_publisher with it, then a
 # static_transform_publisher bridging base_link -> panda_link0. Once active,
@@ -437,7 +437,7 @@ sensors:
     # identical scan at 0.05/0.30/0.70 m — measured 344/360 hits, median 1.86 m
     # at all three), but anything between those heights (toe-kick, low shelf,
     # step, cable tray, pet) would map 0.40 m off. `static_transform_xyz_rpy`
-    # is now the single source of truth: `sim_e2e.launch.py` publishes it as
+    # is now the single source of truth: `deploy_e2e.launch.py` publishes it as
     # the base_link->base_scan static TF and the HAL adds it to the base's
     # world z, so ray and frame can't disagree.
     frame_id: "base_scan"

@@ -10,7 +10,7 @@ capsules.
 
 Before the fix, the function still returned the full param dict with
 ``self_collision_enabled: True`` and **empty** ``collision_capsule_*`` lists.
-``sim_e2e.launch.py`` forwards those as ROS parameters on the safety_kernel
+``deploy_e2e.launch.py`` forwards those as ROS parameters on the safety_kernel
 node, and ``launch_ros`` normalises an empty Python list to ``()`` —
 ``ensure_argument_type`` then rejects the whole launch with
 ``Expected 'value' to be one of [...], but got '()' of type tuple`` *before any

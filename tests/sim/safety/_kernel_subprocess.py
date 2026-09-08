@@ -101,7 +101,7 @@ def kernel_param_args_from_dict(params: dict[str, object]) -> list[str]:
 def kernel_param_args(robot_description: RobotDescription) -> list[str]:
     """Return the ``--ros-args -p key:=value`` argv list for the kernel.
 
-    Mirrors what ``sim_e2e.launch.py`` does in-process: synthesise the
+    Mirrors what ``deploy_e2e.launch.py`` does in-process: synthesise the
     envelope from the robot manifest, then emit each canonical field as
     a ROS parameter (PR-K). Callers extend the list with their
     own scalars (e.g. ``estop_reset_cooldown_s``).

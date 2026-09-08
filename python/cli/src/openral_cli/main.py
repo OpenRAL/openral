@@ -3944,7 +3944,7 @@ def deploy_run(
 
     Unlike `openral deploy sim`, this drives the **real** hardware HAL: it
     resolves the robot from `--config` (a DeployScene) and shells the SAME
-    `sim_e2e.launch.py` graph with `hal_mode:=real` — the HAL lifecycle node +
+    `deploy_e2e.launch.py` graph with `hal_mode:=real` — the HAL lifecycle node +
     C++ safety kernel + reasoner + world state (+ SLAM/Nav2 when the robot
     declares a lidar). The HAL's `connect()` fails loudly if no hardware is
     attached; a simulation-only robot raises ROSCapabilityMismatch (use

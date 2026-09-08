@@ -1103,7 +1103,7 @@ tuning knobs anywhere (community: "very difficult/impossible to tune" since
    describes it as the self-filter, which #144 corrected for the *depth* sensor but
    not for the lidar.
    *Depends on it:* `RobotDescription.lidar_sensor` → HAL `scan_*` params and
-   `sim_e2e.launch.py`. `panda_mobile_vslam` declares no 0.55 cutoff, so the change
+   `deploy_e2e.launch.py`. `panda_mobile_vslam` declares no 0.55 cutoff, so the change
    is one manifest line plus whatever pins it. *(round-3)* Note the same file
    contradicts itself: the `front_depth` block's comment (`robot.yaml:487–504`)
    explicitly says `range_min_m` is **not** the self-filter (identity-based

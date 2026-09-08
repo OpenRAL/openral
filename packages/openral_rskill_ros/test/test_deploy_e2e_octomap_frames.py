@@ -12,7 +12,7 @@ anywhere.
 Observed on hardware 2026-09-07: a ZED-M feeding `octomap_server` through a bimanual OpenArm
 deploy produced exactly that — a healthy dashboard with an empty POINTCLOUD card.
 
-Hermetic (no live ROS graph). Same import/skip pattern as ``test_sim_e2e_visual_slam``.
+Hermetic (no live ROS graph). Same import/skip pattern as ``test_deploy_e2e_visual_slam``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from types import ModuleType
 
 import pytest
 
-_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -35,7 +35,7 @@ def _import_launch_module() -> ModuleType:
     if not os.environ.get("ROS_DISTRO"):
         pytest.skip("ROS_DISTRO not set — launch_ros requires a sourced ROS 2 install.")
     spec = importlib.util.spec_from_file_location(
-        "openral_sim_e2e_octomap_under_test", _LAUNCH_FILE
+        "openral_deploy_e2e_octomap_under_test", _LAUNCH_FILE
     )
     if spec is None or spec.loader is None:
         pytest.fail(f"failed to build module spec for {_LAUNCH_FILE}")

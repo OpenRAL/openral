@@ -1,7 +1,7 @@
 # Default params for NVIDIA Isaac ROS Visual SLAM (cuVSLAM) under
 # `/openral/visual_slam` — camera-based SLAM for lidar-less robots.
 # `VisualSlamNode` is a composable node, not a lifecycle node: enabled by
-# composing it when `slam_backend:=visual` (sim_e2e.launch.py), not
+# composing it when `slam_backend:=visual` (deploy_e2e.launch.py), not
 # CONFIGURE/ACTIVATE by the Reasoner. Frame contract matches OpenRAL's
 # convention — fills the same `map→odom` TF edge slam_toolbox fills.
 # Only stable, documented params pinned; rest falls back to upstream

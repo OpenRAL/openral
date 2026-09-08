@@ -19,7 +19,7 @@ visual:  cameras (+ IMU) ───▶ cuVSLAM ───────▶ map → o
 
 `deploy_sim.py` resolves the backend (`lidar` wins when both flags are set — it
 needs no AI depth model) and forwards `slam_backend:=lidar|visual|none`;
-`sim_e2e.launch.py` composes the matching nodes when `enable_slam` is true.
+`deploy_e2e.launch.py` composes the matching nodes when `enable_slam` is true.
 
 ## Run
 
@@ -43,7 +43,7 @@ ros2 launch openral_slam_bringup nvblox.launch.py robot_yaml:=/abs/path/to/robot
 Every collision volume the manifest declares must be placeable relative to
 `base_frame` — through the `joints` chain, through `fixed_attachments`, or
 through the `assets.urdf.root_frame` + `base_to_root_xyz_rpy` bridge that
-`sim_e2e.launch.py` publishes as a static TF (this is how UR manifests reach
+`deploy_e2e.launch.py` publishes as a static TF (this is how UR manifests reach
 their upstream `base_link` root, which no movable joint has as a child).
 
 `joints` lists only *movable* joints, so a rigidly mounted link (the Franka's
@@ -135,12 +135,12 @@ runtime:
 ```
 
 `deploy_sim.py` forwards these as `slam_visual_impl:=` / `slam_stereo_cameras:=`,
-and `sim_e2e.launch.py` composes the matching launch file with the rig's topics
+and `deploy_e2e.launch.py` composes the matching launch file with the rig's topics
 remapped onto that impl's camera args (Isaac ROS `image_0/1_topic`, PyCuVSLAM
 `left/right_image_topic`). Omitting `slam_stereo_cameras` keeps the impl's
 default `left`/`right` topics.
 
-**Multi-camera mode (sim rigs).** For pycuvslam, `sim_e2e.launch.py` also passes
+**Multi-camera mode (sim rigs).** For pycuvslam, `deploy_e2e.launch.py` also passes
 `robot_yaml`, so `pycuvslam_node.py` derives the rig frame from the manifest
 `base_frame` and reads each camera's `rig_from_camera` extrinsic from TF — cuVSLAM's
 default multi-camera mode. This handles arbitrary base-mounted rigs (e.g. a

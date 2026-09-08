@@ -96,6 +96,6 @@ def test_frame_id_constants_match_research_doc() -> None:
     # The scan has its OWN frame (not shared with base_link): the lidar fan casts
     # 0.30 m above the floor vs. base_link's 0.700 m platform height, a 0.40 m
     # offset the manifest carries in `static_transform_xyz_rpy`, published as
-    # `base_link -> base_scan` by `sim_e2e.launch.py`. Measured: base_link ->
+    # `base_link -> base_scan` by `deploy_e2e.launch.py`. Measured: base_link ->
     # base_scan z = -0.400, odom -> base_scan z = 0.300.
     assert PANDA_MOBILE_SCAN_FRAME_ID == "base_scan"

@@ -1,12 +1,12 @@
 """Regression test: ``--no-dashboard`` skips OTLP endpoint forwarding.
 
-Asserts ``sim_e2e.launch.compose_runtime_graph`` builds every spawned node's
+Asserts ``deploy_e2e.launch.compose_runtime_graph`` builds every spawned node's
 ``additional_env`` WITHOUT ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_PROTOCOL``
 when ``enable_dashboard=false``, WITH them when ``true``.
 
 Why: ``configure_observability`` (``_sdk.py:145``) no-ops with no endpoint set; with one set,
 every node installs exporters that retry against it at SIGINT shutdown. Before the guard at
-``sim_e2e.launch.py:433-454``, ``--no-dashboard`` still pointed nodes at
+``deploy_e2e.launch.py:433-454``, ``--no-dashboard`` still pointed nodes at
 ``http://127.0.0.1:<dashboard_port>`` with nothing listening, so teardown blocked ~30s per
 node — stalling CI and ``tools/audit_sim_configs.py``, surfacing as the audit's
 ``fail-timeout`` (exit -9, SIGKILL'd after ``shutdown-grace``) on otherwise-healthy launches.
@@ -50,7 +50,7 @@ pytestmark = pytest.mark.skipif(
 
 # parents[3]: test/ → openral_rskill_ros/ → packages/ → <repo-root>
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 # openarm is a fixed-base arm with no opt-in extras (no SLAM/Nav2/octomap),
 # so the graph it produces is the minimal "kernel + reasoner + prompt_router
 # + hal + runtime" set — exactly the surface area we want to audit.

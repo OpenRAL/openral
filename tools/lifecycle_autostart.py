@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive a ROS 2 LifecycleNode through CONFIGURE → ACTIVATE with retries.
 
-Used by ``packages/openral_rskill_ros/launch/sim_e2e.launch.py`` to
+Used by ``packages/openral_rskill_ros/launch/deploy_e2e.launch.py`` to
 auto-activate ``/openral_slam_toolbox``, not via ``ros2 lifecycle set``:
 
 1. Discovery race: a robocasa-kitchen first boot can spend ~30s importing
