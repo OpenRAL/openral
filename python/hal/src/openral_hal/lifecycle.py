@@ -1539,10 +1539,15 @@ if _ROS2_AVAILABLE:
             per-robot code. The serial arms (SO-100/SO-101) own their bus and
             are correctly skipped by the isinstance check.
             """
-            from openral_hal.ros_control import RosControlHAL
+            from openral_hal.ros_control_transport import RosControlDrivable
 
+            # Structural, not by ancestry: any HAL exposing the four members of
+            # `RosControlDrivable` gets wired. Gating on `isinstance(...,
+            # RosControlHAL)` would skip a ros2_control robot that reimplements
+            # the same fan-out on `HALBase` instead of inheriting — which the
+            # repo already contains — leaving it with no transport and no error.
             hal = self._hal
-            if not isinstance(hal, RosControlHAL):
+            if not isinstance(hal, RosControlDrivable):
                 return
             hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
             if hal_mode != "real":
