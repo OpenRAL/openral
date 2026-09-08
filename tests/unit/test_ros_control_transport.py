@@ -305,3 +305,74 @@ def test_attach_transport_rejects_a_value_where_a_clock_was_expected() -> None:
     hal = _hal()
     with pytest.raises(ROSConfigError, match="callable"):
         hal.attach_transport(lambda t, m: None, lambda: {}, 123.4)  # type: ignore[arg-type]  # reason: the mistake under test
+
+
+# ── Who gets a transport, and what happens to a payload it can't express ──────
+
+
+def test_membership_is_structural_not_by_ancestry() -> None:
+    """The lifecycle node gates on this Protocol, so its shape decides who gets wired.
+
+    Gating on `isinstance(hal, RosControlHAL)` instead would skip a ros2_control robot that
+    reimplements the same fan-out on `HALBase` rather than inheriting it — `AlohaHAL` does
+    exactly that today — leaving it with no transport and no error to say so.
+    """
+    from openral_hal.openarm_real import OpenArmRealHAL
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    assert isinstance(_hal(), RosControlDrivable)
+    assert isinstance(OpenArmRealHAL(require_can_links=False), RosControlDrivable)
+
+    class OptsInWithoutInheriting:
+        """Any HAL that grows the four members qualifies, whatever its base class."""
+
+        def command_topics(self) -> list[str]:
+            return ["/c/joint_trajectory"]
+
+        def ros2_control_joint_names(self) -> list[str]:
+            return ["j0"]
+
+        @property
+        def joint_state_topic(self) -> str:
+            return "/joint_states"
+
+        def attach_transport(self, publish_fn, state_fn, stamp_fn=None) -> None:  # type: ignore[no-untyped-def]  # reason: structural stand-in
+            return None
+
+    assert isinstance(OptsInWithoutInheriting(), RosControlDrivable)
+
+
+def test_a_hal_missing_the_surface_is_not_drivable() -> None:
+    """The serial arms own their own bus and must not be handed a ros2_control transport."""
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    class SerialArm:
+        pass
+
+    assert not isinstance(SerialArm(), RosControlDrivable)
+
+
+@requires_rclpy
+def test_an_unexpressible_payload_raises_instead_of_vanishing() -> None:
+    """A command shape this transport cannot publish must not be dropped quietly.
+
+    `AlohaHAL` sends its grippers `{"position": float}` rather than `joint_targets`. Skipping
+    that at runtime would be a silent no-op on the actuation path — the failure this whole
+    transport exists to end — so it raises and names the keys instead.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.node import Node
+
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_unexpressible", context=ctx)
+    try:
+        tr = RosControlTransport(node, command_topics=["/g/command"], joint_names=["g0"])
+        with pytest.raises(ROSConfigError, match="cannot express"):
+            tr.publish("/g/command", {"position": 0.5, "stamp_ns": 0})
+        # An empty chunk is a different thing: the HAL had nothing to send.
+        tr.publish("/g/command", {"joint_targets": [], "joint_names": ["g0"]})
+    finally:
+        node.destroy_node()
+        ctx.shutdown()

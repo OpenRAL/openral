@@ -577,13 +577,14 @@ _RosControlHAL — `ros2_control`-backed HAL adapter._
 ### `python/hal/src/openral_hal/ros_control_transport.py`
 _Production `rclpy` transport shared by every real `RosControlHAL` robot._
 
-- `class RosControlTransport` — Bridges one `RosControlHAL` to live ros2_control topics. Built only from what the HAL reports about itself (`command_topics()`, `ros2_control_joint_names()`, `joint_state_topic`), so a one-controller UR and the four-controller bimanual OpenArm are one code path and a new robot needs no transport code. Wired automatically by the lifecycle node under `hal_mode:=real`. **Reuse watch:** the canonical real-HW ros2_control bridge — do not hand-roll publishers in a per-robot HAL. (L58)
-  - `__init__(node, *, command_topics, joint_names, joint_state_topic='/joint_states')` — Refuses an empty topic or joint list. (L75)
-  - `publish(topic, msg) -> None` — One command dict → `JointTrajectory` on that controller. Publishes the chunk's final step only (a point is an absolute target the controller interpolates toward). Raises on a topic the HAL never declared. (L143)
-  - `state() -> dict[str, object]` — Newest joint state projected onto the HAL's joint order; merged **by name, never index**, since split controllers publish independently. (L206)
-  - `last_arrival() -> float` — `time.monotonic()` of the newest message; 0.0 before the first. Feeds `RosControlHAL.attach_transport(stamp_fn=...)`. (L227)
-  - `seen_joints() -> set[str]` (L233)
-  - `missing_joints() -> list[str]` (L237)
+- `class RosControlDrivable(Protocol)` — **runtime-checkable**, structural: what a HAL must expose to be driven by `RosControlTransport` (`command_topics`, `ros2_control_joint_names`, `joint_state_topic`, `attach_transport`). The lifecycle node's wiring gates on *this*, not on `isinstance(hal, RosControlHAL)`, so a ros2_control robot that reimplements the fan-out on `HALBase` rather than inheriting (`AlohaHAL` does) can opt in by shape instead of being silently skipped. Non-method member (`joint_state_topic` is a property) so `isinstance` works but `issubclass` raises — gate with `isinstance`. (L49)
+- `class RosControlTransport` — Bridges one `RosControlHAL` to live ros2_control topics. Built only from what the HAL reports about itself (`command_topics()`, `ros2_control_joint_names()`, `joint_state_topic`), so a one-controller UR and the four-controller bimanual OpenArm are one code path and a new robot needs no transport code. Wired automatically by the lifecycle node under `hal_mode:=real`. **Reuse watch:** the canonical real-HW ros2_control bridge — do not hand-roll publishers in a per-robot HAL. (L99)
+  - `__init__(node, *, command_topics, joint_names, joint_state_topic='/joint_states')` — Refuses an empty topic or joint list. (L116)
+  - `publish(topic, msg) -> None` — One command dict → `JointTrajectory` on that controller. Publishes the chunk's final step only (a point is an absolute target the controller interpolates toward). Raises on a topic the HAL never declared, **and on a payload it cannot express** (no `joint_targets` key — e.g. Aloha's `{"position": …}` gripper command): dropping that quietly would be a silent no-op on the actuation path. An empty `joint_targets` list is the distinct, benign "nothing to send this tick". (L185)
+  - `state() -> dict[str, object]` — Newest joint state projected onto the HAL's joint order; merged **by name, never index**, since split controllers publish independently. (L263)
+  - `last_arrival() -> float` — `time.monotonic()` of the newest message; 0.0 before the first. Feeds `RosControlHAL.attach_transport(stamp_fn=...)`. (L284)
+  - `seen_joints() -> set[str]` (L290)
+  - `missing_joints() -> list[str]` (L294)
   - private: `_time_from_start_s`, `_on_joint_state`
 
 ### `python/hal/src/openral_hal/sim_transport.py`

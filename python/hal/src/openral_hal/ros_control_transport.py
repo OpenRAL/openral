@@ -34,14 +34,55 @@ since `connect()`.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
     from rclpy.node import Node
 
-__all__ = ["RosControlTransport"]
+__all__ = ["RosControlDrivable", "RosControlTransport"]
+
+
+@runtime_checkable
+class RosControlDrivable(Protocol):
+    """What a HAL must expose to be driven by `RosControlTransport`.
+
+    Membership is **structural, not by ancestry**. `RosControlHAL` and its
+    subclasses satisfy it, but so does any other HAL that grows these four
+    members — which matters because the repo already has a real ros2_control
+    robot that is not a `RosControlHAL` subclass (`AlohaHAL`, which reimplements
+    the same fan-out on `HALBase`). Gating the lifecycle node's wiring on
+    inheritance would silently leave such a robot with no transport at all,
+    which is the failure this whole surface exists to prevent.
+
+    A HAL opts in by answering these; the base class answers all four, so for
+    most robots that is automatic.
+    """
+
+    def command_topics(self) -> list[str]:
+        """Controller topics this HAL publishes to; one publisher per entry."""
+        ...
+
+    def ros2_control_joint_names(self) -> list[str]:
+        """Joint names in ros2_control's namespace, in action-vector order."""
+        ...
+
+    @property
+    def joint_state_topic(self) -> str:
+        """Aggregated ``sensor_msgs/JointState`` topic to read."""
+        ...
+
+    def attach_transport(
+        self,
+        publish_fn: Callable[[str, dict[str, object]], None],
+        state_fn: Callable[[], dict[str, object]],
+        stamp_fn: Callable[[], float] | None = None,
+    ) -> None:
+        """Bind the live transport's callables to this HAL."""
+        ...
+
 
 log = structlog.get_logger(__name__)
 
@@ -81,8 +122,9 @@ class RosControlTransport:
         joint_state_topic: str = "/joint_states",
     ) -> None:
         """Create one publisher per command topic and subscribe to the state topic."""
-        # install (unit tests, docs builds, CI lanes with no rclpy), so every ROS symbol is
-        # imported at call time rather than module scope.
+        # `openral_hal` must import without a ROS 2 install (unit tests, docs
+        # builds, CI lanes with no rclpy), so every ROS symbol below is imported
+        # at call time rather than at module scope — hence the PLC0415 waivers.
         from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
 
         if not command_topics:
@@ -157,8 +199,9 @@ class RosControlTransport:
             msg: The HAL's command dict.
 
         Raises:
-            ROSConfigError: The topic is not one this transport owns — contract
-                drift between HAL and transport, which must be loud.
+            ROSConfigError: The topic is not one this transport owns, or the
+                payload is a shape this transport cannot express — both are
+                contract drift between HAL and transport, which must be loud.
         """
         from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
 
@@ -170,8 +213,22 @@ class RosControlTransport:
                 f"Declared: {sorted(self._pubs)}"
             )
 
+        # A payload this transport cannot express must be loud. Returning
+        # quietly would drop a command on the actuation path with nothing above
+        # debug in the logs — the exact silent no-op this transport exists to
+        # end. A HAL whose controllers take something else (a scalar gripper
+        # position, say) needs that message type implemented here, not skipped
+        # at runtime.
+        if "joint_targets" not in msg:
+            raise ROSConfigError(
+                f"RosControlTransport cannot express the command {sorted(msg)} sent to "
+                f"{topic!r}: it publishes trajectory_msgs/JointTrajectory and so requires "
+                "'joint_targets'. Teach this transport that controller's message type "
+                "rather than letting the command be dropped."
+            )
         targets = msg.get("joint_targets")
         if not isinstance(targets, list) or not targets:
+            # Distinct from the above: the HAL had nothing to send this tick.
             log.debug("hal.transport.empty_command", topic=topic)
             return
         raw_names = msg.get("joint_names")
