@@ -257,13 +257,28 @@ the two clear start-state stops sit at +23.13 mm and +22.01 mm, beyond what even
 competing: ADR-0101 removes the voxel term entirely for the fixtures it models,
 and this shrinks it for everything else.
 
-**The honest limit of this measurement.** It measures the kernel *consuming* a
-grid, not the bridge *producing* one. `packages/openral_octomap_bridge`'s
-octree→grid conversion at a finer tree resolution is unmeasured, and octomap's
-own resolution would have to change with it; the 0.63 MB message also crosses
-DDS every cycle (that part *is* in the round trip above). It is also one pose in
-one layout — the window is sized by where the links are. Before shipping a
-resolution change, the bridge side needs its own measurement.
+**The limits this measurement had, and what closed them (2026-09-08).** It
+measured the kernel *consuming* a grid, and named two terms it could not see.
+Both are now measured:
+
+* **the bridge producing one** —
+  `test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`: **1.60 ms**
+  at 15 mm against a 100 ms publish period, from 0.88 ms at 25 mm. Nearly flat,
+  because the marking loop iterates occupied leaves, a *surface*. 12.5 mm is
+  refused outright by the bridge's own `kMaxCells = 4 000 000` guard;
+* **the message on the wire** — `tools/voxel_transport_probe.py`: nothing
+  dropped and the rate held at every size, but publish→receive latency triples,
+  p99 **19-23 ms → 68-83 ms**. That is map staleness, and it is the term that
+  bites.
+
+The staleness is settled against measured arm speed rather than assumed:
+carry-phase stops run 0.051 m/s median and 0.265 m/s max, start-state stops
+exactly 0, so the trade is **net positive in three of four corners** and free for
+the whole start-state class (`tools/stop_ee_speed.py`).
+
+It remains one pose in one layout — the window is sized by where the links are —
+and the carry-phase speeds come from n=5 stops of *this* policy. Those are the
+two limits that stand.
 
 Reproduce with the shipped test:
 
