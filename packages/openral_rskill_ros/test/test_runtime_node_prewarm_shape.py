@@ -1,26 +1,19 @@
 """runtime_node VLA pre-warm ordering contract — structural regression guard.
 
-``_prewarm_vla_imports()`` imports ``torch`` + ``lerobot.policies.factory``
-while the process is still single-threaded. The *ordering* is the entire
-fix, not the import itself: ``transformers``' import runs
-``importlib.metadata.packages_distributions()``, which does a ``stat()``
-per file of every installed distribution, and every ``stat`` releases the
-GIL for a 30 fps camera reader thread to snatch. Measured live on the
-SO-101 bench, the identical import chain takes
+``_prewarm_vla_imports()`` imports ``torch`` + ``lerobot.policies.factory`` while the
+process is still single-threaded. The *ordering* is the entire fix: ``transformers``'
+import runs ``importlib.metadata.packages_distributions()``, doing a ``stat()`` per file of
+every installed distribution, and every ``stat`` releases the GIL for a 30 fps camera reader
+thread to snatch. Measured on the SO-101 bench: 23 s in a quiet process vs 8+ minutes (never
+finished) with two readers up.
 
-* 23 s in a quiet process, and
-* 8+ minutes (never finished) once two readers are up.
+The convoy is on GIL *re-acquisition after a syscall*, so neither ``UV_COMPILE_BYTECODE=1``
+nor ``phase_timer``'s raised switch interval rescues it — running before any reader thread
+exists is the only fix. A refactor moving the pre-warm below ``open_deploy_sensor_readers``
+would silently reinstate the 8-minute stall, discoverable only on real hardware.
 
-The convoy is on GIL *re-acquisition after a syscall*, so neither
-``UV_COMPILE_BYTECODE=1`` nor ``phase_timer``'s raised switch interval
-rescues it — running before any reader thread exists is the only fix that
-works. A refactor that moves the pre-warm below
-``open_deploy_sensor_readers`` silently reinstates the 8-minute stall, and
-it would do so only on real hardware, where it is most expensive to
-discover.
-
-Same static-shape approach as ``test_runtime_node_sigint_shape.py``: parse
-the script and assert the contract, so the guard needs no ROS graph.
+Same static-shape approach as ``test_runtime_node_sigint_shape.py``: parses the script and
+asserts the contract, no ROS graph needed.
 """
 
 from __future__ import annotations

@@ -38,14 +38,12 @@ HZ-0096-1 mitigation 2, failing toward "assume unsafe".
 
 ### The seam is read from every blocking wait, not just the apply-wait
 
-`ROSPublishingHAL`'s apply-wait is only entered by an action with
-`tick_group_size > 1`. A single-surface policy — SmolVLA, ACT, diffusion,
-i.e. most of them — emits one `Action` per tick, so `send_action`
-published and returned without ever consulting the seam, and a latched
-or dead safety layer stayed invisible until the execution budget lapsed
-and the goal aborted as `deadline_exceeded` / `FAILURE_DEADLINE_MISSED`.
-The reasoner's ladder then read "too slow" and retried the same skill
-into the same stopped safety layer.
+`ROSPublishingHAL`'s apply-wait is only entered by an action with `tick_group_size > 1`. A
+single-surface policy (SmolVLA, ACT, diffusion — most of them) emits one `Action` per tick,
+so `send_action` published and returned without consulting the seam, leaving a latched or
+dead safety layer invisible until the execution budget lapsed and the goal aborted as
+`deadline_exceeded` / `FAILURE_DEADLINE_MISSED` — the reasoner's ladder then read "too slow"
+and retried the same skill into the same stopped safety layer.
 
 `_raise_if_safety_aborted(where)` is now the one guard every blocking
 wait on the dispatch path calls, all of them reading the same
@@ -67,19 +65,16 @@ Note the MoveIt approach in particular: `ROSEStopRequested` is a
 `FAILURE_PLANNING_ERROR` — the ladder replanning around an "unreachable"
 pose while the kernel was in fact latched.
 
-**Not instrumented, deliberately.** The `ResetToPose` service call's 1 s
-discovery wait and 5 s response wait: no in-tree HAL withholds a
-`ResetToPose` response while latched (`ManifestHALLifecycleNode` answers
-it regardless), so nothing in this repo can starve them, and the abort
-surfaces one bounded step later at the post-reset joint-state wait.
-`_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period
-sleep wait on the clock, not on the safety layer. `ROSActionRskill.
-_poll_future` (a wrapped `ros_action`/`ros_service` skill blocking on its
-server's result — Nav2 will never arrive if the robot cannot move) **can**
-be starved, but instrumenting it needs a new injected seam across the
-rSkill layer boundary and a live surface with a real wrapped action
-server; the per-waypoint guard above bounds the exposure to one blocking
-`step()`.
+**Not instrumented, deliberately.** The `ResetToPose` service call's 1 s discovery wait and
+5 s response wait: no in-tree HAL withholds a `ResetToPose` response while latched
+(`ManifestHALLifecycleNode` answers regardless), so nothing here can starve them, and the
+abort surfaces one bounded step later at the post-reset joint-state wait.
+`_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
+clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
+`ros_service` skill blocking on its server's result — Nav2 will never arrive if the robot
+can't move) **can** be starved, but instrumenting it needs a new injected seam across the
+rSkill layer boundary plus a real wrapped action server; the per-waypoint guard above bounds
+the exposure to one blocking `step()`.
 
 ## Composition (one shared `WorldStateAggregator`)
 

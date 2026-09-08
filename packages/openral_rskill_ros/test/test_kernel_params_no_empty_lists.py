@@ -1,33 +1,24 @@
 """Regression test: ``sim_e2e.launch.py`` produces no empty-list ROS params.
 
-Asserts that :func:`sim_e2e.launch.compose_runtime_graph` builds the
-``openral_safety_kernel`` LifecycleNode's parameter dict with NO empty
-list (or empty tuple) values for any robot in the in-tree catalogue.
+Asserts :func:`sim_e2e.launch.compose_runtime_graph` builds the ``openral_safety_kernel``
+LifecycleNode's parameter dict with NO empty list/tuple values, for every robot in the
+in-tree catalogue.
 
-Why this matters: ``launch_ros.utilities.evaluate_parameters`` collapses
-an empty Python list to ``()`` and falls through to
-``ensure_argument_type(value, (float, int, str, bool, bytes), 'value')``,
-which raises::
+Why: ``launch_ros.utilities.evaluate_parameters`` collapses an empty Python list to ``()``
+and falls through to ``ensure_argument_type``, which raises::
 
     Expected 'value' to be one of [<class 'float'>, <class 'int'>, ...],
     but got '()' of type '<class 'tuple'>'
 
-That error fires at launch-time, **before any node logs**, so it
-manifests as an opaque "deploy sim crashed instantly" with no traceback
-visible without ``ros2 launch --debug``. The historical incident:
-``e591374`` (extending geometric collision checking to every control mode)
-added ``collision_base_dofs`` as an
-unconditional ROS param; the list is empty for every fixed-base arm
-(openarm, so101, franka_panda, ur5e, ur10e, sawyer, rizon4, …), which
-broke ``openral deploy sim`` for the majority of in-tree robots until
-the omit-when-empty guard at ``sim_e2e.launch.py:397`` was added.
+before any node logs — an opaque "deploy sim crashed instantly" with no traceback without
+``ros2 launch --debug``. Historical incident: ``e591374`` added ``collision_base_dofs`` as an
+unconditional param, empty for every fixed-base arm (openarm, so101, franka_panda, ur5e,
+ur10e, sawyer, rizon4, …) — broke deploy sim for most in-tree robots until the
+omit-when-empty guard at ``sim_e2e.launch.py:397``.
 
-Per CLAUDE.md §1.11: no mocks. Real
-:class:`openral_core.RobotDescription` loaded from a real
-``robots/<robot>/robot.yaml``; real ``LaunchContext`` exercising the
-real ``compose_runtime_graph`` opaque function; real
-``launch_ros.utilities.evaluate_parameters`` so the assertion exercises
-the exact code path ``ros2 launch`` would.
+Per CLAUDE.md §1.11: no mocks — real ``RobotDescription`` (``robots/<robot>/robot.yaml``),
+real ``LaunchContext``/``compose_runtime_graph``, real ``evaluate_parameters`` (exact
+``ros2 launch`` code path).
 
 Run::
 

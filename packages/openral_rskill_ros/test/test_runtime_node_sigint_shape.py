@@ -1,32 +1,23 @@
 """runtime_node SIGINT teardown contract — structural regression guard.
 
-ROS 2 Jazzy installs a SIGINT signal handler in :func:`rclpy.init` that:
-
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :py:meth:`Executor.spin`.
-
-Before this guard, ``runtime_node`` wrapped ``executor.spin()`` in a
-bare ``try/finally`` and called plain ``rclpy.shutdown()`` in the
-``finally`` block. On every SIGINT the finally then crashed with::
+ROS 2 Jazzy's :func:`rclpy.init` SIGINT handler shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of :py:meth:`Executor.spin`. Before this guard, ``runtime_node``
+wrapped ``executor.spin()`` in a bare ``try/finally`` calling plain ``rclpy.shutdown()`` in
+``finally``, so every SIGINT crashed with::
 
     rclpy._rclpy_pybind11.RCLError: failed to shutdown:
     rcl_shutdown already called on the given context
 
-which (a) replaced the ``KeyboardInterrupt`` with a confusing traceback
-in stderr and (b) caused the launch parent's wait-for-children to drag
-out for the full ``shutdown_grace_s`` window before SIGKILL — the exact
-symptom that surfaced as ``fail-timeout`` rows in
-``tools/audit_sim_configs.py`` after the OTLP `--no-dashboard` fix
-landed (see ``outputs/audit_deploy_postfix3.json``).
+— replacing ``KeyboardInterrupt`` with a confusing stderr traceback and dragging the launch
+parent's wait-for-children out to the full ``shutdown_grace_s`` before SIGKILL: the
+``fail-timeout`` rows ``tools/audit_sim_configs.py`` showed after the OTLP `--no-dashboard`
+fix landed (``outputs/audit_deploy_postfix3.json``).
 
-This test is the structural counterpart to the behavioural audit: it
-parses ``runtime_node`` as Python and asserts the *shape* of the
-SIGINT-handling contract, so a future refactor can't silently revert
-to the broken pattern.
+Structural counterpart to that behavioural audit: parses ``runtime_node`` as Python and
+asserts the SIGINT-handling contract's *shape*, so a refactor can't silently revert it.
 
-The empirical validation lives in
-``just sim-audit --deploy-alive-grace 10 --deploy-shutdown-grace 5``
-on a real deploy scene — see this PR's description.
+Empirically validated by ``just sim-audit --deploy-alive-grace 10 --deploy-shutdown-grace 5``
+on a real deploy scene.
 """
 
 from __future__ import annotations

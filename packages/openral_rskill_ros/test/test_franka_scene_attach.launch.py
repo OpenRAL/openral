@@ -1,8 +1,7 @@
 """Integration test: franka manifest-driven HAL, scene-attached, publishes over ROS.
 
-Exercises deploy-sim scene-attach end-to-end at the ROS level — :class:`_ManifestHALLifecycleNode`
-is driven through ``configure → activate``, attaches to a real MuJoCo scene, and
-the test asserts:
+Exercises deploy-sim scene-attach end-to-end at the ROS level: :class:`_ManifestHALLifecycleNode`
+is driven through ``configure → activate``, attaches to a real MuJoCo scene, and asserts:
 
 * ``/joint_states`` carries a :class:`sensor_msgs/JointState` with
   ``len(position) == 8`` (7 panda arm joints + 1 gripper) within a timeout —

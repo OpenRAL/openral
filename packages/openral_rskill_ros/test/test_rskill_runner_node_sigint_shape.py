@@ -1,27 +1,21 @@
 """rskill_runner_node SIGINT teardown contract — structural guard.
 
-Mirrors ``packages/openral_rskill_ros/test/test_runtime_node_sigint_shape.py``
-(landed in caae96f) and the reasoner guard from abd594f. ROS 2 Jazzy installs
-a SIGINT signal handler in :func:`rclpy.init` that:
+Mirrors ``test_runtime_node_sigint_shape.py`` (landed in caae96f) and the reasoner guard
+from abd594f. ROS 2 Jazzy's :func:`rclpy.init` SIGINT handler shuts down the rclpy context
+and raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
 
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
-
-Before this guard, ``rskill_runner_node.main`` wrapped ``rclpy.spin(node)`` in
-a bare ``try/finally`` and called plain ``rclpy.shutdown()`` in the finally. On
-every operator Ctrl-C during ``openral deploy sim`` that finally then crashed
-with::
+Before this guard, ``rskill_runner_node.main`` wrapped ``rclpy.spin(node)`` in a bare
+``try/finally`` calling plain ``rclpy.shutdown()`` in ``finally``, so every operator Ctrl-C
+during ``openral deploy sim`` crashed with::
 
     rclpy._rclpy_pybind11.RCLError: failed to shutdown:
     rcl_shutdown already called on the given context
 
-which (a) replaced the ``KeyboardInterrupt`` with a confusing traceback and
-(b) stalled the launch shutdown supervisor past the grace window, forcing a
-SIGKILL of the deploy graph.
+— replacing ``KeyboardInterrupt`` with a confusing traceback and stalling the launch
+shutdown supervisor past the grace window, forcing a SIGKILL of the deploy graph.
 
-This test parses ``rskill_runner_node.py`` as Python and asserts the *shape*
-of the SIGINT-handling contract so a future refactor can't silently revert to
-the broken pattern.
+Parses ``rskill_runner_node.py`` as Python and asserts the SIGINT-handling contract's
+*shape*, so a refactor can't silently revert it.
 """
 
 from __future__ import annotations

@@ -1,43 +1,31 @@
 #!/usr/bin/env python3
 """F1 — `rskill_runner_node` lifecycle node.
 
-Owns the ``openral_msgs/action/ExecuteRskill`` action server and the
-in-process :class:`openral_runner.DeployRunner` mandated by the F1
-design. One node per robot.
+Owns the ``openral_msgs/action/ExecuteRskill`` action server and the in-process
+:class:`openral_runner.DeployRunner` mandated by the F1 design. One node per robot.
 
 Action-goal lifecycle (CLAUDE.md §6.4 + the F1 design):
 
-1. **goal_accept_cb** — resolve the rskill against a callable resolver
-   passed at construction time (defaults to
-   :func:`openral_rskill.rSkill.from_pretrained`); license + capability
-   gate; envelope gate against the configured ``RobotDescription``.
-   Reject with :class:`ROSCapabilityMismatch` /
-   :class:`ROSConfigError` (CLAUDE.md §10) surfaced as
-   ``ExecuteRskill.Result(success=False, failure_reason=<typed>,
-   failure_kind=<uint8>)``. Every failure branch stamps BOTH: the prose
-   for the operator, the uint8 for the reasoner's replanning ladder
+1. **goal_accept_cb** — resolve the rskill via a callable resolver (default
+   :func:`openral_rskill.rSkill.from_pretrained`); license + capability gate; envelope gate
+   against the configured ``RobotDescription``. Rejects (:class:`ROSCapabilityMismatch` /
+   :class:`ROSConfigError`, CLAUDE.md §10) stamp both the prose ``failure_reason`` and the
+   uint8 ``failure_kind`` for the reasoner's replanning ladder
    (:func:`_failure_kind_for_exception` maps the §5 hierarchy).
-2. **execute_cb** — instantiate / reuse a
-   :class:`openral_runner.DeployRunner` with the
+2. **execute_cb** — instantiate/reuse a :class:`openral_runner.DeployRunner` with the
    :class:`openral_runner.ROSPublishingHAL` sink and the shared
-   :class:`openral_world_state.WorldStateAggregator`; run until the
-   rskill signals completion or the goal's ``deadline_s`` lapses.
-3. **cancel_cb** — drain the in-flight chunk (≤100 ms), then idle-hold
-   the last commanded joint state. Runner stays ``active``, ready for
-   the next goal.
-4. **/openral/estop + /openral/safety_status subscriptions** — defense in
-   depth alongside ``safety_node`` (CLAUDE.md §1.5). Aborts the goal with
-   ``failure_reason="safety_estop"`` / ``failure_kind=FAILURE_SAFETY_ESTOP``
-   and transitions to ``inactive``. The two are OR-ed into one seam,
-   :meth:`RskillRunnerNode._safety_abort_reason`, which is read both by the
-   ``ROSPublishingHAL`` apply-wait (via its injected ``safety_abort_getter``)
-   and — through :meth:`RskillRunnerNode._raise_if_safety_aborted` — by every
-   other blocking wait on the dispatch path, so a latched safety layer is
-   never reported as a generic timeout.
+   :class:`openral_world_state.WorldStateAggregator`; run until completion or ``deadline_s``.
+3. **cancel_cb** — drain the in-flight chunk (≤100 ms), then idle-hold the last commanded
+   joint state. Runner stays ``active``, ready for the next goal.
+4. **/openral/estop + /openral/safety_status subscriptions** — defense in depth alongside
+   ``safety_node`` (CLAUDE.md §1.5); aborts with ``failure_reason="safety_estop"`` /
+   ``failure_kind=FAILURE_SAFETY_ESTOP`` and transitions to ``inactive``. OR-ed into one seam,
+   :meth:`RskillRunnerNode._safety_abort_reason`, read by the ``ROSPublishingHAL`` apply-wait
+   and (via :meth:`RskillRunnerNode._raise_if_safety_aborted`) every other blocking wait on the
+   dispatch path, so a latched safety layer is never reported as a generic timeout.
 
-The action-goal path is the **only** way an external client triggers a
-rskill; the legacy CLI / single-process invocation continues to exist as
-a thin wrapper that sends a goal to this server.
+The action-goal path is the only way an external client triggers a rskill; the legacy CLI /
+single-process invocation is a thin wrapper that sends a goal to this server.
 """
 
 from __future__ import annotations
@@ -119,9 +107,8 @@ _SAFETY_STATUS_LIVENESS_S = 3.0
 def _drop_reason_label(code: int, status_cls: Any) -> str:  # reason: ROS message class is untyped
     """Name a ``SafetyStatus.drop_reason`` value from the IDL's own constants.
 
-    Reverse-maps the value against the ``KIND_*`` / ``DROP_*`` constants the
-    generated message class carries, so a new constant in
-    ``SafetyStatus.msg`` is named here without a second table to keep in sync.
+    Reverse-maps against the generated message class's ``KIND_*`` / ``DROP_*`` constants, so a
+    new constant in ``SafetyStatus.msg`` is named here without a second table to keep in sync.
 
     Args:
         code: The ``drop_reason`` value received on the wire.
@@ -168,23 +155,20 @@ def _commercial_deployment() -> bool:
 def _failure_kind_for_exception(exc: BaseException) -> int:
     """Map a caught exception onto an ``ExecuteRskill.Result.failure_kind``.
 
-    The uint8 constants mirror the CLAUDE.md §5 exception hierarchy one-for-one,
-    so the reasoner's replanning ladder classifies on a typed field instead of
-    substring-matching the ``failure_reason`` prose. Most-specific-first, since
-    the §5 tree is nested (``ROSEStopRequested`` is a ``ROSSafetyViolation``,
-    ``ROSGPUMemoryError`` is a ``ROSRuntimeError``, ``ROSObjectNotInMemory`` is a
-    ``ROSPerceptionStale``).
+    The uint8 constants mirror the CLAUDE.md §5 exception hierarchy one-for-one, so the
+    reasoner's replanning ladder classifies on a typed field instead of substring-matching
+    ``failure_reason`` prose. Most-specific-first, since the §5 tree is nested
+    (``ROSEStopRequested`` is a ``ROSSafetyViolation``, ``ROSGPUMemoryError`` is a
+    ``ROSRuntimeError``, ``ROSObjectNotInMemory`` is a ``ROSPerceptionStale``).
 
-    A ``ROSError`` with no dedicated kind degrades to ``FAILURE_RUNTIME_ERROR``
-    (it *was* a typed failure during execution); anything that is not a
-    ``ROSError`` at all degrades to ``FAILURE_UNKNOWN`` — the two are kept
-    distinct so a consumer can tell "typed but unclassified" from "escaped the
-    OpenRAL exception surface entirely".
+    A ``ROSError`` with no dedicated kind degrades to ``FAILURE_RUNTIME_ERROR`` (typed but
+    unclassified); a non-``ROSError`` degrades to ``FAILURE_UNKNOWN`` (escaped the OpenRAL
+    exception surface entirely) — kept distinct so a consumer can tell the two apart.
 
     Note:
-        ``ROSSafetyViolation`` other than ``ROSEStopRequested`` never reaches a
-        Result — ``_execute_locked`` re-raises it to the safety supervisor
-        (CLAUDE.md §1.1) — so it has no kind of its own by design.
+        ``ROSSafetyViolation`` other than ``ROSEStopRequested`` never reaches a Result —
+        ``_execute_locked`` re-raises it to the safety supervisor (CLAUDE.md §1.1) — so it has
+        no kind of its own by design.
     """
     from openral_core.exceptions import (
         ROSCapabilityMismatch,
@@ -239,19 +223,16 @@ if _ROS2_AVAILABLE:
 
         Args:
             node_name: ROS 2 node name (default ``"openral_rskill_runner"``).
-            robot_description: The :class:`RobotDescription` for the
-                robot this runner targets. Must already be loaded by the
-                caller — the runner does not consult the registry.
-            aggregator: The single shared
-                :class:`WorldStateAggregator` constructed by
-                :func:`compose_so100_runtime`. The runner
-                calls ``.snapshot()`` against it in-process; never
-                subscribes to ``/world_state`` over ROS.
-            skill_resolver: Callable that resolves the goal's
-                ``rskill_id`` / ``revision`` into a configured + active
-                :class:`rSkillBase`. Defaults to a thin wrapper around
-                :meth:`openral_rskill.rSkill.from_pretrained` ; tests
-                inject a local-only resolver to avoid HF Hub access.
+            robot_description: The :class:`RobotDescription` for the robot this runner
+                targets. Must already be loaded by the caller — the runner does not consult
+                the registry.
+            aggregator: The single shared :class:`WorldStateAggregator` constructed by
+                :func:`compose_so100_runtime`. The runner calls ``.snapshot()`` against it
+                in-process; never subscribes to ``/world_state`` over ROS.
+            skill_resolver: Callable that resolves the goal's ``rskill_id`` / ``revision``
+                into a configured + active :class:`rSkillBase`. Defaults to a thin wrapper
+                around :meth:`openral_rskill.rSkill.from_pretrained`; tests inject a
+                local-only resolver to avoid HF Hub access.
         """
 
         def __init__(
@@ -899,23 +880,19 @@ if _ROS2_AVAILABLE:
                         "a VLA never self-terminates (CLAUDE.md §3)",
                     )
 
-                # Move the HAL to the manifest's in-distribution ``starting_pose``
-                # before the first inference tick (without this a checkpoint
-                # trained from a specific pose sees an out-of-distribution state
-                # and drifts joints into their stops). Prefer the MoveIt
-                # approach skill (collision-free MoveGroup plan to starting_pose) —
-                # a failure there is FATAL (abort the goal, never start the policy
-                # from an unreachable/colliding state). The legacy ResetToPose snap
-                # stays best-effort (a failure only warns).
-                # Record the wall-clock instant just before the starting-pose
-                # reset. /joint_states is timer-published (~30 Hz) and
-                # the world_state node re-stamps each JointState with its
-                # wall-clock ARRIVAL time, so the aggregator cache the first
-                # inference reads can still hold the PRE-reset pose for up to one
-                # publish period + DDS + cross-node latency after ResetToPose
-                # returns → the policy's first observation would be stale (OOD →
-                # self-collision wedge). Gate the first tick on a joint state
-                # stamped at/after this instant.
+                # Move the HAL to the manifest's in-distribution ``starting_pose`` before the
+                # first inference tick — a checkpoint trained from a specific pose otherwise
+                # sees an OOD state and drifts joints into their stops. Prefer the MoveIt
+                # approach skill (collision-free MoveGroup plan); a failure there is FATAL
+                # (abort the goal, never start from an unreachable/colliding state). The legacy
+                # ResetToPose snap stays best-effort (failure only warns).
+                #
+                # Record wall-clock just before the reset: /joint_states is timer-published
+                # (~30 Hz) and world_state re-stamps each JointState with wall-clock ARRIVAL
+                # time, so the aggregator cache can still hold the PRE-reset pose for up to one
+                # publish period + DDS + cross-node latency after ResetToPose returns (stale
+                # first observation → OOD → self-collision wedge). Gate the first tick on a
+                # joint state stamped at/after this instant.
                 reset_wall_ns = time.time_ns()
                 self._hal.begin_goal()
                 if self._apply_starting_pose_or_abort(
@@ -1118,14 +1095,11 @@ if _ROS2_AVAILABLE:
         def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
             """Return True once the execution budget has lapsed, reporting the miss.
 
-            Owns the whole check so the step loop reads as one line. Reports
-            the REAL elapsed time rather than the budget — a blocking
-            ``skill.step()`` can overshoot by a lot (144.5 s against a 45 s
-            budget on the SO-101 bench, since the budget can only be tested
-            between steps) and rounding that down to the limit hides the
-            thing worth seeing. Emits ``openral.event.deadline_missed``,
-            which the dashboard already counts, and stashes the elapsed so
-            the goal's ``failure_reason`` can quote it.
+            Reports the REAL elapsed time rather than the budget — a blocking ``skill.step()``
+            can overshoot a lot (144.5 s against a 45 s budget on the SO-101 bench, since the
+            budget is only tested between steps) and rounding down to the limit would hide
+            that. Emits ``openral.event.deadline_missed`` (dashboard-counted) and stashes the
+            elapsed so the goal's ``failure_reason`` can quote it.
 
             Args:
                 start: ``time.monotonic()`` captured when execution began.
@@ -1164,35 +1138,21 @@ if _ROS2_AVAILABLE:
             """Drive ``skill.step(snapshot)`` until done / cancelled / deadline.
 
             Returns:
-                Why the loop exited — ``"completed"`` (the skill signalled
-                :class:`ROSRskillGoalSatisfied`, or an open-loop VLA ran to
-                the caller's satisfaction), ``"deadline"`` (the budget
-                lapsed), or ``"cancelled"``. The caller MUST distinguish
-                these: every exit used to be a bare ``return``, so a goal
-                that blew its deadline was indistinguishable from one that
-                achieved its task and was reported ``success=True``.
-                Observed on the SO-101 bench — a 144.5 s first inference
-                against a resolved 45 s budget still closed SUCCEEDED,
-                which also denies the reasoner's replanning ladder the
-                signal it needs (CLAUDE.md §3, "deadline fallback
-                mandatory").
+                Why the loop exited — ``"completed"`` (:class:`ROSRskillGoalSatisfied`, or an
+                open-loop VLA ran to the caller's satisfaction), ``"deadline"`` (budget lapsed),
+                or ``"cancelled"``. Distinct outcomes matter: on the SO-101 bench a 144.5 s
+                first inference against a resolved 45 s budget must not report
+                ``success=True`` — the reasoner's replanning ladder needs the deadline signal
+                (CLAUDE.md §3, "deadline fallback mandatory").
 
             Note:
-                The budget is checked *between* steps, so a single blocking
-                ``skill.step()`` overruns it by up to one step duration —
-                the loop cannot preempt a synchronous inference call. The
-                reported ``elapsed_s`` is therefore the true elapsed time,
-                not the budget, so the overrun is visible rather than
-                rounded down to the limit.
+                Budget is checked *between* steps, so a blocking ``skill.step()`` can overrun it
+                by up to one step duration. Reported ``elapsed_s`` is the true elapsed time, not
+                the budget, so the overrun stays visible.
 
-            Mirrors the inner loop of
-            :meth:`openral_runner.DeployRunner._tick_impl` but trims
-            back the observability + per-stage timing to keep this PR
-            focused on the topic-shape contract. The full DeployRunner
-            integration lands when F2 ships ``WorldStateStamped`` so the
-            in-process snapshot has the typed staleness array; for now
-            the lightweight loop here is sufficient to publish chunks on
-            ``/openral/candidate_action``.
+            Trimmed sibling of :meth:`openral_runner.DeployRunner._tick_impl`'s inner loop
+            (skips per-stage timing); the full integration lands with F2's
+            ``WorldStateStamped`` typed staleness array.
             """
             from openral_core.exceptions import ROSRskillGoalSatisfied
             from openral_msgs.action import ExecuteRskill
@@ -1399,20 +1359,17 @@ if _ROS2_AVAILABLE:
         def _classify_runtime_failure(exc: BaseException) -> tuple[str, int]:
             """Classify a raw non-``ROSError`` execution failure.
 
-            ``skill.step`` runs torch inference, so a CUDA OOM
-            (``torch.cuda.OutOfMemoryError``) or a dtype/quantization mismatch surfaces
-            as a plain ``RuntimeError`` — NOT a :class:`ROSError` — and previously
-            escaped the callback into an empty-reason abort. Label the common cases so
-            the replanning ladder (and the operator) can act on the real cause instead
-            of misreading it as a workspace/infeasibility failure.
+            ``skill.step`` runs torch inference, so a CUDA OOM (``torch.cuda.OutOfMemoryError``)
+            or a dtype/quantization mismatch surfaces as a plain ``RuntimeError`` — not a
+            :class:`ROSError` — and would otherwise escape into an empty-reason abort. Labels
+            the common cases so the replanning ladder (and the operator) can act on the real
+            cause instead of misreading it as a workspace/infeasibility failure.
 
             Returns:
-                ``(failure_reason, failure_kind)``. The two are derived from ONE
-                message probe so the string and the uint8 can never disagree: the
-                recognised torch failures name a ``ROSRuntimeError`` subclass and
-                therefore carry ``FAILURE_RUNTIME_ERROR``; anything unrecognised
-                keeps its concrete type name and carries ``FAILURE_UNKNOWN`` (it
-                never entered the OpenRAL exception surface at all).
+                ``(failure_reason, failure_kind)`` from ONE message probe, so the string and the
+                uint8 can never disagree: recognised torch failures name a ``ROSRuntimeError``
+                subclass (``FAILURE_RUNTIME_ERROR``); anything unrecognised keeps its concrete
+                type name (``FAILURE_UNKNOWN`` — never entered the OpenRAL exception surface).
             """
             from openral_msgs.action import ExecuteRskill
 
@@ -1443,30 +1400,24 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Block until the aggregator's joint state is newer than the reset.
 
-            Closes the cross-node staleness race after a ``starting_pose`` reset:
-            the HAL refreshes its proprio snapshot inside the ResetToPose handler,
-            but ``/joint_states`` is only re-published on the next publisher-thread
-            tick (~30 Hz) and must transit DDS + the world_state node's
-            ``_on_joint_state`` callback before it lands in the
+            Closes the cross-node staleness race after a ``starting_pose`` reset: the HAL
+            refreshes its proprio snapshot inside the ResetToPose handler, but
+            ``/joint_states`` is only re-published on the next publisher-thread tick (~30 Hz)
+            and must transit DDS + world_state's ``_on_joint_state`` before it lands in the
             ``WorldStateAggregator`` cache the first inference reads.
-            ``WorldState.joint_state.stamp_ns`` is the world_state node's
-            wall-clock ARRIVAL time, so any value ``>= reset_wall_ns`` was
-            published from the reset snapshot. No-op unless a ``starting_pose``
-            reset actually fired; bounded by a short deadline → best-effort
-            (mirrors the reset's own posture; never wedges the goal).
+            ``WorldState.joint_state.stamp_ns`` is world_state's wall-clock ARRIVAL time, so any
+            value ``>= reset_wall_ns`` was published from the reset snapshot. No-op unless a
+            ``starting_pose`` reset fired; bounded by a short deadline → best-effort (mirrors the
+            reset's own posture; never wedges the goal).
 
-            Best-effort about *freshness* only — never about safety. A latched
-            HAL stops publishing ``/joint_states`` altogether (see
-            ``openral_hal.lifecycle._publish_joint_state``, which skips the
-            timer while ``self._estopped`` unless a sim proprio snapshot backs
-            it), so this wait is one of the waits a latched safety layer
-            starves. It used to sit out its full second, log
-            ``post_reset_joint_state_timeout``, and then start the policy
-            anyway — the safety stop invisible.
+            Best-effort about *freshness* only, never safety: a latched HAL stops publishing
+            ``/joint_states`` altogether (``openral_hal.lifecycle._publish_joint_state`` skips
+            the timer while ``self._estopped``, unless a sim proprio snapshot backs it), so this
+            wait is one of the waits a latched safety layer starves.
 
             Raises:
-                ROSEStopRequested: When a safety stop is in effect while this
-                    wait is parked (:meth:`_raise_if_safety_aborted`).
+                ROSEStopRequested: When a safety stop is in effect while this wait is parked
+                    (:meth:`_raise_if_safety_aborted`).
             """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
@@ -1608,27 +1559,21 @@ if _ROS2_AVAILABLE:
         def _run_approach_skill(self, approach: rSkillBase) -> None:
             """Tick the approach skill to completion, publishing each waypoint.
 
-            Mirrors the inner loop of :meth:`_run_until_done_or_deadline` but for
-            the pre-skill approach: ``ROSActionRskill`` plans on the first
-            ``step()`` (blocking, with its own result deadline) then emits one
-            ``JOINT_POSITION`` waypoint per ``step()`` — each replayed by
-            ``self._hal.send_action`` onto ``/openral/candidate_action`` — and
-            raises ``ROSRskillGoalSatisfied`` once the planned trajectory is
-            exhausted.
+            Mirrors the inner loop of :meth:`_run_until_done_or_deadline` but for the pre-skill
+            approach: ``ROSActionRskill`` plans on the first ``step()`` (blocking, own result
+            deadline) then emits one ``JOINT_POSITION`` waypoint per ``step()`` — replayed via
+            ``self._hal.send_action`` onto ``/openral/candidate_action`` — raising
+            ``ROSRskillGoalSatisfied`` once the planned trajectory is exhausted.
 
-            Each waypoint is gated on the safety seam first. The replay is a
-            plain publish loop — a ``JOINT_POSITION`` waypoint carries no
-            ``tick_group_size``, so ``ROSPublishingHAL`` never blocks on an
-            apply-ack and nothing here ever noticed a latched kernel: the whole
-            planned trajectory was replayed into a supervisor that dropped every
-            step, and the approach then reported success and started the policy
-            from a pose the arm never reached.
+            Each waypoint is gated on the safety seam first: a ``JOINT_POSITION`` waypoint
+            carries no ``tick_group_size``, so ``ROSPublishingHAL`` never blocks on an apply-ack
+            and would otherwise never notice a latched kernel silently dropping every step.
 
             Raises:
-                ROSEStopRequested: When a safety stop is in effect between
-                    waypoints (:meth:`_raise_if_safety_aborted`).
-                ROSRuntimeError: If the trajectory exceeds ``_MAX_APPROACH_WAYPOINTS``
-                    (a runaway guard; real MoveIt trajectories are far smaller).
+                ROSEStopRequested: When a safety stop is in effect between waypoints
+                    (:meth:`_raise_if_safety_aborted`).
+                ROSRuntimeError: If the trajectory exceeds ``_MAX_APPROACH_WAYPOINTS`` (a
+                    runaway guard; real MoveIt trajectories are far smaller).
             """
             from openral_core.exceptions import ROSRskillGoalSatisfied, ROSRuntimeError
 
@@ -1785,27 +1730,21 @@ if _ROS2_AVAILABLE:
         def _arm_place_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
             """Publish this goal's place declaration, stamped and attributable.
 
-            The stamp is taken here, at goal start, so the declaration's own
-            backstop window measures from the goal it belongs to rather than
-            from whenever the scene file was written. ``rskill_id`` and
-            ``trace_id`` are overwritten from the live dispatch rather than
-            trusted from the source, which is what makes a wrong declaration
-            reconstructible from the trace alone (HZ-0097-2 mitigation 1).
+            Stamped here, at goal start, so the declaration's backstop window measures from the
+            goal it belongs to. ``rskill_id`` / ``trace_id`` are overwritten from the live
+            dispatch rather than trusted from the source — reconstructible from the trace alone
+            (HZ-0097-2 mitigation 1).
 
-            Any ``region`` on the incoming declaration is **dropped** here. The
-            region is producer-supplied by contract (ADR-0097's 2026-08-14
-            amendment): it buys the payload a reduced world-collision margin,
-            and it is only sound because a producer measured the declared target
-            in the frame the occupancy grid uses. This node is dispatch — it
-            names a target, it never measures one — so a region arriving on a
-            goal or in the scene's ``place_declaration_json`` describes a volume
-            nobody observed (HZ-0097-2/4). Dropping it costs nothing on the
-            legitimate path: the evidence producer attaches the measured region
-            downstream, on the attachment publication the kernel reads.
+            Any ``region`` on the incoming declaration is dropped: by contract (ADR-0097,
+            2026-08-14 amendment) a region buys a reduced world-collision margin only when a
+            producer measured the target in the occupancy grid's frame. This node is dispatch —
+            it names a target, never measures one — so a region on a goal or in
+            ``place_declaration_json`` describes an unobserved volume (HZ-0097-2/4). Dropping it
+            costs nothing: the evidence producer attaches the measured region downstream, on the
+            attachment publication the kernel reads.
 
-            A malformed declaration is refused and logged; the goal still runs,
-            with no declaration, which is the fail-closed direction (the kernel
-            keeps stopping on place contact).
+            A malformed declaration is refused and logged; the goal still runs with no
+            declaration — fail-closed (the kernel keeps stopping on place contact).
             """
             from openral_core.exceptions import ROSConfigError
 
@@ -1896,30 +1835,25 @@ if _ROS2_AVAILABLE:
         def _safety_abort_reason(self) -> str | None:
             """Return why a safety stop is in effect here, or ``None``.
 
-            Injected into :class:`~openral_runner.ROSPublishingHAL` as its
-            ``safety_abort_getter``, and called while the adapter's
-            applied-condition lock is held — so this stays non-blocking:
-            attribute reads and one clock call, no ROS I/O.
+            Injected into :class:`~openral_runner.ROSPublishingHAL` as ``safety_abort_getter``,
+            called while the adapter's applied-condition lock is held — stays non-blocking
+            (attribute reads + one clock call, no ROS I/O).
 
             Two independent sources, OR-ed, richest first:
 
-            1. **The latched ``/openral/safety_status``** (ADR-0096). When it
-               says ``latched``, the reason names the actual fault
-               (``kind_collision``, ``drop_envelope_unconfigured``, …) plus
-               the publisher's ``detail`` — instead of collapsing every abort
-               to the topic name. A latched status is trusted regardless of
-               age: staleness may never downgrade a latch to "clear".
-            2. **The ``/openral/estop`` latch** this node already kept from
-               its own ``std_msgs/Empty`` subscription — unchanged, still
-               standing on its own as belt-and-braces, and still the answer
-               when no SafetyStatus publisher is on the graph.
+            1. **Latched ``/openral/safety_status``** (ADR-0096). When ``latched``, names the
+               actual fault (``kind_collision``, ``drop_envelope_unconfigured``, …) plus the
+               publisher's ``detail`` — trusted regardless of age; staleness may never downgrade
+               a latch to "clear".
+            2. **``/openral/estop`` latch** — this node's own ``std_msgs/Empty`` subscription,
+               standing on its own as belt-and-braces, and the answer when no SafetyStatus
+               publisher is on the graph.
 
-            Between them sits the HZ-0096-1 liveness rule: once a
-            ``SafetyStatus`` has been seen, one that has gone silent past
-            :data:`_SAFETY_STATUS_LIVENESS_S` is reported as **unknown, not
-            safe** — the publisher may have died holding a latch. This can
-            only ever add an abort to a wait that was otherwise about to fail
-            as a bare 5 s apply-timeout; it never suppresses one.
+            HZ-0096-1 liveness rule sits between them: once a ``SafetyStatus`` has been seen,
+            one gone silent past :data:`_SAFETY_STATUS_LIVENESS_S` is reported as
+            unknown-not-safe (the publisher may have died holding a latch). Can only ADD an
+            abort to a wait otherwise about to fail as a bare 5 s apply-timeout; never suppresses
+            one.
             """
             status_reason: str | None = None
             status = self._safety_status
@@ -1952,37 +1886,27 @@ if _ROS2_AVAILABLE:
         def _raise_if_safety_aborted(self, where: str) -> None:
             """Abort the goal as a safety stop if one is in effect right now.
 
-            The single guard every blocking wait on the dispatch path calls, so
-            all of them name the safety layer the same way. Reads exactly the
-            same seam :class:`~openral_runner.ROSPublishingHAL` polls through its
-            ``safety_abort_getter`` (:meth:`_safety_abort_reason`) — the point of
-            this helper is that the seam is now consulted from *every* wait a
-            latched safety layer can starve, not only from the HAL's
-            atomic-group apply-wait.
+            The single guard every blocking wait on the dispatch path calls, reading the same
+            seam :class:`~openral_runner.ROSPublishingHAL` polls via its ``safety_abort_getter``
+            (:meth:`_safety_abort_reason`) — consulted from every wait a latched safety layer can
+            starve, not only the HAL's atomic-group apply-wait.
 
-            Every such wait is waiting on something the safety layer feeds:
-            ``/openral/action_applied`` (silent once the kernel drops instead of
-            republishing), a post-reset ``/joint_states`` frame (a latched HAL
-            stops publishing — ``openral_hal.lifecycle`` skips the timer while
-            ``self._estopped``), or simply the next tick of a policy whose
-            chunks are all being dropped. None of them can distinguish "the
-            safety layer stopped me" from "the stack is dead" on their own, so
-            each used to report its own generic timeout — an apply-timeout, a
-            best-effort warning, or (for a single-slot policy, which has no
-            apply-wait at all) nothing until the execution budget lapsed and the
-            goal aborted with ``deadline_exceeded``. That buried the real cause
-            from the operator, the trace, and the reasoner's replanning ladder
-            (CLAUDE.md §1.4).
+            Covers ``/openral/action_applied`` (silent once the kernel drops instead of
+            republishing), a post-reset ``/joint_states`` frame (a latched HAL stops
+            publishing — ``openral_hal.lifecycle`` skips the timer while ``self._estopped``),
+            and the next tick of a policy whose chunks are all being dropped. None can
+            distinguish "the safety layer stopped me" from "the stack is dead" without this
+            guard — which is what keeps the real cause from being buried from the operator, the
+            trace, and the reasoner's replanning ladder (CLAUDE.md §1.4).
 
             Args:
-                where: What the caller was doing, in a form that reads after
-                    "while " — it becomes the tail of the raised message.
+                where: What the caller was doing, in a form that reads after "while " — becomes
+                    the tail of the raised message.
 
             Raises:
-                ROSEStopRequested: When :meth:`_safety_abort_reason` names a
-                    reason. Callers must let it propagate to ``_execute_locked``,
-                    which stamps ``failure_reason="safety_estop:…"`` +
-                    ``failure_kind=FAILURE_SAFETY_ESTOP``.
+                ROSEStopRequested: When :meth:`_safety_abort_reason` names a reason. Callers
+                    must let it propagate to ``_execute_locked``, which stamps
+                    ``failure_reason="safety_estop:…"`` + ``failure_kind=FAILURE_SAFETY_ESTOP``.
             """
             from openral_core.exceptions import ROSEStopRequested
 
@@ -2106,45 +2030,36 @@ def make_default_skill_resolver(
 ) -> SkillResolver:
     """Build the production resolver that knows about wrapped-ROS rSkills.
 
-    Replacement for using :func:`_default_skill_resolver` directly. The
-    factory captures the runner's lifecycle node so that resolved
-    :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` instances
-    can create their wrapped ``ActionClient`` / service client on the
-    same node — futures share the runner's existing rclpy spin and the
-    polling pattern used by ``_maybe_reset_hal_to_starting_pose`` keeps
-    working.
+    Replacement for using :func:`_default_skill_resolver` directly. Captures the runner's
+    lifecycle node so resolved :class:`~openral_rskill.ros_action_rskill.ROSActionRskill`
+    instances create their wrapped ``ActionClient`` / service client on the same node — futures
+    share the runner's existing rclpy spin.
 
-    Behaviour per ``manifest.kind`` of the resolved manifest:
+    Behaviour per ``manifest.kind``:
 
-    * ``"vla"`` — when ``search_paths`` are provided AND the manifest is
-      indexed there, route through the in-tree
-      :func:`make_local_skill_resolver` path (same shim used by
-      ``openral sim run``). Otherwise fall back to
-      :func:`_default_skill_resolver` (HF Hub).
+    * ``"vla"`` — when ``search_paths`` are provided AND the manifest is indexed there, route
+      through :func:`make_local_skill_resolver` (same shim as ``openral sim run``). Otherwise
+      fall back to :func:`_default_skill_resolver` (HF Hub).
     * ``"ros_action"`` / ``"ros_service"`` — build a
-      :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` against
-      the captured ``ros_node``. Requires a local in-tree manifest in
-      ``search_paths`` because wrapped skills carry no HF Hub weights
-      to download — the manifest itself is the entire on-disk artefact.
-    * ``"wam"`` — rejected with :class:`ROSConfigError`; the WAM
-      resolver branch is not implemented in this PR (tracked separately).
+      :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` against ``ros_node``. Requires a
+      local in-tree manifest in ``search_paths`` — wrapped skills carry no HF Hub weights, the
+      manifest is the entire on-disk artefact.
+    * ``"wam"`` — rejected with :class:`ROSConfigError`; not implemented in this PR (tracked
+      separately).
 
     Args:
-        ros_node: The host :class:`rclpy.lifecycle.LifecycleNode` (the
-            ``RskillRunnerNode`` instance itself in production).
-        search_paths: In-tree manifest search paths. The wrapped-ROS
-            branch needs at least one entry; the VLA branch falls
-            through to HF Hub when empty.
+        ros_node: The host :class:`rclpy.lifecycle.LifecycleNode` (the ``RskillRunnerNode``
+            instance itself in production).
+        search_paths: In-tree manifest search paths. Wrapped-ROS needs at least one entry; VLA
+            falls through to HF Hub when empty.
         scene_cameras: Forwarded into the VLA local-resolver path; see
             :func:`make_local_skill_resolver`.
-        tf_lookup: forwarded into the VLA local-resolver
-            path so wrapped-task-space layouts (``human300_16d`` etc.)
-            assemble ``observation.state`` from live TF at step time.
-            None preserves the joint-space path.
-        tf_lookup_getter: zero-arg callable returning the
-            current ``tf_lookup`` (or None). Lets the resolver pick up a
-            TF buffer that is wired after the resolver is built; forwarded
-            to :func:`make_local_skill_resolver`.
+        tf_lookup: Forwarded into the VLA local-resolver path so wrapped-task-space layouts
+            (``human300_16d`` etc.) assemble ``observation.state`` from live TF at step time.
+            ``None`` preserves the joint-space path.
+        tf_lookup_getter: Zero-arg callable returning the current ``tf_lookup`` (or ``None``).
+            Lets the resolver pick up a TF buffer wired after it is built; forwarded to
+            :func:`make_local_skill_resolver`.
     """
     local_resolver = make_local_skill_resolver(
         search_paths=search_paths,
@@ -2264,39 +2179,32 @@ def make_local_skill_resolver(
 ) -> SkillResolver:
     """Build a resolver that loads rSkills strictly from in-tree manifests.
 
-    Walks each search path once and indexes every ``*/rskill.yaml`` by
-    the manifest's ``name:`` field. On each resolve call:
+    Walks each search path once and indexes every ``*/rskill.yaml`` by the manifest's ``name:``
+    field. On each resolve call:
 
-    * If ``rskill_id`` is in the index, builds the runtime policy
-      adapter via :func:`openral_sim.factory.make_policy` (the same
-      path ``openral sim run`` takes) and wraps it in a thin
-      :class:`rSkillBase` shim so the skill_runner's lifecycle +
-      embodiment-gate contract is satisfied. No HF Hub fallback.
-    * Otherwise raises ``ROSConfigError`` listing the known skill ids.
-      The reasoner's tool palette is built from the same search paths,
-      so anything the reasoner can pick MUST be resolvable here.
+    * If ``rskill_id`` is in the index, builds the runtime policy adapter via
+      :func:`openral_sim.factory.make_policy` (same path as ``openral sim run``) and wraps it in
+      a thin :class:`rSkillBase` shim so the skill_runner's lifecycle + embodiment-gate contract
+      is satisfied. No HF Hub fallback.
+    * Otherwise raises ``ROSConfigError`` listing the known skill ids — the reasoner's tool
+      palette is built from the same search paths, so anything it can pick MUST resolve here.
 
     The manifest index is built lazily on first resolve.
 
     Args:
-        search_paths: Iterable of directories containing
-            ``<id>/rskill.yaml`` files. The same parameter the reasoner
-            uses to seed its palette (``rskill_search_paths``).
-        scene_cameras: Camera-key tuple forwarded to the policy
-            factory's ``_SimpleEnvCfg.scene.cameras`` so adapters like
-            pi05 wire ``observation.images.<cam>`` correctly. Empty
-            tuple is fine for adapters that fall back to manifest
-            aliases.
-        tf_lookup: forwarded to the inner
-            ``_PolicyAdapterSkill`` so wrapped-task-space VLAs can
-            assemble ``observation.state`` from live TF + bindings at
-            step time. ``None`` preserves the joint-space path.
-        tf_lookup_getter: Lazy alternative to ``tf_lookup``. Called at
-            dispatch time (not factory time) to read the current TF
-            lookup — required when the lookup is initialised in
-            ``on_configure`` AFTER this resolver factory runs (the
-            ``compose_runtime`` path). When set, takes precedence over
-            ``tf_lookup``.
+        search_paths: Directories containing ``<id>/rskill.yaml`` files. Same parameter the
+            reasoner uses to seed its palette (``rskill_search_paths``).
+        scene_cameras: Camera-key tuple forwarded to the policy factory's
+            ``_SimpleEnvCfg.scene.cameras`` so adapters like pi05 wire
+            ``observation.images.<cam>`` correctly. Empty tuple is fine for adapters that fall
+            back to manifest aliases.
+        tf_lookup: Forwarded to the inner ``_PolicyAdapterSkill`` so wrapped-task-space VLAs
+            assemble ``observation.state`` from live TF + bindings at step time. ``None``
+            preserves the joint-space path.
+        tf_lookup_getter: Lazy alternative to ``tf_lookup``. Called at dispatch time (not
+            factory time) — required when the lookup is initialised in ``on_configure`` AFTER
+            this resolver factory runs (the ``compose_runtime`` path). Takes precedence over
+            ``tf_lookup`` when set.
     """
     import pathlib
 
@@ -2557,21 +2465,18 @@ def _build_runtime_skill_from_manifest(
         device="auto",
         extra=policy_extra,
     )
-    # The policy factories only access `env_cfg.vla`; a SimpleNamespace
-    # wrapper is enough to avoid building a full Pydantic SimEnvironment
-    # (which requires scene + task fields the runtime path does not
-    # care about). Mirrors what the sim CLI does internally.
+    # The policy factories only access `env_cfg.vla`; a SimpleNamespace wrapper avoids building
+    # a full Pydantic SimEnvironment (scene + task fields the runtime path doesn't need).
+    # Mirrors what the sim CLI does internally.
     #
-    # Deploy-sim's runtime_node forwards the manifest SENSOR NAMES as
-    # `scene_cameras` (its `camera_names`), but the adapter needs the VLA
-    # slots (camera1/camera2/...) so `resolve_camera_keys` -> `_camera_keys`
-    # lands where the checkpoint's `cam_alias` maps them (camera1 -> image).
-    # When the manifest declares RGB sensors, derive slots from the robot but
-    # trim them to the rSkill's required VLA keys. A Franka can expose camera3
-    # for VLABench while a LIBERO skill still wants only camera1/2.
-    # Slot-level overrides belong in the rSkill manifest's `extra["camera_keys"]`,
-    # which `resolve_camera_keys` still honours first. The obs-image keys are
-    # realigned to match in `_PolicyAdapterSkill._step_impl`.
+    # Deploy-sim's runtime_node forwards manifest SENSOR NAMES as `scene_cameras`, but the
+    # adapter needs VLA slots (camera1/camera2/...) so `resolve_camera_keys` -> `_camera_keys`
+    # lands where the checkpoint's `cam_alias` maps them (camera1 -> image). When the manifest
+    # declares RGB sensors, derive slots from the robot but trim to the rSkill's required VLA
+    # keys (a Franka can expose camera3 for VLABench while a LIBERO skill wants only
+    # camera1/2). Slot-level overrides belong in the rSkill manifest's `extra["camera_keys"]`,
+    # honoured first by `resolve_camera_keys`; obs-image keys realign in
+    # `_PolicyAdapterSkill._step_impl`.
     effective_scene_cameras = _required_vla_camera_slots(manifest, description) or scene_cameras
     env_stub = _SimpleEnvCfg(
         vla=vla,
@@ -2581,22 +2486,17 @@ def _build_runtime_skill_from_manifest(
     try:
         adapter = make_policy(env_stub)  # type: ignore[arg-type]
     except ImportError as exc:
-        # Most policy factories (smolvla / pi05 / act / diffusion) live
-        # behind opt-in extras groups (``sim`` / ``libero`` / ``metaworld``
-        # / ``robocasa``) — ``transformers``, ``bitsandbytes``,
-        # ``lerobot[…]``, etc. When that group isn't installed the
-        # factory raises ``ImportError`` (or ``ModuleNotFoundError``)
-        # deep inside lerobot. We translate to ``ROSRuntimeError`` with
-        # an actionable install hint so the action server reports a
-        # clean failure_reason instead of a stack-trace through three
-        # layers of lerobot imports. The reasoner's pre-flight palette
-        # filter (``openral_sim.policy_deps.filter_importable_manifests``)
-        # normally drops such skills at boot, so this branch is a
-        # belt-and-braces safety net for skills that snuck through
-        # (out-of-tree families, drift in the family→imports map, …).
-        # NOTE: ``torch`` is intentionally NOT purged — its C++ side
-        # holds process-global state that breaks if the Python module
-        # is removed from ``sys.modules`` mid-process.
+        # Most policy factories (smolvla / pi05 / act / diffusion) live behind opt-in extras
+        # groups (``sim`` / ``libero`` / ``metaworld`` / ``robocasa``); when that group isn't
+        # installed the factory raises ``ImportError``/``ModuleNotFoundError`` deep inside
+        # lerobot. Translate to ``ROSRuntimeError`` with an actionable install hint so the
+        # action server reports a clean failure_reason instead of a stack-trace through lerobot
+        # imports. The reasoner's pre-flight palette filter
+        # (``openral_sim.policy_deps.filter_importable_manifests``) normally drops such skills
+        # at boot; this branch is belt-and-braces for skills that snuck through (out-of-tree
+        # families, drift in the family→imports map, …). ``torch`` is intentionally NOT
+        # purged — its C++ side holds process-global state that breaks if removed from
+        # ``sys.modules`` mid-process.
         purge_partial_imports(("lerobot", "transformers"))
         family = manifest.model_family
         install_hint = manifest_install_hint(manifest)
@@ -2713,33 +2613,22 @@ def _build_joint_permutation(
 ) -> tuple[list[int] | None, list[bool]]:
     """Map ``description.joints`` order onto ``policy.config.action_feature_names``.
 
-    Different checkpoints can publish their state / action vectors in a
-    different joint order than the robot's URDF / RobotDescription. For
-    OpenArm bimanual this is the classic case: ``robots/openarm/robot.yaml``
-    lists ``[left_joint1..7, left_gripper, right_joint1..7, right_gripper]``
-    (left-first), but the pi05-openarm-pickplace-120ep checkpoint's
-    ``config.json`` declares
-    ``[right_joint_1.pos, ..., right_gripper.pos, left_joint_1.pos, ..., left_gripper.pos]``
-    (right-first). Without a reorder the safety kernel correctly rejects
-    each chunk because it validates ``policy_action[i]`` against the
-    envelope's ``robot_joint_position_max[i]`` — different joints.
+    Different checkpoints can publish state/action vectors in a different joint order than the
+    robot's URDF / RobotDescription — e.g. OpenArm bimanual: ``robots/openarm/robot.yaml`` lists
+    left-first (``left_joint1..7, left_gripper, right_joint1..7, right_gripper``), but the
+    pi05-openarm-pickplace-120ep checkpoint's ``config.json`` declares right-first. Without a
+    reorder the safety kernel correctly rejects each chunk (it validates ``policy_action[i]``
+    against ``robot_joint_position_max[i]`` — different joints).
 
     Returns:
-        A list ``robot_to_policy`` of length ``len(description.joints)``
-        where ``robot_to_policy[i] = j`` such that
-        ``policy_names[j] == robot_names[i]`` (after normalising both
-        sides). Or ``None`` when:
-
-        * the adapter does not expose ``policy.config.action_feature_names``
-          (e.g. ACT / DiffusionPolicy adapters, or a non-pi05 backbone);
-        * the policy's joint count does not match the robot's
-          (single-arm checkpoint on a bimanual robot or vice-versa);
-        * any robot joint name is missing from the policy's list
-          (incompatible embodiments — surface the mismatch loudly instead
-          of silently flopping bytes around).
-
-        A ``None`` return is interpreted by the shim as "pass through";
-        the kernel then enforces correctness downstream.
+        ``robot_to_policy`` of length ``len(description.joints)`` where
+        ``robot_to_policy[i] = j`` such that ``policy_names[j] == robot_names[i]`` (names
+        normalised). ``None`` when: the adapter has no ``policy.config.action_feature_names``
+        (ACT / DiffusionPolicy, or a non-pi05 backbone); the joint counts don't match
+        (single-arm checkpoint on a bimanual robot or vice versa); or any robot joint name is
+        missing from the policy's list (incompatible embodiments — surfaced loudly rather than
+        silently flopping bytes). ``None`` means "pass through"; the kernel enforces correctness
+        downstream.
     """
     if description is None:
         return None, []
@@ -2869,34 +2758,26 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
 ) -> list:
     """Build one typed :class:`Action` per non-discard :class:`ActionSlot`.
 
-    The manifest's ``action_contract.slots`` block declares
-    how the policy's flat action vector splits into typed sub-actions.
-    The :class:`openral_core.ActionContract` validator already enforced
-    coverage (no gaps / overlaps / over-range) and per-mode field
-    requirements at fixture load, so this loop trusts its inputs and
-    only does the byte-routing.
+    ``manifest.action_contract.slots`` declares how the policy's flat action vector splits into
+    typed sub-actions. :class:`openral_core.ActionContract`'s validator already enforced
+    coverage (no gaps/overlaps/over-range) and per-mode field requirements at fixture load, so
+    this loop trusts its inputs and only does the byte-routing.
 
     Args:
-        slots: ``manifest.action_contract.slots``, a list of
-            :class:`openral_core.ActionSlot`.
-        policy_action: The raw 1-D ``np.float32`` policy vector from
-            ``adapter.step()``. Indexed directly per slot range. A slot
-            with declared ``input_bounds`` is clipped to the native
-            controller's accepted input range before safety and HAL
-            dispatch; physical safety bounds remain supervisor-owned.
-        cartesian_delta_scale: Optional per-axis conversion from the
-            policy's native Cartesian values to physical metres/radians
-            for predictive safety. The raw policy bytes are not changed.
-        description: Optional ``RobotDescription`` used to pad
-            sub-slot JOINT_* chunks to full-dof (so the
-            C++ safety kernel's ``chunk.n_dof == envelope.n_dof``
-            check accepts them). When ``None``, JOINT_* chunks pass
-            through with the raw slice width.
+        slots: ``manifest.action_contract.slots``, a list of :class:`openral_core.ActionSlot`.
+        policy_action: Raw 1-D ``np.float32`` policy vector from ``adapter.step()``, indexed
+            directly per slot range. A slot with declared ``input_bounds`` is clipped to the
+            native controller's accepted input range before safety/HAL dispatch; physical
+            safety bounds remain supervisor-owned.
+        cartesian_delta_scale: Optional per-axis conversion from the policy's native Cartesian
+            values to physical metres/radians for predictive safety. Raw policy bytes unchanged.
+        description: Optional ``RobotDescription`` used to pad sub-slot JOINT_* chunks to
+            full-dof (so the C++ safety kernel's ``chunk.n_dof == envelope.n_dof`` check accepts
+            them). ``None`` passes JOINT_* chunks through at raw slice width.
 
     Returns:
-        ``list[Action]`` — one per non-discard slot, all carrying
-        ``horizon=1``. The runner inherits the same OTel trace_id for
-        all returned actions via the enclosing ``inference_span``.
+        ``list[Action]`` — one per non-discard slot, all ``horizon=1``, sharing the enclosing
+        ``inference_span``'s OTel trace_id.
     """
     from openral_core.schemas import Action, ControlMode
 
@@ -3015,37 +2896,31 @@ def _make_policy_adapter_skill(
 ) -> rSkillBase:
     """Instantiate the rSkillBase shim around a `PolicyAdapter`.
 
-    Imports `openral_rskill.base.rSkillBase` lazily because the import
-    transitively pulls torch / lerobot — we only pay that cost on a
-    real skill resolve.
+    Imports `openral_rskill.base.rSkillBase` lazily — the import transitively pulls torch /
+    lerobot, paid only on a real skill resolve.
 
     Args:
-        manifest: ``RSkillManifest`` whose ``embodiment_tags`` /
-            ``role`` / ``latency_budget`` / ``state_contract`` the
-            shim exposes through ``rSkillBase.info``.
-        adapter: Built ``openral_sim.policy.PolicyAdapter`` — driven
-            by ``adapter.step(obs, prompt)`` per tick.
-        prompt: Operator-supplied natural-language instruction.
-            Routed into ``obs["task"]`` every step.
-        description: ``RobotDescription`` used to build the
-            robot-order ↔ policy-order joint permutation. Optional
-            — when absent the runner's joint permutation is skipped.
-        tf_lookup: Optional :class:`openral_state_adapter.TfLookup`
-            callable. When set AND the manifest declares a
-            ``state_contract.layout`` registered in the
-            ``openral_state_adapter`` registry, ``_step_impl``
-            assembles ``obs["state"]`` via that layout's assembler
-            instead of the raw joint-state slice. None preserves the
-            joint-space path (every VLA shipped before the state-contract bindings design).
+        manifest: ``RSkillManifest`` whose ``embodiment_tags`` / ``role`` / ``latency_budget`` /
+            ``state_contract`` the shim exposes through ``rSkillBase.info``.
+        adapter: Built ``openral_sim.policy.PolicyAdapter`` — driven by
+            ``adapter.step(obs, prompt)`` per tick.
+        prompt: Operator-supplied natural-language instruction, routed into ``obs["task"]``
+            every step.
+        description: ``RobotDescription`` used to build the robot-order ↔ policy-order joint
+            permutation. Optional — when absent the joint permutation is skipped.
+        tf_lookup: Optional :class:`openral_state_adapter.TfLookup` callable. When set AND the
+            manifest declares a registered ``state_contract.layout``, ``_step_impl`` assembles
+            ``obs["state"]`` via that layout's assembler instead of the raw joint-state slice.
+            ``None`` preserves the joint-space path (every VLA shipped before state-contract
+            bindings).
 
-    ``obs["state"]`` substitution paths in ``_step_impl`` (either sets
-    ``state_assembled`` and skips the joint-permutation + rad/deg conversion;
-    if a manifest somehow declares both, the layout assembler runs second and
-    wins):
+    ``obs["state"]`` substitution paths in ``_step_impl`` (either sets ``state_assembled`` and
+    skips the joint-permutation + rad/deg conversion; if a manifest declares both, the layout
+    assembler runs second and wins):
 
-    1. ``policy_extras.use_world_state_policy_state`` — the manifest opts in
-       to the simulator-native ``WorldState.policy_state`` vector (BEHAVIOR-1K
-       R1Pro 61-D contract), staleness-gated via ``ROSPerceptionStale``.
+    1. ``policy_extras.use_world_state_policy_state`` — manifest opts in to the simulator-native
+       ``WorldState.policy_state`` vector (BEHAVIOR-1K R1Pro 61-D contract), staleness-gated via
+       ``ROSPerceptionStale``.
     2. ``tf_lookup`` + ``state_contract.layout`` — see above.
     """
     import numpy as np
@@ -3061,17 +2936,14 @@ def _make_policy_adapter_skill(
     # rekeys `obs["images"]` to what the adapter looks up. Built once at
     # skill-build time; see `_sensor_name_to_vla_slot`.
     sensor_to_slot = _sensor_name_to_vla_slot(description)
-    # Joint units govern the deg↔rad conversion at the policy boundary. Prefer
-    # the manifest's EXPLICIT declaration (action_contract.joint_units). issue
-    # #135: there is no runtime guess anymore — the old stats-magnitude heuristic
-    # was fragile (it silently defaulted a degrees-trained SmolVLA SO-101
-    # checkpoint to radians, feeding the policy ~57× too-small state and emitting
-    # ~57× too-large HAL commands → the arm slammed its limits). Every
-    # joint-position rSkill now declares its verified units
-    # (RSkillManifest._check_joint_units_declared enforces it at load). A
-    # joint-position skill reaching the runner without a declaration is a hard
-    # error, not a silent radians default. EE-space skills legitimately leave it
-    # None — their action is not joint angles, so no deg↔rad conversion applies.
+    # Joint units govern the deg↔rad conversion at the policy boundary. Prefer the manifest's
+    # EXPLICIT declaration (action_contract.joint_units) — issue #135: no runtime guess anymore.
+    # The old stats-magnitude heuristic was fragile: it silently defaulted a degrees-trained
+    # SmolVLA SO-101 checkpoint to radians, feeding the policy ~57x too-small state and emitting
+    # ~57x too-large HAL commands → the arm slammed its limits. Every joint-position rSkill now
+    # declares its verified units (RSkillManifest._check_joint_units_declared enforces it at
+    # load); reaching the runner without one is a hard error, not a silent radians default.
+    # EE-space skills legitimately leave it None (no deg↔rad conversion applies).
     _action_contract = getattr(manifest, "action_contract", None)
     _declared_units = getattr(_action_contract, "joint_units", None)
     if _declared_units is not None:
@@ -3121,20 +2993,16 @@ def _make_policy_adapter_skill(
         file=sys.stderr,
         flush=True,
     )
-    # Per-joint absolute clamping bounds taken straight from the
-    # RobotDescription's declared ``position_limits`` — same limits the
-    # safety_kernel's envelope encodes. These are in the unit of the value
-    # that travels on each channel (radians/metres for arm joints, a
-    # normalised [0, 1] fraction for a ``normalised`` gripper), NOT
-    # unconditionally the URDF's mechanical range — see ``JointSpec``
-    # and issue #62. Without this, an out-of-distribution
-    # checkpoint can emit a joint target a few degrees past the mechanical
-    # range; the kernel correctly rejects + estops, the robot never moves,
-    # and the operator sees nothing happen. In hardware the motors / firmware
-    # would also clamp (or refuse) such commands; in MuJoCo the <position>
-    # actuator's ctrlrange clamps too. Pre-clamping here lets the kernel see
-    # an in-range chunk + the HAL apply it, while staying *strictly tighter*
-    # than the envelope (so any real envelope violation still surfaces).
+    # Per-joint absolute clamping bounds taken straight from RobotDescription's declared
+    # ``position_limits`` — same limits the safety_kernel's envelope encodes, in the unit that
+    # travels on each channel (radians/metres for arm joints, normalised [0,1] for a
+    # ``normalised`` gripper), NOT unconditionally the URDF's mechanical range (see
+    # ``JointSpec`` and issue #62). Without this an OOD checkpoint can emit a target a few
+    # degrees past the mechanical range; the kernel correctly rejects + estops, the robot never
+    # moves, and the operator sees nothing happen. Hardware motors/firmware would also clamp
+    # (MuJoCo's <position> actuator ctrlrange clamps too). Pre-clamping here lets the kernel see
+    # an in-range chunk + the HAL apply it, while staying strictly tighter than the envelope (so
+    # a real envelope violation still surfaces).
     if description is not None:
         joint_limits: list[tuple[float, float] | None] = [
             (
@@ -3368,24 +3236,19 @@ def _make_policy_adapter_skill(
                         self._tf_lookup,
                     )
                     state_assembled = True
-            # Reorder robot-order state → policy-order state so the
-            # checkpoint sees its training-distribution joint layout
-            # (see `_build_joint_permutation`). When the permutation is
-            # None the policy's order matches the robot's already (or we
-            # don't have enough metadata to safely reorder).
+            # Reorder robot-order state → policy-order state so the checkpoint sees its
+            # training-distribution joint layout (see `_build_joint_permutation`). None
+            # permutation means the policy's order already matches the robot's (or there isn't
+            # enough metadata to safely reorder).
             #
-            # ALSO: convert rad → deg for the 7 arm joints per side.
-            # The LeRobot OpenArm dataset's state + action features are
-            # in DEGREES (decoded from
-            # ``policy_preprocessor_step_3_normalizer_processor.safetensors`` —
-            # ``observation.state.q50[left_joint4]`` is 96.4, which is
-            # the bent-elbow home pose in degrees, ≈ π/2 rad). Sending
-            # 1.57 (radians) to a policy that's seen 90 (degrees) puts
-            # every joint deep in the lower tail of the QUANTILES
-            # normalizer and triggers the "all joints slam to max"
-            # symptom. Grippers (``policy_is_gripper[j] == True``) are
-            # kept untouched — their state distribution centres around
-            # ``-1`` in a custom motor unit that isn't a rad↔deg conversion.
+            # ALSO: convert rad → deg for the 7 arm joints per side. The LeRobot OpenArm
+            # dataset's state+action features are in DEGREES (decoded from
+            # `policy_preprocessor_step_3_normalizer_processor.safetensors` —
+            # `observation.state.q50[left_joint4]` is 96.4, the bent-elbow home pose in degrees,
+            # ≈ π/2 rad). Sending 1.57 (radians) to a policy that's seen 90 (degrees) puts every
+            # joint deep in the lower tail of the QUANTILES normalizer and triggers "all joints
+            # slam to max". Grippers (`policy_is_gripper[j] == True`) are kept untouched — their
+            # state centres around -1 in a custom motor unit, not a rad↔deg conversion.
             if not state_assembled:
                 # rad->deg conversion is INDEPENDENT of reordering — it runs on
                 # every path (identity perm when no reorder), so a checkpoint
@@ -3455,25 +3318,19 @@ def _make_policy_adapter_skill(
                     file=sys.stderr,
                     flush=True,
                 )
-            # Pre-clamp to the per-joint mechanical range. The safety
-            # kernel uses the same limits in its envelope; any value
-            # inside [min, max] passes through, any value the policy
-            # emits beyond range would otherwise trip an estop. In
-            # hardware the motors / firmware clamp here too; in MuJoCo
-            # the actuator's ctrlrange clamps; doing it explicitly in
-            # the shim makes the safety kernel + the simulator agree
-            # on what "in-range" means, so the operator sees motion
-            # instead of an immediate estop on out-of-distribution
-            # checkpoints.
-            # When the manifest declares an
-            # ``action_contract.slots`` block, the runner dispatches
-            # slices of the RAW policy vector onto typed ``Action``
-            # objects per the slot's declared ``control_mode``. The
-            # joint-permutation + joint-limit clamp path above only
-            # applies to legacy single-surface joint_position output;
-            # multi-surface slots route each slice to its own HAL
-            # channel (cartesian → OSC controller, body twist →
-            # /cmd_vel, gripper → gripper actuator).
+            # Pre-clamp to the per-joint mechanical range. The safety kernel uses the same
+            # limits in its envelope; any value inside [min, max] passes through, any value the
+            # policy emits beyond range would otherwise trip an estop. Hardware motors/firmware
+            # clamp here too; MuJoCo's actuator ctrlrange clamps; doing it explicitly in the shim
+            # makes the safety kernel + simulator agree on "in-range", so the operator sees
+            # motion instead of an immediate estop on OOD checkpoints.
+            #
+            # When the manifest declares an ``action_contract.slots`` block, the runner
+            # dispatches slices of the RAW policy vector onto typed ``Action`` objects per the
+            # slot's declared ``control_mode``. The joint-permutation + joint-limit clamp path
+            # above only applies to legacy single-surface joint_position output; multi-surface
+            # slots route each slice to its own HAL channel (cartesian → OSC controller, body
+            # twist → /cmd_vel, gripper → gripper actuator).
             ac = getattr(self.manifest, "action_contract", None)
             slots = getattr(ac, "slots", None) if ac is not None else None
             if (
@@ -3482,17 +3339,13 @@ def _make_policy_adapter_skill(
                 and getattr(ac, "representation", None) is not None
                 and description is not None
             ):
-                # A skill that declares only ``representation``
-                # (no explicit ``slots``) gets the canonical slot layout
-                # for its action space, so the runner dispatches
-                # cartesian_delta + gripper instead of defaulting the
-                # whole vector to JOINT_POSITION (which the joint-space
-                # envelope rejects on franka: ``n_dof 7 != 8``). Joint
-                # representations return ``None`` and fall through to the
-                # legacy whole-vector JOINT_POSITION path below. The
-                # ``description is not None`` guard keeps a no-manifest
-                # resolve (cartesian slots need the robot's primary EE) on
-                # the legacy path instead of raising in
+                # A skill that declares only ``representation`` (no explicit ``slots``) gets the
+                # canonical slot layout for its action space, so the runner dispatches
+                # cartesian_delta + gripper instead of defaulting the whole vector to
+                # JOINT_POSITION (rejected on franka: ``n_dof 7 != 8``). Joint representations
+                # return ``None`` and fall through to the legacy whole-vector JOINT_POSITION path
+                # below. ``description is not None`` keeps a no-manifest resolve (cartesian
+                # slots need the robot's primary EE) on the legacy path instead of raising in
                 # ``canonical_slots_for_representation``.
                 from openral_core.schemas import canonical_slots_for_representation
 

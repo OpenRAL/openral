@@ -1,23 +1,19 @@
 """Regression guards for deploy-sim's single clock-domain flag.
 
-Root cause of the nav-collision bug (``fix/nav-collision``): the Nav2
-stack was launched with a hardcoded ``use_sim_time:=true`` before
-deploy-sim had a coherent ``/clock`` publisher. Every Nav2 node's clock
-then pinned at 0 while the HAL stamped ``/scan`` + TF on wall-clock, so
-the local costmap rejected the "future" scans, stayed empty, and the base
-drove straight through obstacles (controller logged "loop rate inf Hz").
-``octomap_server`` / ``ros_image_detector`` already worked around the
-missing clock with ``use_sim_time:=false``; Nav2 + slam_toolbox +
-robot_state_publisher did not — a scattered-literal disagreement.
+Root cause of the nav-collision bug (``fix/nav-collision``): Nav2 was launched with a
+hardcoded ``use_sim_time:=true`` before deploy-sim had a coherent ``/clock`` publisher.
+Every Nav2 node's clock pinned at 0 while the HAL stamped ``/scan`` + TF on wall-clock, so
+the local costmap rejected the "future" scans, stayed empty, and the base drove through
+obstacles (controller logged "loop rate inf Hz"). ``octomap_server`` / ``ros_image_detector``
+already used ``use_sim_time:=false``; Nav2 + slam_toolbox + robot_state_publisher did not —
+a scattered-literal disagreement.
 
-These tests pin the fix: a single ``clock_origin`` launch arg is the
-OpenRAL ClockAuthority source for the whole graph's clock domain, so a node
-can never again silently disagree.
+These tests pin the fix: a single ``clock_origin`` launch arg is the OpenRAL ClockAuthority
+source for the whole graph, so a node can never again silently disagree.
 
-Hermetic (no live ROS graph). The module's heavy ``openral_core`` /
-``mujoco`` imports are deferred inside ``compose_runtime_graph``; only
-``launch`` / ``launch_ros`` plus launch-time package imports are needed to
-import the file and inspect its declared args + the Nav2 include.
+Hermetic (no live ROS graph). The module's heavy ``openral_core``/``mujoco`` imports are
+deferred inside ``compose_runtime_graph``; only ``launch``/``launch_ros`` plus launch-time
+package imports are needed to inspect its declared args + the Nav2 include.
 """
 
 from __future__ import annotations

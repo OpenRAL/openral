@@ -1,38 +1,22 @@
 """Regression test: ``--no-dashboard`` skips OTLP endpoint forwarding.
 
-Asserts that :func:`sim_e2e.launch.compose_runtime_graph` builds every
-spawned node's ``additional_env`` **without** ``OTEL_EXPORTER_OTLP_ENDPOINT``
-/ ``OTEL_EXPORTER_OTLP_PROTOCOL`` when ``enable_dashboard=false`` — and
-*with* them when ``enable_dashboard=true``.
+Asserts :func:`sim_e2e.launch.compose_runtime_graph` builds every spawned node's
+``additional_env`` WITHOUT ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_PROTOCOL``
+when ``enable_dashboard=false``, WITH them when ``true``.
 
-Why this matters: the OpenTelemetry SDK in
-``python/observability/src/openral_observability/_sdk.py:configure_observability``
-short-circuits to no-op when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is absent
-(``_sdk.py:145``). With it set, every node installs a BatchSpanProcessor /
-PeriodicExportingMetricReader / BatchLogRecordProcessor that retries
-against the configured endpoint at SIGINT shutdown. Before this guard,
-``openral deploy sim --no-dashboard`` always set the endpoint to
-``http://127.0.0.1:<dashboard_port>`` even though no dashboard was
-running there, so every node blocked for ~30s on connection retries
-during teardown. That stalled every headless caller — CI runs, the
-``tools/audit_sim_configs.py`` deploy probe, batch scripts — and
-manifested as the audit's ``fail-timeout`` status (exit -9, SIGKILL'd
-after ``shutdown-grace`` elapsed) on launches that were otherwise
-perfectly healthy. The guard at ``sim_e2e.launch.py:433-454`` is what
-this test pins.
+Why: ``configure_observability`` (``_sdk.py:145``) no-ops with no endpoint set; with one set,
+every node installs exporters that retry against it at SIGINT shutdown. Before the guard at
+``sim_e2e.launch.py:433-454``, ``--no-dashboard`` still pointed nodes at
+``http://127.0.0.1:<dashboard_port>`` with nothing listening, so teardown blocked ~30s per
+node — stalling CI and ``tools/audit_sim_configs.py``, surfacing as the audit's
+``fail-timeout`` (exit -9, SIGKILL'd after ``shutdown-grace``) on otherwise-healthy launches.
 
-``OTEL_RESOURCE_ATTRIBUTES`` (dashboard run id / mode / git sha) stays
-forwarded under both modes — it is cheap, harmless when no exporter is
-wired, and useful if the operator points the parent shell at an
-external OTLP collector.
+``OTEL_RESOURCE_ATTRIBUTES`` (run id / mode / git sha) stays forwarded in both modes — cheap,
+harmless, useful if the operator points the parent shell at an external collector.
 
-Per CLAUDE.md §1.11: no mocks. Real :class:`openral_core.RobotDescription`
-loaded from ``robots/openarm/robot.yaml``; real ``LaunchContext``
-exercising the real ``compose_runtime_graph`` opaque function. The
-test walks the resulting list of entities and inspects each
-``Node``/``LifecycleNode``'s ``additional_env`` directly (private
-attribute access matches the pattern in
-``test_kernel_params_no_empty_lists.py``).
+Per CLAUDE.md §1.11: no mocks — real ``RobotDescription`` (``robots/openarm/robot.yaml``),
+real ``LaunchContext``, real ``compose_runtime_graph``; inspects each entity's
+``additional_env`` directly (matches ``test_kernel_params_no_empty_lists.py``).
 
 Run::
 

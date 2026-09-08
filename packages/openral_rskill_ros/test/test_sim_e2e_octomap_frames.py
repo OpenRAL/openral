@@ -1,23 +1,18 @@
 """The octomap leg's frames come from the manifest, not `odom`/`base_link`.
 
-`octomap_server` accumulates its octree in a frame that must not move under the
-robot, and `octomap_voxel_bridge` / `WorldCloudBridge` express the result in the
-robot's base frame. Both were the literals ``"odom"`` and ``"base_link"`` — the
-MOBILE-BASE convention, which holds only while something publishes odometry.
+`octomap_server` accumulates its octree in a frame that must not move under the robot, and
+`octomap_voxel_bridge` / `WorldCloudBridge` express the result in the robot's base frame.
+The MOBILE-BASE convention (``"odom"`` / ``"base_link"``) holds only while something
+publishes odometry — a fixed-base arm has neither: nothing publishes `odom`, and its base
+link is named by the manifest (`openarm_base`, `panda_link0`, `pelvis`). The failure is
+silent: every node reports healthy and drops each cloud on a TF lookup, so the octree,
+``/openral/world_voxels``, and the dashboard's pointcloud card all stay empty with no error
+anywhere.
 
-A fixed-base arm has neither frame. Nothing in its graph publishes `odom`, and
-its base link is named by the manifest (`openarm_base`, `panda_link0`,
-`pelvis`). The failure is silent in the worst way: every node comes up, reports
-healthy, and drops each cloud on a TF lookup, so the octree,
-``/openral/world_voxels`` and the dashboard's pointcloud card all stay empty
-with no error anywhere in the graph.
+Observed on hardware 2026-09-07: a ZED-M feeding `octomap_server` through a bimanual OpenArm
+deploy produced exactly that — a healthy dashboard with an empty POINTCLOUD card.
 
-Observed on hardware 2026-09-07: a ZED-M feeding `octomap_server` through a
-bimanual OpenArm deploy produced exactly that — a healthy dashboard with an
-empty POINTCLOUD card.
-
-Hermetic (no live ROS graph). Same import/skip pattern as
-``test_sim_e2e_visual_slam``.
+Hermetic (no live ROS graph). Same import/skip pattern as ``test_sim_e2e_visual_slam``.
 """
 
 from __future__ import annotations
