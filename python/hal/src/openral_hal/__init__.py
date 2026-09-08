@@ -93,7 +93,7 @@ from openral_hal.protocol import (
     ResettableLifecycleEStopHAL,
 )
 from openral_hal.resolver import build_hal
-from openral_hal.ros_control import RosControlHAL
+from openral_hal.ros_control import ControllerKind, RosControlHAL
 from openral_hal.sawyer_real import (
     SAWYER_DESCRIPTION,
     SAWYER_REAL_DESCRIPTION,
@@ -143,6 +143,7 @@ __all__ = [
     "AlohaHAL",
     "AlohaMujocoHAL",
     "AnvilOpenArmV2MujocoHAL",
+    "ControllerKind",
     "EStopRecovery",
     "FrankaPandaHAL",
     "FrankaPandaRealHAL",

@@ -38,7 +38,7 @@ from openral_core.schemas import (
     RobotDescription,
     SafetyEnvelope,
 )
-from openral_hal.ros_control import RosControlHAL
+from openral_hal.ros_control import ControllerKind, RosControlHAL
 
 requires_rclpy = pytest.mark.skipif(
     importlib.util.find_spec("rclpy") is None
@@ -78,6 +78,48 @@ def test_a_plain_hal_reports_one_command_topic_and_its_manifest_joint_names() ->
     assert hal.command_topics() == ["/joint_trajectory_controller/joint_trajectory"]
     assert hal.ros2_control_joint_names() == ["j0", "j1"]
     assert hal.joint_state_topic == "/joint_states"
+
+
+def test_a_plain_hal_declares_its_controller_kind_rather_than_leaving_it_implied() -> None:
+    """The wire format is part of the contract, not a transport-side assumption.
+
+    A topic name says nothing about the message type its controller accepts, and publishing
+    the wrong one is silent: DDS declines to deliver it, so the arm does not move and nothing
+    logs an error. Declaring the kind is what lets the transport pick a publisher type instead
+    of guessing one.
+    """
+    assert _hal().command_bindings() == {
+        "/joint_trajectory_controller/joint_trajectory": ControllerKind.JOINT_TRAJECTORY
+    }
+
+
+def test_command_topics_is_derived_from_the_bindings_so_the_two_cannot_drift() -> None:
+    """One source of truth. A HAL overrides `command_bindings`; the topic list follows."""
+
+    class TwoControllers(RosControlHAL):
+        def command_bindings(self) -> dict[str, ControllerKind]:
+            return {
+                "/arm/joint_trajectory": ControllerKind.JOINT_TRAJECTORY,
+                "/gripper/commands": ControllerKind.FORWARD_COMMAND,
+            }
+
+    hal = TwoControllers(_description(), controller_name="unused")
+    assert hal.command_topics() == ["/arm/joint_trajectory", "/gripper/commands"]
+
+
+def test_every_controller_kind_maps_to_a_message_type() -> None:
+    """Adding an enum member without teaching the transport would be a silent wrong type.
+
+    `_message_type` is the single place that turns a declared kind into a publisher, so an
+    unmapped member must fail here rather than reach a controller.
+    """
+    from openral_hal.ros_control_transport import _message_type
+
+    for kind in ControllerKind:
+        try:
+            assert _message_type(kind) is not None
+        except ImportError:  # reason: per-kind, and only the ROS-less lane
+            pytest.skip("ROS 2 message packages not importable — source a ROS 2 install")
 
 
 def test_openarm_overrides_still_win_over_the_new_base_defaults() -> None:
@@ -314,8 +356,8 @@ def test_membership_is_structural_not_by_ancestry() -> None:
     """The lifecycle node gates on this Protocol, so its shape decides who gets wired.
 
     Gating on `isinstance(hal, RosControlHAL)` instead would skip a ros2_control robot that
-    reimplements the same fan-out on `HALBase` rather than inheriting it — `AlohaHAL` does
-    exactly that today — leaving it with no transport and no error to say so.
+    reimplements the same fan-out on `HALBase` rather than inheriting it, leaving it with no
+    transport and no error to say so.
     """
     from openral_hal.openarm_real import OpenArmRealHAL
     from openral_hal.ros_control_transport import RosControlDrivable
@@ -324,10 +366,10 @@ def test_membership_is_structural_not_by_ancestry() -> None:
     assert isinstance(OpenArmRealHAL(require_can_links=False), RosControlDrivable)
 
     class OptsInWithoutInheriting:
-        """Any HAL that grows the four members qualifies, whatever its base class."""
+        """Any HAL that grows the members qualifies, whatever its base class."""
 
-        def command_topics(self) -> list[str]:
-            return ["/c/joint_trajectory"]
+        def command_bindings(self) -> dict[str, ControllerKind]:
+            return {"/c/joint_trajectory": ControllerKind.JOINT_TRAJECTORY}
 
         def ros2_control_joint_names(self) -> list[str]:
             return ["j0"]
@@ -356,9 +398,10 @@ def test_a_hal_missing_the_surface_is_not_drivable() -> None:
 def test_an_unexpressible_payload_raises_instead_of_vanishing() -> None:
     """A command shape this transport cannot publish must not be dropped quietly.
 
-    `AlohaHAL` sends its grippers `{"position": float}` rather than `joint_targets`. Skipping
-    that at runtime would be a silent no-op on the actuation path — the failure this whole
-    transport exists to end — so it raises and names the keys instead.
+    A HAL that sends `{"position": float}` rather than `joint_targets` is asking for a
+    controller format this transport does not build. Skipping that at runtime would be a
+    silent no-op on the actuation path — the failure this whole transport exists to end —
+    so it raises and names the keys instead.
     """
     import rclpy
     from openral_hal.ros_control_transport import RosControlTransport
@@ -373,6 +416,68 @@ def test_an_unexpressible_payload_raises_instead_of_vanishing() -> None:
             tr.publish("/g/command", {"position": 0.5, "stamp_ns": 0})
         # An empty chunk is a different thing: the HAL had nothing to send.
         tr.publish("/g/command", {"joint_targets": [], "joint_names": ["g0"]})
+    finally:
+        node.destroy_node()
+        ctx.shutdown()
+
+
+@requires_rclpy
+def test_a_forward_command_topic_publishes_float64multiarray_not_a_trajectory() -> None:
+    """The declared kind decides the publisher's type, which is the whole point.
+
+    A `ForwardCommandController` subscribes to `std_msgs/Float64MultiArray`. Publishing a
+    `trajectory_msgs/JointTrajectory` at it is not an error anyone sees — the types simply
+    never match, so the controller receives nothing and the robot stands still.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.node import Node
+    from std_msgs.msg import Float64MultiArray
+
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_forward_kind", context=ctx)
+    try:
+        tr = RosControlTransport(
+            node,
+            command_topics=["/forward_position_controller/commands"],
+            joint_names=["j0", "j1"],
+            command_kinds={"/forward_position_controller/commands": ControllerKind.FORWARD_COMMAND},
+        )
+        pub = tr._pubs["/forward_position_controller/commands"]
+        assert pub.msg_type is Float64MultiArray
+        # And the same HAL payload still publishes cleanly through the other format.
+        tr.publish(
+            "/forward_position_controller/commands",
+            {"joint_targets": [[0.1, 0.2]], "joint_names": ["j0", "j1"]},
+        )
+    finally:
+        node.destroy_node()
+        ctx.shutdown()
+
+
+@requires_rclpy
+def test_a_kind_naming_no_declared_topic_is_rejected_at_wire_up() -> None:
+    """A kind that governs nothing is a typo, and a typo here picks the wrong message type.
+
+    Silently ignoring it would leave the mistyped topic on the JointTrajectory default, which
+    is exactly the silent mismatch the declaration exists to prevent.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.node import Node
+
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_stray_kind", context=ctx)
+    try:
+        with pytest.raises(ROSConfigError, match="not in command_topics"):
+            RosControlTransport(
+                node,
+                command_topics=["/arm/joint_trajectory"],
+                joint_names=["j0"],
+                command_kinds={"/arm/joint_trajctory": ControllerKind.FORWARD_COMMAND},
+            )
     finally:
         node.destroy_node()
         ctx.shutdown()

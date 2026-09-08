@@ -1541,11 +1541,11 @@ if _ROS2_AVAILABLE:
             """
             from openral_hal.ros_control_transport import RosControlDrivable
 
-            # Structural, not by ancestry: any HAL exposing the four members of
+            # Structural, not by ancestry: any HAL exposing the members of
             # `RosControlDrivable` gets wired. Gating on `isinstance(...,
             # RosControlHAL)` would skip a ros2_control robot that reimplements
-            # the same fan-out on `HALBase` instead of inheriting — which the
-            # repo already contains — leaving it with no transport and no error.
+            # the same fan-out on `HALBase` instead of inheriting, leaving it
+            # with no transport and no error.
             hal = self._hal
             if not isinstance(hal, RosControlDrivable):
                 return
@@ -1555,11 +1555,13 @@ if _ROS2_AVAILABLE:
 
             from openral_hal.ros_control_transport import RosControlTransport
 
+            bindings = hal.command_bindings()
             transport = RosControlTransport(
                 self,
-                command_topics=hal.command_topics(),
+                command_topics=list(bindings),
                 joint_names=hal.ros2_control_joint_names(),
                 joint_state_topic=hal.joint_state_topic,
+                command_kinds=bindings,
             )
             hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
             self._ros_control_transport = transport
@@ -1575,9 +1577,10 @@ if _ROS2_AVAILABLE:
             if self._joint_state_pub is not None:
                 self.destroy_publisher(self._joint_state_pub)
                 self._joint_state_pub = None
+            kinds = ", ".join(sorted({k.value for k in bindings.values()}))
             self.get_logger().info(
-                f"ros2_control transport attached: {len(hal.command_topics())} command "
-                f"topic(s), reading {hal.joint_state_topic}; global /joint_states left to "
+                f"ros2_control transport attached: {len(bindings)} command topic(s) "
+                f"[{kinds}], reading {hal.joint_state_topic}; global /joint_states left to "
                 "the controller's joint_state_broadcaster."
             )
 
