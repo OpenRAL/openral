@@ -445,10 +445,34 @@ Four things had to be discovered to make it run at all, each worth keeping:
       **fail-open on the world check**. `_world_voxel_max_cells` now derives the
       cap from the resolution, which is what makes the lever safe to pull.
 
-      **One term left: message size.** 2.8 M cells is a 2.8 MB dense `uint8[]`
-      per publish at 10 Hz — 28 MB/s over DDS against 6 MB/s today. Neither the
-      transport cost nor its effect on the kernel's own deadline is measured.
-      That is the last thing between here and a manifest edit.
+      **Wire measured 2026-09-08 — and it is the term that bites.**
+      `tools/voxel_transport_probe.py`, two processes over real DDS at the
+      deployed 10 Hz under the kernel's own QoS: nothing is dropped and the rate
+      holds at every size, but publish→receive latency triples, from p99
+      **19-23 ms** at 25 mm to **68-83 ms** at 15 mm. That latency is map
+      **staleness**, and staleness is millimetres too.
+
+      **Settled 2026-09-08, and in favour of the lever.**
+      `tools/stop_ee_speed.py` measures how fast the arm actually is at each
+      stop, from the recorded joint state through the real Panda Jacobian:
+      carry-phase **0.051 m/s median, 0.265 m/s max** (n=5); start-state
+      **exactly 0.000** (n=7, the arm has not moved yet). Base contributes
+      ≤0.0013 m/s.
+
+      | | median stop | fastest stop |
+      | --- | ---: | ---: |
+      | median staleness | **+7.89 mm** | **+4.68 mm** |
+      | p99 staleness | **+5.84 mm** | **−5.93 mm** |
+
+      Net positive in three of four corners, and the whole start-state class —
+      43 % of stops — takes the full 8.66 mm with **no** staleness cost at all.
+      All three cost terms are now measured: kernel 0.825 ms, rasterize 1.60 ms,
+      wire +15/+55 ms.
+
+      **Actionable, with two caveats to carry into the change.** n=5 carry-phase
+      stops is thin, and the speeds are *this* policy's — a faster one moves the
+      p99 corner from marginal to routine. Widening n is the thing to do before
+      the manifest edit, not instead of it.
 - [x] **Drop `baguette` from the collision scorecard** — recorded 2026-09-07 in
       the ceiling entry of `docs/reference/collision-validation-evidence.md`:
       0/11 with the gate **off**, so it is policy-bound and cannot report on
