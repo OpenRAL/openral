@@ -1,29 +1,22 @@
-# Current safety state on the LATCHED topic /openral/safety_status
-# (ADR-0096). QoS: RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 — the
-# "description/static" profile from CLAUDE.md §2, deliberately NOT the
-# "safety/e-stop" profile /openral/estop and /openral/failure/safety use.
+# Current safety state on the LATCHED topic /openral/safety_status (ADR-0096).
+# QoS: RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 — the "description/static"
+# profile (CLAUDE.md §2), deliberately NOT the "safety/e-stop" profile
+# /openral/estop and /openral/failure/safety use.
 #
-# This message answers "what is true right now", not "what just
-# happened": a dashboard tab opened mid-mission or a runner reconnecting
-# after a crash must see the current state without having witnessed the
-# transition, which VOLATILE cannot deliver by construction.
-# /openral/failure/safety stays the VOLATILE *event* stream for the
-# reasoner's replanning ladder; this topic neither replaces nor
-# deprecates it, nor /openral/estop.
+# Answers "what is true right now": a late-joining dashboard/runner must see
+# current state without witnessing the transition, which VOLATILE can't
+# deliver. /openral/failure/safety stays the VOLATILE event stream for the
+# reasoner's replanning ladder; this topic replaces neither it nor
+# /openral/estop.
 #
 # Publishers: the C++ safety kernel (cpp/openral_safety_kernel) and
-# SafetyPassthroughNode (packages/openral_safety). Both publish on every
-# latch transition, every fail-closed drop transition, every
-# clear/recovery transition, on every lifecycle activation
-# (hazard-log HZ-0096-1 mitigation 1: a restarted publisher must
-# overwrite any stale durable value within one activation cycle), and as
-# a 1 Hz liveness refresh so `header.stamp` stays evidence that the
-# publisher is alive.
+# SafetyPassthroughNode (packages/openral_safety). Publish on every latch,
+# fail-closed-drop, and clear/recovery transition, on every lifecycle
+# activation (HZ-0096-1 mitigation 1: overwrite stale durable value within one
+# activation cycle), and as a 1 Hz liveness refresh.
 #
-# Consumers MUST treat a status whose `header.stamp` is older than their
-# documented liveness window as UNKNOWN, not as safe (HZ-0096-1
-# mitigation 2/4 — the staleness rule fails toward "assume unsafe",
-# never toward "assume clear").
+# Consumers MUST treat a `header.stamp` older than their liveness window as
+# UNKNOWN, not safe (HZ-0096-1 mitigation 2/4 — fails toward "assume unsafe").
 
 std_msgs/Header header
 

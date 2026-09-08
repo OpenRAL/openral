@@ -1,8 +1,8 @@
-"""Tests for the unified ``assets:`` block on :class:`RobotDescription`.
+"""Tests for the unified ``assets:`` block on ``RobotDescription``.
 
 Covers the schema-level ref-string grammar. The validator here
 only checks the ref *string* format; file resolution lives in
-:mod:`openral_core.assets`. The two must agree on the accepted schemes.
+``openral_core.assets``. The two must agree on the accepted schemes.
 """
 
 from __future__ import annotations

@@ -1,34 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """The world-voxel grid must be genuinely ``base_link``-referenced in x, y AND z.
 
-``openral_msgs/OccupancyVoxels`` carries no TF of its own: ``header.frame_id``
-names the frame its ``origin`` is measured in, and the C++ safety kernel
-rasterizes its FK'd link capsules against that grid directly, with no transform
-applied. So every producer feeding the grid and the kernel's collision FK must
-agree, to the millimetre, on what ``base_link`` means.
+``openral_msgs/OccupancyVoxels`` carries no TF of its own — ``header.frame_id``
+names the frame ``origin`` is measured in, and the C++ safety kernel rasterizes
+FK'd link capsules against that grid untransformed. So the grid producer and the
+kernel's collision FK must agree, to the millimetre, on what ``base_link`` means.
 
-On RoboCasa's ``PandaMobile`` that agreement used to be broken by the *pedestal
-duality*: the MJCF has a ground-level chassis root (``mobilebase0_base``, world
-z 0) and an elevated arm mount 0.70 m above it (``mobilebase0_support``). TF's
-``base_link`` is the **elevated** one — ``MobileBaseBridge`` publishes
-``odom -> base_link`` from the HAL's ``base_pose_6dof()``, i.e. RoboCasa's
-``robot0_base_pos``, whose z is the pedestal top, and the pi05 / rldx / XR-1
-state assemblers were all trained against that convention. The sim camera
-extrinsic, however, was measured against the ground-level chassis root, so the
-depth cloud — and therefore the OctoMap and the grid lowered from it — was
-0.70 m off in z for every TF consumer (Nav2, SLAM, the dashboard).
+RoboCasa's ``PandaMobile`` has a pedestal duality: MJCF chassis root
+``mobilebase0_base`` (world z 0) vs. elevated arm mount ``mobilebase0_support``
+(+0.70 m) — TF's ``base_link`` is the latter (``MobileBaseBridge`` publishes
+``odom -> base_link`` from ``base_pose_6dof()``). Pre-ADR-0095 the camera
+extrinsic was measured against the chassis root instead, so the depth cloud (and
+the OctoMap/grid lowered from it) was 0.70 m off in z for every TF consumer
+(Nav2, SLAM, the dashboard).
 
-These tests pin the fixed contract (ADR-0095 Option A) on a real
-``mujoco.MjModel`` that reproduces the RoboCasa pedestal topology:
+These tests pin the ADR-0095 Option A contract on a real ``mujoco.MjModel``
+reproducing the pedestal topology:
 
     mobilebase0_base (world z 0.000)      chassis root, wheels
-      └── mobilebase0_support (+0.700)    arm mount == what ``base_link`` denotes
+      └── mobilebase0_support (+0.700)    arm mount == ``base_link``
             └── robot0_link1  (+0.333)    Franka URDF joint-1 origin
 
-Nothing here moves ``base_link`` to ground level: that was a past regression
-(the assembled ``world_to_base.position.z`` read 0.0 instead of 0.70 and the
-policy reached at the wrong height). ``base_link`` stays at the pedestal top;
-the camera extrinsic is what moves onto it.
+``base_link`` stays at the pedestal top (a past regression moved
+``world_to_base.position.z`` to 0.0 instead); the camera extrinsic moves onto it.
 """
 
 from __future__ import annotations
@@ -45,11 +39,9 @@ FRANKA_JOINT1_Z_M = 0.333
 # World height of the counter slab's top face in the fixture below.
 COUNTER_TOP_WORLD_Z_M = 0.920
 
-# A real MuJoCo model with RoboCasa's pedestal topology and a forward-and-down
-# arm-mounted camera looking at a counter slab, mirroring
-# ``robot0_agentview_left`` on ``PickPlaceCounterToCabinet``. Body and joint
-# names follow robosuite's auto-prefix convention so the manifest-driven
-# resolution helpers see what they see in a composed kitchen.
+# Real MuJoCo model: RoboCasa pedestal topology + arm-mounted camera on a counter
+# slab, mirroring ``robot0_agentview_left`` on ``PickPlaceCounterToCabinet``. Body/joint
+# names follow robosuite's auto-prefix convention, matching manifest-driven resolution.
 _PEDESTAL_MJCF = """
 <mujoco model="robocasa_pedestal_frame_contract">
   <worldbody>
@@ -162,12 +154,10 @@ def _panda_mobile_description() -> object:
 
 
 def test_base_frame_body_is_the_elevated_arm_mount_not_the_chassis_root() -> None:
-    """``base_link``'s MJCF body is the pedestal-top mount, 0.70 m above the chassis.
+    """``base_link``'s MJCF body is the pedestal-top mount, 0.70 m above the chassis root.
 
-    The chassis root is what the depth **self-filter** needs (it is the
-    ``mj_multiRay`` body-exclude anchor); the arm mount is what the camera
-    *extrinsic* must be measured against, because that is the body whose pose
-    ``MobileBaseBridge`` publishes as ``odom -> base_link``.
+    Chassis root = depth self-filter's ``mj_multiRay`` exclude anchor; arm mount =
+    what ``MobileBaseBridge`` publishes as ``odom -> base_link``.
     """
     from openral_hal.depth_cloud import resolve_base_body_name, resolve_base_frame_body_name
 
@@ -195,12 +185,9 @@ _FIXED_BASE_MJCF = """
 
 
 def test_fixed_base_arm_resolves_the_same_body_as_before() -> None:
-    """No ``_support`` body → ADR-0095 changes nothing for fixed-base robosuite arms.
-
-    A LIBERO franka / ur5e roots its TF tree at the arm base itself, so the
-    chassis root and the ``base_frame`` body are the same MJCF body and both
-    resolvers must keep agreeing. This is the blast-radius bound on the new
-    resolver: only robots with a pedestal see any change at all.
+    """No ``_support`` body → ADR-0095 changes nothing for fixed-base robosuite arms
+    (LIBERO franka/ur5e): chassis root and ``base_frame`` body are the same MJCF
+    body; only pedestal robots see any change.
     """
     mujoco = pytest.importorskip("mujoco")
     from openral_core import RobotDescription
@@ -215,14 +202,10 @@ def test_fixed_base_arm_resolves_the_same_body_as_before() -> None:
 
 
 def test_depth_cloud_lands_where_tf_says_it_does_in_all_three_axes() -> None:
-    """Round-tripping the cloud through the published TF chain reproduces world truth.
-
-    ``octomap_server`` lifts the published cloud with
-    ``odom <- base_link <- <cam>_optical_frame``. Composing the *published*
-    camera extrinsic with the *published* ``base_link`` pose must therefore put
-    every point back exactly where MuJoCo cast it. A camera measured against a
-    different body than ``base_link`` denotes shows up here as a rigid offset —
-    0.700 m of pure z for RoboCasa's pedestal.
+    """Composing the published camera extrinsic with the published ``base_link`` pose
+    (``octomap_server``'s ``odom <- base_link <- <cam>_optical_frame`` chain) must put
+    every point back at MuJoCo's own world truth; a frame mismatch shows up here as a
+    rigid 0.700 m z offset.
     """
     model, data = _pedestal_model_and_data()
 
@@ -252,14 +235,11 @@ def test_depth_cloud_lands_where_tf_says_it_does_in_all_three_axes() -> None:
 
 
 def test_grid_cells_over_the_counter_sit_at_the_base_link_height_of_the_counter() -> None:
-    """The occupied cells of the lowered grid are base-referenced in z, not world-referenced.
+    """Occupied grid cells are base-referenced in z, not world-referenced.
 
-    The bridge (``openral_octomap_bridge``) rasterizes voxel centres expressed
-    in ``header.frame_id`` — ``base_link``. A counter whose top face is at world
-    z 0.920 must therefore land in the grid at 0.920 - 0.700 = 0.220, one voxel
-    row thick. Before ADR-0095 it landed at 0.920, exactly the pedestal height
-    too high, and the kernel only agreed with it because PR #103 had pushed the
-    same 0.700 m into the collision FK root.
+    ``openral_octomap_bridge`` rasterizes voxel centres in ``header.frame_id``
+    (``base_link``): world z 0.920 counter top -> grid z 0.920 - 0.700 = 0.220.
+    Pre-ADR-0095 it landed at 0.920 (PR #103's FK-root offset masked the mismatch).
     """
     model, data = _pedestal_model_and_data()
     cloud_base = _cloud_in_base_frame(model, data)
@@ -283,14 +263,10 @@ def test_grid_cells_over_the_counter_sit_at_the_base_link_height_of_the_counter(
 
 
 def test_collision_fk_root_places_link1_where_the_mjcf_does() -> None:
-    """The manifest's ``panda_joint1`` origin is measured from the SAME ``base_link``.
-
-    The kernel FKs its capsules from ``base_link`` using the manifest origins
-    alone, then rasterizes them against a grid in the same frame. So the
-    manifest's joint-1 origin must equal MuJoCo's ``robot0_link1`` relative to
-    the arm-mount body — the plain Franka URDF 0.333 m, *not* 0.333 + the 0.700 m
-    pedestal. The pedestal is already carried by ``odom -> base_link``; adding it
-    to the FK root as well double-counts it for every TF consumer.
+    """``panda_joint1``'s manifest origin is measured from the same ``base_link`` the
+    kernel FKs capsules from: plain Franka URDF 0.333 m, not 0.333 + the 0.700 m
+    pedestal (already carried by ``odom -> base_link`` — double-counted if also
+    added to the FK root).
     """
     model, data = _pedestal_model_and_data()
     description = _panda_mobile_description()
@@ -307,14 +283,9 @@ def test_collision_fk_root_places_link1_where_the_mjcf_does() -> None:
 
 
 def test_frame_alignment_does_not_change_the_kernels_protective_envelope() -> None:
-    """The paired fix is a pure change of origin: relative geometry is untouched.
-
-    ADR-0095 lands two equal-and-opposite -0.700 m shifts in one commit — the
-    grid content moves down 0.700 m (it becomes truly base-referenced) and the
-    FK root moves down 0.700 m (1.033 -> 0.333). Their *difference*, which is
-    the only thing a capsule-vs-voxel distance depends on, is invariant. This
-    test states that invariant on the fixture's own numbers: link 1 stands the
-    same distance above the counter before and after.
+    """ADR-0095's two equal-and-opposite -0.700 m shifts (grid content; FK root
+    1.033 -> 0.333) leave their difference — the only thing a capsule-vs-voxel
+    distance depends on — invariant.
     """
     # Pre-ADR-0095: grid content at world z, FK root at 1.033 above base_link.
     before = (COUNTER_TOP_WORLD_Z_M) - (1.033)

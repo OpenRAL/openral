@@ -35,6 +35,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.sim.conftest import _robotwin_obs
+
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
 
 
@@ -106,7 +108,6 @@ pytestmark = [
 ]
 
 _VRAM_CEILING_MIB = 8000
-_STATE_DIM = 14
 _ACTION_DIM = 14
 
 
@@ -142,15 +143,6 @@ def lingbot_adapter():
     adapter = POLICIES.get("lingbot_vla")(env_cfg)  # connect() -> ping
     yield adapter
     adapter.close()
-
-
-def _robotwin_obs() -> dict[str, object]:
-    rng = np.random.default_rng(0)
-    img = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
-    return {
-        "images": {"camera1": img, "camera2": img.copy(), "camera3": img.copy()},
-        "state": np.zeros(_STATE_DIM, dtype=np.float32),
-    }
 
 
 def test_step_returns_finite_14d_action(lingbot_adapter) -> None:

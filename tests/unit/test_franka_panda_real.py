@@ -1,9 +1,9 @@
-"""Unit tests for :class:`FrankaPandaRealHAL` — the real-hardware Franka adapter.
+"""Unit tests for ``FrankaPandaRealHAL`` — the real-hardware Franka adapter.
 
-The adapter wraps :class:`RosControlHAL` so the heavy hot-path logic is
+The adapter wraps ``RosControlHAL`` so the heavy hot-path logic is
 already covered by ``tests/unit/test_hal.py``; this file pins the
 Franka-specific surface (FCI metadata, manifest pointer, e-stop topic) and
-the closed-loop behaviour against :class:`SimTransport` (real, not mocked).
+the closed-loop behaviour against ``SimTransport`` (real, not mocked).
 """
 
 from __future__ import annotations
@@ -129,11 +129,9 @@ class TestProtocolConformance:
         finally:
             hal.disconnect()
 
-    def test_disconnect_idempotent(self, hal: FrankaPandaRealHAL) -> None:
-        hal.connect()
-        hal.disconnect()
-        # Second call must not raise.
-        hal.disconnect()
+    # test_disconnect_idempotent moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent
+    # (parametrized over HAL_BUILDERS, "FrankaPandaRealHAL" included).
 
     def test_send_action_publishes_to_franka_controller(
         self, hal: FrankaPandaRealHAL, transport: SimTransport
@@ -170,15 +168,9 @@ class TestSafety:
             hal.estop()
         assert any(topic == "/error_recovery/goal" for topic, _msg in transport.calls)
 
-    def test_after_estop_send_action_fails(
-        self, hal: FrankaPandaRealHAL, transport: SimTransport
-    ) -> None:
-        hal.connect()
-        with pytest.raises(ROSEStopRequested):
-            hal.estop()
-        # Drop into a clean state — sending an action without reconnecting fails.
-        with pytest.raises(ROSRuntimeError):
-            hal.send_action(_hold_action())
+    # test_after_estop_send_action_fails moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_send_action_after_estop_fails
+    # (parametrized over "FrankaPandaRealHAL" / "SawyerRealHAL").
 
 
 # ── Staleness guard (delegated to RosControlHAL) ──────────────────────────────

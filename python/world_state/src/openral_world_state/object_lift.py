@@ -61,7 +61,7 @@ def homogeneous_from_quat_xyz(
         ObjectsLiftError: If the quaternion norm is effectively zero.
 
     Note:
-        The math now lives in :func:`openral_core.geometry.homogeneous_from_quat_xyz`
+        The math now lives in ``openral_core.geometry.homogeneous_from_quat_xyz``
         — the layer-0 HAL needs the same TF→matrix step for its vision
         attachment bridge and must not reach up to layer 2 for it. This wrapper
         keeps the world-state-local ``ObjectsLiftError`` contract that every
@@ -167,11 +167,11 @@ def depth_cloud_to_centers_base(
 ) -> NDArray[np.float64]:
     """Depth-cloud points → occupied centers ``(M, 3)`` in the base frame (#11).
 
-    The octomap-free fallback depth source for :class:`VoxelFrustumLifter`. Drops
+    The octomap-free fallback depth source for ``VoxelFrustumLifter``. Drops
     non-finite returns (depth holes), uniformly subsamples to ``max_points`` so
     a dense cloud can't stall the per-detection projection, and maps the cloud
     from its optical frame into the robot base frame. The result is
-    interchangeable with :func:`decode_occupied_centers` output as the lifter's
+    interchangeable with ``decode_occupied_centers`` output as the lifter's
     ``occupied_centers_base`` argument.
 
     Args:

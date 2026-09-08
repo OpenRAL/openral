@@ -1,24 +1,20 @@
 # RobotDescription — Universal Robots UR10e (real hardware via ur_robot_driver).
 #
-# This manifest is the production / real-HW entry point: sdk_kind: closed,
-# hal.real: openral_hal.ur_real:UR10eRealHAL. It mirrors
-# UR10e_REAL_DESCRIPTION in python/hal/src/openral_hal/ur_real.py — drift
-# guarded by tests/unit/test_robot_manifests_match_hal_constants.py.
+# Production/real-HW entry point: sdk_kind: closed, hal.real:
+# openral_hal.ur_real:UR10eRealHAL. Mirrors UR10e_REAL_DESCRIPTION in
+# python/hal/src/openral_hal/ur_real.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py). Sim-only entry point
+# (UR10e_DESCRIPTION / openral_hal.ur:UR10eHAL, MuJoCo) lives at
+# python/hal/src/openral_hal/ur.py:188 — same 6-DoF kinematics/joint naming,
+# different payload/reach/velocity/effort limits.
 #
-# A separate sim-only entry point (UR10e_DESCRIPTION /
-# openral_hal.ur:UR10eHAL, MuJoCo-backed) lives in
-# python/hal/src/openral_hal/ur.py:188. The two arms share kinematic
-# structure (6-DoF revolute, identical joint naming) but differ in payload,
-# reach, and per-joint velocity / effort limits.
+# Limits from the UR10e datasheet (universal-robots.com/products/ur10e).
+# Shoulder/lift velocities capped at 120deg/s = 2.094 rad/s — larger inertia
+# than UR5e caps the safe slew rate.
 #
-# Joint limits, velocities, and torques are taken from the UR10e datasheet:
-# https://www.universal-robots.com/products/ur10e/
-# Velocities are slower on the shoulder/lift joints (120°/s = 2.094 rad/s)
-# because the larger inertia of the UR10e caps the safe slew rate.
-#
-# License posture (CLAUDE.md §7.4): same as the UR5e manifest — ur_robot_driver
-# is BSD-3 (open); the closed sdk_kind flags the runtime dependency on real
-# UR hardware + the URCap "external_control" program on the teach pendant.
+# License (CLAUDE.md §7.4): ur_robot_driver is BSD-3 (open); closed sdk_kind
+# flags the runtime dependency on real UR hardware + the URCap
+# "external_control" program on the teach pendant.
 
 name: "ur10e"
 embodiment_kind: "manipulator"
@@ -34,19 +30,14 @@ base_frame: "ur10e_base_link"
 assets:
   urdf:
     ref: "file:ur10e.urdf"
-    # `base_link`, NOT the URDF's `world` root, and deliberately so:
-    # `root_frame` names the link `base_frame` ATTACHES TO — the one the
-    # manifest's collision geometry hangs off — not the tree's root.
-    # `derive_robot_relative_height_band` reads this pair to place every UR
-    # collision volume (`joints` lists only movable joints, so `base_link` is
-    # no joint's child and the `base_frame` chain alone cannot reach it).
-    # Retargeting it to `world` makes those volumes unplaceable and the band
-    # refuses outright — verified, not assumed.
-    #
-    # Known and accepted: robot_state_publisher also publishes the URDF's
-    # `world -> base_link`, so `base_link` has two parents. Both hops are
-    # identity and nothing consumes `world` here, so the ambiguity is inert;
-    # it is not worth trading a working height band for.
+    # `base_link`, NOT the URDF's `world` root, deliberately: `root_frame` names
+    # the link `base_frame` attaches to (what collision geometry hangs off), not
+    # the tree root. `derive_robot_relative_height_band` needs this pair to
+    # place every UR collision volume — retargeting to `world` makes those
+    # volumes unplaceable and the band refuses outright (verified). Known and
+    # accepted: robot_state_publisher also publishes `world -> base_link`
+    # (identity transform, unconsumed here) giving `base_link` two parents —
+    # inert, not worth trading a working height band for.
     root_frame: "base_link"
     base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   mjcf: "rd:ur10e_mj_description"

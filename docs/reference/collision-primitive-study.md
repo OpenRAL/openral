@@ -314,7 +314,7 @@ recommend it.
 **The capsule is catastrophic here — 96–112 mm on every link but the wrist.**
 None of the seven links is rod-like enough for one; the Panda's links are
 flanged, tapered blocks, not rods. This retroactively vindicates #103's
-conversion from capsules to boxes, and it is worth recording because
+conversion from capsules to boxes.
 `urdf_lowering.lower_link_geometry` **still emits a PCA capsule for any mesh
 collision** — so re-lowering `panda_mobile` from its URDF today would regress
 the envelope by 1.3–2.1×. That is a live trap, not a historical note.
@@ -374,8 +374,8 @@ pick a scalar at all. That is the generalisation:
 > are wrong in opposite directions. Use the support projection
 > `Σ_k |û·ê_k|·h_k`, or use the true box.**
 
-The middle row's lesson survives its own correction, and is worth restating
-because the original version of this section got the consequence backwards.
+The middle row's lesson survives its own correction — the original version of
+this section got the consequence backwards.
 
 "Conservative" is not a property of a single predicate; it is a property of the
 pipeline. That much was right. What was wrong was the claim that

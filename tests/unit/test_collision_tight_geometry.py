@@ -1,24 +1,20 @@
 """The containment obligation the safety kernel cannot discharge for itself.
 
-The kernel checks, at ``on_configure``, that every declared tight
-representation sits inside the shipped OBB whose broad-phase window it will be
-checked in (``validate_tight_geometry``), and that each stage-2 hull vertex
-satisfies its own 26-DOP slabs. That is two of the three links in the chain::
+The kernel checks, at ``on_configure``, that every declared tight representation
+sits inside its shipped OBB (``validate_tight_geometry``) and that each stage-2
+hull vertex satisfies its own 26-DOP slabs — two of three links in the chain::
 
     link mesh  ⊆  exact convex hull  ⊆  26-DOP  ⊆  shipped OBB
 
-The first link is the one the kernel structurally cannot verify: it never sees
-a mesh. It is discharged here, against the **real** robosuite collision meshes
-the manifest's numbers were derived from — not against a fixture, and not
-against the generator's own intermediate output, because a generator checking
-itself proves nothing about the numbers that shipped.
+The first link (mesh ⊆ hull) is what the kernel never sees, so it's discharged
+here against the **real** robosuite collision meshes the manifest's numbers were
+derived from — not a fixture, not the generator's own intermediate output.
 
-This is the file a safety-WG reviewer should read to satisfy the "containment,
-per link, as a proof and not a sample" obligation in
+Satisfies the "containment, per link, as a proof and not a sample" obligation in
 ``docs/reference/collision-tight-geometry.md`` §10.5 item 1.
 
-Requires robosuite + mujoco (the mesh source). Without them the mesh-side
-proofs cannot run and are skipped; the pure-schema invariants below still do.
+Requires robosuite + mujoco; without them the mesh-side proofs skip and the
+pure-schema invariants below still run.
 """
 
 from __future__ import annotations
@@ -247,17 +243,12 @@ def test_the_declared_geometry_reproduces_from_the_mesh(panda: RobotDescription)
 def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
     """The DOP must actually be smaller than the box, by the amount claimed.
 
-    A containment proof alone would be satisfied by a DOP identical to the box.
-    This pins the *benefit* side of the hazard entry: the support excess drops
-    from 53.3 mm to 25.7 mm on link1, 46.8 to 23.0 on link2, 45.2 to 19.0 on
-    link5 and 28.3 to 13.0 on link7 — and a change that quietly lost that would
-    still pass every containment test above.
-
-    link3, link4 and link6 were added 2026-09-07 (75.6 -> 23.8, 76.1 -> 23.2 and
-    52.7 -> 21.5 mm). link6 is the one the evidence asked for: it dominates 18 of
-    the 29 link-class stops in the 120-run #204 battery, and the 31.2 mm it
-    recovers is almost exactly the 33.1 mm of median link-class excess that
-    survives once the voxel term is removed (PLAN.md §5).
+    A containment proof alone would be satisfied by a DOP identical to the box; this
+    pins the *benefit* side of the hazard entry. Support excess: 53.3->25.7 mm link1,
+    46.8->23.0 link2, 45.2->19.0 link5, 28.3->13.0 link7. link3/4/6 added 2026-09-07:
+    75.6->23.8, 76.1->23.2, 52.7->21.5 mm. link6 dominates 18 of 29 link-class stops
+    in the 120-run #204 battery; its 31.2 mm recovery is close to the 33.1 mm median
+    link-class excess once the voxel term is removed (PLAN.md §5).
     """
     gen = _mesh_tools()
     import numpy as np
@@ -387,28 +378,20 @@ def test_a_hull_over_the_vertex_budget_is_refused() -> None:
 def test_refine_dop_to_budget_beats_the_dop_without_escaping_it() -> None:
     """The generator's third option for a link whose exact hull is over budget.
 
-    ``panda_link1``'s exact hull is 1588 vertices against
-    ``MAX_TIGHT_HULL_VERTICES``, so ``derive_tight_geometry`` used to fall back
-    to the 26-DOP alone. ``refine_dop_to_budget`` intersects that DOP with the
-    exact hull's own tangent face planes instead, worst-violation first.
+    ``panda_link1``'s exact hull (1588 vertices, over ``MAX_TIGHT_HULL_VERTICES``)
+    forced ``derive_tight_geometry`` to fall back to the 26-DOP alone;
+    ``refine_dop_to_budget`` instead intersects that DOP with the exact hull's own
+    tangent face planes, worst-violation first.
 
-    Nothing in ``robots/`` ships this envelope yet -- the 2026-09-07 battery
-    measured it moving link1's stops by 0.0003 mm, so the manifest change was
-    withdrawn and only the tool landed (``docs/reference/
-    collision-validation-evidence.md``, 2026-09-07). That is precisely why the
-    check has to live here: without a manifest exercising it, an unverified
-    generator path would rot until the next reviewer trusted it.
+    Not shipped in ``robots/`` yet — the 2026-09-07 battery measured it moving
+    link1's stops by only 0.0003 mm, so the manifest change was withdrawn and only
+    the tool landed (``docs/reference/collision-validation-evidence.md``,
+    2026-09-07); this test is what keeps the unexercised path from rotting.
 
-    The three properties are the ones a safety-WG reviewer would have to
-    re-derive by hand, and they are structural rather than numeric:
-
-    * ``mesh ⊆ result`` -- every plane added is tangent to ``conv(mesh)``, so
-      no addition can cut the mesh;
-    * ``result ⊆ DOP`` -- the DOP's own slabs are never removed, which is what
-      the ``TightCollisionGeometry`` schema requires and what a
-      subset-then-expand construction cannot promise;
-    * it is *strictly* tighter than the DOP it started from, or it would not be
-      worth the vertices.
+    Checks three structural properties: ``mesh ⊆ result`` (every added plane is
+    tangent to ``conv(mesh)``); ``result ⊆ DOP`` (the DOP's own slabs are never
+    removed, per the ``TightCollisionGeometry`` schema); and strictly tighter than
+    the starting DOP.
     """
     gen = _mesh_tools()
     import numpy as np

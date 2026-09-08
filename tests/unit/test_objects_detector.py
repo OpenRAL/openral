@@ -50,6 +50,8 @@ from openral_runner.backends.gstreamer.pipeline import (  # noqa: E402  # reason
     inspect_element_present,
 )
 
+from tests.unit.conftest import _write_rtdetr_like_onnx  # noqa: E402
+
 # ── Labels used by the ONNX fixtures ─────────────────────────────────────────
 
 # 4-class fixture: logits and boxes are both (1, N, 4) → exercises the
@@ -62,62 +64,14 @@ _LABELS = ["person", "bicycle", "car", "dog"]
 _LABELS_5 = ["person", "bicycle", "car", "dog", "cat"]
 
 # ── ONNX fixture helper ───────────────────────────────────────────────────────
-
-
-def _write_rtdetr_like_onnx(path: pathlib.Path) -> None:
-    """Write a deterministic RT-DETR-like ONNX to *path*.
-
-    The model has one input (``images`` float32 ``[1,3,640,640]``) and three
-    outputs:
-
-    * ``logits``  float32 ``(1, 3, 4)`` — constant pre-sigmoid class scores.
-    * ``boxes``   float32 ``(1, 3, 4)`` — constant cxcywh normalised.
-    * ``images_passthrough``  float32 ``(1,3,640,640)`` — identity of the
-      input, added so ONNXRuntime accepts the model despite the ``Constant``
-      nodes not referencing ``images``.
-    """
-    # Logits: shape (1, 3, 4) — 3 queries, 4 classes.
-    logits_data = np.array(
-        [[[-5.0, -5.0, 3.0, -5.0], [2.0, -5.0, -5.0, -5.0], [-5.0, -5.0, -5.0, -5.0]]],
-        dtype=np.float32,
-    )
-    # Boxes: cxcywh normalised [0, 1], shape (1, 3, 4).
-    boxes_data = np.array(
-        [[[0.5, 0.5, 0.2, 0.4], [0.25, 0.25, 0.1, 0.1], [0.8, 0.8, 0.1, 0.1]]],
-        dtype=np.float32,
-    )
-
-    logits_tensor = nph.from_array(logits_data, name="logits_const")
-    boxes_tensor = nph.from_array(boxes_data, name="boxes_const")
-
-    images_input = h.make_tensor_value_info("images", onnx.TensorProto.FLOAT, [1, 3, 640, 640])
-    logits_out = h.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [1, 3, 4])
-    boxes_out = h.make_tensor_value_info("boxes", onnx.TensorProto.FLOAT, [1, 3, 4])
-    passthrough_out = h.make_tensor_value_info(
-        "images_passthrough", onnx.TensorProto.FLOAT, [1, 3, 640, 640]
-    )
-
-    # Consume images via Identity so ORT accepts the input.
-    id_node = h.make_node("Identity", inputs=["images"], outputs=["images_passthrough"])
-    logits_node = h.make_node("Constant", inputs=[], outputs=["logits"], value=logits_tensor)
-    boxes_node = h.make_node("Constant", inputs=[], outputs=["boxes"], value=boxes_tensor)
-
-    graph = h.make_graph(
-        nodes=[id_node, logits_node, boxes_node],
-        name="rtdetr_test",
-        inputs=[images_input],
-        outputs=[logits_out, boxes_out, passthrough_out],
-    )
-    model = h.make_model(graph, opset_imports=[h.make_opsetid("", 13)])
-    model.ir_version = 8
-    onnx.checker.check_model(model)
-    onnx.save(model, str(path))
+# The 4-class fixture (``_write_rtdetr_like_onnx``) lives in
+# ``tests/unit/conftest.py`` — also used by ``test_detector_runner_e2e.py``.
 
 
 def _write_rtdetr_like_onnx_5class(path: pathlib.Path) -> None:
     """Write a deterministic RT-DETR-like ONNX with 5 classes to *path*.
 
-    Unlike :func:`_write_rtdetr_like_onnx`, ``num_classes`` is 5 so the logits
+    Unlike ``_write_rtdetr_like_onnx``, ``num_classes`` is 5 so the logits
     output is ``(1, 2, 5)`` while boxes stays ``(1, 2, 4)`` — the two outputs
     are now distinguishable purely by shape (``last_dim != 4 → logits``), which
     is the production identification path. Output order is deliberately
@@ -199,7 +153,7 @@ def onnx_path_5class(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
 
 class TestObjectsDetectorDetect:
-    """Tests for :meth:`ObjectsDetector.detect`."""
+    """Tests for ``ObjectsDetector.detect``."""
 
     def test_detect_returns_thresholded_detections(self, detector: ObjectsDetector) -> None:
         """Two queries pass the 0.5 threshold; q2 (≈0.007) is filtered out."""
@@ -301,7 +255,7 @@ class TestObjectsDetectorDetect:
 
 
 class TestObjectsDetectorSummarise:
-    """Tests for :meth:`ObjectsDetector.summarise`."""
+    """Tests for ``ObjectsDetector.summarise``."""
 
     def test_summarise_counts_labels(self, detector: ObjectsDetector) -> None:
         """Counter aggregation: 2x car + 1x person, and sensor_id in output."""
@@ -344,7 +298,7 @@ class TestObjectsDetectorSummarise:
 
 
 class TestTierSelection:
-    """Tests for :func:`select_detector_tier` and :func:`make_objects_detector`."""
+    """Tests for ``select_detector_tier`` and ``make_objects_detector``."""
 
     def test_select_tier_cpu_without_nvinfer(self) -> None:
         """On CPU_ONLY platform, tier is CPU_ONNX — unless nvinfer is present."""

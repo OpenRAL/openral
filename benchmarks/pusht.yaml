@@ -1,23 +1,19 @@
 # PushT benchmark suite — single 2-D pymunk task.
 #
-# Mirrors the Diffusion Policy paper's protocol on the gym-pusht env
-# (Chi et al., 2023): 50 evaluation rollouts, mean coverage as the
-# reward signal.
+# Mirrors the Diffusion Policy paper's protocol on gym-pusht (Chi et al.,
+# 2023): 50 evaluation rollouts, mean coverage as the reward signal.
 #
-# Shape: bare list of BenchmarkScenes; suite id = filename
-# stem ("pusht"). Single-task suite — one BenchmarkScene replayed
-# across 50 seeds. Suite-level invariants are enforced by
-# :func:`openral_core.raise_on_invalid_suite`.
+# Shape: bare list of BenchmarkScenes; suite id = filename stem ("pusht").
+# Single-task suite — one BenchmarkScene replayed across 50 seeds. Invariants
+# enforced by `openral_core.raise_on_invalid_suite`.
 #
-# Notes: gym_pusht/PushT-v0. The paper's headline metric is mean
-# coverage (IoU between the T block and its target), not a binary
-# success flag; the runner reports both via EpisodeResult.success
-# (gym-pusht's info.is_success) and EpisodeResult.total_reward (the
-# cumulative coverage signal). Existing skills/diffusion-pusht/eval/pusht.json
+# gym_pusht/PushT-v0. Headline metric is mean coverage (IoU between the T
+# block and target), not binary success; runner reports both via
+# EpisodeResult.success (gym-pusht's info.is_success) and
+# EpisodeResult.total_reward (cumulative coverage). skills/diffusion-pusht/eval/pusht.json
 # snapshot reports the paper's 0.91 mean IoU.
 #
-# Run:
-#   openral benchmark run --suite pusht --rskill diffusion-pusht
+# Run: openral benchmark run --suite pusht --rskill diffusion-pusht
 
 - scene:
     id: pusht

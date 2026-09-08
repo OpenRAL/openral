@@ -1,33 +1,20 @@
 """Schema-compliance tests for every in-tree robot, scene, and sensor manifest.
 
-Policy
-------
 Every manifest YAML in ``robots/``, ``scenes/benchmark/``, ``scenes/sim/``,
-and ``scenes/deploy/`` **must** be explicitly listed in the registry below.
-If a new file is added to the repository without being added here the
-*completeness* tests will fail, forcing the author to both list the file and
-verify it passes schema validation.
+and ``scenes/deploy/`` must be explicitly listed in the registry below —
+not glob-discovered, so a new file forces conscious registration and the
+registries stand as the audit trail of what exists and its schema tier.
 
-This is intentionally NOT a dynamic glob-all approach:
-- New files must be consciously registered, not silently picked up.
-- The registries act as the single-place audit trail of what manifests
-  exist and which schema tier each belongs to.
+Coverage:
+- ``_ROBOT_IDS``       → ``robots/<id>/robot.yaml``       via ``RobotDescription``
+- ``_BENCHMARK_STEMS`` → ``scenes/benchmark/<stem>.yaml`` via ``BenchmarkScene``
+- ``_SIM_STEMS``       → ``scenes/sim/<stem>.yaml``       via ``SimScene``
+- ``_DEPLOY_STEMS``    → ``scenes/deploy/<stem>.yaml``    via ``DeployScene``
+- Per-robot sensor entries → ``SensorSpec`` (intrinsics for RGB/depth/
+  stereo; n_channels + range for lidar/point-cloud).
 
-Coverage
---------
-- :data:`_ROBOT_IDS`       → ``robots/<id>/robot.yaml``       via :class:`RobotDescription`
-- :data:`_BENCHMARK_STEMS` → ``scenes/benchmark/<stem>.yaml`` via :class:`BenchmarkScene`
-- :data:`_SIM_STEMS`       → ``scenes/sim/<stem>.yaml``       via :class:`SimScene`
-- :data:`_DEPLOY_STEMS`    → ``scenes/deploy/<stem>.yaml``    via :class:`DeployScene`
-- Per-robot sensor entries → :class:`SensorSpec` with modality-specific
-  invariants (intrinsics for RGB/depth/stereo; n_channels + range for
-  lidar/point-cloud).
-
-Adding a new manifest
----------------------
-1. Place the YAML in the correct subdirectory (determines schema tier).
-2. Add its identifier to the matching registry constant below.
-3. Run ``just test -k test_all_manifests`` — all tests must pass.
+New manifest: add it to the matching registry constant, then
+``just test -k test_all_manifests``.
 """
 
 from __future__ import annotations
@@ -259,7 +246,7 @@ _SENSOR_PARAMS = _collect_sensors()
 
 @pytest.mark.parametrize("robot_id", _ROBOT_IDS)
 def test_robot_manifest_validates(robot_id: str) -> None:
-    """``robots/<id>/robot.yaml`` round-trips through :class:`RobotDescription`."""
+    """``robots/<id>/robot.yaml`` round-trips through ``RobotDescription``."""
     from openral_core.schemas import RobotDescription
 
     desc = RobotDescription.from_yaml(str(_robot_yaml(robot_id)))
@@ -276,7 +263,7 @@ def test_robot_manifest_validates(robot_id: str) -> None:
     ids=[sid for sid, _ in _SENSOR_PARAMS],
 )
 def test_sensor_spec_validates(sensor_id: str, sensor_raw: dict[str, Any]) -> None:
-    """Each sensor entry in a robot manifest validates as :class:`SensorSpec`.
+    """Each sensor entry in a robot manifest validates as ``SensorSpec``.
 
     Modality-specific invariants enforced here (beyond Pydantic field typing):
 
@@ -306,7 +293,7 @@ def test_sensor_spec_validates(sensor_id: str, sensor_raw: dict[str, Any]) -> No
 
 @pytest.mark.parametrize("stem", _BENCHMARK_STEMS)
 def test_benchmark_scene_validates(stem: str) -> None:
-    """``scenes/benchmark/<stem>.yaml`` round-trips through :class:`BenchmarkScene`."""
+    """``scenes/benchmark/<stem>.yaml`` round-trips through ``BenchmarkScene``."""
     from openral_core.schemas import BenchmarkScene
 
     scene = BenchmarkScene.from_yaml(str(_scene_yaml("benchmark", stem)))
@@ -321,7 +308,7 @@ def test_benchmark_scene_validates(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _SIM_STEMS)
 def test_sim_scene_validates(stem: str) -> None:
-    """``scenes/sim/<stem>.yaml`` round-trips through :class:`SimScene`."""
+    """``scenes/sim/<stem>.yaml`` round-trips through ``SimScene``."""
     from openral_core.schemas import SimScene
 
     scene = SimScene.from_yaml(str(_scene_yaml("sim", stem)))
@@ -334,7 +321,7 @@ def test_sim_scene_validates(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _DEPLOY_STEMS)
 def test_deploy_scene_validates(stem: str) -> None:
-    """``scenes/deploy/<stem>.yaml`` round-trips through :class:`DeployScene`."""
+    """``scenes/deploy/<stem>.yaml`` round-trips through ``DeployScene``."""
     from openral_core.schemas import DeployScene
 
     scene = DeployScene.from_yaml(str(_scene_yaml("deploy", stem)))

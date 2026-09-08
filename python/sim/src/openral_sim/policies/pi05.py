@@ -1,22 +1,17 @@
 """π0.5 (Physical Intelligence) policy adapter.
 
-Wraps :class:`lerobot.policies.pi05.modeling_pi05.PI05Policy`. π0.5 shares
-the same observation contract as SmolVLA on LIBERO (8-D state + 2 RGB
-cameras) but uses a different lerobot policy class and a 3.4 B-parameter
-PaliGemma backbone, so it gets its own adapter.
+Wraps ``lerobot.policies.pi05.modeling_pi05.PI05Policy``. Same
+observation contract as SmolVLA on LIBERO (8-D state + 2 RGB cameras),
+different lerobot policy class and a 3.4 B-parameter PaliGemma backbone.
+Mirrors ``openral_sim.policies.smolvla``: bare rSkill reference as
+weights URI, lerobot ``make_pre_post_processors`` factory, batch built
+from the eval-layer ``Observation`` (flat ``state`` + ``images`` dict).
 
-Mirrors :mod:`openral_sim.policies.smolvla` in shape:
-- Bare rSkill reference required as weights URI.
-- Reuses the lerobot ``make_pre_post_processors`` factory.
-- Builds the policy input batch from the eval-layer ``Observation`` (flat
-  ``state`` + ``images`` dict).
+Bf16 is the default — fp32 weights are ~13.6 GiB and OOM on an 8 GiB GPU.
+``QuantizationConfig.dtype`` from the rSkill manifest is honoured when set.
 
-Bf16 is the default for π0.5 — fp32 weights are ~13.6 GiB and OOM on an
-8 GiB GPU. The rSkill manifest's ``QuantizationConfig.dtype`` is honoured
-when set; otherwise the lerobot default applies.
-
-This module imports torch / lerobot lazily so installing
-``openral-sim`` never pulls them transitively.
+Imports torch / lerobot lazily so installing ``openral-sim`` never pulls
+them transitively.
 """
 
 from __future__ import annotations
@@ -90,42 +85,32 @@ class _PI05Adapter:
     _postprocessor: Any
     _torch: Any
     _flip_images_180: bool = True
-    # Independent from `_flip_images_180`. When True, applies a *vertical*
-    # flip (`img[::-1, :, :]`) BEFORE any other transform -- this matches
-    # `robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.get_basic_observation`,
-    # which the canonical openpi-robocasa eval uses to feed images to the
-    # policy. Both `RoMALab/pi05_robocasa-MG_*` and
-    # `robocasa/robocasa365_checkpoints/pi05_pretrain_human300` were
-    # benchmarked against vertically-flipped frames, so leaving this off
-    # presents the vision encoder with an upside-down scene relative to
-    # training -- empirically the policy then produces small drift
-    # actions and never commits to a grasp.
+    # Independent of `_flip_images_180`: applies a vertical flip
+    # (`img[::-1, :, :]`) before any other transform, matching
+    # `RoboCasaGymEnv.get_basic_observation`'s H-only flip used by the
+    # canonical openpi-robocasa eval. `RoMALab/pi05_robocasa-MG_*` and
+    # `robocasa365_checkpoints/pi05_pretrain_human300` were both
+    # benchmarked against vertically-flipped frames.
     _flip_vertical: bool = False
     _state_dim: int | None = None
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
-    # Format string applied to each image-batch key. The default
-    # ``"observation.images.{cam}"`` matches the SmolVLA + RoMALab
-    # pi0.5 RoboCasa-MG_300 input feature naming; the lerobot pi05
-    # 10tasks-200k checkpoint by ruiname uses the singular
-    # ``"observation.image.{cam}"`` instead, so the YAML can override.
+    # Default matches SmolVLA + RoMALab pi0.5 RoboCasa-MG_300 naming; the
+    # lerobot pi05 10tasks-200k (ruiname) checkpoint uses the singular
+    # "observation.image.{cam}" instead — override via YAML.
     _image_input_template: str = "observation.images.{cam}"
-    # Per-camera-key -> alias remap merged on top of the built-in
-    # ``{"camera1": "image", "camera2": "image2"}`` map. Used by the
-    # ruiname pi05 RoboCasa checkpoint to rewrite the robosuite key
-    # ``robot0_agentview_left_image`` to the model's input feature name
-    # ``agentview`` (and ``robot0_eye_in_hand_image`` to ``wrist``).
+    # Merged on top of the built-in {"camera1": "image", "camera2": "image2"}
+    # map. Used by the ruiname RoboCasa checkpoint to rewrite
+    # robosuite's `robot0_agentview_left_image` -> `agentview` (and
+    # `robot0_eye_in_hand_image` -> `wrist`).
     _camera_aliases: dict[str, str] = field(default_factory=dict)
     _last_input_frame: NDArray[np.uint8] | None = None
-    # Dtype to cast float inputs to before forward. None → leave whatever
-    # the preprocessor produced. Used by the nf4 path so PaliGemma's
-    # bf16 Linear weights match the activation dtype.
+    # Dtype to cast float inputs to before forward; None leaves the
+    # preprocessor's dtype. Used by nf4 so PaliGemma's bf16 Linear
+    # weights match the activation dtype.
     _input_dtype: Any = None
-    # Wrap forward in ``torch.amp.autocast(device_type, dtype)`` when set
-    # — needed in nf4 mode because some intermediate tensors (RMSNorm
-    # outputs, RoPE rotations, etc.) are computed in fp32 inside
-    # PaliGemma even when params are bf16, and the subsequent Linear
-    # then trips a dtype mismatch. autocast silently up/down-casts so
-    # mixed-precision compute Just Works.
+    # `torch.amp.autocast(device_type, dtype)` wrapper for forward, needed
+    # in nf4/bf16 mode: some PaliGemma intermediates (RMSNorm, RoPE) run
+    # in fp32 even when params are bf16, tripping a dtype mismatch.
     _autocast_dtype: Any = None
     _chunk_executor: Any = None
 
@@ -196,7 +181,7 @@ class _PI05Adapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
@@ -264,33 +249,21 @@ _log = structlog.get_logger(__name__)
 def _expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) -> set[str]:
     """Extend ``covered_keys`` to include every param tied to a covered one.
 
-    PaliGemma's ``language_model.embed_tokens.weight`` is tied to the
-    LM head (Gemma's ``model.embed_tokens`` ↔ ``lm_head.weight``). The
-    source safetensors only stores the head; transformers' real
-    ``from_pretrained`` plumbs the tie automatically, but our manual
-    fast path materialises both slots separately via ``to_empty`` and
-    only learns about the tie when ``policy.tie_weights()`` runs.
+    PaliGemma's ``language_model.embed_tokens.weight`` is tied to the LM
+    head; source safetensors store only the head, and our manual fast
+    path (``to_empty`` + a later ``policy.tie_weights()``) materialises
+    both slots separately, so the tie must be detected explicitly via
+    shared-storage groups (``Tensor.untyped_storage().data_ptr()``).
 
-    If the caller invokes that ``tie_weights`` between ``to_empty`` and
-    the upcoming reset / load, the tied params end up sharing storage.
-    This helper detects shared-storage groups via the state_dict's
-    ``Tensor.untyped_storage().data_ptr()`` and adds every member of a
-    group to ``covered_keys`` whenever any member is already covered.
+    Without this, the targeted reset walk fires a ~10 s ``normal_`` init
+    across the 256k×2048 ``embed_tokens.weight`` slot that the following
+    ``load_state_dict`` would overwrite anyway via the tie.
 
-    Without it, the targeted reset walk fires a ~10 s ``normal_``
-    init across the 256k×2048 ``embed_tokens.weight`` slot — the value
-    that the immediately-following ``load_state_dict`` would overwrite
-    anyway via the tie.
-
-    Uses ``named_parameters()`` rather than ``state_dict()`` because the
-    latter triggers ``Linear8bitLt._save_to_state_dict``, which on a
-    pre-``.to(<cuda>)`` policy crashes looking for the ``SCB`` attr
-    that bnb only populates during the int8 pack (i.e. after the
-    upcoming ``.to(<cuda>)`` we're trying to optimise).
-    ``remove_duplicate=False`` is critical here — by default
-    ``named_parameters`` yields each Parameter exactly once even when
-    multiple module paths point to it (which is *the whole point* of
-    weight tying), so the tied group's second key would be invisible.
+    Uses ``named_parameters(remove_duplicate=False)`` rather than
+    ``state_dict()``: the latter triggers ``Linear8bitLt._save_to_state_dict``,
+    which crashes pre-``.to(<cuda>)`` looking for the bnb-only ``SCB`` attr;
+    ``remove_duplicate=False`` is required so both tied keys are visible
+    (default ``named_parameters`` yields each Parameter once).
     """
     groups: dict[int, set[str]] = {}
     for key, param in policy.named_parameters(remove_duplicate=False):
@@ -309,28 +282,20 @@ def _expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) -
 def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
     """Re-wrap each ``Linear8bitLt.weight`` as a fresh ``bnb.nn.Int8Params``.
 
-    ``torch.nn.Module.to_empty(device=...)`` allocates fresh storage for
-    every parameter but **strips Parameter subclasses** — after
-    ``to_empty`` runs, what used to be an ``Int8Params`` is now a plain
-    ``torch.nn.Parameter`` wrapping a bf16 tensor. The downstream
-    ``policy.to(<cuda>)`` then walks params with the standard
-    ``Tensor.to``, not ``Int8Params.to`` / ``Int8Params.cuda``, so
-    bnb's int8 pack never fires and the whole bf16 model (~7 GiB on
-    a 3.4 B-param backbone) lands on the GPU as bf16 — OOMs an 8 GiB
-    consumer GPU long before the fast path can finish.
+    ``torch.nn.Module.to_empty(device=...)`` strips Parameter subclasses:
+    an ``Int8Params`` becomes a plain ``torch.nn.Parameter`` wrapping a
+    bf16 tensor, so the downstream ``policy.to(<cuda>)`` walks it via
+    plain ``Tensor.to`` instead of ``Int8Params.cuda`` — bnb's int8 pack
+    never fires and the ~7 GiB bf16 model lands on the GPU as bf16, OOMing
+    an 8 GiB card. The nf4 fast path avoids this via
+    ``install_prequantized_linears`` / ``Params4bit.from_prequantized``;
+    int8 has no prequant pack, so this re-wraps the bf16 storage in a
+    fresh ``Int8Params(has_fp16_weights=False)`` so the next
+    ``policy.to(<cuda>)`` dispatches through ``Int8Params.cuda`` (packs
+    to int8, frees the bf16 source).
 
-    The nf4 fast path side-steps the same class-stripping by calling
-    :func:`install_prequantized_linears` which explicitly rebuilds
-    each ``Linear4bit.weight`` as a fresh ``Params4bit.from_prequantized``.
-    The int8 path has no prequant pack to install from, so this helper
-    just re-wraps the (now plain-Parameter) bf16 storage in a fresh
-    ``Int8Params`` with ``has_fp16_weights=False``. The next
-    ``policy.to(<cuda>)`` then dispatches through ``Int8Params.cuda``
-    which packs to int8 and frees the bf16 source.
-
-    Returns the number of modules rewrapped (useful for the structlog
-    sanity counter; should match the count
-    ``quantize_int8_in_place`` reported on the same policy).
+    Returns the rewrapped-module count (should match
+    ``quantize_int8_in_place``'s count on the same policy).
     """
     try:
         import bitsandbytes as bnb
@@ -363,32 +328,20 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
     """Download ``<repo>/model.safetensors`` and apply via ``load_state_dict``.
 
     The int8 fast meta-init path's substitute for lerobot's slow
-    ``PI05Policy.from_pretrained`` graph allocation. The policy has
-    already been built on the meta device (via ``init_empty_weights``)
-    and materialised to real CPU storage (via ``to_empty``); this
-    helper fills that storage with the source bf16 weights so the
-    upcoming ``policy.to(<cuda>)`` has real data for bnb's int8 pack.
+    ``PI05Policy.from_pretrained`` graph allocation: the policy is already
+    built on meta (``init_empty_weights``) and materialised to real CPU
+    storage (``to_empty``); this fills that storage with the source bf16
+    weights so the upcoming ``policy.to(<cuda>)`` has data for bnb's int8
+    pack. Routes through ``_hf_download_cached_first`` so
+    ``local_files_only=True`` skips the HF Hub HEAD on a warm cache. Logs
+    ``missing``/``unexpected`` key counts via structlog.
 
-    Routes through :func:`_hf_download_cached_first` so the
-    ``local_files_only=True`` fast path skips the HF Hub HEAD
-    validation on a warm cache. Logs ``missing`` / ``unexpected``
-    key counts via structlog so the operator can spot a mismatched
-    checkpoint without enabling debug logging.
-
-    The Linear8bitLt modules' ``Int8Params`` slots already have real
-    bf16 CPU storage (from ``to_empty``), so ``load_state_dict``'s
-    ``param.data.copy_(...)`` is a plain bf16→bf16 copy. bnb's
-    ``Int8Params.cuda()`` later computes the int8 SCB pack from the
-    loaded bf16 values; nothing here is bnb-aware.
-
-    The ``state`` dict is explicitly dropped + GC'd before the function
-    returns so the source bf16 tensors don't stay resident alongside
-    the policy's bf16 copy through the subsequent ``.to(<cuda>)``.
-    Without that, the peak CPU footprint is 2× the model (source
-    state + policy params), and the ``.to(<cuda>)`` allocator dance
-    can overshoot 8 GiB GPUs that handled the slow path fine
-    (observed 6.65 GiB peak vs the slow path's 4.72 GiB final on a
-    7.62 GiB RTX 4070 Laptop with ``pi05-libero-int8`` + int8).
+    The loaded ``state`` dict is dropped + GC'd before returning so source
+    bf16 tensors don't stay resident alongside the policy's bf16 copy
+    through the subsequent ``.to(<cuda>)`` — otherwise peak CPU footprint
+    is 2x the model and can overshoot 8 GiB GPUs (observed 6.65 GiB peak
+    vs the slow path's 4.72 GiB final, on a 7.62 GiB RTX 4070 Laptop with
+    ``pi05-libero-int8`` + int8).
     """
     del torch  # consumed by the caller's `.to(device)`; kept for API parity
     try:
@@ -442,27 +395,17 @@ def _pi05_phase(name: str, **fields: Any) -> Any:
 def _resolve_pretrained_path(spec: Any, repo_id: str) -> str:
     """Return a local directory containing the lerobot processor sidecars.
 
-    Three URI shapes are honoured:
-
-    * Absolute local filesystem path (``/.../checkpoint_dir``) -- returned
-      verbatim. This is the shape produced for manifests whose
-      ``weights_uri`` points at a pre-converted lerobot-format checkpoint
-      directory.
-    * Bare rSkill reference whose manifest declares a ``processors`` block
-      -- per-file ``hf_hub_download`` of exactly the two processor URIs
-      via :func:`openral_sim.policies._processors.resolve_processor_dir`
-      (which delegates to :func:`materialize_processor_dir`). Mirrors
-      the SmolVLA / modern-ACT path, per the manifest-declared processors convention.
-    * Bare HF Hub repo id (``namespace/name``) -- snapshot-downloaded as
-      before. The prequantized fast path
-      (``load_prequantized_state_for_rskill``) pulls only ``config.json``
-      + ``model.safetensors`` + ``quantization_metadata.json``, leaving
-      the snapshot dir missing the ``policy_preprocessor.json`` /
-      ``policy_postprocessor.json`` sidecars that
-      ``make_pre_post_processors`` needs. A ``local_files_only=True``
-      shortcut would silently return the incomplete dir; the snapshot
-      call inside :func:`resolve_processor_dir` runs without it so any
-      missing sidecars are fetched (~5 HEADs, ~0.5 s when fully cached).
+    Three URI shapes: an absolute local path is returned verbatim (a
+    pre-converted lerobot checkpoint dir); a bare rSkill reference with a
+    manifest ``processors`` block downloads exactly the two processor
+    files via ``openral_sim.policies._processors.resolve_processor_dir``
+    (mirrors SmolVLA / modern-ACT); a bare HF Hub repo id is
+    snapshot-downloaded. The prequantized fast path
+    (``load_prequantized_state_for_rskill``) pulls only ``config.json`` +
+    ``model.safetensors`` + ``quantization_metadata.json``, so the
+    snapshot here fetches without ``local_files_only`` to backfill any
+    missing ``policy_preprocessor.json`` / ``policy_postprocessor.json``
+    (~5 HEADs, ~0.5 s warm cache).
     """
     import os
 
@@ -479,97 +422,59 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     device = resolve_device(spec)
 
     # Heavy first-import cost (torch + transformers + lerobot pulling in
-    # safetensors / huggingface_hub / accelerate) is paid once per
-    # process but is invisible from the operator's perspective — wrap it
-    # so the 10–30 s first-call cost shows up in the load timeline
-    # alongside the GPU-side phases. Shared torch + ``make_pre_post_processors``
-    # import lives in ``_policy_loading``; ``PI05Policy`` is pulled here
-    # so the lerobot dispatch choice doesn't leak into adapters that
-    # don't need it.
+    # safetensors/huggingface_hub/accelerate) is ~10-30s per process;
+    # wrap it so it shows in the load timeline. Shared torch +
+    # `make_pre_post_processors` import lives in `_policy_loading`;
+    # `PI05Policy` is pulled here to keep the lerobot dispatch local.
     with _pi05_phase("imports"):
         torch, make_pre_post_processors = lazy_import_lerobot("π0.5")
         from lerobot.policies.pi05.modeling_pi05 import PI05Policy
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="π0.5")
 
-    # Load the rSkill manifest up-front so its ``quantization.dtype``
-    # pin can feed dtype resolution alongside any ``spec.extra["dtype"]``
-    # override. The manifest is also reused below for chunk-replay and
-    # image-preprocessing resolution; loading it once is cheaper than
-    # twice. ``load_manifest_for_spec`` returns ``None`` for bare
-    # ``hf://`` / local URIs — pi05 tolerates either shape.
+    # Loaded once, reused below for dtype/chunk-replay/image-preprocessing
+    # resolution. Returns None for bare hf:// / local URIs; pi05 tolerates
+    # either shape.
     manifest = load_manifest_for_spec(spec)
 
-    # Pick a load dtype:
-    #   * dtype="nf4" / "int4"  → 4-bit NF4 quantization via bitsandbytes;
-    #                             the 3.4 B PaliGemma backbone fits in
-    #                             ≤4 GiB this way, leaving room for
-    #                             activations on an 8 GiB GPU.
-    #   * dtype="int8"          → 8-bit LLM.int8 (``bnb.nn.Linear8bitLt``).
-    #                             ~7 GiB peak post-pack — between bf16 and
-    #                             nf4 on memory, but more accurate than
-    #                             nf4 on outlier-heavy attention blocks.
-    #   * dtype="bf16"          → bf16 weights (≈ 7 GiB; tight on 8 GiB).
-    #   * dtype="fp32"          → fp32 weights (≈ 13.6 GiB; needs a bigger GPU).
-    #   * default               → nf4 on CUDA (fits 8 GiB), fp32 on CPU.
-    #
-    # ``PI05Policy.from_pretrained`` doesn't expose a dtype kwarg, so we
-    # set torch's default dtype while loading; both nf4 and int8 take a
-    # different code path that quantizes Linear weights post-load.
+    # Load dtype: nf4/int4 -> bitsandbytes NF4, 3.4B backbone fits <=4 GiB;
+    # int8 -> bnb.nn.Linear8bitLt, ~7 GiB peak, more accurate than nf4 on
+    # outlier-heavy attention; bf16 -> ~7 GiB (tight on 8 GiB); fp32 ->
+    # ~13.6 GiB; default -> nf4 on CUDA, fp32 on CPU.
+    # `PI05Policy.from_pretrained` has no dtype kwarg, so torch's default
+    # dtype is set while loading; nf4/int8 quantize Linear weights post-load.
     dtype_str = manifest_dtype(spec, manifest=manifest) or default_dtype_for_device(device)
     use_nf4 = dtype_str.lower() in {"nf4", "4bit", "int4"}
     use_int8 = dtype_str.lower() in {"int8", "8bit", "llm_int8"}
     torch_dtype = torch_dtype_for(torch, None if (use_nf4 or use_int8) else dtype_str, device)
 
-    # PI05Policy.__init__ ends with ``self.model.to(config.device)`` —
-    # if config.device == "cuda" we have already OOM'd by the time
-    # ``from_pretrained`` returns. Force the construction onto CPU so we
-    # can quantize / cast at our leisure, then move once.
+    # PI05Policy.__init__ ends with `self.model.to(config.device)` — if
+    # device="cuda" we'd OOM before `from_pretrained` returns. Construct
+    # on CPU, quantize/cast there, then move once.
     import lerobot.policies.pi05.modeling_pi05 as _pi05_mod  # noqa: F401  registers PI05Config in the choice registry
     from lerobot.configs.policies import PreTrainedConfig
 
-    # ``PreTrainedConfig.from_pretrained`` hits the Hub for a
-    # ``config.json`` HEAD validation on every load (even with a
-    # cached file), so it can stall 1–5 s on a cold connection.
+    # `config.json` HEAD validation on every load; ~1-5s on a cold connection.
     with _pi05_phase("config_load", repo=repo_id):
         pi05_cfg = PreTrainedConfig.from_pretrained(repo_id, revision=revision)
     pi05_cfg.device = "cpu"
-    # torch.compile bakes the graph at construction time and assumes the
-    # model's dtypes match across all sub-modules. Once we quantize a
-    # subset of Linear weights to nf4 (compute_dtype=bf16) the cached
-    # graph trips "mat1 and mat2 to have the same dtype" errors at
-    # forward time. Disable compile when we plan to mutate dtypes.
+    # torch.compile bakes the graph at construction time; a later nf4
+    # requantization (compute_dtype=bf16) trips a cached-graph dtype
+    # mismatch at forward time, so disable compile whenever dtypes may mutate.
     if hasattr(pi05_cfg, "compile_model"):
         pi05_cfg.compile_model = False
 
-    # When the rSkill ships a prequantized nf4 pack, both
-    # ``from_pretrained`` AND the plain ``PI05Policy(cfg)`` constructor
-    # take ~143 s on CPU just to allocate + zero-initialise the
-    # 3.4 B-param graph -- a per-tensor ``torch.empty(shape)`` allocation
-    # on real RAM is the actual bottleneck, not the safetensors load.
-    # Skip the allocation entirely with ``accelerate.init_empty_weights``
-    # (assigns ``meta``-device tensors with shape but no storage) and
-    # let the downstream ``Linear4bit`` rewrite + prequant state load
-    # materialise real storage exactly once. Measured: ~14 s total load
-    # vs ~157 s on the slow path (11x speedup).
-    # Pick the safetensors repo that will land via ``load_state_dict``
-    # after the meta-init build. Two cases qualify for the fast path:
-    #
-    # * nf4 with a prequant pack — ``detect_prequantized_nf4`` finds
-    #   the matching ``quantization_metadata.json`` sentinel + a
-    #   sibling nf4 safetensors that the upcoming
-    #   ``load_prequantized_state_for_rskill`` overlays via
-    #   ``install_prequantized_linears``.
-    # * int8 — there is no int8 prequant pack today, but we can still
-    #   skip lerobot's ~152 s ``PI05Policy.from_pretrained`` allocation
-    #   by building the graph on meta and loading the bf16 source
-    #   ``model.safetensors`` ourselves. bnb's ``Int8Params.cuda()``
-    #   computes its int8 SCB pack from the loaded bf16 weights on the
-    #   final ``.to(<cuda>)``.
-    #
-    # ``detect_prequantized_nf4`` makes 1 HF HEAD request (~100 ms warm,
-    # 1–3 s cold); the int8 path doesn't probe — it commits to the
-    # bf16 ``repo_id`` resolved from the bare rSkill reference above.
+    # Fast meta-init: `from_pretrained`/`PI05Policy(cfg)` take ~143s on CPU
+    # to allocate + zero-init the 3.4B-param graph (per-tensor
+    # `torch.empty` is the bottleneck, not the safetensors load).
+    # `accelerate.init_empty_weights` assigns meta-device tensors (shape,
+    # no storage); the Linear4bit rewrite + prequant state load below
+    # materialise real storage once — measured ~14s vs ~157s slow path
+    # (11x). Two cases qualify: nf4 with a prequant pack
+    # (`detect_prequantized_nf4` finds `quantization_metadata.json` +
+    # sibling nf4 safetensors, 1 HF HEAD, ~100ms warm/1-3s cold), or int8
+    # (no prequant pack; loads bf16 `model.safetensors` directly, bnb's
+    # `Int8Params.cuda()` packs to int8 on the final `.to(<cuda>)`).
     if use_nf4:
         with _pi05_phase("detect_prequant"):
             prequant_repo = detect_prequantized_nf4(spec)
@@ -584,13 +489,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         prequant_repo if nf4_fast_meta_init else (repo_id if int8_fast_meta_init else None)
     )
 
-    # Peek the safetensors header so the upcoming `reset_parameters`
-    # walk can skip every module whose params will be overwritten by
-    # the state-dict load. On a 3.4 B-param graph that walk runs
-    # kaiming / normal init across every Linear / Embedding / RMSNorm
-    # and was the dominant CPU cost (~60 s of a 95 s warm-cache load)
-    # before this gate was added. `None` means the peek failed and we
-    # fall back to the full reset.
+    # Peek the safetensors header so `reset_parameters` can skip modules
+    # the state-dict load will overwrite anyway — was the dominant CPU
+    # cost (~60s of a 95s warm-cache load) before this gate. None means
+    # the peek failed; fall back to the full reset.
     fast_state_keys: set[str] | None = (
         peek_safetensors_keys(fast_state_repo) if fast_state_repo is not None else None
     )
@@ -602,11 +504,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # reason: accelerate ships no py.typed; the exact code differs by install state
             from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
 
-            # Setting cfg.device='meta' suppresses the internal
-            # ``self.model.to(config.device)`` call inside
-            # ``PI05Policy.__init__`` (which would otherwise raise
-            # ``Cannot copy out of meta tensor`` because the meta
-            # parameters have no storage to copy from).
+            # cfg.device='meta' suppresses `PI05Policy.__init__`'s internal
+            # `self.model.to(config.device)`, which would otherwise raise
+            # "Cannot copy out of meta tensor" (no storage yet).
             pi05_cfg.device = "meta"
             with (
                 _pi05_phase(
@@ -618,11 +518,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 init_empty_weights(),
             ):
                 policy = PI05Policy(pi05_cfg)
-            # Reset the config device immediately so any later
-            # ``cfg.device``-aware code path (position_id allocation,
-            # input-batch device placement) sees the real device. The
-            # parameters themselves are still meta until ``to_empty``
-            # materialises them below.
+            # Reset immediately so later cfg.device-aware code (position_id
+            # allocation, batch placement) sees the real device; params
+            # stay meta until `to_empty` below.
             pi05_cfg.device = "cpu"
             if hasattr(policy, "config"):
                 with contextlib.suppress(Exception):
@@ -642,17 +540,14 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 "nf4 quantization for π0.5 requires a CUDA device; got "
                 f"device={device!r}. Set vla.extra.dtype='bf16' to load on CPU/MPS."
             )
-        # Pre-cast every fp32 leaf parameter / buffer to bf16 BEFORE
-        # quantization, so the surviving non-Linear bits (embeddings,
-        # norms, biases, small projection heads kept in compute dtype)
-        # are uniformly bf16 — otherwise PaliGemma forward later trips
-        # "expected mat1 and mat2 to have the same dtype, but got:
-        # float != BFloat16".
+        # Pre-cast every fp32 leaf param/buffer to bf16 before quantization
+        # so the surviving non-Linear bits (embeddings, norms, biases) are
+        # uniformly bf16 — else PaliGemma forward trips a Float/BFloat16
+        # mat1/mat2 dtype mismatch.
         if not use_fast_meta_init:
-            # When loaded via init_empty_weights the parameters are
-            # ``meta``-device tensors with no .data to cast. The
-            # prequant state load materialises bf16 storage directly
-            # in the right dtype, so this cast is a no-op there.
+            # init_empty_weights params are meta-device (no .data to cast);
+            # the prequant state load below materialises bf16 directly, so
+            # this cast is a no-op on that path.
             with _pi05_phase("precast_bf16"):
                 for p in policy.parameters():
                     if p.dtype == torch.float32:
@@ -661,13 +556,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                     if b.dtype == torch.float32:
                         b.data = b.data.to(torch.bfloat16)
         with _pi05_phase("quantize_nf4"):
-            # On the fast meta-init path the policy tree itself is on
-            # meta device; constructing fresh bnb.nn.Linear4bit shells
-            # on real CPU storage would allocate ~7 GiB of bf16
-            # placeholder weights only to immediately overwrite them
-            # with meta clones plus the prequant state load. Build
-            # the new modules on meta too — the upcoming `to_empty`
-            # phase materialises real storage exactly once.
+            # Fast meta-init path: build new bnb.nn.Linear4bit shells on
+            # meta too, not real CPU storage (would allocate ~7 GiB of bf16
+            # placeholders only to be overwritten by `to_empty` + prequant load).
             quantize_nf4_in_place(
                 policy,
                 torch=torch,
@@ -675,80 +566,40 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 new_modules_on_meta=use_fast_meta_init,
             )
         if use_fast_meta_init:
-            # Linear4bit modules created in the previous step already
-            # carry real bnb storage; the residual params (norms /
-            # biases / embeddings / conv2d / rope caches) are still
-            # meta. ``to_empty`` allocates real CPU storage but with
-            # uninitialized memory; the upcoming prequant state load
-            # reports ~254 ``missing`` keys (bnb sub-state Params4bit
-            # owns internally + ``inv_freq`` RoPE buffers + similar)
-            # that the load *cannot* overwrite. Leaving those at
-            # zero (or uninit garbage) is fatal: an RMSNorm.weight=0
-            # zeros its block output → downstream softmax saturates
-            # → NaNs propagate → an F.embedding gather later reads
-            # an out-of-bounds index and CUDA asserts.
-            #
-            # Restore PyTorch's default ``__init__``-time values by
-            # calling each module's ``reset_parameters()`` after the
-            # materialisation. This re-applies kaiming for Linear,
-            # ones for {LayerNorm,RMSNorm}.weight, zeros for biases,
-            # normal for embeddings, etc. The prequant load below
-            # then overwrites everything it has data for; the few
-            # remaining keys stay at the same canonical values the
-            # slow path's ``PI05Policy.from_pretrained`` would have
-            # produced.
-            # Materialise the meta-device parameters on CPU first, then
-            # move to the target device at the end. Going straight to
-            # `to_empty(device=cuda)` looks tempting (cuts ~19 s of CPU
-            # allocation) but OOMs on 8 GiB GPUs: `to_empty` allocates a
-            # tensor with the *meta* shape, and bitsandbytes' Params4bit
-            # `__torch_function__` doesn't intercept `empty_like` -- so
-            # every Linear weight tries to allocate its full pre-quant
-            # bf16 footprint on GPU (~6.5 GiB) before the prequant state
-            # load replaces it with the much smaller nf4 pack (~4 GiB).
-            # Staging on CPU + a single final `.to(device)` keeps GPU
-            # peak memory at the nf4 footprint.
-            # Split into measurable sub-phases — `to_empty` allocates
-            # ~7 GiB of CPU storage for the 3.4 B-param graph (mmap-lazy
-            # under Linux, so the cost is paged in lazily by downstream
-            # accessors), `reset_parameters` walks every module and
-            # runs kaiming / normal / ones init on its tensors, and
-            # `init_buffers` re-derives the position_ids + RoPE inv_freq
-            # buffers the meta-init dropped on the floor. Profiling on
-            # an RTX 4070 host showed the reset_parameters walk as the
-            # dominant cost (~30–60 s on a warm cache) and almost
-            # entirely wasted because the prequant state load below
-            # overwrites every value it produces. `fast_state_keys`
-            # carries the set of safetensors keys we'll load next; we
-            # use it to skip reset on modules whose params are all
-            # going to be replaced.
+            # `to_empty` materialises real (uninitialised) CPU storage for
+            # every still-meta param (Linear4bit modules from the previous
+            # step already have real bnb storage). The prequant state load
+            # below reports ~254 "missing" keys (bnb Params4bit sub-state +
+            # RoPE inv_freq buffers, etc.) it cannot fill — leaving those at
+            # uninit garbage is fatal: RMSNorm.weight=0 zeros its block
+            # output, softmax saturates, NaNs propagate, and an
+            # F.embedding gather later reads an out-of-bounds index and
+            # CUDA asserts. `reset_parameters()` restores PyTorch's normal
+            # __init__ values (kaiming for Linear, ones for norms, zeros
+            # for biases, normal for embeddings) as a safe baseline before
+            # the prequant load overwrites what it has data for.
+            # Staging on CPU (vs `to_empty(device=cuda)` directly, ~19s
+            # faster) avoids an 8 GiB OOM: bitsandbytes' Params4bit
+            # `__torch_function__` doesn't intercept `empty_like`, so
+            # `to_empty` on cuda would allocate the full pre-quant bf16
+            # footprint (~6.5 GiB) before the nf4 pack (~4 GiB) replaces it.
+            # Split into measurable sub-phases: `to_empty` (~7 GiB CPU,
+            # mmap-lazy under Linux), `reset_parameters` (measured dominant
+            # cost, ~30-60s warm-cache on an RTX 4070 host, mostly wasted
+            # since the prequant load overwrites it — `fast_state_keys`
+            # lets it skip already-covered modules), `init_buffers`
+            # (re-derives position_ids + RoPE inv_freq, dropped by meta-init).
             with _pi05_phase("to_empty"):
                 policy.to_empty(device="cpu")
             with _pi05_phase("reset_parameters"):
                 _targeted_reset_parameters(policy, covered_keys=fast_state_keys)
-            # 2. Reconstruct buffers that the original __init__
-            # would have computed via ``register_buffer`` with a
-            # data tensor -- ``init_empty_weights`` redirects
-            # those allocations to the meta device, leaving the
-            # buffers uninitialised after ``to_empty``. The two
-            # buffer families we care about:
-            #
-            #   * ``*.position_ids`` (int64): the vision embedding
-            #     index lookup table; the constructor sets it to
-            #     ``arange(num_patches).unsqueeze(0)``. With
-            #     garbage int64 values, the embedding gather
-            #     trips ``CUDA index out of bounds`` and the
-            #     kernel asserts (see git blame on this comment
-            #     for the original traceback).
-            #
-            #   * ``*.inv_freq`` / ``*.original_inv_freq``
-            #     (bfloat16/float32): RoPE rotary frequency
-            #     coefficients -- ``1.0 / (theta ** (arange(0, d, 2)/d))``.
-            #     The PaliGemma + gemma_expert language models
-            #     both carry these, with ``d=128`` and ``theta``
-            #     read from the model config. With garbage
-            #     values the RoPE rotation produces NaNs that
-            #     contaminate the entire attention path.
+            # `*.position_ids` (int64): vision embedding index table, set
+            # to `arange(num_patches)`; garbage → CUDA index-out-of-bounds
+            # assert on the embedding gather. `*.inv_freq` /
+            # `*.original_inv_freq` (bf16/fp32): RoPE rotary coefficients
+            # `1/(theta**(arange(0,d,2)/d))`, carried by PaliGemma +
+            # gemma_expert with d=128 and theta from the model config;
+            # garbage → NaN RoPE rotation contaminating the attention path.
             with _pi05_phase("init_buffers"), torch.no_grad():
                 for name, buf in policy.named_buffers():
                     if name.endswith(".position_ids") and buf.dtype == torch.int64:
@@ -757,8 +608,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                         buf.copy_(arange.expand_as(buf))
                     elif name.endswith((".inv_freq", ".original_inv_freq")):
                         d = buf.shape[-1] * 2
-                        # Walk up to the owning module to find
-                        # the rope ``theta`` (a.k.a. ``base``).
+                        # Walk up to the owning module for its rope `theta` (a.k.a. `base`).
                         mod = policy
                         for part in name.split(".")[:-1]:
                             mod = getattr(mod, part)
@@ -777,20 +627,15 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                             )
                         )
                         buf.copy_(freqs.to(buf.dtype))
-        # If the rSkill ships a pre-quantized state dict (a
-        # `quantization_metadata.json` at the HF repo root), load it
-        # OVER the freshly-rewritten Linear4bit modules so the ~30 s
-        # bf16->nf4 quantization on .to(cuda) is replaced by a ~1-2 s
-        # state-dict load. The bf16 weights we just loaded from
-        # `from_pretrained` are discarded; ``tools/quantize_rskill.py``
-        # is the one-shot script that produces the matching upload.
+        # If the rSkill ships a prequantized state dict
+        # (`quantization_metadata.json` at the HF repo root), load it over
+        # the rewritten Linear4bit modules, replacing the ~30s bf16->nf4
+        # quantize-on-`.to(cuda)` with a ~1-2s state-dict load. Produced by
+        # `tools/quantize_rskill.py`.
         with _pi05_phase("prequant_state_load"):
             load_prequantized_state_for_rskill(policy, spec, torch=torch, log_event_prefix="pi05")
-        # Move the materialised model (CPU staging from `to_empty_cpu`
-        # above, then prequant nf4 state load) to the target device. This
-        # is where the peak GPU memory hits -- the nf4-packed Linear
-        # weights are smaller than the bf16 placeholders they replaced,
-        # so the final GPU footprint is the post-quantization one.
+        # Peak GPU memory hits here: the nf4-packed weights are smaller
+        # than the bf16 placeholders they replace.
         with _pi05_phase("to_device", device=device):
             policy = policy.to(device=device)
     elif use_int8:
@@ -800,20 +645,15 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 f"device={device!r}. Set vla.extra.dtype='bf16' to load on CPU/MPS."
             )
         if int8_fast_meta_init:
-            # Fast meta-init path. There's no int8 prequant safetensors
-            # (the LLM.int8 SCB sub-state inside ``Int8Params`` doesn't
-            # round-trip cleanly through safetensors, so an artefact
-            # producer like ``tools/quantize_rskill.py`` is impractical),
-            # but we can still skip lerobot's ~152 s
-            # ``PI05Policy.from_pretrained`` graph allocation: build
-            # the policy on meta via ``init_empty_weights`` (already
-            # done above), swap Linears → Linear8bitLt also on meta,
-            # ``to_empty`` the whole tree to real CPU storage, then
-            # load the source bf16 ``model.safetensors`` directly via
-            # ``policy.load_state_dict``. The bnb int8 pack happens
-            # on the final ``policy.to(<cuda>)`` exactly as in the
-            # slow path; this branch just skips the wasted lerobot
-            # allocation.
+            # Fast meta-init path: no int8 prequant safetensors exist (the
+            # LLM.int8 SCB sub-state inside `Int8Params` doesn't round-trip
+            # through safetensors), but we still skip lerobot's ~152s
+            # `PI05Policy.from_pretrained` allocation: build on meta
+            # (already done above), swap Linears -> Linear8bitLt also on
+            # meta, `to_empty` to real CPU storage, then load the source
+            # bf16 `model.safetensors` via `policy.load_state_dict`. bnb's
+            # int8 pack happens on the final `policy.to(<cuda>)`, same as
+            # the slow path.
             with _pi05_phase("quantize_int8"):
                 quantize_int8_in_place(
                     policy,
@@ -823,13 +663,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 )
             with _pi05_phase("to_empty"):
                 policy.to_empty(device="cpu")
-            # Re-establish PaliGemma's weight tying BEFORE the
-            # targeted reset walk, then expand ``fast_state_keys``
-            # so any param sharing storage with a covered key is
-            # also treated as covered. Without this, the
-            # ``embed_tokens.weight`` slot (~0.5 B params) — which is
-            # tied to the loaded ``lm_head.weight`` — eats a ~10 s
-            # ``normal_`` init that the next ``load_state_dict`` would
+            # Re-establish weight tying before the reset walk, then expand
+            # `fast_state_keys` to cover tied params. Without this, the
+            # ~0.5B-param `embed_tokens.weight` (tied to `lm_head.weight`)
+            # eats a ~10s `normal_` init that `load_state_dict` would
             # immediately discard via the tie.
             _tie_transformers_weights(policy)
             int8_reset_keys = (
@@ -839,11 +676,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             )
             with _pi05_phase("reset_parameters"):
                 _targeted_reset_parameters(policy, covered_keys=int8_reset_keys)
-            # Same buffer reconstruction as the nf4 fast meta-init
-            # branch (see the long comment above the nf4 init_buffers
-            # block) — position_ids + RoPE inv_freq buffers need
-            # canonical values because ``load_state_dict`` won't fill
-            # them (they're not parameters in the source safetensors).
+            # Same buffer reconstruction as the nf4 fast meta-init branch
+            # above: position_ids + RoPE inv_freq need canonical values
+            # since `load_state_dict` won't fill them (not parameters in
+            # the source safetensors).
             with _pi05_phase("init_buffers"), torch.no_grad():
                 for name, buf in policy.named_buffers():
                     if name.endswith(".position_ids") and buf.dtype == torch.int64:
@@ -872,12 +708,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                         buf.copy_(freqs.to(buf.dtype))
             with _pi05_phase("bf16_state_load", repo=repo_id):
                 _load_bf16_state_for_int8(policy, repo_id, torch=torch)
-            # ``to_empty`` above stripped the ``Int8Params`` subclass
-            # from every ``Linear8bitLt.weight`` — re-wrap each one so
-            # the upcoming ``policy.to(<cuda>)`` dispatches through
-            # ``Int8Params.cuda`` (which packs bf16 → int8) instead
-            # of the default ``Tensor.to`` (which would copy 7 GiB of
-            # bf16 weights to the GPU and OOM the 8 GiB card).
+            # `to_empty` above stripped the `Int8Params` subclass from
+            # every `Linear8bitLt.weight`; re-wrap so `policy.to(<cuda>)`
+            # dispatches through `Int8Params.cuda` (bf16->int8 pack)
+            # instead of `Tensor.to` (would copy 7 GiB bf16 to GPU, OOM).
             with _pi05_phase("rebuild_int8_params"):
                 rebuilt = _rebuild_int8_params_for_linear8bitlt(policy)
                 _log.info("pi05_int8_params_rewrapped", modules=rebuilt)
@@ -885,10 +719,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
                 policy = policy.to(device=device)
         else:
             # Slow fallback: bf16 from_pretrained (already paid above,
-            # ~152 s) → bf16 precast → bnb rewrite → device move.
-            # Kept so a CPU-only host (``int8_fast_meta_init`` is
-            # gated on CUDA) still has a working code path even
-            # though the int8 raise above currently rejects CPU.
+            # ~152s) -> bf16 precast -> bnb rewrite -> device move. Kept
+            # for a CPU-only host even though the int8 raise above
+            # currently rejects CPU (int8_fast_meta_init is CUDA-gated).
             with _pi05_phase("precast_bf16"):
                 for p in policy.parameters():
                     if p.dtype == torch.float32:
@@ -913,54 +746,42 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             policy = policy.to(dtype=torch_dtype).to(device=device)
     policy.eval()
 
-    # Chunk replay: same lerobot ``select_action`` queue as SmolVLA. The
-    # shipped pi05 checkpoint defaults to ``n_action_steps=1``, so a
-    # single env step pays a full PaliGemma forward (~3.4 B params).
-    # ``torch.compile`` is intentionally NOT plumbed here because
-    # ``pi05_cfg.compile_model`` is forced off above to keep the
-    # quantization path stable; opt back in by editing the adapter.
-    # ``manifest`` was loaded at the top of this function so its
-    # ``quantization.dtype`` pin could feed dtype resolution; the
-    # resolvers below reuse the same instance.
+    # Chunk replay: same lerobot `select_action` queue as SmolVLA. The
+    # shipped pi05 checkpoint defaults to `n_action_steps=1`, so a single
+    # env step pays a full PaliGemma forward (~3.4B params). torch.compile
+    # is not plumbed here since `pi05_cfg.compile_model` is forced off
+    # above to keep the quantization path stable.
     apply_chunk_replay(policy, spec.extra, manifest=manifest)
 
-    # `_resolve_pretrained_path` → `resolve_processor_dir` →
-    # `materialize_processor_dir`, which fans out into 2 `hf_hub_download`
-    # calls for `policy_preprocessor.json` + `policy_postprocessor.json`
-    # plus any sibling `state_file` safetensors. Each call HEAD-checks
-    # the cache (~100 ms warm, several seconds cold) — wrap so the cost
-    # shows up in the timeline.
+    # `_resolve_pretrained_path` -> `resolve_processor_dir` ->
+    # `materialize_processor_dir` fans out into 2 `hf_hub_download` calls
+    # for the two processor jsons plus any sibling `state_file`
+    # safetensors; each HEAD-checks the cache (~100ms warm, seconds cold).
     with _pi05_phase("processor_dir", repo=repo_id):
         pretrained_path = _resolve_pretrained_path(spec, repo_id)
     with _pi05_phase("make_processors"):
-        # ``call_make_processors_cached_first`` suppresses the 5 HF HEAD /
-        # metadata round-trips the lerobot ``TokenizerProcessorStep`` would
-        # otherwise fire at ``google/paligemma-3b-pt-224`` on every load
-        # against an already-warm cache.
+        # Suppresses the 5 HF HEAD/metadata round-trips lerobot's
+        # `TokenizerProcessorStep` would otherwise fire at
+        # `google/paligemma-3b-pt-224` on every load, warm cache or not.
         preprocessor, postprocessor = call_make_processors_cached_first(
             make_pre_post_processors,
             policy.config,
             pretrained_path=pretrained_path,
         )
 
-    # Manifest-first resolution. flip_vertical (the openpi-robocasa
-    # `RoboCasaGymEnv.process_img` H-only flip) is part of the typed
-    # ImagePreprocessing contract; the human300 manifests carry it on,
-    # the RoMALab MG_300 manifests carry it off.
+    # flip_vertical (the openpi-robocasa `RoboCasaGymEnv.process_img`
+    # H-only flip) is part of the typed ImagePreprocessing contract; the
+    # human300 manifests carry it on, RoMALab MG_300 manifests carry it off.
     ip = resolve_image_preprocessing(manifest, spec.extra)
     flip_vertical = ip.flip_vertical
     state_dim = resolve_state_dim(manifest, spec.extra)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
 
-    # Opt-in TensorRT runtime: swaps sample_actions for the split-ONNX TRT
-    # engines, exactly as SmolVLA and ACT do (see openral_sim.policies.smolvla).
-    # The hook itself ships in the private openral-pro-trt package and is
-    # looked up by name — a host without it falls straight through to the
-    # torch path unwired above. No torch.compile fallback to skip here: π0.5's
-    # `compile_model` is already forced off (see the comment at
-    # `pi05_cfg.compile_model = False` above), independent of whether TRT
-    # attaches.
+    # Opt-in TensorRT runtime: swaps sample_actions for split-ONNX TRT
+    # engines, as SmolVLA/ACT do. The hook ships in the private
+    # openral-pro-trt package, looked up by name; a host without it falls
+    # through to the torch path unwired above.
     if maybe_attach_pro_hooks(
         "pi05", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
     ):
@@ -979,16 +800,12 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         _camera_keys=cam_keys,
         _image_input_template=ip.input_template,
         _camera_aliases=dict(ip.aliases),
-        # The mixed-precision plumbing is needed whenever the policy
-        # parameters are in a reduced precision (nf4 with bf16 compute
-        # OR pure bf16 / fp16), not just under nf4. PaliGemma's
-        # forward materialises some intermediate tensors in fp32
-        # (RMSNorm outputs, RoPE rotations, image-embedding projections)
-        # which then collide with bf16 Linear weights -- ``mat1 and mat2
-        # must have the same dtype: Float vs BFloat16``. Enabling
-        # ``autocast`` lets torch up/down-cast at op boundaries; the
-        # input-cast ensures the preprocessor's fp32 image/state
-        # tensors enter the model at the matching dtype.
+        # Needed whenever policy params are reduced precision (nf4 with
+        # bf16 compute, or pure bf16/fp16): PaliGemma's forward computes
+        # some intermediates (RMSNorm, RoPE, image-embedding projections)
+        # in fp32, colliding with bf16 Linear weights ("mat1 and mat2 must
+        # have the same dtype"). autocast up/down-casts at op boundaries;
+        # the input-cast matches the preprocessor's fp32 tensors to it.
         _input_dtype=(
             torch.bfloat16
             if (use_nf4 or use_int8 or torch_dtype == torch.bfloat16)

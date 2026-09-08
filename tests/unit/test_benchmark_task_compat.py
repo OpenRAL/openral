@@ -1,15 +1,15 @@
 """Benchmark task-compatibility gate.
 
-The embodiment/sensor gate (``rSkill.check_compatibility``) verifies the robot
-matches; it does NOT verify the rSkill was trained for the benchmark's *task*.
-That gap let a LiftCube policy run on PickCube-v1 (and a pick-place policy on an
-insertion task) — sensible-looking rollouts that can never succeed.
+The embodiment/sensor gate (``rSkill.check_compatibility``) verifies the
+robot matches; it does not verify the rSkill was trained for the
+benchmark's *task* — that gap let a LiftCube policy run on PickCube-v1 (and
+pick-place on an insertion task), producing sensible-looking rollouts that
+can never succeed.
 
-``check_benchmark_task_compatibility`` closes it: an rSkill manifest may declare
-``evaluated_tasks`` (the benchmark task ids / families it was trained or
-validated for). When declared, the benchmark runner refuses a scene whose task
-is not covered, with a typed ``ROSCapabilityMismatch``. When undeclared (empty),
-it is permissive (legacy rSkills) — the runner only logs a warning.
+``check_benchmark_task_compatibility`` closes it: an rSkill manifest may
+declare ``evaluated_tasks``. When declared, the runner refuses a scene
+whose task isn't covered (``ROSCapabilityMismatch``); when undeclared
+(legacy rSkills), it only logs a warning.
 
 Validates against a real in-tree manifest fixture (CLAUDE.md §1.11).
 """

@@ -2,8 +2,8 @@
 
 Parametrises across every robot whose ``robots/<id>/robot.yaml`` carries a
 ``sim:`` block.  For each one, loads the YAML through the real
-:class:`openral_core.RobotDescription` validator, then builds the HAL
-purely from the manifest via :meth:`MujocoArmHAL.from_description` (no
+``openral_core.RobotDescription`` validator, then builds the HAL
+purely from the manifest via ``MujocoArmHAL.from_description`` (no
 per-robot subclass), connects against the real MJCF resolved through
 ``robot_descriptions``, and asserts that ``read_state`` / ``send_action``
 shapes line up with ``description.joints``.

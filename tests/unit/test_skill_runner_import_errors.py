@@ -1,17 +1,15 @@
 """Tests for the rSkill-factory ImportError translation in rskill_runner_node.
 
-The runtime path in ``openral deploy sim`` calls
-``_build_runtime_skill_from_manifest`` which delegates to
-``openral_sim.factory.make_policy``. Most policy factories live behind
-opt-in extras groups (``sim`` / ``libero`` / ``metaworld`` /
-``robocasa``) — ``transformers``, ``bitsandbytes``, ``lerobot[…]``, etc.
-When that group isn't installed the factory raises ``ImportError``
-deep inside lerobot, which (a) is confusing to surface and (b) leaves
-partially-loaded modules in ``sys.modules`` so the next call fails
-with a *different* ``cannot import name 'X'`` error.
+``openral deploy sim`` calls ``_build_runtime_skill_from_manifest``, which
+delegates to ``openral_sim.factory.make_policy``. Most policy factories live
+behind opt-in extras groups (``sim``/``libero``/``metaworld``/``robocasa`` —
+``transformers``, ``bitsandbytes``, ``lerobot[…]``). A missing group raises
+``ImportError`` deep inside lerobot, confusing to surface, and leaves
+partially-loaded modules in ``sys.modules`` so the next call fails with a
+*different* ``cannot import name 'X'`` error.
 
-These tests cover the two helpers that translate that error into an
-actionable ``ROSRuntimeError`` + purge stale module state.
+Covers the two helpers that translate that into an actionable
+``ROSRuntimeError`` + purge stale module state.
 """
 
 from __future__ import annotations
@@ -77,11 +75,10 @@ def test_build_runtime_skill_translates_import_error(
 ) -> None:
     """``ImportError`` from the policy factory → ``ROSRuntimeError`` with hint.
 
-    Drives the real ``_build_runtime_skill_from_manifest`` against a
-    minimal in-tree rSkill manifest, with ``make_policy`` monkey-patched
-    to raise ``ImportError`` (the deep-lerobot symptom the operator
-    would actually see). Asserts the translation hits — no stack trace
-    from a missing transformers dep, just the install hint.
+    Drives the real ``_build_runtime_skill_from_manifest`` with
+    ``make_policy`` monkey-patched to raise ``ImportError`` (the
+    deep-lerobot symptom an operator would see); asserts the translation
+    hits — no raw stack trace, just the install hint.
     """
     from pathlib import Path
 

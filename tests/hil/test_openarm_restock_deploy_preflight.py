@@ -1,25 +1,22 @@
 """HIL preflight: everything the restocking deploy needs, short of moving.
 
-Runs on the OpenArm cell and answers one question — *if the arms were
-powered, would `openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml`
-have everything it needs?* Each check is the real artifact against the real
-host: the committed scene, the committed robot manifest, the committed rSkill,
-the physical CAN links and the three physical cameras.
+Runs on the OpenArm cell, answering: if the arms were powered, would
+``openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml`` have everything it
+needs? Each check is the real artifact against the real host: committed scene, robot
+manifest, rSkill, physical CAN links, three physical cameras.
 
-Deliberately stops short of two things:
+Stops short of two things:
 
-- **Actuation.** Nothing here commands a joint. The HAL is connected and its
-  bus preflight is exercised, then disconnected. The ADR-0102 checks go one
-  step further and build the real command messages, but through the adapter's
-  ``publish_fn`` seam, so they never reach the wire — see
-  :func:`test_the_policys_flat_vector_reaches_the_four_controllers_intact`.
-- **Inference.** Loading 6.74 GiB of BF16 weights and running a forward pass
-  is a different tier of test (and needs the policy's processors, which are
-  gated behind the PaliGemma tokenizer). This checks the *plumbing* around the
-  policy, not the policy.
+- Actuation: nothing commands a joint. HAL connects, bus preflight runs, then disconnects.
+  ADR-0102 checks build real command messages but through the adapter's ``publish_fn`` seam,
+  so they never reach the wire — see
+  ``test_the_policys_flat_vector_reaches_the_four_controllers_intact``.
+- Inference: loading 6.74 GiB BF16 weights + forward pass is a different tier of test (needs
+  the policy's processors, gated behind the PaliGemma tokenizer). This checks the plumbing
+  around the policy, not the policy.
 
-Skips cleanly off-rig: the camera checks need the rig's udev symlinks and the
-HAL check needs both CAN links up.
+Skips cleanly off-rig: camera checks need the rig's udev symlinks, HAL check needs both CAN
+links up.
 """
 
 from __future__ import annotations
@@ -28,6 +25,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from tests.hil.conftest import _can_links_up
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE = REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml"
@@ -42,19 +41,12 @@ _CAMERA_NODES = (
 )
 
 
-def _can_links_up() -> bool:
-    from openral_cli.autodetect import enumerate_can_interfaces
-
-    up = {i.name for i in enumerate_can_interfaces() if i.is_up}
-    return set(_CAN_LINKS) <= up
-
-
 def _cameras_present() -> bool:
     return all(Path(p).exists() for p in _CAMERA_NODES)
 
 
 requires_can = pytest.mark.skipif(
-    not _can_links_up(), reason="OpenArm CAN links are not both up — not on the cell"
+    not _can_links_up(_CAN_LINKS), reason="OpenArm CAN links are not both up — not on the cell"
 )
 requires_cameras = pytest.mark.skipif(
     not _cameras_present(),
@@ -158,19 +150,16 @@ def test_hal_builds_from_the_scene_and_passes_its_bus_preflight() -> None:  # pr
 
 # ── ADR-0102: the slot-dispatched 16-DoF vector ───────────────────────────────
 #
-# Why these run here and not only as unit tests: the unit suite hand-builds the
-# slot group and hand-builds the HAL. These drive the REAL dispatcher over the
-# REAL rSkill manifest's `slots:` block into a REAL `OpenArmRealHAL` that has
-# passed its bus preflight against the physically wired cell, so a manifest /
-# robot-manifest / adapter disagreement about joint ORDER shows up here and
-# nowhere else.
+# Why these run here and not only as unit tests: the unit suite hand-builds the slot group
+# and hand-builds the HAL. These drive the REAL dispatcher over the REAL rSkill manifest's
+# `slots:` block into a REAL `OpenArmRealHAL` that has passed its bus preflight against the
+# physically wired cell, so a manifest/robot-manifest/adapter disagreement about joint ORDER
+# shows up here and nowhere else.
 #
-# Why they cannot move the arm, whether or not it is powered: the only path
-# from the four command topics to `openarm_can` and the motors is
-# `openarm_bringup`'s ros2_control stack (CLAUDE.md §1.5 — the 400 Hz loop is
-# C++, not Python). These tests never publish to ROS at all; they collect the
-# messages through the adapter's own `publish_fn` seam, in-process. There is no
-# subscriber because there is no publication.
+# Why they cannot move the arm, whether or not it is powered: the only path from the four
+# command topics to `openarm_can` and the motors is `openarm_bringup`'s ros2_control stack
+# (CLAUDE.md §1.5 — the 400 Hz loop is C++, not Python). These tests never publish to ROS at
+# all; they collect messages through the adapter's own `publish_fn` seam, in-process.
 
 
 def _slot_actions_from_the_real_manifest(tick: int = 1) -> list:  # pragma: no cover
@@ -246,14 +235,12 @@ def test_the_policys_flat_vector_reaches_the_four_controllers_intact() -> None: 
         assert by_topic[right_arm]["joint_targets"] == [[8.0, 9, 10, 11, 12, 13, 14]]
         assert by_topic[right_grip]["joint_targets"] == [[15.0]]
 
-        # Each controller must also be told which joints it was handed — and in
-        # the ros2_control namespace, NOT the manifest's. The policy and the
-        # manifest say `left_joint1`; the URDF and `openarm_bringup`'s
-        # controllers say `openarm_left_joint1`, and the adapter translates
-        # (`OpenArmRealHAL` docstring, `ros2_control_joint_names`). Publishing
-        # the manifest names would leave every controller rejecting the command
-        # as naming joints it does not own. Asserted against the HAL's own
-        # public accessor, sliced by the four spans, so this pins the
+        # Each controller must also be told which joints it was handed — in the ros2_control
+        # namespace, not the manifest's. Policy/manifest say `left_joint1`; URDF/
+        # `openarm_bringup`'s controllers say `openarm_left_joint1`, and the adapter
+        # translates (`OpenArmRealHAL` docstring, `ros2_control_joint_names`). Publishing
+        # manifest names would leave every controller rejecting the command. Asserted against
+        # the HAL's own public accessor, sliced by the four spans, so this pins the
         # translation itself rather than restating a literal.
         control_names = hal.ros2_control_joint_names()
         assert control_names[0] == "openarm_left_joint1", "ros2_control namespace expected"

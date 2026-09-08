@@ -7,7 +7,7 @@ controller config and a few task-specific dimensions. The SO-100 has a
 we **bolt the SO-100 onto the standard ``TableArena``'s top** (the
 same way real users deploy it on a desk). That keeps robosuite's
 shipped cameras (``agentview``, ``frontview``) framing the correct
-workspace and lets us reuse :class:`Lift` verbatim.
+workspace and lets us reuse ``Lift`` verbatim.
 
 For control we use robosuite's stock **OSC_POSITION** controller —
 3-DOF operational-space position control that does Cartesian-to-joint
@@ -23,7 +23,7 @@ IK internally. Three reasons:
 * robosuite ships per-task tuning for OSC (kp / output_max ranges)
   that's been validated across the Panda / Sawyer / UR5e family.
 
-Reuses :class:`robosuite.environments.manipulation.lift.Lift` verbatim
+Reuses ``robosuite.environments.manipulation.lift.Lift`` verbatim
 — no copy-paste of the env body.
 """
 
@@ -52,7 +52,7 @@ _DEFAULT_LIFT_HEIGHT_M = 0.02
 
 
 class _So100Lift(Lift):  # type: ignore[misc]  # reason: robosuite has no type stubs
-    """:class:`Lift` re-parameterised for the SO-100's smaller workspace.
+    """``Lift`` re-parameterised for the SO-100's smaller workspace.
 
     Overrides only what the SO-100's geometry actually forces:
 
@@ -66,7 +66,7 @@ class _So100Lift(Lift):  # type: ignore[misc]  # reason: robosuite has no type s
       to 2 cm of clear lift above the block's resting bottom face.
 
     Everything else (reward shaping, observables, placement sampler
-    hook, reset logic, …) is inherited verbatim from :class:`Lift`.
+    hook, reset logic, …) is inherited verbatim from ``Lift``.
     """
 
     def __init__(
@@ -90,7 +90,7 @@ class _So100Lift(Lift):  # type: ignore[misc]  # reason: robosuite has no type s
         ``BoxObject`` is the Lift-default small cube. For the SO-100
         block (which is several cm tall to clear the gripper geometry)
         we require the block's BOTTOM to clear the table by
-        :attr:`_lift_height_m` — that way the threshold scales with
+        ``_lift_height_m`` — that way the threshold scales with
         the block height instead of producing instant "success" at
         spawn.
         """
@@ -171,7 +171,7 @@ def so100_osc_controller_config() -> dict[str, Any]:
       the SO-100's small mass matrix amplifies any commanded delta —
       Panda-default steps make the arm overshoot wildly.
     * Gripper: ``GRIP`` (registered alias for
-      :class:`SimpleGripController`) — maps a [-1, 1] command to
+      ``SimpleGripController``) — maps a [-1, 1] command to
       symmetric torque around zero on the single Jaw actuator.
 
     Loaded from robosuite's shipped ``parts/osc_position.json`` and
@@ -194,7 +194,7 @@ def so100_osc_controller_config() -> dict[str, Any]:
     arm_cfg["damping_ratio"] = 1.0
     # Interpret Cartesian deltas in WORLD frame. The default ``base``
     # frame would re-rotate our world-frame commands by the SO-100's
-    # 90°-z base orientation (see :meth:`_So100Lift._load_model`),
+    # 90°-z base orientation (see ``_So100Lift._load_model``),
     # which swaps the x and y axes silently — the eef ends up
     # tracking the wrong direction.
     arm_cfg["input_ref_frame"] = "world"
@@ -224,7 +224,7 @@ def make_so100_lift_env(
     lift_height_m: float = _DEFAULT_LIFT_HEIGHT_M,
     reward_shaping: bool = True,
 ) -> _So100Lift:
-    """Build a SO-100-flavoured :class:`Lift` env.
+    """Build a SO-100-flavoured ``Lift`` env.
 
     Args:
         has_renderer: Show the interactive MuJoCo viewer (single-threaded).
@@ -254,7 +254,7 @@ def make_so100_lift_env(
             component (useful for scripted-policy debug curves).
 
     Returns:
-        A configured :class:`_So100Lift` ready for ``env.reset()`` /
+        A configured ``_So100Lift`` ready for ``env.reset()`` /
         ``env.step()``.
     """
     # Reuse Lift's hard-coded table_offset (0, 0, 0.8) so the standard

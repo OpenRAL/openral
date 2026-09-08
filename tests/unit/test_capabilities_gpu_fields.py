@@ -1,8 +1,8 @@
-"""Tests for :class:`ComputeSpec` and its integration with :class:`RobotDescription`.
+"""Tests for ``ComputeSpec`` and its integration with ``RobotDescription``.
 
 After the ``ComputeSpec`` split, GPU / runtime / dtype
-fields live on :class:`ComputeSpec` attached to :attr:`RobotDescription.compute`
-rather than on :class:`RobotCapabilities`.
+fields live on ``ComputeSpec`` attached to ``RobotDescription.compute``
+rather than on ``RobotCapabilities``.
 
 ``rSkill.check_capabilities`` consumes the compute spec via the optional
 ``compute=robot.compute`` keyword.
@@ -58,7 +58,7 @@ class TestComputeSpecDefaults:
 
 
 class TestVisionSlamCapability:
-    """``has_vision_slam`` stays on :class:`RobotCapabilities`."""
+    """``has_vision_slam`` stays on ``RobotCapabilities``."""
 
     def test_defaults_false(self) -> None:
         from openral_core.schemas import RobotCapabilities

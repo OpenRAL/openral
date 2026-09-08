@@ -1,7 +1,7 @@
 """OpenArm v2 bimanual tabletop scene with direct joint-position targets.
 
-Pairs with :mod:`._assets` (which generates the MJCF) to expose a
-:class:`SimRollout` driven through the upstream OpenArm v2 MJCF position
+Pairs with ``._assets`` (which generates the MJCF) to expose a
+``SimRollout`` driven through the upstream OpenArm v2 MJCF position
 actuators. The 16-D action chunk emitted by the pi05 OpenArm checkpoints
 flows in as ``[left_j1..7, left_grip, right_j1..7, right_grip]``; the env
 splits it per arm, clips each joint target to the MJCF limits, writes
@@ -63,27 +63,19 @@ _DEFAULT_RENDER_WIDTH = 256
 _DEFAULT_RENDER_HEIGHT = 256
 _GRIPPER_ENCODER_DEADBAND = 0.05
 # Wrist camera local pose in the ``openarm_{side}_ee_base_link`` body frame.
-# EEF frame conventions (at tabletop reset pose):
-#   body +X  → world +Z (up)
-#   body +Y  → world +Y (lateral, jaw opening/closing axis)
-#   body -Z  → world +X (approach axis, toward workspace)
+# EEF frame at tabletop reset pose: body +X -> world +Z (up), body +Y ->
+# world +Y (jaw axis), body -Z -> world +X (approach axis). Both EEF bodies
+# share this orientation (bimanual kinematics are Y-mirrored).
 #
-# Both left and right EEF bodies share identical world-frame orientation
-# (bimanual kinematics are Y-mirrored, so the same body frame holds for
-# both arms throughout symmetric motions).
+# pos: 12 cm body +X (above EEF in world Z) + 6 cm body -Z (forward toward
+# fingertips) -- close to the gripper for a detailed view.
 #
-# pos: 12 cm in body +X (= 12 cm above EEF in world Z) and 6 cm in body
-# -Z (= 6 cm forward toward the fingertips along the approach axis).
-# This places the camera close to the gripper for a detailed view.
-#
-# quat (wxyz, MuJoCo convention): computed from look/up vectors so the
-# camera is orthogonal to the jaw opening direction:
-#   image right = body -Y = world -Y  (jaw axis → jaws open left↔right)
-#   look        = body -X*0.80 + body -Z*0.60  (mostly world -Z downward,
-#                 some world +X forward) — zero Y component = strictly
-#                 perpendicular to jaw axis.
+# quat (wxyz, MuJoCo convention), orthogonal to the jaw axis:
+#   image right = body -Y = world -Y (jaws open left<->right)
+#   look        = body -X*0.80 + body -Z*0.60 (mostly world -Z down, some
+#                 world +X forward; zero Y = perpendicular to jaw axis)
 #   image up    = body +Z (world +X, toward workspace)
-# Quaternion derived analytically from R = [right | up | -look] column matrix.
+# Derived analytically from R = [right | up | -look] column matrix.
 _WRIST_CAM_LOCAL_POS = np.asarray([0.12, 0.0, -0.06], dtype=np.float64)
 _WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray(
     [0.632177, -0.316784, 0.316784, -0.632177], dtype=np.float64
@@ -95,7 +87,7 @@ def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | Non
     """Validate a 3-vector from ``scene.backend_options``.
 
     Accepts ``None`` (returns ``None``), a YAML list / tuple, or a
-    whitespace-separated string. Raises :class:`ROSConfigError` with a
+    whitespace-separated string. Raises ``ROSConfigError`` with a
     descriptive message for any other shape.
     """
     if raw is None:
@@ -148,10 +140,10 @@ def _resolve_base_translation(env_cfg: SimEnvironment) -> tuple[float, float]:
     ``env_cfg.base_pose`` is the only knob —
     there is no legacy ``backend_options`` fallback and no hand-tuned
     default. A YAML that omits ``base_pose`` for this scene is a
-    :class:`ROSConfigError` at compose time.
+    ``ROSConfigError`` at compose time.
 
     The (z, x) projection is deliberate: the underlying
-    :func:`_lift_robot_bases` helper is translation-only, so non-zero
+    ``_lift_robot_bases`` helper is translation-only, so non-zero
     ``y`` and non-identity quaternion are rejected. Full 6-DOF
     mounting waits on the MJCF helper learning to rotate the bases.
     """
@@ -211,7 +203,7 @@ def _resolve_state_dim(
        with ``weights_uri="mock://noop"``).
 
     Args:
-        weights_uri: The :attr:`VLASpec.weights_uri` from the eval YAML.
+        weights_uri: The ``VLASpec.weights_uri`` from the eval YAML.
             Only bare rSkill references are inspected; explicit-scheme
             URIs (``hf://``, ``local://``, etc.) drop to ``fallback``.
         fallback: Dimension to return when no manifest is available
@@ -307,7 +299,7 @@ def _resolve_initial_pose_from_rskill(
 
     # Reorder from the rSkill's layout to robot.yaml left-first. The
     # bimanual layout splits the vector in two equal halves; per the
-    # cross-check in :func:`_resolve_state_dim`, ``state_dim`` must be
+    # cross-check in ``_resolve_state_dim``, ``state_dim`` must be
     # the total bimanual width so each arm's slice is ``state_dim // 2``.
     if action_layout == "right_first":
         half = state_dim // 2
@@ -342,7 +334,7 @@ def _arm_joint_names_for_side(
 ) -> list[str]:
     """Return the 7 MJCF arm joint names for ``side``.
 
-    Reads :attr:`~openral_core.JointSpec.sim_joint_name` off every
+    Reads ``JointSpec.sim_joint_name`` off every
     ``robot.yaml`` joint whose ``name`` starts with ``"{side}_joint"``,
     falling back to the legacy hardcoded ``openarm_{side}_joint{i}``
     pattern when no description is passed (lets hermetic tests build
@@ -381,7 +373,7 @@ def _build_arm_handles(
     """Look up actuator / joint indices for one arm in the composed MJCF.
 
     Joint names come from the per-joint ``sim_joint_name`` overrides
-    in :class:`~openral_core.RobotDescription` — falling
+    in ``RobotDescription`` — falling
     back to the previous hardcoded ``openarm_{side}_joint{i}`` strings
     when no description is passed (legacy / hermetic-test paths).
 
@@ -390,7 +382,7 @@ def _build_arm_handles(
     ``{side}_finger1_ctrl`` for the driven finger). The schema doesn't
     carry sim-actuator overrides today, so those remain in code; if a
     future fork renames actuators, add a ``sim_actuator_name`` field
-    on :class:`~openral_core.JointSpec`.
+    on ``JointSpec``.
 
     Args:
         model: Compiled MuJoCo model (composed with
@@ -463,18 +455,13 @@ class _OpenArmTabletopRollout:
     # symmetrically to both the inbound action and the outbound state
     # observation so the env's I/O contract matches the policy's order.
     _action_layout: str = "left_first"
-    # ``"radians"`` (the MuJoCo qpos / ctrl native unit and the
-    # robots/openarm/robot.yaml convention) or ``"degrees"`` (the
-    # LeRobot OpenArm dataset convention — yuto-urushima / AdrianLlopart
-    # pickplace checkpoints record state in degrees and emit actions
-    # in degrees; verified against the on-disk normalizer pack's
-    # observation.state.q50 elbow value ≈90 — clearly degrees). When
-    # ``"degrees"``, the env converts qpos → state (rad → deg) before
-    # handing observation to the policy and action → ctrl (deg → rad)
-    # before writing to MuJoCo. Grippers are pass-through — the policy
-    # encodes them in a custom motor-encoder unit (q01..q99 ≈ -50..-1)
-    # which is neither radians nor degrees, and the actuator ctrlrange
-    # clips into the joint's valid range. Set via
+    # ``"radians"`` (MuJoCo qpos/ctrl native unit, robots/openarm/robot.yaml
+    # convention) or ``"degrees"`` (LeRobot OpenArm dataset convention —
+    # yuto-urushima/AdrianLlopart pickplace checkpoints record + emit degrees;
+    # verified against the normalizer pack's observation.state.q50 elbow
+    # value ≈90). ``"degrees"`` converts qpos->state (rad->deg) and
+    # action->ctrl (deg->rad); grippers pass through (custom motor-encoder
+    # unit, q01..q99 ≈ -50..-1, clipped by actuator ctrlrange). Set via
     # ``scene.backend_options.joint_units``.
     _joint_units: str = "radians"
     # Initial ``state_dim``-D arm pose in robot.yaml left-first order
@@ -553,7 +540,7 @@ class _OpenArmTabletopRollout:
 
         The expected width is ``self._state_dim``, derived at backend
         init from the rSkill's ``action_contract.dim`` (or the loaded
-        :class:`RobotDescription`'s joint count as the fallback).
+        ``RobotDescription``'s joint count as the fallback).
         Targets are written *directly* to the upstream OpenArm v2
         ``<position>`` actuators (``{side}_joint{i}_ctrl`` +
         ``{side}_finger1_ctrl``), inheriting the upstream MJCF's
@@ -662,20 +649,18 @@ class _OpenArmTabletopRollout:
     def _update_dynamic_wrist_camera(self, mujoco: Any, cam_name: str) -> None:
         """Fix the wrist camera to be properly body-parented to the EEF link.
 
-        The upstream OpenArm MJCF places the wrist cameras inside the gripper
-        shell at fingertip level with only a -90° Z-rotation, which renders
-        mostly gripper geometry from an uninformative angle. This function
-        overrides position and orientation **in the EEF body-local frame**
-        using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_QUAT_WXYZ`` so
-        the camera sits 14 cm above the wrist and 6 cm forward, looking down
-        at the workspace with the jaw axis horizontal in the image frame.
-        The camera stays rigidly attached to the EEF body rather than floating
-        at a world-space offset. Called once per render step so the camera
-        tracks the live EEF pose.
+        The upstream OpenArm MJCF places wrist cameras inside the gripper
+        shell at fingertip level with only a -90° Z-rotation (mostly gripper
+        geometry, uninformative angle). Overrides position/orientation in the
+        EEF body-local frame (``_WRIST_CAM_LOCAL_POS``/``_WRIST_CAM_LOCAL_QUAT_WXYZ``)
+        so the camera sits 14 cm above the wrist + 6 cm forward, looking down
+        with the jaw axis horizontal in-frame, body-parented (not a floating
+        world-space offset). Called once per render step to track the live
+        EEF pose.
 
-        Both left and right cameras use the same quaternion because the
-        bimanual EEF bodies maintain identical world-frame orientations
-        throughout symmetric motions (Y-mirrored kinematics → same body frame).
+        Both cameras share the same quaternion: the bimanual EEF bodies keep
+        identical world-frame orientation through symmetric motions
+        (Y-mirrored kinematics → same body frame).
         """
         side = cam_name.split("_", 1)[1]  # "wrist_left" → "left"
         body_name = f"openarm_{side}_ee_base_link"
@@ -702,19 +687,17 @@ class _OpenArmTabletopRollout:
         Layout follows ``_action_layout``:
 
         * ``"left_first"`` → ``[L_j1..7, L_grip, R_j1..7, R_grip]``
-          (the robot.yaml / mddoai pi05_openarm_vast convention).
+          (robot.yaml / mddoai pi05_openarm_vast convention).
         * ``"right_first"`` → ``[R_j1..7, R_grip, L_j1..7, L_grip]``
-          (the yuto-urushima / AdrianLlopart pickplace convention,
-          matching their ``config.json action_feature_names``).
+          (yuto-urushima/AdrianLlopart pickplace convention, matching
+          their ``config.json action_feature_names``).
 
         Units follow ``_joint_units``: ``"radians"`` returns qpos as-is;
-        ``"degrees"`` converts arm joints (rad → deg) while leaving the
-        gripper qpos untouched. The gripper qpos is in MuJoCo radians
-        (joint range [0, 0.7854] for left, [-0.7854, 0] for right) but
-        the LeRobot OpenArm dataset records the gripper in a custom
-        motor-encoder unit — there is no closed-form conversion, so the
-        env passes it through and downstream consumers (normalizer +
-        clipping) handle the unit mismatch.
+        ``"degrees"`` converts arm joints (rad → deg), gripper untouched.
+        Gripper qpos is MuJoCo radians (range [0, 0.7854] left, [-0.7854, 0]
+        right) but the LeRobot dataset records it in a custom motor-encoder
+        unit with no closed-form conversion, so it passes through and
+        downstream consumers (normalizer + clipping) handle the mismatch.
         """
         # Assume the finger qpos sits immediately after joint7's qpos
         # slot. Verified by the upstream MJCF body order; the smoke test
@@ -756,7 +739,7 @@ class _OpenArmTabletopRollout:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())

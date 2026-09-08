@@ -1,33 +1,24 @@
 """Real-hardware HAL adapter for the Enactic OpenArm v2 bimanual arm.
 
-Where :mod:`openral_hal.openarm` ships the MuJoCo digital twin, this module
-drives the physical arm.  Same 16-DoF ``Action`` layout, same
-:class:`~openral_hal.protocol.HAL` Protocol, so a Skill or Reasoner moves
-from twin to hardware without a line of change.
+Same 16-DoF ``Action`` layout and ``HAL`` Protocol as the
+``openral_hal.openarm`` MuJoCo twin, so a Skill or Reasoner moves from
+twin to hardware unchanged.
 
-Why ros2_control and not SocketCAN directly
--------------------------------------------
-The OpenArm's motors are Damiao BLDC servos on a CAN FD bus (1 Mbit/s
-arbitration, 5 Mbit/s data), one bus per arm.  It is entirely possible to
-drive them from Python via the ``openarm_can`` bindings — and that is
-precisely what CLAUDE.md §1.5 forbids: *"Python touches motors only through
-a typed bridge to ros2_control with a watchdog. Anything >100 Hz is C++."*
-The OpenArm control loop runs at 400 Hz.
-
-So the actuation path is:
+Actuation path (CLAUDE.md §1.5: motors only through a typed bridge to
+ros2_control with a watchdog; anything >100 Hz is C++). The OpenArm's
+Damiao BLDC servos run one CAN FD bus per arm (1 Mbit/s arbitration,
+5 Mbit/s data) at 400 Hz:
 
     Skill → Action → OpenArmRealHAL → ros2_control command topics
           → controller_manager (400 Hz, C++)
           → openarm_hardware SystemInterface (C++)
           → openarm_can → SocketCAN → Damiao motors
 
-This adapter owns only the top hop.  Everything below it is C++ with a
-real-time budget, which is where a bimanual arm's actuation belongs.
+This adapter owns only the top hop; everything below is C++ on a
+real-time budget.
 
-Controller topology
--------------------
-``openarm_bringup``'s bimanual configuration spawns **four** controllers,
-not one — each arm's 7 joints and its gripper are commanded separately:
+Controller topology: ``openarm_bringup``'s bimanual config spawns four
+controllers — each side's 7 joints and its gripper commanded separately:
 
 ===========================  ============================================
 controller                   joints
@@ -38,35 +29,28 @@ controller                   joints
 ``right_gripper``            ``openarm_right_finger_joint1``
 ===========================  ============================================
 
-:meth:`OpenArmRealHAL.send_action` therefore fans one 16-DoF action out to
-four command topics.  A partial action is never published: either all four
-messages go out, or none do (see :meth:`send_action`).
+``send_action`` fans one 16-DoF action out to all four topics
+atomically — either all four messages publish, or none do.
 
-Joint naming
-------------
-``RobotDescription`` uses the logical names a Skill sees (``left_joint1``,
-``left_gripper``); ros2_control uses the URDF names (``openarm_left_joint1``,
-``openarm_left_finger_joint1``).  The bridge already exists in the manifest:
-each :class:`~openral_core.JointSpec` carries ``sim_joint_name``, which for
-the OpenArm *is* the URDF name.  This adapter reads that field rather than
-hardcoding a second copy of the mapping.
+Joint naming: ``RobotDescription`` uses the logical names a Skill sees
+(``left_joint1``, ``left_gripper``); ros2_control uses the URDF names
+(``openarm_left_joint1``, ``openarm_left_finger_joint1``). Each
+``JointSpec.sim_joint_name`` already carries that URDF name — read it
+rather than hardcoding a second copy of the mapping.
 
-Action layout (identical to :class:`~openral_hal.OpenArmMujocoHAL`)
-------------------------------------------------------------------
+Action layout (identical to ``OpenArmMujocoHAL``):
 * ``target[0:7]``   — left arm joints (rad)
 * ``target[7]``     — left gripper (rad)
 * ``target[8:15]``  — right arm joints (rad)
 * ``target[15]``    — right gripper (rad)
 
-Bus preflight
--------------
-:meth:`connect` refuses to proceed unless both CAN interfaces exist and are
-up.  A HAL that reports "connected" while its motor bus is down is the worst
-possible failure mode: every ``send_action`` succeeds, the arm never moves,
-and nothing upstream can tell the difference.  Note the check is necessary,
-not sufficient — an up interface with unpowered motors sits in
-``ERROR-PASSIVE``, which :meth:`health` surfaces but which cannot be
-detected without transmitting.
+Bus preflight: ``connect`` refuses unless both CAN interfaces exist and
+are up. A HAL reporting "connected" while its motor bus is down is the
+worst failure mode — every ``send_action`` succeeds, the arm never
+moves, and nothing upstream can tell. The check is necessary but not
+sufficient: an up interface with unpowered motors sits in
+``ERROR-PASSIVE``, which ``health`` surfaces but cannot be detected
+without transmitting.
 
 Example::
 
@@ -138,7 +122,7 @@ class OpenArmRealHAL(RosControlHAL):
 
     Args:
         description: Manifest to publish.  Defaults to
-            :data:`OPENARM_REAL_DESCRIPTION`; pass a rig-specific manifest
+            ``OPENARM_REAL_DESCRIPTION``; pass a rig-specific manifest
             (e.g. one written by ``openral detect``) to override sensors or
             safety limits without changing kinematics.
         left_can_interface: SocketCAN interface for the left arm's motor bus.
@@ -156,7 +140,7 @@ class OpenArmRealHAL(RosControlHAL):
             ``name`` / ``position`` / ``velocity`` / ``effort`` keys, in
             ros2_control joint naming.
         staleness_limit_s: Maximum age of a ``read_state()`` reading.
-        require_can_links: When ``True`` (the default), :meth:`connect`
+        require_can_links: When ``True`` (the default), ``connect``
             verifies both CAN interfaces are up and refuses otherwise.  Set
             ``False`` only to exercise the ROS wiring against a bringup whose
             hardware interface is itself simulated.
@@ -339,7 +323,7 @@ class OpenArmRealHAL(RosControlHAL):
                 deadline.
 
         Returns:
-            A 16-element :class:`~openral_core.JointState` in manifest order.
+            A 16-element ``JointState`` in manifest order.
         """
         state = super().read_state()
         if self._state_fn is None:
@@ -468,7 +452,7 @@ class OpenArmRealHAL(RosControlHAL):
 
         ``SlotGroupStager.reset`` is documented as the disconnect/estop path,
         but the base ``estop`` only clears the connection flag and raises — it
-        never routes through :meth:`disconnect`. Without this override a slot
+        never routes through ``disconnect``. Without this override a slot
         staged when the stop landed would survive the stop, and the first tick
         of the resumed run would be spent raising the incomplete-group error
         against a tick from before the e-stop.
@@ -486,13 +470,13 @@ class OpenArmRealHAL(RosControlHAL):
             group: Every slot action of one inference tick.
 
         Returns:
-            A ``JOINT_POSITION`` :class:`Action` covering all 16 joints, which
-            :meth:`send_action` then fans out to the four controllers exactly
+            A ``JOINT_POSITION`` ``Action`` covering all 16 joints, which
+            ``send_action`` then fans out to the four controllers exactly
             as it does a whole-vector action.
 
         Raises:
             ROSConfigError: The group is unplaceable — see
-                :func:`openral_hal._slot_group.compose_slot_group`.
+                ``openral_hal._slot_group.compose_slot_group``.
         """
         targets = compose_slot_group(group, [j.name for j in self.description.joints])
         first = group[0]
@@ -521,7 +505,7 @@ class OpenArmRealHAL(RosControlHAL):
         both wasteful and, on a busy host, occasionally slow.
 
         Returns:
-            A :class:`~openral_hal.protocol.HALHealthReport` naming each arm's
+            A ``HALHealthReport`` naming each arm's
             CAN interface and whether the preflight found it up.
 
         Example:

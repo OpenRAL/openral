@@ -10,12 +10,12 @@ Used by both:
   * ``tools/_robometer_scorer.py`` — loads that checkpoint directly as 4-bit (no
     bf16 materialization, no requantize) via the meta device.
 
-Determinism (CLAUDE.md §8 reproducibility): the reward ramp must be byte-stable
-across process launches. Without pinning, ``scaled_dot_product_attention`` picks
-flash/mem-efficient kernels by process-warmup state (a warmed vs cold process
-drifts ~0.006), so we force the math SDP kernel + deterministic algorithms. With
-this pinned, the meta pre-quantized load is byte-identical to the bf16+quantize
-reference (verified: same-process ``max|Δ| = 0`` and cross-process equality).
+Determinism (CLAUDE.md §8): the reward ramp must be byte-stable across process
+launches. Unpinned, ``scaled_dot_product_attention`` picks flash/mem-efficient
+kernels by process-warmup state (warmed vs cold drifts ~0.006), so the math SDP
+kernel + deterministic algorithms are forced. With that pinned, the meta
+pre-quantized load equals the bf16+quantize reference bit-for-bit (same-process
+``max|Δ| = 0``, cross-process equal).
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ def quantize_nf4_in_place(root: object, compute_dtype: object) -> int:
 def install_linear4bit_shells(root: object, compute_dtype: object) -> int:
     """Replace large ``nn.Linear`` with EMPTY ``Linear4bit`` shells (no packing).
 
-    Used on a meta-device skeleton so :func:`install_prequantized` can drop in the
-    saved packed weights. Same selection rule as :func:`quantize_nf4_in_place`.
+    Used on a meta-device skeleton so ``install_prequantized`` can drop in the
+    saved packed weights. Same selection rule as ``quantize_nf4_in_place``.
     """
     import bitsandbytes as bnb
     import torch
@@ -105,19 +105,14 @@ def install_linear4bit_shells(root: object, compute_dtype: object) -> int:
         nonlocal n
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
-                # ON META, like the skeleton these shells are installed into.
-                # `Linear4bit.__init__` allocates a real parameter for its
-                # weight, so on the default device each shell costs host RAM
-                # proportional to the DENSE layer -- the materialization NF4
-                # exists to avoid. Loading Robometer-4B peaked at 14.3 GB RSS
-                # and was OOM-killed before a single packed weight was read.
-                # `install_prequantized` overwrites every one of these from the
-                # checkpoint, so there is nothing here to preserve: "EMPTY
-                # shells" was always the intent and meta is what makes them
-                # empty. `openral_sim._quantization` guards its own Linear4bit
-                # constructor the same way (via `accelerate.init_empty_weights`);
-                # this path is the one that missed it. Same device the caller
-                # meta-builds the skeleton on in `_robometer_scorer`.
+                # On meta, matching the skeleton these shells install into:
+                # Linear4bit.__init__ allocates a real weight param, so off-meta
+                # each shell costs host RAM proportional to the dense layer —
+                # loading Robometer-4B off-meta peaked at 14.3 GB RSS and was
+                # OOM-killed before a packed weight was read. install_prequantized
+                # overwrites every shell from the checkpoint, so nothing here needs
+                # preserving. openral_sim._quantization guards its own Linear4bit
+                # construction the same way, via accelerate.init_empty_weights.
                 with torch.device("meta"):
                     shell = bnb.nn.Linear4bit(
                         child.in_features,

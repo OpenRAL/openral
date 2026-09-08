@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.UR5eHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.UR5eHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` UR5e MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →
@@ -109,13 +109,6 @@ def hal() -> UR5eHAL:
     """Fresh UR5e HAL with gravity off and enough settle steps for the
     position controllers to converge to the commanded pose."""
     return UR5eHAL(gravity_enabled=False, settle_steps=2000)
-
-
-@pytest.fixture()
-def connected_hal(hal: UR5eHAL) -> UR5eHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _zero_action(horizon: int = 1) -> Action:

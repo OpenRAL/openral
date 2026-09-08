@@ -1,39 +1,31 @@
 """Live ROS integration test for the SegmentInView perception service.
 
-Stands up the **real** ``openral_perception_ros.segmenter_node`` lifecycle node
-with the **real** ``kind: segmenter`` rSkill manifest
-(``rskills/rskill-sam2_1-any-grasped_object_mask-bf16``), the **real** SO-101
-manifest for its wrist intrinsics and optical frame, a **real** static TF, and a
-**real** in-tree wrist frame of the arm holding an eraser. It then calls the
-service over a real DDS graph with a real ``rclpy`` client and checks the whole
-contract the HAL's attachment bridge depends on:
+Stands up the real ``openral_perception_ros.segmenter_node`` lifecycle node with the real
+``kind: segmenter`` rSkill manifest (``rskills/rskill-sam2_1-any-grasped_object_mask-bf16``),
+the real SO-101 manifest for wrist intrinsics/optical frame, real static TF, and a real
+in-tree wrist frame holding an eraser. Calls the service over a real DDS graph with a real
+``rclpy`` client, checking the whole contract the HAL's attachment bridge depends on:
 
-    RGB frame + 3-D TCP point (in the attach link's frame)
-      → tf2 into the camera optical frame
-      → manifest intrinsics → pixel prompt
-      → SAM 2.1 → plural mono8 masks, area ascending, parallel advisory scores
+    RGB frame + 3-D TCP point (attach link's frame) → tf2 into camera optical frame →
+    manifest intrinsics → pixel prompt → SAM 2.1 → plural mono8 masks, area ascending,
+    parallel advisory scores
 
-No doubles anywhere (CLAUDE.md §1.11) — including the model: SAM 2.1 runs here
-for real, on CPU. The dev box's GTX 1060 is sm_61 and the CUDA wheels ship no
-kernels for it, so ``device:=cpu`` is the honest setting, and CPU inference is
-still inference. It is slow (~9 s to load and warm, ~3.7 s per call measured
-here against ~53 ms warmed on the reference RTX 4070), which is exactly why the
-HAL side of this path has a bounded deadline and a conservative fallback.
+No doubles (CLAUDE.md §1.11), including the model: SAM 2.1 runs for real, on CPU — the dev
+box's GTX 1060 is sm_61 with no CUDA kernels for it, so ``device:=cpu``. Measured: ~9 s to
+load/warm, ~3.7 s per call here vs ~53 ms warmed on an RTX 4070 — why the HAL side has a
+bounded deadline and conservative fallback.
 
-The three failure branches are covered too, because each one is what the HAL
-turns into a GRIPPER_FORCE attachment rather than a stall: an un-published
-camera, a prompt that does not project into the frame, and a deactivated node.
+Three failure branches covered too (each is what the HAL turns into a GRIPPER_FORCE
+attachment rather than a stall): un-published camera, a prompt that doesn't project into the
+frame, and a deactivated node.
 
-A second test covers the node's **diagnostic** mask topic
-(``openral_msgs/SegmentMasks`` on ``/openral/perception/masks``): that it is off
-by default — no publisher on the graph at all — and that when an operator turns
-it on, real SAM 2.1 masks reach the dashboard's real
-``PerceptionOverlaySubscriber`` and land in a real ``/api/state`` snapshot.
-Nothing on the robot reads that topic; it only decides what a human sees.
+A second test covers the diagnostic mask topic (``openral_msgs/SegmentMasks`` on
+``/openral/perception/masks``): off by default (no publisher at all), and when an operator
+turns it on, real SAM 2.1 masks reach the dashboard's real ``PerceptionOverlaySubscriber``
+and land in a real ``/api/state`` snapshot. Nothing on the robot reads that topic.
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the sibling reasoner integration
-tests, and listed in the live-ROS suite (``scripts/ros_live_tests.sh``). CI runs
-it inside ``openral:x86`` (the ``docker-build`` workflow). Locally::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. CI runs it in
+``openral:x86`` (docker-build workflow). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
@@ -282,26 +274,19 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
 def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -> None:
     """The debug mask topic costs nothing off, and lights the overlay on.
 
-    PR #122 taught the dashboard to render
-    ``topics.perception.overlays[camera].masks`` — an LA-PNG-per-mask overlay
-    drawn on the camera tile — but the segmenter's contract is a *service*, so
-    that renderer had no producer and never drew anything. This is the producer:
-    ``openral_msgs/SegmentMasks`` on ``/openral/perception/masks``, behind
-    ``publish_debug_masks`` (default false).
+    PR #122 taught the dashboard to render ``topics.perception.overlays[camera].masks`` (an
+    LA-PNG-per-mask overlay on the camera tile), but the segmenter's contract is a service, so
+    that renderer had no producer. This is the producer: ``openral_msgs/SegmentMasks`` on
+    ``/openral/perception/masks``, behind ``publish_debug_masks`` (default false).
 
-    Two properties, both only provable on a real graph:
+    Two properties, provable only on a real graph: (1) off by default means no publisher
+    exists on the topic at all — not just "publishes nothing"; (2) on, real SAM 2.1 masks flow
+    through the real ``SegmentMasks`` message → real ``PerceptionOverlaySubscriber`` (own
+    node, own spin thread, matching sensor-class QoS) → real ``TelemetryStore`` → a real
+    ``/api/state`` snapshot.
 
-    1. **Off by default is really off.** Not "publishes nothing" — *no publisher
-       exists on the topic at all*, which is what makes it free.
-    2. **On, it feeds the real consumer.** Real SAM 2.1 masks → the real
-       ``SegmentMasks`` message → the real ``PerceptionOverlaySubscriber`` (its
-       own node, its own spin thread, matching sensor-class QoS) → the real
-       ``TelemetryStore`` → a real ``/api/state`` snapshot. A QoS drift on
-       either side leaves the overlay blank with nothing to explain it, and only
-       a live graph catches that.
-
-    Strictly diagnostic: nothing asserted here is read by the HAL, the kernel or
-    the attachment path. The HAL takes its masks from its own service reply.
+    Strictly diagnostic: nothing here is read by the HAL, kernel, or attachment path — the HAL
+    takes its masks from its own service reply.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.srv")

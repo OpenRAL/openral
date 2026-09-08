@@ -1,28 +1,11 @@
 """Unit tests for rSkill loader — no network, no GPU required.
 
-The HF Hub network boundary is doubled with a recording fake
-(CLAUDE.md §1.11); the local JSON registry is written to a pytest
-tmp_path so tests are fully isolated.
+The HF Hub network boundary is doubled with a recording fake (CLAUDE.md §1.11);
+the local JSON registry is written to a pytest tmp_path so tests are fully isolated.
 
-Coverage
---------
-- ``rSkill.from_yaml``                     — local manifest load, happy path
-- ``rSkill.from_pretrained``               — mocked HF Hub download, happy path
-- ``rSkill._check_license``               — NVIDIA non-commercial block + env override
-- ``rSkill._check_license``               — Apache-2.0 always passes
-- ``rSkill._check_license``               — PROPRIETARY logs warning (no raise)
-- ``rSkill._check_license``               — PERMISSIVE_RESEARCH logs info (no raise)
-- ``rSkill._check_license``               — UNKNOWN logs warning (no raise)
-- ``rSkill.list_installed``               — empty registry → empty list
-- ``rSkill.list_installed``               — populated registry → correct entries
-- ``rSkill.uninstall``                    — removes matching entry; returns True
-- ``rSkill.uninstall``                    — no-op when repo_id absent; returns False
-- ``rSkill.check_capabilities``           — tag mismatch → ROSCapabilityMismatch
-- ``rSkill.check_capabilities``           — bool flag fail → ROSCapabilityMismatch
-- ``rSkill.check_capabilities``           — numeric flag fail → ROSCapabilityMismatch
-- ``rSkill.check_capabilities``           — all satisfied → no raise
-- ``InstalledRSkillEntry``                 — schema round-trip via JSON
-- ``rSkill.__repr__``                     — contains name, version, license
+Covers: from_yaml/from_pretrained happy paths, _check_license per license posture,
+list_installed/uninstall registry ops, check_capabilities/check_sensors/
+check_compatibility, InstalledRSkillEntry round-trip, and __repr__.
 """
 
 from __future__ import annotations
@@ -115,9 +98,8 @@ _APACHE_YAML = textwrap.dedent("""\
       - generalist
 """)
 
-# NVIDIA non-commercial wraps a Franka-targeted GR00T checkpoint here
-# (the original test used unitree_g1, but V1 closed embodiment_tags to
-# the in-tree set; franka_panda exercises the same NVIDIA license guard).
+# franka_panda: V1 closed embodiment_tags to the in-tree set, so this fixture
+# exercises the NVIDIA license guard on an in-tree tag.
 _NVIDIA_YAML = textwrap.dedent("""\
     name: test/rskill-groot
     version: "1.0.0"
@@ -492,9 +474,7 @@ class TestCheckLicense:
     def test_permissive_research_blocks_commercial_use(self) -> None:
         """PERMISSIVE_RESEARCH weights (e.g. π0.5) are non-commercial — must raise.
 
-        Regression guard for the gate that previously only hard-blocked
-        NVIDIA_NON_COMMERCIAL and let every other non-commercial posture
-        through with an info log.
+        Regression guard: the gate previously hard-blocked only NVIDIA_NON_COMMERCIAL.
         """
         m = self._manifest_with_license(RSkillLicensePosture.PERMISSIVE_RESEARCH)
         env_backup = os.environ.pop("OPENRAL_ALLOW_NONCOMMERCIAL", None)
@@ -649,12 +629,10 @@ class TestCheckCapabilities:
         rSkill.check_capabilities(m, caps)  # no raise
 
     def test_perception_kind_exempt_from_embodiment_match(self) -> None:
-        """Detector / vlm rSkills are embodiment-agnostic: the gate passes on any
-        robot via the explicit ``["any"]`` wildcard.
+        """Detector / vlm rSkills are embodiment-agnostic via the ``["any"]`` wildcard.
 
         Real in-tree perception manifests (CLAUDE.md §1.11) ship
-        ``embodiment_tags: ["any"]`` and must clear ``check_embodiment_tags``
-        against a robot whose embodiment they never enumerate.
+        ``embodiment_tags: ["any"]`` and must clear the gate against any robot.
         """
         repo = Path(__file__).resolve().parents[2]
         caps = RobotCapabilities(embodiment_tags=["some_unrelated_robot"])
@@ -984,19 +962,12 @@ class TestCheckCompatibility:
     def test_act_so101_pen_declares_its_real_training_resolution(self) -> None:
         """The ACT pen rSkill must declare the resolution its backbone truly needs.
 
-        ACT is the one in-tree family that performs no resize: lerobot's
-        ``modeling_act.py`` has no resize step and this checkpoint's
-        ``policy_preprocessor.json`` is rename/batch/device/normalize only
-        (no resize stage), so the ResNet-18 backbone consumes each frame at
-        the sensor's native resolution. The checkpoint trained both views at
-        640x480, so a nominal 224x224 floor under-declared the overhead view
-        by ~3x and let an out-of-distribution camera clear the gate.
-
-        Pins both halves of the fix against the real in-tree fixtures
-        (CLAUDE.md §1.11): ``camera1`` carries the full training resolution,
-        and the pairing still loads on so101_follower — the naive correction
-        (raising ``camera2`` to 640 as well) makes this rSkill fail the
-        sensor gate on its own robot, because the ``wrist`` rig is 256x256.
+        ACT performs no resize (lerobot's ``modeling_act.py``, no resize stage in
+        ``policy_preprocessor.json``), so the ResNet-18 backbone sees native
+        resolution. Trained at 640x480 for both views; a 224x224 floor
+        under-declared the overhead view ~3x and let an OOD camera clear the gate.
+        ``camera2`` stays pinned to the wrist rig's actual 256x256, not 640 —
+        raising it to 640 would fail the sensor gate on this rSkill's own robot.
         """
         repo = Path(__file__).resolve().parents[2]
         m = RSkillManifest.from_yaml(str(repo / "rskills" / "act-so101-pen" / "rskill.yaml"))
@@ -1021,15 +992,10 @@ class TestCheckCompatibility:
     def test_rldx1_simpler_widowx_declares_its_real_non_square_resolution(self) -> None:
         """The RLDX-1 SIMPLER-WidowX rSkill must declare its true 320x256 input.
 
-        The sidecar adapter resizes every frame to
-        ``_SIMPLER_WIDOWX_IMAGE_HW = (256, 320)`` — an (H, W) tuple, i.e.
-        height=256, width=320 — before building the SIMPLER WidowX
-        (bridge_orig) wire obs (see
-        ``python/sim/src/openral_sim/policies/rldx.py``,
-        ``_build_simpler_widowx_obs`` / ``_resize_to_hw``). A square 256x256
-        floor under-declared the width by 64px. Pinned against the real
-        in-tree fixtures (CLAUDE.md §1.11): the widowx robot's `top` camera
-        (640x480) clears the corrected, non-square floor.
+        The sidecar resizes every frame to ``_SIMPLER_WIDOWX_IMAGE_HW = (256, 320)``
+        (H, W) before the SIMPLER WidowX wire obs (see
+        ``python/sim/src/openral_sim/policies/rldx.py``, ``_build_simpler_widowx_obs``
+        / ``_resize_to_hw``). A square 256x256 floor under-declared width by 64px.
         """
         repo = Path(__file__).resolve().parents[2]
         m = RSkillManifest.from_yaml(

@@ -1,18 +1,15 @@
 """Deploy-side VLA↔reward resolution + VRAM preflight.
 
-`openral deploy sim` does not preselect a VLA — the reasoner picks one at runtime
-from the capability-matched palette. So the deploy resolves the reward model from
-the *palette's* `reward_rskill_name` pairing and runs a pre-LAUNCH VRAM feasibility
-check over the whole candidate set before bringing up ROS.
+`openral deploy sim` resolves the reward model from the reasoner-picked palette VLA's
+`reward_rskill_name` pairing, then runs a pre-launch VRAM feasibility check over the
+candidate set before ROS comes up.
 
-Fixture-backed (CLAUDE.md §1.11): the real `robots/franka_panda` manifest (whose
-palette includes `rskills/smolvla-libero`, the only in-tree VLA that names a reward
-model) + `rskills/robometer-4b` (the reward model). The franka palette mixes VLAs
-that declare `min_vram_gb` (smolvla 1.2, molmoact/pi05 4.0, rldx 7.0, 3dda 2.0) with
-ones that do not (act / gr00t / xvla / smolvla-maniskill), so a single robot fixture
-exercises the fit / OOM / undeclared branches.
+Fixture: real `robots/franka_panda` manifest (palette includes `rskills/smolvla-libero`,
+the only in-tree VLA naming a reward model) + `rskills/robometer-4b`. Franka palette
+min_vram_gb: smolvla 1.2, molmoact/pi05 4.0, rldx 7.0, 3dda 2.0; undeclared: act/gr00t/
+xvla/smolvla-maniskill — one fixture exercises the fit/OOM/undeclared branches.
 
-These are CLI-layer helpers — no ROS. Run with the main venv:
+CLI-layer helpers, no ROS. Run:
     PYTHONPATH=python/cli/src:python/core/src:python/reasoner/src:python/sim/src \
         .venv/bin/python -m pytest tests/unit/test_deploy_reward_pairing.py -v
 """

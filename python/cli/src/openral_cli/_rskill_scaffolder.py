@@ -9,7 +9,7 @@ load.
 
 Used by:
 
-- ``ral skill new <id>`` (Typer command in :mod:`openral_cli.main`).
+- ``ral skill new <id>`` (Typer command in ``openral_cli.main``).
 - ``tools/rskill_scaffolder.py`` (standalone argparse wrapper).
 """
 
@@ -82,7 +82,7 @@ def scaffold_rskill(
         license_: License posture to write into the manifest.
         embodiment_tag: Canonical embodiment tag to declare in
             ``embodiment_tags``.
-        family: Optional :data:`RSkillFamily`. When set,
+        family: Optional ``RSkillFamily``. When set,
             `openral_cli._rskill_intel.family_defaults` provides
             the manifest baseline (``model_family``, ``chunk_size``,
             ``quantization``, latency budget, …) so a fresh ACT scaffold

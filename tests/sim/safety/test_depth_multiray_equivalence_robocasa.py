@@ -234,7 +234,7 @@ def _per_pixel(
     ``_cast_depth_rays`` returns distances but not geom ids, and naming the
     struck geom is what turns "the two casters differ" into "the batched one
     walks through a collidable countertop". Every test that uses this first
-    pins it to the shipped path via :func:`_shipped_cast`, so it can never
+    pins it to the shipped path via ``_shipped_cast``, so it can never
     drift into being the thing under test.
     """
     n = dirs.shape[0]
@@ -259,7 +259,7 @@ def _batched(
     """The candidate: one ``mj_multiRay`` for the whole bundle.
 
     ``cutoff`` is ``mjMAXVAL`` — effectively none — so the only difference from
-    :func:`_per_pixel` is the batched call's body cull, not a range gate.
+    ``_per_pixel`` is the batched call's body cull, not a range gate.
     """
     n = dirs.shape[0]
     geomids = np.full(n, -1, dtype=np.int32)

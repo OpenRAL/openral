@@ -138,13 +138,10 @@ def test_merge_scene_entry_wins_on_name_collision() -> None:
 def test_merge_keeps_manifest_geometry_the_scene_did_not_mention() -> None:
     """The scene binds the device; the manifest keeps owning where it points.
 
-    This is the documented split — "the robot manifest for robot-mounted
-    cameras (wrist / head), DeployScene.sensors for workcell-mounted ones" —
-    and replacing wholesale made it unusable: a scene supplying only a device
-    path silently discarded the manifest's mount, so the camera's readings
-    landed in whatever frame happened to be named and nothing said so.
-    octomap_server / SLAM then drop every message on an unresolvable frame
-    while the graph reports healthy.
+    Documented split: robot manifest for robot-mounted cameras (wrist/head),
+    DeployScene.sensors for workcell-mounted ones. Replacing wholesale silently
+    discarded the manifest's mount, landing readings in the wrong frame while
+    octomap_server/SLAM dropped messages with the graph reporting healthy.
     """
     mount = (0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0)
     manifest = [
@@ -258,12 +255,11 @@ def test_gstreamer_testsrc_leg_publishes_frames(tmp_path: Path) -> None:
     """Full leg over a real videotestsrc pipeline: open → ROS tee → frame → close.
 
     Skips without PyGObject (gi) or rclpy — the same gates the production
-    factory enforces. Runs in a SUBPROCESS with the production import
-    order (GStreamer backend → Gst.init → rclpy), because ``rclpy.Node()``
-    segfaults inside Fast-DDS thread setup when rclpy was imported before
-    ``Gst.init()`` (see ``openral_runner/backends/gstreamer/reader.py``
-    PR I/8 note) — and the pytest process may already have rclpy loaded
-    from an earlier test.
+    factory enforces. Runs in a SUBPROCESS with the production import order
+    (GStreamer backend → Gst.init → rclpy): ``rclpy.Node()`` segfaults in
+    Fast-DDS thread setup if rclpy was imported before ``Gst.init()``
+    (see ``openral_runner/backends/gstreamer/reader.py`` PR I/8), and the
+    pytest process may already have rclpy loaded from an earlier test.
     """
     pytest.importorskip("gi", reason="PyGObject (gstreamer extra) not installed")
     pytest.importorskip("rclpy", reason="ROS 2 not sourced")
@@ -395,13 +391,11 @@ print("SENSOR_LEG_PROBE_OK")
 
 
 def test_slam_cameras_are_never_capped_even_when_unnamed() -> None:
-    """Visual SLAM keeps full cadence automatically — no per-binding flag.
+    """Visual SLAM keeps full cadence automatically — no per-binding flag needed.
 
-    ``DeployRuntime.slam_stereo_cameras=None`` means "the impl's built-in
-    left/right default", so a scene that enables SLAM without naming its
-    cameras must STILL exempt them. cuVSLAM loses tracking on a starved
-    stream, and a silent degradation of a tracking input is precisely what
-    this cap must never cause.
+    ``slam_stereo_cameras=None`` means the impl's built-in left/right default,
+    so unnamed SLAM cameras must still be exempt — cuVSLAM loses tracking on a
+    starved stream.
     """
     from openral_rskill_ros.sensor_leg import slam_camera_names
 
@@ -458,12 +452,10 @@ def test_slam_off_means_every_camera_is_capped() -> None:
 
 # ── Dashboard span emission from the pump ──────────────────────────────────
 #
-# The 5 Hz cap on the ROS tee (`_MAX_FALLBACK_TOPIC_RATE_HZ`) would otherwise
-# drop the dashboard's camera tiles to 5 fps, because WorldState's `_on_image`
-# — their historical source — is driven by that tee. The pump emits the span
-# instead, at full reader cadence. These tests pin the two properties that
-# make that safe: a real thumbnail comes out, and a failure there can never
-# stop the aggregator being fed.
+# The 5 Hz `_MAX_FALLBACK_TOPIC_RATE_HZ` cap would drop dashboard tiles to
+# 5 fps if they still came from WorldState's tee-driven `_on_image`, so the
+# pump emits the span itself at full reader cadence. Pinned here: a real
+# thumbnail comes out, and a thumbnail failure never stops the aggregator feed.
 
 
 def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0):
@@ -607,13 +599,12 @@ def test_topic_size_is_native_without_a_runtime_block() -> None:
 
 
 def test_launch_overrides_resolve_the_scene_auto_flags() -> None:
-    """The real ``DeployRuntime`` tri-state: ``None`` means "auto", and the CLI
-    resolves it at launch time — the raw block must NOT be trusted alone.
+    """``DeployRuntime`` is tri-state: ``None`` means "auto", resolved by the CLI
+    at launch — the raw scene block must not be trusted alone.
 
-    Regression: a scene leaving ``enable_object_detector`` / ``enable_slam``
-    unset had its detector/SLAM cameras rate-capped to 3 Hz and downscaled to
-    320x240 even though the CLI auto-enabled those legs, because the runtime
-    node re-read the original YAML where the flags were still ``None``.
+    Regression: unset ``enable_object_detector``/``enable_slam`` left detector/SLAM
+    cameras capped at 3 Hz and 320x240 even after CLI auto-enabled them, because
+    the runtime node re-read the original YAML with the flags still ``None``.
     """
     from openral_core import DeployRuntime
     from openral_rskill_ros.sensor_leg import (

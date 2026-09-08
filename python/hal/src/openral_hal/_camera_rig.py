@@ -1,12 +1,12 @@
 """Generic sim camera rig.
 
 Splice a robot's manifest-declared RGB cameras into a bare-arm MJCF that ships
-no ``<camera>`` elements, so a ``deploy sim`` :class:`~openral_hal._mujoco_arm.MujocoArmHAL`
+no ``<camera>`` elements, so a ``deploy sim`` ``MujocoArmHAL``
 twin renders the cameras the manifest declares — without a per-robot scene
 composer or any ``scene_defaults.composition`` hook on the robot manifest.
 
-Each RGB :class:`~openral_core.SensorSpec` that carries a
-:class:`~openral_core.CameraSimPlacement` is spliced as a ``<camera>`` either
+Each RGB ``SensorSpec`` that carries a
+``CameraSimPlacement`` is spliced as a ``<camera>`` either
 into its ``parent_body`` (a wrist camera that tracks the gripper) or into
 ``<worldbody>`` (a world-fixed overhead / third-person camera). The rig is
 **idempotent**: a camera already present in the MJCF (a scene-attached or
@@ -14,7 +14,7 @@ already-composed model) is left untouched, so this composes cleanly with the
 scene-attach path and prop composers (openarm).
 
 The camera's MuJoCo name is ``sim_camera_name or name`` — the same key
-:meth:`MujocoArmHAL.read_images` renders — so the rig and the reader agree by
+``MujocoArmHAL.read_images`` renders — so the rig and the reader agree by
 construction.
 """
 
@@ -108,7 +108,7 @@ def _ensure_staging(xml: str) -> str:
 def rig_cameras_into_mjcf(xml: str, sensors: list[SensorSpec]) -> tuple[str, bool]:
     """Splice each RGB sensor's missing sim camera into ``xml``; return ``(xml, changed)``.
 
-    For every RGB :class:`SensorSpec` with a :class:`~openral_core.CameraSimPlacement`
+    For every RGB ``SensorSpec`` with a ``CameraSimPlacement``
     whose camera name is absent from ``xml``, splice a ``<camera>`` into the
     named ``parent_body`` (or ``<worldbody>`` when ``parent_body`` is ``None``)
     and ensure a fill light. Cameras already present are skipped (idempotent), so

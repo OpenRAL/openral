@@ -1,32 +1,22 @@
 #!/usr/bin/env python
 """RoboTwin 2.0 scene sidecar — runs the SAPIEN dual-arm env in a separate venv.
 
-This is the **RoboTwin side** of the RoboTwin benchmark backend. It is launched
-(auto-spawned) by :mod:`openral_sim.backends.robotwin` running under the openral
-py3.12 venv, and it runs under the separate RoboTwin venv whose interpreter is
-named by ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON``.
+RoboTwin side of the backend in ``openral_sim.backends.robotwin`` (py3.12),
+auto-spawned under the venv named by ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON``.
+Constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
+--env.type=robotwin``) and serves ZMQ REP + msgpack/ndarray framing
+(``openral_sim.sidecar``):
 
-It constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
---env.type=robotwin``) for the requested task — the authoritative way to drive the
-SAPIEN tasks — and serves a ZMQ REP loop speaking the same msgpack + ndarray framing
-the openral side uses (``openral_sim.sidecar``):
+    ping  -> {"ok", "action_dim", "task", "env": "robotwin"}
+    reset/step -> {"observation", ["reward","terminated","truncated","info",]"sim_time_ns"}
+    render -> {"frame": uint8 HWC|None}   close -> {"ok"}
+    observation = {"images": {"head_camera",...}, "state": 14-D float32, "task": str}
 
-    ping  -> {"ok": True, "action_dim": int, "task": str, "env": "robotwin"}
-    reset -> {"observation": {...}, "sim_time_ns": int|None}
-    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info", "sim_time_ns": int|None}
-    render-> {"frame": <uint8 HWC>|None}
-    close -> {"ok": True}
+RoboTwin/SAPIEN/LeRobot import lazily inside ``main`` so `--help` doesn't
+need the heavy venv.
 
-Observation dict shape (eval-layer contract):
-    {"images": {"head_camera": <H,W,3 uint8>, "left_camera": ..., "right_camera": ...},
-     "state": <14-D float32>, "task": str}
-
-RoboTwin / SAPIEN / LeRobot are imported lazily inside :func:`main` so a syntax-only
-import of this module (or `--help`) does not require the heavy venv.
-
-Licensing: RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0) — all permissive. The
-stack is large + CUDA-12.1-pinned, so it is an externally-provisioned sidecar venv,
-never vendored into the repo (CLAUDE.md §1.9).
+Licensing: RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0). CUDA-12.1-pinned,
+so this is an externally-provisioned sidecar venv, never vendored (CLAUDE.md §1.9).
 """
 
 from __future__ import annotations
@@ -196,7 +186,7 @@ class _RoboTwinEnv:
     Builds a single gym env and adapts its observations to ``{"images", "state",
     "task"}``. LeRobot's robotwin obs is a dict with ``pixels`` (per-camera HWC
     uint8) + ``agent_pos``; we re-key the env's native cameras
-    (:data:`_ENV_CAMERA_NAMES`) to the openral scene camera names (the canonical
+    (``_ENV_CAMERA_NAMES``) to the openral scene camera names (the canonical
     camera-slot names) in order and expose ``agent_pos`` as ``state``.
     """
 

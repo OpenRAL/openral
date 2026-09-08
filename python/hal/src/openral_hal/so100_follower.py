@@ -217,7 +217,7 @@ SO100_DESCRIPTION = RobotDescription(
 def so100_with_sensors(
     catalog_ids: list[str] | None = None,
 ) -> RobotDescription:
-    """Return a copy of :data:`SO100_DESCRIPTION` with catalog sensors attached.
+    """Return a copy of ``SO100_DESCRIPTION`` with catalog sensors attached.
 
     The reference LeRobot SO-100 setup uses a single Logitech C920 scene
     camera; pass ``None`` to get that default, or pass an explicit list of
@@ -229,7 +229,7 @@ def so100_with_sensors(
             reference loadout (``["logitech/c920"]``).
 
     Returns:
-        A new :class:`RobotDescription` with ``sensors`` / ``sensor_bundles``
+        A new ``RobotDescription`` with ``sensors`` / ``sensor_bundles``
         populated.
 
     Example:
@@ -445,7 +445,7 @@ class SO100FollowerHAL(HALBase):
         every id and the observed joint state never changes (exactly the SO-101
         symptom we hit — 1500+ read failures, frozen ``state_to_policy``, no
         motion). Ping each motor once here and raise a typed
-        :class:`ROSConfigError` naming the unresponsive ids, so a comms/power
+        ``ROSConfigError`` naming the unresponsive ids, so a comms/power
         fault surfaces at bring-up instead of as a mystery freeze under load.
 
         No-op when the robot exposes no pingable ``bus`` (an injected

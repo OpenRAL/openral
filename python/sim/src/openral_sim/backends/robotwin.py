@@ -6,12 +6,12 @@ on the aloha-agilex embodiment (14-DoF, 7 per arm; action 14-D joint-space).
 
 RoboTwin's stack (SAPIEN, CuRobo, mplib, pytorch3d) pins **Python 3.10 + CUDA 12.1**
 and an incompatible torch build — it cannot share the openral ``>=3.12`` venv. So,
-exactly like the Isaac Sim scene backend (:mod:`openral_sim.backends.isaac_sim`) and
-the RLDX-1 policy sidecar (:mod:`openral_sim.policies.rldx`), we run it in its own
+exactly like the Isaac Sim scene backend (``openral_sim.backends.isaac_sim``) and
+the RLDX-1 policy sidecar (``openral_sim.policies.rldx``), we run it in its own
 sidecar venv and talk to it over ZMQ REQ/REP framed by msgpack
-(:class:`openral_sim.sidecar.SidecarClient`).
+(``openral_sim.sidecar.SidecarClient``).
 
-This module is the **openral side**: a thin :class:`SimRollout` that marshals
+This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar
 (``tools/robotwin_sidecar.py``) and unwraps the responses. The sidecar owns the
 SAPIEN simulation, the aloha-agilex robot, and the three RoboTwin cameras — it wraps
@@ -31,7 +31,7 @@ interpreter from ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (absolute path to the
 sidecar venv's ``python``), else a cache default, else (opt-in
 ``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) we provision it. The provisioning installs
 LeRobot 0.6 + the RoboTwin SAPIEN stack + downloads assets (a multi-GB,
-Linux-only job); without opt-in we raise a typed :class:`ROSConfigError`
+Linux-only job); without opt-in we raise a typed ``ROSConfigError``
 carrying the exact manual recipe.
 
 Licensing (CLAUDE.md §1.9): RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0) are
@@ -42,24 +42,28 @@ wire is just pyzmq + msgpack (the ``robotwin`` dependency-group).
 
 from __future__ import annotations
 
-import contextlib
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
-from openral_sim._sidecar_common import ensure_pip_venv, ensure_source, run_cmd
+from openral_sim._sidecar_common import (
+    ensure_pip_venv,
+    ensure_source,
+    run_cmd,
+)
+from openral_sim._sidecar_common import (
+    opt_num as _opt_num,
+)
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
-from openral_sim.sidecar import SidecarClient
+from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import SceneSpec, SimEnvironment, TaskSpec
+    from openral_core import SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -161,33 +165,19 @@ def _task_name_for_env(env_cfg: SimEnvironment) -> str:
 # ── SimRollout adapter ────────────────────────────────────────────────────────
 
 
-def _coerce_sim_time_ns(value: object) -> int | None:
-    """Coerce an optional wire ``sim_time_ns`` (int / float / None) to ``int | None``."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return None
-
-
 @dataclass
-class _RoboTwinSimSidecar:
-    """:class:`SimRollout` that proxies a RoboTwin SAPIEN env over the sidecar.
+class _RoboTwinSimSidecar(SidecarSimRollout):
+    """``SimRollout`` that proxies a RoboTwin SAPIEN env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8 keyed by the RoboTwin camera names, ``state`` 1-D
     float32 of the 14 joint positions, ``task`` str); we re-wrap into a plain dict
     and cache the last RGB frame for ``render``.
-    """
 
-    scene: SceneSpec
-    task: TaskSpec
-    _client: SidecarClient
-    _last_image: NDArray[np.uint8] | None = None
-    _action_dim: int | None = None
-    _last_sim_time_ns: int | None = None
+    Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
+    ``SidecarSimRollout`` (shared verbatim with the Isaac Sim adapter); only
+    ``_wrap_obs`` and this docstring-carrying ``action_dim`` are RoboTwin-specific.
+    """
 
     @property
     def action_dim(self) -> int:
@@ -196,35 +186,6 @@ class _RoboTwinSimSidecar:
             reply = self._client.call("ping")
             self._action_dim = int(self._client.require(reply, "action_dim"))
         return self._action_dim
-
-    def reset(self, seed: int | None = None) -> Observation:
-        reply = self._client.call("reset", {"seed": seed})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return self._wrap_obs(self._client.require(reply, "observation"))
-
-    def step(self, action: NDArray[np.float32]) -> StepResult:
-        action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return StepResult(
-            observation=self._wrap_obs(self._client.require(reply, "observation")),
-            reward=float(self._client.require(reply, "reward")),
-            terminated=bool(self._client.require(reply, "terminated")),
-            truncated=bool(self._client.require(reply, "truncated")),
-            info=dict(reply.get("info", {})),
-        )
-
-    def sim_time_ns(self) -> int | None:
-        """Elapsed simulation time in ns from the last sidecar reply, or ``None``."""
-        return self._last_sim_time_ns
-
-    def render(self) -> NDArray[np.uint8] | None:
-        return None if self._last_image is None else self._last_image.copy()
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._client.call("close")
-        self._client.close()
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images_raw = raw.get("images", {})
@@ -249,22 +210,6 @@ class _RoboTwinSimSidecar:
 
 
 # ── factory ───────────────────────────────────────────────────────────────────
-
-
-_Num = TypeVar("_Num", int, float)
-
-
-def _opt_num(
-    opts: dict[str, object], key: str, default: _Num, cast: Callable[[int | float | str], _Num]
-) -> _Num:
-    """Coerce a ``backend_options`` value (typed ``object``) via ``cast``, else default."""
-    value = opts.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return default
-    try:
-        return cast(value)
-    except (ValueError, TypeError):
-        return default
 
 
 def _patch_robotwin_checkout(root: Path) -> None:
@@ -311,7 +256,7 @@ def _provision_robotwin_venv() -> Path:
     """Create the robotwin sidecar venv from the pinned LeRobot + SAPIEN install.
 
     Opt-in (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) because it is a multi-GB,
-    Linux-only download. Uses the shared :func:`ensure_pip_venv`
+    Linux-only download. Uses the shared ``ensure_pip_venv``
     provisioning order so it reuses an existing venv + sentinel. Returns the venv
     python (``<home>/.venv/bin/python``).
 
@@ -380,7 +325,7 @@ def _sidecar_python() -> Path:
 
     Auto-provision precedes the existing-venv shortcut so a venv built from
     superseded pins is repaired rather than returned untouched (same ordering
-    fix as the Isaac backend — see :func:`ensure_pip_venv`'s ``spec``).
+    fix as the Isaac backend — see ``ensure_pip_venv``'s ``spec``).
     """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
@@ -433,7 +378,7 @@ def _robotwin_root() -> Path:
     """Resolve the RoboTwin checkout root the sidecar must run from.
 
     RoboTwin imports use process-relative ``assets/...`` paths, and
-    :class:`SidecarClient` deliberately strips parent ``PYTHONPATH`` for ABI safety.
+    ``SidecarClient`` deliberately strips parent ``PYTHONPATH`` for ABI safety.
     Pass the checkout root explicitly so the sidecar can chdir and add it to
     ``sys.path`` before LeRobot imports the task package.
     """
@@ -464,7 +409,7 @@ def provision_robotwin() -> None:
     backend's own 600 s sidecar boot budget.
 
     Idempotent — an existing venv short-circuits on its sentinel.
-    :func:`_build_robotwin_scene` resolves the same interpreter again.
+    ``_build_robotwin_scene`` resolves the same interpreter again.
 
     Raises:
         ROSConfigError: When the venv is absent and auto-provisioning is off,

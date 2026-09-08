@@ -26,7 +26,6 @@ own manifest.
 
 from __future__ import annotations
 
-import importlib.util
 from typing import Any
 
 import pytest
@@ -39,7 +38,7 @@ pytest.importorskip("robocasa")  # robocasa (robosuite >=1.5) ⊥ libero (robosu
 import mujoco
 import numpy as np
 
-from tests.sim.conftest import mujoco_renderer_probe_error
+from tests.sim.conftest import _robocasa_unavailable, mujoco_renderer_probe_error
 
 _REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[3]
 _SCENE = _REPO_ROOT / "scenes" / "deploy" / "robocasa_fridge_drawer.yaml"
@@ -57,14 +56,6 @@ _DOOR_GEOM = "fridge_right_group_freezer_door_main"
 # `openral_hal.convex_distance` for the full characterisation.
 _TRUE_GAP_M = 0.000148512
 _MJ_WITNESS_SEGMENT_M = 0.126264
-
-
-def _robocasa_unavailable() -> str:
-    if importlib.util.find_spec("robocasa") is None:
-        return "robocasa not installed"
-    from openral_sim._deps import _has_robocasa_kitchen
-
-    return "" if _has_robocasa_kitchen() else "RoboCasa kitchen fork is not active"
 
 
 _ROBOCASA_ERROR = _robocasa_unavailable()

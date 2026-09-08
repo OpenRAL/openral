@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SensorReaderBackend",
-  "description": "Which :class:`SensorReader` implementation to instantiate.",
+  "description": "Which ``SensorReader`` implementation to instantiate.",
   "type": "string",
   "enum": [
     "opencv_thread",

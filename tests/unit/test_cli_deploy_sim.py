@@ -752,13 +752,9 @@ def test_bh_deploy_sim_robot_yaml_override_wins() -> None:
 def test_bh_deploy_sim_hal_executables_have_main_entrypoint() -> None:
     """Every registry HAL node script actually calls ``main()`` when executed.
 
-    Regression guard: ament symlink-installs each ``lifecycle_node.py`` and runs
-    it directly as ``__main__``. The so100 node shipped WITHOUT an
-    ``if __name__ == "__main__": main()`` guard, so executing it defined the
-    node class but never started it — the HAL silently exited 0 and `openral deploy
-    sim` came up with no /joint_states (every other node up, HAL absent). Assert
-    the guard is present on every registry HAL's executable so a missing
-    entry-point can never silently no-op again.
+    Regression: ament runs each ``lifecycle_node.py`` directly as ``__main__``;
+    so100's node once shipped without a ``main()`` guard and silently exited 0
+    with no /joint_states. Assert the guard on every registry HAL executable.
     """
     seen_packages: set[str] = set()
     for hal in _ROBOT_HAL_REGISTRY.values():

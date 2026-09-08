@@ -2,34 +2,16 @@
 // Unit coverage for the OctoMap → OccupancyVoxels rasterization core. Builds a
 // real octree (no ROS graph / TF), queries it, and checks the grid.
 //
-// The second half of this file is about the LATTICE, and the property it pins
-// is EXACTNESS: the published grid carries the octree's occupied volume, cell
-// for cell, at every relative phase and every relative yaw. Neither less (an
-// obstacle lost is the one direction this node must never fail in) nor more (a
-// cell the octree does not have is reach the robot gives up for nothing).
+// The second half pins EXACTNESS: the published grid carries the octree's
+// occupied volume cell for cell at every relative phase/yaw — never less (an
+// obstacle lost) and never more (reach given up for nothing).
 //
-// That property is new, and it is stronger than what stood here before.
-//
-// History, because both previous rules failed in ways worth not repeating.
-// Until 2026-08-16 a base cell was marked when its CENTRE point-queried
-// occupied. Across two lattices with an arbitrary relative phase that snaps
-// every surface onto whichever lattice the centre landed on: on the
-// `robocasa_drawer_utensil` field run (25 mm cells, ~12.1 mm phase, half a
-// cell) a cabinet door panel whose true front face is at base x = +0.0614 came
-// out in the column x ∈ [0.025, 0.050) — a full voxel closer to the robot —
-// with ZERO cells where the panel actually is.
-//
-// Overlap replaced it: mark every cell whose cube shares volume with an
-// occupied leaf's. That is correct, and it is the MINIMUM SOUND cover for a
-// base-aligned grid — a cell overlapping the leaf might be the one holding the
-// surface. But soundness for that format costs a dilation: 29–35 mm of median
-// extra reach on 25 mm cells, 40 mm worst case, which held 48% of the live
-// start-state E-stops (issue #173).
-//
-// So the format changed rather than the rule. The grid's lattice IS the
-// octree's, one cell per cell, and the rotation rides the wire in
-// `OccupancyVoxels.orientation`. There is no phase and no yaw left to be exact
-// about — which is what these tests assert.
+// Rejected prior rules (see README "Why not a base-aligned grid"): centre
+// point-query (until 2026-08-16, zero cells on a real panel on the
+// `robocasa_drawer_utensil` run) and overlap (sound but costs 29-35mm median /
+// 40mm worst-case dilation, held 48% of live start-state E-stops, issue #173).
+// Current rule: grid lattice = octree lattice, rotation on the wire in
+// `OccupancyVoxels.orientation` — no phase/yaw left to be exact about.
 
 #include <algorithm>
 #include <chrono>
@@ -110,8 +92,8 @@ TEST(OctreeToGrid, EmptyTreeGivesAllFree) {
 }
 
 TEST(OctreeToGrid, AnUnplaceableLatticePublishesNoCellsRatherThanWrongOnes) {
-  // A radius of zero (the node's unset default) names no volume. Publishing a
-  // guessed one would be a grid the kernel trusts and the robot is not inside.
+  // Radius zero (the node's unset default) names no volume; a guessed volume
+  // would be a grid the kernel trusts and the robot is not inside.
   octomap::OcTree tree(0.1);
   tree.updateNode(octomap::point3d(0.05F, 0.05F, 0.05F), true);
   const auto grid = bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(),
@@ -121,9 +103,8 @@ TEST(OctreeToGrid, AnUnplaceableLatticePublishesNoCellsRatherThanWrongOnes) {
 }
 
 TEST(OctreeToGrid, TransformShiftsTheQuery) {
-  // Occupy a cell at octree (1.05, 0.05, 0.05). With a base→octree transform
-  // that translates +1 m in x, the base-frame point (0.05, 0.05, 0.05) is that
-  // cell, and the grid covering it holds exactly one occupied cell.
+  // Cell occupied at octree (1.05, 0.05, 0.05); a +1 m x translation maps
+  // base-frame (0.05, 0.05, 0.05) onto it.
   octomap::OcTree tree(0.1);
   tree.updateNode(octomap::point3d(1.05F, 0.05F, 0.05F), true);
 
@@ -294,14 +275,10 @@ double forward_excess(const openral_msgs::msg::OccupancyVoxels& grid, double fac
 }  // namespace
 
 TEST(OctreeToGrid, TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase) {
-  // The `robocasa_drawer_utensil` regression, swept across the full relative
-  // phase. The centre rule put this panel a whole voxel toward the robot; the
-  // overlap rule fixed that but bought back up to a further cell of reach.
-  //
-  // On the octree's own lattice the forward error is the OCTREE's alone: the
-  // cell holding the return endpoint, which reaches at most one resolution in
-  // front of the true face and not a millimetre more. Nothing the bridge does
-  // adds to it. That bound is what this asserts.
+  // `robocasa_drawer_utensil` regression, swept across the full relative
+  // phase. On the octree's own lattice the forward error is the octree's
+  // alone (the return-endpoint cell, ≤1 resolution in front of the true
+  // face); nothing the bridge adds. That bound is what this asserts.
   for (int step = 0; step < 10; ++step) {
     const double phase = kRes * step / 10.0;
     const tf2::Transform base_to_octomap = phased(phase);
@@ -318,13 +295,10 @@ TEST(OctreeToGrid, TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAn
 }
 
 TEST(OctreeToGrid, TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw) {
-  // The exactness proof, swept. For every relative phase of the two lattices —
-  // and for four relative yaws, since a mobile base supplies those too — the
-  // published grid holds exactly the octree's occupied cells over the volume it
-  // covers. `missing` is an obstacle the kernel would not see; `extra` is reach
-  // surrendered for nothing. Both are zero, at every pose.
-  //
-  // The rule this replaced could only promise `missing == 0`. `extra` was its
+  // Exactness proof, swept over relative phase and four relative yaws (a
+  // mobile base supplies those too). `missing` = obstacle the kernel would
+  // not see; `extra` = reach surrendered for nothing. Both zero, every pose.
+  // The rule this replaced only promised `missing == 0`; `extra` was its
   // cost, and issue #173 measured that cost holding 48% of the live stops.
   const octomap::OcTree tree = kitchen_scene();
   for (const double yaw : {0.0, 0.37, 0.785398163397448, 1.9}) {
@@ -348,10 +322,9 @@ TEST(OctreeToGrid, TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw) {
 }
 
 TEST(OctreeToGrid, TheOrientationIsTheOctreeToBaseRotationAndIsAlwaysAUnitQuaternion) {
-  // The wire contract. Consumers refuse a non-unit quaternion rather than
-  // assuming identity, so a producer that ever emits one silently blinds the
-  // kernel; and the rotation must be the one that carries grid axes (the
-  // octree's) into `base_frame`, or every cell lands somewhere the robot isn't.
+  // Wire contract: consumers refuse a non-unit quaternion rather than assume
+  // identity; the rotation must carry grid axes (the octree's) into
+  // `base_frame` or every cell lands somewhere the robot isn't.
   const octomap::OcTree tree = kitchen_scene();
   for (const double yaw : {0.0, 0.37, 2.6}) {
     tf2::Transform base_to_octomap;
@@ -373,14 +346,11 @@ TEST(OctreeToGrid, TheOrientationIsTheOctreeToBaseRotationAndIsAlwaysAUnitQuater
 }
 
 TEST(OctreeToGrid, ACoarseLeafMarksEveryCellUnderIt) {
-  // octomap prunes eight siblings that carry the same value into ONE leaf of
-  // twice the edge length, and a published /octomap_binary is pruned. So a leaf
-  // covers (leaf_size/resolution)^3 cells, not one: get that wrong and 7/8 of a
-  // pruned obstacle leaves the kernel's grid.
-  //
-  // Seeded with updateNode rather than rays because pruning needs the eight
-  // cells to hold exactly equal values, and every ray that reaches one of them
-  // crosses (and so updates) its neighbours.
+  // octomap prunes eight equal-valued siblings into one leaf of twice the edge
+  // length (a published /octomap_binary is pruned), so a leaf covers
+  // (leaf_size/resolution)^3 cells, not one — get that wrong and 7/8 of a
+  // pruned obstacle leaves the kernel's grid. Seeded with updateNode (not
+  // rays): pruning needs the eight cells at exactly equal values.
   octomap::OcTree tree(0.05);
   for (const double x : {0.025, 0.075}) {
     for (const double y : {0.025, 0.075}) {
@@ -409,14 +379,10 @@ TEST(OctreeToGrid, ACoarseLeafMarksEveryCellUnderIt) {
 }
 
 TEST(OctreeToGrid, AGridStraddlingTheOctreesKeyRangeStillSeesEveryLeaf) {
-  // The leaves are fetched with octomap's bbx iterator, whose key conversion
-  // FAILS (silently, into an empty iteration) for coordinates outside the
-  // tree's addressable ±32768·resolution. An empty iteration is an empty grid,
-  // which is the one direction this node must never fail in, so an unusable
-  // bbx falls back to walking the whole tree.
-  //
-  // The grid has to STRADDLE the boundary to exercise this now that its lattice
-  // is the tree's: a grid entirely beyond the range holds no leaves to lose.
+  // octomap's bbx iterator key conversion FAILS silently (empty iteration) for
+  // coordinates outside the tree's addressable ±32768·resolution, so an
+  // unusable bbx falls back to walking the whole tree. The grid must straddle
+  // the boundary: entirely-beyond-range holds no leaves to lose.
   octomap::OcTree tree(0.1);  // addressable to ±3276.8 m
   tree.updateNode(octomap::point3d(3276.05F, 0.05F, 0.05F), true);
 
@@ -427,11 +393,9 @@ TEST(OctreeToGrid, AGridStraddlingTheOctreesKeyRangeStillSeesEveryLeaf) {
 }
 
 TEST(OctreeToGrid, AnAbsurdSpecIsRefusedRatherThanAllocated) {
-  // A radius that would size an allocation no kernel could accept is a
-  // misconfiguration. `std::bad_alloc` out of the bridge's timer callback is a
-  // crashed perception node; an empty grid the node can see and refuse to
-  // publish is not. (The node logs and publishes nothing — a zero-cell grid
-  // reads downstream as a world with no obstacles in it.)
+  // A radius sizing an allocation no kernel could accept is a
+  // misconfiguration; `std::bad_alloc` crashes the node, an empty grid does
+  // not. The node logs and publishes nothing rather than a zero-cell grid.
   octomap::OcTree tree(0.1);
   tree.updateNode(octomap::point3d(0.05F, 0.05F, 0.05F), true);
   const auto grid = bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(),
@@ -440,13 +404,9 @@ TEST(OctreeToGrid, AnAbsurdSpecIsRefusedRatherThanAllocated) {
 }
 
 TEST(OctreeToGrid, RasterizingTheKitchenStaysInsideThePublishBudget) {
-  // The bridge re-derives the grid from the octree on EVERY published grid
-  // (`publish_rate_hz` 10.0 → a 100 ms period), so the rasterization's cost is
-  // a contract, not an implementation detail. Iterating the occupied leaves is
-  // what keeps it there: the work is proportional to the surfaces in the volume
-  // rather than to its cell count. Marking a leaf is now integer index
-  // arithmetic rather than a separating-axis test per candidate cell, so this
-  // can only have got cheaper.
+  // Bridge re-derives the grid every published tick (`publish_rate_hz` 10.0 →
+  // 100 ms period). Cost is proportional to occupied leaves in the volume,
+  // not cell count (integer index arithmetic vs. a separating-axis test).
   const octomap::OcTree tree = kitchen_scene();
   const auto spec = kitchen_spec();
   // Warm the tree's internal state so the timing is the rasterization's.

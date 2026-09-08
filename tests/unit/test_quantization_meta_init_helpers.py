@@ -1,4 +1,4 @@
-"""Tests for the shared meta-init helpers in :mod:`openral_sim._quantization`.
+"""Tests for the shared meta-init helpers in ``openral_sim._quantization``.
 
 ``targeted_reset_parameters`` + ``tie_transformers_weights`` were promoted out
 of the π0.5 adapter so π0.5 / MolmoAct2 / future meta-init families share one

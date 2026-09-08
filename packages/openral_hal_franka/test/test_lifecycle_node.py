@@ -1,22 +1,15 @@
 """Lifecycle smoke test for ``openral_hal_franka``.
 
-Drives the standard managed-lifecycle transition path against the generic
-``_HALLifecycleNode`` from :mod:`openral_hal.lifecycle` using the real
-``FrankaPandaHAL`` factory.  The HAL pulls its MJCF lazily from the
-``robot_descriptions`` package and ships its canonical
-:class:`openral_core.RobotDescription` (``FRANKA_PANDA_DESCRIPTION``) —
-so this smoke exercises the same RobotDescription wiring used at runtime,
-not a stub.
+Drives the generic ``_HALLifecycleNode`` (``openral_hal.lifecycle``) with
+the real ``FrankaPandaHAL`` factory and its canonical
+``openral_core.RobotDescription`` (``FRANKA_PANDA_DESCRIPTION``), so the
+smoke exercises real wiring, not a stub.
 
-Lifecycle phases exercised:
+Phases: ``unconfigured → configure → inactive → activate → active``
+(joint-state publication) ``→ deactivate → cleanup → shutdown``.
 
-* ``unconfigured → configure → inactive → activate → active``
-* joint-state publication while ``active``
-* ``deactivate → cleanup → shutdown``
-
-The test is gated on ``rclpy``, ``openral_hal``, ``mujoco`` and
-``robot_descriptions`` being importable; in lint-only environments any
-missing piece causes a clean skip.
+Gated on ``rclpy``, ``openral_hal``, ``mujoco``, ``robot_descriptions``;
+missing any causes a clean skip.
 """
 
 from __future__ import annotations

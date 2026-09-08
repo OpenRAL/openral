@@ -2,9 +2,9 @@
 r"""SO-100 / SO-101 HAL lifecycle node entry point.
 
 Manifest-driven node: builds its sim or real HAL via
-:func:`openral_hal.lifecycle.make_lifecycle_main_from_manifest`, which reads
+``openral_hal.lifecycle.make_lifecycle_main_from_manifest``, which reads
 the ``robot_yaml`` + ``hal_mode`` ROS parameters and routes through
-:func:`openral_hal.build_hal`. A single package serves both the SO-100
+``openral_hal.build_hal``. A single package serves both the SO-100
 (``so_arm100``) and SO-101 (``so101_new_calib``) from their own manifests.
 
 Usage::

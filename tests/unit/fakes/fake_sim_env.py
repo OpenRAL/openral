@@ -1,27 +1,27 @@
 """SimRollout-shaped fake for `SimAttachedHAL` unit tests.
 
 CLAUDE.md §1.11 boundary double — the
-:class:`openral_sim.rollout.SimRollout` Protocol is a process boundary
+``openral_sim.rollout.SimRollout`` Protocol is a process boundary
 between the HAL layer and the simulator layer, so a narrow fake at
 that boundary is allowed.
 
 The fake implements the **subset** of SimRollout that
-:class:`openral_hal.sim_attached.SimAttachedHAL` actually consumes:
+``openral_hal.sim_attached.SimAttachedHAL`` actually consumes:
 
 * ``reset(seed=...)`` — returns an empty obs dict; records the seed.
 * ``step(action)`` — records the action vector; returns a step result
   with an empty observation.
 * ``action_dim: int`` — surface for
-  :meth:`SimAttachedHAL._probe_env_action_dim`.
+  ``SimAttachedHAL._probe_env_action_dim``.
 * ``mujoco_handles() -> tuple | None`` — pluggable so tests can
   exercise both the "MJCF reachable" and "MJCF unreachable" branches
-  of :meth:`SimAttachedHAL.read_state`.
+  of ``SimAttachedHAL.read_state``.
 * ``task_success() -> bool | None`` — the optional SimRollout
-  task-success extension, driven by :attr:`FakeSimEnv.task_success_value`
+  task-success extension, driven by ``FakeSimEnv.task_success_value``
   (``None`` models a backend with no success predicate, which is what
   the HAL must treat as "unknown", never as failure).
 
-The real :class:`openral_sim.rollout.SimRollout` Protocol carries
+The real ``openral_sim.rollout.SimRollout`` Protocol carries
 additional methods (``render``, ``close``, ``task``, metrics
 accessors). The fake does NOT implement those because
 ``SimAttachedHAL`` never calls them. If a future test or refactor
@@ -56,17 +56,17 @@ class FakeSimEnv:
 
     Attributes:
         action_dim: The env's flat action dimensionality.
-            :meth:`SimAttachedHAL._probe_env_action_dim` reads this on
+            ``SimAttachedHAL._probe_env_action_dim`` reads this on
             ``connect``.
         last_action: The action vector from the most recent
-            :meth:`step` call. ``None`` until the first step.
-        reset_calls: List of seeds passed to :meth:`reset`. Lets tests
+            ``step`` call. ``None`` until the first step.
+        reset_calls: List of seeds passed to ``reset``. Lets tests
             assert "connect was called with the right seed" without
             poking at private state.
-        step_calls: Counter of :meth:`step` invocations.
-        handles: The tuple :meth:`mujoco_handles` returns. Tests vary
+        step_calls: Counter of ``step`` invocations.
+        handles: The tuple ``mujoco_handles`` returns. Tests vary
             this to exercise both branches of
-            :meth:`SimAttachedHAL.read_state`.
+            ``SimAttachedHAL.read_state``.
     """
 
     action_dim: int = 11
@@ -88,7 +88,7 @@ class FakeSimEnv:
     base_joint_names: tuple[str, str, str] | None = None
     base_z: float = 0.7
     # Opt-in fake sim clock for ``sim_time_ns`` tests.
-    #   * ``has_sim_clock=True`` → :meth:`sim_time_ns` returns a per-episode
+    #   * ``has_sim_clock=True`` → ``sim_time_ns`` returns a per-episode
     #     elapsed-time counter that advances by ``sim_dt_ns`` on every ``step``
     #     and REWINDS to 0 on every ``reset`` (modelling robocasa's MjData.time
     #     reset). This exercises ``SimAttachedHAL``'s cross-reset offset.
@@ -109,7 +109,7 @@ class FakeSimEnv:
     # object the scene did not spawn). The HAL must latch polling off, not
     # take down the actuation path.
     task_success_error: Exception | None = None
-    # Counter of :meth:`task_success` reads, so a test can assert the HAL
+    # Counter of ``task_success`` reads, so a test can assert the HAL
     # stops polling after a raise instead of re-raising every step.
     task_success_calls: int = 0
     # The SimRollout Protocol's ``scene`` / ``task`` attributes. Real
@@ -146,7 +146,7 @@ class FakeSimEnv:
     def sim_time_ns(self) -> int | None:
         """Per-episode elapsed sim time in ns, or ``None`` when clock-less.
 
-        Models the :class:`openral_sim.rollout.SimRollout` contract: monotonic
+        Models the ``openral_sim.rollout.SimRollout`` contract: monotonic
         within an episode, rewinds on ``reset``. ``None`` when
         ``has_sim_clock`` is ``False`` (the clock-less-backend case).
         """
@@ -162,7 +162,7 @@ class FakeSimEnv:
         write, ``SimAttachedHAL`` calls ``refresh_obs`` to recompute the
         authoritative pose. Returns ``None`` when proprio emission is
         off (then the HAL keeps its cached obs — the pre-fix behaviour
-        that froze ``/odom``). Does NOT call :meth:`step`, so tests that
+        that froze ``/odom``). Does NOT call ``step``, so tests that
         assert ``step_calls == 0`` after a BODY_TWIST stay valid.
         """
         proprio = self._proprio_from_qpos()

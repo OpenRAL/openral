@@ -27,7 +27,7 @@ def probe_usb(*, warnings: list[str] | None = None) -> UsbProbeResult:
             owns aggregation).
 
     Returns:
-        A populated :class:`UsbProbeResult`.  Empty when the host has no
+        A populated ``UsbProbeResult``.  Empty when the host has no
         USB serial devices or when ``pyudev`` is unavailable on Linux.
     """
     try:

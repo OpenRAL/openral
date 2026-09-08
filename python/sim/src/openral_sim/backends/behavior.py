@@ -142,7 +142,7 @@ def _joint_state_from_policy_state(
 def _assert_slot_identity(*labelled: tuple[Action, str]) -> None:
     """Check a positionally-unpacked joint slot really is the limb we assumed.
 
-    ADR-0102. :func:`_compose_action_group` unpacks the group by arrival order,
+    ADR-0102. ``_compose_action_group`` unpacks the group by arrival order,
     which the mode tuple cannot validate for the three same-mode
     ``JOINT_POSITION`` slots (torso / left arm / right arm). Their
     ``joint_names`` can: the B1K contract names them ``torso_*`` /

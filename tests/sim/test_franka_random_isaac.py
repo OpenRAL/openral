@@ -27,20 +27,11 @@ an RTX GPU + provisioned sidecar skip — the legitimate skip path (§1.12).
 from __future__ import annotations
 
 import importlib.util
-import os
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-
-def _sidecar_python_available() -> bool:
-    override = os.environ.get("OPENRAL_ISAAC_SIDECAR_PYTHON")
-    if override:
-        return Path(override).is_file()
-    default = Path.home() / ".cache" / "openral" / "isaac-sidecar" / ".venv" / "bin" / "python"
-    return default.is_file()
-
+from tests.sim.conftest import _sidecar_python_available
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
 

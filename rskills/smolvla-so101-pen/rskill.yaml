@@ -1,24 +1,21 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
 #
-# Wraps: sapanostic/so_101_smolvla_pen_placement (Apache-2.0) — SmolVLA
-#        finetuned from lerobot/smolvla_base on a real SO-101 pen
-#        pick-and-place teleop dataset (sapanostic/pen-placement-task,
-#        ~60k frames), recorded with TWO cameras: a side/overview view
-#        ("side") and an arm-mounted view ("wrist").
-# Base:  lerobot/smolvla_base (arxiv:2506.01844)
+# Wraps sapanostic/so_101_smolvla_pen_placement (Apache-2.0): SmolVLA
+# finetuned from lerobot/smolvla_base (arxiv:2506.01844) on
+# sapanostic/pen-placement-task (real SO-101 pen pick-and-place teleop,
+# ~60k frames), two cameras: side/overview ("side") + arm-mounted ("wrist").
 #
-# NOTE (2026-07-02): the upstream HF repo turned gated/private after this
-# host cached the full snapshot (weights + processor JSONs + normalizer
-# stats). Until a public mirror is published under OpenRAL/, run deploys
-# with HF_HUB_OFFLINE=1 so hf_hub_download serves the local cache instead
-# of failing on the 401.
+# NOTE (2026-07-02): upstream HF repo turned gated/private after this host
+# cached the full snapshot (weights + processor JSONs + normalizer stats).
+# Until a public mirror is published under OpenRAL/, run deploys with
+# HF_HUB_OFFLINE=1 so hf_hub_download serves the local cache instead of
+# failing on the 401.
 #
-# UNITS — degrees: trained on LeRobot SO-101 teleop recorded in joint
-# DEGREES (normalizer observation.state stats span ±100; MEAN_STD
-# normalization, no q99 quantiles). The runner's
-# _detect_joint_units_are_degrees handles the deg↔rad conversion at the
-# HAL boundary automatically (extended to read MEAN_STD stats for exactly
-# this checkpoint family).
+# UNITS — degrees: trained on LeRobot SO-101 teleop in joint DEGREES
+# (normalizer observation.state stats span ±100, MEAN_STD, no q99
+# quantiles). Runner's `_detect_joint_units_are_degrees` handles deg<->rad at
+# the HAL boundary automatically (extended to read MEAN_STD stats for this
+# checkpoint family).
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

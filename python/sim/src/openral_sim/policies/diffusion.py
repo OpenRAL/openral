@@ -1,6 +1,6 @@
 """Diffusion Policy adapter (Chi et al., 2023).
 
-Wraps :class:`lerobot.policies.diffusion.modeling_diffusion.DiffusionPolicy`.
+Wraps ``lerobot.policies.diffusion.modeling_diffusion.DiffusionPolicy``.
 The PushT checkpoint uses a different obs key naming than the multi-camera
 SmolVLA / ACT family:
 
@@ -110,7 +110,7 @@ class _DiffusionAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         release_torch_modules(
             self,

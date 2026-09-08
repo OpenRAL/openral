@@ -1,8 +1,8 @@
 """Unit tests for the OTel reasoner.tick instrumentation.
 
-Real :class:`ReasonerCore` + real OTel SDK + real
-:class:`InMemorySpanExporter` (the only test double is
-:class:`FakeToolUseClient` at the LLM process boundary per CLAUDE.md
+Real ``ReasonerCore`` + real OTel SDK + real
+``InMemorySpanExporter`` (the only test double is
+``FakeToolUseClient`` at the LLM process boundary per CLAUDE.md
 §1.11). The InMemorySpanExporter ships with the OTel SDK as a
 zero-overhead, real exporter — it isn't a mock.
 """
@@ -16,46 +16,11 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSPlanningError
 from openral_observability import reasoner_span, semconv
-from openral_reasoner import ContextRenderer, PromptRecord, ReasonerCore, ToolPalette
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from openral_reasoner import ContextRenderer, ReasonerCore, ToolPalette
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
-
-
-@pytest.fixture
-def exporter() -> InMemorySpanExporter:
-    """Replace the global TracerProvider with one that records to memory.
-
-    Mirrors the canonical pattern from
-    ``python/observability/tests/conftest.py``: bypass the OTel API's
-    set-once guard via the private holder so each test gets a fresh
-    provider + fresh in-memory exporter (the OTel SDK only allows
-    :func:`trace.set_tracer_provider` to take effect once per process
-    otherwise). Per CLAUDE.md §1.11 the exporter and provider are
-    real SDK components — only the on-the-wire destination is swapped
-    for in-memory storage.
-    """
-    from opentelemetry import trace
-
-    exp = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exp))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exp
-    finally:
-        exp.clear()
-
-
-def _renderer_with_prompt() -> ContextRenderer:
-    """One-prompt renderer (so the empty-palette short-circuit doesn't fire)."""
-    r = ContextRenderer()
-    r.append_prompt(PromptRecord(text="x", metadata_json="", stamp_ns=0))
-    return r
+from tests.unit.conftest import _renderer_with_prompt
 
 
 def _palette(*skills: str) -> ToolPalette:
@@ -181,16 +146,12 @@ def test_reasoner_span_helper_no_op_without_provider() -> None:
 def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
     """The dashboard store's ``reasoner.tick`` handler populates ``_topics["reasoner"]``.
 
-    The Reasoner emits one ``reasoner.tick`` span per orchestrator pass
-    via ``openral_observability.reasoner_span``. The dashboard's
-    headline-family map routes that span name into the per-tick
-    ``_topics["reasoner"]`` slot the operator-facing card reads.
-
-    This test mirrors ``test_slam_bridge.test_dashboard_store_picks_up
-    _slam_occupancy_grid_span`` — builds a single OTLP span by hand,
-    feeds it through ``TelemetryStore.ingest_spans``, asserts the
-    ``snapshot()["topics"]["reasoner"]`` slot carries every attribute
-    the card renderer expects.
+    The Reasoner emits one ``reasoner.tick`` span per orchestrator pass via
+    ``openral_observability.reasoner_span``; the dashboard routes it into the
+    per-tick ``_topics["reasoner"]`` slot the operator card reads. Builds a
+    single OTLP span by hand (mirrors
+    ``test_slam_bridge.test_dashboard_store_picks_up_slam_occupancy_grid_span``)
+    and asserts every attribute the card renderer expects survives ingest.
     """
     pytest.importorskip("opentelemetry.proto")
     from openral_observability.dashboard.store import TelemetryStore
@@ -241,11 +202,10 @@ def test_skill_failure_event_log_title_carries_reason() -> None:
     """A skill_failure span event surfaces its state + rSkill in the event-log title.
 
     The dashboard ingests OTLP, not the ROS FailureTrigger bus, so the only
-    thing it sees is the ``openral.event.skill_failure`` span event. Its concrete
-    state (timeout / vram_insufficient / …) rides on the
-    ``openral.event.skill_failure.state`` attribute. Without folding that into the
-    event-log title the operator sees only the bare event name and can't tell WHY
-    the skill failed — this guards the ``_summarise_event`` enrichment.
+    signal is the ``openral.event.skill_failure`` span event; its concrete
+    state (timeout/vram_insufficient/…) rides on the
+    ``openral.event.skill_failure.state`` attribute. Guards the
+    ``_summarise_event`` enrichment that folds it into the title.
     """
     pytest.importorskip("opentelemetry.proto")
     from openral_observability.dashboard.store import TelemetryStore

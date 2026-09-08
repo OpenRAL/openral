@@ -7,12 +7,10 @@ set -euo pipefail
 # `brew install`), starts the daemon if it isn't already running, and
 # pulls the default baseline model (qwen3:8b — strong tool-use, ~5 GB).
 #
-# After this script, the env vars below point the reasoner at the local
-# endpoint. This is the model-first contract (ADR-0088): an Ollama tag is an
-# *uncurated* model id, so the reasoner logs a `reasoner.model.uncurated`
-# warning (untested for robotics tool calling), which is expected for a local
-# baseline. `ollama` is a named endpoint carrying its own URL, dialect and
-# cold-start timeout, so no DIALECT is needed:
+# Model-first contract (ADR-0088): an Ollama tag is *uncurated*, so the
+# reasoner logs an expected `reasoner.model.uncurated` warning. `ollama` is a
+# named endpoint with its own URL, dialect and cold-start timeout, so no
+# DIALECT is needed:
 #
 #   export OPENRAL_REASONER_MODEL=qwen3:8b
 #   export OPENRAL_REASONER_ENDPOINT=ollama

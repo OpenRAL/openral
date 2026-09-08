@@ -209,7 +209,7 @@ def _cc_for_jetson_board(board: str) -> tuple[int, int] | None:
     """Return the CUDA compute capability for a Jetson board name, or ``None``.
 
     Replaces the legacy ``(8, 7) if "Orin" in board else (7, 2)``
-    heuristic with the explicit :data:`_JETSON_CC_BY_BOARD_KEYWORD`
+    heuristic with the explicit ``_JETSON_CC_BY_BOARD_KEYWORD``
     table above.
     """
     for keyword, cc in _JETSON_CC_BY_BOARD_KEYWORD:
@@ -233,7 +233,7 @@ _NVBUFSURFACE_SEARCH_PATHS: tuple[Path, ...] = (
 def _probe_nvmm_available(*, search_paths: Sequence[Path] | None = None) -> bool:
     """Return ``True`` when ``libnvbufsurface.so`` is installed on this host.
 
-    Populates :attr:`RobotCapabilities.nvmm_available` so
+    Populates ``RobotCapabilities.nvmm_available`` so
     ``rSkill.check_capabilities`` can refuse skills that require the
     NVMM zero-copy sensor-ingest path on a host that cannot provide it.
     The library ships with the L4T multimedia stack on JetPack r35+;
@@ -244,7 +244,7 @@ def _probe_nvmm_available(*, search_paths: Sequence[Path] | None = None) -> bool
     Args:
         search_paths: Override search roots for tests. Production omits
             this and the canonical L4T install locations
-            (:data:`_NVBUFSURFACE_SEARCH_PATHS`) are walked.
+            (``_NVBUFSURFACE_SEARCH_PATHS``) are walked.
 
     Returns:
         ``True`` iff ``libnvbufsurface.so`` exists in any of the
@@ -257,15 +257,12 @@ def _probe_nvmm_available(*, search_paths: Sequence[Path] | None = None) -> bool
 # ── Unified-memory hosts ──────────────────────────────────────────────────────
 #
 # On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor) there is no discrete
-# VRAM pool to report: ``nvmlDeviceGetMemoryInfo`` returns
-# NVML_ERROR_NOT_SUPPORTED and ``nvidia-smi`` prints ``[N/A]`` for
-# memory.total / memory.free. Measured on a DGX Spark (GB10, driver 580.126.09,
-# CUDA 13.0): every other NVML call — count, name, compute capability (12, 1),
-# PCI info — succeeds. The GPU is real and fully usable, so we fall back to the
-# system RAM figure, which is genuinely what the GPU can address.
-#
-# Caveat this deliberately accepts: that pool is shared with the OS and the page
-# cache, so `vram_total_mib` on such a host is "addressable", not "dedicated".
+# VRAM pool: ``nvmlDeviceGetMemoryInfo`` returns NVML_ERROR_NOT_SUPPORTED and
+# ``nvidia-smi`` prints ``[N/A]`` for memory.total / memory.free. Measured on a
+# DGX Spark (GB10, driver 580.126.09, CUDA 13.0): every other NVML call —
+# count, name, compute capability (12, 1), PCI info — succeeds, so we fall
+# back to the system RAM figure. Caveat: that pool is shared with the OS, so
+# `vram_total_mib` on such a host is "addressable", not "dedicated".
 
 
 def _system_memory_mib() -> tuple[int, int] | None:
@@ -647,7 +644,7 @@ def probe_gpus(*, warnings: list[str] | None = None) -> GpuProbeResult:
         warnings: Optional list to append non-fatal probe issues to.
 
     Returns:
-        :class:`GpuProbeResult` with NVIDIA discrete cards, an optional
+        ``GpuProbeResult`` with NVIDIA discrete cards, an optional
         Jetson record, an optional Apple Silicon record, and the backend
         that produced the NVIDIA list.
     """

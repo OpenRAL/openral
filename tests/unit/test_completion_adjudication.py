@@ -39,7 +39,7 @@ try:
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
-    _ReasonerNode = None  # type: ignore[assignment, misc]
+    _ReasonerNode = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
 
 _ROS_SKIP = pytest.mark.skipif(not _HAS_ROS, reason="requires rclpy + openral_msgs")
 

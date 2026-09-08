@@ -73,6 +73,7 @@ def _first_collidable_geom(model: object, body_id: int) -> int | None:
     return None
 
 
+# reason: mujoco ships no stubs; model/data are untyped MjModel/MjData handles
 def _find_arm_cross_pose(model, data, joint_names, le_geom, re_geom):  # type: ignore[no-untyped-def]
     """Search a small grid of shoulder/elbow angles for a left↔right elbow overlap."""
     idx = {name: i for i, name in enumerate(joint_names)}

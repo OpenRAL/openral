@@ -35,6 +35,7 @@ def _fp32_weight_for(source_ckpt: Path, key: str) -> Any:
 
     index = json.loads((source_ckpt / "model.safetensors.index.json").read_text())
     shard = index["weight_map"][key]
+    # reason: safetensors ships no type stubs for safe_open
     with safe_open(str(source_ckpt / shard), framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
         return f.get_tensor(key)
 

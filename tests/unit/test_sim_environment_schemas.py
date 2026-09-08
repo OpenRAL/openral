@@ -89,7 +89,7 @@ def test_scene_environment_yaml_round_trip(tmp_path: Path) -> None:
     """``SimScene.from_yaml`` is the scene+task YAML entrypoint.
 
     YAMLs carry scene + task only; the policy arrives via ``--rskill`` on
-    the CLI, which composes the runtime :class:`SimEnvironment`.
+    the CLI, which composes the runtime ``SimEnvironment``.
     """
     from openral_core import SimScene
 

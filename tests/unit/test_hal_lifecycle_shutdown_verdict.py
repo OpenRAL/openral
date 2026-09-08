@@ -2,21 +2,19 @@
 """Regression: the terminal task-success verdict must survive a signal teardown.
 
 ``SimAttachedHAL.disconnect`` emits ``sim.task_success_final`` — the one
-greppable statement of whether a ``deploy sim`` session ended with the scene's
-task completed. It was reached only from the lifecycle ``cleanup`` / ``shutdown``
-transition, and ``rclpy`` runs neither on SIGINT: its ``rclpy.init``-installed
-handler shuts the context down and raises out of ``spin``. The deploy harness
-tears the graph down exactly that way (``openral_cli.deploy_sim``
-``_terminate_launch_group`` SIGINTs the launch's process group), so the HAL
-process died with the verdict unemitted in every field run — while the unit
-tests that call ``disconnect`` directly stayed green.
+greppable record of whether a ``deploy sim`` session finished its task. It
+fired only from the lifecycle ``cleanup``/``shutdown`` transition, but
+``rclpy`` runs neither on SIGINT (its handler shuts the context and raises
+out of ``spin``); the deploy harness tears down exactly that way
+(``openral_cli.deploy_sim._terminate_launch_group`` SIGINTs the launch's
+process group), so the verdict went unemitted in every field run while
+disconnect-calling unit tests stayed green.
 
-``HALLifecycleNodeBase.shutdown_hal`` is the teardown both ``main()`` factories
-now run in their ``finally``. These tests invoke it directly on a real node.
+``HALLifecycleNodeBase.shutdown_hal`` is the teardown both ``main()``
+factories now run in ``finally``; these tests invoke it directly.
 
-Real components (CLAUDE.md §1.11): a real ``HALLifecycleNodeBase`` subclass on a
-real ``rclpy`` context, a real ``SimAttachedHAL`` over a real ``RobotDescription``
-manifest; the ``SimRollout`` boundary is the shared ``FakeSimEnv`` recorder.
+Real components (CLAUDE.md §1.11): a real node/context, a real
+``SimAttachedHAL`` over a real manifest; ``SimRollout`` is the ``FakeSimEnv`` recorder.
 """
 
 from __future__ import annotations
@@ -81,7 +79,7 @@ def _node(env: FakeSimEnv, name: str) -> Any:
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
 
-    class _SimHALNode(HALLifecycleNodeBase):  # type: ignore[misc, valid-type]
+    class _SimHALNode(HALLifecycleNodeBase):
         def _create_hal(self) -> object:
             return SimAttachedHAL(env, description)
 

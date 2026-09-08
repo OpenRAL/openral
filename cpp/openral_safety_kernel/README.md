@@ -339,13 +339,12 @@ the validator stays allocation-free
 
 ## Attached-payload exemption ladder (ADR-0092)
 
-A grasped payload is checked as robot geometry against the occupancy map. That
-is the point — the carried object must still collide with cabinets and people.
-But two contacts are legitimate and neither is distinguishable from a real
-penetration by depth alone, so the kernel grants exactly two bounded
-exemptions inside `check_attached_voxel_collision`, and nothing else. An
-exempted cell reaches `sweep_min_distance` only; it can never be the cell an
-E-stop names.
+A grasped payload is checked as robot geometry against the occupancy map —
+the carried object must still collide with cabinets and people. Two contacts
+are legitimate and indistinguishable from real penetration by depth alone,
+so the kernel grants exactly two bounded exemptions inside
+`check_attached_voxel_collision`, nothing else. An exempted cell reaches
+`sweep_min_distance` only; it can never be the cell an E-stop names.
 
 **1. Support-contact witness (ADR-0092 D6).** Attachment says what the robot is
 carrying, not that the payload is free of its environment: a grasped baguette
@@ -371,31 +370,29 @@ attested plane instead of the cell cube accounts for the inflation *exactly*,
 by geometry, rather than absorbing it into a widened tolerance that would also
 license real penetration.
 
-The fourth term is the **2026-08-15 co-planar headroom calibration** (hazard log
-Entry 012, "Calibration 2026-08-15", from the 5-run baguette battery
-`spark:~/openral-runs/2026-08-15-baguette-battery`). The battery refuted the
-suspected "sliding" class outright — run 4 moved the payload 10.2 mm during the
-stop, and the lateral patch gate (135.7 mm) never came near the 84–86 mm actual
-offset — and named the real one: cells of **adjacent co-planar structure**, a
-raised edge or a neighbouring stack on the same support surface, sit about one
-voxel above the attested plane while the payload is in genuine, continuing
-support contact. Round-8 r2 measured `+42.9 mm` against a ~15–19 mm envelope: an
-excess of `+24.4 mm`, one 25 mm voxel. The bound therefore gains one full voxel,
-**inside the existing lateral patch** — this is height, never reach, and the
-patch radius bound is untouched. At sim's 25 mm cells with a 5 mm attested depth
-the envelope is `12.5 + 5 + 1 + 25 = 43.5 mm`, so r2's `+42.9 mm` clears it by
-0.6 mm and a `+55 mm` protrusion does not
+Fourth term: the **2026-08-15 co-planar headroom calibration** (hazard log
+Entry 012, "Calibration 2026-08-15", 5-run baguette battery
+`spark:~/openral-runs/2026-08-15-baguette-battery`). The battery refuted
+"sliding" (run 4 moved the payload 10.2 mm during the stop; the lateral
+patch gate, 135.7 mm, never came near the 84-86 mm actual offset) and named
+the real class: **adjacent co-planar structure** (a raised edge, a
+neighbouring stack on the same surface) sits ~1 voxel above the attested
+plane during genuine support contact — round-8 r2 measured `+42.9 mm`
+against a ~15-19 mm envelope, excess `+24.4 mm` = one 25 mm voxel. The bound
+gains one full voxel, **inside the existing lateral patch** (height only,
+never reach; patch radius untouched). At sim's 25 mm cells with a 5 mm
+attested depth: envelope = `12.5 + 5 + 1 + 25 = 43.5 mm`, so r2's `+42.9 mm`
+clears it by 0.6 mm and a `+55 mm` protrusion does not
 (`…TheRound8CoplanarCellIsInsideTheWidenedEnvelope`,
 `…SolidAboveTheCoplanarBandStillStops`, `…TheWidenedEnvelopeIsHeightOnlyNotReach`).
 
-Past *that* bound a cell whose solid sits genuinely above the attested
-support face still stops the robot, and a payload driving into its support
-raises that height millimetre for millimetre until it does
-(`…DeepeningIntoTheSupportStillStops`, now at 40 mm of sink;
-`…ProtrusionInsideThePatchStillStops`, now two cells up). The cost is recorded
-and accepted with the calibration: within the attested patch, one voxel more of
-whatever the kernel cannot tell apart from support contact is exempt — the same
-accepted-trade class as HZ-0092-1's identity-blindness-within-patch, at one
+Past that bound, solid genuinely above the attested support face still
+stops the robot, and a payload sinking into its support raises that height
+mm-for-mm until it does (`…DeepeningIntoTheSupportStillStops`, now 40 mm of
+sink; `…ProtrusionInsideThePatchStillStops`, now two cells up). Cost
+accepted with the calibration: within the attested patch, one voxel more of
+whatever the kernel can't tell apart from support contact is exempt — same
+accepted-trade class as HZ-0092-1's identity-blindness-within-patch, one
 voxel more of height.
 
 The witness is **latched, and it dies on separation**: once nothing it would
@@ -738,15 +735,12 @@ the baseline was snapshotted. This is stale self-occupancy, a different
 phenomenon from support contact, and the witness deliberately does not cover
 it; the attach-time baseline snapshot is retained solely for this.
 
-**What this replaced.** The non-deepening index-keyed baseline (a per-cell
-attach-time distance, with any penetration no deeper than it allowed) and the
-`attached_contact_allow_new_shallow` contact-phase allowance are both **gone**.
-The index-keyed baseline decorrelated in exactly the situation it was meant to
-cover: voxel indices shift as the base drives and the lattice re-phases, while
-the physical contact persists, so the recorded cells stop matching the cells
-actually touched. `allow_new_shallow` was worse — it exempted new cells no one
-had attested, up to a tolerance that had been raised to the voxel size to make
-supported motion pass. Both removals move cases from no-stop to stop.
+**Removed:** the non-deepening index-keyed baseline (per-cell attach-time
+distance, capping penetration at what it allowed) — it decorrelated as the
+base drove and the lattice re-phased, since indices shift while physical
+contact persists. Also removed: `attached_contact_allow_new_shallow`, which
+exempted unattested new cells up to a tolerance raised to the voxel size.
+Both removals move cases from no-stop to stop.
 
 `attached_contact_tolerance_m` survives with its name's meaning restored:
 physical slack for FK and pose noise, defaulting to 1 mm. It is no longer

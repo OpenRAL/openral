@@ -1,35 +1,25 @@
 """Live ROS 2 subscriber feeding the dashboard's camera perception overlays.
 
-The camera tiles already show what the robot sees (OTel `sensors.read_latest`
-spans carry a JPEG thumbnail, re-served as MJPEG by `/api/camera/<src>/stream`).
-What they could not show is what the robot *made of it*: a `kind: detector`
-rSkill's boxes and a `kind: segmenter` rSkill's masks were only visible as text
-in the event log, so an operator debugging a mis-grasp had to correlate a label
-list against a picture by eye.
+Camera tiles already show what the robot sees (OTel `sensors.read_latest`
+spans carry a JPEG thumbnail, re-served as MJPEG by
+`/api/camera/<src>/stream`); this module adds a `kind: detector` rSkill's
+boxes and a `kind: segmenter` rSkill's masks, drawn over those tiles instead
+of shown only as event-log text.
 
-This module closes that gap for both halves. It follows
-`safety_status_subscriber.py`'s shape exactly — one node created at launch, spun
-on a daemon thread, inert-but-harmless when rclpy / the `openral_msgs` overlay
-is unavailable, so a standalone dashboard with no ROS workspace sourced keeps
-working and simply draws no overlays.
+Follows `safety_status_subscriber.py`'s shape: one node created at launch,
+spun on a daemon thread, inert when rclpy / `openral_msgs` is unavailable (no
+overlays drawn, nothing else breaks).
 
 * **Detector boxes** — `openral_msgs/PromptStamped` on
-  `/openral/perception/objects`, carrying an `openral_core.ObjectsMetadata` JSON
-  document.
+  `/openral/perception/objects`, an `openral_core.ObjectsMetadata` JSON doc.
 * **Segmenter masks** — `openral_msgs/SegmentMasks` on
-  `/openral/perception/masks`. The segmenter's own contract is a *service*
-  (`openral_msgs/srv/SegmentInView`, one shot per attach event), so this topic
-  is not that contract: it is the segmenter node's **diagnostic** re-publication
-  of its latest reply, off by default behind that node's `publish_debug_masks`
-  parameter. Subscribing to it is therefore free when nobody enabled it, and a
-  dashboard that never sees a message simply draws no masks. Decoded here with
-  :func:`mono8_mask_to_png_b64`, written against the service's exact mono8
-  convention, into `TelemetryStore.set_perception_masks`.
+  `/openral/perception/masks`: the segmenter node's diagnostic
+  re-publication of its `SegmentInView` service replies (off by default
+  behind `publish_debug_masks`, so subscribing is free when unused). Decoded
+  with ``mono8_mask_to_png_b64`` into `TelemetryStore.set_perception_masks`.
 
-Read-only by construction: it subscribes and writes into the store. It holds no
-publisher, no service client, and no authority over the robot. Overlays are
-advisory *display* only — nothing here is a safety input, and nothing on the
-robot reads back what this module renders.
+Read-only: subscribes and writes to the store only — no publisher, no
+service client, no robot authority. Overlays are advisory display only.
 """
 
 from __future__ import annotations
@@ -74,13 +64,10 @@ _MASKS_QOS_DEPTH = 1
 def dashboard_flip_180() -> bool:
     """Whether this host rotates the dashboard's display copy of camera frames.
 
-    ``OPENRAL_DASHBOARD_FLIP_180`` is an existing repo-wide convention: the HAL
-    publishes LIBERO/MuJoCo frames bottom-up, the camera *topic* stays raw, and
-    only the dashboard's thumbnail is rotated so an operator sees an upright
-    picture. Detectors consume the raw topic, so an overlay drawn over a flipped
-    tile without the same correction lands point-mirrored — right-looking enough
-    to be believed and wrong (CLAUDE.md §1.2). Read here and carried on the
-    overlay so the renderer applies exactly the flip the image got.
+    ``OPENRAL_DASHBOARD_FLIP_180`` is a repo-wide convention: HAL frames
+    (LIBERO/MuJoCo) publish bottom-up and only the dashboard thumbnail is
+    rotated, so an overlay must carry the same flip or it renders
+    point-mirrored (CLAUDE.md §1.2).
 
     Returns:
         True when the env var is set to a truthy value, matching
@@ -106,18 +93,15 @@ def dashboard_flip_180() -> bool:
 def mono8_mask_to_png_b64(data: bytes, width: int, height: int) -> str:
     """Encode one `sensor_msgs/Image` mono8 mask as a tintable base64 PNG.
 
-    The `SegmentInView` service returns each candidate as a full-frame mono8
-    image: 255 where the pixel belongs to the prompted object, 0 elsewhere. The
-    producer writes 255, but any non-zero pixel counts as set — the same
-    tolerance the HAL-side decoder documents, so a mask that survived a lossy
-    hop still renders.
+    `SegmentInView` returns each candidate as a full-frame mono8 image: 255
+    where the pixel belongs to the prompted object, 0 elsewhere (any non-zero
+    pixel counts as set, tolerating a lossy hop).
 
-    Emitted as an **LA** PNG whose alpha channel *is* the mask, which is what
-    makes the frontend's job one composite: draw the PNG, then flood the canvas
-    with the instance colour under ``globalCompositeOperation = "source-in"``
-    and the fill lands on exactly the set pixels. A binary alpha channel is also
-    what PNG compresses best, so a 640x480 mask costs a few kB in the snapshot —
-    the same order as the JPEG thumbnails already riding there.
+    Emitted as an **LA** PNG whose alpha channel *is* the mask: the frontend
+    draws the PNG then fills with the instance colour using
+    ``globalCompositeOperation = "source-in"``, landing on exactly the set
+    pixels. Binary alpha also compresses best — a 640x480 mask costs a few kB,
+    the same order as the JPEG thumbnails already riding in the snapshot.
 
     Args:
         data: The mono8 payload, row-major, ``width`` bytes per row.
@@ -163,9 +147,9 @@ class PerceptionOverlaySubscriber:
         Args:
             store: The dashboard's telemetry store; every decoded detection set
                 is written to it via
-                :meth:`TelemetryStore.set_perception_detections`, and every
+                ``TelemetryStore.set_perception_detections``, and every
                 decoded mask set via
-                :meth:`TelemetryStore.set_perception_masks`.
+                ``TelemetryStore.set_perception_masks``.
         """
         self._store = store
         self._node: Any = None
@@ -239,7 +223,7 @@ class PerceptionOverlaySubscriber:
     def masks_available(self) -> bool:
         """True when the mask subscription is live (needs `SegmentMasks` built).
 
-        Separate from :attr:`available` because the two legs can differ: an
+        Separate from ``available`` because the two legs can differ: an
         older `openral_msgs` overlay carries `PromptStamped` but not
         `SegmentMasks`, and losing masks must not read as losing overlays.
         """
@@ -283,15 +267,12 @@ class PerceptionOverlaySubscriber:
     def _on_masks(self, msg: Any) -> None:  # reason: ROS message is untyped
         """Write one decoded mask set into the store (on the spin thread).
 
-        The wire carries the segmenter's own full-frame ``mono8`` candidates in
-        **area-ascending** order with a parallel advisory-score array; both are
-        preserved as-is. The scores are passed through for display and are never
-        used to rank or filter — the service records a 59.8%-of-frame mask
-        measured at that model's top score of 0.977.
+        Masks arrive full-frame ``mono8``, area-ascending, with a parallel
+        advisory-score array (display-only, never used to rank/filter — a
+        59.8%-of-frame mask was measured at that model's top score of 0.977).
 
-        A malformed mask (a length that does not match its own ``width``
-        times its ``height``) fails the whole set rather than rendering a plausible but
-        wrong shape, and is logged. Like the detector leg, nothing here may
+        A malformed mask (length != ``width * height``) fails the whole set
+        rather than render a wrong shape, and is logged; nothing here may
         escape and kill the spin thread.
         """
         try:

@@ -1,54 +1,51 @@
 """NVIDIA Isaac GR00T N1.7 policy adapter — in-process lerobot backend.
 
-Historically GR00T ran out-of-process in a Python-3.10 ZMQ sidecar (flash-attn +
-Isaac-GR00T pin 3.10). lerobot 0.6.0 ships a native, in-process ``GrootPolicy``
+lerobot 0.6.0 ships a native, in-process ``GrootPolicy``
 (``lerobot.policies.groot``) that loads GR00T **N1.7** under the workspace's
 Python 3.12 — the Cosmos-Reason2 / Qwen3-VL backbone is a stock
-``Qwen3VLForConditionalGeneration`` available in ``transformers>=5.4``, so the
-whole py3.10 rationale disappears for N1.7. This adapter therefore mirrors the
-in-process :mod:`openral_sim.policies.smolvla` adapter instead of forking a
-sidecar.
+``Qwen3VLForConditionalGeneration`` available in ``transformers>=5.4``. This
+adapter mirrors the in-process ``openral_sim.policies.smolvla`` adapter
+rather than a sidecar.
 
 RLDX-1 (a GR00T-**N1.5** finetune) still runs in its ZMQ sidecar via the
 ``rldx`` adapter — native lerobot rejects N1.5 — so
-:class:`openral_sim.policies.rldx._Gr00tFamilySidecarAdapter` is untouched.
+``openral_sim.policies.rldx._Gr00tFamilySidecarAdapter`` is untouched.
 
 In-process NF4
 --------------
 Native ``GrootPolicy`` has no quantization knob and loads the ~3 B model in
 fp32 params / bf16 compute (~6 GB), which will not co-fit an 8 GB card. The
-transformers ``BitsAndBytesConfig`` / ``device_map`` path is unavailable here —
-it requires ``accelerate``, which the workspace venv does not carry (it only
-lived in the retired py3.10 sidecar). So we reuse OpenRAL's accelerate-free
-:func:`openral_sim._quantization.quantize_nf4_in_place` (the same NF4 mechanism
-pi05 / molmoact2 use): after a normal CPU load we rewrite the Qwen3-VL
-backbone's large ``nn.Linear`` layers into ``bnb.nn.Linear4bit`` shells, then
-``policy.to(cuda)`` packs them to NF4. Only the backbone is quantized; the small
-diffusion action head stays in bf16 — this preserves action quality and
-side-steps the GR00T DiT ``TimestepEncoder`` uint8 bug (bug (b) below).
+transformers ``BitsAndBytesConfig`` / ``device_map`` path needs
+``accelerate``, which the workspace venv does not carry, so this reuses
+OpenRAL's accelerate-free ``openral_sim._quantization.quantize_nf4_in_place``
+(same mechanism as pi05 / molmoact2): after a normal CPU load, the Qwen3-VL
+backbone's large ``nn.Linear`` layers are rewritten into
+``bnb.nn.Linear4bit`` shells, then ``policy.to(cuda)`` packs them to NF4.
+Only the backbone is quantized; the small diffusion action head stays bf16,
+preserving action quality and side-stepping the GR00T DiT
+``TimestepEncoder`` uint8 bug (bug (b) below).
 
 The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
 native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under
 Python 3.10, so a manifest with
 ``policy_extras.implementation=behavior_b1k_sidecar`` dispatches to
-:mod:`openral_sim.policies.behavior_groot` before the lerobot loader runs.
+``openral_sim.policies.behavior_groot`` before the lerobot loader runs.
 
 Embodiment mapping
 ------------------
 The rSkill manifest declares its OpenRAL robot tag (e.g. ``franka_panda`` /
-``so101_follower``). GR00T's ``embodiment_tag`` is its OWN namespace, carried in
-``policy_extras.embodiment_tag`` — ``libero_sim`` for the LIBERO checkpoint,
-``new_embodiment`` for the SO-101 fruit checkpoint. Mapping it explicitly is
-load-bearing: it selects that embodiment's modality config (image views,
-state/action layout) AND the action-decode transform. Feed the wrong tag and
-eval scores 0 %.
+``so101_follower``). GR00T's ``embodiment_tag`` is its own namespace, carried
+in ``policy_extras.embodiment_tag`` — ``libero_sim`` for LIBERO,
+``new_embodiment`` for SO-101 fruit. It is load-bearing: it selects the
+embodiment's modality config (image views, state/action layout) and the
+action-decode transform. Wrong tag -> eval scores 0%.
 
-The per-embodiment I/O contract — state width, action width, and GR00T video
-modality keys — is read from the rSkill rather than hard-coded: ``state_dim`` /
-``action_dim`` from ``state_contract.dim`` / ``action_contract.dim`` and the
-image keys from ``policy_extras.image_modality_keys`` (``image``/``wrist_image``
-for LIBERO, ``front``/``wrist`` for SO-101). The LIBERO values remain the
-fallback when a manifest omits them.
+The per-embodiment I/O contract — state width, action width, GR00T video
+modality keys — is read from the rSkill: ``state_dim``/``action_dim`` from
+``state_contract.dim``/``action_contract.dim``, image keys from
+``policy_extras.image_modality_keys`` (``image``/``wrist_image`` for LIBERO,
+``front``/``wrist`` for SO-101). LIBERO values are the fallback when a
+manifest omits them.
 """
 
 from __future__ import annotations
@@ -325,7 +322,7 @@ class _GrootAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()

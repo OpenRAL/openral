@@ -1,40 +1,25 @@
 """Run the collision-stack validation matrix and emit a machine-readable verdict.
 
-For ~17 rounds the four-scene RoboCasa validation matrix was driven by shell and
-Python that lived only in ``~/openral-runs/<date>-<name>/scripts/`` on the DGX
-Spark: ``run_matrix.sh``, ``drive_round.sh``, ``attach_monitor*.py``,
-``postprocess.sh``, ``adjudicate.py``, ``verdict_table.py`` and a per-scene YAML
-copy each. Nothing was in the repo, so every round re-derived the same tooling
-with drift, several rounds produced no written conclusion at all, and one round
-silently executed the wrong checkout. The evidence ledger for all of that is
-``docs/reference/collision-validation-evidence.md``; this tool is what feeds it
-from now on.
+Replaces ~17 rounds of shell/Python that lived only on the DGX Spark (``run_matrix.sh``,
+``attach_monitor*.py``, ``adjudicate.py``, ...), which drifted per round and once silently ran
+the wrong checkout. See ``docs/reference/collision-validation-evidence.md``.
 
-Four subcommands, all reading recorded artifacts only:
+Subcommands (all read recorded artifacts only):
 
-* ``run`` — guardrails, then one ``openral deploy sim`` per scene with a monitor
-  and an action dispatch alongside it, capturing a fixed artifact set per scene,
-  then ``verdicts``. Requires a GPU host with RoboCasa installed.
-* ``verdicts`` — derive ``verdicts.json`` (a
-  :class:`~openral_core.ValidationRoundVerdicts`) from a round directory. Pure
-  and offline: this is the half that is unit-tested against recorded artifacts.
-* ``diff`` — compare two rounds' ``verdicts.json`` into a
-  :class:`~openral_core.ValidationRoundDiff`, so "what changed since the last
-  round" is mechanical.
-* ``import-round`` — write the metadata a pre-harness round never recorded, so
-  the ~17 rounds that predate this tool become queryable by ``verdicts`` and
-  ``diff`` without hand-mapping their scene directories and filename stems.
+* ``run`` — guardrails, then one ``openral deploy sim`` per scene (monitor + action dispatch),
+  then ``verdicts``. Needs a GPU host with RoboCasa.
+* ``verdicts`` — pure/offline: derive ``verdicts.json`` (a
+  ``ValidationRoundVerdicts``) from a round directory.
+* ``diff`` — compare two rounds' ``verdicts.json`` into a ``ValidationRoundDiff``.
+* ``import-round`` — backfill metadata for the ~17 pre-harness rounds so they're queryable too.
 
-The guardrails are the point as much as the runner is. ``run`` refuses to start
-on a dirty worktree, on a built overlay older than the checked-out sources, when
-the resolved launcher is not this checkout's, when the dependency set is missing
-``pyzmq`` (the XR-1 sidecar's wire), or when a safety knob is moved on *either*
-control surface — the composed argv or the resolved scene YAML. Each of those
-closes a specific past incident — see ``docs/contributing/validation-matrix.md``.
+``run`` refuses: a dirty worktree, a stale built overlay, a launcher outside this checkout, a
+missing ``pyzmq`` (XR-1 sidecar wire), or a safety knob moved on either control surface (composed
+argv or resolved scene YAML) — each guard closes a specific past incident
+(``docs/contributing/validation-matrix.md``).
 
-Exit codes: ``0`` clean, ``2`` usage, ``3`` a guardrail refused (nothing is
-written — not even the round directory), ``4`` the round ran but at least one
-scene bucketed ``harness-error``.
+Exit codes: ``0`` clean, ``2`` usage, ``3`` guardrail refused (nothing written), ``4`` ran but at
+least one scene bucketed ``harness-error``.
 
 Run::
 
@@ -94,17 +79,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 class SceneSpec:
     """One scene of the validation matrix.
 
-    ``config`` is the *tracked* DeployScene YAML. Seven of the eight pinned
-    stack knobs have a CLI flag and are pinned there, because the deploy CLI's
-    precedence is explicit-flag > scene ``runtime:`` > default and copying the
-    scene per round is exactly how the historical configs drifted from the
-    tracked ones. The eighth — ``enable_reasoner`` — has **no flag** at all: it
-    is resolved from the scene's ``runtime:`` block and defaults to ``True``
-    (``openral_cli.deploy_sim.resolve_launch_invocation``). So each round
-    materialises a resolved copy of the tracked scene carrying
-    :data:`SCENE_RUNTIME_PIN` (and the seed, when it differs), and the tracked
-    file is never touched. The first live round died in every scene in under a
-    second passing a ``--no-enable-reasoner`` flag that does not exist.
+    ``config`` is the tracked DeployScene YAML, never rewritten. 7 of 8 pinned stack knobs have a
+    CLI flag (precedence: explicit-flag > scene ``runtime:`` > default). ``enable_reasoner`` has no
+    flag — resolved from ``runtime:``, defaults ``True``
+    (``openral_cli.deploy_sim.resolve_launch_invocation``) — so each round materialises a resolved
+    copy carrying ``SCENE_RUNTIME_PIN`` (+ seed if it differs). The first live round died in
+    every scene under 1s on a nonexistent ``--no-enable-reasoner`` flag.
     """
 
     key: str
@@ -369,7 +349,7 @@ def grid_resolution_from_monitor(records: Sequence[Mapping[str, Any]]) -> float 
     Returns:
         The first reported resolution in metres, or ``None`` when the run
         published no grid (octomap off, the graph never reached activation, or
-        — see :func:`monitor_subscription_records` — the monitor received
+        — see ``monitor_subscription_records`` — the monitor received
         nothing at all).
     """
     for record in records:
@@ -386,13 +366,9 @@ _MONITOR_LIFECYCLE_EVENTS: Final[frozenset[str]] = frozenset({"monitor_started",
 def monitor_subscription_records(records: Sequence[Mapping[str, Any]]) -> int:
     """How many of a monitor's records came from a ROS subscription.
 
-    ``0`` on a monitor that ran for the whole scene is the signature of the
-    2026-08-23 defect: the monitor's DDS participant was created before
-    ``openral deploy sim`` purged ``/dev/shm/fastrtps_*``, so its shared-memory
-    segments were unlinked underneath it and it received nothing for the rest
-    of the run. All 24 runs of that round wrote exactly ``monitor_started`` and
-    ``monitor_stopped``. That is a *harness* fault, and it must not be read as
-    "the run stopped before there was anything to record".
+    ``0`` on a full-scene run is the 2026-08-23 defect signature (all 24 runs of that round): the
+    monitor's DDS participant started before ``deploy sim`` purged ``/dev/shm/fastrtps_*``,
+    unlinking its shared-memory segments — a harness fault, not "nothing to record".
 
     Args:
         records: Monitor JSONL records.
@@ -423,7 +399,7 @@ def build_witness_timeline(
         deploy_lines: Lines of the deploy log.
 
     Returns:
-        A :class:`~openral_core.ValidationWitnessTimeline`.
+        A ``ValidationWitnessTimeline``.
     """
     from openral_core import ValidationWitnessTimeline  # reason: deferred
 
@@ -514,12 +490,10 @@ _CERTIFIED_DISTANCE_ATTESTATION: Final[str] = "uncertified_pairs"
 def probe_is_collidability_filtered(snapshot: Mapping[str, Any]) -> bool:
     """Whether a recorded probe attests that *every* side was solid geoms only.
 
-    A distance measured against a geom with neither ``contype`` nor
-    ``conaffinity`` is not a penetration: MuJoCo can never contact it and the
-    safety kernel never checks it. Until the HAL filtered the robot and payload
-    sides as well as the world side, a stop could be adjudicated
-    ``real-contact`` off a visual shell — ``robot0_g42_vis`` at 0.000 m from a
-    freezer door whose nearest *solid* pair was 2.5 mm clear.
+    A distance against a geom with no ``contype``/``conaffinity`` is not a penetration — MuJoCo
+    never contacts it, the kernel never checks it. Before the HAL filtered robot/payload sides too,
+    a stop could be adjudicated ``real-contact`` off a visual shell (``robot0_g42_vis`` at 0.000 m
+    vs. a freezer door whose nearest solid pair was 2.5 mm clear).
 
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
@@ -545,23 +519,14 @@ def probe_is_collidability_filtered(snapshot: Mapping[str, Any]) -> bool:
 def probe_is_distance_certified(snapshot: Mapping[str, Any]) -> bool:
     """Whether every distance in a recorded probe carries its own proof.
 
-    ``mujoco.mj_geomDistance`` — which every probe recorded before this landed
-    was built on — returns confidently wrong values on the pair class these
-    stops are adjudicated from: a RoboCasa fixture geom against a panda
-    collision mesh. Measured cases include ``+0.000000`` where the truth is
-    ``+0.148512 mm``, with a 126 mm witness segment lying outside both geoms;
-    and, in the checked-in rounds themselves, ``0.000 m`` recorded where the
-    certified distance is ``+14.806 mm`` (08-22 fridge), ``+82.185 mm``
-    (08-23 fridge) and ``+107.930 mm`` (08-23 baguette, on a *solid* pair).
-    Every one of those is a ``0.000 m`` reading, which is exactly what rule 1
-    of :func:`adjudicate_ground_truth` promotes to ``real-contact``.
-
-    So the attestation is the same shape as
-    :func:`probe_is_collidability_filtered`, for the same reason and with the
-    same fail-closed consequence: a snapshot that does not attest its
-    distances cannot support a verdict that rests on one. It does **not**
-    reverse such a verdict — the stop becomes ``unadjudicated``, and nothing
-    here shows the kernel was wrong.
+    ``mujoco.mj_geomDistance`` (used before this landed) returns confidently wrong values on
+    fixture-vs-panda-mesh pairs: measured ``+0.000000`` where truth is ``+0.148512 mm`` (126 mm
+    witness segment outside both geoms); in the checked-in rounds, ``0.000 m`` where the certified
+    distance is ``+14.806 mm`` (08-22 fridge), ``+82.185 mm`` (08-23 fridge), ``+107.930 mm``
+    (08-23 baguette, solid pair) — each a reading rule 1 of ``adjudicate_ground_truth``
+    promotes to ``real-contact``. Same attestation shape as
+    ``probe_is_collidability_filtered``, same fail-closed effect: an unattested snapshot cannot
+    support a verdict resting on it — the stop becomes ``unadjudicated``, never a reversal.
 
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
@@ -593,16 +558,11 @@ def probe_is_distance_certified(snapshot: Mapping[str, Any]) -> bool:
 def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
     """The HAL's own kernel-vs-probe budget for this stop, when it recorded one.
 
-    The kernel measures OBB-to-voxel; the probes measure mesh-to-mesh. The gap
-    a *correct* stop can show is therefore the collision model's corner slop
-    plus the voxel half-diagonal — which the sim HAL computes per run and
-    publishes as ``adjudication_budget.admissible_gap_m``. Recomputing only the
-    voxel term here understates it fourfold (21.7 mm against the HAL's 88.2 mm
-    on the 2026-08-23 rounds) and turns conservative, correct stops into
-    ``false-positive``.
-
-    An attached-payload **self** stop has an OBB on both sides and no voxel at
-    all, so it takes the budget's ``self_collision`` block instead.
+    The kernel measures OBB-to-voxel, probes measure mesh-to-mesh; a correct stop's gap is the
+    collision model's corner slop plus the voxel half-diagonal, published as
+    ``adjudication_budget.admissible_gap_m`` — recomputing only the voxel term understates it
+    fourfold (21.7 mm vs. the HAL's 88.2 mm on the 2026-08-23 rounds), turning correct stops into
+    ``false-positive``. A payload self stop has no voxel at all, so it uses ``self_collision``.
 
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload.
@@ -634,15 +594,11 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
 
 
 def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
-    """The hull-fidelity half of :func:`hal_admissible_gap_m` (#221).
+    """The hull-fidelity half of ``hal_admissible_gap_m`` (#221).
 
-    The box term above is a snapshot-wide upper bound and needs no pair
-    identity; the hull term does not have that luxury -- a hull's overhang
-    past its source mesh is a PER-LINK quantity (never maxed across links),
-    so it is summed here from the two specific links the kernel named rather
-    than published as one snapshot-wide number. Either link missing a
-    measured overhang (no stage-2 hull, or a hull with no source mesh) leaves
-    the pair with no budget to charge.
+    The box term is a snapshot-wide upper bound; the hull term is per-link (never maxed across
+    links), so it is summed from the two links the kernel named. Either link missing a measured
+    overhang (no stage-2 hull, or no source mesh) leaves the pair with no budget.
     """
     slop = budget.get("collision_model_slop")
     links = slop.get("links") if isinstance(slop, dict) else None
@@ -670,67 +626,46 @@ def adjudicate_ground_truth(
 
     The rule, in order:
 
-    1. Any probed pair at or below 0 m → ``real-contact``, **provided the probe
-       attests that both of its sides were collidability-filtered**
-       (:func:`probe_is_collidability_filtered`). The kernel was right that the
-       configuration is unsafe even when it named a different body: the probe's
-       own caveat is that ``contype``/``conaffinity`` exclusions suppress
-       MuJoCo *contacts* at real interpenetration, so distance — not the
-       contact list — is the test. Without the attestation a 0 m pair may be a
-       purely visual mesh, which is no evidence of anything, so the stop is
-       ``unadjudicated`` rather than promoted.
-    2. Otherwise, compare the clearance of the party the kernel named against
-       the kernel's reported depth. A discrepancy beyond the admissible gap
-       cannot be explained by representation → ``false-positive``. Within it →
-       ``within-quantization``, which is correct conservative behaviour. The
-       gap comes from the HAL's own ``adjudication_budget`` when the snapshot
-       carries one (:func:`hal_admissible_gap_m`) and falls back to
-       :func:`quantization_budget_m` only when it does not.
+    1. Any probed pair at or below 0 m → ``real-contact``, if the probe attests both sides were
+       collidability-filtered (``probe_is_collidability_filtered``) — ``contype``/``conaffinity``
+       exclusions suppress MuJoCo contacts at real interpenetration, so distance is the test, not
+       the contact list. Unattested → the 0 m pair may be a visual mesh → ``unadjudicated``.
+    2. Else compare the named party's clearance to the kernel's reported depth. Beyond the
+       admissible gap → ``false-positive``; within it → ``within-quantization`` (conservative,
+       correct). Gap comes from the HAL's own ``adjudication_budget`` (``hal_admissible_gap_m``)
+       when the snapshot carries one, else ``quantization_budget_m``.
 
-       **That fallback is asymmetric, and deliberately so.** The voxel term is
-       a strict *lower bound* on the admissible gap — the real gap adds the
-       collision model's corner slop, which is the larger term on every panda
-       link (45-88 mm against 21.7 mm). So on a snapshot with no published
-       budget, ``discrepancy <= budget`` still proves ``within-quantization``
-       (it is within the smaller bound, hence within the true one), while
-       ``discrepancy > budget`` proves nothing at all and yields
-       ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone
-       is what produced two "false positives", one of which re-derives as
-       ``within-quantization`` the moment a real budget exists for the same
-       stop.
-       **A link-vs-link self stop never reaches this rule.** The kernel names
-       two robot links; the probe's robot side excludes the whole robot from
-       the far side, so no probed pair measures one against the other and
-       ``nearest_robot_world_pairs`` can only offer ``party_a``'s clearance to
-       the *world*. That is a different question, and answering it under the
-       self-pair's identity is what scored a genuine ``panda_link5``/
-       ``panda_link7`` stop at −31.97 mm as ``false-positive`` off link5's
-       212 mm clearance to a kitchen island. Such a stop is ``unadjudicated``,
-       with no ``nearest_tripping_party_m`` and no ``discrepancy_m``, until the
-       snapshot carries a link-vs-link pair set.
+       The fallback is asymmetric on purpose: the voxel term is a strict lower bound on the true
+       admissible gap (the real gap adds the collision model's corner slop, the larger term on
+       every panda link — 45-88 mm vs. 21.7 mm), so ``discrepancy <= budget`` still proves
+       ``within-quantization`` without a published budget, but ``discrepancy > budget`` proves
+       nothing → ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone
+       produced two false-positives; one re-derives as ``within-quantization`` once a real
+       budget exists.
 
-    3. A truncated probe, a missing snapshot or an unknown budget →
-       ``unadjudicated``, with ``unadjudicated_reason`` saying which. An
-       *untruncated* probe that returned no pair is not missing data: it proves
-       the nearest geometry is beyond ``distmax_m``, which is used as a strict
-       lower bound.
+       A link-vs-link self stop never reaches this rule: the kernel names two robot links, but
+       the probe excludes the whole robot from its far side, so ``nearest_robot_world_pairs`` can
+       only offer one party's clearance to the *world* — a different question. Scoring under the
+       self-pair's identity turned a genuine ``panda_link5``/``panda_link7`` stop at −31.97 mm
+       into ``false-positive`` off link5's 212 mm clearance to a kitchen island; such a stop is
+       ``unadjudicated`` until the snapshot carries a link-vs-link pair.
 
-    4. **Finally**, whatever the ladder concluded is withdrawn to
-       ``unadjudicated`` unless the probe attests that its distances are
-       certified (:func:`probe_is_distance_certified`). Every rule above reads
-       a number off that probe, and ``mujoco.mj_geomDistance`` — which every
-       round before this one used — is wrong by 15-108 mm on this exact pair
-       class, silently. The check runs *last* rather than first so the record
-       still names what is being withdrawn (``withdrawn from 'real-contact':
-       …``) instead of erasing it. This withdraws verdicts; it reverses none,
-       and it never shows the kernel was wrong.
+    3. A truncated probe, missing snapshot, or unknown budget → ``unadjudicated`` (with
+       ``unadjudicated_reason``). An untruncated probe returning no pair is not missing data — it
+       proves the nearest geometry is beyond ``distmax_m``, used as a strict lower bound.
+
+    4. Finally, the ladder's conclusion is withdrawn to ``unadjudicated`` unless the probe attests
+       certified distances (``probe_is_distance_certified``): every rule above reads a number off
+       that probe, and ``mujoco.mj_geomDistance`` (used before this landed) is wrong by 15-108 mm
+       on this pair class, silently. Runs last so the record names what was withdrawn
+       (``withdrawn from 'real-contact': …``). Withdraws verdicts, reverses none.
 
     Args:
         snapshot: The ``sim.estop_ground_truth_snapshot`` payload, if recorded.
         stop: The kernel's verdict, if the run was stopped.
         grid_resolution_m: Occupancy-grid cell size, from the monitor.
         monitor_records: How many records the monitor received
-            (:func:`monitor_subscription_records`), so a missing grid
+            (``monitor_subscription_records``), so a missing grid
             resolution can name the right cause: ``0`` means the monitor was
             deaf for the whole run, which is a harness fault, not an early stop.
 
@@ -756,53 +691,35 @@ def adjudicate_ground_truth(
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
     payload_robot = list(snapshot.get("nearest_payload_robot_pairs") or [])
     link_link = list(snapshot.get("nearest_link_link_pairs") or [])
-    # NOT `+ link_link`. Adjacent robot links overlap permanently by design —
-    # they are in the robot's allowed-collision matrix and the kernel never
-    # checks them — so folding them in here makes `nearest_any <= 0` vacuously
-    # true and stamps EVERY stop `real-contact`. Measured on
-    # `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at -36.3 mm,
-    # `link5`/`link6` at -23.0 mm, `link4`/`link5` at -4.6 mm, all certified,
-    # all permitted, while the payload that actually tripped the kernel sat
-    # +24.9 mm clear of the counter. The named self pair is added back below,
-    # once it is known which pair the kernel meant (#220 regression).
+    # NOT `+ link_link`: adjacent links overlap permanently (allowed-collision matrix, kernel never
+    # checks them), so folding them in makes `nearest_any <= 0` vacuously true and stamps EVERY
+    # stop `real-contact`. Measured on `2026-09-07-adr0101-live-1`: link3/4 -36.3mm, link5/6
+    # -23.0mm, link4/5 -4.6mm, all certified+permitted, while the tripping payload sat +24.9mm
+    # clear. Self pair added back below once the kernel's meant pair is known (#220 regression).
     all_pairs = robot_pairs + payload_world + payload_robot
 
-    # The coverage block has to be the one for the probe whose pairs are read
-    # below. Reading `nearest_probe_coverage` (the robot-vs-world probe) for a
-    # payload stop lets an untruncated robot probe assert "nothing within
-    # distmax" about a payload probe that was never consulted — evidence from
-    # the wrong instrument, the same error class as scoring against the wrong
-    # bodies (#208, #228). Chosen alongside the pair set, not before it.
+    # Must match the probe whose pairs are read below: reading `nearest_probe_coverage`
+    # (robot-vs-world) for a payload stop lets an untruncated robot probe vouch for a payload probe
+    # never consulted — same error class as scoring against the wrong bodies (#208, #228).
     coverage_key = "nearest_probe_coverage"
 
-    # A link-vs-link self stop names two ROBOT links, and this snapshot cannot
-    # speak to that pair at all: the HAL's robot probe excludes the whole robot
-    # from the far side (`sim_sensor_bridge._nearest_pairs`, `other_excluded`),
-    # so `nearest_robot_world_pairs` only ever holds link-vs-WORLD pairs. Taking
-    # `party_a`'s world clearance here answers a different question than the
-    # kernel asked and quotes it under the self-pair's identity — which is how
-    # `panda_link5`/`panda_link7` at -31.97 mm was scored `false-positive` off
-    # link5's 212 mm clearance to a kitchen island.
-    #
-    # #216 gave the HAL a link<->link probe, so a snapshot that carries one can
-    # answer the question after all. A stop the kernel judged at HULL fidelity
-    # scores only when #221's per-link `hull_overhang_m` is measured for BOTH
-    # links `hal_admissible_gap_m` names; otherwise it still cannot be scored,
-    # and it is the missing *budget* that stops it, not a missing pair — the
-    # two are worth keeping distinct in the reason.
+    # Link-vs-link self stop: `nearest_robot_world_pairs` only holds link-vs-WORLD pairs (HAL's
+    # robot probe excludes the whole robot from the far side,
+    # `sim_sensor_bridge._nearest_pairs`/`other_excluded`) — taking party_a's world clearance under
+    # the self-pair's identity is how panda_link5/link7 at -31.97mm was scored false-positive off
+    # link5's 212mm world clearance. #216 added a link<->link probe: HULL-fidelity stops still need
+    # #221's per-link `hull_overhang_m` for BOTH links (`hal_admissible_gap_m`) — a missing budget,
+    # not a missing pair, kept distinct in the reason.
     self_pair = stop.kind == "self" and not stop.involves_payload
     self_pair_unprobed = self_pair and not link_link
 
     if stop.involves_payload:
-        # The payload is one side. WHICH pair set can answer depends entirely on
-        # the other side, and `involves_payload` alone does not say. A voxel or
-        # a declared place is world geometry: `payload_world`. A robot link
-        # (kind="self") is not, and only `payload_robot` ever measures the
-        # payload against the robot. Routing every payload stop through
-        # `payload_world` scored a payload-vs-`panda_link1` stop at -1.55 mm
-        # off the payload's 166 mm clearance to a countertop (#228) — #208 one
-        # class over, with the difference that the right pair set was already
-        # in the snapshot and simply never consulted.
+        # Which pair set answers depends on the OTHER side, not just `involves_payload`:
+        # voxel/declared place is world geometry (`payload_world`); a robot link (kind="self") only
+        # measures via `payload_robot`. Routing every payload stop through `payload_world` scored
+        # payload-vs-panda_link1 at -1.55mm as false-positive off the payload's 166mm countertop
+        # clearance (#228, same class as #208 — the right pair set was already in the snapshot,
+        # just never consulted).
         partner_name = stop.party_b if stop.party_a.startswith("attached:") else stop.party_a
         if partner_name.startswith(("voxel_", "place:")):
             party_pairs = payload_world
@@ -844,11 +761,9 @@ def adjudicate_ground_truth(
 
     quantization = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
     hal_gap = hal_admissible_gap_m(snapshot, stop)
-    # The grid-quantization fallback is a VOXEL term, and a link-vs-link self
-    # stop has no voxel on either side. Falling back to it there would charge a
-    # budget from a comparison the stop never made — the same class of error as
-    # scoring the pair against world geometry (#208). No HAL budget means no
-    # budget.
+    # Grid-quantization fallback is a VOXEL term; a link-vs-link self stop has no voxel on either
+    # side, so falling back there would charge a budget the stop never made (same error class as
+    # scoring against world geometry, #208). No HAL budget means no budget.
     budget = hal_gap if hal_gap is not None else (None if self_pair else quantization)
     budget_source = ""
     if hal_gap is not None:
@@ -857,10 +772,9 @@ def adjudicate_ground_truth(
         budget_source = "grid-quantization"
 
     lower_bound = nearest_party
-    # No pair within distmax on an untruncated probe: the nearest solid geometry
-    # is provably further away than distmax. That inference needs the partner to
-    # have been a *candidate* — the tripping link's self-pair partner never is,
-    # so its absence from the pair list bounds nothing.
+    # No pair within distmax on an untruncated probe proves the nearest solid geometry is further
+    # than distmax — but only when the partner was a candidate; the tripping link's self-pair
+    # partner never is, so its absence bounds nothing.
     absence_is_evidence = not self_pair_unprobed and not truncated and bool(probed)
     if lower_bound is None and absence_is_evidence and distmax is not None:
         lower_bound = distmax
@@ -891,14 +805,11 @@ def adjudicate_ground_truth(
             "different question and is not quoted here"
         )
     elif self_pair and budget is None:
-        # The pair WAS probed (#216) — what is missing is a term to judge it by.
-        # The kernel did not flag `depth_is_box_bound`, so it judged the pair
-        # at hull fidelity, and #221 charges that a `hull_overhang_m(a) +
-        # hull_overhang_m(b)` budget when both links have one measured. This
-        # branch is reached only when at least one does not -- no stage-2 hull
-        # on that link, or a hull with no source mesh on disk to measure
-        # against (never defaulted to 0). Charging the box budget instead would
-        # forgive a real overlap by up to twice the OBB corner slop.
+        # The pair WAS probed (#216) — missing is a term to judge it by. Kernel judged at hull
+        # fidelity (no `depth_is_box_bound`); #221 charges `hull_overhang_m(a) + hull_overhang_m(b)`
+        # when both are measured. Reached only when one isn't (no stage-2 hull, or no source mesh —
+        # never defaulted to 0). Charging the box budget instead would forgive a real overlap by up
+        # to 2x the OBB corner slop.
         verdict = "unadjudicated"
         reason = (
             f"the kernel judged the self-pair {stop.party_a!r}/{stop.party_b!r} at hull "
@@ -919,27 +830,20 @@ def adjudicate_ground_truth(
         if budget_source == "hal-adjudication-budget":
             verdict = "false-positive"
         else:
-            # The voxel term is a LOWER BOUND on the admissible gap: the true
-            # gap is corner_slop(link) + voxel_half_diagonal, and the slop term
-            # is the larger of the two on every panda link. A discrepancy
-            # beyond a lower bound therefore establishes nothing. Within it
-            # still does — see `within-quantization` below.
+            # Voxel term is a LOWER BOUND on the admissible gap (true gap = corner_slop +
+            # voxel_half_diagonal, slop the larger term on every panda link) — beyond it
+            # establishes nothing; within it still proves `within-quantization` below.
             verdict = "unadjudicated"
             reason = _lower_bound_only_reason(discrepancy, budget)
     else:
         verdict = "within-quantization"
 
     if not certified:
-        # The measurement itself, applied after the ladder rather than before
-        # it, so the record still says WHAT is being withdrawn. A probe built on
-        # `mj_geomDistance` can be wrong by 15-108 mm on exactly this pair
-        # class, in both directions of the comparison above: too small a
-        # distance manufactures `real-contact` and shrinks the discrepancy
-        # toward `within-quantization`, while too large a one removes a pair
-        # whose absence is then read as "nothing was near". Neither bias is
-        # proved to be the only one, so no verdict may rest on an unattested
-        # distance. WITHDRAW, never reverse — this says the evidence cannot
-        # decide, not that the kernel was wrong.
+        # Applied after the ladder, not before, so the record still says WHAT is withdrawn.
+        # `mj_geomDistance` can be wrong by 15-108 mm on this pair class in either direction: too
+        # small manufactures `real-contact`/shrinks toward `within-quantization`; too large drops a
+        # pair read as "nothing near". WITHDRAW, never reverse — evidence can't decide, not that
+        # the kernel was wrong.
         withdrawn = "" if verdict == "unadjudicated" else f"withdrawn from {verdict!r}: "
         certification = (
             "this snapshot does not attest that its probed distances are certified "
@@ -1158,7 +1062,7 @@ def classify_outcome(
     grasped: bool,
     artifacts_complete: bool,
 ) -> str:
-    """Bucket one scene into exactly one :data:`~openral_core.ValidationOutcome`.
+    """Bucket one scene into exactly one ``ValidationOutcome``.
 
     Ordering is load-bearing. Task success wins outright. An initial-configuration
     stop is classified as such *before* the ground-truth adjudication runs,
@@ -1229,7 +1133,7 @@ def scene_verdict_from_artifacts(
         stem: Artifact filename stem.
 
     Returns:
-        A :class:`~openral_core.ValidationSceneVerdict`.
+        A ``ValidationSceneVerdict``.
     """
     from openral_core import ValidationSceneVerdict  # reason: deferred
 
@@ -1379,20 +1283,17 @@ def diff_rounds(
 ) -> ValidationRoundDiff:
     """Compare two rounds field by field.
 
-    The result is a pure reproducibility comparison only when both rounds carry
-    the same ``executed_sha`` **and** the same ``seed``; anything else is a
-    before/after. The seed is load-bearing because it decides the scene's
-    initial configuration — a seed-1-vs-seed-2 pair at one SHA compares two
-    different scenes, and was once labelled ``reproducibility`` on the SHA
-    alone. The distinction matters because the policy is stochastic across runs
-    even at a pinned seed, so only failure *classes* compare between rounds.
+    A pure reproducibility comparison needs matching ``executed_sha`` AND ``seed`` — the seed
+    decides initial configuration, so a seed-1-vs-seed-2 pair at one SHA compares different scenes
+    (once mislabelled ``reproducibility`` on SHA alone). Only failure *classes* compare between
+    rounds; the policy is stochastic even at a pinned seed.
 
     Args:
         current: The newer round.
         baseline: The round to compare against.
 
     Returns:
-        A :class:`~openral_core.ValidationRoundDiff`.
+        A ``ValidationRoundDiff``.
     """
     from openral_core import (  # reason: deferred
         ValidationRoundDiff,
@@ -1570,7 +1471,7 @@ def collision_scale_env() -> dict[str, float]:
     """The #188 graded-velocity band this round will actually run with.
 
     The band reaches the kernel through ``OPENRAL_COLLISION_SCALE_*`` env vars
-    (``sim_e2e.launch.py`` reads them), which :func:`assert_no_safety_overrides`
+    (``sim_e2e.launch.py`` reads them), which ``assert_no_safety_overrides``
     cannot see — it inspects argv. Recorded rather than refused: arming the band
     *is* the point of the A/B battery, and what must never happen is a round
     that armed it and cannot afterwards be told apart from one that did not.
@@ -1807,7 +1708,7 @@ def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, P
     """Write the round's resolved scene copy and return ``(path_for_metadata, file)``.
 
     The tracked scene is never touched. The copy carries exactly two round-level
-    pins: the seed, and :data:`SCENE_RUNTIME_PIN` — the reasoner, which is the
+    pins: the seed, and ``SCENE_RUNTIME_PIN`` — the reasoner, which is the
     one stack knob with no CLI flag. The result is re-parsed to prove the splice
     landed, and checked against the tracked scene so no safety key moved.
 
@@ -1858,22 +1759,15 @@ def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, P
 def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
     """The environment both the launch AND this harness's own `ros2` calls use.
 
-    **It must carry the sim DDS scope.** Since #227/#231 `openral deploy sim`
-    confines itself with `openral_cli._dds_scope.confine_sim_scope`
-    (`ROS_DOMAIN_ID=77`, `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so a
-    simulation and a real robot cannot share a graph. The deploy applied that
-    to itself, and this harness did not — so the graph came up on domain 77
-    while `_wait_for_action_server` polled `ros2 action list` on domain 0, saw
-    nothing for its full 600 s, and reported "action server never appeared".
-    Every scene of every round on post-#231 master failed that way, as
-    `harness-error`, with a perfectly healthy graph running beside it: measured
-    2026-09-07 on `robocasa_drawer_utensil`, where `ROS_DOMAIN_ID=77 ros2
-    action list` showed `/openral/execute_rskill` the whole time.
-
-    Applying it *here* rather than letting the child do it is what makes the two
-    agree: `confine_sim_scope` uses `setdefault`, so the deploy inherits this
-    value instead of choosing its own, and an operator who exports their own
-    scope still wins on both sides.
+    Must carry the sim DDS scope: since #227/#231 `openral deploy sim` confines itself via
+    `openral_cli._dds_scope.confine_sim_scope` (`ROS_DOMAIN_ID=77`,
+    `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so sim and a real robot can't share a graph, but
+    this harness didn't — so the graph came up on domain 77 while `_wait_for_action_server` polled
+    domain 0 for 600s and reported "never appeared". Every post-#231 scene failed this way as
+    `harness-error` beside a healthy graph (measured 2026-09-07, `robocasa_drawer_utensil`:
+    `ROS_DOMAIN_ID=77 ros2 action list` showed `/openral/execute_rskill` throughout). Applied here,
+    not left to the child, because `confine_sim_scope`'s `setdefault` lets the deploy inherit this
+    value while an operator's own exported scope still wins on both sides.
     """
     env = os.environ.copy()
     confine_sim_scope(env)
@@ -1897,21 +1791,17 @@ def wait_for_dds_transport_ready(
 ) -> str:
     """Block until the deploy CLI announces its DDS transport is safe to join.
 
-    ``openral deploy sim`` unlinks *every* ``/dev/shm/fastrtps_*`` this user
-    owns immediately before spawning ``ros2 launch``
-    (``openral_cli.deploy_sim._apply_rmw_default``). A participant created
-    before that purge loses its shared-memory segments underneath it: it does
-    not error, it simply never receives anything again. The 2026-08-23 round
-    lost all 24 monitors that way — every ``run_monitor.jsonl`` in it holds
-    exactly ``monitor_started`` and ``monitor_stopped``.
+    ``openral deploy sim`` unlinks every ``/dev/shm/fastrtps_*`` this user owns before spawning
+    ``ros2 launch`` (``openral_cli.deploy_sim._apply_rmw_default``); a participant created before
+    that purge loses its shared-memory segments silently (no error, nothing received again). The
+    2026-08-23 round lost all 24 monitors this way — every ``run_monitor.jsonl`` holds only
+    ``monitor_started``/``monitor_stopped``.
 
-    So the monitor is started on the far side of the marker
-    (:data:`~openral_cli.deploy_sim.DDS_TRANSPORT_READY_MARKER`), which the
-    deploy prints after the purge and before ``ros2 launch`` is spawned. That
-    keeps the whole of the early-stop coverage #145 added: the sim clock does
-    not start until the HAL node comes up, tens of seconds after this line, so
-    a scene whose initial configuration trips the kernel at sim t≈4.7 s is
-    still fully recorded.
+    So the monitor starts on the far side of the marker
+    (``DDS_TRANSPORT_READY_MARKER``, printed after the purge, before
+    ``ros2 launch``) — the sim clock doesn't start until the HAL node comes up (tens of seconds
+    later), so #145's early-stop coverage (a scene tripping the kernel at sim t≈4.7 s) still fully
+    records.
 
     Args:
         deploy_log: The scene's deploy log, being written by ``proc``.
@@ -1942,32 +1832,16 @@ def _wait_for_action_server(
 ) -> bool:
     """Poll ``ros2 action list`` until the rSkill action server appears.
 
-    Under the launch's own ``env``, and **with** the daemon after a one-shot
-    ``ros2 daemon stop``.
-
-    This used to pass ``--no-daemon``, for a real hazard: the CLI daemon is a
-    long-lived process that answers from the environment *it* was started with,
-    so one left over from an unscoped shell reports a different graph than the
-    round is running on — the false reading that made
-    ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` look broken while it was working
-    (#227). But ``--no-daemon`` builds a one-shot node whose discovery window is
-    too short to see an action that is genuinely advertised: measured
-    2026-09-07 against a live graph with ``/openral/execute_rskill`` up,
-    ``ros2 action list`` found it and ``ros2 action list --no-daemon`` did not,
-    on the same domain, repeatably. So the poll could never succeed and every
-    scene of every round reported "action server never appeared".
-
-    Stopping the daemon first closes the original hazard from the other side:
-    the daemon the loop then uses is started by this call, in ``env``, on this
-    round's scope, so it cannot report some other graph's action server — which
-    would mean waiting on, or being satisfied by, the wrong one. Discovery still
-    needs a few seconds to settle after a restart, so the first poll can miss;
-    that is exactly what a polling loop is for.
+    Uses the launch's own ``env``, with the daemon, after a one-shot ``ros2 daemon stop`` — not
+    ``--no-daemon``: its one-shot node's discovery window is too short to see a genuinely
+    advertised action (measured 2026-09-07: ``ros2 action list`` found ``/openral/execute_rskill``
+    up, ``--no-daemon`` didn't, same domain, repeatably — every scene reported "never appeared").
+    Stopping the daemon first avoids the other hazard, a stale daemon from an unscoped shell
+    answering for the wrong graph (#227): the daemon this loop uses is started here, in ``env``, on
+    this round's scope. Discovery needs a few seconds to settle after a restart, hence the poll.
     """
-    # Kill any daemon started from ANOTHER environment before polling, so the
-    # one this loop uses is started by this call, in `env`, and therefore on
-    # this round's DDS scope. That is the hazard `--no-daemon` was reaching for;
-    # this addresses it without paying its cost (see the note above).
+    # Kill any daemon from another environment first, so the one this loop uses is started here,
+    # in `env`, on this round's DDS scope (see docstring).
     subprocess.run(["ros2", "daemon", "stop"], capture_output=True, text=True, check=False, env=env)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -2030,20 +1904,13 @@ def _run_one_scene(
         )
         monitor: subprocess.Popen[bytes] | None = None
         try:
-            # The monitor attaches BEFORE the wait for the action server, not
-            # five seconds before dispatch: the sim clock starts with the graph,
-            # and a scene whose initial configuration trips the kernel at sim
-            # t≈4.7 s stops before the rSkill server has ever advertised. The
-            # 2026-08-22 utensil scene did exactly that and recorded zero
-            # snapshots, a null grid resolution and an `unadjudicated` verdict.
-            #
-            # But not before the deploy's `/dev/shm/fastrtps_*` purge, which
-            # silently unlinks the segments of any participant that already
-            # exists — the 2026-08-23 round attached ~6 ms in and every one of
-            # its 24 monitors recorded nothing for the whole scene. The gate is
-            # the deploy's own readiness marker, so the monitor is up long
-            # before the sim clock starts and still on the safe side of the
-            # purge.
+            # Monitor attaches BEFORE the action-server wait, not 5s before dispatch: the sim clock
+            # starts with the graph, and a scene tripping the kernel at sim t≈4.7s stops before the
+            # rSkill server ever advertised (2026-08-22 utensil: zero snapshots, null grid
+            # resolution, `unadjudicated`). But not before the deploy's `/dev/shm/fastrtps_*`
+            # purge, which silently unlinks an existing participant's segments (2026-08-23 round:
+            # attached ~6ms in, all 24 monitors recorded nothing). Gated on the deploy's readiness
+            # marker: up before the sim clock starts, safe past the purge.
             ready = wait_for_dds_transport_ready(deploy_log, proc, timeout_s=300.0)
             gate = run_dir / f"{stem}_monitor_gate.txt"
             gate.write_text(
@@ -2207,11 +2074,9 @@ def render_notes(verdicts: ValidationRoundVerdicts) -> str:
         )
     exempted = [s.scene for s in verdicts.scenes if s.stop and s.stop.exemption_active]
     allowance = [s.scene for s in verdicts.scenes if s.witness.place_allowance_active_lines]
-    # Two very different causes of a null `grid_resolution_m`, which the
-    # 2026-08-23 round reported as one. A monitor that received nothing has no
-    # evidence about the run at all and is a HARNESS fault; a monitor that
-    # received plenty but no `world_voxels` describes a run that stopped before
-    # octomap published a grid. Naming them apart is the whole point.
+    # Two different causes of a null `grid_resolution_m` the 2026-08-23 round conflated: a monitor
+    # that received nothing is a HARNESS fault; one that received plenty but no `world_voxels`
+    # describes a run that stopped before octomap published a grid.
     deaf = [s.scene for s in verdicts.scenes if s.monitor_records == 0]
     blind = [
         s.scene
@@ -2376,17 +2241,12 @@ def cmd_diff(round_dir: Path, baseline_dir: Path, out_path: Path | None) -> int:
 def parse_launch_argv(lines: Iterable[str]) -> list[str]:
     """The resolved launch argv the deploy CLI echoed into its log.
 
-    This is the only artifact that states the stack a run *actually* got, after
-    the CLI resolved flag > scene ``runtime:`` > default. Reading it is how a
-    pre-harness round's stack is recovered without trusting anyone's memory.
-
-    The head of that argv is not fixed: since ``_ros2_argv_head`` the CLI may
-    echo ``<venv>/bin/python /opt/ros/<distro>/bin/ros2 launch …`` instead of
-    the bare ``ros2 launch …`` older rounds carry. So the line is found by its
-    ``argv: `` prefix and only required to contain a ``launch`` token —
-    matching the old head literally silently returned ``[]`` for every round
-    recorded after that change, which reads as "no stack recorded" rather than
-    as an error.
+    The only artifact stating the stack a run *actually* got (flag > scene ``runtime:`` > default
+    resolution) — how a pre-harness round's stack is recovered without trusting memory. The argv
+    head isn't fixed: since ``_ros2_argv_head`` the CLI may echo
+    ``<venv>/bin/python /opt/ros/<distro>/bin/ros2 launch …`` instead of the bare ``ros2 launch …``
+    older rounds carry, so the line is matched by its ``argv: `` prefix plus a ``launch`` token,
+    not the old head literally (which silently returned ``[]`` for every round after that change).
 
     Args:
         lines: Lines of the deploy log.
@@ -2428,7 +2288,7 @@ def stack_tokens(argv: Sequence[str]) -> list[str]:
     are dropped: what is left is the stack the whole round shared.
 
     Args:
-        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+        argv: A resolved ``ros2 launch`` argv, from ``parse_launch_argv``.
 
     Returns:
         The stack tokens, sorted.
@@ -2448,7 +2308,7 @@ def robot_facts_from_launch_argv(argv: Sequence[str]) -> dict[str, str]:
     lost to. Derived, never assumed: an unrecognised shape yields ``{}``.
 
     Args:
-        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+        argv: A resolved ``ros2 launch`` argv, from ``parse_launch_argv``.
 
     Returns:
         ``{"repo_root": ..., "robot_id": ..., "robot_manifest_path": ...}``, or
@@ -2671,11 +2531,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         "safety_overrides_absent": True,
         "collision_scale": collision_scale_env(),
         "gpu_name": gpu_name,
-        # The DDS scope the round ran on. Unrecorded until #227, which is why
-        # no round before 2026-09-05 can be checked for whether it shared a
-        # graph with another machine — the question the 2026-09-04 `post200-2`
-        # fridge round still cannot answer. `deploy sim` confines itself, but
-        # an operator override wins, so it is recorded rather than assumed.
+        # DDS scope the round ran on, unrecorded until #227 — no round before 2026-09-05 can be
+        # checked for sharing a graph (the 2026-09-04 `post200-2` fridge round still can't answer
+        # that). `deploy sim` confines itself, but an operator override wins, so this is recorded,
+        # not assumed.
         "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", ""),
         "ros_automatic_discovery_range": os.environ.get("ROS_AUTOMATIC_DISCOVERY_RANGE", ""),
         "notes_path": "NOTES.md",

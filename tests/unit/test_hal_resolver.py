@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_hal.build_hal` — the single sim/real HAL
+"""Unit tests for ``openral_hal.build_hal`` — the single sim/real HAL
 construction seam.
 
 The resolver is what makes ``deploy sim`` deterministically build a

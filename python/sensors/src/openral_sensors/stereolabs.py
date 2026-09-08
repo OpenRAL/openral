@@ -1,23 +1,16 @@
 """StereoLabs ZED camera adapters — ZED Mini (ZED-M).
 
-Provides:
+``zed_mini_bundle`` builds a ``SensorBundle`` for a StereoLabs ZED Mini
+(left + right rectified RGB, stereo depth, 6-DoF IMU); registered under
+``stereolabs/zed_mini``.
 
-- ``zed_mini_bundle`` — factory that builds a :class:`SensorBundle` for a
-  StereoLabs ZED Mini (left + right rectified RGB, stereo depth, 6-DoF IMU).
-- Catalog registration under ``stereolabs/zed_mini``.
-
-The ZED Mini is a *passive* stereo camera: it emits no structured light and
-no IR pattern, so unlike a RealSense or an OAK-D Pro it degrades on
-untextured surfaces but never interferes with a second depth camera pointed
-at the same workspace.  That property is why it coexists on a cell with
-active sensors.
-
-Depth is computed **on the host**, not on the device.  Over USB the camera
-presents a single UVC node streaming the two eyes side-by-side in one YUYV
-frame (2560×720 = 2×1280×720 at HD720); the ZED SDK splits and rectifies
-that frame and runs stereo matching on the GPU.  A host without the SDK sees
-one wide RGB camera and no depth at all — which is exactly what
-``openral detect`` reports, and why the bundle records ``sdk_required``.
+Passive stereo — no structured light or IR pattern, so it degrades on
+untextured surfaces but never interferes with a second active depth camera
+on the same workspace. Depth is computed on the host, not the device: over
+USB it presents one UVC node streaming both eyes side-by-side in one YUYV
+frame (2560×720 = 2×1280×720 at HD720); the ZED SDK splits, rectifies and
+stereo-matches on GPU. Without the SDK, ``openral detect`` sees one wide RGB
+camera and no depth — hence the bundle records ``sdk_required``.
 
 Example:
     >>> from openral_sensors.stereolabs import zed_mini_bundle
@@ -83,7 +76,7 @@ def zed_mini_bundle(
     width: int = 1280,
     height: int = 720,
 ) -> SensorBundle:
-    """Build a :class:`SensorBundle` for a StereoLabs ZED Mini.
+    """Build a ``SensorBundle`` for a StereoLabs ZED Mini.
 
     The bundle exposes four streams: left and right rectified RGB, host-computed
     stereo depth, and the on-device 6-DoF IMU.  Nominal intrinsics are the
@@ -104,7 +97,7 @@ def zed_mini_bundle(
         height: Per-eye stream height.
 
     Returns:
-        A :class:`SensorBundle` with ``sync="hardware"`` — the two eyes come
+        A ``SensorBundle`` with ``sync="hardware"`` — the two eyes come
         out of one sensor pair in a single UVC frame, so they are exposed
         simultaneously by construction.
 

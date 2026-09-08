@@ -28,10 +28,8 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
 
-  <!-- The payload footprint publisher + payload scan filter: they read the
-       attachment set (openral_msgs) and the live attach-link TF, project the
-       carried geometry, and publish a geometry_msgs/Polygon + a filtered
-       sensor_msgs/LaserScan. -->
+  <!-- The payload scan filter: reads the attachment set (openral_msgs) and the live attach-link
+       TF, projects the carried geometry, and publishes a filtered sensor_msgs/LaserScan. -->
   <exec_depend>openral_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>

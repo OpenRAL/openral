@@ -1,19 +1,16 @@
 """A workcell-mounted sensor's static transform must reach /tf_static.
 
-``sim_e2e.launch.py`` turns a sensor's ``parent_frame`` +
-``static_transform_xyz_rpy`` into a ``static_transform_publisher`` so its
-readings are *located* by TF instead of being mislabelled into an existing
-frame. That loop iterated ``description.sensors`` only — the robot manifest —
-so a camera declared in ``DeployScene.sensors`` could never get its mount
+``sim_e2e.launch.py`` turns a sensor's ``parent_frame`` + ``static_transform_xyz_rpy`` into
+a ``static_transform_publisher`` so its readings are located by TF instead of mislabelled
+into an existing frame. That loop iterated ``description.sensors`` only (the robot
+manifest), so a camera declared in ``DeployScene.sensors`` could never get its mount
 published.
 
-That is not a hypothetical shape: every camera on the OpenArm restock cell is
-declared at scene level (``scenes/deploy/openarm_restock_shelf.yaml``, three
-entries each carrying ``parent_frame: openarm_base``), and so is any ZED whose
-depth is consumed by the octomap leg. The consequence is the same silent
-failure the loop exists to prevent — `octomap_server` cannot resolve the cloud's
-frame, drops every message, and the map stays empty while the graph reports
-healthy.
+Not hypothetical: every camera on the OpenArm restock cell is declared at scene level
+(``scenes/deploy/openarm_restock_shelf.yaml``, three entries with ``parent_frame:
+openarm_base``), as is any ZED feeding the octomap leg. Same silent failure the loop exists
+to prevent: `octomap_server` can't resolve the cloud's frame, drops every message, and the
+map stays empty while the graph reports healthy.
 
 Per CLAUDE.md §1.11: real ``RobotDescription``, real ``DeployScene``, real
 ``LaunchContext``, real ``compose_runtime_graph``. No mocks.

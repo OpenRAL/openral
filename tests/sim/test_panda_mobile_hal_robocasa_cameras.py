@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -58,12 +57,10 @@ from openral_core import (  # noqa: E402  # reason: after importorskip gates
     RobotDescription,
     WorldState,
 )
-from openral_hal import build_hal  # noqa: E402
 from openral_hal.sim_sensor_bridge import SimSensorBridge  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANDA_MOBILE = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
-_BAGUETTE = _REPO_ROOT / "scenes" / "deploy" / "robocasa_baguette.yaml"
 
 # The three arm-mounted cameras robosuite really owns for a PandaMobile scene
 # (robot0_agentview_left / _right / eye_in_hand). The HAL hands them up keyed by
@@ -102,18 +99,6 @@ def _attachment(object_id: str, body_name: str) -> AttachedCollisionObject:
         evidence_ref=f"mujoco_body:{body_name}",
         stamp_ns=1,
     )
-
-
-@pytest.fixture
-def hal() -> Iterator[Any]:
-    """A connected panda_mobile HAL attached to the real baguette scene."""
-    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
-    built = build_hal(desc, mode="sim", sim_env_yaml=str(_BAGUETTE))
-    built.connect()
-    try:
-        yield built
-    finally:
-        built.disconnect()
 
 
 def test_head_camera_is_not_rendered_without_the_opt_in(

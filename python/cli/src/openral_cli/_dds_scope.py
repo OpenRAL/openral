@@ -1,44 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 """Keep a simulation and a real robot off each other's ROS graph.
 
-**The incident this exists for (2026-09-05, issue #227).** `openral deploy sim`
-set no DDS scope. It inherited the environment, and `ROS_DOMAIN_ID` is normally
-unset — domain 0, with multicast discovery across the whole subnet. A simulation
-launched on one host joined the ROS graph of a *live bimanual OpenArm* running
-on another host on the same LAN. `/joint_states` had two publishers; the sim's
-state assembler read `openarm_left_joint1 … openarm_right_joint7` where it
-wanted `panda_gripper`, and every round of a 10-round A/B died in ~50 s looking
-exactly like a policy failure.
+Incident (2026-09-05, issue #227): `openral deploy sim` set no DDS scope, so
+it inherited `ROS_DOMAIN_ID` (unset = domain 0, multicast subnet discovery)
+and a sim on one host joined a live bimanual OpenArm's graph on another host.
+Two `/joint_states` publishers meant the sim's state assembler read OpenArm
+joint names instead of `panda_gripper`; a 10-round A/B died in ~50s per round
+looking like a policy failure. Nothing actuated only by luck — the robot had
+no subscriber on `/openral/candidate_action`; a sim `Action` publish onto a
+topic a robot subscribes to is one collision away.
 
-Nothing actuated, and that was luck rather than design: the robot's stack
-consumed its own topic names and happened to have no subscriber on
-`/openral/candidate_action`. A simulation publishing an `Action` onto a topic a
-physical robot subscribes to is one name collision away.
+Two controls:
 
-Two independent controls, because they fail differently:
+* ``confine_sim_scope`` — prevention: pins a sim to one host + a private
+  domain. Measured against a live OpenArm: `ROS_AUTOMATIC_DISCOVERY_RANGE=
+  SUBNET` (default) makes its nodes visible, `LOCALHOST` hides them without
+  affecting same-host discovery; `OFF` would also hide the sim's own nodes.
+* ``assert_graph_unoccupied`` — detection: covers a real-robot launch
+  joining an existing sim graph, or two runs on one host in the same domain.
 
-* :func:`confine_sim_scope` — *prevention*. A sim graph lives on one host, so it
-  is pinned to that host and to a private domain. Measured against the live
-  OpenArm: with `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET` (the default) the robot's
-  nodes are visible; with `LOCALHOST` they are not, while same-host discovery is
-  unaffected. `OFF` would also hide the sim's own nodes from each other.
-* :func:`assert_graph_unoccupied` — *detection*, and it is the half that covers
-  the direction confinement cannot. Confinement stops a sim reaching a robot; it
-  does nothing about a real-robot launch joining a graph a sim is already on, and
-  nothing about two runs on one host colliding inside the same private domain.
-
-**The signature is a `/joint_states` publisher, deliberately.** Every robot has
-exactly one — real or simulated — so one rule covers both directions without
-either side having to recognise the other's node names. If one is already there
-when you launch, you are about to share a graph with another robot.
+Signature: a `/joint_states` publisher — every robot has exactly one.
 
 .. warning::
-   The ``ros2`` CLI daemon is **not** usable for this check. It is a long-lived
-   process that answers from its own environment, so ``ros2 node list`` under
-   ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` still reported the remote robot's
-   nodes — a false negative that reads as "the setting does not work". The probe
-   here runs in a subprocess with the exact launch environment and talks to
-   ``rclpy`` directly.
+   The ``ros2`` CLI daemon is unusable here: it answers from its own
+   environment, so `ros2 node list` under `LOCALHOST` still reported the
+   remote robot's nodes. The probe runs in a subprocess with the exact
+   launch environment and talks to ``rclpy`` directly.
 """
 
 from __future__ import annotations
@@ -76,7 +63,7 @@ _PROBE_SPIN_S: Final[float] = 3.0
 
 _PROBE_NODE_NAME: Final[str] = "openral_graph_scope_probe"
 
-#: Returned by :func:`_scan_graph` when ``rclpy`` is not importable at all.
+#: Returned by ``_scan_graph`` when ``rclpy`` is not importable at all.
 #: Distinct from "the probe failed": a host with no ROS has no graph to join and
 #: cannot run ``ros2 launch`` either, so the launch fails on its own with a
 #: clearer message than this guard could give. Refusing there would block every
@@ -148,7 +135,7 @@ def _scan_graph(env: dict[str, str]) -> dict[str, list[object]] | str | None:
     Three outcomes, kept distinct because they mean different things:
 
     * a ``dict`` — the graph was read;
-    * :data:`_NO_ROS` — ``rclpy`` is not importable, so there is no graph here
+    * ``_NO_ROS`` — ``rclpy`` is not importable, so there is no graph here
       at all and nothing to collide with;
     * ``None`` — the probe *should* have worked and did not. An unreadable graph
       is **not** treated as an empty one: a probe that failed has not shown the

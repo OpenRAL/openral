@@ -8,7 +8,7 @@ this reader consumes.
 
 Two payload encodings are accepted:
 
-* ``jsonschema`` (the encoding used by :class:`openral_dataset.Rosbag2Sink`)
+* ``jsonschema`` (the encoding used by ``openral_dataset.Rosbag2Sink``)
   — the payload is UTF-8 JSON and we read ``trace_id`` directly.
 * ``ros2msg`` (the encoding used by a native ``ros2 bag record``) — the
   CDR-serialised payload is not decoded here; we scan the bytes for a
@@ -97,7 +97,7 @@ class BagMessage:
             ``ros2msg`` payload (carries the span_id too); empty
             otherwise. The correlator joins on ``trace_id`` but exposes
             ``traceparent`` so callers that want full
-            :func:`openral_observability.propagation.extract_traceparent`
+            ``openral_observability.propagation.extract_traceparent``
             semantics have it.
         schema_name: mcap schema name, useful for filtering downstream.
         payload_summary: Decoded JSON (when encoding is ``jsonschema``)
@@ -142,7 +142,7 @@ def _extract_traceparent_from_ros2msg(payload: bytes) -> tuple[str, str]:
 
 
 def read_bag(bag_path: str | Path) -> Iterator[BagMessage]:
-    """Yield every message in ``bag_path`` as a :class:`BagMessage`.
+    """Yield every message in ``bag_path`` as a ``BagMessage``.
 
     Args:
         bag_path: Path to an mcap file or to a rosbag2 directory
@@ -150,7 +150,7 @@ def read_bag(bag_path: str | Path) -> Iterator[BagMessage]:
             sorted order when given a directory.
 
     Yields:
-        One :class:`BagMessage` per record, in mcap order (write
+        One ``BagMessage`` per record, in mcap order (write
         order). The correlator re-sorts by ``log_time_ns`` so callers
         may stream this lazily.
 

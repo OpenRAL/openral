@@ -1,25 +1,19 @@
 """HAL autostart budget must outlast what ``on_configure`` actually does.
 
-``tools/lifecycle_autostart.py`` bounds each lifecycle transition, and
-``sim_e2e.launch.py`` spawns it for the HAL. The transition it waits on runs
-``build_sim_env_from_yaml`` → the scene factory, which for a sidecar backend
-*boots the simulator in-process*: ``connect()`` spawns the sidecar and blocks
-in ``_wait_for_boot``.
+``tools/lifecycle_autostart.py`` bounds each lifecycle transition;
+``sim_e2e.launch.py`` spawns it for the HAL, which for a sidecar backend boots
+the simulator in-process inside ``connect()`` → ``_wait_for_boot``.
 
-Those backends carry boot budgets far above the old fixed 300 s literal
-(``isaac_sim`` 900 s, ``behavior`` 1200 s, ``robotwin`` 600 s), and the shipped
-Isaac / BEHAVIOR deploy scenes raise theirs to ``boot_timeout_s: 1200``. Isaac
-Sim 5.1 reaches ``app ready`` in ~13 s on an RTX 4070 Laptop, but a sidecar
-that wedges after that burns the client's full ``boot_timeout_s`` before
-``connect()`` raises — observed live — so the transition's worst case is the
-declared budget, not the nominal boot. When the
-autostart expired first it exited non-zero *while ``on_configure`` kept
-running*, so the HAL could finish configuring with nothing left to drive
-ACTIVATE — parked in INACTIVE, no ``/joint_states``, no cameras, no message
-naming the cause.
+Boot budgets exceed the old fixed 300 s literal (``isaac_sim`` 900 s,
+``behavior`` 1200 s, ``robotwin`` 600 s); shipped Isaac/BEHAVIOR deploy scenes
+raise theirs to ``boot_timeout_s: 1200``. Isaac Sim 5.1 reaches app-ready in
+~13 s on an RTX 4070 Laptop, but a wedged sidecar burns the full budget before
+``connect()`` raises — observed live. If autostart timed out first while
+``on_configure`` kept running, the HAL could finish configuring parked in
+INACTIVE with nothing left to drive ACTIVATE: no ``/joint_states``, no
+cameras, no error naming the cause.
 
-Real in-tree scene YAMLs and the real backend constants throughout — the point
-is that the shipped scenes and the launcher agree (CLAUDE.md §1.11).
+Real in-tree scene YAMLs and real backend constants throughout (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations

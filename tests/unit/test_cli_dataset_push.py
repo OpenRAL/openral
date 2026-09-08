@@ -1,18 +1,16 @@
 """Unit tests for ``openral dataset push``.
 
 Per CLAUDE.md §1.11 — no mocks of openral_* types. The HF Hub API is the
-**network boundary**; the upload path is exercised via ``--dry-run``
-(which never reaches the network) so we don't need a fake
-``HfApi`` for the consent-gate tests. The single ``test_actual_upload``
-case lives in a follow-up HIL job behind ``[needs-hf-token]``.
+network boundary; the upload path is exercised via ``--dry-run`` (never
+reaches the network), so consent-gate tests need no fake ``HfApi``.
+``test_actual_upload`` lives in a follow-up HIL job behind
+``[needs-hf-token]``.
 
-What this file covers:
-
-* Path validation — missing ``meta/info.json``, malformed JSON.
-* repo_id resolution — CLI override, info.json fallback, error on missing.
-* Consent gating — interactive match / mismatch, ``--yes`` flag,
-  ``OPENRAL_DATASET_CONSENT=1`` env override, non-TTY rejection.
-* ``--dry-run`` short-circuit (no token resolution needed).
+Covers: path validation (missing ``meta/info.json``, malformed JSON);
+repo_id resolution (CLI override, info.json fallback, error on missing);
+consent gating (interactive match/mismatch, ``--yes``,
+``OPENRAL_DATASET_CONSENT=1``, non-TTY rejection); ``--dry-run``
+short-circuit (no token resolution needed).
 """
 
 from __future__ import annotations

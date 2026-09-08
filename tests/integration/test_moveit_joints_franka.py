@@ -1,25 +1,16 @@
 """End-to-end exercise — joint goal rSkill against live MoveIt.
 
-Brings up the upstream ``moveit_resources_panda_moveit_config`` demo
-launch as a subprocess (real ``move_group`` + ``ros2_control`` fake
-hardware + ``robot_state_publisher``), then drives the
-:class:`~openral_rskill.joint_goal_rskill.JointGoalRskill` adapter selected by
-``ros_integration.goal_builder: "joint"`` from the in-tree
-``rskills/rskill-moveit-joints/`` manifest. Asserts the planner returns a
-non-empty trajectory that the adapter caches, reorders into the host
-:class:`~openral_core.RobotDescription` joint order, and emits one
-waypoint per :meth:`~openral_rskill.base.rSkillBase.step` call until
-:class:`~openral_core.exceptions.ROSRskillGoalSatisfied` fires.
+Brings up the upstream ``moveit_resources_panda_moveit_config`` demo launch as a subprocess
+(real ``move_group`` + ``ros2_control`` fake hardware + ``robot_state_publisher``), then
+drives the ``JointGoalRskill`` adapter selected by ``ros_integration.goal_builder: "joint"``
+from the in-tree ``rskills/rskill-moveit-joints/`` manifest. Asserts the planner returns a
+non-empty trajectory the adapter caches, reorders into the host ``RobotDescription`` joint
+order, and emits one waypoint per ``rSkillBase.step`` call until ``ROSRskillGoalSatisfied``
+fires.
 
-Gates per CLAUDE.md §1.11 / §1.12:
-
-* ``ROS_DISTRO`` env must be set (a sourced ROS 2 workspace).
-* ``rclpy`` must import.
-* ``moveit_resources_panda_moveit_config`` must be available as an
-  ament package (apt: ``ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config``).
-
-When any of those are missing the test ``pytest.skip(reason=...)`` —
-never faked.
+Gates per CLAUDE.md §1.11 / §1.12: ``ROS_DISTRO`` env set (sourced ROS 2 workspace); ``rclpy``
+importable; ``moveit_resources_panda_moveit_config`` available as an ament package (apt:
+``ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config``). Missing any → skips, never faked.
 """
 
 from __future__ import annotations
@@ -56,26 +47,19 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
 ) -> None:
     """The wrapped MoveIt rSkill returns a real trajectory and replays it.
 
-    End-to-end exercise of the adapter contract:
+    End-to-end exercise of the adapter contract: (1) load the in-tree
+    ``OpenRAL/rskill-moveit-multi-joints`` manifest from
+    ``rskills/rskill-moveit-joints/rskill.yaml`` (no HF Hub fetch); (2) construct
+    ``ROSActionRskill`` against the running ``move_group`` on the canonical Franka panda
+    ``RobotDescription``; (3) drive ``configure()`` + ``activate()`` — the adapter opens an
+    ``ActionClient`` on ``/move_action`` and parses the manifest's ``default_goal_json``;
+    (4) call ``step()`` — the first call sends the goal, waits for the real planner, caches
+    the returned ``JointTrajectory`` reordered into ``RobotDescription.joints`` order;
+    (5) subsequent ``step()`` calls each return one waypoint as a 1-row ``Action``; (6) after
+    the last waypoint, ``step()`` raises ``ROSRskillGoalSatisfied``.
 
-    1. Load the in-tree ``OpenRAL/rskill-moveit-multi-joints`` manifest from
-       ``rskills/rskill-moveit-joints/rskill.yaml`` (no HF Hub fetch).
-    2. Construct :class:`ROSActionRskill` against the running
-       ``move_group`` on the canonical Franka panda
-       :class:`~openral_core.RobotDescription`.
-    3. Drive ``configure()`` + ``activate()`` — the adapter opens an
-       ``ActionClient`` on ``/move_action`` and parses the manifest's
-       ``default_goal_json``.
-    4. Call ``step()`` — the first call sends the goal, waits for the
-       real planner, caches the returned :class:`JointTrajectory`
-       reordered into ``RobotDescription.joints`` order.
-    5. Subsequent ``step()`` calls each return one waypoint as a 1-row
-       :class:`Action`.
-    6. After the last waypoint, ``step()`` raises
-       :class:`ROSRskillGoalSatisfied`.
-
-    No mocks (CLAUDE.md §1.11): real rclpy, real ``move_group``, real
-    rSkill manifest, real :class:`RobotDescription`.
+    No mocks (CLAUDE.md §1.11): real rclpy, real ``move_group``, real rSkill manifest, real
+    ``RobotDescription``.
     """
     del move_group_subprocess  # fixture provides the side effect
 

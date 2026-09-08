@@ -1,7 +1,7 @@
-"""Rollout — the typed output of a :class:`~openral_wam.WorldModel`.
+"""Rollout — the typed output of a ``WorldModel``.
 
 A rollout is a *predicted* trajectory: given a current
-:class:`~openral_core.WorldState` and a candidate action chunk, the
+``WorldState`` and a candidate action chunk, the
 WAM emits the predicted states (and optionally predicted frames /
 rewards) for ``horizon`` steps. The planning layer uses the rollout to
 gate the action chunk (CLAUDE.md §6.3 pattern 1), anticipate failures
@@ -22,10 +22,10 @@ __all__ = ["Rollout"]
 
 
 class Rollout(BaseModel):
-    """Predicted trajectory from one :class:`~openral_wam.WorldModel` call.
+    """Predicted trajectory from one ``WorldModel`` call.
 
     Attributes:
-        predicted_states: Predicted :class:`WorldState` for each of the
+        predicted_states: Predicted ``WorldState`` for each of the
             ``horizon`` steps. Length must equal ``horizon``.
         predicted_rewards: Optional predicted reward per step. Length
             must equal ``horizon`` when populated; ``None`` when the

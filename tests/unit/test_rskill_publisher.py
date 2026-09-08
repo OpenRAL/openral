@@ -1,27 +1,14 @@
-"""Smoke tests for ``tools/rskill_publisher.py``.
+"""Tests for ``tools/rskill_publisher.py``.
 
-The publisher is a CLI script with no Python package wrapper; we import it
-via :mod:`importlib` from its file path so the test exercises exactly the
-script users invoke with ``uv run python tools/rskill_publisher.py``.
+The publisher is a CLI script with no Python package wrapper; imported via
+``importlib`` from its file path so the test exercises exactly the script
+users invoke with ``uv run python tools/rskill_publisher.py``.
 
-All HF Hub I/O (``HfApi.create_repo``, ``upload_folder``, ``model_info``)
-is mocked.  The tests only exercise the local validation, dry-run, and
-token-resolution paths — the actual upload behaviour is covered by the
-manual smoke run that the publisher's docstring documents.
-
-Coverage
---------
-- ``_resolve_token`` — preference order: ``--token`` arg > ``HF_TOKEN`` env
-  > ``HUGGINGFACE_HUB_TOKEN`` env > exit 1 with a hint.
-- ``_validate_manifest`` — exits 1 on a missing or malformed manifest;
-  returns the parsed :class:`RSkillManifest` on success.
-- ``main`` — dry-run path (no ``--publish``) succeeds and emits the
-  "valid" message on stdout.
-- ``main`` — exits 1 when ``skill_dir`` is not a directory.
-- ``main`` — exits 1 when the manifest is missing inside a real directory.
-- ``_publish`` — creates the repo with ``private=True`` and runs the
-  privacy gate; it MUST abort if the API reports the repo as public
-  (a regression here is a security issue per CLAUDE.md §7.2 / §12).
+All HF Hub I/O (``HfApi.create_repo``, ``upload_folder``, ``model_info``) is
+mocked — a network boundary double per CLAUDE.md §1.11. Only local
+validation, dry-run, and token-resolution paths are exercised here; the
+actual upload is covered by the manual smoke run the publisher's own
+docstring documents.
 """
 
 from __future__ import annotations
@@ -423,10 +410,8 @@ def test_main_dry_run_exits_1_when_readme_missing(
 ) -> None:
     """Dry-run must surface the missing README and exit non-zero.
 
-    Before the doc validator landed, dry-run only checked the manifest
-    schema — a manifest-valid rSkill with no README would say "valid"
-    and authors would then publish an undocumented package. The gate
-    now blocks that path.
+    Before the doc validator landed, a manifest-valid rSkill with no README
+    would print "valid" and ship undocumented.
     """
     # Manifest exists; README does NOT.
     skill_dir = _write_skill_dir(tmp_path, readme=None)
@@ -444,19 +429,14 @@ def test_main_publish_aborts_when_readme_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``--publish`` must refuse upload when the README is missing.
-
-    Critical safety gate: an upload that races past the doc validator
-    would put a non-documented package on the Hub.
-    """
+    """``--publish`` must refuse upload when the README is missing — an upload
+    that races past the doc validator would put an undocumented package on the Hub."""
     skill_dir = _write_skill_dir(tmp_path, readme=None)
     monkeypatch.setenv("HF_TOKEN", "fake-token-for-test")
     monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--publish"])
 
-    # Module-level network stub: if the publisher reaches HfApi, the
-    # test fails the way we want — by raising AttributeError on
-    # `upload_folder` since the fake never sets it. But the gate
-    # should exit BEFORE we ever touch huggingface_hub.
+    # Gate must exit before touching huggingface_hub; fake_api has no upload_folder
+    # configured so reaching it would fail loudly rather than silently pass.
     fake_api = MagicMock()
     with (
         patch.dict(

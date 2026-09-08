@@ -34,10 +34,6 @@ class _RobometerScorerClass(Protocol):
     def __call__(self, weights: str, device: str = "cuda") -> _RobometerScorer: ...
 
 
-# |progress trend per sample| below this reads as "stalled" (no meaningful change).
-_STALL_TREND_EPS = 0.002
-
-
 def critic_score_from_assessment(
     assessment: Mapping[str, object], *, threshold: float
 ) -> tuple[float, float]:
@@ -194,19 +190,12 @@ class RobometerInProcessReward:
 
     def assess(self, frames: list[Frame], task: str) -> dict[str, Any]:
         """Score ``frames`` and summarize the window for the Reasoner."""
-        from openral_runner.backends.reward.frame_source import trend  # noqa: PLC0415
+        from openral_runner.backends.reward.frame_source import assess_from_score  # noqa: PLC0415
 
         progress, success = self.score(frames, task)
-        p_trend = trend(progress)
-        return {
-            "progress_now": progress[-1],
-            "success_now": success[-1],
-            "progress_trend": p_trend,
-            "success_trend": trend(success),
-            "stalled": abs(p_trend) < _STALL_TREND_EPS,
-            "succeeded": success[-1] >= self._success_threshold,
-            "frames_seen": len(frames),
-        }
+        return assess_from_score(
+            progress, success, success_threshold=self._success_threshold, frames_seen=len(frames)
+        )
 
     def close(self) -> None:
         """Release the model."""

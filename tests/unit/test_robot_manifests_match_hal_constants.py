@@ -1,58 +1,24 @@
-"""Regression test — every ``robots/<id>/robot.yaml`` matches its in-code
-``*_DESCRIPTION`` HAL constant, where one exists.
+"""Regression test — every ``robots/<id>/robot.yaml`` matches its ``*_DESCRIPTION`` HAL constant.
 
-The HAL constants in ``python/hal/src/openral_hal/`` are the runtime
-source of truth; the YAMLs under ``robots/`` are what the eval layer loads
-via ``ROBOTS.register``. This test pins them together so a future bump to
-joint limits / payload / safety envelope can't silently drift the YAML out
-of sync with the HAL.
+HAL constants in ``python/hal/src/openral_hal/`` are the runtime source of
+truth; YAMLs under ``robots/`` are what the eval layer loads via
+``ROBOTS.register``. Pins them together so a joint-limit/payload/safety-
+envelope bump can't silently drift the YAML out of sync (issues #54-58).
 
-Coverage
---------
-- ``robots/ur5e/robot.yaml``           ↔ ``UR5e_REAL_DESCRIPTION``      (HAL `ur_real.py`)
-- ``robots/ur10e/robot.yaml``          ↔ ``UR10e_REAL_DESCRIPTION``     (HAL `ur_real.py`)
-- ``robots/franka_panda/robot.yaml``   ↔ ``FRANKA_PANDA_REAL_DESCRIPTION``
-- ``robots/sawyer/robot.yaml``         ↔ ``SAWYER_REAL_DESCRIPTION``
-- ``robots/aloha_bimanual/robot.yaml`` ↔ ``ALOHA_REAL_DESCRIPTION``
-- ``robots/g1/robot.yaml``             ↔ ``G1_DESCRIPTION``             (HAL `g1.py`)
-- ``robots/h1/robot.yaml``             ↔ ``H1_DESCRIPTION``             (HAL `h1.py`)
-- ``robots/rizon4/robot.yaml``         ↔ ``RIZON4_DESCRIPTION``         (HAL `flexiv_rizon4.py`)
-- ``robots/openarm/robot.yaml``        ↔ ``OPENARM_DESCRIPTION``        (HAL `openarm.py`)
-- ``robots/anvil_openarm_v2/robot.yaml`` ↔ ``ANVIL_OPENARM_V2_DESCRIPTION``
-- ``robots/galaxea_a1/robot.yaml``      ↔ ``GALAXEA_A1_DESCRIPTION``
+UR5e/UR10e/Franka/Sawyer/ALOHA pin to their ``*_REAL_DESCRIPTION`` (production
+manifests), derived from the sim baseline via
+``openral_hal._real_description.make_real_description`` — kinematics,
+safety envelope, capabilities and ``hal`` entrypoints are shared; only
+``sdk_kind`` differs. G1/H1/Rizon4/OpenArm/Anvil-v2 pin to their sim baseline
+because none has a real-HW HAL yet (G1/H1 gated on the M2 C++ S0 cerebellum,
+CLAUDE.md §6.2; Rizon4/OpenArm/Anvil real-HW wrappers are tracked follow-ups)
+— their ``hal.real`` is null until the real adapter lands.
 
-Most covered YAMLs pin to the **real-hardware** ``*_REAL_DESCRIPTION``
-constant because those YAMLs are the production-deployment manifests.
-The Franka / Sawyer / ALOHA real descriptions are derived from their sim
-baselines (``FRANKA_PANDA_DESCRIPTION`` / ``SAWYER_DESCRIPTION`` /
-``ALOHA_DESCRIPTION``) via
-:func:`openral_hal._real_description.make_real_description`. The UR
-real descriptions (``UR5e_REAL_DESCRIPTION`` / ``UR10e_REAL_DESCRIPTION``
-in ``ur_real.py``) follow the same pattern, derived from
-``UR5e_DESCRIPTION`` / ``UR10e_DESCRIPTION`` in ``ur.py``. In every case
-kinematics + safety envelope + capabilities + ``hal`` entrypoints are shared
-between the sim baseline and the real-HW description; only ``sdk_kind``
-differs. The sim baselines stay in-tree as the manifest the MuJoCo /
-gym sim adapter loads when available. Issues #54–#58.
-
-The G1, H1, Rizon 4, and OpenArm all pin to their sim baselines
-(``G1_DESCRIPTION`` / ``H1_DESCRIPTION`` / ``RIZON4_DESCRIPTION`` /
-``OPENARM_DESCRIPTION``) because none of them have a real-HW HAL yet:
-the G1 / H1 wait on the M2 C++ S0 cerebellum (CLAUDE.md §6.2); the
-Rizon 4 real-HW wrapper around ``flexiv_rdk`` and the OpenArm real-HW
-wrapper around lerobot's upstream driver are tracked as follow-ups.
-All four YAMLs' ``hal.sim`` points at the sim HAL and ``hal.real`` is null
-until the real adapter lands.
-
-The SO-100 manifest is skipped here because its YAML carries optional
-sensor entries that the in-code constant deliberately omits (the HAL
-constant is only the kinematic core; sensor wiring is opt-in via
-``so100_with_sensors``).  The ALOHA YAML similarly carries a top-down
-camera ``SensorSpec`` and an ``observation_spec`` / ``action_spec`` block
-the in-code constant omits (sensor / sim-IO wiring is owned by the eval
-adapter); only the joint inventory + capability + safety + sdk pointer
-is asserted equal.  ``pusht_2d`` is a sim-pseudo manifest with no in-code
-DESCRIPTION sibling and is therefore not in scope for this guard.
+SO-100 and ``pusht_2d`` are out of scope: SO-100's YAML carries optional
+sensor entries the in-code constant omits; ALOHA's YAML carries a camera
+``SensorSpec`` + observation/action spec the constant omits (only joint
+inventory + capability + safety + sdk pointer are asserted equal for it);
+``pusht_2d`` has no in-code DESCRIPTION sibling.
 """
 
 from __future__ import annotations
@@ -71,22 +37,14 @@ from openral_core import RobotDescription
         ("robots/franka_panda/robot.yaml", "FRANKA_PANDA_REAL_DESCRIPTION"),
         ("robots/sawyer/robot.yaml", "SAWYER_REAL_DESCRIPTION"),
         ("robots/aloha_bimanual/robot.yaml", "ALOHA_REAL_DESCRIPTION"),
-        # G1 + H1 + Rizon 4 + OpenArm all pin to their sim baselines
-        # because none of them has a real-HW HAL yet.  G1 / H1 are
-        # gated on the M2 C++ S0 cerebellum (CLAUDE.md §6.2); Rizon 4
-        # awaits a wrapper around ``flexiv_rdk``; OpenArm awaits a
-        # wrapper around lerobot's upstream OpenArm driver.  All four
-        # YAMLs' hal.sim points at their respective sim HAL and hal.real
-        # is null until the real adapter lands.
+        # Sim-baseline pins (no real-HW HAL yet) — see module docstring.
         ("robots/g1/robot.yaml", "G1_DESCRIPTION"),
         ("robots/h1/robot.yaml", "H1_DESCRIPTION"),
         ("robots/rizon4/robot.yaml", "RIZON4_DESCRIPTION"),
         ("robots/openarm/robot.yaml", "OPENARM_DESCRIPTION"),
-        # The Anvil OpenARM 2.0 (standard v2 + Anvil's J1/J6 range
-        # deltas and wrist bracket) pins to its sim baseline for the
-        # same reason as the Enactic v2 arm: no real-HW HAL yet (a
-        # wrapper around Anvil's driver stack,
-        # github.com/anvil-robotics/openarm, is a tracked follow-up).
+        # Anvil OpenARM 2.0: standard v2 + Anvil's J1/J6 range deltas + wrist
+        # bracket. Real-HW wrapper (github.com/anvil-robotics/openarm) is a
+        # tracked follow-up.
         ("robots/anvil_openarm_v2/robot.yaml", "ANVIL_OPENARM_V2_DESCRIPTION"),
         ("robots/galaxea_a1/robot.yaml", "GALAXEA_A1_DESCRIPTION"),
     ],

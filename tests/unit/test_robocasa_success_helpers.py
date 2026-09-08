@@ -150,9 +150,9 @@ def test_check_success_fallback_uses_terminated_only_without_a_predicate() -> No
 def test_deploy_continuous_mode_still_never_polls_success_during_step() -> None:
     """`step()` in continuous mode leaves the predicate untouched.
 
-    The new `task_success()` accessor is polled by the HAL AFTER the step,
-    for observability. `step()` itself must stay exactly as evaluation-free
-    as before, so nothing about termination changes (CLAUDE.md §1.4).
+    `task_success()` is polled by the HAL AFTER the step, for observability.
+    `step()` itself must stay evaluation-free, so nothing about termination
+    changes (CLAUDE.md §1.4).
     """
     raw_env = _RawEnv()
     rollout = _MinimalRoboCasaSim(

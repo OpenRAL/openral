@@ -1,28 +1,21 @@
 # RobotDescription — Hugging Face SO-101 follower (real + sim).
 #
-# The SO-101 is the hardware revision of the SO-100: identical 6-DoF
-# kinematic chain (5 servo joints + 1-DoF jaw, all driven over a USB
-# serial bus by Feetech STS3215 servos), updated mechanical design and
-# calibration. The same lerobot-side SDK driver (SO100DigitalTwin /
-# the Feetech serial backend) handles the hardware; only the
-# Onshape-derived MJCF mesh set is different.
+# Hardware revision of the SO-100: identical 6-DoF kinematic chain (5 servo
+# joints + 1-DoF jaw, Feetech STS3215 over USB serial), updated mechanical
+# design/calibration. Same lerobot SDK driver (SO100DigitalTwin / Feetech
+# serial backend); only the Onshape-derived MJCF mesh set differs.
 #
-# Joint kinematic detail is taken from the public SO-101 MJCF in
-# ``robot_descriptions`` / ``TheRobotStudio/SO-ARM100/Simulation/SO101``
-# (the ``new_calib`` variant). Arm ``position_limits`` are in radians
-# despite the lerobot SDK exposing degrees — OpenRAL keeps the
-# URDF-native units. The *gripper* is the documented exception: its
-# channel carries a normalised [0, 1] jaw fraction, so its limits are
-# ``[0.0, 1.0]`` — see the note on that joint (issue #62).
+# Kinematics from the public SO-101 MJCF (`robot_descriptions` /
+# `TheRobotStudio/SO-ARM100/Simulation/SO101`, `new_calib` variant). Arm
+# `position_limits` are radians (URDF-native), despite lerobot's SDK exposing
+# degrees. Gripper is the exception: normalised [0, 1] jaw fraction, limits
+# `[0.0, 1.0]` (issue #62).
 #
-# Manifest joint order is the kinematic chain order:
-#   shoulder_pan → shoulder_lift → elbow_flex → wrist_flex → wrist_roll → gripper
-# which is also the order the SO-101 MJCF declares its <position>
-# actuators (named "1"…"6") and hinge joints (sim_joint_name "1"…"6") —
-# :func:`MujocoArmHAL._sim_kwargs_for` resolves the manifest-to-MJCF
-# mapping by INDEX, while SimAttachedHAL reads live joint state by
-# sim_joint_name so deploy-sim publishes the same non-zero state as
-# direct `openral sim run`.
+# Joint order = kinematic chain order (shoulder_pan -> shoulder_lift ->
+# elbow_flex -> wrist_flex -> wrist_roll -> gripper), matching the MJCF's
+# <position> actuators ("1".."6") and hinge joints (sim_joint_name "1".."6").
+# `MujocoArmHAL._sim_kwargs_for` maps manifest-to-MJCF by INDEX; SimAttachedHAL
+# reads live state by sim_joint_name, so deploy-sim matches direct `openral sim run`.
 
 name: "so101_follower"
 embodiment_kind: "manipulator"
@@ -186,24 +179,18 @@ sensors:
       target: [-0.0074, -0.091, -0.1886]
       up: [0.0, 0.0, -1.0]
       fovy_deg: 90.0
-    # 640x480 is MEASURED, not nominal: `v4l2-ctl --get-fmt-video` on the
-    # icSpring rig reports 640/480 MJPG, and every scene binding
-    # (scenes/deploy/so101_bench.yaml) requests the same. The previous 256x256
-    # entry described no real configuration — and it is load-bearing twice
-    # over: `rSkill.check_sensors` gates `min_width`/`min_height` against these
-    # intrinsics (openral_rskill/loader.py `_check_resolution`) while the
-    # pixels come from the binding, and `SensorRosPublisher._publish_camera_info`
-    # takes `width`/`height` from the frame but `fx/fy/cx/cy` from here. A stale
-    # resolution therefore both mis-gates skill compatibility and desynchronises
-    # CameraInfo for any geometric consumer.
-    #
-    # The focal lengths are NOMINAL, not calibrated: fx=fy (square pixels) and a
-    # centred principal point, scaled from the old entry so the declared
-    # horizontal FOV is preserved (2*atan(128/192) = 67.4°, so fx = 320/tan(33.7°)
-    # = 480). Run a real checkerboard calibration before this camera feeds
-    # cuVSLAM / nvblox / object-lift. Note `sim_placement.fovy_deg: 90` implies a
-    # wider lens than these intrinsics do; that disagreement predates this entry
-    # and is left alone rather than silently changing how the MuJoCo twin renders.
+    # 640x480 is MEASURED (`v4l2-ctl --get-fmt-video` on the icSpring rig: 640/480
+    # MJPG; scenes/deploy/so101_bench.yaml requests the same) — the previous
+    # 256x256 entry was fictional. Load-bearing twice: `rSkill.check_sensors`
+    # gates min_width/min_height against these intrinsics
+    # (openral_rskill/loader.py `_check_resolution`), and
+    # `SensorRosPublisher._publish_camera_info` takes width/height from the
+    # frame but fx/fy/cx/cy from here — a stale value mis-gates compatibility
+    # AND desyncs CameraInfo. Focal lengths are NOMINAL not calibrated (fx=fy,
+    # centred, scaled to preserve the old horizontal FOV 2*atan(128/192)=67.4deg
+    # -> fx=480); run a real checkerboard calibration before this feeds
+    # cuVSLAM/nvblox/object-lift. `sim_placement.fovy_deg: 90` implies a wider
+    # lens than these intrinsics — pre-existing disagreement, left alone.
     intrinsics:
       width: 640
       height: 480
@@ -303,18 +290,15 @@ action_spec:
   control_freq_hz: 30.0
 
 # Hand-authored OBB (box) collision model, part of the SO-101 negative
-# self-collision-margin safety exception above (issue #84). Every link is
-# a tight oriented box fit to the link-frame mesh (PCA extents), NOT a capsule:
-# the SO-101 links are rectangular 3D-printed brackets, so a capsule's circular
-# cross-section over-reports clearance by ~7-9 cm at the arm's compact folded
-# operating poses (the VLA's whole distribution), false-E-stopping valid poses.
-# Boxes cut the over-report to ~1-4 cm (verified vs an fcl non-convex mesh
-# oracle). half_extents + origin_xyz_rpy are the link-frame mesh OBB; rpy orients
-# the box. The true (non-convex) self-clearance in the VLA envelope is ~0
-# (grazing contact by design), handled by a small negative self_collision_margin
-# (see safety.self_collision_margin_m below), NOT by disabling any pair. Teaching
-# `openral collision lower` to emit OBBs for blocky links is the follow-up that
-# makes this regenerable.
+# self-collision-margin safety exception (issue #84). Boxes not capsules: the
+# SO-101's rectangular 3D-printed brackets make a capsule's circular
+# cross-section over-report clearance by ~7-9 cm at the arm's compact folded
+# poses, false-E-stopping valid poses; boxes (PCA-fit, tight per link) cut that
+# to ~1-4 cm (verified vs an fcl non-convex mesh oracle). half_extents +
+# origin_xyz_rpy are the link-frame mesh OBB. True self-clearance in the VLA
+# envelope is ~0 (grazing contact by design) — handled by a small negative
+# self_collision_margin below, NOT by disabling any pair. Follow-up: teach
+# `openral collision lower` to emit OBBs for blocky links, for regenerability.
 collision_geometry:
   - link_name: "base"
     shape: { shape: "box", half_extents_m: [0.0555, 0.0478, 0.0360] }

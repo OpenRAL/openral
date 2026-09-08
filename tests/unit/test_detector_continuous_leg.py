@@ -1,23 +1,14 @@
 """Continuous-leg observability for the ROS-Image object detector (issue #12).
 
-The continuous detect+publish leg in ``ros_image_detector_node`` used to swallow
-its per-frame outcome silently: a ``detect()`` exception was logged at DEBUG
-(invisible at the default level) and an empty result was dropped with no trace.
-On ``/openral/perception/objects`` that makes a *crashing* detector (e.g. a CUDA
-OOM under VLA co-residency on an 8 GB card) indistinguishable from one watching a
-quiet scene — both leave the topic empty, because the real detector publishes
-nothing when it sees nothing (the empty-topic-means-quiet-scene contract the
-world-state eviction relies on). :func:`classify_continuous_tick` is the pure
-decision that maps each tick's outcome to the log level that surfaces it, so
-the leg is observable without changing what lands on the bus. Validated here
-with no LifecycleNode or
-executor — the node applies its own throttling and does the publish.
+Regression: the continuous leg logged ``detect()`` exceptions at DEBUG and
+dropped empty results silently, making a crashing detector (e.g. CUDA OOM
+under VLA co-residency on an 8 GB card) indistinguishable on
+``/openral/perception/objects`` from a quiet scene — both leave the topic
+empty, the contract world-state eviction relies on.
+``classify_continuous_tick`` maps each tick's outcome to a log level.
 
-``openral_perception_ros`` is a colcon-built ROS package (ament_cmake); like the
-other ROS-package unit tests (``test_image_convert``), skip cleanly when the
-workspace overlay isn't sourced. The ros2-test CI job sources
-``install/setup.bash`` and runs this for real; ``classify_continuous_tick`` is
-pure Python so the guard is only about the package being importable.
+``openral_perception_ros`` is ament_cmake; skips cleanly if the workspace
+overlay isn't sourced (ros2-test CI sources ``install/setup.bash``).
 """
 
 from __future__ import annotations

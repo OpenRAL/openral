@@ -1,39 +1,27 @@
 """Time the WHOLE MPPI control loop against its 50 ms budget, on a live graph.
 
-`openral_nav2_bringup` deferred `CostCritic.consider_footprint` because the
-flag's own cost was measured in isolation
-(`benchmark/cost_critic_footprint_bench.cpp`: +8.1 / +9.7 ms) while the loop
-AROUND CostCritic was not. This measures the loop: it attaches to a running
-`openral deploy sim` graph, drives a real `NavigateToPose`, and reads
-`controller_server`'s own CPU time from `/proc` divided by the control cycles
-it actually produced.
+`openral_nav2_bringup` deferred `CostCritic.consider_footprint` because its
+own cost was measured in isolation (`benchmark/cost_critic_footprint_bench.cpp`:
++8.1 / +9.7 ms) but the loop AROUND CostCritic was not. This attaches to a
+running `openral deploy sim` graph, drives a real `NavigateToPose`, and reads
+`controller_server`'s CPU time from `/proc` divided by control cycles produced.
 
-**CPU per cycle, not wall-clock per cycle, deliberately.** The stack runs
-`use_sim_time:=True`, so the controller's 20 Hz is 20 Hz of SIMULATION time.
-Wall-clock spacing between commands would measure how fast MuJoCo steps, not
-whether the controller fits its budget. Process CPU time is independent of the
-clock source and is directly comparable to the 50 ms period.
+CPU per cycle, not wall-clock: the stack runs `use_sim_time:=True`, so
+wall-clock spacing would measure MuJoCo's step rate, not the controller's fit
+to its budget. Process CPU time is clock-source-independent.
 
-Four arms, so the flag's effect is separable from the footprint's::
+Four arms (bare/grown x consider_footprint on/off) isolate the flag's effect
+from the footprint's. Every run validates which polygon the costmap actually
+adopted via `/local_costmap/published_footprint`'s longest edge (frame-
+invariant: 0.72 m bare, 1.23 m grown) — `arm_valid: false` otherwise.
+`payload_footprint_node` (shipped when this round was taken, deleted by
+PR #186 the next day) republished the bare polygon at 2 Hz whenever nothing
+was attached, which without this check silently alternated with the arm's own
+polygon; Nav2 is base-only now (ADR-0099), so a rerun has no competitor.
 
-    bare  x consider_footprint=false   # what ships today
-    bare  x consider_footprint=true
-    grown x consider_footprint=false
-    grown x consider_footprint=true    # the arm that decides the flip
-
-**Every run validates which polygon the costmap actually adopted** by reading
-`/local_costmap/published_footprint` and measuring its longest edge (frame
-invariant: 0.72 m bare, 1.23 m grown). A run whose costmap never took the arm's
-polygon is reported `arm_valid: false` rather than counted -- `payload_footprint_node`, shipped when
-this round was taken and deleted by PR #186 the following day, published the
-bare polygon at 2 Hz whenever nothing was attached, and without this check the
-two publishers silently alternated. Nav2 is base-only now (ADR-0099), so a
-rerun would find no competing publisher and the `grown` arms have nothing left
-to drive them.
-
-Private (`_` prefix): it attaches to a graph someone else launched and is
-evidence tooling, not a shipped entry point. The round it produced is recorded
-in `docs/reference/robocasa-carry-survey.md`; its raw output is
+Private (`_` prefix): attaches to an already-launched graph, evidence tooling
+not a shipped entry point. Round recorded in
+`docs/reference/robocasa-carry-survey.md`; raw output
 `docs/reference/data/nav2-mppi-loop-2026-08-28.jsonl`.
 
 Usage (with a deploy-sim graph already up and Nav2 ACTIVE)::

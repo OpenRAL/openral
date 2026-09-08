@@ -60,18 +60,11 @@ def test_deadman_fires_when_safe_action_stops(ros_context: None) -> None:
         50,
     )
 
-    # /openral/failure/safety is a shared safety bus in production —
-    # deadman_watchdog (KIND_TIMEOUT), the C++ safety kernel, the
-    # human-estop forwarder (KIND_HUMAN), and any future safety
-    # publisher all share the topic. Under parallel `colcon test` the
-    # sibling openral_human_estop test process lands on the same DDS
-    # domain and can publish KIND_HUMAN at the same instant; whichever
-    # message DDS delivers first would race into [0]. Filter on
-    # kind == KIND_TIMEOUT so the assertion reflects the real
-    # production contract ("a KIND_TIMEOUT reached the bus") rather
-    # than the over-specific "no other safety publisher exists at this
-    # instant". Mirrors the fix in
-    # packages/openral_human_estop/test/test_forwarder_node.py.
+    # /openral/failure/safety is a shared safety bus in production — deadman_watchdog
+    # (KIND_TIMEOUT), the C++ safety kernel, and the human-estop forwarder (KIND_HUMAN) all
+    # share it. Under parallel `colcon test` the sibling openral_human_estop process can land
+    # on the same DDS domain and race a KIND_HUMAN into [0], so filter on KIND_TIMEOUT instead
+    # (mirrors packages/openral_human_estop/test/test_forwarder_node.py).
     def _have_timeout_failure() -> bool:
         return any(ft.kind == FailureTrigger.KIND_TIMEOUT for ft in failures_received)
 
@@ -117,17 +110,11 @@ def test_deadman_does_not_fire_when_safe_action_arrives(ros_context: None) -> No
     node = DeadmanWatchdogNode(node_name="deadman_watchdog_test_alive")
     helper = rclpy.create_node("deadman_watchdog_test_alive_helper")
     chunk_pub = helper.create_publisher(ActionChunk, "/openral/safe_action", 10)
-    # /openral/estop is std_msgs/Empty so there is no `kind` field to
-    # filter on; any sibling test process publishing an estop on the
-    # same DDS domain (e.g. the human-estop forwarder) would inflate
-    # `len(estop_received)` and turn this "no estop fired" check into
-    # a false positive. Pivot the assertion to the watchdog's own
-    # FailureTrigger publish on /openral/failure/safety: the watchdog
-    # publishes both /openral/estop and FailureTrigger(KIND_TIMEOUT)
-    # in the same callback as a unit, so the absence of one implies
-    # the absence of the other for *this* node, and KIND_TIMEOUT is
-    # specific enough to filter past cross-talk from human-estop's
-    # KIND_HUMAN / a future kernel's KIND_ENVELOPE_VIOLATION / etc.
+    # /openral/estop is std_msgs/Empty (no `kind` field), so a sibling test process publishing
+    # an estop on the same DDS domain would inflate `len(estop_received)` into a false
+    # positive. Pivot to the watchdog's own FailureTrigger on /openral/failure/safety instead:
+    # it publishes /openral/estop + FailureTrigger(KIND_TIMEOUT) as a unit, so absence of one
+    # implies absence of the other for *this* node, and KIND_TIMEOUT filters past cross-talk.
     failures_received: list[FailureTrigger] = []
     helper.create_subscription(
         FailureTrigger,

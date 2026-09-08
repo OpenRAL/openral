@@ -87,43 +87,37 @@ inline constexpr double kDopAxis[kDopAxes][3] = {
 
 /// Hard ceiling on a stage-2 hull's vertex count, enforced at configure time.
 ///
-/// This is a **cost** bound, not a geometry choice, and it is set by
-/// measurement rather than taste: the stage-2 support function is an exhaustive
-/// scan of the vertex list (the only form whose result is provably the true
-/// support, which is what makes the returned bound sound — see
-/// `hull_cell_distance`), so its cost is linear in the vertex count. On the
-/// reference host the staged path stays cheaper than the `box_box_distance` it
-/// replaces up to roughly 320 vertices; past that it loses. The Panda's
-/// `link1` hull has 1588 vertices and was measured **0.76x** the shipped
-/// routine's speed at 400 occupied cells, so it is refused stage 2 and runs
-/// stage 1 only — still a strict tightening (25.7 mm of support excess against
-/// the shipped box's 53.3 mm) and still ~9x cheaper per cleared cell.
-/// See `docs/reference/collision-hull-narrow-phase.md`.
+/// Cost bound, measured not chosen: stage-2 support is an exhaustive vertex
+/// scan (the only form provably the true support — see hull_cell_distance),
+/// linear in vertex count. On the reference host the staged path beats
+/// box_box_distance up to ~320 vertices; past that it loses. Panda's link1
+/// hull (1588 vertices) measured 0.76x the shipped routine's speed at 400
+/// occupied cells, so it runs stage 1 only — still a strict tightening
+/// (25.7 mm support excess vs the shipped box's 53.3 mm) and ~9x cheaper per
+/// cleared cell. See docs/reference/collision-hull-narrow-phase.md.
 inline constexpr int kMaxTightHullVertices = 320;
 
-/// Floating-point slack (m) allowed by `validate_tight_geometry` when checking
-/// that a stage-2 hull vertex satisfies its own DOP slabs.
+/// Floating-point slack (m) `validate_tight_geometry` allows when checking a
+/// stage-2 hull vertex against its own DOP slabs.
 ///
-/// The two are tangent **by construction** — the slab bound is `h_mesh(u)`, the
-/// maximum of `u·x` over the same vertex set — so the true relation is
-/// equality, not inequality, on at least one vertex per axis, and the offline
-/// producer and the kernel evaluate that dot product in different orders. One
-/// nanometre is eleven orders of magnitude below the 25 mm voxel pitch and
-/// seven below the shipped boxes' own 0.055 mm containment margin; it buys
-/// numerical agreement, not geometric room. The DOP-inside-the-OBB check takes
-/// no slack at all, because there the margin is a real, measured 0.055–0.132 mm.
+/// Tangent by construction — slab bound is h_mesh(u), the max of u.x over
+/// the same vertex set — so the true relation is equality on at least one
+/// vertex per axis, and producer/kernel evaluate that dot product in
+/// different orders. 1 nm is 11 orders below the 25 mm voxel pitch and 7
+/// below the shipped boxes' 0.055 mm containment margin — numerical
+/// agreement, not geometric room. The DOP-inside-OBB check takes no slack:
+/// that margin is real, measured 0.055-0.132 mm.
 inline constexpr double kTightContainmentEpsilonM = 1e-9;
 
-/// Slack (m) on a collision gate whose threshold is an exact, documented
-/// boundary — currently the place-approach allowance ceiling, where "exactly at
-/// the ceiling it trips" is the accepted-cost bound itself.
+/// Slack (m) on a collision gate with an exact, documented threshold —
+/// currently the place-approach allowance ceiling, where "exactly at the
+/// ceiling it trips" is the accepted-cost bound itself.
 ///
-/// A distance reaching such a gate is the end of a chain of rigid transforms,
-/// and which side of an exact tie the last ULP falls on is an artefact of
-/// association order, not a decision. Biasing the tie onto the STOP is the
-/// conservative reading, and a picometre is thirteen orders of magnitude below
-/// the 25 mm lattice these distances are measured on — numerical determinism,
-/// not geometric room, exactly as `kTightContainmentEpsilonM` is.
+/// A distance reaching such a gate ends a chain of rigid transforms; which
+/// side of an exact tie the last ULP falls on is association-order artefact,
+/// not a decision. Biasing onto STOP is conservative; 1 pm is 13 orders
+/// below the 25 mm lattice — numerical determinism, not geometric room, as
+/// with kTightContainmentEpsilonM.
 inline constexpr double kGateTieEpsilonM = 1e-12;
 
 /// Iteration ceiling for the stage-2 GJK loop. Hitting it is not a failure
@@ -131,23 +125,23 @@ inline constexpr double kGateTieEpsilonM = 1e-12;
 /// a truncated run is simply more conservative than a converged one.
 inline constexpr int kGjkMaxIterations = 24;
 
-/// Ceiling on stage-2 invocations in ONE `check_voxel_collision` call, across
+/// Ceiling on stage-2 invocations in ONE check_voxel_collision call, across
 /// every link. Past it the check keeps refining with stage 1 and the shipped
-/// `box_box_distance`, which is exactly today's behaviour or better — so the
-/// cap can only make the answer more conservative, never less.
+/// box_box_distance (today's behaviour or better), so the cap can only make
+/// the answer more conservative, never less.
 ///
-/// This is the "hard cap on stage-2 invocations per step" that
-/// `docs/reference/collision-tight-geometry.md` §12.2 names as the alternative
-/// to shipping an oversized hull, and it exists because stage 2's cost is
-/// driven by how many cells stage 1 *cannot* clear — which is a property of the
-/// map, not of the robot. At the measured RoboCasa start state two cells reach
-/// stage 2. A map that pressed clutter against the arm at the real HAL's 20 mm
-/// world-voxel margin was measured driving that toward every occupied cell, and
-/// an unbounded stage 2 turned a 1.07x speedup into a 1.5x slowdown. The cap
-/// bounds the worst case at roughly 1.1x the shipped routine instead.
+/// The "hard cap on stage-2 invocations per step" that
+/// docs/reference/collision-tight-geometry.md §12.2 names as the alternative
+/// to shipping an oversized hull. Stage 2's cost is driven by how many cells
+/// stage 1 *cannot* clear — a property of the map, not the robot. Measured
+/// RoboCasa start state: two cells reach stage 2. Clutter pressed against
+/// the arm at the real HAL's 20 mm world-voxel margin drove that toward
+/// every occupied cell; unbounded stage 2 turned a 1.07x speedup into a
+/// 1.5x slowdown. The cap bounds the worst case at ~1.1x the shipped
+/// routine instead.
 ///
-/// 32 is ~16x the measured demand and ~0.4 ms of a 10 ms budget over a 16-step
-/// horizon. Changing it changes a real-time bound: it belongs in the hazard log.
+/// 32 is ~16x measured demand, ~0.4 ms of a 10 ms budget over a 16-step
+/// horizon. Changing it changes a real-time bound: belongs in the hazard log.
 inline constexpr int kMaxStage2PerCheck = 32;
 
 /// Convergence tolerance (m) for the stage-2 GJK loop. Four orders of
@@ -155,21 +149,20 @@ inline constexpr int kMaxStage2PerCheck = 32;
 /// arithmetic resolves.
 inline constexpr double kGjkTolerance = 1e-9;
 
-/// Tight convex geometry refining ONE `Obb` in `CollisionModel::boxes`, for the
-/// arm-link-vs-world-voxel check only. Everything here is expressed in that
-/// box's own local frame, so the broad-phase window — which is sized from the
-/// box's `half_extents` alone — never moves.
+/// Tight convex geometry refining ONE Obb in CollisionModel::boxes, for the
+/// arm-link-vs-world-voxel check only. Expressed in the box's own local
+/// frame, so the broad-phase window (sized from half_extents alone) never
+/// moves.
 ///
 /// Two stages, both strict subsets of the shipped box:
-///
-/// * **Stage 1, always on**: the 26-DOP slabs `[dop_lo[i], dop_hi[i]]` along
-///   `kDopAxis[i]`. Built offline as *tangent* halfspaces `u.x <= h_mesh(u)`,
-///   so containment of the true link mesh is true by construction rather than
-///   by a fit, and there is no optimiser tolerance anywhere in the argument.
-/// * **Stage 2, optional**: `vertex_count` vertices of the link's exact convex
-///   hull, packed CSR-style at `CollisionModel::hull_vertices[vertex_first]`.
-///   `vertex_count == 0` means this link stops at stage 1 — the representation
-///   `link1` uses, because its exact hull is over `kMaxTightHullVertices`.
+/// * Stage 1, always on: 26-DOP slabs [dop_lo[i], dop_hi[i]] along
+///   kDopAxis[i]. Built offline as tangent halfspaces u.x <= h_mesh(u), so
+///   containment of the true mesh is true by construction, not by fit — no
+///   optimiser tolerance in the argument.
+/// * Stage 2, optional: vertex_count vertices of the link's exact convex
+///   hull, CSR-packed at CollisionModel::hull_vertices[vertex_first].
+///   vertex_count == 0 stops at stage 1 (link1's representation: its exact
+///   hull exceeds kMaxTightHullVertices).
 struct LinkHull {
   int vertex_first{0};        ///< offset into CollisionModel::hull_vertices
   int vertex_count{0};        ///< hull vertex count; 0 = stage 1 only
@@ -216,25 +209,24 @@ struct WorldModel {
   std::vector<Capsule> capsules;
 };
 
-/// Binding absolute ceiling on the declaration-scoped place approach allowance
-/// (ADR-0097's 2026-08-14 amendment, Condition 1, as calibrated by its
-/// **Second Amendment 2026-08-15**; hazard log HZ-0097-4 mitigation 1 and its
-/// "Calibration 2026-08-15" subsection). The allowance is
-/// `min(kPlaceApproachAllowanceVoxels × one voxel, this)`, so a coarser map can
-/// only ever *shrink* it — never widen it. Both numbers are maintainer-set
-/// conditions, not implementation choices: Entry 010's HZ-0095-2 is the
-/// precedent the ceiling exists to prevent from recurring (a 25 mm
-/// sim-resolution parameter silently becoming 50 mm at real hardware's 5 cm
-/// resolution under a purely resolution-relative formula). Changing either
-/// needs a new recorded decision.
+/// Binding absolute ceiling on the declaration-scoped place approach
+/// allowance (ADR-0097's 2026-08-14 amendment, Condition 1, calibrated by
+/// its Second Amendment 2026-08-15; hazard log HZ-0097-4 mitigation 1,
+/// "Calibration 2026-08-15"). Allowance = min(kPlaceApproachAllowanceVoxels
+/// x one voxel, this), so a coarser map can only *shrink* it, never widen.
+/// Both numbers are maintainer-set conditions, not implementation choices:
+/// Entry 010's HZ-0095-2 is the precedent this ceiling prevents recurring
+/// (a 25 mm sim-resolution parameter silently becoming 50 mm at real
+/// hardware's 5 cm resolution under a purely resolution-relative formula).
+/// Changing either needs a new recorded decision.
 ///
-/// The ceiling was `0.025` until 2026-08-15, when the 5-run battery
-/// (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) showed a one-voxel
-/// allowance is *structurally* marginal rather than occasionally short: it is
+/// Was 0.025 until 2026-08-15, when the 5-run battery
+/// (spark:~/openral-runs/2026-08-15-baguette-battery/run1) showed a
+/// one-voxel allowance is *structurally* marginal, not occasionally short:
 /// sized to absorb exactly the ~one-voxel map-vs-truth error at a placement
-/// pose, leaving nothing for the real contact the place witness is earned by
-/// making (run 1 read 26.48 mm of penetration at a −2.43 mm ground-truth
-/// contact, 1.48 mm past the old cap).
+/// pose, leaving nothing for the real contact the witness is earned by
+/// (run 1 read 26.48 mm penetration at a -2.43 mm ground-truth contact,
+/// 1.48 mm past the old cap).
 inline constexpr double kMaxPlaceApproachAllowanceM = 0.04;
 
 /// Voxel multiple in the same allowance (ADR-0097's Second Amendment). 37.5 mm
@@ -255,29 +247,28 @@ inline constexpr double place_approach_allowance_cap(double resolution) noexcept
   return scaled < kMaxPlaceApproachAllowanceM ? scaled : kMaxPlaceApproachAllowanceM;
 }
 
-/// How far PAST the approach allowance a declared payload's world contact may
-/// read before it stops being refusable and becomes a latched stop (#176).
+/// How far PAST the approach allowance a declared payload's world contact
+/// may read before it stops being refusable and becomes a latched stop
+/// (#176).
 ///
-/// Sized by the measured OVERSHOOT, not by a voxel multiple, and the difference
-/// matters. The approach allowance is calibrated for a payload *reaching* its
-/// support through a voxel-inflated opening; a payload that has *arrived* reads
-/// a little deeper still, for reasons that are all map discretisation and none
-/// of them force. On the 2026-08-26 `oriented-grid-2` round the baguette place
-/// read **−38.22 mm** against a 37.5 mm allowance — **0.72 mm** over — while the
-/// ground-truth probe measured the physical contact at **−1.4 mm**.
+/// Sized by measured OVERSHOOT, not a voxel multiple: the approach
+/// allowance is calibrated for a payload *reaching* its support through a
+/// voxel-inflated opening; an *arrived* payload reads deeper, purely from
+/// map discretisation. 2026-08-26 oriented-grid-2: baguette place read
+/// -38.22 mm against a 37.5 mm allowance (0.72 mm over) while ground truth
+/// measured -1.4 mm contact.
 ///
-/// 0.2 voxels (5 mm on sim's 25 mm grid) is ~7x that overshoot, which is the
-/// headroom a calibration deserves, and it is deliberately NOT larger. Per-cell
-/// penetration saturates near the allowance itself — measured, the deepest
-/// reachable payload-vs-cell reading is −37.50 mm at 25 mm and −50.00 mm at
-/// 50 mm — so a band of a full voxel would cover the entire reachable range and
-/// the depth bound would stop bounding anything. At 0.2 voxels real depth still
-/// latches on both lattices.
+/// 0.2 voxels (5 mm on sim's 25 mm grid) is ~7x that overshoot — deliberately
+/// not larger. Per-cell penetration saturates near the allowance itself
+/// (measured deepest reachable payload-vs-cell: -37.50 mm at 25 mm,
+/// -50.00 mm at 50 mm), so a full-voxel band would cover the whole reachable
+/// range and stop bounding anything; at 0.2 voxels real depth still latches
+/// on both lattices.
 ///
-/// The band is NOT permission to penetrate. A reading inside it refuses the
-/// candidate action; it just refuses it the way a controller refuses an
-/// unreachable pose, rather than by latching a fault the operator must reset.
-/// Past the band, the stop is exactly the latched one it is today.
+/// Not permission to penetrate: a reading inside it refuses the candidate
+/// action the way a controller refuses an unreachable pose, not by latching
+/// a fault the operator must reset. Past the band it's the latched stop it
+/// is today.
 inline constexpr double kPlaceAdvisoryDepthVoxels = 0.2;
 
 /// Absolute ceiling on that band, the same two-number construction (and the
@@ -317,32 +308,32 @@ inline constexpr std::size_t kMaxPlaceTargetPrimitives = 64;
 
 struct AttachedPrimitive;
 
-/// The producer-supplied region of a live place declaration (ADR-0097's
-/// 2026-08-14 amendment), lowered into the kernel's own frame convention: an
-/// oriented box whose `pose` is expressed in the **robot base frame** — the same
-/// frame the occupancy grid is in, which is why the node only accepts a region
-/// whose declared `frame_id` matches the grid's.
+/// Producer-supplied region of a live place declaration (ADR-0097's
+/// 2026-08-14 amendment), lowered into the kernel's frame convention: an
+/// oriented box whose pose is in the robot base frame — same as the
+/// occupancy grid, which is why the node only accepts a region whose
+/// declared frame_id matches the grid's.
 ///
-/// While it is valid, payload-vs-world voxel checks for the objects named in
-/// `object_mask` run at a margin reduced by
-/// `place_approach_allowance_cap(resolution)` against cells whose **centre** lies
-/// inside the box. Everything else is untouched: arm-vs-world, payload-vs-world outside the
-/// box, the support-contact witness, and the reported evidence. The region is a
-/// license to *approach* the contact the declaration already licenses — the hard
-/// stop behind the reduced margin is unchanged, so deepening past the allowance
-/// still stops (HZ-0097-4 mitigation 3).
+/// While valid, payload-vs-world voxel checks for objects in object_mask
+/// run at a margin reduced by place_approach_allowance_cap(resolution)
+/// against cells whose CENTRE lies inside the box. Everything else is
+/// untouched: arm-vs-world, payload-vs-world outside the box, the
+/// support-contact witness, the reported evidence. A license to *approach*
+/// the contact the declaration already licenses — the hard stop behind the
+/// reduced margin is unchanged, so deepening past the allowance still stops
+/// (HZ-0097-4 mitigation 3).
 ///
-/// `valid == false` — no declaration, a retracted or expired one, a region the
-/// producer never supplied, or one that failed `ingest_place_region` — means no
-/// allowance anywhere, i.e. behaviour identical to before the amendment.
+/// valid == false (no declaration, retracted/expired, never supplied, or
+/// failed ingest_place_region) means no allowance anywhere — identical to
+/// pre-amendment behaviour.
 ///
-/// `geometry` is the ADR-0098 half: the declared target's OWN primitives, posed
-/// in the robot base frame, so a cell inside the box can be adjudicated against
-/// the modelled surface instead of against the 25 mm cube that quantised it.
-/// It is a **view** — the node owns the buffer, exactly as it owns
-/// `VoxelGrid::occupancy` — and `nullptr` / `n_geometry == 0` is the ordinary
-/// case for every producer that measures a box but no geometry, in which the
-/// region behaves precisely as it did before ADR-0098.
+/// geometry is the ADR-0098 half: the declared target's OWN primitives,
+/// posed in the robot base frame, so a cell inside the box can be
+/// adjudicated against the modelled surface instead of the 25 mm cube that
+/// quantised it. A VIEW — the node owns the buffer, as with
+/// VoxelGrid::occupancy — and nullptr/n_geometry == 0 is the ordinary case
+/// for a producer that measures a box but no geometry, where the region
+/// behaves exactly as before ADR-0098.
 struct PlaceApproachRegion {
   bool valid{false};            ///< a live, validated region is in force
   std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
@@ -354,16 +345,15 @@ struct PlaceApproachRegion {
 
 /// Outcome of a place-region ingest attempt (`ingest_place_region`).
 ///
-/// Every value other than `kOk` means exactly one thing to the geometry — *no
-/// allowance*, i.e. the unchanged pre-amendment margin — and something quite
-/// different to whoever reads the log, which is why the outcome is not a bool.
-/// `kNoObject` is the ordinary pre-grasp state: dispatch declares the place
-/// phase before the payload is attached, so the declaration resolves to no
-/// carried object on every attachment heartbeat until the grasp lands. The
-/// remaining values are producer errors in a message that reached the kernel.
-/// Collapsing the two into one `reason=bounds` label is what round-8
-/// (`spark:~/openral-runs/2026-08-15-round8/`) reported as 672-811 identical
-/// bounds warnings per run, none of which described a bound.
+/// Every value other than kOk means the same thing to the geometry (*no
+/// allowance* — unchanged pre-amendment margin) but something different to
+/// whoever reads the log, so the outcome is not a bool. kNoObject is the
+/// ordinary pre-grasp state: dispatch declares the place phase before the
+/// payload is attached, so the declaration resolves to no carried object
+/// until the grasp lands. The rest are producer errors. Collapsing both
+/// into one reason=bounds label is what round-8
+/// (spark:~/openral-runs/2026-08-15-round8/) reported as 672-811 identical
+/// bounds warnings per run, none describing a bound.
 enum class PlaceRegionStatus : std::uint8_t {
   kOk = 0,
   kNoObject = 1,        ///< empty object_mask — the declared payload is not carried
@@ -384,17 +374,16 @@ enum class PlaceRegionStatus : std::uint8_t {
 struct VoxelGrid {
   /// Base-frame pose of voxel (0,0,0)'s minimum corner.
   ///
-  /// `pose.r` is NOT decoration: the grid's lattice is the source map's, fixed
-  /// in map/odom, so its axes turn relative to `base_frame` as the robot does.
-  /// Cell indices run along the grid's own axes and a cell cube is oriented by
-  /// `pose.r`. Publishing on the map's lattice is what removes the 29-40 mm
-  /// dilation a base-aligned grid had to pay to re-express one lattice on
-  /// another (issue #173); the rotation is carried here instead of being
-  /// dissolved into extra occupied cells.
+  /// pose.r is NOT decoration: the grid's lattice is the source map's, fixed
+  /// in map/odom, so its axes turn relative to base_frame as the robot does.
+  /// Cell indices run along the grid's own axes, oriented by pose.r.
+  /// Publishing on the map's lattice removes the 29-40 mm dilation a
+  /// base-aligned grid paid to re-express one lattice on another (issue
+  /// #173); the rotation is carried here instead of dissolving into extra
+  /// occupied cells.
   ///
-  /// Identity is the correct value only for a grid whose lattice really is
-  /// base-aligned; the ingest refuses a non-unit rotation rather than assuming
-  /// one.
+  /// Identity is correct only for a lattice that really is base-aligned;
+  /// ingest refuses a non-unit rotation rather than assuming one.
   Transform pose{};
   double resolution{0.0};  ///< voxel edge length (m)
   int sx{0};               ///< grid dimensions
@@ -411,38 +400,37 @@ struct VoxelGrid {
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
 ///
-/// `link_a`, `link_b` and `min_distance` always describe **one and the same**
-/// geometry pair: on a hit they are the deepest pair that actually tripped the
-/// check's gate. They must never be sampled from different pairs — evidence
-/// that names one cell and quotes another cell's distance sends downstream
-/// diagnosis after a penetration that does not exist (an attached payload's
-/// exempt attach-time contact residue reading as if it were the fresh support
-/// contact that stopped the robot).
+/// link_a, link_b and min_distance always describe ONE geometry pair: on a
+/// hit, the deepest pair that tripped the gate. Never sample them from
+/// different pairs — evidence naming one cell while quoting another's
+/// distance sends downstream diagnosis after a penetration that doesn't
+/// exist (e.g. an exempt attach-time contact residue reading as the fresh
+/// support contact that stopped the robot).
 ///
-/// `sweep_min_distance` is the separate, sweep-wide figure: the minimum
-/// surface distance over **every** pair the check touched, including pairs
-/// that stayed clear of the margin and pairs the gate deliberately exempted.
-/// It is a diagnostic, not the reason for the stop — keep it in its own field
-/// and its own log key.
+/// sweep_min_distance is the separate, sweep-wide minimum over EVERY pair
+/// checked, including pairs that stayed clear of the margin or were
+/// exempted. Diagnostic only, not the reason for the stop — its own field,
+/// its own log key.
 ///
 /// With no hit there is no pair to describe, so `min_distance` keeps its
 /// clearance meaning and equals `sweep_min_distance`. Both are `+inf` when the
 /// check compared nothing.
-/// `place_allowance_active` is disclosure, never a decision (CLAUDE.md §1.4):
-/// it is true when the reported pair tripped a margin that the declaration-
-/// scoped place approach allowance had *reduced*, so an operator reading the
-/// evidence knows the stop happened inside a declared region at a reduced
-/// margin. `min_distance` stays the pair's true surface distance either way.
-/// `advisory` narrows what a hit *licenses the caller to do*, and nothing else.
-/// It is true only for the one class in issue #176: an attached payload against
-/// world occupancy, inside its own declared place region, at a depth past the
-/// approach allowance but still inside `kPlaceAdvisoryDepthVoxels` of it. The
-/// caller refuses the candidate action without latching a fault or asserting
-/// E-stop, and bounds how many times in a row it will do so.
+/// place_allowance_active is disclosure, never a decision (CLAUDE.md §1.4):
+/// true when the reported pair tripped a margin the declaration-scoped
+/// place approach allowance had *reduced*, so an operator knows the stop
+/// happened inside a declared region at a reduced margin. min_distance
+/// stays the pair's true surface distance either way.
 ///
-/// It is never set for a robot link, never outside a live declaration, and
-/// never past that depth — every one of those stays the latched stop it is
-/// today. `hit` is still true: an advisory hit is a refusal, not a pass.
+/// advisory narrows what a hit *licenses the caller to do*, nothing else.
+/// True only for issue #176's one class: an attached payload against world
+/// occupancy, inside its own declared place region, past the approach
+/// allowance but still within kPlaceAdvisoryDepthVoxels of it — the caller
+/// refuses the action without latching a fault or E-stop, bounded to a
+/// capped number of consecutive refusals.
+///
+/// Never set for a robot link, never outside a live declaration, never past
+/// that depth — those stay the latched stop. hit is still true: an
+/// advisory hit is a refusal, not a pass.
 struct CollisionHit {
   bool hit{false};
   int link_a{-1};
@@ -457,23 +445,22 @@ struct CollisionHit {
   /// declared target rather than the cell, so the evidence can never quote one
   /// geometry's distance under another's identity.
   bool place_target_adjudicated{false};
-  /// The reported `min_distance` is the OBB's **bound**, not a measurement of
-  /// the geometry named in the evidence.
+  /// Reported min_distance is the OBB's BOUND, not a measurement of the
+  /// geometry named in the evidence.
   ///
   /// Set only for a self-collision pair whose two links both ship a stage-2
-  /// hull (#191/#202) and whose hulls the GJK found **overlapping**. Penetration
-  /// depth needs an expanding-polytope step the kernel does not run, so on that
-  /// branch `hull_hull_distance` falls back to `box_box_distance`. That number
-  /// is sound — the hull is contained in its box, so the box can only report
-  /// MORE penetration — but it can be far looser than the truth: on
-  /// `panda_link5` <-> `panda_link7` at the 2026-09-04 battery's tripping
-  /// configuration it reads -31.97 mm for a ~1.5 mm hull interpenetration, 20x.
+  /// hull (#191/#202) and whose hulls GJK found OVERLAPPING. Penetration
+  /// depth needs an expanding-polytope step the kernel doesn't run, so on
+  /// that branch hull_hull_distance falls back to box_box_distance — sound
+  /// (hull is contained in its box, so the box can only report MORE
+  /// penetration) but can be far looser than truth: panda_link5<->panda_link7
+  /// at the 2026-09-04 battery's tripping configuration reads -31.97 mm for
+  /// a ~1.5 mm hull interpenetration, 20x.
   ///
-  /// Publishing that under the identity of a check that exists *because* the
-  /// box cannot be trusted for the pair is the defect this flag closes. The trip
-  /// decision is unaffected — both numbers are <= 0 and the pair trips either
-  /// way — so this is disclosure, exactly like `place_target_adjudicated`, and
-  /// never a gate.
+  /// Publishing that under the identity of a check that exists BECAUSE the
+  /// box can't be trusted for the pair is the defect this flag closes. Trip
+  /// decision is unaffected (both numbers <= 0, pair trips either way) —
+  /// disclosure only, like place_target_adjudicated, never a gate.
   bool depth_is_box_bound{false};
 };
 
@@ -530,14 +517,13 @@ struct AttachedObject {
   Vec3 support_normal{0.0, 0.0, 1.0};   ///< unit outward support normal, object frame
   double support_patch_radius{0.0};     ///< lateral radius of the supported patch (m)
   double support_max_penetration{0.0};  ///< attested PHYSICAL contact depth bound (m)
-  /// ADR-0100 contact-force witness. `has_contact_force_witness` is the wire's
-  /// `contact_force_valid`; `contact_force_calibrated` is the witness's own
-  /// `magnitude_calibrated`, and WITHOUT it `contact_force_magnitude` is not in
-  /// Newtons and the gate must not read it (survey §21.7 — no published work
+  /// ADR-0100 contact-force witness. has_contact_force_witness is the wire's
+  /// contact_force_valid; contact_force_calibrated is the witness's own
+  /// magnitude_calibrated — WITHOUT it, contact_force_magnitude is not in
+  /// Newtons and the gate must not read it (survey §21.7: no published work
   /// validates MuJoCo force magnitudes against real F/T measurements).
-  /// `contact_force_target_matches` is resolved at ingest: the witness's
-  /// `target_id` names the live declaration's target. All three default to the
-  /// no-gate state.
+  /// contact_force_target_matches is resolved at ingest: witness's target_id
+  /// names the live declaration's target. All three default to no-gate.
   bool has_contact_force_witness{false};
   bool contact_force_calibrated{false};
   bool contact_force_target_matches{false};
@@ -556,17 +542,17 @@ struct AttachedObject {
 /// for hands and fingers (140 N), the most permissive body region in the table.
 inline constexpr double kMaxContactForceThresholdN = 140.0;
 
-/// The live declaration's contact-force bound (ADR-0100, survey Path C).
+/// Live declaration's contact-force bound (ADR-0100, survey Path C).
 ///
-/// Deliberately NOT folded into `PlaceApproachRegion`: that struct is valid only
-/// when a producer measured a region, and dispatch publishes declarations with
-/// no region at all (`region_valid=false`). The force bound travels with the
-/// *declaration*, which exists in both cases, so it needs its own carrier.
+/// Deliberately NOT folded into PlaceApproachRegion: that struct is valid
+/// only when a producer measured a region, but dispatch publishes
+/// declarations with no region at all (region_valid=false). The force bound
+/// travels with the *declaration*, which exists in both cases, so it needs
+/// its own carrier.
 ///
-/// `valid == false` — no declaration, a retracted or expired one, or a
-/// declaration whose `threshold_n <= 0` — means NO force gate anywhere, i.e.
-/// behaviour identical to before ADR-0100. That is the default and the
-/// fail-toward-shipped direction.
+/// valid == false (no declaration, retracted/expired, or threshold_n <= 0)
+/// means NO force gate anywhere — identical to pre-ADR-0100 behaviour. The
+/// default, and the fail-toward-shipped direction.
 struct PlaceForceGate {
   bool valid{false};            ///< a live declaration supplies a positive threshold
   std::uint8_t object_mask{0};  ///< bit i: attached object i is the declaration's payload
@@ -575,11 +561,10 @@ struct PlaceForceGate {
 
 /// Outcome of the declaration-scoped contact-force gate.
 ///
-/// `tripped` is the ONLY thing this can say. The gate adds a refusal and can
-/// never remove one (ADR-0100 §1): it is evaluated after every geometric check
-/// has already passed, so a `tripped` result converts an accept into a refusal
-/// and nothing else. There is no branch by which it turns a refusal into an
-/// accept, widens a margin, or creates an exemption.
+/// tripped is the ONLY thing this can say. The gate adds a refusal, never
+/// removes one (ADR-0100 §1): evaluated after every geometric check passed,
+/// so tripped converts an accept into a refusal, nothing else — no branch
+/// turns a refusal into an accept, widens a margin, or creates an exemption.
 struct ContactForceGateResult {
   bool tripped{false};
   int object_index{-1};    ///< attached object whose witness tripped, or -1
@@ -683,25 +668,24 @@ enum class TightGeometryStatus : std::uint8_t {
   kDegenerate = 5,       ///< non-finite or inverted slab
 };
 
-/// Prove, at configure time, that every declared tight representation is a
-/// subset of the shipped OBB it refines — the single assertion that keeps the
-/// broad-phase window (`check_voxel_collision`'s `ex`/`ey`/`ez` reach) correct
-/// without changing a line of it.
+/// Proves, at configure time, that every declared tight representation is a
+/// subset of the shipped OBB it refines — the assertion that keeps the
+/// broad-phase window (check_voxel_collision's ex/ey/ez reach) correct
+/// without touching it.
 ///
-/// The chain checked here is `hull vertices ⊆ 26-DOP ⊆ shipped OBB`, both links
-/// definitional rather than fitted:
-///
+/// Chain checked: hull vertices ⊆ 26-DOP ⊆ shipped OBB, both links
+/// definitional, not fitted:
 /// * a stage-2 vertex must satisfy every one of the 26 slab constraints;
-/// * the DOP's first three axes ARE the box's axes, and a 26-DOP lies inside
-///   its own first three slabs, so `-half_extents[k] <= dop_lo[k] <=
-///   dop_hi[k] <= half_extents[k]` proves the whole polytope is inside the box.
+/// * the DOP's first three axes ARE the box's axes, and a 26-DOP lies
+///   inside its own first three slabs, so -half_extents[k] <= dop_lo[k] <=
+///   dop_hi[k] <= half_extents[k] proves the whole polytope is inside the box.
 ///
-/// The remaining obligation — that the true link *mesh* is inside the DOP — is
-/// discharged offline by construction (the slabs are tangent halfspaces
-/// `u.x <= h_mesh(u)`) and re-proved against the real mesh by
-/// `tests/unit/test_collision_tight_geometry.py`. The kernel never sees a mesh.
+/// The remaining obligation — true link MESH inside the DOP — is discharged
+/// offline by construction (slabs are tangent halfspaces u.x <= h_mesh(u))
+/// and re-proved against the real mesh by
+/// tests/unit/test_collision_tight_geometry.py. The kernel never sees a mesh.
 ///
-/// On refusal `offending_box` receives the offending index. Not on the hot
+/// On refusal offending_box receives the offending index. Not on the hot
 /// path. Allocation-free.
 TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
                                             std::size_t& offending_box) noexcept;
@@ -765,79 +749,77 @@ struct GjkWitness {
   int n{0};
 };
 
-/// Stage 2 — a lower bound on the surface distance between the link's **exact
-/// convex hull** and the occupied voxel cube, equal to that distance (to
-/// `kGjkTolerance`) on convergence. GJK over the hull's vertex list against the
-/// cube's eight corners.
+/// Stage 2 — a lower bound on the surface distance between the link's EXACT
+/// CONVEX HULL and the occupied voxel cube, equal to that distance (to
+/// kGjkTolerance) on convergence. GJK over the hull's vertex list against
+/// the cube's eight corners.
 ///
-/// Conservatism does not depend on convergence. Every value the routine can
-/// return is a supporting-hyperplane lower bound on the true distance, so the
-/// iteration cap, the early exit once the bound clears `margin`, and the
-/// overlap case can each only make the answer **more** conservative — never
-/// less. On overlap, and whenever the bound would be worse than the stage-1
-/// figure, `fallback` (stage 1's bound, which is <= 0 whenever the hull and the
-/// cell actually overlap, because the DOP contains the hull) is returned
-/// instead.
+/// Conservatism doesn't depend on convergence: every value returned is a
+/// supporting-hyperplane lower bound on the true distance, so the iteration
+/// cap, the early exit once the bound clears margin, and the overlap case
+/// can each only make the answer MORE conservative, never less. On overlap,
+/// or whenever the bound would be worse than stage 1's figure, fallback
+/// (stage 1's bound, <= 0 whenever hull and cell actually overlap since the
+/// DOP contains the hull) is returned instead.
 ///
-/// The support function is an exhaustive scan of the vertex list. That is
-/// deliberate and is the reason `kMaxTightHullVertices` exists: a hill-climbing
-/// support over an edge graph is the usual acceleration, but under floating
-/// point it can stop one vertex short of the true support, and a support that
-/// is not the true maximum turns the supporting-hyperplane bound into an
-/// **over**-report of clearance. The kernel buys soundness with a linear scan
-/// and bounds the cost with the vertex ceiling instead.
+/// Support function is an exhaustive vertex-list scan, deliberately — the
+/// reason kMaxTightHullVertices exists: the usual hill-climbing support
+/// over an edge graph can, under floating point, stop one vertex short of
+/// the true support, turning the supporting-hyperplane bound into an
+/// OVER-report of clearance. The kernel buys soundness with a linear scan
+/// and bounds cost with the vertex ceiling instead.
 ///
-/// `seed_dir` is stage 1's winning separating-axis normal. Allocation-free
+/// seed_dir is stage 1's winning separating-axis normal. Allocation-free
 /// (fixed-size stack simplex).
 double hull_cell_distance(const TightPose& pose, const Vec3& center, double half_side,
                           const Vec3& seed_dir, double margin, double fallback,
                           GjkWitness& witness) noexcept;
 
-/// A lower bound on the surface distance between **two links' exact convex
-/// hulls**, equal to that distance (to `kGjkTolerance`) on convergence. The
-/// same GJK as `hull_cell_distance`, with the voxel cube's eight corners
-/// replaced by the second hull's vertex list.
+/// Lower bound on the surface distance between TWO LINKS' exact convex
+/// hulls, equal to that distance (to kGjkTolerance) on convergence. Same GJK
+/// as hull_cell_distance, with the voxel cube's eight corners replaced by
+/// the second hull's vertex list.
 ///
-/// This is the self-collision counterpart of stage 2, and it exists because the
-/// OBB cannot answer the question for a pair whose links interleave: on
-/// `panda_link5` <-> `panda_link7` the boxes overlap over 86.38 % of the pair's
-/// (joint6, joint7) grid while the real geometry interpenetrates over 6.60 %,
-/// and **no margin separates the two populations** — the deepest real collision
-/// sits at a box gap of -8.37 mm and the shallowest false one at -36.64 mm.
-/// That is why the pair shipped ACM-exempted "under protest" (issue #155, PR
-/// #169) until the hulls landed. See `docs/reference/collision-hull-narrow-phase.md`.
+/// Self-collision counterpart of stage 2, needed because the OBB can't
+/// separate a pair whose links interleave: on panda_link5<->panda_link7 the
+/// boxes overlap over 86.38% of the pair's (joint6, joint7) grid while real
+/// geometry interpenetrates over 6.60%, and no margin separates the two
+/// populations (deepest real collision: box gap -8.37 mm; shallowest false
+/// one: -36.64 mm) — why the pair shipped ACM-exempted "under protest"
+/// (issue #155, PR #169) until the hulls landed. See
+/// docs/reference/collision-hull-narrow-phase.md.
 ///
-/// Conservatism, exactly as for `hull_cell_distance`: every value returned is a
-/// supporting-hyperplane lower bound on the true hull-to-hull distance, so the
-/// iteration cap can only make the answer more conservative. Unlike the cell
-/// routine this one does **not** stop at the first bound clearing `margin` —
-/// its result is the reported `sweep_min_distance` rather than one of hundreds
-/// of per-cell numbers, and the early exit was measured returning 4.2 mm for a
-/// pair genuinely 60.0 mm apart. On overlap, and whenever the bound is worse than
-/// `fallback` (the caller's `box_box_distance`, which is <= 0 whenever the
-/// hulls actually overlap, because each box contains its hull), `fallback` is
-/// returned instead. A link that ships no stage-2 hull returns `fallback`
-/// unchanged, so a manifest without `tight_geometry` behaves exactly as before.
+/// Conservatism as for hull_cell_distance: every value is a
+/// supporting-hyperplane lower bound, so the iteration cap can only make
+/// the answer more conservative. Unlike the cell routine this does NOT stop
+/// at the first bound clearing margin — its result is the reported
+/// sweep_min_distance, not one of hundreds of per-cell numbers, and the
+/// early exit was measured returning 4.2 mm for a pair genuinely 60.0 mm
+/// apart. On overlap, or whenever the bound is worse than fallback (the
+/// caller's box_box_distance, <= 0 whenever the hulls actually overlap
+/// since each box contains its hull), fallback is returned instead. A link
+/// with no stage-2 hull returns fallback unchanged, so a manifest without
+/// tight_geometry behaves exactly as before.
 ///
-/// **Refining is the less-conservative direction, and that is the point**: the
-/// hull is `conv(collision mesh)`, so it contains the geometry the robot is
-/// actually made of and cannot clear a pose the real links occupy. What it
-/// removes is the box's corner slop, which is what forced the exemption.
+/// Refining is the less-conservative direction, and that's the point: the
+/// hull is conv(collision mesh), so it contains the geometry the robot is
+/// actually made of and can't clear a pose the real links occupy. What it
+/// removes is the box's corner slop — what forced the exemption.
 ///
-/// Cold-started (no witness cache): a self-collision pair is checked at most
-/// once per configuration, so there is no neighbouring cell to warm-start from.
+/// Cold-started (no witness cache): a self-collision pair is checked at
+/// most once per configuration, no neighbouring cell to warm-start from.
 /// Allocation-free (fixed-size stack simplex).
 ///
-/// **Cost, measured on the shipped `panda_mobile` at its robosuite reset pose**
-/// (-O3, this dev host, 200 000 calls): `check_self_collision` goes from 0.758
-/// to 2.303 us per call, +1.545 us, 3.04x. The multiplier is large because the
-/// routine it sits in is small; over a 16-step horizon the addition is 24.7 us
-/// against a 10 ms budget, 0.25 %. It is also close to the sustained cost
-/// rather than a spike: this pair's boxes fail to clear on 86.38 % of its
-/// configuration space, so the GJK runs nearly every call. If a future robot
-/// makes that bite, the next lever is a DOP-vs-DOP stage 1 in front of the GJK
-/// (the same shape as `dop_cell_lower_bound`), not a looser support function —
-/// see `kMaxTightHullVertices` for why the scan stays exhaustive.
+/// Cost, measured on shipped panda_mobile at its robosuite reset pose (-O3,
+/// this dev host, 200000 calls): check_self_collision goes from 0.758 to
+/// 2.303 us/call, +1.545 us, 3.04x. Multiplier is large because the routine
+/// it sits in is small; over a 16-step horizon the addition is 24.7 us
+/// against a 10 ms budget, 0.25%. Close to sustained cost, not a spike:
+/// this pair's boxes fail to clear on 86.38% of its configuration space, so
+/// GJK runs nearly every call. If a future robot makes that bite, the next
+/// lever is a DOP-vs-DOP stage 1 in front of the GJK (same shape as
+/// dop_cell_lower_bound), not a looser support function — see
+/// kMaxTightHullVertices for why the scan stays exhaustive.
 double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
                           double fallback, bool* depth_is_box_bound = nullptr) noexcept;
 
@@ -900,34 +882,33 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
                        const double ee_twist[6], double lambda, double* dq, std::size_t n_dof,
                        const std::uint8_t* dof_blocked = nullptr) noexcept;
 
-/// Check every robot capsule (FK'd via `scratch`) against the occupied cells of
-/// a dense voxel `grid`. Only the voxels inside each capsule's inflated AABB
-/// are tested (bounded), and each occupied voxel is treated conservatively as a
-/// cube at the cell centre. On a hit, `link_a` is the robot link index and
-/// `link_b` is the linear index of the deepest cell within the margin, and
-/// `min_distance` is that cell's distance (`CollisionHit`). Allocation-free.
+/// Checks every robot capsule (FK'd via scratch) against the occupied cells
+/// of a dense voxel grid. Only voxels inside each capsule's inflated AABB
+/// are tested (bounded); each occupied voxel is treated conservatively as a
+/// cube at the cell centre. On a hit, link_a is the robot link index,
+/// link_b the linear index of the deepest cell within margin, min_distance
+/// that cell's distance (CollisionHit). Allocation-free.
 ///
-/// A boxed link whose `box_hull` entry names a `LinkHull` runs the **staged**
-/// narrow phase instead of `box_box_distance`: a 26-DOP separating-axis bound
-/// on every occupied cell, then GJK on the link's exact convex hull only for
-/// the cells the DOP cannot clear. Both stages are strict subsets of the
-/// shipped OBB (proved at configure time by `validate_tight_geometry`), so the
-/// broad-phase window above is unchanged and cannot miss a cell it visits
-/// today. The reported distance is still a lower bound on the true link-mesh-
-/// to-cell distance — it is merely a **tighter** one, which is the whole point:
-/// the kernel gives away less clearance it never had. Links without tight
-/// geometry, every capsule-lowered robot, and every other check in this header
-/// keep the shipped primitive path exactly as it is.
+/// A boxed link whose box_hull entry names a LinkHull runs the STAGED
+/// narrow phase instead of box_box_distance: a 26-DOP separating-axis bound
+/// on every occupied cell, then GJK on the link's exact convex hull only
+/// for cells the DOP can't clear. Both stages are strict subsets of the
+/// shipped OBB (proved at configure time by validate_tight_geometry), so
+/// the broad-phase window is unchanged and can't miss a cell it visits
+/// today. The reported distance is still a lower bound on the true
+/// link-mesh-to-cell distance, just TIGHTER — the kernel gives away less
+/// clearance it never had. Links without tight geometry, every
+/// capsule-lowered robot, and every other check here keep the shipped
+/// primitive path unchanged.
 ///
-/// `band_m` widens ONLY the broad-phase cell window, never the trip threshold.
-/// A cell still trips at `margin` and nothing else; `band_m` exists so cells
-/// that are *clear* but within `margin + band_m` are still visited and folded
-/// into `sweep_min_distance`. Without it that field cannot see them at all —
-/// the window is sized by the margin, so on a real map the minimum jumps from
-/// "nothing in range" straight to a tripping cell, which is exactly what made
-/// the #188 velocity band dead code on its first implementation. Default 0.0 is
-/// the shipped window, byte-for-byte, and the extra cells are only scanned when
-/// a deployment arms the band.
+/// band_m widens ONLY the broad-phase cell window, never the trip
+/// threshold. A cell still trips at margin alone; band_m exists so cells
+/// clear but within margin + band_m are still visited and folded into
+/// sweep_min_distance. Without it, the window is sized by margin alone and
+/// on a real map the minimum jumps from "nothing in range" straight to a
+/// tripping cell — what made the #188 velocity band dead code on its first
+/// implementation. Default 0.0 is the shipped window byte-for-byte; extra
+/// cells are scanned only when a deployment arms the band.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin,
                                    double band_m = 0.0) noexcept;
@@ -962,73 +943,69 @@ CollisionHit check_attached_world_collision(const CollisionModel& model,
                                             const CollisionScratch& scratch,
                                             const WorldModel& world, double margin) noexcept;
 
-/// Check every attached payload against the occupied cells of a dense voxel
-/// `grid` (same conservative per-voxel cube treatment as
-/// `check_voxel_collision`). On a hit, `link_a` is the attached-object index
-/// and `link_b` is the linear index of the deepest cell that actually tripped
-/// the check, and `min_distance` is that cell's distance.
+/// Checks every attached payload against the occupied cells of a dense
+/// voxel grid (same conservative per-voxel cube treatment as
+/// check_voxel_collision). On a hit, link_a is the attached-object index,
+/// link_b the linear index of the deepest cell that tripped, min_distance
+/// that cell's distance.
 ///
 /// While a place declaration's region is live for this payload
-/// (`grid.place_region`), the *margin* each cell inside that region is gated
-/// against is first reduced by `place_approach_allowance` — the bounded license
-/// to reach the contact the declaration already permits (ADR-0097's 2026-08-14
-/// amendment, capped per its Second Amendment at `min(1.5 × voxel, 4 cm)`). That is a margin
-/// change, not an exemption: a cell deeper than the reduced margin still stops the robot, and the
-/// reported distance is the cell's true distance.
+/// (grid.place_region), the margin each cell inside it is gated against is
+/// first reduced by place_approach_allowance — the bounded license to reach
+/// the contact the declaration already permits (ADR-0097's 2026-08-14
+/// amendment, capped per its Second Amendment at min(1.5 x voxel, 4 cm)). A
+/// margin change, not an exemption: a cell deeper than the reduced margin
+/// still stops the robot, and the reported distance is the cell's true
+/// distance.
 ///
-/// When that declaration also ships the target's own geometry (ADR-0098,
-/// survey Path B), a cell it covers is instead **adjudicated against the
-/// modelled body**: the pair's distance becomes `place_target_distance` and the
-/// gate moves to the surface itself, with `place_target_adjudicated` set so the
-/// caller names the declared target rather than the cell. A margin is a standoff
-/// for geometry the robot must not touch, and the declared target is the one
-/// body in the map it was dispatched to touch, so it is gated as an
-/// intended-contact pair at zero clearance — the contract Tesseract's negatable
-/// per-pair margins and MoveIt's `touch_links` both express (survey §17.2,
-/// §3.2). The advisory band still covers arrival overshoot; past it the latched
-/// stop is unchanged.
+/// When the declaration also ships the target's own geometry (ADR-0098,
+/// survey Path B), a covered cell is instead adjudicated against the
+/// MODELLED BODY: the pair's distance becomes place_target_distance, the
+/// gate moves to the surface itself, and place_target_adjudicated is set so
+/// the caller names the declared target, not the cell. A margin is a
+/// standoff for geometry the robot must not touch; the declared target is
+/// the one body it was dispatched to touch, so it's gated as an
+/// intended-contact pair at zero clearance — the contract Tesseract's
+/// negatable per-pair margins and MoveIt's touch_links both express
+/// (survey §17.2, §3.2). The advisory band still covers arrival overshoot;
+/// past it the latched stop is unchanged.
 ///
-/// Two bounds carry the safety argument, and they point in opposite directions
-/// on purpose:
-///
-/// 1. Against **truth**, this is strictly more conservative than the blanket
-///    allowance it refines. The blanket lets the payload sit `allowance` inside
-///    a cube whose near face may be a whole voxel in front of the real surface,
-///    so what it permits against the real body is unknowable; this permits
-///    penetration of the real body of zero.
-/// 2. Against the **cube**, it is looser — by exactly the amount the cube
-///    over-stated the surface, and never by more than the blanket allowance
-///    already in force. The substitution is taken only while
-///    `d_target <= d_cell + allowance`; a model claiming more clearance than the
-///    map's own quantisation could explain (a primitive fitted too small, a
-///    stale articulated door) is refused and the pair falls back to the blanket
-///    path bit for bit.
+/// Two bounds carry the safety argument, in opposite directions on
+/// purpose:
+/// 1. Against TRUTH, strictly more conservative than the blanket allowance
+///    it refines: the blanket lets the payload sit `allowance` inside a
+///    cube whose near face may be a whole voxel in front of the real
+///    surface (unknowable permission against the real body); this permits
+///    zero penetration of the real body.
+/// 2. Against the CUBE, looser — by exactly the amount the cube
+///    over-stated the surface, never more than the blanket allowance
+///    already in force. Taken only while d_target <= d_cell + allowance; a
+///    model claiming more clearance than the map's quantisation could
+///    explain (a primitive fitted too small, a stale articulated door) is
+///    refused and falls back to the blanket path bit for bit.
 ///
 /// A declaration with no geometry is byte-for-byte the pre-ADR-0098 path.
 ///
 /// Two — and only two — exemptions can spare a cell outright, both bounded:
+/// 1. Support-contact witness (ADR-0092 D6): object i carries a World
+///    State attestation, its bit live in grid.support_witness_live, and
+///    the cell satisfies support_contact_exempts — inside the attested
+///    patch laterally, no higher above the attested plane than the voxel
+///    cube's projected half-width + attested physical depth +
+///    grid.attached_contact_tolerance + one voxel of co-planar headroom.
+///    Lets a ~1 mm physical support contact survive 25 mm voxels: depth is
+///    measured against the attested plane, so cell-cube inflation is
+///    accounted for exactly instead of absorbed by a widened tolerance.
+/// 2. Embedded attach-time residue: the payload's own uncleared occupancy
+///    left in the map at attach (a cell already >= half a voxel inside the
+///    payload when the baseline was snapshotted). Stale self-occupancy,
+///    not support contact — the witness deliberately doesn't cover it.
 ///
-/// 1. **Support-contact witness** (ADR-0092 D6): object `i` carries a World
-///    State attestation, its bit is live in `grid.support_witness_live`, and
-///    the cell satisfies `support_contact_exempts` — inside the attested patch
-///    laterally, and no higher above the attested support plane than the voxel
-///    cube's own projected half-width plus the attested physical depth plus
-///    `grid.attached_contact_tolerance` plus one voxel of co-planar headroom.
-///    This is what lets a ~1 mm physical support contact survive 25 mm voxels:
-///    the depth is measured against the attested plane, so the cell-cube
-///    inflation is accounted for exactly instead of being absorbed by a widened
-///    tolerance.
-/// 2. **Embedded attach-time residue**: the payload's own uncleared occupancy
-///    left in the map at attach (a cell already at least half a voxel inside
-///    the payload when the baseline was snapshotted). This is stale
-///    self-occupancy, not support contact, and the witness deliberately does
-///    not cover it.
-///
-/// An exempted cell never supplies the reported identity or distance — it
-/// reaches `sweep_min_distance` only, so an exempt cell can never be published
-/// as the contact that stopped the robot (`CollisionHit`). Allocation-free.
-/// `band_m` widens only the broad-phase cell window, exactly as it does for
-/// `check_voxel_collision`.
+/// An exempted cell never supplies the reported identity or distance —
+/// reaches sweep_min_distance only, so it can never be published as the
+/// contact that stopped the robot (CollisionHit). Allocation-free. band_m
+/// widens only the broad-phase cell window, exactly as for
+/// check_voxel_collision.
 CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
@@ -1040,37 +1017,35 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
 /// at any resolution separates "set the object down" from "crush it" (survey §9
 /// point 4). Force is the axis that does, and this is the check that reads it.
 ///
-/// **It only ever adds a refusal.** The caller evaluates it after every
-/// geometric check has already passed, so a tripped gate converts an accept into
-/// a refusal. There is no path here that widens a margin, creates an exemption,
-/// or lets a measured force license contact the geometry refused — that
-/// direction is the whole safety argument and it is enforced by this function
-/// having no way to express anything but `tripped` (ADR-0100 §1).
+/// It only ever adds a refusal. Evaluated after every geometric check has
+/// passed, so a tripped gate converts an accept into a refusal — no path
+/// widens a margin, creates an exemption, or lets a measured force license
+/// contact the geometry refused; that direction is the whole safety
+/// argument, enforced by this function having no way to express anything
+/// but `tripped` (ADR-0100 §1).
 ///
-/// It arms only when ALL FOUR of these hold, and every one fails toward the
-/// shipped geometry-only behaviour:
+/// Arms only when ALL FOUR hold, each failing toward shipped geometry-only
+/// behaviour:
+/// 1. attached.force_gate.valid — a live declaration supplies a positive,
+///    in-range threshold. Dispatch's default is 0.0 (no gate).
+/// 2. Object i's bit is set in force_gate.object_mask — follows the
+///    DECLARED payload, never a second object the robot happens to carry.
+/// 3. has_contact_force_witness && contact_force_target_matches — a
+///    witness is present and names the declared target.
+/// 4. contact_force_calibrated — producer asserted a named calibration.
+///    Without it contact_force_magnitude is not in Newtons and isn't read:
+///    no published work validates MuJoCo contact-force magnitudes against
+///    real force-torque measurements (survey §21.7), so uncalibrated is a
+///    producer quantity, never a physical claim (CLAUDE.md §1.2).
 ///
-/// 1. `attached.force_gate.valid` — a live declaration supplies a positive,
-///    in-range threshold. Dispatch's default is `0.0`, i.e. no gate.
-/// 2. Object `i`'s bit is set in `force_gate.object_mask` — the gate follows the
-///    *declared* payload, never a second object the robot happens to carry.
-/// 3. `has_contact_force_witness && contact_force_target_matches` — a witness is
-///    present and names the declared target. A measured contact against anything
-///    else attests nothing here.
-/// 4. `contact_force_calibrated` — the producer asserted a named calibration.
-///    Without it `contact_force_magnitude` is not in Newtons and is not read at
-///    all: no published work validates MuJoCo contact-force magnitudes against
-///    real force-torque measurements (survey §21.7), so an uncalibrated number
-///    is a producer quantity, never a physical claim (CLAUDE.md §1.2).
+/// Absence of a witness is NOT evidence of absence of contact — the sim
+/// producer reads MuJoCo's solver contact list, which contype/conaffinity
+/// suppression can leave empty under demonstrable contact. Absence only
+/// means the gate doesn't arm and geometry decides alone.
 ///
-/// Absence of a witness is NOT evidence of absence of contact — the sim producer
-/// reads MuJoCo's solver contact list, which contype/conaffinity suppression can
-/// leave empty under a payload demonstrably in contact. Absence only ever means
-/// the gate does not arm and geometry decides alone.
-///
-/// The comparison is strict: a magnitude exactly at the threshold passes, so a
-/// declaration stating "up to N newtons" permits N. Allocation-free; O(n_objects)
-/// over a cap of eight.
+/// Comparison is strict: a magnitude exactly at threshold passes, so "up
+/// to N newtons" permits N. Allocation-free; O(n_objects) over a cap of
+/// eight.
 ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) noexcept;
 
 /// Margin reduction the live place declaration grants object `object_index`
@@ -1151,34 +1126,32 @@ double place_target_distance(const PlaceApproachRegion& region, const AttachedPr
 /// kernel's place-region log lines. Never null; unknown values read `unknown`.
 const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
 
-/// Does object `i`'s attested support contact explain occupied cell `center`?
+/// Does object i's attested support contact explain occupied cell `center`?
 ///
-/// The predicate is purely geometric and index-free, so it does not decorrelate
-/// as the base drives. With the attested plane lifted into the base frame
-/// (`p = obj_xf · support_point`, `n = obj_xf.R · support_normal`) and
-/// `s = (center - p)·n` the cell centre's height above that plane:
-///
-/// * **Bounded laterally** — the cell must lie within `support_patch_radius`
-///   of the contact point (padded by the voxel cube's circumradius, which is
-///   the exact discretisation slop). A new contact against a wall or a fixture
-///   elsewhere is outside the patch and still stops the robot.
-/// * **Bounded in height** — `s <= w + support_max_penetration + slack +
-///   resolution`, where `w = half_resolution · (|n.x| + |n.y| + |n.z|)` is the
-///   *exact* half-width of the voxel cube projected on the support normal. A
-///   surface cell of a support flush with the attested plane has `|s| <= w` by
-///   construction; the fourth term is **one voxel of co-planar headroom**
-///   (hazard log Entry 012, "Calibration 2026-08-15"), because cells of adjacent
-///   co-planar structure — a raised edge, a neighbouring stack on the same
-///   surface — sit about one voxel above the attested plane while the payload is
-///   in genuine, continuing support contact (round-8 r2: +42.9 mm against a
-///   ~15–19 mm envelope). Past *that* bound, solid sitting genuinely higher than
-///   the support face still trips the check, and a payload driving deeper into
-///   its support raises `s` at the physical rate (1 mm of sink = 1 mm of `s`)
-///   until it trips. The lateral patch bound above is untouched by that
+/// Purely geometric and index-free, so it doesn't decorrelate as the base
+/// drives. With the attested plane lifted into the base frame
+/// (p = obj_xf . support_point, n = obj_xf.R . support_normal) and
+/// s = (center - p).n the cell centre's height above that plane:
+/// * BOUNDED LATERALLY — the cell must lie within support_patch_radius of
+///   the contact point (padded by the voxel cube's circumradius, the exact
+///   discretisation slop). A new contact elsewhere (wall, fixture) is
+///   outside the patch and still stops the robot.
+/// * BOUNDED IN HEIGHT — s <= w + support_max_penetration + slack +
+///   resolution, where w = half_resolution . (|n.x|+|n.y|+|n.z|) is the
+///   EXACT half-width of the voxel cube projected on the support normal. A
+///   surface cell flush with the attested plane has |s| <= w by
+///   construction; the fourth term is ONE VOXEL of co-planar headroom
+///   (hazard log Entry 012, "Calibration 2026-08-15"): cells of adjacent
+///   co-planar structure (a raised edge, a neighbouring stack on the same
+///   surface) sit ~1 voxel above the attested plane during genuine support
+///   contact (round-8 r2: +42.9 mm against a ~15-19 mm envelope). Past that
+///   bound, solid genuinely higher than the support face still trips, and a
+///   payload sinking into its support raises s at the physical rate (1 mm
+///   sink = 1 mm s) until it trips. The lateral bound is untouched by that
 ///   calibration: it widens height, never reach.
 ///
-/// The caller must have already established that the witness is live; this
-/// function does not consult `grid.support_witness_live`. Allocation-free.
+/// Caller must have already established the witness is live; this function
+/// doesn't consult grid.support_witness_live. Allocation-free.
 bool support_contact_exempts(const AttachedObject& object, const Transform& object_xf,
                              const Vec3& center, double resolution, double slack) noexcept;
 

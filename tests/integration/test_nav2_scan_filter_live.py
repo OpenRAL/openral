@@ -1,33 +1,23 @@
 """Live proof that the payload scan filter keeps Nav2's costmap honest.
 
-Nav2 here is **base-only**: the costmaps' footprint is the manifest's bare
-chassis and nothing grows it, because the arm and anything carried belong to the
-3-D safety kernel (see ``packages/openral_nav2_bringup/README.md``, "Nav2 is
-base-only"). That makes this node load-bearing rather than cosmetic — with no
-footprint growing over the payload, an unfiltered payload return is simply an
-obstacle that moves with the robot, one it can never drive away from.
+Nav2 is base-only (``packages/openral_nav2_bringup/README.md``): footprint is the bare
+chassis; arm/payload go through the 3-D safety kernel instead of footprint growth, so an
+unfiltered payload return is an obstacle the robot can never drive away from.
 
-The unit suite
-(``packages/openral_nav2_bringup/test/test_payload_scan_filter.py``) pins the
-geometry the filter computes. It cannot pin the part that actually matters: that
-a **real** ``nav2_costmap_2d``, reading the filtered topic the shipped
-``config/nav2_panda_mobile.yaml`` points every observation source at, ends up
-with no cell marked for the carried object — and still marks a real obstacle at
-the same bearing. That claim is about Nav2's parameter and topic contract, so
-only Nav2's own binary can settle it.
+The unit suite (``packages/openral_nav2_bringup/test/test_payload_scan_filter.py``) pins the
+filter's geometry only; only a real ``nav2_costmap_2d`` reading the filtered topic every
+source in ``config/nav2_panda_mobile.yaml`` points at can prove the carried object marks no
+cell while a real obstacle at the same bearing still does.
 
-Three tests, one per direction the node can be wrong:
+Three tests: (1) carried object never marks the cost grid, (2) a self-return is removed while
+a real obstacle on the same bearing survives, (3) control — a filter that cannot place the
+chassis removes nothing, proving (1)/(2) measured the filter, not
+``footprint_clearing_enabled``.
 
-* the carried object never marks the cost grid;
-* a self-return is removed while a real obstacle on the same bearing survives;
-* a filter that cannot place the chassis removes **nothing** — the control that
-  proves the first two measured the filter and not ``footprint_clearing_enabled``.
-
-Real components throughout (CLAUDE.md §1.11): the upstream ``nav2_costmap_2d``
-node from ``ros-${ROS_DISTRO}-nav2-bringup``, the production
-``payload_scan_filter_node`` run as its own process through its real ``main()``,
-and the real ``robots/panda_mobile/robot.yaml`` for the chassis outline. The one
-constructed input is the ``WorldStateStamped`` carrying the attachment.
+Real components (CLAUDE.md §1.11): upstream ``nav2_costmap_2d``
+(``ros-${ROS_DISTRO}-nav2-bringup``), production ``payload_scan_filter_node`` via its real
+``main()``, real ``robots/panda_mobile/robot.yaml`` chassis outline. Only
+``WorldStateStamped`` is constructed.
 """
 
 from __future__ import annotations
@@ -59,15 +49,12 @@ _ROBOT_YAML = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 _NODE_DIR = _REPO_ROOT / "packages" / "openral_nav2_bringup" / "openral_nav2_bringup"
 _SCAN_FILTER_NODE = _NODE_DIR / "payload_scan_filter_node.py"
 
-# The standalone `nav2_costmap_2d` executable runs one `Costmap2DROS` named
-# `costmap`, whose footprint topics are RELATIVE — so launching it under
-# `__ns:=/local_costmap` reproduces the exact topic names the production
-# `nav2_bringup` graph uses, which is the half of the contract the shipped
-# `config/nav2_panda_mobile.yaml` and `DEFAULT_FOOTPRINT_TOPICS` depend on.
-# Verified against the Jazzy binary, not assumed: `ros2 node info` on the
-# namespaced node lists `/local_costmap/footprint` inbound
-# (`geometry_msgs/Polygon`) and `/local_costmap/published_footprint` outbound
-# (`geometry_msgs/PolygonStamped`).
+# The standalone `nav2_costmap_2d` executable runs one `Costmap2DROS` named `costmap`, whose
+# footprint topics are RELATIVE — `__ns:=/local_costmap` reproduces the production nav2_bringup
+# topic names that config/nav2_panda_mobile.yaml and DEFAULT_FOOTPRINT_TOPICS depend on.
+# Confirmed on the Jazzy binary via `ros2 node info`: `/local_costmap/footprint` inbound
+# (geometry_msgs/Polygon), `/local_costmap/published_footprint` outbound
+# (geometry_msgs/PolygonStamped).
 _COSTMAP_NAMESPACE = "/local_costmap"
 _COSTMAP_NODE = "/local_costmap/costmap"
 
@@ -87,8 +74,8 @@ _PAYLOAD_HALF_X = 0.10
 #: well clear of the 0.35 m chassis, so the costmap's own
 #: ``footprint_clearing_enabled`` cannot be what removes it.
 _PAYLOAD_X_IN_BASE = _LINK_X_IN_BASE + _PAYLOAD_X_IN_LINK
-# nav2_costmap_2d's `footprint_padding` default, verified live: the published
-# polygon is the received one grown by this on every axis.
+# nav2_costmap_2d's `footprint_padding` default: published polygon = received polygon
+# grown by this on every axis.
 _FOOTPRINT_PADDING_M = 0.01
 
 
@@ -122,17 +109,12 @@ _COSTMAP_PARAMS_WITH_OBSTACLES = f"""\
     always_send_full_costmap: True
 """
 
-# The self-filter's costmap. Identical to the payload one except that
-# `footprint_clearing_enabled` is turned OFF.
-#
-# That is not a convenience — it is what makes the test mean anything. A
-# self-return lands *inside* the chassis polygon by definition, and with the
-# upstream default (`True`, verified live) the obstacle layer frees every cell
-# under the footprint on each update, so the cell would read clear whether or
-# not the filter did its job and the degraded control below could never fail.
-# Turning it off isolates the filter — and reproduces the one consumer that has
-# no costmap-side clearing at all: `collision_monitor`, which reads the scan raw
-# and is exactly what brakes for the robot's own chassis today.
+# Self-filter costmap = payload one with `footprint_clearing_enabled` turned OFF.
+# Required, not cosmetic: a self-return lands inside the chassis polygon, and with the
+# upstream default (True) the obstacle layer frees every footprint cell each update, so the
+# cell would read clear regardless of the filter — the degraded control below could never
+# fail. OFF isolates the filter and reproduces `collision_monitor`, which reads the scan raw
+# with no costmap-side clearing and is what brakes for the robot's own chassis today.
 _COSTMAP_PARAMS_SELF_RETURNS = _COSTMAP_PARAMS_WITH_OBSTACLES.replace(
     "      enabled: True\n",
     "      enabled: True\n      footprint_clearing_enabled: False\n",
@@ -144,10 +126,8 @@ def _spin_until(
 ) -> bool:
     """Spin until ``predicate()`` holds, running ``each()`` on every pass.
 
-    ``each`` re-publishes the world state on every iteration rather than in one
-    burst: ``/openral/world_state_fast`` is VOLATILE and 30 Hz on a real robot,
-    so a single publish that lands before DDS discovery matches is simply lost
-    and the test would fail on the transport, not on the behaviour.
+    ``each`` re-publishes each iteration, not once: ``/openral/world_state_fast`` is VOLATILE
+    and 30 Hz on a real robot, so a publish before DDS discovery matches is simply lost.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -163,18 +143,11 @@ def _spin_until(
 def _process(argv: list[str], log_path: Path) -> Iterator[subprocess.Popen[bytes]]:
     """Run a node in its own process GROUP, teeing its log where a failure can quote it.
 
-    The group is the load-bearing part. ``ros2 run <pkg> <exe>`` **forks** the
-    node rather than exec-ing it, so signalling the ``Popen`` handle reaps the
-    ``ros2`` wrapper and orphans the node — which keeps publishing, on the same
-    topics, under the same node name. Every test in this file uses
-    ``/local_costmap/costmap_raw``, so one orphan makes later tests sample a
-    costmap they never configured; and the test immediately before the
-    silhouette sweep is the degraded control, whose whole job is to leave the
-    chassis marked. That is the grid the sweep then refused, twice, in CI.
-
-    Signalling the whole group is what actually stops the node. Verified by
-    ``pgrep -f nav2_costmap_2d`` returning nothing after a run, where it used to
-    return one process per test.
+    Group is load-bearing: ``ros2 run <pkg> <exe>`` forks rather than execs, so signalling
+    the ``Popen`` handle reaps only the wrapper and orphans the node, which keeps publishing
+    under the same name/topics (every test here uses ``/local_costmap/costmap_raw``) and
+    corrupts later tests. Signalling the whole group is what actually stops it — confirmed via
+    ``pgrep -f nav2_costmap_2d`` returning nothing after a run.
     """
     with log_path.open("wb") as log:
         proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -198,16 +171,11 @@ def _lifecycle(
 ) -> None:
     """Drive the costmap through ``transition``, waiting for it to be ready.
 
-    Retried rather than one-shot: the node needs a moment to advertise
-    ``change_state`` after ``Popen`` returns, and ``activate`` fails until the
-    ``base_link -> odom`` TF it checks has been discovered. Both are startup
-    races, not behaviour, and a one-shot call makes the test flaky on a loaded
-    host. Stops on the first success, so it can never re-drive a transition
-    that already happened.
-
-    ``costmap_node`` defaults to this file's node and is a parameter only so
-    ``test_nav2_global_costmap_height_live.py`` can drive its own costmap
-    through the same retry loop rather than copying it.
+    Retried, not one-shot: ``change_state`` takes a moment to advertise after ``Popen``
+    returns, and ``activate`` fails until ``base_link -> odom`` TF is discovered — both
+    startup races, not behaviour. Stops on first success. ``costmap_node`` defaults to this
+    file's node; parameterized so ``test_nav2_global_costmap_height_live.py`` can reuse the
+    same retry loop.
     """
     deadline = time.monotonic() + timeout_s
     last = ""
@@ -230,13 +198,10 @@ def _lifecycle(
 def _static_transforms(node: Any) -> Any:
     """``odom -> base_link -> {panda_link7, base_scan}``, the frames the nodes need.
 
-    The costmap refuses to activate without ``base_link -> odom``; the footprint
-    publisher needs the attach link to place the payload; the scan filter needs
-    ``base_scan -> panda_link7`` to place it in the sensor's frame. The lidar
-    sits at the attach link's height here so the scan plane cuts through the
-    carried object — the case where a payload becomes a costmap obstacle at all.
-    A static broadcaster is TRANSIENT_LOCAL, so the subprocesses get these
-    however late they join.
+    Costmap needs ``base_link -> odom`` to activate; footprint publisher needs the attach
+    link; scan filter needs ``base_scan -> panda_link7``. Lidar is placed at the attach link's
+    height so the scan plane cuts through the carried object. TRANSIENT_LOCAL, so late-joining
+    subprocesses still get these.
     """
     from geometry_msgs.msg import TransformStamped
     from tf2_ros import StaticTransformBroadcaster
@@ -326,14 +291,10 @@ def _cost_at(costmap: Any, x_m: float, y_m: float) -> int:
 def test_the_carried_object_never_becomes_a_costmap_obstacle(tmp_path: Path) -> None:
     """The scan filter's real claim, measured in a real costmap's cost grid.
 
-    One unchanging sensor picture, two attachment states. While the object is
-    attached its returns must not mark the costmap at all; the moment World
-    State says it is released, the very same returns must mark it — otherwise
-    the filter is not removing a payload, it is blinding Nav2.
-
-    The payload sits 0.75 m ahead, well outside the 0.35 m chassis, so Nav2's
-    own ``footprint_clearing_enabled`` (default ``True``, verified live) cannot
-    be what keeps the cell free.
+    Same sensor picture, two attachment states: attached, returns must not mark the costmap;
+    released, the same returns must mark it — else the filter is blinding Nav2, not removing
+    a payload. Payload sits 0.75 m ahead, outside the 0.35 m chassis, so
+    ``footprint_clearing_enabled`` (default True) cannot be what keeps the cell free.
     """
     import rclpy
     from nav2_msgs.msg import Costmap
@@ -485,10 +446,9 @@ def _forward_scan(range_m: float) -> Any:
     scan.angle_min = -math.pi
     scan.angle_max = math.pi
     scan.angle_increment = 2.0 * math.pi / n_beams
-    # Matches the manifest's `range_min_m` since #194 lowered it to the sensor
-    # minimum. It used to be 0.55 m — a radial cutoff sized to hide the chassis,
-    # the blunt instrument this filter replaces — and this fixture already
-    # ignored it, because gating here would hide the very returns under test.
+    # Matches manifest range_min_m since #194 lowered it to the sensor minimum (was 0.55 m,
+    # a radial cutoff sized to hide the chassis — the blunt instrument this filter replaces).
+    # This fixture already ignored that cutoff: gating here would hide the returns under test.
     scan.range_min = 0.05
     scan.range_max = 12.0
     ranges = [3.0] * n_beams
@@ -553,27 +513,19 @@ def _self_filter_rig(
 ) -> Iterator[Any]:
     """A live costmap on the filtered topic, plus the filter process under test.
 
-    Yields ``(executor, publish_of, samples, filter_log, latest)``:
-    ``samples[probe]`` is the cost sampled at that probe point on every costmap
-    update, ``latest`` holds the most recent whole ``Costmap`` (for callers that
-    sweep the grid rather than probe it), and ``publish_of(scan)`` returns a
-    callable that re-publishes that scan alongside ``state``.
+    Yields ``(executor, publish_of, samples, filter_log, latest)``: ``samples[probe]`` is the
+    cost at that probe point on each costmap update, ``latest`` is the most recent whole
+    ``Costmap``, ``publish_of(scan)`` returns a callable republishing that scan alongside
+    ``state``.
 
-    ``state`` defaults to an empty ``WorldStateStamped``, so the payload half of
-    the filter is provably not what is doing the removing. A caller that wants
-    the payload half acting passes the attachment in.
+    ``state`` defaults to an empty ``WorldStateStamped`` so the payload half of the filter is
+    provably not doing the removing; pass an attachment to exercise that half.
 
-    ``warmup_scan`` closes a startup race that is **not** cosmetic. The filter
-    fails open by design — a scan that arrives before its TF buffer has the
-    ``base_frame <- scan_frame`` transform is republished unfiltered — and a
-    self-return that reaches the cost grid even once is **permanent**: the
-    filter then removes exactly the beam whose ray would have cleared it, and
-    a costmap with ``footprint_clearing_enabled: False`` has nothing else that
-    would. (Measured: 32 cells marked by one unfiltered ring survived 20 s of
-    all-``inf`` filtered scans, and cleared the moment a real return was put on
-    the same bearings.) So a caller that asserts on the *steady state* passes
-    its scan in here, and the costmap is not configured until the filter's own
-    output proves the filter is live.
+    ``warmup_scan``: the filter fails open until its TF buffer has ``base_frame <- scan_frame``,
+    and a self-return that reaches the grid even once is permanent (measured: 32 cells from
+    one unfiltered ring survived 20 s of all-``inf`` filtered scans, clearing only once a real
+    return hit the same bearings). Callers asserting steady state pass their scan here; the
+    costmap isn't configured until the filter's own output proves it is live.
     """
     import rclpy
     from nav2_msgs.msg import Costmap
@@ -644,12 +596,10 @@ def _self_filter_rig(
         filter_log = tmp_path / "self_scan_filter.log"
         with _process(filter_argv, filter_log):
             if warmup_scan is not None:
-                # The costmap process is not started until this returns. A gate
-                # that merely delays `configure` would still leave a window in
-                # which an unfiltered scan is published while a costmap process
-                # exists, and one mark that lands inside the chassis is
-                # permanent (see this function's docstring). Not existing yet is
-                # the only airtight version.
+                # Costmap process isn't started until this returns — a gate that only delays
+                # `configure` would leave a window where an unfiltered scan hits an existing
+                # costmap process, and one mark inside the chassis is permanent (see this
+                # function's docstring).
                 _wait_for_a_filtered_scan(
                     node, executor, publish=_publish_of(warmup_scan), filter_log=filter_log
                 )
@@ -669,18 +619,11 @@ def test_a_self_return_is_removed_and_a_real_obstacle_at_the_same_bearing_is_not
 ) -> None:
     """The robot half of the filter, measured in a real costmap's cost grid.
 
-    A 2-D lidar on a real base sees the base. Unfiltered, those returns become
-    permanent costmap obstacles and the robot concludes it is surrounded by
-    itself — the failure sim hides completely, because
-    ``synthesize_laser_scan_2d`` re-casts through the robot's own MuJoCo
-    kinematic tree and never emits a self-return in the first place.
-
-    One beam carries one range, so a self-return and a real obstacle cannot
-    share a beam of a single scan. The discriminating construction is therefore
-    the same *bearing*, twice: forward beams at 0.20 m are inside the chassis
-    and must vanish; the identical beams at 0.60 m are 0.25 m past it and must
-    reach the cost grid untouched. Both phases run with an empty attachment set,
-    so the payload half is provably not what is acting.
+    Unfiltered, a 2-D lidar's self-returns become permanent costmap obstacles — a failure
+    sim hides this, since ``synthesize_laser_scan_2d`` re-casts through the robot's own
+    MuJoCo tree and never emits a self-return. Same bearing, twice: forward beams at 0.20 m
+    (inside the chassis) must vanish; at 0.60 m (0.25 m past it) must reach the grid untouched.
+    Both phases run with an empty attachment set, so the payload half is provably not acting.
     """
     lethal_threshold = 253
     filter_argv = [
@@ -728,25 +671,17 @@ def test_a_self_return_is_removed_and_a_real_obstacle_at_the_same_bearing_is_not
 
 
 def test_a_self_filter_that_cannot_place_the_chassis_removes_nothing(tmp_path: Path) -> None:
-    """The fail-closed direction, and the control for the test above.
+    """The fail-closed direction, and the control for the sibling test above.
 
-    Same node, same scan, same costmap — only the ``base_frame`` is one nobody
-    broadcasts, so every ``base_frame <- base_scan`` lookup fails. Dropping a
-    real obstacle because we mistook it for the robot is the dangerous error
-    here, so a self-filter that cannot place the chassis must remove *nothing*,
-    and the 0.20 m return must arrive in the cost grid exactly as the raw
-    sensor reported it.
+    Same node/scan/costmap but ``base_frame`` is one nobody broadcasts, so every
+    ``base_frame <- base_scan`` lookup fails; a self-filter that cannot place the chassis must
+    remove nothing — the 0.20 m return must reach the grid unchanged (else something else,
+    e.g. footprint clearing, was keeping that cell free, invalidating the sibling test too).
 
-    This doubles as the proof that the sibling test measured the filter: if
-    something else (footprint clearing, the range gate, the rolling window)
-    were keeping that cell free, this assertion would fail too.
-
-    Since #212 the pass-through is no longer immediate — the node withholds
-    every scan until its chassis TF resolves once — so this also measures the
-    *bounded* half of that gate: with a TF that never resolves, the short
-    ``self_tf_grace_s`` here has to expire and hand Nav2 its scans back, or a
-    mistyped ``base_frame`` would leave the costmap blind forever. The
-    sibling test above measures the withholding itself.
+    Since #212 the pass-through isn't immediate — the node withholds every scan until chassis
+    TF resolves once — so this also measures the bounded half of that gate: with a TF that
+    never resolves, ``self_tf_grace_s`` must expire and hand scans back, or a mistyped
+    ``base_frame`` would blind the costmap forever.
     """
     lethal_threshold = 253
     filter_argv = [
@@ -792,23 +727,16 @@ def test_the_filter_withholds_every_scan_until_it_can_place_the_chassis(
 ) -> None:
     """The #212 startup gate: no output at all rather than one unfiltered scan.
 
-    The self half cannot fail open the way the payload half can. A payload
-    return that reaches the cost grid is cleared by the next scan's ray along
-    the same bearing; a *chassis* return is not, because the working filter
-    then removes exactly that ray. One unfiltered scan published during the TF
-    warm-up is therefore permanent — which is what failed #207's silhouette
-    sweep in CI after five clean local runs.
+    The self half can't fail open like the payload half: a payload return is cleared by the
+    next scan's ray on the same bearing, but a chassis return isn't (the working filter
+    removes exactly that ray), so one unfiltered scan during TF warm-up is permanent — which
+    is what failed #207's silhouette sweep in CI. So the node publishes nothing while a
+    self-polygon is configured and ``base_frame <- scan_frame`` has never resolved (measured
+    with a ``base_frame`` nobody broadcasts, holding the gate shut for the whole grace window).
 
-    So the node publishes nothing while a self-polygon is configured and
-    ``base_frame <- scan_frame`` has never resolved. Measured here with a
-    ``base_frame`` nobody broadcasts, which holds the gate shut for the whole
-    grace window.
-
-    The second half is the same assertion's non-vacuity **and** the property
-    that keeps the gate from being the worse bug: the window is bounded, so a
-    mistyped ``base_frame`` costs Nav2 ``self_tf_grace_s`` of blindness rather
-    than all of it. If the subscription had simply never matched, no scan would
-    arrive after the grace either and this would fail.
+    Second half proves non-vacuity and boundedness: the window is bounded, so a mistyped
+    ``base_frame`` costs only ``self_tf_grace_s`` of blindness, not all of it — if the
+    subscription had never matched, no scan would arrive after the grace either.
     """
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
@@ -878,25 +806,15 @@ def test_the_filter_withholds_every_scan_until_it_can_place_the_chassis(
 def test_raytrace_clearing_a_dropped_beam_would_erase_a_real_obstacle(tmp_path: Path) -> None:
     """Why a dropped beam stays ``inf`` — the measurement that rejects #212 option 1.
 
-    The tempting one-line fix for the permanence above is to publish
-    ``range_max`` for a dropped beam instead of ``inf``, so Nav2 raytraces the
-    bearing clear and the map heals itself. Its stated justification is that a
-    chassis-dropped beam's endpoint is provably inside the manifest polygon, so
-    there is nothing real along it to erase.
+    Option 1 (publish ``range_max`` instead of ``inf`` for a dropped beam, so Nav2 raytraces
+    it clear) is wrong because Nav2 clears the ray out to ``raytrace_max_range`` (3.0 m in the
+    shipped config, well past the chassis) — not just the endpoint — and a chassis-occluded
+    bearing never gets re-marked, so that clears cells marked from other robot poses too.
 
-    That justification covers the wrong segment. Nav2 does not clear to the
-    endpoint's *shape*, it clears the ray out to ``raytrace_max_range`` — 3.0 m
-    in the shipped config, an order of magnitude past the chassis. And a
-    bearing on which the chassis returns is one the sensor is *permanently*
-    occluded on, so the cells that ray erases were marked from other robot
-    poses and nothing on that bearing will ever re-mark them.
-
-    Measured here, with the exact bytes option 1 would have put on the wire: a
-    real obstacle 0.25 m past the chassis edge, already lethal in the grid, is
-    deleted by one ``range_max`` beam on its bearing. The filter passes that
-    beam through untouched — 12 m is not inside any chassis — so this is
-    Nav2's behaviour being pinned, which is what makes it a decision about our
-    fail direction rather than a guess.
+    Measured with the exact bytes option 1 would emit: a real obstacle 0.25 m past the
+    chassis edge, already lethal, is deleted by one ``range_max`` beam on its bearing (the
+    filter passes 12 m through untouched, since it's outside any chassis) — pinning Nav2's
+    own behaviour rather than guessing at it.
     """
     lethal_threshold = 253
     filter_argv = [
@@ -989,18 +907,11 @@ def _ring_scan(*, payload_x_m: float | None = None) -> Any:
 def _silhouette_mask(costmap: Any, *, with_payload: bool) -> Any:
     """Which of ``costmap``'s cell centres lie inside the robot (∪ the payload).
 
-    The predicates are the shipped node's own — ``base_footprint_polygon`` off
-    the real ``robots/panda_mobile/robot.yaml`` for the chassis, and
-    ``points_in_primitive`` for the carried box — so this measures the same
-    geometry the filter measures rather than a second opinion about it.
-
-    Evaluated **in the scan plane** (``_SCAN_Z_IN_BASE``), which is the only
-    height a 2-D costmap can be marked from and, in this rig, the payload box's
-    own centre height with the box axis-aligned — so the cross-section taken
-    here is its full ground projection, not a slice of it.
-
-    The rig's ``odom -> base_link`` is identity, so the costmap's own frame and
-    ``base_link`` share an origin and no transform is needed.
+    Uses the shipped node's own predicates — ``base_footprint_polygon`` off the real
+    ``robots/panda_mobile/robot.yaml``, ``points_in_primitive`` for the carried box — so this
+    measures the same geometry the filter measures. Evaluated in the scan plane
+    (``_SCAN_Z_IN_BASE``), the payload box's own centre height, so this is its full ground
+    projection. ``odom -> base_link`` is identity in this rig, so no transform is needed.
     """
     import numpy as np
     from openral_core import RobotDescription
@@ -1052,33 +963,21 @@ def _marked_cells_inside_silhouette(
 def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_path: Path) -> None:
     """Issue #108's costmap-clean claim, swept rather than probed.
 
-    "The costmaps contain no floating or self obstacles" is a statement about
-    the **whole** silhouette, and the probe-point tests above cannot make it: a
-    return that marks some *other* cell inside the robot — a different bearing,
-    a raytrace artefact, a stale mark the rolling window carried along — passes
-    them and still leaves the base surrounded by itself.
+    "No floating or self obstacles" is a whole-silhouette claim the probe-point tests above
+    can't make (a mark on some other cell inside the robot still passes them). So this drives
+    355 beams off the chassis at every bearing (five off a carried box) through the shipped
+    filter into a real ``nav2_costmap_2d``, sweeps every published cell, and asserts zero are
+    marked inside the chassis ∪ payload silhouette.
 
-    So this drives the full real-hardware picture (355 beams returning off the
-    chassis at every bearing, five off a carried box) through the shipped
-    filter into a real ``nav2_costmap_2d``, then sweeps every cell of the
-    published grid and asserts **zero** are marked inside the chassis ∪ payload
-    silhouette.
+    Asserts on steady state: the rig withholds the costmap until the filter's own output
+    proves it is filtering, since a self-return reaching the grid once is permanent (a real
+    fail-open transient, documented in the package README, not hidden here).
+    ``footprint_clearing_enabled`` is off (see ``_COSTMAP_PARAMS_SELF_RETURNS``), so Nav2's own
+    clearing can't be what keeps this clean, reproducing ``collision_monitor`` — the one
+    consumer with no costmap-side clearing at all.
 
-    It asserts on the **steady state**: the rig withholds the costmap until the
-    filter's own output proves it is filtering, because a self-return that
-    reaches the grid once is permanent (the filter then removes the very beam
-    whose ray would clear it). That transient is a real property of the node's
-    fail-open design, recorded in the package README rather than hidden here.
-
-    ``footprint_clearing_enabled`` is off in this costmap (see
-    ``_COSTMAP_PARAMS_SELF_RETURNS``), so Nav2's own footprint clearing cannot
-    be what keeps the silhouette clean — and it reproduces the one consumer
-    that has no costmap-side clearing at all, ``collision_monitor``, which reads
-    the scan raw.
-
-    This is the assertion ADR-0099 obliges: with Nav2 base-only, nothing grows
-    the footprint over a payload any more, so the scan filter is the only thing
-    keeping the robot and what it carries out of Nav2's world.
+    ADR-0099: with Nav2 base-only, nothing grows the footprint over a payload, so the scan
+    filter is the only thing keeping the robot and its payload out of Nav2's world.
     """
     filter_argv = [
         sys.executable,
@@ -1089,21 +988,18 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
     ]
 
     ring = _ring_scan(payload_x_m=_PAYLOAD_X_IN_BASE)
-    # The rig cannot publish while `ros2 lifecycle set` blocks, and the node's
-    # default 0.5 s `attached_state_timeout_s` expires inside that window — so
-    # the first scan after activation could find no attachment, pass the five
-    # payload beams through, and mark the payload silhouette permanently. The
-    # sweep measures containment, not attachment freshness, so the timeout is
-    # widened past the window rather than raced against.
+    # The rig cannot publish while `ros2 lifecycle set` blocks, and the node's default 0.5 s
+    # `attached_state_timeout_s` expires inside that window — the first scan after activation
+    # could find no attachment and mark the payload silhouette permanently. The sweep measures
+    # containment, not attachment freshness, so the timeout is widened past the window.
     filter_argv += ["-p", "attached_state_timeout_s:=30.0"]
     with _self_filter_rig(
         tmp_path,
         filter_argv=filter_argv,
         state=_world_state(carrying=True, revision=1),
-        # The costmap is not configured until this scan comes back filtered.
-        # Without that gate the rig can feed it one unfiltered ring during the
-        # filter's TF warm-up, and those marks never clear — see the rig's
-        # docstring, and the "permanent self-marks" note in the package README.
+        # The costmap is not configured until this scan comes back filtered — without that
+        # gate the rig could feed one unfiltered ring during TF warm-up, and those marks never
+        # clear (see the rig's docstring and the package README's "permanent self-marks" note).
         warmup_scan=ring,
     ) as (executor, publish_of, samples, filter_log, latest):
         publish = publish_of(ring)
@@ -1141,15 +1037,12 @@ def test_no_costmap_cell_inside_the_robot_or_payload_silhouette_is_marked(tmp_pa
 def test_the_silhouette_sweep_fails_when_the_self_filter_is_not_running(tmp_path: Path) -> None:
     """The control: the sweep above measured the filter, not the rig.
 
-    Same ring, same costmap, same assertion — with the filter given no
-    ``robot_yaml``, which is the documented degradation to "the robot's own
-    returns are not filtered". The chassis must then mark its own silhouette.
-
-    Without this, "zero marked cells inside the robot" is a claim the rolling
-    window, the range gate or an unwired topic could satisfy on their own. That
-    is not hypothetical here: #183 found this file's payload test passing
-    vacuously because the deploy image had never built the package the filter
-    lives in.
+    Same ring, same costmap, same assertion — with the filter given no ``robot_yaml``, the
+    documented degradation to "the robot's own returns are not filtered". The chassis must
+    then mark its own silhouette, or "zero marked cells" is a claim the rolling window, the
+    range gate, or an unwired topic could satisfy on their own — not hypothetical: #183 found
+    this file's payload test passing vacuously because the deploy image never built the
+    package the filter lives in.
     """
     filter_argv = [sys.executable, str(_SCAN_FILTER_NODE)]
 

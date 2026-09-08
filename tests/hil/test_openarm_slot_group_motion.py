@@ -1,42 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 """HIL: one slot-dispatched tick actually MOVES the joint it addresses.
 
-The last unclosed gate on ADR-0102. `tests/hil/test_openarm_restock_deploy_preflight.py`
-proves the composed 16-DoF vector reaches the four controllers correctly
-named and correctly sliced — but it never publishes, so it cannot prove the
-values *arrive somewhere physical*. A sign flip, a scale error, or a joint the
-controller silently ignores is invisible to it. This is the test that closes
-that, and the only one in the tree that commands a real OpenArm to move.
+Last unclosed gate on ADR-0102. ``test_openarm_restock_deploy_preflight.py`` proves the
+composed 16-DoF vector reaches the four controllers correctly named and sliced — but never
+publishes, so it can't prove the values arrive somewhere physical. A sign flip, scale error,
+or silently-ignored joint is invisible to it. This closes that; the only test in the tree
+that commands a real OpenArm to move.
 
-**It requires a person at the E-stop.** Two independent gates, both explicit:
+Requires a person at the E-stop. Two independent gates, both explicit:
 
 1. ``OPENRAL_OPENARM_ALLOW_MOTION=1`` — never set in CI or by ``just test``.
-2. ``OPENRAL_OPENARM_ATTENDED=1`` — the human attestation. Separate on purpose:
-   the first says "this bench can move", the second says "someone is watching
-   it right now". A rig that leaves gate 1 exported must not thereby become a
-   rig that moves unattended.
+2. ``OPENRAL_OPENARM_ATTENDED=1`` — human attestation, separate on purpose: gate 1 says "this
+   bench can move", gate 2 says "someone is watching it right now". Leaving gate 1 exported
+   must not make a rig move unattended.
 
-Why an unattended "tiny step" is not a thing
---------------------------------------------
-The wire format is ``trajectory_msgs/JointTrajectory``: an **absolute**
-position with a deadline, not a delta. Motion is
-``(target - measured) / time_from_start``, so the distance travelled is set by
-how wrong the command is — exactly the quantity under test. Picking a small
-number does not bound it. Three things bound it here instead:
+Why an unattended "tiny step" is not a thing: the wire format is
+``trajectory_msgs/JointTrajectory`` — an absolute position with a deadline, not a delta.
+Motion is ``(target - measured) / time_from_start``, so distance travelled is set by how
+wrong the command is, the exact quantity under test; a small number doesn't bound it. Three
+things bound it here instead: every target is measured pose + delta on one joint, the other
+fifteen held at their measured values, so a correct command is a near-no-op; the run refuses
+to start unless all 16 joints have been seen on ``/joint_states`` (``OpenArmRealHAL``
+zero-fills unreported joints, so a partial state reads as a plausible pose with zeros —
+"measured + delta" on top of that slews the cell toward home); ``time_from_start`` is
+stretched to 0.8 s (production uses 0.1 s), bounding the rate by construction — this test does
+not validate the production 100 ms deadline, only where the values land.
 
-* every target is **measured pose + delta on one joint**, the other fifteen
-  held at their measured values, so a correct command is a near-no-op;
-* the run **refuses to start** unless all 16 joints have been seen on
-  ``/joint_states``. ``OpenArmRealHAL`` zero-fills unreported joints into a
-  full 16-DoF vector, so a partial state reads as a plausible pose containing
-  zeros — command "measured + delta" on top of that and the cell slews to
-  approximately home;
-* ``time_from_start`` is stretched to 0.8 s (production uses 0.1 s), bounding
-  the rate by construction. This test therefore does **not** validate the
-  production 100 ms deadline — only where the values land.
-
-Each case restores the joint to its measured pose before returning, so the
-test is idempotent (CLAUDE.md §2), and the teardown latches the HAL.
+Each case restores the joint to its measured pose before returning (idempotent, CLAUDE.md
+§2), and teardown latches the HAL.
 """
 
 from __future__ import annotations
@@ -46,6 +37,8 @@ import os
 from pathlib import Path
 
 import pytest
+
+from tests.hil.conftest import _can_links_up
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"
@@ -70,15 +63,8 @@ _ARRIVAL_TOL_RAD = 0.015
 _SETTLE_S = 2.5
 
 
-def _can_links_up() -> bool:
-    from openral_cli.autodetect import enumerate_can_interfaces
-
-    up = {i.name for i in enumerate_can_interfaces() if i.is_up}
-    return set(_CAN_LINKS) <= up
-
-
 requires_can = pytest.mark.skipif(
-    not _can_links_up(), reason="OpenArm CAN links are not both up — not on the cell"
+    not _can_links_up(_CAN_LINKS), reason="OpenArm CAN links are not both up — not on the cell"
 )
 requires_rclpy = pytest.mark.skipif(
     importlib.util.find_spec("rclpy") is None, reason="rclpy not available"

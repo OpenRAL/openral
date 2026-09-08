@@ -1,10 +1,10 @@
 """Lifecycle smoke test for ``openral_hal_ur5e``.
 
 Drives the standard managed-lifecycle transition path against the generic
-``_HALLifecycleNode`` from :mod:`openral_hal.lifecycle` using the real
+``_HALLifecycleNode`` from ``openral_hal.lifecycle`` using the real
 ``UR5eHAL`` factory.  The HAL pulls its MJCF lazily from the
 ``robot_descriptions`` package and ships its canonical
-:class:`openral_core.RobotDescription` (``UR5e_DESCRIPTION``) — so this
+``openral_core.RobotDescription`` (``UR5e_DESCRIPTION``) — so this
 smoke exercises the same RobotDescription wiring used at runtime, not a
 stub.
 
@@ -147,7 +147,10 @@ def test_generic_hal_lifecycle_emits_hal_read_state_span(
             for transition in ("trigger_deactivate", "trigger_cleanup"):
                 try:
                     getattr(node, transition)()
-                except Exception:
+                except RuntimeError:
+                    # RCLError (invalid transition from an already-failed
+                    # state) / InvalidHandle (rclpy resource already torn
+                    # down) — both subclass RuntimeError; best-effort teardown.
                     pass
             executor.remove_node(node)
             node.destroy_node()
@@ -207,7 +210,10 @@ def test_generic_hal_lifecycle_emits_hal_send_action_span(
             for transition in ("trigger_deactivate", "trigger_cleanup"):
                 try:
                     getattr(node, transition)()
-                except Exception:
+                except RuntimeError:
+                    # RCLError (invalid transition from an already-failed
+                    # state) / InvalidHandle (rclpy resource already torn
+                    # down) — both subclass RuntimeError; best-effort teardown.
                     pass
             executor.remove_node(helper)
             executor.remove_node(node)

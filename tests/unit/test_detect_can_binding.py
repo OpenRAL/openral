@@ -1,15 +1,14 @@
-"""``_enrich_can_buses`` — writing the host's real CAN names into the config.
+"""``_enrich_can_buses`` — writes the host's real CAN interface names into the config.
 
-A CAN interface name is a property of the host, not of the robot: the same
-bimanual arm is ``openarm_left`` / ``openarm_right`` where a udev rule pins it
-and ``can1`` / ``can0`` where none does. So a canonical manifest can only
-declare *which parameter each bus fills*; the value has to be discovered.
+A CAN interface name is a host property, not a robot property: the same bimanual
+arm is ``openarm_left``/``openarm_right`` under a udev rule, ``can1``/``can0``
+without one. The manifest only declares which parameter each bus fills; the
+value is discovered at runtime.
 
-These tests deliberately use host names that differ from the OpenArm
-manifest's own defaults — otherwise a no-op would pass. They also exercise bus
-counts the OpenArm does not have (one, four), because the mechanism is meant to
-serve any CAN robot, and check that an unresolvable role warns rather than
-guessing: binding one limb to another limb's bus would look like it worked.
+Tests use host names differing from the manifest's defaults (a no-op must not
+pass), exercise bus counts the OpenArm lacks (one, four), and check an
+unresolvable role warns rather than guesses (binding one limb to another's
+bus would otherwise look correct).
 """
 
 from __future__ import annotations

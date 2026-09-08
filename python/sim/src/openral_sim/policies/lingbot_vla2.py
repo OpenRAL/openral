@@ -11,33 +11,31 @@ and a hard pin on ``torch==2.8.0`` / ``transformers==4.57.3`` / ``triton==3.4.0`
 
 Why an out-of-process sidecar (not in-process, not vendored)
 -----------------------------------------------------------
-Mirrors the :mod:`openral_sim.policies.rldx` rationale:
+Mirrors ``openral_sim.policies.rldx``:
 
 * **Dep stack cannot coexist.** ``lingbotvla`` pins ``torch==2.8.0`` +
-  ``triton==3.4.0`` + ``transformers==4.57.3``; the openral workspace is
-  ``torch>=2.9`` / ``transformers>=5`` (CLAUDE.md §3). Force-installing would
-  clobber smolvla / pi05 / ACT / GR00T (the documented ``--group`` clobber).
-  (The boot helper does override the torch half of that pin set up to 2.9.1 /
-  triton 3.5.1 — torch 2.8.0 publishes no linux-aarch64 ``cu128`` wheel, see
-  ``docs/reference/aarch64-support.md``. ``transformers==4.57.3`` still can't
-  coexist, so the sidecar stays out-of-process regardless.)
-* **Vendoring is intractable.** The inference path is ~6 kLOC of tightly
-  coupled model code (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` +
-  ``qwen3vl_in_vla`` + ``flex_attention``) plus ``lingbotvla/ops`` Triton
-  kernels and a ``sys.path``-based package layout — not the handful of files
-  the in-process MolmoAct2 / SmolVLA adapters vendor.
-* **The HF release ships no ``config.json`` architecture.** ``config.json`` is
-  a 31-byte ``{"vlm_family":"qwen3_vl"}`` stub; the real architecture dims live
-  in the repo's ``configs/vla/robotwin/robotwin.yaml`` training config, which
-  the sidecar owns in its repo checkout. There is no ``trust_remote_code``
-  escape.
+  ``triton==3.4.0`` + ``transformers==4.57.3`` vs. the workspace's
+  ``torch>=2.9`` / ``transformers>=5`` (CLAUDE.md §3); force-installing would
+  clobber smolvla/pi05/ACT/GR00T. The boot helper overrides the torch half
+  to 2.9.1/triton 3.5.1 (torch 2.8.0 publishes no linux-aarch64 ``cu128``
+  wheel, see ``docs/reference/aarch64-support.md``), but
+  ``transformers==4.57.3`` still can't coexist, so the sidecar stays
+  out-of-process regardless.
+* **Vendoring is intractable.** ~6 kLOC of tightly coupled model code
+  (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` + ``qwen3vl_in_vla``
+  + ``flex_attention``) plus ``lingbotvla/ops`` Triton kernels and a
+  ``sys.path``-based layout.
+* **No ``config.json`` architecture in the HF release.** It's a 31-byte
+  ``{"vlm_family":"qwen3_vl"}`` stub; real architecture dims live in
+  ``configs/vla/robotwin/robotwin.yaml``, owned by the sidecar's repo
+  checkout. No ``trust_remote_code`` escape.
 
 So the sidecar runs the upstream ``LingbotVLAv2Server`` in its own py3.12 +
 torch-2.9.1 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +
-msgpack, exactly like the rldx / rlbench-3dda sidecars. The boot helper
-``tools/lingbot_vla2_sidecar.py`` (openral interpreter) auto-provisions the
-clone + venv on first use, then execs the server ``tools/_lingbot_vla2_server.py``
-(sidecar venv) — same two-file boot/server split as the qwen-vlm sidecar.
+msgpack. The boot helper ``tools/lingbot_vla2_sidecar.py`` (openral
+interpreter) auto-provisions the clone + venv on first use, then execs
+``tools/_lingbot_vla2_server.py`` (sidecar venv) — the same two-file
+boot/server split as the qwen-vlm sidecar.
 
 Observation / action contract (verified against the upstream configs)
 ---------------------------------------------------------------------
@@ -54,7 +52,7 @@ robot config shipped upstream (``configs/robot_configs/robotwin.yaml`` +
 * **Action chunk**: the server returns unnormalized ``action.arm.position(12)``
   + ``action.effector.position(2)`` per step; the sidecar flattens them (in that
   key order) to a ``(chunk, 14)`` array under ``"action"``. This adapter replays
-  one 14-D step per :meth:`step`, refilling from the sidecar when the queue
+  one 14-D step per ``step``, refilling from the sidecar when the queue
   drains.
 
 Quantization: the 8 GB-class dev GPU cannot hold the 6.38 B model (fp32 25.5 GB
@@ -188,8 +186,8 @@ def _resolve_model_id(
 def _locate_sidecar_script() -> Path:
     """Find ``tools/lingbot_vla2_sidecar.py`` (the boot helper) relative to the repo.
 
-    The boot helper runs under the openral interpreter (:data:`sys.executable`)
-    so it can import :mod:`openral_sim._sidecar_common`; it clones the upstream
+    The boot helper runs under the openral interpreter (``sys.executable``)
+    so it can import ``openral_sim._sidecar_common``; it clones the upstream
     repo + builds the torch-2.9 venv on first use, then execs the server. The
     venv itself no longer needs to exist when this adapter is constructed —
     provisioning is the boot helper's job (escape hatch:
@@ -214,10 +212,10 @@ def _locate_sidecar_script() -> Path:
 
 @dataclass
 class _LingBotVla2Adapter:
-    """:class:`PolicyAdapter` proxying the LingBot-VLA 2.0 sidecar.
+    """``PolicyAdapter`` proxying the LingBot-VLA 2.0 sidecar.
 
     Predicts a full action chunk on the sidecar and replays one 16-D step per
-    :meth:`step`; the queue refills (a new sidecar inference) when it drains.
+    ``step``; the queue refills (a new sidecar inference) when it drains.
     """
 
     spec: VLASpec
@@ -389,7 +387,7 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
 
 @POLICIES.register("lingbot_vla2")
 def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
-    """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see :func:`_build_lingbot`."""
+    """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see ``_build_lingbot``."""
     return _build_lingbot(env_cfg, variant="v2")
 
 
@@ -398,6 +396,6 @@ def _build_lingbot_vla(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     """LingBot-VLA 1.0 (4B Qwen2.5-VL dense expert / posttrain-robotwin).
 
     Same obs contract + adapter as v2; the sidecar loads the V1 repo + venv and
-    runs ``tools/_lingbot_vla2_server.py --variant v1``. See :func:`_build_lingbot`.
+    runs ``tools/_lingbot_vla2_server.py --variant v1``. See ``_build_lingbot``.
     """
     return _build_lingbot(env_cfg, variant="v1")

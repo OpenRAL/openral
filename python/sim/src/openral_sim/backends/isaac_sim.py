@@ -1,15 +1,15 @@
 r"""Isaac Sim scene adapter — drives an Isaac Lab env through an out-of-process sidecar.
 
-NVIDIA Isaac Sim (Omniverse Kit + PhysX + RTX) ships per-interpreter
-wheels: 4.x→py3.10, 5.x→py3.11, 6.x→py3.12. The openral workspace pins
-``>=3.12,<3.13``, and Isaac Sim's stack (its own torch / CUDA build, the rigid
-``SimulationApp``-before-``omni.*`` import order, a libgomp/OpenMP ``LD_PRELOAD``
-clash with the VLA torch stack) makes an in-process load impractical inside the
-3.12 venv. So — exactly like the RLDX-1 policy sidecar
-(:mod:`openral_sim.policies.rldx`) — we run Isaac Lab in its own py3.11 venv and
-talk to it over ZMQ REQ/REP framed by msgpack.
+NVIDIA Isaac Sim (Omniverse Kit + PhysX + RTX) ships per-interpreter wheels:
+4.x→py3.10, 5.x→py3.11, 6.x→py3.12. The openral workspace pins
+``>=3.12,<3.13``, and Isaac Sim's stack (its own torch / CUDA build, the
+rigid ``SimulationApp``-before-``omni.*`` import order, a libgomp/OpenMP
+``LD_PRELOAD`` clash with the VLA torch stack) makes an in-process load
+impractical inside the 3.12 venv. So — like the RLDX-1 policy sidecar
+(``openral_sim.policies.rldx``) — Isaac Lab runs in its own py3.11 venv,
+reached over ZMQ REQ/REP framed by msgpack.
 
-This module is the **openral side**: a thin :class:`SimRollout` that marshals
+This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar
 (``tools/isaac_sidecar.py``) and unwraps the responses. The sidecar owns the
 Omniverse app, the Franka manipulation env, PhysX stepping, and RTX camera
@@ -23,7 +23,7 @@ Lifecycle (mirrors the RLDX adapter's auto-spawn block)
   resolved scene config (task id, layout, obs size, instruction) and poll
   ``ping`` until it answers or ``boot_timeout_s`` elapses. First boot pays the
   tens-of-seconds Omniverse Kit start; ``boot_timeout_s`` defaults large.
-* :meth:`close` terminates only a child we spawned ourselves; a pre-existing
+* ``close`` terminates only a child we spawned ourselves; a pre-existing
   operator-launched sidecar is left running.
 
 Sidecar python resolution
@@ -35,7 +35,7 @@ install) is provisioned out of band by the user — there is no auto-install pla
 for it, unlike the lightweight openral-side ``isaac_client`` wire deps. Without
 the env var set we fall back to the cache default
 (``~/.cache/openral/isaac-sidecar/.venv/bin/python``) and raise a typed
-:class:`ROSConfigError` carrying the exact provisioning commands if absent.
+``ROSConfigError`` carrying the exact provisioning commands if absent.
 
 Scene category: **free-axis** (``fixed_robot=None``). The sidecar's env is
 Franka-based today but the scene is robot-flagged for forward compatibility with
@@ -54,22 +54,21 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import opt_num as _opt_num
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
-from openral_sim.sidecar import SidecarClient
+from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription, SceneSpec, SensorSpec, SimEnvironment, TaskSpec
+    from openral_core import RobotDescription, SensorSpec, SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -162,37 +161,18 @@ _MAX_PHYSICAL_GRIPPER_TRAVEL_M = 0.1
 # ── SimRollout adapter ────────────────────────────────────────────────────────
 
 
-def _coerce_sim_time_ns(value: object) -> int | None:
-    """Coerce an optional wire ``sim_time_ns`` (int / float / None) to ``int | None``.
-
-    The sidecar's msgpack reply carries sim time as a plain number (or omits it
-    on an older protocol); anything non-numeric degrades to ``None`` so the HAL
-    simply publishes no ``/clock`` rather than crashing.
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return None
-
-
 @dataclass
-class _IsaacSimSidecar:
-    """:class:`SimRollout` that proxies an Isaac Lab env over the sidecar.
+class _IsaacSimSidecar(SidecarSimRollout):
+    """``SimRollout`` that proxies an Isaac Lab env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8, ``state`` 1-D float32, ``task`` str); we only
     re-wrap into a plain dict and cache the last RGB frame for ``render``.
-    """
 
-    scene: SceneSpec
-    task: TaskSpec
-    _client: SidecarClient
-    _last_image: NDArray[np.uint8] | None = None
-    _action_dim: int | None = None
-    _last_sim_time_ns: int | None = None
+    Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
+    ``SidecarSimRollout`` (shared verbatim with the RoboTwin adapter); only
+    ``_wrap_obs`` and this docstring-carrying ``action_dim`` are Isaac-specific.
+    """
 
     @property
     def action_dim(self) -> int:
@@ -208,44 +188,6 @@ class _IsaacSimSidecar:
             reply = self._client.call("ping")
             self._action_dim = int(self._client.require(reply, "action_dim"))
         return self._action_dim
-
-    def reset(self, seed: int | None = None) -> Observation:
-        reply = self._client.call("reset", {"seed": seed})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return self._wrap_obs(self._client.require(reply, "observation"))
-
-    def step(self, action: NDArray[np.float32]) -> StepResult:
-        action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
-        # Cache the sidecar's elapsed sim time so the
-        # deploy-sim HAL can publish /clock with an Isaac backend. Optional in
-        # the wire protocol (older sidecars omit it) → stays None, /clock off.
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return StepResult(
-            observation=self._wrap_obs(self._client.require(reply, "observation")),
-            reward=float(self._client.require(reply, "reward")),
-            terminated=bool(self._client.require(reply, "terminated")),
-            truncated=bool(self._client.require(reply, "truncated")),
-            info=dict(reply.get("info", {})),
-        )
-
-    def sim_time_ns(self) -> int | None:
-        """Elapsed simulation time in ns from the last sidecar reply, or ``None``.
-
-        The value the deploy-sim HAL reads (through
-        ``SimAttachedHAL.sim_time_ns``, which adds the cross-reset offset) to
-        publish ``/clock``. ``None`` when the sidecar does not report sim time
-        (older protocol), so the graph stays on wall-clock.
-        """
-        return self._last_sim_time_ns
-
-    def render(self) -> NDArray[np.uint8] | None:
-        return None if self._last_image is None else self._last_image.copy()
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._client.call("close")
-        self._client.close()
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images_raw = raw.get("images", {})
@@ -297,33 +239,12 @@ class _IsaacSimSidecar:
 # ── factory ───────────────────────────────────────────────────────────────────
 
 
-_Num = TypeVar("_Num", int, float)
-
-
-def _opt_num(
-    opts: dict[str, object], key: str, default: _Num, cast: Callable[[int | float | str], _Num]
-) -> _Num:
-    """Coerce a ``backend_options`` value (typed ``object``) via ``cast``, else default.
-
-    Returns ``default`` for a missing key, a ``bool`` (an ``int`` subclass we do
-    not want silently accepted), a non-scalar type, OR an unparseable scalar
-    (e.g. ``port: "auto"`` → ``ValueError`` → ``default``) — never raises.
-    """
-    value = opts.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return default
-    try:
-        return cast(value)
-    except (ValueError, TypeError):
-        return default
-
-
 def _provision_isaac_venv() -> Path:
     """Create the isaac sidecar venv from the pinned NVIDIA-index install.
 
     Opt-in (``OPENRAL_ISAAC_AUTO_PROVISION=1``) because it is a multi-GB,
     RTX-only, license-gated download from NVIDIA's index. Uses the shared
-    :func:`ensure_pip_venv` provisioning order so it reuses an existing venv +
+    ``ensure_pip_venv`` provisioning order so it reuses an existing venv +
     sentinel, matching the LocateAnything / Qwen sidecars. Returns the venv
     python (``<home>/.venv/bin/python``).
     """
@@ -380,7 +301,7 @@ def _sidecar_python() -> Path:
     venv → a typed error carrying the exact manual commands.
 
     Auto-provision is tried *before* the existing-venv shortcut so a venv built
-    from superseded pins gets repaired: :func:`ensure_pip_venv` reuses it when
+    from superseded pins gets repaired: ``ensure_pip_venv`` reuses it when
     its sentinel still matches (cheap) and re-installs when it does not. The
     old order returned any existing venv untouched, which is why the stale
     nvJitLink of issue #89 survived every re-provision attempt.
@@ -606,7 +527,7 @@ def provision_isaac_sim() -> None:
     a terminal than as a lifecycle timeout.
 
     Idempotent — an existing venv short-circuits on its sentinel, so a warm
-    host pays one ``is_file()``. :func:`_build_isaac_sim_scene` resolves the
+    host pays one ``is_file()``. ``_build_isaac_sim_scene`` resolves the
     same interpreter again on the build path.
 
     Raises:

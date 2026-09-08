@@ -1,30 +1,25 @@
 """``libero_eef8d`` layout assembler.
 
-Mirrors the LIBERO training-time 8-D **task-space** proprio state verbatim —
-verified against ``python/sim/src/openral_sim/backends/libero.py:219`` (the
-benchmark ``LiberoBackend._wrap_obs``)::
+Mirrors LIBERO's 8-D task-space proprio state verbatim — verified against
+``python/sim/src/openral_sim/backends/libero.py:219``
+(``LiberoBackend._wrap_obs``)::
 
-    eef_pos        (3) +   # world-frame end-effector position
-    eef_axisangle  (3) +   # world-frame EE orientation as an axis-angle vector
+    eef_pos        (3) +   # world-frame EE position
+    eef_axisangle  (3) +   # world-frame EE orientation, axis-angle
     gripper_qpos   (2) = 8
 
-The LIBERO-finetuned checkpoints distributed at e.g.
+Consumed by the LIBERO-finetuned checkpoints ``hf://lerobot/smolvla_libero``,
+``hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8``, and
+``hf://OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16``.
 
-* ``hf://lerobot/smolvla_libero``      (``rskill-smolvla-franka_panda-libero_spatial-bf16``)
-* ``hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8``
-* ``hf://OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16``
-
-consume this layout. In the **benchmark** path (``openral sim run``) the LIBERO
-env supplies this task-space state directly; in the **deploy** path
-(``openral deploy sim``) the runner must assemble it from live TF (EE pose) +
-``JointState`` (gripper). Without this layout the skill_runner falls back to
-the raw *joint-space* position vector (``rskill_runner_node`` ``obs["state"] =
-robot_state``) — feeding joint angles to a policy trained on end-effector
-poses, which executes incoherently (the franka arm moves but never approaches
-the target). This is the symmetric, task-space sibling of
-:mod:`~openral_state_adapter.layouts.human300_16d` (which is base-relative and
-16-D for mobile bases); LIBERO is a fixed-base franka, so the EE pose is taken
-**absolute in the world frame** to match robosuite's ``robot0_eef_pos``.
+The benchmark path (``openral sim run``) reads this state from the LIBERO
+env directly; the deploy path (``openral deploy sim``) assembles it here
+from live TF + ``JointState``. Without this layout the skill_runner falls
+back to the raw joint-space vector, driving an EE-pose-trained policy
+incoherently. Task-space sibling of
+``human300_16d`` (base-relative, 16-D,
+mobile base); LIBERO is fixed-base, so EE pose is absolute in the world
+frame, matching robosuite's ``robot0_eef_pos``.
 """
 
 from __future__ import annotations
@@ -119,13 +114,11 @@ def assemble_libero_eef8d(
             f"manifest declared {n_joints}: {bindings.gripper_qpos_joints!r}.",
         )
 
-    # ``world_to_eef``: ``target=world_frame``, ``source=eef_frame`` — the
-    # translation field is the EE origin expressed in the world frame, matching
-    # robosuite's ``robot0_eef_pos`` the checkpoint was trained on. NOTE the
-    # ``world_frame`` binding defaults to ``"map"`` (SLAM root); LIBERO is a
-    # fixed-base sim with no SLAM, so the manifest MUST set ``world_frame`` to
-    # the HAL-published sim root (e.g. ``"world"``) — ``"map"`` would be
-    # unavailable / meters-off on a fresh boot.
+    # ``world_to_eef``: EE origin in world frame, matching robosuite's
+    # ``robot0_eef_pos``. ``world_frame`` binding defaults to ``"map"``
+    # (SLAM root) but LIBERO is fixed-base with no SLAM — manifest MUST
+    # set ``world_frame`` to the HAL-published sim root (e.g. ``"world"``);
+    # ``"map"`` would be unavailable or meters-off on a fresh boot.
     world_to_eef = tf_lookup(bindings.world_frame, bindings.eef_frame)
 
     out = np.empty(_DIM, dtype=np.float32)

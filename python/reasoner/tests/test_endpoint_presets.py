@@ -108,9 +108,9 @@ def test_no_choices_reports_the_provider_error() -> None:
     """A gateway 200 with ``choices: null`` must name the upstream failure.
 
     OpenRouter answers HTTP 200 with ``choices: null`` when the backing
-    provider rate-limits or 5xxs; ``list(None)`` used to surface as
+    provider rate-limits or 5xxs; a bare ``list(None)`` surfaces only
     ``TypeError: 'NoneType' object is not iterable``, which tells an operator
-    nothing about a transient provider outage.
+    nothing about the transient provider outage.
     """
     from openral_core.exceptions import ROSPlanningError
     from openral_reasoner.tool_use import _openai_choices
@@ -131,9 +131,9 @@ def test_no_choices_reports_the_provider_error() -> None:
 def test_anthropic_preset_is_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
     """`ENDPOINT=anthropic` must build a client, not reject its own name.
 
-    The preset's `url` was `None` ("SDK default host"), which collided with the
-    `endpoint is None` sentinel meaning "not configured" — so the only preset
-    with no explicit URL was the only one that could never be used.
+    The preset's `url` is `None` ("SDK default host"), which collides with the
+    `endpoint is None` sentinel meaning "not configured" — the only preset
+    with no explicit URL is the one guarded against here.
     """
     pytest.importorskip("anthropic")
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-haiku-4-5")
@@ -167,8 +167,9 @@ def test_curated_model_takes_the_whole_preset(monkeypatch: pytest.MonkeyPatch) -
 def test_curated_model_rejects_a_dialect_clash(monkeypatch: pytest.MonkeyPatch) -> None:
     """A named endpoint cannot re-dialect a curated model.
 
-    This previously built an `AnthropicToolUseClient` pointed at Ollama's
-    OpenAI-only endpoint: it configured cleanly and failed on every tick.
+    Without this guard, `claude-opus-4-8` (anthropic) on `ollama` (openai)
+    would build an `AnthropicToolUseClient` pointed at an OpenAI-only
+    endpoint: it configures cleanly and fails on every tick.
     """
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")

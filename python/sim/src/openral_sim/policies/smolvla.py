@@ -5,10 +5,10 @@ Wraps any ``lerobot.policies.*`` checkpoint that follows the SmolVLA
 ``smolvla_metaworld``, ``pi05_libero``, and any compatible finetune.
 
 The adapter only accepts bare rSkill references in
-:attr:`VLASpec.weights_uri`. The rSkill manifest is the contract between
+``VLASpec.weights_uri``. The rSkill manifest is the contract between
 robot/sensors/preprocessing and the policy weights — the eval layer never
 loads weights without one. The manifest is resolved to a bare HF Hub repo id
-via :func:`openral_rskill.loader.resolve_rskill_to_hf`.
+via ``openral_rskill.loader.resolve_rskill_to_hf``.
 
 Like the other adapters, this module imports torch / lerobot / transformers
 lazily so installing ``openral-sim`` never pulls them transitively.
@@ -282,7 +282,7 @@ class _SmolVLAAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
@@ -305,7 +305,7 @@ class _SmolVLAAdapter:
         The co-located sensor leg delivers frames as NVMM
         descriptors in ``observation["image_handles"]``. When the TRT runtime
         is attached and every camera slot has a handle, encode them with
-        :class:`NvmmVisionEncoder` (same cached vision engine, straight on the
+        ``NvmmVisionEncoder`` (same cached vision engine, straight on the
         device pointers) and stash the embeddings on the sampler — the pixel
         tensors in the batch are then placeholders.
 
@@ -395,7 +395,7 @@ class _SmolVLAAdapter:
 
         The fast pop path skips ``_build_batch`` (which normally records the
         preview), but the eval-layer debug video samples
-        :meth:`last_input_frame` every env step — without this it would show
+        ``last_input_frame`` every env step — without this it would show
         one frozen frame per chunk.
         """
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
@@ -581,22 +581,19 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         )
 
     # ``SmolVLAPolicy.from_pretrained`` allocates the full graph on CPU,
-    # downloads + mmaps the safetensors, and (on a cold HF connection)
-    # HEAD-validates every cached file. Split the device transfer into
-    # its own phase so a slow ``.to(device)`` is distinguishable from a
-    # slow ``from_pretrained``.
-    # Force a float32 *default* dtype across the load. ``from_pretrained``
-    # materialises the model skeleton under the process-global default dtype,
-    # then loads the stored weights into it: the bf16 VLM backbone is restored
-    # from its bf16 safetensors, but the float32 action expert is only float32
-    # if the skeleton was built float32. SmolVLA's flow-matching sampler
-    # allocates its noise/time tensors as hard-coded float32 (``sample_noise``),
-    # so a bf16 expert raises "mat1 and mat2 must have the same dtype" in
-    # embed_suffix. Another in-process policy (molmoact2 / pi05) or any
-    # transformers load can leave the global default at bf16; restore float32
-    # for the duration of the load so SmolVLA is immune to that leak. Deploy-sim
-    # shares one process across skills; ``openral sim run`` does not — which is
-    # why this only ever bit the deploy path.
+    # downloads + mmaps the safetensors, and (cold HF connection) HEAD-
+    # validates every cached file; the device transfer is a separate phase
+    # so a slow ``.to(device)`` is distinguishable from a slow load.
+    # Force a float32 default dtype across the load: `from_pretrained`
+    # materialises the model skeleton under the process-global default
+    # dtype, so the float32 action expert is only float32 if the skeleton
+    # was built float32 — SmolVLA's flow-matching sampler hard-codes
+    # float32 noise/time tensors (`sample_noise`), so a bf16 expert raises
+    # "mat1 and mat2 must have the same dtype" in embed_suffix. Another
+    # in-process policy load (molmoact2/pi05) can leave the global default
+    # at bf16; restoring float32 here makes SmolVLA immune to that leak
+    # (deploy-sim shares one process across skills; `openral sim run` does
+    # not, so only the deploy path saw this).
     prev_default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.float32)
     try:
@@ -627,22 +624,22 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     finally:
         torch.set_default_dtype(prev_default_dtype)
     policy.eval()
-    # Pin SmolVLA's dtype-split legs. lerobot's current dtype-preserving
-    # ``from_pretrained`` returns an INCONSISTENT mix — a bf16 VLM backbone plus
-    # an action path (state_proj / action projections / flow-matching expert)
-    # whose dtype varies run-to-run — which cannot run as-loaded:
-    # (a) ``embed_prefix`` ``torch.cat``s the state embedding with the bf16 VLM
-    #     image/text embeddings, so ``state_proj`` (and the state input) must be
-    #     the BACKBONE dtype; but
-    # (b) the flow-matching sampler hard-codes float32 noise/time and ``suffix_out``
-    #     is cast back to float32 before ``action_out_proj``, so the action path
-    #     must be float32.
-    # The expert bridges the two internally (``smolvlm_with_expert`` casts each
-    # leg to its own layer weight dtype). Pinning these legs — rather than a full
-    # ``policy.float()`` — keeps the large VLM backbone bf16, so the policy still
-    # co-resides with the Robometer reward monitor on an 8 GB card (fp32-unify
-    # OOMs it). Observed pre-fix failure: ``mat1 and mat2 must have the same
-    # dtype, got Float and BFloat16`` at ``state_proj(state)``.
+    # Pin SmolVLA's dtype-split legs. lerobot's dtype-preserving
+    # `from_pretrained` returns an inconsistent mix — a bf16 VLM backbone
+    # plus an action path (state_proj/action projections/flow-matching
+    # expert) whose dtype varies run-to-run — that cannot run as-loaded:
+    # (a) `embed_prefix` `torch.cat`s the state embedding with the bf16 VLM
+    #     image/text embeddings, so `state_proj` (and the state input) must
+    #     be the backbone dtype; but
+    # (b) the flow-matching sampler hard-codes float32 noise/time and
+    #     `suffix_out` is cast back to float32 before `action_out_proj`, so
+    #     the action path must be float32.
+    # The expert bridges both internally (`smolvlm_with_expert` casts each
+    # leg to its own layer weight dtype). Pinning these legs — rather than
+    # a full `policy.float()` — keeps the large VLM backbone bf16, so the
+    # policy still co-resides with the Robometer reward monitor on an
+    # 8 GB card (fp32-unify OOMs it). Observed pre-fix failure: "mat1 and
+    # mat2 must have the same dtype, got Float and BFloat16" at `state_proj(state)`.
     _backbone_dtype = next(policy.model.vlm_with_expert.vlm.parameters()).dtype
     policy.model.state_proj.to(_backbone_dtype)
     for _leg in ("action_in_proj", "action_out_proj", "action_time_mlp_in", "action_time_mlp_out"):

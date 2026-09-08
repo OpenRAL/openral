@@ -2,9 +2,9 @@
 r"""panda_mobile HAL lifecycle node entry point.
 
 Manifest-driven node: builds its sim HAL via
-:func:`openral_hal.lifecycle.make_lifecycle_main_from_manifest`, which reads
+``openral_hal.lifecycle.make_lifecycle_main_from_manifest``, which reads
 the ``robot_yaml`` + ``hal_mode`` ROS parameters and routes through
-:func:`openral_hal.build_hal`. panda_mobile is simulation-only (``hal.real``
+``openral_hal.build_hal``. panda_mobile is simulation-only (``hal.real``
 is null), so ``deploy run`` raises ``ROSCapabilityMismatch``.
 
 Usage::

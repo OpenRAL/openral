@@ -111,14 +111,12 @@ def _lifecycle_harness() -> Iterator[tuple[Any, Any, dict[str, list[Any]]]]:
         control_qos,
     )
 
-    # SingleThreadedExecutor mirrors how the node actually runs in production
-    # (`make_lifecycle_main*` → `rclpy.spin(node)` is single-threaded). It also
-    # keeps the OpenArm node's offscreen MuJoCo renderer thread-correct: the
-    # `mujoco.Renderer` (EGL context) is created on this thread in
-    # `on_configure`, and `_spin_for` below runs the camera-render timer on the
-    # SAME thread via `spin_once`. A MultiThreadedExecutor would dispatch that
-    # callback to a worker thread, and the thread-affine `eglMakeCurrent` would
-    # raise EGL_BAD_ACCESS and abort the process headless.
+    # SingleThreadedExecutor mirrors production (`make_lifecycle_main*` → `rclpy.spin(node)`
+    # is single-threaded); it also keeps the OpenArm node's offscreen MuJoCo renderer
+    # thread-correct: the `mujoco.Renderer` (EGL context) is created on this thread in
+    # `on_configure`, and `_spin_for` below runs the camera-render timer on the SAME thread
+    # via `spin_once`. A MultiThreadedExecutor would dispatch that callback to a worker
+    # thread, and the thread-affine `eglMakeCurrent` would raise EGL_BAD_ACCESS and abort.
     executor = rclpy.executors.SingleThreadedExecutor()
     executor.add_node(node)
     executor.add_node(helper)
@@ -159,10 +157,9 @@ def test_activate_publishes_sixteen_dof_joint_states() -> None:
 def test_cameras_publish_rgb_frames() -> None:
     """SimSensorBridge + OpenArmMujocoHAL.read_images publish the manifest cameras.
 
-    issue #191 Phase 3b — the composed scene's MJCF camera "top" renders the
-    "top" RGB sensor (the MJCF and sensor names match); the frame
-    is published on ``/openral/cameras/top/image`` headless (EGL on the
-    executor thread).
+    Issue #191 Phase 3b: the composed scene's MJCF camera "top" renders the "top" RGB sensor
+    (MJCF and sensor names match); frame published on ``/openral/cameras/top/image`` headless
+    (EGL on the executor thread).
     """
     import rclpy
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy

@@ -1,33 +1,22 @@
 #!/usr/bin/env python
 """Isaac Sim scene sidecar — runs Isaac Lab in its own py3.11 venv.
 
-This is the **Isaac side** of the Isaac Sim backend. It is launched (auto-spawned)
-by :mod:`openral_sim.backends.isaac_sim` running under the openral py3.12 venv,
-and it runs under the separate Isaac Sim py3.11 venv whose interpreter is named
-by ``OPENRAL_ISAAC_SIDECAR_PYTHON``.
+Isaac side of the backend in ``openral_sim.backends.isaac_sim`` (py3.12),
+auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
+Omniverse Kit headless, builds a Franka arm + liftable cube + tiled RGB camera
+scene, and serves ZMQ REP + msgpack/ndarray framing:
 
-It launches the Omniverse Kit app headless, builds a minimal Isaac Lab
-manipulation scene (a Franka arm + a liftable cube + a tiled RGB camera), and
-serves a ZMQ REP loop speaking the same msgpack + ndarray framing the openral
-side uses:
+    ping->{"ok","action_dim","task","layout"}   reset->{"observation"}
+    step->{"observation","reward","terminated","truncated","info"}
+    render->{"frame": uint8 HWC|None}   close->{"ok"}
+    observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
-    ping  -> {"ok": True, "action_dim": int, "task": str, "layout": str}
-    reset -> {"observation": {...}}
-    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info"}
-    render-> {"frame": <uint8 HWC>|None}
-    close -> {"ok": True}
+IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
+— heavy imports live inside ``main``, not module scope.
 
-Observation dict shape (eval-layer contract):
-    {"images": {"camera1": <H,W,3 uint8>}, "state": <1-D float32>, "task": str}
-
-IMPORTANT (Isaac import order): ``SimulationApp`` MUST be constructed before any
-``omni.*`` / ``isaaclab`` import. We therefore do all heavy imports *inside*
-:func:`main`, after the app is up. Do not hoist them to module scope.
-
-Licensing: this process sets ``OMNI_KIT_ACCEPT_EULA=YES`` — running it is the
-user's acceptance of the NVIDIA Omniverse license. The Omniverse Kit components
-are proprietary and are never vendored into the repo (CLAUDE.md §1.9); this
-launcher only drives an externally-provisioned install.
+Sets ``OMNI_KIT_ACCEPT_EULA=YES`` (running this accepts the NVIDIA Omniverse
+license). Kit is proprietary and never vendored (CLAUDE.md §1.9) — this only
+drives an externally-provisioned install.
 """
 
 from __future__ import annotations
@@ -109,14 +98,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def _check_required_versions(requirements: list[str]) -> None:
     """Fail loudly when an installed dist is older than the floor openral pins.
 
-    Isaac's own extensions prebundle CUDA libraries that resolve against the
-    venv's ``nvidia-*`` wheels; too-old ones do not raise, they make extension
-    startup fail and leave Kit alive but never serving. Checking first turns a
-    silent ``boot_timeout_s`` burn into an immediate, actionable error.
-
-    Versions are compared as digit tuples (``12.6.85`` -> ``(12, 6, 85)``) —
-    enough for the CUDA runtime wheels, and it keeps this launcher free of
-    ``packaging``, which the sidecar venv is not guaranteed to carry.
+    A too-old ``nvidia-*`` CUDA wheel doesn't raise — it leaves Kit alive but
+    never serving, burning the full ``boot_timeout_s`` silently. Versions
+    compare as digit tuples (``12.6.85`` -> ``(12, 6, 85)``) to avoid a
+    ``packaging`` dependency the sidecar venv isn't guaranteed to carry.
     """
     from importlib.metadata import PackageNotFoundError, version
 

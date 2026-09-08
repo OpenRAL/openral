@@ -1,46 +1,35 @@
 """Integration coverage for the sim-only idle stepper's WIRED bridge+HAL path.
 
-The 2026-06-04 idle-stepper amendment added this coverage. The unit suite
+2026-06-04 idle-stepper amendment added this coverage. The unit suite
 (``python/hal/tests/test_sim_attached_idle_step.py``) already covers
-:meth:`SimAttachedHAL.idle_step` in isolation (frame-advance, estop-suppress,
-terminal-reset, crash-containment) and the pure :func:`should_idle_step`
-predicate. What was *deferred* — and is added here — is integration-level proof
-that the WIRED :class:`SimSensorBridge` (against a real lifecycle node) +
-:class:`SimAttachedHAL` (against a real sim env) together keep an idle scene
-live and yield to an active action stream. The regression this guards is an
-idle ``openral deploy sim`` scene freezing the perception bus: the env only steps
-on ``/openral/safe_action`` receipt, so when no skill runs the cameras go
-stale.
+``SimAttachedHAL.idle_step`` in isolation (frame-advance, estop-suppress, terminal-reset,
+crash-containment) and the pure ``should_idle_step`` predicate. Deferred and added here:
+integration-level proof that the WIRED ``SimSensorBridge`` (real lifecycle node) +
+``SimAttachedHAL`` (real sim env) together keep an idle scene live and yield to an active
+action stream. Regression guarded: an idle ``openral deploy sim`` scene freezing the
+perception bus, since the env only steps on ``/openral/safe_action`` receipt, so cameras go
+stale with no skill running.
 
-Test FORM — in-process real-component integration, NOT ``launch_testing``
-------------------------------------------------------------------------
-A ``launch_testing`` variant would bring up the lifecycle node and assert on
-the idle *timer* firing on its own wall-clock cadence. That is exactly the
-source of flakiness for which this test was deferred: the assertion
-("cameras kept advancing while idle", "idle did not double-step under load")
-hinges on the precise interleaving of the rclpy timer, the camera-publish
-timer, and the ``last_action_ns`` stamp — none of which a black-box launch
-test can pin deterministically. A slow CI host, a GC pause, or executor
-scheduling jitter flips the result.
+Test form — in-process real-component integration, not ``launch_testing``: a launch_testing
+variant asserting on the idle timer firing on its own wall-clock cadence is exactly the
+flakiness source this test was deferred to avoid — the assertion hinges on the precise
+interleaving of the rclpy timer, the camera-publish timer, and ``last_action_ns``, none of
+which a black-box launch test can pin deterministically (a slow CI host, GC pause, or
+executor jitter flips the result).
 
-So this test wires the REAL components — a real ``rclpy`` ``LifecycleNode``
-(the framework boundary; its ``create_timer`` / ``create_publisher`` /
-``get_logger`` surface is genuine, not stubbed), a real ``SimSensorBridge``,
-and a real ``SimAttachedHAL`` over a real native-MuJoCo sim env (no mocks,
-CLAUDE.md §1.11) — and drives the bridge's own idle-tick callback
-(``_idle_step_tick``) directly a controlled number of times rather than
-waiting on the wall-clock timer. This exercises the full wiring
-(bridge predicate → ``hal.idle_step`` → ``env.step`` → ``read_images``
-re-cache) deterministically, with no timer-timing flakiness. Timing
-tolerances are generous (a multi-second idle-hold) so the yield assertion can
-never race the clock.
+So this test wires the real components — a real ``rclpy`` ``LifecycleNode`` (genuine
+``create_timer``/``create_publisher``/``get_logger``), a real ``SimSensorBridge``, a real
+``SimAttachedHAL`` over a real native-MuJoCo sim env (no mocks, CLAUDE.md §1.11) — and drives
+the bridge's own idle-tick callback (``_idle_step_tick``) directly a controlled number of
+times rather than waiting on the wall-clock timer, exercising the full wiring (bridge
+predicate → ``hal.idle_step`` → ``env.step`` → ``read_images`` re-cache) deterministically.
+Timing tolerances are generous (multi-second idle-hold) so the yield assertion never races
+the clock.
 
-Backend choice: the native-MuJoCo ``so101_box`` scene (``scenes/sim/
-so101_tube_insertion.yaml``) — it exercises ``SimSensorBridge`` with live
-``mujoco_handles`` + rendered camera frames, builds in ~5 s, and needs neither
-``libero`` nor ``robocasa`` (neither installed here), so it is the lightest
-backend that drives the real idle path. We avoid the ~60 s robocasa kitchen
-build entirely.
+Backend: native-MuJoCo ``so101_box`` scene (``scenes/sim/so101_tube_insertion.yaml``) —
+exercises ``SimSensorBridge`` with live ``mujoco_handles`` + rendered camera frames, builds in
+~5 s, needs neither ``libero`` nor ``robocasa`` (neither installed here), avoiding the ~60 s
+robocasa kitchen build entirely.
 """
 
 from __future__ import annotations
@@ -86,11 +75,9 @@ def _first_hwc_frame(images: dict[str, Any]) -> NDArray[Any]:
 def wired_bridge_and_hal() -> Iterator[tuple[Any, Any]]:
     """Yield a real (SimSensorBridge, SimAttachedHAL) wired to a real sim env.
 
-    Skips cleanly when the sim deps (mujoco / openral_sim) are absent. Uses the
-    native-MuJoCo so101 box scene — its action width is not introspectable, so
-    ``env_action_dim=6`` is passed explicitly (the documented constructor path
-    for non-introspectable envs, mirroring the unit suite's ``_build_so101_hal``
-    and what the lifecycle node would resolve).
+    Skips cleanly when sim deps (mujoco/openral_sim) are absent. Uses the native-MuJoCo so101
+    box scene — its action width isn't introspectable, so ``env_action_dim=6`` is passed
+    explicitly (mirrors the unit suite's ``_build_so101_hal``).
     """
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
@@ -116,10 +103,9 @@ def wired_bridge_and_hal() -> Iterator[tuple[Any, Any]]:
 
         node = LifecycleNode("test_sim_idle_stepper_wiring")
         bridge = SimSensorBridge(node, hal, desc, viewer_enabled=False, idle_hold_ms=_IDLE_HOLD_MS)
-        # Wire the real idle timer through the production setup path. Both gates
-        # must hold: the HAL exposes a callable ``idle_step`` AND live MuJoCo
-        # handles (so101_box does). If this returns without a timer the wiring
-        # is broken — assert it so the test fails loudly rather than vacuously.
+        # Wire the real idle timer through the production setup path. Both gates must hold:
+        # callable idle_step AND live MuJoCo handles (so101_box does) — assert the timer
+        # exists so a broken wiring fails loudly rather than vacuously.
         bridge._setup_idle_stepper()
         assert bridge._idle_timer is not None, (
             "idle timer not created — both gates (callable idle_step + live "
@@ -139,15 +125,14 @@ def test_idle_liveness_wired_bridge_keeps_scene_advancing(
 ) -> None:
     """IDLE LIVENESS: with no action stream, driving the bridge's idle tick keeps frames advancing.
 
-    Drives the REAL ``SimSensorBridge._idle_step_tick`` callback (the same code
-    the production timer fires) several times against a real wired HAL+env with
-    no actions sent. ``last_action_ns == 0`` makes :func:`should_idle_step`
-    engage every tick, so the env is stepped and ``read_images()`` advances.
+    Drives the real ``SimSensorBridge._idle_step_tick`` callback (same code the production
+    timer fires) several times against a real wired HAL+env with no actions sent —
+    ``last_action_ns == 0`` makes ``should_idle_step`` engage every tick, so ``read_images()``
+    advances.
 
-    Robustness: asserts on *frame distinctness* ("two frames captured several
-    idle ticks apart DIFFER"), never on an exact step count or a sleep — the
-    frozen-scene regression leaves the frames byte-identical, a live scene does
-    not. No wall-clock timing is relied upon (the tick is invoked directly).
+    Asserts on frame distinctness, never an exact step count or sleep: the frozen-scene
+    regression leaves frames byte-identical, a live scene doesn't. No wall-clock timing
+    relied on.
     """
     bridge, hal = wired_bridge_and_hal
 
@@ -172,19 +157,12 @@ def test_idle_stepper_yields_under_active_action_stream(
 ) -> None:
     """YIELD UNDER LOAD: a real send_action suppresses the idle tick (no double-step).
 
-    Sends a real ``Action`` through ``hal.send_action`` (the single choke point
-    that stamps ``last_action_ns``), then drives the bridge's idle tick. While
-    the action is recent (within the multi-second idle-hold), the tick must NOT
-    also step the env — otherwise the idle stepper would race / double-step an
-    actively-driven scene.
-
-    Robustness: we count actual idle steps by wrapping ``hal.idle_step`` and
-    only counting invocations that returned ``True`` (i.e. actually stepped).
-    The generous ``_IDLE_HOLD_MS`` (5 s) means the microsecond gap between the
-    ``send_action`` stamp and the tick is always inside the hold — no clock
-    race. We also confirm the env DOES resume idle-stepping once the action is
-    far enough in the past, proving the suppression is the hold predicate (not a
-    permanently-wedged stepper).
+    Sends a real ``Action`` through ``hal.send_action`` (stamps ``last_action_ns``), then
+    drives the idle tick — while the action is recent (within the idle-hold), the tick must
+    not also step the env. Counts actual idle steps via a spy wrapping ``hal.idle_step``
+    (``True`` return only). Generous ``_IDLE_HOLD_MS`` (5 s) keeps the send-to-tick gap always
+    inside the hold. Also confirms the env resumes idle-stepping once the action is far enough
+    in the past, proving suppression is the hold predicate, not a permanently-wedged stepper.
     """
     from openral_core.schemas import Action, ControlMode
 

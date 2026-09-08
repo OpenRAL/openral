@@ -2,7 +2,7 @@
 
 Loads the **real** ``gabrycina/so101-passing-pen-policy`` checkpoint (skips when
 the snapshot is not in the local HF cache and no network), exports it via
-:func:`tools.export_act_onnx.export`, and asserts ONNXRuntime output parity
+``tools.export_act_onnx.export``, and asserts ONNXRuntime output parity
 against the untouched torch ``ACTPolicy.predict_action_chunk`` on the same
 normalized inputs.
 

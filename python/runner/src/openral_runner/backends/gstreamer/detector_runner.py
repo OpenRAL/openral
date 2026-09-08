@@ -1,25 +1,25 @@
 """Runtime glue that runs a ``kind: detector`` rSkill against a live pipeline.
 
-Loads the :class:`~openral_core.schemas.DetectorContract` from the manifest, builds an
-:class:`~openral_runner.backends.gstreamer.objects_detector.ObjectsDetector` (CPU tier)
-or :class:`~openral_runner.backends.gstreamer.nvmm_detector.NvmmObjectsDetector` (NVMM
+Loads the ``DetectorContract`` from the manifest, builds an
+``ObjectsDetector`` (CPU tier)
+or ``NvmmObjectsDetector`` (NVMM
 aggregator tier), attaches the appropriate branch to the bus tee via
-:class:`~openral_runner.backends.gstreamer.tee_manager.TeeManager`,
-and on each frame publishes the resulting :class:`~openral_core.ObjectsMetadata` to a
+``TeeManager``,
+and on each frame publishes the resulting ``ObjectsMetadata`` to a
 caller-supplied sink callback.
 
 The branch is chosen by tier:
 
-* :attr:`~objects_detector.DetectorTier.CPU_ONNX` → ``videoconvert !
+* ``DetectorTier.CPU_ONNX`` → ``videoconvert !
   video/x-raw,format=BGR ! appsink`` — system-memory CPU path.
-* :attr:`~objects_detector.DetectorTier.NVMM_AGGREGATOR` → ``<conv> !
+* ``DetectorTier.NVMM_AGGREGATOR`` → ``<conv> !
   video/x-raw(memory:NVMM),format=RGBA ! appsink`` — zero-copy NVMM path, where
   ``<conv>`` is the platform's NVMM converter (``nvvideoconvert`` on DeepStream /
   ``nvvidconv`` on Tegra), resolved by
-  :func:`~openral_runner.backends.gstreamer.pipeline.nvmm_convert_element`.
+  ``nvmm_convert_element``.
 
 Importing this module requires the ``gstreamer`` optional-extra (``gi`` + GStreamer 1.0).
-``gi`` is eagerly imported at load time — mirrors :mod:`tee_manager`'s eager ``gi`` +
+``gi`` is eagerly imported at load time — mirrors ``tee_manager``'s eager ``gi`` +
 ``Gst.init`` so GStreamer process state is initialised before any later ``import rclpy``
 in the same interpreter.
 """
@@ -59,30 +59,30 @@ __all__ = ["DetectorRunner"]
 class DetectorRunner:
     """Runtime glue that wires a ``kind: detector`` rSkill to a live pipeline.
 
-    Validates the manifest, builds an :class:`ObjectsDetector` (CPU tier) or
-    :class:`~openral_runner.backends.gstreamer.nvmm_detector.NvmmObjectsDetector`
+    Validates the manifest, builds an ``ObjectsDetector`` (CPU tier) or
+    ``NvmmObjectsDetector``
     (NVMM aggregator tier), attaches the appropriate branch to the named bus tee
-    via :class:`TeeManager`, and fires ``on_detection`` for every non-``None``
+    via ``TeeManager``, and fires ``on_detection`` for every non-``None``
     detection result on the GStreamer streaming thread.
 
     In production ``on_detection`` publishes to ROS; in tests it appends to a list.
 
     Args:
         pipeline: A running ``Gst.Pipeline`` containing the named tee.
-        manifest: A validated :class:`~openral_core.schemas.RSkillManifest` with
+        manifest: A validated ``RSkillManifest`` with
             ``kind == "detector"`` and a non-``None`` ``.detector`` block.
         onnx_path: Resolved ONNX weights path.  Weights resolution from
             ``weights_uri`` is the loader's responsibility — caller supplies the
             ready path.
         sensor_id: Sensor / camera identifier embedded in emitted
-            :class:`~openral_core.ObjectsMetadata`.
+            ``ObjectsMetadata``.
         on_detection: Callback invoked (on the streaming thread) for each
-            non-``None`` :class:`~openral_core.ObjectsMetadata`.  In production
+            non-``None`` ``ObjectsMetadata``.  In production
             this publishes to ROS; in tests pass ``collected.append``.
         tee_name: Name of the bus tee inside *pipeline*.  Defaults to
-            :data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`.
+            ``TEE_NAME``.
         tier: Execution tier override.  ``None`` calls
-            :func:`~openral_runner.backends.gstreamer.objects_detector.select_detector_tier`
+            ``select_detector_tier``
             to auto-select.  Pass ``DetectorTier.CPU_ONNX`` to force the CPU path.
 
     Raises:
@@ -156,16 +156,16 @@ class DetectorRunner:
     def start(self) -> None:
         """Attach the tier-appropriate branch to the live tee and connect the signal.
 
-        For :attr:`~objects_detector.DetectorTier.CPU_ONNX`: builds a
+        For ``DetectorTier.CPU_ONNX``: builds a
         ``videoconvert ! video/x-raw,format=BGR ! appsink`` branch (system-memory CPU
-        tier) and wires ``new-sample`` to :meth:`_on_sample_bgr`.
+        tier) and wires ``new-sample`` to ``_on_sample_bgr``.
 
-        For :attr:`~objects_detector.DetectorTier.NVMM_AGGREGATOR`: builds a
+        For ``DetectorTier.NVMM_AGGREGATOR``: builds a
         ``<conv> ! video/x-raw(memory:NVMM),format=RGBA ! appsink`` branch
         (zero-copy NVMM tier), where ``<conv>`` is the platform's NVMM converter
         (``nvvideoconvert`` on DeepStream / ``nvvidconv`` on Tegra), resolved by
-        :func:`~openral_runner.backends.gstreamer.pipeline.nvmm_convert_element`,
-        and wires ``new-sample`` to :meth:`_on_sample_nvmm`.
+        ``nvmm_convert_element``,
+        and wires ``new-sample`` to ``_on_sample_nvmm``.
 
         Raises:
             ROSConfigError: If the NVMM aggregator tier is selected but no NVMM
@@ -221,7 +221,7 @@ class DetectorRunner:
         """Pull a BGR sample, run the detector, and fire ``on_detection`` on a hit.
 
         Mirrors the ``_pull_bgr_sample`` pattern from
-        :mod:`openral_runner.backends.gstreamer.perception_tee`:
+        ``openral_runner.backends.gstreamer.perception_tee``:
         caps → structure, assert ``format=="BGR"``, get_int width/height,
         buffer.map(READ), ``bytes(map_info.data)``, unmap.
 
@@ -279,7 +279,7 @@ class DetectorRunner:
     def _on_sample_nvmm(self, appsink: Any) -> int:  # noqa: ANN401  # reason: GstApp.AppSink — duck-typed
         """Pull an NVMM RGBA sample, map it zero-copy, run the detector, fire on a hit.
 
-        Mirrors the NVMM map path in :mod:`reader`. Returns ``int(Gst.FlowReturn.OK)``
+        Mirrors the NVMM map path in ``reader``. Returns ``int(Gst.FlowReturn.OK)``
         always — no Python exception may reach the GStreamer streaming thread.
         """
         import ctypes  # noqa: PLC0415  # reason: only the NVMM path needs ctypes

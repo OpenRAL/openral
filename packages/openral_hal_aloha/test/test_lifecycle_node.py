@@ -1,10 +1,10 @@
 """Lifecycle smoke test for ``openral_hal_aloha``.
 
 Drives the standard managed-lifecycle transition path against the
-generic ``_HALLifecycleNode`` from :mod:`openral_hal.lifecycle` using
+generic ``_HALLifecycleNode`` from ``openral_hal.lifecycle`` using
 the real ``AlohaMujocoHAL`` factory. The HAL pulls its MJCF lazily (typically
 from ``robot_descriptions``) and ships its canonical
-:class:`openral_core.RobotDescription` (``ALOHA_DESCRIPTION``).
+``openral_core.RobotDescription`` (``ALOHA_DESCRIPTION``).
 
 The test is gated on ``rclpy``, ``openral_hal``, ``mujoco``,
 ``robot_descriptions`` and ``gym_aloha`` being importable; in lint-only environments

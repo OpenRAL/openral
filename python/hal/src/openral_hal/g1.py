@@ -1,50 +1,38 @@
 """HAL adapter for the Unitree G1 humanoid (MuJoCo digital twin).
 
-This module wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
-(``unitree_g1/g1.xml``, vendored via ``robot_descriptions``) as a
-:class:`openral_hal.HAL` Protocol implementation, extending the
-:class:`openral_hal.UR5eHAL` / :class:`openral_hal.FrankaPandaHAL` /
-:class:`openral_hal.SO100MujocoHAL` pattern to a 29-DoF bipedal
-humanoid.
+Wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
+(``unitree_g1/g1.xml``, vendored via ``robot_descriptions``) as an
+``openral_hal.HAL`` Protocol implementation, extending the
+``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL`` /
+``openral_hal.SO100MujocoHAL`` pattern to a 29-DoF bipedal humanoid.
 
-What this is — and what it isn't
---------------------------------
-The default HAL remains a **digital-twin contract validator** with the
+The default HAL is a **digital-twin contract validator** with the
 ADR-0087 kinematic glide. ``walking_enabled=True`` selects ADR-0089's
-pinned MuJoCo Playground ONNX controller and its matching dynamics for
-gravity-on sim walking. The production C++ S0 controller remains future
-work; the Python policy is simulation-only. The suite validates:
+pinned MuJoCo Playground ONNX controller and matching dynamics for
+gravity-on sim walking (simulation-only Python policy; the production
+C++ S0 controller is future work — see
+`docs/architecture/repo-state-map.html` for the planned production S0
+block; the walking controller must never be reused by a real HAL). The
+suite validates the 29-DoF joint-position action layout, lifecycle
+wiring (``connect → read_state → send_action → estop``), joint
+indexing, ``RobotDescription`` round-trip, embodiment/VLA tag plumbing,
+and the optional BODY_TWIST-to-walking controller path.
 
-* the 29-DoF joint-position action layout,
-* the lifecycle wiring (``connect → read_state → send_action → estop``),
-* the joint indexing,
-* the ``RobotDescription`` round-trip,
-* the embodiment / VLA tag plumbing,
-* and the optional BODY_TWIST-to-walking controller path
-
-The walking controller must never be reused by a real HAL. See
-`docs/architecture/repo-state-map.html` for the planned production S0 block.
-
-Joint inventory
----------------
-The menagerie MJCF has 30 joints (29 actuated + 1 floating base) and
-29 position actuators in a fixed order. The ``floating_base_joint``
-is the free joint for the pelvis pose and is *not* exposed on the
-public ``RobotDescription`` — it is implicit world state, not
-something a Skill commands. The 29 actuated joints are, in order:
+Joint inventory: the menagerie MJCF has 30 joints (29 actuated + 1
+floating base, not exposed on ``RobotDescription`` — implicit world
+state, not Skill-commanded) and 29 position actuators in a fixed order:
 
     legs  : 2 x (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
     waist : yaw, roll, pitch
     arms  : 2 x (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
                  wrist_roll, wrist_pitch, wrist_yaw)
 
-i.e. 12 + 3 + 14 = 29.  qpos addresses for the actuated joints are
-``7..35`` (the first 7 qpos slots belong to the floating base);
-actuator indices are ``0..28`` and align 1:1 with the joint name
-order above.
+i.e. 12 + 3 + 14 = 29. qpos addresses for the actuated joints are
+``7..35`` (first 7 qpos slots are the floating base); actuator indices
+are ``0..28``, aligned 1:1 with the joint order above.
 
-The wrist endpoint is a bare joint — this menagerie variant does NOT
-ship hand actuators, so there is no gripper to map. A future
+The wrist endpoint is a bare joint — this menagerie variant ships no
+hand actuators, so there is no gripper to map. A future
 ``g1_with_hands`` variant would need a hand-aware subclass.
 
 Example:
@@ -230,7 +218,7 @@ def _g1_parent_child(joint_name: str) -> tuple[str, str]:
     floating-base root, then ``<side>_<segment>_link`` for the body
     above each joint.  Strict accuracy isn't necessary (these fields
     are descriptive metadata for the JointSpec, not used by the HAL
-    contract), but using stable names keeps :class:`RobotDescription`
+    contract), but using stable names keeps ``RobotDescription``
     diffs readable.
     """
     # The "previous" link in each chain.  ``waist_*`` lifts off the pelvis;
@@ -390,8 +378,8 @@ class G1MujocoHAL(MujocoArmHAL):
 
     Drives the 29 actuated joints of the menagerie ``unitree_g1`` MJCF
     through MuJoCo's position-controlled actuators.  Exposes a
-    29-D :class:`openral_core.Action` matching the joint order in
-    :data:`G1_DESCRIPTION` (left leg 6 → right leg 6 → waist 3 → left
+    29-D ``openral_core.Action`` matching the joint order in
+    ``G1_DESCRIPTION`` (left leg 6 → right leg 6 → waist 3 → left
     arm 7 → right arm 7).
 
     .. warning::
@@ -406,7 +394,7 @@ class G1MujocoHAL(MujocoArmHAL):
             ``robot_descriptions``
             (``mujoco_menagerie/unitree_g1/g1.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to ``1``; raise it in tests
+            ``send_action``.  Defaults to ``1``; raise it in tests
             that assert the body has converged at the commanded pose.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time — required for the contract-validation
@@ -436,11 +424,11 @@ class G1MujocoHAL(MujocoArmHAL):
         """Initialise the G1 HAL; no MuJoCo state is created until ``connect()``.
 
         All wiring (MJCF URI, floating-base offsets) lives in
-        :data:`G1_DESCRIPTION.sim`.
+        ``G1_DESCRIPTION.sim``.
 
         Args:
             mjcf_path: Optional override for the MJCF file path.
-            settle_steps: MuJoCo physics steps per :meth:`send_action`.
+            settle_steps: MuJoCo physics steps per ``send_action``.
             gravity_enabled: When ``False``, gravity is zeroed at connect.
             staleness_limit_s: Maximum age of a cached state.
             body_twist_dt_s: Logical control timestep one BODY_TWIST

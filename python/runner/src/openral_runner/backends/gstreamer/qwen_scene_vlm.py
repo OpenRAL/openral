@@ -7,11 +7,11 @@ verification ("has the robot grasped the mug?", "is the task complete?",
 "did we drop the object?").
 
 The model runs NF4 in an isolated sidecar process
-(:mod:`tools.qwen_vlm_sidecar`) for dependency / VRAM isolation; this backend is
+(``tools.qwen_vlm_sidecar``) for dependency / VRAM isolation; this backend is
 the ZMQ client. It mirrors the lifecycle of
-:class:`~openral_runner.backends.gstreamer.locateanything_detector.LocateAnythingDetector`
+``LocateAnythingDetector``
 (lazy connect, auto-spawn, teardown only the child we started) but its result is
-*text*, not :class:`~openral_core.ObjectsMetadata` — a scene VLM is a reasoning
+*text*, not ``ObjectsMetadata`` — a scene VLM is a reasoning
 aid, not a localizer (use the detector for boxes).
 """
 
@@ -23,10 +23,11 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
 
 from openral_core import RSkillManifest
 from openral_core.exceptions import ROSConfigError
+
+from ._zmq_sidecar import ZmqSidecarMixin
 
 
 def _find_sidecar_script() -> Path:
@@ -43,7 +44,7 @@ def _find_sidecar_script() -> Path:
     )
 
 
-class QwenSceneVlm:
+class QwenSceneVlm(ZmqSidecarMixin):
     """ZMQ client + auto-managed lifecycle for the Qwen3.5-4B scene-VLM sidecar.
 
     Ping the server, auto-spawn the sidecar if it isn't already up, and tear
@@ -77,9 +78,9 @@ class QwenSceneVlm:
         # cheap and side-effect-free — the dispatch path and tests can build the
         # backend without a running sidecar or a GPU. `Any` because pyzmq attrs
         # aren't typed under strict (mirrors the LocateAnything backend).
-        self._zmq: Any = None
-        self._ctx: Any = None
-        self._sock: Any = None
+        self._zmq = None
+        self._ctx = None
+        self._sock = None
         self._child: subprocess.Popen[bytes] | None = None
 
     # -- wire ---------------------------------------------------------------
@@ -106,45 +107,6 @@ class QwenSceneVlm:
                     "and auto_spawn=False"
                 )
             self._spawn_and_wait(self._boot_timeout_s)
-
-    def _connect(self) -> None:
-        if self._sock is not None:
-            self._sock.close(linger=0)
-        sock = self._ctx.socket(self._zmq.REQ)
-        sock.setsockopt(self._zmq.LINGER, 0)
-        sock.setsockopt(self._zmq.RCVTIMEO, self._request_timeout_ms)
-        sock.setsockopt(self._zmq.SNDTIMEO, 5000)
-        sock.connect(f"tcp://{self._host}:{self._port}")
-        self._sock = sock
-
-    def _rpc(self, req: dict[str, object], *, recv_timeout_ms: int | None = None) -> dict[str, Any]:
-        """Send one request and return the decoded reply.
-
-        Recreates the (strict REQ/REP) socket on timeout so a missed reply
-        can't wedge it.
-        """
-        import msgpack  # type: ignore[import-not-found,import-untyped,unused-ignore]  # noqa: PLC0415 — lazy: only needed when the sidecar is used
-
-        assert self._sock is not None
-        if recv_timeout_ms is not None:
-            self._sock.setsockopt(self._zmq.RCVTIMEO, recv_timeout_ms)
-        try:
-            self._sock.send(msgpack.packb(req, use_bin_type=True))
-            reply: dict[str, Any] = msgpack.unpackb(self._sock.recv(), raw=False)
-        except self._zmq.error.Again:
-            self._connect()  # REQ can't recover from a missed reply; reset it
-            raise
-        finally:
-            if recv_timeout_ms is not None:
-                self._sock.setsockopt(self._zmq.RCVTIMEO, self._request_timeout_ms)
-        return reply
-
-    def _try_ping(self, *, recv_timeout_ms: int = 1000) -> bool:
-        try:
-            reply = self._rpc({"op": "ping"}, recv_timeout_ms=recv_timeout_ms)
-        except self._zmq.error.Again:
-            return False
-        return bool(reply.get("ok"))
 
     def _spawn_and_wait(self, boot_timeout_s: float) -> None:
         import sys  # noqa: PLC0415 — lazy: only needed on the auto-spawn path
@@ -241,7 +203,7 @@ def build_scene_vlm(
     host: str = "127.0.0.1",
     port: int = 5759,
 ) -> QwenSceneVlm:
-    """Build a :class:`QwenSceneVlm` from a ``kind: "vlm"`` rSkill manifest.
+    """Build a ``QwenSceneVlm`` from a ``kind: "vlm"`` rSkill manifest.
 
     Args:
         manifest: A validated rSkill manifest with ``kind == "vlm"``.
@@ -249,8 +211,8 @@ def build_scene_vlm(
         port: Sidecar port to connect to.
 
     Returns:
-        A lazily-connecting :class:`QwenSceneVlm` (no sidecar spawned until the
-        first :meth:`QwenSceneVlm.query`).
+        A lazily-connecting ``QwenSceneVlm`` (no sidecar spawned until the
+        first ``QwenSceneVlm.query``).
 
     Raises:
         ROSConfigError: If the manifest is not ``kind == "vlm"``.

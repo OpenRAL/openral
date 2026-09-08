@@ -1,35 +1,20 @@
 """HAL stub for the panda_mobile mobile-manipulator.
 
-In-process digital-twin HAL for the ``panda_mobile`` embodiment: a
-Franka 7-DoF arm mounted on a holonomic three-DoF planar base. The
-real robosuite/robocasa-backed sim adapter that drives MuJoCo physics
-lives in :mod:`openral_sim.backends.robocasa`; this module provides the
-*HAL Protocol* surface (``connect`` / ``disconnect`` /
-``read_state`` / ``send_action`` / ``estop``) so the higher layers
-(safety supervisor, ``RskillRunnerNode``, dashboard) can be exercised
-end-to-end without a robosuite / MuJoCo install.
+In-process digital-twin HAL for the ``panda_mobile`` embodiment: a Franka
+7-DoF arm mounted on a holonomic three-DoF planar base. The real
+robosuite/robocasa-backed sim adapter that drives MuJoCo physics lives in
+``openral_sim.backends.robocasa``; this module provides the *HAL
+Protocol* surface (``connect``/``disconnect``/``read_state``/
+``send_action``/``estop``) so the safety supervisor, ``RskillRunnerNode``,
+and dashboard can be exercised without a robosuite/MuJoCo install.
 
-The HAL maintains 10-DoF integrator state:
-
-* Base: ``base_x`` (m), ``base_y`` (m), ``base_yaw`` (rad). Driven by
-  :attr:`~openral_core.ControlMode.BODY_TWIST` actions whose
-  ``joint_targets`` carry six floats — only the first three (linear x,
-  linear y, angular z) are honoured; the others are zeroed and warned
-  on if non-zero, per the planar-base convention documented on
-  :class:`~openral_core.schemas.ControlMode.BODY_TWIST`.
-* Arm: ``panda_joint1..7``. Driven by
-  :attr:`~openral_core.ControlMode.JOINT_POSITION` actions whose
-  ``joint_targets`` carry seven floats. The gripper joint is not
-  modelled here — its motion is locally trivial and the existing
-  Franka HAL already covers it; Nav2 + SLAM exercise does not need
-  the gripper.
-
-The follow-up implementation steps are documented in the
-plan: a real ament-python ``packages/openral_hal_panda_mobile/`` ROS
-lifecycle node that subscribes ``/openral/safe_action`` and publishes
-``/joint_states`` + ``/odom`` + a MuJoCo-ray-cast-derived ``/scan``;
-plus the matching ``robocasa.py`` adapter changes to expose base
-velocity and synthesise the laser scan.
+Maintains 11-DoF state: base ``base_x``/``base_y`` (m), ``base_yaw`` (rad)
+via ``ControlMode.BODY_TWIST`` (six-float
+``joint_targets``; only vx/vy/wz honoured, per the planar-base convention
+on ``BODY_TWIST``); arm
+``panda_joint1..7`` via ``ControlMode.JOINT_POSITION``
+(seven floats); gripper (1 DoF) via
+``GRIPPER_POSITION``.
 
 Example:
     >>> from openral_hal.panda_mobile import PandaMobileHAL
@@ -37,7 +22,7 @@ Example:
     >>> hal.connect()
     >>> state = hal.read_state()
     >>> len(state.position)
-    10
+    11
 """
 
 from __future__ import annotations
@@ -63,18 +48,16 @@ __all__ = [
 def _load_panda_mobile_description() -> RobotDescription:
     """Load the canonical ``robots/panda_mobile/robot.yaml`` once at import.
 
-    The :class:`HALLifecycleNodeBase` reads ``self._hal.description`` to
-    populate the per-joint limit attributes on ``hal.read_state`` OTel
-    spans + to size the ``JointState`` message. We load the same YAML
-    that the robot registry / Reasoner palette consults so the
-    description is the single source of truth — never a hand-coded
-    duplicate.
+    ``HALLifecycleNodeBase`` reads ``self._hal.description`` for per-joint
+    limits on ``hal.read_state`` OTel spans and to size ``JointState``; this
+    loads the same YAML as the robot registry / Reasoner palette so it stays
+    the single source of truth.
 
     Returns:
-        :class:`~openral_core.RobotDescription` for ``panda_mobile``.
+        ``RobotDescription`` for ``panda_mobile``.
 
     Raises:
-        :class:`~openral_core.exceptions.ROSConfigError`: when the YAML
+        ``ROSConfigError``: when the YAML
             is missing or malformed.
     """
     here = Path(__file__).resolve()
@@ -118,8 +101,8 @@ PANDA_MOBILE_JOINT_NAMES: list[str] = [
     *_PANDA_MOBILE_ARM_JOINT_NAMES,
     _PANDA_MOBILE_GRIPPER_JOINT_NAME,
 ]
-"""Full 11-DoF joint order: base (3) + arm (7) + gripper (1).
-Matches ``robots/panda_mobile/robot.yaml`` since the gripper became a declared joint."""
+"""Full 11-DoF joint order: base (3) + arm (7) + gripper (1), matching
+``robots/panda_mobile/robot.yaml``."""
 
 # `BODY_TWIST` is the canonical 6-vec velocity command (linear xyz +
 # angular xyz; width ``openral_core.BODY_TWIST_DIM``). The planar base
@@ -133,13 +116,13 @@ class PandaMobileHAL:
     """In-process digital-twin HAL for the panda_mobile embodiment.
 
     Maintains 10-DoF qpos state in memory. Routing per
-    :attr:`Action.control_mode`:
+    ``Action.control_mode``:
 
-    * :attr:`ControlMode.BODY_TWIST` — Euler-integrates base pose using
+    * ``ControlMode.BODY_TWIST`` — Euler-integrates base pose using
       the planar components of the twist (linear x, linear y,
       angular z). Each ``send_action`` call advances by
       ``dt_s`` seconds (default ``0.05`` — 20 Hz nav control rate).
-    * :attr:`ControlMode.JOINT_POSITION` — sets the seven arm joints
+    * ``ControlMode.JOINT_POSITION`` — sets the seven arm joints
       directly when the action carries seven targets; sets all ten
       slots when ten targets are supplied (base position + arm).
 
@@ -158,7 +141,7 @@ class PandaMobileHAL:
         initial_pose: list[float] | None = None,
         dt_s: float = 0.05,
     ) -> None:
-        """Latch initial 10-DoF state. No I/O until :meth:`connect`."""
+        """Latch initial 10-DoF state. No I/O until ``connect``."""
         if initial_pose is None:
             self._qpos: list[float] = [0.0] * len(PANDA_MOBILE_JOINT_NAMES)
         elif len(initial_pose) == len(PANDA_MOBILE_BASE_JOINT_NAMES):
@@ -203,7 +186,7 @@ class PandaMobileHAL:
         self._connected = False
 
     def read_state(self) -> JointState:
-        """Return a fresh 10-DoF :class:`JointState` snapshot."""
+        """Return a fresh 10-DoF ``JointState`` snapshot."""
         if not self._connected:
             raise ROSConfigError("PandaMobileHAL.read_state called before connect().")
         import time  # noqa: PLC0415
@@ -219,18 +202,14 @@ class PandaMobileHAL:
     def send_action(self, action: Action) -> None:
         """Apply the action to the in-memory state. Branches on control_mode.
 
-        Accepts the four surfaces the slot dispatcher
-        emits: ``JOINT_POSITION``, ``BODY_TWIST``, ``CARTESIAN_DELTA``,
-        ``GRIPPER_POSITION``. Each reads its mode-specific payload
-        from the matching :class:`Action` field (joint_targets,
-        body_twist, cartesian_delta, gripper) — NOT joint_targets for
-        every mode, which was the earlier convention that conflated all
-        surfaces onto one field.
+        Accepts ``JOINT_POSITION``, ``BODY_TWIST``, ``CARTESIAN_DELTA``,
+        ``GRIPPER_POSITION``; each reads its payload from the matching
+        ``Action`` field (joint_targets, body_twist, cartesian_delta,
+        gripper).
 
         Raises:
-            ROSConfigError: If the action's ``control_mode`` is not in
-                the accepted set, or the mode-specific payload field
-                is missing / mis-shaped.
+            ROSConfigError: If ``control_mode`` is not one of the four, or
+                the mode-specific payload field is missing / mis-shaped.
         """
         if not self._connected:
             raise ROSConfigError("PandaMobileHAL.send_action called before connect().")
@@ -258,13 +237,9 @@ class PandaMobileHAL:
                 )
             self._apply_body_twist(list(action.body_twist[0]))
         elif mode is ControlMode.CARTESIAN_DELTA:
-            # Apply OSC delta to the cached arm joint
-            # vector via a Jacobian-free approximation: treat the
-            # cartesian delta as an additive bias on the gripper
-            # frame's qpos snapshot. Real motion lives in the
-            # sim-attached path (robosuite OSC). The digital-twin
-            # tracks the delta for dashboard observability and so
-            # tests can verify the chunk reached the HAL inbox.
+            # No Jacobian here: real motion lives in the sim-attached path
+            # (robosuite OSC). This just tracks the delta for dashboard
+            # observability / test verification; qpos is unchanged.
             if not action.cartesian_delta:
                 raise ROSConfigError("PandaMobileHAL.send_action: empty Action.cartesian_delta.")
             self._apply_cartesian_delta(list(action.cartesian_delta[0]))
@@ -284,7 +259,7 @@ class PandaMobileHAL:
     def estop(self) -> None:
         """Latch the estop flag. Subsequent ``send_action`` calls no-op.
 
-        The latch can only be cleared by calling :meth:`reset_estop`,
+        The latch can only be cleared by calling ``reset_estop``,
         mirroring the supervisor's recovery contract: estops never
         auto-clear.
         """
@@ -356,17 +331,10 @@ class PandaMobileHAL:
     def _apply_joint_position(self, row: list[float]) -> None:
         """Set arm (or arm+base, or arm+base+gripper) joints to absolute targets.
 
-        Three accepted widths:
-
-        * ``len(row) == 7`` — arm-only; the seven joints map onto
-          ``panda_joint1..7``, the base + gripper stay where they were.
-        * ``len(row) == 10`` — base (3) + arm (7); the gripper stays
-          where it was. The state-replay shape from before the
-          gripper-as-joint change, preserved for legacy callers /
-          MoveIt trajectory replay.
-        * ``len(row) == 11`` — full chain: base (3) + arm (7) +
-          gripper (1). The current canonical width matching
-          ``robots/panda_mobile/robot.yaml``.
+        Accepted widths: 7 (arm-only, ``panda_joint1..7``; base + gripper
+        hold); 10 (base + arm, for MoveIt trajectory replay; gripper holds);
+        11 (base + arm + gripper — canonical width matching
+        ``robots/panda_mobile/robot.yaml``).
         """
         n_arm = len(_PANDA_MOBILE_ARM_JOINT_NAMES)
         n_base = len(PANDA_MOBILE_BASE_JOINT_NAMES)
@@ -390,7 +358,7 @@ class PandaMobileHAL:
         The digital-twin HAL has no Jacobian / kinematic chain to
         translate ``[dx, dy, dz, drx, dry, drz]`` into joint motion
         — real motion lives in the sim-attached path
-        (:class:`openral_hal.sim_attached.SimAttachedHAL` →
+        (``openral_hal.sim_attached.SimAttachedHAL`` →
         robosuite OSC). Here we just stamp the latest commanded
         delta onto ``self._last_cartesian_delta`` so the lifecycle
         node's diagnostics + the dashboard's command-vs-reality

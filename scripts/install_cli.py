@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 """Write ~/.local/bin/openral so the CLI is reachable from any terminal.
 
-Called by `just install-cli` (and transitively by `just quickstart`).
-Idempotent — safe to re-run after moving the repo or upgrading Python.
+Called by `just install-cli` / `just quickstart`. Idempotent. The wrapper:
+resolves which checkout to drive (below), sources the ROS 2 distro overlay
+(/opt/ros/*/setup.bash) and the colcon workspace overlay
+(<repo>/install/setup.bash) if present, then exec-replaces itself with
+.venv/bin/openral, forwarding all args.
 
-The generated wrapper:
-  1. Resolves which checkout to drive (see below).
-  2. Sources the ROS 2 distro overlay (/opt/ros/*/setup.bash) if present.
-  3. Sources the colcon workspace overlay (<repo>/install/setup.bash) if built.
-  4. exec-replaces itself with .venv/bin/openral, forwarding all args.
-     So `openral` (no args) drops into the REPL and `openral <cmd>` is
-     one-shot, matching the behaviour `just openral` used to provide.
-
-Repo-root resolution is a *provenance* control, not a convenience. The wrapper
-bakes in the checkout that generated it, so running `openral` from a second
-checkout (a git worktree used for validation) used to silently execute the
-first checkout's venv, colcon overlay and ``robots/`` manifests — a validation
-run on a DGX Spark was attributed to the wrong branch with nothing in the log
-to show it. The generated wrapper therefore:
-
-  * honours ``OPENRAL_REPO_ROOT`` as an explicit override, validating that the
-    named tree really has an executable ``.venv/bin/openral`` before exec'ing
-    it (hard error otherwise — never a silent fall back to the baked path), and
-    printing the root it settled on to stderr so every log records it;
-  * warns (non-fatally) when the cwd sits inside a *different* OpenRAL checkout
-    than the baked-in one, which is the shape of the Spark incident.
-
-The single-checkout default is unchanged and stays silent.
+Repo-root resolution is a provenance control: the wrapper bakes in its
+generating checkout, so running `openral` from a second checkout (e.g. a
+validation worktree) used to silently execute the first checkout's venv/
+overlay/`robots/` manifests with nothing in the log to show it (a DGX Spark
+run was misattributed this way). Now: `OPENRAL_REPO_ROOT` overrides it
+(validated, hard error if that tree has no executable `.venv/bin/openral`,
+root printed to stderr); a cwd inside a *different* checkout than the
+baked-in one gets a non-fatal warning. Single-checkout default stays silent.
 """
 
 from __future__ import annotations

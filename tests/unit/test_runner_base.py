@@ -1,16 +1,16 @@
-"""Unit tests for :mod:`openral_runner.base` and the ``InferenceRunner`` Protocol.
+"""Unit tests for ``openral_runner.base`` and the ``InferenceRunner`` Protocol.
 
-No mocks. Uses a real in-process :class:`InferenceRunnerBase` subclass that
+No mocks. Uses a real in-process ``InferenceRunnerBase`` subclass that
 simulates per-tick latency via ``time.sleep`` and a real
-:class:`~openral_core.TickResult`. Asserts:
+``TickResult``. Asserts:
 
 * The Protocol's structural ``isinstance`` check accepts the base subclass.
-* :meth:`InferenceRunnerBase.run` ticks ``max_ticks`` times and aggregates
-  the per-tick timings into :class:`RunResult` (mean / p99).
+* ``InferenceRunnerBase.run`` ticks ``max_ticks`` times and aggregates
+  the per-tick timings into ``RunResult`` (mean / p99).
 * The 30 Hz cadence is honoured within ±2 ms over 10 ticks (≈ the cadence
   contract the hardware runner depends on).
-* :class:`DeadlineOverrunPolicy` is applied per the configured mode.
-* :meth:`activate` / :meth:`deactivate` toggle the ``_active`` flag and
+* ``DeadlineOverrunPolicy`` is applied per the configured mode.
+* ``activate`` / ``deactivate`` toggle the ``_active`` flag and
   re-running after deactivation works.
 """
 
@@ -84,10 +84,8 @@ def test_deactivate_short_circuits_run() -> None:
     runner.activate()
     runner.deactivate()
     result = runner.run(max_ticks=10)
-    # deactivate before any tick → loop body never runs because the
-    # internal ``self._active`` check fails the very first iteration.
-    # The runner's run() activates if not active; deactivating first means
-    # the run() re-activates, so we expect all 10 ticks.
+    # run() re-activates when not active, so deactivating before run() still
+    # executes all 10 ticks.
     assert result.n_ticks == 10
 
 
@@ -125,14 +123,12 @@ def test_run_result_aggregates_timings_correctly() -> None:
 
 
 def test_run_result_empty_when_max_ticks_zero() -> None:
-    """``max_ticks=0`` returns an empty :class:`RunResult` (no ticks executed)."""
+    """``max_ticks=0`` returns an empty ``RunResult`` (no ticks executed)."""
     runner = FixedLatencyRunner(fake_inference_s=1e-3, rate_hz=30.0)
-    # max_ticks=0 cannot be passed today (RunResult.n_ticks is ge=0 — but
-    # the loop's `while self._tick_idx < max_ticks` will be False immediately).
     runner.activate()
-    runner.deactivate()  # ensure first iter check fails
-    # We can't easily produce 0 ticks via run(max_ticks=0) because run() re-activates;
-    # instead assert that explicit 0 round-trips through _build_run_result.
+    runner.deactivate()
+    # run() re-activates, so max_ticks=0 can't be produced via run(); assert the
+    # 0-tick case round-trips through _build_run_result directly instead.
     rr = runner._build_run_result([], budget_violations=0, trace_id=None)
     assert rr.n_ticks == 0
     assert rr.avg_inference_ms == 0.0
@@ -156,7 +152,7 @@ def test_deadline_overrun_warn_continues(caplog: pytest.LogCaptureFixture) -> No
 
 
 def test_deadline_overrun_raise_aborts() -> None:
-    """``RAISE`` policy raises :class:`ROSDeadlineMissed` on the first overrun."""
+    """``RAISE`` policy raises ``ROSDeadlineMissed`` on the first overrun."""
     runner = FixedLatencyRunner(
         fake_inference_s=20e-3,
         rate_hz=60.0,
@@ -188,11 +184,9 @@ def test_first_deadline_miss_always_logs() -> None:
 
 
 def test_subsequent_misses_are_counted_not_logged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host that misses every tick emits one line, not 30 per second.
-
-    WARNING is the one band an operator cannot filter away in the Event
-    Log, so an unthrottled 30 Hz warn buries the context needed to
-    diagnose the very slowness it is reporting.
+    """A host that misses every tick emits one line, not 30 per second — WARNING is
+    the one band an operator cannot filter away, so an unthrottled 30 Hz warn buries
+    the diagnostic context.
     """
     runner = _miss_runner()
     now = 1_000.0
@@ -279,10 +273,9 @@ class StopAfterNRunner(FixedLatencyRunner):
 
 
 def test_should_terminate_default_false_is_hardware_compatible() -> None:
-    """``DeployRunner`` semantics: default hook never terminates early.
-
-    A subclass that does not override ``_should_terminate`` runs until
-    ``max_ticks`` exactly as before the hook was added.
+    """``DeployRunner`` semantics: default hook never terminates early — a subclass
+    that doesn't override ``_should_terminate`` runs to ``max_ticks`` exactly as
+    before the hook was added.
     """
     runner = FixedLatencyRunner(fake_inference_s=1e-3, rate_hz=100.0)
     result = runner.run(max_ticks=5)
@@ -290,7 +283,7 @@ def test_should_terminate_default_false_is_hardware_compatible() -> None:
 
 
 def test_should_terminate_breaks_run_loop_early() -> None:
-    """Subclass override stops :meth:`run` before ``max_ticks``."""
+    """Subclass override stops ``run`` before ``max_ticks``."""
     runner = StopAfterNRunner(stop_after=3, fake_inference_s=1e-3, rate_hz=100.0)
     # max_ticks deliberately far above stop_after — the hook is the real bound.
     result = runner.run(max_ticks=100)

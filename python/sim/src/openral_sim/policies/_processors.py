@@ -1,20 +1,11 @@
-"""Private helper for the manifest-first per-file processor-dir resolution.
+"""Manifest-first per-file resolver for policy processor JSON sidecars.
 
-Closes the three sister TODOs in :mod:`openral_sim.policies.diffusion`,
-:mod:`openral_sim.policies.xvla`, and :mod:`openral_sim.policies.pi05` —
-each previously called ``huggingface_hub.snapshot_download`` to fetch the
-``policy_preprocessor.json`` / ``policy_postprocessor.json`` sidecars
-needed by lerobot's ``make_pre_post_processors`` /
-``PolicyProcessorPipeline.from_pretrained``. The SmolVLA and modern-ACT
-adapters already migrated to the per-file URI contract declared on
-``RSkillManifest.processors``; this helper extends the same
-pattern to the remaining three adapters.
-
-The function deliberately accepts the sim-layer ``VLASpec`` (and a raw
-``repo_id`` fallback) rather than requiring callers to pre-load the
-manifest themselves — the snapshot fallback is a real path that
-explicit-scheme URIs still rely on (e.g. ``hf://lerobot/diffusion_pusht``,
-which predates the per-file processor contract).
+Used by ``openral_sim.policies.diffusion``, ``openral_sim.policies.xvla`` and
+``openral_sim.policies.pi05`` for the ``policy_preprocessor.json`` /
+``policy_postprocessor.json`` sidecars that lerobot's ``make_pre_post_processors`` /
+``PolicyProcessorPipeline.from_pretrained`` consume. Prefers per-file download via
+``RSkillManifest.processors``; falls back to ``snapshot_download`` for explicit-scheme URIs (e.g.
+``hf://lerobot/diffusion_pusht``) that predate that contract.
 """
 
 from __future__ import annotations
@@ -37,7 +28,7 @@ def resolve_processor_dir(spec: VLASpec | Any, repo_id: str) -> str:
     1. If ``spec.weights_uri`` is a bare rSkill reference (no explicit
        scheme) **and** the resolved manifest declares a ``processors``
        block, call
-       :func:`~openral_rskill._vla_core.materialize_processor_dir` —
+       ``materialize_processor_dir`` —
        per-file ``hf_hub_download`` of exactly the two URIs
        (``preprocessor_uri`` / ``postprocessor_uri``).
     2. Otherwise fall back to ``snapshot_download(repo_id)``. This path

@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """A recorded stop must place the CARRIED OBJECT again, not just the robot.
 
-``sim.estop_ground_truth_snapshot`` reconstructs the robot exactly — its
-``robot_joint_state`` and ``base_frame_tf`` were verified to 0.000–0.863 mm
-across the four checked-in stops — while ``attached_bodies`` carried only
-``world_xyz``. A position is not a pose, so driving a recorded snapshot back
-into a live model left the payload at its *reset* attitude, and every
-payload-side distance in every recorded round described a different
-configuration than the one that stopped (#172). That is a CLAUDE.md §1.8
-violation in the producer: a trace that cannot replay the geometry it
-adjudicates is not a trace.
+``sim.estop_ground_truth_snapshot`` reconstructs the robot exactly (its
+``robot_joint_state``/``base_frame_tf`` verified to 0.000–0.863 mm across the
+four checked-in stops) but ``attached_bodies`` carried only ``world_xyz``. A
+position is not a pose: replaying a recorded snapshot left the payload at its
+*reset* attitude, so every payload-side distance described a different
+configuration than the one that stopped (#172) — a CLAUDE.md §1.8 violation
+(a trace that cannot replay the geometry it adjudicates is not a trace).
 
 These tests drive the real snapshot against a real compiled ``MjModel`` /
 ``MjData`` (no mocks, CLAUDE.md §1.11) and then *reconstruct* from the record

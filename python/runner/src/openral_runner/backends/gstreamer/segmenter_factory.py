@@ -1,16 +1,16 @@
 """Manifest → segmenter-backend dispatch for ``kind: segmenter`` rSkills.
 
-The sibling of :mod:`~openral_runner.backends.gstreamer.detector_factory`, and
+The sibling of ``detector_factory``, and
 GStreamer-free for the same reason: the manifest↔backend selection stays
 unit-testable without a live pipeline or a model load.
 
 Dispatch keys on the manifest's ``segmenter.engine``, which is REQUIRED — there
 is no legacy ``runtime``-keyed fallback to preserve for this kind, so unlike
-:func:`~openral_runner.backends.gstreamer.detector_factory.build_manifest_detector`
+``build_manifest_detector``
 this never has to guess:
 
 * ``engine: sam2_hf`` → the in-process Transformers promptable segmenter
-  (:class:`~.sam2_segmenter.Sam2Segmenter`). No ``onnx_path``; the model loads
+  (``Sam2Segmenter``). No ``onnx_path``; the model loads
   under the runtime's own ``transformers``.
 """
 
@@ -40,7 +40,7 @@ def build_manifest_segmenter(manifest: RSkillManifest, *, device: str = "auto") 
     Returns:
         The backend instance, which exposes
         ``segment(frame_bgr, width, height, *, positive_points, negative_points)``
-        and must be :meth:`~.sam2_segmenter.Sam2Segmenter.warm_up`-ed at node
+        and must be ``warm_up``-ed at node
         activate.
 
     Raises:

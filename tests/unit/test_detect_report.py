@@ -1,4 +1,4 @@
-"""Tests for :class:`openral_detect.DetectionReport` and helpers.
+"""Tests for ``openral_detect.DetectionReport`` and helpers.
 
 Hermetic — exercises the schema only, no probes.  Per CLAUDE.md §1.11,
 all fixtures use real Pydantic models with realistic values, no mocks.

@@ -2,18 +2,13 @@
 
 Internal module. Not part of the public ``openral_rskill`` surface.
 
-`phase_timer(name, prefix=..., gpu_mb=...)` is the canonical seam every
-VLA adapter's `_build_*` factory wraps each load phase with so the
-operator can see exactly where a multi-second load is spending its time
-— without it, phases like ``PI05Policy.from_pretrained`` (3.4 B-param
-graph allocation) and ``materialize_processor_dir`` (HF Hub HEAD
-requests for cached files) sit in opaque C/CUDA / network code for tens
-of seconds with no log output at all.
-
-The original implementation lived inline as ``_heartbeat`` in the pi05
-adapter; it is generalised here so the smolvla / xvla / act adapters
-can apply the same pattern without duplicating the threading + GPU
-plumbing (CLAUDE.md §1.13).
+``phase_timer(name, prefix=..., gpu_mb=...)`` is the canonical seam every
+VLA adapter's ``_build_*`` factory wraps each load phase with, so a
+multi-second load (e.g. ``PI05Policy.from_pretrained`` graph allocation,
+``materialize_processor_dir`` HF Hub HEAD requests) doesn't sit in opaque
+C/CUDA/network code with no log output. Generalised from the pi05
+adapter's inline ``_heartbeat`` so smolvla/xvla/act share it without
+duplicating the threading + GPU plumbing (CLAUDE.md §1.13).
 
 Output shape per phase::
 
@@ -23,10 +18,8 @@ Output shape per phase::
     ...
     <prefix>_<name>_done {elapsed_s, rss_mb, major_faults, **fields}
 
-``rss_mb`` / ``major_faults`` (the latter counted from phase entry) are
-Linux-only and simply absent elsewhere. They exist to attribute a load
-phase that is slow while burning no CPU — the signature of page reclaim,
-which no CPU-time metric can show.
+``rss_mb``/``major_faults`` (Linux-only) attribute a load phase that is
+slow while burning no CPU — the signature of page reclaim.
 
 Example:
 -------
@@ -55,21 +48,18 @@ _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 def _gpu_mb(*, no_import: bool = False) -> float | None:
     """Return current CUDA allocator usage in MB, or ``None`` if unavailable.
 
-    Cheap: a single ``torch.cuda.memory_allocated()`` call — deliberately
-    ``memory_allocated`` (live tensors), not ``memory_reserved`` (the caching
-    allocator's pool): the question both callers ask is "did the weights
-    actually go away", and reserved bytes stay put by design after a free.
-    THE single GPU-memory probe — eviction accounting in
-    ``rskill_runner_node`` and the phase-timer heartbeats read this same
-    number, so their logs can never disagree about how much VRAM a swap
-    freed.
+    Deliberately ``memory_allocated`` (live tensors), not ``memory_reserved``
+    (the caching allocator's pool, which stays put by design after a free) —
+    the question is "did the weights actually go away". THE single
+    GPU-memory probe: eviction accounting in ``rskill_runner_node`` and the
+    phase-timer heartbeats read this same number, so their logs never
+    disagree about how much VRAM a swap freed.
 
     Args:
         no_import: When True, only consult an already-imported torch
-            (``sys.modules``) — for callers on paths where importing
-            torch just to answer would itself be the heavy operation.
-            Default imports torch lazily, so a CPU-only host still
-            answers ``None``.
+            (``sys.modules``) — importing torch just to answer would itself
+            be the heavy operation on some paths. Default imports torch
+            lazily, so a CPU-only host still answers ``None``.
     """
     if no_import:
         torch_mod = sys.modules.get("torch")
@@ -91,13 +81,10 @@ def _gpu_mb(*, no_import: bool = False) -> float | None:
 def _rss_majflt() -> tuple[float, int] | None:
     """Return ``(rss_mb, major_faults)`` for this process, or ``None``.
 
-    Two small ``/proc`` reads, no psutil. Present on every heartbeat because
-    a load phase that is neither CPU-bound nor I/O-bound is almost always
-    stalled in page reclaim — a state that shows up nowhere in CPU
-    accounting. A 2 GB model build on a host under memory pressure inflates
-    wall-time with a rising ``major_faults`` and a flat ``elapsed_s``-per-MB,
-    which is the signature this exists to capture. Non-Linux hosts get
-    ``None`` and the fields are simply absent.
+    Two small ``/proc`` reads, no psutil. A load phase that is neither
+    CPU-bound nor I/O-bound is almost always stalled in page reclaim, which
+    shows up nowhere in CPU accounting — rising ``major_faults`` with flat
+    ``elapsed_s``-per-MB is that signature. Non-Linux hosts get ``None``.
     """
     try:
         with open("/proc/self/statm") as f:  # reason: procfs, not a path op
@@ -112,15 +99,14 @@ def _rss_majflt() -> tuple[float, int] | None:
 class _SwitchIntervalGuard:
     """Depth-counted owner of the process-global GIL switch interval.
 
-    The switch interval is PROCESS-GLOBAL, so its save/restore must have
-    exactly one owner. Two overlapping ``phase_timer`` contexts on different
-    threads would otherwise interleave their restores — A enters saving 5 ms,
-    B enters saving A's 50 ms, A exits restoring 5 ms, B exits re-installing
-    50 ms — leaving the deploy graph's camera pumps and HAL publisher at a
-    50 ms switch interval for the rest of the session. The outermost
-    acquire sets 0.05 and the matching outermost release restores the saved
-    value; nested/concurrent phases ride along. (Deliberate module-level
-    singleton: it guards a resource that is itself a process global.)
+    The switch interval is PROCESS-GLOBAL, so save/restore needs exactly one
+    owner: two overlapping ``phase_timer`` contexts on different threads
+    would otherwise interleave restores (A saves 5ms, B saves A's 50ms, A
+    restores 5ms, B re-installs 50ms) — leaving the deploy graph's camera
+    pumps and HAL publisher stuck at 50ms for the rest of the session. The
+    outermost acquire sets 0.05 and the matching outermost release restores
+    the saved value. (Deliberate module-level singleton guarding a
+    process-global resource.)
     """
 
     def __init__(self) -> None:
@@ -214,7 +200,7 @@ def phase_timer(
     logger.info(event_start, **fields)
 
     # Baseline for the major-fault delta reported on every heartbeat and on
-    # ``_done`` — see :func:`_rss_majflt`.
+    # ``_done`` — see ``_rss_majflt``.
     baseline = _rss_majflt()
     majflt_0 = baseline[1] if baseline is not None else 0
 
@@ -236,20 +222,16 @@ def phase_timer(
 
     thread = threading.Thread(target=_tick, daemon=True, name=f"{prefix}_{name}_heartbeat")
     thread.start()
-    # GIL relief: load phases run inside the same process as the deploy
-    # graph's high-rate threads (two 30 fps opencv camera readers + the HAL's
-    # joint-state publisher in runtime_node). At the default 5 ms switch
-    # interval those threads preempt the loading thread constantly and the
-    # convoy effect starves it: measured live on an SO-101 deploy, the
-    # SmolVLA import phase got ~12% of one core and a 6 s import stretched
-    # past 15 minutes. Raising the interval to 50 ms for the phase lets the
-    # loader run in long slices while every peer thread still gets the GIL
-    # ~20x/s — cameras drop to a reduced rate for a few seconds and the HAL
-    # publisher stays far inside the safety kernel's 1 s staleness deadline.
-    # Load phases are rare, operator-initiated events; steady-state rates are
-    # untouched. Restored in the same finally that stops the heartbeat —
-    # depth-counted so overlapping phases (see _SwitchIntervalGuard) restore
-    # exactly once, from the outermost saved value.
+    # GIL relief: load phases share the process with the deploy graph's
+    # high-rate threads (two 30 fps opencv camera readers + the HAL's
+    # joint-state publisher). At the default 5 ms switch interval those
+    # threads convoy-starve the loading thread: measured live on an SO-101
+    # deploy, SmolVLA import got ~12% of one core and a 6 s import stretched
+    # past 15 minutes. Raising to 50 ms lets the loader run in long slices
+    # while peers still get the GIL ~20x/s — cameras drop rate briefly, the
+    # HAL publisher stays well inside the safety kernel's 1 s staleness
+    # deadline. Restored in the finally below (depth-counted; see
+    # _SwitchIntervalGuard).
     _switch_interval_guard.acquire()
     try:
         yield

@@ -1,27 +1,22 @@
 """Live exercise of the public ``ManifestHALLifecycleNode`` (issue #191).
 
-The unified, ``robot.yaml``-driven node is the generic lifecycle node the
-per-robot HAL packages collapse into. No existing integration test brings it up
-on its own (the panda_mobile / openarm tests cover the two *bespoke* nodes), so
-this one closes that gap: it constructs ``ManifestHALLifecycleNode`` directly,
-points it at a real manifest, and drives
-``UNCONFIGURED → INACTIVE → ACTIVE → INACTIVE → UNCONFIGURED``.
+The unified, ``robot.yaml``-driven node is the generic lifecycle node the per-robot HAL
+packages collapse into. No existing test brings it up on its own (panda_mobile/openarm tests
+cover the two bespoke nodes), so this closes that gap: constructs ``ManifestHALLifecycleNode``
+directly, points it at a real manifest, drives UNCONFIGURED → INACTIVE → ACTIVE → INACTIVE →
+UNCONFIGURED.
 
-It asserts:
+Asserts: the node configures (builds the HAL through ``openral_hal.build_hal`` and
+``connect()``s it) and activates; a real ``/joint_states`` stream flows at the configured
+rate, carrying the manifest's joints; a manifest declaring a ``hal.parameters`` block still
+brings the node up cleanly — ``build_hal`` threads the defaults and drops keys the sim HAL
+doesn't accept, rather than crashing.
 
-* the node configures (builds the HAL through ``openral_hal.build_hal`` and
-  ``connect()``s it) and activates;
-* a real ``/joint_states`` stream flows at the configured rate, carrying the
-  manifest's joints;
-* a manifest that declares a ``hal.parameters`` block still brings
-  the node up cleanly — ``build_hal`` threads the defaults and drops the keys
-  the sim HAL does not accept, rather than crashing.
-
-Real ``RobotDescription`` (``robots/franka_panda``), real derived
-``MujocoArmHAL``, real rclpy executor + publishers — no mocks (CLAUDE.md §1.11).
+Real ``RobotDescription`` (``robots/franka_panda``), real derived ``MujocoArmHAL``, real
+rclpy executor + publishers — no mocks (CLAUDE.md §1.11).
 
 Gates: ``ROS_DISTRO`` env + ``rclpy`` + ``mujoco`` (the franka sim HAL derives a
-``MujocoArmHAL``). When any is missing the test ``pytest.skip``s cleanly.
+``MujocoArmHAL``). Missing any → skips cleanly.
 """
 
 from __future__ import annotations

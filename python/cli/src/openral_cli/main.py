@@ -177,7 +177,7 @@ def _identity(*, stacked: bool) -> RenderableType:
 def render_banner(version_str: str, *, width: int | None = None) -> RenderableType:
     """Build the REPL welcome box as a rich renderable (Claude-Code style).
 
-    Returns a :class:`rich.panel.Panel` so the same renderable can be printed to
+    Returns a ``rich.panel.Panel`` so the same renderable can be printed to
     the live console *and* exported to plain text in tests, independent of
     terminal/TTY/colour state. The white-bordered rounded box carries ``OPENRAL
     v<version>`` inline in the top border and adapts to ``width``:
@@ -512,8 +512,8 @@ def _check_gpu(result: GpuProbeResult, warnings: list[str]) -> list[CheckResult]
     """Return one row per detected GPU / SoC accelerator.
 
     Args:
-        result: Pre-probed :class:`~openral_detect.GpuProbeResult` (shared
-            with :func:`_check_compute_spec` so the probe runs exactly once).
+        result: Pre-probed ``GpuProbeResult`` (shared
+            with ``_check_compute_spec`` so the probe runs exactly once).
         warnings: Non-fatal probe warnings to surface when no GPU is found.
     """
     rows: list[CheckResult] = []
@@ -546,10 +546,10 @@ def _check_gpu(result: GpuProbeResult, warnings: list[str]) -> list[CheckResult]
 
 
 def _check_compute_spec(result: GpuProbeResult) -> list[CheckResult]:
-    """Build :class:`~openral_core.ComputeSpec` rows from the GPU probe.
+    """Build ``ComputeSpec`` rows from the GPU probe.
 
-    Shares the same :class:`~openral_detect.GpuProbeResult` already obtained
-    by :func:`_check_gpu` so no second probe is issued.  The assembled
+    Shares the same ``GpuProbeResult`` already obtained
+    by ``_check_gpu`` so no second probe is issued.  The assembled
     ``ComputeSpec`` mirrors exactly what ``openral detect`` would write into
     ``RobotDescription.compute_edge`` / ``compute_local`` — doctor and detect
     stay in sync.
@@ -873,7 +873,7 @@ def _gather_checks() -> list[CheckResult]:
     """Run all checks and return the combined result list.
 
     The GPU probe is issued exactly once and shared between
-    :func:`_check_gpu` (hardware rows) and :func:`_check_compute_spec`
+    ``_check_gpu`` (hardware rows) and ``_check_compute_spec``
     (derived ``ComputeSpec`` rows) so ``openral doctor`` and
     ``openral detect`` build the same ``ComputeSpec`` from the same data.
 
@@ -1400,7 +1400,7 @@ def _write_deploy_scene_scaffold(
     ``sensor_specs`` here are always workcell cameras; robot-mounted cameras
     live in the robot manifest itself and never reach this scaffold. ``safety``
     is left unset so the robot manifest's own envelope applies. Validated
-    through :class:`DeployScene` before writing so a malformed scaffold fails
+    through ``DeployScene`` before writing so a malformed scaffold fails
     here, not on ``deploy run``.
     """
     import yaml as _yaml
@@ -2882,7 +2882,7 @@ def benchmark_run(
     The runner iterates ``scenes x range(seed, seed + n_episodes)``,
     delegating each rollout to ``openral_sim.SimRunner`` so the
     rSkill compatibility check, OTel spans, and latency-budget reporting
-    are identical to ``openral sim run``. Each :class:`BenchmarkScene`
+    are identical to ``openral sim run``. Each ``BenchmarkScene``
     carries its own scene + task + robot; the ``BenchmarkSpec`` wrapper
     class was removed so the suite is a bare list of scenes whose id is
     the YAML filename stem.
@@ -2987,7 +2987,7 @@ def _print_benchmark_run_plan(
 ) -> None:
     """Print `openral benchmark run --dry-run`'s plan, or exit if nothing would run.
 
-    Applies the same ``evaluated_tasks`` filter :func:`run_benchmark` applies,
+    Applies the same ``evaluated_tasks`` filter ``run_benchmark`` applies,
     so the printed plan is the plan that would actually execute. Without it a
     suite the rSkill covers for zero tasks dry-ran clean and then raised
     ``ROSCapabilityMismatch`` on the real invocation, and a partially covered
@@ -3118,10 +3118,10 @@ def _default_benchmark_out_path(vla_spec: VLASpec, suite_id: str) -> Path:
     """Derive ``rskills/<vla>/eval/<suite_id>.json`` from a VLASpec + suite id.
 
     Resolves the rSkill to its in-tree directory via
-    :func:`openral_rskill.loader.resolve_rskill_local_dir` so the JSON
+    ``openral_rskill.loader.resolve_rskill_local_dir`` so the JSON
     lands in the right place regardless of which URI form the user typed
     (bare name, ``rskills/<name>``, Hub repo id). Falls back to the
-    library's :func:`openral_sim.benchmark.default_output_path` when no
+    library's ``openral_sim.benchmark.default_output_path`` when no
     in-tree shim exists (Hub-only references).
     """
     from openral_rskill.loader import resolve_rskill_local_dir
@@ -3269,7 +3269,7 @@ def benchmark_scene(
     r"""Run a single-scene benchmark and write a validated `RSkillEvalResult` JSON.
 
     Single-scene sibling of ``openral benchmark run --suite`` — accepts
-    exactly one :class:`BenchmarkScene` YAML and emits the same eval JSON
+    exactly one ``BenchmarkScene`` YAML and emits the same eval JSON
     shape so ``openral benchmark report`` does not need to distinguish
     the two entrypoints.
 
@@ -3445,7 +3445,7 @@ def _persist_scene_eval(result: RSkillEvalResult, out_path: Path, *, write_eval:
 def _default_benchmark_scene_out_path(vla_spec: VLASpec, scene: BenchmarkScene) -> Path:
     """Derive ``rskills/<vla>/eval/scene_<scene_id>.json`` from a VLASpec.
 
-    Mirrors :func:`_default_benchmark_out_path` for the single-scene
+    Mirrors ``_default_benchmark_out_path`` for the single-scene
     entrypoint. The ``scene_`` prefix distinguishes per-scene JSONs from
     multi-task suite JSONs so both can coexist under the same rSkill.
     """
@@ -3576,16 +3576,12 @@ def _summarize_results(results: dict[str, object]) -> str:
 
 
 # ── sim sub-app ───────────────────────────────────────────────────────────────
-#
-# Mounts the ``openral sim`` Typer group exported by ``openral_sim.cli`` so
-# users can invoke the sim eval runner as ``openral sim run …``.
-#
-# Lazy-import discipline: importing `openral_sim.cli` at module load is
-# light (only the Typer option metadata + a couple of pydantic / structlog
-# imports). The heavy sim dependencies (torch, mujoco, gymnasium, lerobot)
-# load inside `openral_sim.runner` and the per-adapter modules under
-# `openral_sim.policies/backends`, which `_run()` imports lazily.
-# `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light` guards this.
+# Mounts the ``openral sim`` Typer group from ``openral_sim.cli`` (`openral sim
+# run …`). Lazy-import discipline: `openral_sim.cli` at module load is light
+# (Typer option metadata + pydantic/structlog); heavy deps (torch, mujoco,
+# gymnasium, lerobot) load inside `openral_sim.runner` and the per-adapter
+# modules under `openral_sim.policies/backends`, imported lazily by `_run()`.
+# Guarded by `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light`.
 app.add_typer(sim_app, name="sim")
 
 # `openral behavior serve` — expose an rSkill through the official BEHAVIOR

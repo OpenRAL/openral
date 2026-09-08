@@ -1,33 +1,22 @@
 """Single sim/real HAL construction seam.
 
-:func:`build_hal` is the one place that turns a :class:`RobotDescription` +
-a ``mode`` into a constructed :class:`~openral_hal.protocol.HAL`. Every
-caller — the ROS lifecycle nodes (``deploy sim``), the runner factory
-(``deploy run``), and the deploy-sim CLI — routes through it, so the choice
-of HAL *type* lives only in the manifest's ``hal:`` block, never in
-environment config or runtime parameters.
+``build_hal`` turns a ``RobotDescription`` + ``mode`` into a
+``HAL``. ROS lifecycle nodes (``deploy sim``),
+the runner factory (``deploy run``), and the deploy-sim CLI all route
+through it, so HAL *type* lives only in the manifest's ``hal:`` block.
 
-Routing:
+Routing: ``mode="sim"`` + ``sim_env_yaml`` builds
+``SimAttachedHAL`` around the scene's
+``SimRollout`` (bypasses ``hal.sim``); plain
+``mode="sim"`` uses ``hal.sim``, or derives
+``MujocoArmHAL.from_description`` when ``hal.sim`` is ``None`` and a
+``sim:`` block exists; ``mode="real"`` uses ``hal.real`` with ``transport``
+kwargs (``port``, ``robot_ip``, ``fci_ip``). Missing HAL →
+``ROSCapabilityMismatch``; ``sim_env_yaml`` with ``mode="real"`` →
+``ROSConfigError``.
 
-* ``mode="sim"`` + ``sim_env_yaml`` → a :class:`~openral_hal.sim_attached.SimAttachedHAL`
-  wrapping the scene's :class:`~openral_sim.rollout.SimRollout`. The scene
-  owns physics + pixels; the bare-twin / ``hal.sim`` class is bypassed entirely.
-* ``mode="sim"`` → the manifest's ``hal.sim`` import string, or — when that
-  is ``None`` and a ``sim:`` block is present — the derived
-  :meth:`MujocoArmHAL.from_description`. No sim HAL and no ``sim:``
-  block → :class:`ROSCapabilityMismatch`.
-* ``mode="real"`` → the manifest's ``hal.real`` import string, constructed
-  with the supplied ``transport`` kwargs (real HALs take transport-specific
-  arguments — serial ``port``, ``robot_ip``, ``fci_ip`` — and embed their own
-  description). ``hal.real`` is ``None`` → :class:`ROSCapabilityMismatch`
-  (the robot is simulation-only).
-* ``mode="real"`` + ``sim_env_yaml`` → :class:`ROSConfigError` (a real-hardware
-  HAL never attaches a sim scene).
-
-Construction convention: a class whose ``__init__`` accepts a ``description``
-parameter (the ros2_control real HALs) receives it; otherwise the class
-self-describes (the zero-arg MuJoCo sim subclasses, the lerobot followers)
-and only the ``transport`` keys its signature accepts are passed.
+Construction: a constructor accepting ``description`` receives it;
+otherwise the class self-describes from its accepted ``transport`` keys.
 """
 
 from __future__ import annotations
@@ -58,7 +47,7 @@ def build_hal(
 
     Args:
         description: The robot manifest (typically loaded via
-            :meth:`RobotDescription.from_yaml`).
+            ``RobotDescription.from_yaml``).
         mode: ``"sim"`` for the simulation HAL (``deploy sim`` / ``sim run``
             harness), ``"real"`` for the real-hardware HAL (``deploy run``).
         transport: Constructor kwargs for the real HAL (serial ``port``,
@@ -66,13 +55,12 @@ def build_hal(
             accept are dropped. Ignored by the derived sim path. Merged
             **over** the manifest's ``hal.parameters.defaults``, so
             an explicit ``deploy run`` transport override wins.
-        sim_env_yaml: Path to a SimScene YAML (renamed from
-            SceneEnvironment). When
+        sim_env_yaml: Path to a SimScene YAML. When
             provided with ``mode="sim"``, returns a
-            :class:`~openral_hal.sim_attached.SimAttachedHAL` wrapping the
-            scene's :class:`~openral_sim.rollout.SimRollout`; bypasses the
+            ``SimAttachedHAL`` wrapping the
+            scene's ``SimRollout``; bypasses the
             bare-twin / ``hal.sim`` class. Mutually exclusive with
-            ``mode="real"`` — raises :class:`~openral_core.exceptions.ROSConfigError`
+            ``mode="real"`` — raises ``ROSConfigError``
             if both are supplied.
 
     Returns:
@@ -120,15 +108,12 @@ def build_hal(
                     "null and there is no `sim:` block to derive MujocoArmHAL from. "
                     "It is real-hardware-only — use `deploy run`."
                 )
-            # The DERIVED twin takes the same transport the class-based HALs
-            # do, under one renamed key: `deploy sim` composes a scene MJCF
-            # from `DeployScene.composition` and threads it in as `mjcf_path`
-            # (openral_hal.lifecycle._compose_scene_mjcf), but
-            # `from_description` spells it `mjcf_path_override`. Dropping the
-            # transport here — as this branch used to — silently ignored the
-            # scene composition for every `hal.sim: null` robot (so100 /
-            # so101): the stack booted a bare arm on an empty plane while the
-            # log still said it had composed the scene.
+            # Same transport as the class-based HALs, under one renamed key:
+            # `deploy sim` composes a scene MJCF via
+            # openral_hal.lifecycle._compose_scene_mjcf as `mjcf_path`, but
+            # from_description spells it `mjcf_path_override`. Must be
+            # renamed, not dropped — so100/so101 (`hal.sim: null`) need the
+            # composed scene.
             derived = dict(resolved)
             if "mjcf_path" in derived:
                 derived["mjcf_path_override"] = derived.pop("mjcf_path")

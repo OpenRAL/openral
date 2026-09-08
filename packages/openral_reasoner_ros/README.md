@@ -13,10 +13,9 @@ Subscribes to:
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
 
-Since the 2026-05-25 amendment the reasoner is
-**event-driven** with a slow heartbeat. The periodic timer ticks at
-`tick_hz` (default 0.2 Hz = one every 5 s; was 5 Hz pre-amendment).
-Event preemption is the primary trigger:
+Since the 2026-05-25 amendment the reasoner is **event-driven** with a slow
+heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
+5 s). Event preemption is the primary trigger:
 
 - `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
 - `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
@@ -47,37 +46,29 @@ The effect/actuation variants:
 | `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
 | `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
 
-**Mission handling on `/openral/prompt`:** a genuine operator prompt
-(re)builds the mission queue only when no mission is in progress (none,
-finished, or not yet started — a pre-work resend still replaces). While
-a mission is mid-flight, a prompt is treated as *guidance* (it reaches
-the LLM via the PROMPTS context section) unless its `metadata_json`
-carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps
-it) — so an operator answer to a reasoner question can never silently
-discard the task queue. The reasoner's own
-cascade re-prompts (`spatial_memory` / `detector` / `scene_vlm` /
-`reward_monitor` / `memory` / `mission` frame_ids) never rebuild the
-mission and never reset the search budgets or the retry-cap streak.
+**Mission handling on `/openral/prompt`:** an operator prompt (re)builds the
+mission queue only when no mission is in progress. Mid-flight, a prompt is
+*guidance* (reaches the LLM via PROMPTS context) unless `metadata_json`
+carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps it).
+The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
+`scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
+the mission and never reset the search budgets or retry-cap streak.
 
-**Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter
-to a writable JSON path and the mission ledger + every replanning-ladder
-bound (attempts, subdivision offers, decompose nudges, the per-task
-locate budget) is snapshotted after each mutation and restored at
-`on_configure` — a restarted reasoner resumes the mission where it
-stopped instead of resetting every cap. Empty (default) disables
-persistence.
+**Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter to a
+writable JSON path and the mission ledger + every replanning-ladder bound
+(attempts, subdivision offers, decompose nudges, per-task locate budget) is
+snapshotted after each mutation and restored at `on_configure`. Empty
+(default) disables persistence.
 
-**Dispatch-phase watchdog:** `_rskill_inflight` (the one-goal-at-a-time
-busy latch) is bounded by the `dispatch_watchdog_s` ROS parameter
-(default 30 s; `<= 0` disables): if neither the VRAM-peer eviction nor
-the goal response resolves within the ceiling — a runner or peer that
-died *after* the readiness probe; rclpy futures never time out on their
-own — the watchdog releases the latch, reactivates the peers, and emits
-a `KIND_CONTROLLER` FailureTrigger (`state="dispatch_timeout"`) so the
-ladder handles it instead of every future dispatch being refused as
-busy forever. The expired dispatch generation invalidates its remaining
-callbacks; a late accepted goal is canceled and cannot overwrite a newer
-dispatch.
+**Dispatch-phase watchdog:** `_rskill_inflight` (the one-goal-at-a-time busy
+latch) is bounded by `dispatch_watchdog_s` (default 30 s; `<= 0` disables): if
+neither the VRAM-peer eviction nor the goal response resolves within the
+ceiling (a runner/peer died after the readiness probe; rclpy futures never
+time out on their own), the watchdog releases the latch, reactivates the
+peers, and emits a `KIND_CONTROLLER` FailureTrigger
+(`state="dispatch_timeout"`). The expired dispatch generation invalidates its
+remaining callbacks; a late accepted goal is canceled and cannot overwrite a
+newer dispatch.
 
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary
@@ -185,30 +176,25 @@ The base system prompt (`openral_reasoner.DEFAULT_SYSTEM_PROMPT`) is a
 robot-agnostic operating brief: one-tool-per-tick semantics, faithful
 adherence to the operator goal, robot/scene-matched skill selection,
 locate-before-manipulate (`recall_object`), navigate-to-approach
-(`resolve_place` / Nav2 navigation skills), per-tick progress
-evaluation, and observe-but-never-bypass safety/e-stop handling
-("Python proposes, C++ disposes").
+(`resolve_place` / Nav2 navigation skills), per-tick progress evaluation,
+and observe-but-never-bypass safety/e-stop handling ("Python proposes,
+C++ disposes").
 
 At `on_configure` the node calls
 [`resolve_reasoner_system_prompt`](../../python/reasoner/src/openral_reasoner/tool_use.py),
-which composes the prompt in two parts:
+which composes:
 
-1. **Base brief** — `DEFAULT_SYSTEM_PROMPT`, unless the deployment sets
-   `OPENRAL_REASONER_SYSTEM_PROMPT` to a non-empty value, which replaces
-   it. (A whitespace-only value is treated as unset.)
-2. **`## THIS ROBOT` block** — appended by `render_robot_context_prompt`
-   from the active robot's `RobotCapabilities` (loaded from the
-   `robot_yaml` ROS parameter, or supplied via the `robot_capabilities`
-   constructor arg). It lists the robot's embodiment tags, whether it
-   can locomote (which gates the navigate-to-approach rule — a
-   fixed-base arm is told it cannot drive to a target and should hand
-   off instead), its manipulation / sensing hardware, payload, and
-   control modes.
+1. **Base brief** — `DEFAULT_SYSTEM_PROMPT`, unless
+   `OPENRAL_REASONER_SYSTEM_PROMPT` is set to a non-empty value (whitespace-only
+   counts as unset), which replaces it.
+2. **`## THIS ROBOT` block** — appended by `render_robot_context_prompt` from
+   the active robot's `RobotCapabilities` (`robot_yaml` ROS parameter, or the
+   `robot_capabilities` constructor arg): embodiment tags, whether it can
+   locomote (gates the navigate-to-approach rule), manipulation/sensing
+   hardware, payload, and control modes.
 
-The robot block is appended to whichever base is in effect, so a custom
-brief still carries the factual body description it cannot hardcode.
-With no robot wired the prompt stays at the (possibly overridden) base
-brief alone.
+With no robot wired the prompt stays at the (possibly overridden) base brief
+alone.
 
 ## Curated reasoner models
 
@@ -332,27 +318,24 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |
 | `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens (Anthropic cache reads included). Tick latency that grows in step with this is a context-size problem — window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |
 
-Both also appear on the `reasoner.tick.selected` structured log, so the split
-is readable from the log stream without opening Jaeger.
+`reasoner.llm_s` and `reasoner.prompt_tokens` also appear on the
+`reasoner.tick.selected` structured log, readable without opening Jaeger.
 
-The active W3C `traceparent` captured inside this span is threaded
-through onto the outbound `EmitPromptTool` `PromptStamped.metadata_json`
-so the F7 bag↔OTel correlator can join the
-published prompt back to the producing tick.
+The active W3C `traceparent` captured inside this span is threaded onto the
+outbound `EmitPromptTool` `PromptStamped.metadata_json` so the F7 bag↔OTel
+correlator can join the published prompt back to the producing tick.
 
-Spans are emitted via `opentelemetry-sdk` — no provider installed
-when `configure_observability` was not called, which makes the helper
-a no-op (cost <1 µs). The
-`/just docker-smoke-x86-reasoner` smoke explicitly installs a real
-provider so the round-trip can be observed end-to-end inside the
-deploy image.
+Spans are emitted via `opentelemetry-sdk`; a no-op (cost <1 µs) when
+`configure_observability` was not called (no provider installed). The
+`just docker-smoke-x86-reasoner` smoke installs a real provider so the
+round-trip can be observed end-to-end inside the deploy image.
 
 ## CLAUDE.md amendment
 
-The §3 dual-system pattern wording was amended in the same PR that
-introduced this package to specify **direct typed `ReasonerToolCall`
-dispatch** as the reasoner's output contract — the LLM picks exactly one
-typed tool call per tick and the node routes it onto the ROS graph.
+CLAUDE.md §3's dual-system pattern specifies **direct typed
+`ReasonerToolCall` dispatch** as the reasoner's output contract: the LLM
+picks exactly one typed tool call per tick and the node routes it onto the
+ROS graph.
 
 ## See also
 

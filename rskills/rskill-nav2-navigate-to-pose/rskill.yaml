@@ -1,28 +1,23 @@
 # rSkill manifest — Nav2 NavigateToPose (kind: ros_action, result-only)
 #
-# Wraps the upstream `nav2_msgs/action/NavigateToPose` action server as
-# an OpenRAL rSkill.
+# Wraps the upstream `nav2_msgs/action/NavigateToPose` action server as an
+# OpenRAL rSkill.
 #
-# RESULT-ONLY MODE
-# ----------------
-# `ros_integration.result_trajectory_field` is omitted, which puts the
-# adapter into result-only mode: it sends the goal, awaits the action
-# result, and raises `ROSRskillGoalSatisfied` on success. NO `Action`
-# chunk is emitted to `/openral/candidate_action`. Nav2's own behaviour
-# tree publishes `cmd_vel` directly to the base controller, BYPASSING
-# the OpenRAL safety supervisor for those velocity commands. Collision
-# avoidance relies entirely on Nav2's costmap. Bringing velocity-stream
-# safety under the supervisor's check is an explicit out-of-scope
-# follow-up for the ROS-wrapped rSkills design (no in-tree HAL exposes `body_twist` in
-# `supported_control_modes` today, so this is also blocked on a
-# mobile-base HAL landing — issue tracked separately).
+# RESULT-ONLY MODE: `ros_integration.result_trajectory_field` is omitted, so
+# the adapter sends the goal, awaits the action result, and raises
+# `ROSRskillGoalSatisfied` on success — NO `Action` chunk is emitted to
+# `/openral/candidate_action`. Nav2's own behaviour tree publishes `cmd_vel`
+# directly to the base controller, BYPASSING the OpenRAL safety supervisor for
+# those velocity commands; collision avoidance relies entirely on Nav2's
+# costmap. Bringing velocity-stream safety under the supervisor is an explicit
+# out-of-scope follow-up (blocked on a mobile-base HAL exposing `body_twist`
+# in `supported_control_modes` — none does today; tracked separately).
 #
-# Per-dispatch structured parameters. The LLM tool palette
-# surfaces this schema to the provider; the reasoner attaches the
-# generated payload as ``goal_params_json`` on the ExecuteSkill goal;
-# the wrapped-action adapter deep-merges it over the
-# ``default_goal_json`` below at configure-time. Omit fields you want
-# from the manifest default.
+# Per-dispatch structured parameters: the LLM tool palette surfaces this
+# schema to the provider, the reasoner attaches the generated payload as
+# `goal_params_json` on the ExecuteSkill goal, and the wrapped-action adapter
+# deep-merges it over `default_goal_json` below at configure-time — omit
+# fields you want from the manifest default.
 
 schema_version: "0.1"
 name: "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"

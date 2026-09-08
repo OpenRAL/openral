@@ -150,6 +150,7 @@ class _XR1Policy:
             "low_cpu_mem_usage": True,
         }
         if quantization == "nf4":
+            # reason: transformers ships BitsAndBytesConfig untyped (see above)
             model_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call, unused-ignore]
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",

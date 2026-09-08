@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.SO100MujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.SO100MujocoHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` SO-100 MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →
@@ -10,7 +10,7 @@ The point of this suite is the SO-100 "real hardware first day" contract
 (CLAUDE.md §1.11): if these tests pass, the 6-DoF joint-position action
 layout, gripper normalisation, lifecycle, and ``RobotDescription`` joint
 order are guaranteed to match what
-:class:`openral_hal.SO100FollowerHAL` will see when the physical arm
+``openral_hal.SO100FollowerHAL`` will see when the physical arm
 arrives — the only remaining failure surfaces are at the USB driver
 level (HIL territory).
 
@@ -119,13 +119,6 @@ def hal() -> SO100MujocoHAL:
     """Fresh SO-100 HAL with gravity off and enough settle steps for the
     position controllers to converge to the commanded pose."""
     return SO100MujocoHAL(gravity_enabled=False, settle_steps=2000)
-
-
-@pytest.fixture()
-def connected_hal(hal: SO100MujocoHAL) -> SO100MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _zero_action(horizon: int = 1) -> Action:

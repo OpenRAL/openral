@@ -67,13 +67,13 @@ Together they must describe **exactly one connected tree**. A manifest that
 leaves a rigid mount out is *refused* with `ROSConfigError` naming the
 disconnected roots — it is not lowered.
 
-The loader previously treated any link no joint reached as a second base at the
-identity frame. That silently placed the whole orphaned subtree on the robot's
-origin, which is wrong in both directions: it fabricates contacts that cannot
-happen, and — the reason this is a hazard rather than a nuisance — it leaves
-that subtree's real swept volume entirely unmodelled, so a genuine
-self-collision is never detected. There is no safe default for a link whose
-pose is unknown, so the loader refuses instead of guessing.
+Treating any link no joint reaches as a second base at the identity frame
+silently places the whole orphaned subtree on the robot's origin — wrong in
+both directions: it fabricates contacts that cannot happen, and (the reason
+this is a hazard, not a nuisance) leaves that subtree's real swept volume
+entirely unmodelled, so a genuine self-collision is never detected. There is
+no safe default for a link whose pose is unknown, so the loader refuses
+instead of guessing.
 
 Every attachment origin must be read out of the robot's real URDF/MJCF at the
 zero configuration (composed, where the source model inserts intermediate
@@ -123,17 +123,13 @@ at `cpp/openral_safety_kernel/`.
 `/openral/safety_status` (ADR-0096) is the only **latched** topic here:
 current safety state (`latched`, `drop_reason`, `detail`, `rskill_id`,
 `trace_id`, `header.stamp`) rather than an event, so a dashboard opened
-mid-mission or a runner reconnecting after a crash reads the truth
-immediately. Published on every latch transition, every clear/recovery
-transition, on **every activation** (hazard-log HZ-0096-1 mitigation 1
-— a restarted node must overwrite the stale durable sample a still
-connected consumer holds), and re-stamped at 1 Hz so `header.stamp` is
-evidence the publisher is alive. The C++ kernel publishes the identical
-contract, so this node keeps replacing/being replaced behind the same
-topic surface. Before it, this node had no typed failure output at all
-— it never constructed a `FailureTrigger` — so a fail-closed drop or
-e-stop from here was a bare `std_msgs/Empty` and nothing else.
-Observability only: no enforcement path changed.
+mid-mission or a reconnecting runner reads the truth immediately. Published
+on every latch transition, every clear/recovery transition, on **every
+activation** (hazard-log HZ-0096-1 mitigation 1 — a restarted node must
+overwrite the stale durable sample a still-connected consumer holds), and
+re-stamped at 1 Hz as liveness evidence. The C++ kernel publishes the
+identical contract, so this node keeps replacing/being replaced behind the
+same topic surface. Observability only: no enforcement path changed.
 
 `/openral/estop` is subscribed by **both** the HAL and the
 skill_runner (defense in depth, CLAUDE.md §1.5).

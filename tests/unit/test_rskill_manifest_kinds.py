@@ -5,8 +5,8 @@ of these rules surfaces here instead of as a silent VLA-on-wrapper /
 wrapper-on-VLA bug downstream.
 
 No mocks (CLAUDE.md §1.11) — every test constructs a real
-:class:`~openral_core.RSkillManifest` against a real
-:class:`~openral_core.RosIntegration` literal that matches the on-disk
+``RSkillManifest`` against a real
+``RosIntegration`` literal that matches the on-disk
 shape of ``rskills/rskill-moveit-joints/rskill.yaml``.
 """
 
@@ -250,10 +250,9 @@ def test_ros_integration_default_goal_json_must_be_json_dict() -> None:
 def test_every_intree_rskill_manifest_declares_kind() -> None:
     """Migration: no manifest may rely on a default for ``kind``.
 
-    The schema field is required (no default) so this also doubles as
-    proof that the migration script ran on every in-tree rskill. The
-    test fails loud (with the offending paths) if any new manifest
-    lands without ``kind:``.
+    The field is required (no default), so this also proves the migration
+    script ran on every in-tree rskill. Fails loud with offending paths if
+    a new manifest lands without ``kind:``.
     """
     repo_root = pathlib.Path(__file__).resolve().parents[2]
     rskills_dir = repo_root / "rskills"

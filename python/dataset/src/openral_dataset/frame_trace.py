@@ -1,13 +1,13 @@
 """read_frame_trace — pivot a LeRobotDataset frame back to its OTel ids.
 
-ISSUE-109: every frame written by :class:`LeRobotDatasetSink` carries the
+ISSUE-109: every frame written by ``LeRobotDatasetSink`` carries the
 ``trace_id`` / ``span_id`` of the ``rskill.tick`` span that produced it.
 This module reads those columns back so ``openral replay --frame
 <repo>/<ep>/<frame>`` can resolve a dataset coordinate to a trace and
 join it against the bag + dashboard spans.
 
 The read goes straight at the v3 parquet shards (``pyarrow``) rather than
-through :class:`lerobot.datasets.LeRobotDataset` — indexing the dataset
+through ``lerobot.datasets.LeRobotDataset`` — indexing the dataset
 would decode the episode MP4s, which needs a working torchcodec/ffmpeg
 backend. The correlation columns are plain ``string`` parquet values, so
 a dependency-light read keeps the pivot usable on any host.
@@ -60,8 +60,7 @@ def read_frame_trace(*, root: Path | str, episode_idx: int, frame_idx: int) -> t
         )
 
     for parquet_path in files:
-        # reason: pyarrow.parquet.read_table is untyped upstream despite py.typed
-        table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]
+        table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]  # reason: no stubs
         columns = set(table.column_names)
         if "trace_id" not in columns or "span_id" not in columns:
             raise ROSConfigError(

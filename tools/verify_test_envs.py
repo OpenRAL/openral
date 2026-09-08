@@ -480,14 +480,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"unknown group(s): {', '.join(unknown)}", file=sys.stderr)
         return 2
 
-    # Fail here, once, with an actionable message rather than N times with a
-    # bare `FileNotFoundError: [Errno 2] No such file or directory: 'just'`
-    # traceback out of subprocess.Popen — which is what the robocasa-gr1 and
-    # simpler-env lanes produced on the hosted runner, before a single test ran.
-    # `just sync` (not bare `uv sync`) is the required entry point: the recipe
-    # forces --all-packages and then repairs the malformed hf-libero install, so
-    # substituting a plain `uv sync` here would silently diverge from the
-    # documented flow. Say what is missing instead (CLAUDE.md §1.4).
+    # Fail here, once, with an actionable message instead of a bare
+    # `FileNotFoundError: 'just'` from subprocess.Popen per group. `just sync`
+    # (not bare `uv sync`) forces --all-packages and repairs the hf-libero
+    # install, so substitute nothing here (CLAUDE.md §1.4).
     if not args.no_sync and not args.dry_run and shutil.which("just") is None:
         print(
             "`just` is not on PATH, and this script syncs dependency groups "

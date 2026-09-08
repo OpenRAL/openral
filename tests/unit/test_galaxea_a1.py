@@ -539,12 +539,10 @@ def test_sidecar_gripper_requires_active_relay() -> None:
 
 
 def test_deploy_sim_of_real_only_robot_raises_typed_errors() -> None:
-    """`deploy sim` of the hardware-only A1 fails with typed errors, never a TypeError.
+    """`deploy sim` of the hardware-only A1 fails with typed errors, never a bare TypeError.
 
-    The bare-twin path reports the robot as real-hardware-only; attaching the
-    deploy bench scene (which registers no sim scene id) reports the unknown
-    scene id — the latter used to crash with ``TypeError: '_Registry' object
-    is not iterable`` while formatting its own error message.
+    Regression: an unknown sim scene id used to crash formatting its own error
+    message with ``TypeError: '_Registry' object is not iterable``.
     """
     from openral_core.exceptions import ROSCapabilityMismatch
     from openral_hal.resolver import build_hal

@@ -2,7 +2,7 @@
 
 Kept rclpy-free so the assemblers are pure functions and the
 unit tests don't need a running ROS graph — the skill_runner wraps
-``tf2_ros.Buffer.lookup_transform`` into the :class:`TfLookup` Protocol
+``tf2_ros.Buffer.lookup_transform`` into the ``TfLookup`` Protocol
 at call time.
 """
 

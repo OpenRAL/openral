@@ -1,6 +1,6 @@
 """The generic Cartesian-pose MoveGroup builder (`goal_builder: "pose"`).
 
-Pins the pure pieces of :mod:`openral_rskill.pose_goal_rskill`:
+Pins the pure pieces of ``openral_rskill.pose_goal_rskill``:
 
 * ``build_pose_constraints`` — pose → MoveGroup position + orientation
   constraints, the shared lowering ``LookAtRskill`` also uses (look-at being a

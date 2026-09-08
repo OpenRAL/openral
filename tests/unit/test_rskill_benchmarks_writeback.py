@@ -30,12 +30,10 @@ def skill_dir(tmp_path: Path) -> Path:
 
 
 def test_update_writes_into_empty_benchmarks_block(skill_dir: Path) -> None:
-    """Manifest with no ``benchmarks:`` block gets one appended; subsequent
-    runs land in the just-created block.
+    """Manifest with no ``benchmarks:`` block gets one appended.
 
-    The rldx1-ft-rc365-nf4 manifest omits the empty
-    ``benchmarks: {}`` line (schema default fills it back in); the
-    writeback's "missing block → append" branch is what's exercised here.
+    ``rldx1-ft-rc365-nf4`` omits the empty ``benchmarks: {}`` line (schema
+    default fills it back in); exercises the "missing block → append" branch.
     """
     before = (skill_dir / "rskill.yaml").read_text()
     assert "benchmarks:" not in before  # sanity: the fixture omits the block

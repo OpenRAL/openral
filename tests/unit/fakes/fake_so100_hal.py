@@ -3,7 +3,7 @@
 CLAUDE.md §1.11 boundary double — the SO-100 follower speaks Feetech
 serial over a USB port, a hardware/process boundary no CI box has.
 This is a real recording fake (not a ``MagicMock``): it implements the
-subset of the :class:`openral_hal.HAL` Protocol that
+subset of the ``openral_hal.HAL`` Protocol that
 ``openral_cli.main._connect_so100`` actually drives
 (``connect`` / ``read_state`` / ``disconnect``) and records the
 lifecycle so tests assert on observable state, not on mock call

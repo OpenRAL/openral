@@ -1,43 +1,32 @@
 """Shared loader helpers for openral_sim policy adapters.
 
-Three things every full-graph policy adapter does on `__build_*` and
-which used to be open-coded in :mod:`openral_sim.policies.pi05`,
-:mod:`openral_sim.policies.rldx`, and :mod:`openral_sim.policies.smolvla`:
+Consolidates three things ``openral_sim.policies.pi05``,
+``openral_sim.policies.rldx``, and ``openral_sim.policies.smolvla``
+each need on their ``_build_*``:
 
-1. **Manifest resolution.** Pull the :class:`RSkillManifest` from
-   ``spec.weights_uri`` when it is a bare rSkill reference (no explicit
-   scheme); return ``None`` for ``hf://`` / local URIs and other
-   explicit-scheme URIs so callers can decide whether the lack of a
-   manifest is fatal. See :func:`load_manifest_for_spec`.
+1. **Manifest resolution** (``load_manifest_for_spec``) — pull the
+   ``RSkillManifest`` from ``spec.weights_uri`` when it's a bare
+   rSkill reference; ``None`` for ``hf://``/local/explicit-scheme URIs so
+   callers decide whether a missing manifest is fatal. RLDX uses this too
+   (its sidecar holds the processor) as the source of truth for
+   ``state_contract``/``image_preprocessing``/``n_action_steps``.
 
-2. **Lazy torch + lerobot import.** Both the SmolVLA and π0.5 adapters
-   defer ``torch`` / ``lerobot`` imports so installing ``openral-sim``
-   never pulls them transitively (CLAUDE.md §3 — Python toolchain).
-   The matching ``ROSConfigError`` install-hint is identical across the
-   adapters; :func:`lazy_import_lerobot` returns the imported torch +
-   ``make_pre_post_processors`` callable, with adapter-specific
-   ``policy_class`` resolved by the caller.
+2. **Lazy torch + lerobot import** (``lazy_import_lerobot``) — SmolVLA
+   and π0.5 defer ``torch``/``lerobot`` so installing ``openral-sim``
+   never pulls them transitively (CLAUDE.md §3). Returns
+   ``(torch, make_pre_post_processors)``; adapter-specific
+   ``policy_class`` is resolved by the caller.
 
-3. **Processor pipeline materialisation.** ``make_pre_post_processors``
-   needs a ``pretrained_path`` that already carries
-   ``policy_preprocessor.json`` + ``policy_postprocessor.json`` sidecars.
-   Both SmolVLA and π0.5 build that dir per-call via the rSkill
-   manifest's ``processors`` block; the choice between
-   :func:`openral_rskill._vla_core.materialize_processor_dir` (manifest
-   only) and :func:`openral_sim.policies._processors.resolve_processor_dir`
-   (manifest with snapshot fallback) is adapter-specific so callers
-   pass a callable.
+3. **Processor pipeline materialisation** — ``make_pre_post_processors``
+   needs a ``pretrained_path`` carrying ``policy_preprocessor.json`` +
+   ``policy_postprocessor.json``; the choice between
+   ``openral_rskill._vla_core.materialize_processor_dir`` (manifest
+   only) and ``openral_sim.policies._processors.resolve_processor_dir``
+   (manifest with snapshot fallback) is adapter-specific, passed as a callable.
 
-The RLDX adapter consumes the manifest helper here too — it doesn't run
-``make_pre_post_processors`` (its sidecar holds the processor), but the
-manifest is still its single source of truth for ``state_contract`` /
-``image_preprocessing`` / ``n_action_steps``.
-
-These helpers are deliberately small. We do **not** try to wrap the
-quantization branch from pi05 (that flow is genuinely adapter-specific —
-SmolVLA never quantizes, RLDX delegates to the sidecar). See
-:mod:`openral_sim._quantization` for the dtype-resolution + bnb rewrite
-helpers that *are* generic.
+Deliberately small: the pi05 quantization branch is not wrapped here
+(SmolVLA never quantizes, RLDX delegates to its sidecar) — see
+``openral_sim._quantization`` for the generic dtype/bnb helpers.
 """
 
 from __future__ import annotations
@@ -53,7 +42,7 @@ if TYPE_CHECKING:
 def load_manifest_for_spec(spec: Any) -> RSkillManifest | None:
     """Load the rSkill manifest pinned in ``spec.weights_uri``.
 
-    Returns the parsed :class:`openral_core.RSkillManifest` when
+    Returns the parsed ``openral_core.RSkillManifest`` when
     ``spec.weights_uri`` is a bare rSkill reference (name, local path
     like ``rskills/smolvla-libero``, or HF repo id with no explicit
     scheme); returns ``None`` for ``hf://``, ``local://``, ``file://``,

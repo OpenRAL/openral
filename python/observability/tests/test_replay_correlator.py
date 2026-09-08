@@ -2,7 +2,7 @@
 
 Per CLAUDE.md §1.11 — no mocks. The bag is a real ``mcap.writer.Writer``
 output containing both a ``jsonschema``-encoded message (the encoding
-:class:`openral_dataset.Rosbag2Sink` writes) and a ``ros2msg``-style
+``openral_dataset.Rosbag2Sink`` writes) and a ``ros2msg``-style
 payload that embeds a W3C ``traceparent`` substring (the encoding a
 ``ros2 bag record --storage mcap`` would produce). The reader recovers
 the trace_id from both, and the correlator joins them with a list of

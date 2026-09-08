@@ -1,15 +1,10 @@
 """Dispatch one rSkill goal at a live ``deploy sim`` graph and report the result.
 
-Private helper of ``tools/validation_matrix.py``. Recovered from
-``run_xr1_full.py`` in ``spark:~/openral-runs/<round>/scripts/`` and
-parameterised over the rSkill and prompt, which the original hardcoded per
-round — the drift that made "which skill did round N dispatch?" unanswerable
-from the artifacts.
-
-The validation matrix runs with the reasoner **off**, so nothing else would
-issue a goal; this is the direct-dispatch surface standing in for it. The
-process prints exactly one JSON line, which the harness stores as the run's
-``goal.log`` and reads back for ``wall_s`` and ``failure_reason``.
+Private helper of ``tools/validation_matrix.py``, parameterised over the rSkill and prompt
+(unlike its ``run_xr1_full.py`` ancestor, which hardcoded both per round). The validation matrix
+runs with the reasoner off, so this is the direct-dispatch surface that issues the goal in its
+place. Prints one JSON line, stored as the run's ``goal.log`` and read back for ``wall_s`` /
+``failure_reason``.
 
 Requires a sourced ROS 2 environment and the built overlay.
 

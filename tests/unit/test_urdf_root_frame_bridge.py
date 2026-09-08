@@ -1,34 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every in-tree URDF must be reachable from its manifest's ``base_frame``.
 
-``robot_state_publisher`` publishes the URDF's own link names. When a manifest's
-``base_frame`` is not the URDF's root link, nothing on ``/tf`` ever publishes
-``base_frame`` — and every consumer that looks it up fails *silently*:
-``_sensor_wiring`` defaults each sensor's ``parent_frame`` to it, ``SlamMapBridge``
-and ``WorldCloudBridge`` transform into it, and ``octomap_server`` /
-``octomap_voxel_bridge`` map against it. The nodes stay up and report healthy
-while dropping every frame, which is the worst shape this failure can take.
+``robot_state_publisher`` only publishes the URDF's own link names. If a
+manifest's ``base_frame`` isn't the URDF's root link, nothing on ``/tf``
+publishes it — every consumer (``_sensor_wiring``'s default ``parent_frame``,
+``SlamMapBridge``, ``WorldCloudBridge``, ``octomap_server``,
+``octomap_voxel_bridge``) fails silently while its node reports healthy.
 
-:class:`~openral_core.schemas.UrdfAsset` already carries the fix
-(``root_frame`` + ``base_to_root_xyz_rpy``). These tests pin that a manifest
-which *needs* it *declares* it, and that what it declares matches the URDF on
-disk rather than a remembered number.
+``UrdfAsset.root_frame`` + ``base_to_root_xyz_rpy`` is the fix; these tests pin
+that a manifest which needs it declares it, and that the declared values match
+the on-disk URDF rather than a remembered number.
 
-``root_frame`` names the link ``base_frame`` ATTACHES TO — not necessarily the
-tree's root. That distinction is load-bearing: ``derive_robot_relative_height_band``
-reads the same pair to place collision geometry, and the UR manifests point it
-at ``base_link`` because ``joints`` lists only movable joints, so ``base_link``
-is no joint's child and the ``base_frame`` chain alone cannot reach the arm.
-Retargeting those to the URDF's ``world`` root made every UR collision volume
-unplaceable and the height band refuse outright — verified by doing it and
-watching `packages/openral_slam_bringup` fail, so this file asserts
-reachability, NOT rootness.
-
-A consequence worth knowing rather than enforcing: when ``root_frame`` is a
-link the URDF already parents, that link ends up with two parents on /tf. For
-the UR manifests both hops are identity and nothing consumes the URDF's
-``world``, so the ambiguity is inert — and not worth trading a working height
-band for.
+``root_frame`` names the link ``base_frame`` attaches to, NOT necessarily the
+tree's root — this file asserts reachability, not rootness. The UR manifests
+point it at ``base_link`` (not the URDF's ``world`` root) because ``joints``
+lists only movable joints, so ``base_link`` is no joint's child; retargeting
+to ``world`` was tried and broke ``packages/openral_slam_bringup`` (unplaceable
+collision volumes, height band refused). When ``root_frame`` is a link the
+URDF already parents (as for UR), that link gets two ``/tf`` parents — inert
+here since both hops are identity and nothing consumes the URDF's ``world``.
 """
 
 from __future__ import annotations

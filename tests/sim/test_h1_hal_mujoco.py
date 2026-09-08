@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.H1MujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.H1MujocoHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` Unitree H1 MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →
@@ -155,7 +155,7 @@ class TestH1Description:
 class TestMenagerieSchema:
     """Guard against silent ``mujoco_menagerie`` schema drift.
 
-    The :class:`H1MujocoHAL` indexing assumes the floating-base + 19
+    The ``H1MujocoHAL`` indexing assumes the floating-base + 19
     actuated-joint order documented in ``h1.py``.  If a future
     menagerie upgrade reorders joints, these guards fail before the
     closed-loop tests do and point at the right place.
@@ -202,13 +202,6 @@ def hal() -> H1MujocoHAL:
     couple every closed-loop assertion to body dynamics.
     """
     return H1MujocoHAL(gravity_enabled=False, settle_steps=3000)
-
-
-@pytest.fixture()
-def connected_hal(hal: H1MujocoHAL) -> H1MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 def _zero_action(horizon: int = 1) -> Action:
@@ -320,13 +313,12 @@ class TestClosedLoopMujoco:
     the floating base falls instantly with gravity on — see the suite
     docstring)."""
 
-    def test_send_action_holds_zero_pose(self, connected_hal: H1MujocoHAL) -> None:
+    def test_send_action_holds_zero_pose(
+        self, connected_hal: H1MujocoHAL, assert_send_action_holds_zero_pose
+    ) -> None:
         # Commanding zero on every actuator should leave every joint at
         # zero (the menagerie's default rest pose with gravity off).
-        connected_hal.send_action(_zero_action())
-        state = connected_hal.read_state()
-        for i, q in enumerate(state.position):
-            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
+        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     def test_left_arm_converges_to_target(self, connected_hal: H1MujocoHAL) -> None:
         target = [0.0] * 19

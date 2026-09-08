@@ -1,15 +1,14 @@
 """Support-contact attestation from MuJoCo signed distance probes.
 
-The 2026-08-14 acceptance round is the reason this file exists. A cup rested on
-a RoboCasa island at 0.000 mm — a textbook support contact — and the producer
-attested nothing, so the safety kernel had no exemption and E-stopped on the
-real support contact at -11.11 mm. The contact list was empty: MuJoCo's
-``contype``/``conaffinity`` bitmasks suppress whole geom pairs, and cup↔island
-happened to be one of them while baguette↔counter happened not to be.
+Regression for the 2026-08-14 acceptance round: a cup resting on a RoboCasa
+island at 0.000 mm got no attestation (MuJoCo's ``contype``/``conaffinity``
+bitmasks suppress the cup↔island pair, so the contact list was empty), and
+the safety kernel E-stopped on the real support contact at -11.11 mm with no
+exemption to apply. baguette↔counter is the control pair where contacts DO
+generate.
 
-Every fixture here is a real compiled ``MjModel`` with analytically known
-geometry, so the attested numbers are checked against arithmetic rather than
-against whatever the producer happens to emit.
+Fixtures are real compiled ``MjModel``s with analytically known geometry, so
+attested numbers are checked against arithmetic, not against producer output.
 """
 
 from __future__ import annotations
@@ -58,11 +57,10 @@ _BAGUETTE_HALF_EXTENTS = (0.14, 0.03, 0.04)
 _AABB_PAD_M = 1e-4
 
 # ``island_top`` and ``cup_body`` share no bits in either direction
-# (1 & 4 == 0 and 4 & 1 == 0), so MuJoCo generates NO contact record for the
-# pair however deeply they overlap. That is the island defect, reproduced.
-# ``baguette_body`` is affine to the island (its conaffinity 4 meets the
-# island's contype 4), so that pair DOES produce contact records — the
-# baguette-class control that the old contact-list producer handled.
+# (1 & 4 == 0, 4 & 1 == 0) so MuJoCo emits NO contact record for that pair
+# however deeply they overlap — the island defect, reproduced. ``baguette_body``
+# is affine to the island (conaffinity 4 meets contype 4), so that pair DOES
+# produce contact records — the control.
 _SCENE_MJCF = """
 <mujoco model="support_contact_witness">
   <option gravity="0 0 -9.81"/>
@@ -128,26 +126,20 @@ def _contact_records(model: Any, data: Any, payload: str) -> list[Any]:
 
 
 def test_island_class_payload_generates_no_mujoco_contact_records() -> None:
-    """The fixture reproduces the defect's precondition, not just its symptom.
-
-    If MuJoCo ever stopped suppressing this pair, the attestation test below
-    would pass for the wrong reason.
-    """
+    """Pins the defect's precondition: no contact records for cup↔island, some for baguette."""
     model, data = _scene()
     assert _contact_records(model, data, "cup") == []
-    # The control payload must keep producing records, or the equivalence test
-    # further down is comparing the probe against nothing.
+    # baguette is the control payload; must keep producing records or the
+    # equivalence test below compares the probe against nothing.
     assert _contact_records(model, data, "baguette") != []
 
 
 def test_attests_support_the_contact_list_cannot_see() -> None:
-    """RED before the fix: zero contact records meant zero attestations.
+    """Zero MuJoCo contact records still yields an attestation, checked against arithmetic.
 
-    Every number here is arithmetic on the fixture. The cup is a sphere of
-    radius 0.04 centred 0.0008 m below a tangent rest on the plane z = 0.42, so
-    the probe's closest points are (0.10, 0.05, 0.4192) on the cup and
-    (0.10, 0.05, 0.42) on the island: signed distance -0.0008, midpoint
-    (0.10, 0.05, 0.4196).
+    Cup: sphere r=0.04 centred 0.0008 m below tangent rest on plane z=0.42, so
+    closest points are (0.10, 0.05, 0.4192) on cup / (0.10, 0.05, 0.42) on
+    island: signed distance -0.0008, midpoint (0.10, 0.05, 0.4196).
     """
     model, data = _scene()
     witness = support_contact_witness(
@@ -190,12 +182,7 @@ def test_attests_support_the_contact_list_cannot_see() -> None:
 
 
 def test_baguette_class_attestation_matches_the_solver_contacts() -> None:
-    """Where contacts DO exist, the probe reproduces what they reported.
-
-    This is the equivalence claim for the payloads the old contact-list basis
-    handled correctly: the attested depth is MuJoCo's own deepest ``dist``, and
-    the attested plane is the one its contact frames and positions describe.
-    """
+    """Where solver contacts DO exist, the probe's depth and plane match them exactly."""
     model, data = _scene()
     records = _contact_records(model, data, "baguette")
     assert records
@@ -262,11 +249,7 @@ def test_no_support_within_the_probe_window_attests_nothing() -> None:
 
 
 def test_penetration_past_the_kernel_cap_attests_nothing() -> None:
-    """A payload 12 mm inside the island is not resting on it; it is colliding.
-
-    Clamping to the cap would launder a real penetration into an exemption, so
-    the producer withholds the attestation entirely and lets the kernel stop.
-    """
+    """A payload 12 mm inside the island is colliding, not resting: no clamp-to-cap laundering."""
     model, data = _scene(cup_z=_ISLAND_TOP_Z + _CUP_RADIUS_M - 0.012)
     assert (
         support_contact_witness(
@@ -300,20 +283,13 @@ _TESSELLATED_MJCF = """
 
 
 def test_a_neighbouring_strip_cannot_tilt_the_attested_support_plane() -> None:
-    """One counter, two coplanar strips, a tray flush across both — plane stays level.
+    """#190 regression: a tray flush across two coplanar strips must not tilt the attested plane.
 
-    This is the #190 regression. A support geom's analytic face normal is only
-    meaningful at a point *on* that geom, and the certified instrument's
-    witness on the overlapping branch lies in the support's supporting PLANE,
-    which for a neighbouring strip is a point 0.25 m outside it. There the box
-    normal comes back **lateral**, and because ``_dominant_support`` groups by
-    support root and averages, that one hit tilted the attested plane 45
-    degrees off vertical — a support plane the safety kernel would have
-    exempted against.
-
-    The probe now cross-checks every hit against the instrument's own contact
-    direction, which is exact even at a flush contact, so the off-geom hits
-    are dropped and only the strip actually under the tray is attested.
+    A support geom's analytic face normal is only meaningful at a point *on*
+    that geom. Averaging hits from an off-geom neighbour strip (0.25 m outside
+    it) pulled in a lateral normal and tilted the plane 45 degrees off
+    vertical. Fix: cross-check every hit against the instrument's own contact
+    direction and drop the off-geom ones.
     """
     model = mujoco.MjModel.from_xml_string(_TESSELLATED_MJCF)
     data = mujoco.MjData(model)
@@ -334,14 +310,11 @@ def test_a_neighbouring_strip_cannot_tilt_the_attested_support_plane() -> None:
 
 
 def test_a_plane_support_attests_nothing_because_it_cannot_be_certified() -> None:
-    """A payload resting on the floor plane earns no exemption — stated, not silent.
+    """A payload resting on a floor plane earns no exemption (fail-closed).
 
     The certified instrument has no bounded hull for a plane and refuses to
     measure it (#170); the witness path issues only from certified
-    measurements (#190). So a cup flush on the floor attests nothing, and the
-    kernel stops on that contact rather than being told to ignore it. That is
-    the fail-closed direction, and this test is where the behaviour is pinned
-    so a plane-aware branch, if one is ever added, has something to flip.
+    measurements (#190). Pin for a future plane-aware branch to flip.
     """
     from openral_hal.convex_distance import convex_geom_distance
 
@@ -410,17 +383,13 @@ def test_robot_geometry_is_never_a_support() -> None:
 
 
 def test_the_support_under_the_load_wins_a_two_surface_contact() -> None:
-    """Two coplanar supports at once: the seat is attested, not the ledge.
+    """Two coplanar supports at once: the load-bearing island wins, not the tessellated ledge.
 
-    A plank rests centred on a wide island while its tip also grazes a narrow
-    three-geom ledge whose top face is the same plane. Both are load-bearing and
-    equally horizontal, so the dominance rule falls through to load path — the
-    island lies under the plank's centre of mass, the ledge catches its rim.
-
-    The ledge deliberately outnumbers the island three geom pairs to one: a
-    distance probe reports one closest point per pair, so any rule keyed on pair
-    count or point spread would measure tessellation and pick the ledge. This
-    test is the pin on that.
+    A plank centred on a wide island also grazes a narrow three-geom ledge at
+    its rim, same plane. Both are equally horizontal, so dominance falls
+    through to load path (centre of mass over island). The ledge deliberately
+    outnumbers the island 3:1 in geom pairs, to pin that dominance is not
+    decided by pair count / point spread.
     """
     mjcf = f"""
 <mujoco model="two_supports">
@@ -557,11 +526,7 @@ def _grasp(*, island_z: float) -> Any:
 
 
 def test_attach_transition_carries_the_witness_for_a_suppressed_pair() -> None:
-    """The acceptance run's exact shape: grasp a cup resting on an island.
-
-    cup↔island produces no contact record, so before the fix the attachment
-    went out with ``support_contact=None`` and the kernel had nothing to apply.
-    """
+    """Grasping a cup on the island: attachment carries a witness despite no contact record."""
     witness = _grasp(island_z=0.4).support_contact
     assert witness is not None
     assert witness.support_id == "sim:island"

@@ -1,56 +1,31 @@
 """Sweep a live graph's Nav2 costmaps for cells marked inside the robot itself.
 
-Issue [#108](https://github.com/OpenRAL/openral/issues/108) asks for one thing
-this repo had never measured on a real scene: that Nav2's global **and** local
-costmaps contain no floating or self obstacles — no cell marked `LETHAL` inside
-the robot's own silhouette, or inside a payload it is carrying. A cell like that
-is an obstacle that moves with the robot, one it can never drive away from, and
-since [#186](https://github.com/OpenRAL/openral/pull/186) made Nav2 base-only
-(ADR-0099) the scan filter is the only thing preventing it.
+Issue #108: neither costmap should mark `LETHAL` inside the robot's own
+silhouette or a carried payload's — since PR #186 made Nav2 base-only
+(ADR-0099) the scan filter is the only thing preventing that. Complements
+`tests/integration/test_nav2_scan_filter_live.py` (a deterministic synthetic-
+ring test that runs on every CI build): this tool adds real RoboCasa scenes,
+real `synthesize_laser_scan_2d` returns, real SLAM, a base that drives.
 
-`tests/integration/test_nav2_scan_filter_live.py` proves the same claim
-deterministically, on a synthetic ring of self-returns through a real
-`nav2_costmap_2d`. That test runs on every CI build and this tool cannot; what
-this tool adds is the half the test cannot have — **the real scenes**, with
-real RoboCasa kitchen geometry, real `synthesize_laser_scan_2d` returns, real
-SLAM, and a base that actually drives.
+Private (`_` prefix, like `_nav2_mppi_loop_probe.py`): attaches to an
+already-launched graph, evidence tooling not a shipped entry point.
 
-Private (`_` prefix), like `_nav2_mppi_loop_probe.py`: it attaches to a graph
-someone else launched and is evidence tooling, not a shipped entry point.
+Measures: transforms every costmap cell centre into `base_frame` and tests it
+against the manifest's `base_footprint_polygon` and every attached object on
+`/openral/world_state_fast` (placed via TF at its attach link, projected onto
+the costmap plane by sampling z extent) — the same predicates
+`payload_scan_filter_node` uses.
 
-**What it measures.** For every costmap sample it receives, every cell centre is
-transformed into the robot's `base_frame` and tested against:
+Non-vacuity guards (decide `verdict` and exit code, not advisory):
+`lethal_cells_anywhere` (0 -> empty map, proves nothing), `base_travel_m` (~0
+-> nothing rolled through the window), `payload_samples` /
+`payload_partial_samples` / `attached_objects_seen` (payload verdict requires
+every declared object placed, else `payload_silhouette_measured: false`).
 
-* the manifest's bare chassis `footprint_polygon` (`base_footprint_polygon`), and
-* every attached object on `/openral/world_state_fast`, placed through TF at its
-  attach link and projected onto the costmap plane by sampling its z extent.
-
-Both predicates are `payload_scan_filter_node`'s own, so this measures the same
-geometry the filter measures rather than a second opinion about it.
-
-**What it will not claim.** Three non-vacuity guards, because "zero marked cells
-inside the robot" is a claim an empty costmap and a parked robot satisfy for
-free:
-
-* `lethal_cells_anywhere` — how many cells the costmap marked *outside* the
-  silhouette. A run where this is 0 measured an empty map and proves nothing.
-* `base_travel_m` — how far the base actually drove. A run where this is ~0
-  never moved the rolling window over new geometry.
-* `payload_samples` / `payload_partial_samples` / `attached_objects_seen` — the
-  payload half is vacuous unless something is attached *and every declared
-  object could be placed*, so a run that never grasped, or that lost one
-  object's attach-link TF, reports `payload_silhouette_measured: false` rather
-  than a clean payload verdict it did not earn.
-
-The guards are not advisory: they decide `verdict` and the exit code. A costmap
-that marked nothing anywhere, or a base that never moved, reports
-`VACUOUS - ...` and exits non-zero, so a hollow run cannot be quoted as a pass.
-
-**And what it cannot attribute.** In sim `synthesize_laser_scan_2d` re-casts
-through the robot's own MuJoCo kinematic tree, so a self-return never enters
-`/scan` in the first place. A clean silhouette here is therefore the *end state*
-being correct, not proof that `payload_scan_filter_node` is what made it so —
-that attribution is what the deterministic live-lane test exists for.
+Cannot attribute causation: in sim, self-returns never enter `/scan` at all
+(`synthesize_laser_scan_2d` re-casts through the robot's own kinematic tree),
+so a clean silhouette here is the end state being correct, not proof
+`payload_scan_filter_node` caused it — that's what the live-lane test is for.
 
 Usage (with a deploy-sim graph already up and Nav2 ACTIVE)::
 
@@ -132,21 +107,14 @@ def payload_mask(
 
     Returns ``(union mask, objects fully placed, z span in the base frame)``.
 
-    **The count is per OBJECT, and that is the whole point.** It used to be per
-    *primitive*: ``placed`` was incremented once for each primitive that
-    projected, while the caller compared it against ``len(attached_objects)``.
-    Sim payloads come from ``extract_body_primitives`` over a MuJoCo body
-    subtree and carry many -- a RoboCasa baguette measures **16** -- so
-    ``placed == declared`` could never hold, every sample was filed as a partial
-    placement, and ``payload_silhouette_measured`` was unsatisfiable rather than
-    unsatisfied. The payload half of issue #108 could not be reported as
-    measured on any scene, no matter how completely the payload was placed.
-
-    A partial placement still has to be caught, because an object the probe
-    cannot place silently narrows the silhouette and its cells then count as
-    "elsewhere on the map". So an object is placed only when *every* one of its
-    primitives projected, and an object with no primitives -- which contributes
-    no silhouette at all -- never counts as placed.
+    Counts per OBJECT, not primitive: MuJoCo bodies decompose into many
+    primitives via ``extract_body_primitives`` (a RoboCasa baguette has 16),
+    so counting primitives against ``len(attached_objects)`` could never reach
+    ``placed == declared`` — the payload half of issue #108 was unmeasurable
+    on any scene. An object counts as placed only when every one of its
+    primitives projected (a partial placement would otherwise shrink the
+    silhouette while its cells still count as "elsewhere on the map"); an
+    object with no primitives never counts as placed.
     """
     mask = np.zeros(points_xy.shape[0], dtype=bool)
     placed = 0
@@ -205,17 +173,12 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
         self.tfl = TransformListener(self.buf, self)
         self.state: WorldStateStamped | None = None
         self.attached_seen = 0
-        #: The placed payload's z extent in ``base_frame``, the number that
-        #: decides whether a marked cell under its projection is even *possible*
-        #: as a payload return. Both costmaps' only observation source is the
-        #: planar scan, so a payload that never crosses the scan plane cannot
-        #: mark anything and a cell beneath it is some other, real obstacle at
-        #: scan height. Measured live on a baguette carry: the payload sits at
-        #: z = 1.43 m in ``odom`` against a 0.30 m scan plane -- 1.13 m clear --
-        #: while the cells flagged inside its silhouette were 4-9 cm past the
-        #: chassis edge, i.e. the counter the robot was parked at. Recording the
-        #: span is what lets a reader tell those two apart instead of reading
-        #: every such verdict as the scan filter failing.
+        #: Placed payload's z extent in ``base_frame``: decides whether a
+        #: marked cell under its projection could even be a payload return
+        #: (both costmaps only observe the planar scan). Measured on a
+        #: baguette carry: payload at z=1.43 m in odom vs 0.30 m scan plane
+        #: (1.13 m clear), while flagged cells were 4-9 cm past the chassis
+        #: edge (the counter) — this field lets a reader tell those apart.
         self.payload_z_span: tuple[float, float] | None = None
         self.track: list[tuple[float, float]] = []
 
@@ -276,7 +239,7 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
     def _payload_masks(self, points_xy: Any) -> tuple[Any, int, int]:
         """Union mask of the attached objects' projections, placed and declared counts.
 
-        Thin wrapper over :func:`payload_mask` so the counting rule it got wrong
+        Thin wrapper over ``payload_mask`` so the counting rule it got wrong
         can be tested without a graph; see that function.
         """
         state = self.state

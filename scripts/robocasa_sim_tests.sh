@@ -1,61 +1,45 @@
 #!/usr/bin/env bash
 # The RoboCasa sim suite — the one list that defines what it is.
 #
-# `just test-robocasa-sim` execs this file. There is no second caller, because
-# there is no CI lane: this suite runs on a developer host or it does not run.
-# That is a measured conclusion, not an omission, and it is written down here
-# so nobody re-derives it.
+# `just test-robocasa-sim` execs this file. No CI lane exists; runs on a
+# developer host only. Needs, at once: a colcon-built overlay (spawns the
+# real `safety_kernel_node`), MuJoCo, and a provisioned RoboCasa kitchen.
 #
-# WHY THERE IS NO CI LANE
-# -----------------------
-# These tests need three things at once: a colcon-built overlay (they spawn the
-# real `safety_kernel_node`), MuJoCo, and a provisioned RoboCasa kitchen
-# backend.
+# Why no CI lane:
+# - Disk: RoboCasa assets are 23 GB (aigen_objs 13 GB, objaverse 6.2 GB,
+#   lightwheel 1.5 GB, fixtures 1.4 GB, generative_textures 1.2 GB, textures
+#   521 MB; per-bundle from utexas.box.com, no sub-bundle granularity). The
+#   only hosted image with a colcon overlay (`docker-build`) is already
+#   25.2 GB on a runner that reclaims ~14 GB by `rm -rf`-ing dotnet/android/
+#   CodeQL; even a trimmed ~8 GB set (fixtures+textures+one bundle) doesn't
+#   fit. No GPU needed — disk is the only constraint.
+# - Security: a self-hosted runner was built, registered, then REMOVED. This
+#   is a PUBLIC repo; a runner label is a routing request, not access
+#   control — any workflow naming the label can claim the runner, and for
+#   `pull_request` GitHub executes the workflow definition from the fork's
+#   ref. Three fork-reachable `pull_request` workflows exist (`dco.yml`,
+#   `quality.yml`, `test-selective.yml`); a fork PR could retarget one to
+#   `runs-on: [self-hosted, <label>]` for arbitrary code with the runner's
+#   SSH keys, `gh` credentials, and LAN access to the lab robots. Fixing
+#   this needs an org runner group, unavailable on this org's GitHub Free
+#   plan.
 #
-# The third rules out every GitHub-hosted runner. RoboCasa's assets are 23 GB
-# on disk — `objects/aigen_objs` 13 GB, `objects/objaverse` 6.2 GB,
-# `objects/lightwheel` 1.5 GB, `fixtures` 1.4 GB, `generative_textures` 1.2 GB,
-# `textures` 521 MB — downloaded per-bundle from utexas.box.com with no
-# sub-bundle granularity. The only hosted surface with a colcon overlay is the
-# `docker-build` image, already 25.2 GB, building on a runner that has to
-# `rm -rf` dotnet, android and CodeQL to reclaim its ~14 GB. Even a trimmed set
-# (fixtures + textures + one object bundle, ~8 GB) is past that runner's whole
-# disk. No GPU is needed, so the constraint is disk and nothing else.
+# `tests/unit/test_robocasa_sim_targets.py` keeps this list honest (asserts
+# every `importorskip("robocasa")`-gated test appears below); the rest of
+# `tests/sim/` is manual by declared policy
+# (`.github/workflows/test-selective.yml`).
 #
-# A self-hosted runner was built, registered and then REMOVED on security
-# grounds. `OpenRAL/openral` is a PUBLIC repository, and a runner label is a
-# routing request made by a workflow, not an access control enforced by the
-# runner: a repo-scoped runner accepts jobs from ANY workflow in the repo that
-# names its labels, and for a `pull_request` event GitHub executes the workflow
-# definition from the FORK's ref. This repo has three fork-reachable
-# `pull_request` workflows (`dco.yml`, `quality.yml`, `test-selective.yml`), so
-# a fork PR can simply edit one to `runs-on: [self-hosted, <label>]` and run
-# arbitrary code on the runner host — with that user's SSH keys, `gh`
-# credentials and LAN access to the lab robots. Restricting a runner to
-# selected workflows requires an organisation runner group, which this org's
-# GitHub Free plan does not provide, so there is no native control that makes
-# the label mean anything. The trigger config of the workflow being protected
-# is irrelevant: the exposed asset is the runner, not the workflow.
-#
-# So the suite is manual, `tests/unit/test_robocasa_sim_targets.py` is what
-# keeps this list honest, and the rest of `tests/sim/` is manual by declared
-# policy anyway (`.github/workflows/test-selective.yml`).
-#
+# Run:
 #   source /opt/ros/jazzy/setup.bash && just ros2-build \
 #     && source install/setup.bash && just test-robocasa-sim
+# Before merging anything touching the kernel, the panda_mobile manifest,
+# the HAL sim bridge, or a `scenes/deploy/robocasa_*.yaml` pin.
 #
-# Run it before merging anything that touches the kernel, the panda_mobile
-# manifest, the HAL sim bridge, or a `scenes/deploy/robocasa_*.yaml` pin.
-#
-# MEMORY: a RoboCasa kitchen compose is heavy. The whole suite in one pytest
-# process OOM-killed a 15 GB host that was also running an editor and a
-# browser. Narrow it with `-k` when the machine is busy — extra args are
-# appended to the pytest invocation, so naming a path ADDS it to TARGETS
-# rather than selecting it:
-#   just test-robocasa-sim -k geom_distance
-#
-# NOT in TARGETS: anything needing HF weights or a GPU. This list is geometry
-# and kernel behaviour against a real kitchen.
+# A RoboCasa kitchen compose is heavy — the whole suite OOM-killed a 15 GB
+# host running an editor+browser. Narrow with `-k` (extra args append to
+# TARGETS, they don't select from it): `just test-robocasa-sim -k geom_distance`.
+# NOT in TARGETS: anything needing HF weights or a GPU — geometry + kernel
+# behaviour only.
 
 set -euo pipefail
 

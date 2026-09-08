@@ -1,4 +1,4 @@
-"""End-to-end tests for :class:`Rosbag2ToLeRobotConverter`.
+"""End-to-end tests for ``Rosbag2ToLeRobotConverter``.
 
 Per CLAUDE.md §1.11 — real `mcap` writer (via `Rosbag2Sink`) writes a
 bag to `tmp_path`, then the real `Rosbag2ToLeRobotConverter.from_bag`

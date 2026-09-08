@@ -1,6 +1,6 @@
 """Unit tests for the Tier-C critic progress-stall watchdog (audit P1 R3).
 
-These tests exercise the **real** :class:`openral_core.CriticEvidence`
+These tests exercise the **real** ``openral_core.CriticEvidence``
 schema the watchdog emits (CLAUDE.md §1.11 — no mocks). The watchdog is
 pure logic and import-safe, so the suite runs without ROS or a GPU.
 """

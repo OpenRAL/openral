@@ -59,7 +59,7 @@ class ONNXRuntime:
     -----------------
     ONNX quantization must be applied *before* loading, at export time, using
     ``onnxruntime.quantization.quantize_dynamic`` or ``quantize_static``.
-    Calling :meth:`quantize` on an already-loaded session raises
+    Calling ``quantize`` on an already-loaded session raises
     ``ROSRuntimeError``; use ``tools/quantize_onnx.py`` (planned) instead.
 
     Args:
@@ -67,7 +67,7 @@ class ONNXRuntime:
             are supported; ``"mps"`` is not supported by ONNX Runtime.
 
     Raises:
-        ROSRuntimeError: Propagated from :meth:`load` and :meth:`infer`.
+        ROSRuntimeError: Propagated from ``load`` and ``infer``.
 
     Example:
         >>> rt = ONNXRuntime(device="cpu")
@@ -98,7 +98,7 @@ class ONNXRuntime:
 
     @property
     def is_loaded(self) -> bool:
-        """True after :meth:`load` completes successfully."""
+        """True after ``load`` completes successfully."""
         return self._session is not None
 
     @property
@@ -178,7 +178,7 @@ class ONNXRuntime:
                 provider's kernel-compilation step).
 
         Raises:
-            ROSRuntimeError: Propagated from :meth:`infer`.
+            ROSRuntimeError: Propagated from ``infer``.
         """
         self.infer(inputs)
         log.debug("onnx_runtime.warmed_up", device=self._device)

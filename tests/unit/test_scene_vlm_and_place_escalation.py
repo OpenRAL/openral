@@ -1,22 +1,16 @@
 """Two perception capabilities that existed but never reached the reasoner.
 
-**1. ``query_scene`` was never offered by ``deploy sim``.** The reasoner gates the
-tool on a ``scene_query_available`` ROS param whose declaration says "The deploy
-launch sets this when it brings up a scene VLM" — but no launch file or CLI path
-ever set it, and no scene-VLM node was launched. So the Qwen VLM rSkill
-(``rskills/qwen35-4b-nf4``), the ``scene_vlm_node`` that serves
-``/openral/perception/query_scene``, and the reasoner's ``_dispatch_query_scene``
-handler were all present and wired to each other, yet unreachable from
-``openral deploy sim``.
-
-**2. ``resolve_place`` never escalated to the open-vocab detector.** A
-``recall_object`` miss escalates to a live ``locate_in_view``, which is how a
-goal noun gets grounded when the spatial map never ingested it. ``resolve_place``
-was excluded, so its miss fell through to a re-prompt saying only "not in
-memory"; the LLM read that as "try again" and re-picked the same tool. Observed
-live on ``robocasa_baguette``: ticks 10, 11 and 22 all re-selected
-``resolve_place`` for 'the counter' while an open-vocab ``any-indoor`` detector
-sat idle in the same graph.
+1. ``query_scene`` was never offered by ``deploy sim``. It's gated on a
+   ``scene_query_available`` ROS param that no launch file or CLI path ever
+   set, so the Qwen VLM rSkill (``rskills/qwen35-4b-nf4``), ``scene_vlm_node``
+   (serves ``/openral/perception/query_scene``), and the reasoner's
+   ``_dispatch_query_scene`` were all wired to each other but unreachable.
+2. ``resolve_place`` never escalated to the open-vocab detector like
+   ``recall_object`` does via ``locate_in_view``. Its miss fell through to a
+   "not in memory" re-prompt, so the LLM just re-picked the same tool.
+   Observed live on ``robocasa_baguette``: ticks 10, 11, 22 all re-selected
+   ``resolve_place`` for 'the counter' while an ``any-indoor`` detector sat
+   idle in the same graph.
 
 No mocks (CLAUDE.md §1.11): real in-tree scene YAML, real ``DeployRuntime``
 schema, real launch-argv construction.

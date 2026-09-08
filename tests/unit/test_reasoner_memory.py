@@ -1,6 +1,6 @@
 """Tests for the self-maintained MEMORY.md file model.
 
-Covers :class:`~openral_reasoner.memory.MemoryStore` (apply ops, supersession,
+Covers ``MemoryStore`` (apply ops, supersession,
 round-trip render/parse, archival search) and the ``## MEMORY`` context section.
 
 Run with:

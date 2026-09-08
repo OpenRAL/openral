@@ -3,10 +3,10 @@
 A reward rSkill (Robometer-4B) runs in parallel with a VLA policy and scores the
 rollout: per-frame normalized progress + per-frame success probability. This
 package holds the **node-side** pieces — a transport-agnostic rolling frame
-buffer (:class:`~openral_runner.backends.reward.frame_source.RollingFrameBuffer`,
+buffer (``RollingFrameBuffer``,
 fed by the same ``sensor_msgs/Image`` topic the VLA uses, in sim or real) and
 the in-process Robometer scorer
-(:class:`~openral_runner.backends.reward.robometer_reward.RobometerInProcessReward`).
+(``RobometerInProcessReward``).
 
 Nothing here imports torch / transformers, so the package stays importable on
 any host.

@@ -1,9 +1,8 @@
 """Unit tests for SO100FollowerHAL — SO-100 follower arm adapter.
 
-These tests exercise the real lerobot code path via ``SO100DigitalTwin``, a
-genuine lerobot ``Robot`` subclass that implements the full Robot interface
-without any serial port or physical hardware.  No ``sys.modules`` mocking is
-used; every lerobot import resolves to the real installed package.
+Exercises the real lerobot code path via ``SO100DigitalTwin``, a genuine lerobot
+``Robot`` subclass with no serial port or physical hardware; every lerobot import
+resolves to the real installed package (no ``sys.modules`` mocking).
 """
 
 from __future__ import annotations
@@ -475,9 +474,8 @@ class TestJointValuesToLerobot:
     def test_send_action_and_ramp_agree(
         self, hal: SO100FollowerHAL, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Regression: the ramp used to re-implement the conversion inline, so
-        a calibration change in _action_to_lerobot silently would not apply to
-        the pre-episode reset. The final ramp waypoint must now be
+        """Regression: the ramp used to re-implement the conversion inline, so a
+        calibration change wouldn't apply to it. Final ramp waypoint must be
         byte-identical to a send_action of the same pose."""
         monkeypatch.setattr(time, "sleep", lambda _s: None)
         target = [0.2, -0.4, 0.6, 0.3, -0.1, 0.8]

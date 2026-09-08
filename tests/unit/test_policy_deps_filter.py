@@ -1,13 +1,13 @@
 """Tests for ``openral_sim.policy_deps`` — pre-flight palette filter.
 
-The reasoner calls :func:`filter_importable_manifests` at
+The reasoner calls ``filter_importable_manifests`` at
 ``on_configure`` to drop rSkills whose ``model_family`` lives behind
 an extras group that isn't installed in this venv. The skill_runner
-calls :func:`model_family_install_hint` to translate runtime
+calls ``model_family_install_hint`` to translate runtime
 ``ImportError`` into actionable error messages.
 
-Both contracts share :data:`_FAMILY_INSTALL_HINTS` /
-:data:`_FAMILY_REQUIRED_IMPORTS` — a half-registered family (one dict
+Both contracts share ``_FAMILY_INSTALL_HINTS`` /
+``_FAMILY_REQUIRED_IMPORTS`` — a half-registered family (one dict
 updated but not the other) fails these tests rather than at the
 operator's first ``openral deploy sim``.
 """
@@ -35,7 +35,7 @@ from openral_sim.policy_deps import (
 
 @dataclass
 class _StubManifest:
-    """Minimum-shape stand-in for :class:`openral_core.RSkillManifest`."""
+    """Minimum-shape stand-in for ``openral_core.RSkillManifest``."""
 
     name: str
     model_family: str
@@ -43,12 +43,8 @@ class _StubManifest:
 
 
 def test_install_hints_and_required_imports_cover_the_same_families() -> None:
-    """Catch half-registered families at unit-test time.
-
-    A new family must land in BOTH dicts, otherwise the reasoner's
-    pre-flight filter will keep it but the skill_runner won't have a
-    useful install hint to surface (or vice versa).
-    """
+    """A new family must land in BOTH dicts, or the reasoner's pre-flight filter keeps
+    it while skill_runner has no install hint to surface (or vice versa)."""
     hint_keys = set(_FAMILY_INSTALL_HINTS)
     import_keys = set(_FAMILY_REQUIRED_IMPORTS)
     groups_keys = set(_FAMILY_INSTALL_GROUPS)
@@ -85,14 +81,10 @@ def test_model_family_required_imports_returns_empty_for_unknown() -> None:
 
 @pytest.mark.parametrize("family", ["smolvla", "pi05", "act", "diffusion", "xvla"])
 def test_lerobot_family_probes_the_real_adapter_module(family: str) -> None:
-    """Each in-tree lerobot policy family probes the module its adapter imports.
-
-    ``openral_sim.policies.<family>`` loads
-    ``lerobot.policies.<family>.modeling_<family>``, so the import-deps
-    probe must check that exact module — not a bare top-level name that
-    doesn't exist. Regression for ``xvla``, which mapped to ``("xvla",)``
-    and so got dropped from the deploy-sim reasoner palette ("No module
-    named 'xvla'") even though it runs fine via ``openral sim run``.
+    """Each family probes the exact module ``openral_sim.policies.<family>`` loads
+    (``lerobot.policies.<family>.modeling_<family>``), not a bare top-level name.
+    Regression for ``xvla``, which mapped to ``("xvla",)`` and got dropped from the
+    deploy-sim palette ("No module named 'xvla'") despite running fine via ``openral sim run``.
     """
     imports = model_family_required_imports(family)
     expected = f"lerobot.policies.{family}.modeling_{family}"
@@ -203,17 +195,13 @@ def test_purge_partial_imports_drops_only_matching_prefixes() -> None:
 def test_fast_probe_does_not_import_the_deep_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default probe resolves the top-level package only.
+    """The default probe resolves only the top-level package.
 
-    This is the whole point of the fast tier. ``lerobot/policies/__init__``
-    eagerly imports every family's config class, so importing (or even
-    ``find_spec``-ing) ``lerobot.policies.<x>.modeling_<x>`` drags in the
-    entire tree — 6.6 s, measured — and the CLI preflight and the
-    reasoner's palette seed were each paying it on every deploy while only
-    ``runtime_node`` actually needs the modules resolved.
-
-    Uses an obscure stdlib module as a stand-in so the assertion holds
-    without the lerobot extras installed.
+    ``lerobot/policies/__init__`` eagerly imports every family's config class, so
+    resolving ``lerobot.policies.<x>.modeling_<x>`` drags in the entire tree (6.6 s,
+    measured) — CLI preflight and the reasoner's palette seed paid that on every
+    deploy though only ``runtime_node`` needs the deep import. Uses a stdlib module
+    as stand-in so the assertion holds without the lerobot extras installed.
     """
     deep = "email.mime.audio"
     monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_deep", (deep,))
@@ -267,11 +255,10 @@ def test_fast_probe_rejects_a_missing_top_level_of_a_dotted_requirement(
 
 
 def test_gr00t_probe_covers_the_lazy_diffusers_import() -> None:
-    """``diffusers`` is imported lazily inside GrootPolicy's build, not by the
-    ``modeling_groot`` module import — probing only the modeling module admitted
-    gr00t rSkills to the reasoner palette on hosts without the gr00t extras and
-    every dispatch then aborted at runtime ("'diffusers' is required but not
-    installed"; observed live, deploy-sim 2026-07-20). The probe must cover it."""
+    """``diffusers`` loads lazily inside GrootPolicy's build, not via ``modeling_groot`` —
+    probing only the modeling module let gr00t rSkills into the palette on hosts missing
+    the gr00t extras, and dispatch aborted at runtime ("'diffusers' is required but not
+    installed"; observed deploy-sim 2026-07-20)."""
     assert "diffusers" in model_family_required_imports("gr00t")
 
 

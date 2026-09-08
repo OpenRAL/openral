@@ -1,12 +1,12 @@
 """Pydantic models for the auto-provisioning detection report.
 
-A :class:`DetectionReport` is a typed snapshot of everything ``openral detect``
+A ``DetectionReport`` is a typed snapshot of everything ``openral detect``
 discovered on the host: USB controllers, SocketCAN motor buses, GPUs / Jetson /
 Apple Silicon, cameras (V4L2 / RealSense / Orbbec), ROS 2 topology, and network
 interfaces.
 
 Every probe that fails (missing optional dep, no hardware, command not on
-``$PATH``) appends a typed message to :attr:`DetectionReport.warnings` and
+``$PATH``) appends a typed message to ``DetectionReport.warnings`` and
 returns an empty result.  **Probes never raise** — that is the contract
 that lets ``openral detect`` produce a useful report on bare hosts.
 
@@ -53,7 +53,7 @@ __all__ = [
 class UsbDeviceRecord(BaseModel):
     """One USB serial device captured for the report.
 
-    Mirrors :class:`openral_cli.autodetect.UsbDevice` as a Pydantic
+    Mirrors ``openral_cli.autodetect.UsbDevice`` as a Pydantic
     model so the report serializes cleanly through JSON / YAML.
     """
 
@@ -86,7 +86,7 @@ class UsbProbeResult(BaseModel):
 class CanInterfaceInfo(BaseModel):
     """One SocketCAN interface captured for the report.
 
-    Mirrors :class:`openral_cli.autodetect.CanInterface` as a Pydantic model
+    Mirrors ``openral_cli.autodetect.CanInterface`` as a Pydantic model
     so the report serializes cleanly through JSON / YAML.
 
     ``state`` is the field an operator reads when a detected arm will not
@@ -201,7 +201,7 @@ class V4l2CameraInfo(BaseModel):
 
     One row per *physical* camera, not per node: a UVC device typically
     registers two ``/dev/videoN`` nodes (capture + metadata) and
-    :attr:`device_path` names the capture one.
+    ``device_path`` names the capture one.
 
     ``vid`` / ``pid`` / ``serial`` come from the camera's own USB descriptor
     and are what lets the assembler resolve a ``usb_uvc`` catalog signature.
@@ -296,8 +296,8 @@ class NetworkProbeResult(BaseModel):
 class DetectionReport(BaseModel):
     """Typed result of a single ``detect_hardware()`` invocation.
 
-    The report is the **only** input to :func:`assemble_robot_description`
-    and to :func:`check_installed_rskills`, so all subsequent stages can run
+    The report is the **only** input to ``assemble_robot_description``
+    and to ``check_installed_rskills``, so all subsequent stages can run
     without re-probing the host.
 
     Attributes:

@@ -1,27 +1,21 @@
 """Background sampler for host / GPU / RAM gauges.
 
-Starts a tiny daemon thread that samples ``psutil`` + ``pynvml`` every N
-seconds and records into the OpenRAL meter so the dashboard's "System"
-card shows live GPU/CPU/RAM utilisation. Idempotent: calling
-:func:`start_system_metrics_collector` twice with the same interval is
-a no-op.
+Daemon thread samples ``psutil`` + ``pynvml`` every N seconds into the
+OpenRAL meter for the dashboard's "System" card. Idempotent — calling
+``start_system_metrics_collector`` twice with the same interval is a
+no-op.
 
-Wired into the SDK lifecycle:
-:func:`openral_observability.configure_observability` starts the
-collector after the meter provider is installed, and
-:func:`openral_observability.shutdown_observability` stops it before
-draining the providers. Callers therefore do not need to invoke
-``start_system_metrics_collector`` explicitly — it ships with every
-observability-configured process.
+Wired into the SDK lifecycle: ``openral_observability.configure_observability``
+starts it after the meter provider is installed,
+``openral_observability.shutdown_observability`` stops it before
+draining providers — callers don't invoke it directly.
 
-``psutil`` and ``nvidia-ml-py`` (which provides ``pynvml``) are direct
-dependencies of ``openral-observability`` — declared per CLAUDE.md §1.4
-"explicit beats implicit", not relied on transitively. ``pynvml``
-imports cleanly on hosts without an NVIDIA driver; ``nvmlInit()`` then
-fails at runtime and the GPU path silently no-ops while CPU + RAM keep
-flowing. If neither dependency is importable for some other reason,
-``start_system_metrics_collector`` returns ``False`` and the
-dashboard's System health card stays empty.
+``psutil`` / ``nvidia-ml-py`` (``pynvml``) are direct deps of
+``openral-observability`` (CLAUDE.md §1.4, not transitive). ``pynvml``
+imports fine without an NVIDIA driver; ``nvmlInit()`` then fails and the
+GPU path no-ops while CPU/RAM keep flowing. If neither import succeeds,
+``start_system_metrics_collector`` returns ``False`` and the System
+card stays empty.
 """
 
 from __future__ import annotations
@@ -40,7 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 #: Per-(device, query) keys whose "not supported" degradation has already been
 #: logged, so an unsupported NVML call is reported once rather than on every
-#: sampling tick. See :func:`_nvml_query`.
+#: sampling tick. See ``_nvml_query``.
 _UNSUPPORTED_LOGGED: set[str] = set()
 
 _lock = threading.Lock()
@@ -107,12 +101,17 @@ def _probe_availability() -> tuple[bool, bool]:
     gpu_ok = False
     try:
         import pynvml  # type: ignore[import-untyped]  # reason: nvidia-ml-py ships no py.typed marker; runtime-safe via outer try/except for hosts that strip the dep
-
-        pynvml.nvmlInit()
-        pynvml.nvmlShutdown()
-        gpu_ok = True
-    except Exception:
-        pass
+    except ImportError:
+        pynvml = None
+    if pynvml is not None:
+        try:
+            pynvml.nvmlInit()
+            pynvml.nvmlShutdown()
+            gpu_ok = True
+        except Exception as exc:
+            # pynvml raises undocumented NVMLError_* subclasses that vary by
+            # driver/platform; the probe must never crash the caller.
+            _LOG.debug("system_metrics: pynvml capability probe failed: %r", exc)
     return cpu_ok, gpu_ok
 
 
@@ -147,21 +146,13 @@ def _set_abs(
 def _nvml_query(read: Callable[[], Any], what: str, gpu_index: int) -> Any | None:
     """Run one NVML read, returning ``None`` when the device does not support it.
 
-    Not every NVML query works on every device. On a unified-memory NVIDIA SoC
-    (GB10 / DGX Spark, Thor) ``nvmlDeviceGetMemoryInfo`` raises
-    ``NVMLError_NotSupported`` — there is no discrete VRAM pool to report —
-    while ``nvmlDeviceGetUtilizationRates`` works fine.
-
-    Previously these reads were unguarded, so that one unsupported call
-    propagated out of :func:`_sample_once` and cost the whole tick: GPU
-    utilisation the device *does* support was dropped along with the memory
-    figures, and the sampler logged a full traceback at ERROR every interval
-    (32 tracebacks in two minutes of a ``deploy sim`` run). ``openral_detect``
-    already degrades gracefully on the same devices; this brings the metrics
-    path in line.
-
-    The degradation is logged once per (device, query) rather than per tick,
-    because it is a permanent property of the hardware, not a transient fault.
+    On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor)
+    ``nvmlDeviceGetMemoryInfo`` raises ``NVMLError_NotSupported`` (no discrete
+    VRAM pool) while ``nvmlDeviceGetUtilizationRates`` works fine — an
+    unguarded read dropped the whole tick (32 tracebacks in two minutes of a
+    ``deploy sim`` run) instead of just the unsupported metric. Matches
+    ``openral_detect``'s degradation on the same devices. Logged once per
+    (device, query), not per tick — it's a permanent hardware property.
 
     Args:
         read: Zero-argument callable performing the NVML query.

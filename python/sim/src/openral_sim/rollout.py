@@ -1,6 +1,6 @@
 """Sim rollout protocol — the typed contract every scene adapter must satisfy.
 
-A :class:`SimRollout` is what comes out of :func:`openral_sim.make_env`.
+A ``SimRollout`` is what comes out of ``openral_sim.make_env``.
 It is *gym-flavoured* (``reset``, ``step``, ``close``) but intentionally
 narrower so adapters can wrap any underlying engine (gymnasium, dm_env,
 custom) without leaking framework specifics into the eval layer.
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 def sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None:
     """Derive sim-time nanoseconds from a MuJoCo ``(model, data)`` handle pair.
 
-    Shared helper for the MuJoCo-backed :class:`SimRollout` adapters
+    Shared helper for the MuJoCo-backed ``SimRollout`` adapters
     (``robocasa`` / ``libero`` / ``metaworld`` / ``aloha`` / the native
     backends) so the ``data.time``-to-nanoseconds conversion lives in exactly
     one place. ``mujoco.MjData.time`` is the authoritative
@@ -49,6 +49,44 @@ def sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | No
     return round(float(data.time) * 1e9)
 
 
+def render_named_rgb_mujoco(
+    renderer: Any,
+    model: Any,
+    data: Any,
+    camera_name: str,
+    *,
+    height: int,
+    width: int,
+) -> tuple[Any, NDArray[np.uint8]]:
+    """Render one named MuJoCo camera as HWC uint8 RGB, creating the renderer lazily.
+
+    Shared by the native MuJoCo scene backends (``tabletop_push``, ``so101_box``)
+    whose own ``_render_named_rgb`` otherwise duplicated this renderer-caching +
+    render call verbatim. ``mujoco.Renderer`` construction is expensive, so
+    callers cache the returned renderer on their own instance and pass it back
+    in on the next call instead of rebuilding it per frame.
+
+    Args:
+        renderer: A previously returned ``mujoco.Renderer``, or ``None`` to
+            create one sized ``height``x``width``.
+        model: The compiled ``mujoco.MjModel``.
+        data: The live ``mujoco.MjData``.
+        camera_name: MJCF camera name to render.
+        height: Renderer output height (only used to construct a new renderer).
+        width: Renderer output width (only used to construct a new renderer).
+
+    Returns:
+        ``(renderer, rgb)`` — the renderer to cache and the rendered HWC uint8
+        RGB frame.
+    """
+    import mujoco
+
+    if renderer is None:
+        renderer = mujoco.Renderer(model, height=height, width=width)
+    renderer.update_scene(data, camera=camera_name)
+    return renderer, np.asarray(renderer.render(), dtype=np.uint8).copy()
+
+
 Observation = dict[str, Any]
 """Free-form observation dict — keys are adapter-specific.
 
@@ -57,7 +95,7 @@ Adapters SHOULD include at least:
     * ``"state"``  → 1-D float32 NumPy array of proprioception.
     * ``"task"``   → str natural-language instruction.
 
-The :class:`~openral_sim.policy.PolicyAdapter` is responsible for mapping
+The ``PolicyAdapter`` is responsible for mapping
 this dict to its own input format. This keeps the eval layer agnostic to VLA
 input conventions.
 """
@@ -86,7 +124,7 @@ class StepResult:
 class SimRollout(Protocol):
     """Minimal gym-style env contract used by the eval runner.
 
-    Every scene factory in :data:`openral_sim.SCENES` must return an
+    Every scene factory in ``openral_sim.SCENES`` must return an
     object satisfying this protocol.
 
     Attributes:
@@ -107,7 +145,7 @@ class SimRollout(Protocol):
 
             * MuJoCo-backed adapters return ``round(MjData.time * 1e9)`` (the
               physics clock advanced by ``model.opt.timestep`` per step) via
-              :func:`sim_time_ns_from_mujoco_handles`.
+              ``sim_time_ns_from_mujoco_handles``.
             * SAPIEN / ManiSkill-backed adapters derive elapsed control time
               from the live env's elapsed step counter and control timestep.
             * The value is **monotonic non-decreasing within a single
@@ -115,16 +153,14 @@ class SimRollout(Protocol):
               backends that rewind ``MjData.time`` to ``0`` on reset (e.g.
               robocasa) restart their clock, so a consumer that needs
               cross-reset monotonicity maintains its own offset (see
-              :meth:`openral_hal.sim_attached.SimAttachedHAL.sim_time_ns`).
+              ``openral_hal.sim_attached.SimAttachedHAL.sim_time_ns``).
             * Returns ``None`` when the backend has **no sim clock** —
               clock-less backends (PushT) and sidecars whose wire protocol does
               not carry elapsed time.
 
-            Like the other extensions it is intentionally NOT part of the
-            Protocol, so a clock-less adapter need not stub it. Callers MUST
-            use ``getattr(env, "sim_time_ns", None)`` and treat both a missing
-            attribute and a ``None`` return as "no sim clock" (fall back to
-            wall time).
+            Callers MUST use ``getattr(env, "sim_time_ns", None)`` and treat
+            both a missing attribute and a ``None`` return as "no sim clock"
+            (fall back to wall time).
 
         ``task_success(self) -> bool | None``
             — the backend's OWN task-success predicate, read on demand
@@ -141,34 +177,33 @@ class SimRollout(Protocol):
               latch a terminal, or influence ``StepResult``.
 
             The ``sim run`` / benchmark path does NOT use this — it reads
-            ``StepResult.info[task.success_key]`` (see :class:`StepResult`).
+            ``StepResult.info[task.success_key]`` (see ``StepResult``).
             This extension exists for ``deploy sim``, whose continuous
             twin suppresses per-step task evaluation entirely, so the
             HAL polls the predicate for observability
-            (:meth:`openral_hal.sim_attached.SimAttachedHAL.task_success`).
+            (``openral_hal.sim_attached.SimAttachedHAL.task_success``).
 
         ``viewer_render(self) -> None``
             — Adapters whose underlying engine owns the live viewer
             and needs per-step pumping (e.g. SAPIEN / ManiSkill3 envs
-            constructed with ``render_mode='human'``). :class:`SimRunner`
+            constructed with ``render_mode='human'``). ``SimRunner``
             calls this once per applied step to pump the viewer; the
             adapter is responsible for promoting / opening the window
-            on the first call and tearing it down in :meth:`close`.
+            on the first call and tearing it down in ``close``.
 
         ``enable_intrinsic_viewer(self) -> None``
             — Adapters whose engine draws its own self-managed window
             and does not need per-step pumping (e.g. ``gym_pusht`` with
             ``render_mode="human"``; the engine updates the window inside
-            its own ``step`` / ``reset``). :class:`SimRunner` calls this
+            its own ``step`` / ``reset``). ``SimRunner`` calls this
             ONCE before the first ``reset()`` when ``--view`` is set, then
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
 
-        Every extension above is intentionally *not* part of the Protocol
-        so adapters do not need to stub a method they cannot honour;
-        callers MUST use ``getattr(env, "<name>", None)`` and treat both
-        a missing attribute and a ``None`` return as "unsupported"
-        (for the viewer hooks: "viewer unsupported").
+        None of the above is part of the Protocol, so adapters need not
+        stub a method they cannot honour; callers MUST use
+        ``getattr(env, "<name>", None)`` and treat both a missing attribute
+        and a ``None`` return as "unsupported".
     """
 
     scene: SceneSpec
@@ -208,7 +243,7 @@ class EpisodeResult:
         frames: Captured RGB frames (HWC uint8) when ``record_video`` is True;
             empty otherwise.
         metadata: Free-form per-run metadata propagated from
-            :class:`openral_core.SimEnvironment.metadata`.
+            ``openral_core.SimEnvironment.metadata``.
     """
 
     success: bool = False

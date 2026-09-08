@@ -1,21 +1,16 @@
 """Regression test for silent skips in ``tests/sim/``.
 
-Background: the sim-test files use ``pytest.importorskip`` and module-level
-``pytest.skip(reason=..., allow_module_level=True)`` to bail on
-non-CUDA / non-lerobot hosts. Pytest swallows the skip *reason* unless the
-runner is invoked with ``-r`` (we now set ``-ra`` in
-``pyproject.toml [tool.pytest.ini_options]``). This test asserts that:
+Sim-test files use ``pytest.importorskip``/module-level
+``pytest.skip(allow_module_level=True)`` to bail on non-CUDA/non-lerobot
+hosts; pytest swallows the skip *reason* unless invoked with ``-r`` (now
+``-ra`` in ``pyproject.toml``). Asserts: (1) the collector can walk every
+``tests/sim/`` file without a collection error — import-time bugs surface
+here, not as silent "0 items collected"; (2) every module-level CUDA skip
+emits a reason mentioning CUDA/MuJoCo/another opt-in dep, so a CPU-only
+laptop run says why.
 
-1. Pytest's collector can walk every ``tests/sim/`` file without raising
-   a collection error (i.e. import-time bugs would surface here, not as
-   a "0 items collected" silence).
-2. Every test file with a module-level CUDA skip emits a SKIPPED entry
-   whose reason mentions CUDA, MuJoCo, or another opt-in dep — so the
-   developer running ``pytest`` on a CPU-only laptop sees *why*.
-
-The test runs ``pytest --collect-only`` in a subprocess with
-``CUDA_VISIBLE_DEVICES=""`` so it deterministically simulates a CUDA-less
-host even on machines that have a GPU.
+Runs ``pytest --collect-only`` in a subprocess with ``CUDA_VISIBLE_DEVICES=""``
+to deterministically simulate a CUDA-less host even on a GPU machine.
 """
 
 from __future__ import annotations
@@ -51,13 +46,10 @@ def _run_pytest_collect() -> subprocess.CompletedProcess[str]:
         "NO_COLOR": "1",
         "TERM": "dumb",
     }
-    # Pass every expected sim file explicitly. Pytest's directory collector
-    # short-circuits at the first module-level skip — only the alphabetically
-    # first file gets imported, hiding skip reasons for the rest. Naming each
-    # file forces pytest to visit it (it is reported either as a collected
-    # item, a SKIPPED line, or an "ERROR: found no collectors for <path>"
-    # stderr line — all three contain the filename, which is what this
-    # regression test is asserting).
+    # Pass every expected sim file explicitly: pytest's directory collector
+    # short-circuits at the first module-level skip, hiding the rest. Naming
+    # each file forces pytest to report it (collected item, SKIPPED line, or
+    # "ERROR: found no collectors for <path>") — all three name the file.
     explicit_files = [str(_SIM_DIR / fname) for fname in _EXPECTED_SIM_TEST_FILES]
     return subprocess.run(
         [
@@ -87,14 +79,11 @@ def test_sim_collection_does_not_error(
     collect_result: subprocess.CompletedProcess[str],
 ) -> None:
     """Pytest must complete collection cleanly (exit 0, 4, or 5, no internal errors)."""
-    # Exit codes: 0 = ok, 5 = "no tests collected" (acceptable when every
-    # module skips on the CUDA-less runner). 4 = pytest's usage error
-    # which it raises with "found no collectors for <path>" when an
-    # explicit file path is given to a module that did pytest.importorskip
-    # / pytest.skip(allow_module_level=True) at import — that's the
-    # expected outcome on a CPU-only host and is itself a visible signal
-    # (the path appears in stderr). Any other code (1, 2, 3) signals a
-    # real collection error or test failure.
+    # Exit codes: 0 = ok; 5 = "no tests collected" (every module skipped on the
+    # CUDA-less runner); 4 = pytest's "found no collectors for <path>" usage
+    # error when an explicit path hits a module-level skip at import — expected
+    # on a CPU-only host, and visible (path in stderr). Any other code (1-3) is
+    # a real collection error or test failure.
     assert collect_result.returncode in (0, 4, 5), (
         f"pytest --collect-only exited {collect_result.returncode}\n"
         f"--- stdout ---\n{collect_result.stdout}\n"

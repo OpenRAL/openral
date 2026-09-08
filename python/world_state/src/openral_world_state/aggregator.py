@@ -4,26 +4,16 @@ Collects joint state, sensor image refs, EE poses, base pose, and battery
 level from injected update callables and produces a ``WorldState`` Pydantic
 snapshot on demand.
 
-Diagnostics
------------
-Every tracked component (joint state, each sensor bundle, each EE) gets a
-per-key entry in ``WorldState.diagnostics``:
+Diagnostics: each tracked component (joint state, sensor bundle, EE) gets a
+``WorldState.diagnostics`` entry — ``"ok"`` (updated within
+``staleness_limit_s``), ``"stale"`` (not), or ``"error"`` (latched via
+``set_error``). Staleness is **latched**: once stale, a component stays
+``"stale"`` until a fresh update arrives, so the Reasoner sees it across
+snapshot boundaries.
 
-- ``"ok"``    — updated within ``staleness_limit_s``
-- ``"stale"`` — not updated within ``staleness_limit_s``
-- ``"error"`` — reserved; set by callers via :meth:`set_error`
-
-Staleness entries are **latched**: once a component goes stale it stays
-``"stale"`` in the diagnostics dict until a fresh update arrives.  This
-makes the diagnostic history visible to the Reasoner even across snapshot
-boundaries.
-
-Hot path
---------
-:meth:`snapshot` is the only hot-path method.  It acquires a lock, samples
-all injectable state, classifies staleness, and returns an immutable Pydantic
-model.  All update methods are designed to be called from subscriber
-callbacks in the ROS 2 node wrapper.
+Hot path: ``snapshot`` is the only hot-path method — it locks, samples
+all injected state, classifies staleness, and returns an immutable model.
+Update methods are called from ROS 2 subscriber callbacks.
 
 Example:
     >>> import time
@@ -118,7 +108,7 @@ class WorldStateAggregator:
 
     The aggregator holds no ROS 2 imports.  All data arrives via typed update
     methods called from subscriber callbacks in the enclosing ROS 2 lifecycle
-    node.  :meth:`snapshot` can be called from any thread; internal state is
+    node.  ``snapshot`` can be called from any thread; internal state is
     protected by a reentrant lock.
 
     Args:
@@ -132,16 +122,11 @@ class WorldStateAggregator:
         policy_state_staleness_limit_s: Separate window for the step-locked
             ``policy_state`` component, published once per simulator step
             rather than at a fixed rate. Default ``5.0 s`` — see
-            :data:`DEFAULT_POLICY_STATE_STALENESS_S`.
-        clock_fn: Callable returning the current time in nanoseconds.
-            Defaults to ``time.time_ns``.  Override in tests to control time.
-            It stamps arrivals and drives the staleness diagnostics only. It is
-            **not** used to judge the place declaration's liveness: that is
-            evaluated in the attachment stream's own clock domain (see
-            :meth:`update_attached_objects`), because the declaration's
-            ``stamp_ns`` comes from the publishing graph's ROS clock — simulator
-            time under ``use_sim_time`` — which ``time.time_ns`` cannot be
-            compared against.
+            ``DEFAULT_POLICY_STATE_STALENESS_S``.
+        clock_fn: Callable returning the current time in nanoseconds; defaults
+            to ``time.time_ns``. Override in tests. Stamps arrivals/staleness
+            only — place-declaration liveness uses the attachment stream's own
+            clock (see ``update_attached_objects``), never this one.
 
     Example:
         >>> from openral_core.schemas import JointState
@@ -228,43 +213,24 @@ class WorldStateAggregator:
         self._attached_objects: dict[str, AttachedCollisionObject] = {}
         self._attachment_revision: int = 0
         self._attachment_stamp_ns: int = 0
-        # The place-phase declaration the evidence producer resolved for the
-        # carried payload (ADR-0097 + its 2026-08-14 amendment). It travels with
-        # the attachment snapshot because the approach allowance it carries is
-        # scoped to that payload, and its liveness is re-evaluated on every
-        # attachment message: HZ-0097-3 makes expiry World State's
-        # responsibility, not the dispatcher's alone, so a dispatcher that dies
-        # mid-goal cannot leave a region armed.
+        # ADR-0097 (+2026-08-14 amendment): place-phase declaration for the
+        # carried payload, replaced atomically with the attachment set it
+        # scopes to; re-evaluated per attachment message (HZ-0097-3) so a
+        # dead dispatcher can't leave a region armed.
         #
-        # Liveness is evaluated in the ATTACHMENT STREAM'S OWN CLOCK — the stamp
-        # riding the message that carried the declaration, i.e. the same value
-        # stored in `_attachment_stamp_ns` — never `_clock_fn`. The declaration
-        # is stamped by the dispatching rSkill runner's ROS clock, the producer
-        # re-stamps its publications from the same ROS clock, and the safety
-        # kernel compares against its own ROS clock; under `use_sim_time` that
-        # domain is simulator time. `_clock_fn` defaults to wall `time.time_ns`,
-        # so comparing a sim-stamped declaration against it made every
-        # declaration look ~1.79e18 ns past its backstop and published
-        # `place_declaration=None` on every snapshot. See `snapshot`.
+        # Liveness uses the ATTACHMENT STREAM'S own clock (`_attachment_stamp_ns`
+        # — the rSkill runner's ROS clock, sim time under `use_sim_time`), never
+        # `_clock_fn` (wall `time.time_ns`): comparing against `_clock_fn` once
+        # put every sim-stamped declaration ~1.79e18 ns past its backstop and
+        # published `place_declaration=None` forever. See `snapshot`.
         #
-        # What that leaves covering HZ-0097-3 mitigation 2 (and HZ-0097-4
-        # mitigation 4, which inherits it):
-        #   1. The producer heartbeats the attachment set, so every heartbeat
-        #      re-runs the backstop against a fresh stream stamp; a declaration
-        #      that outlives its goal is dropped on the next message, and the
-        #      producer drops it on its own side first.
-        #   2. A stream that STOPS (producer or dispatcher crash) advances no
-        #      stream clock here, so the stored declaration cannot expire from
-        #      World State — but it also means no fresh attachment evidence
-        #      reaches the kernel, whose `attached_collision_deadline_s`
-        #      freshness gate then refuses EVERY candidate action
-        #      (`attached_unavailable`), not merely the allowance. That is
-        #      strictly more conservative than expiring the region.
-        #   3. The kernel re-evaluates `place_declaration_live()` per candidate
-        #      action against its own ROS clock — the declaration's domain —
-        #      so the backstop is enforced where the margin is actually applied.
-        # Inventing a second, wall-clock timeout here would only re-create the
-        # cross-domain bug this comment exists to prevent.
+        # HZ-0097-3/-4 coverage: (1) the producer heartbeat re-runs the backstop
+        # each beat, so an outlived declaration drops on the next message; (2) a
+        # stopped stream can't expire it here, but also starves the kernel's
+        # `attached_collision_deadline_s` freshness gate, which then refuses
+        # every candidate action, not just the allowance; (3) the kernel
+        # re-checks `place_declaration_live()` per action on its own ROS clock —
+        # the declaration's actual domain.
         self._place_declaration: PlaceDeclaration | None = None
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
@@ -342,26 +308,16 @@ class WorldStateAggregator:
     def update_image_frame(self, sensor_name: str, frame: SensorFrame) -> None:
         """Record an inline pixel payload for a named sensor.
 
-        Unlike :meth:`update_image` (which just records "a frame arrived
-        on topic X"), this method stores the actual :class:`SensorFrame`
-        — usually with ``frame.data`` set — so the next
-        :meth:`snapshot` carries pixels inline through
-        :attr:`WorldState.image_frames`. This is the path a Skill uses
-        when it needs RGB pixels without opening its own ROS
-        subscription (CLAUDE.md §6.1 — Layer 1 (Sensors) writes through
-        Layer 2 (World State) into Layer 3 (rSkill)).
-
-        Accepts arbitrary ``sensor_name`` values not declared in the
-        :class:`RobotDescription` ``sensor_bundles`` list — synthetic
-        digital-twin cameras live in the active MJCF, not the robot
-        manifest, and the aggregator must aggregate whatever streams
-        in.
+        Unlike ``update_image`` (topic ref only), stores the actual
+        ``SensorFrame`` so ``snapshot`` carries pixels inline via
+        ``WorldState.image_frames`` — the path a Skill uses without its
+        own ROS subscription (CLAUDE.md §6.1, Layer 1→2→3). Accepts sensor
+        names not declared in ``RobotDescription.sensor_bundles``: synthetic
+        digital-twin cameras live in the active MJCF, not the robot manifest.
 
         Args:
-            sensor_name: Camera id; used as the key in
-                :attr:`WorldState.image_frames`.
-            frame: Validated :class:`SensorFrame` (``data`` /
-                ``topic`` / ``handle``).
+            sensor_name: Camera id; key in ``WorldState.image_frames``.
+            frame: Validated ``SensorFrame`` (``data``/``topic``/``handle``).
         """
         stamp = self._clock_fn()
         with self._lock:
@@ -455,16 +411,15 @@ class WorldStateAggregator:
             place_declaration: The place-phase declaration the evidence producer
                 resolved for this payload, with its measured region (ADR-0097's
                 2026-08-14 amendment), or ``None`` for no place phase. Replaced
-                atomically with the attachment set it is scoped to, so the
-                kernel can never apply a region and an attachment snapshot that
-                disagree. A declaration that is already retracted or expired is
-                stored as ``None``.
+                atomically with the attachment set it scopes to, so the kernel
+                can never apply a region and an attachment snapshot that
+                disagree. A declaration already retracted or expired is stored
+                as ``None``.
 
-                Liveness is evaluated against ``stamp_ns`` — this message's own
-                stamp, in the stream's clock domain, which is the only clock the
-                declaration's ``stamp_ns`` is comparable with. This is the single
-                evaluation point; :meth:`snapshot` publishes what is stored here
-                rather than re-checking against a second clock.
+                Liveness is evaluated against ``stamp_ns`` (this message's own
+                stream-clock stamp) — the only clock it is comparable with. This
+                is the single evaluation point; ``snapshot`` publishes what
+                is stored here.
 
         Raises:
             ValueError: If ids duplicate or the revision moves backwards.
@@ -501,7 +456,7 @@ class WorldStateAggregator:
         """Latch an explicit diagnostic status for a named component.
 
         Use to surface hardware faults or driver errors that go beyond
-        mere staleness.  The forced status persists until :meth:`clear_error`
+        mere staleness.  The forced status persists until ``clear_error``
         is called.
 
         Args:
@@ -527,24 +482,18 @@ class WorldStateAggregator:
     def snapshot(self) -> WorldState:
         """Produce a typed ``WorldState`` snapshot from current aggregated data.
 
-        Staleness is evaluated at call time.  Components older than
+        Staleness is evaluated at call time. Components older than
         ``staleness_limit_s`` appear as ``"stale"`` in
-        ``WorldState.diagnostics``.  Latched errors override staleness.
+        ``WorldState.diagnostics``. Latched errors override staleness.
 
         Emits a ``world_state.snapshot`` OTel span recording
         ``openral.world_state.components_stale`` and
-        ``openral.world_state.has_latched_error``. When a component first
-        transitions to stale (or first acquires a latched error) the span
-        carries a ``openral.event.staleness_latched`` (or
-        ``..._error_latched``) event. Per-component staleness ages are
-        recorded on the ``openral.world_state.staleness_ms`` histogram.
+        ``openral.world_state.has_latched_error``, plus a transition-only
+        ``openral.event.staleness_latched`` / ``..._error_latched`` event and a
+        per-component ``openral.world_state.staleness_ms`` histogram entry.
 
         Returns:
             An immutable ``WorldState`` snapshot.
-
-        Raises:
-            RuntimeError: If no joint state has ever been received (``None``
-                state would make the snapshot unusable).
         """
         with (
             self._lock,
@@ -674,7 +623,7 @@ class WorldStateAggregator:
     ) -> None:
         """Lift this tick's snapshot diagnostics onto the span + metric instruments.
 
-        Called from inside :meth:`snapshot` under ``self._lock``. Compares
+        Called from inside ``snapshot`` under ``self._lock``. Compares
         the current stale / latched-error sets against the previous tick
         to fire ``openral.event.staleness_latched`` /
         ``openral.event.error_latched`` events only on transitions.

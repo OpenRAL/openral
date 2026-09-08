@@ -1,42 +1,33 @@
 """openral inference runner — hardware-side counterpart to ``openral_sim``.
 
-This package hosts the :class:`InferenceRunner` Protocol +
-:class:`InferenceRunnerBase` shared between sim and hardware paths, plus
-the :class:`SensorReader` Protocol and the per-backend sensor readers
-(``openral_runner.backends``).
+Hosts the ``InferenceRunner`` Protocol + ``InferenceRunnerBase``
+shared between sim and hardware paths, the ``SensorReader`` Protocol,
+and the per-backend sensor readers (``openral_runner.backends``).
 
-Public surface today:
+Public surface:
 
-- ``InferenceRunner``: structural Protocol every runner satisfies
-  (``activate / tick / run / deactivate``; ``rate_hz``).
-- ``InferenceRunnerBase``: shared abstract base with the rate-limited
-  ``run()`` loop, ``rskill.tick`` OTel parent span, ``RunResult``
-  aggregation, and deadline-overrun policy. Subclasses implement
-  ``_tick_impl``.
-- ``SensorReader``: structural Protocol every sensor backend satisfies
-  (``open / close / read_latest``). Concrete backends live under
-  ``openral_runner.backends``; ``OpenCVThreadSensorReader`` is the
-  default.
+- ``InferenceRunner``: structural Protocol (``activate / tick / run /
+  deactivate``; ``rate_hz``).
+- ``InferenceRunnerBase``: rate-limited ``run()`` loop, ``rskill.tick`` OTel
+  parent span, ``RunResult`` aggregation, deadline-overrun policy;
+  subclasses implement ``_tick_impl``.
+- ``SensorReader``: structural Protocol (``open / close / read_latest``);
+  ``OpenCVThreadSensorReader`` is the default backend.
 - ``SafetyClient`` / ``NullSafetyClient``: pre-action safety seam called
-  by the runner before HAL dispatch. ``NullSafetyClient`` is a no-op
-  stub awaiting the real C++ safety kernel (CLAUDE.md §6 Layer 6).
-- ``DeployRunner``: concrete :class:`InferenceRunnerBase` subclass
-  that composes a real :class:`HAL`, :class:`Skill`,
-  :class:`WorldStateAggregator`, a list of :class:`SensorReader`s, and a
-  :class:`SafetyClient`. First end-to-end loop on real hardware
-  (or a digital twin like :class:`SO100DigitalTwin`).
+  before HAL dispatch; ``NullSafetyClient`` is a no-op stub pending the
+  real C++ safety kernel (CLAUDE.md §6 Layer 6).
+- ``DeployRunner``: concrete ``InferenceRunnerBase`` composing a real
+  ``HAL``, ``Skill``, ``WorldStateAggregator``, a list of
+  ``SensorReader``s, and a ``SafetyClient``.
 - ``precise_sleep`` / ``sleep_until``: cadence helpers (mirrors lerobot's
   ``precise_sleep`` shape).
 
-Imports are PEP 562 lazy: ``import openral_runner`` no longer
-eagerly drags in torch (via ``base``). Symbols are still available
-through attribute access — ``openral_runner.InferenceRunnerBase``
-works exactly as before — but they are only resolved on first use.
-This is load-bearing: importing the gstreamer subpackage (or any
-subpackage that does not need torch) used to triple-load 582 torch
-modules at import, and the resulting ``glib`` state conflicts with
-``rclpy.init()`` / ``Node()`` inside the x86-ros Docker image
-(observed segfaults in the ROS-tee smoke test, PR I/8).
+Imports are PEP 562 lazy: ``import openral_runner`` no longer eagerly drags
+in torch (via ``base``); symbols still resolve via attribute access, on
+first use. Load-bearing: importing the gstreamer subpackage used to
+triple-load 582 torch modules, and the resulting ``glib`` state conflicts
+with ``rclpy.init()`` / ``Node()`` in the x86-ros Docker image (segfaults
+in the ROS-tee smoke test, PR I/8).
 """
 
 from __future__ import annotations

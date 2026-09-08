@@ -39,7 +39,7 @@ def main(args: Any = None) -> None:
     )
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class DepthProviderNode(Node):  # type: ignore[misc]
+    class DepthProviderNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Subscribe RGB, call the DA3 depth sidecar, publish 32FC1 depth + CameraInfo."""
 
         def __init__(self) -> None:

@@ -3,13 +3,13 @@
 Covers the env-driven factory branch, the managed-server lifecycle decisions
 (autostart on/off, loopback-only, endpoint-up short-circuit), sidecar script
 resolution, and the tool-call wire path through
-:class:`~openral_reasoner.cosmos3.Cosmos3ToolUseClient`.
+``Cosmos3ToolUseClient``.
 
 §1.11 rule: the only doubles are the ``openai`` SDK object at the network
 boundary (mirroring ``test_reasoner_invalid_plan_feedback.py``) and a
 monkeypatched HTTP endpoint probe — both process/network boundaries. No
 openral types are mocked; palettes are built with the real
-:func:`build_tool_palette` against a real :class:`RobotCapabilities`.
+``build_tool_palette`` against a real ``RobotCapabilities``.
 
 Run with:
     uv run pytest tests/unit/test_reasoner_cosmos3.py -v
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from openral_core import EmitPromptTool, RobotCapabilities
@@ -33,6 +32,8 @@ from openral_reasoner.cosmos3 import (
 )
 from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import build_tool_use_client_from_env
+
+from tests.unit.conftest import _install_fake_openai
 
 _ENV_VARS = (
     "OPENRAL_REASONER_MODEL",
@@ -298,41 +299,14 @@ def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "code 3" in str(excinfo.value)
 
 
-# ── Wire path (openai SDK network-boundary double, §1.11) ─────────────────────
-
-
-def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> None:
-    """Patch ``openai.OpenAI`` so ``create()`` returns one ``emit_prompt`` call.
-
-    Mirrors the real SDK response graph
-    (``response.choices[0].message.tool_calls[0].function.{name,arguments}``).
-    """
-
-    def _create(**_kwargs: object) -> SimpleNamespace:
-        function = SimpleNamespace(name="emit_prompt", arguments=arguments)
-        tool_call = SimpleNamespace(function=function)
-        message = SimpleNamespace(tool_calls=[tool_call])
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs: object) -> None:
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
-
-    import openai  # reason: network-boundary double per §1.11
-
-    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
-
-
 # ── Sidecar pre-warm ─────────────────────────────────────────────────────────
 
 
 def test_warm_starts_the_sidecar_without_a_tick(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``warm()`` reaches ``_ensure_server`` — the whole point of the seam.
+    """``warm()`` reaches ``_ensure_server`` without waiting for the first tick.
 
-    Without it the sidecar boots lazily from ``select_tool``, i.e. on the
-    reasoner's first tick, after the graph is already up and an operator is
-    waiting. On a cold host that is a venv provision plus a ~9 GB download;
-    bringup has minutes of unrelated work to overlap it with.
+    Otherwise the sidecar boots lazily on the reasoner's first tick — a venv
+    provision plus a ~9 GB download — with the operator already waiting.
     """
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     client = build_tool_use_client_from_env()

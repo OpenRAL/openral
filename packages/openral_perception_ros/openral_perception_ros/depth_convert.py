@@ -65,7 +65,7 @@ def depth_array_to_image_msg(depth_m: Any, *, frame_id: str, stamp: Any = None) 
 
 
 def image_msg_to_depth_array(msg: Any) -> Any:
-    """Inverse of :func:`depth_array_to_image_msg` — ``32FC1`` Image → HxW float32.
+    """Inverse of ``depth_array_to_image_msg`` — ``32FC1`` Image → HxW float32.
 
     Args:
         msg: A ``sensor_msgs/Image`` with ``encoding='32FC1'`` and packed rows.

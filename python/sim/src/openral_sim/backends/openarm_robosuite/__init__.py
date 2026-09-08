@@ -1,7 +1,7 @@
 """OpenArm v2 bimanual tabletop scene with robosuite OSC controllers.
 
 Importing this package registers the ``openarm_tabletop_pnp`` scene id
-in :data:`openral_sim.SCENES`. The heavy ``mujoco`` import in :mod:`.env`
+in ``openral_sim.SCENES``. The heavy ``mujoco`` import in ``.env``
 is deferred to function bodies (`if TYPE_CHECKING: import mujoco` at
 module level), so importing ``openral_sim`` — which the CLI does eagerly
 via ``openral_sim.cli`` → ``SimRunner`` → ``backends`` registration —
@@ -17,8 +17,8 @@ policy was removed — real-trained checkpoint, sim-to-real gap, no verified
 grasp); the scene is retained for the dataset bridge and as the embodiment
 fixture for a future task-matched OpenArm policy.
 
-See :mod:`._assets` for the MJCF composer and :mod:`.env` for the
-:class:`SimRollout` implementation.
+See ``._assets`` for the MJCF composer and ``.env`` for the
+``SimRollout`` implementation.
 """
 
 from openral_sim.backends.openarm_robosuite import (

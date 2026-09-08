@@ -4,10 +4,9 @@ Runs InternRobotics' InternVLA-N1 / DualVLN (arXiv:2512.08186) — a
 Qwen2.5-VL-7B System-2 waypoint planner + NavDP DiT System-1 trajectory
 policy — in its own isolated venv (upstream InternNav pins
 ``transformers==4.51.0``, incompatible with the py3.12 workspace) and serves
-velocity commands over a ZMQ REP socket. The openral-side client is the
-``internvla_n1`` policy adapter
-(:mod:`openral_sim.policies.internvla_n1`), which speaks the canonical
-:class:`openral_sim.sidecar.SidecarClient` frame
+velocity commands over ZMQ REP. Client: the ``internvla_n1`` policy adapter
+(``openral_sim.policies.internvla_n1``), speaking the canonical
+``openral_sim.sidecar.SidecarClient`` frame
 (``{"endpoint": str, "data": {...}}`` + the ``__ndarray__``/npy codec).
 
 Wire protocol (msgpack, ZMQ REQ/REP):
@@ -27,14 +26,12 @@ Wire protocol (msgpack, ZMQ REQ/REP):
   in : {"endpoint": "close"} / {"endpoint": "shutdown"} -> {"ok": True} (exits)
   on error -> {"error": str}
 
-The look-down dance is handled server-side: when System-2 emits the
-look-down action (``[5]``) the agent is immediately re-stepped with
-``look_down=True`` on the same frame, mirroring the upstream realworld
-deployment loop (InternNav ``scripts/realworld/http_internvla_server.py``).
+Look-down is handled server-side: System-2 emitting ``[5]`` immediately
+re-steps the agent with ``look_down=True`` on the same frame (mirrors
+InternNav ``scripts/realworld/http_internvla_server.py``).
 
-Depth is REQUIRED and must be metric meters (upstream feeds
-``uint16/10000.0``); this server refuses all-zero depth rather than
-letting System-1 hallucinate trajectories from a broken sensor.
+Depth is REQUIRED, metric meters (upstream feeds ``uint16/10000.0``);
+all-zero depth is refused rather than letting System-1 hallucinate.
 """
 
 from __future__ import annotations

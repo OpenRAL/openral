@@ -1,13 +1,13 @@
 """Tests for the ``kind: "playbook"`` rSkill manifest variant.
 
 Covers:
-- :class:`~openral_core.schemas.PlaybookContract` Hypothesis round-trip +
+- ``PlaybookContract`` Hypothesis round-trip +
   JSON-Schema validation + field guards.
 - Contract test: load ``rskills/find-object/rskill.yaml`` via
-  :meth:`~openral_core.schemas.RSkillManifest.from_yaml` and assert the key
+  ``RSkillManifest.from_yaml`` and assert the key
   guarantees.
 - Validator boundary tests: each required/forbidden rule for ``kind=playbook``
-  raises :exc:`pydantic.ValidationError` exactly, and a non-playbook kind that
+  raises ``pydantic.ValidationError`` exactly, and a non-playbook kind that
   carries a ``playbook`` block is rejected.
 
 Run with:

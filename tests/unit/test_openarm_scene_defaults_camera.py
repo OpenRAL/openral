@@ -1,13 +1,11 @@
 """Unit tests for OpenArm tabletop camera defaults.
 
-The openarm_robosuite scene composer used to carry module-level
-constants for the "top" (a.k.a. "base") overview camera, baked to the
-``mddoai/openarm_2026-05-14_clean`` dataset POV. Those
-defaults moved onto the deploy scene composition so the environment owns its
-arena and camera pose; the robot manifest describes only the robot.
+The "top"/"base" overview camera POV (``mddoai/openarm_2026-05-14_clean``
+dataset) lives on the deploy scene composition, not the robot manifest — the
+environment owns arena + camera pose, the robot manifest describes only the
+robot.
 
-CLAUDE.md §1.11: real schemas, real fixture under ``robots/openarm/``,
-no mocks.
+CLAUDE.md §1.11: real schemas, real fixture under ``robots/openarm/``, no mocks.
 """
 
 from __future__ import annotations
@@ -82,10 +80,9 @@ def test_openarm_robot_yaml_does_not_own_scene_defaults() -> None:
 
 
 def test_openarm_robot_yaml_matches_in_code_constant() -> None:
-    """``robots/openarm/robot.yaml`` and ``OPENARM_DESCRIPTION`` agree on defaults.
-
-    The drift guard now asserts both omit scene defaults; scene composition is
-    pinned by ``test_openarm_deploy_scene_loads_top_camera_defaults``.
+    """``robots/openarm/robot.yaml`` and ``OPENARM_DESCRIPTION`` agree: both omit
+    scene defaults. Scene composition itself is pinned by
+    ``test_openarm_deploy_scene_loads_top_camera_defaults``.
     """
     pytest.importorskip("openral_hal")
     from openral_hal.openarm import OPENARM_DESCRIPTION

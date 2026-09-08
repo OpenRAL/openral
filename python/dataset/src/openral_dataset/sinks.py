@@ -1,28 +1,20 @@
 """LeRobotDatasetSink — writes LeRobot v3.0 datasets from RolloutRecorder fan-out.
 
-Wraps :class:`lerobot.datasets.LeRobotDataset` (codebase_version ``"3.0"``,
+Wraps ``lerobot.datasets.LeRobotDataset`` (codebase_version ``"3.0"``,
 shipped in ``lerobot>=0.5.1``). The sink:
 
-* Lazy-imports lerobot at construction so the package stays importable on
-  hosts without lerobot. A typed :class:`ROSConfigError` with the install
-  hint is raised the moment ``LeRobotDatasetSink`` is instantiated without
-  lerobot in the environment.
-* Defers ``LeRobotDataset.create()`` until the first :meth:`write_frame`
-  call so the per-camera video shapes can be taken from the actual frame
-  (sim and hardware often render at runtime-determined resolutions; the
-  ``SensorSpec.intrinsics`` field is optional in the RobotDescription
-  schema and not always populated).
-* Carries the per-dataset license + repo_id into
-  ``meta/info.json["metadata"]`` so downstream consumers can read it
-  without consulting an out-of-band metadata table.
-* Aggregates a per-dataset ``dataset_success_rate`` across all episodes
-  so consumers can filter to successful rollouts without a full pass
-  over the rows.
+* Lazy-imports lerobot at construction, raising a typed
+  ``ROSConfigError`` with an install hint if it's missing — keeps the
+  package importable on hosts without lerobot.
+* Defers ``LeRobotDataset.create()`` until the first ``write_frame`` so
+  per-camera video shapes come from the actual frame (``SensorSpec.intrinsics``
+  is optional and not always populated).
+* Carries license + repo_id into ``meta/info.json["metadata"]``.
+* Aggregates a per-dataset ``dataset_success_rate`` across episodes.
 
-Per CLAUDE.md §1.11 (no mocks) — tests instantiate this sink and exercise
-a real :class:`lerobot.datasets.LeRobotDataset` round-trip on hosts where
-lerobot is installed; on hosts without lerobot the tests
-``pytest.skip`` with the install hint.
+Per CLAUDE.md §1.11 (no mocks) — tests exercise a real
+``lerobot.datasets.LeRobotDataset`` round-trip where lerobot is
+installed; ``pytest.skip`` with the install hint otherwise.
 """
 
 from __future__ import annotations
@@ -46,7 +38,7 @@ _log = structlog.get_logger(__name__)
 
 # Default license string for produced datasets. The LeRobot convention is
 # CC-BY-4.0 (matches the official lerobot/aloha and lerobot/pusht datasets);
-# the consent prompt at `openral dataset push` (PR5) enforces an upgrade to a
+# the consent prompt at `openral dataset push` enforces an upgrade to a
 # more restrictive license when the dataset contains PII.
 DEFAULT_LICENSE: Final[str] = "CC-BY-4.0"
 
@@ -91,11 +83,11 @@ def _featurespec_to_lerobot_dict(spec: FeatureSpec) -> dict[str, Any]:
 
 
 class LeRobotDatasetSink(DatasetSink):
-    """LeRobot v3.0 dataset writer fed by :class:`RolloutRecorder`.
+    """LeRobot v3.0 dataset writer fed by ``RolloutRecorder``.
 
     The sink writes one Parquet row per frame and one MP4 chunk per
     episode-camera, exactly the v3 on-disk format. Construction is cheap;
-    the underlying :class:`lerobot.datasets.LeRobotDataset` is created
+    the underlying ``lerobot.datasets.LeRobotDataset`` is created
     lazily on the first frame so per-camera image shapes can be taken
     from the actual frame data.
 
@@ -103,13 +95,12 @@ class LeRobotDatasetSink(DatasetSink):
         root: Output root directory. Must not already contain a v3
             dataset (lerobot raises a clean error if it does).
         robot: Normative robot description; drives feature shapes via
-            :func:`openral_dataset.features_from_robot`.
+            ``openral_dataset.features_from_robot``.
         fps: Recording cadence in Hz. Locked once the dataset is
             created — every episode must use the same fps.
         repo_id: HF Hub repo id (e.g. ``openral/dataset-pick-cube``).
             Defaults to ``"openral/dataset-<robot_name>"``. Stored on
-            disk in ``meta/info.json``; not pushed by this sink (PR5
-            owns the push path).
+            disk in ``meta/info.json``; not pushed by this sink.
         license: SPDX license string for the produced dataset.
         vcodec: ffmpeg codec for the video streams (default
             ``"libsvtav1"`` — lerobot's v3 default).
@@ -118,7 +109,7 @@ class LeRobotDatasetSink(DatasetSink):
         ROSConfigError: If ``lerobot>=0.5.1`` is not importable.
         ROSConfigError: If ``robot.observation_spec`` / ``action_spec``
             are not configured for dataset binding (delegates to
-            :func:`features_from_robot`).
+            ``features_from_robot``).
 
     Example:
         >>> from openral_core import RobotDescription
@@ -143,7 +134,7 @@ class LeRobotDatasetSink(DatasetSink):
 
         Args:
             root: Destination dataset root (must not pre-exist).
-            robot: Normative :class:`RobotDescription`; supplies camera
+            robot: Normative ``RobotDescription``; supplies camera
                 shapes via ``sensors[*].intrinsics`` and the fallback
                 state/action contract from ``observation_spec`` /
                 ``action_spec`` when present.
@@ -175,7 +166,7 @@ class LeRobotDatasetSink(DatasetSink):
         By design, this sink requires EVERY shape (state,
         action, per-camera HWC) to be declared up-front — there is no
         first-frame fallback. Missing shapes raise
-        :class:`ROSConfigError` at construction so a wiring bug
+        ``ROSConfigError`` at construction so a wiring bug
         surfaces before the rollout starts.
         """
         # Lazy-validate lerobot is importable. We don't actually import
@@ -261,7 +252,7 @@ class LeRobotDatasetSink(DatasetSink):
         the FIRST episode (not inside ``write_frame``), so any
         ``LeRobotDataset.create`` error surfaces before any tick has
         run. The features dict is already fully resolved by
-        :meth:`__init__` — there is no first-frame fallback.
+        ``__init__`` — there is no first-frame fallback.
         """
         if self._finalized:
             raise RuntimeError("LeRobotDatasetSink is finalized; cannot open new episodes")
@@ -355,10 +346,10 @@ class LeRobotDatasetSink(DatasetSink):
 
         The per-frame ``next.success`` flag is filled at write_frame time
         with ``False``; the *resolved* episode success comes through here
-        via :meth:`lerobot.datasets.LeRobotDataset.save_episode`'s
+        via ``lerobot.datasets.LeRobotDataset.save_episode``'s
         ``episode_data`` dict, which v3 uses to backfill scalar fields
         post-hoc. The dataset-level ``dataset_success_rate`` is
-        recomputed at :meth:`finalize` time.
+        recomputed at ``finalize`` time.
         """
         # Record the episode → trace_id pointer (ISSUE-109) regardless of
         # whether any frames were written; a zero-frame episode keeps the
@@ -377,9 +368,7 @@ class LeRobotDatasetSink(DatasetSink):
 
         # episode_data carries per-episode metadata; lerobot v3 accepts
         # any extra keys here and lands them on meta/episodes/*. The
-        # backfill of next.success across the episode's rows is
-        # documented in the converter PR (PR4); for now the per-row
-        # next.success is False on hardware and the episode-level
+        # per-row next.success is False on hardware; the episode-level
         # summary.success drives the aggregate dataset_success_rate.
         self._dataset.save_episode(parallel_encoding=True)
         self._n_episodes += 1

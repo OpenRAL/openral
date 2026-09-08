@@ -5,13 +5,13 @@ The bridge's ROS half needs a live graph and is covered by
 everything the barrier's *safety* argument rests on and that can be decided
 without one:
 
-* :func:`~openral_hal.vision_attachment_bridge.resolve_segment_outcome` — the
+* ``resolve_segment_outcome`` — the
   full truth table of "what does this round trip mean", including that **no**
   input combination produces "skip the attachment".
 * the ``mono8`` mask wire, encoded by the perception node and decoded by the
   HAL, round-tripped through a **real** SAM 2.1 mask fixture rather than a
   hand-drawn square (CLAUDE.md §1.11).
-* :func:`~openral_hal.depth_cloud.depth_grid_from_image`, the depth decoder that
+* ``depth_grid_from_image``, the depth decoder that
   turns a driver's ``32FC1`` / ``16UC1`` frame into the metric raster the
   producer gates on.
 """

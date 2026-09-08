@@ -3,27 +3,6 @@ auto_select_quant, and EngineCache.
 
 PyTorchRuntime and ONNXRuntime tests are skipped when the respective packages
 are not installed (marked with pytest.importorskip inside each test method).
-
-Coverage
---------
-- ``Runtime`` Protocol: NullRuntime satisfies it; isinstance check works.
-- ``NullRuntime``: initial state; load/unload; infer returns {}; quantize/warmup
-  no-ops; device property; is_loaded transitions.
-- ``Runtime`` Protocol: arbitrary duck-typed class that satisfies the Protocol.
-- ``QuantizationDtype`` / ``QuantizationBackend`` enum values.
-- ``QuantizationConfig`` defaults and construction.
-- ``DeviceInfo`` defaults.
-- ``QUANT_PRESETS``: all keys present; values are QuantizationConfig instances.
-- ``auto_select_quant``: CPU-only → int8; apple_silicon → bf16; GPU < 4 GB → int4;
-  GPU 4-8 GB -> fp16; GPU > 8 GB CC >= 8.0 -> bf16; GPU > 8 GB CC < 8.0 -> fp16;
-  no CC but large GPU → fp16.
-- ``EngineCache``: cache_key deterministic; get miss → None; put persists; get hit;
-  invalidate; clear; size_bytes; entry_count; put raises on missing source.
-- ``PyTorchRuntime`` (skipped without torch): device property; load non-existent →
-  ROSRuntimeError; unload while not loaded; quantize before load → ROSRuntimeError;
-  unsupported quant → ROSRuntimeError.
-- ``ONNXRuntime`` (skipped without onnxruntime): device property; MPS raises on init;
-  load non-existent → ROSRuntimeError; quantize → ROSRuntimeError always.
 """
 
 from __future__ import annotations

@@ -1,40 +1,27 @@
-"""Rosbag2Sink — mcap-backed :class:`DatasetSink` for online hardware recording.
+"""Rosbag2Sink — mcap-backed ``DatasetSink`` for online hardware recording.
 
-Writes every :class:`RolloutRecorder` event into a
-``.mcap`` file that the offline :class:`Rosbag2ToLeRobotConverter`
-replays into a LeRobotDataset v3. The same file is readable by
-``ros2 bag info`` / ``mcap-cli`` / Foxglove / any rosbag2-mcap consumer
-because mcap is the file format — we just use it without going through
-the ``rosbag2_py`` Python wrapper.
+Writes every ``RolloutRecorder`` event to a ``.mcap`` file that the
+offline ``Rosbag2ToLeRobotConverter`` replays into a LeRobotDataset v3.
+Readable by ``ros2 bag info`` / ``mcap-cli`` / Foxglove / any rosbag2-mcap
+consumer — mcap is the file format, used directly rather than through the
+``rosbag2_py`` wrapper:
 
-Why mcap directly and not ``rosbag2_py``:
+* ``mcap`` is a PyPI library (no ROS 2 apt install needed) — works on
+  unsourced hosts (laptops, CI) and lets unit tests run without ROS.
+* Same on-disk format as ``rosbag2``'s mcap storage backend; ``ros2 bag
+  info`` reads it back without complaint.
+* Schema encoding is ``jsonschema`` (mcap canonical), not ``ros2msg`` IDL —
+  a future ROS-side publisher can write the same topics with ``ros2msg``
+  encoding alongside ours (the converter accepts either).
+* Writer thread is a daemon with a bounded ``queue.Queue``; ``write_frame``
+  only enqueues, so the sink never blocks the inference tick on disk I/O.
 
-* ``mcap`` is a PyPI library; ``rosbag2_py`` is a ROS 2 system package
-  shipped via apt. Using the bare mcap library lets the sink work on
-  hosts that haven't sourced ROS 2 (developer laptops, CI runners) and
-  makes the unit tests runnable end-to-end without ROS infrastructure.
-* The on-disk format is identical — ``rosbag2`` with the mcap storage
-  backend writes the same mcap stream that this sink writes. The
-  ``ros2 bag info`` tooling reads it back without complaint.
-* Schema encoding is ``jsonschema`` (one of mcap's canonical
-  encodings), not ``ros2msg`` IDL. This means a future ROS-side
-  publisher can ALSO subscribe to these topics and write the SAME
-  messages with the ``ros2msg`` encoding alongside ours; consumers
-  switch on schema encoding. PR4's converter accepts either.
-* Hot-path safety — the writer thread is a daemon with a bounded
-  ``queue.Queue``; ``write_frame`` enqueues only. The sink never blocks
-  the inference tick on disk I/O.
+Topics: ``/openral/tick`` (``openral_msgs.msg.Tick`` per-tick metadata)
+and ``/openral/episode`` (``openral_msgs.msg.Episode`` markers at
+episode_start/episode_end, phase=0/1).
 
-Topics written:
-
-* ``/openral/tick`` — :class:`openral_msgs.msg.Tick` per-tick metadata
-  (episode_idx, step_idx, reward, terminated, truncated, trace_id).
-* ``/openral/episode`` — :class:`openral_msgs.msg.Episode` markers
-  emitted at episode_start and episode_end (phase=0 / phase=1).
-
-Per CLAUDE.md §1.11 (no mocks) — tests exercise a real
-:class:`mcap.writer.Writer` against a tmp_path and re-read with a real
-:class:`mcap.reader.make_reader`.
+No mocks (CLAUDE.md §1.11): tests use a real ``mcap.writer.Writer``
+against a tmp_path, re-read with a real ``mcap.reader.make_reader``.
 """
 
 from __future__ import annotations
@@ -59,10 +46,10 @@ __all__ = ["Rosbag2Sink"]
 
 _log = structlog.get_logger(__name__)
 
-# Topic names — kept module-private constants so PR4's converter can
-# import them by symbol rather than re-typing the strings. A typo would
-# silently produce a bag that the converter rejects with
-# ROSPagrConfigError("bag has no /openral/episode markers").
+# Topic names — module-private constants so the converter imports them
+# by symbol rather than re-typing the strings. A typo would silently
+# produce a bag the converter rejects with
+# ROSConfigError("bag has no /openral/episode markers").
 TOPIC_TICK: Final[str] = "/openral/tick"
 TOPIC_EPISODE: Final[str] = "/openral/episode"
 # Per-camera image frames. One message per
@@ -187,11 +174,11 @@ _STOP = _Stop()
 
 
 class Rosbag2Sink(DatasetSink):
-    """mcap-backed sink fed by :class:`RolloutRecorder` fan-out.
+    """mcap-backed sink fed by ``RolloutRecorder`` fan-out.
 
     Writes openral-flavoured rosbag2-compatible mcap files. Compatible
     with `ros2 bag info`, Foxglove, mcap-cli; readable in pure Python
-    via :func:`mcap.reader.make_reader` (which is how PR4's converter
+    via ``mcap.reader.make_reader`` (which is how the converter
     consumes it).
 
     Args:
@@ -220,7 +207,7 @@ class Rosbag2Sink(DatasetSink):
         bag_path: Path | str,
         compression: str | None = "zstd",
     ) -> None:
-        """Stash configuration; no mcap import or I/O until :meth:`open_episode`."""
+        """Stash configuration; no mcap import or I/O until ``open_episode``."""
         try:
             import mcap  # noqa: F401  # reason: presence probe
         except ImportError as exc:
@@ -502,7 +489,7 @@ class Rosbag2Sink(DatasetSink):
         If the queue is full the oldest entry is silently dropped and a
         warning is logged. This is deliberate: blocking the hot path on
         disk I/O is worse than losing a frame. The dropped count
-        surfaces via :attr:`n_dropped` for HIL-test assertions.
+        surfaces via ``n_dropped`` for HIL-test assertions.
         """
         try:
             self._queue.put_nowait(msg)

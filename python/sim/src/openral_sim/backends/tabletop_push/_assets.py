@@ -1,6 +1,6 @@
 """Compose the ``tabletop_push`` MJCF — robot-agnostic, MjSpec-based.
 
-Unlike :mod:`openral_sim.backends.so101_box._assets` (which regex-splices its
+Unlike ``openral_sim.backends.so101_box._assets`` (which regex-splices its
 task world into the SO-ARM101 MJCF and is therefore coupled to that robot's
 ``<body name="base">`` / ``<body name="gripper">`` / ``"1"``..``"6"`` schema),
 this composer is **robot as a flag**: it works against any arm whose manifest
@@ -8,19 +8,19 @@ declares an ``assets.mjcf``.
 
 How it stays robot-agnostic
 ---------------------------
-* The robot's own MJCF is loaded into a :class:`mujoco.MjSpec`; the task world
+* The robot's own MJCF is loaded into a ``mujoco.MjSpec``; the task world
   (table, cube, goal marker, cameras, light) is **appended** to that spec's
   ``worldbody``. Appending never reorders the robot's joints/actuators, so the
   composed model's actuator and qpos indices stay 1:1 with ``description.joints``
   in declaration order — exactly the contract
-  :meth:`openral_hal.MujocoArmHAL._sim_kwargs_for` relies on. The free objects'
+  ``openral_hal.MujocoArmHAL._sim_kwargs_for`` relies on. The free objects'
   qpos land *after* the robot's, so driving the robot by its low actuator
   indices is correct regardless of which robot is loaded.
 * The robot base is re-anchored by mutating the spec's **root body**
   (``worldbody.bodies[0]``) — no body-name lookup, so an SO-ARM ``base``, a
   Franka ``link0`` and a UR ``base`` are all handled identically.
 * The robot's base MJCF is resolved from the manifest via
-  :func:`openral_core.assets.resolve_asset` (the same source
+  ``openral_core.assets.resolve_asset`` (the same source
   ``build_hal(mode="sim")`` uses) — the manifest is the single robot-MJCF
   contract across ``sim run`` / ``deploy sim`` / ``deploy run``.
 
@@ -164,7 +164,7 @@ class TabletopOptions:
 def _resolve_robot_mjcf(description: RobotDescription) -> str:
     """Resolve a robot's base MJCF path from its manifest ``assets.mjcf``.
 
-    Reuses :func:`openral_core.assets.resolve_asset` — the single resolver that
+    Reuses ``openral_core.assets.resolve_asset`` — the single resolver that
     ``build_hal(mode="sim")`` / ``MujocoArmHAL.from_description`` use — so every
     ref scheme (``rd:``, ``gym_aloha:``, ``openarm:``, ``menagerie:``, ``file:``)
     is honoured identically across the sim/real paths.
@@ -233,7 +233,7 @@ def compose_tabletop_mjcf(
     """Compose and compile the ``tabletop_push`` model around ``description``.
 
     The robot's base MJCF (resolved from ``description.assets.mjcf``) is loaded
-    into an :class:`mujoco.MjSpec`; the table, cube, goal marker, two world
+    into an ``mujoco.MjSpec``; the table, cube, goal marker, two world
     cameras and a light are appended to its ``worldbody``; the robot root body
     is re-anchored to the requested base pose; and the spec is compiled. Because
     the task world is *appended*, the robot keeps the low actuator / qpos
@@ -241,12 +241,12 @@ def compose_tabletop_mjcf(
 
     Args:
         description: Robot whose ``assets.mjcf`` provides the base arm MJCF.
-        options: Scene options; ``None`` uses :class:`TabletopOptions` defaults.
+        options: Scene options; ``None`` uses ``TabletopOptions`` defaults.
         base_pose: Optional full 6-DOF robot mount pose (free-axis scenes honour
             it); falls back to ``options.robot_base_xyz`` / ``robot_base_yaw_deg``.
 
     Returns:
-        A compiled :class:`mujoco.MjModel` ready for an :class:`mujoco.MjData`.
+        A compiled ``mujoco.MjModel`` ready for an ``mujoco.MjData``.
 
     Raises:
         ROSConfigError: If ``mujoco`` is missing, the manifest lacks

@@ -1,15 +1,15 @@
 """Unit tests for the ``rskills/<id>/eval/<benchmark>.json`` validator.
 
-Covers the wiring between :class:`openral_core.RSkillEvalResult` and
-:meth:`rSkill.from_yaml` (the loader scans ``<skill_dir>/eval/*.json`` and
+Covers the wiring between ``openral_core.RSkillEvalResult`` and
+``rSkill.from_yaml`` (the loader scans ``<skill_dir>/eval/*.json`` and
 validates each — see ``python/rskill/src/openral_rskill/loader.py``).
 
 Coverage
 --------
 - Every in-tree ``rskills/*/eval/*.json`` validates against
-  :class:`RSkillEvalResult` (regression guard against shape drift).
-- A malformed JSON in ``eval/`` causes :meth:`rSkill.from_yaml` to raise
-  :class:`ROSConfigError`.
+  ``RSkillEvalResult`` (regression guard against shape drift).
+- A malformed JSON in ``eval/`` causes ``rSkill.from_yaml`` to raise
+  ``ROSConfigError``.
 - A skill with **no** ``eval/`` directory loads cleanly.
 """
 

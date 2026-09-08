@@ -1,28 +1,21 @@
 r"""Generic end-to-end ROS graph for ``openral deploy sim``.
 
-One launch file for every robot. Every robot-specific bit is a launch
-argument resolved inside an ``OpaqueFunction`` so concrete strings
-reach ``LifecycleNode(package=, executable=, name=)``:
+One launch file for every robot. Every robot-specific bit is a launch argument resolved inside
+an ``OpaqueFunction`` so concrete strings reach ``LifecycleNode(package=, executable=, name=)``:
 
-* ``robot_yaml``          — RobotDescription manifest path. Loaded
-                            via Pydantic at launch time; the safety
-                            kernel envelope is synthesised from it
-                            (``openral_safety.envelope_loader.compute_intersection``)
-                            and forwarded as ROS parameters on the
-                            kernel node. **No envelope YAML file is
-                            written or read.**
-* ``hal_package`` / ``hal_executable`` / ``hal_node_name`` — HAL spawn,
-                            picked by ``openral deploy sim`` from
-                            ``_ROBOT_HAL_REGISTRY[robot_id]``.
-* ``hal_params_file``     — Ephemeral ROS parameter YAML the CLI writes
-                            with the HAL's per-robot knobs (``/**``
-                            wildcard).
-* ``reset_to_pose_service``, ``dashboard_port``, ``reasoner_model``,
-  ``reasoner_endpoint`` — shared knobs.
+* ``robot_yaml`` — RobotDescription manifest path, loaded via Pydantic at launch time; the
+  safety kernel envelope is synthesised from it
+  (``openral_safety.envelope_loader.compute_intersection``) and forwarded as ROS parameters on
+  the kernel node. No envelope YAML file is written or read.
+* ``hal_package`` / ``hal_executable`` / ``hal_node_name`` — HAL spawn, picked by
+  ``openral deploy sim`` from ``_ROBOT_HAL_REGISTRY[robot_id]``.
+* ``hal_params_file`` — ephemeral ROS parameter YAML the CLI writes with the HAL's per-robot
+  knobs (``/**`` wildcard).
+* ``reset_to_pose_service``, ``dashboard_port``, ``reasoner_model``, ``reasoner_endpoint`` —
+  shared knobs.
 
-Spawned processes: dashboard + safety_kernel + runtime + reasoner +
-prompt_router + HAL. Lifecycle nodes auto-transition UNCONFIGURED →
-INACTIVE → ACTIVE.
+Spawned processes: dashboard + safety_kernel + runtime + reasoner + prompt_router + HAL.
+Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 """
 
 from __future__ import annotations
@@ -181,21 +174,16 @@ def _octomap_resolution(hal_mode: str) -> float:
 def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
     """The ``(fixed_frame, base_frame)`` the octomap leg should map in.
 
-    ``octomap_server`` accumulates its octree in a frame that must not move
-    under the robot, and ``octomap_voxel_bridge`` / ``WorldCloudBridge``
-    express the result in the robot's own base frame. Both used to be the
-    literals ``"odom"`` / ``"base_link"``, which is the MOBILE-BASE
-    convention: it holds only while something publishes odometry.
+    ``octomap_server`` accumulates its octree in a frame that must not move under the robot, and
+    ``octomap_voxel_bridge`` / ``WorldCloudBridge`` express the result in the robot's own base
+    frame. The MOBILE-BASE convention (``"odom"`` / ``"base_link"``) holds only while something
+    publishes odometry — a fixed-base arm has no odometry and no ``odom`` frame, so its
+    world-fixed ``base_frame`` is the correct accumulation frame instead. Getting this wrong is
+    silent: every node comes up healthy and each cloud is dropped on a TF lookup, leaving an
+    empty map and an empty dashboard card.
 
-    A fixed-base arm has no odometry and no ``odom`` frame — nothing in the
-    graph publishes one. The manifest's ``base_frame`` is already world-fixed
-    for such a robot, so it is the correct accumulation frame. Getting this
-    wrong is silent: every node comes up healthy and each cloud is dropped on
-    a TF lookup, leaving an empty map and an empty dashboard card.
-
-    Returns the manifest's own frames, so a robot that names them differently
-    (``pelvis``, ``panda_link0``, ``openarm_base``) is honoured rather than
-    assumed.
+    Returns the manifest's own frames, so a robot that names them differently (``pelvis``,
+    ``panda_link0``, ``openarm_base``) is honoured rather than assumed.
     """
     base_frame = description.base_frame
     locomotion = getattr(description.capabilities, "locomotion", None) or ["none"]
@@ -322,21 +310,18 @@ def _build_nav2_include(
 ) -> object:
     """Construct the IncludeLaunchDescription for upstream Nav2.
 
-    Pulled out of :func:`compose_runtime_graph` for line-count
-    hygiene. Unlike slam_toolbox (which idles until activate), Nav2
-    is always-on: its in-stack ``lifecycle_manager_navigation``
-    brings the planner / controller / behavior / smoother /
-    velocity_smoother sub-nodes to ACTIVE automatically. The
-    Reasoner *triggers* Nav2 by dispatching the
-    ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action rSkill,
-    not by lifecycle-transitioning the planner.
+    Pulled out of ``compose_runtime_graph`` for line-count hygiene. Nav2 is always-on
+    (unlike slam_toolbox, which idles until activate): its in-stack
+    ``lifecycle_manager_navigation`` brings the planner / controller / behavior / smoother /
+    velocity_smoother sub-nodes to ACTIVE automatically. The Reasoner triggers Nav2 by
+    dispatching the ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action
+    rSkill, not by lifecycle-transitioning the planner.
 
     ``use_sim_time`` is derived from the graph-wide clock authority (see
-    :func:`_resolve_clock_origin`); it is **not** hardcoded here. With no
-    ``/clock`` on the bus it must be ``False`` so Nav2's controller loop
-    and costmaps run on wall-clock — matching the HAL's wall-clock
-    ``/scan`` + odom→base_link TF. (``true`` + no ``/clock`` pins every
-    Nav2 node at t=0, "loop rate inf Hz", empty costmap → collision.)
+    ``_resolve_clock_origin``), never hardcoded: with no ``/clock`` on the bus it must be
+    ``False`` so Nav2's controller loop and costmaps run on wall-clock, matching the HAL's
+    wall-clock ``/scan`` + odom→base_link TF — ``true`` with no ``/clock`` pins every Nav2 node
+    at t=0 ("loop rate inf Hz"), producing an empty costmap → collision.
     """
     from ament_index_python.packages import get_package_share_directory
     from launch.actions import IncludeLaunchDescription
@@ -376,26 +361,23 @@ def _build_visual_slam_includes(
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
 
-    Pulled out of :func:`compose_runtime_graph` so the impl→launch-file
-    selection and the per-scene stereo-camera remaps are unit-testable
-    (mirrors :func:`_build_nav2_include`).
+    Pulled out of ``compose_runtime_graph`` so the impl→launch-file selection and per-scene
+    stereo-camera remaps are unit-testable (mirrors ``_build_nav2_include``).
 
-    ``visual_impl`` picks the engine — ``"pycuvslam"`` composes the in-process
-    PyCuVSLAM wheel node (``pycuvslam.launch.py``, rectified stereo, no Isaac
-    ROS apt stack); anything else composes the composable ``isaac_ros_visual_slam``
-    C++ node (``cuvslam.launch.py``). ``stereo_cameras_csv`` (a ``"<left>,<right>"``
-    scene rig) overrides the impl's default left/right topics, keyed to each
-    impl's own arg names. When ``enable_nav2`` is set, nvblox is composed too
-    (cuVSLAM gives pose, not an occupancy grid).
+    ``visual_impl`` picks the engine — ``"pycuvslam"`` composes the in-process PyCuVSLAM wheel
+    node (``pycuvslam.launch.py``, rectified stereo, no Isaac ROS apt stack); anything else
+    composes the composable ``isaac_ros_visual_slam`` C++ node (``cuvslam.launch.py``).
+    ``stereo_cameras_csv`` (``"<left>,<right>"``) overrides the impl's default left/right
+    topics, keyed to each impl's own arg names. ``enable_nav2`` also composes nvblox (cuVSLAM
+    gives pose, not an occupancy grid).
 
-    ``mono_camera`` (pycuvslam only) selects the **mono RGBD** path: one RGB
-    camera + the DA3 metric-depth provider. It auto-composes ``depth_provider_node``
-    (RGB → 32FC1 depth, framed at ``mono_depth_frame`` so nvblox can place it via
-    the HAL's ``base → <camera>_optical_frame`` TF) and nvblox — cuVSLAM gets the
-    depth for scale, nvblox for the occupancy grid + voxels. The DA3 sidecar
-    (``tools/da3_depth_sidecar.py``) is spawned alongside by default
-    (``depth_sidecar_autostart``); the depth provider retries until it answers
-    (first boot provisions the sidecar venv). ``False`` = operator-run/shared.
+    ``mono_camera`` (pycuvslam only) selects the mono RGBD path: one RGB camera + the DA3
+    metric-depth provider. Auto-composes ``depth_provider_node`` (RGB → 32FC1 depth, framed at
+    ``mono_depth_frame`` so nvblox can place it via the HAL's ``base → <camera>_optical_frame``
+    TF) and nvblox — cuVSLAM gets depth for scale, nvblox for the occupancy grid + voxels. The
+    DA3 sidecar (``tools/da3_depth_sidecar.py``) spawns alongside by default
+    (``depth_sidecar_autostart``); the depth provider retries until it answers (first boot
+    provisions the sidecar venv). ``False`` = operator-run/shared.
     """
     from launch.actions import ExecuteProcess, IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -548,12 +530,12 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
 def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: object) -> list:  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
     """Resolve every launch arg, load ``robot.yaml``, build the graph.
 
-    Bound to an :class:`~launch.actions.OpaqueFunction` in
-    :func:`generate_launch_description` so the launch args resolve to
+    Bound to an ``OpaqueFunction`` in
+    ``generate_launch_description`` so the launch args resolve to
     concrete strings before they reach
-    :class:`launch_ros.actions.LifecycleNode` (which doesn't accept
-    :class:`~launch.substitutions.LaunchConfiguration` in every field).
-    The name mirrors :func:`openral_rskill_ros.compose_runtime` — same
+    ``launch_ros.actions.LifecycleNode`` (which doesn't accept
+    ``LaunchConfiguration`` in every field).
+    The name mirrors ``openral_rskill_ros.compose_runtime`` — same
     "build the runtime in one place" semantics, scoped to the launch
     layer instead of the in-process composer.
     """
@@ -813,18 +795,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 print(f"[sim_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
-    # The actuated joint order (length n_dof) so the kernel can map
-    # /joint_states (named) into q_meas in the action's dof index space, the seed
-    # the geometric check needs to reconstruct non-position chunks. Same order as
-    # the per-joint envelope arrays + collision_dof_index. `collision_seed_dt_s`
-    # is the velocity-integration look-ahead step; 0.0 keeps the conservative
-    # reactive (measured-config) check only. This is deliberate: the only
-    # JOINT_VELOCITY emitter in-tree is the robocasa BASE chunk, whose dofs are
-    # listed in collision_base_dofs and zeroed before FK — so integrating them is
-    # a no-op. Enabling dt>0 helps only a future fixed-base
-    # velocity arm AND requires validating that the chunk's velocity units match
-    # this dt; integrating with the wrong dt would mispredict and could
-    # under-report, so it stays off (fail-safe) until that validation lands.
+    # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
+    # in the action's dof index space — same order as the per-joint envelope arrays +
+    # collision_dof_index. `collision_seed_dt_s` is the velocity-integration look-ahead step;
+    # 0.0 keeps the conservative reactive (measured-config) check only. Deliberate: the only
+    # JOINT_VELOCITY emitter in-tree is the robocasa BASE chunk, whose dofs are listed in
+    # collision_base_dofs and zeroed before FK, so integrating them is a no-op. dt>0 would help
+    # only a future fixed-base velocity arm, and requires validating the chunk's velocity units
+    # match this dt (wrong dt mispredicts and could under-report) — stays off (fail-safe) until
+    # validated.
     kernel_params["collision_joint_names"] = [j.name for j in description.joints]
     kernel_params["collision_seed_dt_s"] = 0.0
     # deploy-sim publishes /joint_states only as fast as the sim steps, which
@@ -834,21 +813,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # also moves slowly in sim-time, so a wall-stale seed is still spatially
     # accurate. Real hardware (30 Hz+ /joint_states) never approaches this bound.
     kernel_params["collision_state_deadline_ms"] = 1000.0
-    # Dof indices of the planar mobile-base joints (manifest
-    # base_joints). The kernel zeroes these before the base-relative collision FK
-    # so a mobile manipulator's arm is checked in the base_link frame the
-    # world/voxel grid lives in. Empty for fixed-base arms.
+    # Dof indices of the planar mobile-base joints (manifest base_joints). The kernel zeroes
+    # these before the base-relative collision FK so a mobile manipulator's arm is checked in
+    # the base_link frame the world/voxel grid lives in. Empty for fixed-base arms.
     #
-    # ``collision_base_dofs`` is omitted when empty: launch_ros's
-    # evaluate_parameter_dict normalises a Python list to a typed array and
-    # an EMPTY list collapses to ``()``, which ensure_argument_type rejects
-    # ("got '()' of type tuple"). The list is empty for every fixed-base
-    # arm (openarm, so101, franka_panda, ur5e, ur10e, …) — i.e. the
-    # majority of in-tree robots — so passing it unconditionally crashed
-    # the whole launch before any node started. The kernel declares its
-    # own ``[]`` default for this parameter, so omitting it is equivalent
-    # to "no base dofs to zero" (same semantics as the
-    # ``lifecycle_peer_node_ids`` guard 90 lines below).
+    # ``collision_base_dofs`` is omitted when empty: launch_ros's evaluate_parameter_dict
+    # normalises a Python list to a typed array, and an EMPTY list collapses to ``()``, which
+    # ensure_argument_type rejects ("got '()' of type tuple"). Empty for every fixed-base arm
+    # (openarm, so101, franka_panda, ur5e, ur10e, …) — the majority of in-tree robots — so
+    # passing it unconditionally crashed the whole launch before any node started. The kernel
+    # declares its own ``[]`` default for this parameter, so omitting it means "no base dofs to
+    # zero" (same semantics as the ``lifecycle_peer_node_ids`` guard 90 lines below).
     _base_joint_set = set(getattr(description, "base_joints", None) or [])
     _collision_base_dofs = [
         i for i, j in enumerate(description.joints) if j.name in _base_joint_set
@@ -860,20 +835,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # model) leaves predictive Cartesian off; the reactive measured-config check
     # is the floor regardless. Base dofs above are blocked from the arm Jacobian.
     kernel_params["collision_ee_link_index"] = ee_link_index_from_collision_params(collision_params)
-    # When octomap is enabled, turn on the kernel's
-    # allocation-free capsule-vs-voxel world-collision check and have it
-    # subscribe /openral/world_voxels (published by the octomap bridge
-    # below). max_cells covers the bridge's default 2×2×2 m @ 0.05 grid
-    # (64 k cells) with headroom; margin inflates obstacles conservatively.
-    # Fail-closed staleness/over-capacity semantics are the kernel's.
+    # When octomap is enabled, turn on the kernel's allocation-free capsule-vs-voxel
+    # world-collision check and subscribe /openral/world_voxels (published by the octomap
+    # bridge below). max_cells covers the bridge's default 2×2×2 m @ 0.05 grid (64k cells) with
+    # headroom; margin inflates obstacles conservatively. Fail-closed staleness/over-capacity
+    # semantics are the kernel's.
     #
-    # The check tests each robot link CAPSULE against the grid, so it needs a
-    # collision model with links: the kernel hard-fails ``on_configure`` if a
-    # geometric check is enabled but ``collision_n_links == 0``. Robots that
-    # declare a depth sensor but no collision geometry (e.g. panda_mobile)
-    # still get the map produced (octomap_server + bridge launch below for
-    # observability), but the kernel voxel check stays off so the kernel
-    # configures cleanly on its scalar envelope.
+    # The check tests each robot link CAPSULE against the grid, so it needs a collision model
+    # with links: the kernel hard-fails ``on_configure`` if a geometric check is enabled but
+    # ``collision_n_links == 0``. Robots that declare a depth sensor but no collision geometry
+    # (e.g. panda_mobile) still get the map produced (octomap_server + bridge launch below for
+    # observability), but the kernel voxel check stays off so the kernel configures cleanly on
+    # its scalar envelope.
     has_collision_capsules = int(collision_params.get("collision_n_links", 0)) > 0
     if has_collision_capsules and _attached_collision_enabled(hal_mode):
         kernel_params = {
@@ -1074,19 +1047,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         additional_env=otel_env,
         output="screen",
     )
-    # Derive ``camera_names`` from the robot manifest's RGB sensors so
-    # the WorldState aggregator subscribes to the topics the HAL
-    # actually publishes. Hard-coding ``[top, left_wrist, right_wrist]``
-    # broke the panda_mobile / robocasa-kitchen path: that robot's
-    # ``robots/panda_mobile/robot.yaml`` declares
-    # ``camera1 / camera2 / camera3`` (robocasa renders
-    # ``robot0_agentview_left_image`` etc. and the adapter remaps them
-    # to ``cameraN``), so WorldState was subscribing to /image topics
-    # nothing publishes — and the rldx adapter's
-    # ``observation.images['camera1']`` lookup later raised
-    # ``ROSConfigError: rldx adapter expects observation.images
-    # ['camera1']; got []``. Fall back to the legacy triple if the
-    # manifest declares no RGB sensors (e.g. pure-base robots).
+    # Derive ``camera_names`` from the robot manifest's RGB sensors so the WorldState aggregator
+    # subscribes to the topics the HAL actually publishes. Hard-coding
+    # ``[top, left_wrist, right_wrist]`` broke panda_mobile / robocasa-kitchen: that robot
+    # declares ``camera1/camera2/camera3`` (robocasa renders ``robot0_agentview_left_image``
+    # etc., remapped to ``cameraN``), so WorldState subscribed to topics nothing publishes and
+    # the rldx adapter's ``observation.images['camera1']`` lookup raised
+    # ``ROSConfigError: rldx adapter expects observation.images['camera1']; got []``. Falls back
+    # to the legacy triple if the manifest declares no RGB sensors (e.g. pure-base robots).
     rgb_camera_names = [s.name for s in description.sensors if s.modality == "rgb"]
     if not rgb_camera_names:
         rgb_camera_names = ["top", "left_wrist", "right_wrist"]
@@ -1207,17 +1175,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             output="log",
         )
     )
-    # The reasoner uses the robust script-based autostart (tools/lifecycle_autostart.py),
-    # not _autostart_lifecycle's launch_ros event handlers — same Jazzy race documented
-    # for HAL/slam_toolbox above. Under a heavy graph (reward monitor + critic loading
-    # concurrently with the reasoner's configure) the OnStateTransition(configuring →
-    # inactive) handler can miss the reasoner's transition_event, silently dropping the
-    # ACTIVATE so the reasoner sits in INACTIVE forever (launch_ros logs "Abandoning wait
-    # for /openral_reasoner/change_state"; the whole deploy then never reaches the tick
-    # loop). The script polls the node's state and drives CONFIGURE→ACTIVATE with a
-    # generous timeout, immune to the race. The reasoner is never runtime-deactivated
-    # (VRAM eviction only evicts the detectors, not the reasoner), so a one-shot drive to active is
-    # behaviour-preserving — exactly as for the HAL block below.
+    # Reasoner uses the robust script-based autostart (tools/lifecycle_autostart.py), not
+    # _autostart_lifecycle's launch_ros event handlers — same Jazzy race as HAL/slam_toolbox
+    # below. Under a heavy graph (reward monitor + critic loading concurrently with the
+    # reasoner's configure) the OnStateTransition(configuring → inactive) handler can miss the
+    # transition_event, silently dropping ACTIVATE so the reasoner sits in INACTIVE forever
+    # (launch_ros logs "Abandoning wait for /openral_reasoner/change_state"; the deploy never
+    # reaches the tick loop). The script polls the node's state and drives CONFIGURE→ACTIVATE
+    # with a generous timeout, immune to the race. The reasoner is never runtime-deactivated
+    # (VRAM eviction only evicts the detectors), so a one-shot drive to active is
+    # behaviour-preserving — same as the HAL block below.
     _reasoner_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
     if enable_reasoner:
         autostart.append(
@@ -1238,18 +1205,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             )
         )
         autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
-    # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather
-    # than ``_autostart_lifecycle`` because launch_ros's
-    # ``lifecycle_event_manager`` race on Jazzy (same one documented for
-    # slam_toolbox below) silently swallows the ACTIVATE transition on
-    # robocasa-kitchen first-boots: the HAL's ``on_configure`` takes
-    # ~6 s (MuJoCo + robosuite import + env.reset), and by the time the
-    # FSM publishes ``transition_event(inactive)``, the
-    # ``OnStateTransition(goal_state="inactive")`` event handler's
-    # ``EmitEvent(ChangeState=ACTIVATE)`` is dropped. End-state: HAL
-    # stuck in INACTIVE, no ``on_activate``, no /joint_states, no
-    # /odom, no /openral/cameras/*/image publishers. Nav2 + dashboard
-    # cameras can't come up. Mirror the slam_toolbox workaround.
+    # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather than
+    # ``_autostart_lifecycle`` because launch_ros's ``lifecycle_event_manager`` race on Jazzy
+    # (same one as slam_toolbox below) silently swallows ACTIVATE on robocasa-kitchen
+    # first-boots: HAL's ``on_configure`` takes ~6 s (MuJoCo + robosuite import + env.reset),
+    # and by the time the FSM publishes ``transition_event(inactive)``, the
+    # ``OnStateTransition(goal_state="inactive")`` handler's ``EmitEvent(ChangeState=ACTIVATE)``
+    # is dropped. End-state: HAL stuck in INACTIVE, no ``on_activate``, no /joint_states, no
+    # /odom, no /openral/cameras/*/image publishers — Nav2 + dashboard cameras can't come up.
+    # Mirrors the slam_toolbox workaround.
     hal_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
     from openral_hal.sim_bringup import hal_transition_timeout_s
 
@@ -1275,19 +1239,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
     )
 
-    # robot_state_publisher: when the robot.yaml carries an
-    # ``assets.urdf`` ref, launch ``robot_state_publisher`` so the per-link
-    # arm + sensor TF chain lands on ``/tf`` (consumed by the
-    # ``openral_state_adapter`` registry at step time; also by
-    # Nav2 / MoveIt / RViz when present). The ref can be either:
+    # robot_state_publisher: when robot.yaml carries an ``assets.urdf`` ref, launch
+    # ``robot_state_publisher`` so the per-link arm + sensor TF chain lands on ``/tf``
+    # (consumed by the ``openral_state_adapter`` registry at step time; also by
+    # Nav2 / MoveIt / RViz when present). The ref is either:
     #
-    # * a ``file:<relpath>`` (vendored URDF, resolved against the manifest dir
-    #   then the repo root) or a ``rd:<module>`` ref (pulled from the
-    #   ``robot_descriptions`` package, no large file checked in-tree);
-    # * the ``ros2://robot_description`` dynamic marker — declared by the
-    #   detection assembler when the robot publishes its own URDF on the
-    #   ``/robot_description`` topic. ``resolve_asset`` returns ``None`` for it,
-    #   so RSP is skipped (the URDF is already on the bus).
+    # * ``file:<relpath>`` (vendored URDF, resolved against the manifest dir then repo root) or
+    #   ``rd:<module>`` (pulled from the ``robot_descriptions`` package, no large file checked
+    #   in-tree);
+    # * ``ros2://robot_description`` — declared by the detection assembler when the robot
+    #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
+    #   it, so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list = []
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
@@ -1359,20 +1321,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     ),
                 )
 
-    # Sensor mount poses. A sensor whose manifest entry declares both
-    # ``parent_frame`` and ``static_transform_xyz_rpy`` gets that transform on
-    # /tf_static, so its readings are located by TF rather than by being
-    # mislabelled into an existing frame. panda_mobile's ``base_scan`` is why
-    # this exists: it used to declare ``frame_id: base_link`` and silently lose
-    # its 0.40 m mount offset, handing Nav2 and slam_toolbox every return 0.40 m
-    # above where the ray was cast. Same shape as the URDF-root bridge above,
-    # and the same reason — the manifest owns the geometry, not the launch file.
+    # Sensor mount poses. A sensor whose manifest entry declares both ``parent_frame`` and
+    # ``static_transform_xyz_rpy`` gets that transform on /tf_static, so its readings are
+    # located by TF rather than mislabelled into an existing frame. panda_mobile's
+    # ``base_scan`` is why this exists: it declared ``frame_id: base_link`` and silently lost
+    # its 0.40 m mount offset, handing Nav2 and slam_toolbox every return 0.40 m above where the
+    # ray was cast. Same shape and reason as the URDF-root bridge above — the manifest owns the
+    # geometry, not the launch file.
+    #
     # Manifest sensors UNION DeployScene sensors, scene winning on a name clash
-    # (`merge_deploy_sensors`' own rule). Iterating only the manifest meant a
-    # workcell-mounted camera — every camera on the OpenArm restock cell, which
-    # declares all three at scene level — could never get its mount published,
-    # which is the exact failure the comment above says this loop exists to
-    # prevent.
+    # (`merge_deploy_sensors`'s own rule): iterating only the manifest would silently drop the
+    # mount publish for a workcell-mounted camera (e.g. every camera on the OpenArm restock
+    # cell, declared entirely at scene level).
     from openral_rskill_ros.sensor_leg import merge_deploy_sensors
 
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
@@ -1424,7 +1384,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # in-process PyCuVSLAM wheel) is chosen by ``slam_visual_impl`` — a
             # host property, not a capability. Both single-source the node spec
             # from the openral_slam_bringup launch files; see
-            # :func:`_build_visual_slam_includes`.
+            # ``_build_visual_slam_includes``.
             slam_share = get_package_share_directory("openral_slam_bringup")
             # Mono RGBD frames its DA3 depth at the camera's TF frame so nvblox
             # can place it via the HAL's live camera TF; resolve that frame from
@@ -1476,24 +1436,20 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 output="screen",
             )
             extra_nodes.append(slam_node)
-            # Auto-CONFIGURE + ACTIVATE slam_toolbox externally via a
-            # tiny in-process Python helper that uses rclpy.lifecycle to
-            # drive the transitions with retries. Using
-            # ``ros2 lifecycle set`` directly was racey on robocasa-kitchen
-            # boots: the kitchen install subprocess prints ~60 lines to
-            # stdout before slam_toolbox's service is fully advertised,
-            # so a fixed-delay TimerAction fired ``ros2 lifecycle set``
-            # while the node was still ``Node not found``, exiting 1 and
-            # surfacing as ``[ERROR] [ros2-9]: process has died, exit
-            # code 1``. The rclpy helper waits for the service, retries,
-            # and never logs at ERROR level on transient absence.
+            # Auto-CONFIGURE + ACTIVATE slam_toolbox externally via a tiny in-process Python
+            # helper (rclpy.lifecycle, with retries). Direct ``ros2 lifecycle set`` was racey on
+            # robocasa-kitchen boots: the kitchen install subprocess prints ~60 lines to stdout
+            # before slam_toolbox's service is fully advertised, so a fixed-delay TimerAction
+            # fired ``ros2 lifecycle set`` while the node was still "Node not found", exiting 1
+            # and surfacing as ``[ERROR] [ros2-9]: process has died, exit code 1``. The rclpy
+            # helper waits for the service, retries, and never logs at ERROR on transient
+            # absence.
             #
-            # Using rclpy avoids launch_ros's ``lifecycle_event_manager``
-            # which on Jazzy logs a spurious ``[ERROR] Failed to make
-            # transition 'TRANSITION_CONFIGURE'`` even when slam_toolbox's
-            # ``on_configure`` returns SUCCESS (the change_state response
-            # arrives with ``success=false`` on the first call due to a
-            # service-responder race upstream).
+            # Also avoids launch_ros's ``lifecycle_event_manager``, which on Jazzy logs a
+            # spurious ``[ERROR] Failed to make transition 'TRANSITION_CONFIGURE'`` even when
+            # slam_toolbox's ``on_configure`` returns SUCCESS (the change_state response arrives
+            # with ``success=false`` on the first call due to a service-responder race
+            # upstream).
             lifecycle_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
             slam_autostart = ExecuteProcess(
                 cmd=[
@@ -1533,18 +1489,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 ),
             ),
         )
-        # The reasoner_node seeds its rSkill
-        # palette at on_configure (~5 s after launch), long before
-        # Nav2 finishes its 15-30 s lifecycle bringup. The graph-
-        # availability filter drops the
-        # ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` rSkill because
-        # ``/navigate_to_pose`` isn't yet advertised — so the LLM
-        # never sees the Nav2 tool and replies "I do not have a
-        # tool available to perform base movement". Spawn a small
-        # helper that polls the ROS graph for ``/navigate_to_pose``
-        # and fires Empty on ``/openral/skill_registry_changed``
-        # once it appears; the reasoner re-seeds the palette and
-        # the Nav2 rSkill becomes dispatchable.
+        # reasoner_node seeds its rSkill palette at on_configure (~5 s after launch), long
+        # before Nav2 finishes its 15-30 s lifecycle bringup. The graph-availability filter
+        # drops the ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` rSkill because
+        # ``/navigate_to_pose`` isn't yet advertised, so the LLM never sees the Nav2 tool and
+        # replies "I do not have a tool available to perform base movement". Spawn a small
+        # helper that polls the ROS graph for ``/navigate_to_pose`` and fires Empty on
+        # ``/openral/skill_registry_changed`` once it appears; the reasoner re-seeds the palette
+        # and the Nav2 rSkill becomes dispatchable.
         palette_reseed_helper = str(_REPO_ROOT / "tools" / "wait_for_action_and_signal_palette.py")
         extra_nodes.append(
             ExecuteProcess(
@@ -1568,18 +1520,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
-        # The world-collision perception leg. octomap_server
-        # builds a 3-D OcTree from the HAL's depth PointCloud2
-        # (``synthesize_depth_image`` back-projected by
-        # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and
-        # the openral_octomap_bridge lowers that octree into the dense
-        # ``/openral/world_voxels`` grid the kernel rasterizes capsules
-        # against. Keeps the octomap dependency OUT of the real-time
-        # kernel. ``frame_id`` is the fixed tree frame (odom, already on
-        # /tf via the HAL's odom→base_link broadcast); ``cloud_in`` is
-        # remapped to the robot's depth topic. Requires
-        # ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge
-        # package built — opt-in, default off, like slam/nav2.
+        # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
+        # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
+        # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
+        # lowers that octree into the dense ``/openral/world_voxels`` grid the kernel rasterizes
+        # capsules against — keeps the octomap dependency OUT of the real-time kernel.
+        # ``frame_id`` is the fixed tree frame (odom, already on /tf via the HAL's
+        # odom→base_link broadcast); ``cloud_in`` is remapped to the robot's depth topic.
+        # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
+        # opt-in, default off, like slam/nav2.
         octomap_server = Node(
             package="octomap_server",
             executable="octomap_server_node",
@@ -1646,39 +1595,34 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         extra_nodes.extend([octomap_server, octomap_bridge])
 
     if enable_object_detector or locator_specs:
-        # The perception leg runs when EITHER the continuous detector
-        # is on OR an on-demand locator was requested (a lean ``--no-object-detector``
-        # deploy grounds via the locator alone). The continuous-detector node itself
-        # stays gated on ``enable_object_detector`` below; the camera resolution and
-        # the locator loop run for both.
-        # The object-detection perception leg. The ROS-Image
-        # detector runs RT-DETR over the agentview RGB tee and publishes
-        # ObjectsMetadata to /openral/perception/objects. The world-state
-        # node's object-lift (object_lift_enabled defaults True) subscribes
-        # that topic, resolves the detection camera from the robot
-        # description via ``sensor_id``, and raises 2-D boxes into the
-        # /openral/world_voxels grid in the ``map`` frame. Purely additive:
-        # the detector emits no Action chunks and the safety kernel never
-        # sees its output. The COCO-80 label map is read from the
-        # rtdetr-coco-r18 rSkill manifest at launch-build time so the node's
-        # class indices map to the same names the model was exported with.
-        # yaml is imported locally on purpose: a default (detector-off) launch
-        # must never import yaml or read rskill.yaml, so the base graph stays
+        # The perception leg runs when EITHER the continuous detector is on OR an on-demand
+        # locator was requested (a lean ``--no-object-detector`` deploy grounds via the locator
+        # alone). The continuous-detector node itself stays gated on ``enable_object_detector``
+        # below; camera resolution and the locator loop run for both.
+        #
+        # The object-detection perception leg: the ROS-Image detector runs RT-DETR over the
+        # agentview RGB tee and publishes ObjectsMetadata to /openral/perception/objects. The
+        # world-state node's object-lift (object_lift_enabled defaults True) subscribes that
+        # topic, resolves the detection camera from the robot description via ``sensor_id``,
+        # and raises 2-D boxes into the /openral/world_voxels grid in the ``map`` frame. Purely
+        # additive: the detector emits no Action chunks and the safety kernel never sees its
+        # output. The COCO-80 label map is read from the rtdetr-coco-r18 rSkill manifest at
+        # launch-build time so the node's class indices map to the same names the model was
+        # exported with. ``yaml`` is imported locally on purpose: a default (detector-off)
+        # launch must never import yaml or read rskill.yaml, so the base graph stays
         # byte-for-byte unchanged. Do NOT hoist this import to the module top.
         import yaml
 
-        # Cross-frame lift — detect on (and stamp the detection with)
-        # the robot's first *liftable* RGB camera: one whose frame_id is a
-        # dedicated ``*_optical_frame`` (the SimSensorBridge broadcasts its live
-        # extrinsics, so the world-state lifter can project the world voxel map
-        # into it). The detection's ``sensor_id`` MUST be that camera — not a
-        # depth sensor — so the lifter resolves the right intrinsics/extrinsics.
-        # Generic over robots; prefer an optical-frame RGB camera but fall back
-        # to the robot's first RGB camera so the detector still gets frames.
-        # (Post canonical-camera-slot rename, franka_panda publishes ``top``/``wrist``,
-        # neither optical-framed; the old hardcoded ``agentview_left`` fallback
-        # was a dead topic — the detector cached no frame and every
-        # ``locate_in_view`` returned found=False, looping the reasoner.)
+        # Cross-frame lift: detect on (and stamp the detection with) the robot's first
+        # *liftable* RGB camera — one whose frame_id is a dedicated ``*_optical_frame`` (the
+        # SimSensorBridge broadcasts its live extrinsics, so the world-state lifter can project
+        # the world voxel map into it). The detection's ``sensor_id`` MUST be that camera, not a
+        # depth sensor, so the lifter resolves the right intrinsics/extrinsics. Generic over
+        # robots; prefers an optical-frame RGB camera but falls back to the robot's first RGB
+        # camera so the detector still gets frames. (franka_panda publishes ``top``/``wrist``,
+        # neither optical-framed; the old hardcoded ``agentview_left`` fallback was a dead
+        # topic — no cached frame, every ``locate_in_view`` returned found=False, looping the
+        # reasoner.)
         det_camera = "agentview_left"
         try:
             with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:

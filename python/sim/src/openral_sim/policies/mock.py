@@ -32,7 +32,7 @@ class _MockSim:
     """Tiny gym-like env used for tests.
 
     The "physics" is just a step counter; success fires after
-    :attr:`success_step` steps. Image observations are zeros of the right
+    ``success_step`` steps. Image observations are zeros of the right
     shape so any downstream image preprocessing path runs end-to-end.
     """
 

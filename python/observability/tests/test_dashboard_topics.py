@@ -1,4 +1,4 @@
-"""Topic-bucket tests for :mod:`openral_observability.dashboard.store`.
+"""Topic-bucket tests for ``openral_observability.dashboard.store``.
 
 These tests verify the per-topic dynamic aggregation added on top of the
 latest-wins span cards: hal.read_state populates `topics.robot_state`,

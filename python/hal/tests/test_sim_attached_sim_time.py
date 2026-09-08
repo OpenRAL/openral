@@ -13,30 +13,11 @@ the ``test_sim_attached_idle_step.py`` ``_build_so101_hal`` idiom.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import pairwise
 
 import pytest
 from _renderer_probe import requires_renderer
-
-
-def _build_so101_hal() -> object:
-    """Build a connected SimAttachedHAL over the native-MuJoCo so101 box scene.
-
-    Mirrors ``test_sim_attached_idle_step._build_so101_hal``: the backend
-    exposes no introspectable ``action_dim`` so we pass ``env_action_dim=6``
-    explicitly (the documented path for non-introspectable envs).
-    """
-    from openral_core import RobotDescription
-    from openral_hal.sim_attached import SimAttachedHAL
-    from openral_hal.sim_bringup import build_sim_env_from_yaml
-
-    env, seed = build_sim_env_from_yaml(
-        "scenes/sim/so101_tube_insertion.yaml", robot_id_fallback="so101_follower"
-    )
-    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-    hal = SimAttachedHAL(env, desc, env_reset_seed=seed, env_action_dim=6)
-    hal.connect()
-    return hal
 
 
 @requires_renderer
@@ -58,7 +39,9 @@ def test_rollout_sim_time_ns_advances_on_real_mujoco_backend() -> None:
 
 
 @requires_renderer
-def test_sim_attached_sim_time_ns_monotonic_across_steps_real_mujoco() -> None:
+def test_sim_attached_sim_time_ns_monotonic_across_steps_real_mujoco(
+    _build_so101_hal: Callable[[], object],
+) -> None:
     """SimAttachedHAL.sim_time_ns is monotonic non-decreasing across real steps."""
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
@@ -77,7 +60,9 @@ def test_sim_attached_sim_time_ns_monotonic_across_steps_real_mujoco() -> None:
 
 
 @requires_renderer
-def test_sim_attached_sim_time_ns_does_not_rewind_across_reconnect_real_mujoco() -> None:
+def test_sim_attached_sim_time_ns_does_not_rewind_across_reconnect_real_mujoco(
+    _build_so101_hal: Callable[[], object],
+) -> None:
     """The cross-reset offset prevents a rewind on lifecycle reconnect.
 
     The env's explicit reset rewinds real ``MjData.time``; deploy-sim

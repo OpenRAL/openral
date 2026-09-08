@@ -2,49 +2,29 @@
 # Wraps: Calvert0921/smolvla_franka_liftcube_1000
 # Base:  lerobot/smolvla_base   (arxiv:2506.01844)
 #
-# Community SmolVLA finetune on a ManiSkill-style Franka LiftCube task,
-# trained on the paired dataset Calvert0921/SmolVLA_LiftCube_Franka_1000
-# (1000 demos). The upstream model card is empty so this rSkill is
-# wired strictly from the checkpoint's `config.json`:
+# Community SmolVLA finetune on a ManiSkill-style Franka LiftCube task, dataset
+# Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos). Upstream model card is
+# empty, so this manifest is wired strictly from the checkpoint's `config.json`:
+# type smolvla; input observation.state (9,) Franka qpos (7 arm + 2 fingers),
+# observation.images.up (3,256,256) overhead, observation.images.wrist
+# (3,256,256) eye-in-hand; output action (8,) = 7 joint pos + 1 gripper;
+# chunk_size 50, n_action_steps 50, flow-matching steps 10.
 #
-#   type: smolvla           → routed via the in-tree `smolvla` adapter.
-#   input_features:
-#     observation.state              shape (9,)        — Franka qpos
-#                                                       (7 arm + 2 fingers)
-#     observation.images.up          shape (3,256,256) — top / overhead view
-#     observation.images.wrist       shape (3,256,256) — eye-in-hand view
-#   output_features:
-#     action                          shape (8,)        — 7 joint pos + 1 gripper
-#   chunk_size: 50  n_action_steps: 50  flow-matching steps: 10
+# ManiSkill3 backend surfaces cameras as `camera1`/`camera2` (matching
+# franka_panda's `sensors` block); `image_preprocessing.aliases` below renames
+# them to the model's `up`/`wrist` keys. Companion MS3 backend changes (this
+# PR) surface every `sensor_data` entry as camera1/camera2/... in declaration
+# order, plumb `backend_options.robot_uids` to `gym.make` (so `panda_wristcam`
+# brings in the wrist cam), and forward `task.max_steps` to MS3's
+# `max_episode_steps` (else silently truncated at MS3's default 50).
 #
-# Camera-name mapping
-# -------------------
-# The ManiSkill3 backend surfaces cameras under `camera1` / `camera2`
-# (matching the franka_panda RobotDescription's `sensors` block); the
-# `image_preprocessing.aliases` map below renames those to the model's
-# `up` / `wrist` keys so the SmolVLA preprocessor finds them.
-#
-# End-to-end wiring
-# -----------------
-# The companion ManiSkill3 backend changes (this PR) surface every
-# entry in `sensor_data` as `camera1` / `camera2` / ... in declaration
-# order, plumb `backend_options.robot_uids` through to `gym.make` so
-# the YAML's `panda_wristcam` brings in the wrist camera, and forward
-# `task.max_steps` to MS3's `max_episode_steps` so the rollout isn't
-# silently truncated at MS3's default 50 steps.
-#
-# The upstream model repo (Calvert0921/smolvla_franka_liftcube_1000)
-# ships only config.json + model.safetensors + train_config.json — no
-# `policy_*processor.json`. Rather than rely on the SmolVLA adapter's
-# dataset-stats fallback at every load (a 404 + recompute against
-# `dataset_uri`'s `meta/episodes_stats.jsonl`), the processor pair was
-# rebuilt once via `make_pre_post_processors(policy.config,
-# dataset_stats=...)` and uploaded to THIS rSkill's own HF repo
-# (OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16). The rebuilt normalizer
-# stats match the checkpoint's baked `normalize_inputs` /
-# `normalize_targets` buffers exactly, so the processors are faithful to
-# how the model was trained. The fallback path still exists for any
-# other community finetune uploaded without processors.
+# Upstream repo ships no `policy_*processor.json` (only config.json +
+# model.safetensors + train_config.json). Rather than rely on the adapter's
+# dataset-stats fallback at every load (404 + recompute), the processor pair
+# was rebuilt once via `make_pre_post_processors(policy.config,
+# dataset_stats=...)` and uploaded to this rSkill's own HF repo — verified to
+# match the checkpoint's baked normalize buffers exactly. Fallback path still
+# exists for other community finetunes shipped without processors.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -130,18 +110,15 @@ latency_budget:
 paper_url: "https://arxiv.org/abs/2506.01844"
 dataset_uri: "hf://Calvert0921/SmolVLA_LiftCube_Franka_1000"
 source_repo: "hf://Calvert0921/smolvla_franka_liftcube_1000"
-# Task-data gate: this checkpoint was trained on the *LiftCube*
-# dataset (a ManiSkill2-style "lift the cube to a height" task) which has NO
-# equivalent env in ManiSkill3 3.0.1 — MS3 ships PickCube-v1 (grasp + place at
-# a goal + stay static), a different task. Declaring the (MS3-absent) true task
-# makes the benchmark runner refuse every real MS3 scene with
-# ROSCapabilityMismatch. Verified empirically 2026-06-19: retargeted to
-# PickCube-v1 it runs (50 steps, ~15 ms/step real inference) and attempts the
-# cube but cannot satisfy PickCube's goal-placement success (success=False) —
-# exactly the plausible-but-unsolvable rollout the gate exists to block. This
-# rSkill therefore has no valid MS3 benchmark; replace with a PickCube-trained
-# policy (e.g. the author's PegInsertion checkpoint -> PegInsertionSide-v1, or
-# an MS3 OpenVLA-OFT policy) before pairing it with a maniskill scene.
+# Task-data gate: trained on *LiftCube* (ManiSkill2-style "lift to a height"),
+# which has NO equivalent env in MS3 3.0.1 (MS3 ships PickCube-v1: grasp +
+# place at goal + stay static — a different task). Declaring the MS3-absent
+# true task makes the benchmark runner refuse every MS3 scene with
+# ROSCapabilityMismatch. Verified 2026-06-19: retargeted to PickCube-v1 it
+# runs (50 steps, ~15 ms/step) but cannot satisfy PickCube's goal-placement
+# success — exactly the plausible-but-unsolvable rollout the gate blocks. No
+# valid MS3 benchmark until replaced with a PickCube-trained policy (e.g.
+# author's PegInsertion -> PegInsertionSide-v1, or an MS3 OpenVLA-OFT policy).
 evaluated_tasks: ["maniskill3/LiftCube"]
 
 description: >
@@ -171,15 +148,10 @@ action_contract:
   dim: 8
 
 benchmarks:
-  # PickCube-v1, measured BEFORE the evaluated_tasks gate existed. 0.0 = the
-  # shipped LiftCube checkpoint cannot satisfy PickCube's goal-placement
-  # success (task mismatch — see the MS3 LiftCube-gap note above).
-  #
-  # This number is no longer reproducible by the documented command: no
-  # in-tree scene or suite carries `maniskill3/LiftCube`, so
-  # `openral benchmark run --suite maniskill3_panda --rskill
+  # PickCube-v1, measured BEFORE the evaluated_tasks gate existed; 0.0 = task
+  # mismatch (see LiftCube-gap note above). No longer reproducible by the
+  # documented command: no in-tree scene/suite carries `maniskill3/LiftCube`,
+  # so `openral benchmark run --suite maniskill3_panda --rskill
   # rskills/smolvla-maniskill-franka` now filters to zero tasks and raises
-  # ROSCapabilityMismatch. That is the gate working as designed — this rSkill
-  # has no valid in-tree MS3 benchmark until a LiftCube scene is added or a
-  # PickCube-trained checkpoint replaces it.
+  # ROSCapabilityMismatch — the gate working as designed.
   maniskill3_panda: 0.0

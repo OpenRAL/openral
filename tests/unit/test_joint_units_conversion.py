@@ -1,21 +1,16 @@
 """Joint-units conversion at the policy boundary (issue #135).
 
-The runner no longer guesses the checkpoint's joint units — every
-joint-position rSkill declares ``action_contract.joint_units`` and the
-runner converts deg<->rad only when it is ``degrees``. These tests pin the
-two actuation-critical helpers that apply that conversion:
+The runner no longer guesses checkpoint joint units — every joint-position
+rSkill declares ``action_contract.joint_units``, converted deg<->rad only
+when ``degrees``. Pins the two actuation-critical helpers:
 
-* :func:`_robot_state_to_policy` — robot-order radians state → policy order,
-  converting rad->deg when the policy is a degrees checkpoint (so a
-  degrees-trained policy is never fed raw radians, ~57x too small → OOD).
-* :func:`_policy_action_to_robot` — policy-order action → robot order,
-  converting deg->rad so a degrees checkpoint's output reaches the radians
-  ``Action`` contract instead of passing through raw (~57x too large → the
-  arm slams its limits).
+* ``_robot_state_to_policy`` — robot radians → policy order, rad->deg
+  for a degrees checkpoint (else ~57x too small → OOD).
+* ``_policy_action_to_robot`` — policy action → robot order, deg->rad
+  for a degrees checkpoint (else ~57x too large → arm slams its limits).
 
-Gripper channels carry a custom motor unit, not an angle. ``gripper_scale``
-maps the HAL's normalized [0, 1] surface to a checkpoint's [0, 100] dataset
-surface when declared.
+Gripper channels carry a motor unit, not an angle; ``gripper_scale`` maps the
+HAL's normalized [0, 1] to a checkpoint's [0, 100] dataset surface when declared.
 """
 
 from __future__ import annotations
@@ -134,13 +129,11 @@ def test_missing_policy_feature_names_falls_back_to_robot_gripper_role() -> None
 def test_adapter_without_a_policy_passes_through_instead_of_raising() -> None:
     """An adapter exposing no ``_policy`` must fall through, not blow up.
 
-    ACT / DiffusionPolicy adapters (and any non-lerobot backbone) have no
-    ``_policy`` attribute, so reading it raises AttributeError on the first
-    line of the probe and leaves the local unbound. The follow-up
-    ``output_features`` read then raised ``UnboundLocalError`` — a NameError,
-    which the surrounding ``except (AttributeError, KeyError, TypeError)``
-    does not catch — so the runner crashed where the contract says it should
-    return "pass through" and let the safety kernel enforce correctness.
+    ACT/DiffusionPolicy adapters have no ``_policy``; reading it raises
+    AttributeError and leaves the local unbound, so the follow-up
+    ``output_features`` read raised ``UnboundLocalError`` — uncaught by
+    ``except (AttributeError, KeyError, TypeError)`` — crashing where the
+    contract says "pass through".
     """
     description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
 

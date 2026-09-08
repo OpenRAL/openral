@@ -4,21 +4,17 @@ Backends like RoboCasa (kitchen + GR1 fork) and LIBERO need install
 recipes that go beyond ``uv sync --group <name>``: editable installs of
 git clones, ``--no-deps`` pins of robosuite master, compiler env
 overrides (``CC=/usr/bin/gcc`` for LIBERO's robosuite==1.4 C
-extensions). The historical UX was a 10-line install hint baked into a
-``ROSConfigError`` and the user pasted commands by hand. This module
-turns that into a one-prompt-and-go flow:
+extensions). One-prompt-and-go flow:
 
-* :class:`BackendInstallPlan` declares a sequence of subprocess steps
+* ``BackendInstallPlan`` declares a sequence of subprocess steps
   plus probe imports to detect "already installed".
-* :func:`ensure_backend_deps` short-circuits when the probes succeed,
+* ``ensure_backend_deps`` short-circuits when the probes succeed,
   otherwise prints a Rich banner with the full plan and auto-installs
   (default). Set ``OPENRAL_AUTO_INSTALL_DEPS=0`` to prompt instead.
-  Failures raise a typed :class:`ROSConfigError` with the verbatim
-  commands so the user can finish out-of-band. Failures raise a typed
-  :class:`ROSConfigError` with the verbatim commands so the user can
-  finish out-of-band.
+  Failures raise a typed ``ROSConfigError`` with the verbatim
+  commands so the user can finish out-of-band.
 
-Sibling of :mod:`openral_sim._assets` which handles the lazy-download
+Sibling of ``openral_sim._assets`` which handles the lazy-download
 of large CC-BY asset bundles after deps are in place.
 """
 
@@ -51,7 +47,7 @@ _DEFAULT_CACHE_HOME = Path.home() / ".cache" / "openral"
 _AUTO_INSTALL_ENV = "OPENRAL_AUTO_INSTALL_DEPS"
 
 _INSTALL_LOCK = threading.Lock()
-"""Serialises :func:`ensure_backend_deps` across threads.
+"""Serialises ``ensure_backend_deps`` across threads.
 
 ``SimRunner._build_env_and_policy`` builds env + policy concurrently on a
 2-worker ``ThreadPoolExecutor``. Without this lock both workers race into
@@ -63,7 +59,7 @@ banner is shown, the user answers once, and the second thread re-probes after
 the install has run (and short-circuits if the same plan covered both)."""
 """Set to ``1`` to skip the confirmation prompt and run the plan straight away.
 
-Honoured the same way :data:`openral_sim._assets._ROBOCASA_ALLOW_ENV`
+Honoured the same way ``openral_sim._assets._ROBOCASA_ALLOW_ENV``
 gates the asset-download prompt — useful in CI / Dockerfiles where
 interactive prompts are not available.
 """
@@ -80,9 +76,9 @@ class InstallStep:
 
     Attributes:
         description: One-line human description shown in the banner.
-        argv: Command + args list, executed via :func:`subprocess.run`
+        argv: Command + args list, executed via ``subprocess.run``
             (``shell=False``). The first entry is resolved through
-            :func:`shutil.which` so the plan can refer to ``"uv"`` /
+            ``shutil.which`` so the plan can refer to ``"uv"`` /
             ``"git"`` without hardcoding paths.
         env: Extra env vars layered on top of the parent process's
             environment for this step only. ``CC=/usr/bin/gcc`` for
@@ -110,11 +106,11 @@ class BackendInstallPlan:
             banner; declines to confirm count as a license refusal.
         probe: Zero-arg callable returning ``True`` when the backend
             is already installed. Runs at the start of
-            :func:`ensure_backend_deps` and again after the plan has
+            ``ensure_backend_deps`` and again after the plan has
             executed; the second probe gates the success message.
         steps: Ordered install steps. Each runs sequentially, stopping
             on the first non-zero exit.
-        manual_hint: String shown inside the :class:`ROSConfigError`
+        manual_hint: String shown inside the ``ROSConfigError``
             when the user refuses or a step fails -- gives them the
             exact commands to finish manually.
         repins: Top-level module names whose INSTALLED VERSION this plan
@@ -122,7 +118,7 @@ class BackendInstallPlan:
             the probe failed, i.e. the version on disk is not the one this
             backend needs -- so if such a module is already imported in
             this interpreter, running the steps would swap it underneath
-            live objects. :func:`_assert_no_live_dependency_swap` refuses
+            live objects. ``_assert_no_live_dependency_swap`` refuses
             that case; see it for why a ``sys.modules`` flush cannot fix it.
     """
 
@@ -145,7 +141,7 @@ def _has_module(module: str) -> bool:
     not trigger robocasa's import-time version assertions (which would
     raise AssertionError under a real numpy 2.x install if the clone's
     asserts have not yet been relaxed at provision time, see
-    :func:`_relax_robocasa_version_asserts_step`).
+    ``_relax_robocasa_version_asserts_step``).
     """
     try:
         return importlib.util.find_spec(module) is not None
@@ -194,20 +190,17 @@ _ROBOCASA_GR1_RUNTIME_DEPS = tuple(
 def _robocasa_import_succeeds() -> bool:
     """True iff ``import robocasa`` actually SUCCEEDS (not just ``find_spec``).
 
-    The probes above use ``find_spec`` (never ``import``) for cheapness, but
-    ``find_spec``-able is NOT the same as functional: a robocasa whose import
-    would still fail — the wrong robosuite major shadowing the fork's pin (e.g.
-    LIBERO's ``robosuite==1.4``), a half-applied editable install, a missing
-    submodule — is still ``find_spec``-able, and the bare-``find_spec`` probes
-    would wrongly report it "present", causing :func:`ensure_backend_deps` to
-    SKIP the provisioning that would fix it (the false-positive this guards
-    against).
+    The probes above use ``find_spec`` for cheapness, but a robocasa whose
+    import would still fail (wrong robosuite major shadowing the fork's pin,
+    e.g. LIBERO's ``robosuite==1.4``; a half-applied editable install; a
+    missing submodule) is still ``find_spec``-able — a bare ``find_spec``
+    probe would falsely report it present and skip provisioning.
 
-    A plain ``import robocasa`` is enough now that the install plan relaxes the
-    fork's import-time micro-version asserts at provision time
-    (:func:`_relax_robocasa_version_asserts_step`) — no runtime version spoof.
-    Run it in a fresh subprocess so any crash is isolated; return ``True`` only
-    on a clean exit.
+    A plain ``import robocasa`` is enough now that the install plan relaxes
+    the fork's import-time micro-version asserts at provision time
+    (``_relax_robocasa_version_asserts_step``) — no runtime version spoof.
+    Runs in a fresh subprocess so any crash is isolated; ``True`` only on a
+    clean exit.
     """
     try:
         result = subprocess.run(
@@ -354,7 +347,7 @@ def _has_vlabench() -> bool:
 
     The ``rrt_algorithms`` probe covers the git-only data-gen dep that VLABench
     imports transitively (``dm_task`` → ``skill_lib`` → RRT); the plan writes a
-    site-packages stub for it (:func:`_vlabench_stub_rrt_step`), and a stray
+    site-packages stub for it (``_vlabench_stub_rrt_step``), and a stray
     ``uv sync`` can evict that stub, so probing it re-triggers the plan to
     rewrite it — same self-healing rationale as the robosuite editable-shadow
     cleanup. ``lerobot.envs.configs`` carries ``VLABenchEnv`` (the native 0.6.0
@@ -375,31 +368,22 @@ def _has_vlabench() -> bool:
 def _refresh_editable_finders() -> None:
     """Refresh ``sys.meta_path`` after ``uv pip install -e`` swaps editables in-process.
 
-    setuptools-editable ships one ``__editable___<pkg>_<ver>_finder.py``
-    module per editable package, registered via an
-    ``__editable__.<pkg>-<ver>.pth`` shim that calls
-    ``<finder_module>.install()``. The finder bakes a ``MAPPING`` dict
-    at import time pointing at the source directory. When ``uv pip
-    install -e`` swaps an editable install mid-process (e.g. the
-    RoboCasa plan steps from the kitchen fork ``robocasa==1.0.1`` to
-    the GR1 fork ``robocasa==0.2.0``), the old ``.pth`` + finder
-    ``.py`` are removed from site-packages but the old
-    ``_EditableFinder`` stays on ``sys.meta_path`` with its stale
-    ``MAPPING``. ``importlib.invalidate_caches()`` only flushes
-    path-importer caches, not ``sys.meta_path``, so ``find_spec("<pkg>")``
-    keeps resolving to the old source directory and the post-install
-    probe falsely reports the install never landed.
+    setuptools-editable ships one ``__editable___<pkg>_<ver>_finder.py`` per
+    editable package, registered via a ``.pth`` shim calling
+    ``<finder_module>.install()``; the finder bakes a ``MAPPING`` dict at
+    import time pointing at the source dir. When ``uv pip install -e`` swaps
+    an editable mid-process (e.g. RoboCasa's kitchen fork
+    ``robocasa==1.0.1`` -> GR1 fork ``robocasa==0.2.0``), the old ``.pth`` +
+    finder ``.py`` are removed from site-packages but the old
+    ``_EditableFinder`` stays on ``sys.meta_path`` with a stale ``MAPPING``.
+    ``importlib.invalidate_caches()`` only flushes path-importer caches, not
+    ``sys.meta_path``, so ``find_spec`` keeps resolving to the old source
+    dir and the post-install probe falsely reports the install missing.
 
-    This helper:
-
-    1. Removes any ``sys.meta_path`` finder backed by a module whose
-       ``__file__`` no longer exists on disk (the marker that uv
-       deleted its ``.pth`` + ``_finder.py`` pair).
-    2. Re-executes every current ``__editable__.*.pth`` ``import``
-       line in the active venv's site-packages so the replacement
-       finder modules register themselves via ``install()`` (which is
-       idempotent: it no-ops when an equivalent finder is already
-       present).
+    Fix: remove any ``sys.meta_path`` finder whose module ``__file__`` no
+    longer exists (uv deleted its ``.pth``/``_finder.py`` pair), then
+    re-execute every current ``__editable__.*.pth`` ``import`` line so
+    replacement finders register via the idempotent ``install()``.
     """
     import sys
 
@@ -465,22 +449,18 @@ _STEP_TAIL_LINES = 25
 def _run_install_step(step: InstallStep, env: dict[str, str]) -> None:
     """Run one install step, streaming its output *and* keeping the tail.
 
-    The step's stdout+stderr are merged and echoed to this process's stderr
-    byte-for-byte as they arrive, so `uv`'s carriage-return progress bars and a
-    multi-GB download's throughput line render live exactly as they would if the
-    child owned the terminal. The last :data:`_STEP_TAIL_BYTES` are retained so
-    :func:`_step_failure_detail` can quote *why* a step failed.
-
-    The retention is the point. ``subprocess.run(..., check=True)`` raises a
-    ``CalledProcessError`` whose message is only ``Command [...] returned
-    non-zero exit status 2``. That string is what reaches the ``ROSConfigError``,
-    and from there the rSkill runner's ``goal_rejected`` and the reasoner's
-    replanning ladder — so an operator watching the reasoner sees an exit code
-    and no cause. The child's real diagnostic did reach the launch log, but
-    detached from the error and buried among unrelated node output. Observed on
-    a GB10 (aarch64) host, where the whole explanation was one `uv` line:
-    ``Distribution `torchcodec==0.4.0` can't be installed because it doesn't
-    have a source distribution or wheel for the current platform``.
+    stdout+stderr are merged and echoed to this process's stderr byte-for-byte
+    as they arrive, so `uv`'s carriage-return progress bars render live as if
+    the child owned the terminal. The last ``_STEP_TAIL_BYTES`` are
+    retained so ``_step_failure_detail`` can quote why a step failed —
+    plain ``subprocess.run(..., check=True)`` raises a ``CalledProcessError``
+    with only ``Command [...] returned non-zero exit status 2``, which is all
+    that reaches ``ROSConfigError`` and downstream the rSkill runner's
+    ``goal_rejected`` / the reasoner's replanning ladder: an operator sees an
+    exit code, not a cause. Observed on a GB10 (aarch64) host where the whole
+    explanation was one `uv` line: "Distribution `torchcodec==0.4.0` can't
+    be installed because it doesn't have a source distribution or wheel for
+    the current platform".
 
     Raises:
         subprocess.CalledProcessError: The step exited non-zero. ``output``
@@ -577,7 +557,7 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
     the shadow as a **namespace package** and intercepts the import
     *before* the ``__editable__.{pkg}.pth`` finder gets a chance, so
     ``importlib.util.find_spec("<pkg>").origin`` returns ``None`` and
-    every probe in :func:`_has_robocasa_kitchen` / :func:`_has_robocasa_gr1`
+    every probe in ``_has_robocasa_kitchen`` / ``_has_robocasa_gr1``
     fails — even though the editable install is correct on disk.
 
     The step removes the shadow iff it exists and has no ``__init__.py``
@@ -614,35 +594,30 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
 # Pin robosuite to a specific master commit instead of floating HEAD.
 #
 # Both robocasa forks install robosuite from an editable clone of
-# ARISE-Initiative/robosuite *master*. The kitchen fork (robocasa 1.0.1)
-# tracks recent master, but the GR1 fork (robocasa-gr1-tabletop-tasks
-# 0.2.0, NVIDIA's GR00T-N1 release) was authored against robosuite
-# 1.5.0/1.5.1 and only declares support for those. Riding floating
-# master means a future master commit that refactors the robot
-# base-class API silently breaks the GR1 env build with
-# ``ValueError: Invalid base type to add to robot!`` at
-# ``robot_model.py:add_base`` (issue #44) while the kitchen fork keeps
-# working — and the two cannot be told apart by version string because
-# master always reports ``"1.5.2"``. Pinning to a single verified commit
-# makes both forks deterministic and lets them share one robosuite
-# install (no per-scene robosuite swap).
+# ARISE-Initiative/robosuite master. The kitchen fork (robocasa 1.0.1)
+# tracks recent master; the GR1 fork (robocasa-gr1-tabletop-tasks 0.2.0,
+# NVIDIA's GR00T-N1 release) was authored against robosuite 1.5.0/1.5.1
+# only. A future master commit refactoring the robot base-class API
+# silently breaks the GR1 env build with `ValueError: Invalid base type
+# to add to robot!` at `robot_model.py:add_base` (issue #44) while the
+# kitchen fork keeps working — undetectable by version string, since
+# master always reports "1.5.2". Pinning one verified commit makes both
+# forks deterministic and lets them share one robosuite install.
 #
-# This SHA is validated end-to-end by ``openral sim run`` on
-# ``robocasa_gr1_pnp_cup_to_drawer`` (GR1 + RLDX-1-FT-GR1, full episode)
-# AND by the kitchen scenes. Bump it only after re-running both on the
-# new commit.
+# Validated end-to-end by `openral sim run` on
+# `robocasa_gr1_pnp_cup_to_drawer` (GR1 + RLDX-1-FT-GR1, full episode)
+# and the kitchen scenes; bump only after re-running both.
 #
-# MUST equal the ``[tool.uv.sources] robosuite = { rev = ... }`` pin in
-# ``pyproject.toml``: ``uv sync --group robocasa`` lands robosuite at the
-# uv.sources rev, then the steps below ``uv pip install -e`` the local
-# clone OVER it. If the clone rode floating master (the bug — issue #44)
-# the editable reinstall silently replaced the pinned tree with a
-# drifting one. Keep the two in lockstep when bumping.
+# MUST equal the `[tool.uv.sources] robosuite = { rev = ... }` pin in
+# `pyproject.toml`: `uv sync --group robocasa` lands robosuite at the
+# uv.sources rev, then the steps below `uv pip install -e` the local
+# clone over it — riding floating master there (issue #44) silently
+# replaces the pinned tree with a drifting one. Keep both in lockstep.
 _ROBOSUITE_PIN = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c"  # master @ 2026-08-06
 
 
 def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
-    """Clone robosuite (if absent) and pin it to :data:`_ROBOSUITE_PIN`.
+    """Clone robosuite (if absent) and pin it to ``_ROBOSUITE_PIN``.
 
     Idempotent: a shallow master clone seeds the directory on first run,
     then we shallow-fetch the pinned commit and check it out detached.
@@ -667,7 +642,7 @@ def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
 
 
 def _robosuite_clone_hint(git: str, rs_dir: Path) -> str:
-    """Manual-install one-liner mirroring :func:`_robosuite_clone_step`."""
+    """Manual-install one-liner mirroring ``_robosuite_clone_step``."""
     return (
         f"{git} clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} ; "
         f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN} && "
@@ -685,12 +660,11 @@ def _relax_robocasa_version_asserts_step(init_path: Path) -> InstallStep:
     mujoco / numpy), and empirically robocasa runs fine on the workspace's
     mujoco 3.8.x / numpy 2.2.x / robosuite 1.5.2 once the assert is bypassed.
 
-    So we neutralise the assert CONDITIONS in the editable clone at provision
-    time (idempotent via a marker; **fails loudly** if no assert is found, so an
-    upstream rewrite of ``__init__.py`` can't silently leave a stale pin). This
-    replaces the former runtime ``_spoof_robocasa_version_pins`` — no version
-    lying, and numba sees the real numpy 2.x (the spoof had to warm numba first
-    precisely because it faked an old numpy).
+    So the assert CONDITIONS are neutralised in the editable clone at
+    provision time (idempotent via a marker; **fails loudly** if no assert is
+    found, so an upstream rewrite of ``__init__.py`` can't silently leave a
+    stale pin) — no runtime version spoofing, and numba sees the real numpy
+    2.x directly.
     """
     patch = (
         "import re, sys\n"
@@ -909,7 +883,7 @@ def _robocasa_kitchen_clone_dir() -> Path:
     """Stable on-disk path for the robocasa kitchen clone (editable install anchor).
 
     Lives under ``$OPENRAL_CACHE_HOME/repos/robocasa-kitchen``. Same
-    rationale as :func:`_gr1_clone_dir` and :func:`_robosuite_clone_dir`:
+    rationale as ``_gr1_clone_dir`` and ``_robosuite_clone_dir``:
     editable installs anchor here forever. The earlier non-editable
     `uv pip install --no-deps "robocasa @ git+https://..."` path was a
     real wedge — the upstream sdist excludes the ``models/assets/`` tree
@@ -926,7 +900,7 @@ def _robocasa_kitchen_clone_dir() -> Path:
 def _robosuite_clone_dir() -> Path:
     """Stable on-disk path for the robosuite master clone.
 
-    Same rationale as :func:`_gr1_clone_dir`: editable installs anchor
+    Same rationale as ``_gr1_clone_dir``: editable installs anchor
     here. We need a patched master clone (with empty ``__init__.py``
     files dropped into ``robosuite/examples/`` and
     ``robosuite/examples/third_party_controller/``) because upstream
@@ -1123,19 +1097,16 @@ def _libero_plan() -> BackendInstallPlan:
     # up a flag set the C extension rejects. Pinning CC=gcc mirrors
     # the existing install hint and the bootstrap script.
     cc = shutil.which("gcc") or "/usr/bin/gcc"
-    # hf-libero==0.1.3 ships distutils-installed metadata with no RECORD.
-    # We deliberately do NOT pass `--reinstall-package hf-libero`: that
-    # forces uv to *uninstall* hf-libero first, hitting the very barrier
-    # it was meant to dodge (`error: Unable to uninstall hf-libero==0.1.3:
-    # distutils-installed distributions do not include the metadata
-    # required to uninstall safely`) and wedging the whole libero install
-    # — exactly what happens when swapping in from a robocasa (robosuite
-    # 1.5) venv. A plain `--inexact` sync installs/overwrites hf-libero
-    # with proper dist-info when it's absent and leaves it untouched when
-    # already satisfied; it never forces an uninstall, so the barrier
-    # never fires. hf-libero is pure-python — robosuite owns the C
-    # extensions and is version-swapped separately — so no forced rebuild
-    # is needed. --inexact preserves other backend groups in the venv.
+    # hf-libero==0.1.3 ships distutils-installed metadata with no RECORD, so
+    # `--reinstall-package hf-libero` forces uv to uninstall it first and
+    # hits `error: Unable to uninstall hf-libero==0.1.3: distutils-installed
+    # distributions do not include the metadata required to uninstall
+    # safely`, wedging the install (as happens swapping in from a robocasa/
+    # robosuite-1.5 venv). Plain `--inexact` sync installs/overwrites
+    # hf-libero when absent and leaves it untouched when satisfied — never
+    # forces an uninstall. hf-libero is pure-python (robosuite owns the C
+    # extensions, version-swapped separately), so no rebuild is needed.
+    # --inexact preserves other backend groups in the venv.
     libero_args = [
         uv,
         "sync",
@@ -1235,7 +1206,7 @@ def _has_isaac_client() -> bool:
 
     The heavy ``isaacsim`` / ``isaaclab`` install lives in a separate py3.11
     sidecar venv, provisioned out-of-band; this probe only covers the
-    openral-side wire, same shape as :func:`_has_rldx_client`.
+    openral-side wire, same shape as ``_has_rldx_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1306,7 +1277,7 @@ def _has_robotwin_client() -> bool:
 
     The heavy SAPIEN + RoboTwin install lives in a separate py3.10 sidecar venv,
     provisioned out-of-band; this probe only covers the openral-side
-    wire, same shape as :func:`_has_isaac_client`.
+    wire, same shape as ``_has_isaac_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1317,7 +1288,7 @@ def _has_rlbench_client() -> bool:
     CoppeliaSim/PyRep + the peract RLBench fork live in a separate py3.10 sidecar
     venv, provisioned out-of-band (CoppeliaSim is proprietary and never
     vendored); this probe only covers the openral-side wire, same shape as
-    :func:`_has_isaac_client`.
+    ``_has_isaac_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1956,16 +1927,12 @@ def _just_free_equivalent(manual_hint: str) -> str | None:
 def remediation(manual_hint: str) -> str:
     """Return ``manual_hint``, plus a runnable equivalent when ``just`` is absent.
 
-    Every hint in this module names ``just sync …`` because that is the repo's
-    documented entry point (CLAUDE.md — "always ``just sync`` (never bare ``uv
-    sync``)"). But these messages are also raised inside environments that never
-    installed ``just``: CI runners, Docker images, a fresh box. A remediation
-    you cannot run where it was printed is a defect of its own — it costs the
-    reader a round trip to find out the instruction was impossible, which is
-    exactly how the hosted `select-and-test` runner behaved. Keep the canonical
-    command first (what the docs say, and what a normal dev host runs) and
-    append the expansion only when the binary really is missing, so the common
-    case stays uncluttered.
+    Every hint in this module names ``just sync …`` (CLAUDE.md: "always
+    ``just sync``, never bare ``uv sync``"), but these messages also raise
+    inside environments without ``just`` installed: CI runners, Docker
+    images, a fresh box (observed on the hosted `select-and-test` runner).
+    Keeps the canonical command first, appending the ``uv``-only expansion
+    only when the binary is actually missing.
 
     Example:
         >>> "just sync --group libero" in remediation("just sync --group libero")
@@ -1982,26 +1949,23 @@ def remediation(manual_hint: str) -> str:
 def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
     """Refuse to re-pin a distribution this interpreter has already imported.
 
-    LIBERO needs ``robosuite==1.4`` while RoboCasa / OpenArm need ``>=1.5``,
-    and the two layouts are not merely different versions — 1.4 keeps its
-    mount models under ``robosuite.models.mounts``, 1.5 under
-    ``robosuite.models.bases``. Swapping the on-disk package mid-process
-    therefore leaves ``robosuite.models.base`` cached from the OLD tree while
-    any fresh import resolves against the NEW one, so ``MujocoXML`` exists
-    twice and every ``isinstance`` across the seam fails::
+    LIBERO needs ``robosuite==1.4`` while RoboCasa/OpenArm need ``>=1.5``; the
+    two layouts differ structurally (1.4's mount models live under
+    ``robosuite.models.mounts``, 1.5's under ``robosuite.models.bases``), so
+    swapping the on-disk package mid-process leaves ``robosuite.models.base``
+    cached from the old tree while fresh imports resolve the new one —
+    ``MujocoXML`` exists twice and every ``isinstance`` across the seam fails::
 
         XMLError: <class 'robosuite.models.mounts.rethink_mount.RethinkMount'>
                   is not a MujocoXML instance.
 
-    Flushing ``sys.modules`` (which the post-install path already does) cannot
-    repair this: dependents imported earlier — ``libero``, ``lerobot.envs``,
-    and any env object already constructed — keep hard references to classes
-    from the old tree, and nothing re-binds them short of a new interpreter.
+    Flushing ``sys.modules`` (already done post-install) cannot repair this:
+    dependents imported earlier (``libero``, ``lerobot.envs``, any constructed
+    env object) keep hard references to classes from the old tree.
 
-    Reaching this function means the probe already failed, i.e. the installed
-    version is NOT the one this backend wants. So an imported ``repins``
-    module is exactly the corrupting case, and the only safe answer is to fail
-    before mutating the venv rather than after.
+    Reaching this function means the probe already failed (the installed
+    version is not what this backend wants), so an imported ``repins`` module
+    is exactly the corrupting case — fail before mutating the venv.
 
     Raises:
         ROSConfigError: When a ``plan.repins`` module is already imported.
@@ -2024,18 +1988,18 @@ def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
 def ensure_backend_deps(backend_id: str) -> None:
     """Install ``backend_id`` deps if missing, after the user confirms.
 
-    Probes via the plan's :attr:`BackendInstallPlan.probe` and short-
+    Probes via the plan's ``BackendInstallPlan.probe`` and short-
     circuits when it returns ``True``. Otherwise prints a Rich banner
     listing every subprocess step + the license posture, asks
     auto-installs by default (set ``OPENRAL_AUTO_INSTALL_DEPS=0`` to
-    prompt via :func:`typer.confirm` instead), runs the steps in order,
+    prompt via ``typer.confirm`` instead), runs the steps in order,
     and re-probes.
 
     Thread-safe: ``SimRunner._build_env_and_policy`` builds env + policy
     on a 2-worker ``ThreadPoolExecutor``. When both sides need a first-
     install the two banners + ``typer.confirm`` reads would interleave on
     one stdout/stdin pair and the single ``y`` would only land in one of
-    the two prompts. The module-level :data:`_INSTALL_LOCK` serialises
+    the two prompts. The module-level ``_INSTALL_LOCK`` serialises
     the probe-prompt-install-reprobe sequence so the second waiter sees
     the first install's result and short-circuits when its own probe
     flips to ``True``.
@@ -2044,7 +2008,7 @@ def ensure_backend_deps(backend_id: str) -> None:
         ROSConfigError: When the user refuses, ``uv`` / ``git`` is
             missing, a step exits non-zero, or the post-install probe
             still fails. The error message embeds
-            :attr:`BackendInstallPlan.manual_hint` so the user has a
+            ``BackendInstallPlan.manual_hint`` so the user has a
             ready-to-paste fallback.
     """
     plan = get_plan(backend_id)

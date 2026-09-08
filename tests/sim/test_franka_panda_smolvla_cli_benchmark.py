@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.sim.conftest import _libero_robosuite_conflict
+
 # Use `importlib.util.find_spec` + `pytestmark` rather than module-level
 # `pytest.importorskip` / `pytest.skip(allow_module_level=True)`: with
 # `tests/sim/__init__.py` making this directory a Package, a Skipped raised
@@ -48,25 +50,6 @@ if not _MISSING_MODULES:
     import torch
 
     _CUDA_AVAILABLE = torch.cuda.is_available()
-
-
-def _libero_robosuite_conflict() -> bool:
-    """True when an installed robosuite blocks the LIBERO runtime (it pins 1.4.x).
-
-    A >=1.5 robosuite (e.g. provisioned by a robocasa install) makes LIBERO
-    unprovisionable on this host — ``openral benchmark run`` auto-installs the
-    ``libero`` group but cannot downgrade robosuite, so its post-install probe
-    fails. Skip cleanly rather than go red. On a clean runner robosuite is
-    absent, so the ``--group libero`` install supplies 1.4.x and the test runs.
-    """
-    import importlib.metadata as _md
-
-    if importlib.util.find_spec("robosuite") is None:
-        return False
-    try:
-        return not _md.version("robosuite").startswith("1.4")
-    except _md.PackageNotFoundError:
-        return False
 
 
 pytestmark = [
@@ -104,15 +87,15 @@ def _make_tiny_libero_suite(tmp_path: Path) -> Path:
     As of June 2026, a benchmark suite is a bare ``list[BenchmarkScene]``
     YAML; ``suite_id`` is derived from the filename stem. We write to
     ``libero_spatial.yaml`` (not ``_tiny``) so the stem matches a valid
-    :data:`openral_core.BenchmarkName` literal — the test uses
+    ``openral_core.BenchmarkName`` literal — the test uses
     ``--no-update-manifest`` to keep the in-tree ``rskills/smolvla-libero/rskill.yaml``
     untouched, but the resolver still validates the stem on the way in.
 
-    The trim collapses the first :class:`BenchmarkScene` to a
+    The trim collapses the first ``BenchmarkScene`` to a
     single-episode, 20-step rollout and discards the remaining nine.
     Per-scene fields (robot_id / scene / metadata) carry through
     untouched so the suite invariants in
-    :func:`openral_core.raise_on_invalid_suite` still hold.
+    ``openral_core.raise_on_invalid_suite`` still hold.
     """
     import yaml
     from openral_core import load_benchmark_suite

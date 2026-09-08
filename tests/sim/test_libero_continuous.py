@@ -4,7 +4,7 @@ lerobot's ``LiberoEnv.step`` resets the episode *inline* the instant the task
 succeeds or the horizon is hit (``if terminated: self.reset()``), re-randomising
 the whole scene mid-mission and re-creating the MjData (which orphans the passive
 viewer). For a continuous deploy twin the reasoner/mission own episode
-boundaries, so :meth:`_LiberoSim.enable_continuous` (called by ``SimAttachedHAL``)
+boundaries, so ``_LiberoSim.enable_continuous`` (called by ``SimAttachedHAL``)
 suppresses that. ``openral sim run`` keeps the per-episode reset.
 
 Real LIBERO env, no mocks (CLAUDE.md §1.11); skips cleanly when the suite can't

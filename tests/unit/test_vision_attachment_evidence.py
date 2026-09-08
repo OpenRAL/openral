@@ -292,11 +292,9 @@ def _nested_candidates() -> list[NDArray[np.bool_]]:
 def test_most_inclusive_passing_candidate_wins_not_the_highest_scoring_one() -> None:
     """Among candidates that clear every gate, geometry picks — and picks the largest.
 
-    Over-approximating a payload is the conservative error for collision
-    checking, so the most inclusive geometrically plausible hypothesis is the
-    safe pick. The *smaller* candidate is handed the far higher model score here
-    precisely so that a score-based selection would choose differently and fail
-    this test.
+    Over-approximating a payload is the conservative error for collision checking.
+    The smaller candidate gets the far higher model score, so a score-based
+    selection would choose differently and fail this test.
     """
     producer = VisionAttachmentEvidenceProducer(_robot())
     candidates = _nested_candidates()
@@ -427,15 +425,11 @@ def test_accepted_evidence_ref_records_which_candidate_was_selected() -> None:
 def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None:
     """The design-driving regression: a confidently-wrong mask must not be trusted.
 
-    This is the real 59.85%-of-frame mask SAM 2.1 returned at its own **highest**
-    score, 0.9781 (see ``tests/unit/fixtures/sam2_masks.SOURCE.txt``). Paired
-    with the depth of the table it actually masked, it must be rejected — and
-    rejected on geometry: it is far too big to be in the jaws and far too far
-    from the tool center point.
-
-    The score is passed in truthfully and must appear in the report **without**
-    influencing the verdict. If a future change lets this mask through, a robot
-    would plan as if it were carrying a half-metre slab of tablecloth.
+    Real 59.85%-of-frame mask SAM 2.1 returned at its own highest score, 0.9781
+    (see ``tests/unit/fixtures/sam2_masks.SOURCE.txt``). Must be rejected on
+    geometry alone — too big for the jaws, too far from the TCP — with the score
+    recorded but not influencing the verdict; letting it through would have a
+    robot plan around a half-metre slab of tablecloth.
     """
     producer = VisionAttachmentEvidenceProducer(_robot())
     mask = _mask(_TABLECLOTH_MASK)

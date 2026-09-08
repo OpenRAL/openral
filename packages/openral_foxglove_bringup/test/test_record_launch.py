@@ -9,14 +9,6 @@ verifies three invariants:
    any forbidden topic literals.
 3. The edited ``config/openral_layout.json`` is valid JSON whose
    ``/openral/…`` and navigation topics all belong to an expected-allowed set.
-
-Note: ``/openral/world_collisions_markers`` and
-``/openral/world_voxels_cloud`` are the two Phase-3 Bucket-2 topics added to
-the layout by this phase.  They are expected to be added to
-``BUCKET1_TOPIC_WHITELIST`` in ``topics.py`` by the coordinator (Phase 4
-wiring).  Until that merge, the test asserts them against an explicit
-``_EXPECTED_ALLOWED`` set that already includes them so the test reflects
-intent.
 """
 
 from __future__ import annotations
@@ -62,14 +54,12 @@ _FORBIDDEN_TOPIC_LITERALS = [
     "/openral/prompt_in/dashboard",
 ]
 
-# Topics the layout is allowed to reference: the current Bucket-1 whitelist
-# PLUS the two Phase-3 Bucket-2 topics that the coordinator adds to
-# ``topics.py`` as part of Phase 4.  Using an explicit set here lets the test
-# express intent without depending on the coordinator's merge order.
+# Topics the layout is allowed to reference: the Bucket-1 whitelist plus the
+# two Bucket-2 converter output topics.
 _EXPECTED_ALLOWED: set[str] = {
     "/openral/cameras/top/image",
-    "/openral/world_collisions_markers",  # Phase-3 Bucket-2 — coordinator adds to whitelist
-    "/openral/world_voxels_cloud",  # Phase-3 Bucket-2 — coordinator adds to whitelist
+    "/openral/world_collisions_markers",
+    "/openral/world_voxels_cloud",
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",
@@ -88,23 +78,16 @@ _EXPECTED_ALLOWED: set[str] = {
 
 def _load_record_launch() -> object:
     """Import record.launch.py by path, injecting the bringup package shim."""
-    # record.launch.py imports ``launch`` at module top. That ships with a
-    # sourced ROS 2 install but is absent in the plain-pytest CI lane — skip the
-    # launch-construction guards there, exactly as they run under
-    # ament_cmake_pytest with ROS sourced (CLAUDE.md §1.11).
+    # record.launch.py imports ``launch``, present only with ROS 2 sourced —
+    # skip the launch-construction guards otherwise (CLAUDE.md §1.11).
     #
-    # Guard on ``launch.actions``, NOT on bare ``launch``. Several packages ship
-    # a ROS ``launch/`` directory with no ``__init__.py``
-    # (``openral_rskill_ros/launch`` is the one that wins), and their package
-    # root lands on ``sys.path`` via a sibling ``test/conftest.py``. With no real
-    # ROS on the path, ``import launch`` therefore resolves to that directory as
-    # an implicit NAMESPACE package and succeeds — so a bare
-    # ``importorskip("launch")`` is silently satisfied by a directory of launch
-    # files, and the skip never fires. The failure only surfaces later, as
-    # ``ImportError: cannot import name 'LaunchDescription' from 'launch'
-    # (unknown location)``. A submodule the namespace shadow does not contain is
-    # the reliable probe; a real ROS ``launch`` provides it and wins over any
-    # namespace portion.
+    # Guard on ``launch.actions``, not bare ``launch``: with no real ROS on
+    # the path, a package's own unpackaged ``launch/`` dir (e.g.
+    # ``openral_rskill_ros/launch``, no ``__init__.py``) can resolve as an
+    # implicit namespace package, so a bare ``importorskip("launch")`` is
+    # silently satisfied and fails later with ``ImportError: cannot import
+    # name 'LaunchDescription' from 'launch' (unknown location)``. A
+    # submodule the namespace shadow lacks is the reliable probe.
     pytest.importorskip("launch.actions")
     # Ensure topics.py is importable under the name the launch file imports.
     import sys

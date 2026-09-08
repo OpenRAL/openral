@@ -381,12 +381,10 @@ class TestSmolVLAAdapterBuildBatch:
     def test_build_batch_default_alias_is_passthrough(self) -> None:
         """Default ``_cam_alias`` is empty — keys flow through unchanged.
 
-        After the ``feat(skill): _vla_core resolvers (no auto-derive)``
-        commit, the historical LIBERO-only default ``{camera1: image,
-        camera2: image2}`` is gone from the dataclass. That mapping is
-        now ONLY applied when the rSkill manifest's
-        ``image_preprocessing.aliases`` field declares it (see
-        ``rskills/{pi05,smolvla}-libero/rskill.yaml``).
+        Since ``feat(skill): _vla_core resolvers (no auto-derive)``, the historical
+        LIBERO-only default ``{camera1: image, camera2: image2}`` is gone from the
+        dataclass; it's applied only when the manifest's ``image_preprocessing.aliases``
+        field declares it (``rskills/{pi05,smolvla}-libero/rskill.yaml``).
         """
         adapter = self._make_adapter()
         batch = adapter._build_batch(
@@ -490,10 +488,9 @@ class TestSmolVLAAdapterBuildBatch:
     def test_default_prefetch_is_disabled_for_benchmark_freshness(self) -> None:
         """Sim/eval keeps boundary observations fresh unless real-time deploy opts in.
 
-        `chunk_prefetch` absent from `vla.extra` (the benchmark/`sim run` case)
-        must yield a synchronous executor — deploy is the only caller that sets
-        it, so published eval numbers keep replanning from a fresh boundary
-        observation.
+        `chunk_prefetch` absent from `vla.extra` (benchmark/`sim run`) yields a
+        synchronous executor — only deploy sets it, so published eval numbers keep
+        replanning from a fresh boundary observation.
         """
         from openral_rskill._vla_core import build_chunk_executor
 

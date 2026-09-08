@@ -1,6 +1,6 @@
 """In-memory aggregator for the live dashboard.
 
-:class:`TelemetryStore` is the single shared object the OTLP/HTTP
+``TelemetryStore`` is the single shared object the OTLP/HTTP
 receiver writes into and the SSE / JSON endpoints read from. It is
 thread-safe (an asyncio task feeds it from request handlers; the SSE
 generator subscribes from another task) and bounded — every internal
@@ -14,9 +14,9 @@ violation, deadline missed, sensor stale, ...) and per-instrument
 rolling samples for metrics.
 
 Wire format: callers feed in already-decoded
-:class:`opentelemetry.proto.trace.v1.trace_pb2.ResourceSpans` /
-:class:`opentelemetry.proto.metrics.v1.metrics_pb2.ResourceMetrics`
-messages. The receiver in :mod:`openral_observability.dashboard.receivers`
+``opentelemetry.proto.trace.v1.trace_pb2.ResourceSpans`` /
+``opentelemetry.proto.metrics.v1.metrics_pb2.ResourceMetrics``
+messages. The receiver in ``openral_observability.dashboard.receivers``
 does the protobuf decode; the store never parses protobuf itself.
 """
 
@@ -67,28 +67,17 @@ _SUBSCRIBER_QUEUE_SIZE = 256
 # OTLP Status.code values per opentelemetry-proto: 0=UNSET, 1=OK, 2=ERROR.
 _STATUS_ERROR = 2
 
-# Spans that earn an `info` row in the operator's Event Log. EVERYTHING
-# ELSE lands in the `debug` band.
+# Spans that earn an `info` row in the Event Log; everything else lands in
+# the `debug` band. Allow-list by design: a deny-list must name every noisy
+# 30 Hz emitter (`world_state.snapshot`, `rskill.tick`, `safety.check` —
+# three separate emitters incl. the C++ kernel — `rskill.chunk_inference`,
+# ...) and silently regresses when one is missed — at ~120 info rows/s the
+# 200-slot ring cycles in under two seconds. An allow-list is quiet by
+# default; a span must be deliberately promoted.
 #
-# This is an allow-list on purpose. It used to be a deny-list
-# (`_PER_TICK_SPANS`) naming the three obvious 30 Hz offenders — but four
-# more span families tick at the same rate and were never added to it:
-# `world_state.snapshot` (once per runner tick), `rskill.tick`,
-# `safety.check` (once per candidate action chunk, from three separate
-# emitters including the C++ kernel), and `rskill.chunk_inference`. At
-# ~120 info rows/s the 200-slot ring cycles in under two seconds, so every
-# lifecycle line an operator actually needs scrolled past before it could
-# be read — the exact problem the deny-list was introduced to fix, still
-# unfixed because the list was incomplete.
-#
-# A deny-list makes "noisy" the thing you must remember to declare, and
-# that memory failed four times. Inverted, a new span is quiet until
-# someone deliberately promotes it, which is the safer default for a
-# panel whose whole value is signal density.
-#
-# Two things are unaffected: an ERROR-status span still escalates to
-# `error` regardless of this set, and every span is still indexed in full
-# for `openral replay`. This changes the event-log band only.
+# An ERROR-status span still escalates to `error` regardless of this set,
+# and every span is still indexed in full for `openral replay` — this
+# changes the event-log band only.
 _HEADLINE_SPANS = frozenset(
     {
         semconv.SPAN_CLI_COMMAND,  # one per CLI invocation
@@ -143,7 +132,7 @@ _ANY_VALUE_DECODERS: dict[str, Any] = {
 def _is_headline_span(name: str) -> bool:
     """True when ``name`` earns an ``info`` row in the Event Log.
 
-    See :data:`_HEADLINE_SPANS` for why this is an allow-list rather than a
+    See ``_HEADLINE_SPANS`` for why this is an allow-list rather than a
     list of known-noisy spans.
     """
     return name in _HEADLINE_SPANS or name.startswith(_HEADLINE_SPAN_PREFIXES)
@@ -423,8 +412,8 @@ class TelemetryStore:
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
         # as a dedicated card. Latched/static keys (run mode, robot
-        # model, skill id, kernel) live in :attr:`_identity`; everything
-        # high-frequency lives under :attr:`_topics` keyed by topic name.
+        # model, skill id, kernel) live in ``_identity``; everything
+        # high-frequency lives under ``_topics`` keyed by topic name.
         # Bounded per-trace span index (bag↔OTel replay). Ordered dict so
         # eviction is FIFO on first-seen trace_id; each value is a deque
         # capped by _TRACE_INDEX_MAX_SPANS.
@@ -540,12 +529,12 @@ class TelemetryStore:
     def ingest_logs(self, payload: list[ResourceLogs]) -> int:
         """Decode + record a batch of ``ResourceLogs`` as event-log rows.
 
-        Each OTLP ``LogRecord`` becomes one :class:`TelemetryEvent`: the
+        Each OTLP ``LogRecord`` becomes one ``TelemetryEvent``: the
         body is the title, the instrumentation scope (logger) name is the
         kind, the record attributes are the attrs, and ``severity_number``
         maps to ``debug``/``info``/``warn``/``error``/``fatal`` via
-        :func:`_log_level`. This is the structlog→OTel bridge
-        (:mod:`openral_observability.logging`) surfacing on the UI — every
+        ``_log_level``. This is the structlog→OTel bridge
+        (``openral_observability.logging``) surfacing on the UI — every
         level incl. DEBUG ships to the dashboard's ``/v1/logs`` endpoint,
         which calls this (issue #318). Records land in the same bounded
         event ring as spans/span-events; the UI defaults the Debug chip
@@ -739,7 +728,7 @@ class TelemetryStore:
                 ``score_advisory`` (``None`` when the producer sent none).
             rskill_id: The producing segmenter rSkill, shown on the tile.
             stamp_unix: The attach instant the masks describe, as Unix seconds.
-            flip_180: As for :meth:`set_perception_detections`.
+            flip_180: As for ``set_perception_detections``.
         """
         with self._lock:
             overlays = self._topics["perception"].setdefault("overlays", {})
@@ -758,8 +747,8 @@ class TelemetryStore:
         """Register an asyncio queue that receives every state update.
 
         The caller (the SSE endpoint) awaits ``queue.get()`` in a loop
-        and must call :meth:`unsubscribe` when the client disconnects.
-        Bounded at :data:`_SUBSCRIBER_QUEUE_SIZE`; if a slow client
+        and must call ``unsubscribe`` when the client disconnects.
+        Bounded at ``_SUBSCRIBER_QUEUE_SIZE``; if a slow client
         causes the queue to fill the oldest delta is dropped so the
         producer never blocks.
         """
@@ -870,28 +859,18 @@ class TelemetryStore:
                 self._counters[event.name] += 1
 
     def _append_event(self, ev: TelemetryEvent) -> None:
-        """Append to the main ring, and mirror non-debug events into the protected lane.
+        """Append to the main ring, and mirror non-debug events into a protected lane.
 
-        The protected lane keeps the last :data:`_ERROR_EVENT_RING_SIZE`
-        non-debug events alive even when the high-rate debug stream cycles the
-        main ring, so a bringup line / skill_failure / estop / safety.violation
-        always leaves a trace the operator can still find seconds later.
-
-        **Everything above debug is mirrored, but into two separate lanes.**
-        Measured on a live `deploy sim`: the main ring held 201 rows of which
-        193 were `hal.read_state`, i.e. ~7 s of history at 30 Hz. Demoting the
-        per-tick spans took info *generation* to zero, but the rows an operator
-        actually wants — `deploy.bringup`, `rskill.execute` — still shared one
-        FIFO with the debug stream, so they were evicted within seconds. An info
-        row that cannot outlive the flood is no more useful than one that was
-        never emitted.
-
-        Mirroring them into the *error* lane fixed that and broke something
-        worse: routine info then evicted the safety events those 64 slots exist
-        to preserve (`world.scene_objects` alone at ~0.10/s cycles the lane in
-        ~11 minutes of an idle scene). So the two classes get one ring each —
-        errors, e-stops, safety violations and skill failures here, headline
-        info there — and neither can starve the other.
+        Two protected lanes, sized independently so neither starves the
+        other: the error lane (``_ERROR_EVENT_RING_SIZE`` — errors,
+        e-stops, safety violations, skill failures) and the headline lane
+        (``_HEADLINE_EVENT_RING_SIZE`` — routine info), on top of the
+        main ring the high-rate debug stream cycles in seconds. Measured on
+        a live `deploy sim`: the main ring held 201 rows, 193 of them
+        `hal.read_state` (~7 s of history at 30 Hz); `world.scene_objects`
+        alone at ~0.10/s cycles a single shared 64-slot lane in ~11 minutes
+        of an idle scene, which is why routine info and safety events each
+        need their own ring rather than sharing one.
         """
         self._events.append(ev)
         if ev.severity in _ERROR_SEVERITIES or ev.kind in _PROTECTED_EVENT_KINDS:
@@ -1155,27 +1134,19 @@ class TelemetryStore:
                 "duration_ms": duration_ms,
             }
             self._topics["safety"]["latest_ts_unix"] = ts_unix
-            # E-stop latch state for the UI's E-STOP / Reset control. The kernel
-            # drops every chunk while latched and reports a clean pass once
-            # running clean again — so this self-corrects after a reset
-            # without the dashboard needing an rclpy node. A clamp
-            # ("warning") is not a latch and leaves the flag untouched.
+            # E-stop latch for the UI's E-STOP / Reset control. The kernel
+            # drops every chunk while latched, reports a clean pass once
+            # clear again, so this self-corrects after a reset without an
+            # rclpy node. A clamp ("warning") is not a latch — flag untouched.
             #
-            # The clean-pass value is "info", NOT "ok". This used to test for
-            # "ok", which no emitter has ever produced: the C++ kernel sends
-            # `info` on a pass (lifecycle_kernel.cpp:721), `warn` while
-            # latched (:461) and `violation` on a drop (:583, :748), and the
-            # Python passthrough supervisor matches it. So the latch could
-            # only ever be set, never cleared, and the "self-corrects" claim
-            # above was false — `estopped` stuck true until an explicit
-            # POST /api/estop_reset.
-            #
-            # A pass from a real kernel is proof it is not latched: the
-            # kernel cannot publish a passing chunk while `fault_latch_` is
-            # set, it returns early with `estop_latched`. The null client is
-            # excluded because it emits "info" unconditionally without
-            # checking anything (runner/safety.py) — treating that as
-            # evidence of a clear would let a no-op client unlatch the UI.
+            # Clean-pass value is "info" (never "ok" — no emitter sends it):
+            # the C++ kernel sends `info` on a pass (lifecycle_kernel.cpp:721),
+            # `warn` while latched (:461), `violation` on a drop (:583, :748);
+            # the Python passthrough supervisor matches it. A pass from a real
+            # kernel proves not-latched (`fault_latch_` gates it, returning
+            # `estop_latched` early). The null client is excluded (emits
+            # "info" unconditionally, runner/safety.py) so it can't be
+            # mistaken for evidence of a clear.
             if severity == "violation":
                 self._topics["safety"]["estopped"] = True
             elif severity == "info" and attrs.get(semconv.SAFETY_KERNEL) != (
@@ -1183,15 +1154,13 @@ class TelemetryStore:
             ):
                 self._topics["safety"]["estopped"] = False
             if severity == "violation":
-                # A violation must SURVIVE and STAND OUT. The generic
-                # per-span event is severity "info" (the kernel span's
-                # status is OK — dropping the action IS the kernel working)
-                # and the 30 Hz hal.read_state stream evicts it from the
-                # 200-slot event ring within seconds, so the operator never
-                # saw WHY the arm stopped (observed live: SO-101 self-
-                # collision e-stop with zero trace on the dashboard). Two
-                # fixes: (a) a persistent ``last_violation`` slot on the
-                # safety topic that only the next violation overwrites (the
+                # A violation must SURVIVE and STAND OUT: the generic per-span
+                # event is severity "info" (the kernel span's status is OK —
+                # dropping the action IS the kernel working) and the 30 Hz
+                # hal.read_state stream evicts it from the 200-slot ring
+                # within seconds (observed live: SO-101 self-collision e-stop
+                # with zero dashboard trace). Two fixes: (a) a persistent
+                # ``last_violation`` slot the next violation overwrites (the
                 # per-check ledger row is reset by the next OK check), and
                 # (b) a dedicated error-severity ``safety.violation`` event
                 # + counter so the Event Log shows a red row while it lasts.
@@ -1232,9 +1201,9 @@ class TelemetryStore:
     ) -> None:
         """Stash the latest ``reasoner.tick`` attributes for the dashboard card.
 
-        :meth:`openral_reasoner.ReasonerCore.tick` emits one
+        ``openral_reasoner.ReasonerCore.tick`` emits one
         of these spans per orchestrator pass via
-        :func:`openral_observability.reasoner_span`. The dashboard's
+        ``openral_observability.reasoner_span``. The dashboard's
         Reasoner card reads the slot this writes (the Event Log carries
         the full history; this is the "headline latest" surface so the
         operator can see what the LLM just picked).
@@ -1564,7 +1533,7 @@ def _summarise_event(name: str, attrs: dict[str, Any]) -> str:
     ``openral.event.skill_failure.state`` / ``reasoner.rskill_id``. Without
     folding those into the title the dashboard event log + traces section show
     only the bare event name, so the operator can't see why the skill failed.
-    Mirrors :func:`_summarise_span` for spans.
+    Mirrors ``_summarise_span`` for spans.
     """
     short = name.rsplit(".", 1)[-1]  # openral.event.skill_failure -> skill_failure
     parts: list[str] = [short]

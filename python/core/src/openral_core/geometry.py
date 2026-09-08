@@ -61,7 +61,7 @@ def homogeneous_from_quat_xyz(
     TF needs it: the layer-0 HAL's vision attachment bridge composes
     ``attach_link <- camera_optical`` this way, and layer 2's object lift has
     done the same since it was written.
-    :func:`openral_world_state.object_lift.homogeneous_from_quat_xyz` now
+    ``openral_world_state.object_lift.homogeneous_from_quat_xyz`` now
     delegates here, so there is one implementation rather than one per layer
     (CLAUDE.md §1.13).
 
@@ -259,7 +259,7 @@ def compute_gaze_pose(
 
     The pose the ``rskill-moveit-multi-look_at`` rSkill plans the
     camera frame to: position fixed at ``camera_xyz``, orientation from
-    :func:`look_at_quat_wxyz`. Defaults to the ROS optical-frame convention
+    ``look_at_quat_wxyz``. Defaults to the ROS optical-frame convention
     (``"+z"`` forward) since real camera ``frame_id``s are optical frames.
 
     Args:
@@ -270,7 +270,7 @@ def compute_gaze_pose(
         view_axis: Camera forward-axis convention.
 
     Returns:
-        A :class:`~openral_core.Pose6D` (``quat_xyzw`` order).
+        A ``Pose6D`` (``quat_xyzw`` order).
 
     Example:
         >>> pose = compute_gaze_pose((0.0, 0.0, 1.0), (1.0, 0.0, 1.0))

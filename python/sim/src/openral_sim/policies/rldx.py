@@ -1,79 +1,38 @@
 r"""RLDX-1 auto-managed sidecar adapter via ZMQ REQ/REP + msgpack.
 
-Background
-----------
-RLWRLD publishes the RLDX-1 family of VLAs (a Qwen3-VL-8B backbone with
-a Multi-Stream Action Transformer flow-matching head, ~6.9 B params,
-bf16 on disk ≈ 14 GiB). The reference inference path ships in
-https://github.com/RLWRLD/RLDX-1 as ``rldx/eval/run_rldx_server.py`` —
-a ZMQ REP server (``tcp://<host>:<port>``) that holds the ``RLDXPolicy``
-in memory and answers ``get_action`` / ``reset`` / ``ping`` requests.
+RLWRLD's RLDX-1 (Qwen3-VL-8B + Multi-Stream Action Transformer
+flow-matching head, ~6.9B params, bf16 on disk ~14 GiB). Reference path:
+https://github.com/RLWRLD/RLDX-1 `rldx/eval/run_rldx_server.py`, a ZMQ
+REP server (`tcp://<host>:<port>`) holding `RLDXPolicy`, answering
+`get_action`/`reset`/`ping`.
 
-Why an out-of-process sidecar (and not in-process)
---------------------------------------------------
-In-process loading of ``rldx`` into the openral Python 3.12 venv was
-evaluated and rejected as impractical:
+In-process load is rejected: `rldx` pins `requires-python=="3.10.*"`,
+`numpy==1.26.4`, `torch==2.7.0`, `transformers==4.57.0`,
+`flash-attn==2.7.4.post1`, vs. openral's py3.12/numpy>=2/torch>=2.10/
+transformers>=5 (CLAUDE.md §3) — downgrading breaks smolvla, pi05, xVLA, ACT,
+DP. `RLWRLD/RLDX-1-FT-*` checkpoints ship no `modeling_rldx.py` (no
+`trust_remote_code` escape); `--no-deps` install cascades through 15+
+version-incompatible packages (albumentations 2.x vs 1.4, lmdb, av, dm-tree)
+and still hits transformers 5.x vs. code written for 4.57. Reimplementing
+means porting ~25 kLOC of Triton/MSAT flow-matching code — out of scope. So
+the upstream server runs in its own Python 3.10 venv (one venv reused across
+every checkpoint, at `~/.cache/openral/rldx-sidecar/source/.venv`, never one
+per rSkill), driven over ZMQ from this adapter.
 
-* ``rldx`` pins ``requires-python = "==3.10.*"`` plus strict majors on
-  ``numpy==1.26.4`` / ``torch==2.7.0`` / ``transformers==4.57.0`` /
-  ``flash-attn==2.7.4.post1``. The openral workspace is Python 3.12
-  with ``numpy>=2`` / ``torch>=2.10`` / ``transformers>=5`` (CLAUDE.md
-  §3) — downgrading would break smolvla, pi05, xVLA, ACT, DP.
-* The HF checkpoints (``RLWRLD/RLDX-1-FT-*``) do NOT ship
-  ``modeling_rldx.py``, so there is no ``trust_remote_code`` escape —
-  ``AutoModel.from_pretrained`` strictly requires the local ``rldx``
-  package, which registers ``architectures=["RLDX"]`` at import time.
-* Force-installing ``rldx`` with ``--no-deps`` cascades through 15+
-  packages with major-version-incompatible APIs (albumentations 2.x vs
-  1.4 pinned, lmdb, av, dm-tree, …) — and even past the imports the
-  model load goes through transformers 5.x against rldx code written
-  for 4.57.
-* Reimplementing the policy inference layer in openral would mean
-  porting ~25 kLOC of custom Triton kernels + MSAT flow-matching code
-  (``rldx/inference/``, ``rldx/model/``) — out of scope.
+Auto-managed lifecycle: `__post_init__` pings `host:port`; on failure, if
+`auto_spawn=True` (default; `OPENRAL_RLDX_AUTO_SPAWN=0` or
+`vla.extra.auto_spawn: false` to disable) it `Popen`s ``tools.rldx_sidecar``
+with the manifest-resolved model id, port, quantization, embodiment tag, then
+polls ping until answer or `boot_timeout_s` elapses (default 900s — first
+boot includes upstream `git clone` + `uv sync`). `close()` terminates only
+the child this adapter spawned; a pre-existing/shared server is left
+running. Registered as a `POLICIES` entry; manifest `model_family: "rldx"`
+selects it.
 
-So we run the upstream server in its own Python 3.10 venv (the only
-3.10 environment on disk; one venv reused across every RLDX-1
-checkpoint) and talk to it from this adapter over ZMQ. The friction
-the user pays for "extra venvs" is exactly that one cached environment
-at ``~/.cache/openral/rldx-sidecar/source/.venv``; we do **not** create
-one per rSkill.
-
-Auto-managed lifecycle (the openral piece)
-------------------------------------------
-This adapter manages the sidecar process so end users never invoke the
-boot helper by hand:
-
-* On ``__post_init__`` we ping the server at ``host:port``.
-* If the ping fails and ``auto_spawn=True`` (the default; toggle via
-  ``OPENRAL_RLDX_AUTO_SPAWN=0`` or ``vla.extra.auto_spawn: false``), we
-  ``Popen`` :mod:`tools.rldx_sidecar` with the manifest-resolved model
-  id, port, quantization, and embodiment tag, then poll the ping until
-  the server answers or ``boot_timeout_s`` elapses (default 900 s —
-  the first boot on a fresh host includes the ``git clone`` and
-  ``uv sync`` of the upstream repo, which is the slow path).
-* ``close()`` terminates the child we spawned. If the server was
-  already running when we connected (an operator launched the sidecar
-  by hand, or another openral process is sharing it), ``close()`` is a
-  no-op for the subprocess — we don't reach into other people's PIDs.
-
-The wire-format and obs-layout code below is unchanged from the
-non-auto-managed variant; the auto-spawn block is a thin wrapper that
-gives users a single-command experience without breaking the manual
-boot path for debugging or shared-host setups.
-
-This adapter is registered as a ``POLICIES`` entry; the rSkill
-manifest describes the upstream RLDX checkpoint and
-``model_family: "rldx"`` selects this adapter.
-
-Wire protocol
--------------
-Source of truth: ``rldx/policy/server_client.py`` and
-``rldx/eval/run_rldx_server.py`` in the upstream repo (Apache-2.0).
-
-Transport: ``zmq.REQ`` ↔ ``zmq.REP``, framed by ``msgpack``. NumPy
-arrays are encoded via ``np.save`` into an in-memory buffer wrapped in
-``{"__ndarray_class__": True, "as_npy": <bytes>}``.
+Wire protocol — source of truth `rldx/policy/server_client.py` +
+`rldx/eval/run_rldx_server.py` upstream (Apache-2.0). `zmq.REQ`<->`zmq.REP`
+framed by msgpack; ndarrays via `np.save` into an in-memory buffer wrapped as
+`{"__ndarray_class__": True, "as_npy": <bytes>}`.
 
 Request::
 
@@ -85,9 +44,8 @@ Response::
 
     [action_dict, info_dict]
 
-For LIBERO eval the server is booted with ``--use-sim-policy-wrapper``,
-which wraps the policy in ``RLDXSimPolicyWrapper`` (rldx/policy/...).
-The wrapper consumes a flat-keyed batched-temporal observation::
+LIBERO eval boots the server with ``--use-sim-policy-wrapper``
+(`RLDXSimPolicyWrapper`), consuming a flat-keyed batched-temporal obs::
 
     video.image:        (B=1, T=1, 256, 256, 3) uint8  -- agentview, post-flip
     video.wrist_image:  (B=1, T=1, 256, 256, 3) uint8  -- eye-in-hand, post-flip
@@ -96,11 +54,11 @@ The wrapper consumes a flat-keyed batched-temporal observation::
     state.gripper:                  (B=1, T=1, 2) float32
     annotation.human.action.task_description: tuple[str] of len B
 
-…and returns the canonical LIBERO action chunk as flat keys::
+...returning the LIBERO action chunk as flat keys::
 
     action.x / y / z / roll / pitch / yaw / gripper: (B=1, T=16, 1) float32
 
-The adapter assembles those into the 7-D LIBERO action vector
+The adapter assembles these into the 7-D LIBERO action vector
 ``[dx, dy, dz, droll, dpitch, dyaw, gripper]`` and queues the chunk
 (default 16 actions) for replay.
 """
@@ -128,7 +86,9 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
 
 from openral_sim.policies._policy_loading import load_manifest_for_spec
+from openral_sim.policies.gr00t import _env_bool
 from openral_sim.registry import POLICIES
+from openral_sim.sidecar import open_req_socket
 
 if TYPE_CHECKING:
     from openral_core import VLASpec
@@ -169,31 +129,22 @@ _RLDX_RESPONSE_ENVELOPE_LEN = 2
 
 # ─── GR1 (Fourier ArmsAndWaistFourierHands) state/action layout ──────────
 #
-# RLDX-1-FT-GR1 is NATIVE to the Fourier GR-1 humanoid. The model card's
-# inference example uses `EmbodimentTag.GENERAL_EMBODIMENT`; that slot's
-# modality keys in processor_config.json + statistics.json match the
-# Fourier BASIC composite exactly:
+# RLDX-1-FT-GR1 is native to the Fourier GR-1 humanoid; model card uses
+# `EmbodimentTag.GENERAL_EMBODIMENT`, whose modality keys (from
+# processor_config.json + statistics.json) match the Fourier BASIC
+# composite: state.right_arm(7) + state.left_arm(7) + state.waist(3) +
+# state.right_hand(6, Fourier dexhand) + state.left_hand(6) = 29-D.
+# (FT-GR1 also carries `humanoid_everyday_g1`/`_h1`/`neural_gr1` modality
+# configs as pretraining-only cross-embodiment slots —
+# `humanoid_everyday_g1` is NVIDIA's Unitree-G1 dataset, not the
+# deployment target; README: "Fourier GR-1 humanoid platform ... arms +
+# waist + Fourier hands".)
 #
-#   state.right_arm:  7-D  (right arm joints)
-#   state.left_arm:   7-D  (left arm joints)
-#   state.waist:      3-D
-#   state.right_hand: 6-D  (Fourier dexhand)
-#   state.left_hand:  6-D  (Fourier dexhand)
-#                    ────
-#   total:           29-D  = Fourier BASIC composite
-#
-# (Aside: the FT-GR1 checkpoint ALSO carries `humanoid_everyday_g1` /
-# `_h1` / `neural_gr1` modality configs as cross-embodiment slots used
-# during pretraining — `humanoid_everyday_g1` is NVIDIA's Unitree-G1
-# dataset, NOT the deployment target. The README is explicit:
-# "Fourier GR-1 humanoid platform … arms + waist + Fourier hands".)
-#
-# The openral GR1 RoboCasa scene emits a 29-D state in the order
-# ``[waist(3) | right_arm(7) | left_arm(7) | right_hand(6) | left_hand(6)]``,
-# matching the upstream GR1ArmsAndWaistKeyConverter.map_obs output
-# (see openral_sim.backends.robocasa._wrap_obs_gr1). The dims are
-# already Fourier-native (6-DoF dexhand, NOT 11-D qpos) so no
-# trimming/clipping is needed.
+# The openral GR1 RoboCasa scene emits a 29-D state in order
+# `[waist(3) | right_arm(7) | left_arm(7) | right_hand(6) | left_hand(6)]`,
+# matching upstream `GR1ArmsAndWaistKeyConverter.map_obs`
+# (`openral_sim.backends.robocasa._wrap_obs_gr1`); already Fourier-native
+# (6-DoF dexhand, not 11-D qpos), so no trimming needed.
 _GR1_STATE_SLICES: dict[str, tuple[int, int]] = {
     "state.waist": (0, 3),
     "state.right_arm": (3, 10),
@@ -313,19 +264,16 @@ _SIMPLER_VIDEO_KEY_WIDOWX = "video.image_0"
 _SIMPLER_VIDEO_KEY_GOOGLE = "video.image"
 _SIMPLER_WIDOWX_IMAGE_HW: tuple[int, int] = (256, 320)
 _SIMPLER_GOOGLE_IMAGE_HW: tuple[int, int] = (256, 320)
-# Layout → upstream ``EmbodimentTag`` enum name (drives the modality
-# config the sidecar uses to validate obs / route actions). Verified
-# against ``rldx/data/embodiment_tags.py`` at the RLDX-1 commit pinned
-# by ``tools/rldx_sidecar.py``. ALSO cross-checked against each FT
-# checkpoint's `processor_config.json` `modality_configs` keys:
-# `OXE_WIDOWX` / `OXE_GOOGLE` are enum *names* that exist in the enum
-# module, but the published FT-SIMPLER-* checkpoints' processor only
-# contains the OXE_BRIDGE_ORIG (`bridge_orig`) and OXE_FRACTAL
-# (`fractal20220817_data`) modality buckets — `PolicyLoader.load` does
-# `modality_configs[embodiment_tag.value]` and crashes with `KeyError:
-# oxe_widowx` if we pass the wrong name. The map below uses the names
-# that actually round-trip through the FT checkpoints we ship rSkills
-# for.
+# Layout -> upstream `EmbodimentTag` enum name (drives the modality
+# config the sidecar uses to validate obs / route actions), per
+# `rldx/data/embodiment_tags.py` at the pinned commit
+# (`tools/rldx_sidecar.py`) and each FT checkpoint's
+# `processor_config.json` `modality_configs` keys. `OXE_WIDOWX` /
+# `OXE_GOOGLE` exist as enum names but the published FT-SIMPLER-*
+# checkpoints' processor only has `OXE_BRIDGE_ORIG` (`bridge_orig`) and
+# `OXE_FRACTAL` (`fractal20220817_data`) buckets —
+# `PolicyLoader.load`'s `modality_configs[embodiment_tag.value]` would
+# raise `KeyError: oxe_widowx` with the wrong name.
 _RLDX_LAYOUT_TO_EMBODIMENT_TAG: dict[str, str] = {
     "libero": "GENERAL_EMBODIMENT",
     "gr1": "GENERAL_EMBODIMENT",
@@ -366,7 +314,7 @@ _SIDECAR_PORT_MAX = 40000
 def _resolve_state_layout(manifest: Any) -> str:
     """Map an rSkill manifest's ``state_contract.layout`` to a sidecar layout.
 
-    Returns one of :data:`_RLDX_NON_DEFAULT_LAYOUTS` when the manifest declares
+    Returns one of ``_RLDX_NON_DEFAULT_LAYOUTS`` when the manifest declares
     it, else ``"libero"`` (the flat LIBERO contract). Shared by the ``rldx``
     and ``gr00t`` factories so both dispatch obs assembly off the manifest
     instead of hardcoding a single embodiment.
@@ -388,7 +336,7 @@ def _require_scene_cameras(
     single-view fallback. On a scene that renders too few, the missing stream
     only surfaces as an opaque ``observation.images[...]`` error mid-rollout —
     after the (multi-minute) sidecar boot. Surfacing it here turns that into a
-    clear, upfront :class:`ROSCapabilityMismatch`.
+    clear, upfront ``ROSCapabilityMismatch``.
 
     A scene that declares **no** ``cameras`` is the adapter-default case (LIBERO
     renders ``camera1``+``camera2`` itself), so only an *explicit, too-short*
@@ -426,8 +374,6 @@ def _derive_sidecar_port(
     the port range; it never guards a security boundary.
     """
     key = "|".join((family, model, embodiment_tag, quantization, layout))
-    # SHA-1 here is non-cryptographic — only used to spread identities evenly
-    # across the port range, never as a security boundary.
     digest = hashlib.sha1(key.encode("utf-8")).digest()
     span = _SIDECAR_PORT_MAX - _SIDECAR_PORT_MIN
     return _SIDECAR_PORT_MIN + (int.from_bytes(digest[:4], "big") % span)
@@ -445,7 +391,7 @@ def _resolve_sidecar_port(
 ) -> int:
     """Resolve the sidecar port: env pin > vla.extra pin > per-identity default.
 
-    The per-identity default (:func:`_derive_sidecar_port`) replaces the old
+    The per-identity default (``_derive_sidecar_port``) replaces the old
     hard 5555 so different checkpoints don't collide on one port and silently
     reuse each other's sidecar.
     """
@@ -471,34 +417,28 @@ _EULER_GIMBAL_EPS = 1e-6  # below this we drop into the gimbal-lock branch.
 # "fully closed" RLDS values. Matches the upstream
 # ``WidowXBridgeEnv._postprocess_gripper`` constant.
 _RLDS_GRIPPER_THRESHOLD = 0.5
-# WidowX gripper qpos range vs bridge_data_v2 stats. The MS3 widowx
-# bridge env configures the gripper finger joints with
-# ``lower=0.015, upper=0.037`` (see
-# ``mani_skill/envs/tasks/digital_twins/bridge_dataset_eval/base_env.py``
-# `gripper_pd_joint_pos`). Bridge_data_v2's published statistics for
-# ``state.gripper_position`` give range [0.046, 1.115] and mean
-# 0.708, i.e. the policy was trained on a gripper state expressed in
-# a different unit than MS3's raw joint position. Without rescaling
-# the policy sees a "fully open" reset state value (raw 0.037) that's
-# ~20× smaller than its training "fully open" (~1.0), reads it as
-# strongly out-of-distribution, and emits ~zero arm deltas (the
-# arm-frozen-but-gripper-active failure mode observed at run time).
+# WidowX gripper qpos range vs bridge_data_v2 stats. MS3's widowx bridge
+# env configures gripper finger joints with `lower=0.015, upper=0.037`
+# (`mani_skill/envs/tasks/digital_twins/bridge_dataset_eval/base_env.py`
+# `gripper_pd_joint_pos`). bridge_data_v2's published `state.gripper_position`
+# stats give range [0.046, 1.115], mean 0.708 — a different unit than MS3's
+# raw joint position. Without rescaling, a "fully open" reset (raw 0.037,
+# ~20x smaller than training's ~1.0) reads as strongly OOD and emits
+# ~zero arm deltas (observed arm-frozen-but-gripper-active failure mode).
 _BRIDGE_GRIPPER_RAW_LOW = 0.015
 _BRIDGE_GRIPPER_RAW_HIGH = 0.037
 _BRIDGE_GRIPPER_NORM_LOW = 0.046
 _BRIDGE_GRIPPER_NORM_HIGH = 1.115
 
 
-# WidowX sticky-gripper params. Mirrors the upstream
-# ``rldx/eval/sim/SimplerEnv/simpler_env.py`` Google fractal handler
-# (``_postprocess_gripper`` + ``sticky_gripper_num_repeat = 15``).
-# The WidowX upstream env wrapper is "stateless" — it just binarizes
-# ``2*(close>0.5)-1`` — but that path was evaluated at bf16 precision
-# where the policy's gripper_close outputs were crisp (~0 or ~1). On
-# our nf4-quantized path the outputs hover around the threshold and
-# binarization oscillates, which prevents the gripper from holding
-# closed long enough to grasp. Adopting the Google-style sticky
-# state machine recovers a working grasp without re-quantizing.
+# WidowX sticky-gripper params, mirroring upstream
+# `rldx/eval/sim/SimplerEnv/simpler_env.py`'s Google fractal handler
+# (`_postprocess_gripper` + `sticky_gripper_num_repeat = 15`). The
+# WidowX upstream wrapper is stateless (binarizes `2*(close>0.5)-1`),
+# fine at bf16 where gripper_close outputs are crisp (~0/~1); on our
+# nf4 path outputs hover near the threshold and binarization
+# oscillates, preventing a hold-closed grasp. The Google-style sticky
+# state machine fixes this without re-quantizing.
 _STICKY_GRIPPER_NUM_REPEAT = 15
 # Confidence band: a transition only fires when the policy is
 # strongly biased (>0.75 close or <0.25 close). Values inside
@@ -543,7 +483,7 @@ def _encode_ndarray(obj: Any) -> Any:
 
 
 def _decode_ndarray(obj: dict[str, Any]) -> Any:
-    """Msgpack ``object_hook``: reverse :func:`_encode_ndarray`."""
+    """Msgpack ``object_hook``: reverse ``_encode_ndarray``."""
     if "__ndarray_class__" in obj:
         return np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
     return obj
@@ -785,16 +725,9 @@ class _Gr00tFamilySidecarAdapter:
         this on failure so ``_wait_for_boot`` doesn't loop forever against
         a permanently-dead socket once the first ping times out.
         """
-        import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in rldx group
-
-        if self._socket is not None:
-            with contextlib.suppress(Exception):
-                self._socket.close(linger=0)
-        self._socket = self._ctx.socket(zmq.REQ)
-        self._socket.setsockopt(zmq.LINGER, 0)
-        self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self._socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-        self._socket.connect(f"tcp://{self.host}:{self.port}")
+        self._socket = open_req_socket(
+            self._ctx, self.timeout_ms, self.host, self.port, old=self._socket
+        )
 
     def _try_ping(self) -> bool:
         """One ZMQ ping with the configured RCVTIMEO. True iff server answers.
@@ -804,13 +737,13 @@ class _Gr00tFamilySidecarAdapter:
         nothing is on the other end, instead of returning the raw
         ECONNREFUSED a TCP connect would surface in microseconds. To
         keep cold-start connects fast (no sidecar yet → spawn one), we
-        gate the ZMQ leg behind the cheap :meth:`_is_port_busy` TCP
-        probe. Side benefit: :meth:`_wait_for_boot` now polls at the
+        gate the ZMQ leg behind the cheap ``_is_port_busy`` TCP
+        probe. Side benefit: ``_wait_for_boot`` now polls at the
         ~2 s sleep rate instead of being throttled to the 60 s RCVTIMEO,
         which also shortens child-death detection during boot.
 
         On ZMQ-leg failure we recreate the REQ socket -- see
-        :meth:`_init_socket` for why the EFSM state of REQ makes
+        ``_init_socket`` for why the EFSM state of REQ makes
         per-attempt resets mandatory.
         """
         if not self._is_port_busy():
@@ -894,7 +827,7 @@ class _Gr00tFamilySidecarAdapter:
         The child is launched in its own session/process group so a
         Ctrl-C against the openral process (e.g. ``openral sim run``) does
         not also abort the multi-minute first-boot ``uv sync``. We rely
-        on :meth:`close` / atexit to clean up.
+        on ``close`` / atexit to clean up.
         """
         if self._is_port_busy():
             # Race: somebody else just bound the port between our ping
@@ -1321,7 +1254,7 @@ class _Gr00tFamilySidecarAdapter:
     def _pick_single_camera(
         self, observation: Observation, scene_key: str, *, buf_key: str
     ) -> NDArray[np.uint8]:
-        """Single-camera variant of :meth:`_pick_images` for GR1 / RC365."""
+        """Single-camera variant of ``_pick_images`` for GR1 / RC365."""
         images = observation.get("images", {})
         img = images.get(scene_key)
         if img is None:
@@ -1464,7 +1397,7 @@ class _Gr00tFamilySidecarAdapter:
         """Stack LIBERO-flat ``action.x .. action.gripper`` into ``(T, 7)``.
 
         The gripper column is rescaled to the LIBERO/robosuite convention
-        — see :func:`_rldx_gripper_to_libero` — because the RLDX policy
+        — see ``_rldx_gripper_to_libero`` — because the RLDX policy
         emits gripper in the RLDS dataset convention (``[0, 1]`` with
         ``0=close, 1=open``) while ``LiberoEnv.step`` consumes
         ``[-1, +1]`` with ``-1=open, +1=close`` (GH-133). Without this
@@ -1569,7 +1502,7 @@ class _Gr00tFamilySidecarAdapter:
         Both layouts leave the gripper column AS-IS at the raw policy
         ``gripper_close`` value in [0, 1]. WidowX's binarisation + the
         Google-style sticky-gripper state machine are applied in
-        :meth:`step` against the per-chunk popleft, not here — the
+        ``step`` against the per-chunk popleft, not here — the
         state machine spans applied steps and would otherwise lose
         its across-chunk continuity at every replan boundary. The
         environment-side step path then receives MS3's
@@ -1599,7 +1532,7 @@ class _Gr00tFamilySidecarAdapter:
             slabs.append(arr)
         chunk = np.concatenate(slabs, axis=-1).astype(np.float32)  # (T, 7)
         # No per-chunk gripper postproc — the per-step sticky machine
-        # in :meth:`step` reads the raw closedness directly. Google's
+        # in ``step`` reads the raw closedness directly. Google's
         # sticky-gripper (when wired) will share the same per-step
         # hook for symmetry.
         return chunk
@@ -1755,19 +1688,11 @@ def _rldx_gripper_to_libero(gripper: NDArray[np.float32]) -> NDArray[np.float32]
     Returns:
         Float32 array of the same shape with values in ``{-1, 0, +1}``,
         ready to feed straight into LIBERO's 7-D action vector at
-        index ``6`` (see :data:`_RLDX_ACTION_AXES`).
+        index ``6`` (see ``_RLDX_ACTION_AXES``).
     """
     g = np.asarray(gripper, dtype=np.float32)
     out: NDArray[np.float32] = (-np.sign(2.0 * g - 1.0)).astype(np.float32)
     return out
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    """Parse a permissive bool env var (``1`` / ``true`` / ``yes``)."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Back-compat alias: the adapter was named for RLDX-1 (which landed first) before
@@ -1792,17 +1717,15 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
         image_size       -- video frame resize target (default 256, the
                             LiberoEnv native resolution).
         timeout_ms       -- per-request ZMQ recv timeout (default 60_000).
-                            First call after sidecar boot is slow because
-                            the policy hasn't loaded; raise this for big
-                            checkpoints.
+                            First call after boot is slow (policy still
+                            loading); raise for big checkpoints.
         camera_keys      -- override the (agentview, wrist) camera pair
                             when your scene doesn't follow the LIBERO
                             convention.
         auto_spawn       -- when True (default) the adapter forks
                             ``tools/rldx_sidecar.py`` if no server is
                             already listening on ``host:port``; set False
-                            to preserve the older "boot it yourself"
-                            workflow.
+                            to boot it yourself.
         boot_timeout_s   -- max seconds to wait for the spawned sidecar
                             to answer ``ping`` (default 900 — the first
                             boot includes the upstream ``git clone`` +
@@ -1831,22 +1754,17 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     # per-identity default can hash them in. Explicit env / vla.extra pins
     # still win.
     # Replan precedence: vla.extra.replan_steps > manifest.n_action_steps >
-    # half-chunk default (``_RLDX_CHUNK_LEN // 2 = 8``). The manifest
-    # field was previously declared but unused — the adapter only read
-    # vla.extra, so a value set in rskill.yaml was silently ignored.
-    # Honour it now so a checkpoint can ship its own tested cadence
-    # (e.g. 16 = "replay the full chunk, half as many inference
-    # round-trips, twice the open-loop horizon between observations").
+    # half-chunk default (`_RLDX_CHUNK_LEN // 2 = 8`) — lets a checkpoint
+    # ship its own tested cadence (e.g. 16 = full chunk replay, half the
+    # inference round-trips, twice the open-loop horizon).
     #
-    # The half-chunk fallback is **still reachable in production**:
-    # ``rskills/rldx1-ft-libero-nf4``, ``rldx1-ft-gr1-nf4``, and
-    # ``rldx1-ft-rc365-nf4`` deliberately omit ``n_action_steps`` (the
-    # manifest comment "equals chunk_size (full chunk replay)" is a lie
-    # the schema does not enforce — ``RSkillManifest.n_action_steps``
-    # defaults to ``None``, not to ``chunk_size``). With no
-    # ``vla.extra.replan_steps`` override either, those rskills depend
-    # on this 8-step half-chunk default to actually replay anything,
-    # so the fallback stays.
+    # Half-chunk fallback is still reachable in production:
+    # `rskills/rldx1-ft-libero-nf4`, `rldx1-ft-gr1-nf4`, and
+    # `rldx1-ft-rc365-nf4` omit `n_action_steps` (their manifest comment
+    # "equals chunk_size" is not schema-enforced —
+    # `RSkillManifest.n_action_steps` defaults to `None`, not
+    # `chunk_size`) and have no `vla.extra.replan_steps` override, so
+    # they depend on this 8-step default to replay at all.
     _manifest = load_manifest_for_spec(spec)
     _manifest_steps = getattr(_manifest, "n_action_steps", None) if _manifest else None
     replan_steps = int(

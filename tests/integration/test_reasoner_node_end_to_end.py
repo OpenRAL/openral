@@ -1,22 +1,19 @@
-"""Live ROS integration test for the F4 reasoner_node + F10 prompt_router_node.
+"""Live ROS integration tests for the F4 reasoner_node + F10 prompt_router_node.
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` to match the convention in
-``tests/integration/test_failure_bus.py`` / ``test_world_state_integration.py``
-(rclpy + DDS init clash with a glib pulled in by torch/pyarrow during the
-regular ``uv run pytest`` invocation).
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (same convention as test_failure_bus.py /
+test_world_state_integration.py): rclpy + DDS init clashes with glib pulled in
+by torch/pyarrow during a regular ``uv run pytest`` invocation.
 
-Part of the live-ROS suite listed in ``scripts/ros_live_tests.sh``. CI runs it
-inside ``openral:x86`` (the ``docker-build`` workflow — the only CI surface with
-a real rclpy + colcon overlay). Locally::
+Part of ``scripts/ros_live_tests.sh``; CI runs it in ``openral:x86`` (docker-build
+workflow — the only CI surface with a real rclpy + colcon overlay). Locally::
 
     source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
     just test-ros-live            # whole suite; `-k <expr>` narrows it
 
-The test exercises the full ``/openral/prompt_in/cli`` →
-``/openral/prompt`` → reasoner tick → dispatch round-trip with a real
-:class:`FakeToolUseClient` (the only test double allowed at the LLM
-process boundary per CLAUDE.md §1.11).
+Exercises ``/openral/prompt_in/cli`` → ``/openral/prompt`` → reasoner tick →
+dispatch with a real ``FakeToolUseClient`` (only test double allowed at
+the LLM process boundary, CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -224,14 +221,10 @@ def test_reasoner_node_emits_prompt_on_canned_response() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_recall_object_query_reprompts_with_spatial_memory_result() -> None:
-    """Phase 2b — RecallObjectTool → SpatialMemory query → re-prompt cascade.
+    """RecallObjectTool → real SpatialMemory (home fixture) → re-prompt cascade.
 
-    A reasoner wired with a real ``SpatialMemory`` (loaded from the
-    home fixture) dispatches a canned ``RecallObjectTool`` for the wine bottle; the
-    node runs the query and republishes the rendered result as a
-    ``PromptStamped`` with frame_id ``"spatial_memory"`` so the next tick sees
-    it. We assert the re-prompt carries the recalled object and the occluding
-    fridge the planner must open first.
+    Re-prompt is a PromptStamped with frame_id "spatial_memory" carrying the
+    recalled wine bottle and the occluding fridge the planner must open first.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -333,14 +326,10 @@ def test_recall_object_query_reprompts_with_spatial_memory_result() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_spatial_memory_path_param_preloads_query_backend() -> None:
-    """Deployment wiring — the spatial_memory_path param loads a backend.
+    """spatial_memory_path ROS param (not constructor injection) loads a SpatialMemory backend.
 
-    Instead of injecting a SpatialMemory at construction (the unit path), this
-    sets the ``spatial_memory_path`` ROS parameter to the real home fixture —
-    the deployment wiring a launch file uses — configures the node, and asserts
-    the backend loaded and the query tools are enabled, then drives a
-    RecallObjectTool to confirm the full dispatch → re-prompt path works against
-    the preloaded map.
+    This is the wiring sim_e2e.launch.py uses; asserts the full RecallObjectTool
+    dispatch → re-prompt path works against the preloaded map.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -378,8 +367,8 @@ def test_spatial_memory_path_param_preloads_query_backend() -> None:
                 ],
             ],
         )
-        # No injected backend — wire it purely through the ROS parameter, exactly
-        # as sim_e2e.launch.py does via `spatial_memory_path:=<path>`.
+        # No injected backend — wired via the ROS param, as sim_e2e.launch.py does
+        # (`spatial_memory_path:=<path>`).
         reasoner = ReasonerNode(
             client=client,
             palette=ToolPalette(execute_rskill_ids=frozenset()),
@@ -446,9 +435,8 @@ def _drive_memory_node(
 ) -> list[Any]:
     """Boot a ReasonerNode with ``memory_md_path`` wired, run a tick, collect ``memory`` re-prompts.
 
-    Shared harness for the §3 / Phase 4c dispatch tests: mirrors the
-    spatial-memory deployment wiring (param → configure → activate → publish a
-    prompt → spin) but watches for the ``memory`` frame_id re-prompt.
+    Shared harness for the §3 / Phase 4c dispatch tests (param → configure → activate →
+    publish → spin), watching for the ``memory`` frame_id re-prompt.
     """
     import rclpy
     from openral_msgs.msg import PromptStamped
@@ -526,12 +514,10 @@ def _drive_memory_node(
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_memory_write_persists_to_disk_and_reprompts(tmp_path: Any) -> None:
-    """§3 / Phase 4c — memory_write applies, persists MEMORY.md, and re-prompts.
+    """§3 / Phase 4c — MemoryWriteTool(add) persists to MEMORY.md and re-prompts.
 
-    The ``memory_md_path`` param wires an (initially absent) MEMORY.md; a canned
-    ``MemoryWriteTool(add)`` is dispatched. We assert the new fact is written to
-    the file on disk (so it survives a restart) and a ``memory`` frame_id
-    confirmation is re-prompted so the next tick sees the update.
+    Fact is written to disk (survives a restart) and a ``memory`` frame_id
+    confirmation is re-prompted so the next tick sees it.
     """
     pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -566,11 +552,9 @@ def test_memory_write_persists_to_disk_and_reprompts(tmp_path: Any) -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_memory_search_recalls_archived_entry_and_reprompts(tmp_path: Any) -> None:
-    """§3 / Phase 4c — memory_search recalls an archived fact via re-prompt.
+    """§3 / Phase 4c — MemorySearchTool recalls a fact from a pre-existing archive JSONL.
 
-    A pre-existing archive JSONL (a fact that left the live file) is loaded
-    alongside the MEMORY.md; a canned ``MemorySearchTool`` query recalls it and
-    the node re-prompts with the hit so the next tick can use it.
+    Archive holds a fact superseded out of the live MEMORY.md; the node re-prompts with the hit.
     """
     pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -610,13 +594,10 @@ def test_memory_search_recalls_archived_entry_and_reprompts(tmp_path: Any) -> No
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_active_search_cascade_is_bounded_and_hands_off() -> None:
-    """§3 — a repeatedly-missing query terminates in human-handoff.
+    """§3 — SearchBudget bounds the RecallObjectTool find→re-prompt cascade.
 
-    A FakeToolUseClient that keeps emitting RecallObjectTool for an object that is
-    not in memory would, without a bound, drive the find→re-prompt cascade
-    forever. The SearchBudget caps it: after ``max_attempts`` consecutive
-    queries the reasoner publishes a handoff with its own frame_id (filtered by
-    _on_prompt → no further tick), stopping the loop.
+    After ``max_attempts`` consecutive misses the reasoner publishes a human-handoff
+    (own frame_id, filtered by ``_on_prompt``) instead of looping forever.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -696,9 +677,8 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
             executor.spin_once(timeout_sec=0.05)
 
         calls_at_handoff = client.calls
-        # The terminal handoff must also terminate the active mission. Before
-        # the fix, the filtered self-prompt stopped only the immediate cascade;
-        # every heartbeat selected recall_object again forever.
+        # Terminal handoff must also stop the active mission — a filtered self-prompt alone
+        # only stopped the immediate cascade; the heartbeat re-selected recall_object forever.
         for _ in range(10):
             executor.spin_once(timeout_sec=0.05)
 
@@ -718,14 +698,10 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_recall_miss_escalates_to_locate_in_view() -> None:
-    """A recall_object miss escalates to a live locate_in_view.
+    """recall_object miss (policy, not LLM choice) escalates to locate_in_view.
 
-    When the goal object is not in spatial memory and an on-demand detector is
-    available, the reasoner must (policy, not LLM choice) call the namespaced
-    ``locate_in_view`` service for the SAME query before handing off — so the
-    live open-vocab detector can ground objects the map never ingested. This
-    stands up a real LocateInView service server and asserts it receives the
-    query when recall_object misses.
+    Same query is sent to locate_in_view before handoff, so the live open-vocab
+    detector can ground objects the map never ingested.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -826,13 +802,9 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_severity_fail_failure_preempts_reasoner_tick() -> None:
-    """A SEVERITY_FAIL FailureTrigger forces an out-of-band reasoner tick.
+    """SEVERITY_FAIL FailureTrigger (severity=2) forces an out-of-band reasoner tick.
 
-    The reasoner design commits to "event preemption on
-    FailureTrigger.severity>=FAIL". This test publishes a real
-    ``FailureTrigger`` with ``severity=SEVERITY_FAIL`` (=2) and asserts
-    the reasoner dispatched a tool call within the next 100 ms
-    (matching the min-interval).
+    Event preemption per design: dispatches a tool call within 100 ms (the min-interval).
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -903,15 +875,11 @@ def test_severity_fail_failure_preempts_reasoner_tick() -> None:
         executor.add_node(sub_node)
         executor.add_node(pub_node)
 
-        # Re-publish the SEVERITY_FAIL (=2) trigger on every spin
-        # iteration until the reasoner's preempted dispatch lands.
-        # DDS discovery is best-effort and a single publish before the
-        # reasoner's subscriber has matched the publisher silently
-        # drops the message (VOLATILE durability) — same flake shape as
-        # test_prompt_router_forwards_cli_prompt_to_openral_prompt.
-        # ReasonerCore's per-kind retry cap (3 by default) bounds the
-        # redundant preempted ticks if the reasoner happens to consume
-        # the canned response before the loop exits.
+        # Re-publish SEVERITY_FAIL (=2) each spin until preempted dispatch lands: DDS discovery
+        # is best-effort, a publish before the subscriber matches silently drops (VOLATILE
+        # durability) — same flake shape as
+        # test_prompt_router_forwards_cli_prompt_to_openral_prompt above.
+        # ReasonerCore's per-kind retry cap (3 default) bounds redundant preempted ticks.
         def _publish_fail() -> None:
             fail = FailureTrigger()
             fail.header.stamp = pub_node.get_clock().now().to_msg()
@@ -1048,11 +1016,8 @@ def test_skill_registry_changed_triggers_palette_refresh(tmp_path) -> None:
 def test_execute_skill_rejection_emits_failure_trigger() -> None:
     """Goal rejection by the F1 server emits a KIND_CONTROLLER FailureTrigger.
 
-    Spins up a real :class:`rclpy_action.ActionServer` on
-    ``/openral/execute_rskill`` that rejects every goal. The reasoner
-    must publish a ``FailureTrigger`` on ``/openral/failure/rskill``
-    with ``kind=KIND_CONTROLLER`` (=5) per the F4 follow-up
-    (GH-126).
+    F4 follow-up (GH-126): a real ActionServer on /openral/execute_rskill rejects every
+    goal; reasoner must publish FailureTrigger(kind=KIND_CONTROLLER=5) on /openral/failure/rskill.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1189,10 +1154,8 @@ def test_execute_skill_rejection_emits_failure_trigger() -> None:
 def test_lifecycle_transition_calls_change_state() -> None:
     """LifecycleTransitionTool drives a real ``<node>/change_state``.
 
-    Spins up a real :class:`LifecycleNode` peer with a recording flag
-    on its configure transition; the reasoner dispatches a
-    ``LifecycleTransitionTool(node=..., transition="configure")`` and
-    the peer's ``on_configure`` must fire.
+    Dispatches LifecycleTransitionTool(node=..., transition="configure") against a real
+    LifecycleNode peer and asserts its ``on_configure`` fires.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1292,10 +1255,8 @@ def _spin_reasoner_with_action_server(
 ) -> None:
     """Shared spin loop for ExecuteRskill action-server integration tests.
 
-    Drops the reasoner, the action-server node, and any extra subscriber
-    onto a single-threaded executor; injects an operator prompt on
-    ``/openral/prompt`` to force a reasoner tick; spins until
-    ``stop_event`` fires or ``timeout_s`` elapses.
+    Publishes an operator prompt on ``/openral/prompt`` to force a reasoner tick;
+    spins until ``stop_event`` fires or ``timeout_s`` elapses.
     """
     import rclpy
     from openral_msgs.msg import PromptStamped
@@ -1341,12 +1302,7 @@ def _spin_reasoner_with_action_server(
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_execute_skill_success_emits_no_failure_trigger() -> None:
-    """Successful goal completes without emitting a FailureTrigger.
-
-    Spins up an :class:`ActionServer` that accepts and reports
-    ``success=True``; the reasoner must log success on the result
-    callback and must **not** publish on ``/openral/failure/rskill``.
-    """
+    """Successful ExecuteRskill goal (success=True) must not publish on /openral/failure/rskill."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
     from openral_core import ExecuteRskillTool
@@ -1458,13 +1414,9 @@ def test_execute_skill_success_emits_no_failure_trigger() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_execute_skill_deadline_emits_kind_timeout() -> None:
-    """`deadline_s` elapsing emits KIND_TIMEOUT and cancels the goal.
+    """``deadline_s`` elapsing on a stalled ActionServer goal cancels it.
 
-    Spins up an ``ActionServer`` that accepts but stalls indefinitely;
-    the reasoner's one-shot deadline timer must fire after
-    ``call.deadline_s`` seconds, ``cancel_goal_async`` the goal, and
-    publish ``FailureTrigger(kind=KIND_TIMEOUT)`` with a realistic
-    ``TimeoutEvidence``.
+    Emits ``FailureTrigger(kind=KIND_TIMEOUT)`` with a realistic ``TimeoutEvidence``.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1619,22 +1571,17 @@ def test_execute_skill_deadline_emits_kind_timeout() -> None:
     assert evidence["operation"] == "skill.openral/skill-test-timeout"
     assert evidence["deadline_s"] == pytest.approx(deadline_s)
     assert evidence["elapsed_s"] >= deadline_s * 0.5
-    # ``cancel_observed`` is a best-effort sanity touch: in practice the
-    # cancel propagates after the test tears down the server, so we log
-    # rather than assert. The contract that matters is the KIND_TIMEOUT
-    # FailureTrigger emission above.
+    # cancel_observed: best-effort — cancel typically propagates after test teardown, so
+    # we log rather than assert. What matters is the KIND_TIMEOUT emission above.
     _ = cancel_observed
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_execute_skill_abort_emits_kind_controller() -> None:
-    """Server-side abort emits a KIND_CONTROLLER FailureTrigger.
+    """Server-side ``goal_handle.abort()`` emits a KIND_CONTROLLER FailureTrigger.
 
-    Spins up an ``ActionServer`` that accepts the goal then immediately
-    calls ``goal_handle.abort()`` with ``success=False`` and a
-    ``failure_reason``. The reasoner's result callback must publish a
-    ``FailureTrigger(kind=KIND_CONTROLLER, state="aborted",
-    detail=failure_reason)`` on ``/openral/failure/rskill``.
+    Publishes FailureTrigger(kind=KIND_CONTROLLER, state="aborted", detail=failure_reason)
+    on /openral/failure/rskill.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1750,13 +1697,11 @@ def test_execute_skill_abort_emits_kind_controller() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_spatial_memory_ingest_accumulates_from_world_state() -> None:
-    """The live ingest edge end-to-end (reasoner half).
+    """Live ingest edge end-to-end (reasoner half).
 
-    With ``spatial_memory_ingest:=true`` the reasoner auto-creates a durable
-    SpatialMemory and folds each ``/openral/world_state_slow``
-    ``WorldState.detected_objects`` snapshot — what the world-state producer
-    publishes — into it. We publish a snapshot carrying a wine bottle, drive a
-    tick, and confirm ``recall_object`` recalls it from the accumulated map.
+    ``spatial_memory_ingest:=true`` auto-creates a durable SpatialMemory and folds each
+    ``/openral/world_state_slow`` ``WorldState.detected_objects`` snapshot into it;
+    ``recall_object`` must then recall an ingested wine bottle.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1993,13 +1938,10 @@ def _write_nav2_map(d: Any, *, width: int = 20, height: int = 20) -> Any:
 def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
     """Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
 
-    The REAL deploy path (not a faked /map publisher): a saved nav2 ``map.yaml`` is
-    loaded by a standalone ``nav2_map_server`` — exactly what ``sim_e2e.launch.py``
-    brings up when ``map_path`` is set — which latches ``/map``. We assert (a) the
-    saved map reaches ``/map`` (the costmap is populated from the bundle), (b) the
-    reasoner consumes it into its occupancy grid, and (c) with the bundle's
-    scene graph also wired, ``recall_object`` still answers — the two bundle
-    modalities loaded together at deploy start.
+    Real deploy path: a saved nav2 map.yaml loaded by ``nav2_map_server`` (what
+    sim_e2e.launch.py brings up for ``map_path``), latching ``/map``. Asserts (a) the
+    map reaches ``/map``, (b) the reasoner consumes it into its occupancy grid, (c)
+    ``recall_object`` still answers with the bundle's scene graph also wired.
     """
     import os
     import shutil
@@ -2284,12 +2226,11 @@ def test_emit_prompt_honours_target_topic() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_cascade_reprompt_does_not_reset_search_budget() -> None:
-    """A 'detector'-framed cascade re-prompt keeps the search budget accumulating.
+    """'detector'-framed cascade re-prompt keeps the search budget accumulating.
 
-    Regression: the reset guard in _on_prompt excluded only "spatial_memory",
-    so every detector / reward_monitor / mission re-prompt reset the very
-    budget its dispatch had just charged — the locate-miss budget could never
-    exceed 1 and an undetectable object looped forever.
+    Regression: _on_prompt's reset guard excluded only "spatial_memory", so every
+    detector/reward_monitor/mission re-prompt reset the budget just charged —
+    locate-miss budget could never exceed 1, undetectable objects looped forever.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")

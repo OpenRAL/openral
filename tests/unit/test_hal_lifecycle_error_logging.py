@@ -8,14 +8,13 @@
 **without logging** — so the lifecycle-autostart driver sees only an opaque
 failure and the traceback is lost.
 
-The :func:`openral_observability.log_lifecycle_errors` decorator on the base's
-``on_configure`` closes that gap for every HAL (UR5e / Franka / SO-100 /
-OpenArm / panda_mobile / …) at once, since they all share this base. This test
-drives a minimal real subclass whose ``_create_hal`` raises an untyped error
-through a real ``trigger_configure``.
+The ``openral_observability.log_lifecycle_errors`` decorator on the base's
+``on_configure`` closes that gap for every HAL (UR5e/Franka/SO-100/OpenArm/
+panda_mobile/…) at once, since they all share this base. This test drives a
+minimal real subclass whose ``_create_hal`` raises an untyped error through a
+real ``trigger_configure``.
 
-Per CLAUDE.md §1.11 — no mocks. The node is a real ``HALLifecycleNodeBase``
-subclass on a real ``rclpy`` context.
+Per CLAUDE.md §1.11 — no mocks: a real subclass on a real ``rclpy`` context.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ def test_hal_unexpected_configure_error_logs_traceback_and_returns_failure(
     from openral_hal.lifecycle import HALLifecycleNodeBase
     from rclpy.lifecycle import TransitionCallbackReturn
 
-    class _BoomHAL(HALLifecycleNodeBase):  # type: ignore[misc, valid-type]
+    class _BoomHAL(HALLifecycleNodeBase):
         def _create_hal(self) -> object:
             # Untyped error — NOT ROSConfigError / ROSRuntimeError, so it bypasses
             # the base's typed except and would otherwise reach rclpy's silent ERROR.

@@ -23,7 +23,7 @@ def _neuter_rich_console() -> None:
 
     original_init = Console.__init__
 
-    def patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]  # reason: untyped shim
         kwargs.setdefault("force_terminal", False)
         kwargs.setdefault("force_interactive", False)
         kwargs.setdefault("no_color", True)

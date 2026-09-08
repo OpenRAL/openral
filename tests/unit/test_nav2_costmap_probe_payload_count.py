@@ -1,30 +1,26 @@
 """The silhouette probe counts placed payloads per object, not per primitive.
 
 `tools/_nav2_costmap_silhouette_probe.py` decides whether the payload half of
-issue #108 was measured at all by comparing the number of attached objects it
-could place against the number declared. It used to increment the placed count
-once per successfully-placed *primitive* while comparing against a count of
-*objects*, so any payload with more than one primitive scored `placed >
-declared`, every sample was filed as a partial placement, and
-`payload_silhouette_measured` stayed `false` however completely the payload had
-been placed. The guard was unsatisfiable rather than unsatisfied.
+issue #108 was measured by comparing placed vs. declared attached objects. It
+used to increment the placed count per successfully-placed *primitive* while
+comparing against a count of *objects*, so any multi-primitive payload scored
+`placed > declared`, was filed as a partial placement, and left
+`payload_silhouette_measured` `false` however completely it had been placed —
+the guard was unsatisfiable, not unsatisfied.
 
-That is not a hypothetical shape. `AttachedCollisionPrimitive.msg` says in its
-own header that one object "may carry several of these primitives", the sim
-producer builds them with `extract_body_primitives` over a whole MuJoCo body
-subtree, and a live `robocasa_baguette` carry measured **16** primitives on the
-single `sim:obj_main` payload. Every scene run this repo has recorded reported
-the payload half unmeasured, and this is why.
+Not hypothetical: `AttachedCollisionPrimitive.msg` documents one object "may
+carry several of these primitives"; the sim producer builds them via
+`extract_body_primitives` over a MuJoCo body subtree; a live
+`robocasa_baguette` carry measured **16** primitives on one `sim:obj_main`
+payload — why every recorded scene run reported the payload half unmeasured.
 
-Real components (CLAUDE.md §1.11): real `openral_msgs` IDL messages and the
-probe's own `payload_mask`. The only thing supplied by the test is the
-`base_frame <- attach_link` transform, which is a plain argument to that
-function rather than a stand-in for a dependency — a real 4x4 identity.
+Real components (CLAUDE.md §1.11): real `openral_msgs` IDL and the probe's
+own `payload_mask`; only the `base_frame <- attach_link` transform is
+test-supplied, as a plain real 4x4 identity argument.
 
-Lives under `tests/unit/` because it needs no graph, but it is registered in
+Lives under `tests/unit/` (needs no graph) but is registered in
 `scripts/ros_live_tests.sh` because importing the probe needs the colcon
-overlay — the same reason `tests/unit/test_safety_status_msg.py` is listed
-there.
+overlay — same as `tests/unit/test_safety_status_msg.py`.
 """
 
 from __future__ import annotations

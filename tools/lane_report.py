@@ -1,33 +1,20 @@
 """Opt-in lane accounting — decide, record and attest what a lane actually ran.
 
-Issue #163. The `test-selective` job used to report a lane's outcome by
-grepping pytest's terse summary for ``N passed`` / ``N skipped``. Two silent
-degradations lived in that scheme:
+Issue #163: grepping pytest's ``N passed``/``N skipped`` summary hid two
+degradations — a blast-radius diff that expanded to zero lanes exited 0
+indistinguishable from a full pass (fixed in ``select_tests.py``; this tool
+makes it visible/enforced), and "any skip fails" punished CUDA/Vulkan/sidecar
+gaps a hosted runner can never provide the same as a genuinely broken lane.
 
-1. A *blast-radius* diff expanded to zero lanes, so the step exited 0 having
-   executed nothing — indistinguishable from a run that executed every lane and
-   passed. (Fixed in ``select_tests.py``; this tool makes the difference
-   *visible* and *enforced*.)
-2. "Any skip fails the lane" is the right rule for anything a runner can
-   provide and the wrong rule for anything it cannot. A hosted ubuntu-24.04
-   runner has no CUDA GPU, no Vulkan ICD and no proprietary sidecars, so
-   CUDA/Vulkan/sidecar-gated tests skip forever and redden every PR that
-   selects them — while a genuinely fixable gap ("panda.srdf not installed")
-   looked exactly the same.
+Policy, driven by ``[capability_gaps]`` in ``tools/test_selection.toml``:
 
-The policy implemented here, driven by ``[capability_gaps]`` in
-``tools/test_selection.toml``:
-
-* A skip explained by a DECLARED capability gap is *declared-not-run*: allowed,
-  attributed to the gap, and counted in the ledger. It is never called
-  "skipped" and never silently absent.
-* Any other skip still FAILS the lane. Matching is fail-closed — reword a skip
-  reason out of the declared patterns and the lane goes red, not green.
-* A lane whose every test is explained by a declared gap is *declared-not-run*
-  — reported, never silent. A lane that collected no tests at all still fails.
-* ``attest`` cross-checks the ledger against the selector's own output: every
-  selected lane must have produced a record. "Selected but never executed" is
-  the exact shape of #163 and is now a hard failure.
+* A skip explained by a DECLARED capability gap is *declared-not-run*:
+  attributed and counted, never silently "skipped".
+* Any other skip FAILS the lane. Matching is fail-closed.
+* A lane whose every test is gap-explained is *declared-not-run*, reported.
+  A lane that collected no tests at all still fails.
+* ``attest`` cross-checks the ledger against the selector's output — a
+  selected lane with no ledger record is a hard failure (the #163 shape).
 
 Run::
 
@@ -224,14 +211,10 @@ def build_record(  # noqa: PLR0911  # reason: one explicit early return per lane
         # undeclared branch above has already returned. Nothing is hidden: the
         # gap is named and counted here and printed by the attest step.
         #
-        # Judged on what the diff SELECTED, not on the lane's full potential. A
-        # narrow diff can select a single fully-gated file out of an otherwise
-        # well-covered lane: `sim` yields 162 passing tests when all seven of
-        # its files are selected, but a diff touching only `rskills/act-aloha/**`
-        # selects just `test_aloha_bimanual_act_aloha.py`, whose six tests are
-        # all CUDA-gated (proof run 32815008771). Failing that would punish a PR
-        # for touching a GPU-only file — the exact class of breakage this policy
-        # exists to remove.
+        # Judged on what the diff SELECTED, not the lane's full potential: `sim`
+        # yields 162 passing tests over all seven files, but a diff touching only
+        # `rskills/act-aloha/**` selects just the 6 CUDA-gated tests in
+        # `test_aloha_bimanual_act_aloha.py` (proof run 32815008771).
         record.status = STATUS_DECLARED_NOT_RUN
         record.note = "every selected test is gated by a declared capability gap"
         return record

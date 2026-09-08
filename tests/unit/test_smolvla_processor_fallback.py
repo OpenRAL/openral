@@ -11,8 +11,8 @@ at load time.
 
 Coverage
 --------
-- :func:`_is_processor_missing` — pure cause-chain walker; no deps.
-- :func:`_load_lerobot_dataset_stats` — v3 (``meta/stats.json``) and
+- ``_is_processor_missing`` — pure cause-chain walker; no deps.
+- ``_load_lerobot_dataset_stats`` — v3 (``meta/stats.json``) and
   v2.1 (``meta/episodes_stats.jsonl``) layouts. ``hf_hub_download`` is
   mocked at the network boundary (CLAUDE.md §5.4 allows this) to point
   at a real on-disk fixture; the aggregation logic and JSON parsing

@@ -1,7 +1,7 @@
 """Dashboard per-trace span index (bag↔OTel replay) + /api/traces / /api/spans.
 
-Exercises the real :class:`TelemetryStore` against real
-:class:`opentelemetry.proto.trace.v1.trace_pb2.Span` protobuf payloads
+Exercises the real ``TelemetryStore`` against real
+``opentelemetry.proto.trace.v1.trace_pb2.Span`` protobuf payloads
 posted through a real ``ASGITransport`` to the FastAPI app — no mocks
 per CLAUDE.md §1.11.
 """

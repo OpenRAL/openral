@@ -1,31 +1,24 @@
 r"""3D Diffuser Actor policy sidecar — RLBench keyframe inference over ZMQ.
 
-3D Diffuser Actor (Ke et al., 2024, arXiv:2402.10885, MIT) is a
-diffusion policy over end-effector keyposes for RLBench. Its released PerAct
-18-task checkpoint pins an older stack (the ``MohitShridhar/RLBench@peract``
-fork + CLIP + a torch build that must be Ada-compatible) that cannot live in the
-openral py3.12 workspace — so, like the RLDX-1 policy adapter
-(:mod:`openral_sim.policies.rldx`), it runs in its own venv as a long-lived
-process and is driven over ZMQ REQ/REP framed by msgpack.
+3D Diffuser Actor (Ke et al. 2024, arXiv:2402.10885, MIT) is a diffusion policy
+over end-effector keyposes for RLBench. Its released PerAct 18-task checkpoint
+pins an older stack (``MohitShridhar/RLBench@peract`` + CLIP + an
+Ada-compatible torch build) that can't live in the py3.12 openral workspace —
+so, like the RLDX-1 adapter (``openral_sim.policies.rldx``), it runs in its
+own venv as a long-lived process over ZMQ REQ/REP + msgpack.
 
-This file is the **sidecar side** (no openral import). It owns the
-``DiffuserActor`` model, the CLIP-encoded instruction embeddings, and the
-per-episode observation history (the policy is trained with ``num_history=3``).
-The openral side is :mod:`openral_sim.policies.rlbench_3dda`.
+This file is the sidecar side (no openral import; owns the ``DiffuserActor``
+model, CLIP instruction embeddings, per-episode obs history at
+``num_history=3``). The openral side is ``openral_sim.policies.rlbench_3dda``.
 
-Wire protocol::
+Wire: ``ping -> {"ok", "model": "3d_diffuser_actor"}``, ``reset -> {"ok"}``
+(clears history), ``get_action -> {"action": (8,) float32 [xyz, quat,
+gripper_open]}``. ``get_action`` data carries the scene's ``images``/
+``point_clouds``/``gripper_pose``/``gripper_open``; instruction is the
+precomputed CLIP token embedding for the launched task.
 
-    ping       -> {"ok": True, "model": "3d_diffuser_actor"}
-    reset      -> {"ok": True}                       # clears per-episode history
-    get_action -> {"action": (8,) float32}           # [x y z qx qy qz qw gripper_open]
-
-``get_action`` request data carries the RLBench observation the scene sidecar
-produced: per-camera ``images`` (HWC uint8) + ``point_clouds`` (HWC float32) +
-``gripper_pose`` (7) + ``gripper_open``. The instruction is the precomputed CLIP
-token embedding for the launched task (matches the upstream evaluator exactly).
-
-VRAM: inference peaks ~0.43 GB (8 GB-host friendly); runs under ``no_grad`` (the
-100-step diffusion loop would otherwise build a graph and OOM).
+VRAM: inference peaks ~0.43 GB (8 GB-host friendly); runs under ``no_grad``
+(the 100-step diffusion loop would otherwise build a graph and OOM).
 """
 
 from __future__ import annotations

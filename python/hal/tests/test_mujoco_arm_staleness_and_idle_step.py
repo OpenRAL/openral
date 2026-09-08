@@ -1,24 +1,20 @@
 """Bare ``MujocoArmHAL`` staleness recovery + idle-step (deploy-sim regression).
 
-Two coupled regressions surfaced by ``openral deploy sim`` against a bare
-:class:`~openral_hal._mujoco_arm.MujocoArmHAL` (e.g. ``OpenArmMujocoHAL``):
+Two coupled regressions from ``openral deploy sim`` against a bare
+``MujocoArmHAL`` (e.g. ``OpenArmMujocoHAL``):
 
 1. **Latched ``ROSPerceptionStale``.** ``read_state`` reads live in-process
-   ``MjData`` (always the current simulator state), yet it refreshed the
-   staleness clock only on the *success* path. If the single-threaded executor
-   stalled >``staleness_limit_s`` between two publish ticks — e.g. a slow camera
-   render hogging the thread — the next ``read_state`` raised *before* the
-   refresh, so the clock never advanced and every subsequent read raised too.
-   The HAL bricked itself permanently ("Joint state is X s old" logged
-   constantly) despite the data being perfectly current.
-
+   ``MjData`` but refreshed the staleness clock only on the success path, so a
+   stall past ``staleness_limit_s`` (e.g. a slow camera render) raised before
+   the refresh and every later read raised too — the HAL bricked itself
+   despite current data.
 2. **No dedicated publisher thread.** A bare ``MujocoArmHAL`` lacked
-   ``idle_step``, so the lifecycle node published ``/joint_states`` from a timer
-   on the executor (starved by rendering) instead of the dedicated
-   thread + ``ProprioSnapshot``, and its cameras froze when idle.
+   ``idle_step``, so ``/joint_states`` published from an executor timer
+   (starved by rendering) instead of the dedicated thread + ``ProprioSnapshot``,
+   and cameras froze when idle.
 
-These tests build a *real* native-MuJoCo arm (no mocks, CLAUDE.md §1.11). A
-bare arm's ``connect()`` does not render, so no GL/display is required; the only
+These tests build a real native-MuJoCo arm (no mocks, CLAUDE.md §1.11); a bare
+arm's ``connect()`` does not render, so no GL/display is required. The only
 external need is the menagerie MJCF, fetched on first use — unavailable →
 ``pytest.skip``.
 """

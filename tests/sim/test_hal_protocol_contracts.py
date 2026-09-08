@@ -126,14 +126,6 @@ def hal(request: pytest.FixtureRequest) -> HAL:
         raise
 
 
-@pytest.fixture
-def connected_hal(hal: HAL) -> HAL:
-    """HAL in connected state; disconnects on teardown."""
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 # ── Shared HAL protocol contracts ────────────────────────────────────────────
 
 

@@ -1,20 +1,16 @@
 # World State's bounded attestation that an attached payload is resting on a
 # named environment surface (ADR-0092 D6).
 #
-# Attachment says what the robot is carrying; it does NOT say the payload is
-# free of its environment. A grasped baguette still lies on the counter while
-# the gripper closes, and the safety kernel sees that legitimate contact as a
-# payload-vs-world penetration. This witness is the attestation that licenses
-# exactly that one contact — bounded in extent by patch_radius_m, bounded in
-# depth by max_penetration_m, and dead the moment the payload separates.
-# No witness means no exemption; the kernel's default is to stop.
+# Attachment alone does not say the payload is free of its environment — the
+# safety kernel sees a legitimately grasped-and-resting object as a
+# payload-vs-world penetration. This witness licenses exactly that one
+# contact: bounded in extent by patch_radius_m, in depth by max_penetration_m,
+# dead the moment the payload separates. No witness = no exemption (kernel
+# default is to stop).
 #
-# Geometry is expressed in the ATTACHED OBJECT's own frame, never in the base
-# frame and never as voxel indices. That is deliberate: indices decorrelate as
-# the mobile base drives and the occupancy lattice re-phases underneath the
-# robot, while the physical contact persists. The object frame moves with the
-# payload, so the attested plane keeps describing the same physical support
-# face for as long as the contact lasts.
+# Geometry is in the ATTACHED OBJECT's own frame, never base frame or voxel
+# indices — those decorrelate as the mobile base drives and the occupancy
+# lattice re-phases, while the object frame moves with the payload.
 
 # Identity of the supporting environment surface (e.g. "sim:counter_main").
 # Together with stamp_ns this keys the kernel's re-arm check: a witness that

@@ -1,12 +1,8 @@
 """``canonical_robot_path`` must not depend on the caller's directory.
 
-Regression test. The workspace root was previously a hard-coded
-``parents[5]``, which overshot the real root by one level, so the package-based
-lookup never matched anything and every successful resolution came from the
-CWD fallback. Running ``openral detect`` from anywhere but the repo root
-therefore emitted an empty ``unknown_<host>`` scaffold — with zero joints and
-no HAL — for a robot the probes had already positively identified. Nothing
-raised; the operator got a plausible-looking file describing nothing.
+Regression: a hard-coded ``parents[5]`` overshot the real workspace root by
+one level, so ``openral detect`` run from outside the repo root silently
+emitted an empty ``unknown_<host>`` scaffold instead of the resolved manifest.
 
 These tests really change directory (``monkeypatch.chdir``) rather than
 patching the resolver, because the directory the process is in *is* the thing

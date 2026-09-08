@@ -18,7 +18,9 @@ Real protobuf spans, no mocks (CLAUDE.md §1.11).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
+import pytest
 from openral_observability.dashboard import TelemetryStore
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
@@ -30,40 +32,44 @@ from opentelemetry.proto.trace.v1.trace_pb2 import (
 )
 
 
-def _av(value: object) -> AnyValue:
-    if isinstance(value, bool):
-        return AnyValue(bool_value=value)
-    if isinstance(value, int):
-        return AnyValue(int_value=value)
-    if isinstance(value, float):
-        return AnyValue(double_value=value)
-    return AnyValue(string_value=str(value))
+@pytest.fixture
+def _attrs(av: Callable[[object], AnyValue]) -> Callable[[dict[str, object]], list[KeyValue]]:
+    def _attrs(d: dict[str, object]) -> list[KeyValue]:
+        return [KeyValue(key=k, value=av(v)) for k, v in d.items()]
+
+    return _attrs
 
 
-def _attrs(d: dict[str, object]) -> list[KeyValue]:
-    return [KeyValue(key=k, value=_av(v)) for k, v in d.items()]
-
-
-def _safety_span(attrs: dict[str, object]) -> Span:
-    start = time.time_ns()
-    return Span(
-        trace_id=b"\x09" * 16,
-        span_id=b"\x09" * 8,
-        name="safety.check",
-        start_time_unix_nano=start,
-        end_time_unix_nano=start + 300_000,  # 0.3 ms — matches the kernel span
-        attributes=_attrs(attrs),
-        status=Status(code=0),  # kernel span is OK even on a violation
-    )
-
-
-def _wrap(*spans: Span) -> list[ResourceSpans]:
-    return [
-        ResourceSpans(
-            resource=Resource(attributes=_attrs({"service.name": "openral_safety_kernel"})),
-            scope_spans=[ScopeSpans(spans=list(spans))],
+@pytest.fixture
+def _safety_span(_attrs: Callable[[dict[str, object]], list[KeyValue]]) -> Callable[..., Span]:
+    def _safety_span(attrs: dict[str, object]) -> Span:
+        start = time.time_ns()
+        return Span(
+            trace_id=b"\x09" * 16,
+            span_id=b"\x09" * 8,
+            name="safety.check",
+            start_time_unix_nano=start,
+            end_time_unix_nano=start + 300_000,  # 0.3 ms — matches the kernel span
+            attributes=_attrs(attrs),
+            status=Status(code=0),  # kernel span is OK even on a violation
         )
-    ]
+
+    return _safety_span
+
+
+@pytest.fixture
+def _wrap(
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> Callable[..., list[ResourceSpans]]:
+    def _wrap(*spans: Span) -> list[ResourceSpans]:
+        return [
+            ResourceSpans(
+                resource=Resource(attributes=_attrs({"service.name": "openral_safety_kernel"})),
+                scope_spans=[ScopeSpans(spans=list(spans))],
+            )
+        ]
+
+    return _wrap
 
 
 _VIOLATION_ATTRS = {
@@ -77,7 +83,9 @@ _VIOLATION_ATTRS = {
 }
 
 
-def test_violation_populates_persistent_slot() -> None:
+def test_violation_populates_persistent_slot(
+    _wrap: Callable[..., list[ResourceSpans]], _safety_span: Callable[..., Span]
+) -> None:
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
     lv = store.snapshot()["topics"]["safety"]["last_violation"]
@@ -86,7 +94,9 @@ def test_violation_populates_persistent_slot() -> None:
     assert lv["rskill_id"] == "OpenRAL/rskill-smolvla-so101-pen-bf16"
 
 
-def test_violation_emits_error_event_and_counter() -> None:
+def test_violation_emits_error_event_and_counter(
+    _wrap: Callable[..., list[ResourceSpans]], _safety_span: Callable[..., Span]
+) -> None:
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
     snap = store.snapshot()
@@ -99,7 +109,11 @@ def test_violation_emits_error_event_and_counter() -> None:
     assert snap["counters"]["openral.event.safety_violation"] == 1
 
 
-def test_persistent_slot_survives_a_high_rate_span_flood() -> None:
+def test_persistent_slot_survives_a_high_rate_span_flood(
+    _wrap: Callable[..., list[ResourceSpans]],
+    _safety_span: Callable[..., Span],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
     """The last_violation slot outlives the event-ring eviction the flood causes."""
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
@@ -131,7 +145,9 @@ def test_persistent_slot_survives_a_high_rate_span_flood() -> None:
     assert snap["counters"]["openral.event.safety_violation"] == 1
 
 
-def test_error_events_survive_high_rate_flood_via_protected_lane() -> None:
+def test_error_events_survive_high_rate_flood_via_protected_lane(
+    _wrap: Callable[..., list[ResourceSpans]],
+) -> None:
     """Any error event (skill_failure, estop, ...) outlives the main-ring flood.
 
     The shared 200-slot event ring cycles in ~seconds under a 30 Hz stream; the
@@ -172,7 +188,9 @@ def test_error_events_survive_high_rate_flood_via_protected_lane() -> None:
     assert "reasoner.skill_failure" in error_kinds
 
 
-def test_ok_check_does_not_overwrite_last_violation() -> None:
+def test_ok_check_does_not_overwrite_last_violation(
+    _wrap: Callable[..., list[ResourceSpans]], _safety_span: Callable[..., Span]
+) -> None:
     """A subsequent passing check resets its ledger pill but not last_violation."""
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
@@ -192,16 +210,20 @@ def test_ok_check_does_not_overwrite_last_violation() -> None:
     assert safety["last_violation"]["drop_reason"] == "collision"  # slot survives
 
 
-def _clean_pass_span(kernel: str = "cpp") -> Span:
-    """A passing safety check.
+@pytest.fixture
+def _clean_pass_span(_safety_span: Callable[..., Span]) -> Callable[..., Span]:
+    def _clean_pass_span(kernel: str = "cpp") -> Span:
+        """A passing safety check.
 
-    The value is ``"info"``. This fixture used to send ``"ok"`` — which no
-    emitter has ever produced — so it validated a fiction: the test passed
-    while the real latch could only ever be set, never cleared.
-    """
-    return _safety_span(
-        {"safety.check_name": "envelope", "safety.kernel": kernel, "safety.severity": "info"}
-    )
+        The value is ``"info"``. This fixture used to send ``"ok"`` — which no
+        emitter has ever produced — so it validated a fiction: the test passed
+        while the real latch could only ever be set, never cleared.
+        """
+        return _safety_span(
+            {"safety.check_name": "envelope", "safety.kernel": kernel, "safety.severity": "info"}
+        )
+
+    return _clean_pass_span
 
 
 def test_estopped_flag_defaults_false() -> None:
@@ -209,7 +231,11 @@ def test_estopped_flag_defaults_false() -> None:
     assert TelemetryStore().snapshot()["topics"]["safety"]["estopped"] is False
 
 
-def test_estopped_flag_latches_on_violation_and_clears_on_a_clean_pass() -> None:
+def test_estopped_flag_latches_on_violation_and_clears_on_a_clean_pass(
+    _wrap: Callable[..., list[ResourceSpans]],
+    _safety_span: Callable[..., Span],
+    _clean_pass_span: Callable[..., Span],
+) -> None:
     """The e-stop button's mode follows the kernel latch.
 
     A violation (self-collision, envelope, or an /openral/estop drop) latches
@@ -230,25 +256,31 @@ def test_estopped_flag_latches_on_violation_and_clears_on_a_clean_pass() -> None
     assert store.snapshot()["topics"]["safety"]["estopped"] is False
 
 
-def _skill_failure_span(state: str) -> Span:
-    """A reasoner span carrying a skill_failure event (how the red row is born)."""
-    start = time.time_ns()
-    ev = Span.Event(
-        name="openral.event.skill_failure",
-        time_unix_nano=start,
-        attributes=_attrs(
-            {"openral.event.skill_failure.state": state, "reasoner.rskill_id": "OpenRAL/x"}
-        ),
-    )
-    return Span(
-        trace_id=b"\x0a" * 16,
-        span_id=b"\x0a" * 8,
-        name="reasoner.execute_rskill",
-        start_time_unix_nano=start,
-        end_time_unix_nano=start + 1_000,
-        events=[ev],
-        status=Status(code=0),
-    )
+@pytest.fixture
+def _skill_failure_span(
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> Callable[[str], Span]:
+    def _skill_failure_span(state: str) -> Span:
+        """A reasoner span carrying a skill_failure event (how the red row is born)."""
+        start = time.time_ns()
+        ev = Span.Event(
+            name="openral.event.skill_failure",
+            time_unix_nano=start,
+            attributes=_attrs(
+                {"openral.event.skill_failure.state": state, "reasoner.rskill_id": "OpenRAL/x"}
+            ),
+        )
+        return Span(
+            trace_id=b"\x0a" * 16,
+            span_id=b"\x0a" * 8,
+            name="reasoner.execute_rskill",
+            start_time_unix_nano=start,
+            end_time_unix_nano=start + 1_000,
+            events=[ev],
+            status=Status(code=0),
+        )
+
+    return _skill_failure_span
 
 
 def test_set_estopped_forces_flag() -> None:
@@ -266,14 +298,18 @@ def test_set_estopped_forces_flag() -> None:
     assert store.snapshot()["topics"]["safety"]["estopped"] is False
 
 
-def test_skill_failure_is_error_when_not_latched() -> None:
+def test_skill_failure_is_error_when_not_latched(
+    _wrap: Callable[..., list[ResourceSpans]], _skill_failure_span: Callable[[str], Span]
+) -> None:
     store = TelemetryStore()
     store.ingest_spans(_wrap(_skill_failure_span("timeout")))
     ev = [e for e in store.snapshot()["events"] if e["kind"] == "openral.event.skill_failure"]
     assert ev and ev[0]["severity"] == "error"
 
 
-def test_skill_failure_while_estopped_is_warning() -> None:
+def test_skill_failure_while_estopped_is_warning(
+    _wrap: Callable[..., list[ResourceSpans]], _skill_failure_span: Callable[[str], Span]
+) -> None:
     """A skill_failure while e-stop-latched is a consequence of the stop, not a fault."""
     store = TelemetryStore()
     store.set_estopped(True)
@@ -282,7 +318,11 @@ def test_skill_failure_while_estopped_is_warning() -> None:
     assert ev and ev[0]["severity"] == "warn"
 
 
-def test_skill_failure_survives_flood_even_when_warn() -> None:
+def test_skill_failure_survives_flood_even_when_warn(
+    _wrap: Callable[..., list[ResourceSpans]],
+    _skill_failure_span: Callable[[str], Span],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
     """A latched (warn) skill_failure must still leave a durable trace + reason.
 
     Regression: skill_failure downgraded to "warn" while e-stopped used to fall
@@ -329,7 +369,9 @@ def test_skill_failure_survives_flood_even_when_warn() -> None:
 # store's own comment claiming it "self-corrects after a reset" was false.
 
 
-def test_estop_latched_drops_do_not_clear_the_latch() -> None:
+def test_estop_latched_drops_do_not_clear_the_latch(
+    _wrap: Callable[..., list[ResourceSpans]], _safety_span: Callable[..., Span]
+) -> None:
     """While latched the kernel emits `warn`/`estop_latched` — still stopped."""
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
@@ -350,7 +392,11 @@ def test_estop_latched_drops_do_not_clear_the_latch() -> None:
     assert store.snapshot()["topics"]["safety"]["estopped"] is True
 
 
-def test_the_null_client_cannot_unlatch_the_ui() -> None:
+def test_the_null_client_cannot_unlatch_the_ui(
+    _wrap: Callable[..., list[ResourceSpans]],
+    _safety_span: Callable[..., Span],
+    _clean_pass_span: Callable[..., Span],
+) -> None:
     """The null client emits "info" unconditionally without checking anything.
 
     Treating that as evidence of a clear would let a no-op safety client

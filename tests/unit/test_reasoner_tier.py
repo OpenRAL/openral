@@ -4,7 +4,7 @@ The full Tier-A/B/C/D preemption flow (callbacks driving the LLM)
 lives in ``tests/integration/test_reasoner_node_end_to_end.py``
 because it needs a real rclpy executor. This module covers the
 transport-agnostic surface — the ``tier`` argument on
-:meth:`ReasonerCore.tick` and its landing on the OTel span.
+``ReasonerCore.tick`` and its landing on the OTel span.
 """
 
 from __future__ import annotations
@@ -13,27 +13,11 @@ import pytest
 from openral_core import EmitPromptTool
 from openral_observability import semconv
 from openral_reasoner import ContextRenderer, PromptRecord, ReasonerCore, ToolPalette
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-
-@pytest.fixture
-def exporter() -> InMemorySpanExporter:
-    """Real OTel SDK + in-memory exporter; per-test reset of the global provider."""
-    exp = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exp))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    trace.set_tracer_provider(provider)
-    try:
-        yield exp
-    finally:
-        exp.clear()
+# ``exporter`` fixture comes from tests/unit/conftest.py.
 
 
 def _renderer_with_prompt() -> ContextRenderer:

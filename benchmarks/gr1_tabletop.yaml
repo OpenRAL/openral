@@ -1,38 +1,26 @@
 # GR1 tabletop atomic pick-and-place benchmark suite.
 #
-# Mirrors the RoboCasa GR1 Tabletop Tasks suite released by NVIDIA with
-# "GR00T N1: An Open Foundation Model for Generalist Humanoid Robots"
-# (arXiv:2503.14734, https://github.com/robocasa/robocasa-gr1-tabletop-tasks).
-# Picks the canonical PnPCupToDrawerClose tabletop task and sweeps it
-# across multiple seeds. The other 23 task envs (Posttrain* variants
-# plus the six PnPXxxToYyyClose verbs) are registered by the
-# RoboCasa scene adapter — swap the BenchmarkScene's ``scene.id`` /
-# ``task.scene_id`` to point at any of them once a checkpoint exists,
-# the suite structure is unchanged.
+# Mirrors the RoboCasa GR1 Tabletop Tasks suite (NVIDIA "GR00T N1",
+# arXiv:2503.14734, github.com/robocasa/robocasa-gr1-tabletop-tasks). Picks
+# canonical PnPCupToDrawerClose and sweeps seeds. Other 23 task envs
+# (Posttrain* variants + six PnPXxxToYyyClose verbs) are registered by the
+# RoboCasa scene adapter — swap `scene.id`/`task.scene_id` once a checkpoint
+# exists for them; suite structure is unchanged.
 #
-# Shape: bare list of BenchmarkScenes; suite id = filename
-# stem ("gr1_tabletop"). Only the VLA (rSkill) varies across runs.
-# Consumed by `openral benchmark run`; writes a
-# RSkillEvalResult JSON to rskills/<vla>/eval/gr1_tabletop.json with
-# reproduced_locally=true AND updates `benchmarks.gr1_tabletop` in the
-# matching rskill.yaml with the headline avg_success_rate. Suite-level
-# invariants are enforced by :func:`openral_core.raise_on_invalid_suite`.
+# Shape: bare list of BenchmarkScenes; suite id = filename stem
+# ("gr1_tabletop"). Consumed by `openral benchmark run`; writes
+# RSkillEvalResult to rskills/<vla>/eval/gr1_tabletop.json
+# (reproduced_locally=true) and updates `benchmarks.gr1_tabletop` in the
+# rskill.yaml with avg_success_rate. Invariants enforced by
+# `openral_core.raise_on_invalid_suite`.
 #
-# Protocol: 1 task × 10 episodes. Lighter than the 50-ep paper protocol
-# so the suite finishes in ~30 min on a single GPU; raise n_episodes for
-# a paper-equivalent reproduction.
+# Protocol: 1 task x 10 episodes (lighter than the 50-ep paper protocol,
+# ~30 min on one GPU; raise n_episodes for paper-equivalent reproduction).
+# Robot: gr1 (Fourier GR-1, leg+head actuation disabled; scene factory pins
+# `fixed_robot="gr1"`, rejecting any other robot_id).
 #
-# Robot: gr1 — a Fourier GR-1 humanoid with leg + head actuation
-# disabled. The scene factory pins ``fixed_robot="gr1"`` so any other
-# robot_id is rejected at adapter build time.
-#
-# Run (smoketest with the random policy, no GPU needed):
-#   openral benchmark run --suite gr1_tabletop \
-#       --rskill rskills/random-mock
-# Run (real VLA — substitute the GR00T-N1 rSkill once a checkpoint
-# ships):
-#   openral benchmark run --suite gr1_tabletop \
-#       --rskill rskills/groot-n1-gr1-tabletop
+# Run (smoketest, no GPU): openral benchmark run --suite gr1_tabletop --rskill rskills/random-mock
+# Run (real VLA): openral benchmark run --suite gr1_tabletop --rskill rskills/groot-n1-gr1-tabletop
 
 - scene:
     id: robocasa/gr1/PnPCupToDrawerClose

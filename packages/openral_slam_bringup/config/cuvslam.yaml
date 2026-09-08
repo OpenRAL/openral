@@ -1,21 +1,13 @@
-# Default parameter set for NVIDIA Isaac ROS Visual SLAM
-# (cuVSLAM) running under OpenRAL's `/openral/visual_slam` namespace as
-# the camera-based SLAM backend for lidar-less robots.
-#
-# Unlike slam_toolbox, cuVSLAM's `VisualSlamNode` is a
-# *composable node*, not a ROS 2 lifecycle node — it is enabled by
-# composing it into the graph when `slam_backend:=visual` (see
-# sim_e2e.launch.py), not driven through CONFIGURE/ACTIVATE by the
-# Reasoner's LifecycleTransitionTool. The frame contract below matches
-# OpenRAL's convention so cuVSLAM fills the same `map→odom` TF edge
-# slam_toolbox fills on lidar robots.
-#
-# Only the stable, documented parameters are pinned here; everything
-# else falls back to the upstream `isaac_ros_visual_slam` defaults. The
-# IMU / tracking-mode block is operator-tunable and version-sensitive —
-# confirm names against the installed Isaac ROS release before relying
-# on them (this package does NOT bundle the cuVSLAM engine — see the
-# NVIDIA license guard note below).
+# Default params for NVIDIA Isaac ROS Visual SLAM (cuVSLAM) under
+# `/openral/visual_slam` — camera-based SLAM for lidar-less robots.
+# `VisualSlamNode` is a composable node, not a lifecycle node: enabled by
+# composing it when `slam_backend:=visual` (sim_e2e.launch.py), not
+# CONFIGURE/ACTIVATE by the Reasoner. Frame contract matches OpenRAL's
+# convention — fills the same `map→odom` TF edge slam_toolbox fills.
+# Only stable, documented params pinned; rest falls back to upstream
+# `isaac_ros_visual_slam` defaults. IMU/tracking-mode block is
+# operator-tunable and version-sensitive — confirm against the installed
+# Isaac ROS release (engine not bundled; NVIDIA license guard).
 
 /**:
   ros__parameters:
@@ -39,11 +31,9 @@
     #           cuVSLAM errors "Rectified stereo camera mode requires pinhole
     #           distortion model" otherwise). OpenRAL sim publishes rectified.
     #   false → raw images; cuVSLAM undistorts using camera_info's distortion
-    #           model (plumb_bob / rational_polynomial / fisheye). Verified live
-    #           against the Isaac ROS quickstart bag (raw, rational_polynomial):
-    #           rectified_images:false + camera_optical_frames produced a real
-    #           VO trajectory. A real RealSense rectified stream uses
-    #           true. Pass an override params file or per-robot config to flip it.
+    #           model (plumb_bob / rational_polynomial / fisheye). A real
+    #           RealSense rectified stream uses true. Pass an override params
+    #           file or per-robot config to flip it.
     rectified_images: true
     # camera_optical_frames: optional explicit [left_optical, right_optical, …]
     # the rig's optical frames (cuVSLAM relates camera motion to base_frame via

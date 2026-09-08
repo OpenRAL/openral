@@ -23,7 +23,6 @@ No mocks (CLAUDE.md §1.11): real ``panda_mobile`` manifest, real RoboCasa
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -35,11 +34,9 @@ pytest.importorskip("robocasa")  # robocasa (robosuite >=1.5) ⊥ libero (robosu
 
 from openral_core import RobotDescription, extract_base_sim_joint_names
 from openral_core.schemas import Action, ControlMode
-from openral_hal import build_hal
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANDA_MOBILE = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
-_BAGUETTE = _REPO_ROOT / "scenes" / "deploy" / "robocasa_baguette.yaml"
 
 _VX_M_S = 0.5
 _N_COMMANDS = 20
@@ -47,17 +44,6 @@ _N_COMMANDS = 20
 # separates the two by a wide margin while tolerating contact with scene
 # geometry on a longer run.
 _MIN_TRACKING_RATIO = 0.9
-
-
-@pytest.fixture
-def hal() -> Iterator[Any]:
-    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
-    built = build_hal(desc, mode="sim", sim_env_yaml=str(_BAGUETTE))
-    built.connect()
-    try:
-        yield built
-    finally:
-        built.disconnect()
 
 
 def _base_xy_yaw(model: Any, data: Any, desc: RobotDescription) -> tuple[float, float, float]:

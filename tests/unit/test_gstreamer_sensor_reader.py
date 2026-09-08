@@ -1,9 +1,9 @@
-"""Unit tests for :class:`GStreamerSensorReader` (CPU appsink path).
+"""Unit tests for ``GStreamerSensorReader`` (CPU appsink path).
 
 No mocks (CLAUDE.md §1.11). Tests run a real GStreamer pipeline anchored
 on ``videotestsrc`` (ships with every install — no camera required),
 exercise the live appsink callback, and assert the published
-:class:`SensorFrame` shape + the staleness / EOS / error contracts.
+``SensorFrame`` shape + the staleness / EOS / error contracts.
 
 The module skips wholesale when PyGObject is not importable, so it is a
 no-op on hosts that lack the ``gstreamer`` optional-extra.
@@ -224,7 +224,7 @@ def test_reader_unsupported_format_surfaces_bus_error() -> None:
 
 
 def test_reader_is_sensor_reader_protocol_instance() -> None:
-    """The reader satisfies the structural :class:`SensorReader` Protocol."""
+    """The reader satisfies the structural ``SensorReader`` Protocol."""
     reader = GStreamerSensorReader(
         sensor_id="cam0",
         pipeline="videotestsrc ! appsink",

@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`openral_observability.dashboard.store`.
+"""Unit tests for ``openral_observability.dashboard.store``.
 
 Tests feed real ``ResourceSpans`` / ``ResourceMetrics`` protobuf
 messages — built via ``opentelemetry-proto`` directly — into the
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 
 import pytest
 from openral_observability.dashboard import TelemetryStore
@@ -41,104 +42,129 @@ from opentelemetry.proto.trace.v1.trace_pb2 import (
 )
 
 
-def _av(value: object) -> AnyValue:
-    if isinstance(value, bool):
-        return AnyValue(bool_value=value)
-    if isinstance(value, int):
-        return AnyValue(int_value=value)
-    if isinstance(value, float):
-        return AnyValue(double_value=value)
-    return AnyValue(string_value=str(value))
+@pytest.fixture
+def _attrs(av: Callable[[object], AnyValue]) -> Callable[[dict[str, object]], list[KeyValue]]:
+    def _attrs(d: dict[str, object]) -> list[KeyValue]:
+        return [KeyValue(key=k, value=av(v)) for k, v in d.items()]
+
+    return _attrs
 
 
-def _attrs(d: dict[str, object]) -> list[KeyValue]:
-    return [KeyValue(key=k, value=_av(v)) for k, v in d.items()]
+@pytest.fixture
+def _resource(
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> Callable[[dict[str, object]], Resource]:
+    def _resource(d: dict[str, object]) -> Resource:
+        return Resource(attributes=_attrs(d))
+
+    return _resource
 
 
-def _resource(d: dict[str, object]) -> Resource:
-    return Resource(attributes=_attrs(d))
-
-
-def _make_span(
-    name: str,
-    *,
-    duration_ms: float = 12.5,
-    attrs: dict[str, object] | None = None,
-    status_code: int = 0,
-    events: list[tuple[str, dict[str, object]]] | None = None,
-) -> Span:
-    start = time.time_ns()
-    end = start + int(duration_ms * 1_000_000)
-    span_events = []
-    if events:
-        for ev_name, ev_attrs in events:
-            span_events.append(
-                Span.Event(
-                    name=ev_name,
-                    time_unix_nano=end,
-                    attributes=_attrs(ev_attrs),
+@pytest.fixture
+def _make_span(_attrs: Callable[[dict[str, object]], list[KeyValue]]) -> Callable[..., Span]:
+    def _make_span(
+        name: str,
+        *,
+        duration_ms: float = 12.5,
+        attrs: dict[str, object] | None = None,
+        status_code: int = 0,
+        events: list[tuple[str, dict[str, object]]] | None = None,
+    ) -> Span:
+        start = time.time_ns()
+        end = start + int(duration_ms * 1_000_000)
+        span_events = []
+        if events:
+            for ev_name, ev_attrs in events:
+                span_events.append(
+                    Span.Event(
+                        name=ev_name,
+                        time_unix_nano=end,
+                        attributes=_attrs(ev_attrs),
+                    )
                 )
-            )
-    return Span(
-        trace_id=b"\x01" * 16,
-        span_id=b"\x01" * 8,
-        name=name,
-        start_time_unix_nano=start,
-        end_time_unix_nano=end,
-        attributes=_attrs(attrs or {}),
-        status=Status(code=status_code),
-        events=span_events,
-    )
+        return Span(
+            trace_id=b"\x01" * 16,
+            span_id=b"\x01" * 8,
+            name=name,
+            start_time_unix_nano=start,
+            end_time_unix_nano=end,
+            attributes=_attrs(attrs or {}),
+            status=Status(code=status_code),
+            events=span_events,
+        )
+
+    return _make_span
 
 
+@pytest.fixture
 def _wrap_spans(
-    spans: list[Span],
-    resource_attrs: dict[str, object] | None = None,
-) -> list[ResourceSpans]:
-    return [
-        ResourceSpans(
-            resource=_resource(resource_attrs or {"service.name": "ral"}),
-            scope_spans=[ScopeSpans(spans=spans)],
-        )
-    ]
+    _resource: Callable[[dict[str, object]], Resource],
+) -> Callable[..., list[ResourceSpans]]:
+    def _wrap_spans(
+        spans: list[Span],
+        resource_attrs: dict[str, object] | None = None,
+    ) -> list[ResourceSpans]:
+        return [
+            ResourceSpans(
+                resource=_resource(resource_attrs or {"service.name": "ral"}),
+                scope_spans=[ScopeSpans(spans=spans)],
+            )
+        ]
+
+    return _wrap_spans
 
 
+@pytest.fixture
 def _make_log(
-    body: str,
-    *,
-    severity_number: int = SeverityNumber.SEVERITY_NUMBER_INFO,
-    severity_text: str = "",
-    attrs: dict[str, object] | None = None,
-) -> LogRecord:
-    return LogRecord(
-        time_unix_nano=time.time_ns(),
-        severity_number=severity_number,
-        severity_text=severity_text,
-        body=_av(body),
-        attributes=_attrs(attrs or {}),
-    )
-
-
-def _wrap_logs(
-    records: list[LogRecord],
-    *,
-    scope_name: str = "openral.otel_bridge",
-    resource_attrs: dict[str, object] | None = None,
-) -> list[ResourceLogs]:
-    return [
-        ResourceLogs(
-            resource=_resource(resource_attrs or {"service.name": "ral"}),
-            scope_logs=[
-                ScopeLogs(
-                    scope=InstrumentationScope(name=scope_name),
-                    log_records=records,
-                )
-            ],
+    av: Callable[[object], AnyValue],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> Callable[..., LogRecord]:
+    def _make_log(
+        body: str,
+        *,
+        severity_number: int = SeverityNumber.SEVERITY_NUMBER_INFO,
+        severity_text: str = "",
+        attrs: dict[str, object] | None = None,
+    ) -> LogRecord:
+        return LogRecord(
+            time_unix_nano=time.time_ns(),
+            severity_number=severity_number,
+            severity_text=severity_text,
+            body=av(body),
+            attributes=_attrs(attrs or {}),
         )
-    ]
+
+    return _make_log
 
 
-def test_ingest_rskill_execute_populates_headline_card() -> None:
+@pytest.fixture
+def _wrap_logs(
+    _resource: Callable[[dict[str, object]], Resource],
+) -> Callable[..., list[ResourceLogs]]:
+    def _wrap_logs(
+        records: list[LogRecord],
+        *,
+        scope_name: str = "openral.otel_bridge",
+        resource_attrs: dict[str, object] | None = None,
+    ) -> list[ResourceLogs]:
+        return [
+            ResourceLogs(
+                resource=_resource(resource_attrs or {"service.name": "ral"}),
+                scope_logs=[
+                    ScopeLogs(
+                        scope=InstrumentationScope(name=scope_name),
+                        log_records=records,
+                    )
+                ],
+            )
+        ]
+
+    return _wrap_logs
+
+
+def test_ingest_rskill_execute_populates_headline_card(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     store = TelemetryStore()
     span = _make_span(
         "rskill.execute",
@@ -161,7 +187,9 @@ def test_ingest_rskill_execute_populates_headline_card() -> None:
     assert any(ev["kind"] == "rskill.execute" for ev in snap["events"])
 
 
-def test_run_mode_and_run_id_propagate_from_resource() -> None:
+def test_run_mode_and_run_id_propagate_from_resource(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     store = TelemetryStore()
     span = _make_span("rskill.tick")
     store.ingest_spans(
@@ -180,7 +208,9 @@ def test_run_mode_and_run_id_propagate_from_resource() -> None:
     assert snap["run_mode"] == "sim"
 
 
-def test_span_event_counters_increment() -> None:
+def test_span_event_counters_increment(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     store = TelemetryStore()
     span = _make_span(
         "safety.check",
@@ -198,7 +228,9 @@ def test_span_event_counters_increment() -> None:
     assert "error" in severities  # safety_violation
 
 
-def test_skill_failure_event_counts_and_carries_state() -> None:
+def test_skill_failure_event_counts_and_carries_state(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     """A Reasoner-published skill failure (mirrored onto the
     span path by ``_publish_skill_failure``) tallies on its own counter, lands
     on the event log at ``error`` severity, and carries the failure state so the
@@ -224,7 +256,9 @@ def test_skill_failure_event_counts_and_carries_state() -> None:
     assert failure["attrs"]["openral.event.skill_failure.state"] == "vram_insufficient"
 
 
-def test_error_status_propagates_to_card_severity() -> None:
+def test_error_status_propagates_to_card_severity(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     store = TelemetryStore()
     span = _make_span("rskill.execute", status_code=2, attrs={"rskill.id": "x"})
     store.ingest_spans(_wrap_spans([span]))
@@ -234,7 +268,10 @@ def test_error_status_propagates_to_card_severity() -> None:
     assert any(ev["kind"] == "rskill.execute" for ev in err_events)
 
 
-def test_histogram_metric_records_samples_and_percentiles() -> None:
+def test_histogram_metric_records_samples_and_percentiles(
+    _resource: Callable[[dict[str, object]], Resource],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
     store = TelemetryStore()
     rm = ResourceMetrics(
         resource=_resource({"service.name": "ral"}),
@@ -277,7 +314,10 @@ def test_histogram_metric_records_samples_and_percentiles() -> None:
     assert series["p95"] >= 10.0
 
 
-def test_metric_threshold_attribute_is_promoted_and_stripped() -> None:
+def test_metric_threshold_attribute_is_promoted_and_stripped(
+    _resource: Callable[[dict[str, object]], Resource],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
     """A ``openral.metric.threshold_ms`` data-point attribute becomes the series
     ``threshold`` and never leaks into the label set (so it cannot fragment the
     series or show as a label suffix)."""
@@ -326,7 +366,10 @@ def test_metric_threshold_attribute_is_promoted_and_stripped() -> None:
     assert series2["threshold_dir"] == "upper"
 
 
-def test_sum_metric_tracks_cumulative() -> None:
+def test_sum_metric_tracks_cumulative(
+    _resource: Callable[[dict[str, object]], Resource],
+    _attrs: Callable[[dict[str, object]], list[KeyValue]],
+) -> None:
     store = TelemetryStore()
     rm = ResourceMetrics(
         resource=_resource({"service.name": "ral"}),
@@ -357,7 +400,9 @@ def test_sum_metric_tracks_cumulative() -> None:
     assert series["cumulative"] == 7.0
 
 
-def test_event_ring_is_bounded() -> None:
+def test_event_ring_is_bounded(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     store = TelemetryStore()
     spans = [_make_span("rskill.tick", attrs={"i": i}) for i in range(500)]
     store.ingest_spans(_wrap_spans(spans))
@@ -365,7 +410,9 @@ def test_event_ring_is_bounded() -> None:
     assert len(snap["events"]) == 200  # _EVENT_RING_SIZE
 
 
-def test_world_scene_objects_span_populates_topic() -> None:
+def test_world_scene_objects_span_populates_topic(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     """``world.scene_objects`` (durable spatial-memory scene-object graph) →
     decoded objects in the topic bucket."""
     store = TelemetryStore()
@@ -401,7 +448,9 @@ def test_world_scene_objects_span_populates_topic() -> None:
     assert topic["objects"] == objects
 
 
-def test_world_scene_objects_malformed_list_degrades_to_empty() -> None:
+def test_world_scene_objects_malformed_list_degrades_to_empty(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
     """A malformed ``list`` attr yields ``[]`` rather than crashing the receiver."""
     store = TelemetryStore()
     span = _make_span(
@@ -445,7 +494,9 @@ def test_log_level_unspecified_falls_back_to_text() -> None:
     assert _log_level(unspecified, "nonsense") == "info"
 
 
-def test_ingest_logs_appends_debug_event() -> None:
+def test_ingest_logs_appends_debug_event(
+    _wrap_logs: Callable[..., list[ResourceLogs]], _make_log: Callable[..., LogRecord]
+) -> None:
     """A bridged DEBUG log record becomes a debug-severity event (issue #318)."""
     store = TelemetryStore()
     recorded = store.ingest_logs(
@@ -470,7 +521,9 @@ def test_ingest_logs_appends_debug_event() -> None:
     assert ev["attrs"]["count"] == 0
 
 
-def test_ingest_logs_maps_all_levels() -> None:
+def test_ingest_logs_maps_all_levels(
+    _wrap_logs: Callable[..., list[ResourceLogs]], _make_log: Callable[..., LogRecord]
+) -> None:
     """info/warn/error log lines land alongside today's trace events."""
     store = TelemetryStore()
     store.ingest_logs(
@@ -491,7 +544,9 @@ def test_ingest_logs_maps_all_levels() -> None:
     assert "ral" in snap["services"]
 
 
-def test_ingest_logs_shares_the_bounded_event_ring() -> None:
+def test_ingest_logs_shares_the_bounded_event_ring(
+    _wrap_logs: Callable[..., list[ResourceLogs]], _make_log: Callable[..., LogRecord]
+) -> None:
     """Log-derived events obey the same 200-event cap as spans."""
     store = TelemetryStore()
     store.ingest_logs(

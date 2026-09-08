@@ -2,25 +2,22 @@
 # Wraps: InternRobotics/InternVLA-N1-DualVLN  (weights CC-BY-NC-SA-4.0)
 # Paper: "Ground Slow, Move Fast: A Dual-System Foundation Model for
 #         Generalizable Vision-and-Language Navigation" (arXiv:2512.08186)
-# Code:  https://github.com/InternRobotics/InternNav  (MIT)
+# Code:  github.com/InternRobotics/InternNav  (MIT)
 #
-# WHY THIS MODEL
-# --------------
-# Vision-Language Navigation foundation model. Highest R2R val-unseen
-# success rate (64.3) among policies with PUBLICLY RELEASED weights as of
-# 2026-07 (Qwen-RobotNav 64.x and CorrectNav 65.1 score higher but ship no
-# weights). Dual-system: a Qwen2.5-VL-7B System-2 plans a pixel-goal waypoint
-# from RGB history + instruction; a NavDP diffusion-transformer System-1
-# turns that goal into a metric trajectory using depth. See README.md.
+# WHY THIS MODEL: Vision-Language Navigation foundation model, highest R2R
+# val-unseen success rate (64.3) among policies with PUBLICLY RELEASED
+# weights as of 2026-07 (Qwen-RobotNav 64.x and CorrectNav 65.1 score higher
+# but ship no weights). Dual-system: Qwen2.5-VL-7B System-2 plans a
+# pixel-goal waypoint from RGB history + instruction; NavDP
+# diffusion-transformer System-1 turns that goal into a metric trajectory
+# using depth. See README.md.
 #
-# OUT-OF-PROCESS
-# --------------
-# Upstream InternNav pins transformers==4.51.0, incompatible with the
-# workspace's transformers 5.x. Like the rldx / diffuser_actor families, the
-# model runs in an isolated py3.11 venv sidecar
-# (tools/internvla_n1_sidecar.py boots tools/_internvla_n1_server.py); the
-# openral-side adapter (openral_sim.policies.internvla_n1) talks to it over
-# ZMQ. The adapter emits a 6-D BODY_TWIST velocity command for the base.
+# OUT-OF-PROCESS: upstream InternNav pins transformers==4.51.0, incompatible
+# with the workspace's transformers 5.x. Like rldx/diffuser_actor, runs in an
+# isolated py3.11 venv sidecar (tools/internvla_n1_sidecar.py boots
+# tools/_internvla_n1_server.py); openral-side adapter
+# (openral_sim.policies.internvla_n1) talks to it over ZMQ, emitting a 6-D
+# BODY_TWIST velocity command for the base.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"

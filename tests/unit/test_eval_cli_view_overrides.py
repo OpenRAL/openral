@@ -1,14 +1,13 @@
 """Unit tests for ``openral sim run``'s flag composition and viewer resolution.
 
-After the ``feat(core,sim): SceneEnvironment + openral sim run --rskill, no
-legacy`` commit, the canonical invocation is::
+Canonical invocation since ``feat(core,sim): SceneEnvironment + openral sim
+run --rskill, no legacy``::
 
     openral sim run --config FILE.yaml --rskill rskills/<id>
 
-The old ``--rskill / --robot`` form (legacy free-flag composition)
-is gone. ``--config`` and ``--rskill`` are both required; the YAML
-carries scene + task only. These tests pin the new flag-composition
-contract and the tri-state ``--view / --no-view`` resolution.
+The legacy ``--rskill / --robot`` free-flag form is gone; ``--config`` and
+``--rskill`` are both required and the YAML carries scene+task only. Pins the
+flag-composition contract and the tri-state ``--view / --no-view`` resolution.
 """
 
 from __future__ import annotations
@@ -189,11 +188,9 @@ def test_resolve_view_explicit_view_overrides_mujoco_gl_egl(
 ) -> None:
     """``--view`` + ``MUJOCO_GL=egl`` rewrites the env var to ``glfw`` in-process.
 
-    The ``just sim-*`` recipes hard-code ``MUJOCO_GL=egl`` for headless CI.
-    When the user explicitly passes ``--view`` from one of those recipes,
-    the original code silently degraded to offscreen (mujoco honoured
-    egl). Now we override the env var to glfw before mujoco is imported
-    by the scene factory, so the viewer actually opens.
+    ``just sim-*`` recipes hard-code ``MUJOCO_GL=egl`` for headless CI; passing
+    ``--view`` used to silently degrade to offscreen (mujoco honored egl). The env
+    var is now overridden to glfw before mujoco is imported, so the viewer opens.
     """
     monkeypatch.setenv("MUJOCO_GL", "egl")
     monkeypatch.setenv("DISPLAY", ":0")

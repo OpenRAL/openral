@@ -1,37 +1,22 @@
 """HAL lifecycle node SIGINT teardown contract — structural regression guard.
 
 Mirrors ``packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py``
-(landed in abd594f for the reasoner_node) and the original runtime_node guard
-(caae96f). ROS 2 Jazzy installs a SIGINT signal handler in :func:`rclpy.init`
-that:
+(abd594f) and the runtime_node guard (caae96f). ROS 2 Jazzy's SIGINT handler
+(``rclpy.init``) shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of ``rclpy.spin``; a bare ``try/finally`` with
+plain ``rclpy.shutdown()`` then crashes with ``RCLError: rcl_shutdown already
+called on the given context`` on every Ctrl-C, masking the
+``KeyboardInterrupt`` and stalling the launch shutdown supervisor past the
+30 s ``shutdown_grace`` window (SIGKILL, ``ros2 launch`` exit 250).
 
-1. Shuts down the rclpy context.
-2. Raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
-
-Before this guard, both ``main()`` factories in ``openral_hal.lifecycle``
-(:func:`make_lifecycle_main` and :func:`make_lifecycle_main_from_manifest`)
-wrapped ``rclpy.spin(node)`` in a bare ``try/finally`` and called plain
-``rclpy.shutdown()`` in the finally block. On every operator Ctrl-C during
-``openral deploy sim`` the finally then crashed with::
-
-    rclpy._rclpy_pybind11.RCLError: failed to shutdown:
-    rcl_shutdown already called on the given context
-
-which (a) replaced the ``KeyboardInterrupt`` with a confusing traceback in
-stderr and (b) stalled the launch shutdown supervisor's wait-for-children past
-the 30 s ``shutdown_grace`` window, forcing a SIGKILL of the deploy graph
-(``ros2 launch`` exit 250).
-
-This module has *two* spin-wrapping ``main()`` factories, so the spin-wrap
-assertion below requires **every** spin Try to catch both exceptions (not just
-one of them).
-
-This is the structural counterpart to the behavioural deploy probe: it parses
-``lifecycle.py`` as Python and asserts the *shape* of the SIGINT-handling
-contract, so a future refactor can't silently revert to the broken pattern.
-The HAL lifecycle node is the robot bring-up node (not the safety kernel); it
-only subscribes to ``/openral/estop`` defensively — this guard touches only the
-``main()`` spin/shutdown wrapper, never the estop latch.
+Both ``main()`` factories in ``openral_hal.lifecycle``
+(``make_lifecycle_main``, ``make_lifecycle_main_from_manifest``) must
+wrap every spin in ``try/except (KeyboardInterrupt, ExternalShutdownException)
+/finally``; this module parses ``lifecycle.py`` as Python and asserts that
+*shape* (structural, not behavioural). The HAL lifecycle node is robot
+bring-up, not the safety kernel — it only subscribes to ``/openral/estop``
+defensively; this guard touches only the spin/shutdown wrapper, never the
+estop latch.
 """
 
 from __future__ import annotations
@@ -80,7 +65,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in the HAL lifecycle.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     """
     bare_calls: list[int] = []
@@ -157,14 +142,10 @@ def test_spin_wrapped_in_sigint_except() -> None:
 def test_spin_finally_disconnects_the_hal() -> None:
     """Every spin ``finally`` must call ``node.shutdown_hal()``.
 
-    SIGINT shuts the rclpy context and raises out of ``spin``; it never
-    *requests* the lifecycle ``shutdown`` transition, so ``on_shutdown`` /
-    ``on_cleanup`` — and with them ``HAL.disconnect`` — do not run. The
-    terminal ``sim.task_success_final`` verdict ``SimAttachedHAL.disconnect``
-    emits was therefore missing from every real ``openral deploy sim`` run
-    (the harness SIGINTs the launch's process group), while the unit tests
-    calling ``disconnect`` directly stayed green. The ``finally`` is the only
-    place on the signal path that can reach it.
+    SIGINT raises out of ``spin`` without requesting the lifecycle
+    ``shutdown`` transition, so ``on_shutdown``/``on_cleanup`` — and with
+    them ``HAL.disconnect`` — never run. The ``finally`` is the only place on
+    the signal path that can reach it.
     """
     tree = _parse()
     for node in ast.walk(tree):

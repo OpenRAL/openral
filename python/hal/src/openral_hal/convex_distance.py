@@ -1,63 +1,65 @@
 # python/hal/src/openral_hal/convex_distance.py
 """Certified signed distance between two MuJoCo convex geoms.
 
-``mujoco.mj_geomDistance`` is not usable as an adjudication instrument for the
-pairs the collision-evidence path measures. Under mujoco 3.8.0 it fails in two
-distinct ways on a RoboCasa fixture geom against a ``panda_mobile`` collision
-mesh, and both failures are silent — a wrong number, no error, no flag:
+``mujoco.mj_geomDistance`` is not usable as an adjudication instrument
+for the pairs the collision-evidence path measures. Under mujoco 3.8.0
+it fails in two distinct ways on a RoboCasa fixture geom against a
+``panda_mobile`` collision mesh, both silently — a wrong number, no
+error, no flag:
 
-* **The default (native CCD) path is knife-edge.** On ``robocasa_fridge_drawer``
-  layout 9 it returns ``+0.000000`` for ``robot0_link7_collision`` vs
-  ``fridge_right_group_freezer_door_main``, writing a ``fromto`` witness
-  126.264 mm long whose endpoints lie outside *both* geoms. The true gap is
-  ``+0.148512 mm``. Displacing the link by **1 picometre** — 1e-12 m, ten
-  orders of magnitude below the answer — makes the same call return
-  ``+0.1485 mm`` with a 0.149 mm witness. It is a degenerate *configuration*,
-  not a distance regime, so no choice of ``distmax`` avoids it; and a scene's
-  reset pose is exactly where degenerate configurations live, because fixtures
-  are placed on exact axis-aligned numbers.
-* **The libccd path (``mjDSBL_NATIVECCD``) is robustly wrong, and unbounded in
-  ``distmax``.** The same pair reports ``-2.168 / -46.372 / -57.032 / -339.690
-  / -351.570 / -361.890 / -367.604 mm`` at ``distmax`` ``0.02 / 0.05 / 0.1 /
-  0.2 / 0.3 / 0.6 / 1.0`` — a monotone function of the probe window, through a
-  48 mm-thick door panel, against a true gap of ``+0.15 mm``.
+* **The default (native CCD) path is knife-edge.** On
+  ``robocasa_fridge_drawer`` layout 9 it returns ``+0.000000`` for
+  ``robot0_link7_collision`` vs ``fridge_right_group_freezer_door_main``,
+  with a ``fromto`` witness 126.264 mm long whose endpoints lie outside
+  *both* geoms. The true gap is ``+0.148512 mm``. Displacing the link by
+  1 picometre (1e-12 m, ten orders below the answer) makes the same call
+  return ``+0.1485 mm`` with a 0.149 mm witness — a degenerate
+  *configuration*, not a distance regime, so no choice of ``distmax``
+  avoids it, and a scene's reset pose is exactly where such
+  configurations live (fixtures are placed on exact axis-aligned
+  numbers).
+* **The libccd path (``mjDSBL_NATIVECCD``) is robustly wrong, and
+  unbounded in ``distmax``.** The same pair reports ``-2.168 / -46.372 /
+  -57.032 / -339.690 / -351.570 / -361.890 / -367.604 mm`` at ``distmax``
+  ``0.02 / 0.05 / 0.1 / 0.2 / 0.3 / 0.6 / 1.0`` — a monotone function of
+  the probe window, through a 48 mm-thick door panel, against a true gap
+  of ``+0.15 mm``.
 
-Both reproduce in a **two-geom standalone MJCF** carrying nothing but that mesh
-and that box at those world poses, so neither is a robosuite, RoboCasa or
-model-size artifact: it is ``mj_geomDistance`` itself.
+Both reproduce in a two-geom standalone MJCF with just that mesh and box
+at those world poses — not a robosuite, RoboCasa or model-size artifact;
+it is ``mj_geomDistance`` itself.
 
-This module replaces it there. It answers the same question — the signed
-distance between the two *convex* bodies MuJoCo would actually collide — and
-answers it with a proof:
+This module replaces it, answering the same signed-distance question
+with a proof:
 
-* Every geom is represented as ``conv(core) ⊕ ball(radius)``: a box and a mesh
-  are their hull vertices at radius 0, a sphere is one point, a capsule two.
-  Signed distance is then ``signed(core_a, core_b) - r_a - r_b`` — exact on
-  both branches, because inflating two convex bodies by balls shifts their
+* Every geom is ``conv(core) ⊕ ball(radius)``: a box/mesh is its hull
+  vertices at radius 0, a sphere one point, a capsule two. Signed
+  distance is ``signed(core_a, core_b) - r_a - r_b`` — exact on both
+  branches, since inflating two convex bodies by balls shifts their
   signed distance by exactly the sum of the radii.
-* **Separated** cores are solved by GJK, and the answer carries a
-  **separating-axis certificate**: for the unit witness direction ``u``,
-  ``min_B u·b - max_A u·a`` is a lower bound on the true distance (weak
-  duality) and ``||p_b - p_a||`` is an upper bound. Coinciding bounds prove
-  optimality. The residual is reported as ``duality_gap_m``; it is ~1e-14 m in
-  practice.
+* **Separated** cores are solved by GJK with a separating-axis
+  certificate: for unit witness ``u``, ``min_B u·b - max_A u·a`` lower-
+  bounds the true distance (weak duality) and ``||p_b - p_a||`` upper-
+  bounds it; coinciding bounds prove optimality. The residual is
+  ``duality_gap_m``, ~1e-14 m in practice.
 * **Overlapping** cores are solved by exact SAT over face normals and
-  edge-edge cross products — the direction set that provably contains the
-  minimum-translational-distance axis of two convex polytopes, and the same
-  construction the safety kernel's own ``box_box_distance`` uses on its 6 + 9
-  axes.
-* **Round types with no ball form** (cylinder, ellipsoid) are bracketed by an
-  inscribed and a circumscribed polytope, so the answer is an interval that
-  provably contains the truth rather than a number that might not.
+  edge-edge cross products — the direction set that provably contains
+  the minimum-translational-distance axis of two convex polytopes, the
+  same construction the safety kernel's ``box_box_distance`` uses on
+  its 6 + 9 axes.
+* **Round types with no ball form** (cylinder, ellipsoid) are bracketed
+  by an inscribed and a circumscribed polytope, so the answer is a
+  provable interval rather than a number that might not be.
 
-Nothing here is a fallback (CLAUDE.md §1.4). Every result states whether it is
-certified, and an uncertified result carries the reason instead of a plausible
-number. A caller that cannot use an uncertified distance must refuse the
-measurement.
+Nothing here is a fallback (CLAUDE.md §1.4): every result states whether
+it is certified, and an uncertified result carries the reason instead
+of a plausible number. A caller that cannot use an uncertified distance
+must refuse the measurement.
 
-Cost: ~1 ms per mesh↔box pair on this dev host, against ``mj_geomDistance``'s
-~0.8 µs. Three orders of magnitude, affordable only because this runs once at a
-terminal event in evidence collection. Nothing on the 100 Hz path calls it.
+Cost: ~1 ms per mesh↔box pair on this dev host vs ``mj_geomDistance``'s
+~0.8 µs — three orders of magnitude, affordable only because this runs
+once at a terminal event in evidence collection. Nothing on the 100 Hz
+path calls it.
 """
 
 from __future__ import annotations
@@ -111,7 +113,7 @@ class ConvexDistance:
             it is NOT a point on ``b``'s surface and ``witness_clearance_m``
             will refute it as one. Read it as "where ``a``'s buried face meets
             ``b``'s supporting plane", and take the direction from
-            :attr:`direction`, never by differencing the two witnesses.
+            ``direction``, never by differencing the two witnesses.
         direction: Unit direction from ``b`` toward ``a`` — the separating
             direction on the GJK branch and the minimum-translation axis on
             the SAT branch. ``None`` when the pair was not solved (beyond the
@@ -612,7 +614,7 @@ def convex_geom_distance(
         arc_segments: Polygon resolution for the bracketed round types.
 
     Returns:
-        A :class:`ConvexDistance`. ``certified`` is ``False`` — with a reason —
+        A ``ConvexDistance``. ``certified`` is ``False`` — with a reason —
         when a geom has no bounded convex hull (plane, heightfield, SDF), when a
         round type's bracket is wider than 0.1 mm, when the separating-axis
         certificate does not close, or when an overlapping pair's exact axis set

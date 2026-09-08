@@ -1,31 +1,27 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
 #
-# This is the scaffold template consumed by `openral rskill new <id>` and
-# `tools/rskill_scaffolder.py`. It is a real, schema-valid manifest:
+# Scaffold template consumed by `openral rskill new <id>` and
+# `tools/rskill_scaffolder.py`. Real, schema-valid manifest:
 # `rSkill.from_yaml("rskills/template/rskill.yaml")` succeeds as-is.
 #
-# Sentinel values rewritten by the scaffolder
-# -------------------------------------------
-#   TEMPLATE_ORG/rskill-TEMPLATE_ID  →  <owner>/rskill-<id>
-#   TEMPLATE_ORG                    →  <owner>
-#   TEMPLATE_ID                     →  <id>
-#   license                         →  --license value
-#   embodiment_tags                 →  [--embodiment-tag value]
+# Sentinel values rewritten by the scaffolder:
+#   TEMPLATE_ORG/rskill-TEMPLATE_ID -> <owner>/rskill-<id>
+#   TEMPLATE_ORG                    -> <owner>
+#   TEMPLATE_ID                     -> <id>
+#   license                         -> --license value
+#   embodiment_tags                 -> [--embodiment-tag value]
 #
-# The template is modeled on `rskills/pi05-libero-int8/rskill.yaml` — the
-# representative VLA skill in tree — and therefore ships pi0.5-shaped
-# policy knobs (`image_preprocessing`, `state_contract`,
-# `n_action_steps`, `min_vram_gb`). Strip or edit them if your new
-# skill wraps a simpler ACT/Diffusion policy that does not need them.
+# Modeled on rskills/pi05-libero-int8/rskill.yaml (the representative in-tree
+# VLA skill), so it ships pi0.5-shaped policy knobs (image_preprocessing,
+# state_contract, n_action_steps, min_vram_gb) — strip/edit them for a
+# simpler ACT/Diffusion policy.
 #
-# Field grouping convention (preprocessing knobs sit together):
-#   Identity → Policy identity → Compatibility contract →
-#   Runtime / weights → Preprocessing → Execution semantics → Provenance.
+# Field grouping: Identity -> Policy identity -> Compatibility contract ->
+# Runtime/weights -> Preprocessing -> Execution semantics -> Provenance.
 #
-# NOTE: `ral skill new` performs a YAML round-trip (safe_load →
-# mutate → safe_dump) and therefore strips inline comments. The
-# scaffolded `rskills/<id>/rskill.yaml` will be comment-free; copy the
-# explanatory header back if you want it.
+# NOTE: `ral skill new` YAML-round-trips (safe_load -> mutate -> safe_dump),
+# stripping inline comments — the scaffolded file will be comment-free; copy
+# this header back if you want it.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -98,13 +94,12 @@ latency_budget:
   # schema default of `None` opts out of that test-side tolerance check.
 
 # OPTIONAL — chunk_prefetch runs the next inference in the background so a
-# fresh chunk is ready before the current one drains; chunk_prefetch_at tunes
-# the lead in actions consumed (default 20). Real-Time Chunking (RTC) builds
-# on prefetch: it guides the prefetched chunk inside the flow-matching
-# denoiser to blend with the executing chunk's unconsumed tail, instead of a
-# hard cut at the chunk boundary. optional — flow-matching families (smolvla
-# / pi05) only; requires chunk_prefetch: true and chunk_prefetch_at >=
-# rtc.execution_horizon (the executor warns otherwise):
+# fresh chunk is ready before the current one drains (chunk_prefetch_at tunes
+# the lead in actions consumed, default 20). RTC builds on prefetch: guides
+# the prefetched chunk inside the flow-matching denoiser to blend with the
+# executing chunk's unconsumed tail instead of a hard cut. Flow-matching
+# families only (smolvla/pi05); requires chunk_prefetch: true and
+# chunk_prefetch_at >= rtc.execution_horizon (executor warns otherwise):
 # policy_extras:
 #   chunk_prefetch: true
 #   rtc:

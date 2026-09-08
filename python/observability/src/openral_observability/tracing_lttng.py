@@ -7,18 +7,18 @@ events alongside our application tracepoints. It is **opt-in** because:
 * The userspace tracer link adds dependencies (``lttng-ust``,
   ``babeltrace2``) and a daemon (``lttng-sessiond``) that most users
   don't want loaded by default.
-* When the env var :data:`ENV_TRACING_GATE` (``OPENRAL_ROS2_TRACING``)
+* When the env var ``ENV_TRACING_GATE`` (``OPENRAL_ROS2_TRACING``)
   is unset, every tracepoint in this module is a no-op — the lookup
   short-circuits before touching any LTTng symbol. Zero cost off.
 
 Three public surfaces:
 
-* :func:`is_enabled` — single source of truth for the gate.
-* :func:`lttng_tracepoint` — context manager that fires an entry and an
+* ``is_enabled`` — single source of truth for the gate.
+* ``lttng_tracepoint`` — context manager that fires an entry and an
   exit tracepoint around a code block. Used at the runner tick
   boundaries, the HAL command write / state read, and
   ``safety_node.validate``.
-* :func:`start_session` / :func:`stop_session` / :func:`view_session` —
+* ``start_session`` / ``stop_session`` / ``view_session`` —
   thin ``lttng`` subprocess wrappers driven by ``openral profile session``.
 
 The trace_id is exposed as an LTTng *context* (``--add-context=ip``
@@ -67,7 +67,7 @@ ENV_TRACING_FALLBACK_DIR: Final[str] = "OPENRAL_ROS2_TRACING_FALLBACK_DIR"
 
 
 # Tracepoint base names — one constant per "event pair" the hot path
-# emits. :func:`lttng_tracepoint` appends ``_begin`` / ``_end`` suffixes
+# emits. ``lttng_tracepoint`` appends ``_begin`` / ``_end`` suffixes
 # so each constant covers both sides of the bracket. The ``openral:``
 # prefix matches ``tracetools``'s ROS 2 namespace so a future
 # ``babeltrace2 --names=openral:*`` filter line is easy.
@@ -91,7 +91,7 @@ class LttngSessionError(RuntimeError):
 
 @dataclass(frozen=True)
 class LttngSession:
-    """An active LTTng session as known to :func:`start_session`.
+    """An active LTTng session as known to ``start_session``.
 
     Attributes:
         name: LTTng session name (e.g. ``openral``).
@@ -110,7 +110,7 @@ _WARNED_ONCE = False
 
 
 def is_enabled() -> bool:
-    """Return True iff :data:`ENV_TRACING_GATE` is set to a truthy value.
+    """Return True iff ``ENV_TRACING_GATE`` is set to a truthy value.
 
     Truthy = ``1`` / ``true`` / ``yes`` (case-insensitive). The function
     resolves the backend lazily on first call and caches the result;
@@ -175,7 +175,7 @@ def _warn_fallback(reason: str) -> None:
 def lttng_tracepoint(name: str, **attrs: Any) -> Iterator[None]:
     """Fire an entry tracepoint, run the block, fire an exit tracepoint.
 
-    When :data:`ENV_TRACING_GATE` is off this is a single env-var check
+    When ``ENV_TRACING_GATE`` is off this is a single env-var check
     plus a generator dance — measured at <300 ns on a 2024 laptop and
     safe to leave in the hot path. The trace_id from the active OTel
     span is attached automatically as ``otel_trace_id`` so a CTF reader
@@ -246,7 +246,7 @@ class _LttngUstBackend:
 class _JsonFallbackBackend:
     """Append tracepoints as line-delimited JSON to a fallback file.
 
-    Used only when :data:`ENV_TRACING_GATE` is set but the ``lttngust``
+    Used only when ``ENV_TRACING_GATE`` is set but the ``lttngust``
     Python binding is not importable. The JSON shape mirrors the LTTng
     event header (``name``, ``ts_ns``, ``otel_trace_id``, ``attrs``) so
     downstream tooling can convert it to CTF later if needed.
@@ -344,7 +344,7 @@ def start_session(*, name: str, output_dir: Path) -> LttngSession:
 
 
 def stop_session(*, name: str) -> None:
-    """Stop and destroy an LTTng session previously created via :func:`start_session`.
+    """Stop and destroy an LTTng session previously created via ``start_session``.
 
     Destroying flushes pending events to disk and is therefore part of
     the stop path — without it, an attached viewer would only see the

@@ -4,11 +4,11 @@ Covers the three fixes for the "always loads RLDX's environment" bug, where a
 second sim eval silently bound to whatever sidecar was already holding the
 shared default port (or, for GR00T, was force-fed the LIBERO obs contract):
 
-1. **Manifest-driven layout dispatch** (:func:`_resolve_state_layout`) shared
+1. **Manifest-driven layout dispatch** (``_resolve_state_layout``) shared
    by the ``rldx`` *and* ``gr00t`` factories — the GR00T adapter no longer
    hardcodes ``state_layout="libero"``.
-2. **Per-identity default port** (:func:`_derive_sidecar_port` /
-   :func:`_resolve_sidecar_port`) so two different checkpoints never collide
+2. **Per-identity default port** (``_derive_sidecar_port`` /
+   ``_resolve_sidecar_port``) so two different checkpoints never collide
    on one port.
 3. **Identity-checked reuse** (``_verify_existing_identity``) — the adapter
    refuses to adopt a pre-existing sidecar serving a different checkpoint.

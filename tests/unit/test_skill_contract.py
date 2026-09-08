@@ -1,31 +1,14 @@
 """Skill ABC contract — parametrized contract test for every concrete Skill.
 
-CLAUDE.md §5.1: *"types are the contract"*.  This file pins the runtime
-contract :class:`openral_rskill.Skill` declares so a typo or signature
-drift in any Skill subclass fails the unit lane immediately instead of
-waiting for a sim or HIL run.
+CLAUDE.md §5.1: "types are the contract". Pins the runtime contract
+``openral_rskill.Skill`` declares so a signature drift in any Skill
+subclass fails the unit lane immediately instead of waiting for a sim or HIL
+run. A new Skill subclass author verifies the Protocol by appending a
+one-line entry to ``SKILL_BUILDERS`` — no new test file needed.
 
-Why a parametrized test?  When a new Skill subclass is added (e.g. a new
-VLA adapter), its author can verify it satisfies the Protocol by appending
-a one-line entry to :data:`SKILL_BUILDERS`.  No new test file is needed.
-
-Coverage (asserted against every Skill listed in :data:`SKILL_BUILDERS`)
-----------------------------------------------------------------------
-- Initial state is :class:`RSkillState.UNCONFIGURED`.
-- ``configure()`` from ``unconfigured`` → ``inactive`` and sets
-  ``info.weights_loaded`` and ``info.quantized``.
-- ``activate()`` from ``inactive`` → ``active`` and sets ``info.warmed_up``.
-- ``deactivate()`` from ``active`` → ``inactive``.
-- ``shutdown()`` from any state → ``finalized``; idempotent if already
-  ``finalized``.
-- ``step()`` outside the ``active`` state raises :class:`ROSRuntimeError`.
-- ``step()`` in ``active`` returns an :class:`Action`.
-- Illegal transitions (``activate()`` from ``unconfigured``,
-  ``deactivate()`` from ``inactive``) raise :class:`ROSRuntimeError`.
-- Errors raised inside the lifecycle hooks move the Skill to the
-  ``error`` state and re-raise.
-- ``info`` returns a fresh copy — mutating it does not corrupt internal
-  state.
+Covers: lifecycle transitions (unconfigured -> inactive -> active ->
+finalized), illegal-transition errors, ``step()`` state gating, error-state
+latching, ``info`` copy isolation, and the weight load/unload hook contract.
 """
 
 from __future__ import annotations
@@ -109,8 +92,8 @@ SKILL_BUILDERS: dict[str, SkillBuilder] = {
 }
 
 
-# Optional: SmolVLAAdapter requires lerobot + torch.  Only add it when the
-# heavy deps are present so the contract test stays in the unit lane.
+# Optional: SmolVLAAdapter requires lerobot + torch; only added when present
+# so the contract test stays in the unit lane.
 if (
     importlib.util.find_spec("lerobot") is not None
     and importlib.util.find_spec("torch") is not None

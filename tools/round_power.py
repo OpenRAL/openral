@@ -2,36 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """How many validation-matrix runs does a comparison actually need?
 
-Issue #217, step 1: *"Power first. Decide the round count from the effect size
-worth detecting before running anything."*
+Issue #217: decide the round count from the effect size worth detecting before
+running anything. Motivated by two under-powered conclusions: the n=1 reading
+on #176, and the 20-run 2026-08-26 vs 2026-09-04 comparison, which had under
+30% power against the effect it observed (25% -> 5%) — "p = 0.18, not
+separable" (#217) was correct arithmetic on a sample that could not separate
+anything.
 
-This exists because the collision programme has now twice drawn a conclusion
-from a battery that could not have supported one, and had to take it back:
-the n=1 reading on #176, and the 2026-08-26 vs 2026-09-04 success comparison
-that #217 was opened to settle. The second is the sharper lesson — a 20-run
-arm has **under 30 % power** against the very effect it observed (25 % → 5 %), so
-"p = 0.18, not separable" was the arithmetic working correctly on a sample
-that was never going to separate anything. Running it again, the same size,
-answers nothing again.
+* ``required`` — runs per arm for a target power against a stated effect.
+* ``power`` — power of a battery already planned.
 
-Two numbers come out, and both are worth having before a battery rather than
-after:
-
-* ``required``  — runs per arm for a target power against a stated effect.
-* ``power``     — what a battery you have already planned can actually see.
-
-Exact, not Monte Carlo, and stdlib-only. The test that a battery reports is
-Fisher's exact test on the 2×2 of successes, so power is computed by
-enumerating every outcome pair ``(a, b)`` under the two binomials and summing
-the probability of those the test would reject. That makes the answer
-deterministic — the same inputs give the same number on every host and in
-every re-run, which a sampled estimate does not (CLAUDE.md §1.8) — and it
-avoids putting scipy in the workspace for a planning script.
-
-Cost is ``O(n²)`` Fisher evaluations, each ``O(n)``. Sub-second to ``n = 100``,
-a few seconds by ``n = 300``; the ladder stops at 800 because a comparison
-needing more runs than that is not a comparison this programme can afford, and
-saying so is the useful answer.
+Exact (not Monte Carlo), stdlib-only, deterministic (CLAUDE.md §1.8): power is
+the sum, over every ``(a, b)`` outcome pair under the two binomials, of the
+pairs Fisher's exact test would reject. ``O(n²)`` Fisher evaluations, each
+``O(n)`` — sub-second to n=100, seconds by n=300; the ladder stops at 800
+(unaffordable beyond that).
 
 Example:
     $ python tools/round_power.py --baseline 0.25 --alternative 0.05

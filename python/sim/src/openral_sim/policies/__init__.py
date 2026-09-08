@@ -1,8 +1,8 @@
 """Built-in VLA / policy adapters for sim eval — registered at import time.
 
-Mirrors :mod:`openral_sim.backends` but for the policy half of the
+Mirrors ``openral_sim.backends`` but for the policy half of the
 ``(robot × scene × task × VLA)`` quad. To add a new policy, drop a module
-here and register a factory in :data:`openral_sim.POLICIES`.
+here and register a factory in ``openral_sim.POLICIES``.
 
 The factories themselves are responsible for lazily importing heavy backends
 (torch, lerobot, openpi-client, …) so installing ``openral-sim`` never

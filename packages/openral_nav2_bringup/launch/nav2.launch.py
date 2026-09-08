@@ -1,35 +1,24 @@
 #!/usr/bin/env python3
 """Stand-alone launch for the Nav2 stack.
 
-Includes the upstream ``nav2_bringup/launch/navigation_launch.py`` —
-brings up ``bt_navigator``, ``planner_server``, ``controller_server``,
-``smoother_server``, ``behavior_server``, ``velocity_smoother`` and
-the ``lifecycle_manager_navigation`` that drives them all to
-``ACTIVE``. Parameters come from this package's
-``config/nav2_panda_mobile.yaml`` (the shared base) — a copy of the
-upstream ``nav2_params.yaml``. Per-robot geometry/kinematics are NOT
-hand-edited here: when a ``robot_yaml`` arg is passed, ``RewrittenYaml``
-substitutes ``robot_radius`` (from the robot's ``footprint_radius``),
-the costmap ``inflation_radius`` (footprint + a small clearance) and
-the MPPI ``motion_model`` (from ``base_kinematics``) via
-``RobotDescription.nav2_param_overrides()`` — so one base file serves
-any mobile base. The base ships panda_mobile's values
-(``robot_radius: 0.35``, ``inflation_radius: 0.40``, ``motion_model:
-Omni`` for the holonomic base, symmetric ``vy_min: -0.5``), so the
-rewrite is a no-op for panda and differs only for a differently-shaped
-robot. Velocity bounds remain Nav2 tuning in the base file (not robot
-identity).
+Includes upstream ``nav2_bringup/launch/navigation_launch.py`` — brings up ``bt_navigator``,
+``planner_server``, ``controller_server``, ``smoother_server``, ``behavior_server``,
+``velocity_smoother`` and ``lifecycle_manager_navigation`` (drives them to ``ACTIVE``). Params come
+from ``config/nav2_panda_mobile.yaml`` (a copy of upstream ``nav2_params.yaml``). With a
+``robot_yaml`` arg, ``RewrittenYaml`` substitutes ``robot_radius`` (from ``footprint_radius``),
+costmap ``inflation_radius`` (footprint + clearance) and MPPI ``motion_model`` (from
+``base_kinematics``) via ``RobotDescription.nav2_param_overrides()``, so one base file serves any
+mobile base. Base ships panda_mobile's values (``robot_radius: 0.35``, ``inflation_radius: 0.40``,
+``motion_model: Omni``, ``vy_min: -0.5``) — a no-op rewrite for panda. Velocity bounds stay Nav2
+tuning in the base file, not robot identity.
 
-Unlike slam_toolbox (which idles until the Reasoner activates it),
-Nav2 is always-on: each Nav2 sub-node is a LifecycleNode driven by
-the in-stack ``lifecycle_manager_navigation`` (autostart=true). The
-Reasoner triggers Nav2 by dispatching the
-``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action rSkill —
-which sends a ``NavigateToPose`` action goal to ``/navigate_to_pose``
-— rather than by lifecycle-transitioning the planner.
+Unlike slam_toolbox (idles until the Reasoner activates it), Nav2 is always-on: each sub-node is a
+``LifecycleNode`` driven by ``lifecycle_manager_navigation`` (``autostart=true``). The Reasoner
+triggers navigation by dispatching the ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none``
+wrapped-action rSkill (``NavigateToPose`` goal to ``/navigate_to_pose``), not by
+lifecycle-transitioning the planner.
 
-Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py``
-when the ``enable_nav2`` launch argument is ``true``.
+Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py`` when ``enable_nav2=true``.
 """
 
 from __future__ import annotations
@@ -153,26 +142,17 @@ def _payload_scan_filter_nodes(
 ) -> list[object]:
     """The scan filter that rides with Nav2.
 
-    ``openral_nav2_payload_scan_filter`` removes the robot's own returns — and
-    any carried object's — from the scan the costmaps and the collision monitor
-    consume. It reads the attachment set off ``/openral/world_state_fast``, the
-    safety kernel's own source, so no consumer can act on a stale one, and it
-    takes the nominal chassis outline from ``robot_yaml``.
+    ``openral_nav2_payload_scan_filter`` removes the robot's own returns and any carried object's
+    from the scan the costmaps and collision monitor consume. Reads the attachment set off
+    ``/openral/world_state_fast`` (the safety kernel's own source) and takes the chassis outline
+    from ``robot_yaml``.
 
-    **There is no footprint publisher any more.** Nav2 is base-only: the
-    costmaps' ``footprint`` comes statically from the manifest via
-    ``RobotDescription.nav2_param_overrides()``. Growing it over a carried
-    object projected 3-D geometry onto a 2-D costmap whose obstacles come from
-    a single scan slice, which forbade the place poses the tasks require and
-    protected against nothing — see this package's README, "Nav2 is base-only".
+    No footprint publisher: Nav2 is base-only, and the costmaps' ``footprint`` comes statically
+    from the manifest via ``RobotDescription.nav2_param_overrides()`` (see README, "Nav2 is
+    base-only").
 
-    Both halves of the filter survive that, and the self half matters *more*
-    without a growing footprint: an unfiltered payload return is an obstacle
-    that moves with the robot, i.e. one it can never escape.
-
-    ``robot_yaml`` is optional: without it the payload half still runs and only
-    the *self* half goes dark (the node warns). The node is skipped on the
-    ``visual`` backend, which has no ``/scan`` at all.
+    ``robot_yaml`` is optional: without it only the payload half runs (the node warns). Skipped on
+    the ``visual`` backend, which has no ``/scan``.
     """
     from launch_ros.actions import Node  # reason: launch-time only
 

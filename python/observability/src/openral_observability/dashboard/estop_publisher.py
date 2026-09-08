@@ -1,11 +1,9 @@
 """Persistent ROS 2 e-stop publisher for the dashboard (safety-critical).
 
-The dashboard has no rclpy node of its own, so its e-stop originally shelled out
-``ros2 topic pub`` per press. That spawns a FRESH publisher every time which must
-rediscover the subscribers before it can deliver — adding ~1 s and, worse,
-racing discovery so the message could be published before any subscriber is
-matched and be silently LOST. An e-stop that is sometimes lost, and never
-instant, is not an e-stop (observed live: the robot kept moving).
+A shell-out ``ros2 topic pub`` per press spawns a FRESH publisher that must
+rediscover subscribers before delivering — ~1 s, and racing discovery, so the
+message could be published before any subscriber matched and be silently
+LOST (observed live: the robot kept moving).
 
 This holds ONE publisher, created at dashboard startup, so DDS discovery of the
 HAL / kernel / runner subscribers happens ONCE at launch. Every later press then

@@ -2,7 +2,7 @@
 
 ``cpp/openral_safety_kernel/src/collision.cpp`` is normative: the C++ kernel is
 what stops the robot. Anything offline that decides *what the kernel will do* —
-the ACM always-colliding sweep in :mod:`openral_safety.urdf_lowering`, the
+the ACM always-colliding sweep in ``openral_safety.urdf_lowering``, the
 collision studies — must ask the same question with the same geometry, or it
 reasons about a robot that does not exist. Issue #155 is exactly that failure:
 the ACM sweep modelled a ``BoxShape`` as its inscribed sphere while the kernel
@@ -13,9 +13,9 @@ Each function here is a line-by-line port of its C++ counterpart:
 ===========================  ==========================================
 this module                  ``collision.cpp``
 ===========================  ==========================================
-:func:`box_box_distance`     ``box_box_distance`` (L327) — 15-axis SAT
-:func:`box_capsule_distance` ``box_capsule_distance`` (L293) — ternary
-:func:`capsule_distance`     ``capsule_distance`` (L252) — segment pair
+``box_box_distance``     ``box_box_distance`` (L327) — 15-axis SAT
+``box_capsule_distance`` ``box_capsule_distance`` (L293) — ternary
+``capsule_distance``     ``capsule_distance`` (L252) — segment pair
 ===========================  ==========================================
 
 All three return a **surface gap**: positive = disjoint by that much, ``<= 0`` =
@@ -73,7 +73,7 @@ _TERNARY_ITERS = 48
 def _unhandled(shape: object) -> ROSConfigError:
     """Fail closed on a primitive this module does not model.
 
-    Every dispatch here is exhaustive over :data:`CollisionShape` and ends in
+    Every dispatch here is exhaustive over ``CollisionShape`` and ends in
     this raise rather than in a bare ``else`` that would treat an unknown
     primitive as a capsule. A silently mis-modelled shape is exactly how the box
     under-approximation of issue #155 survived, and #165 closed the same pattern
@@ -248,9 +248,9 @@ def shape_distance(a_shape: _Shape, a_tf: _Arr, b_shape: _Shape, b_tf: _Arr) -> 
     """Surface gap between two link primitives, dispatched exactly as the kernel.
 
     ``check_self_collision`` (``collision.cpp`` L527) routes each pair by type:
-    box↔box to :func:`box_box_distance`, box↔capsule (either order) to
-    :func:`box_capsule_distance`, and everything else — capsules and spheres — to
-    :func:`capsule_distance`. This reproduces that routing so an offline sweep
+    box↔box to ``box_box_distance``, box↔capsule (either order) to
+    ``box_capsule_distance``, and everything else — capsules and spheres — to
+    ``capsule_distance``. This reproduces that routing so an offline sweep
     asks the kernel's question, not an approximation of it.
 
     Args:
@@ -307,7 +307,7 @@ def bounding_capsule_segment(
 
     For consumers that can only express a link as a capsule or a sphere sweep —
     today that is the cuRobo/cuMotion plan-time model
-    (:mod:`openral_safety.cumotion_config`). The result always **over**-covers,
+    (``openral_safety.cumotion_config``). The result always **over**-covers,
     which is the only safe direction for a planner: a planner that thinks the arm
     is thinner than it is emits trajectories the kernel then has to E-stop.
 

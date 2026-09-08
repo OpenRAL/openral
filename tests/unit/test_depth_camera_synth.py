@@ -357,41 +357,36 @@ def test_depth_image_matches_cloud_z_column() -> None:
 
 # ── Visual-only geometry must not be seen through (mj_multiRay regression) ──
 
-# A RoboCasa counter in miniature: a cabinet body whose collision carcass tops
-# out at world z 0.890, and a separate counter body carrying the countertop as
-# a VISUAL-only slab (contype=0 conaffinity=0) whose top face is at 0.920, plus
-# one small collision bracket off to the side. The bracket is what gives the
-# counter body a BVH; MuJoCo builds that BVH from collision geoms only, so the
-# body's bounding sphere hugs the bracket and excludes the slab entirely.
+# A RoboCasa counter in miniature: a cabinet body whose collision carcass tops out at world z
+# 0.890, and a separate counter body carrying the countertop as a VISUAL-only slab
+# (contype=0 conaffinity=0) whose top face is at 0.920, plus one small collision bracket off
+# to the side. The bracket gives the counter body a BVH (MuJoCo builds it from collision geoms
+# only), so the body's bounding sphere hugs the bracket and excludes the slab entirely.
 #
-# `mj_multiRay` culls whole bodies against that sphere, so it skips the counter
-# body and reports the cabinet carcass beneath it. That is why the synth casts
-# `mj_ray` per pixel and not the batched call — and #195 measured that the
-# reason survives #174: on the real validation-matrix scenes the batched call
-# skips only **collidable** geoms, so filtering intangible geometry out of the
-# cast does not make it safe (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`).
-# On THIS scene the two casters happen to agree, because the slab the cull
-# drops is exactly the slab the filter drops.
+# `mj_multiRay` culls whole bodies against that sphere, so it skips the counter body and
+# reports the cabinet carcass beneath it — why the synth casts `mj_ray` per pixel, not the
+# batched call. #195 measured that the reason survives #174: on the real validation-matrix
+# scenes the batched call skips only **collidable** geoms, so filtering intangible geometry out
+# of the cast does not make it safe
+# (`tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`). On THIS scene the two
+# casters happen to agree, because the slab the cull drops is exactly the slab the filter drops.
 #
-# **The expectation on this scene inverted with #174, and deliberately.** The
-# slab is `contype=0 conaffinity=0`: MuJoCo forms no contact pair for it, so no
-# body can ever touch it, and a cell holding only that slab is an obstacle the
-# safety kernel would E-stop on and the ground-truth probe is required (#149)
-# to call unbacked. The physical surface here is the carcass at 0.890; 0.920 is
-# paint. The depth synth now filters intangible geometry out of every cast, so
-# these two tests assert the collidable answer.
+# **The expectation on this scene inverted with #174, and deliberately.** The slab is
+# `contype=0 conaffinity=0`: MuJoCo forms no contact pair for it, so no body can ever touch it,
+# and a cell holding only that slab is an obstacle the safety kernel would E-stop on that the
+# ground-truth probe is required (#149) to call unbacked. The physical surface here is the
+# carcass at 0.890; 0.920 is paint. The depth synth now filters intangible geometry out of
+# every cast, so these two tests assert the collidable answer.
 #
-# This scene remains the adversarial one — it is built so the visual slab falls
-# outside its body's collision BVH — but it is not the RoboCasa case. Measured
-# on all four validation-matrix scenes, every one of ten `*_top_visual`
-# countertops has a collidable top geom at the same height: filtering them
-# moves those returns by a maximum of 0.0 mm and loses no ray. Across 16 384
-# rays no return anywhere came back nearer or vanished.
+# This scene remains the adversarial one (built so the visual slab falls outside its body's
+# collision BVH) but it is not the RoboCasa case: measured on all four validation-matrix
+# scenes, every one of ten `*_top_visual` countertops has a collidable top geom at the same
+# height — filtering them moves those returns by a maximum of 0.0 mm and loses no ray, across
+# 16 384 rays no return anywhere came back nearer or vanished.
 #
-# Note what that means for the batched call, which #195 then measured: the
-# RoboCasa countertops it skips are the *collidable* `*_top_*_0` / `_1` slabs,
-# not the `*_top_*_visual` paint. Those slabs stay in the cast after #174, and
-# `mj_multiRay` still walks through them.
+# What that means for the batched call, which #195 then measured: the RoboCasa countertops it
+# skips are the *collidable* `*_top_*_0` / `_1` slabs, not the `*_top_*_visual` paint — those
+# slabs stay in the cast after #174, and `mj_multiRay` still walks through them.
 _CARCASS_TOP_Z = 0.890
 _SLAB_TOP_Z = 0.920
 _COUNTER_CAM_Z = 2.0
@@ -620,19 +615,17 @@ def test_points_from_depth_grid_refuses_a_clearing_mask_it_cannot_place() -> Non
 
 # ── what payload transparency can and cannot clear ───────────────────────────
 #
-# A grasped payload is made transparent to the depth rays (8149344) and the rays
-# that find nothing behind it are marked "clearing" (f02fe7d), so OctoMap
-# retires the cells the payload's silhouette covers. That mechanism reaches
-# exactly the cells a ray still crosses. It is why the attached object's own
-# occupancy has to be removed at the bridge as well: the cells the camera can no
-# longer reach are never touched by any ray, and
-# `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`
-# (packages/openral_octomap_bridge/test/test_occupancy_persistence.cpp) pins
-# what becomes of them — nothing, for as long as the run lasts.
+# A grasped payload is made transparent to depth rays (8149344), and rays that find nothing
+# behind it are marked "clearing" (f02fe7d), so OctoMap retires the cells the payload's
+# silhouette covers — but only cells a ray still crosses. That's why the attached object's own
+# occupancy must also be removed at the bridge: cells the camera can no longer reach are never
+# touched by any ray, and `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`
+# (packages/openral_octomap_bridge/test/test_occupancy_persistence.cpp) pins what becomes of
+# them — nothing, for as long as the run lasts.
 #
-# Camera at the origin looking down -Z. The payload slab sits at z = -1.5 and is
-# excluded; a counter (x in [0.05, 0.65], NOT excluded) crosses in front of its
-# right-hand half at z = -1.0; a wall closes the scene at z = -2.
+# Camera at the origin looking down -Z. The payload slab sits at z = -1.5 and is excluded; a
+# counter (x in [0.05, 0.65], NOT excluded) crosses in front of its right-hand half at
+# z = -1.0; a wall closes the scene at z = -2.
 _OCCLUDED_PAYLOAD_MJCF = """
 <mujoco model="depth_payload_behind_counter">
   <worldbody>

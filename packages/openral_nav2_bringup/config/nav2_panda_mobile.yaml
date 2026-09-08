@@ -162,59 +162,16 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        # DELIBERATELY `false`, and pinned by
-        # `test/test_nav2_launch.py::test_mppi_does_not_yet_consider_the_footprint`.
-        #
-        # WHY TRUE. MPPI scores the robot's OUTLINE, not just its centre cell.
-        # For a 0.70 x 0.50 m rectangle the difference is not cosmetic: this
-        # base routinely parks with less clearance than its own circumscribed
-        # radius (measured free-corridor bottlenecks in RoboCasa kitchens run
-        # 0.19-0.24 m against a 0.444 m circumscribed radius) because the
-        # chassis is a RECTANGLE tucked against a counter that lies inside its
-        # circumscribed circle and outside the rectangle. A centre-cell test
-        # cannot see that; a polygon test gets it right.
-        #
-        # WHAT IT COSTS — measured on the live loop, not inferred from a part.
-        # `scenes/deploy/robocasa_deliver_straw.yaml` driven with the full
-        # stack (SLAM + Nav2 + octomap + kernel gate) on q-laptop, timing
-        # `controller_server`'s own CPU per published control cycle, 8 runs:
-        #
-        #   consider_footprint: false   9.58 ms/cycle   19% of the 50 ms budget
-        #   consider_footprint: true   10.11 ms/cycle   20% of the 50 ms budget
-        #
-        # +0.53 ms. The loop never fell behind in any arm: 500-501 cycles per
-        # 25 s window (exactly 20 Hz, none dropped), one "Control loop missed
-        # its desired rate" warning in the whole session. Full method and the
-        # per-arm table: docs/reference/robocasa-carry-survey.md.
-        #
-        # THAT IS AN ORDER OF MAGNITUDE BELOW the +8.1 ms this file used to
-        # predict from `benchmark/cost_critic_footprint_bench.cpp`, which times
-        # `footprintCostAtPose` in isolation and assumes 56000 calls per
-        # iteration (batch_size 2000 x time_steps 56 / trajectory_point_step 2).
-        # The gate reasoning behind that number is still correct —
-        # `findCircumscribedCost` returns 0.0 while `inflation_radius` 0.40 m
-        # sits below the 0.444 m circumscribed radius, which Nav2 confirms in
-        # its own log, so the check IS unconditional per `inCollision` call.
-        # What differs is how often `CostCritic::score` REACHES `inCollision`,
-        # which is not in the Jazzy binary install and was not verified. The
-        # discrepancy is recorded, not explained; the live number is the one
-        # that bounds the cycle.
-        #
-        # THE FOOTPRINT THIS SCORES IS THE BARE CHASSIS. Nav2 is base-only by
-        # design here: the 2-D costmap owns base geometry, the 3-D safety
-        # kernel owns the arm and anything carried. The payload-growing
-        # publisher was removed — its projection forbade exactly the poses the
-        # place tasks require (a payload entering a fridge or cabinet projects
-        # onto the fixture the base must approach), while adding no protection,
-        # because the costmap's obstacles come from a scan slice at z ~ 0.70 m
-        # in `odom` and a carried object rides at ~0.98 m. See this package's
-        # README, "Nav2 is base-only".
-        #
-        # If the cheap gate is ever wanted back, `inflation_radius` >= 0.444 m
-        # restores it — now a well-defined change, because with no payload
-        # growth the circumscribed radius is a constant of the manifest rather
-        # than a function of what is being held. It is still a
-        # navigation-behaviour change and is deliberately NOT made here.
+        # Deliberate, pinned by
+        # `test/test_nav2_launch.py::test_mppi_considers_the_full_footprint` — flip both together.
+        # MPPI scores the OUTLINE, not the centre cell: panda_mobile is a 0.70x0.50 m rectangle
+        # (0.444 m circumscribed radius); RoboCasa free-corridor bottlenecks measured 0.19-0.24 m —
+        # inside the circle, outside the rectangle. Cost, live (robocasa_deliver_straw.yaml, full
+        # stack, 8 runs, controller_server CPU/cycle): 9.58->10.11 ms (+0.53 ms; 19%->20% of the
+        # 50 ms budget); 500-501 cycles/25 s every arm (20 Hz, none dropped). See
+        # docs/reference/robocasa-carry-survey.md (differs from `cost_critic_footprint_bench.cpp`'s
+        # +8.1 ms estimate; live number governs). Footprint scored = bare chassis (Nav2 is
+        # base-only; kernel owns arm/payload). Restore the cheap gate: `inflation_radius >= 0.444 m`.
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -263,74 +220,43 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.35  # panda_mobile chassis envelope; unused while `footprint` parses
-      # Polygon, not `robot_radius`, because the manifest measures an outline
-      # and a radius throws that away — `consider_footprint: true` below then
-      # scores the real shape rather than a disc. It is STATIC: ADR-0099 makes
-      # Nav2 base-only, nothing publishes `/local_costmap/footprint` at runtime,
-      # and the payload-footprint publisher that used to (PR #143) was deleted
-      # by #186. See the package README, "Nav2 is base-only".
-      # Nav2 treats `""` and `"[]"` as "use robot_radius", so a robot without a
-      # `footprint_polygon` in its manifest gets `"[]"` here from
-      # `RobotDescription.nav2_param_overrides()` rather than inheriting panda's
-      # shape. This value IS panda's `footprint_polygon`, so the rewrite is a
-      # no-op for panda.
+      # Polygon, not `robot_radius`: the manifest measures an outline and a radius throws that away
+      # — `consider_footprint: true` below then scores the real shape. Static: ADR-0099 makes Nav2
+      # base-only, nothing publishes `/local_costmap/footprint` at runtime; the payload-footprint
+      # publisher (PR #143) was removed by #186 — see README, "Nav2 is base-only".
+      # Nav2 treats `""`/`"[]"` as "use robot_radius": a robot without `footprint_polygon` gets
+      # `"[]"` here from `RobotDescription.nav2_param_overrides()` rather than inheriting panda's
+      # shape. This value IS panda's `footprint_polygon`, so the rewrite is a no-op for panda.
       footprint: "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # CORRECTION, measured: 0.40 m is BELOW this costmap's circumscribed
-        # radius, not above it. The ~0.364 m figure came from `robot_radius
-        # 0.35` + padding, but this costmap is configured with the `footprint`
-        # POLYGON above, and Nav2 derives the circumscribed radius from the
-        # polygon's farthest padded vertex — hypot(0.36, 0.26) = 0.444 m
-        # (`nav2_costmap_2d::calculateMinAndMaxDistances`, run against the real
-        # Jazzy library in `benchmark/cost_critic_footprint_bench.cpp`). The
-        # correction holds whatever `CostCritic.consider_footprint` is set to —
-        # it is a property of this polygon, not of that flag. What it costs is
-        # that with the flag on (it is, see the CostCritic comment above) MPPI's
-        # `findCircumscribedCost` returns 0.0 and the full-footprint check runs
-        # on every sampled point rather than a fraction of them — measured on
-        # the live loop at +0.53 ms of a 50 ms cycle, which is why the flag is
-        # on. Raising this above 0.444 m would restore the cheap gate for the
-        # bare chassis; since ADR-0099 made Nav2 base-only there is no longer a
-        # grown polygon to defeat it, but 0.40 m is a navigation-behaviour value
-        # and is left alone rather than changed blind.
-        # Below the INSCRIBED radius (0.26 m for this polygon) Nav2 cannot
-        # use the costmap potential field at all and logs an error; the prior
-        # 0.10 m did exactly that. cost_scaling_factor keeps
-        # this a soft gradient — LETHAL only within the inscribed radius
-        # — so the base still threads tight kitchen aisles, it just
-        # prefers the centreline. Local matches global so the
-        # controller's neighbourhood agrees with the planner. Also
-        # emitted by RobotDescription.nav2_param_overrides()
-        # (footprint_radius + clearance) when a robot_yaml is passed;
-        # this base value equals panda's, so that rewrite is a no-op.
+        # 0.40 m is BELOW this costmap's circumscribed radius: Nav2 derives it from the `footprint`
+        # POLYGON, farthest padded vertex = hypot(0.36, 0.26) = 0.444 m
+        # (`calculateMinAndMaxDistances`, verified against Jazzy in `cost_critic_footprint_bench.cpp`),
+        # regardless of `consider_footprint`. With it on, `findCircumscribedCost` returns 0.0 and the
+        # full check runs on every sampled point (+0.53 ms/50 ms cycle); raising past 0.444 m would
+        # restore the cheap gate — left at 0.40 m as a deliberate nav-behaviour choice.
+        # Below the INSCRIBED radius (0.26 m) Nav2 cannot use the potential field and logs an error.
+        # `cost_scaling_factor: 3.0` keeps a soft gradient (LETHAL only inside the inscribed radius),
+        # so the base threads tight aisles but prefers the centreline. Local matches global so the
+        # controller's neighbourhood agrees with the planner. Also emitted by
+        # `RobotDescription.nav2_param_overrides()`; equals panda's value here, so a no-op.
         inflation_radius: 0.40
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
         publish_voxel_map: True
         origin_z: 0.0
-        # A VoxelLayer can only raytrace a scan whose sensor origin lies inside
-        # the voxel column, and the prior 16×0.05=0.80 m top left it outside:
-        # the local costmap logged "origin out of map bounds … cannot raytrace"
-        # every cycle and never formed. nav2_costmap_2d's VoxelLayer hard-caps
-        # z_voxels at 16, so z_resolution is raised instead — 16×0.08=1.28 m.
-        #
-        # The height that justified it was WRONG, and the fix is elsewhere. This
-        # comment used to say the lidar "sits at z≈1.05 m"; it does not. The fan
-        # is cast 0.30 m above the floor, and the 0.70 m figure was `base_link`
-        # — the robot0_base_pos platform frame the scan was mislabelled into,
-        # which is what put the sensor origin high enough to fall out of a
-        # 0.80 m column in the first place. `robots/panda_mobile/robot.yaml` now
-        # gives the lidar its own `base_scan` frame with the mount carried in
-        # TF, so the origin sits at 0.30 m and would fit the old column.
-        #
-        # 1.28 m is KEPT anyway, deliberately: it still clears the ~0.9 m
-        # counters the scan must raytrace through, the cap makes it free to
-        # keep, and narrowing it is a costmap-behaviour change with nothing to
-        # gain. Re-derive it only if the mount moves.
+        # VoxelLayer can only raytrace a scan whose sensor origin lies inside the voxel column; the
+        # prior 16x0.05=0.80 m top left it outside (logged "origin out of map bounds ... cannot
+        # raytrace" every cycle, costmap never formed). VoxelLayer hard-caps z_voxels at 16, so
+        # z_resolution is raised instead: 16x0.08=1.28 m. Lidar origin sits at 0.30 m above the
+        # floor (`robots/panda_mobile/robot.yaml`'s dedicated `base_scan` frame, mount carried in
+        # TF) — well inside either column. 1.28 m is kept anyway: it clears the ~0.9 m counters the
+        # scan must raytrace through, the cap makes it free to keep, and narrowing is a
+        # costmap-behaviour change with nothing to gain. Re-derive only if the mount moves.
         z_resolution: 0.08
         z_voxels: 16
         max_obstacle_height: 2.0
@@ -405,37 +331,18 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        # The height gate is DISABLED here, deliberately — issue #211. Without
-        # this the whole global costmap was empty: 0 non-zero cells over 101
-        # published samples on two deploy scenes, while the local costmap on the
-        # same graph and the same scan topic peaked at 254. `NavfnPlanner`
-        # planned every goal against a blank 20 x 20 m grid and nothing warned.
-        #
-        # nav2 filters observation z in the costmap's OWN `global_frame`, in two
-        # separate places with two separate parameters: `ObservationBuffer`
-        # (`<source>.min/max_obstacle_height`, applied at buffer time after the
-        # transform) and `ObstacleLayer::updateBounds` (the LAYER-level pair,
-        # applied again while marking). Both default to a floor of 0.0, and both
-        # must be widened — setting only the source pair leaves the layer pair
-        # cutting the identical points.
-        #
-        # This costmap's frame is `map`, and `map`'s z origin is not the floor.
-        # slam_toolbox scan-matches in 2-D and publishes `map -> odom` with the
-        # z that flattens `base_link` to 0 — and `base_link` is the arm mount
-        # 0.700 m up the pedestal (ADR-0095), not ground level. So `map -> odom`
-        # carries -0.700 m, the lidar plane lands at -0.400 m in `map`, and a
-        # 0.0 floor discards every return. The local costmap is in `odom`, where
-        # the same plane is at +0.300 m, and keeps them. Same scan, same
-        # parameters, opposite outcome.
-        #
-        # The window is inert rather than tuned. `/openral/nav2/scan` is a
-        # PLANAR LaserScan and this is a 2-D layer, so every point shares one z
-        # and the gate can only admit all of them or none — it has no
-        # discriminating power to lose. +/-10 m is simply past anything a frame
-        # in this stack can offset that plane by (the largest is the 0.700 m
-        # pedestal). Do NOT copy this to the local costmap: that layer is a
-        # `VoxelLayer` with a real z column (`origin_z` 0.0, 16 x 0.08 m), where
-        # the height bounds do carry meaning.
+        # Height gate DISABLED here, deliberately (#211): without it the global costmap was empty
+        # (0 non-zero cells / 101 samples, two deploy scenes) while local peaked at 254; NavfnPlanner
+        # planned against a blank 20x20 m grid, no warning. Nav2 filters z in `global_frame` in two
+        # places — `ObservationBuffer` (source min/max_obstacle_height) and
+        # `ObstacleLayer::updateBounds` (layer-level pair) — both default floor 0.0, both must widen.
+        # This costmap's frame is `map`, whose z origin isn't the floor: slam_toolbox's `map -> odom`
+        # flattens `base_link` (arm mount, 0.700 m up the pedestal, ADR-0095) to 0, so it carries
+        # -0.700 m, putting the lidar plane at -0.400 m in `map` (a 0.0 floor discards every return);
+        # the local costmap (`odom`) sees the same plane at +0.300 m. `/openral/nav2/scan` is planar
+        # (one z per point) so the gate can only admit all or none; +/-10 m is past any offset this
+        # stack produces (largest: 0.700 m pedestal). Do NOT copy to the local costmap: that's a
+        # `VoxelLayer` with a real z column (`origin_z` 0.0, 16x0.08 m) where height bounds matter.
         min_obstacle_height: -10.0
         max_obstacle_height: 10.0
         observation_sources: scan

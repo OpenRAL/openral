@@ -113,10 +113,10 @@ class TestDiffusionPushTManifest:
         assert sensors[0].modality == "rgb"
         assert sensors[0].vla_feature_key == "observation.image"
 
-    def test_manifest_has_latency_budget(self, skill_manifest) -> None:
-        budget = skill_manifest.manifest.latency_budget
-        assert budget is not None
-        assert budget.per_chunk_ms > 0
+    def test_manifest_has_latency_budget(
+        self, skill_manifest, assert_manifest_has_latency_budget
+    ) -> None:
+        assert_manifest_has_latency_budget(skill_manifest.manifest)
 
 
 class TestDiffusionPushTIOContract:

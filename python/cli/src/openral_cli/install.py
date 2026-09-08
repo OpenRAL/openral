@@ -1,34 +1,24 @@
 """``openral install`` — install opt-in dependency groups into the managed venv.
 
-This subcommand is the post-install escape hatch for the Tier-0 curl-bash
-installer (``scripts/install.sh``). The base install gives the user
-``openral`` on their ``$PATH`` with the CLI's own thin runtime; heavy / opt-in
-extras (sim physics, LIBERO / MetaWorld / RoboCasa task suites, ROS 2 system
-deps) ship separately and are layered in on demand.
+Post-install escape hatch for the Tier-0 curl-bash installer
+(``scripts/install.sh``): the base install puts ``openral`` on ``$PATH``
+with a thin CLI runtime; heavy / opt-in extras (sim physics, LIBERO /
+MetaWorld / RoboCasa, ROS 2 system deps) are layered in on demand.
 
-Group taxonomy mirrors the workspace root ``pyproject.toml``
-``[dependency-groups]`` table — keep the two in sync. ``ros`` is special-cased
-because it re-exec's the packaged ``openral_cli/bootstrap/bootstrap_ubuntu.sh``
-(sudo + apt) rather than
-calling ``uv pip install``; everything else is a pure-Python group resolved by
-the workspace lockfile.
+Group taxonomy mirrors the root ``pyproject.toml`` ``[dependency-groups]``
+table — keep the two in sync. ``ros`` is special-cased: it re-execs the
+packaged ``openral_cli/bootstrap/bootstrap_ubuntu.sh`` (sudo + apt) instead
+of calling ``uv pip install``; every other group is pure-Python, resolved
+by the workspace lockfile.
 
-The libero ↔ robocasa exclusion declared in the root ``[tool.uv].conflicts``
-table is enforced here as a typed ``ROSConfigError`` so users see the failure
-at the CLI instead of as a solver-conflict from ``uv pip install``.
+The libero ↔ robocasa exclusion from root ``[tool.uv].conflicts`` is
+enforced here as a typed ``ROSConfigError`` instead of surfacing as a
+``uv`` solver conflict.
 
 Examples:
-    Install the lightweight sim group (CPU-only physics)::
-
-        openral install sim
-
-    Install LIBERO (mutually exclusive with robocasa)::
-
-        openral install libero
-
-    Re-run the apt + ROS 2 + udev system bootstrap (needs sudo)::
-
-        openral install ros
+    openral install sim        # CPU-only physics
+    openral install libero     # mutually exclusive with robocasa
+    openral install ros        # apt + ROS 2 + udev bootstrap (needs sudo)
 """
 
 from __future__ import annotations
@@ -48,18 +38,15 @@ from rich.table import Table
 
 # ── Group → dependency-list mirror of root pyproject.toml ────────────────────
 #
-# These lists are duplicated from the workspace root ``pyproject.toml``
-# ``[dependency-groups]`` table on purpose: the installer must work *before*
-# the workspace is cloned (the curl-bash one-liner runs `uv tool install
-# openral-cli` against PyPI, which does not see the root pyproject). When a
-# group is added or a pin is bumped in the root file, mirror the change here
-# in the same commit — the ``tests/unit/test_install_command.py`` real-
-# components check loads the workspace pyproject when present and asserts the
-# two are in lockstep.
+# Duplicated from the workspace root ``pyproject.toml``
+# ``[dependency-groups]`` table on purpose: the installer must work before
+# the workspace is cloned (`uv tool install openral-cli` runs against PyPI,
+# which does not see the root pyproject). When a group is added or a pin is
+# bumped in the root file, mirror it here in the same commit —
+# ``tests/unit/test_install_command.py`` asserts the two stay in lockstep.
 #
-# Each entry is exactly what would appear in ``[dependency-groups].<group>``;
-# the installer hands them straight to ``uv pip install`` so PEP 508 markers
-# are honoured.
+# Each entry mirrors ``[dependency-groups].<group>``, handed straight to
+# ``uv pip install`` so PEP 508 markers are honoured.
 _GROUPS: Final[dict[str, list[str]]] = {
     "sim": [
         "gym-aloha>=0.1.3",
@@ -187,11 +174,11 @@ def _check_conflicts(group: str, already_installed: frozenset[str]) -> None:
         group: Name of the group about to be installed.
         already_installed: Names of groups previously installed into the
             current target venv. Detected via importlib.metadata best-effort
-            in :func:`_detect_installed_groups`.
+            in ``_detect_installed_groups``.
 
     Raises:
         ROSConfigError: when installing ``group`` would violate an entry in
-            :data:`_CONFLICTS`.
+            ``_CONFLICTS``.
     """
     for conflict_set in _CONFLICTS:
         if group in conflict_set:
@@ -259,7 +246,7 @@ def _run_uv_pip_install(group: str, python: str) -> int:
     """Invoke ``uv pip install --python <python> <packages…>`` and stream output.
 
     Args:
-        group: Dependency-group name; must be a key in :data:`_GROUPS`.
+        group: Dependency-group name; must be a key in ``_GROUPS``.
         python: Absolute path to the target interpreter.
 
     Returns:
@@ -277,7 +264,7 @@ def _install_group(group: str, *, force: bool) -> None:
     """Install one dependency group into the active managed venv.
 
     Args:
-        group: Group name. Must be a key in :data:`_GROUPS`.
+        group: Group name. Must be a key in ``_GROUPS``.
         force: When ``True``, bypass the libero ↔ robocasa conflict check.
 
     Raises:

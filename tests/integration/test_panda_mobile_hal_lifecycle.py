@@ -1,23 +1,16 @@
 """Live exercise of ``_PandaMobileLifecycleNode``.
 
-Brings up the real panda_mobile HAL lifecycle node (built and
-installed via ``just ros2-build``), drives it through
-``UNCONFIGURED → INACTIVE → ACTIVE → INACTIVE → UNCONFIGURED``, and
-asserts that the three publishers fire at their declared rates:
+Brings up the real panda_mobile HAL lifecycle node (built via ``just ros2-build``), drives it
+through UNCONFIGURED → INACTIVE → ACTIVE → INACTIVE → UNCONFIGURED, and asserts the three
+publishers fire at their declared rates: ``/joint_states`` at 30 Hz (base-class joint-state
+publisher), ``/odom`` at 20 Hz, ``/scan`` at 10 Hz (mobile-base extras).
 
-* ``/joint_states`` at 30 Hz (base-class joint-state publisher).
-* ``/odom`` at 20 Hz (mobile-base extras).
-* ``/scan`` at 10 Hz (mobile-base extras).
+TF broadcast on ``odom -> base_link`` is verified by subscribing to ``/tf`` and checking at
+least one transform arrives in the same window. No mocks per CLAUDE.md §1.11 — real
+``PandaMobileHAL`` (in-process digital twin), real rclpy executor, real ROS pub/sub.
 
-The TF broadcast on ``odom -> base_link`` is verified by subscribing
-to ``/tf`` and checking at least one frame transform arrives within
-the same window. No mocks per CLAUDE.md §1.11 — real
-``PandaMobileHAL`` (in-process digital twin), real rclpy executor,
-real ROS publishers + subscribers.
-
-Gates: ``ROS_DISTRO`` env + ``rclpy`` import + a colcon install
-exposing ``openral_hal_panda_mobile``. When any of those are
-missing the test ``pytest.skip(reason=...)`` cleanly per §1.11.
+Gates: ``ROS_DISTRO`` env + ``rclpy`` import + a colcon install exposing
+``openral_hal_panda_mobile``. Missing any → ``pytest.skip(reason=...)`` per §1.11.
 """
 
 from __future__ import annotations
@@ -177,12 +170,10 @@ def test_lifecycle_odom_pose_advances_under_body_twist(
 ) -> None:
     """Sending a /openral/safe_action body_twist advances the published /odom pose.
 
-    Construct an ActionChunk on /openral/safe_action with a 1 m/s
-    forward velocity, integrate for ~0.5 s of in-process digital-twin
-    HAL ticks, then assert the latest /odom message reports
-    pose.pose.position.x > 0 (rough — the digital twin's Euler step
-    is calibrated to 50 ms per safe_action send, so even a single
-    send should advance the pose).
+    Constructs an ActionChunk on /openral/safe_action with 1 m/s forward velocity, integrates
+    for ~0.5 s of in-process digital-twin HAL ticks, then asserts /odom reports
+    pose.pose.position.x > 0 (the twin's Euler step is calibrated to 50 ms per safe_action
+    send, so even a single send should advance the pose).
     """
     import math
 

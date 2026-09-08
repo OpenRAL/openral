@@ -1,33 +1,25 @@
 """Typed mission state for sequential multi-task deploy goals.
 
-An operator goal may carry several ordered subtasks supplied via ``--initial-task``
-(or a live ``/openral/prompt``). Prior to this module's fix the deploy CLI
-joined ``DeployScene.tasks`` with ``" | "`` into a single opaque prompt that was
-**drained pull-once** (``ContextRenderer.drain_prompts``), so the reasoner forgot
-the goal after the first tick and never advanced to subsequent subtasks (removed).
+An operator goal may carry several ordered subtasks (``--initial-task``, or a
+live ``/openral/prompt``), parsed into an ordered list of ``TaskState``
+with at most one ``active``/``verifying`` at a time; the reasoner advances
+the queue only when the active task verifies complete. Splitting is simple
+and deterministic; richer decomposition (the ``decompose-mission`` playbook)
+layers on top via ``MissionState.subdivide_active``.
 
-This module is the deterministic fix: the goal is parsed into an
-ordered list of :class:`TaskState`, of which at most one is ``active`` (or
-``verifying``) at a time. The reasoner advances the queue only when the active
-task is verified complete, so a multi-task goal is *sequenced* by
-bookkeeping rather than by hoping the LLM remembers it. Splitting is intentionally
-simple and deterministic; richer decomposition (the ``decompose-mission``
-playbook) layers on top via :meth:`MissionState.subdivide_active`.
+**Hierarchical subdivision on replan** (#123): when the active task is
+blocked (reward gate ``abandon``, ladder exhausted), the reasoner may
+decompose it into finer subtasks instead of only handing off. The data model
+stays **flat**: ``MissionState.subdivide_active`` splices the blocked
+task in place with its children (``t2 → t2.1, t2.2``), so the ``## MISSION``
+ledger and dashboard need no change. ``TaskState.depth`` bounds
+re-decomposition (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), so a
+perpetually-blocked task terminates in human-handoff rather than
+subdividing forever.
 
-This module (#123) adds **hierarchical subdivision on replan**: when
-the active task is blocked (reward gate ``abandon``, ladder exhausted) the
-reasoner may decompose it into finer subtasks instead of only handing off. The
-data model stays **flat** — :meth:`MissionState.subdivide_active` *splices* the
-blocked task in place with its children (``t2 → t2.1, t2.2``), so the ``##
-MISSION`` ledger and the dashboard (which rebuild from the flat task list each
-tick) need no change. :attr:`TaskState.depth` bounds re-decomposition
-(:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`) so a perpetually-blocked task terminates in
-``human-handoff`` rather than subdividing forever.
-
-The state is reasoner-internal (no rclpy, no Pydantic boundary) so it lives here
-as plain dataclasses and is fully unit-testable; the ROS node drives the
-transitions and the :class:`~openral_reasoner.context.ContextRenderer` renders the
-``## MISSION`` ledger.
+Reasoner-internal (no rclpy, no Pydantic): plain dataclasses, fully
+unit-testable. The ROS node drives transitions;
+``ContextRenderer`` renders the ledger.
 """
 
 from __future__ import annotations
@@ -61,7 +53,7 @@ DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
 """Max re-decomposition depth (#123).
 
 A task at the queue root has ``depth == 0``; its children from one
-:meth:`MissionState.subdivide_active` are ``depth == 1``; their children
+``MissionState.subdivide_active`` are ``depth == 1``; their children
 ``depth == 2``. Once a blocked task is already at this depth, subdivision is
 refused (``subdivide_active`` returns ``None``) and the caller falls back to
 ``human-handoff`` — bounding the ladder so a perpetually-blocked task cannot
@@ -73,7 +65,7 @@ DEFAULT_MAX_TASK_LOCATE_ATTEMPTS: int = 3
 
 Max locate cycles the reasoner may spend on a single active mission (sub)task
 *without* reaching an ``execute_rskill`` dispatch before the subtask is
-abandoned. Distinct from the :class:`~openral_reasoner.active_search.SearchProgress`
+abandoned. Distinct from the ``SearchProgress``
 miss budget: that resets on a locate HIT, so a live locate-loop where
 ``locate_in_view`` keeps hitting (``found=True``) but never dispatches a skill
 never terminates. This budget counts every locate cycle regardless of hit/miss."""
@@ -83,19 +75,16 @@ never terminates. This budget counts every locate cycle regardless of hit/miss."
 class TaskLocateBudget:
     """Per-task ``locate_in_view`` cycle budget.
 
-    The S2 locate-loop persists in deploy because ``locate_in_view`` repeatedly
-    HITS (``found=True``) — the existing :class:`SearchProgress` bound only counts
-    *misses* and resets on a hit, so a task whose object is visible but never
-    actioned re-locates forever. This budget counts locate cycles spent on the
-    *active mission task* (hit or miss); once exhausted the caller abandons the
-    subtask via the mission ladder so the next pick proceeds.
+    Unlike ``SearchProgress`` (misses only, resets on a hit), this counts
+    every locate cycle — hit or miss — spent on the *active mission task*
+    without an ``execute_rskill`` dispatch, so a task whose object stays
+    visible but never gets actioned still terminates instead of re-locating
+    forever.
 
-    :meth:`charge` is called once per locate dispatch with the active task id; it
-    auto-resets the counter when the task changes (advancing the queue starts a
-    fresh budget) and returns ``True`` once the cycle count exceeds
-    ``max_attempts``. :meth:`reset` is called on real progress (an
-    ``execute_rskill`` dispatch) so locate cycles only count while the task has
-    produced no skill dispatch.
+    ``charge`` is called once per locate dispatch with the active task
+    id; it auto-resets when the task changes and returns ``True`` once
+    exhausted. ``reset`` is called on real progress (an
+    ``execute_rskill`` dispatch).
 
     Example:
         >>> b = TaskLocateBudget(max_attempts=3)
@@ -176,39 +165,31 @@ def evaluate_task_verdict(
 ) -> tuple[VerdictAction, str]:
     """Pure reward-gate decision for the active task.
 
-    **Gate on the PROGRESS head, not the success head.**
-    Robometer-4B emits two heads: ``progress`` (task *closeness*, which reaches
-    ~0.80-0.86 on a genuine physical success and separates success from failure
-    cleanly) and ``success`` (a done-probability that is empirically *compressed*
-    — only ~0.56-0.79 even on a real success, so a 0.8 auto-pass bar over it is
-    effectively dead). The ``success_threshold`` / ``check_floor`` bars (0.8 /
-    0.5) were calibrated against the *progress* head (internal calibration notes
-    cite progress≈0.78 on a physical success), so the band logic gates on
-    ``progress_now``. ``success_now`` is kept as a **secondary corroborating
-    signal** surfaced in the verdict text (and available to the caller's
-    ``vlm_check`` adjudication) — it never overrides the progress band.
+    Gates on the PROGRESS head, not the success head: Robometer-4B's
+    ``progress`` (task closeness) reaches ~0.80-0.86 on a genuine physical
+    success and separates success from failure cleanly, while ``success``
+    (done-probability) is empirically compressed to ~0.56-0.79 even on a
+    real success. ``success_threshold``/``check_floor`` (0.8/0.5) are
+    calibrated against ``progress_now`` (internal notes cite progress≈0.78
+    on a physical success); ``success_now`` is a secondary corroborating
+    signal surfaced in the verdict text, never overriding the progress
+    band.
 
-    Three-tier verdict over the progress head when the reward is available
-    (``ok=True``):
+    Three-tier verdict when the reward is available (``ok=True``):
 
-    1. ``progress_now >= success_threshold`` → ``"complete"`` — high-confidence
-       auto-pass; no VLM call needed.
-    2. ``check_floor <= progress_now < success_threshold`` → ``"vlm_check"`` — the
-       ambiguous band; the **caller** must adjudicate by calling ``describe_image``,
-       optionally weighing ``success_now`` as corroboration. This
-       function only signals the need — it never performs the call.
-    3. ``progress_now < check_floor`` → falls to the existing attempts ladder:
-       ``"abandon"`` once ``attempts >= max_attempts``, else ``"retry"``.
+    1. ``progress_now >= success_threshold`` → ``"complete"`` (auto-pass).
+    2. ``check_floor <= progress_now < success_threshold`` →
+       ``"vlm_check"`` — caller must adjudicate via ``describe_image``.
+    3. ``progress_now < check_floor`` → attempts ladder: ``"abandon"``
+       once ``attempts >= max_attempts``, else ``"retry"``.
 
-    ``ok=False`` (reward unavailable / stale): no tier evaluation; goes directly to
-    the attempts ladder so reward errors never produce a spurious completion.
+    ``ok=False`` skips tier evaluation, going straight to the attempts
+    ladder. Caller must pass ``check_floor <= success_threshold``
+    (enforced upstream by ``RewardContract``, not re-validated here).
 
-    The caller is assumed to pass ``check_floor <= success_threshold``; the
-    ``RewardContract`` validator guarantees this upstream — no re-validation here.
-
-    Returns ``(action, verdict_text)`` where ``verdict_text`` is the short
-    human-readable note recorded on the task (progress is primary; success is
-    appended as corroboration when supplied).
+    Returns:
+        ``(action, verdict_text)`` — progress is primary; success appended
+        as corroboration when supplied.
 
     Example:
         >>> evaluate_task_verdict(
@@ -267,7 +248,7 @@ class TaskState:
     Attributes:
         task_id: Stable id within the mission (``"t1"``, ``"t2"``, …).
         text: The subtask instruction handed to the reasoner as the active goal.
-        status: Lifecycle position (:data:`TaskStatus`).
+        status: Lifecycle position (``TaskStatus``).
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
@@ -276,8 +257,8 @@ class TaskState:
             (e.g. ``"success=0.91"``, ``"stalled@0.73"``, ``"unverified"``).
         depth: Re-decomposition depth (see #123). A task split
             from the operator goal is ``0``; a child spliced in by
-            :meth:`MissionState.subdivide_active` is ``parent.depth + 1``. Bounds
-            the subdivision ladder against :data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`.
+            ``MissionState.subdivide_active`` is ``parent.depth + 1``. Bounds
+            the subdivision ladder against ``DEFAULT_MAX_SUBDIVIDE_DEPTH``.
     """
 
     task_id: str
@@ -296,7 +277,7 @@ class MissionState:
     Owns the deterministic sequencing the LLM is no longer trusted to do: the
     active task is the only goal injected each tick; the queue advances only when
     the node verifies the active task complete (or abandons it after the ladder is
-    exhausted). All mutators return the newly-active :class:`TaskState` (or
+    exhausted). All mutators return the newly-active ``TaskState`` (or
     ``None`` when the mission is finished) so the caller can re-inject the next
     goal and wake the reasoner.
 
@@ -323,11 +304,10 @@ class MissionState:
 
     @classmethod
     def from_prompt(cls, text: str) -> MissionState:
-        """Seed a mission from an operator goal as a SINGLE task.
+        """Seed a mission from an operator goal as a single task.
 
-        The regex ``split_mission`` floor is removed: the operator goal is one
-        task and the LLM owns decomposition via ``decompose_mission``. A blank
-        goal yields an empty mission.
+        The LLM owns decomposition via ``decompose_mission``. A blank goal
+        yields an empty mission.
         """
         goal = text.strip()
         return cls([goal] if goal else [])
@@ -417,7 +397,7 @@ class MissionState:
         """Move the active task ``verifying → active`` to re-offer a fresh decision.
 
         The reward gate moves the active task to ``verifying`` while it queries the
-        monitor (:meth:`mark_verifying`). When the node offers subdivision on a
+        monitor (``mark_verifying``). When the node offers subdivision on a
         blocked task (#123) instead of abandoning it, it calls this so the normal
         dispatch / ``subdivide_active`` cycle resumes from ``active``. No-op
         (returns the current active task or ``None``) when nothing is ``verifying``.
@@ -443,22 +423,20 @@ class MissionState:
     ) -> TaskState | None:
         """Splice the active task in place with finer child subtasks (#123).
 
-        Hierarchical subdivision on replan: when the active
-        task is blocked, replace it in the queue with ``subtasks`` — flat child
-        tasks ``t<n>.1, t<n>.2, …`` at ``depth + 1`` — and activate the first
-        child. The data model stays flat (Option 1 "flat splice"): the parent is
-        *removed*, its children take its slot, and any already-pending tail keeps
-        its order, so the ledger and dashboard need no change.
+        Replaces the blocked active task in the queue with ``subtasks`` —
+        flat children ``t<n>.1, t<n>.2, …`` at ``depth + 1`` — and activates
+        the first. The parent is removed, children take its slot, and any
+        pending tail keeps its order, so the ledger and dashboard need no
+        change.
 
-        Bounded by ``max_depth`` (:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`): if the
-        active task is already at that depth, subdivision is **refused** and this
-        returns ``None`` so the caller hands off instead of subdividing forever.
-        Also a no-op (returns ``None``) when there is no active task or
-        ``subtasks`` is empty after trimming — the caller must treat ``None`` as
-        "could not subdivide" and fall back to :meth:`abandon_active`.
+        Refused (returns ``None``) when the active task is already at
+        ``max_depth`` (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), when there is no
+        active task, or when ``subtasks`` is empty after trimming — the
+        caller falls back to ``abandon_active``.
 
-        Returns the newly-active first child, or ``None`` when subdivision was
-        refused / impossible.
+        Returns:
+            The newly-active first child, or ``None`` when subdivision was
+            refused / impossible.
 
         Example:
             >>> m = MissionState(["tidy the kitchen", "wipe the table"])
@@ -507,10 +485,10 @@ class MissionState:
     def to_state_dict(self) -> dict[str, object]:
         """Full round-trippable snapshot of the queue (statuses, attempts, depth).
 
-        Unlike :meth:`to_summary` (a lossy telemetry view), this carries every
-        :class:`TaskState` field so a crashed/restarted reasoner can resume the
+        Unlike ``to_summary`` (a lossy telemetry view), this carries every
+        ``TaskState`` field so a crashed/restarted reasoner can resume the
         mission exactly where it stopped instead of resetting every ladder
-        bound (see :mod:`openral_reasoner.persistence`).
+        bound (see ``openral_reasoner.persistence``).
 
         Example:
             >>> m = MissionState(["pick the bowl", "place the butter"])
@@ -537,7 +515,7 @@ class MissionState:
 
     @classmethod
     def from_state_dict(cls, state: dict[str, object]) -> MissionState:
-        """Rebuild a mission from :meth:`to_state_dict` output (exact resume)."""
+        """Rebuild a mission from ``to_state_dict`` output (exact resume)."""
         mission = cls([])
         raw_tasks = state.get("tasks")
         if not isinstance(raw_tasks, list):

@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-# openral_perception_ros is a colcon-built ROS package (ament_cmake); like every
-# other ROS-package unit test (test_image_convert, test_skill_runner_*), skip
-# cleanly when the workspace overlay isn't sourced. The ros2-test CI job sources
-# install/setup.bash and runs this for real. _camera_label itself is pure-Python
-# (plain string parsing, no rclpy) — the guard is about the package being on the
-# path, and the module keeps rclpy imports inside main() specifically so this
-# helper stays importable without ROS.
+# openral_perception_ros is a colcon-built ROS package (ament_cmake); skip
+# cleanly when the workspace overlay isn't sourced (ros2-test CI sources
+# install/setup.bash). _camera_label is pure-Python (no rclpy) — the guard is
+# only about the package being importable, and the module keeps rclpy imports
+# inside main() so this helper stays reachable without ROS.
 pytest.importorskip("openral_perception_ros")
 
 from openral_perception_ros.reward_monitor_node import _camera_label

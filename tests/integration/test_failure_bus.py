@@ -1,23 +1,20 @@
 """Integration tests for the namespaced FailureTrigger bus.
 
-Drives the real
-:class:`openral_observability.FailureBusPublisher` against the
-colcon-built ``openral_msgs/msg/FailureTrigger`` IDL through ``rclpy``
-and asserts:
+Drives the real ``openral_observability.FailureBusPublisher`` against the colcon-built
+``openral_msgs/msg/FailureTrigger`` IDL through ``rclpy`` and asserts:
 
-1. Each :class:`FailureSource` publishes on its own
-   ``/openral/failure/<suffix>`` topic.
-2. The typed uint8 ``kind`` / ``severity`` fields are wire-correct
-   against the IDL ``KIND_*`` / ``SEVERITY_*`` constants.
-3. ``evidence_json`` round-trips through the Pydantic
-   :data:`openral_core.FailureEvidence` discriminated union.
+1. Each ``FailureSource`` publishes on its own ``/openral/failure/<suffix>`` topic.
+2. Typed uint8 ``kind``/``severity`` fields are wire-correct against IDL
+   ``KIND_*``/``SEVERITY_*`` constants.
+3. ``evidence_json`` round-trips through the Pydantic ``openral_core.FailureEvidence``
+   discriminated union.
 4. The publisher's token bucket drops excess WARN events.
-5. After dropped events, a ``KIND_SUPPRESSED_SUMMARY`` roll-up appears
-   at the configured cadence carrying the suppressed counts.
+5. After dropped events, a ``KIND_SUPPRESSED_SUMMARY`` roll-up appears at the configured
+   cadence carrying the suppressed counts.
 6. ``SEVERITY_ABORT`` is never rate-limited.
 
-Per CLAUDE.md §1.11 / §5.4: real schemas, real IDL, real rclpy, no
-mocks. The test skips with a typed reason when ROS 2 is not sourced.
+Per CLAUDE.md §1.11 / §5.4: real schemas, real IDL, real rclpy, no mocks. Skips with a typed
+reason when ROS 2 is not sourced.
 """
 
 from __future__ import annotations

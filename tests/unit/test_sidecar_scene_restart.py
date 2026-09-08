@@ -1,14 +1,14 @@
 """``SidecarClient`` scene-aware restart on identity mismatch.
 
-A sidecar is spawned detached (own session) and reused across runs by
-pinging ``host:port`` first. When a *different* scene reuses the port, the
-ping identity contradicts the request. Previously ``connect`` raised
-``ROSConfigError`` ("already serving a different scene") and the run died —
-the Isaac ``:5757`` collision seen in the scene×rSkill sweep, where the first
-scene's sidecar lingered and every later scene failed. Now, when
-``auto_spawn`` is set, the stale sidecar is reaped (via its recorded PID) and
-a fresh one spawned. ``auto_spawn=False`` keeps the explicit error (we must
-not restart a hand-launched sidecar).
+A sidecar is spawned detached (own session) and reused across runs by pinging
+``host:port`` first. When a *different* scene reuses the port, the ping
+identity contradicts the request: ``connect`` used to raise ``ROSConfigError``
+("already serving a different scene") and the run died — the Isaac ``:5757``
+collision seen in the scene×rSkill sweep, where the first scene's sidecar
+lingered and every later scene failed. Now, with ``auto_spawn`` set, the stale
+sidecar is reaped (via its recorded PID) and a fresh one spawned;
+``auto_spawn=False`` keeps the explicit error (never restart a hand-launched
+sidecar).
 
 CLAUDE.md §1.11 — the only doubles are at the process/network boundary
 (``zmq`` import, ``os.killpg``, the port probe), exactly the seam this module

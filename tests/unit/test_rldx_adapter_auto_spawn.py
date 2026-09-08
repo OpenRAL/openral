@@ -1,24 +1,12 @@
-"""Unit tests for the RLDX-1 auto-managed sidecar adapter.
+"""Unit tests for the RLDX-1 auto-managed sidecar adapter — openral-side only, no
+upstream rldx package or GPU model needed. Per CLAUDE.md §1.11, no mocks: exercises
+real ``RSkillManifest`` fixtures under ``rskills/rldx1-*``, the real
+``@POLICIES.register("rldx")`` factory, and a real ``socket.socket`` listener for
+the "port busy → don't double-spawn" guard.
 
-Validates the openral-side of the integration without depending on the
-upstream rldx package or starting a real GPU model. Per CLAUDE.md §1.11
-there are no mocks — every test exercises **real** code paths:
-
-* real :class:`RSkillManifest` instances loaded from the canonical YAML
-  files under ``rskills/rldx1-*``,
-* the real ``@POLICIES.register("rldx")`` factory,
-* a real :class:`socket.socket` listener that occupies a port without
-  speaking ZMQ — proves the adapter's "port busy → don't double-spawn"
-  guard works against a real TCP probe.
-
-What we deliberately do NOT exercise here (covered by sim-tier tests
-when a GPU + the upstream rldx checkout are available):
-
-* end-to-end ZMQ round-trips against the live RLDX-1 server,
-* actual quantization / Qwen3-VL inference.
-
-These tests pin the adapter contract that survives whether or not the
-RLDX-1 checkpoint can be fetched at the time of CI.
+Not covered here (sim-tier, needs GPU + upstream rldx checkout): live ZMQ round-trips,
+quantization/Qwen3-VL inference. These tests pin the adapter contract independent of
+checkpoint availability at CI time.
 """
 
 from __future__ import annotations
@@ -48,13 +36,9 @@ _RSKILLS = (
 
 @pytest.mark.parametrize("rskill_dir", _RSKILLS, ids=lambda p: p.name)
 def test_rldx_rskill_manifest_loads(rskill_dir: Path) -> None:
-    """Every shipped rldx1-* manifest passes the real RSkillManifest validator.
-
-    Catches schema drift (a new license string, a typo in
-    `model_family`, an unrecognised `state_contract.layout`) at import
-    time — these manifests are the contract the RLDX-1 family exposes
-    to the loader.
-    """
+    """Every shipped rldx1-* manifest passes the real RSkillManifest validator — catches
+    schema drift (license string, `model_family` typo, `state_contract.layout`) at
+    import time."""
     manifest = load_rskill_manifest(str(rskill_dir))
     assert manifest.model_family == "rldx"
     assert manifest.license == "rlwrld_non_commercial"
@@ -64,11 +48,8 @@ def test_rldx_rskill_manifest_loads(rskill_dir: Path) -> None:
 
 @pytest.fixture
 def libero_env_cfg() -> SimEnvironment:
-    """Compose a SimEnvironment around the FT-LIBERO rSkill manifest.
-
-    Drives the same code path that ``openral sim run --config X --rskill Y``
-    uses; no test doubles.
-    """
+    """Compose a SimEnvironment around the FT-LIBERO rSkill manifest — same code path
+    as ``openral sim run --config X --rskill Y``; no test doubles."""
     from tests.sim.conftest import compose_sim_env
 
     # compose_sim_env loads strict SimScene, so the canonical
@@ -114,12 +95,9 @@ def test_build_rldx_picks_libero_layout(libero_env_cfg: SimEnvironment) -> None:
 
 
 def test_auto_spawn_disabled_via_env(libero_env_cfg: SimEnvironment) -> None:
-    """``OPENRAL_RLDX_AUTO_SPAWN=0`` overrides ``vla.extra.auto_spawn=true``.
-
-    Mirrors the user workflow: someone wires up a hand-managed sidecar
-    on a shared GPU and exports the env var so the per-config default
-    is ignored.
-    """
+    """``OPENRAL_RLDX_AUTO_SPAWN=0`` overrides ``vla.extra.auto_spawn=true`` — mirrors
+    a hand-managed sidecar on a shared GPU where the env var overrides the per-config
+    default."""
     from openral_sim.registry import POLICIES
 
     free_port = _allocate_free_port()
@@ -145,12 +123,9 @@ def test_auto_spawn_disabled_via_env(libero_env_cfg: SimEnvironment) -> None:
 
 
 def test_locate_sidecar_script_finds_real_tool() -> None:
-    """The repo-root locator finds ``tools/rldx_sidecar.py`` on disk.
-
-    Exercises the real upwards-walk in ``_RLDXSidecarAdapter.
-    _locate_sidecar_script``; no mocks, no env override, no fixture
-    filesystem. If someone moves the helper this test fails loud.
-    """
+    """The repo-root locator finds ``tools/rldx_sidecar.py`` on disk — exercises the
+    real upwards-walk in ``_RLDXSidecarAdapter._locate_sidecar_script``; fails loud if
+    the helper moves."""
     from openral_sim.policies.rldx import _RLDXSidecarAdapter
 
     adapter = _RLDXSidecarAdapter.__new__(_RLDXSidecarAdapter)
@@ -198,11 +173,8 @@ def test_resolve_model_id_from_bare_hf_uri() -> None:
 
 
 def test_is_port_busy_against_real_listener() -> None:
-    """``_is_port_busy`` returns True for a real TCP listener.
-
-    No mocks: opens an actual loopback socket, binds + listens, then
-    asks the adapter to probe it.
-    """
+    """``_is_port_busy`` returns True for a real TCP listener — opens a loopback
+    socket, binds + listens, then probes it (no mocks)."""
     from openral_sim.policies.rldx import _RLDXSidecarAdapter
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
@@ -223,15 +195,11 @@ def test_is_port_busy_against_real_listener() -> None:
 def test_try_ping_fast_fails_on_dead_port_at_production_timeout() -> None:
     """``_try_ping`` returns ``False`` in <500 ms when no sidecar is listening.
 
-    Regression: ZMQ REQ on tcp:// is lazy — ``recv()`` blocks for the
-    full ``RCVTIMEO`` (production default 60 000 ms) when nothing is on
-    the other end instead of returning immediately like a raw TCP
-    connect to a closed port would. That made every cold-start
-    ``openral sim run`` with an rldx rSkill burn 60 s between
-    ``rldx_sidecar_connecting`` and ``[rldx-sidecar] launching server``.
-
-    The fix gates the ZMQ leg behind the existing :meth:`_is_port_busy`
-    TCP probe; this test pins that behaviour at the production timeout.
+    Regression: ZMQ REQ on tcp:// connects lazily, so ``recv()`` blocked the full
+    ``RCVTIMEO`` (60 000 ms default) instead of failing fast, stalling every cold-start
+    ``openral sim run`` 60 s between ``rldx_sidecar_connecting`` and ``launching
+    server``. Fix gates the ZMQ leg behind ``_is_port_busy``'s TCP probe; pins the
+    timeout here.
     """
     import time
 
@@ -263,13 +231,9 @@ def test_try_ping_fast_fails_on_dead_port_at_production_timeout() -> None:
 
 
 def _allocate_free_port() -> int:
-    """Ask the OS for an unused loopback port, close immediately.
-
-    Has the usual TOCTOU caveat — between this returning and the
-    caller using the port something else could bind it. Acceptable for
-    these unit tests because the adapter is what attempts the connect
-    next, and we assert on the failure mode, not on success.
-    """
+    """Ask the OS for an unused loopback port, close immediately. TOCTOU caveat:
+    something else could bind it before the caller does; acceptable here since we
+    assert the failure mode, not success."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])

@@ -3,7 +3,7 @@
 Two claims about Real-Time Chunking that no CPU or stub test can make:
 
 1. **The guidance survives OpenRAL's inference seam.** Every VLA call in this
-   repo goes through :func:`openral_rskill._vla_core.run_inference`, which wraps
+   repo goes through ``openral_rskill._vla_core.run_inference``, which wraps
    the policy in ``torch.no_grad()``. lerobot's ``RTCProcessor.denoise_step``
    opens a ``torch.enable_grad()`` block and calls
    ``torch.autograd.grad(x1_t, x_t, ...)`` inside it. The VJP it takes happens
@@ -22,7 +22,7 @@ same guided call under ``torch.inference_mode()`` must raise (so claim 1 is
 about a real constraint, not a coincidence of the current seam).
 
 Real everything (CLAUDE.md §1.11): the shipped manifest's own ``policy_extras.rtc``
-block parsed by the production :func:`openral_rskill._vla_core._parse_rtc_config`,
+block parsed by the production ``openral_rskill._vla_core._parse_rtc_config``,
 the real checkpoint at its shipped precision, and a real frame from its training
 dataset — the same fixture ``tests/integration/test_smolvla_eraser_place_rskill.py``
 replays, including the real training instruction ("place the erase on the blue
@@ -253,7 +253,7 @@ def test_inference_mode_would_break_the_guidance(rollout: _Rollout) -> None:
 
     ``torch.enable_grad()`` escapes ``no_grad`` but *cannot* escape
     ``inference_mode``, so swapping the two in
-    :func:`openral_rskill._vla_core.run_inference` would break every guided
+    ``openral_rskill._vla_core.run_inference`` would break every guided
     chunk in production while leaving the unguided path green. This test documents
     why the choice matters; the other three tests here are what actually break.
     """

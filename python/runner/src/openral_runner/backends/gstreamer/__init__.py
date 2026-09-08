@@ -1,16 +1,16 @@
-"""GStreamer-backed :class:`SensorReader` for the inference runner.
+"""GStreamer-backed ``SensorReader`` for the inference runner.
 
 This subpackage is split into modules that can be imported without
 pulling in PyGObject:
 
-* :mod:`pipeline` — pipeline-string builder + platform detect. Pure
+* ``pipeline`` — pipeline-string builder + platform detect. Pure
   Python, no ``gi`` import. Safe to import on hosts without GStreamer.
-* :mod:`reader` (commit #2) — the actual :class:`SensorReader` impl.
+* ``reader`` (commit #2) — the actual ``SensorReader`` impl.
   Imports ``gi.repository.Gst`` at module load and therefore requires
   the ``gstreamer`` optional-extra (``pip install openral-runner[gstreamer]``).
-* :mod:`ros_tee` (commit #4) — optional ``rclpy.Image`` publisher fed
+* ``ros_tee`` (commit #4) — optional ``rclpy.Image`` publisher fed
   from a second appsink.
-* :mod:`perception_tee` — optional ``PromptStamped``
+* ``perception_tee`` — optional ``PromptStamped``
   publisher fed from a third appsink. Runs per-frame event detectors
   (motion, scene change, …) and publishes on
   ``/openral/perception/<kind>``.
@@ -18,7 +18,7 @@ pulling in PyGObject:
 The NVMM→CUDA zero-copy consumers (``nvbufsurface`` ctypes wrapper
 around ``libnvbufsurface.so``, the shared PyCUDA context, the TensorRT
 NVMM executors) are an OpenRAL Pro plugin — not part of this
-subpackage. :mod:`reader`'s NVMM buffer latch degrades to a logged bus
+subpackage. ``reader``'s NVMM buffer latch degrades to a logged bus
 error when that plugin is absent (see ``_handle_nvmm_buffer``).
 
 See the OpenRAL architecture docs (backend evaluation: lean GStreamer

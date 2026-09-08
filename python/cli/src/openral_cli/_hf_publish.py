@@ -1,25 +1,17 @@
 """Shared HF Hub publishing helpers — token resolution, scope check, ignore patterns.
 
-Lifted from :mod:`tools.rskill_publisher` so that both ``openral dataset push``
-and the existing skill publisher share one canonical path
-for token discovery, scope verification, and ignore-pattern filtering. Per
-CLAUDE.md §1.13, this de-duplication preempts the next "add another HF
-uploader" PR from copying the rSkill version verbatim.
+Lifted from ``tools.rskill_publisher`` so ``openral dataset push`` and the
+skill publisher share one path for token discovery, scope verification, and
+ignore-pattern filtering (CLAUDE.md §1.13).
 
-The helpers are conservative by design:
-
-* :func:`resolve_token` accepts an explicit token argument, then falls back
-  to ``HF_TOKEN`` / ``HUGGINGFACE_HUB_TOKEN`` environment variables. It
-  raises :class:`openral_core.exceptions.ROSConfigError` (with an actionable
-  hint) when nothing is found, rather than handing the API a ``None`` and
-  watching it produce a generic 401.
-* :func:`ensure_private` re-fetches repo metadata after creation and aborts
-  if the API reports the repo as public. This catches the edge case where
-  ``create_repo(private=True)`` silently fails to apply on a pre-existing
-  public repo.
-* :data:`IGNORE_PATTERNS` excludes the same secrets / build-artifact glob
-  as ``rskill_publisher`` so dataset uploads can't accidentally publish
-  ``.env`` files or ``__pycache__/`` directories.
+* ``resolve_token`` — explicit token arg, else ``HF_TOKEN`` /
+  ``HUGGINGFACE_HUB_TOKEN`` env vars; raises
+  ``openral_core.exceptions.ROSConfigError`` with a hint when none found.
+* ``ensure_private`` — re-fetches repo metadata after creation and aborts
+  if the API reports it public (``create_repo(private=True)`` does not flip
+  an existing public repo).
+* ``IGNORE_PATTERNS`` — same secrets / build-artifact glob as
+  ``rskill_publisher``.
 """
 
 from __future__ import annotations
@@ -94,7 +86,7 @@ def ensure_private(api: HfApi, repo_id: str, *, repo_type: str = "model") -> Non
     on the Hub.
 
     Args:
-        api: Authenticated :class:`huggingface_hub.HfApi` client.
+        api: Authenticated ``huggingface_hub.HfApi`` client.
         repo_id: The repository to verify (e.g. ``"openral/dataset-foo"``).
         repo_type: ``"model"`` (default — used by rSkills), ``"dataset"``
             (used by dataset uploads), or ``"space"``.

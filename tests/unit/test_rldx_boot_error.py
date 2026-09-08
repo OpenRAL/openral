@@ -1,13 +1,13 @@
 """Unit tests for the rldx/gr00t-family sidecar boot-failure classification.
 
-The GR00T-family adapter (:class:`_Gr00tFamilySidecarAdapter`, driving both
+The GR00T-family adapter (``_Gr00tFamilySidecarAdapter``, driving both
 ``rldx`` and ``gr00t``) forks its own boot helper and has its own connect loop —
-separate from :class:`openral_sim.sidecar.SidecarClient`. When the spawned child
+separate from ``openral_sim.sidecar.SidecarClient``. When the spawned child
 *crashes* during boot (child exits non-zero — e.g. CUDA OOM when the bf16-resident
 3B weights do not co-fit alongside the Isaac renderer on an 8 GB host, observed as
 ``rldx_sidecar_died_during_boot returncode=-9``), it must NOT be reported as "did
 not answer ping within {timeout}s" — that reads like a slow/hung bootstrap and
-sends the operator down the wrong path. :meth:`_boot_failure_error` distinguishes
+sends the operator down the wrong path. ``_boot_failure_error`` distinguishes
 the two off the captured child exit code, mirroring the SidecarClient fix.
 """
 

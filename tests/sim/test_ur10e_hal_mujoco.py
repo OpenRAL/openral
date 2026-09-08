@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.UR10eHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.UR10eHAL`` against real MuJoCo physics.
 
 Mirrors the UR5e test suite but verifies the **distinct safety / capability
 envelope** of the larger UR10e (higher payload, slower shoulder, larger
@@ -94,13 +94,6 @@ class TestUR10eDescription:
 @pytest.fixture()
 def hal() -> UR10eHAL:
     return UR10eHAL(gravity_enabled=False, settle_steps=2000)
-
-
-@pytest.fixture()
-def connected_hal(hal: UR10eHAL) -> UR10eHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
 
 
 # ── Protocol + lifecycle ──────────────────────────────────────────────────────

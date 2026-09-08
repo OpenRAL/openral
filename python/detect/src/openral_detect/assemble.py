@@ -1,50 +1,26 @@
-"""Assemble a complete :class:`RobotDescription` from a `DetectionReport`.
+"""Assemble a complete ``RobotDescription`` from a `DetectionReport`.
 
-Strategy (per the user's clarification):
+1. **Pick a base**: known robot signature (``so100`` / ``aloha`` / …) with a
+   committed ``robots/<name>/robot.yaml`` → ``RobotDescription.from_yaml``,
+   untouched except for sensor/compute enrichment; otherwise a minimal
+   scaffold.
+2. **Enrich sensors**: each detected camera (RealSense, V4L2 USB UVC) →
+   ``openral_sensors.SensorSignature`` → ``CATALOG.build(entry.id, ...)``
+   for a fully-populated ``SensorSpec`` / ``SensorBundle`` (real intrinsics,
+   FOV, encoding, rate); serial numbers and ``needs_calibration`` land in
+   ``SensorSpec.metadata``.
+3. **Populate** ``ComputeSpec`` on ``compute_edge``
+   (Jetson/embedded SoC) or ``compute_local`` (discrete NVIDIA / Apple
+   Silicon / CPU-only) via ``build_compute_spec`` — the same function
+   ``openral doctor`` calls, so both commands agree.
 
-1. **Pick a base.**
-
-   - If the host matches a known robot signature
-     (``so100`` / ``aloha`` / …) and ``robots/<name>/robot.yaml`` exists,
-     load the canonical manifest via
-     :meth:`RobotDescription.from_yaml`.  **Standard robot ⇒ standard
-     description, untouched** except for sensor / compute enrichment.
-   - Otherwise synthesise a minimal scaffold the operator can hand-edit.
-
-2. **Enrich sensors via catalog reverse-lookup.**
-   Each detected camera (RealSense, V4L2 USB UVC) is translated into a
-   :class:`openral_sensors.SensorSignature`.  When the signature
-   resolves to a catalog entry, we call
-   ``CATALOG.build(entry.id, ...)`` to materialize a *fully-populated*
-   :class:`openral_core.SensorSpec` / :class:`SensorBundle` — real
-   intrinsics, FOV, encoding, rate.  Detected serial numbers and
-   ``needs_calibration`` flags land in ``SensorSpec.metadata``.
-
-3. **Populate :class:`~openral_core.ComputeSpec` on the three compute slots.**
-   The probed accelerator records (NVIDIA, Jetson, Apple Silicon) are
-   passed to :func:`build_compute_spec` which fills
-   ``compute_tops``, ``system_memory_gb``, ``gpu_vram_gb``,
-   ``cuda_compute_capability``, ``cuda_toolkit_version``,
-   ``tensorrt_version``, ``gpu_supported_runtimes``,
-   ``gpu_supported_dtypes``, ``nvmm_available``.
-
-   Tier selection:
-
-   - Jetson / embedded SoC probe → ``compute_edge``
-   - Discrete NVIDIA / Apple Silicon / CPU-only → ``compute_local``
-
-   The same function is called by ``openral doctor`` so both commands
-   produce identical :class:`~openral_core.ComputeSpec` values from the
-   same probe data.
-
-The function never raises on a missing catalog entry — it falls back to
-a generic ``SensorSpec`` and adds a warning to the description's
-``onboard_compute["detect_warnings"]`` list.
+Never raises on a missing catalog entry — falls back to a generic
+``SensorSpec`` and adds a warning to
+``onboard_compute["detect_warnings"]``.
 """
 
 from __future__ import annotations
 
-import platform
 import socket
 from typing import Any
 
@@ -81,22 +57,22 @@ __all__ = ["assemble_robot_description", "build_compute_spec"]
 
 
 def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeSpec:
-    """Build a :class:`~openral_core.ComputeSpec` from a GPU probe + report.
+    """Build a ``ComputeSpec`` from a GPU probe + report.
 
-    Extracts the same fields that :func:`assemble_robot_description` writes into
+    Extracts the same fields that ``assemble_robot_description`` writes into
     ``RobotDescription.compute_edge`` / ``compute_local``, so callers that only
     need the compute spec (e.g. ``openral doctor``) do not have to run the full
     assembly pipeline.
 
     Args:
         gpu: The GPU probe result (nvidia, jetson, apple_silicon fields).
-        report: The full :class:`DetectionReport`; its
-            :meth:`~DetectionReport.derived_runtimes` /
-            :meth:`~DetectionReport.derived_dtypes` methods are used to derive
+        report: The full ``DetectionReport``; its
+            ``DetectionReport.derived_runtimes`` /
+            ``DetectionReport.derived_dtypes`` methods are used to derive
             the runtime + dtype lists.
 
     Returns:
-        A fully-populated :class:`~openral_core.ComputeSpec` instance.
+        A fully-populated ``ComputeSpec`` instance.
         All fields default to zero / ``None`` / empty when no accelerator was
         detected, matching the semantics of an empty host.
     """
@@ -126,11 +102,11 @@ def assemble_robot_description(
     force_robot_type: str | None = None,
     enrich_cameras: bool = True,
 ) -> RobotDescription:
-    """Build a :class:`RobotDescription` from a probed host.
+    """Build a ``RobotDescription`` from a probed host.
 
     Args:
-        detection: A :class:`DetectionReport` produced by
-            :func:`openral_detect.detect_hardware`.
+        detection: A ``DetectionReport`` produced by
+            ``openral_detect.detect_hardware``.
         base_description: Caller-supplied canonical description to use as
             the base.  When ``None``, the assembler resolves the inferred
             ``bh_robot_type`` (from USB matches or DDS inference) to
@@ -146,7 +122,7 @@ def assemble_robot_description(
             is supplied.
         enrich_cameras: When ``True`` (default), detected cameras (RealSense
             bundles, V4L2 ``camera_N`` specs) are appended onto the base
-            description's sensor list via :func:`_enrich_sensors`. Pass
+            description's sensor list via ``_enrich_sensors``. Pass
             ``False`` to skip that append and leave ``sensors`` /
             ``sensor_bundles`` exactly as the base description defines them —
             the interactive ``openral detect`` sensor wizard passes ``False``
@@ -154,14 +130,14 @@ def assemble_robot_description(
             enrichment always run regardless of this flag.
 
     Returns:
-        A fully-populated :class:`RobotDescription` ready to be written to
-        disk and consumed by :func:`openral_detect.check_installed_rskills`.
+        A fully-populated ``RobotDescription`` ready to be written to
+        disk and consumed by ``openral_detect.check_installed_rskills``.
 
         When the base manifest declares ``hal.parameters.can_bus_bindings``,
         the CAN interface names in ``hal.parameters.defaults`` are replaced
         with the ones actually found on this host — see
-        :func:`_enrich_can_buses`. Any binding that cannot be resolved
-        unambiguously appends to :attr:`DetectionReport.warnings` and leaves
+        ``_enrich_can_buses``. Any binding that cannot be resolved
+        unambiguously appends to ``DetectionReport.warnings`` and leaves
         the manifest value alone.
 
     Raises:
@@ -266,7 +242,6 @@ def _enrich_sensors(description: RobotDescription, detection: DetectionReport) -
         realsense_seen.add(bundle_name)
 
     # ── V4L2 / USB UVC ───────────────────────────────────────────────────────
-    rs_serials = {dev.serial for dev in detection.cameras.realsense}
     rs_names = {dev.name for dev in detection.cameras.realsense}
     for i, cam in enumerate(detection.cameras.v4l2):
         # Skip RealSense devices that also surfaced via V4L2 to avoid dupes.
@@ -295,8 +270,6 @@ def _enrich_sensors(description: RobotDescription, detection: DetectionReport) -
     capabilities = description.capabilities.model_copy(
         update={"has_vision": bool(new_sensors or new_bundles)}
     )
-
-    _ = rs_serials  # reserved for future "annotate by serial" pass; keeps lint quiet
 
     return description.model_copy(
         update={
@@ -342,10 +315,8 @@ def _build_realsense_bundle(
                 "catalog_id": entry.id,
             }
         )
-        # Pydantic models don't allow attribute mutation by default outside of
-        # model_copy, so we replace each sensor in-place.
-        # SensorSpec uses use_enum_values=True, but mutation is still allowed
-        # because no immutability config is set.
+        # SensorSpec sets no immutability config, so direct attribute mutation
+        # is allowed here (not Pydantic's default).
         spec.metadata = meta  # reason: same-package mutation
     return bundle
 
@@ -360,19 +331,14 @@ def _build_v4l2_camera(
 ) -> SensorSpec | SensorBundle:
     """Resolve one probed V4L2 camera to a catalog-built spec or bundle.
 
-    Signature resolution, strongest evidence first:
-
-    1. The camera's **own** USB VID/PID, when the probe read it out of sysfs.
-       This is exact — two different models never share a descriptor.
-    2. The V4L2 product name, token by token (``"ZED-M: ZED-M"`` → ``ZED-M``).
-    3. The VID/PID of any *other* USB device on the host.  This is a last
-       resort and deliberately last: it can only ever be a coincidence match,
-       and before the probe read per-camera descriptors it was the only USB
-       path available.
+    Signature resolution order, strongest evidence first: (1) the camera's
+    own USB VID/PID from sysfs — exact, no two models share a descriptor;
+    (2) V4L2 product name, token by token; (3) VID/PID of any other USB
+    device on the host — coincidence-prone, so last.
 
     Returns:
-        A :class:`SensorSpec` for a single-stream camera, or a
-        :class:`SensorBundle` when the catalog entry describes a multi-stream
+        A ``SensorSpec`` for a single-stream camera, or a
+        ``SensorBundle`` when the catalog entry describes a multi-stream
         device (a stereo head resolves to left/right/depth/IMU from one node).
     """
     entry = None
@@ -443,7 +409,7 @@ def _build_v4l2_camera(
 
 
 def _merge_compute(existing: ComputeSpec | None, probed: ComputeSpec) -> ComputeSpec:
-    """Merge a freshly-probed :class:`ComputeSpec` with any existing static spec.
+    """Merge a freshly-probed ``ComputeSpec`` with any existing static spec.
 
     Static manifest values (e.g. ``endpoint``, ``network_latency_ms``) are
     preserved; probed values (runtimes, VRAM, TOPS) take the max so a
@@ -551,19 +517,10 @@ def _enrich_can_buses(
 ) -> RobotDescription:
     """Replace declared CAN interface defaults with the host's actual names.
 
-    A CAN interface name belongs to the *host*, not to the robot. The same
-    bimanual arm is ``openarm_left`` / ``openarm_right`` on a machine whose
-    udev rules pin it and ``can1`` / ``can0`` on one without, so a canonical
-    manifest cannot know it — it can only declare which HAL parameter each
-    bus fills. Without this step ``openral detect`` infers the robot *from*
-    the CAN bus and then emits a config naming whichever interfaces the
-    manifest author happened to have, which is the more dangerous failure: it
-    looks host-derived and is not.
-
-    Robot-specific knowledge lives entirely in the manifest's
-    ``hal.parameters.can_bus_bindings`` (parameter name to role token). What
-    is here is the mechanism, so a new CAN robot is a manifest entry rather
-    than a change to this function.
+    A CAN interface name belongs to the host, not the robot (udev rules
+    vary), so the manifest only declares which HAL parameter each bus fills,
+    via ``hal.parameters.can_bus_bindings`` — a new CAN robot is a manifest
+    entry, not a change to this function.
 
     Args:
         description: Base description, whose ``hal.parameters.can_bus_bindings``
@@ -649,6 +606,3 @@ def _unique_name(stem: str, taken: set[str]) -> str:
         if candidate not in taken:
             return candidate
     raise RuntimeError(f"could not generate unique name from {stem!r}")
-
-
-_ = platform  # imported for future host-os checks; keep stable

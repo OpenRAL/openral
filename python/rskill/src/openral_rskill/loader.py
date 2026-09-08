@@ -1,6 +1,6 @@
 """rSkill loader — HF Hub download, manifest validation, license guard, local registry.
 
-This module provides :class:`rSkill`: the packaged, capability-tagged
+This module provides ``rSkill``: the packaged, capability-tagged
 distribution format for a robot skill (CLAUDE.md §6.4 / RFC §1.4, §8.7).
 
 .. warning::
@@ -67,7 +67,7 @@ _CACHE_HOME = Path(
 )
 
 DEFAULT_REGISTRY_PATH: Path = _DATA_HOME / "rskills.json"
-"""Default JSON registry file written by :meth:`rSkill.from_pretrained`."""
+"""Default JSON registry file written by ``rSkill.from_pretrained``."""
 
 # In-process LRU for resolved rSkill manifests (avoids re-fetching the same
 # rskill.yaml from the HF Hub every time a config references it).
@@ -103,7 +103,7 @@ class InstalledRSkillEntry(BaseModel):
         revision: HF Hub commit SHA (None when installed from a local path).
         local_dir: Absolute path to the snapshot directory in the HF Hub cache.
         manifest_path: Absolute path to the ``rskill.yaml`` file on disk.
-        license: License posture value string from :class:`RSkillLicensePosture`.
+        license: License posture value string from ``RSkillLicensePosture``.
         role: Skill slot — ``"s0"``, ``"s1"``, or ``"s2"``.
         embodiment_tags: Embodiment tags declared in the manifest.
         installed_at: ISO 8601 timestamp of installation.
@@ -148,7 +148,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
     An ``rSkill`` represents the *distribution artefact*: the ``rskill.yaml``
     manifest plus the associated weight files stored in the HF Hub cache (or
-    locally).  It is distinct from the runtime :class:`~openral_rskill.Skill`
+    locally).  It is distinct from the runtime ``Skill``
     ABC, which is the in-process lifecycle node.
 
     Typical workflow::
@@ -158,7 +158,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         # pkg.local_dir → Path to weights on disk
 
     Attributes:
-        manifest: Parsed and validated :class:`~openral_core.schemas.RSkillManifest`.
+        manifest: Parsed and validated ``RSkillManifest``.
         local_dir: Filesystem path to the directory containing all skill files.
     """
 
@@ -189,19 +189,19 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
         Steps performed in order:
 
-        1. Download ``rskill.yaml`` via :func:`huggingface_hub.hf_hub_download`.
-        2. Parse and validate against :class:`~openral_core.schemas.RSkillManifest`.
+        1. Download ``rskill.yaml`` via ``huggingface_hub.hf_hub_download``.
+        2. Parse and validate against ``RSkillManifest``.
         3. Run the license guard (hard-block for NVIDIA non-commercial without env).
         4. Run the provenance guard (warn that signatures are unverified; fail
            closed if ``OPENRAL_REQUIRE_SIGNED_SKILLS=1``).
-        5. Download the full snapshot via :func:`huggingface_hub.snapshot_download`.
+        5. Download the full snapshot via ``huggingface_hub.snapshot_download``.
         6. Register the entry in the local JSON registry.
 
         .. warning::
            No cryptographic signature verification is performed.  The
            weights are trusted on the basis of HF Hub transport security only.
            Pin ``revision`` to a commit SHA for reproducibility, and treat any
-           ``*.pt`` weights as untrusted code (see :class:`PyTorchRuntime`).
+           ``*.pt`` weights as untrusted code (see ``PyTorchRuntime``).
 
         Args:
             repo_id: HF Hub repository, e.g. ``"openral/rskill-pick-cube-so100"``.
@@ -214,13 +214,13 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             registry_path: Override the default registry JSON path.
 
         Returns:
-            A validated :class:`rSkill` instance ready for use.
+            A validated ``rSkill`` instance ready for use.
 
         Raises:
             ROSConfigError: If the manifest is invalid, the license blocks the
                 deployment, or ``huggingface_hub`` is not installed.
             ImportError: Propagated if ``huggingface_hub`` is not importable (caught
-                and re-raised as :class:`ROSConfigError`).
+                and re-raised as ``ROSConfigError``).
 
         Example:
             >>> # rSkill.from_pretrained("openral/rskill-pick-cube-so100")
@@ -305,14 +305,14 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
                 directory that contains ``rskill.yaml``).
 
         Returns:
-            A validated :class:`rSkill` instance.
+            A validated ``rSkill`` instance.
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
             pydantic.ValidationError: If the YAML fails schema validation.
             ROSConfigError: If the license blocks the deployment, or
                 ``OPENRAL_REQUIRE_SIGNED_SKILLS=1`` and verification is
-                unavailable (see :meth:`_check_provenance`).
+                unavailable (see ``_check_provenance``).
 
         Example:
             >>> # rSkill.from_yaml("/path/to/my-skill/rskill.yaml")
@@ -335,7 +335,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             registry_path: Override the default registry JSON path.
 
         Returns:
-            List of :class:`InstalledRSkillEntry`, newest-first.
+            List of ``InstalledRSkillEntry``, newest-first.
 
         Raises:
             ROSConfigError: If the registry file is corrupt (invalid JSON or schema).
@@ -400,8 +400,8 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         vlm / reward) and ``playbook`` decision procedures — and run on any
         robot. Agnosticism is declared, not derived: the manifest validator
         rejects an empty tag list, so emptiness never silently means match-any.
-        Used by :meth:`check_capabilities` and by the per-section presenter in
-        :func:`openral_detect.check_single_rskill`.
+        Used by ``check_capabilities`` and by the per-section presenter in
+        ``openral_detect.check_single_rskill``.
 
         Raises:
             ROSCapabilityMismatch: If the tag sets are disjoint.
@@ -514,18 +514,18 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     ) -> None:
         """Verify that the robot satisfies the rSkill's capability requirements.
 
-        Composition of :meth:`check_embodiment_tags`,
-        :meth:`check_capability_flags`, :meth:`check_runtime`, and
-        :meth:`check_quantization_dtype` — raises on the first mismatch.
+        Composition of ``check_embodiment_tags``,
+        ``check_capability_flags``, ``check_runtime``, and
+        ``check_quantization_dtype`` — raises on the first mismatch.
         Pass ``compute=robot.compute_edge or robot.compute_local`` to enable
-        runtime / dtype checks against the robot's :class:`ComputeSpec`.
+        runtime / dtype checks against the robot's ``ComputeSpec``.
 
         Args:
             manifest: The rSkill manifest to check.
             robot_capabilities: The target robot's declared capabilities.
             compute: Optional compute spec resolved from the deployment tier
-                (:attr:`RobotDescription.compute_edge` falling back to
-                :attr:`RobotDescription.compute_local`).  When
+                (``RobotDescription.compute_edge`` falling back to
+                ``RobotDescription.compute_local``).  When
                 ``None``, runtime and dtype checks are skipped if the legacy
                 capability fields are also absent.
 
@@ -550,9 +550,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     ) -> None:
         """Verify the robot exposes every sensor the rSkill requires.
 
-        Resolves each :class:`~openral_core.SensorRequirement` against
+        Resolves each ``SensorRequirement`` against
         ``robot_sensors`` per the rules documented on
-        :class:`~openral_core.SensorRequirement`:
+        ``SensorRequirement``:
 
         * If a requirement carries a ``vla_feature_key``, exactly one robot
           sensor must expose that key, with matching modality, and meeting
@@ -562,7 +562,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
         Args:
             manifest: The rSkill manifest whose ``sensors_required`` to check.
-            robot_sensors: The robot's declared :class:`SensorSpec` list
+            robot_sensors: The robot's declared ``SensorSpec`` list
                 (typically ``RobotDescription.sensors``).
 
         Raises:
@@ -592,10 +592,10 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         """Run every rSkill ↔ robot compatibility check in one call.
 
         This is the umbrella entry point — combines
-        :meth:`check_capabilities` (embodiment tags + boolean / numeric
-        capability flags) and :meth:`check_sensors` (sensor requirements
+        ``check_capabilities`` (embodiment tags + boolean / numeric
+        capability flags) and ``check_sensors`` (sensor requirements
         against ``robot.sensors``). Use this from runtime code that has the
-        full :class:`RobotDescription`; the two narrower methods remain for
+        full ``RobotDescription``; the two narrower methods remain for
         cases where only one half is available.
 
         Args:
@@ -711,10 +711,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Noncommercial (GR00T N1-N1.6), RLWRLD Model License (RLDX-1), and
         permissive-research (π0.5) — in a commercial deployment unless the
         ``OPENRAL_ALLOW_NONCOMMERCIAL`` environment variable is set to ``"1"``.
-        The block is driven by :attr:`RSkillManifest.is_commercial_use_allowed`
+        The block is driven by ``RSkillManifest.is_commercial_use_allowed``
         so a new restricted posture is gated by construction rather than needing
-        a hand-maintained branch here (the previous version only caught
-        NVIDIA_NON_COMMERCIAL and silently let RLWRLD / research weights through).
+        a hand-maintained branch here.
 
         PROPRIETARY and UNKNOWN licenses are surfaced as structured warnings
         rather than hard-blocked: they need out-of-band vendor review or an
@@ -806,18 +805,18 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
     @staticmethod
     def _validate_eval_jsons(skill_dir: Path) -> None:
-        """Validate every ``<skill_dir>/eval/*.json`` against :class:`RSkillEvalResult`.
+        """Validate every ``<skill_dir>/eval/*.json`` against ``RSkillEvalResult``.
 
         CLAUDE.md §6.4 lists ``eval/`` as required packaging for an rSkill;
         this guard turns a malformed benchmark JSON into a typed
-        :class:`ROSConfigError` at load time instead of a downstream surprise
+        ``ROSConfigError`` at load time instead of a downstream surprise
         when ``openral benchmark report`` walks the same files.
 
         Args:
             skill_dir: Directory containing the rSkill (parent of ``eval/``).
 
         Raises:
-            ROSConfigError: If any JSON fails :class:`RSkillEvalResult` validation.
+            ROSConfigError: If any JSON fails ``RSkillEvalResult`` validation.
         """
         eval_dir = skill_dir / "eval"
         if not eval_dir.is_dir():
@@ -872,7 +871,7 @@ def resolve_rskill_local_dir(uri: str) -> Path | None:
 
     The argument is a bare rSkill reference (``smolvla-libero``,
     ``rskills/smolvla-libero``, ``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``, …).
-    Walks the same candidate forms :func:`_candidate_local_paths` produces
+    Walks the same candidate forms ``_candidate_local_paths`` produces
     and returns the first one that is a directory containing an
     ``rskill.yaml``. Resolves to an absolute path when found.
 
@@ -1008,7 +1007,7 @@ def _validate_skill_ref(raw: str) -> str:
 
 
 def load_rskill_manifest(uri: str) -> RSkillManifest:
-    """Resolve a bare rSkill reference to a parsed :class:`RSkillManifest`.
+    """Resolve a bare rSkill reference to a parsed ``RSkillManifest``.
 
     Accepts a bare name, path, or HF repo id. Resolution order:
 
@@ -1020,7 +1019,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
        mapped to ``<repo_root>/rskills/<name>/rskill.yaml`` if that file
        exists.
     3. **HF Hub repo id** — anything else is treated as a Hub repo and the
-       manifest is downloaded via :func:`huggingface_hub.hf_hub_download`.
+       manifest is downloaded via ``huggingface_hub.hf_hub_download``.
 
     Results are memoised in-process so repeated lookups do not re-hit disk
     or the Hub.
@@ -1030,7 +1029,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
             ``"OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"``.
 
     Returns:
-        The parsed and validated :class:`~openral_core.RSkillManifest`.
+        The parsed and validated ``RSkillManifest``.
 
     Raises:
         ROSConfigError: If the reference cannot be resolved.
@@ -1082,7 +1081,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
 def resolve_rskill_to_hf(uri: str) -> str:
     """Resolve a bare rSkill reference to a HF Hub repo id or local path.
 
-    Looks up the manifest via :func:`load_rskill_manifest` and returns
+    Looks up the manifest via ``load_rskill_manifest`` and returns
     either the bare HF Hub repo id (when ``weights_uri`` is ``hf://...``)
     or an absolute local filesystem path (when ``weights_uri`` is
     ``local://...``). Both forms are accepted by ``from_pretrained``
@@ -1098,7 +1097,7 @@ def resolve_rskill_to_hf(uri: str) -> str:
     absolute paths in the manifest are honoured verbatim.
 
     Args:
-        uri: A bare rSkill reference — same shapes as :func:`load_rskill_manifest`.
+        uri: A bare rSkill reference — same shapes as ``load_rskill_manifest``.
 
     Returns:
         Bare HF Hub repo id (e.g. ``"lerobot/smolvla_libero"``) or an
@@ -1116,7 +1115,7 @@ def resolve_rskill_to_hf(uri: str) -> str:
 def resolve_rskill_to_hf_with_revision(uri: str) -> tuple[str, str | None]:
     """Resolve a bare rSkill reference to ``(repo_id_or_path, revision)``.
 
-    Same resolution as :func:`resolve_rskill_to_hf`, but splits the optional
+    Same resolution as ``resolve_rskill_to_hf``, but splits the optional
     ``@<branch-or-sha>`` revision pin off an ``hf://`` ``weights_uri`` and
     returns it separately. HF ``from_pretrained`` / ``snapshot_download`` treat
     their repo-id argument as a bare id and ignore an appended ``@<sha>``, so the

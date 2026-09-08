@@ -1,13 +1,13 @@
 """Deterministic LLM stand-in for the integration tier.
 
-The :class:`FakeToolUseClient` satisfies the
-:class:`openral_reasoner.tool_use.ToolUseClient` Protocol exactly the
+The ``FakeToolUseClient`` satisfies the
+``openral_reasoner.tool_use.ToolUseClient`` Protocol exactly the
 same way the real Anthropic / OpenAI-compatible clients do; the only
 difference is that the tool selection is driven by a static
-:class:`Selector` callable (or a queued list of pre-baked
-:data:`~openral_core.ReasonerToolCall` instances) rather than by a
+``Selector`` callable (or a queued list of pre-baked
+``ReasonerToolCall`` instances) rather than by a
 remote LLM. Suitable for unit tests of
-:class:`openral_reasoner.ReasonerCore` and for end-to-end tests that
+``openral_reasoner.ReasonerCore`` and for end-to-end tests that
 need a reproducible tick sequence.
 
 This module lives under ``tests/integration/fakes/`` per CLAUDE.md
@@ -48,11 +48,11 @@ class ToolCallTrace:
 
 
 class FakeToolUseClient:
-    """In-process deterministic :class:`ToolUseClient` for tests.
+    """In-process deterministic ``ToolUseClient`` for tests.
 
     Two configuration styles:
 
-    - **Queued**: pass a list of pre-built :data:`ReasonerToolCall`
+    - **Queued**: pass a list of pre-built ``ReasonerToolCall``
       instances via ``responses``. The client pops one per call,
       raises ``IndexError`` when the queue is empty (tests must
       provide as many responses as ticks).
@@ -69,7 +69,7 @@ class FakeToolUseClient:
         selector: Callable that builds a response from the input.
         raise_on_call: If not ``None``, every ``select_tool`` call
             raises this exception (used to test
-            :class:`ROSPlanningError` propagation).
+            ``ROSPlanningError`` propagation).
         delay_s: Sleep this long inside every ``select_tool`` call —
             models the real provider round-trip so the async-LLM tests
             (issue #21) can assert the executor is NOT starved while a
@@ -174,7 +174,7 @@ class FakeToolUseClient:
 
     @property
     def calls(self) -> int:
-        """Number of ``select_tool`` invocations so far (len of :attr:`traces`)."""
+        """Number of ``select_tool`` invocations so far (len of ``traces``)."""
         return len(self._traces)
 
     @property

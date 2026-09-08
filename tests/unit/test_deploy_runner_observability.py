@@ -9,7 +9,7 @@ give Jaeger / Prom callers structured visibility.
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 
 import pytest
 from openral_core import Action, ControlMode
@@ -17,19 +17,13 @@ from openral_core.schemas import WorldState
 from openral_hal.so100_follower import SO100FollowerHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_observability import semconv
-from openral_observability.metrics import _reset_instrument_cache
 from openral_rskill.base import rSkillBase
 from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
-from opentelemetry import metrics, trace
-from opentelemetry.metrics import _internal as metrics_internal
-from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
     HistogramDataPoint,
     InMemoryMetricReader,
 )
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
@@ -57,35 +51,6 @@ class _NoOpTestSkill(rSkillBase):
             joint_targets=[[0.0] * 6],
             confidence=1.0,
         )
-
-
-@pytest.fixture
-def memory_exporter() -> Iterator[InMemorySpanExporter]:
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
-    trace.set_tracer_provider(provider)
-    try:
-        yield exporter
-    finally:
-        exporter.clear()
-
-
-@pytest.fixture
-def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
-    reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader])
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]
-    metrics.set_meter_provider(provider)
-    _reset_instrument_cache()
-    try:
-        yield reader
-    finally:
-        provider.shutdown()
-        _reset_instrument_cache()
 
 
 @pytest.fixture

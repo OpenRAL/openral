@@ -1,6 +1,6 @@
 """NullWorldModel — identity stub satisfying the WorldModel Protocol.
 
-Returns ``horizon`` copies of the input :class:`~openral_core.WorldState`,
+Returns ``horizon`` copies of the input ``WorldState``,
 zero predicted rewards, latency 0.0 ms, and confidence 1.0. Useful for
 runner / planner plumbing tests where the WAM seam must be present but
 no real prediction is needed.
@@ -8,7 +8,7 @@ no real prediction is needed.
 This stub is **not** a fallback to be silently used in production —
 CLAUDE.md §1.4 ("explicit beats implicit") forbids hidden fallbacks.
 The mental-simulation gating pattern (CLAUDE.md §6.3 pattern 1) wired
-against a :class:`NullWorldModel` is a no-op gate; replace with a
+against a ``NullWorldModel`` is a no-op gate; replace with a
 concrete adapter before relying on the gating signal.
 """
 
@@ -29,7 +29,7 @@ class NullWorldModel:
 
     Useful for plumbing tests where a real generative WAM would
     require a Thor-class GPU or a cloud dispatch. The emitted
-    :class:`~openral_wam.Rollout` carries the input state copied
+    ``Rollout`` carries the input state copied
     ``horizon`` times, no rewards, 0 ms latency, and confidence 1.0.
 
     Args:
@@ -63,7 +63,7 @@ class NullWorldModel:
         action_chunk: Action,
         horizon: int,
     ) -> Rollout:
-        """Return a :class:`Rollout` with ``world_state`` copied ``horizon`` times."""
+        """Return a ``Rollout`` with ``world_state`` copied ``horizon`` times."""
         del action_chunk
         if horizon <= 0 or horizon > self.max_horizon:
             raise ValueError(

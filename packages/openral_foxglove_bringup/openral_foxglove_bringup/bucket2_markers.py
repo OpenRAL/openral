@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 """Bucket-2 converter node: OpenRAL custom msgs → standard ROS viz types.
 
-Subscribes to two ``openral_msgs`` topics and re-publishes them as
-standard ROS visualization types that Foxglove renders natively without
-any TypeScript extension:
+- ``/openral/world_collisions`` (``WorldCollision``) → ``/openral/world_collisions_markers``
+  (``MarkerArray``): each capsule → CYLINDER marker (radius, length = 2×half_length);
+  half_length == 0 → zero-length CYLINDER (renders as a squashed disc). Exact capsule
+  geometry (hemispherical end-caps) isn't a single standard Marker type; a two-marker
+  cylinder+spheres approach was rejected as noisy in the panel.
+- ``/openral/world_voxels`` (``OccupancyVoxels``) → ``/openral/world_voxels_cloud``
+  (``PointCloud2``): one point per occupied voxel, at the voxel centre.
 
-- ``/openral/world_collisions`` (``openral_msgs/WorldCollision``)
-  → ``/openral/world_collisions_markers`` (``visualization_msgs/MarkerArray``)
-
-  Each capsule obstacle is approximated as a CYLINDER marker of the same
-  radius and length 2 × half_length.  A sphere (half_length == 0) is
-  emitted as a CYLINDER of length 0; Foxglove renders it visually as a
-  squashed disc — operators should note the approximation.  The exact
-  capsule geometry (hemispherical end-caps) is not representable as a
-  single standard Marker type; a two-marker approach (cylinder + two
-  spheres) was considered and rejected as noisy in the panel.
-
-- ``/openral/world_voxels`` (``openral_msgs/OccupancyVoxels``)
-  → ``/openral/world_voxels_cloud`` (``sensor_msgs/PointCloud2``)
-
-  One point per occupied voxel, placed at the voxel CENTRE.
-
-The conversion math lives in **pure, ROS-free functions** (``capsule_markers``
-and ``occupied_voxel_centers``) that operate on plain Python data so the
-unit tests can exercise them without a ROS context (CLAUDE.md §1.11).
-All ``rclpy`` / ``openral_msgs`` / ROS message imports are deferred
-inside node methods — the repo's standard PLC0415 pattern, which is
-ruff-exempt for ``packages/**``.
+Conversion math lives in pure, ROS-free functions (``capsule_markers``,
+``occupied_voxel_centers``) so unit tests exercise them without a ROS context
+(CLAUDE.md §1.11). ``rclpy``/``openral_msgs`` imports are deferred inside node
+methods (PLC0415, ruff-exempt for ``packages/**``).
 """
 
 from __future__ import annotations
@@ -114,7 +100,7 @@ def capsule_markers(
         object_id: Per-obstacle label string.  Length N (may be empty strings).
 
     Returns:
-        One :class:`MarkerSpec` per obstacle, index-parallel with the inputs.
+        One ``MarkerSpec`` per obstacle, index-parallel with the inputs.
 
     Raises:
         ValueError: If ``len(radius) != len(half_length)``, the 6N invariant
@@ -173,16 +159,11 @@ def occupied_voxel_centers(
 ) -> list[tuple[float, float, float]]:
     """Return the centre positions of all occupied voxels.
 
-    Voxel indexing (row-major, x fastest):
-        ``idx = x + size_x * (y + size_y * z)``
-
-    Centre of voxel (x, y, z), where ``R`` is ``orientation_xyzw``:
-        ``origin + R * ((x + 0.5, y + 0.5, z + 0.5) * resolution)``
-
-    ``openral_msgs/OccupancyVoxels`` is an ORIENTED lattice — its cell axes are
-    the source map's, not ``header.frame_id``'s — so the rotation places the
-    cell and is not decoration. Dropping it draws every voxel in the wrong place
-    whenever the robot is not aligned with the map.
+    Row-major indexing, x fastest: ``idx = x + size_x * (y + size_y * z)``.
+    ``openral_msgs/OccupancyVoxels`` is an ORIENTED lattice — its cell axes
+    are the source map's, not ``header.frame_id``'s — so dropping the
+    rotation draws every voxel in the wrong place whenever the robot isn't
+    map-aligned.
 
     Args:
         origin: (ox, oy, oz) minimum corner of voxel (0, 0, 0) in metres.

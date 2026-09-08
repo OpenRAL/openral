@@ -1,33 +1,29 @@
 # LIBERO object environment — deploy-sim digital twin (DeployScene; operator-goal driven).
 #
 # Boots the full OpenRAL stack (HAL + reasoner + safety kernel + reward monitor
-# + object-locator) against the LIBERO *object* MuJoCo scene: a table holding
-# ten grocery items (alphabet soup, cream cheese, salad dressing, bbq sauce,
+# + object-locator) against the LIBERO *object* MuJoCo scene: a table with ten
+# grocery items (alphabet soup, cream cheese, salad dressing, bbq sauce,
 # ketchup, tomato sauce, butter, milk, chocolate pudding, orange juice) and a
-# basket. Unlike libero_spatial (where the target is positionally fixed), the
-# object suite places every item in the scene at once — the operator goal names
-# *which* objects to move, so the reasoner must locate each one before picking.
+# basket. Unlike libero_spatial (positionally fixed target), object places
+# every item at once — the operator goal names which to move, so the reasoner
+# must locate each before picking.
 #
-# The operator supplies one goal at runtime (``--initial-task`` / ``/openral/prompt``);
-# the reasoner decomposes that single goal into an ordered queue via
-# ``decompose_mission``, locates each named object via the
-# omdet-turbo-locator, executes smolvla-libero per subtask, reward-gates each
-# attempt against robometer-4b, and advances one task at a time until the queue is
-# drained. Every subtask selection, localisation, VLA execution, and reward verdict
-# is an OTel span on ``reasoner.tick`` / ``rskill.tick`` so the run is diagnosable
-# from the trace.
+# Operator supplies one goal at runtime (`--initial-task` / `/openral/prompt`);
+# reasoner decomposes it into an ordered queue via `decompose_mission`, locates
+# each object via omdet-turbo-locator, executes smolvla-libero per subtask,
+# reward-gates against robometer-4b, advances until drained. Every subtask
+# selection/localisation/VLA execution/reward verdict is an OTel span on
+# `reasoner.tick`/`rskill.tick`.
 #
-# Robot auto-resolves via ``SCENES.fixed_robot("libero_object") == "franka_panda"``.
+# Robot auto-resolves via `SCENES.fixed_robot("libero_object") == "franka_panda"`.
 # Run: OPENRAL_DASHBOARD_FLIP_180=1 openral deploy sim --config scenes/deploy/libero_object.yaml
-#      --enable-reward-monitor
-#      --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
+#      --enable-reward-monitor --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
 # Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
 #
-# OPENRAL_DASHBOARD_FLIP_180=1 rotates the dashboard cameras 180° so LIBERO's
-# bottom-up MuJoCo render shows upright (display-only; the VLA already flips its
-# own copy via the manifest's image_preprocessing.flip_180). The scene runs the
-# episode continuously — a task success no longer resets the arena, so
-# the reasoner-decomposed mission persists across its subtasks and the MuJoCo viewer stays in sync.
+# OPENRAL_DASHBOARD_FLIP_180=1 rotates dashboard cameras 180deg for display
+# only (VLA already flips via image_preprocessing.flip_180) since LIBERO
+# renders bottom-up. Episode runs continuously — task success no longer
+# resets the arena, so the decomposed mission persists across subtasks.
 
 scene:
   id: libero_object

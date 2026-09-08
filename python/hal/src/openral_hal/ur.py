@@ -2,11 +2,11 @@
 
 The two arms share kinematic structure (6-DoF revolute, identical joint
 naming) but differ in payload, reach, and per-joint velocity / effort limits.
-We expose them as separate :class:`RobotDescription` constants and HAL
+We expose them as separate ``RobotDescription`` constants and HAL
 factories so safety envelopes and embodiment tags stay distinct.
 
 Both adapters drive a MuJoCo simulation of the arm via
-:class:`openral_hal._mujoco_arm.MujocoArmHAL`.  The MJCF is sourced from
+``openral_hal._mujoco_arm.MujocoArmHAL``.  The MJCF is sourced from
 ``robot_descriptions`` (DeepMind ``mujoco_menagerie``).  Production deployment
 on real hardware is expected to wrap the same ``RobotDescription`` with a
 ``ros2_control`` HAL talking to the ``ur_robot_driver`` (URCap / RTDE), but
@@ -246,7 +246,7 @@ UR10e_DESCRIPTION = RobotDescription(
 def ur5e_with_sensors(
     catalog_ids: list[str] | None = None,
 ) -> RobotDescription:
-    """Return a copy of :data:`UR5e_DESCRIPTION` with catalog sensors attached.
+    """Return a copy of ``UR5e_DESCRIPTION`` with catalog sensors attached.
 
     The reference UR5e research setup uses a flange-mounted RealSense D415
     plus a Robotiq FT-300S wrist sensor; pass ``None`` to get that default.
@@ -256,7 +256,7 @@ def ur5e_with_sensors(
             reference loadout (``["intel/realsense_d415", "robotiq/ft_300s"]``).
 
     Returns:
-        A new :class:`RobotDescription` with ``sensors`` / ``sensor_bundles``
+        A new ``RobotDescription`` with ``sensors`` / ``sensor_bundles``
         populated.
 
     Example:
@@ -272,9 +272,9 @@ def ur5e_with_sensors(
 def ur10e_with_sensors(
     catalog_ids: list[str] | None = None,
 ) -> RobotDescription:
-    """Return a copy of :data:`UR10e_DESCRIPTION` with catalog sensors attached.
+    """Return a copy of ``UR10e_DESCRIPTION`` with catalog sensors attached.
 
-    Default loadout matches :func:`ur5e_with_sensors` (D435 + FT-300S); the
+    Default loadout matches ``ur5e_with_sensors`` (D435 + FT-300S); the
     UR10e shares the same flange interface and is usually paired with the
     higher-range D435 instead of the D415.
 
@@ -283,7 +283,7 @@ def ur10e_with_sensors(
             reference loadout (``["intel/realsense_d435", "robotiq/ft_300s"]``).
 
     Returns:
-        A new :class:`RobotDescription` with ``sensors`` / ``sensor_bundles``
+        A new ``RobotDescription`` with ``sensors`` / ``sensor_bundles``
         populated.
 
     Example:
@@ -303,14 +303,14 @@ class UR5eHAL(MujocoArmHAL):
     """HAL adapter for the Universal Robots UR5e (MuJoCo-backed simulation).
 
     Thin manifest-driven wrapper — every wiring constant lives in
-    :data:`UR5e_DESCRIPTION.sim`.
+    ``UR5e_DESCRIPTION.sim``.
 
     Args:
         mjcf_path: Optional override for the MJCF file path.  When ``None``,
             ``UR5e_DESCRIPTION.assets.mjcf`` is resolved at construction
             time (``robot_descriptions:ur5e_mj_description``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to 1.
+            ``send_action``.  Defaults to 1.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
             time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -344,9 +344,9 @@ class UR5eHAL(MujocoArmHAL):
 class UR10eHAL(MujocoArmHAL):
     """HAL adapter for the Universal Robots UR10e (MuJoCo-backed simulation).
 
-    Args mirror :class:`UR5eHAL`; the only difference is the underlying MJCF
+    Args mirror ``UR5eHAL``; the only difference is the underlying MJCF
     and ``RobotDescription`` (different velocity / effort envelopes), both of
-    which now live in :data:`UR10e_DESCRIPTION`.
+    which now live in ``UR10e_DESCRIPTION``.
 
     Example:
         >>> from openral_hal import UR10eHAL  # doctest: +SKIP

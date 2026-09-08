@@ -278,8 +278,8 @@ That contract was removed in 0.3.0; the equivalent today is
 `world.scene_objects` looked like it was flooding the info band — ~20 rows in
 one snapshot, the same shape as the `rskill.execute` mistake. Measured over a
 20 s window it fires at **0.10/s**; the rows had simply accumulated over
-several minutes. Left as a headline span. Worth recording that the check was
-run, because the two preceding rounds each found a real one.
+several minutes. Left as a headline span. The check ran — the two preceding rounds each found
+a real one.
 
 *Revisited later:* the rate was low but every row was zero-information — a
 static (even empty) scene re-shipped its full object-list JSON on each 0.2 Hz

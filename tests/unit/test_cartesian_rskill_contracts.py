@@ -1,18 +1,17 @@
 """Remaining cartesian rSkills declare an explicit OSC action contract.
 
-These checkpoints all emit a 7-D action that is a 6-D OSC end-effector delta
-plus a 1-D gripper command
-(:class:`ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER`), even though their
-action dim (7) differs from their embodiment's actuated-joint count — the
-tell-tale sign the vector is cartesian, not joint-space. Declaring the
-representation in ``rskill.yaml`` makes deploy-sim expand the vector into
+These checkpoints emit a 7-D action (6-D OSC end-effector delta + 1-D
+gripper, ``ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER``) even
+though dim (7) differs from the embodiment's actuated-joint count — the
+tell-tale sign it's cartesian, not joint-space. Declaring the
+representation in ``rskill.yaml`` makes deploy-sim expand it into
 ``cartesian_delta`` + ``gripper_position`` slots (via
-:func:`canonical_slots_for_representation`) instead of defaulting the whole
-vector to ``JOINT_POSITION``, which the joint-space envelope rejects.
+``canonical_slots_for_representation``) instead of defaulting to
+``JOINT_POSITION``, which the joint-space envelope rejects.
 
-This sweep follows the two LIBERO worked examples already covered by
-``test_libero_action_contracts.py``; ``rldx1-ft-simpler-widowx-nf4`` was the
-first to declare the representation and is asserted here as the reference.
+Follows the two LIBERO examples in ``test_libero_action_contracts.py``;
+``rldx1-ft-simpler-widowx-nf4`` was first to declare the representation
+and is the reference asserted here.
 """
 
 from pathlib import Path

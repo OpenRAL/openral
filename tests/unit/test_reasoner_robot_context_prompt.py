@@ -1,8 +1,8 @@
-"""Unit tests for :func:`openral_reasoner.render_robot_context_prompt`.
+"""Unit tests for ``openral_reasoner.render_robot_context_prompt``.
 
 Option B: the reasoner's system prompt carries a
 ``## THIS ROBOT`` block built from the active robot's
-:class:`~openral_core.RobotCapabilities`. We validate against real
+``RobotCapabilities``. We validate against real
 ``robots/`` fixtures (CLAUDE.md §1.11) — ``panda_mobile`` (a wheeled
 mobile manipulator) and ``so100_follower`` (a fixed-base arm) — to
 exercise both locomotion branches with real capability data, never
@@ -180,12 +180,10 @@ def test_ladder_rungs_stay_conditional_not_imperative() -> None:
 def test_prompt_grounds_before_decomposing_collective_goal() -> None:
     """The collective-goal rule prefers `located` over raw `in_view`.
 
-    A direct glm-5.2 probe (recorded in the "decompose gate" investigation; the
-    probe script itself was deploy scratch, since removed) showed the LLM decomposing a collective
-    goal straight from the continuous detector's mislabelled `in_view` clutter
-    (0/3 correct) until told that the open-vocab `located` line is authoritative
-    and goal objects must be confirmed into it before decomposing (3/3). This
-    guards that guidance against silent removal.
+    A glm-5.2 probe showed the LLM decomposing a collective goal straight from
+    the continuous detector's mislabelled `in_view` clutter (0/3 correct) until
+    told `located` is authoritative and goals must be confirmed into it first
+    (3/3). Guards that guidance against silent removal.
     """
     p = DEFAULT_SYSTEM_PROMPT
     assert "GROUND BEFORE YOU DECOMPOSE" in p
@@ -199,11 +197,9 @@ def test_prompt_grounds_before_decomposing_collective_goal() -> None:
 
 
 def test_prompt_allows_manipulation_when_seen_but_not_lifted() -> None:
-    """A live in-view confirmation lets the reasoner attempt a
-    manipulation skill even when recall_object cannot resolve a 3-D pose (the
-    object is seen but not yet lifted into spatial memory). Without this, the
-    reasoner stalls on the search ladder / hands off for a target the depth
-    sensor can't lift (e.g. a distant object only the wide camera sees).
+    """A live in-view confirmation lets the reasoner attempt manipulation even
+    when recall_object can't resolve a 3-D pose (seen but not yet lifted into
+    spatial memory), e.g. a distant object only the wide camera sees.
     """
     p = DEFAULT_SYSTEM_PROMPT.lower()
     assert "seen but not yet lifted" in p

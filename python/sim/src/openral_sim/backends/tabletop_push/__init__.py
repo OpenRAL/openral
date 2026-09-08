@@ -1,8 +1,8 @@
 """Robot-agnostic ``tabletop_push`` native scene.
 
 Importing this package registers the ``tabletop_push`` scene factory on
-:data:`openral_sim.SCENES`. See :mod:`openral_sim.backends.tabletop_push.env`
-for the rollout and :mod:`openral_sim.backends.tabletop_push._assets` for the
+``openral_sim.SCENES``. See ``openral_sim.backends.tabletop_push.env``
+for the rollout and ``openral_sim.backends.tabletop_push._assets`` for the
 MjSpec composer.
 """
 

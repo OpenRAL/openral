@@ -60,7 +60,7 @@ def resolve_starting_pose_action(
         starting_pose: The manifest's ``starting_pose`` (or ``None``).
 
     Returns:
-        The :class:`StartingPoseAction` to execute.
+        The ``StartingPoseAction`` to execute.
 
     Example:
         >>> resolve_starting_pose_action(
@@ -87,7 +87,7 @@ def joint_names_from_goal_json(default_goal_json: str) -> list[str]:
     ``rskill-moveit-multi-joints-none`` (``goal_builder: "joint"``) approach manifest
     declares for its MoveIt planning group. Used to length-check a robot's flat
     ``starting_pose`` before building the retarget override
-    (:func:`moveit_joint_goal_override`).
+    (``moveit_joint_goal_override``).
 
     Args:
         default_goal_json: The approach rSkill's
@@ -123,7 +123,7 @@ def moveit_joint_goal_override(joint_names: Sequence[str], positions: Sequence[f
     Produces the deep-merge override that replaces the approach
     manifest's ``joint.positions`` with ``starting_pose`` — i.e. plan to the next
     skill's pose instead of the manifest's home default. ``joint_names`` (from
-    :func:`joint_names_from_goal_json`) is used only to length-check ``positions``;
+    ``joint_names_from_goal_json``) is used only to length-check ``positions``;
     the manifest's ``joint.joint_names`` order is authoritative and is preserved
     by the deep-merge.
 

@@ -113,7 +113,7 @@ def spheres_for_capsule(shape: CapsuleShape | SphereShape | BoxShape) -> int:
     A sphere (or a zero-length capsule) needs exactly one. A capsule of length
     ``L`` and radius ``r`` needs ``ceil(L / r) + 1`` spheres so adjacent centres
     sit no more than one radius apart, covering the swept volume. A box is first
-    taken to its bounding capsule (:func:`bounding_capsule_segment`) and counted
+    taken to its bounding capsule (``bounding_capsule_segment``) and counted
     the same way.
 
     Example:
@@ -137,8 +137,8 @@ def link_collision_spheres(
     """Lower one link's collision volume to cuRobo spheres in the link frame.
 
     Takes the link to a capsule that **contains** it
-    (:func:`bounding_capsule_segment`), then samples spheres along that segment.
-    ``count`` defaults to :func:`spheres_for_capsule`.
+    (``bounding_capsule_segment``), then samples spheres along that segment.
+    ``count`` defaults to ``spheres_for_capsule``.
 
     Args:
         geom: A lowered link collision volume (capsule, sphere or box).
@@ -158,12 +158,12 @@ def sphere_model_geometry(
 ) -> dict[str, LinkCollisionGeometry]:
     """Each link as the **capsule cuRobo's spheres actually cover**, by link name.
 
-    :func:`link_collision_spheres` samples spheres along
-    :func:`~openral_safety.kernel_predicates.bounding_capsule_segment`, so this is
+    ``link_collision_spheres`` samples spheres along
+    ``bounding_capsule_segment``, so this is
     the geometry the planner checks — strictly larger than the kernel's box, and
     therefore a *different* collision model with a different allowed-collision
-    matrix. Handing it back as :class:`LinkCollisionGeometry` lets
-    :func:`~openral_safety.urdf_lowering.acm_for_geometry` decide that matrix
+    matrix. Handing it back as ``LinkCollisionGeometry`` lets
+    ``acm_for_geometry`` decide that matrix
     with the same proof it uses for the kernel's.
 
     A link that is already a capsule or a sphere is returned unchanged.
@@ -218,28 +218,23 @@ def render_cumotion_config(
     """Render a cuRobo ``robot_cfg`` fragment from a lowered collision model.
 
     Emits the collision geometry cuMotion needs — per-link ``collision_spheres``
-    sampled from the kernel's own lowered capsules, ``self_collision_ignore`` from
-    the allowed-collision matrix, and ``cspace.joint_names`` — so plan-time and
-    kernel-time collision geometry share one source of truth.
-
+    sampled from the kernel's own lowered capsules, ``self_collision_ignore``
+    from the allowed-collision matrix, and ``cspace.joint_names`` — so plan-time
+    and kernel-time collision geometry share one source of truth.
     ``retract_config`` and acceleration/jerk limits are planner tuning, not
-    geometry; they are intentionally left out and added when validated against a
-    live cuRobo install. The header documents this.
+    geometry; intentionally left out (the header documents this).
 
     **The ACM is not simply copied.** The manifest's matrix is decided against
     the *kernel's* geometry, and the spheres emitted here are strictly larger
-    than that (:func:`sphere_model_geometry`), so a pair the kernel can separate
-    may be always-colliding for the planner. ``panda_link5`` <-> ``panda_link7``
-    is exactly that pair: the kernel separates it at exact-hull fidelity (issue
-    #191) while the spheres overlap at **100.00 %** of its (joint6, joint7)
-    grid, the shallowest by 1.03 mm. Copying the kernel's matrix would hand
-    cuRobo a self-collision constraint that rejects the arm's own ``ready`` pose.
-    Given ``urdf_path``, this re-runs
-    :func:`~openral_safety.urdf_lowering.acm_for_geometry` against the sphere
-    geometry and unions the result in, so the planner's model stays **looser**
-    than the kernel's — never tighter, which is the only safe direction for a
-    planner (PR #169). Without it the manifest's matrix is used as-is and the
-    header says so.
+    (``sphere_model_geometry``), so a pair the kernel can separate may be
+    always-colliding for the planner — ``panda_link5``<->``panda_link7`` is
+    exactly that pair: the kernel separates it at exact-hull fidelity (issue
+    #191) while the spheres overlap at **100.00%** of its (joint6, joint7)
+    grid, shallowest by 1.03 mm. Given ``urdf_path``, this re-runs
+    ``acm_for_geometry`` against the sphere
+    geometry and unions it in, so the planner's model stays **looser** than the
+    kernel's — never tighter, the only safe direction for a planner (PR #169).
+    Without it, the manifest's matrix is used as-is and the header says so.
 
     Args:
         robot: The robot manifest (provides ``base_frame`` and joints).
@@ -250,14 +245,11 @@ def render_cumotion_config(
     Returns:
         A YAML document string with a generated-provenance header.
     """
-    # The kernel checks the MANIFEST's geometry. `model.collision_geometry` is
-    # what the lowering tool would *write*, which for a hand-authored box
-    # manifest is a different, looser solid (`urdf_lowering.lower_link_geometry`
-    # still emits a PCA capsule for a mesh collision — collision-primitive-study
-    # 8.5). Sourcing the spheres from it means "plan-time and kernel-time share
-    # one source of truth" was not true for exactly the robots that most need
-    # it. Prefer the manifest; fall back to the lowered model during onboarding,
-    # when the manifest has no geometry block yet.
+    # The kernel checks the MANIFEST's geometry; `model.collision_geometry` is what the
+    # lowering tool would *write*, a different (looser) solid for a hand-authored box manifest
+    # (`urdf_lowering.lower_link_geometry` still emits a PCA capsule for a mesh collision —
+    # collision-primitive-study 8.5). Prefer the manifest; fall back to the lowered model only
+    # during onboarding, when the manifest has no geometry block yet.
     geometry = list(robot.collision_geometry or []) or list(model.collision_geometry)
 
     collision_spheres: dict[str, list[dict[str, object]]] = {}

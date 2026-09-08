@@ -15,30 +15,24 @@
 #     |        └──────────┘
 #     +---------------------> +X (width = 1.00 m)
 #
-# Both the slotted block and the cylindrical tube spawn at random
-# (x, y) within ``{tube,block}_spawn_xy_range`` each ``reset()``, lying
-# flat on the floor with a random yaw. Success = tube inserted
-# vertically into the block hole within the configured tolerances.
+# Block and tube spawn at random (x, y) within `{tube,block}_spawn_xy_range`
+# each `reset()`, flat on the floor with random yaw. Success = tube inserted
+# vertically into the block hole within configured tolerances.
 #
-# Policy travels on the CLI: ``--rskill rskills/<your-skill>``.
+# Policy travels on the CLI: `--rskill rskills/<your-skill>`.
 #
-# Image-key aliasing: the scene emits the observation dict
-#     {"images": {"oak_top": ..., "oak_top_depth": ..., "wrist": ...}, ...}
-# The RGB streams are keyed by their bare MuJoCo camera names
-# (`oak_top`, `wrist`) so they line up with `scene.cameras` below —
-# that's what the policy adapter's `resolve_camera_keys` pulls from the
-# observation. Pair this with an rSkill that maps those scene camera
-# keys onto the checkpoint's own image-feature suffixes via
-# `image_preprocessing.aliases` (direction is `<scene-cam-key>:
-# <model-feature-suffix>`):
+# Image-key aliasing: scene emits {"images": {"oak_top": ..., "oak_top_depth":
+# ..., "wrist": ...}, ...}, keyed by bare MuJoCo camera names (matching
+# `scene.cameras`) — that's what the policy adapter's `resolve_camera_keys`
+# pulls. Pair with an rSkill mapping those keys onto the checkpoint's
+# image-feature suffixes via `image_preprocessing.aliases`
+# (`<scene-cam-key>: <model-feature-suffix>`):
 #     image_preprocessing:
 #       aliases:
-#         oak_top: top      # → observation.images.top
-#         wrist: wrist      # → observation.images.wrist
-# e.g. a checkpoint that expects `top` / `wrist` / `front`; the absent `front`
-# camera is zero-padded via the image mask. The
-# depth stream is exposed as `oak_top_depth` (HxW float32 metres) for
-# skills with a depth-aware tower; depth-blind skills can ignore it.
+#         oak_top: top      # -> observation.images.top
+#         wrist: wrist      # -> observation.images.wrist
+# An absent feature (e.g. `front`) is zero-padded via the image mask. Depth
+# stream is `oak_top_depth` (HxW float32 metres); depth-blind skills ignore it.
 
 scene:
   id: so101_box                  # @SCENES.register("so101_box", fixed_robot="so101_follower")

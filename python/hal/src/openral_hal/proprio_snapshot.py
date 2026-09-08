@@ -7,10 +7,10 @@ HAL's multi-threaded executor.
 
 Contract:
 
-* A :class:`ProprioFrame` is **captured only from the sim callback group** —
+* A ``ProprioFrame`` is **captured only from the sim callback group** —
   right after an ``env.step`` — where reading the HAL's proprio is safe (no
   concurrent step). Capture builds *plain data* (lists / tuples / a frozen
-  :class:`~openral_core.schemas.JointState`); it never hands the simulator's
+  ``JointState``); it never hands the simulator's
   live state to another thread.
 * The frame is **stored and read** through this holder. The lock guards only
   the single reference swap / read — never an ``env.step`` / render / raycast —
@@ -64,11 +64,11 @@ class ProprioFrame:
 
 
 class ProprioSnapshot:
-    """Lock-guarded holder for the latest :class:`ProprioFrame`.
+    """Lock-guarded holder for the latest ``ProprioFrame``.
 
-    One writer (the sim callback group, after each step) calls :meth:`set`; any
+    One writer (the sim callback group, after each step) calls ``set``; any
     number of readers (the control callback group's publishers) call
-    :meth:`latest`. Because :class:`ProprioFrame` is immutable and the reference
+    ``latest``. Because ``ProprioFrame`` is immutable and the reference
     is swapped under the lock, a reader never sees a partially-updated frame.
 
     Example:
@@ -87,7 +87,7 @@ class ProprioSnapshot:
     """
 
     def __init__(self) -> None:
-        """Initialise an empty snapshot (no frame published until :meth:`set`)."""
+        """Initialise an empty snapshot (no frame published until ``set``)."""
         self._lock = threading.Lock()
         self._frame: ProprioFrame | None = None
 

@@ -1,19 +1,14 @@
 """Unit tests for the RLDX → LIBERO gripper-action rescaling (GH-133).
 
-The RLDX policy emits ``action.gripper`` in the RLDS dataset convention
-(``[0, 1]`` with ``0=close`` / ``1=open``) — its training data was
-standardized into that range. LIBERO's robosuite-based OSC controller
-consumes ``[-1, +1]`` with the **opposite** sign convention (``-1=open``
-/ ``+1=close``). Without a rescale step, the openral adapter feeds raw
-``~0`` values into ``LiberoEnv.step``, the gripper never actuates, and
-pick-and-place tasks deterministically fail. Reproduced as GH-133.
+RLDX emits ``action.gripper`` in RLDS convention (``[0,1]``, 0=close/1=open);
+LIBERO's robosuite OSC controller wants ``[-1,+1]`` with the opposite sign
+(-1=open/+1=close). Without a rescale, raw ``~0`` values never actuate the
+gripper and pick-and-place tasks deterministically fail.
 
-These tests exercise the real adapter helper
-(:func:`openral_sim.policies.rldx._rldx_gripper_to_libero`) and the
-real :meth:`_RLDXSidecarAdapter._assemble_libero_chunk` path with the
-exact wire shape the upstream RLDX server emits ``(1, T=16, 1)`` —
-mirrors ``rldx/policy/rldx_policy.py`` LIBERO-flat output. No mocks,
-no stubs (CLAUDE.md §1.11 / §5.4).
+Exercises the real ``openral_sim.policies.rldx._rldx_gripper_to_libero``
+and ``_RLDXSidecarAdapter._assemble_libero_chunk`` with the exact
+``(1, T=16, 1)`` wire shape upstream ``rldx/policy/rldx_policy.py`` emits.
+No mocks (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -54,13 +49,8 @@ from openral_sim.policies.rldx import (
     ],
 )
 def test_rldx_gripper_to_libero_endpoints(rlds_value: float, expected_libero: float) -> None:
-    """Confirms the upstream two-step transform on scalar inputs.
-
-    The reference path in
-    ``rldx/eval/sim/LIBERO/libero_env.py`` does
-    ``invert(normalize(g)) = -sign(2g - 1)``. The openral helper must
-    produce identical outputs so the LIBERO finetune sees its training
-    distribution at inference time.
+    """Matches the upstream transform: ``rldx/eval/sim/LIBERO/libero_env.py``
+    does ``invert(normalize(g)) = -sign(2g - 1)``; the openral helper must match.
     """
     out = _rldx_gripper_to_libero(np.asarray([rlds_value], dtype=np.float32))
     assert out.shape == (1,)
@@ -100,14 +90,10 @@ def _wire_action_dict(
 ) -> dict[str, np.ndarray]:
     """Build the on-the-wire action dict the upstream server returns.
 
-    Layout matches ``RLDXSimPolicyWrapper`` (LIBERO suite, the path our
-    adapter drives via ``--use-sim-policy-wrapper``):
-
-        action.x / y / z / roll / pitch / yaw / gripper : (1, T, 1) float32
-
-    See the module-docstring of ``openral_sim.policies.rldx`` for the
-    full wire contract. The motion axes get small deterministic values
-    so we can also verify the assembler preserves them untouched.
+    Layout matches ``RLDXSimPolicyWrapper`` (LIBERO suite, via
+    ``--use-sim-policy-wrapper``): ``action.x/y/z/roll/pitch/yaw/gripper``,
+    each ``(1, T, 1)`` float32. Motion axes get small deterministic values
+    so the assembler test can verify they pass through untouched.
     """
     if gripper_values is None:
         gripper_values = np.linspace(0.0, 1.0, chunk_len, dtype=np.float32)
@@ -126,14 +112,9 @@ def _wire_action_dict(
 def test_assemble_libero_chunk_rescales_gripper_column() -> None:
     """End-to-end: server-shape input → 7-D LIBERO chunk with rescaled gripper.
 
-    Exercises ``_RLDXSidecarAdapter._assemble_libero_chunk`` on real
-    server-shaped data. Asserts:
-
-    * the chunk is ``(T, 7)`` float32,
-    * non-gripper axes survive unchanged (so the rescale only touches
-      the gripper column),
-    * the gripper column is in ``{-1, 0, +1}`` and obeys the upstream
-      ``-sign(2g - 1)`` rule.
+    Exercises ``_RLDXSidecarAdapter._assemble_libero_chunk``: chunk is
+    ``(T, 7)`` float32, non-gripper axes pass through unchanged, gripper
+    column is in ``{-1, 0, +1}`` per ``-sign(2g - 1)``.
     """
     # Construct an adapter shell without invoking ``__post_init__`` —
     # the chunk-assembly path is pure numpy and does not need a live

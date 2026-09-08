@@ -3,7 +3,7 @@
 This is the strongest "all wiring is correct" signal in the repo.  Each
 per-HAL ``tests/sim/test_<robot>_hal_mujoco.py`` validates one HAL in
 isolation; this suite parametrizes the **production**
-:class:`openral_runner.DeployRunner` over every HAL twin and runs a
+``openral_runner.DeployRunner`` over every HAL twin and runs a
 real rate-limited inference loop end-to-end:
 
     activate → for max_ticks:

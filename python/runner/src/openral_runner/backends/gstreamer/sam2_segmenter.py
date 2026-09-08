@@ -1,13 +1,13 @@
 """In-process SAM 2.1 promptable segmenter for ``kind: "segmenter"`` rSkills.
 
 The segmenter sibling of
-:mod:`~openral_runner.backends.gstreamer.omdet_turbo_detector`, and it lives
+``omdet_turbo_detector``, and it lives
 here for the same reason: SAM 2.1 is a first-class ``transformers``
-architecture (:class:`Sam2Model` + :class:`Sam2Processor`), so it loads under
+architecture (``Sam2Model`` + ``Sam2Processor``), so it loads under
 the runtime's own ``transformers`` and runs **in process** — no sidecar venv,
 no ZMQ, no quantization beyond the bf16 compute dtype. It is selected for
 manifests whose ``segmenter.engine`` is
-:attr:`~openral_core.schemas.SegmenterEngine.SAM2_HF`.
+``SAM2_HF``.
 
 **What it answers.** A detector is asked a *semantic* question ("where are the
 cups?") and replies with labelled, scored boxes. This backend is asked a
@@ -15,7 +15,7 @@ cups?") and replies with labelled, scored boxes. This backend is asked a
 replies with binary masks. It has no label vocabulary and reports no
 thresholdable confidence, because its consumer (the HAL's vision
 attachment-evidence producer) is forbidden from gating on model confidence.
-See :func:`segment` for the measurement that makes that a hard rule.
+See ``segment`` for the measurement that makes that a hard rule.
 
 **Placement.** It runs beside the detector rSkills on the GStreamer graph side
 because the HAL is deliberately kept torch-free; the HAL asks for masks over
@@ -27,7 +27,7 @@ measured ~297 MiB peak (RTX 4070 Laptop, bf16) it co-resides trivially with a
 ~3.5 GiB VLA on an 8 GB card, and the one-shot call must fit inside the HAL's
 existing ~100 ms deferred-ack barrier. A warmed call is ~53 ms; the **first**
 call is ~742 ms (kernel autotune), which would not fit — hence
-:meth:`Sam2Segmenter.warm_up`, which must be called at activate.
+``Sam2Segmenter.warm_up``, which must be called at activate.
 
 **Resolution is not a lever.** ``Sam2Processor`` resizes every input to 1024²
 internally, so latency was measured flat (46-52 ms) from 224² to 1024². Do not
@@ -35,7 +35,7 @@ spend budget shrinking the wrist camera for this model's sake.
 
 ``torch`` / ``transformers`` are imported lazily at first use so this module
 imports cleanly on hosts without the wheels (mirroring
-:mod:`~openral_runner.backends.gstreamer.omdet_turbo_detector`). Install with
+``omdet_turbo_detector``). Install with
 ``just sync --group sam2``.
 """
 
@@ -81,7 +81,7 @@ class MaskCandidate:
         score_advisory: The model's own IoU estimate for this candidate.
             **Advisory only** — recorded in the trace, never thresholded.
         area_px: Number of set pixels, precomputed because every consumer wants
-            it and it is what :attr:`min_mask_area_px` filters on.
+            it and it is what ``min_mask_area_px`` filters on.
     """
 
     mask: NDArray[np.bool_]
@@ -103,7 +103,7 @@ def project_point_to_pixel(
         point_xyz: Point in the camera optical frame, in metres.
         intrinsics: Pinhole intrinsics whose ``width``/``height`` bound the
             image rectangle. Scale them with
-            :func:`openral_core.scale_intrinsics_to` first if the frame is not
+            ``openral_core.scale_intrinsics_to`` first if the frame is not
             rendered at the calibrated resolution.
 
     Returns:
@@ -143,7 +143,7 @@ class Sam2Segmenter:
         model_id: Identifier recorded alongside every emitted mask.
         weights_source: HF repo id to load (``facebook/sam2.1-hiera-small``).
         max_prompt_points: Upper bound on prompt points per call, from the
-            manifest's :attr:`~openral_core.SegmenterContract.max_prompt_points`.
+            manifest's ``SegmenterContract.max_prompt_points``.
         multimask: Ask for the three-hypothesis head instead of a single mask.
         min_mask_area_px: Candidates with fewer set pixels are dropped as
             degenerate.
@@ -257,7 +257,7 @@ class Sam2Segmenter:
         Candidates are returned ordered by **area ascending** — a deterministic,
         purely geometric ordering over SAM 2's nested subpart/part/whole
         hypotheses. They are deliberately *not* ordered or filtered by
-        :attr:`MaskCandidate.score_advisory`: a mis-aimed point prompt on a real
+        ``MaskCandidate.score_advisory``: a mis-aimed point prompt on a real
         third-person frame was measured returning a mask covering 59.8% of the
         image — essentially the whole tablecloth — at this model's **top** score
         of 0.977. Model confidence cannot distinguish a correct mask from a
@@ -275,7 +275,7 @@ class Sam2Segmenter:
                 jaw tips, which keep the mask off the gripper fingers.
 
         Returns:
-            Surviving :class:`MaskCandidate` s, area ascending. Empty when the
+            Surviving ``MaskCandidate`` s, area ascending. Empty when the
             frame bytes do not match ``width * height * 3`` or when no candidate
             clears ``min_mask_area_px``.
 
@@ -343,11 +343,11 @@ def build_mask_candidates(
     scores: Sequence[float],
     min_mask_area_px: int,
 ) -> list[MaskCandidate]:
-    """Filter and order decoded masks into :class:`MaskCandidate` s.
+    """Filter and order decoded masks into ``MaskCandidate`` s.
 
     Pure (no torch / transformers) so the conversion is unit-testable without a
     GPU or a model load, mirroring
-    :func:`~openral_runner.backends.gstreamer.omdet_turbo_detector.build_objects_metadata_from_results`.
+    ``build_objects_metadata_from_results``.
     Masks with fewer than ``min_mask_area_px`` set pixels are dropped; survivors
     are sorted by area ascending (SAM 2's nested subpart → part → whole), never
     by score.

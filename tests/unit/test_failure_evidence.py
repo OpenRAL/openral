@@ -1,4 +1,4 @@
-"""Round-trip every :data:`openral_core.FailureEvidence` variant.
+"""Round-trip every ``openral_core.FailureEvidence`` variant.
 
 Exercises the real Pydantic discriminated union — no mocks per
 CLAUDE.md §1.11. Each variant is serialized with ``model_dump_json``
@@ -7,7 +7,7 @@ identity must hold and the discriminator (``kind`` field) must select
 the correct concrete class.
 
 Plus token-bucket coverage for
-:class:`openral_observability.failure_bus._TokenBucket`, which is the
+``openral_observability.failure_bus._TokenBucket``, which is the
 only piece of F3's publisher that is testable without ``rclpy``.
 """
 
@@ -95,7 +95,7 @@ def test_unknown_kind_is_rejected() -> None:
 
 
 def test_suppressed_summary_requires_parallel_arrays() -> None:
-    """Mismatched arrays in :class:`SuppressedSummaryEvidence` raise."""
+    """Mismatched arrays in ``SuppressedSummaryEvidence`` raise."""
     with pytest.raises(ROSConfigError):
         SuppressedSummaryEvidence(window_s=1.0, kinds=[0, 1], severities=[1], counts=[3, 7])
 
@@ -139,7 +139,7 @@ def test_default_rate_limit_policy_matches_adr_0018() -> None:
 
 
 def test_topic_for_namespaces_every_source() -> None:
-    """Every :class:`FailureSource` value lands under ``/openral/failure/<suffix>``."""
+    """Every ``FailureSource`` value lands under ``/openral/failure/<suffix>``."""
     assert {s: topic_for(s) for s in FailureSource} == {
         FailureSource.HAL: "/openral/failure/hal",
         FailureSource.SENSOR: "/openral/failure/sensor",

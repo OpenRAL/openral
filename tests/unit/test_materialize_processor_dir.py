@@ -1,21 +1,19 @@
 """Tests for the per-file processor materialization helper.
 
-Closes Gap 1 + Gap 3 of the rSkill self-containment audit at the
-helper boundary. Verifies:
+Closes Gap 1 + Gap 3 of the rSkill self-containment audit. Verifies:
 
-- :func:`parse_hf_file_uri` splits URIs of the various shapes the schema
-  accepts (with / without revision pin; nested file paths).
-- :func:`materialize_processor_dir` calls
-  :func:`huggingface_hub.hf_hub_download` per URI with the exact
-  ``(repo_id, filename, revision)`` triplet declared in the manifest's
+- ``parse_hf_file_uri`` splits URIs the schema accepts (with/without
+  revision pin; nested file paths).
+- ``materialize_processor_dir`` calls
+  ``huggingface_hub.hf_hub_download`` per URI with the exact
+  ``(repo_id, filename, revision)`` triplet from the manifest's
   ``processors`` block — NOT ``snapshot_download``.
-- The returned directory exposes the lerobot-canonical filenames
-  (``policy_preprocessor.json`` / ``policy_postprocessor.json``) so the
-  ``make_pre_post_processors`` factory consumes them transparently.
+- The returned directory exposes lerobot-canonical filenames
+  (``policy_preprocessor.json``/``policy_postprocessor.json``) for
+  ``make_pre_post_processors``.
 
-Mocks are scoped to the ``huggingface_hub`` network boundary
-(CLAUDE.md §5.4 allows network-boundary mocks). Every other component
-— Pydantic schemas, manifest loaders, the helper itself — runs for real.
+Mocks are scoped to the ``huggingface_hub`` network boundary (CLAUDE.md
+§5.4). Everything else runs for real.
 """
 
 from __future__ import annotations
@@ -193,12 +191,10 @@ class TestMaterializeProcessorDir:
     def test_state_files_in_pipeline_json_are_materialized(self, tmp_path: Path) -> None:
         """Pipeline steps with ``state_file`` get their sibling .safetensors downloaded too.
 
-        Reason: ``lerobot.processor.pipeline.PolicyProcessorPipeline.from_pretrained``
-        walks every step in the loaded JSON. For steps that declare a
-        ``state_file`` (normalizer / unnormalizer / tokenizer) it checks the
-        passed directory first and, if the state file isn't there, falls back
-        to ``hf_hub_download(repo_id=<dir>, ...)`` — which fails because the
-        directory is a local path, not a repo id. So the helper must
+        ``PolicyProcessorPipeline.from_pretrained`` checks the passed directory
+        for each step's ``state_file``, then falls back to
+        ``hf_hub_download(repo_id=<dir>, ...)`` — which fails since the
+        directory is a local path, not a repo id. The helper must
         pre-materialize those state files into the same staging dir.
         """
         import json

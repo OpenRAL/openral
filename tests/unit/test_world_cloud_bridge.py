@@ -3,9 +3,9 @@
 Two layers, both runnable without rclpy / a ROS 2 workspace (mirrors
 ``tests/unit/test_slam_bridge.py``):
 
-1. The pure render core (:func:`crop_points_to_box`,
-   :func:`distance_to_rgb`, :func:`encode_world_cloud_png`,
-   :func:`world_cloud_span_attributes`) — tested directly against
+1. The pure render core (``crop_points_to_box``,
+   ``distance_to_rgb``, ``encode_world_cloud_png``,
+   ``world_cloud_span_attributes``) — tested directly against
    synthetic ``(N, 3)`` arrays.
 2. The dashboard store handler for ``world.pointcloud`` spans — a
    hand-built OTLP span fed through ``TelemetryStore.ingest_spans``,
