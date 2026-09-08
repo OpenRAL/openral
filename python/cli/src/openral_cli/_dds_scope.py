@@ -39,17 +39,30 @@ from typing import Final
 from openral_core.exceptions import ROSConfigError
 
 __all__ = [
-    "ALLOW_SHARED_GRAPH_ENV",
+    "ALLOW_UNVERIFIED_GRAPH_ENV",
     "SIM_DOMAIN_ID",
     "assert_graph_unoccupied",
     "confine_sim_scope",
 ]
 
-#: Escape hatch, matching the repo's other "I know what I am doing" env gates
-#: (``OPENRAL_ALLOW_REMOTE_CODE``, ``OPENRAL_ALLOW_UNSAFE_PICKLE``). Set it to
-#: attach a dashboard from another host, or to run a sim beside a robot on
-#: purpose. Named in every refusal below so the way out is never a guess.
-ALLOW_SHARED_GRAPH_ENV: Final[str] = "OPENRAL_ALLOW_SHARED_GRAPH"
+#: Escape hatch for **one** of this module's two refusals: the one raised when
+#: the graph could not be *read* at all (``rclpy`` will not import, the probe
+#: crashed). That is the guard's instrument being broken, not a hazard it
+#: detected, and without a way past it a broken rclpy import makes a deploy
+#: unrecoverable. Matches the repo's other "I know what I am doing" env gates
+#: (``OPENRAL_ALLOW_REMOTE_CODE``, ``OPENRAL_ALLOW_UNSAFE_PICKLE``).
+#:
+#: It deliberately does **not** cover the occupied-graph refusal. That one is
+#: #227 — a sim silently consuming a live OpenArm's joint states for ten rounds
+#: — and it is now unconditional: no env var makes OpenRAL start a robot onto a
+#: graph that already carries one. The predecessor ``OPENRAL_ALLOW_SHARED_GRAPH``
+#: covered both, so the single legitimate need (a broken probe) doubled as a way
+#: to switch off a real safety check, and the documented OpenArm bring-up
+#: *required* setting it until the vendor ros2_control graph moved inside
+#: ``deploy_e2e.launch.py``. A guard whose normal path tells you to disable it
+#: teaches operators to disable it (CLAUDE.md §1.1). Setting the old name now
+#: does nothing; the occupied-graph refusal names the real remedies instead.
+ALLOW_UNVERIFIED_GRAPH_ENV: Final[str] = "OPENRAL_ALLOW_UNVERIFIED_GRAPH"
 
 #: The domain a confined sim runs on. Any fixed value would do — what matters is
 #: that it is not 0, which is where an unconfigured robot host lands.
@@ -187,9 +200,6 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         ROSConfigError: When a foreign ``/joint_states`` publisher is present,
             or when the graph could not be read at all.
     """
-    if os.environ.get(ALLOW_SHARED_GRAPH_ENV) == "1":
-        return
-
     scope = (
         f"ROS_DOMAIN_ID={env.get('ROS_DOMAIN_ID', '0 (unset)')} "
         f"ROS_AUTOMATIC_DISCOVERY_RANGE="
@@ -201,12 +211,16 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         # the str arm is narrowed out of the union for the dict access below.
         return
     if found is None:
+        # The instrument is broken, not a hazard detected — the one refusal the
+        # escape hatch covers. See ALLOW_UNVERIFIED_GRAPH_ENV.
+        if os.environ.get(ALLOW_UNVERIFIED_GRAPH_ENV) == "1":
+            return
         raise ROSConfigError(
             f"could not read the ROS graph to check it is unoccupied ({scope}). "
             f"Refusing rather than assuming it is clear — a guard that passes "
             f"when its instrument is broken is worse than no guard. Check that "
             f"rclpy imports in this environment, then retry; set "
-            f"{ALLOW_SHARED_GRAPH_ENV}=1 to launch without the check.",
+            f"{ALLOW_UNVERIFIED_GRAPH_ENV}=1 to launch without the check.",
         )
 
     publishers = found.get("joint_state_publishers") or []
@@ -230,6 +244,9 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"/joint_states and can reach each other's command topics. On "
         f"2026-09-05 a sim silently consumed a live OpenArm's joint states this "
         f"way for ten rounds (#227).\n"
-        f"Run the simulation on a different host or domain, stop the other "
-        f"graph, or set {ALLOW_SHARED_GRAPH_ENV}=1 if sharing is intended.",
+        f"There is no env var that waives this. Run the simulation on a "
+        f"different host or ROS_DOMAIN_ID, or stop the other graph. If the "
+        f"other publisher is the vendor ros2_control graph for the robot you "
+        f"are launching, do not start it by hand — deploy_e2e.launch.py starts "
+        f"it under hal_mode:=real (see REAL_BRINGUP_LAUNCH).",
     )

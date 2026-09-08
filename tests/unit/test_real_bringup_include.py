@@ -5,8 +5,8 @@ Before `_build_real_bringup_include`, `deploy_e2e.launch.py` assumed the
 `controller_manager` graph was already up, so a real bring-up meant launching it
 by hand from a second terminal. That put a second `/joint_states` publisher on
 the bus, which is exactly what `openral_cli._dds_scope` refuses to launch over
-(#227) — so the documented path needed `OPENRAL_ALLOW_SHARED_GRAPH=1` to work at
-all, disarming a real safety guard to do an ordinary deploy.
+(#227) — so the documented path needed that guard disarmed by an env var to work
+at all. With the bringup inside the graph the refusal became unwaivable.
 
 The wiring is a convention, not a manifest field: a HAL package that ships
 `launch/real_bringup.launch.py` declares by that fact alone which controller

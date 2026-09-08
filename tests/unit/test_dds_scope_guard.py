@@ -70,7 +70,7 @@ class TestGraphOccupancyGuard:
 
     def test_a_sim_refuses_to_start_beside_a_robot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The 2026-09-05 direction, and it must fail closed rather than read it."""
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
         with pytest.raises(ROSConfigError) as excinfo:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
@@ -78,13 +78,15 @@ class TestGraphOccupancyGuard:
         assert "/joint_states already has 1 publisher" in message
         assert "joint_state_broadcaster" in message, "must name who is already there"
         assert "real hardware" in message, "ros2_control signature must be called out"
-        assert _dds_scope.ALLOW_SHARED_GRAPH_ENV in message, "the way out must be named"
+        # The way out must still be named — but it is an action, not an env var.
+        assert "different host or ROS_DOMAIN_ID" in message
+        assert "stop the other graph" in message
 
     def test_a_real_robot_refuses_to_start_beside_an_existing_graph(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The reverse direction — the one confinement cannot cover."""
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
         with pytest.raises(ROSConfigError) as excinfo:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="real")
@@ -92,7 +94,7 @@ class TestGraphOccupancyGuard:
 
     def test_an_empty_graph_launches(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guard must not block the normal case."""
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._EMPTY_GRAPH)
         _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
 
@@ -104,7 +106,7 @@ class TestGraphOccupancyGuard:
         The same posture the adjudicator takes for an uncertified probe: absence
         of evidence is not evidence of absence.
         """
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: None)
         with pytest.raises(ROSConfigError) as excinfo:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
@@ -120,7 +122,7 @@ class TestGraphOccupancyGuard:
         exercising the launch path while buying no safety, since there is no
         robot within reach.
         """
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: _dds_scope._NO_ROS)
         _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
 
@@ -129,15 +131,53 @@ class TestGraphOccupancyGuard:
         assert _dds_scope._NO_ROS is not None
         assert isinstance(_dds_scope._NO_ROS, str)
 
-    def test_the_escape_hatch_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Sharing on purpose stays possible, and is opt-IN."""
-        monkeypatch.setenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, "1")
+    def test_the_occupied_graph_refusal_cannot_be_waived(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No env var starts a robot onto a graph that already carries one.
+
+        The predecessor `OPENRAL_ALLOW_SHARED_GRAPH` waived this as well as the
+        unreadable-graph refusal, so the one legitimate need (a broken probe)
+        doubled as a switch for the #227 guard — and the documented OpenArm
+        bring-up *required* setting it, which teaches operators to set it.
+        Both spellings are pinned here so neither reopens the hole.
+        """
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
+        for name in ("OPENRAL_ALLOW_SHARED_GRAPH", _dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV):
+            monkeypatch.setenv(name, "1")
+            with pytest.raises(ROSConfigError):
+                _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
+            monkeypatch.delenv(name, raising=False)
+
+    def test_the_refusal_offers_no_env_var_as_a_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator must not read "set X=1" as a way past a live robot."""
+        monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
+        with pytest.raises(ROSConfigError) as excinfo:
+            _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
+        message = str(excinfo.value)
+        assert "OPENRAL_ALLOW_SHARED_GRAPH" not in message
+        assert _dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV not in message
+        assert "no env var that waives this" in message
+
+    def test_the_escape_hatch_covers_only_an_unreadable_graph(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken probe is the instrument failing, not a hazard detected.
+
+        Without a way past it, an environment where `rclpy` will not import
+        makes a deploy unrecoverable — so this one refusal stays waivable.
+        """
+        monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: None)
+        with pytest.raises(ROSConfigError):
+            _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
+        monkeypatch.setenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, "1")
         _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")
 
     def test_the_refusal_names_the_scope_it_checked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without the scope the operator cannot tell which graph was scanned."""
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
         env = {"ROS_DOMAIN_ID": "77", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
         with pytest.raises(ROSConfigError) as excinfo:
@@ -149,7 +189,7 @@ class TestGraphOccupancyGuard:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`domain 0` / `SUBNET` is the combination that caused the incident."""
-        monkeypatch.delenv(_dds_scope.ALLOW_SHARED_GRAPH_ENV, raising=False)
+        monkeypatch.delenv(_dds_scope.ALLOW_UNVERIFIED_GRAPH_ENV, raising=False)
         monkeypatch.setattr(_dds_scope, "_scan_graph", lambda _env: self._ROBOT_GRAPH)
         with pytest.raises(ROSConfigError) as excinfo:
             _dds_scope.assert_graph_unoccupied({}, hal_mode="sim")

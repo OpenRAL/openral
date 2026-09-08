@@ -324,7 +324,8 @@ def _build_real_bringup_include(hal_package: str) -> object | None:
     ``/joint_states`` publisher on the bus and tripped the shared-graph guard
     (``openral_cli._dds_scope``, #227) on the documented bring-up path. Starting
     it here keeps that guard meaningful: one graph, one publisher, and no
-    ``OPENRAL_ALLOW_SHARED_GRAPH`` escape hatch needed to deploy a real robot.
+    escape hatch needed to deploy a real robot — the occupied-graph refusal is
+    now unwaivable (``openral_cli._dds_scope``).
 
     Returns ``None`` when the package ships no such file — the case for every
     HAL whose controller graph is started elsewhere (a vendor daemon, a
