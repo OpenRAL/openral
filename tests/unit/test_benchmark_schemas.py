@@ -1,20 +1,17 @@
 """Unit tests for ProtocolSpec and the bare-list benchmark suite shape.
 
-The ``BenchmarkSpec`` wrapper class was deleted. A benchmark
-suite is now a bare ``list[BenchmarkScene]`` on disk + a ``suite_id`` derived
-from the YAML filename stem. Suite-level invariants moved out of
-``BenchmarkSpec.model_post_init`` into the free function
+A benchmark suite on disk is a bare ``list[BenchmarkScene]`` + a ``suite_id``
+derived from the YAML filename stem. Suite-level invariants live in
 :func:`openral_core.raise_on_invalid_suite`, which raises
-:class:`ROSConfigError` rather than ``pydantic.ValidationError`` so the
-suite id can be embedded in the error message.
+:class:`ROSConfigError` (not ``pydantic.ValidationError``) so the suite id
+can be embedded in the error message.
 
-``ProtocolSpec`` is retained as a standalone schema for design / report tooling
-(it never moved into ``BenchmarkScene``); its own construction / validation
-tests still apply unchanged.
+``ProtocolSpec`` is a standalone schema for design/report tooling, not part
+of ``BenchmarkScene``.
 
 The catalogue-fixture parametric test exercises every YAML under
-``benchmarks/`` via :func:`openral_core.load_benchmark_suite` (CLAUDE.md §1.11
-— real fixtures, no mocks).
+``benchmarks/`` via :func:`openral_core.load_benchmark_suite` (CLAUDE.md
+§1.11 — real fixtures, no mocks).
 """
 
 from __future__ import annotations
@@ -554,15 +551,13 @@ def test_benchmarks_catalogue_fixture_loads_and_passes_invariants(
 ) -> None:
     """Every YAML under benchmarks/ loads, passes suite invariants, and matches its catalogue row.
 
-    CLAUDE.md §1.11 — real fixtures. Each catalogue YAML is exercised by
-    a parametrised case so a typo / drift in any one of them fails loud
-    and points at the offending file.
+    CLAUDE.md §1.11 — real fixtures; a typo/drift in any catalogue YAML
+    fails loud and points at the file.
 
-    Asserts on the per-scene fields: suite invariants (see
-    :func:`raise_on_invalid_suite`) guarantee uniformity of ``robot_id`` /
-    ``n_episodes`` / ``metadata`` across the list; ``success_key`` /
-    ``max_steps`` MAY differ per-task by validator contract but every
-    shipped suite is uniform on ``success_key``.
+    Suite invariants (:func:`raise_on_invalid_suite`) guarantee uniformity
+    of ``robot_id``/``n_episodes``/``metadata``; ``success_key``/
+    ``max_steps`` MAY differ per-task by contract, but every shipped suite
+    is uniform on ``success_key``.
     """
     path = _BENCHMARKS_DIR / f"{stem}.yaml"
     if not path.exists():

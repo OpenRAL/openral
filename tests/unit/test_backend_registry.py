@@ -1,22 +1,17 @@
 """Unit tests for the runtime-backend / policy-attach-hook registry.
 
-Coverage
---------
-- ``resolve_runtime_backend``: built-in names (``pytorch``, ``onnx``, ``null``)
-  resolve to the real class; an unregistered name raises ``ROSConfigError``
-  naming ``openral-pro-trt``; a name registered under the
-  ``openral.runtime_backends`` entry-point group resolves to whatever real
-  class the entry point targets (proves the discovery path, not just the
-  built-in dict).
-- ``maybe_attach_pro_hooks``: no hook installed → ``False`` (debug log, no
-  raise); a registered ``openral.policy_attach_hooks`` entry point is invoked
-  and its truthy/falsy return propagates.
+Coverage: ``resolve_runtime_backend`` — built-in names (``pytorch``,
+``onnx``, ``null``) resolve to the real class; an unregistered name raises
+``ROSConfigError`` naming ``openral-pro-trt``; a name registered under the
+``openral.runtime_backends`` entry-point group resolves via the real
+discovery path. ``maybe_attach_pro_hooks`` — no hook installed → ``False``
+(debug log, no raise); a registered ``openral.policy_attach_hooks`` entry
+point is invoked and its truthy/falsy return propagates.
 
-Both entry-point tests monkeypatch ``entry_points`` with real
+Entry-point tests monkeypatch ``entry_points`` with real
 ``importlib.metadata.EntryPoint`` objects pointing at real, importable
-targets (an existing ``Runtime`` class; a module-level function in this
-file) — the discovery machinery is exercised for real, only the "what's
-installed" answer is controlled (CLAUDE.md §1.11: no mocks/stubs).
+targets — only "what's installed" is controlled (CLAUDE.md §1.11: no
+mocks/stubs).
 """
 
 from __future__ import annotations

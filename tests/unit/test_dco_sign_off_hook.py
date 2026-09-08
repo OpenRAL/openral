@@ -1,21 +1,17 @@
 """Regression tests for the DCO sign-off hook (``.githooks/prepare-commit-msg``).
 
-The hook auto-appends a ``Signed-off-by:`` trailer so the ``Verify Signed-off-by``
-CI passes without anyone remembering ``git commit -s``. Two defects corrupted a
-real commit (``990d70b``) during a stack rebase:
+The hook auto-appends a ``Signed-off-by:`` trailer so ``Verify Signed-off-by`` CI
+passes without ``git commit -s``. Two defects corrupted a real commit
+(``990d70b``) during a stack rebase: (1) idempotence keyed on the *formatted*
+trailer from ``git config user.name`` — a configured ``AdrianLlopart`` never
+matched the ``Adrian Llopart`` already in the message, so every rebase step that
+re-runs the hook (``reword``/``edit``, ``rebase --continue``) appended another
+sign-off; (2) ``git interpret-trailers`` reads a lone ``---`` as a patch start
+and inserted the trailer above it, splitting a body that legitimately contains
+``---``.
 
-1. Idempotence keyed on the *formatted* trailer built from ``git config
-   user.name``. A configured ``AdrianLlopart`` never matched the ``Adrian
-   Llopart`` already recorded in the message, so every rebase step that re-runs
-   the hook (``reword``/``edit``, ``rebase --continue``) appended another
-   sign-off.
-2. ``git interpret-trailers`` reads a lone ``---`` as the start of a patch and
-   inserted the trailer *above* it — splitting a body that legitimately contains
-   ``---`` and burying the trailer in the middle of the prose.
-
-These tests drive the real hook through real ``git commit`` and ``git rebase``
-invocations in a throwaway repository, so they neither need nor are affected by
-the hooks installed in the OpenRAL checkout itself.
+These tests drive the real hook through real ``git commit``/``git rebase`` in a
+throwaway repository, independent of the hooks installed in this checkout.
 """
 
 from __future__ import annotations
@@ -121,11 +117,10 @@ def test_appends_sign_off_to_a_plain_commit(repo: Path) -> None:
 def test_does_not_duplicate_an_existing_sign_off_spelled_differently(repo: Path) -> None:
     """Idempotence keys on the email, so a differently spelled name still matches.
 
-    The old hook also survived this particular shape — not because its check
-    worked, but because ``--if-exists doNothing`` saw a ``Signed-off-by`` key in
-    the trailing trailer block and declined. That safety net disappears the
-    moment a ``---`` divider hides the existing trailer (see the divider and
-    rebase tests), which is exactly how 990d70b ended up with two sign-offs.
+    The old hook survived this shape by accident: ``--if-exists doNothing`` saw a
+    ``Signed-off-by`` key in the trailing trailer block and declined — a safety net
+    that disappears once a ``---`` divider hides the existing trailer, which is how
+    990d70b ended up with two sign-offs.
     """
     _commit(repo, f"fix(sensors): clamp the stale deadline\n\n{TRAILER}\n", "b.txt")
 

@@ -212,23 +212,11 @@ def test_render_blocks_serializes_box_not_capsule() -> None:
 
 
 def test_a_box_never_lowers_to_a_capsule_smaller_than_itself() -> None:
-    """The retired inscribed-sphere lowering, and why its safety argument was wrong.
+    """The bounding capsule for a box link must contain the box (issue #155).
 
-    This test used to assert the opposite: that a box feeds the ACM sweep as its
-    *inscribed* sphere, on the reasoning that under-approximating "can only reduce
-    the collision count — it can never disable a self-collision check the true box
-    would keep".
-
-    Both halves of that were wrong (issue #155). The ACM sweep no longer reduces a
-    box to a single primitive at all — it asks `kernel_predicates.shape_distance`
-    for the true oriented box, the same question the kernel asks. And the
-    under-approximation was not safe even on its own terms: it silently dropped
-    `panda_link5`/`panda_link7`, and the same helper fed the cuMotion *planner*,
-    where believing a link is thinner than it is means planning into obstacles.
-
-    What survives is the invariant in the other direction: the one remaining
-    capsule lowering (for consumers that can only express capsules) must
-    **contain** the box.
+    Regression: the retired inscribed-sphere lowering under-approximated box links,
+    silently dropping panda_link5/panda_link7 self-collision checks and feeding the
+    cuMotion planner a thinner-than-real obstacle model.
     """
     box = BoxShape(half_extents_m=(0.08, 0.04, 0.02))
     origin = (0.1, 0.2, 0.3, 0.5, 0.6, 0.7)  # arbitrary rotation — must not matter

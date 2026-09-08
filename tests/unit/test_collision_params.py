@@ -73,13 +73,12 @@ def _two_link_arm() -> RobotDescription:
 def test_unknown_primitive_is_refused_not_lowered_as_a_capsule() -> None:
     """An unlowerable primitive raises instead of becoming an assumed capsule.
 
-    Before this fix the routing was ``if BoxShape: ... else: <capsule>``, so a
-    fourth variant was lowered as a zero-length capsule of its ``radius_m`` —
-    silently, and in the unsafe direction: a capsule of radius ``r`` is
-    contained in every non-spherical primitive carrying ``r``, so the kernel
-    received a strictly smaller volume than the manifest declared. Refusing is
-    at-least-as-conservative: no params are emitted, so no motion is authorised
-    against a wrong envelope.
+    Regression: the old routing (``if BoxShape: ... else: <capsule>``) lowered any
+    other variant to a zero-length capsule of its ``radius_m`` — unsafe, since that
+    capsule is contained in every non-spherical primitive carrying the same radius,
+    so the kernel got a smaller volume than declared. Refusing is at-least-as-
+    conservative: no params emitted, so no motion is authorised against a wrong
+    envelope.
     """
     robot = _two_link_arm()
     # `model_construct` bypasses validation — the only way to hold a primitive

@@ -254,19 +254,13 @@ def test_topic_prefix_locked_to_adr_path() -> None:
 
 
 # ── Live integration: real GStreamer + real rclpy ────────────────────────────
-#
-# Gates live behind ``OPENRAL_TEST_ROS_LIVE=1`` because live rclpy + DDS init can
-# clash with a glib pulled in by torch/pyarrow during the regular pytest run.
-# Importorskips live *inside* the test function so the pure-Python tests above
-# stay collectible on hosts without PyGObject / rclpy.
-#
-# Deliberately NOT in the CI live-ROS suite (``scripts/ros_live_tests.sh``,
-# issue #46): unlike the reasoner tests it also needs PyGObject, and the only CI
-# image with a real rclpy is ``openral:x86`` — THE gstreamer-free deploy image
-# (the media stack is OpenRAL Pro). No CI surface has gi + rclpy together, so
-# wiring it up would buy a guaranteed skip. Retiring the gate would not help
-# either: it is a crash guard, not just an availability check. `just test` runs
-# this file on a dev host that has the ``gstreamer`` extra installed.
+# Gated on OPENRAL_TEST_ROS_LIVE=1: rclpy + DDS init can clash with glib pulled
+# in by torch/pyarrow during the regular pytest run. importorskips live inside
+# the test so the pure-Python tests above stay collectible without PyGObject/rclpy.
+# Not in the CI live-ROS suite (scripts/ros_live_tests.sh, issue #46) — needs
+# PyGObject too, and the only CI image with real rclpy (openral:x86) ships no
+# gstreamer/gi (media stack is OpenRAL Pro): a crash guard, not just an
+# availability check. `just test` runs it on a dev host with the gstreamer extra.
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _LIVE_ROS_REASON = (

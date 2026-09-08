@@ -1,18 +1,14 @@
 """Gripper-effort grasp trigger: debounce, hysteresis, regrasp, effort-channel health.
 
-Every state snapshot here is a real :class:`openral_core.JointState` over the
-real ``robots/so101_follower/robot.yaml`` manifest, so the joint names, the
-``role: "gripper"`` resolution and the ``effort_limit`` the fractional
-thresholds scale against all come from the shipped robot rather than from
-placeholders (CLAUDE.md §1.11).
+State snapshots are real :class:`openral_core.JointState` over the real
+``robots/so101_follower/robot.yaml`` manifest — joint names, ``role: "gripper"``
+resolution and ``effort_limit`` all come from the shipped robot (CLAUDE.md §1.11).
 
-The effort *values* are chosen by these tests, and deliberately so: this is the
-component that decides when to believe a grasp happened, and the point of the
-suite is to pin what it does at, above and below its own thresholds. What no
-test here can establish — and what the module says out loud — is whether an
-SO-101's Feetech servos actually report those numbers. That is hardware
-validation, and :func:`~openral_hal._grasp_trigger.assess_effort_readback` is the
-hook for it; the last test in this file exercises the hook itself.
+Effort *values* are chosen by these tests to pin trigger behaviour at, above and
+below its own thresholds. Whether an SO-101's Feetech servos actually report
+those numbers is hardware validation, not covered here — see
+:func:`~openral_hal._grasp_trigger.assess_effort_readback`, exercised by the
+last test in this file.
 """
 
 from __future__ import annotations
@@ -93,10 +89,9 @@ def test_attach_needs_n_consecutive_ticks(description: RobotDescription) -> None
 def test_a_transient_effort_spike_never_attaches(description: RobotDescription) -> None:
     """One tick over the threshold between quiet ticks is rejected as a spike.
 
-    This is the whole reason the debounce exists: closing the jaws accelerates
-    the servo and spikes the effort readback whether or not anything is between
-    them, and a one-tick attach would hand the collision checker a payload for a
-    grasp that never happened.
+    Closing the jaws accelerates the servo and spikes effort readback whether
+    or not anything is between them; a one-tick attach would hand the
+    collision checker a payload for a grasp that never happened.
     """
     trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=3))
     for effort in (0.0, 3.0, 0.0, 3.0, 0.0):

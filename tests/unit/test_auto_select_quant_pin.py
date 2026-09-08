@@ -1,15 +1,13 @@
 """Pin ``auto_select_quant`` outputs across the supported Jetson targets.
 
-Regression guard: if anyone tweaks the heuristic
-in :func:`openral_rskill.quantization.auto_select_quant`, the
-Jetson families will not silently change dtype.
+Regression guard: if the heuristic in
+:func:`openral_rskill.quantization.auto_select_quant` changes, the Jetson
+families will not silently change dtype.
 
-Note: the design's original prediction for Orin Nano / Xavier NX was `int4`,
-but the actual heuristic returns `fp16` for 8 GB shared memory (the
-4 GB < mem ≤ 8 GB band lands in fp16, not int4). The pin-tests
-document the **actual** behaviour. Promoting Orin Nano / Xavier NX to
-`int4` is a follow-up against `auto_select_quant` itself, not against
-this file — the original prediction was prescriptive, not descriptive.
+Orin Nano / Xavier NX: design predicted `int4`, but the heuristic returns
+`fp16` for 8 GB shared memory (4 GB < mem ≤ 8 GB lands in fp16). These
+pins document the actual behaviour; promoting to `int4` is a follow-up
+against `auto_select_quant` itself, not this file.
 """
 
 from __future__ import annotations

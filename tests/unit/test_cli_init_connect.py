@@ -1,24 +1,19 @@
 """Unit tests for ``openral connect``.
 
-Companion to ``tests/unit/test_cli_skill.py`` (covers ``openral rskill
-install/list``) and ``tests/unit/test_doctor.py`` (covers ``openral
-doctor``). ``openral detect`` (which superseded ``ral init``) is covered
-by ``tests/unit/test_detect_*.py``; ``openral calibrate camera`` lives
-with the rest of the sensor surface in ``tests/unit/test_sensors.py``.
+Companion to ``test_cli_skill.py`` (``openral rskill install/list``) and
+``test_doctor.py`` (``openral doctor``). ``openral detect`` (superseded
+``ral init``) is covered by ``test_detect_*.py``; ``openral calibrate
+camera`` lives in ``test_sensors.py``.
 
 The SO-100 serial port is a hardware boundary no CI box has, so the HAL
 is substituted with the recording fake in
-:mod:`tests.unit.fakes.fake_so100_hal` (CLAUDE.md §1.11 boundary
-double). Assertions target CLI behavior (exit code, output, fake's
-observable lifecycle state), never mock call bookkeeping.
+:mod:`tests.unit.fakes.fake_so100_hal` (CLAUDE.md §1.11 boundary double).
+Assertions target CLI behavior, never mock call bookkeeping.
 
-Coverage
---------
-- ``openral connect`` — unsupported robot type → exit 1.
-- ``openral connect`` — happy path: joint summary printed, HAL left disconnected.
-- ``openral connect`` — ``ROSConfigError`` from ``connect()`` → exit 1.
-- ``openral connect`` — ``ROSRuntimeError`` from ``connect()`` → exit 1.
-- ``openral connect`` — read failure still disconnects (finally clause).
+Coverage: unsupported robot type → exit 1; happy path (joint summary
+printed, HAL left disconnected); ``ROSConfigError``/``ROSRuntimeError``
+from ``connect()`` → exit 1; read failure still disconnects (finally
+clause).
 """
 
 from __future__ import annotations

@@ -1,26 +1,20 @@
 """Canary: SmolVLA adapter no longer calls snapshot_download.
 
-Closes Gap 1 + Gap 3 of the rSkill self-containment audit at the
-adapter layer. The SmolVLA + modern-ACT adapters MUST consume
-``manifest.processors`` via per-file ``hf_hub_download`` —
-``snapshot_download`` is the implicit-fetch path we deliberately
-replaced and should not creep back in.
+Closes Gap 1 + Gap 3 of the rSkill self-containment audit at the adapter
+layer. SmolVLA + modern-ACT adapters must consume ``manifest.processors``
+via per-file ``hf_hub_download``; ``snapshot_download`` is the deliberately
+replaced implicit-fetch path and must not creep back in.
 
-The ACT adapter still legitimately calls ``snapshot_download`` from the
-LEGACY branch (``rskills/act-aloha``, where norm stats live inside
-``model.safetensors`` and the policy class itself loads via
-``ACTPolicy.from_pretrained(pretrained_path)``). That branch is
-documented and out of scope for this round. This test pins:
+The ACT adapter's LEGACY branch (``rskills/act-aloha``, norm stats inside
+``model.safetensors``, loaded via ``ACTPolicy.from_pretrained``) still
+legitimately calls ``snapshot_download`` — documented, out of scope here.
+Pins:
 
 - ``policies/smolvla.py``: no ``snapshot_download`` reference anywhere
   (the only HF Hub call goes through ``materialize_processor_dir``).
-- ``policies/act.py``: at most one ``snapshot_download`` call site
-  (the ACT-specific config+weights snapshot that feeds
-  ``_sanitize_act_config_json`` + ``ACTPolicy.from_pretrained``), and
-  that call site is NOT inside the modern-processors branch.
-
-If the count creeps up, the canary fires before a silent regression
-lands a new implicit fetch.
+- ``policies/act.py``: at most one ``snapshot_download`` call site (the
+  ACT-specific config+weights snapshot feeding ``_sanitize_act_config_json``
+  + ``ACTPolicy.from_pretrained``), not inside the modern-processors branch.
 """
 
 from __future__ import annotations
@@ -37,9 +31,7 @@ def _read_source(rel_path: str) -> str:
 def _count_code_occurrences(src: str, symbol: str) -> int:
     """Count ``symbol`` occurrences in non-comment lines only.
 
-    Comments are allowed to mention the symbol (e.g. "no snapshot_download
-    here" or a historical note) without tripping the canary. We only flag
-    real Python references.
+    Comments may mention the symbol without tripping the canary.
     """
     count = 0
     for line in src.splitlines():
@@ -62,19 +54,10 @@ def test_smolvla_adapter_has_no_snapshot_download() -> None:
 
 
 def test_act_adapter_keeps_only_legacy_snapshot_calls() -> None:
-    """ACT keeps a bounded number of snapshot_download references.
-
-    Two legitimate call sites today, each preceded by a local import =
-    four code occurrences:
-
-    1. Policy weights snapshot for ``_sanitize_act_config_json`` +
-       ``ACTPolicy.from_pretrained`` (config + weights, not processors).
-    2. Legacy norm-stats loader (`_try_load_act_norm_stats` —
-       ``rskills/act-aloha`` keeps working unchanged).
-
-    The modern PolicyProcessorPipeline path now uses
-    ``materialize_processor_dir`` instead of ``snapshot_download``;
-    a third call site indicates a regression.
+    """ACT keeps ≤ ``max_allowed`` non-comment ``snapshot_download`` refs: the
+    legacy weights snapshot (``_sanitize_act_config_json`` +
+    ``ACTPolicy.from_pretrained``) and the legacy norm-stats loader
+    (``rskills/act-aloha``); the modern path uses ``materialize_processor_dir``.
     """
     src = _read_source("python/sim/src/openral_sim/policies/act.py")
     occurrences = _count_code_occurrences(src, "snapshot_download")
@@ -128,12 +111,11 @@ def test_act_adapter_uses_materialize_processor_dir_in_modern_branch() -> None:
 def test_act_close_releases_the_nvmm_executor() -> None:
     """The TRT device executor must be closed on skill swap, not left to GC.
 
-    Its engine + activation workspace live outside torch's caching
-    allocator, so release_torch_modules cannot reclaim them — an adapter
-    close() that skips the executor leaves the VRAM resident and the next
-    skill's load OOMs (the exact 'swap did not give the card back' class the
-    SmolVLA adapter already guards via its _nvmm_encoder teardown). The fake
-    stands in for the OpenRAL Pro executor at the package boundary (§1.11).
+    Its engine + activation workspace live outside torch's caching allocator,
+    so release_torch_modules cannot reclaim them; a close() that skips the
+    executor leaves VRAM resident and the next skill's load OOMs (same class
+    SmolVLA's _nvmm_encoder teardown guards against). Fake stands in for the
+    OpenRAL Pro executor at the package boundary (§1.11).
     """
     from openral_core import VLASpec
     from openral_sim.policies.act import _ACTAdapter

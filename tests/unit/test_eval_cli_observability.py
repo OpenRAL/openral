@@ -1,16 +1,13 @@
 """``openral`` CLI top-level owns OTel; every invocation runs under ``cli.command``.
 
-Ownership moved from the sim leaf (``openral_sim.cli``) to the top-level
-``openral_cli.main:_root`` callback so the entire invocation — including
-the sim / benchmark / connect subcommands — runs inside a single
-``cli.command`` root span. Shutting down the providers inside the sim
-leaf used to drain the BatchSpanProcessor before the root span's
-``__exit__`` ran, dropping the export silently; that bug is now
-prevented by structure.
+Ownership lives in ``openral_cli.main:_root`` so sim/benchmark/deploy/connect
+subcommands all run inside one root ``cli.command`` span. The sim leaf
+(``openral_sim.cli``) used to shut providers down itself, draining the
+BatchSpanProcessor before the root span's ``__exit__`` ran and silently
+dropping the export.
 
-Tests use the real OTel SDK with an in-memory exporter (CLAUDE.md
-§1.11 / §5.4). No mocks of ``configure_observability`` —
-the production code path is exercised end-to-end.
+Tests use the real OTel SDK with an in-memory exporter (CLAUDE.md §1.11);
+no mocks of ``configure_observability``.
 """
 
 from __future__ import annotations
@@ -60,13 +57,10 @@ def test_ral_sim_list_runs_under_cli_command_span(memory_exporter: InMemorySpanE
 
 
 def test_ral_doctor_runs_under_cli_command_span(memory_exporter: InMemorySpanExporter) -> None:
-    """``openral doctor`` (a top-level command, no mode mapping) still gets wrapped.
+    """``openral doctor`` (no mode mapping) still gets a ``cli.command`` span.
 
-    The mode mapping in ``main._RUN_MODE_BY_SUBCOMMAND`` covers
-    ``sim`` / ``benchmark`` / ``deploy`` / ``connect`` — every other
-    subcommand emits a ``cli.command`` span with no ``openral.run.mode``
-    attribute. Asserting that explicitly catches regressions where a
-    future contributor accidentally adds an unconditional mode.
+    ``main._RUN_MODE_BY_SUBCOMMAND`` covers sim/benchmark/deploy/connect only;
+    every other subcommand's span carries no ``openral.run.mode`` attribute.
     """
     cli = CliRunner()
     result = cli.invoke(app, ["doctor"])

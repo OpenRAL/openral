@@ -1,22 +1,14 @@
 """Doctest enforcement — implements the CLAUDE.md §5.4 doctest mandate.
 
-CLAUDE.md §5.4 requires *"every public-facing example block in a docstring
-is run"*.  This file enforces that rule for the curated set of packages whose
-doctests pass today.  When a new package is added, append it to
-``DOCTEST_TARGETS`` here and to the corresponding ``just test-doctest``
-recipe in the ``Justfile``.
+CLAUDE.md §5.4 requires every public docstring example to run. Enforced for
+the curated, explicitly opt-in ``DOCTEST_TARGETS`` list; adding a package
+means appending it here AND to ``just test-doctest`` in the Justfile.
 
-The list is **explicitly opt-in** — adding a path is a deliberate decision
-to keep the docstring examples passing forever, not a global flag that
-sweeps in every new module silently.
-
-Every public module that ships docstring examples is currently in
-``DOCTEST_TARGETS``.  ``runtime_onnx.py`` joined the list once its
-``import onnxruntime`` was lazified into a constructor-time import
-(see ``_import_ort``); the previous structlog stdout pollution that
+``runtime_onnx.py`` joined once ``import onnxruntime`` was lazified into a
+constructor-time import (``_import_ort``); structlog stdout pollution that
 blocked ``world_state/aggregator.py``, ``hal/so100_follower.py``, and
-``hal/ros_control.py`` is fixed by the repo-root ``conftest.py`` that
-filters every record below ``WARNING``.
+``hal/ros_control.py`` is fixed by the repo-root ``conftest.py`` filtering
+records below ``WARNING``.
 """
 
 from __future__ import annotations
@@ -67,11 +59,9 @@ DOCTEST_TARGETS: list[str] = [
 def test_curated_doctest_targets_all_pass() -> None:
     """Every path in ``DOCTEST_TARGETS`` must have its doctests pass.
 
-    Runs ``pytest --doctest-modules`` as a subprocess so the inner pytest
-    invocation is independent of the outer one.  Subprocess (rather than
-    in-process ``pytest.main``) avoids re-entering the pytest plugin loop
-    and makes the failure mode crisp: stdout / stderr show up directly in
-    the failure message.
+    Runs ``pytest --doctest-modules`` as a subprocess (not in-process
+    ``pytest.main``) to stay independent of the outer pytest run and avoid
+    re-entering its plugin loop; stdout/stderr surface directly on failure.
     """
     targets = [str(_REPO_ROOT / p) for p in DOCTEST_TARGETS]
     for path in targets:
@@ -94,12 +84,10 @@ def test_curated_doctest_targets_all_pass() -> None:
 
 
 def test_doctest_targets_collect_at_least_30_examples() -> None:
-    """Smoke check: the curated set actually exercises a meaningful number of examples.
+    """Smoke check: the curated set exercises a meaningful number of examples.
 
-    A regression that silently strips example blocks from docstrings would
-    pass ``test_curated_doctest_targets_all_pass`` (vacuously). This test
-    asserts that we are running at least the count we have today, so a
-    drop-off triggers a CI failure.
+    Guards against silently stripped example blocks, which would otherwise pass
+    ``test_curated_doctest_targets_all_pass`` vacuously.
     """
     targets = [str(_REPO_ROOT / p) for p in DOCTEST_TARGETS]
     cmd = [sys.executable, "-m", "pytest", "--doctest-modules", "--collect-only", "-q", *targets]

@@ -27,10 +27,11 @@ from openral_sim.policies.molmoact2 import (
 
 
 class TestEnableExpandableSegments:
-    """MolmoAct2 NF4 is ~6 GiB resident and peaks ~7.63 GiB; on an 8 GiB card the
-    first forward's ~1.5 GiB embedding cat OOMs without the CUDA expandable-
-    segments allocator. The adapter enables it before the first CUDA allocation.
-    Verified on an RTX 4070: OOM without, peak 7.63 GiB fit with (see PR)."""
+    """MolmoAct2 NF4: ~6 GiB resident, peaks ~7.63 GiB. On an 8 GiB card the
+    first forward's ~1.5 GiB embedding cat OOMs without the CUDA
+    expandable-segments allocator, enabled before the first CUDA allocation.
+    RTX 4070: OOM without, 7.63 GiB peak fit with.
+    """
 
     # Follows the installed torch: the var was renamed in 2.9
     # (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF) and the old spelling now

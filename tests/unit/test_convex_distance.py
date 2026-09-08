@@ -1,25 +1,19 @@
 """The replacement distance instrument is exact, certified, and refuses when it cannot be.
 
 ``openral_hal.convex_distance`` exists because ``mujoco.mj_geomDistance`` is
-unreliable for RoboCasa-fixture-vs-panda-mesh pairs under mujoco 3.8.0 (that
-module's docstring carries the measurements). An instrument adopted for that
-reason has to be held to a higher standard than the one it replaces, so this
-file pins three separate things:
+unreliable for RoboCasa-fixture-vs-panda-mesh pairs under mujoco 3.8.0 (measurements
+in that module's docstring). This file pins three things: **accuracy** against
+analytically-known distances (boxes at a stated offset, spheres, capsules,
+cylinders, the penetrating branch) rather than another implementation;
+**the certificate** — every separated answer closes its own separating-axis
+duality gap, a bracketed round type reports a bracket containing the truth, and
+an uncertifiable answer says so instead of being emitted (CLAUDE.md §1.4); and
+**the witness validator**, the contradiction detector that exposed the original
+defect (a nearest-point segment whose endpoints lie outside both geoms can't be
+a nearest pair).
 
-* **Accuracy** against distances that are known analytically — boxes at a
-  stated offset, spheres, capsules, cylinders, and the penetrating branch —
-  rather than against another implementation.
-* **The certificate.** Every separated answer must close its own
-  separating-axis duality gap; a bracketed round type must report a bracket
-  that contains the truth; and an answer that cannot be certified must say so
-  instead of being emitted (CLAUDE.md §1.4, no hidden fallbacks).
-* **The witness validator**, which is the contradiction detector that exposed
-  the original defect: a nearest-point segment whose endpoints lie outside
-  both geoms cannot be a nearest pair.
-
-No mocks (CLAUDE.md §1.11): real compiled ``MjModel``s throughout, and the
-mesh case is the *real* panda link-7 collision mesh, read out of the robot's
-own MJCF description rather than invented here.
+No mocks (CLAUDE.md §1.11): real compiled ``MjModel``s, and the mesh case is the
+*real* panda link-7 collision mesh from the robot's own MJCF description.
 """
 
 from __future__ import annotations

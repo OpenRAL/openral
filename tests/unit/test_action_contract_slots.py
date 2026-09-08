@@ -1,20 +1,15 @@
 """Unit + property tests for ``ActionContract.slots``.
 
-Covers:
+Covers: per-mode field requirements on :class:`ActionSlot` (ee/frame/
+joint_names per control_mode); :class:`ActionContract` coverage invariants
+(every index in ``[0, dim)`` in exactly one slot, no gaps/overlaps);
+discard-slot semantics; JSON round-trip; and the property that any
+non-overlapping partition of ``[0, dim)`` with correct per-mode fields
+validates.
 
-* Per-mode field requirements on :class:`ActionSlot` (ee / frame /
-  joint_names presence per control_mode).
-* Coverage invariants on :class:`ActionContract`: every index in
-  ``[0, dim)`` belongs to exactly one slot, no gaps, no overlaps.
-* Discard-slot semantics: no Action emitted, but coverage still
-  honoured.
-* Round-trip JSON serialisation.
-* Property: any partition of ``[0, dim)`` into non-overlapping
-  slot ranges + correct per-mode fields validates.
-
-The full slot dispatcher (``rskill_runner_node._step_impl``) is tested
-in a sibling module (``test_skill_runner_slot_dispatch.py``) once the
-dispatcher lands. This file is the schema-side guard.
+The full slot dispatcher (``rskill_runner_node._step_impl``) is tested in
+``test_skill_runner_slot_dispatch.py`` once it lands — this file is the
+schema-side guard.
 """
 
 from __future__ import annotations

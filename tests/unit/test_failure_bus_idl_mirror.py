@@ -1,37 +1,19 @@
 """``failure_bus`` ↔ ``openral_msgs/FailureTrigger`` constant-mirror contract.
 
-``openral_observability.failure_bus`` restates the ``FailureTrigger`` ``KIND_*``
-/ ``SEVERITY_*`` numbers as plain Python ints so a caller can publish (or read)
-a typed failure event **without** a sourced ROS install — the ``openral`` CLI,
-the sim runner, and every ROS-free unit test reach for that mirror rather than
-the generated IDL.
+``openral_observability.failure_bus`` restates ``FailureTrigger``'s
+``KIND_*``/``SEVERITY_*`` as plain Python ints so ROS-free callers (CLI, sim
+runner, unit tests) can publish/read typed failure events without a sourced
+ROS install.
 
-Nothing pinned it until now, and it had already drifted: the mirror stopped at
-``KIND_REASONER_TIMEOUT = 9`` and never grew ``KIND_COLLISION = 10``, which
-``FailureTrigger.msg``, ``SafetyStatus.msg``, the safety kernel's
-``ViolationKind`` and its ``publish_collision_failure`` all carry. The whole
-collision stack therefore produced the one kind no ROS-free caller could name,
-and the callers that needed it hard-coded the literal ``10``.
+Regression pinned: the mirror drifted, stopping at
+``KIND_REASONER_TIMEOUT=9`` and missing ``KIND_COLLISION=10`` (present on
+``FailureTrigger.msg``, ``SafetyStatus.msg``, the safety kernel), so callers
+hard-coded the literal ``10``. Checks both directions (IDL→mirror,
+mirror→IDL) plus ``__all__`` export — the same by-name technique as the
+reasoner's ``_failure_kind_value``.
 
-So this reads the **generated** constants off the colcon-built message class and
-compares them against the module both ways round:
-
-* every ``KIND_*`` / ``SEVERITY_*`` on the IDL exists in the mirror with the
-  same value — the next constant added to the ``.msg`` fails here;
-* every ``KIND_*`` / ``SEVERITY_*`` in the mirror still exists on the IDL — a
-  constant *removed* from (or renamed in) the ``.msg`` fails here too, instead
-  of leaving a Python name that silently means nothing on the wire;
-* every mirrored constant is exported in ``__all__`` — the second half of "a
-  caller can name it", and the half a hand-added constant forgets.
-
-Reading the IDL by name is the same technique the reasoner's
-``_failure_kind_value`` uses for ``ExecuteRskill.Result``: the test cannot
-redeclare the numbers it is supposed to be checking.
-
-Needs the colcon ``openral_msgs`` overlay (``just ros2-build`` + ``source
-install/setup.bash``); skips without it (CLAUDE.md §1.11 — never faked). It is
-listed in ``scripts/ros_live_tests.sh`` so the docker image — the only CI
-surface that has the overlay — actually runs it.
+Needs the colcon ``openral_msgs`` overlay; skips without it (CLAUDE.md
+§1.11). Run by ``scripts/ros_live_tests.sh`` in the docker CI image.
 """
 
 from __future__ import annotations

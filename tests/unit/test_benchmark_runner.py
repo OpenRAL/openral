@@ -5,14 +5,10 @@ scene + zero policy — no GPU, no HF Hub, no physics. The mock adapter
 terminates each episode at step ``success_step`` so a full
 ``tasks × n_episodes`` matrix completes in well under a second.
 
-``BenchmarkSpec`` was deleted; ``run_benchmark`` and
-``_aggregate_results`` now take a bare ``list[BenchmarkScene]`` + a
-keyword-only ``suite_id``. Tests build the list directly via
-``_mini_suite``.
-
-Also covers the public helper ``default_output_path``: the
-canonical mapping from a bare rSkill ref to
-``rskills/<dir>/eval/<benchmark>.json``.
+``run_benchmark`` / ``_aggregate_results`` take a bare
+``list[BenchmarkScene]`` + a keyword-only ``suite_id`` (built via
+``_mini_suite``). Also covers ``default_output_path``: the canonical
+mapping from a bare rSkill ref to ``rskills/<dir>/eval/<benchmark>.json``.
 """
 
 from __future__ import annotations

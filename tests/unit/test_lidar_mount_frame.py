@@ -1,25 +1,20 @@
 """The lidar's frame and the ray that produces it must agree.
 
 `robots/panda_mobile/robot.yaml` used to declare `frame_id: base_link` for its
-2-D lidar. The sim casts that fan 0.30 m above the FLOOR, while `base_link` is
-the `robot0_base_pos` platform frame at 0.700 m — so every return reached Nav2
-and slam_toolbox 0.40 m above where it was measured. Kitchens hid it (cabinets
-are floor-to-counter slabs, so a fan at 0.05 / 0.30 / 0.70 m returns an
-identical scan) but anything living between those heights would have been mapped
-0.40 m off.
+2-D lidar. The sim casts that fan at 0.30 m world z; `base_link` sits at
+0.700 m (`robot0_base_pos`), so every return reached Nav2/slam_toolbox 0.40 m
+above where it was measured — hidden by kitchens (floor-to-counter slabs give
+an identical scan at 0.05/0.30/0.70 m) but wrong at other heights. Fix pinned
+here: the lidar owns its frame, the mount is declared once, and the mount
+offset reconciles the two.
 
-These pin the fix: the lidar owns its frame, the mount is declared once, and the
-declared mount is the offset that reconciles the two.
-
-The same manifest carried a second physical dishonesty, fixed by #194:
-`range_min_m` read 0.55 m — not the sensor's minimum but a radial cutoff sized
-to hide a chassis whose circumscribed radius is 0.43 m. It deleted every REAL
-obstacle inside 0.55 m in every direction, in the band where Nav2 has the least
-room to react. Self-returns are excluded by IDENTITY instead — by kinematic-tree
-root in sim, by the chassis polygon in `payload_scan_filter_node` on hardware —
-so the field is free to mean what it says. The last test below is the invariant:
-a `range_min_m` that reaches past the chassis is a self-filter again, whatever
-the comment claims.
+Second issue, fixed by #194: `range_min_m` read 0.55 m — not the sensor's
+minimum but a radial cutoff sized to hide a chassis with circumscribed radius
+0.43 m, deleting every real obstacle inside 0.55 m where Nav2 has least room
+to react. Self-returns are now excluded by IDENTITY (kinematic-tree root in
+sim, chassis polygon in `payload_scan_filter_node` on hardware). Invariant
+pinned below: `range_min_m` reaching past the chassis is a self-filter again,
+whatever the comment claims.
 """
 
 from __future__ import annotations
@@ -83,11 +78,8 @@ def test_the_mount_default_matches_the_sim_cast_height() -> None:
 def test_range_min_cannot_reach_past_the_chassis() -> None:
     """`range_min_m` is the sensor's minimum, so it must not double as a self-filter.
 
-    Regression for #194. A `range_min_m` at or beyond the chassis's
-    circumscribed radius is indistinguishable from a radial self-filter: every
-    return it drops inside that radius *could* be the robot, so the value stops
-    being a sensor property and starts silently deleting obstacles. Below the
-    radius it can only be the sensor's own floor.
+    Regression for #194: at or beyond the chassis's circumscribed radius it is
+    indistinguishable from a radial self-filter, silently deleting real obstacles.
     """
     desc = _panda_mobile()
     lidar = desc.lidar_sensor

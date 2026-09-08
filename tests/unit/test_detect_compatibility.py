@@ -108,14 +108,11 @@ class TestInTreeSkillsAgainstSo100:
             so100_robot, registry_path=empty_registry, rskills_dir=SKILLS_DIR
         )
         assert len(report.rows) >= 4
-        # SO-100-tagged skills must not be rejected on EMBODIMENT grounds
-        # (their embodiment intersects so100_follower). A skill may still fail
-        # on an orthogonal sensor/capability check — e.g. the `kind: detector`
-        # RT-DETR rSkills are embodiment-agnostic (``embodiment_tags: ["any"]``)
-        # so they clear the embodiment gate but still require a 640x480
-        # RGB camera the bare SO-100 manifest doesn't declare
-        # (failure_kind="sensor_modality") — which is the sensor case, not the
-        # embodiment case under test here.
+        # SO-100-tagged skills must not fail on EMBODIMENT grounds (tag intersects
+        # so100_follower); they may still fail elsewhere, e.g. the `kind: detector`
+        # RT-DETR skills are embodiment-agnostic (tags=["any"]) but need a 640x480
+        # RGB camera the bare SO-100 manifest lacks — failure_kind="sensor_modality",
+        # not the embodiment case under test here.
         so100_rows = [r for r in report.rows if "so100_follower" in r.embodiment_tags]
         assert so100_rows, "expected at least one so100_follower-tagged manifest"
         assert all(r.failure_kind != "embodiment_tag" for r in so100_rows)

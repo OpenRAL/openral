@@ -1,33 +1,20 @@
 """Schema-compliance tests for every in-tree robot, scene, and sensor manifest.
 
-Policy
-------
 Every manifest YAML in ``robots/``, ``scenes/benchmark/``, ``scenes/sim/``,
-and ``scenes/deploy/`` **must** be explicitly listed in the registry below.
-If a new file is added to the repository without being added here the
-*completeness* tests will fail, forcing the author to both list the file and
-verify it passes schema validation.
+and ``scenes/deploy/`` must be explicitly listed in the registry below —
+not glob-discovered, so a new file forces conscious registration and the
+registries stand as the audit trail of what exists and its schema tier.
 
-This is intentionally NOT a dynamic glob-all approach:
-- New files must be consciously registered, not silently picked up.
-- The registries act as the single-place audit trail of what manifests
-  exist and which schema tier each belongs to.
-
-Coverage
---------
+Coverage:
 - :data:`_ROBOT_IDS`       → ``robots/<id>/robot.yaml``       via :class:`RobotDescription`
 - :data:`_BENCHMARK_STEMS` → ``scenes/benchmark/<stem>.yaml`` via :class:`BenchmarkScene`
 - :data:`_SIM_STEMS`       → ``scenes/sim/<stem>.yaml``       via :class:`SimScene`
 - :data:`_DEPLOY_STEMS`    → ``scenes/deploy/<stem>.yaml``    via :class:`DeployScene`
-- Per-robot sensor entries → :class:`SensorSpec` with modality-specific
-  invariants (intrinsics for RGB/depth/stereo; n_channels + range for
-  lidar/point-cloud).
+- Per-robot sensor entries → :class:`SensorSpec` (intrinsics for RGB/depth/
+  stereo; n_channels + range for lidar/point-cloud).
 
-Adding a new manifest
----------------------
-1. Place the YAML in the correct subdirectory (determines schema tier).
-2. Add its identifier to the matching registry constant below.
-3. Run ``just test -k test_all_manifests`` — all tests must pass.
+New manifest: add it to the matching registry constant, then
+``just test -k test_all_manifests``.
 """
 
 from __future__ import annotations

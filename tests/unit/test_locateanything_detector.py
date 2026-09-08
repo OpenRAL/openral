@@ -202,12 +202,11 @@ def test_locate_in_view_palette_gated_on_detector_available() -> None:
 def test_locateanything_extra_declares_sidecar_client_deps() -> None:
     """The detector-node-side ZMQ client transport is a declared dependency.
 
-    Regression guard: the ``LocateAnythingDetector`` client (which runs in the
-    deploy-sim / detector-node venv, not the sidecar venv) lazily imports
-    ``zmq`` + ``msgpack``. Those must ship in a real optional-dependency group so
-    ``deploy sim --object-detector-manifest`` doesn't fail per-request with a bare
-    ``No module named 'zmq'`` — they were previously only in the unrelated
-    ``rldx`` group.
+    Regression: the ``LocateAnythingDetector`` client (deploy-sim/detector-node
+    venv, not the sidecar venv) lazily imports ``zmq`` + ``msgpack``. Must ship
+    in a real optional-dependency group or ``deploy sim
+    --object-detector-manifest`` fails per-request with ``No module named
+    'zmq'`` — previously only in the unrelated ``rldx`` group.
     """
     import tomllib
 

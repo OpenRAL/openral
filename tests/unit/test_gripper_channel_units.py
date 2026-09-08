@@ -1,25 +1,21 @@
 """Regression guard — a normalised gripper channel declares normalised limits.
 
-Issue #62. ``JointSpec.position_limits`` is the unit of the value that travels
-on that channel: the safety kernel's envelope
-(:func:`openral_safety.envelope_loader._extract_joint_limits`), the runner's
-pre-clamp (``rskill_runner_node._make_policy_adapter_skill``) and the
-supervisor's ``gripper_min`` / ``gripper_max`` all compare a **commanded
-Action value** against it.
+Issue #62. ``JointSpec.position_limits`` is compared against a commanded
+Action value by three consumers: the safety kernel's
+:func:`openral_safety.envelope_loader._extract_joint_limits`, the runner's
+pre-clamp (``rskill_runner_node._make_policy_adapter_skill``), and the
+supervisor's ``gripper_min``/``gripper_max``.
 
-For a gripper whose HAL contract is a normalised ``[0, 1]`` jaw fraction —
-which is exactly what ``sim.grippers[].write_mode: normalised`` declares, since
-:meth:`openral_hal._mujoco_arm.MujocoArmHAL._gripper_command_to_raw` clips its
-input to ``[0, 1]`` before mapping it onto ``ctrl_range`` — declaring the jaw's
-*mechanical* radian range instead makes the envelope stop constraining that
-channel: a malformed ``1.5`` fraction sits inside ``[-0.1745, 1.7453]``, clears
-both the pre-clamp and the kernel, and reaches the HAL, which clips it
-silently. ``robots/so101_follower`` and ``robots/so100_follower`` both shipped
-that way.
+``sim.grippers[].write_mode: normalised`` means the HAL contract is a
+``[0,1]`` jaw fraction (:meth:`openral_hal._mujoco_arm.MujocoArmHAL._gripper_command_to_raw`
+clips to ``[0,1]`` before mapping onto ``ctrl_range``). Declaring the jaw's
+mechanical radian range instead stops the envelope constraining that channel:
+a malformed ``1.5`` fraction sat inside ``[-0.1745, 1.7453]``, cleared both
+pre-clamp and kernel, and reached the HAL, which clipped it silently —
+``robots/so101_follower``/``so100_follower`` both shipped that way.
 
-``PASSTHROUGH`` grippers are deliberately out of scope: their channel carries
-the actuator's native unit (metres for Aloha, radians for OpenArm), so their
-limits are robot-specific and there is no cross-manifest invariant to assert.
+``PASSTHROUGH`` grippers are out of scope: native units (metres/radians) are
+robot-specific, with no cross-manifest invariant to assert.
 """
 
 from __future__ import annotations

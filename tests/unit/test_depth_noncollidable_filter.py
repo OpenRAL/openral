@@ -1,22 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """The depth synth must see what the world can TOUCH, not what it can show.
 
-#149 taught the ground-truth probe that a geom with neither ``contype`` nor
-``conaffinity`` cannot collide with anything, and must never be promoted to a
-real contact. Nothing taught the perception path the same thing: ``mj_ray``
-struck whatever was *visible*, OctoMap integrated it, and the safety kernel
-E-stopped on cells no body can ever occupy — while the probe adjudicating that
-stop was required to ignore the only geometry backing them (#174).
+#149: a geom with neither ``contype`` nor ``conaffinity`` cannot collide and must
+never be promoted to a real contact. #174: the perception path hadn't learned this —
+``mj_ray`` struck whatever was *visible*, OctoMap integrated it, and the safety
+kernel E-stopped on cells no body can ever occupy.
 
-On RoboCasa this is not a rounding error. 703 of the 1675 geoms in the
-``baguette`` scene are non-collidable decoration, and 18.8 % of one live map's
-occupied cells were backed by nothing else.
+RoboCasa ``baguette`` scene: 703 of 1675 geoms are non-collidable decoration; 18.8 %
+of one live map's occupied cells were backed by nothing else.
 
-The direction of the fix is what makes it safe, and it is the property these
-tests hold: filtering can only move a return **farther** along its ray or
-remove it entirely. A collidable surface stays hittable, so no touchable
-geometry can leave the map. On hardware the term does not exist — a visible
-object is solid — so this is the sim matching the world it stands in for.
+Invariant under test: filtering can only move a depth return **farther** along its
+ray or remove it entirely — a collidable surface stays hittable, so no touchable
+geometry is lost from the map.
 
 Real compiled ``MjModel``s throughout, no mocks (CLAUDE.md §1.11).
 """
@@ -99,12 +94,8 @@ def test_the_solid_behind_the_decoration_is_what_the_depth_reports() -> None:
 
 
 def test_decoration_over_nothing_returns_nothing() -> None:
-    """With no solid behind it, an untouchable panel leaves the ray empty.
-
-    This is the half that removes map cells rather than moving them, so it is
-    the half a reviewer should look hardest at: the cell is emptied precisely
-    because nothing that can be collided with was ever in it.
-    """
+    """With no solid behind it, an untouchable panel leaves the ray empty — the
+    riskier half of the invariant: it removes a map cell rather than relocates it."""
     depth = _depth(solid=False)
 
     assert float(depth[8, 8]) == 0.0, "0.0 is the depth image's no-return sentinel"
@@ -112,13 +103,8 @@ def test_decoration_over_nothing_returns_nothing() -> None:
 
 
 def test_filtering_never_pulls_a_return_nearer() -> None:
-    """The safety property, over every pixel: depth is non-decreasing.
-
-    The unfiltered cast is what master did. Filtering removes candidates from
-    the nearest-hit search and can therefore only push the answer away from
-    the camera or lose it — never bring it closer, which is the only direction
-    that could put the kernel's obstacle set at risk.
-    """
+    """Safety property over every pixel: filtered depth is never nearer than
+    unfiltered — filtering only pushes a return away from the camera or drops it."""
     xml = _SCENE.format(camera_z=_CAMERA_Z, solid=_SOLID)
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)

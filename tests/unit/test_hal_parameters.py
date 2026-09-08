@@ -1,20 +1,15 @@
 """Unit tests for the manifest ``hal.parameters`` block (issue #191).
 
-``HalParameters.defaults`` lets a robot's HAL construction kwargs (serial
-``port``, ``robot_ip``, …) live in ``robots/<id>/robot.yaml`` instead of a
-per-robot lifecycle-node subclass, so the unified
+``HalParameters.defaults`` puts a robot's HAL constructor kwargs (serial
+``port``, ``robot_ip``, …) in ``robots/<id>/robot.yaml`` so
 :class:`openral_hal.lifecycle.ManifestHALLifecycleNode` can serve a
-parameterised HAL with no bespoke ``_create_hal``. These tests pin:
+parameterised HAL with no bespoke ``_create_hal``. Pins: schema (default-empty,
+round-trip, ``extra="forbid"``); every real manifest still loads with the new
+field; :func:`openral_hal.build_hal` threads ``hal.parameters.defaults`` into
+the HAL constructor, with an explicit ``transport`` override winning and
+unaccepted keys dropped.
 
-* the schema (default-empty, round-trip, ``extra="forbid"``);
-* the new field is backward-compatible — every real manifest still loads and
-  defaults to an empty block;
-* :func:`openral_hal.build_hal` threads ``hal.parameters.defaults`` into the
-  HAL constructor, with an explicit ``transport`` override winning and
-  unaccepted keys dropped.
-
-Fixtures are the real ``robots/<id>/robot.yaml`` manifests (CLAUDE.md §1.11 —
-no ``"foo"`` placeholders, no mocks).
+Fixtures are real ``robots/<id>/robot.yaml`` manifests (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -67,8 +62,7 @@ class TestManifestBackwardCompatibility:
     @pytest.mark.parametrize("manifest", _MANIFESTS, ids=lambda p: p.parent.name)
     def test_real_manifest_loads_with_parameters_block(self, manifest: Path) -> None:
         desc = RobotDescription.from_yaml(str(manifest))
-        # Every manifest parses; the block is always a HalParameters (empty for
-        # most, populated for the manifest-driven serial arms — see below).
+        # Empty for most manifests; populated for the manifest-driven serial arms (see below).
         assert isinstance(desc.hal.parameters, HalParameters)
 
     def test_so100_so101_declare_serial_port_defaults(self) -> None:

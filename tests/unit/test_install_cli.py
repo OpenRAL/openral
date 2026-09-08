@@ -1,29 +1,20 @@
 """Unit tests for ``scripts/install_cli.py`` — the ``openral`` launcher writer.
 
-The generated ``~/.local/bin/openral`` wrapper runs ``set -euo pipefail`` and
-then sources the ROS 2 distro overlay and the colcon workspace overlay before
-``exec``-ing ``.venv/bin/openral``. Those overlays are ament-generated and are
-NOT nounset-safe — ``/opt/ros/<distro>/setup.bash`` line 8 reads
-``$AMENT_TRACE_SETUP_FILES`` with no default. Under ``set -u`` that aborts the
-wrapper with::
+The generated ``~/.local/bin/openral`` wrapper runs ``set -euo pipefail`` then
+sources the ROS 2 distro + colcon overlays (ament-generated, NOT nounset-safe:
+``/opt/ros/<distro>/setup.bash`` line 8 reads ``$AMENT_TRACE_SETUP_FILES``
+unguarded) before ``exec``-ing ``.venv/bin/openral``. Under ``set -u`` that
+aborts with ``AMENT_TRACE_SETUP_FILES: unbound variable`` before the REPL.
+Tests build a real throwaway repo under ``tmp_path`` (CLAUDE.md §1.11: no
+mocks), render the wrapper, run it with real bash, and assert it still
+reaches ``exec``.
 
-    /opt/ros/jazzy/setup.bash: line 8: AMENT_TRACE_SETUP_FILES: unbound variable
-
-…so the user never reaches the REPL. These tests build a real, throwaway repo
-shape under ``tmp_path`` (no mocks / no monkey-patching — CLAUDE.md §1.11),
-including a deliberately nounset-unsafe ``install/setup.bash`` overlay and a
-stub ``.venv/bin/openral``, render the wrapper against it, run it with real
-bash, and assert it sources the unsafe overlay and still reaches ``exec``.
-
-The second family of tests covers *provenance*. The wrapper bakes in the
-checkout that generated it, so running ``openral`` from a second checkout used
-to silently execute the first one's venv, overlay and ``robots/`` manifests —
-which is how a DGX Spark validation run got attributed to the wrong branch.
-Those tests build two real checkouts under ``tmp_path`` (one of them a real
-``git init`` repo, because the mismatch guard probes ``git rev-parse``) and
-pin down the three-way behaviour matrix: baked default runs silently,
-``OPENRAL_REPO_ROOT`` redirects and announces itself, and a cwd inside a
-different checkout warns without changing which tree runs.
+A second family covers provenance: the wrapper bakes in the checkout that
+generated it, so a second checkout used to silently run the first one's venv,
+overlay and ``robots/`` manifests (a DGX Spark validation run got attributed
+to the wrong branch). Tests pin the three-way matrix: baked default runs
+silently, ``OPENRAL_REPO_ROOT`` redirects and announces itself, a cwd in a
+different checkout warns without switching which tree runs.
 """
 
 from __future__ import annotations
@@ -58,15 +49,12 @@ def _make_fake_repo(
 ) -> Path:
     """Build a throwaway OpenRAL checkout shape that the wrapper can drive.
 
-    The ``install/setup.bash`` overlay is intentionally nounset-unsafe — it
-    reproduces the exact ament idiom (``[ -n "$AMENT_TRACE_SETUP_FILES" ]``)
-    that aborts the wrapper under ``set -u``. Both the overlay and the stub
-    ``.venv/bin/openral`` stamp their own checkout path into the output, so a
-    test can prove *which* tree supplied the overlay and which supplied the
-    CLI — that is exactly what the repo-root override has to get right.
-
-    ``git_init`` makes the checkout a real git repository, which is what the
-    wrapper's cwd-mismatch guard probes with ``git rev-parse --show-toplevel``.
+    ``install/setup.bash`` is intentionally nounset-unsafe (reproduces the
+    ament idiom ``[ -n "$AMENT_TRACE_SETUP_FILES" ]`` that aborts under
+    ``set -u``). Overlay and stub CLI both stamp their own checkout path into
+    their output, so a test can prove which tree supplied which. ``git_init``
+    makes it a real git repo, since the cwd-mismatch guard probes
+    ``git rev-parse --show-toplevel``.
     """
     repo = (tmp_path / name).resolve()
     install = repo / "install"
@@ -133,11 +121,10 @@ def _run_wrapper(
 
 
 def test_wrapper_sources_nounset_unsafe_overlay_and_reaches_exec(tmp_path: Path) -> None:
-    """Regression: `set -u` + nounset-unsafe overlay must NOT abort before exec.
+    """Regression: `set -u` + nounset-unsafe overlay must not abort before exec.
 
-    This is the bug report — ``openral`` printed
-    ``AMENT_TRACE_SETUP_FILES: unbound variable`` and dropped the user back to
-    the shell instead of the REPL.
+    Bug report: ``openral`` printed ``AMENT_TRACE_SETUP_FILES: unbound
+    variable`` and dropped the user to the shell instead of the REPL.
     """
     install_cli = _load_install_cli()
     repo = _make_fake_repo(tmp_path)
@@ -187,11 +174,9 @@ def test_render_wrapper_substitutes_repo_token(tmp_path: Path) -> None:
 def test_repo_root_override_redirects_venv_and_overlay_and_announces_it(tmp_path: Path) -> None:
     """``OPENRAL_REPO_ROOT`` wins over the baked-in checkout, visibly.
 
-    Provenance regression: on a DGX Spark a validation run launched from a git
-    worktree silently executed the *parent* checkout's venv, overlay and
-    ``robots/`` manifests, so the result was attributed to the wrong branch.
-    The override must redirect BOTH the colcon overlay and the exec'd CLI, and
-    must name the root it chose on stderr so the run log records which tree ran.
+    DGX Spark regression: a worktree run silently executed the parent
+    checkout's venv/overlay/manifests. Override must redirect both the
+    overlay and the exec'd CLI, and name the chosen root on stderr.
     """
     install_cli = _load_install_cli()
     baked = _make_fake_repo(tmp_path, name="openral-main")
@@ -235,9 +220,8 @@ def test_repo_root_override_without_a_venv_cli_fails_instead_of_falling_back(
 def test_warns_when_cwd_is_a_different_openral_checkout(tmp_path: Path) -> None:
     """cwd in another usable checkout → WARNING on stderr, baked tree still runs.
 
-    This is the Spark footgun made visible. It stays a warning, not an error:
-    the baked default must keep working, and the launcher must not silently
-    *switch* trees either — it only tells the operator what it is about to do.
+    Stays a warning, not an error: baked default keeps working, launcher must
+    not silently switch trees — it only tells the operator what it's about to do.
     """
     install_cli = _load_install_cli()
     baked = _make_fake_repo(tmp_path, name="openral-main")

@@ -1,14 +1,12 @@
 """Unit tests for the eval registry, factory, and SimRunner contract gate.
 
-:class:`SimRunner` is **strict** by construction (see
-``_check_rskill_compatibility``): every sim eval must be backed by an
-rSkill manifest and a registered :class:`RobotDescription`. To exercise
-the factory + episode loop without a real rSkill, these tests:
-
-- drive :class:`SimRunner` against the mock scene via the
-  ``"placeholder"`` sentinel that short-circuits manifest load;
-- assert :func:`_check_rskill_compatibility` rejects misconfigured
-  :class:`SimEnvironment` values.
+:class:`SimRunner` is strict by construction (``_check_rskill_compatibility``):
+every sim eval needs an rSkill manifest and a registered
+:class:`RobotDescription`. To exercise the factory + episode loop without a
+real rSkill: drive :class:`SimRunner` against the mock scene via the
+``"placeholder"`` sentinel (short-circuits manifest load); assert
+:func:`_check_rskill_compatibility` rejects misconfigured
+:class:`SimEnvironment` values.
 """
 
 from __future__ import annotations

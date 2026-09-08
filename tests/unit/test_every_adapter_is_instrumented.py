@@ -1,15 +1,13 @@
 """Canary: every VLA adapter reaches the `inference_span` seam.
 
-`openral.inference.duration` is emitted *only* by `inference_span`.
-`InferenceRunnerBase` used to record it too, from `Skill.step` wall-time, but
-that measured the chunk *dispatch* cost rather than the inference — the two
-disagreed on chunked adapters and doubled the sample count — so it was removed.
+`openral.inference.duration` comes only from `inference_span`.
+`InferenceRunnerBase` used to also record it from `Skill.step` wall-time —
+measuring dispatch not inference, doubling the sample count on chunked
+adapters — so it was removed.
 
-A single seam is only safe while it is universal: an adapter that never opens
-the span now emits no inference latency at all, silently. Five sidecar adapters
-(behavior_groot, internvla_n1, lingbot_va_a1, lingbot_vla2, rlbench_3dda) were
-exactly that gap until 2026-08-04, and the runner's record had been masking it.
-This canary is source-level so the next adapter cannot reintroduce it.
+Five sidecar adapters (behavior_groot, internvla_n1, lingbot_va_a1,
+lingbot_vla2, rlbench_3dda) silently missed the seam until 2026-08-04,
+masked by the runner's record. Source-level canary so it can't regress.
 """
 
 from __future__ import annotations
@@ -33,13 +31,12 @@ _NOT_ADAPTERS = {
     "_video_capture.py",
 }
 
-# The three ways to reach the seam: open the span directly, go through
-# `run_inference` (which opens it for you), or hand the chunk forward to
-# `build_chunk_executor`, whose `ChunkedExecutor` calls `run_inference`
-# internally (openral_rskill/executor.py:_forward). The executor route is why
-# gr00t / molmoact2 / openvla / pi05 / smolvla / xvla name no span symbol of
-# their own yet are fully instrumented — a two-name check reported the first
-# three as gaps they are not.
+# Three ways to reach the seam: open the span directly, call `run_inference`
+# (opens it), or hand the chunk to `build_chunk_executor` (its
+# `ChunkedExecutor` calls `run_inference` internally,
+# openral_rskill/executor.py:_forward) — why gr00t/molmoact2/openvla/pi05/
+# smolvla/xvla name no span symbol yet are fully instrumented; a two-name
+# check flagged the first three as false gaps.
 _SEAM_NAMES = {"inference_span", "run_inference", "build_chunk_executor"}
 
 
@@ -87,11 +84,10 @@ def test_the_canary_covers_every_shipped_adapter() -> None:
 def test_every_adapter_releases_all_its_module_fields() -> None:
     """`close()` must drop every torch-module field, not just `_policy`.
 
-    `release_torch_modules` exists because `empty_cache()` only returns
-    *already-free* blocks — a field the adapter still references pins its VRAM.
-    xVLA released only `_policy` while holding four on-device lerobot
-    processors (`_env_pre`/`_policy_pre`/`_policy_post`/`_env_post`), so its
-    normalizer buffers survived every skill swap.
+    `release_torch_modules` exists because `empty_cache()` only frees
+    already-free blocks — a still-referenced field pins VRAM. xVLA released only
+    `_policy` while holding four lerobot processors (`_env_pre`/`_policy_pre`/
+    `_policy_post`/`_env_post`), so normalizer buffers survived every skill swap.
     """
     import re
 

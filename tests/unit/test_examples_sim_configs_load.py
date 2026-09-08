@@ -1,16 +1,12 @@
 """Every YAML under ``scenes/`` must load as its tier's typed schema.
 
-This is the cheap, per-PR guard that catches stale example configs
-(missing ``vla:`` block removal, schema drift, etc.) without requiring
-the GPU rollout that ``tools/audit_sim_configs.py`` performs. CLAUDE.md
-§1.11 — real schemas, no mocks; we load the real YAMLs that ship in the
-tree.
+Cheap per-PR guard for stale example configs (missing ``vla:`` block, schema
+drift) without the GPU rollout ``tools/audit_sim_configs.py`` performs.
+CLAUDE.md §1.11 — real schemas, no mocks; loads the real in-tree YAMLs.
 
-Scenes live in three tiers — ``scenes/deploy/`` loads as
-:class:`DeployScene`, ``scenes/sim/`` as :class:`SimScene`,
-``scenes/benchmark/`` as :class:`BenchmarkScene`. A failure here means
-the YAML carries a key the schema no longer recognises, or a required
-key was removed, or a legacy ``vla:`` block was reintroduced.
+Three tiers: ``scenes/deploy/`` → :class:`DeployScene`, ``scenes/sim/`` →
+:class:`SimScene`, ``scenes/benchmark/`` → :class:`BenchmarkScene`. A failure
+means an unrecognized/missing key, or a legacy ``vla:`` block reintroduced.
 """
 
 from __future__ import annotations

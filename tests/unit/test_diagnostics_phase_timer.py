@@ -1,22 +1,13 @@
 """Unit tests for :func:`openral_rskill._diagnostics.phase_timer`.
 
-The phase timer is the single seam every VLA adapter's ``_build_*``
-factory wraps each load phase with so an opaque multi-second
-``Policy.from_pretrained`` shows up in the operator-visible log /
-``openral dashboard`` trace. The tests cover the three observable
-contracts:
+The seam every VLA adapter's ``_build_*`` factory wraps each load phase
+with, so a multi-second ``Policy.from_pretrained`` shows up in the operator
+log / ``openral dashboard`` trace. Covers three contracts: (1) event shape —
+one ``<prefix>_<name>_start``/``..._done`` pair with populated ``elapsed_s``;
+(2) ``**fields`` flow unmutated to both events; (3) ``gpu_mb=True`` populates
+``gpu_mb`` on CUDA, no-ops on CPU-only.
 
-1. **Event shape** — every wrapped phase emits exactly one
-   ``<prefix>_<name>_start`` on entry and exactly one
-   ``..._done`` with a populated ``elapsed_s`` on exit.
-2. **Extra fields** — ``**fields`` flow through to both the start and
-   done events without mutation.
-3. **GPU memory probe** — ``gpu_mb=True`` populates the heartbeat /
-   done payload's ``gpu_mb`` field on a CUDA host, silently no-ops
-   on a CPU-only host.
-
-Per CLAUDE.md §1.11 — no mocks. Tests use a real ``structlog``
-processor to capture events.
+Per CLAUDE.md §1.11 — no mocks; a real ``structlog`` processor captures events.
 """
 
 from __future__ import annotations
@@ -76,8 +67,7 @@ def test_default_prefix_is_phase(cap: _CaptureProcessor) -> None:
 def test_gpu_mb_on_cpu_only_host_omits_field(cap: _CaptureProcessor) -> None:
     """``gpu_mb=True`` is silently no-op when CUDA is unavailable.
 
-    The done event's payload must NOT carry a ``gpu_mb`` field when
-    torch isn't installed or no CUDA device is present — that's how a
+    Done payload must not carry ``gpu_mb`` when torch/CUDA is absent — how a
     CPU-only CI host stays clean.
     """
     try:
@@ -91,11 +81,8 @@ def test_gpu_mb_on_cpu_only_host_omits_field(cap: _CaptureProcessor) -> None:
         pass
     done = cap.events[-1]
     if cuda:
-        # On a real CUDA host the field should be present; we don't
-        # assert its magnitude because the test allocates no tensors.
-        # The done event only fires the gpu probe in the heartbeat
-        # path, not on the final done line — so this just confirms the
-        # done emits without crashing on the CUDA host.
+        # No magnitude assert (test allocates no tensors); gpu probe fires in
+        # the heartbeat path, not the final done line — just confirms no crash.
         assert done[0] == "unit_phase_gpu_done"
     else:
         assert done[0] == "unit_phase_gpu_done"
@@ -105,9 +92,7 @@ def test_gpu_mb_on_cpu_only_host_omits_field(cap: _CaptureProcessor) -> None:
 def test_exception_inside_block_still_emits_done(cap: _CaptureProcessor) -> None:
     """A raising wrapped block still emits the ``_done`` event.
 
-    Critical for diagnostics — the operator needs to see how long the
-    phase ran before the failure, not lose the timing because the body
-    raised.
+    Diagnostics needs the phase duration even when the body raised.
     """
     with pytest.raises(RuntimeError, match="synthetic"), phase_timer("phase_fail", prefix="unit"):
         raise RuntimeError("synthetic")
@@ -120,10 +105,9 @@ def test_exception_inside_block_still_emits_done(cap: _CaptureProcessor) -> None
 def test_switch_interval_raised_inside_and_restored(cap: _CaptureProcessor) -> None:
     """The GIL switch interval is raised while the block runs and restored after.
 
-    Regression test for the SO-101 deploy cold-start starvation: load
-    phases share runtime_node with two 30 fps camera threads, and at the
-    default 5 ms switch interval the loading thread was starved to ~12%
-    of a core (a 6 s SmolVLA import stretched past 15 minutes).
+    Regression: SO-101 deploy cold-start starvation — load phases share
+    runtime_node with two 30fps camera threads; at the default 5ms interval the
+    loading thread was starved to ~12% of a core (6s SmolVLA import → 15+ min).
     """
     before = sys.getswitchinterval()
     with phase_timer("phase_gil", prefix="unit"):
@@ -143,10 +127,9 @@ def test_switch_interval_restored_on_exception() -> None:
 def test_done_carries_rss_and_major_fault_delta(cap: _CaptureProcessor) -> None:
     """``_done`` reports live RSS and major faults counted from phase entry.
 
-    This is the attribution seam for a load phase that is slow while
-    burning no CPU: page reclaim shows up here and nowhere in CPU time.
-    Allocating inside the block must move ``rss_mb`` upward, and the
-    fault counter is a delta (>= 0), never the process-lifetime total.
+    Attribution seam for a phase that's slow while burning no CPU (page reclaim
+    shows here, not in CPU time). Allocating must move ``rss_mb`` up; the fault
+    counter is a delta (>=0), not the process-lifetime total.
     """
     with phase_timer("phase_mem", prefix="unit"):
         ballast = bytearray(64 * 1024 * 1024)
@@ -163,11 +146,10 @@ def test_done_carries_rss_and_major_fault_delta(cap: _CaptureProcessor) -> None:
 def test_overlapping_phase_timers_restore_the_original_interval() -> None:
     """Two overlapping contexts must not leave 50 ms installed forever.
 
-    Regression: the save/restore was non-reentrant on the process-global
-    switch interval — A enters saving 5 ms, B enters saving A's 50 ms, A
-    exits restoring 5 ms, B exits re-installing 50 ms permanently. The
-    depth-counted guard makes the OUTERMOST holder own both transitions,
-    in whichever order the contexts unwind.
+    Regression: save/restore was non-reentrant on the process-global switch
+    interval — A saves 5ms, B saves A's 50ms, A restores 5ms, B re-installs 50ms
+    permanently. Depth-counted guard makes the outermost holder own both
+    transitions, regardless of unwind order.
     """
     import threading
 

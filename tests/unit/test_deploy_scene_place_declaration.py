@@ -96,28 +96,21 @@ def test_no_declaration_at_all_is_still_valid() -> None:
 
 
 # -- The committed scenes themselves ------------------------------------------
-#
-# `scenes/deploy/robocasa_drawer_utensil.yaml` is deliberately NOT here: its
-# target is a `stack` level chosen from many per layout, so a guessed name would
-# very likely resolve to a different real receptacle instead of failing closed.
-# That reasoning lives in the scene file; `test_the_drawer_scene_declares_nothing`
-# pins the decision so it cannot be undone by accident.
-# Every name here is one a live seed-1 env answered to. `robocasa_baguette` was
-# read off the rounds 5/6 artifacts and confirmed by the 2026-08-22 Spark run
-# (region measured, allowance published); the other two were #142 guesses that
-# the HAL refused fail-closed (`... names no MuJoCo body; refused`) and were
-# replaced with the names that run's MuJoCo body table actually carries.
+# `robocasa_drawer_utensil.yaml` is deliberately excluded: its target is one of
+# many per-layout stack levels, so a guess could resolve to the wrong
+# receptacle (pinned by `test_the_drawer_scene_declares_nothing`). Every name
+# below is one a live seed-1 env answered to: `robocasa_baguette` from rounds
+# 5/6, confirmed 2026-08-22 (Spark); the other two replaced #142 guesses the
+# HAL refused fail-closed.
 _DECLARING_SCENES = {
     "robocasa_baguette.yaml": "sim:cab_1_left_group_main",
     "robocasa_sink_cup.yaml": "sim:sink_island_group_main",
-    # The fridge target is a function of that scene's `layout_ids` pin, which
-    # moved 30 -> 47 once the pin was verified against the KERNEL criterion on a
-    # live octomap (layout 30 clears the mesh but stops at -23.47 mm). At layout
-    # 47 the kitchen composes to style 32 and the fixture is
-    # `fridgesidebyside_main_group_1`, so the old body no longer exists. Anyone
-    # changing that pin must re-resolve this in the same commit: the HAL fails
-    # closed on a stale target, so the symptom is a silently unarmed place phase
-    # rather than an error.
+    # The fridge target depends on the scene's `layout_ids` pin (30->47, verified
+    # against the KERNEL criterion on a live octomap: layout 30 stops at
+    # -23.47 mm). At layout 47 the fixture is `fridgesidebyside_main_group_1`;
+    # the old body no longer exists. Re-resolve this in the same commit as any
+    # pin change — the HAL fails closed on a stale target, so the symptom is a
+    # silently unarmed place phase, not an error.
     "robocasa_fridge_drawer.yaml": "sim:fridgesidebyside_main_group_1_fridge_drawer0",
 }
 
@@ -178,18 +171,14 @@ def test_the_backstop_outlives_the_transport_phase(scene_file: str) -> None:
 def test_the_drawer_scene_declares_nothing_until_its_target_is_read_off_a_run() -> None:
     """`PickPlaceCounterToDrawer`'s target is one of many stack levels.
 
-    Its generated name (`<stack>_<group>_<level>`) recurs across layouts pointing
-    at a different drawer each time, so a guess would not fail closed — it would
-    arm the witness and its approach allowance at whichever real receptacle
-    happened to answer to that name (HZ-0097-2).
-
-    The 2026-08-22 live run sharpened this rather than resolving it: at seed 1
-    the only bodies whose names match `drawer` are the FRIDGE's freezer drawers,
-    while the counter drawer this task places into is `stack_2_left_group_3_*`.
-    A reader who greps the body table for `drawer` therefore gets a name that
-    resolves — to a receptacle across the kitchen — and a resolving name cannot
-    fail closed. The scene stays undeclared until a run establishes which stack
-    level `register_fixture_ref("drawer", ...)` actually returned.
+    Its generated name (`<stack>_<group>_<level>`) recurs across layouts pointing at
+    a different drawer each time, so a guess would not fail closed — it would arm
+    the approach allowance at whichever real receptacle answered to that name
+    (HZ-0097-2). At seed 1 the only bodies matching `drawer` are the FRIDGE's
+    freezer drawers, while the actual counter drawer is `stack_2_left_group_3_*` —
+    a grep-for-drawer guess resolves, just to the wrong receptacle across the
+    kitchen. Stays undeclared until a run establishes which stack level
+    `register_fixture_ref("drawer", ...)` actually returned.
     """
     scene = DeployScene.from_yaml(
         str(_REPO_ROOT / "scenes" / "deploy" / "robocasa_drawer_utensil.yaml")

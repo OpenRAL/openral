@@ -1,26 +1,14 @@
-"""End-to-end tests for :class:`DetectorRunner`.
+"""End-to-end tests for :class:`DetectorRunner` — live, no mocks (CLAUDE.md §1.11).
 
-These are **live** tests — no mocks, no stubs, per CLAUDE.md §1.11.
+Live e2e: real ``rskills/rtdetr-coco-r18/rskill.yaml``, a live ``videotestsrc``
+GStreamer pipeline with a named bus tee, a deterministic 4-class ONNX (shared
+with ``test_objects_detector.py``); asserts detections, model_id, tee
+attach/detach, and that the pipeline survives ``stop()``.
 
-The e2e test:
-- Builds a deterministic 4-class ONNX (copied from ``test_objects_detector.py``).
-- Loads the **real** ``rskills/rtdetr-coco-r18/rskill.yaml`` manifest.
-- Constructs a live ``videotestsrc`` GStreamer pipeline with the named bus tee.
-- Creates a :class:`DetectorRunner` and calls ``start()``.
-- Pumps until the ``new-sample`` callback fires and a detection lands in
-  ``collected``.
-- Asserts that the 4-class ONNX emits exactly the expected 2 objects (car +
-  person), the model_id matches the manifest name, and the tee branch is live.
-- Calls ``stop()`` and asserts the branch is torn down and the pipeline is still
-  PLAYING.
+Non-live: a ``kind: vla`` manifest raises :exc:`ROSConfigError` at
+construction, before any GStreamer call.
 
-The non-live unit test verifies that passing a ``kind: vla`` manifest raises
-:exc:`~openral_core.exceptions.ROSConfigError` at construction time — the kind
-guard fires before any GStreamer call, so the test can use a minimal pipeline
-with no tee.
-
-Gates:
-    ``gi``, ``onnxruntime``, ``onnx`` — skipped if any is absent.
+Gates: skips if ``gi``, ``onnxruntime``, or ``onnx`` is absent.
 """
 
 from __future__ import annotations
@@ -101,15 +89,9 @@ class TestDetectorRunnerE2E:
     ) -> None:
         """Full pipeline: videotestsrc → tee → BGR branch → ObjectsDetector → callback.
 
-        The 4-class ONNX fixture emits ``car`` (confidence ≈ 0.953) and ``person``
-        (confidence ≈ 0.881) on every frame, above the manifest's 0.5 threshold.
-        COCO index 0 = ``person``, index 2 = ``car`` — confirmed by the rtdetr-coco-r18
-        label list.
-
-        The ``rtdetr-coco-r18`` manifest uses ``score_threshold: 0.7`` and 80 COCO labels,
-        but the 4-class ONNX only activates classes 0 and 2.  The ``DetectorRunner``
-        passes ``manifest.detector.labels`` to ``ObjectsDetector``, so the label names
-        are ``"person"`` (idx 0) and ``"car"`` (idx 2) from the COCO 80-class list.
+        4-class ONNX emits ``car`` (conf ≈0.953, COCO idx 2) and ``person`` (conf
+        ≈0.881, idx 0) every frame, above the manifest's 0.5 threshold. Manifest uses
+        ``score_threshold: 0.7`` / 80 COCO labels; only classes 0,2 activate here.
         """
         # Build a live CPU pipeline with the named bus tee.
         spec = PipelineSpec(
@@ -196,11 +178,10 @@ class TestDetectorRunnerKindGuard:
         self,
         onnx_path: pathlib.Path,
     ) -> None:
-        """Passing a ``kind: vla`` manifest to ``DetectorRunner`` raises ``ROSConfigError``.
+        """``kind: vla`` manifest raises ``ROSConfigError`` from ``DetectorRunner``.
 
-        The kind guard fires in ``__init__`` before any GStreamer call, so we
-        can use a minimal pipeline (``videotestsrc ! fakesink``) with no tee —
-        the ``TeeManager`` constructor is never reached.
+        Guard fires in ``__init__`` before any GStreamer call, so a minimal pipeline
+        (``videotestsrc ! fakesink``) suffices — ``TeeManager`` is never reached.
         """
         vla_fixture = _REPO_ROOT / "rskills" / "pi05-libero-int8" / "rskill.yaml"
         assert vla_fixture.exists(), f"vla fixture not found: {vla_fixture}"
@@ -236,11 +217,10 @@ class TestDetectorRunnerTierDefault:
         onnx_path: pathlib.Path,
         rtdetr_manifest: RSkillManifest,
     ) -> None:
-        """Constructing DetectorRunner without an explicit tier resolves to CPU_ONNX.
+        """No explicit tier → resolves to CPU_ONNX (no DeepStream/Tegra on this host).
 
-        On this host (no DeepStream, no Tegra) ``select_detector_tier()`` returns
-        :attr:`~openral_runner.backends.gstreamer.objects_detector.DetectorTier.CPU_ONNX`.
-        No call to ``start()`` is made — construction is sufficient to verify ``_tier``.
+        ``select_detector_tier()`` sets it in ``DetectorRunner.__init__``; no
+        ``start()`` call needed to verify ``_tier``.
         """
         spec = PipelineSpec(
             source=Source.TESTSRC,
@@ -278,13 +258,11 @@ class TestDetectorRunnerInputSizeHandoff:
         self,
         onnx_path: pathlib.Path,
     ) -> None:
-        """``DetectorContract.input_size`` is (width, height); detector gets (height, width).
+        """``DetectorContract.input_size`` (width,height) must reach the detector as
+        (height,width) — a latent transpose masked by the square 640×640 fixture.
 
-        Regression for a latent transpose masked by the square 640×640 fixture:
-        a non-square ``(640, 480)`` (= width 640, height 480) must reach
-        ``ObjectsDetector`` as ``(480, 640)`` = (height, width).
-        ``ObjectsDetector.__init__`` only stores ``input_size`` (no ONNX validation),
-        so the existing ``onnx_path`` fixture works without a non-square model.
+        ``(640,480)`` in → ``(480,640)`` out. ``ObjectsDetector.__init__`` only stores
+        ``input_size`` (no ONNX validation), so the existing fixture works unmodified.
         """
         fixture = _REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "rskill.yaml"
         assert fixture.exists(), f"Fixture not found: {fixture}"

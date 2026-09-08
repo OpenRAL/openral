@@ -1,14 +1,12 @@
 """Tests for the no-hardware / no-optional-dep contract of every probe.
 
-Per CLAUDE.md §1.11 we use real probes (no MagicMock); the only
-allowed boundary fakes are missing-optional-dependency injections at
-module import boundaries (CLAUDE.md §5.4) — implemented here by
-monkey-patching ``sys.modules`` so the in-function ``import`` raises
-``ImportError`` exactly as it would on a stripped host.
+Per CLAUDE.md §1.11, real probes only (no MagicMock); the sole allowed
+boundary fake is missing-optional-dep injection at import boundaries
+(CLAUDE.md §5.4) — done here by monkeypatching ``sys.modules`` so the
+in-function ``import`` raises ``ImportError`` as it would on a stripped host.
 
-The probes must:
-1. Return an empty / sensible default record (never raise).
-2. Append a typed warning string to the supplied list.
+Contract: probes never raise; return a sensible empty default and append a
+typed warning string.
 """
 
 from __future__ import annotations
@@ -96,12 +94,11 @@ class TestGpuProbe:
 class TestUnifiedMemoryHosts:
     """A GPU with no discrete VRAM pool must still be detected.
 
-    On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor)
-    ``nvmlDeviceGetMemoryInfo`` returns NVML_ERROR_NOT_SUPPORTED and
-    ``nvidia-smi`` prints ``[N/A]`` for memory.total. Before the fallback below,
-    that single unsupported call aborted the whole enumeration and the host
-    reported "GPU absent" — taking gpu_supported_dtypes and the cuMotion gate
-    down with it. Measured on a DGX Spark (GB10, cc 12.1, CUDA 13.0).
+    On a unified-memory SoC (GB10/DGX Spark, Thor), ``nvmlDeviceGetMemoryInfo``
+    returns NVML_ERROR_NOT_SUPPORTED and ``nvidia-smi`` prints ``[N/A]`` for
+    memory.total. Regression: that one unsupported call used to abort the whole
+    enumeration, reporting "GPU absent" and breaking ``gpu_supported_dtypes`` and
+    the cuMotion gate. Measured on DGX Spark (GB10, cc 12.1, CUDA 13.0).
     """
 
     def test_system_memory_matches_proc_meminfo(self) -> None:

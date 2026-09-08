@@ -1,22 +1,18 @@
 """Tests for the install-plan fixes surfaced by the rSkill audit GPU smoke tests.
 
-Covers the four bootstrap rough edges that fired during real-component
-end-to-end runs of pi05 / rldx × LIBERO / GR1 / RC365 on an RTX 4070:
+Covers four bootstrap rough edges from real-component end-to-end runs of
+pi05 / rldx × LIBERO / GR1 / RC365 on an RTX 4070: (1+2) editable-install
+shadow directory cleanup (``_remove_editable_shadow_step`` wired into the
+robocasa kitchen + GR1 plans); (3) RLDX client deps gated by their own
+backend plan so a sibling ``uv sync --group robocasa`` doesn't strip them;
+(4) the ``hf-libero==0.1.3`` distutils-metadata uninstall barrier, avoided
+by NOT forcing ``--reinstall-package hf-libero`` — a plain ``--inexact``
+libero sync installs it cleanly, and ``--inexact`` on the robocasa plans
+preserves cross-backend deps.
 
-1+2. Editable-install shadow directory cleanup
-     (``_remove_editable_shadow_step`` wired into the robocasa kitchen
-     + GR1 plans).
-3.   RLDX client deps gated by their own backend plan so a sibling
-     ``uv sync --group robocasa`` does not silently strip them.
-4.   ``hf-libero==0.1.3`` distutils-installed-metadata uninstall barrier
-     avoided by NOT forcing ``--reinstall-package hf-libero`` (which would
-     trigger the uninstall it can't do); a plain ``--inexact`` libero sync
-     overwrites/installs it cleanly, plus ``--inexact`` on the robocasa
-     plans so they preserve cross-backend deps instead of uninstalling.
-
-These are install-plan tests — they assert the plan SHAPE (argv flags,
-step ordering), not that the subprocess actually runs. Real-component
-verification happened on the GPU host.
+Install-plan tests: they assert the plan SHAPE (argv flags, step ordering),
+not that the subprocess runs. Real-component verification happened on the
+GPU host.
 """
 
 from __future__ import annotations
@@ -58,13 +54,11 @@ _UV_PIP_UNINSTALL = ["uv", "pip", "uninstall", "--python", sys.executable]
 def _step_site_packages() -> Path:
     """Where ``_remove_editable_shadow_step`` will actually look.
 
-    The step runs ``uv run python``, which resolves the *project* venv — not
-    necessarily the interpreter running pytest. Those differ whenever the suite
-    runs from a git worktree, or against a venv reached via ``PYTHONPATH``, and
-    planting the shadow under the wrong ``site-packages`` made the removal test
-    fail while the preservation test passed vacuously (the step reports "no
-    shadow to clean" both when the dir is protected and when it was never
-    there). Ask the step's own interpreter instead.
+    ``uv run python`` resolves the *project* venv, not necessarily the pytest
+    interpreter (they differ from a git worktree or a ``PYTHONPATH``-reached
+    venv); planting the shadow under the wrong ``site-packages`` made the
+    removal test fail while the preservation test passed vacuously. Ask the
+    step's own interpreter instead.
     """
     import subprocess
 
@@ -225,17 +219,14 @@ class TestHfLiberoWorkaround:
     def test_libero_plan_does_not_force_reinstall_hf_libero(self) -> None:
         """Plain `uv sync --group libero --inexact`, NOT `--reinstall-package hf-libero`.
 
-        Reason: ``hf-libero==0.1.3`` ships distutils-installed metadata
-        with no RECORD. ``--reinstall-package hf-libero`` forces uv to
-        *uninstall* it first, which hits the exact barrier it was meant
-        to dodge (``error: Unable to uninstall hf-libero==0.1.3:
-        distutils-installed distributions do not include the metadata
-        required to uninstall safely``) and wedges the whole libero
-        install. A plain ``--inexact`` sync installs/overwrites hf-libero
-        with proper dist-info when absent and leaves it untouched when
-        already satisfied — it never forces an uninstall, so the barrier
-        never fires. hf-libero is pure-python (robosuite owns the C
-        extensions, swapped separately), so it needs no forced rebuild.
+        ``hf-libero==0.1.3`` ships distutils-installed metadata with no RECORD;
+        ``--reinstall-package hf-libero`` forces uv to uninstall it first, which
+        hits that exact barrier (``error: Unable to uninstall hf-libero==0.1.3:
+        distutils-installed distributions do not include the metadata required
+        to uninstall safely``) and wedges the whole libero install. A plain
+        ``--inexact`` sync installs/overwrites it without forcing an uninstall.
+        hf-libero is pure-python (robosuite owns the C extensions, swapped
+        separately), so it needs no forced rebuild.
         """
         plan = _libero_plan()
         sync_step = plan.steps[0]
@@ -292,14 +283,11 @@ class TestLiberoReadinessProbe:
 class TestOpenarmRobosuitePlan:
     """Regression for the openarm_tabletop_pnp install-prompt gap.
 
-    Before this plan landed, every other sim backend
-    (libero / robocasa_{kitchen,gr1} / metaworld / aloha / maniskill3 /
-    simpler_env) called ``ensure_backend_deps(...)`` at the top of its
-    SCENES factory and got the Rich banner + typer.confirm flow on
-    first use; openarm_robosuite alone skipped straight to ``from
-    robosuite ... import MjSim`` and crashed with a bare
-    ``ModuleNotFoundError`` when the user had only run ``uv sync
-    --all-packages``.
+    Every other sim backend (libero / robocasa_{kitchen,gr1} / metaworld / aloha
+    / maniskill3 / simpler_env) calls ``ensure_backend_deps(...)`` at the top of
+    its SCENES factory for the install-prompt flow; openarm_robosuite alone
+    skipped straight to ``from robosuite ... import MjSim`` and crashed with a
+    bare ``ModuleNotFoundError`` on a plain ``uv sync --all-packages``.
     """
 
     def test_plan_is_registered(self) -> None:
@@ -390,19 +378,17 @@ class TestRobocasaPlansUseInexact:
 class TestRobocasaPlansPinRobosuite:
     """Both robocasa forks must install robosuite at a *pinned* commit.
 
-    Regression for issue #44. The kitchen + GR1 forks share the editable
-    robosuite-master clone. The GR1 fork (robocasa-gr1-tabletop-tasks
-    0.2.0) only supports robosuite 1.5.0/1.5.1; riding floating master
-    means a future master commit that refactors the robot base-class API
-    breaks the GR1 env build with ``Invalid base type to add to robot!``
-    while the kitchen fork keeps working — and master always reports
-    ``"1.5.2"`` so the two are indistinguishable by version string.
-    Pinning both plans to one verified commit makes the build
-    deterministic and lets the forks share a single robosuite install.
+    Regression for issue #44: the kitchen + GR1 forks share the editable
+    robosuite-master clone, but the GR1 fork (robocasa-gr1-tabletop-tasks
+    0.2.0) only supports robosuite 1.5.0/1.5.1 — a future master commit that
+    refactors the robot base-class API breaks GR1 with ``Invalid base type to
+    add to robot!`` while kitchen keeps working, and master always reports
+    ``"1.5.2"`` so the two are indistinguishable by version string. Pinning
+    both plans to one verified commit makes the build deterministic.
 
-    These assert the plan SHAPE (the clone step pins a 40-char SHA, the
-    manual hint mirrors it). The commit itself is validated end-to-end on
-    the GPU host by ``tests/sim/test_gr1_rldx_robocasa.py``.
+    Asserts plan SHAPE only (clone step pins a 40-char SHA, hint mirrors it);
+    the commit is validated end-to-end on the GPU host by
+    ``tests/sim/test_gr1_rldx_robocasa.py``.
     """
 
     def test_pin_is_an_immutable_full_sha(self) -> None:
@@ -484,21 +470,16 @@ class TestRobocasaPlansRelaxVersionAsserts:
 class TestRefreshEditableFinders:
     """Regression for the robocasa_gr1 install probe failure.
 
-    setuptools-editable installs an ``__editable___<pkg>_<ver>_finder.py``
-    + ``__editable__.<pkg>-<ver>.pth`` shim that registers an
-    ``_EditableFinder`` on ``sys.meta_path`` with a ``MAPPING`` dict
-    baked in at import time. When ``uv pip install -e`` swaps an
-    editable install mid-process (e.g. the GR1 plan steps from the
-    kitchen fork ``robocasa==1.0.1`` to the GR1 fork
-    ``robocasa==0.2.0``), the old finder stays on ``sys.meta_path``
-    with its stale MAPPING. ``importlib.invalidate_caches()`` does NOT
-    refresh ``sys.meta_path``, so the post-install probe falsely
-    reports the install never landed.
+    setuptools-editable installs an ``__editable___<pkg>_<ver>_finder.py`` +
+    ``.pth`` shim that registers an ``_EditableFinder`` on ``sys.meta_path``
+    with a ``MAPPING`` dict baked in at import time. When ``uv pip install -e``
+    swaps an editable install mid-process (e.g. the GR1 plan steps kitchen's
+    ``robocasa==1.0.1`` to GR1's ``robocasa==0.2.0``), the old finder stays on
+    ``sys.meta_path`` with its stale MAPPING — ``importlib.invalidate_caches()``
+    does not refresh it, so the post-install probe falsely reports no install.
 
-    Real-component: we build two tiny editable packages in a tmp dir
-    and exercise ``uv pip install -e`` against the live venv to
-    reproduce the swap. No mocks; the helper runs against the real
-    ``sys.meta_path`` and the real .pth shims uv writes.
+    Real-component: builds two tiny editable packages in a tmp dir and runs
+    ``uv pip install -e`` against the live venv to reproduce the swap.
     """
 
     PKG_NAME = "openral_test_refresh_finders_xyz_42"
@@ -644,29 +625,18 @@ class TestEnsureBackendDepsLock:
         monkeypatch.setitem(deps_mod._PLANS, "alpha", lambda: make_plan("alpha"))
         monkeypatch.setitem(deps_mod._PLANS, "beta", lambda: make_plan("beta"))
 
-        # The interleaving is driven by explicit synchronization primitives
-        # (Barrier / Event / an instrumented Lock) instead of a wall-clock
-        # ``time.sleep`` race window. The old version slept 0.05 s inside the
-        # prompt and *hoped* the scheduler overlapped the two threads within
-        # that budget — under full-suite load thread B was often not even
-        # scheduled before the sleep elapsed, so the race was never exercised
-        # and the assertion passed for the wrong reason (or, with timing skew,
-        # could spuriously interleave). Here the window is opened and closed
-        # deterministically:
-        #
-        #   1. ``both_started`` (Barrier) rendezvous: both worker threads are
-        #      live before either calls ``ensure_backend_deps``.
-        #   2. ``_INSTALL_LOCK`` is replaced with ``InstrumentedLock``, which
-        #      fires ``second_acquire_blocking`` the instant a SECOND thread
-        #      blocks on ``acquire()`` — i.e. the holder is in the prompt and
-        #      thread B is provably parked at the lock. No polling, no sleep.
-        #   3. The lock holder parks inside ``fake_confirm`` on
-        #      ``release_holder`` until the main thread has observed (2), so
-        #      the prompt is held open exactly across B's contention attempt.
-        #
-        # If ``_INSTALL_LOCK`` failed to serialise, B would fall through into
-        # ``fake_confirm`` and ``max_active`` would reach 2 — the assertion
-        # that still encodes the contract, unchanged.
+        # Deterministic synchronization (Barrier/Event/InstrumentedLock) replaces
+        # the old version's 0.05 s `time.sleep` race window, which was flaky
+        # under full-suite load (thread B often not scheduled in time) and could
+        # spuriously interleave.
+        #   1. `both_started` (Barrier): both threads live before either calls
+        #      ensure_backend_deps.
+        #   2. `_INSTALL_LOCK` -> `InstrumentedLock`: fires `second_acquire_blocking`
+        #      the instant thread B blocks on `acquire()`.
+        #   3. The lock holder parks in `fake_confirm` on `release_holder` until
+        #      (2) is observed, holding the prompt open across B's contention.
+        # If `_INSTALL_LOCK` failed to serialise, B would enter `fake_confirm` too
+        # and `max_active` would reach 2 — the assertion below.
         active = 0
         max_active = 0
         active_lock = threading.Lock()
@@ -677,12 +647,9 @@ class TestEnsureBackendDepsLock:
         class InstrumentedLock:
             """``_INSTALL_LOCK`` stand-in that flags a contended acquire.
 
-            Wraps a real :class:`threading.Lock` so production semantics are
-            unchanged. When ``acquire`` is called while the lock is already
-            held by another thread, the caller is about to block; we set
-            ``second_acquire_blocking`` first so the test knows thread B has
-            reached the lock and is parked there — the deterministic signal
-            that replaces the old timing window.
+            Wraps a real :class:`threading.Lock`; when ``acquire`` would block
+            (already held), sets ``second_acquire_blocking`` first so the test
+            can observe thread B parked at the lock deterministically.
             """
 
             def __init__(self) -> None:
@@ -841,18 +808,16 @@ class TestRobocasaImportVerification:
 def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(monkeypatch) -> None:
     """A backend may not re-pin a distribution this interpreter already imported.
 
-    LIBERO pins ``robosuite==1.4`` (mount models under
-    ``robosuite.models.mounts``) while RoboCasa / OpenArm need ``>=1.5``
-    (``robosuite.models.bases``). Swapping the on-disk package mid-process
-    leaves ``robosuite.models.base`` cached from the old tree while fresh
-    imports resolve against the new one, so ``MujocoXML`` exists twice and
-    every ``isinstance`` across the seam fails with the thoroughly unhelpful
+    LIBERO pins ``robosuite==1.4`` (``robosuite.models.mounts``) while RoboCasa /
+    OpenArm need ``>=1.5`` (``robosuite.models.bases``). Swapping the on-disk
+    package mid-process leaves ``robosuite.models.base`` cached from the old
+    tree while fresh imports resolve against the new one, so ``MujocoXML``
+    exists twice and every ``isinstance`` across the seam fails with
     ``XMLError: ... is not a MujocoXML instance``.
 
-    Observed for real: running ``pytest python/hal/tests`` downgraded the
-    developer's venv from robosuite 1.5.2 to 1.4.0 partway through and then
-    failed three LIBERO tests that pass in isolation. The guard must fire
-    BEFORE any install step runs, so a refused swap leaves the venv untouched.
+    Observed for real: `pytest python/hal/tests` downgraded a dev venv from
+    robosuite 1.5.2 to 1.4.0 mid-run and failed three LIBERO tests that pass in
+    isolation. The guard must fire BEFORE any install step runs.
     """
     ran: list[str] = []
 
@@ -915,17 +880,15 @@ def test_every_robosuite_swapping_plan_declares_the_repin() -> None:
 
 
 # ── Install-step output capture ───────────────────────────────────────────
+# Regression: a failing step surfaced as bare "returned non-zero exit status 2"
+# (`subprocess.run(..., check=True)` puts only the exit code in
+# CalledProcessError, which `ensure_backend_deps` embeds in its
+# ROSConfigError, and the rSkill runner reports as `goal_rejected`). The
+# child's real diagnostic reached the launch log but was detached from the
+# error. Observed on a GB10 (aarch64) host: the explanation was one `uv` line
+# about `torchcodec` having no aarch64 wheel.
 #
-# A failing step used to surface as bare "returned non-zero exit status 2":
-# `subprocess.run(..., check=True)` puts nothing but the exit code in the
-# CalledProcessError, and that string is what `ensure_backend_deps` embeds in
-# its ROSConfigError — which the rSkill runner then reports as `goal_rejected`
-# and the reasoner replans against. The child's real diagnostic reached the
-# launch log but was detached from the error and buried among other nodes'
-# output. Observed on a GB10 (aarch64) host, where the entire explanation was
-# one `uv` line about `torchcodec` having no aarch64 wheel.
-#
-# These drive REAL subprocesses (no mocks, CLAUDE.md §1.11) — the child is a
+# Real subprocesses (no mocks, CLAUDE.md §1.11): the child is a
 # `sys.executable -c` one-liner that writes known text and exits non-zero.
 
 
@@ -1022,13 +985,11 @@ def _uv_only_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 class TestRemediationIsRunnableWhereItPrinted:
     """`just sync …` is useless advice in an environment with no `just`.
 
-    The hosted `select-and-test` runner is exactly such an environment: the
-    OpenArm lane raised "Install it first, then re-run in a fresh process:
-    just sync --all-packages --group robocasa --inexact" on a container where
-    `just` does not exist, so following the instruction produced
-    `FileNotFoundError: 'just'`. CI now installs `just` (see
-    .github/workflows/test-selective.yml), but any other `just`-less container
-    reaching this message by another route must still get somewhere to go.
+    Regression: the hosted `select-and-test` runner's OpenArm lane raised
+    "Install it first... just sync --all-packages --group robocasa --inexact"
+    on a container without `just`, producing `FileNotFoundError: 'just'`. CI
+    now installs `just` (`.github/workflows/test-selective.yml`), but any other
+    `just`-less container reaching this message must still get somewhere to go.
     """
 
     def test_expansion_matches_the_justfile_sync_recipe(self) -> None:

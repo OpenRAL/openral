@@ -1,19 +1,16 @@
 """Regression test for the ``/openral/safe_action`` decoder.
 
-The HAL lifecycle node's ``_on_safe_action`` callback used to hardcode
-every incoming chunk as :class:`ControlMode.JOINT_POSITION`, throwing
-away the wire ``control_mode`` field. Consequence: per-mode chunks
-(CARTESIAN_DELTA, GRIPPER_POSITION, BODY_TWIST) arriving from the C++
-safety kernel were silently misrouted into ``Action.joint_targets``,
-where the HAL packer rejected them with a single WARN — visible only
-as "arm never moves in ``openral deploy sim``".
+The HAL lifecycle node's ``_on_safe_action`` used to hardcode every incoming
+chunk as :class:`ControlMode.JOINT_POSITION`, dropping the wire
+``control_mode`` field. Per-mode chunks (CARTESIAN_DELTA, GRIPPER_POSITION,
+BODY_TWIST) from the C++ safety kernel were silently misrouted into
+``Action.joint_targets``, rejected by the HAL packer with a single WARN —
+visible only as "arm never moves in `openral deploy sim`".
 
-This module pins the decoder (:func:`openral_hal.lifecycle.
-decode_action_chunk`) against every control_mode the F1/F5 publisher
-emits, so the same lie can't return. Real ``ActionChunk``-shaped
-inputs, real Pydantic :class:`Action` outputs, no mocks per CLAUDE.md
-§1.11 — the decoder is duck-typed so any object exposing the wire
-field names works as the test double.
+Pins :func:`openral_hal.lifecycle.decode_action_chunk` against every
+control_mode the F1/F5 publisher emits. Real ``ActionChunk``-shaped inputs,
+real Pydantic :class:`Action` outputs, no mocks (CLAUDE.md §1.11) — the
+decoder is duck-typed so any object exposing the wire field names works.
 """
 
 from __future__ import annotations

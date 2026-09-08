@@ -1,20 +1,17 @@
 """The ``ros2 launch`` parser must run under the workspace venv interpreter.
 
 ``/opt/ros/<distro>/bin/ros2`` has a ``#!/usr/bin/python3`` shebang, so a bare
-``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system* interpreter.
-``PYTHONPATH`` only prepends the venv, so every distribution the venv does not
-carry still resolves out of ``/usr/lib/python3/dist-packages`` — and mixing an
-apt build's compiled extensions with the venv's NumPy is an ABI coin-flip.
+``ros2 launch`` parses under the *system* interpreter — ``PYTHONPATH`` only
+prepends the venv, so apt-installed extensions can mix with the venv's NumPy.
 
-Observed on a Jetson AGX Thor carrying ``python3-pandas``: ``openral deploy
-run`` aborted the entire launch with ``ValueError: numpy.dtype size changed``
-raised from ``openral_hal.sim_bringup`` → ``lerobot`` → ``deepdiff`` →
-``import pandas`` (``deepdiff`` guards that import with ``except ImportError``,
-which a ``ValueError`` sails straight through).
+Observed on a Jetson AGX Thor with ``python3-pandas``: ``openral deploy run``
+aborted with ``ValueError: numpy.dtype size changed`` from
+``openral_hal.sim_bringup`` → ``lerobot`` → ``deepdiff`` → ``import pandas``
+(``deepdiff`` guards that import against ``ImportError`` only, not ``ValueError``).
 
 Running under ``sys.executable`` makes the venv's ``include-system-site-packages
-= false`` actually apply, which removes the whole class of failure. These tests
-pin that the resolution layer keeps doing so — no ``ros2 launch`` is run.
+= false`` apply, removing the failure class. These tests pin that the resolution
+layer keeps doing so — no ``ros2 launch`` is actually run.
 """
 
 from __future__ import annotations

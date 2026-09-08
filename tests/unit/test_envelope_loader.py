@@ -354,10 +354,9 @@ class TestLooseningRejected:
 class TestKernelParamsFromEnvelope:
     """The Python → C++-kernel-ROS-params converter.
 
-    The legacy ``write_envelope_file`` / ``load_envelope_files`` helpers
-    that flattened the envelope to a YAML file the kernel slurped were
-    removed in the PR that landed this contract. There is exactly one
-    transport: per-field ROS parameters.
+    Legacy ``write_envelope_file``/``load_envelope_files`` (flattened the
+    envelope to a YAML file the kernel slurped) were removed with this contract.
+    Exactly one transport now: per-field ROS parameters.
     """
 
     def test_round_trips_robot_ceiling(self) -> None:

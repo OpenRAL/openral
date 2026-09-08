@@ -1,22 +1,13 @@
 """Unit tests for the `openral sim` subcommand surface.
 
-Confirms four things:
-
-1. ``openral sim run`` is mounted on the main ``openral`` Typer app and reachable
-   via ``typer.testing.CliRunner``.
-2. ``openral sim list`` (the dedicated registry-printer that replaced the
-   legacy ``openral sim run --list`` flag) prints the three sim registries.
-3. ``openral sim run --help`` exposes the rollout flag set without listing
-   ``--list`` (which has moved to its own subcommand).
-4. End-to-end smoke: ``openral sim run --robot pusht_2d --scene pusht --rskill placeholder``
-   runs the real pusht adapter for a few steps without an HF Hub
-   lookup (the mock-VLA-placeholder bypass introduced in commit
-   ``fix(eval): allow mock VLAs to skip rSkill manifest load``).
-
-A fourth test verifies that importing ``openral_cli.main`` does not
-transitively pull in heavyweight sim dependencies (``torch``, ``mujoco``,
-``gymnasium``) — the eval adapters defer those imports until ``_run()``
-is called, and we don't want `openral doctor` startup to pay for them.
+Covers: ``openral sim run`` mounted on the main ``openral`` Typer app; ``openral sim
+list`` (replaced the legacy ``openral sim run --list`` flag) prints the sim
+registries; ``openral sim run --help`` shows the rollout flags without ``--list``; an
+e2e smoke run (``--robot pusht_2d --scene pusht --rskill placeholder``) exercises the
+real pusht adapter without an HF Hub lookup via the mock-VLA-placeholder bypass
+(commit ``fix(eval): allow mock VLAs to skip rSkill manifest load``); and that
+importing ``openral_cli.main`` doesn't pull in torch/mujoco/gymnasium — eval adapters
+defer those imports until ``_run()`` so ``openral doctor`` startup stays light.
 """
 
 from __future__ import annotations
@@ -115,9 +106,8 @@ def test_bh_sim_run_dry_run_resolves_without_building_sim() -> None:
 def test_bh_sim_run_legacy_scene_flag_rejected() -> None:
     """The legacy ``--scene/--vla`` free-flag form was removed.
 
-    The canonical invocation is ``openral sim run --config FILE.yaml --rskill
-    rskills/<id>``. Passing ``--scene`` now surfaces as Click's
-    "no such option" error.
+    Canonical invocation is ``openral sim run --config FILE.yaml --rskill
+    rskills/<id>``; ``--scene`` now surfaces as Click's "no such option" error.
     """
     result = runner.invoke(
         app,
@@ -137,12 +127,9 @@ def test_bh_sim_run_legacy_scene_flag_rejected() -> None:
 def test_bh_cli_import_is_light() -> None:
     """Importing `openral_cli.main` must not transitively load torch / mujoco / gym.
 
-    The eval registry adapters defer those imports until `_run()` is
-    invoked. A regression here would make every `openral doctor` invocation
-    pay for ~1 GB of CUDA libraries.
-
-    We spawn a fresh Python subprocess so the parent test interpreter's
-    pre-loaded modules don't pollute the check.
+    Eval registry adapters defer those imports until `_run()`; a regression would make
+    every `openral doctor` invocation pay ~1 GB of CUDA libraries. Runs in a subprocess
+    so the parent test interpreter's pre-loaded modules don't pollute the check.
     """
     code = (
         "import sys, openral_cli.main; "

@@ -1,16 +1,14 @@
 """Unit tests for the Gr00t-family (GR00T / RLDX) scene-camera-count gate.
 
-GR00T and RLDX sidecar checkpoints read a fixed number of *distinct* camera
-streams positionally (LIBERO=2, RC365=3, GR1/Simpler=1) and have **no**
-single-view fallback — unlike the in-process lerobot adapters (smolvla / pi05 /
-act), which resolve their camera list from ``scene.cameras`` and adapt. On a
-scene that renders too few cameras the missing stream used to surface only as an
-opaque ``observation.images[...]`` error *after* the multi-minute sidecar boot.
+GR00T/RLDX sidecar checkpoints read a fixed number of *distinct* camera streams
+positionally (LIBERO=2, RC365=3, GR1/Simpler=1), unlike the in-process lerobot
+adapters (smolvla/pi05/act) which adapt to ``scene.cameras``. Too few cameras
+used to surface only as an opaque ``observation.images[...]`` error after the
+multi-minute sidecar boot; :func:`_require_scene_cameras` turns that into an
+upfront :class:`ROSCapabilityMismatch`.
 
-:func:`_require_scene_cameras` turns that into an upfront
-:class:`ROSCapabilityMismatch`. These tests pin the gate against the real
-:class:`SceneSpec` / :class:`SimEnvironment` schemas (no doubles, per
-CLAUDE.md §1.11) — they need neither a GPU nor the ``gr00t`` opt-in group.
+Real :class:`SceneSpec`/:class:`SimEnvironment` schemas (CLAUDE.md §1.11);
+needs neither a GPU nor the ``gr00t`` opt-in group.
 """
 
 from __future__ import annotations
