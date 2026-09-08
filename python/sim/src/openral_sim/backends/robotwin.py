@@ -42,7 +42,6 @@ wire is just pyzmq + msgpack (the ``robotwin`` dependency-group).
 
 from __future__ import annotations
 
-import contextlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,12 +60,10 @@ from openral_sim._sidecar_common import (
     opt_num as _opt_num,
 )
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
-from openral_sim.sidecar import SidecarClient
-from openral_sim.sidecar import coerce_sim_time_ns as _coerce_sim_time_ns
+from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import SceneSpec, SimEnvironment, TaskSpec
+    from openral_core import SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -169,21 +166,18 @@ def _task_name_for_env(env_cfg: SimEnvironment) -> str:
 
 
 @dataclass
-class _RoboTwinSimSidecar:
+class _RoboTwinSimSidecar(SidecarSimRollout):
     """``SimRollout`` that proxies a RoboTwin SAPIEN env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8 keyed by the RoboTwin camera names, ``state`` 1-D
     float32 of the 14 joint positions, ``task`` str); we re-wrap into a plain dict
     and cache the last RGB frame for ``render``.
-    """
 
-    scene: SceneSpec
-    task: TaskSpec
-    _client: SidecarClient
-    _last_image: NDArray[np.uint8] | None = None
-    _action_dim: int | None = None
-    _last_sim_time_ns: int | None = None
+    Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
+    ``SidecarSimRollout`` (shared verbatim with the Isaac Sim adapter); only
+    ``_wrap_obs`` and this docstring-carrying ``action_dim`` are RoboTwin-specific.
+    """
 
     @property
     def action_dim(self) -> int:
@@ -192,35 +186,6 @@ class _RoboTwinSimSidecar:
             reply = self._client.call("ping")
             self._action_dim = int(self._client.require(reply, "action_dim"))
         return self._action_dim
-
-    def reset(self, seed: int | None = None) -> Observation:
-        reply = self._client.call("reset", {"seed": seed})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return self._wrap_obs(self._client.require(reply, "observation"))
-
-    def step(self, action: NDArray[np.float32]) -> StepResult:
-        action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return StepResult(
-            observation=self._wrap_obs(self._client.require(reply, "observation")),
-            reward=float(self._client.require(reply, "reward")),
-            terminated=bool(self._client.require(reply, "terminated")),
-            truncated=bool(self._client.require(reply, "truncated")),
-            info=dict(reply.get("info", {})),
-        )
-
-    def sim_time_ns(self) -> int | None:
-        """Elapsed simulation time in ns from the last sidecar reply, or ``None``."""
-        return self._last_sim_time_ns
-
-    def render(self) -> NDArray[np.uint8] | None:
-        return None if self._last_image is None else self._last_image.copy()
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._client.call("close")
-        self._client.close()
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images_raw = raw.get("images", {})

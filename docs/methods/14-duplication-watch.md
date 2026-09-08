@@ -773,3 +773,88 @@ pattern in `tools/schema_export.py`.*
     Decide the empty-URI contract first (CLAUDE.md §1.4 favours the loud
     version), then make all eleven call sites agree.
 
+27. **`disconnect()` / `_floats` in `AlohaHAL` / `RosControlHAL` — *resolved.***
+    Both were byte-identical (flag-and-log). `disconnect` moved to `HALBase`
+    as the default — subclasses with real teardown (`SO100FollowerHAL`,
+    `GalaxeaA1HAL`, `MujocoArmHAL`) still override it. The nested `_floats`
+    closure in each `read_state` became `_base.py::_raw_floats(raw, key, width)`.
+28. **`_connect` / `_rpc` in `locateanything_detector.py` / `qwen_scene_vlm.py`
+    — *not consolidated, no shared home.*** AST-identical ZMQ REQ-socket
+    bodies, but neither module imports from a shared `backends/gstreamer`
+    module, and the same shape also appears in `omdet_turbo_detector.py`,
+    `sam2_segmenter.py`, and the reward backends — a two-file extraction
+    would miss the real six-way duplication and force a new module for two
+    callers. Leave as-is; a future pass consolidating all sidecar clients
+    into one `ZmqSidecarClient` base should take all six at once.
+
+29. **Sidecar scene/socket duplication — *resolved.*** `_IsaacSimSidecar` and
+    `_RoboTwinSimSidecar` were the same dataclass with byte-identical
+    `reset`/`step`/`sim_time_ns`/`render`/`close`; both now subclass
+    `sidecar.SidecarSimRollout`, which owns those fields and methods (each
+    backend keeps only `_wrap_obs` and its docstring-carrying `action_dim`).
+    `SidecarClient._init_socket` and the RLDX-1 adapter's own `_init_socket`
+    (`policies/rldx.py`) were also byte-identical; both now call
+    `sidecar.open_req_socket`. `tabletop_push/env.py` and `so101_box/env.py`'s
+    `_render_named_rgb` were byte-identical too; both now call
+    `rollout.render_named_rgb_mujoco` — `rollout.py` was already the shared
+    module both imported (for `sim_time_ns_from_mujoco_handles`).
+
+30. **`connected_hal` leftover shadows — *resolved.*** `test_so100_follower_hal_mujoco.py`
+    and `test_openarm_hal_mujoco.py` each still defined the same
+    connect/disconnect wrapper `tests/sim/conftest.py:236` already provides.
+    Both local copies deleted; the conftest fixture resolves against each
+    file's own `hal` fixture.
+31. **HIL transport `state`/`_on_joint_state`/`wait_for_first_state` —
+    *resolved.*** Byte-identical across `_ros_control_transport.py`,
+    `_aloha_ros_transport.py`, `_openarm_ros_transport.py`. Split into
+    `_JointStateCache` (`state()`, all three) and `_PolledJointStateMixin`
+    (the other two, in `_ros_control_transport.py`) — OpenArm keeps its own
+    `_on_joint_state`/`spin_once` (executor-bound, waits for all 16 joints).
+32. **Safety-kernel place-\* live test harness `publish_grid` /
+    `publish_joint_state` / `reset_estop` — *resolved.*** Byte-identical
+    closures in the allowance-band and target-geometry live tests. Moved to
+    `tests/integration/conftest.py` as three factory fixtures
+    (`publish_occupancy_grid`, `publish_carriage_joint_state`,
+    `reset_kernel_estop`) returning callables; each test still owns its
+    `helper`/publishers/`spin` and passes them in explicitly — no change to
+    any topic, joint order, timeout or QoS.
+33. **`test_disconnect_idempotent` (Franka/Aloha/Sawyer real HALs) —
+    *resolved, was already redundant.*** `tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent`
+    already parametrizes over `HAL_BUILDERS`, which already includes
+    `FrankaPandaRealHAL`/`SawyerRealHAL`/`AlohaHAL` built with the same
+    args as each file's own `hal` fixture. Deleted the three per-file copies.
+34. **`test_after_estop_send_action_fails` (Franka/Sawyer real HALs) —
+    *resolved.*** No existing parametrized home (unlike #33), so added
+    `test_hal_send_action_after_estop_fails` to
+    `test_hal_protocol_conformance.py`, parametrized over just these two
+    names (not all of `HAL_BUILDERS` — the other builders were never proven
+    to share this "estop leaves send_action failing until reconnect" contract).
+35. **`test_manifest_has_latency_budget` (pusht/diffusion, franka_panda/smolvla/libero,
+    aloha/act sim suites) — *resolved.*** Same one-line manifest-contract
+    assertion three times. `tests/sim/conftest.py::assert_manifest_has_latency_budget`
+    is now the shared body; each file keeps its own test method (and its own
+    `skill_manifest` fixture loading its own rSkill), so a failure still
+    names the file/class it came from.
+36. **`test_send_action_holds_zero_pose` (H1/G1) / `test_hold_zero_pose`
+    (OpenArm) — *resolved.*** Identical "zero action → every joint stays
+    near zero" body. `tests/sim/conftest.py::assert_send_action_holds_zero_pose`
+    is now the shared assertion; each file still calls it with its own
+    `connected_hal` and `_zero_action()`, keeping its own test name/class.
+37. **`_expand` PEP 735 `include-group` walker — *resolved.*** Identical
+    recursive closure in `test_qwen_scene_vlm.py` and
+    `test_locateanything_detector.py`. Moved to
+    `tests/unit/conftest.py::expand_dependency_group`, a factory fixture
+    returning `expand(groups, name) -> list[str]`.
+38. **`_CaptureProcessor.__call__` in `test_reasoner_core.py` — *resolved,
+    leftover shadow.*** The whole class duplicated `tests/unit/conftest.py`'s
+    `_CaptureProcessor` (used by the `cap` fixture there). Deleted the local
+    class; `test_reasoner_core.py`'s `log_cap` fixture now imports the
+    conftest one and keeps its own extra `openral_reasoner.core.log` rebind.
+39. **`_find_metric` (`python/observability/tests/conftest.py` fixture vs.
+    `tests/unit/test_runner_observability.py` module function) — *left
+    alone, no shared home.*** Different installable-package test tiers, each
+    with its own `conftest.py`; a shared helper would need a new top-level
+    module reachable from both, which the no-new-top-level-modules rule
+    forbids. Two copies, below the threshold to justify that module.
+    module both imported (for `sim_time_ns_from_mujoco_handles`).
+

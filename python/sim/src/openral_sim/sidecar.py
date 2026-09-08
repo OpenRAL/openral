@@ -13,7 +13,9 @@ New sidecar integrations (the Isaac Sim scene backend,
 adapter (``openral_sim.policies.rldx``) predates it and keeps its own copy —
 its wire codec is locked to the upstream server's ``__ndarray_class__`` sentinel
 and its real path (a Qwen3-VL sidecar) cannot be exercised in CI — so migrating
-it is deferred; this module is the shape it should move toward.
+it is deferred; this module is the shape it should move toward. It already
+shares this module's ``open_req_socket`` for REQ-socket setup, the one piece
+of its own ``_init_socket`` that was byte-identical to ``SidecarClient``'s.
 
 Exception contract (CLAUDE.md §5):
     * connect-time failures (no sidecar, spawn never binds) → ``ROSConfigError``;
@@ -33,13 +35,20 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
+from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
 from openral_sim._sidecar_common import read_sidecar_identity
+from openral_sim.rollout import StepResult
+
+if TYPE_CHECKING:
+    from openral_core import SceneSpec, TaskSpec
+
+    from openral_sim.rollout import Observation
 
 _log = structlog.get_logger(__name__)
 
@@ -154,6 +163,29 @@ def coerce_sim_time_ns(value: object) -> int | None:
     if isinstance(value, float):
         return int(value)
     return None
+
+
+def open_req_socket(ctx: Any, timeout_ms: int, host: str, port: int, *, old: Any = None) -> Any:
+    """Create (or recreate) a ZMQ REQ socket connected to ``host:port``.
+
+    A ZMQ REQ socket whose ``recv`` timed out is stuck in EFSM (strict
+    send→recv pairing); every later ``send`` then raises until reopened.
+    ``old``, when given, is closed first (idempotent) so callers can recreate
+    on failure without wedging. Shared by ``SidecarClient._init_socket`` and
+    the GR00T-family sidecar adapter's own ``_init_socket``
+    (``openral_sim.policies.rldx``) — the bodies were byte-identical.
+    """
+    import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
+
+    if old is not None:
+        with contextlib.suppress(Exception):
+            old.close(linger=0)
+    sock = ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    sock.connect(f"tcp://{host}:{port}")
+    return sock
 
 
 @dataclass
@@ -327,16 +359,9 @@ class SidecarClient:
         send→recv pairing); every later ``send`` then raises until reopened.
         ``_try_ping`` recreates on failure so boot polling does not wedge.
         """
-        import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
-
-        if self._socket is not None:
-            with contextlib.suppress(Exception):
-                self._socket.close(linger=0)
-        self._socket = self._ctx.socket(zmq.REQ)
-        self._socket.setsockopt(zmq.LINGER, 0)
-        self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self._socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-        self._socket.connect(f"tcp://{self.host}:{self.port}")
+        self._socket = open_req_socket(
+            self._ctx, self.timeout_ms, self.host, self.port, old=self._socket
+        )
 
     def _try_ping(self) -> bool:
         """One ping gated behind a cheap TCP probe (REQ is lazy on tcp://)."""
@@ -484,3 +509,72 @@ class SidecarClient:
                 child.wait(timeout=5.0)
         _deregister_spawned_child(child)
         self._child = None
+
+
+@dataclass
+class SidecarSimRollout:
+    """Shared ``SimRollout`` base for out-of-process sidecar scene backends.
+
+    ``openral_sim.backends.isaac_sim._IsaacSimSidecar`` and
+    ``openral_sim.backends.robotwin._RoboTwinSimSidecar`` were the same
+    dataclass with byte-identical ``reset`` / ``step`` / ``sim_time_ns`` /
+    ``render`` / ``close`` bodies — they differ only in ``_wrap_obs`` (per-
+    backend camera naming and which extra observation fields the sidecar
+    reply carries) and in the ``action_dim`` docstring. This base owns the
+    common fields and the identical wire calls; subclasses implement
+    ``_wrap_obs`` and keep their own ``action_dim`` (its docstring carries
+    backend-specific facts, e.g. the concrete action width).
+    """
+
+    scene: SceneSpec
+    task: TaskSpec
+    _client: SidecarClient
+    _last_image: NDArray[np.uint8] | None = None
+    _action_dim: int | None = None
+    _last_sim_time_ns: int | None = None
+
+    def reset(self, seed: int | None = None) -> Observation:
+        """Reset the sidecar env and return its first wrapped observation."""
+        reply = self._client.call("reset", {"seed": seed})
+        self._last_sim_time_ns = coerce_sim_time_ns(reply.get("sim_time_ns"))
+        return self._wrap_obs(self._client.require(reply, "observation"))
+
+    def step(self, action: NDArray[np.float32]) -> StepResult:
+        """Apply one action over the wire and return the wrapped transition."""
+        action_np = np.asarray(action, dtype=np.float32).reshape(-1)
+        reply = self._client.call("step", {"action": action_np})
+        # Cache the sidecar's elapsed sim time so the
+        # deploy-sim HAL can publish /clock. Optional in the wire protocol
+        # (older sidecars omit it) → stays None, /clock off.
+        self._last_sim_time_ns = coerce_sim_time_ns(reply.get("sim_time_ns"))
+        return StepResult(
+            observation=self._wrap_obs(self._client.require(reply, "observation")),
+            reward=float(self._client.require(reply, "reward")),
+            terminated=bool(self._client.require(reply, "terminated")),
+            truncated=bool(self._client.require(reply, "truncated")),
+            info=dict(reply.get("info", {})),
+        )
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed simulation time in ns from the last sidecar reply, or ``None``.
+
+        The value the deploy-sim HAL reads (through
+        ``SimAttachedHAL.sim_time_ns``, which adds the cross-reset offset) to
+        publish ``/clock``. ``None`` when the sidecar does not report sim time
+        (older protocol), so the graph stays on wall-clock.
+        """
+        return self._last_sim_time_ns
+
+    def render(self) -> NDArray[np.uint8] | None:
+        """Return the last cached RGB frame, or ``None`` before the first step."""
+        return None if self._last_image is None else self._last_image.copy()
+
+    def close(self) -> None:
+        """Idempotent teardown: best-effort sidecar-side close, then the client."""
+        with contextlib.suppress(Exception):
+            self._client.call("close")
+        self._client.close()
+
+    def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+        """Unwrap the sidecar's raw ``observation`` dict — backend-specific."""
+        raise NotImplementedError

@@ -92,6 +92,7 @@ from openral_observability import inference_span
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies.gr00t import _env_bool
 from openral_sim.registry import POLICIES
+from openral_sim.sidecar import open_req_socket
 
 if TYPE_CHECKING:
     from openral_core import VLASpec
@@ -728,16 +729,9 @@ class _Gr00tFamilySidecarAdapter:
         this on failure so ``_wait_for_boot`` doesn't loop forever against
         a permanently-dead socket once the first ping times out.
         """
-        import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in rldx group
-
-        if self._socket is not None:
-            with contextlib.suppress(Exception):
-                self._socket.close(linger=0)
-        self._socket = self._ctx.socket(zmq.REQ)
-        self._socket.setsockopt(zmq.LINGER, 0)
-        self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        self._socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-        self._socket.connect(f"tcp://{self.host}:{self.port}")
+        self._socket = open_req_socket(
+            self._ctx, self.timeout_ms, self.host, self.port, old=self._socket
+        )
 
     def _try_ping(self) -> bool:
         """One ZMQ ping with the configured RCVTIMEO. True iff server answers.

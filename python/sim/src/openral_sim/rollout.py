@@ -49,6 +49,44 @@ def sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | No
     return round(float(data.time) * 1e9)
 
 
+def render_named_rgb_mujoco(
+    renderer: Any,
+    model: Any,
+    data: Any,
+    camera_name: str,
+    *,
+    height: int,
+    width: int,
+) -> tuple[Any, NDArray[np.uint8]]:
+    """Render one named MuJoCo camera as HWC uint8 RGB, creating the renderer lazily.
+
+    Shared by the native MuJoCo scene backends (``tabletop_push``, ``so101_box``)
+    whose own ``_render_named_rgb`` otherwise duplicated this renderer-caching +
+    render call verbatim. ``mujoco.Renderer`` construction is expensive, so
+    callers cache the returned renderer on their own instance and pass it back
+    in on the next call instead of rebuilding it per frame.
+
+    Args:
+        renderer: A previously returned ``mujoco.Renderer``, or ``None`` to
+            create one sized ``height``x``width``.
+        model: The compiled ``mujoco.MjModel``.
+        data: The live ``mujoco.MjData``.
+        camera_name: MJCF camera name to render.
+        height: Renderer output height (only used to construct a new renderer).
+        width: Renderer output width (only used to construct a new renderer).
+
+    Returns:
+        ``(renderer, rgb)`` — the renderer to cache and the rendered HWC uint8
+        RGB frame.
+    """
+    import mujoco
+
+    if renderer is None:
+        renderer = mujoco.Renderer(model, height=height, width=width)
+    renderer.update_scene(data, camera=camera_name)
+    return renderer, np.asarray(renderer.render(), dtype=np.uint8).copy()
+
+
 Observation = dict[str, Any]
 """Free-form observation dict — keys are adapter-specific.
 

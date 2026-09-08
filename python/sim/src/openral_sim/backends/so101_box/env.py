@@ -46,7 +46,7 @@ from openral_sim.backends.so101_box._assets import (
     compose_so101_box_mjcf,
 )
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
+from openral_sim.rollout import StepResult, render_named_rgb_mujoco, sim_time_ns_from_mujoco_handles
 
 if TYPE_CHECKING:
     import mujoco
@@ -410,16 +410,15 @@ class _So101BoxRollout:
         return rgb, depth
 
     def _render_named_rgb(self, camera_name: str) -> NDArray[np.uint8]:
-        import mujoco
-
-        if self._renderer_rgb is None:
-            self._renderer_rgb = mujoco.Renderer(
-                self._model,
-                height=self._render_height,
-                width=self._render_width,
-            )
-        self._renderer_rgb.update_scene(self._data, camera=camera_name)
-        return np.asarray(self._renderer_rgb.render(), dtype=np.uint8).copy()
+        self._renderer_rgb, rgb = render_named_rgb_mujoco(
+            self._renderer_rgb,
+            self._model,
+            self._data,
+            camera_name,
+            height=self._render_height,
+            width=self._render_width,
+        )
+        return rgb
 
     # ------------------------------------------------- spawn / pose utilities
 

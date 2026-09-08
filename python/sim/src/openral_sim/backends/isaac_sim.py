@@ -65,12 +65,10 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
 from openral_sim._sidecar_common import opt_num as _opt_num
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
-from openral_sim.sidecar import SidecarClient
-from openral_sim.sidecar import coerce_sim_time_ns as _coerce_sim_time_ns
+from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription, SceneSpec, SensorSpec, SimEnvironment, TaskSpec
+    from openral_core import RobotDescription, SensorSpec, SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -164,20 +162,17 @@ _MAX_PHYSICAL_GRIPPER_TRAVEL_M = 0.1
 
 
 @dataclass
-class _IsaacSimSidecar:
+class _IsaacSimSidecar(SidecarSimRollout):
     """``SimRollout`` that proxies an Isaac Lab env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8, ``state`` 1-D float32, ``task`` str); we only
     re-wrap into a plain dict and cache the last RGB frame for ``render``.
-    """
 
-    scene: SceneSpec
-    task: TaskSpec
-    _client: SidecarClient
-    _last_image: NDArray[np.uint8] | None = None
-    _action_dim: int | None = None
-    _last_sim_time_ns: int | None = None
+    Fields, ``reset``/``step``/``sim_time_ns``/``render``/``close`` live on
+    ``SidecarSimRollout`` (shared verbatim with the RoboTwin adapter); only
+    ``_wrap_obs`` and this docstring-carrying ``action_dim`` are Isaac-specific.
+    """
 
     @property
     def action_dim(self) -> int:
@@ -193,44 +188,6 @@ class _IsaacSimSidecar:
             reply = self._client.call("ping")
             self._action_dim = int(self._client.require(reply, "action_dim"))
         return self._action_dim
-
-    def reset(self, seed: int | None = None) -> Observation:
-        reply = self._client.call("reset", {"seed": seed})
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return self._wrap_obs(self._client.require(reply, "observation"))
-
-    def step(self, action: NDArray[np.float32]) -> StepResult:
-        action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
-        # Cache the sidecar's elapsed sim time so the
-        # deploy-sim HAL can publish /clock with an Isaac backend. Optional in
-        # the wire protocol (older sidecars omit it) → stays None, /clock off.
-        self._last_sim_time_ns = _coerce_sim_time_ns(reply.get("sim_time_ns"))
-        return StepResult(
-            observation=self._wrap_obs(self._client.require(reply, "observation")),
-            reward=float(self._client.require(reply, "reward")),
-            terminated=bool(self._client.require(reply, "terminated")),
-            truncated=bool(self._client.require(reply, "truncated")),
-            info=dict(reply.get("info", {})),
-        )
-
-    def sim_time_ns(self) -> int | None:
-        """Elapsed simulation time in ns from the last sidecar reply, or ``None``.
-
-        The value the deploy-sim HAL reads (through
-        ``SimAttachedHAL.sim_time_ns``, which adds the cross-reset offset) to
-        publish ``/clock``. ``None`` when the sidecar does not report sim time
-        (older protocol), so the graph stays on wall-clock.
-        """
-        return self._last_sim_time_ns
-
-    def render(self) -> NDArray[np.uint8] | None:
-        return None if self._last_image is None else self._last_image.copy()
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._client.call("close")
-        self._client.close()
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images_raw = raw.get("images", {})
