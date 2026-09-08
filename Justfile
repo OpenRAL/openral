@@ -141,7 +141,7 @@ sync *args:
 lint:
     uv run ruff check .
     uv run ruff format --check .
-    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_wam
+    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_wam -p openral_hal
     uv run mypy --strict tools/
 
 # Format
