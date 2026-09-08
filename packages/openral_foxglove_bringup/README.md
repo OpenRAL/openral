@@ -94,7 +94,9 @@ ros2 launch openral_foxglove_bringup foxglove.launch.py use_sim_time:=true
 
 Then open **https://app.foxglove.dev** (or the desktop app) →
 **Open connection** → **Foxglove WebSocket** → `ws://localhost:8765` →
-import the layout from `config/openral_layout.json`.
+import the layout — the scene-matched one the deploy logs a path to, or
+`config/openral_layout.json` when you brought the graph up by hand (see
+[Layout](#layout)).
 
 ## Layout
 
@@ -162,10 +164,24 @@ python -m openral_foxglove_bringup.layout --follow-frame map
 ```
 
 The shipped `config/openral_layout.json` is this generator's output for
-`top` / `left_wrist` / `right_wrist`; regenerate it in place with
-`--write-default` rather than hand-editing, and a test asserts the two match.
-A slot a scene does not publish shows as an empty panel — pick another from
-the panel's topic dropdown, or regenerate.
+`DEFAULT_CAMERAS` (`top` / `wrist_left` / `wrist_right`); regenerate it in place
+with `--write-default` rather than hand-editing, and a test asserts the two
+match.
+
+**Prefer the layout the deploy generates.** Camera slots are sensor names from
+the robot manifest ∪ the deploy scene, and only a sensor carrying a
+`deploy_binding` gets a reader — so a panel aimed at a declared-but-unbound slot
+reads "Image topic does not exist", which looks exactly like a dead camera.
+`openral deploy sim/run --foxglove` writes a layout for the slots *that deploy
+actually publishes* and logs the path:
+
+```
+[deploy_e2e] foxglove: ws://127.0.0.1:8765 — import the scene-matched layout
+  from /tmp/openral_layout_<robot>.json (cameras: context, wrist_left, wrist_right)
+```
+
+Import that one. `DEFAULT_CAMERAS` cannot know your scene; it is only the
+fallback for a viewer opened against a graph nobody launched from the CLI.
 
 ## Render `/tf` + the robot model
 
@@ -216,6 +232,10 @@ Foxglove draws them natively — no TypeScript extension:
 |---|---|---|
 | `WorldCollision` (capsules) | `visualization_msgs/MarkerArray` (cylinders) | `/openral/world_collisions_markers` |
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
+
+`openral deploy sim/run --foxglove` spawns this converter as part of the graph,
+so these two topics are live on any deploy that has Foxglove on. Standalone
+(pairing with `foxglove.launch.py`, or against a graph you brought up yourself):
 
 ```bash
 ros2 launch openral_foxglove_bringup bucket2.launch.py
