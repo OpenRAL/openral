@@ -62,7 +62,11 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
-from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
+from openral_foxglove_bringup.topics import (
+    ASSET_URI_ALLOWLIST,
+    BUCKET1_TOPIC_WHITELIST,
+    READ_ONLY_CAPABILITIES,
+)
 
 
 def _resolve_repo_root() -> pathlib.Path:
@@ -2085,6 +2089,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "port": int(foxglove_port),
                     "tls": False,
                     "capabilities": READ_ONLY_CAPABILITIES,
+                    # What a viewer may fetch to draw the URDF. Upstream's
+                    # default refuses a dot in a directory segment, which
+                    # rejects every versioned asset path — see topics.py.
+                    "asset_uri_allowlist": ASSET_URI_ALLOWLIST,
                     "topic_whitelist": BUCKET1_TOPIC_WHITELIST,
                     # Keep the upstream 10 MB send buffer for camera frames.
                     "send_buffer_limit": 10_000_000,

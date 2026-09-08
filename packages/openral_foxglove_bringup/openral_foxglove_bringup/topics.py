@@ -117,4 +117,25 @@ BUCKET1_TOPIC_WHITELIST: list[str] = [
 #: viewer cannot publish, call services, or write params. ``connectionGraph``
 #: powers Foxglove's Topic Graph panel; ``assets`` lets the 3D panel fetch
 #: ``package://`` URDF meshes (a read-only fetch).
+#: ``asset_uri_allowlist`` for the bridge's asset server — what a connected
+#: viewer may fetch to render the URDF (meshes, textures).
+#:
+#: Upstream's default spells a directory segment ``[-\w%]+``, which admits no
+#: dot. Enactic's OpenArm meshes live under
+#: ``package://openarm_description/assets/robot/openarm_v2.0/meshes/...`` and
+#: the ``openarm_v2.0`` segment carries one, so *every* mesh was refused
+#: (``Asset URI not allowed``) and the 3D panel drew a bare TF tree with no
+#: robot in it. Versioned asset directories are ordinary upstream practice, so
+#: this is not OpenArm-specific.
+#:
+#: The dot is added to the directory class and path traversal is refused
+#: explicitly by the leading negative lookahead instead — this list is the only
+#: thing standing between a connected viewer and the deploy host's filesystem,
+#: and ``..`` must stay unreachable however the rest of the pattern relaxes.
+#: The extension set is upstream's, unchanged.
+ASSET_URI_ALLOWLIST: list[str] = [
+    r"^package://(?!.*\.\.)(?:[-\w%.]+/)*[-\w%.]+"
+    r"\.(?:dae|fbx|glb|gltf|jpeg|jpg|mtl|obj|png|stl|tif|tiff|urdf|webp|xacro)$",
+]
+
 READ_ONLY_CAPABILITIES: list[str] = ["connectionGraph", "assets"]

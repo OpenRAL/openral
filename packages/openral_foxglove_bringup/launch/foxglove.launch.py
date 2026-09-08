@@ -33,6 +33,7 @@ from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from openral_foxglove_bringup.topics import (
+    ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
     READ_ONLY_CAPABILITIES,
 )
@@ -161,6 +162,9 @@ def generate_launch_description() -> LaunchDescription:
         "use_sim_time": use_sim_time,
         "tls": False,
         "capabilities": READ_ONLY_CAPABILITIES,
+        # Upstream's default allowlist refuses a dot in a directory segment,
+        # which rejects every versioned asset path (see topics.py).
+        "asset_uri_allowlist": ASSET_URI_ALLOWLIST,
         # Sensor frames can be large; keep the upstream 10 MB send buffer.
         "send_buffer_limit": 10_000_000,
         "max_qos_depth": 10,

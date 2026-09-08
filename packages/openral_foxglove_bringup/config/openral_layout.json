@@ -61,12 +61,12 @@
   },
   "Image!cam_1": {
    "imageMode": {
-    "imageTopic": "/openral/cameras/left_wrist/image"
+    "imageTopic": "/openral/cameras/wrist_left/image"
    }
   },
   "Image!cam_2": {
    "imageMode": {
-    "imageTopic": "/openral/cameras/right_wrist/image"
+    "imageTopic": "/openral/cameras/wrist_right/image"
    }
   },
   "3D!nav": {

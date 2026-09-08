@@ -63,8 +63,8 @@ _FORBIDDEN_TOPIC_LITERALS = [
 _EXPECTED_ALLOWED: set[str] = {
     # Scene
     "/openral/cameras/top/image",
-    "/openral/cameras/left_wrist/image",
-    "/openral/cameras/right_wrist/image",
+    "/openral/cameras/wrist_left/image",
+    "/openral/cameras/wrist_right/image",
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",

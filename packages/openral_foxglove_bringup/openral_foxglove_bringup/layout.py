@@ -45,7 +45,14 @@ from typing import Any
 #: scene; the two wrist slots cover the three-camera humanoid scenes. A slot a
 #: scene does not publish renders as an empty panel — pick another from the
 #: panel's topic dropdown, or regenerate with ``--cameras``.
-DEFAULT_CAMERAS: tuple[str, ...] = ("top", "left_wrist", "right_wrist")
+#: Camera slots the shipped layout is generated for. These are *sensor names*
+#: from the robot manifest, not free labels — `camera_image_topic` builds
+#: `/openral/cameras/<slot>/image` from them, and a slot that does not exist
+#: renders as "Image topic does not exist" in an otherwise healthy panel.
+#: `wrist_left` / `wrist_right` is the spelling `robots/*/robot.yaml` uses
+#: (openarm, and two other manipulators); the transposed `left_wrist` this
+#: shipped with matched no camera on any robot in the repo.
+DEFAULT_CAMERAS: tuple[str, ...] = ("top", "wrist_left", "wrist_right")
 
 #: Where the generated layout is shipped, relative to the package root.
 DEFAULT_LAYOUT_PATH: str = "config/openral_layout.json"
