@@ -30,15 +30,13 @@ namespace openral_safety_kernel {
 namespace {
 
 rclcpp::QoS chunk_qos() {
-  // The openral slot dispatcher publishes N chunks per
-  // policy tick on /openral/candidate_action (arm CARTESIAN_DELTA +
-  // gripper GRIPPER_POSITION + optional base BODY_TWIST). KEEP_LAST=1
-  // on the subscriber side coalesces back-to-back publishes inside
-  // the same callback batch: only the last slot's chunk survives, so
-  // in deploy_sim the arm freezes while the gripper keeps streaming
-  // because that's the LAST published slot per tick. Four-slot mobile
-  // manipulation plus predictive collision work can backlog beyond ten
-  // samples; fifty holds twelve complete ticks while staying bounded.
+  // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
+  // (arm CARTESIAN_DELTA + gripper GRIPPER_POSITION + optional base
+  // BODY_TWIST). KEEP_LAST=1 would coalesce back-to-back publishes in one
+  // callback batch to only the last slot (arm freezes in deploy_sim while
+  // the gripper keeps streaming, since gripper is the LAST slot per tick).
+  // Four-slot mobile manipulation + predictive collision can backlog past
+  // ten samples; 50 holds twelve complete ticks while staying bounded.
   rclcpp::QoS q(rclcpp::KeepLast(50));
   q.reliable();
   q.durability_volatile();
@@ -109,13 +107,10 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
 
 /// Decode one wire `AttachedCollisionPrimitive` into the kernel's input record.
 ///
-/// Shared by the attached-payload ingest and the declared place target's
-/// geometry (ADR-0098): both read the same message type off the same
-/// `WorldStateStamped`, and a shape the two decoded differently would be a
-/// payload and a receptacle that disagree about where a surface is. Returns
-/// false on an unknown `SHAPE_*` tag or too few dimensions for the tag given —
-/// every caller fails closed on that, because an unrecognised shape is not safe
-/// to treat as absent.
+/// Shared by attached-payload ingest and the declared place target's geometry
+/// (ADR-0098) so both interpret the same wire shape identically. Returns
+/// false (fail-closed) on an unknown SHAPE_* tag or too few dimensions for
+/// the tag given.
 bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
                                AttachedPrimitiveInput& out) {
   const std::size_t n_dims = prim.shape_dimensions.size();
@@ -248,58 +243,54 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("world_voxel_enabled", false);
   this->declare_parameter<double>("world_voxel_margin_m", 0.0);
   this->declare_parameter<double>("world_voxel_deadline_ms", 500.0);
-  // Sized by the ROBOT, not by taste: the grid must cover wherever the
-  // kernel-checked geometry can reach, and on a lattice-aligned grid that
-  // volume is a ball (the grid's axes are the map's and turn relative to the
-  // base, so a base-aligned box is not invariant to them). panda_mobile's
-  // checked arm reaches 1016 mm from the grid centre; the deploy launch covers
-  // 1.05 m, which at the sim's 25 mm cells is 85^3 = 614125 including the one
-  // cell per axis the lattice snap can add.
+  // Sized by the ROBOT, not by taste: must cover wherever the kernel-checked
+  // geometry can reach — a ball on a lattice-aligned grid (axes are the
+  // map's, turn relative to base, so a base-aligned box isn't invariant).
+  // panda_mobile's checked arm reaches 1016 mm from grid centre; deploy
+  // launch covers 1.05 m, 85^3 = 614125 cells at sim's 25 mm resolution
+  // (includes the one lattice-snap cell per axis).
   //
-  // The previous 262144 was the cap the sim BOX WAS SHRUNK TO FIT (1.6 m at
-  // 25 mm = 64^3) — the inversion this replaces. It left the arm reaching up to
-  // 124 mm outside the published grid, where the world check sees nothing.
+  // Previous cap 262144 (1.6 m at 25 mm = 64^3) was sized to the sim box, not
+  // the robot — left the arm reaching 124 mm outside the published grid,
+  // unchecked.
   //
-  // Cost is dominated by the attached-contact baseline, not the occupancy:
-  // `attached_contact_distance_` is attached_max_objects x 8 B per cell — 64
-  // B/cell against occupancy's 1 B — so this default reserves ~40 MB, of which
-  // 39 MB is that baseline. Making it sparse is the lever if that ever binds.
+  // Cost is dominated by the attached-contact baseline, not occupancy:
+  // attached_contact_distance_ is attached_max_objects x 8 B/cell vs
+  // occupancy's 1 B/cell — this default reserves ~40 MB, 39 MB of it that
+  // baseline. Sparse storage is the lever if that ever binds.
   this->declare_parameter<std::int64_t>("world_voxel_max_cells", 614125);
 
   // Attached-payload phase — grasped objects carried on
   // /openral/world_state_fast (ADR-0092). Each object leaves world occupancy
-  // (openral_octomap_bridge clears the payload's own cells out of
-  // /openral/world_voxels off this same message — the kernel exempts nothing on
-  // its behalf) and is re-checked as collision-active robot geometry (vs world,
-  // voxels, and the robot's own links except its attach link + touch links). Caps
-  // are fixed-capacity: an over-capacity, unknown-link, or malformed attachment
-  // set fails closed (the next candidate action is dropped until a clean message
-  // lands). Each object owns a single identity, attach link, and touch-link set
-  // but may carry several primitives; the object, total-primitive, and
-  // total-touch-link caps are enforced independently and fail closed.
+  // (openral_octomap_bridge clears its own cells from /openral/world_voxels
+  // off this same message; the kernel exempts nothing itself) and is
+  // re-checked as collision-active robot geometry (vs world, voxels, and the
+  // robot's own links except attach link + touch links). Fixed-capacity
+  // caps: over-capacity, unknown-link, or malformed attachment fails closed
+  // (next candidate dropped until a clean message lands). Each object owns
+  // one identity/attach link/touch-link set but may carry several
+  // primitives; object/primitive/touch-link caps enforce independently.
   this->declare_parameter<bool>("attached_collision_enabled", false);
   this->declare_parameter<double>("attached_collision_margin_m", 0.0);
-  // How many consecutive advisory refusals (#176) the kernel will issue before
-  // treating the next one as an ordinary latched stop. 0 disables the band
-  // entirely and restores the pre-#176 behaviour exactly — which is the value
-  // to set if a deployment wants no part of it.
+  // Consecutive advisory refusals (#176) before the kernel treats the next
+  // one as an ordinary latched stop. 0 disables the band entirely (exact
+  // pre-#176 behaviour) — set that if a deployment wants no part of it.
   //
-  // 3 is small on purpose. The band exists so a place that has ARRIVED is not
-  // an operator-reset event; it is not there to let a skill push repeatedly. A
-  // skill that cannot get out of the band in three attempts is not grazing the
-  // receptacle, and the fourth refusal latches.
+  // 3 is small on purpose: the band exists so an ARRIVED place is not an
+  // operator-reset event, not to let a skill push repeatedly. A skill that
+  // can't clear the band in three attempts isn't grazing the receptacle;
+  // the fourth refusal latches.
   this->declare_parameter<std::int64_t>("place_advisory_max_consecutive", 3);
 
   // Distance-graded velocity scaling (#188). Width of the band ABOVE each
-  // check's own gate margin in which an accepted chunk is slowed rather than
-  // passed at full rate. **0 disables the mechanism entirely and reproduces
-  // today's behaviour bit-for-bit**, which is the default: this changes an
-  // enforcement surface, and the A/B five-round battery is what earns it a
+  // check's own gate margin where an accepted chunk is slowed, not passed at
+  // full rate. 0 (default) disables the mechanism entirely, reproducing
+  // today's behaviour bit-for-bit — the A/B five-round battery earns a
   // non-zero value, not this parameter's existence.
   //
-  // The scale is `exp(k · (slack − proximity))`, so it is exactly 1.0 at the
-  // top of the band and `exp(−k · proximity)` at the margin itself. With the
-  // suggested 0.05 m / 20.0 that is 1.00 → 0.37 across the band.
+  // scale = exp(k * (slack - proximity)): 1.0 at the band's top,
+  // exp(-k * proximity) at the margin. Suggested 0.05 m / 20.0 -> 1.00 to
+  // 0.37 across the band.
   this->declare_parameter<double>("collision_scale_proximity_m", 0.0);
   this->declare_parameter<double>("collision_scale_k", 20.0);
   // Floor on the scale. A band that can reach zero does not slow the robot,
@@ -342,16 +333,15 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::int64_t>>("collision_base_dofs",
                                                      std::vector<std::int64_t>{});
 
-  // Phase 3 — predictive Cartesian look-ahead. The EE collision-link
-  // index lets the kernel build the arm Jacobian and reconstruct where a
-  // CARTESIAN_DELTA chunk's EE deltas drive the arm; <0 (default) leaves
-  // predictive Cartesian disabled (reactive measured-config check only). The
-  // launch derives the index from the robot's end-effector frame; lambda damps
-  // the DLS solve near singularities; margin_growth inflates the collision
-  // margin after each additional look-ahead step to bound accumulated
-  // linearization/DLS residual (the first predicted step uses the configured
-  // collision margin);
-  // max_steps caps the look-ahead (0 = every row, last step always included).
+  // Phase 3 — predictive Cartesian look-ahead. EE collision-link index lets
+  // the kernel build the arm Jacobian and reconstruct where a CARTESIAN_DELTA
+  // chunk's EE deltas drive the arm; <0 (default) disables predictive
+  // Cartesian (reactive measured-config check only). Launch derives the
+  // index from the robot's EE frame; lambda damps the DLS solve near
+  // singularities; margin_growth inflates the collision margin per
+  // additional look-ahead step to bound accumulated linearization/DLS
+  // residual (first predicted step uses the configured margin); max_steps
+  // caps the look-ahead (0 = every row, last step always included).
   this->declare_parameter<std::int64_t>("collision_ee_link_index", -1);
   this->declare_parameter<double>("collision_predict_lambda", 0.05);
   this->declare_parameter<double>("collision_predict_margin_growth_m", 0.01);
@@ -728,17 +718,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     const bool geom_enabled = self_collision_enabled_ || world_collision_enabled_ ||
                               world_voxel_enabled_ || attached_collision_enabled_;
     const auto mode = static_cast<ControlMode>(view.control_mode);
-    // Smallest clearance ABOVE its own gate margin seen anywhere in this
-    // chunk's sweep (#188). Slack rather than raw distance because every check
-    // carries a different margin and the predictive steps inflate theirs with
-    // look-ahead depth — slack is the only margin-agnostic way to compare them.
+    // Smallest clearance ABOVE its own gate margin anywhere in this chunk's
+    // sweep (#188). Slack, not raw distance: every check carries a different
+    // margin and predictive steps inflate theirs with look-ahead depth, so
+    // slack is the only margin-agnostic comparison.
     //
-    // Pairs BELOW their margin that did not trip are deliberately excluded:
-    // not tripping there means the pair is exempted (an attached payload's
-    // attach-time contact baseline, an ACM row, a live place allowance), and an
-    // exemption says that contact is allowed. Letting it drive the scale would
-    // make a robot that is legitimately resting a payload on a shelf crawl for
-    // as long as it holds it.
+    // Pairs BELOW their margin that didn't trip are excluded: not tripping
+    // means the pair is exempted (attach-time contact baseline, ACM row,
+    // live place allowance) — letting an exemption drive the scale would
+    // make a robot resting a payload on a shelf crawl for as long as it
+    // holds it.
     double collision_min_slack_m = std::numeric_limits<double>::infinity();
     const bool is_position = (mode == ControlMode::kJointPosition);
     // Non-position chunks carry velocities / EE deltas, not joint
@@ -854,36 +843,32 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         return std::string("attached_") + std::to_string(idx);
       };
-      // Report one collision hit. `hit` supplies BOTH the identity and the
-      // distance, so the E-stop evidence always describes a single geometry
-      // pair: `hit.min_distance` is that pair's own surface distance, never
-      // the sweep-wide minimum. The sweep minimum — which may belong to a pair
-      // the check exempted (an attached payload's attach-time contact
-      // baseline) — is logged under its own `sweep_min_distance_m` key and its
-      // own span attribute, and deliberately stays out of the evidence
-      // payload's `min_distance_m`.
+      // Report one collision hit. `hit` supplies BOTH identity and distance,
+      // so E-stop evidence always describes a single geometry pair:
+      // hit.min_distance is that pair's own surface distance, never the
+      // sweep-wide minimum. The sweep minimum (may belong to an exempted
+      // pair, e.g. an attached payload's attach-time contact baseline) is
+      // logged separately under sweep_min_distance_m and its own span
+      // attribute, and stays out of min_distance_m.
       //
-      // The evidence also carries `q_fk_` — the configuration the hit was
-      // measured at. `report` is only ever reached from `check_config`, right
-      // after that config was FK'd, so this is the geometry the verdict is
-      // about and nothing else can be. A predicted step's configuration is
-      // reconstructible from no other artifact (it depends on the kernel's own
-      // DLS Jacobian, its lambda and its dt), and the drawer-opening stop that
-      // opened this issue was adjudicated against the *measured* joints, where
-      // the two links it named sit 53 mm apart.
+      // Evidence also carries q_fk_, the configuration the hit was measured
+      // at. `report` is reached only from check_config right after FK, so
+      // this is the only geometry the verdict can be about. A predicted
+      // step's configuration is reconstructible from no other artifact
+      // (depends on the kernel's own DLS Jacobian, lambda, dt) — the
+      // drawer-opening stop that opened this issue was adjudicated against
+      // the *measured* joints, where the two named links sit 53 mm apart.
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         ++chunks_dropped_;
-        // The advisory band (#176): a declared payload's own receptacle contact
-        // is refused, not latched — the chunk is dropped and the skill may try
-        // again, instead of the operator having to call /openral/estop_reset
-        // over a contact the ground truth measures in single millimetres.
+        // Advisory band (#176): a declared payload's own receptacle contact is
+        // refused, not latched — chunk dropped, skill may retry, instead of an
+        // operator /openral/estop_reset over a contact measured in millimetres.
         //
-        // Bounded three ways, and any of them failing gives today's stop:
-        // `hit.advisory` is only ever set for an attached payload inside its
-        // own live declaration and within one voxel of the approach allowance;
-        // the run of refusals is capped; and every other check in this function
-        // reaches the same `report` with `advisory == false`.
+        // Bounded three ways (any failing gives today's stop): hit.advisory
+        // is set only for an attached payload inside its live declaration,
+        // within one voxel of the approach allowance; refusals are capped;
+        // every other check here reaches report with advisory == false.
         if (hit.advisory && advisory_refusals_ < place_advisory_max_consecutive_) {
           ++advisory_refusals_;
           last_drop_reason_ = "collision_advisory";
@@ -1077,12 +1062,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                 collision_scale_proximity_m_);
             note_slack(hit, amargin);
             if (hit.hit) {
-              // ADR-0098: when the declared target's own geometry adjudicated
-              // the pair, `hit.min_distance` is the distance to that BODY, not
-              // to the cell `link_b` indexes — so the evidence has to name the
-              // body. Quoting one geometry's distance under another's identity
-              // is precisely the failure `CollisionHit` forbids, and precisely
-              // what #187 landed to stop the evidence doing.
+              // ADR-0098: when declared target geometry adjudicated the pair,
+              // hit.min_distance is the distance to that BODY, not the cell
+              // link_b indexes, so the evidence must name the body —
+              // quoting one geometry's distance under another's identity is
+              // the CollisionHit-forbidden failure #187 fixed.
               const std::string other =
                   hit.place_target_adjudicated
                       ? "place:" + place_declaration_target_ + "#" + std::to_string(hit.link_b)
@@ -1099,17 +1083,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             return true;
           }
           // ADR-0100 contact-force gate, survey Path C. Evaluated LAST, after
-          // every geometric check above has already passed, which is what makes
-          // "additive conservatism" literally true rather than merely argued:
-          // the only configurations this can reach are ones the kernel was about
-          // to accept, so it can turn an accept into a refusal and nothing else.
-          // It never widens a margin, never creates an exemption, and geometry
-          // keeps priority in the evidence.
+          // every geometric check above passed — makes "additive
+          // conservatism" literally true: the only configurations this can
+          // reach are ones the kernel was about to accept, so it can only
+          // turn an accept into a refusal, never widen a margin or create an
+          // exemption; geometry keeps priority in the evidence.
           //
-          // It is also configuration-invariant across the horizon — the witness
-          // describes the measured contact now, not a predicted one — so it is
-          // reported at the step being checked and the whole chunk is refused,
-          // exactly as any other hit at that step would be.
+          // Configuration-invariant across the horizon (witness describes
+          // measured contact now, not a predicted one), so it's reported at
+          // the step being checked and the whole chunk is refused, exactly
+          // as any other hit at that step would be.
           const auto force = check_contact_force_gate(attached_model_);
           if (force.tripped) {
             CollisionHit fhit{};
@@ -1233,24 +1216,22 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE, "chunk accepted",
                       msg->rskill_id, msg->trace_id);
 
-    // Distance-graded slowdown (#188). The chunk has ALREADY been accepted —
-    // this never turns an accept into a drop, and never a drop into an accept.
-    // It only decides how fast the accepted motion is allowed to be executed.
+    // Distance-graded slowdown (#188). Chunk is ALREADY accepted — this
+    // never turns an accept into a drop or vice versa; it only decides how
+    // fast the accepted motion executes.
     //
-    // Only rate-shaped modes are scalable, and the distinction is not
-    // stylistic: multiplying an ABSOLUTE target (JOINT_POSITION,
-    // CARTESIAN_POSE, JOINT_TRAJECTORY) by 0.5 does not halve the speed, it
-    // commands a pose half way to the origin — a large unrequested motion, in
-    // an unpredictable direction, dressed up as a safety measure. Shrinking
-    // those toward the measured configuration would be the correct form and
-    // needs a fresh seed that position mode deliberately does not require
-    // today, so absolute modes are left alone. Gripper / dex-hand / composite
-    // rows are not motion rates either (a scaled grasp is a dropped object, a
-    // scaled mode flag is a corrupted multiplexer). BODY_TWIST is excluded on
-    // evidence, not convenience: FK zeroes the base dofs, so nothing here
-    // measures where the BASE is going, and slowing it for an arm-side
-    // clearance would be a number applied to the wrong body (the base's own
-    // proximity gate is Nav2's collision monitor, #186).
+    // Only rate-shaped modes are scalable: multiplying an ABSOLUTE target
+    // (JOINT_POSITION, CARTESIAN_POSE, JOINT_TRAJECTORY) by 0.5 doesn't halve
+    // the speed, it commands a pose halfway to the origin — a large
+    // unrequested motion in an unpredictable direction. Shrinking toward the
+    // measured configuration would be correct but needs a fresh seed
+    // position mode doesn't require today, so absolute modes are left alone.
+    // Gripper/dex-hand/composite rows aren't motion rates either (a scaled
+    // grasp drops the object; a scaled mode flag corrupts the multiplexer).
+    // BODY_TWIST is excluded on evidence: FK zeroes the base dofs, so
+    // nothing here measures where the BASE is going, and slowing it for an
+    // arm-side clearance would apply the number to the wrong body (base's
+    // own proximity gate is Nav2's collision monitor, #186).
     const bool rate_shaped = mode == ControlMode::kJointVelocity ||
                              mode == ControlMode::kCartesianDelta ||
                              mode == ControlMode::kCartesianTwist;

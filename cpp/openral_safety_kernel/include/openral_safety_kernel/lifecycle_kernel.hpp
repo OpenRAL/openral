@@ -348,17 +348,17 @@ private:
 
   /// Distance-graded velocity scaling (issue #188 — "Path A").
   ///
-  /// The kernel's verdict used to be accept / drop / latch at a fixed margin,
-  /// and the 2026-08-26 five-round battery measured the cost: 11 of 15 stops
-  /// were inside what 25 mm voxel quantisation alone explains, and each was
-  /// mission-ending. Slowing along the policy's own path is the response the
-  /// evidence supports (PACS, arXiv:2511.06385: 0.70 unfiltered / 0.04 under
-  /// reactive projection / 0.72 under chunk-level graded braking).
+  /// 2026-08-26 five-round battery measured the cost of accept/drop/latch at
+  /// a fixed margin: 11 of 15 stops were inside what 25 mm voxel
+  /// quantisation alone explains, each mission-ending. Slowing along the
+  /// policy's own path is the response the evidence supports (PACS,
+  /// arXiv:2511.06385: 0.70 unfiltered / 0.04 under reactive projection /
+  /// 0.72 under chunk-level graded braking).
   ///
-  /// `collision_scale_proximity_m_ == 0.0` disables the mechanism and restores
-  /// today's behaviour exactly — the same rollback shape as
-  /// `place_advisory_max_consecutive: 0`. It is the default: this is a
-  /// WG-gated enforcement surface and the A/B battery is what turns it on.
+  /// collision_scale_proximity_m_ == 0.0 disables the mechanism, restoring
+  /// today's behaviour exactly — same rollback shape as
+  /// place_advisory_max_consecutive: 0. Default: WG-gated enforcement
+  /// surface, the A/B battery is what turns it on.
   double collision_scale_proximity_m_{0.0};
   double collision_scale_k_{0.0};
   double collision_scale_min_{1.0};

@@ -146,17 +146,15 @@ if(BUILD_TESTING)
   # CLAUDE.md §1.11 forbids mocks; gtest fixtures consume real
   # RobotDescription / SafetyEnvelope structs constructed in-test.
   #
-  # `ament_lint_auto` / `ament_lint_common` are intentionally NOT wired
-  # in here. Their default linters (ament_flake8 single-quote rule,
-  # ament_cpplint legal/copyright + Google include-order, ament_uncrustify
-  # Allman braces, ament_pep257 D213) directly conflict with the
-  # workspace's own style discipline — ruff (double quotes), Google-style
-  # docstrings (summary on line 1), clang-format LLVM style (K&R braces)
-  # — codified in CLAUDE.md §5.1/§5.2 and applied uniformly across every
-  # other ROS 2 package in `packages/`. Wiring ament_lint_common only
-  # here produced ~259 style failures in `just ros2-test` that the rest
-  # of the repo doesn't enforce; ruff + clang-tidy + mypy remain the
-  # sole style authorities, run via `just lint`.
+  # ament_lint_auto/ament_lint_common intentionally NOT wired in: their
+  # default linters (ament_flake8 single-quote rule, ament_cpplint
+  # legal/copyright + Google include-order, ament_uncrustify Allman braces,
+  # ament_pep257 D213) conflict with the workspace's own style discipline
+  # (ruff double quotes, Google-style docstrings, clang-format LLVM/K&R —
+  # CLAUDE.md §5.1/§5.2, applied uniformly across packages/). Wiring
+  # ament_lint_common here alone produced ~259 style failures in
+  # `just ros2-test` the rest of the repo doesn't enforce; ruff +
+  # clang-tidy + mypy remain the sole style authorities, via `just lint`.
 
   ament_add_gtest(test_validator test/test_validator.cpp)
   target_link_libraries(test_validator ${PROJECT_NAME})

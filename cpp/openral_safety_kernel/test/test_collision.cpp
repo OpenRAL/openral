@@ -1708,23 +1708,15 @@ TEST(IngestAttached, EmptyInputIsOkAndEmpty) {
   EXPECT_EQ(model.n_primitives, 0U);
 }
 
-// ── Evidence coherence: the reported pair and the reported distance ────
+// ── Evidence coherence: reported pair and reported distance describe ONE hit ──
 //
-// A `CollisionHit` is the kernel's E-stop evidence: `link_a` / `link_b` name
-// the geometry that tripped the check and `min_distance` is the number the
-// FailureTrigger and the operator log quote for it. Those three fields must
-// describe ONE pair. They used to be sampled from two different places — the
-// identity from the first pair to trip the gate, the distance from the
-// sweep-wide minimum over every pair the check touched, including pairs the
-// gate deliberately exempted (an attached payload's attach-time contact
-// baseline). A payload resting on a shelf then reported its own uncleared
-// occupancy residue's ~-40 mm as if it were the support contact's ~-0.4 mm,
-// and downstream diagnosis chased a penetration that never existed.
-//
-// The contract pinned below: on a hit the evidence describes the DEEPEST
-// pair that actually tripped the gate; the sweep-wide minimum is carried
-// separately in `sweep_min_distance`. Reporting only — the tests at the end
-// of this section pin that the stop/no-stop decision itself is untouched.
+// `CollisionHit` is E-stop evidence: `link_a`/`link_b` name the geometry that
+// tripped the check; `min_distance` is the number the FailureTrigger and the
+// operator log quote. Contract: on a hit, evidence names the DEEPEST pair
+// that tripped the gate; the sweep-wide minimum over every pair checked
+// (including gate-exempted ones, e.g. an attached payload's attach-time
+// contact baseline) is carried separately in `sweep_min_distance`. Reporting
+// only — tests below also pin that the stop/no-stop decision is unaffected.
 
 namespace {
 
@@ -1969,30 +1961,23 @@ TEST(SupportContactWitness, ProtrusionInsideThePatchStillStops) {
   EXPECT_EQ(hit.link_b, support_index(12, 12, 14));
 }
 
-// ── the 2026-08-15 battery's height-envelope calibration ────────────────────
+// ── 2026-08-15 battery: height-envelope calibration ──────────────────────────
+// Source: spark:~/openral-runs/2026-08-15-baguette-battery ("Calibration
+// 2026-08-15"), hazard-log Entry 012 (HZ-0092-1), ADR-0097 Second Amendment.
+// Findings: run 4 moved the payload 10.2 mm during the stop while the
+// lateral patch gate (135.7 mm) stayed clear of the actual 84-86 mm offset —
+// ruling out "sliding" — and round-8 r2 measured +42.9 mm against a
+// ~15-19 mm envelope (excess +24.4 mm ≈ one 25 mm voxel): adjacent
+// co-planar structure sits ~1 voxel above the attested plane during genuine
+// support contact.
 //
-// `spark:~/openral-runs/2026-08-15-baguette-battery`, recorded as
-// "Calibration 2026-08-15" on hazard-log Entry 012 (HZ-0092-1) and approved by
-// the maintainer alongside ADR-0097's Second Amendment. The battery refuted the
-// suspected "sliding" class outright — run 4 moved the payload 10.2 mm during
-// the stop and the lateral patch gate (135.7 mm) never came near the 84-86 mm
-// actual offset — and named the real one: cells of ADJACENT CO-PLANAR STRUCTURE
-// (a raised edge, a neighbouring stack on the same support surface) sit
-// approximately ONE VOXEL above the attested plane while the payload is still
-// in genuine, continuing support contact. Round-8 r2 measured +42.9 mm against
-// a ~15-19 mm envelope: an excess of +24.4 mm, one 25 mm voxel.
-//
-// The bound therefore gains a fourth additive term, one full voxel, INSIDE the
-// existing lateral patch (the patch radius is untouched — this is height, not
-// reach):
-//
+// Bound gains a 4th additive term, one full voxel, inside the existing
+// lateral patch (patch radius untouched — height, not reach):
 //   half_resolution·(|n.x|+|n.y|+|n.z|) + attested depth + slack + resolution
 //
-// Fixture: the same 24³ / 25 mm lattice, re-phased so a chosen cell layer lands
-// at a chosen height above the attested plane, and the attested depth set to
-// the run's own 5 mm. The envelope is then
-//   12.5 + 5.0 + 1.0 + 25.0 = 43.5 mm exactly,
-// so r2's +42.9 mm clears it by 0.6 mm — and nothing rounder would.
+// Fixture: same 24³/25 mm lattice, re-phased so a cell layer sits at a chosen
+// height above the attested plane; attested depth = run's 5 mm. Envelope =
+// 12.5 + 5.0 + 1.0 + 25.0 = 43.5 mm; r2's +42.9 mm clears it by 0.6 mm.
 
 namespace {
 
@@ -2094,23 +2079,20 @@ TEST(SupportContactWitness, TheRound8CoplanarCellIsInsideTheWidenedEnvelope) {
 
 TEST(SupportContactWitness, TheWidenedEnvelopeIsExactlyItsFourNamedTerms) {
   // The envelope DERIVED rather than transcribed, at the exact geometry the
-  // field flew. `kBatteryEnvelope` above is a literal: easy to read, but a
-  // literal cannot notice when one of the four terms it summarises moves
-  // underneath it, and the two probes that lean on it would then be probing a
-  // number the kernel no longer computes. This rebuilds the same figure out of
-  // the constants the kernel actually reads — the live resolution, the attested
-  // depth, the node's `attached_contact_tolerance_m`, and the calibration's one
-  // voxel — and pins the derivation and the literal to each other, so BOTH a
-  // changed constant AND a changed formula fail here.
+  // field flew. `kBatteryEnvelope` above is a literal: it can't notice when
+  // one of its four summarised terms moves underneath it, silently probing a
+  // stale number. This rebuilds the figure from the constants the kernel
+  // actually reads (live resolution, attested depth, attached_contact_tolerance_m,
+  // calibration's one voxel) so both a changed constant and a changed formula
+  // fail here.
   //
-  // Provenance. This is the thinnest safety-relevant margin in the stack. The
-  // final battery (`spark:~/openral-runs/2026-08-15-final-battery/`, round 8
-  // r2; hazard-log Entry 012, "Calibration 2026-08-15") put the real co-planar
-  // cell at +42.893 mm above the attested support plane, 85.7 mm out, against
-  // an envelope of 43.500 mm: 0.607 mm of headroom, and the run's whole outcome
-  // turns on it. Half a millimetre off any one of these four constants and the
-  // flagship run stops again — or, in the other direction, a genuine protrusion
-  // stops being one.
+  // Provenance: thinnest safety-relevant margin in the stack. Final battery
+  // (spark:~/openral-runs/2026-08-15-final-battery/, round 8 r2; hazard-log
+  // Entry 012, "Calibration 2026-08-15") put the real co-planar cell at
+  // +42.893 mm above the attested support plane, 85.7 mm out, against a
+  // 43.500 mm envelope: 0.607 mm headroom — the run's whole outcome turns on
+  // it. Half a millimetre off any of the four constants and the flagship run
+  // stops again, or a genuine protrusion stops being one.
   osk::AttachedModel att;
   append_battery_baguette(att);
   const osk::AttachedObject& obj = att.objects[0];
@@ -2261,19 +2243,14 @@ TEST(SupportContactWitness, LostOccupancyMapDropsEveryWitness) {
   EXPECT_EQ(osk::update_support_contact_witnesses(att, s, grid, 0xFF, 0.0), 0x0);
 }
 
-// ── the partition against the Layer-2 payload clearing ──────────────────────
-//
-// The bridge that owns occupancy (`openral_octomap_bridge`) removes the
-// payload's own cells from the published grid, and the witness above proves
-// the payload is still on its support by finding an OCCUPIED cell it would
-// exempt still touching the payload. A resting payload's bottom cell layer IS
-// the counter's top cell layer, so the two mechanisms fight over the same
-// cells: whichever wins decides whether the robot can carry anything.
-//
-// The division of the cells is stated from this side here, in the kernel's own
-// terms and on the kernel's own fixture, so a change to either half has to
-// come past it: the payload's silhouette ABOVE the attested plane belongs to
-// the clearing, the cells inside the attested patch belong to the witness.
+// ── partition against the Layer-2 payload clearing ───────────────────────────
+// `openral_octomap_bridge` removes the payload's own cells from the published
+// grid; the witness above proves continued support by finding an occupied
+// cell it would exempt still touching the payload. A resting payload's
+// bottom cell layer IS the counter's top cell layer, so the two mechanisms
+// contend for the same cells. Division (stated here so a change to either
+// side must pass through it): payload silhouette ABOVE the attested plane →
+// clearing; cells inside the attested patch → witness.
 
 TEST(SupportContactWitness, ThePartitionedClearingLeavesTheWitnessItsEvidence) {
   // What the bridge must publish for a resting payload: the payload's own cell
@@ -2387,24 +2364,18 @@ TEST(SupportContactWitness, MalformedAttestationFailsTheWholeIngestClosed) {
 }
 
 // ── Place-phase witness (ADR-0097) ──────────────────────────────────────────
+// `support_contact_exempts` is producer-blind — no branch on `evidence_kind`,
+// no knowledge of what a declaration is; the declaration gates the PRODUCER,
+// keeping the predicate evidence-based. A place witness is structurally the
+// same as a pick witness: an attestation on
+// `AttachedCollisionObject.support_contact`, exempting exactly its patch.
 //
-// The kernel gains NOTHING for the place phase, and these tests exist to prove
-// that rather than to assume it. `support_contact_exempts` is producer-blind:
-// it does not branch on `evidence_kind`, it does not know what a declaration
-// is, and it cannot — the declaration gates the PRODUCER, which is what keeps
-// the kernel's own predicate evidence-based. A place witness is therefore
-// exactly what a pick witness is: an attestation on
-// `AttachedCollisionObject.support_contact`, exempting exactly the patch it
-// describes.
-//
-// The scenario is round-5's
-// (`spark:~/openral-runs/2026-08-14-round5/baguette/seed1_run2`), reproduced as
-// a geometry class: a payload inserted into a mapped container region, resting
-// on the shelf inside it. What made that run stop at -1.78 mm is that World
-// State attested nothing for the shelf contact — there was no place phase to
-// attest for — so the shelf read as an ordinary obstacle. In kernel terms the
-// declared and undeclared cases differ in one bit, `has_support_witness`, and
-// both directions are pinned below.
+// Scenario: round-5 (spark:~/openral-runs/2026-08-14-round5/baguette/
+// seed1_run2) — payload inserted into a mapped container, resting on the
+// shelf. That run stopped at -1.78 mm because World State attested nothing
+// for the shelf contact (no place phase to attest for), so the shelf read as
+// an ordinary obstacle. In kernel terms declared/undeclared differ in one
+// bit, `has_support_witness`; both directions pinned below.
 
 namespace {
 
@@ -2796,45 +2767,41 @@ TEST(CollisionEvidence, GatingIsUnchangedAcrossTheAttachedContactLadder) {
   }
 }
 
-// ── Declaration-scoped approach allowance (ADR-0097's 2026-08-14 amendment) ──
-//
-// Round-6 (`spark:~/openral-runs/2026-08-14-round6/baguette/seed1_carry_*`) is
-// the failure this section pins closed. With a correct place declaration and a
-// payload genuinely headed for the declared cabinet, the kernel E-stopped at
-// `horizon_step 0` on `attached:sim:obj_main` vs `voxel_178099` at a
-// `min_distance` of `-4.9 mm`, while the payload was still `22-30 mm` from real
-// shelf contact. Nothing was wrong with the declaration or the trajectory: the
-// place witness is EARNED by measured contact, and the predictive check —
-// unchanged and unrelated to the witness — stops the payload before it can make
-// that contact, because 25 mm cells inflate the cabinet's thin opening geometry
-// by up to one whole voxel. A witness earned by touching can never arm if the
+// ── Declaration-scoped approach allowance (ADR-0097, 2026-08-14 amendment) ──
+// Closes round-6 (spark:~/openral-runs/2026-08-14-round6/baguette/
+// seed1_carry_*): with a correct place declaration and payload headed for the
+// declared cabinet, the kernel E-stopped at horizon_step 0 on
+// attached:sim:obj_main vs voxel_178099 (min_distance -4.9 mm) while the
+// payload was still 22-30 mm from real shelf contact. Declaration and
+// trajectory were fine — the place witness is earned by measured contact,
+// and the predictive check (unrelated to the witness) stopped the payload
+// before it could touch, because 25 mm cells inflate the cabinet's thin
+// opening by up to one voxel. A witness earned by touching can't arm if the
 // payload is stopped before it can touch.
 //
-// The amendment's answer is a margin allowance of `min(1.5 × voxel, 40 mm)`,
-// applied ONLY to the declared payload, ONLY to cells whose centre is inside the
-// producer-supplied region of the declared target, and ONLY while that
-// declaration is live. It is not an exemption: the reported distance is the
-// cell's true distance, and the hard stop behind the reduced margin is
-// untouched.
+// Fix: margin allowance of min(1.5 × voxel, 40 mm), applied only to the
+// declared payload, only to cells whose centre is inside the producer's
+// declared-target region, only while the declaration is live. Not an
+// exemption — reported distance is still the cell's true distance; the hard
+// stop behind the reduced margin is untouched.
 //
-// The cap was `min(one voxel, 25 mm)` until ADR-0097's SECOND AMENDMENT
-// (2026-08-15, hazard log HZ-0097-4's "Calibration 2026-08-15"). The 5-run
-// battery's run 1 (`spark:~/openral-runs/2026-08-15-baguette-battery/run1`) was
-// the allowance's first in-vivo firing: 26.48 mm of predictive-check
-// penetration read at a ground-truth −2.43 mm contact, i.e. 1.48 mm short. Since
-// the map-vs-truth error at a placement pose is itself about one voxel, a
-// one-voxel allowance is sized to absorb exactly the discretization and leaves
-// nothing for the contact the witness is earned by making — structurally
-// marginal, not occasionally short. At 25 mm cells the cap is now 37.5 mm; at a
-// real 50 mm grid it is 40 mm, not 75 mm, because the absolute ceiling still
-// binds and only its value moved (2.5 cm → 4 cm).
+// Cap was min(one voxel, 25 mm) until ADR-0097's Second Amendment
+// (2026-08-15, hazard log HZ-0097-4, "Calibration 2026-08-15"). The 5-run
+// battery's run 1 (spark:~/openral-runs/2026-08-15-baguette-battery/run1) —
+// the allowance's first in-vivo firing — read 26.48 mm of predictive-check
+// penetration at a ground-truth -2.43 mm contact, 1.48 mm short. Map-vs-truth
+// error at a placement pose is itself ~1 voxel, so a one-voxel allowance
+// absorbs exactly the discretization and leaves nothing for the contact
+// itself — structurally marginal, not occasionally short. At 25 mm cells the
+// cap is now 37.5 mm; at a real 50 mm grid it's 40 mm, not 75 mm — the
+// absolute ceiling still binds, only its value moved (2.5 cm → 4 cm).
 //
-// Fixture: the same 24^3 / 25 mm lattice as the witness tests, with the cabinet
-// modelled as what it physically is — a shelf below and a lip above, separated
-// by an opening the payload must pass through. The lattice phase puts the shelf
-// cells' cube top face at z = -9.3 mm and the lip cells' cube bottom face at
-// z = +40.7 mm: a QUANTISED opening of exactly 50 mm for a 50 mm-tall baguette,
-// i.e. zero predicted clearance where the real cabinet has centimetres.
+// Fixture: same 24³/25 mm lattice as the witness tests; cabinet modelled as
+// a shelf below and a lip above, separated by the opening the payload must
+// pass through. Lattice phase: shelf cells' top face at z = -9.3 mm, lip
+// cells' bottom face at z = +40.7 mm — a quantised 50 mm opening for a
+// 50 mm-tall baguette, zero predicted clearance where the real cabinet has
+// centimetres.
 
 namespace {
 
@@ -3141,15 +3108,13 @@ TEST(PlaceAdvisoryBand, TheBandStaysASmallFractionOfTheAllowance) {
   // measured 0.72 mm overshoot, not to widen the allowance by stealth, so it is
   // pinned here at both lattices and against the allowance it sits on.
   //
-  // Why a ratio and not "the band is shallower than the deepest reachable
-  // contact": how deep a payload can read against a cell depends on the
-  // PAYLOAD's own primitive, not only on the map. Measured, a 150x25x25 mm box
-  // saturates at −37.50 mm on the 25 mm grid — at or inside the 37.5 mm
-  // allowance, so that payload can never trip in a declared region at all —
-  // while the field baguette reached −38.22 mm. There is therefore no universal
-  // "deepest reachable" to bound against, and where depth does saturate the
-  // consecutive-refusal cap in the lifecycle node is the operative bound, not
-  // this one.
+  // Why a ratio and not "shallower than the deepest reachable contact": depth
+  // depends on the PAYLOAD's own primitive, not only the map. A 150x25x25 mm
+  // box saturates at -37.50 mm on the 25 mm grid (at/inside the 37.5 mm
+  // allowance — can never trip in a declared region), while the field
+  // baguette reached -38.22 mm. No universal "deepest reachable" to bound
+  // against; where depth saturates, the lifecycle node's consecutive-refusal
+  // cap is the operative bound, not this one.
   for (const double res : {0.025, 0.05}) {
     const double allowance = osk::place_approach_allowance_cap(res);
     const double band = osk::place_advisory_depth(res);
@@ -3262,18 +3227,16 @@ TEST(PlaceApproachAllowance, AnObjectAlreadyInTheRegionIsForgivenOnlyToTheCap) {
 
 TEST(PlaceApproachAllowance, DeepeningPastTheAllowanceInsideTheRegionStillStops) {
   // HZ-0097-4 mitigation 3, at sim's own resolution, on the cap as calibrated
-  // 2026-08-15. The allowance shrinks the predictive margin; it does not remove
-  // the hard stop behind it. A payload driven THROUGH the declared shelf rather
-  // than onto it still E-stops, and the declaration cannot stretch the bound —
-  // 0.7 mm past the 37.5 mm cap is still a stop, and so is the 40 mm the
-  // amendment's own headroom arithmetic quotes.
+  // 2026-08-15. The allowance shrinks the predictive margin, not the hard
+  // stop behind it: a payload driven THROUGH the declared shelf still
+  // E-stops — 0.7 mm past the 37.5 mm cap is still a stop, and so is the
+  // 40 mm the amendment's own headroom arithmetic quotes.
   //
-  // The payload here is a 300x100x100 mm tote rather than the 50 mm-tall
-  // baguette, and deliberately: against a 25 mm cell a 50 mm-tall box saturates
-  // at exactly 37.5 mm of SAT overlap (25 mm of half-extent + 12.5 mm of cell
-  // half-width) on every axis, so the flagship payload's own geometry cannot
-  // reach past the calibrated cap at all. Proving the hard stop behind the
-  // reduced margin therefore needs a payload deep enough to try.
+  // Payload here is a 300x100x100 mm tote, not the 50 mm-tall baguette,
+  // deliberately: against a 25 mm cell a 50 mm-tall box saturates at exactly
+  // 37.5 mm of SAT overlap (25 mm half-extent + 12.5 mm cell half-width) on
+  // every axis, so the flagship payload's own geometry can't reach past the
+  // calibrated cap at all — proving the hard stop needs a deeper payload.
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
   s.link_world = {identity(), identity(), identity(), identity()};
@@ -3497,34 +3460,25 @@ TEST(PlaceApproachAllowance, AMapWithNoResolutionGrantsNothing) {
       << "past the eight-object schema cap there is no mask bit to consult";
 }
 
-// ── The declared target's own geometry (ADR-0098, survey Path B) ─────────────
+// ── declared target's own geometry (ADR-0098, survey Path B) ────────────────
+// The region box says WHERE the receptacle is, not WHAT it is, so it grants
+// the same blanket allowance to every cell inside it regardless of whether
+// the declared body put that cell there. This covers shipping the target's
+// own primitives so a payload is measured against the modelled shelf, not
+// the 50 mm cube it was quantised into.
 //
-// The region box says WHERE the declared receptacle is; it cannot say WHAT it
-// is, so it hands the same blanket allowance to every cell inside itself whether
-// the declared body put that cell there or not. These tests cover the half that
-// closes: shipping the target's own primitives, so a payload is measured against
-// the modelled shelf instead of against the 50 mm cube the shelf was quantised
-// into.
-//
-// The coarse fixture makes the three regimes separable to the millimetre. Cell
-// (6, 6, 6) is a 50 mm cube centred on the origin, so its top face sits at
-// +25 mm; the modelled shelf below puts its top face at +5 mm, i.e. the cube
-// over-states the surface by exactly 20 mm. The baguette's bottom face is at
-// `dz`, so at margin 0:
-//
-//   * undeclared            trips at `dz <= +25 mm` (the cube's face)
-//   * declared, box only    trips at `dz <= -15 mm` (cube face minus the 40 mm
-//                           blanket allowance — 20 mm of which the real shelf
-//                           never justified)
-//   * declared + geometry   trips at `dz <=  +5 mm` (the shelf itself)
-//
-// So at this margin geometry sits strictly between the two: it keeps the relief
-// the quantisation actually created, and gives back the 20 mm the blanket was
-// forgiving on no evidence. That ordering is NOT an invariant — at the deployed
-// 30 mm standoff a deeper shelf puts geometry on the permissive side of the
-// blanket, because the standoff does not apply to the body the robot was
-// dispatched to touch. The invariant is the one
-// `NeverLetsThePayloadReachTheModelledSurface` pins: whatever the margin, the
+// Coarse fixture: cell (6,6,6), a 50 mm cube centred on the origin, top face
+// at +25 mm; modelled shelf's top face at +5 mm (cube over-states by 20 mm).
+// Baguette bottom face at `dz`, margin 0:
+//   * undeclared            trips at dz <= +25 mm (cube's face)
+//   * declared, box only    trips at dz <= -15 mm (cube face - 40 mm blanket
+//                           allowance, 20 mm of it unjustified by the shelf)
+//   * declared + geometry   trips at dz <= +5 mm (the shelf itself)
+// Geometry sits strictly between the two: keeps the relief quantisation
+// created, gives back the 20 mm the blanket forgave on no evidence. Not an
+// invariant — at the deployed 30 mm standoff a deeper shelf can put geometry
+// on the permissive side (standoff doesn't apply to the dispatched body).
+// The real invariant is `NeverLetsThePayloadReachTheModelledSurface`: the
 // payload never reaches the modelled surface without stopping.
 
 namespace {
@@ -3823,39 +3777,31 @@ TEST(PlaceApproachAllowance, TheWitnessTakesOverWhereTheAllowanceStops) {
       << "the witness latch is measured against the map, not against the allowance";
 }
 
-// ── issue #102: the nominal PandaMobile pose vs a real fixture ────────────────
+// ── issue #102: nominal PandaMobile pose vs a real fixture ──────────────────
+// Issue #102, acceptance bullet 3: "regression for the nominal valid pose and
+// a nearby genuinely colliding fixture pose." Report: a `deploy sim` run of
+// scenes/deploy/robocasa_baguette.yaml, seed 1, where the world-voxel gate
+// refused the arm's reset configuration before any motion, naming
+// panda_link4 vs voxel_39263 (centre [0.175, 0.075, 0.725] in base_link,
+// min_distance_m ~= -0.0526); moving the base ~16 cm away cleared the check
+// at the cost of taking the policy out of distribution.
 //
-// Issue #102's third acceptance bullet: "Add a regression for the nominal valid
-// pose and a nearby genuinely colliding fixture pose." The report is a
-// `deploy sim` run of `scenes/deploy/robocasa_baguette.yaml` at seed 1 in which
-// the world-voxel gate refused the arm's own reset configuration before any
-// motion, naming `panda_link4` against `voxel_39263` — a cell whose centre the
-// run logged at `[0.175, 0.075, 0.725]` in `base_link`, at
-// `min_distance_m ~= -0.0526` — and in which moving the base ~16 cm away cleared
-// the check at the cost of taking the policy out of distribution.
+// Kernel half of that acceptance, from in-tree or run-quoted geometry:
+//   * chain + collision boxes: robots/panda_mobile/robot.yaml verbatim
+//     (joint origins/rpy, per-link OBB half-extents+origins), base_link as
+//     FK root (post-ADR-0095: base_link IS the arm mount, no second 0.7 m
+//     RoboCasa pedestal inside the kernel);
+//   * configuration: robosuite's PandaOmron.init_qpos (what RoboCasa builds
+//     for robots: ["PandaMobile"]) — the reset pose the run was refused at;
+//   * lattice: deploy-sim's 25 mm cells (_octomap_resolution("sim")) at
+//     world_voxel_margin_m = 0.0 (_world_voxel_margin_m("sim")), phased so
+//     the run's logged cell centre is exactly a cell centre;
+//   * "nearby colliding fixture": same cabinet face moved 150 mm toward the
+//     robot — same order as the ~16 cm base shift, opposite direction.
 //
-// This is the kernel half of that acceptance, driven from geometry that is
-// either in-tree or quoted from the run:
-//
-//   * the chain and the collision boxes are `robots/panda_mobile/robot.yaml`
-//     verbatim (joint origins / rpy, per-link OBB half-extents + origins), with
-//     `base_link` as the FK root — the post-ADR-0095 frame contract, in which
-//     `base_link` IS the arm mount and the 0.7 m RoboCasa pedestal is NOT added
-//     a second time inside the kernel;
-//   * the configuration is robosuite's `PandaOmron.init_qpos` (what RoboCasa
-//     builds for `robots: ["PandaMobile"]`), i.e. the reset pose the run was
-//     refused at;
-//   * the lattice is the deploy-sim one — 25 mm cells
-//     (`_octomap_resolution("sim")`) checked at `world_voxel_margin_m = 0.0`
-//     (`_world_voxel_margin_m("sim")`), phased so the run's logged cell centre
-//     is exactly a cell centre;
-//   * the "nearby genuinely colliding fixture" is that same cabinet face moved
-//     150 mm toward the robot — the same order as the ~16 cm base shift the
-//     issue reports as clearing the check, in the opposite direction.
-//
-// The joint state at the logged −52.6 mm is NOT in the repository (the run logs
-// live on the validation host), so this pins the recorded CELL against the
-// recorded LINK at the recorded pose rather than re-deriving that number.
+// Joint state at the logged -52.6 mm is not in the repo (run logs live on
+// the validation host); this pins the recorded CELL against the recorded
+// LINK at the recorded pose instead of re-deriving that number.
 namespace {
 
 constexpr double kIssue102Res = 0.025;
@@ -4021,42 +3967,33 @@ TEST(Issue102NominalPose, TheSameFixture150mmCloserStillStops) {
   EXPECT_GE(hit.link_b, 0) << "the evidence must name the cell it stopped on";
 }
 
-// --- Field round 2026-08-22-harness-2 / baguette: attached-payload SELF stop ---
-//
-// The kernel E-stopped on `attached:sim:obj_main` vs **panda_link2** at
-// min_distance -4.63106 mm (sweep equal, horizon_step 0, mode 5 =
-// CARTESIAN_DELTA). The ground-truth probe in the same snapshot put the
-// nearest payload MESH 75.857 mm from `robot0_link2`, which reads at a glance
-// like the evidence named the wrong link -- the same class as the defect
-// `fold_pair` exists to prevent (evidence describing one cell, min_distance
-// describing another).
-//
-// It did not. This pins the arithmetic that settles it, at the MEASURED
-// configuration the probe snapshotted:
-//
-//   * `panda_link2` is genuinely the nearest checked link by the kernel's own
-//     payload-OBB<->link-OBB math, at +21.707 mm, with `panda_link1` the
-//     runner-up 25.5 mm further out. No ranking ambiguity to misattribute.
-//   * the logged -4.63 mm is a *predicted* step-0 configuration, one damped
+// ── field round 2026-08-22-harness-2 / baguette: attached-payload SELF stop ──
+// Kernel E-stopped on attached:sim:obj_main vs panda_link2 at min_distance
+// -4.63106 mm (sweep equal, horizon_step 0, mode 5 = CARTESIAN_DELTA). The
+// ground-truth probe in the same snapshot put the nearest payload MESH
+// 75.857 mm from robot0_link2 — looks like a wrong-link misattribution (the
+// class `fold_pair` exists to prevent), but is not. Arithmetic at the
+// MEASURED configuration the probe snapshotted:
+//   * panda_link2 is genuinely nearest by the kernel's payload-OBB<->link-OBB
+//     math, at +21.707 mm; panda_link1 runner-up, 25.5 mm further — no
+//     ranking ambiguity.
+//   * the logged -4.63 mm is a *predicted* step-0 config (one damped
 //     least-squares Jacobian look-ahead past the measured one; the probe
-//     measures the measured one. The evidence says which in `horizon_step`.
-//     That exact value is NOT reproduced here and cannot be from the round's
-//     artifacts: the offending chunk was tick 117 and the ground-truth
-//     snapshot retains only tick-116 candidates, none of them mode 5. What is
-//     pinned below is the measured configuration both sides agree on, which is
-//     what the link-identity question actually turns on.
-//   * the remaining 54.15 mm between +21.707 mm (OBB<->OBB) and the probe's
-//     +75.857 mm (mesh<->mesh) is representation, not error: `panda_link2`'s
-//     own corner slop is 48.22 mm (`collision_model_mesh_slop` against
-//     panda_mj_description under mujoco 3.8.0), and the payload's published
-//     primitives -- MuJoCo mesh geoms lowered to their local AABB by
-//     `extract_body_primitives` -- carry the rest. That payload-side term is
-//     what `adjudication_budget.self_collision` now reports.
+//     measures the measured one — `horizon_step` says which). Not
+//     reproducible here: offending chunk was tick 117, ground-truth snapshot
+//     only retains tick-116 candidates, none mode 5. What's pinned below is
+//     the measured configuration both sides agree on.
+//   * the remaining 54.15 mm between +21.707 mm (OBB<->OBB) and +75.857 mm
+//     (mesh<->mesh) is representation, not error: panda_link2's own corner
+//     slop is 48.22 mm (collision_model_mesh_slop vs panda_mj_description
+//     under mujoco 3.8.0); the payload's published primitives (MuJoCo mesh
+//     geoms lowered to local AABB by extract_body_primitives) carry the
+//     rest — reported by adjudication_budget.self_collision.
 //
-// Geometry is the field data verbatim: the arm chain + OBBs from
-// robots/panda_mobile/robot.yaml (`panda_mobile_arm_model` above), the joint
-// positions from run_gt_snapshot.json, and the payload's 16 published box
-// primitives + `pose_in_link` from run_snapshots/collision_25.npz.
+// Geometry is field data verbatim: arm chain + OBBs from
+// robots/panda_mobile/robot.yaml (panda_mobile_arm_model above), joint
+// positions from run_gt_snapshot.json, payload's 16 box primitives +
+// pose_in_link from run_snapshots/collision_25.npz.
 namespace {
 
 osk::AttachedPrimitive field_box_prim(const osk::Vec3& half, const osk::Transform& pose) {
@@ -4242,21 +4179,19 @@ TEST(BaguettePayloadSelfStop, TheNamedLinkIsGenuinelyTheNearestOne) {
 }
 
 TEST(BaguettePayloadSelfStop, TheObbOrderingLegitimatelyInvertsTheMeshOrdering) {
-  // **The reason this pose fooled two separate analyses**, and the single most
-  // important thing to keep pinned.
+  // Why this pose fooled two separate analyses, pinned.
   //
-  // In MESH space the two candidate links are nearly tied, and `panda_link1`
-  // is the closer of them: the run's probe measured the nearest payload mesh
-  // at 73.855 mm from `robot0_link1` and 75.857 mm from `robot0_link2`. In OBB
-  // space -- the space the kernel actually checks in -- the order REVERSES and
-  // the gap blows open: 47.242 mm for link1, 21.707 mm for link2.
+  // In MESH space the two candidate links are nearly tied, panda_link1
+  // closer: probe measured nearest payload mesh at 73.855 mm from
+  // robot0_link1, 75.857 mm from robot0_link2. In OBB space (what the kernel
+  // actually checks) the order REVERSES and the gap opens: 47.242 mm for
+  // link1, 21.707 mm for link2.
   //
-  // That is not a defect. `panda_link2`'s box is simply the more inflated of
-  // the two at this configuration (its corner slop is 48.22 mm), so it
-  // legitimately wins the argmin the kernel is entitled to take over its own
-  // geometry. Anyone who ranks links by the probe and expects the kernel to
-  // agree will conclude the evidence named the wrong body -- which is exactly
-  // what happened, twice.
+  // Not a defect: panda_link2's box is simply more inflated at this
+  // configuration (corner slop 48.22 mm), so it legitimately wins the
+  // kernel's argmin over its own geometry. Ranking by the probe and
+  // expecting the kernel to agree concludes the evidence named the wrong
+  // body — which happened, twice.
   constexpr double kMeshLink1 = 0.073855;  // run_gt_snapshot nearest_payload_robot_pairs
   constexpr double kMeshLink2 = 0.075857;
 
@@ -4311,22 +4246,19 @@ TEST(BaguettePayloadSelfStop, WhenItTripsTheEvidenceNamesThatSamePair) {
   EXPECT_NEAR(hit.sweep_min_distance, 0.02170726, 1e-7);
 }
 
-// ── Staged tight narrow phase: 26-DOP → exact convex hull ──────────────
+// ── staged tight narrow phase: 26-DOP → exact convex hull ────────────────────
+// Safety case for replacing `box_box_distance` on the arm-vs-world-voxel path:
+// containment chain mesh ⊆ hull ⊆ 26-DOP ⊆ shipped OBB, so every value the
+// staged path returns is a LOWER bound on the true link-to-cell distance.
+// These tests prove the two halves the kernel owns; `mesh ⊆ hull` is offline
+// data proved against the real robosuite mesh by
+// tests/unit/test_collision_tight_geometry.py.
 //
-// The safety case for replacing `box_box_distance` on the arm-vs-world-voxel
-// path is a containment chain -- `mesh ⊆ hull ⊆ 26-DOP ⊆ shipped OBB` -- and
-// the property that every value the staged path can return is a LOWER bound on
-// the true link-to-cell distance. These tests prove the two halves the kernel
-// is responsible for. The third link, `mesh ⊆ hull`, is offline data and is
-// proved against the real robosuite mesh by
-// `tests/unit/test_collision_tight_geometry.py`.
-//
-// Note what "at least as conservative" means here, because it is easy to state
-// backwards. Against the TRUE geometry the staged path never over-reports
-// clearance -- that is what these tests check, and it is the safety property.
-// Against the SHIPPED OBB it deliberately reports MORE clearance, because the
-// box was proud of the real link by up to 53 mm. Removing excess conservatism
-// is the change; keeping the kernel sound is the constraint.
+// "At least as conservative" here means: never over-reports clearance against
+// TRUE geometry (the safety property, checked here). Against the SHIPPED OBB
+// it deliberately reports MORE clearance — the box was proud of the real link
+// by up to 53 mm; removing that excess conservatism is the change, keeping
+// the kernel sound is the constraint.
 
 namespace {
 
@@ -4767,18 +4699,14 @@ TEST(VoxelCollisionTightGeometry, ExhaustingTheStage2BudgetOnlyEverAddsConservat
       << "budget exhaustion must fall back to the shipped bound, never below it";
 }
 
-// ── The grid's lattice is the map's, not the base frame's ────────────────────
-//
-// `VoxelGrid::pose` carries the rotation from the grid's axes into
-// `base_frame`. It exists so the perception bridge can publish on the source
-// map's own lattice, one cell per map voxel, instead of re-expressing that
-// lattice on a base-aligned one. That re-expression is sound only if every cell
-// the map voxel's volume enters is marked, which dilated the obstacle set by
-// 29-35 mm (40 mm worst) on 25 mm cells — a dilation issue #173 measured
-// holding 48% of the live start-state E-stops.
-//
-// What the kernel owes in exchange is that the rotation is actually applied,
-// everywhere.
+// ── grid lattice is the map's, not the base frame's ──────────────────────────
+// `VoxelGrid::pose` carries the rotation from the grid's axes into base_frame,
+// so the perception bridge can publish on the source map's own lattice (one
+// cell per map voxel) instead of re-expressing it base-aligned — sound only
+// if every cell a map voxel's volume enters is marked, which dilated the
+// obstacle set by 29-35 mm (40 mm worst) on 25 mm cells (issue #173: held
+// 48% of live start-state E-stops). In exchange the kernel must apply the
+// rotation everywhere.
 
 namespace {
 
@@ -4917,21 +4845,19 @@ TEST(OrientedGrid, TheRotationIsLoadBearingAndNotDecorative) {
 }
 
 // ── issue #191: self-collision at exact-hull fidelity ────────────────────────
+// OBB can't separate a pair of interleaving links. Shipped panda_mobile:
+// panda_link5<->panda_link7 boxes overlap on 86.38% of the pair's
+// (joint6, joint7) grid while real geometry interpenetrates on only 6.60%,
+// with no margin separating the populations (deepest real collision: box gap
+// -8.37 mm; shallowest false one: -36.64 mm) — why the pair shipped
+// ACM-exempted "under protest" from PR #169 until `check_self_collision`
+// learned to re-ask the hulls.
 //
-// The OBB cannot separate a pair of interleaving links. On the shipped
-// `panda_mobile`, `panda_link5` <-> `panda_link7` has the boxes overlapping on
-// 86.38 % of the pair's (joint6, joint7) grid while the real geometry
-// interpenetrates on 6.60 %, and no margin separates the populations: the
-// deepest real collision sits at a box gap of -8.37 mm, the shallowest false
-// one at -36.64 mm. That is why the pair shipped ACM-exempted "under protest"
-// from PR #169 until `check_self_collision` learned to re-ask the hulls.
-//
-// The fixtures below reproduce that RELATIONSHIP rather than that geometry: two
-// thin plates, each sitting inside a fat box, offset so the boxes overlap and
-// the plates do not. The 152/102-vertex Panda hulls themselves are verified
-// against their source meshes in `tests/unit/test_collision_tight_geometry.py`,
-// and the pair's live verdict through the real kernel node in
-// `tests/sim/safety/test_kernel_panda_link5_link7.py`.
+// Fixtures reproduce that RELATIONSHIP, not the geometry: two thin plates
+// each inside a fat box, offset so the boxes overlap and the plates don't.
+// The 152/102-vertex Panda hulls are verified against source meshes in
+// tests/unit/test_collision_tight_geometry.py; the pair's live verdict via
+// the real kernel node in tests/sim/safety/test_kernel_panda_link5_link7.py.
 namespace {
 
 // Two links, each carrying a 0.20 x 0.08 x 0.08 m box refined by a 10 mm-thick
@@ -5061,17 +4987,17 @@ TEST(SelfCollisionHull, AStageOneOnlyLinkKeepsTheBoxBound) {
 }
 
 TEST(SelfCollisionHull, HullHullDistanceIsSandwichedBetweenItsOwnBounds) {
-  // The soundness property the refinement rests on, swept rather than
-  // spot-checked. `box_box_distance` is NOT ground truth here -- it is a
-  // 15-axis SAT *lower* bound, and beating it is the whole point -- so the
-  // answer is bracketed instead, by two quantities that need no solver:
+  // Soundness property the refinement rests on, swept not spot-checked.
+  // box_box_distance is NOT ground truth — it's a 15-axis SAT *lower* bound,
+  // and beating it is the point — so the answer is bracketed by two
+  // solver-free quantities:
   //
   //   box_box_distance  <=  true distance  <=  min over vertex pairs |v_a - v_b|
   //
-  // The left inequality is the shipped conservatism (a value below it would be
-  // a needless E-stop); the right is the one that matters for safety, since any
-  // pair of points inside the two hulls upper-bounds the distance between them.
-  // Reporting above it would be reporting clearance that does not exist.
+  // Left inequality is the shipped conservatism (below it = needless E-stop);
+  // right is the safety-relevant one, since any point pair inside the two
+  // hulls upper-bounds the true distance — reporting above it would report
+  // clearance that doesn't exist.
   std::vector<osk::Vec3> verts;
   const osk::Vec3 plate{0.01, 0.04, 0.04};
   const osk::LinkHull a = axis_aligned_box_hull(plate, verts);
