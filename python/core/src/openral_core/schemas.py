@@ -1462,43 +1462,21 @@ CollisionShape: TypeAlias = Annotated[
 ]
 """Discriminated union of convex collision primitives.
 
-The discriminator field is ``shape``. Used by
-:class:`LinkCollisionGeometry` (robot links),
-:class:`WorldCollisionPrimitive` (world obstacles) and
+Discriminator field is ``shape``. Used by :class:`LinkCollisionGeometry`
+(robot links), :class:`WorldCollisionPrimitive` (world obstacles) and
 :class:`AttachedCollisionPrimitive` (carried payloads). Mesh primitives are
-intentionally excluded — the allocation-free safety kernel checks only
-convex analytic shapes; mesh-accurate collision stays a planning-layer
-concern.
+excluded — the allocation-free safety kernel checks only convex analytic
+shapes; mesh-accurate collision is a planning-layer concern.
 
-**The discriminator is enforced, not merely documented.** Until it was
-annotated, resolution worked only by accident: pydantic v2's *smart union*
-tried each member left-to-right and ``extra="forbid"`` plus the per-member
-``Literal`` defaults happened to make exactly one fit. That is a structural
-match on the field set, not on the tag — so a member whose fields are a
-superset of an earlier member's would have been resolved to the wrong member
-*silently*, and a typo'd tag produced six errors — one per (variant, field)
-mismatch across all three branches — none of which named the bad tag. With
-``Field(discriminator="shape")`` pydantic reads ``shape`` first and reports a
-single error that enumerates the valid tags.
+Notes:
 
-Consequences worth knowing:
-
-- **Validating a mapping now requires the ``shape`` key.** A dict or YAML
-  block carrying only ``{"radius_m": ...}`` used to resolve to
-  :class:`SphereShape` by structure; it is now rejected with
-  ``union_tag_not_found``. Every manifest in ``robots/`` already writes the
-  tag explicitly (``shape: {shape: "box", ...}``), and the tag has been the
-  documented contract since this alias was introduced, so this narrows the
-  implementation onto the published contract rather than changing it — no
-  ``schema_version`` bump, no migrator. A third-party manifest that omitted
-  the tag gets a loud, named refusal rather than a silently guessed
-  primitive.
-- **Constructing a member directly is unaffected** — ``BoxShape(...)`` still
-  fills ``shape="box"`` from its default. The discriminator governs
-  *validation of a mapping*, not instantiation.
-- **Never dump a shape with ``exclude_defaults=True``.** The tag is a
-  defaulted field, so excluding defaults drops it and the resulting mapping
-  no longer re-validates. Nothing in-tree does this; keep it that way.
+- Validating a mapping requires the ``shape`` key; an untagged dict (e.g.
+  ``{"radius_m": ...}``) is rejected with ``union_tag_not_found`` rather than
+  structurally guessed. Every ``robots/`` manifest already writes the tag.
+- Constructing a member directly is unaffected: ``BoxShape(...)`` still fills
+  ``shape="box"`` from its default.
+- Never dump a shape with ``exclude_defaults=True`` — it drops the tag and
+  the result no longer re-validates.
 """
 
 
@@ -3201,22 +3179,12 @@ class AttachedCollisionPrimitive(BaseModel):
             ROSConfigError: The primitive is none of the three shapes the IDL
                 can carry.
 
-        The branch chain used to have no ``else``, so an unrepresentable shape
-        left ``shape_type`` at the IDL default ``0`` (no ``SHAPE_*`` constant is
-        ``0``) and ``shape_dimensions`` empty, and the message was published
-        anyway. That is **not** a safety hole today — every consumer already
-        refuses tag ``0``: the C++ kernel's attached-object ingest calls
-        ``fail_closed()`` on an unknown tag, and
-        ``openral_nav2_bringup.payload_scan_filter_node`` raises
-        ``ValueError``. What it was is a *diagnosability* hole, and a contract
-        that leans on every present and future consumer to keep guarding it: a
-        producer that cannot encode a shape would surface as an E-stop in the
-        safety kernel, or an exception inside an unrelated Nav2 node, one
-        process boundary away from the code that actually failed and with the
-        shape's name nowhere in the report. Refusing here names the shape at
-        the point of the defect. Mirrors the fail-closed pattern in
-        ``openral_cli.collision.collision_primitive_envelope`` and this class's
-        own :meth:`from_idl`, which already refuses an unknown ``shape_type``.
+        Fail-closed: an unrepresentable shape raises here rather than
+        publishing ``shape_type=0`` (the IDL default, indistinguishable from
+        "no shape"). Mirrors the fail-closed pattern in
+        ``openral_cli.collision.collision_primitive_envelope`` and this
+        class's own :meth:`from_idl`, which already refuses an unknown
+        ``shape_type``.
         """
         if isinstance(self.shape, SphereShape):
             msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
@@ -6700,40 +6668,18 @@ class PlaybookContract(BaseModel):
 class RSkillManifest(BaseModel):
     """Pydantic model of the ``rskill.yaml`` package manifest (V1).
 
-    This is the on-disk schema for an rSkill HF Hub repo. An rSkill is
-    loaded by capability-checking against a :class:`RobotDescription`,
-    selecting a runtime + quantization, then constructing a runtime
+    On-disk schema for an rSkill HF Hub repo. An rSkill is loaded by
+    capability-checking against a :class:`RobotDescription`, selecting a
+    runtime + quantization, then constructing a runtime
     :class:`~openral_rskill.Skill` instance.
 
-    ``schema_version`` is ``"0.1"``: the manifest surface has had no
-    backward-incompatible change. Now the repo is published it is
-    versioned for real (CLAUDE.md §1.6) — a backward-incompatible change
-    bumps it and ships a migrator, while backward-compatible additions
-    evolve the surface in place.
-
-    Two symmetric guards were added on top of the initial V1 shape:
-
-    1. **``actuators_required``** mirrors ``sensors_required`` on the
-       output side. Every skill declares at least one
-       :class:`ActuatorRequirement`; the loader validates it against
-       :attr:`RobotDescription.action_spec`. ``n_dof`` and
-       ``vla_action_key`` are auto-filled from the robot YAML for the 9
-       canonical embodiments; for ``"custom"`` they must be set on the
-       manifest.
-
-    2. **``embodiment_extra``** is the explicit escape hatch for
-       embodiments that do not have a canonical
-       ``robots/<id>/robot.yaml``. Required iff ``"custom"`` appears in
-       :attr:`embodiment_tags`; forbidden otherwise.
-
-    V1 already tightened: ``name`` / ``fallback_skill_id`` must be
-    HF-Hub-shaped, ``version`` is SemVer, ``weights_uri`` is restricted
-    to ``hf://`` or ``local://``, ``embodiment_tags`` is closed to the
-    set of in-tree-supported robots (now including ``"custom"``), and
-    ``benchmarks`` replaces the old free-form ``metadata`` blob with a
-    typed dict of canonical suite ids → success rate. Commercial-use
-    posture is derived from :attr:`license` via
-    :attr:`is_commercial_use_allowed`.
+    Validated constraints: ``name`` / ``fallback_skill_id`` must be
+    HF-Hub-shaped (``<owner>/<repo>``); ``version`` is SemVer; ``weights_uri``
+    is restricted to ``hf://`` or ``local://``; ``embodiment_tags`` is closed
+    to the in-tree robot set (plus ``"custom"``, which requires
+    :attr:`embodiment_extra`); ``benchmarks`` is a typed dict of canonical
+    suite id → success rate. Commercial-use posture is derived from
+    :attr:`license` via :attr:`is_commercial_use_allowed`.
 
     Attributes:
         schema_version: On-disk format version. ``"0.1"`` today.
@@ -6836,19 +6782,13 @@ class RSkillManifest(BaseModel):
             scores tools primarily on this text; keep it specific to what
             the skill does (objects, scenes, task type), not how it was
             trained.
-        default_prompt: Optional. The task string this checkpoint was
-            trained on, VERBATIM. Single-task finetunes are conditioned on
-            one exact string (typos included) and degrade on a paraphrase,
-            but nothing in the graph carried it: ``ExecuteRskill.prompt``
-            was the only source, so an operator dispatching by hand had to
-            retype it out of the README and a near-miss silently produced a
-            worse policy. When the goal's ``prompt`` is empty the runner
-            falls back to this field. Leave unset for generalist
-            checkpoints that take arbitrary instructions — an empty goal
-            prompt on those is genuinely a caller error. Not a substitute
-            for :attr:`description`: that is prose for the LLM to *choose*
-            the skill, this is the literal conditioning string fed to the
-            policy.
+        default_prompt: Optional. The exact task string (VERBATIM, typos
+            included) this checkpoint was trained on; single-task finetunes
+            degrade on a paraphrase. The runner falls back to this field when
+            the goal's ``prompt`` is empty. Leave unset for generalist
+            checkpoints that take arbitrary instructions. Not a substitute
+            for :attr:`description` (LLM-facing skill-selection prose) — this
+            is the literal conditioning string fed to the policy.
         actions: REQUIRED. Closed-vocabulary list (≥1) of high-level
             action verbs this skill performs (see :class:`RSkillAction`).
             Generalist / foundation checkpoints declare ``[GENERALIST]``;
@@ -8253,23 +8193,20 @@ class RSkillEvalResult(BaseModel):
 
 # ─── Validation-matrix round verdicts (outputs/validation-matrix/<round>/) ───
 #
-# The collision stack is validated by replaying a fixed set of scenes on a GPU
-# host and reading the artifacts each run leaves behind.  For ~17 rounds that
-# reading was done by hand, by scripts that lived only on the validation host,
-# and several rounds produced no written conclusion at all — see
-# ``docs/reference/collision-validation-evidence.md`` ("Standing caveats" §5).
+# The collision stack is validated by replaying a fixed scene set on a GPU
+# host and reading the artifacts each run leaves. Before this ledger (~17
+# rounds) that reading was manual and several rounds left no written
+# conclusion (``docs/reference/collision-validation-evidence.md``, "Standing
+# caveats" §5). ``tools/validation_matrix.py`` now derives one
+# :class:`ValidationRoundVerdicts` per round from recorded artifacts only, so
+# "what changed since the last round" is a diff
+# (:class:`ValidationRoundDiff`) rather than re-reading logs.
 #
-# These models are the machine-readable half of that ledger.
-# ``tools/validation_matrix.py`` derives exactly one
-# :class:`ValidationRoundVerdicts` per round *from recorded artifacts only*, so
-# "what changed since the last round" becomes a diff
-# (:class:`ValidationRoundDiff`) instead of an agent re-reading logs.
-#
-# Nothing here interprets the safety kernel's decision — the kernel's verdict
-# is transcribed verbatim (:class:`ValidationStopEvidence`) and adjudicated
-# only *against the simulator's own ground truth*
-# (:class:`ValidationGroundTruthAdjudication`).  A "false positive" label is a
-# statement about the world model, never a licence to relax a margin.
+# The kernel's verdict is transcribed verbatim
+# (:class:`ValidationStopEvidence`) and adjudicated only against the
+# simulator's ground truth (:class:`ValidationGroundTruthAdjudication`) — a
+# "false positive" label is about the world model, never licence to relax a
+# margin.
 
 
 ValidationOutcome: TypeAlias = Literal[
@@ -9827,50 +9764,31 @@ class BenchmarkScene(SimScene):
 
 # ─── Standalone protocol descriptor (eval suites are bare lists now) ─────────
 #
-# Historically the "eval" responsibility was split into two named
-# subsystems:
-#   * SimEnvironment (above) — free-axis single rollouts. Every axis is a
-#     field on the spec; the user composes the rollout they want.
-#   * BenchmarkSpec — a Pydantic wrapper around a list of BenchmarkScenes
-#     pinning a fixed (robot x scenes x tasks x protocol); only the VLA
-#     varied. Loaded from ``benchmarks/<id>.yaml`` via
-#     ``BenchmarkSpec.from_yaml``.
+# A benchmark suite is a bare ``list[BenchmarkScene]`` on disk and in memory;
+# the suite id is the filename stem. Load via
+# :func:`openral_core.load_benchmark_suite` and validate suite-level
+# invariants (uniform robot_id/n_episodes/seed/metadata; unique task ids;
+# non-empty) via :func:`openral_core.raise_on_invalid_suite`. Output is a
+# validated :class:`RSkillEvalResult` JSON in
+# ``rskills/<vla>/eval/<benchmark_id>.json`` with ``reproduced_locally=true``.
 #
-# The Task-10 scene-hierarchy convergence (June 2026) deleted the wrapper.
-# A benchmark suite is now a
-# bare ``list[BenchmarkScene]`` on disk and in memory; the suite-id is
-# the filename stem. Load via :func:`openral_core.load_benchmark_suite`
-# and validate the suite-level invariants (uniformity of robot_id,
-# n_episodes, seed, metadata; unique task ids; non-empty list) via
-# :func:`openral_core.raise_on_invalid_suite`. The output is still a
-# validated :class:`RSkillEvalResult` JSON dropped into
-# ``rskills/<vla>/eval/<benchmark_id>.json`` with
-# ``reproduced_locally=true``.
-#
-# That same convergence had already flattened
-# the per-scene payload: each entry carries its own ``robot_id``, ``task``,
-# ``n_episodes``, ``seed``, and :class:`BenchmarkMetadata` block.
-# :class:`ProtocolSpec` survives as a standalone schema for design-doc drafts
-# and benchmark-report tooling that wants to describe a protocol outside
-# a suite context.
+# Each :class:`BenchmarkScene` carries its own ``robot_id``, ``task``,
+# ``n_episodes``, ``seed``, and :class:`BenchmarkMetadata`.
+# :class:`ProtocolSpec` below is a standalone schema for describing a
+# protocol outside a suite (design-doc drafts, benchmark-report tooling).
 
 
 class ProtocolSpec(BaseModel):
     """Stand-alone eval-protocol descriptor.
 
-    Historically, the ``protocol`` block lived on the deleted ``BenchmarkSpec``.
-    After the Task-10 scene-hierarchy convergence (June 2026) a benchmark became
-    a list of :class:`BenchmarkScene`s —
-    each scene carries its own ``n_episodes`` / ``seed`` /
-    ``task.success_key`` / ``task.max_steps`` — and the
-    ``BenchmarkSpec`` wrapper was then deleted altogether. ``ProtocolSpec``
-    is retained as a public schema for callers that want to describe a
-    protocol independently (e.g. ADR drafts, benchmark-report tooling).
+    Each :class:`BenchmarkScene` now carries its own ``n_episodes`` /
+    ``seed`` / ``task.success_key`` / ``task.max_steps``; ``ProtocolSpec`` is
+    retained as a public schema for describing a protocol independently of a
+    suite (ADR drafts, benchmark-report tooling).
 
     Pins the methodology so two rSkills evaluated under the same benchmark
-    produce apples-to-apples numbers. Authors of a benchmark should set
-    these to match the published protocol of the suite they are reproducing
-    (e.g. LIBERO: 10 episodes per task, fixed seed range, ``is_success``).
+    produce apples-to-apples numbers (e.g. LIBERO: 10 episodes per task,
+    fixed seed range, ``is_success``).
 
     Attributes:
         n_episodes: Number of independent episodes per task. Honest
@@ -10879,12 +10797,10 @@ class ReasonerEndpointPreset(NamedTuple):
     reasoner package, and the mirror drifted twice.
     """
 
-    #: Always a real URL, never ``None``. The ``anthropic`` preset used to carry
-    #: ``None`` for "let the SDK pick its default host", which collided with the
-    #: ``endpoint is None`` sentinel meaning "no endpoint configured" and made
-    #: that preset unreachable: it raised an error telling the operator to set
-    #: the variable they had just set. Spelling the default host out keeps one
-    #: meaning per value.
+    #: Always a real URL, never ``None`` — ``None`` here would collide with
+    #: the ``endpoint is None`` "no endpoint configured" sentinel (the
+    #: ``anthropic`` preset once used ``None`` for "let the SDK pick its
+    #: default host" and became unreachable as a result).
     url: str
     dialect: str
     auth_required: bool
@@ -11487,17 +11403,18 @@ variant). Consumers decode an LLM tool-use payload with::
 
 Producers (LLM clients) serialise via ``call.model_dump_json()``.
 
-The first four variants are the actuation/effect palette this contract commits
-to. A later amendment adds two **read-only query** variants — :class:`RecallObjectTool`
-and :class:`ResolvePlaceTool` — that only *read* the spatial memory
-(no actuation authority). A further amendment adds
-:class:`DecomposeMissionTool` — the typed path for the ``decompose-mission``
-playbook to write/refine the deterministic :class:`MissionState` task queue
-(populate or flat-splice a blocked task); it edits only the S2 ledger, never
-actuation. Extending the palette requires (a) a new variant here, (b) the
-corresponding ROS-side dispatch in ``openral_reasoner_ros.reasoner_node``, (c) a
-CLAUDE.md §6.2 / §7.6 amendment if the new tool shifts the reasoner's authority
-surface. The two query variants' dispatch + result-return path is wired
-separately; until then they are a typed contract not yet exposed in the live
-provider palette.
+Actuation/effect palette: :class:`ExecuteRskillTool`,
+:class:`ReloadGstPipelineTool`, :class:`LifecycleTransitionTool`,
+:class:`EmitPromptTool`, :class:`WaitTool`. Read-only query variants (no
+actuation authority): :class:`RecallObjectTool`, :class:`ResolvePlaceTool`,
+:class:`LocateInViewTool`, :class:`QuerySceneTool`,
+:class:`QueryTaskProgressTool`, :class:`MemorySearchTool`. Write-to-memory:
+:class:`MemoryWriteTool`. S2-ledger-only: :class:`DecomposeMissionTool`
+(populates/flat-splices :class:`MissionState`'s task queue, never actuation).
+
+Extending the palette requires (a) a new variant here, (b) the corresponding
+ROS-side dispatch in ``openral_reasoner_ros.reasoner_node``, (c) a CLAUDE.md
+§6.2 / §7.6 amendment if the new tool shifts the reasoner's authority surface.
+The query variants' dispatch + result-return path is wired separately; until
+then they are a typed contract not yet exposed in the live provider palette.
 """

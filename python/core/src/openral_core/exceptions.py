@@ -90,11 +90,9 @@ class ROSForceLimitExceeded(ROSSafetyViolation):
 class ROSCollisionImminent(ROSSafetyViolation):
     """A proposed motion would self-collide or strike a world obstacle.
 
-    Raised on the safety path when geometric checking finds a
-    chunk whose forward-kinematic sweep brings a robot link within its
-    clearance of another link or a world primitive. Like every
-    :class:`ROSSafetyViolation`, it is caught only at the safety supervisor
-    boundary, where it triggers an E-stop and a structured incident log.
+    Raised on the safety path when geometric checking finds a chunk whose
+    forward-kinematic sweep brings a robot link within clearance of another
+    link or a world primitive.
     """
 
 
