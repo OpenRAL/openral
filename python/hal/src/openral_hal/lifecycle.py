@@ -2,81 +2,52 @@
 
 Wraps any :class:`openral_hal.protocol.HAL` Protocol implementation as a
 ``rclpy.lifecycle.LifecycleNode`` so every per-robot package (``UR5e``,
-``UR10e``, ``FrankaPanda``, ``SO100Follower``, ``OpenArm``, …) shares
-the same publisher / subscriber / heartbeat / OTel-span wiring.
+``FrankaPanda``, ``SO100Follower``, ``OpenArm``, …) shares the same
+publisher / subscriber / heartbeat / OTel-span wiring.
 
-There are three ways to use this module, in decreasing order of preference:
+Three ways to use this module, in decreasing preference:
 
-1. **Manifest-driven** (preferred — issue #191): call
-   :func:`make_lifecycle_main_from_manifest`, which spins up the generic
-   :class:`ManifestHALLifecycleNode`. It reads ``robot_yaml`` + ``hal_mode``
-   ROS parameters and builds its HAL through :func:`openral_hal.build_hal`,
-   so a robot's construction kwargs (serial ``port``, ``robot_ip``, …) live
-   in the manifest's ``hal.parameters.defaults`` block rather than
-   a per-robot subclass. Adding a robot needs only a ``robot.yaml`` + a HAL
-   class + a registry entry — no new node class.
-
-2. **Zero-parameter HALs** (legacy): call :func:`make_lifecycle_main` with a
-   callable that returns a fresh HAL instance. Suitable for adapters whose
-   constructor has no ROS parameters worth exposing; superseded by (1) for
-   robots whose manifest declares ``hal.sim`` / ``hal.real``.
-
-3. **Bespoke parameterised HALs** (OpenArm cameras / viewer / MJCF scene;
-   panda_mobile mobile base): subclass :class:`HALLifecycleNodeBase` and
+1. **Manifest-driven** (preferred — issue #191): :func:`make_lifecycle_main_from_manifest`
+   spins up :class:`ManifestHALLifecycleNode`, which reads ``robot_yaml`` +
+   ``hal_mode`` ROS parameters and builds its HAL via
+   :func:`openral_hal.build_hal` — construction kwargs (serial ``port``,
+   ``robot_ip``) live in the manifest's ``hal.parameters.defaults`` block, so
+   adding a robot needs only a ``robot.yaml`` + a HAL class, no new node class.
+2. **Zero-parameter HALs** (legacy): :func:`make_lifecycle_main` with a
+   callable returning a fresh HAL; for constructors with no ROS parameters.
+3. **Bespoke parameterised HALs** (OpenArm cameras/viewer/MJCF scene;
+   panda_mobile mobile base): subclass :class:`HALLifecycleNodeBase`,
    implement :meth:`HALLifecycleNodeBase._create_hal` plus the optional hooks
-   (:meth:`_heartbeat_extra_fields`,
-   :meth:`on_configure_post_hal`,
-   :meth:`on_activate_post_subs`,
-   :meth:`on_deactivate_pre_teardown`,
+   (:meth:`_heartbeat_extra_fields`, :meth:`on_configure_post_hal`,
+   :meth:`on_activate_post_subs`, :meth:`on_deactivate_pre_teardown`,
    :meth:`on_cleanup_pre_disconnect`). Tracked for collapse into (1) under
    issue #191 (Phases 2-3).
 
-Either way, the base class owns:
+The base class owns: the standard publishers (``/joint_states`` +
+``~/joint_states``); standard subscribers (``/openral/safe_action``,
+``/openral/estop``); the 1 Hz ``DiagnosticsHeartbeat``; the per-tick OTel
+``hal.read_state``/``hal.send_action`` spans the dashboard's Robot State /
+Commands / Identity cards consume; and the estop latch (CLAUDE.md §1.5
+defense in depth).
 
-* The standard publishers (``/joint_states`` + ``~/joint_states``).
-* The standard subscribers (``/openral/safe_action``,
-  ``/openral/estop``).
-* The 1 Hz ``DiagnosticsHeartbeat``.
-* The per-tick OTel ``hal.read_state`` + ``hal.send_action`` spans
-  consumed by the live dashboard's Robot State / Commands / Identity
-  cards.
-* The estop latch (CLAUDE.md §1.5 defense in depth).
+ROS 2 imports are deferred so this module imports cleanly without a live
+ROS 2 install (pure-Python CI / linting).
 
-ROS 2 imports are deferred so this module imports cleanly without a
-live ROS 2 installation (e.g. pure-Python CI / linting).
+Lifecycle transitions:
+``configure`` → :meth:`_create_hal` + ``connect()`` → :meth:`on_configure_post_hal`.
+``activate`` → start joint-state timer + safe_action/estop subs → :meth:`on_activate_post_subs`.
+``deactivate`` → :meth:`on_deactivate_pre_teardown` → stop timers / destroy subs+pubs.
+``cleanup`` → :meth:`on_cleanup_pre_disconnect` → ``disconnect()``.
+``shutdown`` → force-disconnect.
 
-Lifecycle transitions
----------------------
-- ``configure``  → construct the HAL (via :meth:`_create_hal`) and call
-  ``connect()``; then run :meth:`on_configure_post_hal`.
-- ``activate``   → start the joint-state publish timer + safe_action +
-  estop subscriptions; then run :meth:`on_activate_post_subs`.
-- ``deactivate`` → :meth:`on_deactivate_pre_teardown`; stop timers /
-  destroy subs+pubs.
-- ``cleanup``    → :meth:`on_cleanup_pre_disconnect`; call
-  ``disconnect()`` on the HAL.
-- ``shutdown``   → force-disconnect.
-
-Example (UR5e — zero-parameter)::
-
-    # In each per-robot package's lifecycle_node.py:
-    from openral_hal.lifecycle import make_lifecycle_main
-    from openral_hal import UR5eHAL
-
-    main = make_lifecycle_main(
-        node_name="openral_hal_ur5e",
-        hal_factory=UR5eHAL,
-    )
-
-Example (SO-100 / franka — manifest-driven, the preferred path)::
+Example (manifest-driven, the preferred path)::
 
     # In each per-robot package's lifecycle_node.py — no subclass needed:
     from openral_hal.lifecycle import make_lifecycle_main_from_manifest
 
     main = make_lifecycle_main_from_manifest(node_name="openral_hal_so100")
     # `openral deploy sim` injects `robot_yaml` + `hal_mode=sim`; real-HAL
-    # construction kwargs (the SO-100's serial `port`) live in the manifest's
-    # `hal.parameters` block, threaded by build_hal.
+    # construction kwargs live in the manifest's `hal.parameters` block.
 """
 
 from __future__ import annotations
@@ -286,15 +257,13 @@ def make_lifecycle_main(
         try:
             rclpy.spin(node)
         except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown path. rclpy installs a SIGINT handler at
-            # `rclpy.init()` that shuts down the context AND raises
-            # KeyboardInterrupt out of `rclpy.spin()` on Jazzy; on
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another
-            # thread spin raises ExternalShutdownException instead. The
-            # context is already down by the time we reach `finally`, so
-            # the bare `rclpy.shutdown()` we used to call there raised
-            # `RCLError: rcl_shutdown already called` — switched to the
-            # idempotent `try_shutdown()` below.
+            # Normal teardown: rclpy's SIGINT handler shuts the context down
+            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
+            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
+            # raises ExternalShutdownException instead. The context is
+            # already down by `finally`, so `try_shutdown()` (idempotent) is
+            # used instead of the bare `rclpy.shutdown()` that used to raise
+            # `RCLError: rcl_shutdown already called` here.
             pass
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
@@ -302,9 +271,7 @@ def make_lifecycle_main(
             # verdict it emits) is reached on a signal-driven teardown.
             node.shutdown_hal()
             node.destroy_node()
-            # Idempotent — no-op when the SIGINT handler (or whoever
-            # fired ExternalShutdownException) already shut the context.
-            rclpy.try_shutdown()
+            rclpy.try_shutdown()  # idempotent if the context is already down
 
     return main
 
@@ -312,18 +279,15 @@ def make_lifecycle_main(
 def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
     """Build a ``main()`` for a manifest-driven HAL lifecycle node.
 
-    Unlike :func:`make_lifecycle_main` (which pins a single hardcoded HAL
-    class), the returned node reads two ROS parameters and constructs its HAL
-    through the one resolver seam :func:`openral_hal.build_hal`:
-
-    * ``robot_yaml`` (str, required) — path to ``robots/<id>/robot.yaml``.
-    * ``hal_mode`` (str, default ``"sim"``) — ``"sim"`` (``deploy sim`` / the
-      ``sim run`` harness) or ``"real"`` (``deploy run``, real hardware).
-
-    So a single node serves both modes for every robot, and "add a robot"
-    needs no per-package HAL class wiring — just a manifest declaring
-    ``hal.sim`` / ``hal.real``. A robot whose manifest lacks the
-    requested mode raises ``ROSCapabilityMismatch`` at configure time.
+    Unlike :func:`make_lifecycle_main` (a single hardcoded HAL class), the
+    returned node reads two ROS parameters and constructs its HAL through
+    :func:`openral_hal.build_hal`: ``robot_yaml`` (str, required) — path to
+    ``robots/<id>/robot.yaml``; ``hal_mode`` (str, default ``"sim"``) —
+    ``"sim"`` (``deploy sim`` / ``sim run``) or ``"real"`` (``deploy run``).
+    One node serves both modes for every robot — "add a robot" needs only a
+    manifest declaring ``hal.sim``/``hal.real``, no per-package HAL class
+    wiring. A robot whose manifest lacks the requested mode raises
+    ``ROSCapabilityMismatch`` at configure time.
 
     Args:
         node_name: ROS 2 node name (e.g. ``"openral_hal_franka"``).
@@ -358,15 +322,13 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
         try:
             rclpy.spin(node)
         except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown path. rclpy installs a SIGINT handler at
-            # `rclpy.init()` that shuts down the context AND raises
-            # KeyboardInterrupt out of `rclpy.spin()` on Jazzy; on
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another
-            # thread spin raises ExternalShutdownException instead. The
-            # context is already down by the time we reach `finally`, so
-            # the bare `rclpy.shutdown()` we used to call there raised
-            # `RCLError: rcl_shutdown already called` — switched to the
-            # idempotent `try_shutdown()` below.
+            # Normal teardown: rclpy's SIGINT handler shuts the context down
+            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
+            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
+            # raises ExternalShutdownException instead. The context is
+            # already down by `finally`, so `try_shutdown()` (idempotent) is
+            # used instead of the bare `rclpy.shutdown()` that used to raise
+            # `RCLError: rcl_shutdown already called` here.
             pass
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
@@ -374,9 +336,7 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
             # verdict it emits) is reached on a signal-driven teardown.
             node.shutdown_hal()
             node.destroy_node()
-            # Idempotent — no-op when the SIGINT handler (or whoever
-            # fired ExternalShutdownException) already shut the context.
-            rclpy.try_shutdown()
+            rclpy.try_shutdown()  # idempotent if the context is already down
 
     return main
 
@@ -779,23 +739,19 @@ if _ROS2_AVAILABLE:
             """Disconnect the HAL on a signal-driven process teardown.
 
             ``rclpy`` answers SIGINT by shutting the context down and raising
-            out of :func:`rclpy.spin`; it never *requests* the lifecycle
-            ``shutdown`` transition, so :meth:`on_shutdown` / :meth:`on_cleanup`
-            — and with them ``HAL.disconnect`` — never run. Every real
-            ``openral deploy sim`` session ends exactly that way
-            (``_terminate_launch_group`` SIGINTs the launch's process group),
-            which is why the terminal ``sim.task_success_final`` verdict that
-            :meth:`SimAttachedHAL.disconnect` emits was absent from every field
-            log while the unit tests calling ``disconnect`` directly stayed
-            green: nothing on the signal path ever called it.
+            out of :func:`rclpy.spin` without ever requesting the lifecycle
+            ``shutdown`` transition, so :meth:`on_shutdown`/:meth:`on_cleanup`
+            (and ``HAL.disconnect`` with them) never run — this is the only
+            place that reaches ``disconnect`` on that path. Every real
+            ``openral deploy sim`` session ends this way
+            (``_terminate_launch_group`` SIGINTs the process group).
 
             Called from the ``finally`` of both ``main()`` factories, before
-            ``destroy_node``. Exactly-once and idempotent both ways: the HAL
-            handle is taken before the call, so a subsequent ``on_cleanup``
-            (and a second teardown) find nothing to disconnect, and
-            ``disconnect`` is itself idempotent. Deliberately HAL-only — no
-            publisher/timer teardown here, because the rclpy context is already
-            down by this point and ``destroy_node`` owns that half.
+            ``destroy_node``. Exactly-once and idempotent: the HAL handle is
+            taken before the call, so a subsequent ``on_cleanup`` finds
+            nothing to disconnect, and ``disconnect`` is itself idempotent.
+            HAL-only — no publisher/timer teardown, since the rclpy context is
+            already down and ``destroy_node`` owns that half.
 
             SIGKILL remains uncatchable: the launch teardown escalates to it
             after its grace window, and a killed process emits no verdict.
@@ -1068,25 +1024,23 @@ if _ROS2_AVAILABLE:
         def _attachment_barrier_holders(self) -> list[Any]:
             """Every component that can hold the attached-payload ack barrier.
 
-            Two of them exist: the simulator sensor bridge, which waits for the
-            transparent depth frames that clear the payload out of the occupancy
-            map, and the vision attachment bridge, which waits for a bounded
-            ``SegmentInView`` round trip on real hardware. They are alternatives
-            in practice, but the tick must clear whichever are present rather
-            than only the first one wired (CLAUDE.md §1.4).
+            Two exist: the simulator sensor bridge (waits for the transparent
+            depth frames that clear the payload out of the occupancy map) and
+            the vision attachment bridge (waits for a bounded ``SegmentInView``
+            round trip on real hardware) — alternatives in practice, but the
+            tick must clear whichever are present, not only the first wired
+            (CLAUDE.md §1.4).
 
-            **The invariant this imposes on a holder.** Because
-            :meth:`_on_attachment_perception_ready` re-checks all of them, one
-            holder's notify can be *swallowed* while another is still busy. That
-            is only safe because every holder issues its own notify whenever it
-            settles, so the last one to settle re-issues the release. Both do:
-            the sim bridge notifies from its depth/voxel counters **and** from
-            the ``(object_id, evidence_ref)``-keyed "this revision masks no new
-            geometry" path (which is what stops an ADR-0097 attestation-only
-            re-publish deadlocking a successful place), and the vision bridge
-            notifies from every terminal path of its bounded round trip,
-            including its own teardown. A holder that clears its hold silently
-            would strand a deferred tick here.
+            Invariant this imposes on a holder: :meth:`_on_attachment_perception_ready`
+            re-checks all of them, so one holder's notify can be swallowed
+            while another is still busy — safe only because every holder
+            re-issues its own notify whenever it settles (the sim bridge from
+            its depth/voxel counters AND its "this revision masks no new
+            geometry" path per ``(object_id, evidence_ref)``, which stops an
+            ADR-0097 attestation-only re-publish deadlocking a successful
+            place; the vision bridge from every terminal path including its
+            own teardown). A holder that clears its hold silently would
+            strand a deferred tick here.
             """
             candidates = (getattr(self, "_bridge", None), getattr(self, "_vision_attachment", None))
             return [holder for holder in candidates if holder is not None]

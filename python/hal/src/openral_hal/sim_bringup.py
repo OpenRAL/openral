@@ -1,41 +1,32 @@
 """Build an :class:`openral_sim.SimRollout` from a SimScene/DeployScene YAML path.
 
-Shared helper for any HAL ROS lifecycle node that
-wants to flip into ``SimAttachedHAL`` mode via a ``sim_env_yaml`` ROS
-parameter. The lookup path is:
+Shared helper for any HAL ROS lifecycle node that flips into
+``SimAttachedHAL`` mode via a ``sim_env_yaml`` ROS parameter:
 
-1. Resolve ``sim_env_yaml`` to an absolute path (walking parents of
-   this source file when the path is relative).
-2. Load it as either a :class:`~openral_core.SimScene` (``openral sim
-   run --config``) or a :class:`~openral_core.DeployScene` (``openral
-   deploy sim --config``). For DeployScene the HAL
-   synthesises a noop :class:`~openral_core.TaskSpec` since the HAL
-   drives ``env.step`` directly and never consults the task's
-   ``id`` / ``instruction`` / ``max_steps`` / ``success_key``.
-   :class:`~openral_core.BenchmarkScene` YAMLs are rejected with a
-   redirect message — those belong to ``openral benchmark scene``.
-3. Wrap the scene + task in a :class:`~openral_core.SimEnvironment`
-   with a dummy :class:`~openral_core.VLASpec` (the lifecycle node
-   drives ``env.step`` directly via
-   :meth:`SimAttachedHAL.send_action`; the VLA is never invoked).
-4. Look up the scene's factory in :data:`openral_sim.SCENES` and
-   instantiate the env.
+1. Resolve ``sim_env_yaml`` to an absolute path (walking parents of this
+   source file when relative).
+2. Load it as a :class:`~openral_core.SimScene` (``openral sim run
+   --config``) or :class:`~openral_core.DeployScene` (``openral deploy sim
+   --config``) — for DeployScene the HAL synthesises a noop
+   :class:`~openral_core.TaskSpec` (it drives ``env.step`` directly and
+   never consults the task's ``id``/``instruction``/``max_steps``/
+   ``success_key``). :class:`~openral_core.BenchmarkScene` YAMLs are
+   rejected with a redirect to ``openral benchmark scene``.
+3. Wrap scene + task in a :class:`~openral_core.SimEnvironment` with a
+   dummy :class:`~openral_core.VLASpec` (never invoked — the lifecycle node
+   drives ``env.step`` via :meth:`SimAttachedHAL.send_action`).
+4. Look up the scene's factory in :data:`openral_sim.SCENES` and instantiate.
 
-Generic across robots — the only per-HAL piece is the
-``robot_id_fallback`` argument, defaulting to ``None`` so callers
-provide their own (e.g. the panda_mobile lifecycle node passes
-``"panda_mobile"`` for robocasa-shaped YAMLs that have no
-``robot_id:`` field).
+Generic across robots — the only per-HAL piece is ``robot_id_fallback``
+(``None`` default; e.g. the panda_mobile lifecycle node passes
+``"panda_mobile"`` for robocasa-shaped YAMLs with no ``robot_id:`` field).
 
-Most backends ignore ``task.id`` entirely (so101, robocasa, native
-MjSpec), so the synthesised task carries an inert ``_hal_deploy_noop``
-suffix. The index-parsing suites (LIBERO ``"<suite>/<int>"``) are the
-exception: they have no taskless floor — each suite task *is* a distinct
-MuJoCo scene — so :func:`_synthesise_deploy_task_id` synthesises a valid
-concrete index (``0``) for them instead. Deploy-sim is env-only and never
-reads the task's success criterion, so booting task ``0``'s floor is the
-correct continuous-operation twin; the reasoner picks the rSkill at
-runtime.
+Most backends ignore ``task.id`` (so101, robocasa, native MjSpec), so the
+synthesised task carries an inert ``_hal_deploy_noop`` suffix. LIBERO's
+index-parsing suites (``"<suite>/<int>"``) have no taskless floor — each
+suite task is a distinct MuJoCo scene — so
+:func:`_synthesise_deploy_task_id` gives them a concrete index (``0``)
+instead; deploy-sim never reads the task's success criterion.
 """
 
 from __future__ import annotations
@@ -279,36 +270,30 @@ def hal_transition_timeout_s(deploy_config: str | None) -> str:
 
     Lives beside :func:`build_sim_env_from_yaml` because that is the call
     whose duration this bounds: the launch file spawns
-    ``tools/lifecycle_autostart.py`` with this value, and the transition it
-    waits on is the ``on_configure`` that runs the function above.
+    ``tools/lifecycle_autostart.py`` with this value to wait on the
+    ``on_configure`` transition that runs the function above.
 
-    The floor is 300 s. The HAL's ``on_configure`` runs synchronously on its
-    executor and blocks for over a minute on a robocasa-kitchen first boot
-    (MuJoCo + robosuite import, ``env.reset``, and — on a cold env — a uv
-    resolve+build of robocasa that alone logs ~27 s). Below that the autostart
-    times out mid-configure and false-fails with "did not advance the FSM".
+    Floor is 300 s: ``on_configure`` runs synchronously and blocks over a
+    minute on a robocasa-kitchen first boot (MuJoCo + robosuite import,
+    ``env.reset``, a cold-env uv resolve+build ~27 s alone); below that the
+    autostart times out mid-configure ("did not advance the FSM").
 
-    A fixed 300 s is not enough for the sidecar backends. ``on_configure``
-    also *boots* the sidecar — the scene factory's ``connect()`` spawns the
-    process and blocks in ``_wait_for_boot`` — and those carry much larger
-    budgets of their own (``isaac_sim`` 900 s, ``behavior`` 1200 s,
-    ``robotwin`` 600 s), which the in-tree Isaac / BEHAVIOR deploy scenes
-    raise to ``boot_timeout_s: 1200``. Measured on an RTX 4070 Laptop, Isaac
-    Sim 5.1 reaches ``app ready`` in ~13 s — but a sidecar that wedges after
-    that point burns the client's whole ``boot_timeout_s`` before
-    ``connect()`` raises, which is exactly the case that matters: the
-    transition's worst case is the declared budget, not the nominal boot
-    time. So those five scenes were declaring a budget the launcher would not
-    honour: the autostart died at 300 s while
-    ``on_configure`` kept running, and the HAL could finish configuring with
-    nothing left alive to drive ACTIVATE — parked in INACTIVE with no
-    ``/joint_states``, no cameras, and no message naming the cause.
+    300 s flat isn't enough for sidecar backends: ``on_configure`` also boots
+    the sidecar (``connect()`` spawns the process, blocks in
+    ``_wait_for_boot``) at their own larger budgets (``isaac_sim`` 900 s,
+    ``behavior`` 1200 s, ``robotwin`` 600 s — the in-tree deploy scenes raise
+    ``boot_timeout_s`` to 1200). Measured on an RTX 4070 Laptop, Isaac Sim 5.1
+    reaches "app ready" in ~13 s, but a sidecar wedged after that burns the
+    whole ``boot_timeout_s`` before ``connect()`` raises — the transition's
+    worst case is the declared budget, not the nominal boot time. Without
+    this, those scenes' autostart died at 300 s while ``on_configure`` kept
+    running, leaving the HAL parked in INACTIVE with no ``/joint_states``, no
+    cameras, and no message naming the cause.
 
-    Reading the scene's own ``boot_timeout_s`` keeps the two numbers from
-    contradicting each other: raising it in the YAML now also buys the
-    lifecycle the time to wait. Note the cost — a genuinely wedged HAL on such
-    a scene goes unreported for that much longer, which is why the floor
-    applies to every scene that does not ask for more.
+    Reading the scene's own ``boot_timeout_s`` keeps the two numbers in sync
+    (raising it in the YAML also buys the lifecycle more wait time); the
+    floor still applies to every scene that doesn't ask for more, so a
+    genuinely wedged HAL on those goes unreported that much longer.
 
     Args:
         deploy_config: DeployScene YAML path, or ``None`` / ``""`` when the

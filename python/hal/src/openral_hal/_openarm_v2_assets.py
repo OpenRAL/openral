@@ -1,31 +1,24 @@
 """Vendor the upstream ``enactic/openarm_mujoco`` v2 MJCF assets.
 
-The ``robot_descriptions`` package pins
-``enactic/openarm_mujoco`` to commit ``cd30dd4`` — the v0.3 / v1 era,
-before v2 landed.  v2 (PR #19 on master, commit ``45d4c29`` at the
-time this file was written) ships a dramatically improved MJCF:
-native ``<position>`` actuators on every joint with per-class PD
-gains (``DM8009``: kp=230 kv=2.7, ``DM4340``: kp=190 kv=2.2,
-``DM4310``: kp=30 kv=1.5, fingers: kp=30 kv=0.2), proper
-``ctrlrange`` and ``forcerange``, symmetric left / right finger
-gains, only 16 actuators total (one finger driver per side, the
-second finger follows via an ``<equality>`` constraint).  That
-collapses ~400 lines of software PD + workaround code in
-:class:`openral_hal.OpenArmMujocoHAL` down to a trivial
-write-target → write-ctrl mapping (CLAUDE.md §1.4 — don't write
-abstractions you can delete by reading better upstream).
+``robot_descriptions`` pins ``enactic/openarm_mujoco`` to commit
+``cd30dd4`` (v0.3/v1 era, before v2). v2 (PR #19, commit ``45d4c29`` at
+write time) ships native ``<position>`` actuators with per-class PD gains
+(``DM8009``: kp=230 kv=2.7, ``DM4340``: kp=190 kv=2.2, ``DM4310``: kp=30
+kv=1.5, fingers: kp=30 kv=0.2), proper ``ctrlrange``/``forcerange``,
+symmetric left/right finger gains, and 16 actuators total (one finger
+driver per side, the second follows via an ``<equality>`` constraint) —
+collapsing ~400 lines of software PD + workaround code in
+:class:`openral_hal.OpenArmMujocoHAL` to a trivial write-target →
+write-ctrl mapping (CLAUDE.md §1.4).
 
 Until ``robot_descriptions`` bumps its pin past PR #19, this module
-maintains a parallel clone under ``$OPENRAL_CACHE_DIR/openarm_v2/``
-pinned to a known-good v2 SHA, and returns the bimanual MJCF path
-from inside it.  The pattern mirrors
-``python/sim/src/openral_sim/backends/so100_robosuite/_assets.py``
-(the menagerie SO-100 wrapper).
-
-When ``robot_descriptions`` adds a v2 entry, this module can be
-removed and :mod:`openral_hal.openarm` can drop back to a clean
-``from robot_descriptions import openarm_v2_mj_description`` —
-tracked as a TODO at the call site.
+maintains a parallel clone under ``$OPENRAL_CACHE_DIR/openarm_v2/`` pinned
+to a known-good v2 SHA and returns the bimanual MJCF path from inside it —
+mirrors ``python/sim/src/openral_sim/backends/so100_robosuite/_assets.py``
+(the menagerie SO-100 wrapper). Once ``robot_descriptions`` adds a v2
+entry, this module can be removed in favor of
+``from robot_descriptions import openarm_v2_mj_description`` (TODO at the
+call site).
 """
 
 from __future__ import annotations

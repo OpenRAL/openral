@@ -7,44 +7,33 @@ This module wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
 :class:`openral_hal.SO100MujocoHAL` pattern to a 29-DoF bipedal
 humanoid.
 
-What this is — and what it isn't
---------------------------------
-The default HAL remains a **digital-twin contract validator** with the
+The default HAL is a **digital-twin contract validator** with the
 ADR-0087 kinematic glide. ``walking_enabled=True`` selects ADR-0089's
-pinned MuJoCo Playground ONNX controller and its matching dynamics for
-gravity-on sim walking. The production C++ S0 controller remains future
-work; the Python policy is simulation-only. The suite validates:
+pinned MuJoCo Playground ONNX controller and matching dynamics for
+gravity-on sim walking (simulation-only Python policy; the production C++
+S0 controller is future work — see `docs/architecture/repo-state-map.html`
+for the planned production S0 block; the walking controller must never be
+reused by a real HAL). The suite validates the 29-DoF joint-position
+action layout, lifecycle wiring
+(``connect → read_state → send_action → estop``), joint indexing,
+``RobotDescription`` round-trip, embodiment/VLA tag plumbing, and the
+optional BODY_TWIST-to-walking controller path.
 
-* the 29-DoF joint-position action layout,
-* the lifecycle wiring (``connect → read_state → send_action → estop``),
-* the joint indexing,
-* the ``RobotDescription`` round-trip,
-* the embodiment / VLA tag plumbing,
-* and the optional BODY_TWIST-to-walking controller path
-
-The walking controller must never be reused by a real HAL. See
-`docs/architecture/repo-state-map.html` for the planned production S0 block.
-
-Joint inventory
----------------
-The menagerie MJCF has 30 joints (29 actuated + 1 floating base) and
-29 position actuators in a fixed order. The ``floating_base_joint``
-is the free joint for the pelvis pose and is *not* exposed on the
-public ``RobotDescription`` — it is implicit world state, not
-something a Skill commands. The 29 actuated joints are, in order:
+Joint inventory: the menagerie MJCF has 30 joints (29 actuated + 1
+floating base, not exposed on ``RobotDescription`` — implicit world
+state, not Skill-commanded) and 29 position actuators in a fixed order:
 
     legs  : 2 x (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
     waist : yaw, roll, pitch
     arms  : 2 x (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
                  wrist_roll, wrist_pitch, wrist_yaw)
 
-i.e. 12 + 3 + 14 = 29.  qpos addresses for the actuated joints are
-``7..35`` (the first 7 qpos slots belong to the floating base);
-actuator indices are ``0..28`` and align 1:1 with the joint name
-order above.
+i.e. 12 + 3 + 14 = 29. qpos addresses for the actuated joints are
+``7..35`` (first 7 qpos slots are the floating base); actuator indices
+are ``0..28``, aligned 1:1 with the joint order above.
 
-The wrist endpoint is a bare joint — this menagerie variant does NOT
-ship hand actuators, so there is no gripper to map. A future
+The wrist endpoint is a bare joint — this menagerie variant ships no
+hand actuators, so there is no gripper to map. A future
 ``g1_with_hands`` variant would need a hand-aware subclass.
 
 Example:

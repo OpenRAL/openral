@@ -6,59 +6,38 @@ This module wraps the upstream DeepMind ``mujoco_menagerie`` H1 MJCF
 pattern as :class:`openral_hal.G1MujocoHAL` — the H1's bigger,
 earlier sibling.
 
-What this is — and what it isn't
---------------------------------
 Like :class:`G1MujocoHAL`, this HAL is a **digital-twin contract
-validator**, not a useful humanoid sim.  The H1 has a floating base
-and no S0 cerebellar controller; left to its own devices it falls
-over under gravity and the closed-loop convergence tests therefore
-run with ``gravity_enabled=False``.  The point of the suite is the
-same as for the SO-100 / ALOHA / G1 twins (CLAUDE.md §1.11):
+validator**, not a useful humanoid sim: the H1 has a floating base and no
+S0 cerebellar controller, so it falls over under gravity and closed-loop
+convergence tests run with ``gravity_enabled=False``. The suite validates
+the 19-DoF joint-position action layout, lifecycle wiring
+(``connect → read_state → send_action → estop``), joint indexing,
+``RobotDescription`` round-trip, and embodiment/VLA tag plumbing
+(CLAUDE.md §1.11) the same way the future ``H1RealHAL`` will see them.
+Balance, walking, and useful humanoid control are C++ S0 cerebellum
+territory (CLAUDE.md §6.2, M2 milestone) — out of scope here.
 
-* the 19-DoF joint-position action layout,
-* the lifecycle wiring (``connect → read_state → send_action → estop``),
-* the joint indexing,
-* the ``RobotDescription`` round-trip,
-* and the embodiment / VLA tag plumbing
-
-all behave the same way the future ``H1RealHAL`` will see when the
-physical robot is plugged in.  Balance, walking, and any actually
-useful humanoid control live in CLAUDE.md §6.2 territory — the C++
-S0 cerebellum tracked under the M2 milestone — and are explicitly
-out of scope here.
-
-Joint inventory
----------------
-The menagerie MJCF has 20 joints (19 actuated + 1 floating base) and
-19 position actuators in a fixed order.  The floating base is the
-free joint for the pelvis pose and is *not* exposed on the public
-``RobotDescription`` — it is implicit world state, not something a
-Skill commands.  The 19 actuated joints, in order:
+Joint inventory: the menagerie MJCF has 20 joints (19 actuated + 1
+floating base, not exposed on ``RobotDescription`` — implicit world
+state, not Skill-commanded) and 19 position actuators in a fixed order:
 
     legs  : 2 x (hip_yaw, hip_roll, hip_pitch, knee, ankle)
     torso : 1 (yaw only)
     arms  : 2 x (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow)
 
-i.e. 10 + 1 + 8 = 19.  qpos addresses for the actuated joints are
-``7..25`` (the first 7 qpos slots belong to the floating base);
-actuator indices are ``0..18`` and align 1:1 with the joint name
-order above.
+i.e. 10 + 1 + 8 = 19. qpos addresses for the actuated joints are
+``7..25`` (first 7 qpos slots are the floating base); actuator indices
+are ``0..18``, aligned 1:1 with the joint order above.
 
-Differences from the G1 ``g1.py``
----------------------------------
-* **19 DoF vs 29 DoF** — H1 is a coarser-DoF predecessor: each leg
-  is 5-DoF (no separate hip yaw / yaw split, single-DoF ankle), the
-  waist is 1-DoF (torso yaw only, no waist roll / pitch), and each
-  arm stops at the elbow (no wrists).
-* **No keyframe** — the menagerie H1 MJCF ships ``nkey=0``; the
-  rest pose is every actuated joint at ``qpos=0``, which is already
-  the upright neutral pose.  Unlike the ALOHA twin we don't need
-  ``mj_resetDataKeyframe`` in ``connect()``.
-* **Joint names** follow the menagerie convention without the
-  ``_joint`` suffix (``left_hip_yaw`` not ``left_hip_yaw_joint``) —
-  a stylistic difference between the two menagerie packages.
-* **No hands** — wrists aren't actuated.  A future
-  ``h1_with_hands`` variant would extend the joint set.
+Differences from ``g1.py``: **19 DoF vs 29** — H1 is coarser (each leg
+5-DoF, no separate hip yaw/roll split, single-DoF ankle; waist 1-DoF
+torso-yaw-only; arms stop at the elbow, no wrists). **No keyframe** —
+``nkey=0``, rest pose is every actuated joint at ``qpos=0`` (already
+upright neutral), so unlike ALOHA no ``mj_resetDataKeyframe`` in
+``connect()``. **Joint names** follow menagerie convention without the
+``_joint`` suffix (``left_hip_yaw`` not ``left_hip_yaw_joint``). **No
+hands** — wrists aren't actuated; a future ``h1_with_hands`` variant
+would extend the joint set.
 
 Example:
     >>> from openral_hal import H1MujocoHAL, H1_DESCRIPTION
@@ -319,22 +298,16 @@ H1_DESCRIPTION = RobotDescription(
 
 
 # ── PD gains for the position loop ───────────────────────────────────────────
-# The menagerie H1 ships **torque actuators** (``motor`` with
-# ``gain=1, bias=0``): writing ``ctrl[i] = x`` applies ``x`` N·m
-# directly, NOT "drive joint i to position x".  This is unlike the G1
-# / UR / Franka MJCFs which ship ``position`` actuators with an
-# internal PD law.  To preserve the HAL contract — every
-# ``MujocoArmHAL`` subclass takes position targets — :class:`H1MujocoHAL`
-# runs a P + D position loop in software and writes the resulting
-# torque to ``ctrl``.  This mirrors what the real ``unitree_sdk2``
-# driver does on hardware: the motor-level interface is torque; the
-# user-facing interface is position.
-#
-# Gains are sized so a 1-rad position error saturates the actuator at
-# roughly its ``ctrlrange`` limit, with critical-ish damping
-# (kv = 0.05 * kp).  These are not the production-quality balance
-# gains the S0 cerebellum will eventually use — they are "track a
-# joint target with gravity off" gains for contract validation.
+# The menagerie H1 ships torque actuators (``motor``, ``gain=1, bias=0``):
+# ``ctrl[i] = x`` applies ``x`` N·m directly, not "drive joint i to position
+# x" (unlike G1/UR/Franka's ``position`` actuators with internal PD). To
+# preserve the HAL contract (every ``MujocoArmHAL`` subclass takes position
+# targets), :class:`H1MujocoHAL` runs a P+D position loop in software and
+# writes the resulting torque to ``ctrl`` — mirrors the real ``unitree_sdk2``
+# driver (torque motor interface, position user interface). Gains are sized
+# so a 1-rad position error saturates near ``ctrlrange``, with critical-ish
+# damping (kv = 0.05 * kp) — "track a target with gravity off" gains for
+# contract validation, not the S0 cerebellum's production balance gains.
 _H1_KP_BY_GROUP: dict[str, float] = {
     "hip": 200.0,
     "knee": 300.0,

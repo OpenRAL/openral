@@ -1,65 +1,33 @@
 """SimAttachedHAL — wrap any ``openral_sim.SimRollout`` as a HAL adapter.
 
-The generic, robot-agnostic bridge between the
-:class:`openral_sim.SimRollout` simulator interface and the
-:class:`openral_hal.HAL` Protocol the ROS lifecycle nodes consume.
+Generic bridge between :class:`openral_sim.SimRollout` and the
+:class:`openral_hal.HAL` Protocol the ROS lifecycle nodes consume. Runs the
+HAL and the env in one process — a split HAL/env process pair left ``/scan``
+unable to ray-cast live MJCF geometry (no handle to ``MjModel``/``MjData``) —
+so the lifecycle node's ``mujoco_handle_provider`` can bind to
+``self._hal.mujoco_handles()``.
 
-The motivating problem: a HAL ROS lifecycle node + a robocasa env
-historically lived in separate processes (the launch tree spawns the
-HAL; ``openral_sim.SimRunner`` spawns the env). With the two split,
-``/scan`` couldn't ray-cast against live MJCF geometry because the
-lifecycle node had no handle to ``MjModel``/``MjData``. The bringup
-script we used for the navigate-look-pick recordings co-located them
-in one process by hand. This module is the in-process composition
-made first-class.
+``read_state`` walks ``description.joints``, resolving each via
+``JointSpec.sim_joint_name`` (or a matching env name) against the MJCF;
+``send_action`` calls ``env.step(...)`` through a per-robot
+:class:`ActionPacker` (see :func:`pack_action_for_env`), so the HAL is
+generic across any robot whose manifest declares the joint mapping.
 
-Architecture
-------------
+Also owns the **task-success signal**: ``deploy sim`` suppresses the
+backend's own per-step task evaluation, so :meth:`task_success` reads the
+backend's predicate and :meth:`_observe_task_success` logs
+``sim.task_success`` on every change plus a terminal
+``sim.task_success_final`` at :meth:`disconnect` — reached on a
+signal-driven teardown via
+:meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal` (SIGINT runs
+no lifecycle transition). Observability only (CLAUDE.md §1.4): never
+termination, reset, reward, or the action path.
 
-* :class:`SimAttachedHAL` implements the structural
-  :class:`openral_hal.HAL` Protocol against any
-  :class:`openral_sim.rollout.SimRollout` instance. Reading state
-  walks ``description.joints`` and looks up live qpos / qvel from
-  the env's MJCF handles; sending an action calls ``env.step(...)``.
-
-* The lifecycle node uses :class:`SimAttachedHAL` in place of the
-  per-robot digital-twin HAL whenever its
-  ``sim_env_yaml`` ROS param is set, then binds its
-  ``mujoco_handle_provider`` to ``self._hal.mujoco_handles()`` so the
-  ray-cast ``/scan`` generator sees the live MJCF.
-
-* Generic across embodiments: any robot whose
-  :class:`~openral_core.RobotDescription` declares the joint mapping
-  (``JointSpec.sim_joint_name`` or matching ``name``s the env emits)
-  works. The translation between the HAL :class:`Action` and the
-  env's flat action vector is delegated to a small per-robot
-  ``ActionPacker`` (see :func:`pack_action_for_env`).
-
-* It also carries the **task-success signal**. ``deploy sim`` runs the
-  backend continuously, which suppresses the simulator's own per-step
-  task evaluation — so nothing in the deploy stack stated whether the
-  scene's task (e.g. "cup placed in the sink") had actually been
-  completed, and a validation run could prove attach/detach but not
-  placement. :meth:`SimAttachedHAL.task_success` reads the backend's own
-  predicate and :meth:`SimAttachedHAL._observe_task_success` logs
-  ``sim.task_success`` on every change, with a terminal
-  ``sim.task_success_final`` at :meth:`SimAttachedHAL.disconnect` — which
-  a signal-driven teardown reaches through
-  :meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal`, since
-  SIGINT runs no lifecycle transition.
-  Observability only (CLAUDE.md §1.4): the verdict reaches the log and
-  nothing else — never termination, reset, reward, or the action path.
-
-CLAUDE.md §1.5 / §3
--------------------
-The hot path (``read_state`` / ``send_action``) must complete within
-the robot's control cycle. ``env.step`` is the slowest call —
-robocasa steps ~5-15 ms per call on the reference host, well inside
-the 50 ms (20 Hz) Nav2 cmd_vel budget.
-
-This is a HAL adapter, not a safety shim. The safety supervisor's
-contract holds: every action passing through here has already been
-clamped by the C++ kernel.
+CLAUDE.md §1.5/§3: ``read_state``/``send_action`` must fit the robot's
+control cycle — ``env.step`` is the slowest call (robocasa ~5-15 ms on the
+reference host, within the 50 ms/20 Hz Nav2 cmd_vel budget). This is a HAL
+adapter, not a safety shim: every action here has already been clamped by
+the C++ kernel.
 """
 
 from __future__ import annotations
@@ -84,21 +52,15 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
-# Module logger — the HAL lifecycle wrapper logs through self.get_logger();
-# this falls through to stderr via the rclpy logging bridge when running
-# inside a ROS node, otherwise just stdlib logging.
+# Module logger — falls through to stderr via the rclpy logging bridge in a
+# ROS node, else plain stdlib logging.
 _log = logging.getLogger(__name__)
 
-# Logger name for the task-success signal. Deliberately dotted under
-# ``openral.`` rather than this module's ``openral_hal.sim_attached``:
-# ``openral_observability.logging.install_structlog_bridge`` attaches the
-# OTel ``LoggingHandler`` to ``logging.getLogger("openral")``, and stdlib
-# logger ancestry is DOTTED — ``openral_hal.sim_attached`` is a sibling of
-# ``openral``, not a descendant, so records logged under the module name
-# never propagate to the handler and never reach the dashboard's event
-# ring. ``openral.sim.task_success`` does propagate, so the transition
-# lines show up in `openral monitor` as well as on stdout, and the
-# dashboard's event ``kind`` reads as the signal's own name.
+# Dotted under ``openral.`` (not this module's own name): stdlib logger
+# ancestry is dotted and openral_observability's structlog bridge attaches
+# its OTel handler to ``logging.getLogger("openral")``; a sibling name like
+# ``openral_hal.sim_attached`` never propagates to it, so the transition
+# lines would be missing from `openral monitor` and the dashboard event ring.
 _TASK_SUCCESS_LOGGER = "openral.sim.task_success"
 
 # structlog event keys for the task-success signal. Grep targets: a
@@ -231,66 +193,43 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
 ) -> np.ndarray[Any, np.dtype[np.float32]]:
     """Default packer: translate an OpenRAL Action into the env action vector.
 
-    Handles the two control modes panda_mobile (and any future
-    mobile-manipulator with the same robosuite BASIC composite)
-    actually use:
-
-    * ``BODY_TWIST`` — the first row's first three slots (vx, vy, wz)
-      become the env's first three action dims; the remaining slots
-      (arm + gripper) are zeroed.
-    * ``JOINT_POSITION`` — the row directly populates the env's
-      joint slots. An arm-only row (``arm_dim`` floats) fills slots
-      ``[base_dim:base_dim + arm_dim]``; a full ``base_dim + arm_dim``
-      row fills slots ``[0:base_dim + arm_dim]``; otherwise rejected.
-      ``base_dim`` / ``arm_dim`` derive from the description.
-
-    Other modes raise ``ROSConfigError`` — the dispatching lifecycle
-    node enforces the supported set via
-    :attr:`RobotDescription.capabilities.supported_control_modes`.
-    Callers that need richer translations (whole-body humanoid
-    actions, dexterous-hand chunks) pass their own
-    :class:`ActionPacker` to the HAL constructor.
+    Modes: ``CARTESIAN_DELTA`` (OSC arm delta into slots
+    ``[base_dim:base_dim+6]``), ``GRIPPER_POSITION`` (last slot),
+    ``BODY_TWIST`` (vx/vy/wz into slots 0-2), ``JOINT_POSITION`` (an
+    arm-only row fills ``[base_dim:base_dim+arm_dim]``; a full
+    ``base_dim+arm_dim`` row fills ``[0:base_dim+arm_dim]``). Other modes
+    raise ``ROSConfigError`` — the lifecycle node enforces the supported set
+    via :attr:`RobotDescription.capabilities.supported_control_modes`. A
+    caller needing richer translation (whole-body humanoid, dexterous-hand)
+    passes its own :class:`ActionPacker`.
 
     Args:
-        action: The chunk to pack. Only the first row is consumed
-            (chunk_size=1 is invariant for the wrapped-ROS dispatch
-            path; per-row safety-supervisor commit is what makes that
-            valid).
-        description: The robot manifest. Used to size the arm portion
-            of the env vector when arm joints are present.
-        env_action_dim: The env's declared action_dim (typically 11
-            for the robosuite BASIC composite + gripper).
-        prev: The env-frame action vector from the previous ``send_action``
-            within the same policy tick, or ``None``. A single policy step
-            on a non-composite env (e.g. LIBERO OSC_POSE) arrives as TWO
-            typed Actions — CARTESIAN_DELTA (arm) then GRIPPER_POSITION
-            (finger) — and each one drives a separate ``env.step``. Seeding the arm pack
-            from ``prev`` carries the last commanded gripper through the arm
-            step (instead of zeroing it to a half-open neutral), so the
-            policy's gripper command holds while the arm moves — mirroring
-            the ``_pack_with_composite_split`` merge. Without it the arm
-            steps with gripper=0 and the gripper steps with arm=0, so the
-            arm only advances every other env step with a flickering gripper
-            and never coordinates a grasp.
+        action: The chunk to pack; only the first row is consumed
+            (chunk_size=1 is invariant on the wrapped-ROS dispatch path).
+        description: Robot manifest; sizes the arm portion of the env vector.
+        env_action_dim: The env's declared action_dim (typically 11 for the
+            robosuite BASIC composite + gripper).
+        prev: Env-frame action vector from the previous ``send_action`` in
+            the same policy tick, or ``None``. A single policy step on a
+            non-composite env (e.g. LIBERO OSC_POSE) arrives as two typed
+            Actions — CARTESIAN_DELTA then GRIPPER_POSITION — each stepping
+            the env separately; seeding from ``prev`` carries the last
+            gripper command through the arm step instead of zeroing it
+            (mirrors ``_pack_with_composite_split``'s merge) — without it
+            the arm and gripper zero each other out across the two Actions.
 
     Returns:
         ``(env_action_dim,)`` float32 — the env-frame action vector.
 
     Raises:
-        ROSConfigError: when the chunk's `control_mode` isn't one of
-            the supported modes or its row width doesn't match the
-            implied slot layout.
+        ROSConfigError: when `control_mode` is unsupported or its row width
+            doesn't match the implied slot layout.
     """
-    # The payload field depends on control_mode. The legacy code path
-    # lifted ``joint_targets[0]`` for every mode, which was
-    # the lie that conflated cartesian / gripper bytes into a
-    # joint-targets row. Now each mode reads from its own field.
-    #
-    # The modes this packer handles (CARTESIAN_DELTA,
-    # GRIPPER_POSITION, BODY_TWIST, JOINT_POSITION) are a subset of
-    # ``openral_core.SIM_EXECUTABLE_CONTROL_MODES``; the union of this
-    # packer + ``_pack_with_composite_split`` + the BODY_TWIST direct-qpos
-    # path equals that constant exactly (lockstep test enforces it).
+    # Each mode reads its own Action field (not joint_targets[0] for all).
+    # This packer's modes (CARTESIAN_DELTA, GRIPPER_POSITION, BODY_TWIST,
+    # JOINT_POSITION) plus `_pack_with_composite_split` plus the BODY_TWIST
+    # direct-qpos path union to exactly
+    # `openral_core.SIM_EXECUTABLE_CONTROL_MODES` (lockstep test enforced).
     out = np.zeros(env_action_dim, dtype=np.float32)
     # Slot layout derives from the robot manifest (single source of
     # truth) rather than hardcoded panda dims: base width from
@@ -609,30 +548,18 @@ class SimAttachedHAL:
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.
 
-        Two probe paths, in order:
+        Two probe paths, in order: (1) ``self._env.action_dim`` — the direct
+        attribute every backend exposes (robosuite/robocasa natively; the
+        native MuJoCo backends ``so101_box`` / ``tabletop_push`` /
+        ``openarm_tabletop_pnp`` as a property reporting their true ``step``
+        width); (2) ``self._env._env.action_dim`` — robocasa wraps the raw
+        robosuite env on ``_env`` for gymnasium-shaped/kitchen envs.
 
-        1. ``self._env.action_dim`` — the direct attribute every backend
-           exposes (robosuite/robocasa carry it natively; the native MuJoCo
-           backends — ``so101_box``, ``tabletop_push``, ``openarm_tabletop_pnp``
-           — expose it as a property reporting their true ``step`` width per
-           the probe-gap fix).
-        2. ``self._env._env.action_dim`` — robocasa wraps the raw robosuite
-           env on ``_env`` for gymnasium-shaped envs and on a sibling
-           attribute on the kitchen path; the inner env is what carries
-           ``action_dim``.
-
-        If neither path resolves AND no ``env_action_dim`` override was
-        supplied to the constructor, this raises :class:`ROSConfigError`
-        naming the backend — a loud boot-time failure beats a wrong-width
-        mid-run E-stop. (Previously this silently fell back to ``11``, the
-        robosuite BASIC composite width, so a native backend whose ``step``
-        required a different width — ``so101_box`` → 6 — raised a width
-        mismatch on the next ``env.step``, including the idle stepper firing
-        autonomously on the bridge timer.) The fix is single-source-of-truth:
-        every backend reports its own ``action_dim``; this method only
-        introspects it, never guesses.
-
-        Splitting this off keeps :meth:`connect` linear.
+        If neither resolves and no ``env_action_dim`` override was supplied
+        to the constructor, raises :class:`ROSConfigError` naming the
+        backend — a loud boot-time failure beats a wrong-width mid-run
+        E-stop; this method never guesses a width (e.g. falling back to 11,
+        the robosuite BASIC composite width).
 
         Raises:
             ROSConfigError: the env exposes no introspectable ``action_dim``
@@ -849,22 +776,15 @@ class SimAttachedHAL:
         if action.tick_group_size > 1 or callable(group_step):
             self._stage_action_group(action, group_step if callable(group_step) else None)
             return
-        # BODY_TWIST direct-qpos path. The default ``pack_action_for_env``
-        # packs ``[vx, vy, wz]`` into slots 0-2 of robocasa's composite-
-        # controller action vector, but robocasa's BASIC controller
-        # doesn't interpret those slots as planar velocities for the
-        # OmronMobileBase — the base doesn't move when commanded that
-        # way. Mirror :meth:`PandaMobileHAL._apply_body_twist` instead:
-        # rotate the body-frame twist into world frame by the current
-        # yaw, Euler-integrate by ``body_twist_dt_s``, and write the
-        # three base qpos slots directly. Skips ``env.step()`` so the
-        # arm dynamics don't churn (the navigate-kitchen use case wants
-        # the base to translate; the arm stays in its starting pose).
-        # JOINT_POSITION continues to flow through ``env.step()`` so
-        # robosuite's per-joint controllers run as before.
+        # BODY_TWIST direct-qpos path: robosuite's BASIC controller doesn't
+        # interpret ``pack_action_for_env``'s slots 0-2 as OmronMobileBase
+        # planar velocities, so mirror :meth:`PandaMobileHAL._apply_body_twist`
+        # instead — rotate the body-frame twist into world frame, Euler-
+        # integrate by ``body_twist_dt_s``, write the base qpos slots
+        # directly, and skip ``env.step()`` so the arm dynamics don't churn.
+        # JOINT_POSITION still flows through ``env.step()``.
         if action.control_mode is ControlMode.BODY_TWIST:
-            # The body_twist payload moved from joint_targets
-            # (legacy lie) to the typed Action.body_twist field.
+            # body_twist has its own typed Action field (not joint_targets).
             if not action.body_twist:
                 raise ROSConfigError(
                     "SimAttachedHAL.send_action: empty Action.body_twist for BODY_TWIST."
@@ -1269,59 +1189,43 @@ class SimAttachedHAL:
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.
 
-        SIM-ONLY. This refreshes ``_last_obs`` (camera frames + state) so the
-        perception / object-detector bus sees a live scene even when
-        no skill is executing — without this the env only steps on
-        ``/openral/safe_action`` receipt, so an idle scene freezes physics and
-        cameras go stale.
+        SIM-ONLY. Refreshes ``_last_obs`` (camera frames + state) so
+        perception sees a live scene between skill ticks — without this the
+        env only steps on ``/openral/safe_action`` receipt, so an idle scene
+        freezes physics and cameras go stale.
 
-        Safety: this method is defined ONLY on :class:`SimAttachedHAL`. Real
-        HALs (Franka FCI, ros2_control bridges, lerobot followers) do NOT
-        define it, and the :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
+        Safety: defined ONLY on :class:`SimAttachedHAL` — real HALs don't
+        define it, and :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
         gates its idle timer on ``callable(getattr(hal, "idle_step", None))``,
-        so the timer is never even created against a real HAL. This is the real
-        guarantee — NOT "zero is harmless": a zero vector is a HOLD for the
-        sim's velocity / OSC-delta controllers, but on a real absolute-position
-        arm it would command "drive every joint to 0 rad" (violent). The
-        method-only-on-sim exclusion is what makes the zero action safe.
+        so the timer is never created against a real HAL. That method-only
+        exclusion is the actual safety guarantee, not "zero is harmless": a
+        zero vector is a HOLD for the sim's velocity/OSC-delta controllers but
+        would command "drive every joint to 0 rad" on a real absolute-position
+        arm. Does not touch ``_last_env_action`` / ``_last_body_twist`` — an
+        idle HOLD is orthogonal to the last skill command.
 
-        Does NOT touch the commanded-slot state (``_last_env_action``) nor the
-        latched base twist (``_last_body_twist``) — an idle HOLD is orthogonal
-        to whatever a skill last commanded; the next ``send_action`` resumes
-        from its own merged state.
+        Caveat: zero is a true HOLD only for velocity/OSC-delta/composite
+        controllers. A position-controlled native backend (``so101_box``)
+        drives joints toward 0 rad instead of holding — acceptable here since
+        the goal is to keep the scene rendering, not freeze the arm. A backend
+        can opt out via ``idle_action()`` returning its own hold vector (the
+        BEHAVIOR-1K backend returns current joint targets).
 
-        Caveat — zero is a true HOLD only for the sim's velocity / OSC-delta /
-        robosuite composite controllers. For a **position-controlled native
-        backend** (e.g. ``so101_box``, whose ``step`` consumes joint-position
-        targets) a zero vector commands the joints *toward 0 rad* rather than
-        holding the current pose. That is acceptable here — the goal is to keep
-        the scene physically live so cameras render, not to freeze the arm in
-        place — but it is NOT a literal hold for those backends. A backend can
-        opt out of the zero vector entirely by exposing ``idle_action()``
-        returning its own hold vector (the BEHAVIOR-1K backend returns the
-        current joint targets so idle ticks genuinely hold pose).
-
-        Action-dim note: ``_env_action_dim`` is the env's authoritative width,
-        resolved by :meth:`_probe_env_action_dim` from the backend's own
-        ``action_dim`` (every native backend — ``so101_box`` → 6,
-        ``tabletop_push`` → actuator count, ``openarm_tabletop_pnp`` →
-        ``state_dim`` — now reports it). A backend that exposes no width and
-        carries no override fails loudly at ``connect`` time, so the idle tick
-        never builds a wrong-width zero vector. (The bridge's catch-once-and-
-        disable guard around :meth:`idle_step` remains as defence in depth.)
+        ``_env_action_dim`` is resolved by :meth:`_probe_env_action_dim` from
+        the backend's own ``action_dim``; a backend with no width and no
+        override fails loudly at ``connect``, so the idle tick never builds a
+        wrong-width zero vector.
 
         Args:
             wall_dt_s: Wall-clock seconds this tick represents. Accepted for
                 signature parity with :meth:`MujocoArmHAL.idle_step` and
-                currently unused: a wrapped ``SimRollout`` owns its own
-                per-``step`` sim-time stride, so the bridge cannot convert a
-                wall slice into a step count without backend-specific
-                knowledge.
+                unused — a wrapped ``SimRollout`` owns its own per-``step``
+                sim-time stride.
 
         Returns:
             ``True`` if the env was stepped, ``False`` if suppressed (not
-            connected, estop latched, or action dim unresolved). Backend-agnostic —
-            no MuJoCo-handle gate.
+            connected, estop latched, or action dim unresolved).
+            Backend-agnostic — no MuJoCo-handle gate.
         """
         del wall_dt_s
         if not self._connected:
@@ -1348,23 +1252,11 @@ class SimAttachedHAL:
             )
             self._pending_actions.clear()
             self._pending_action_tick = None
-        # No MuJoCo-handle gate: idle-stepping is valid for ANY wrapped
-        # SimRollout — a zero action is a HOLD for the sim's velocity / OSC-delta
-        # controllers, and the method-only-on-SimAttachedHAL exclusion (real HALs
-        # never define idle_step) is the real safety guarantee. Non-MuJoCo
-        # backends (Isaac Sim sidecar, ManiSkill3) step via env.step(zeros) the
-        # same as MJCF ones.
-        # Hold-action step — the same env.step idiom as send_action's tail
-        # (NOT robocasa.refresh_obs, which re-renders WITHOUT stepping).
-        # The shared ``_step_and_cache`` keeps observation caching identical
-        # across command and idle paths. The hold vector is zeros
-        # (a true HOLD for velocity / OSC-delta controllers) UNLESS the
-        # backend exposes ``idle_action()`` — position-controlled backends
-        # (BEHAVIOR-1K joint targets) return their current hold pose there,
-        # because for them a zero vector is a "drive to origin" command, not
-        # a hold. Never build any other vector here. ``_step_and_cache``
-        # deliberately leaves ``_last_env_action`` / ``_last_body_twist``
-        # untouched.
+        # No MuJoCo-handle gate: valid for ANY wrapped SimRollout, including
+        # non-MuJoCo backends (Isaac Sim sidecar, ManiSkill3). Steps via the
+        # same env.step idiom as send_action's tail (not robocasa.refresh_obs,
+        # which re-renders without stepping), so `_step_and_cache` keeps
+        # observation caching identical across command and idle paths.
         idle_action_getter = getattr(self._env, "idle_action", None)
         idle_action = (
             np.asarray(idle_action_getter(), dtype=np.float32).reshape(-1)
@@ -1421,32 +1313,24 @@ class SimAttachedHAL:
     ) -> NDArray[np.float32]:
         """Pack a typed Action into the env action vector via composite slots.
 
-        Uses the composite controller's authoritative slot indexes.
+        Uses the composite controller's authoritative ``cc._action_split_indexes``
+        slot map, mirroring upstream ``RoboCasaGymEnv.step`` /
+        ``PandaOmronKeyConverter.unmap_action``. Layout-agnostic: works for
+        PandaMobile+BASIC (action_dim=11) and PandaOmron+HybridMobileBase
+        (action_dim=12) without per-layout branching.
 
-        Mirrors the upstream ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.
-        step`` / ``PandaOmronKeyConverter.unmap_action`` pattern. Handles
-        the four slot kinds the openral RoboCasa rSkill manifests
-        actually emit today (CARTESIAN_DELTA arm, GRIPPER_POSITION
-        finger, JOINT_VELOCITY base, JOINT_POSITION fallback). BODY_TWIST
-        has its own direct qpos path and never reaches this helper.
+        Handles CARTESIAN_DELTA (arm), GRIPPER_POSITION (finger),
+        JOINT_VELOCITY (base), COMPOSITE_MODE, and delegates JOINT_POSITION to
+        ``pack_action_for_env`` — the full
+        ``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` set except BODY_TWIST
+        (own direct-qpos path). Any other mode raises (lockstep-test-enforced
+        drift guard).
 
-        Layout-agnostic: works for PandaMobile+BASIC (action_dim=11) and
-        PandaOmron+HybridMobileBase (action_dim=12) without per-layout
-        branching, because ``cc._action_split_indexes`` carries the
-        truth for whichever composite was instantiated.
-
-        Slots from previous send_action calls within the same policy
-        tick persist in ``self._last_env_action`` so multi-Action
-        dispatch (arm + gripper, etc.) doesn't zero each other out —
-        the arm's OSC-delta slot is RE-ZEROED on every call so the
-        per-step delta is applied once, not accumulated.
-
-        Handles CARTESIAN_DELTA, GRIPPER_POSITION,
-        JOINT_VELOCITY, COMPOSITE_MODE, and delegates JOINT_POSITION to
-        ``pack_action_for_env``; all members of
-        ``openral_core.SIM_EXECUTABLE_CONTROL_MODES``. Any other mode hits
-        the closing ``else`` and raises (the drift guard the lockstep test
-        proves).
+        Slots from previous ``send_action`` calls in the same policy tick
+        persist in ``self._last_env_action`` so multi-Action dispatch (arm +
+        gripper) doesn't zero each other out; the arm's OSC-delta slot is
+        re-zeroed each call so the per-step delta applies once, not
+        accumulated.
         """
         env_dim = int(self._env_action_dim or 0)
         if self._last_env_action is None or self._last_env_action.shape[0] != env_dim:
@@ -1656,25 +1540,19 @@ class SimAttachedHAL:
         # ray-cast see the new base pose on the same tick. No physics
         # step — just the kinematic update.
         mujoco.mj_forward(model, data)
-        # Re-render camera observations against the new model+data.
-        # Without this the WorldState aggregator + dashboard show the
-        # connect-time frame for every BODY_TWIST command (env.step is
-        # the only path that normally refreshes ``_last_obs``, and we
-        # skip it here). Backends without the ``refresh_obs`` method
-        # (in-process digital twins, gymnasium-wrapped envs) silently
-        # keep the cached frame — visual lag is the documented
-        # tradeoff for those paths.
+        # Re-render camera observations against the new model+data — env.step
+        # is the only path that normally refreshes ``_last_obs`` and we skip
+        # it here, so without this the dashboard shows the connect-time frame
+        # for every BODY_TWIST command. Backends without ``refresh_obs``
+        # (in-process digital twins, gymnasium-wrapped envs) keep the cached
+        # frame (documented visual-lag tradeoff).
         #
-        # ``refresh_obs`` MUST NOT step physics — see
-        # ``_RoboCasaSim.refresh_obs``. It used to drive a zero-action
-        # ``env.step``, and robosuite's mobile-base controller treats that step
-        # as an instruction to regulate the base back to its held setpoint,
-        # erasing the qpos write above. Measured on the real baguette scene:
-        # of 1.0000 m written over 40 commands only 0.0396 m survived (4.0%),
-        # with the per-command survival decaying 1.000 -> 0.458 -> 0.085 ->
-        # 0.015 -> 0.002 -> 0.000 as the regulator caught up. That is what
-        # starved Nav2's ``SimpleProgressChecker`` and aborted every
-        # ``navigate_to_pose`` goal with "Failed to make progress".
+        # ``refresh_obs`` MUST NOT step physics (see ``_RoboCasaSim.
+        # refresh_obs``): a zero-action ``env.step`` there let robosuite's
+        # mobile-base controller regulate the base back to its held setpoint,
+        # erasing the qpos write above — measured on the baguette scene, of
+        # 1.0000 m written over 40 commands only 0.0396 m (4.0%) survived,
+        # starving Nav2's ``SimpleProgressChecker`` ("Failed to make progress").
         refresh = getattr(self._env, "refresh_obs", None)
         if refresh is not None:
             refreshed = refresh()
@@ -2020,40 +1898,27 @@ class SimAttachedHAL:
     ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]] | None:
         """Full 6-DoF base pose ``(xyz, quat_xyzw)`` from the cached robocasa obs.
 
-        ``base_pose`` (planar ``x, y, yaw``) is what the panda_mobile
-        HAL was originally designed around — Nav2 / SLAM consume that
-        as a 2-D twist + yaw. But the rldx / pi05 state assemblers
-         read the base's *full* 6-DoF pose via
-        ``tf("odom", "base_link")``, and the planar version sets
-        ``z = 0.0`` + ``roll = pitch = 0``, which silently drops the
-        ~0.70 m platform height that RoboCasa proprio
-        (``robot0_base_pos[2]``) reports. Symptom in ``openral deploy sim``:
-        the assembled ``world_to_base.position.z`` is ``0.0`` instead
-        of ``0.70``, so the policy sees the arm 0.49 m higher in the
-        base frame than at training time and tries to reach a target
-        that's at the wrong height — the "robot moves but grabs at
-        the wrong position" failure mode the dump diff exposed.
+        The planar :attr:`base_pose` (``x, y, yaw``) sets ``z=0``/
+        ``roll=pitch=0``, dropping the ~0.70 m platform height RoboCasa
+        proprio (``robot0_base_pos[2]``) reports — the rldx/pi05 state
+        assemblers read the base's full 6-DoF pose via
+        ``tf("odom", "base_link")``, and a planar-only pose there previously
+        produced ``world_to_base.position.z == 0.0`` instead of ``0.70``,
+        putting the arm 0.49 m off in the base frame ("moves but grabs at the
+        wrong position").
 
-        Source of truth: ``_last_obs["raw_proprio"]["robot0_base_pos"]``
-        + ``["robot0_base_quat"]`` — the values the RoboCasa env's
-        robosuite observable system computes (the SAME values
-        ``openral sim run`` feeds to the policy via
-        ``robot0_base_pos`` in the 16-D ``human300`` state vector).
-        Reading them here keeps the deploy_sim ``odom → base_link``
-        TF byte-identical to what sim_run's state assembly produces.
+        Source of truth: ``_last_obs["raw_proprio"]["robot0_base_pos"]`` +
+        ``["robot0_base_quat"]`` — the same values ``openral sim run`` feeds
+        the policy in the 16-D ``human300`` state vector, keeping the
+        deploy_sim ``odom → base_link`` TF byte-identical to sim_run's state
+        assembly. NOT ``data.xpos[robot0_base]`` (raw MJCF body position):
+        robosuite's observable applies a robot-specific offset
+        (``robot.robot_model.base_xpos_offset``) so the reported base
+        position matches a stable mount reference, not the MJCF body anchor.
 
-        Note: ``data.xpos[robot0_base]`` (raw MJCF body world-frame
-        position) is NOT the same as ``robot0_base_pos`` — robosuite's
-        observable wraps the body lookup with a robot-specific offset
-        (``robot.robot_model.base_xpos_offset``) so the publicly
-        reported "base position" matches a stable robot-mount
-        reference, not the MJCF body's own anchor. We MUST use the
-        observable's output, not the raw xpos, or the policy sees a
-        translated world.
-
-        Returns ``None`` when the wrapped obs has no ``raw_proprio``
-        slot (non-RoboCasa backend) or the keys are missing — the
-        caller falls back to the planar :attr:`base_pose`.
+        Returns ``None`` when the wrapped obs has no ``raw_proprio`` slot
+        (non-RoboCasa backend) or the keys are missing — the caller falls
+        back to the planar :attr:`base_pose`.
         """
         if self._last_obs is None:
             return None

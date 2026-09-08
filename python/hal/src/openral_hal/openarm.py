@@ -9,44 +9,35 @@ per-class PD gains, fixes v1's asymmetric LEFT-finger gain bug, and
 collapses the two-finger-per-side gripper to a single driven joint
 with a kinematic equality constraint coupling the follower finger.
 
-That upstream cleanup deletes a meaningful pile of HAL workaround
-code that the v1 adapter required (software PD loop sized from
-``forcerange``, ``ctrllimited`` override, asymmetric-gain
-compensation, two-finger averaging) — see git history for context.
-This adapter is therefore a thin :class:`HALBase` subclass: read /
-write the 16-element action vector directly into MuJoCo's 16
-position-actuator ``ctrl`` slots and let the MJCF's own PD law
-handle dynamics.
+That upstream cleanup deletes the HAL workaround code v1 required
+(software PD loop sized from ``forcerange``, ``ctrllimited`` override,
+asymmetric-gain compensation, two-finger averaging — see git history).
+This adapter is therefore a thin :class:`HALBase` subclass: read/write
+the 16-element action vector directly into MuJoCo's 16 position-actuator
+``ctrl`` slots and let the MJCF's own PD law handle dynamics.
 
-What this is — and what it isn't
---------------------------------
-Like the SO-100 / ALOHA / G1 / H1 / Rizon-4 twins, this HAL is a
-**digital-twin contract validator** (CLAUDE.md §1.11): if the sim
-tests pass, the 16-DoF action layout, lifecycle, joint indexing,
-and ``RobotDescription`` round-trip are guaranteed to match what
-:class:`openral_hal.openarm_real.OpenArmRealHAL` sees on the
-physical arm — the two share this module's
-:data:`OPENARM_DESCRIPTION`.  The remaining failure surfaces are
-below the adapter, in the ``openarm_hardware`` ros2_control plugin
-and the CAN FD bus itself (HIL territory).
+Like the SO-100/ALOHA/G1/H1/Rizon-4 twins, this HAL is a **digital-twin
+contract validator** (CLAUDE.md §1.11): if the sim tests pass, the
+16-DoF action layout, lifecycle, joint indexing, and
+``RobotDescription`` round-trip are guaranteed to match what
+:class:`openral_hal.openarm_real.OpenArmRealHAL` sees on the physical
+arm — the two share this module's :data:`OPENARM_DESCRIPTION`. Remaining
+failure surfaces are below the adapter, in the ``openarm_hardware``
+ros2_control plugin and the CAN FD bus itself (HIL territory).
 
-Action layout
--------------
-16-DoF :class:`openral_core.Action` with the same shape as
-:class:`AlohaHAL` (just one extra arm joint per side, plus a
-hinge-mode gripper instead of a prismatic one):
+Action layout: 16-DoF :class:`openral_core.Action`, same shape as
+:class:`AlohaHAL` (one extra arm joint per side, hinge-mode gripper
+instead of prismatic):
 
 * ``target[0:7]``   — left arm joints (radians)
 * ``target[7]``     — left gripper position (rad, ``[0, 0.7854]``)
 * ``target[8:15]``  — right arm joints (radians)
 * ``target[15]``    — right gripper position (rad, ``[-0.7854, 0]``)
 
-The asymmetric gripper ctrlranges (left positive, right negative)
-come from the v2 MJCF — the mechanism mirrors physically and the
-upstream definitions reflect that.  Each gripper command drives
-*one* finger actuator; the second finger per side follows via the
-MJCF's ``<equality>`` constraint and does not need a separate
-command.
+The asymmetric gripper ctrlranges (left positive, right negative) come
+from the v2 MJCF, whose mechanism mirrors physically. Each gripper
+command drives *one* finger actuator; the second finger per side follows
+via the MJCF's ``<equality>`` constraint.
 
 Example:
     >>> from openral_hal import OpenArmMujocoHAL, OPENARM_DESCRIPTION

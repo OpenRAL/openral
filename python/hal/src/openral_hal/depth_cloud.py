@@ -569,17 +569,15 @@ def points_from_depth_grid(
     frame (REP-103). Pixels reading exactly ``0.0`` (the "no measurement"
     sentinel) are dropped.
 
-    ``clearing`` marks pixels whose only return was a self-filtered body (the
-    robot's own link, an acknowledged payload): those have no depth, but the
-    ray behind them is free, so a ``max_range_m`` endpoint is emitted there —
-    letting OctoMap clear cells the robot occludes instead of leaving them
-    frozen. Passing the mask
+    ``clearing`` marks pixels whose only return was a self-filtered body (own
+    link, an acknowledged payload): no depth, but the ray behind is free, so
+    a ``max_range_m`` endpoint is emitted there, letting OctoMap clear
+    occluded cells instead of leaving them frozen. Passing the mask
     :func:`openral_sim.backends.depth_camera.synthesize_depth_frame` returns
-    reproduces the cloud
+    reproduces what
     :func:`~openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
-    would cast separately, from one ray-cast — this is what lets the
-    deploy-sim depth timer pay for one cast per camera per frame instead of
-    two (depth image + cloud).
+    would cast separately, from one ray-cast — one cast per camera per frame
+    instead of two (depth image + cloud).
 
     Args:
         depth: ``(H, W)`` float32 depth raster in metres (optical-Z), ``0.0``

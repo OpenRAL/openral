@@ -1,38 +1,25 @@
 """Real-hardware HAL adapters for the Universal Robots UR5e and UR10e.
 
-Where :mod:`openral_hal.ur` ships MuJoCo-backed adapters for sim, this
-module wraps the Universal Robots ``ur_robot_driver`` (URCap / RTDE) under
-the same :class:`openral_hal.protocol.HAL` Protocol so a real arm is
-reachable from upper layers without changing any Skill or Reasoner code.
+Where :mod:`openral_hal.ur` ships MuJoCo-backed sim adapters, this module
+wraps ``ur_robot_driver`` (URCap/RTDE) under the same
+:class:`openral_hal.protocol.HAL` Protocol so a real arm is reachable
+without changing Skill/Reasoner code. Real-HW path:
+:class:`~openral_hal.ros_control.RosControlHAL` + a ``ros2_control``
+controller manager driven by ``ur_robot_driver``, which runs as a ROS 2
+node exposing ``/joint_states`` + a ``scaled_joint_trajectory_controller``
+command channel (RFC §5.1 control QoS), and speaks RTDE to the URCap's
+``external_control`` program on the teach pendant.
 
-The real-hardware path is :class:`~openral_hal.ros_control.RosControlHAL`
-plus a ``ros2_control`` controller manager driven by
-``ur_robot_driver``.  The driver:
+Wrapper over bare :class:`RosControlHAL`: pins UR-series defaults
+(controller name, joint-trajectory topic differ from a generic
+``ros2_control`` deployment); advertises typed
+:data:`UR5e_REAL_DESCRIPTION`/:data:`UR10e_REAL_DESCRIPTION` constants the
+manifests (``robots/ur5e``/``robots/ur10e``) pin to; surfaces the
+deadman/E-stop subscription contract the safety supervisor expects.
 
-* runs as a ROS 2 node alongside ``ros2_control`` and exposes the standard
-  ``/joint_states`` topic and a ``scaled_joint_trajectory_controller``
-  command channel (RFC §5.1 control QoS), and
-* speaks RTDE to the URCap on the teach pendant (URCap installs the
-  ``external_control`` program that streams setpoints back to the driver).
-
-Why a wrapper class instead of using :class:`RosControlHAL` directly?
-
-* Defaults are pinned for the UR series (the controller name and the
-  joint-trajectory topic differ from a generic ``ros2_control`` deployment).
-* The sub-class advertises a typed :data:`UR5e_REAL_DESCRIPTION` /
-  :data:`UR10e_REAL_DESCRIPTION` constant so the eval-layer manifest
-  (``robots/ur5e/robot.yaml`` / ``robots/ur10e/robot.yaml``) has a single
-  ``sdk_kind`` / ``hal`` block it pins to.
-* It surfaces the deadman / E-stop subscription contract the safety
-  supervisor expects.
-
-License posture (CLAUDE.md §7.4)
---------------------------------
-``ur_robot_driver`` is BSD-3 (open).  We mark the YAML manifest's
-``sdk_kind`` as ``closed`` to flag that the **runtime path requires a real
-arm + URCap**, not because the Python adapter or the driver carry a
-restrictive license.  The full license string lives in the manifest
-metadata so the loader can surface it.
+License posture (CLAUDE.md §7.4): ``ur_robot_driver`` is BSD-3 (open); the
+manifest's ``sdk_kind`` is marked ``closed`` to flag that the runtime path
+requires a real arm + URCap, not a restrictive Python/driver license.
 
 Example::
 

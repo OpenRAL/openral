@@ -1,27 +1,23 @@
 """Real-hardware HAL adapter for the Franka Emika Panda over the FCI.
 
-This adapter targets a **physical** Panda arm driven through ``franka_ros2``
-(``libfranka`` + ``franka_hardware``) and a ``ros2_control`` joint trajectory
-controller.  It is the production sibling of the MuJoCo-backed
-:class:`openral_hal.franka_panda.FrankaPandaHAL`: both expose the same
-:data:`FRANKA_PANDA_DESCRIPTION` so upper layers (Skill, Reasoner, Safety)
-see one normative robot regardless of where the joints physically live.
+Targets a **physical** Panda driven through ``franka_ros2`` (``libfranka`` +
+``franka_hardware``) and a ``ros2_control`` joint trajectory controller —
+the production sibling of the MuJoCo-backed
+:class:`openral_hal.franka_panda.FrankaPandaHAL`; both expose
+:data:`FRANKA_PANDA_DESCRIPTION` so upper layers see one normative robot
+regardless of where the joints physically live.
 
-License posture
----------------
-Per CLAUDE.md §7.4 the Franka FCI / ``libfranka`` stack is *closed but
-permissive* (vendor-licensed binaries, free for research / commercial), and
-``franka_ros2`` is Apache-2.0.  The manifest therefore declares
+License posture (CLAUDE.md §7.4): the Franka FCI/``libfranka`` stack is
+closed but permissive (vendor-licensed binaries, free for research/
+commercial); ``franka_ros2`` is Apache-2.0. The manifest declares
 ``sdk_kind: "closed_with_api"`` and sets ``hal.real`` to this adapter.
 
-Transport layering
-------------------
-The hot path is ``ros2_control``.  We do not import ``rclpy`` here — instead
-we delegate to :class:`openral_hal.ros_control.RosControlHAL`, which takes
-injected ``publish_fn`` / ``state_fn`` callables.  The lifecycle node defined
-in ``packages/openral_hal_franka`` wires real publishers/subscribers at
-runtime; unit tests inject :class:`SimTransport` to exercise the same code
-path without ROS 2 installed.
+Transport: the hot path is ``ros2_control``; this module does not import
+``rclpy`` and instead delegates to :class:`openral_hal.ros_control.RosControlHAL`,
+which takes injected ``publish_fn``/``state_fn`` callables. The lifecycle
+node in ``packages/openral_hal_franka`` wires real publishers/subscribers at
+runtime; unit tests inject :class:`SimTransport` for the same code path
+without ROS 2 installed.
 
 Example:
     >>> from openral_hal.franka_panda_real import FrankaPandaRealHAL

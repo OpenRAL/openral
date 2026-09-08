@@ -119,48 +119,43 @@ log = structlog.get_logger(__name__)
 class MujocoArmHAL(HALBase):
     """Generic MuJoCo-backed HAL adapter for position-controlled arms.
 
-    Supports single-arm robots, floating-base humanoids (via the
+    Supports single-arm robots, floating-base humanoids (via
     ``joint_qvel_addr`` offset), and bimanual robots (via multiple
     :class:`SimGripperDescription` entries with optional
     ``mirror_actuator_index`` for parallel-jaw configurations like Aloha).
 
     Args:
-        description: Normative :class:`RobotDescription`.  ``description.joints``
-            must enumerate every controllable joint exposed to higher layers in
-            the same order as the robot's MuJoCo actuators.
+        description: Normative :class:`RobotDescription`; ``description.joints``
+            must enumerate every controllable joint in the same order as the
+            robot's MuJoCo actuators.
         mjcf_path: Filesystem path to the MJCF XML.
-        joint_qpos_addr: Mapping ``joint_name -> qpos index`` (mjcf coordinate
-            in ``data.qpos``).
+        joint_qpos_addr: Mapping ``joint_name -> qpos index`` in ``data.qpos``.
         actuator_index: Mapping ``joint_name -> actuator index`` (column of
-            ``data.ctrl``).  ``None`` for read-only joints (e.g. the mirrored
+            ``data.ctrl``); ``None`` for read-only joints (e.g. the mirrored
             second finger of a parallel gripper).
-        joint_qvel_addr: Optional mapping ``joint_name -> qvel index``.
-            Defaults to ``joint_qpos_addr`` for arms without a floating
-            base; for floating-base humanoids the qvel indices are offset
-            by 6 (vs qpos 7) and must be passed explicitly.
-        grippers: Zero or more :class:`SimGripperDescription` entries.
-            Each gripper's ``joint`` must also appear in
-            ``description.joints``.  Single-arm robots ship one entry (or
-            none); bimanual robots (Aloha, OpenArm) ship two.
+        joint_qvel_addr: Optional mapping ``joint_name -> qvel index``;
+            defaults to ``joint_qpos_addr`` for non-floating-base arms. For
+            floating-base humanoids the qvel indices are offset by 6 (vs
+            qpos 7) and must be passed explicitly.
+        grippers: Zero or more :class:`SimGripperDescription` entries; each
+            ``joint`` must also appear in ``description.joints``. Single-arm
+            robots ship one (or none); bimanual robots (Aloha, OpenArm) two.
         keyframe_index: When set, :meth:`connect` calls
             ``mj_resetDataKeyframe(model, data, keyframe_index)`` before
-            ``mj_forward``.  Required for MJCFs whose default
+            ``mj_forward`` — required for MJCFs whose default
             ``MjData.qpos`` sits outside the actuator ``ctrlrange``
             (gym-aloha).
         seed_ctrl_from_qpos: When True, :meth:`connect` seeds
             ``data.ctrl[actuator] = data.qpos[joint_qpos_addr]`` for every
-            controllable joint so position actuators hold the initial
-            pose (OpenArm v2).
-        settle_steps: Number of ``mj_step`` calls performed in
-            :meth:`send_action` to advance the simulation toward the new
-            target.  Defaults to ``1``.
+            controllable joint so position actuators hold the initial pose
+            (OpenArm v2).
+        settle_steps: Number of ``mj_step`` calls in :meth:`send_action` to
+            advance toward the new target. Defaults to ``1``.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
-            time.  Useful for closed-loop tests where exact convergence is
-            asserted.
+            (useful for closed-loop tests asserting exact convergence).
         staleness_limit_s: Age (seconds) of the cached state above which
-            ``read_state`` emits a one-shot starvation WARNING (the
-            in-process read still returns live ``MjData`` — see
-            :meth:`read_state`).
+            ``read_state`` emits a one-shot starvation WARNING (the read
+            still returns live ``MjData`` — see :meth:`read_state`).
 
     Raises:
         ROSConfigError: If ``description.joints`` is empty.
@@ -721,17 +716,14 @@ class MujocoArmHAL(HALBase):
             return False
         import mujoco as mj  # reason: optional sim-only dep
 
-        # Advance a WALL-TIME slice, not a single physics step. One
-        # `mj_step` per idle tick makes sim time crawl at
-        # `timestep * tick_rate` — 0.002 s * 10 Hz = 2% of real time on this
-        # arm — and every OTHER timer in the HAL node runs on the NODE clock,
-        # which under `use_sim_time` IS that crawling sim clock. The camera,
-        # camera-TF and cinecam timers then fire 50x slower than their nominal
-        # rate (a 10 Hz camera timer every 5 s), the world-state aggregator
-        # stamps the frames with wall-clock arrival and latches every camera
-        # STALE, and the policy is fed seconds-old pixels. Stepping the tick's
-        # worth of sim time keeps the two clocks in step, which is what
-        # "keeps cameras live while idle" was supposed to mean.
+        # Advance a WALL-TIME slice, not a single physics step: one `mj_step`
+        # per idle tick makes sim time crawl at `timestep * tick_rate`
+        # (0.002 s * 10 Hz = 2% of real time on this arm), and every other
+        # timer in the HAL node runs on that same crawling clock under
+        # `use_sim_time` — camera/TF/cinecam timers then fire 50x slower than
+        # nominal, the world-state aggregator latches every camera STALE, and
+        # the policy is fed seconds-old pixels. Stepping the tick's worth of
+        # sim time keeps the clocks in step.
         steps = 1
         if wall_dt_s is not None and wall_dt_s > 0:
             timestep = float(self._model.opt.timestep)
@@ -960,15 +952,12 @@ class MujocoArmHAL(HALBase):
     ) -> MujocoArmHAL:
         """Build a :class:`MujocoArmHAL` purely from ``description.sim``.
 
-        This is the **recommended** entry point for any code that selects a
-        robot at runtime — it removes every hardcoded constant from the HAL
-        Python files. The legacy keyword-argument constructor stays
-        available for tests and for one-off overrides.
-
-        The default joint→qpos/qvel/actuator mappings are 1:1 with
-        ``description.joints`` order, offset by 7/6 if
-        ``description.sim.floating_base`` is True (humanoids).  Explicit
-        per-joint overrides in ``description.sim`` win when present.
+        The recommended entry point for runtime robot selection (removes
+        hardcoded constants from HAL Python files); the keyword-argument
+        constructor stays available for tests / one-off overrides. Default
+        joint→qpos/qvel/actuator mappings are 1:1 with ``description.joints``
+        order, offset by 7/6 if ``description.sim.floating_base`` is True
+        (humanoids); explicit per-joint overrides in ``description.sim`` win.
 
         Args:
             description: A :class:`RobotDescription` whose ``sim`` field is
@@ -1016,15 +1005,13 @@ class MujocoArmHAL(HALBase):
     ) -> None:
         """Initialise *self* from a fully-populated ``description.sim`` block.
 
-        This is the seam every thin per-robot subclass (UR5e/UR10e, Franka,
-        ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the
-        boilerplate ``super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, ...))``
-        dance.  Subclasses keep their typed ``__init__`` signature (so IDEs
-        still surface ``mjcf_path``/``settle_steps``/``gravity_enabled``/
+        The seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA,
+        OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate
+        ``super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, ...))``
+        dance — subclasses keep their typed ``__init__`` signature (so IDEs
+        surface ``mjcf_path``/``settle_steps``/``gravity_enabled``/
         ``staleness_limit_s`` as the four user-tunable knobs) and forward
-        straight to here.
-
-        ``settle_steps=None`` (the default) lets
+        straight to here. ``settle_steps=None`` (default) lets
         :meth:`_sim_kwargs_for` substitute
         ``description.sim.settle_steps_default``.
 

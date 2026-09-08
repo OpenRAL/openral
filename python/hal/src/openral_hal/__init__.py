@@ -30,39 +30,34 @@ Public surface:
 - ``SO100MujocoHAL``: MuJoCo-backed digital twin for the SO-100 follower,
   driving the ``mujoco_menagerie`` MJCF with the same 6-DoF action layout
   as ``SO100FollowerHAL``.
-- ``G1MujocoHAL`` / ``G1_DESCRIPTION``: MuJoCo-backed digital twin for the
-  Unitree G1 humanoid (29-DoF; ADR-0087 glide by default, optional ADR-0089
-  pretrained walking controller in sim). Real-HW G1 HAL is planned
-  under the M2 milestone (CLAUDE.md §6.2).
-- ``H1MujocoHAL`` / ``H1_DESCRIPTION``: MuJoCo-backed digital twin for the
-  Unitree H1 humanoid (19-DoF — predecessor to the G1 with a simpler 5-DoF
-  per leg, 1-DoF torso, 4-DoF per arm layout).  Same contract-validator
-  scope as ``G1MujocoHAL``; real-HW H1 HAL also waits on the M2 S0
-  cerebellum.
-- ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: MuJoCo-backed digital twin
-  for the Flexiv Rizon 4 (7-DoF cobot with whole-body force sensitivity).
-  Structurally identical to the UR / Franka sim HALs.
-- ``OpenArmMujocoHAL`` / ``OPENARM_DESCRIPTION``: MuJoCo-backed digital
-  twin for the Enactic OpenArm v2 bimanual (2 x (7-DoF arm + 1 gripper) =
-  16-DoF action).  Fresh ``HALBase`` subclass because the bimanual
-  layout doesn't fit ``MujocoArmHAL``, but otherwise trivial — v2's
-  native ``<position>`` actuators (per-class PD baked into the MJCF)
-  let the HAL just write target → ctrl and step.  The v2 MJCF is
-  fetched lazily by ``openral_hal._openarm_v2_assets``; will simplify
-  back to ``robot_descriptions`` once upstream bumps its pin.
+- ``G1MujocoHAL`` / ``G1_DESCRIPTION``: MuJoCo digital twin for the Unitree
+  G1 humanoid (29-DoF; ADR-0087 glide by default, optional ADR-0089
+  pretrained walking controller in sim). Real-HW G1 HAL planned for M2
+  (CLAUDE.md §6.2).
+- ``H1MujocoHAL`` / ``H1_DESCRIPTION``: MuJoCo digital twin for the Unitree
+  H1 humanoid (19-DoF — predecessor to G1, 5-DoF/leg, 1-DoF torso, 4-DoF/
+  arm). Same contract-validator scope as ``G1MujocoHAL``; real-HW H1 also
+  waits on the M2 S0 cerebellum.
+- ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: MuJoCo digital twin for the
+  Flexiv Rizon 4 (7-DoF cobot, whole-body force sensitivity); structurally
+  identical to the UR/Franka sim HALs.
+- ``OpenArmMujocoHAL`` / ``OPENARM_DESCRIPTION``: MuJoCo digital twin for
+  the Enactic OpenArm v2 bimanual (2 x (7-DoF arm + 1 gripper) = 16-DoF).
+  Fresh ``HALBase`` subclass (bimanual doesn't fit ``MujocoArmHAL``); v2's
+  native ``<position>`` actuators (per-class PD baked into the MJCF) let it
+  just write target → ctrl and step. MJCF fetched lazily by
+  ``openral_hal._openarm_v2_assets``.
 - ``OpenArmRealHAL`` / ``OPENARM_REAL_DESCRIPTION``: real-hardware adapter
-  for the same arm.  Commands the four ``openarm_bringup`` ros2_control
-  controllers (per-side arm + gripper) that drive the Damiao CAN FD motor
+  for the same arm — commands the four ``openarm_bringup`` ros2_control
+  controllers (per-side arm + gripper) driving the Damiao CAN FD motor
   buses from C++ at 400 Hz; ``connect()`` refuses a bus that is not up.
-- ``AnvilOpenArmV2MujocoHAL`` / ``ANVIL_OPENARM_V2_DESCRIPTION``: MuJoCo-backed
-  digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured
-  variant of the standard OpenArm v2 (same 16-DoF surface).  Differs
-  from the Enactic v2 arm in exactly two documented ranges (J1 clamped
-  to +/-135 deg; J6 radial deviation widened to -45..+70 deg) plus the
-  wrist support bracket that enables it (visual-only CAD meshes in the
-  MJCF).
-  Thin manifest-driven subclass like ``OpenArmMujocoHAL``; the MJCF is
-  fetched at a pinned SHA from ``bensonlee5/anvil-openarm-mujoco`` by
+- ``AnvilOpenArmV2MujocoHAL`` / ``ANVIL_OPENARM_V2_DESCRIPTION``: MuJoCo
+  digital twin for the Anvil OpenARM 2.0 (Anvil Robotics' variant of the
+  standard OpenArm v2, same 16-DoF surface). Differs in two ranges (J1
+  clamped to +/-135 deg; J6 radial deviation widened to -45..+70 deg) plus
+  the wrist support bracket (visual-only CAD meshes). Thin manifest-driven
+  subclass like ``OpenArmMujocoHAL``; MJCF fetched at a pinned SHA from
+  ``bensonlee5/anvil-openarm-mujoco`` by
   ``openral_hal._anvil_openarm_v2_assets`` (``openarm:anvil_v2_bimanual``).
 - ``SimTransport``: typed in-memory ros2_control transport for unit tests.
 - ``GalaxeaA1HAL`` / ``GALAXEA_A1_DESCRIPTION``: real Galaxea A1 through an

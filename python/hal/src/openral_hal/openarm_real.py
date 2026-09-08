@@ -5,16 +5,12 @@ drives the physical arm.  Same 16-DoF ``Action`` layout, same
 :class:`~openral_hal.protocol.HAL` Protocol, so a Skill or Reasoner moves
 from twin to hardware without a line of change.
 
-Why ros2_control and not SocketCAN directly
--------------------------------------------
-The OpenArm's motors are Damiao BLDC servos on a CAN FD bus (1 Mbit/s
-arbitration, 5 Mbit/s data), one bus per arm.  It is entirely possible to
-drive them from Python via the ``openarm_can`` bindings — and that is
-precisely what CLAUDE.md §1.5 forbids: *"Python touches motors only through
-a typed bridge to ros2_control with a watchdog. Anything >100 Hz is C++."*
-The OpenArm control loop runs at 400 Hz.
-
-So the actuation path is:
+Why ros2_control and not SocketCAN directly: the OpenArm's motors are
+Damiao BLDC servos on a CAN FD bus (1 Mbit/s arbitration, 5 Mbit/s data),
+one bus per arm, running at 400 Hz. Driving them from Python via the
+``openarm_can`` bindings is exactly what CLAUDE.md §1.5 forbids:
+*"Python touches motors only through a typed bridge to ros2_control with
+a watchdog. Anything >100 Hz is C++."* So the actuation path is:
 
     Skill → Action → OpenArmRealHAL → ros2_control command topics
           → controller_manager (400 Hz, C++)

@@ -40,17 +40,16 @@ _DEGENERATE_QUAT_NORM = 1e-12
 
 # -- E-stop ground-truth snapshot bounds --
 # Near-miss probe: kernel stops on a mm-cm margin, so MuJoCo's contact list is
-# usually empty; ground truth is signed geom distance for pairs whose
-# bounding spheres are within this gap, closest-first, truncated to a few.
-# Old caps (256/8) saturated on mobilebase-floor pairs at 0-2mm and hid an
-# arm 17-30mm inside a freezer door; fixed by scoping to
-# kernel_checked_body_ids(), these caps are the backup.
-# Distance = convex_distance.convex_geom_distance, not mj_geomDistance (two
-# silent failure modes on RoboCasa-fixture/panda-mesh pairs — see that
-# module's docstring). Costs ~2-4ms/pair vs ~9us, so candidates are
-# pre-thinned by a certified distmax_m (separating-axis) window: 1-24 of
-# 74-259 candidates solved, ~0.1-0.7s/snapshot on the 4 RoboCasa matrix
-# scenes.
+# usually empty; ground truth is signed geom distance (convex_distance.
+# convex_geom_distance, not mj_geomDistance — two silent failure modes on
+# RoboCasa-fixture/panda-mesh pairs, see that module's docstring) for pairs
+# whose bounding spheres are within this gap, closest-first, truncated to a
+# few. Old caps (256/8) saturated on mobilebase-floor pairs at 0-2mm and hid
+# an arm 17-30mm inside a freezer door; fixed by scoping to
+# kernel_checked_body_ids(), these caps are the backup. Costs ~2-4ms/pair vs
+# ~9us, so candidates are pre-thinned by a certified distmax_m
+# (separating-axis) window: 1-24 of 74-259 candidates solved, ~0.1-0.7s/
+# snapshot on the 4 RoboCasa matrix scenes.
 _NEAREST_PROBE_DISTMAX_M = 0.10
 _NEAREST_PROBE_MAX_CALLS = 4096
 _NEAREST_PROBE_MAX_PAIRS = 32
@@ -539,21 +538,17 @@ def _nearest_pair_records(
     body_of_geom = np.asarray(model.geom_bodyid, dtype=np.int64)
     if body_of_geom.size == 0:
         return [], coverage
-    # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can never
-    # generate a contact for it, and the safety kernel never checks one.
-    # Measuring against it manufactures penetrations that mean nothing
-    # physically — round 5/6 reported the payload "134 mm inside
-    # cab_1_left_group_reg_main", a RoboCasa region marker, and the 2026-08-23
-    # rounds called a stop `real-contact` on `robot0_g42_vis`, a visual shell.
-    # The support producer already draws the same line for the same reason
-    # (``_sim_attachment_evidence._support_candidate_geoms``: "purely visual
-    # geometry ... is not solid, and a decorative shell coincident with a real
-    # surface would only add noise"). It applies to BOTH sides of every probe:
-    # a robot link body and an attached payload body each carry visual geoms
-    # alongside their collision ones, so scoping a side by BODY does not scope
-    # it to solid geometry. Pairs whose bitmasks merely fail to *meet* are still
-    # measured — suppression there is a property of the pair, not of the geom,
-    # and that is precisely the case the probe exists to adjudicate.
+    # A geom with NEITHER contype NOR conaffinity is not solid: MuJoCo can
+    # never contact it and the kernel never checks one, so measuring against
+    # it manufactures meaningless penetrations (round 5/6: payload "134 mm
+    # inside cab_1_left_group_reg_main", a RoboCasa region marker; 2026-08-23:
+    # a stop called `real-contact` on `robot0_g42_vis`, a visual shell). Same
+    # rule the support producer draws (``_sim_attachment_evidence.
+    # _support_candidate_geoms``). Applies to BOTH sides — a body carries
+    # visual geoms alongside its collision ones, so scoping a side by BODY
+    # does not scope it to solid geometry. Pairs whose bitmasks merely fail
+    # to *meet* are still measured: suppression is a property of the pair,
+    # not the geom, which is what the probe adjudicates.
     collidable = (np.asarray(model.geom_contype, dtype=np.int64) != 0) | (
         np.asarray(model.geom_conaffinity, dtype=np.int64) != 0
     )
@@ -588,17 +583,13 @@ def _nearest_pair_records(
         return [], coverage
     gap = _pair_distance_lower_bound(model, data, side_geoms, other_geoms)
     if within_side:
-        # Probing a set against ITSELF (link<->link). Two pair classes have to
-        # go before the budget is spent on them, and both are +inf rather than
-        # post-filtered so they never consume an exact call:
-        #
-        # 1. Same body. A link's own geoms touch by construction; the kernel
-        #    skips them (`lb == lb2`) and a 0 m self-pair would sort straight to
-        #    the top of the report and bury the pair that actually stopped.
-        # 2. The mirror. With one set on both sides every pair appears twice,
-        #    (a, b) and (b, a), which would double the records and halve the
-        #    effective `max_pairs`. Keeping the lower geom id is arbitrary but
-        #    total, so exactly one of each survives.
+        # Probing a set against ITSELF (link<->link). Two pair classes are
+        # excluded as +inf (not post-filtered, so they never consume an exact
+        # call): (1) same body — a link's own geoms touch by construction, the
+        # kernel skips them (`lb == lb2`), and a 0 m self-pair would bury the
+        # pair that actually stopped; (2) the mirror — with one set on both
+        # sides every pair appears twice, (a, b) and (b, a); keeping the
+        # lower geom id (arbitrary but total) keeps exactly one.
         side_bodies = body_of_geom[side_geoms][:, None]
         other_bodies = body_of_geom[other_geoms][None, :]
         mirrored = side_geoms[:, None] >= other_geoms[None, :]
@@ -1332,48 +1323,44 @@ def voxel_backing_record(
 ) -> dict[str, object]:
     """What MuJoCo geometry, if any, backs one occupancy voxel.
 
-    **The question a world-voxel stop turns on, and the one nothing in the
-    stack could answer.** The kernel stops on a cell in
-    ``/openral/world_voxels``; the near-miss probes measure MuJoCo against
-    MuJoCo and never look at the map at all. So a stop could be adjudicated
-    "nothing was there" when the truth was "the map and the world disagree" —
-    and the probe's two deliberate blind spots (it excludes every robot body
-    from its world side, and every non-collidable geom) are exactly where such
-    a disagreement hides.
+    The kernel stops on a cell in ``/openral/world_voxels``; the near-miss
+    probes measure MuJoCo against MuJoCo and never look at the map — so a
+    stop could be adjudicated "nothing was there" when the truth was "the
+    map and the world disagree." That disagreement hides exactly in the
+    probe's two blind spots (it excludes every robot body from its world
+    side, and every non-collidable geom), so this locates the cell and asks
+    MuJoCo directly, with no exclusions:
 
-    This locates the cell and asks MuJoCo directly, with no exclusions:
-
-    * ``solid_world`` — a collidable world geom passes through the cell. The
-      stop is explained by real geometry.
-    * ``attached_payload`` — the carried object; it should have been cleared
+    * ``solid_world`` — a collidable world geom passes through the cell;
+      the stop is explained by real geometry.
+    * ``attached_payload`` — the carried object; should have been cleared
       from world occupancy by the bridge.
-    * ``self_occupancy_suspect`` — **the robot's own body**, base and mount
-      included. ``suspect`` is the whole of the claim: this says a robot body
-      is in the cell *now*, which is equally the signature of a correct stop on
-      a link that has reached real geometry. It cannot distinguish "the robot
-      wrote this cell" from "the robot has since moved into it" — on the
-      2026-08-23 fridge reconstruction the backing body was ``robot0_link7``,
-      the stopping link, 1.9 mm inside a freezer door. Read it as a prompt to
-      check the near-miss pairs, never as a finding on its own. What a hit does
-      rule out is that the stop was on nothing at all.
-    * ``noncollidable_world`` — a marker/visual geom, and **since #180 this is
-      a narrower claim than it used to be**. That bullet used to read "the
-      depth synth strikes these too, so they CAN become occupancy"; #180 made
-      exactly these geoms transparent to the cast, so in sim they no longer
-      can. A cell backed *only* by decoration is therefore now a statement
-      about the probe or a stale cell, not a live map defect — and because a
-      shell usually wraps something, the ray is re-cast past it
+    * ``self_occupancy_suspect`` — the robot's own body, base and mount
+      included. ``suspect`` because a robot body in the cell *now* is
+      equally the signature of a correct stop on a link that reached real
+      geometry — it cannot distinguish "the robot wrote this cell" from
+      "the robot has since moved into it" (2026-08-23 fridge
+      reconstruction: backing body ``robot0_link7``, the stopping link,
+      1.9 mm inside a freezer door). Read as a prompt to check the
+      near-miss pairs, never as a finding alone; it only rules out that the
+      stop was on nothing at all.
+    * ``noncollidable_world`` — a marker/visual geom. Since #180 made
+      exactly these geoms transparent to the depth cast (in sim they can no
+      longer become occupancy), a cell backed *only* by decoration is now a
+      statement about the probe or a stale cell, not a live map defect —
+      and since a shell usually wraps something, the ray is re-cast past it
       (:func:`_voxel_cube_hits`) so the slab behind is found and
-      ``solid_world`` wins. The class is still reported when it is genuinely
-      all there is: ``unbacked`` — nothing at all. A phantom or stale cell.
+      ``solid_world`` wins. Still reported when genuinely all there is.
+    * ``unbacked`` — nothing at all: a phantom or stale cell.
 
     Method: three orthogonal ray fans, one per base-frame cube axis, each
-    ``rays_per_axis**2`` rays started just outside one face and accepted only
-    where the strike lies inside the cube. A depth-derived occupancy cell is
-    created by a *surface* return, so surface sampling is the matching test —
-    a cell buried strictly inside a solid could not have been written by the
-    depth path and is not sought. ``rays_cast``/``rays_hit`` are reported so
-    ``unbacked`` reads as "looked and found nothing", never "did not look".
+    ``rays_per_axis**2`` rays started just outside one face and accepted
+    only where the strike lies inside the cube. A depth-derived occupancy
+    cell is created by a *surface* return, so surface sampling is the
+    matching test — a cell buried strictly inside a solid could not have
+    been written by the depth path and is not sought. ``rays_cast``/
+    ``rays_hit`` are reported so ``unbacked`` reads as "looked and found
+    nothing", never "did not look".
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1481,24 +1468,17 @@ def voxel_backing_record(
     record["rays_cast"] = cast
     record["rays_hit"] = hit_count
 
-    # The rays cannot see a collidable geom coincident with a decoration shell,
-    # and in RoboCasa that is every counter top. Consulted when they found no
-    # collidable **world** geometry — which covers two cases:
-    #
-    # 1. nothing solid at all (the coincident-shell case the sweep was added
-    #    for);
-    # 2. solid geometry that is all ROBOT. That is the `self_occupancy_suspect`
-    #    signature, and on 27 rays it is genuinely ambiguous: "the cell holds
-    #    the robot" and "the cell holds the robot *and* a world surface the
-    #    fans happened to miss" produce the same record. Sweeping here answers
-    #    the second half, which is exactly the question that decides whether a
-    #    start-state stop is self-occupancy or ordinary quantisation
-    #    (2026-09-07, `fridge-s2`: 15 of 27 rays, `robot0_link2_collision`, no
-    #    world geom found — and no way to tell whether that meant none was
-    #    there).
-    #
-    # A cell whose world backing the rays already found is left alone, so this
-    # still cannot change a verdict the ray pass got right.
+    # The rays cannot see a collidable geom coincident with a decoration shell
+    # (every RoboCasa counter top). Consulted only when they found no
+    # collidable **world** geometry — covering (1) nothing solid at all (the
+    # coincident-shell case this was added for), and (2) solid geometry that
+    # is all ROBOT — the `self_occupancy_suspect` signature, genuinely
+    # ambiguous on 27 rays between "the cell holds the robot" and "the cell
+    # holds the robot *and* a world surface the fans missed" (2026-09-07,
+    # `fridge-s2`: 15 of 27 rays, `robot0_link2_collision`, no world geom
+    # found — no way to tell which). A cell whose world backing the rays
+    # already found is left alone, so this cannot change a verdict the ray
+    # pass got right.
     swept = not any(
         _geom_is_collidable(model, geom) and int(model.geom_bodyid[geom]) not in robot_body_ids
         for geom in hits
@@ -1604,42 +1584,38 @@ def estop_ground_truth_snapshot(
 ) -> dict[str, object]:
     """MuJoCo ground truth for one safety stop, attached payload or not.
 
-    Every kernel E-stop gets one of these (CLAUDE.md §1.4): without it a stop
-    cannot be adjudicated real-vs-false after the fact. The payload sections
-    are populated only when something is carried; the robot↔world sections
-    are always populated, which is what a PRE-GRASP arm↔world stop needs (the
-    2026-08-13 post-fix matrix had 3 of 4 stops in that class and zero ground
-    truth for them).
+    Every kernel E-stop gets one of these (CLAUDE.md §1.4) — without it a
+    stop cannot be adjudicated real-vs-false after the fact. Payload
+    sections populate only when something is carried; robot↔world sections
+    always populate, which a PRE-GRASP arm↔world stop needs (the 2026-08-13
+    post-fix matrix had 3 of 4 stops in that class with zero ground truth).
 
-    **The contact lists are not a penetration oracle.** MuJoCo
-    contype/conaffinity exclusions can suppress a contact entirely — the
-    field round saw an arm 30 mm inside a freezer door with ``ncon == 0``.
-    An empty ``robot_world_contacts`` therefore means "MuJoCo reported no
-    contact", never "nothing is interpenetrating"; the ``nearest_*_pairs``
-    probes are the adjudicator, and the record carries this as
-    ``contacts_caveat``.
+    **Contact lists are not a penetration oracle.** MuJoCo
+    contype/conaffinity exclusions can suppress a contact entirely (field
+    round: an arm 30 mm inside a freezer door with ``ncon == 0``). An empty
+    ``robot_world_contacts`` means "MuJoCo reported no contact", never
+    "nothing is interpenetrating" — the ``nearest_*_pairs`` probes are the
+    adjudicator, and the record carries this as ``contacts_caveat``.
 
-    **The probes measure only between solid geoms, on every side.** A geom with
-    neither ``contype`` nor ``conaffinity`` cannot collide with anything and is
-    never checked by the safety kernel, so a signed distance against one is not
-    a penetration — rounds 5/6 reported the payload "134 mm inside
-    ``cab_1_left_group_reg_main``", a RoboCasa region marker, and the 2026-08-23
-    fridge round reported ``robot0_g42_vis`` (a visual shell) touching the
-    freezer door at 0.000 m while the nearest solid pair on the same link was
-    2.5 mm clear. The filter therefore covers the robot and payload sides too,
-    not just the enumerated world side: scoping a probe side by *body* does not
-    scope it to solid geometry, because a link body carries its visual meshes
-    alongside its collision geom. It is the same rule the support-contact
-    producer applies when enumerating support candidates
-    (``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
+    **The probes measure only between solid geoms, on every side.** A geom
+    with neither ``contype`` nor ``conaffinity`` cannot collide with
+    anything and is never checked by the kernel, so a signed distance
+    against one is not a penetration (rounds 5/6: payload "134 mm inside
+    ``cab_1_left_group_reg_main``", a RoboCasa region marker; 2026-08-23
+    fridge round: ``robot0_g42_vis``, a visual shell, touching the freezer
+    door at 0.000 m while the nearest solid pair on the same link was
+    2.5 mm clear). The filter covers the robot and payload sides too, not
+    just the enumerated world side — scoping a probe side by *body* does
+    not scope it to solid geometry, since a link body carries its visual
+    meshes alongside its collision geom (same rule as
+    ``_sim_attachment_evidence._support_candidate_geoms``). Each probe's
     coverage block reports ``noncollidable_world_geoms_excluded``,
     ``noncollidable_side_geoms_excluded`` and
-    ``noncollidable_other_geoms_excluded``, so the omission is visible rather
-    than silent — and the presence of those keys is what lets a downstream
-    adjudicator tell a trustworthy 0 m pair from one recorded before the filter
-    existed. Pairs whose bitmasks merely fail to *meet* are still measured:
-    suppression there is a property of the pair, not of the geom, and that is
-    precisely the case the probe exists to adjudicate.
+    ``noncollidable_other_geoms_excluded`` so the omission is visible, not
+    silent — letting a downstream adjudicator tell a trustworthy 0 m pair
+    from one recorded before the filter existed. Pairs whose bitmasks
+    merely fail to *meet* are still measured: suppression is a property of
+    the pair, not the geom, and that is what the probe adjudicates.
 
     Args:
         model: live ``mujoco.MjModel``.
@@ -1693,27 +1669,26 @@ def estop_ground_truth_snapshot(
         ``base_frame_tf``, ``adjudication_budget`` and
         ``evidence_voxel_backing``.
 
-        ``adjudication_budget`` is what makes a kernel number and a probe
-        number comparable at all: the kernel measures OBB-to-voxel, the probes
-        measure mesh-to-mesh, and the admissible gap between them is
-        ``corner_slop(link) + voxel_half_diagonal``. The 2026-08-22 round
-        subtracted the two directly with only the quantization term and called
-        a conservative, correct ``panda_link1`` stop a false positive.
+        ``adjudication_budget`` makes a kernel number and a probe number
+        comparable: the kernel measures OBB-to-voxel, the probes measure
+        mesh-to-mesh, and the admissible gap is
+        ``corner_slop(link) + voxel_half_diagonal`` (the 2026-08-22 round
+        subtracted the two directly with only the quantization term and
+        called a conservative, correct ``panda_link1`` stop a false
+        positive).
 
-        ``evidence_voxel_backing`` is the map-side half of the record — what
-        MuJoCo actually has at the cell the kernel stopped on, with no geom
-        class excluded. It is ``None`` when no evidence voxel was supplied.
+        ``evidence_voxel_backing`` is the map-side half — what MuJoCo has
+        at the cell the kernel stopped on, no geom class excluded; ``None``
+        when no evidence voxel was supplied.
 
-        Each probe carries its own coverage block, and that is what makes an
-        *absent* pair readable: an empty near-miss list only means "nothing
-        was close" when ``truncated`` is false and
-        ``side_geoms_probed == side_geoms``.
+        Each probe's coverage block is what makes an *absent* pair
+        readable: an empty near-miss list means "nothing was close" only
+        when ``truncated`` is false and ``side_geoms_probed == side_geoms``.
         ``noncollidable_world_geoms_excluded`` /
         ``noncollidable_side_geoms_excluded`` /
-        ``noncollidable_other_geoms_excluded`` name how much non-solid geometry
-        the probe deliberately did not measure, per side. The payload coverage
-        blocks are ``{}`` when nothing is carried, matching their empty pair
-        lists.
+        ``noncollidable_other_geoms_excluded`` name the non-solid geometry
+        the probe deliberately skipped, per side. Payload coverage blocks
+        are ``{}`` when nothing is carried, matching their empty pair lists.
     """
     attached_bodies = sorted(attached_body_ids)
     attached = frozenset(attached_bodies)
@@ -2361,16 +2336,13 @@ class SimSensorBridge:
         )
         # Record what the manifest declares, but do NOT advertise yet — each
         # camera earns its topic in :meth:`_advertise_camera` on its first real
-        # frame. A manifest may legitimately declare a camera the *current*
-        # scene cannot supply: robocasa's synthetic ``head`` nav cam is
-        # mobile-base-only and opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM``, which
-        # ``openral deploy`` sets only when a capability-matched rSkill
-        # consumes ``observation.images.head`` — so on a palette without one,
-        # panda_mobile still declares the sensor and no backend renders it.
-        # Advertising eagerly published a permanently silent
-        # ``/openral/cameras/head/image`` onto the graph, which reads to any
-        # subscriber (dashboard panel, recorder, nav policy) as a live stream
-        # that is merely slow — so it waits forever instead of failing.
+        # frame. A manifest may declare a camera the *current* scene cannot
+        # supply (robocasa's synthetic ``head`` nav cam is mobile-base-only and
+        # opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM``, set only when a
+        # capability-matched rSkill consumes ``observation.images.head``);
+        # advertising eagerly would publish a permanently silent
+        # ``/openral/cameras/head/image`` that reads to any subscriber as a
+        # live stream merely slow — waiting forever instead of failing.
         for s in rgb:
             self._image_obs_key[s.name] = _obs_key_for_sensor(s)
             self._camera_info_specs[s.name] = s
@@ -2775,15 +2747,14 @@ class SimSensorBridge:
         try:
             # Hand the tick's WALL period to the HAL so it advances that much
             # SIM time. The idle timer is deliberately on SYSTEM_TIME (see
-            # _start_idle_stepper), but every other timer on this node — the
-            # camera republisher, the camera-TF broadcast, the cinecam — runs on
-            # the node clock, which under `use_sim_time` is the sim clock this
-            # very callback advances. A single physics step per tick leaves sim
-            # time running at ~2% of wall, so those timers fire ~50x slower than
-            # their nominal rate and the world-state aggregator latches every
-            # camera STALE against its wall-clock arrival stamps. Bare MuJoCo
-            # arms also run this during active skills: send_action() advances
-            # one physics tick, not one wall-time slice.
+            # _start_idle_stepper), but every other timer on this node (camera
+            # republisher, camera-TF, cinecam) runs on the node clock, which
+            # under `use_sim_time` IS the sim clock this callback advances — a
+            # single physics step per tick leaves sim time at ~2% of wall,
+            # those timers fire ~50x slower than nominal, and the aggregator
+            # latches every camera STALE. Bare MuJoCo arms also run this during
+            # active skills: send_action() advances one physics tick, not one
+            # wall-time slice.
             idle_step(wall_dt_s=1.0 / max(self._camera_rate_hz, 1.0))
         except Exception as exc:  # reason: contain a per-tick crash-loop; warn once + disable
             self._node.get_logger().warning(
