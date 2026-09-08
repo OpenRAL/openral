@@ -758,3 +758,18 @@ pattern in `tools/schema_export.py`.*
       `slam_bringup` launch tests). colcon builds and tests each package
       standalone, so a shared helper would need a new shared package.
 
+26. **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
+    (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
+    `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
+    `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
+    a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
+    The bodies differ in one reachable case: the shared version guards
+    `if not weights_uri`, so an empty `weights_uri` returns `None`; act's
+    falls through to `load_rskill_manifest("")` and raises `ROSConfigError`.
+    `VLASpec(id=..., weights_uri="")` is constructible, and
+    `libero._control_mode` calls the loader directly, so switching it would
+    turn a loud config error into a silent fall-back to `"relative"` control
+    mode. **Removing this duplicate is a behaviour change, not a refactor.**
+    Decide the empty-URI contract first (CLAUDE.md §1.4 favours the loud
+    version), then make all eleven call sites agree.
+
