@@ -414,7 +414,7 @@ def main(args: Any = None) -> None:
     from sensor_msgs.msg import CameraInfo, Image
     from tf2_ros import Buffer, TransformException, TransformListener
 
-    class DepthHeightFilterNode(Node):  # type: ignore[misc]
+    class DepthHeightFilterNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """ROS node wrapper around ``filter_depth_by_global_height``."""
 
         def __init__(self) -> None:

@@ -193,7 +193,7 @@ def test_variants_are_frozen() -> None:
     """Every variant is frozen=True so the LLM can't mutate routed calls."""
     src = EmitPromptTool(target_topic="/openral/prompt", text="x")
     with pytest.raises(ValidationError):
-        src.text = "y"  # type: ignore[misc]
+        src.text = "y"  # type: ignore[misc]  # reason: pydantic frozen fields are read-only
 
 
 def test_variants_forbid_extra_fields() -> None:

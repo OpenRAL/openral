@@ -135,7 +135,7 @@ def _yaml_id(path: Path) -> str:
 @pytest.fixture(params=_discover_robot_yamls(Path(__file__).resolve().parents[3]), ids=_yaml_id)
 def any_robot_yaml(request: pytest.FixtureRequest) -> Path:
     """Parametrized: yields every robots/<name>/robot.yaml in turn."""
-    return request.param  # type: ignore[no-any-return]
+    return request.param  # type: ignore[no-any-return]  # reason: FixtureRequest.param is Any
 
 
 def test_every_robot_manifest_loads(any_robot_yaml: Path) -> None:

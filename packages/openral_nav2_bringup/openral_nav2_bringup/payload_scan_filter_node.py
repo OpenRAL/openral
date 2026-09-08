@@ -327,7 +327,7 @@ def main(args: Any = None) -> None:
             (float(p.x), float(p.y), float(p.z)), (float(q.x), float(q.y), float(q.z), float(q.w))
         )
 
-    class PayloadScanFilterNode(Node):  # type: ignore[misc]
+    class PayloadScanFilterNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Republishes ``/scan`` with the payload's and the robot's returns removed."""
 
         def __init__(self) -> None:

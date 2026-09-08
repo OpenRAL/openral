@@ -3015,7 +3015,7 @@ def _make_policy_adapter_skill(
     else:
         joint_limits = []
 
-    class _PolicyAdapterSkill(rSkillBase):  # type: ignore[misc, valid-type]
+    class _PolicyAdapterSkill(rSkillBase):
         """``rSkillBase`` shim over an ``openral_sim.policy.PolicyAdapter``.
 
         The adapter (built via ``openral_sim.factory.make_policy``)

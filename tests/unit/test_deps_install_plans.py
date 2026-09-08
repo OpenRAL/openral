@@ -358,6 +358,7 @@ class TestRobocasaPlansUseInexact:
     @pytest.mark.parametrize(
         "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
     )
+    # reason: plan_fn is untyped; pytest.mark.parametrize doesn't type it
     def test_first_step_uses_inexact(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
         """Both robocasa plans must use --inexact on their leading uv sync.
 
@@ -402,6 +403,7 @@ class TestRobocasaPlansPinRobosuite:
     @pytest.mark.parametrize(
         "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
     )
+    # reason: plan_fn is untyped; pytest.mark.parametrize doesn't type it
     def test_robosuite_clone_step_pins_the_commit(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
         """Exactly one step clones robosuite, and it checks out the pinned SHA.
 
@@ -423,6 +425,7 @@ class TestRobocasaPlansPinRobosuite:
     @pytest.mark.parametrize(
         "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
     )
+    # reason: plan_fn is untyped; pytest.mark.parametrize doesn't type it
     def test_manual_hint_mirrors_the_pin(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
         """The user-facing manual hint must check out the same pinned commit."""
         plan = plan_fn()
@@ -443,6 +446,7 @@ class TestRobocasaPlansRelaxVersionAsserts:
     @pytest.mark.parametrize(
         "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
     )
+    # reason: plan_fn is untyped; pytest.mark.parametrize doesn't type it
     def test_plan_relaxes_init_asserts(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
         plan = plan_fn()
         relax_steps = [

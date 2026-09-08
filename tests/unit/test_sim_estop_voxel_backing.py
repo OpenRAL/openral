@@ -335,8 +335,8 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
     )
     # The cell offset from origin rotates: (dx, dy) -> (-dy, dx).
     ox, oy, _ = _GRID_ORIGIN
-    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]
-    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]
+    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
+    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
     assert pytest.approx(-(ay - oy) + ox, abs=1e-6) == rx
     assert pytest.approx((ax - ox) + oy, abs=1e-6) == ry
     assert pytest.approx(az, abs=1e-9) == rz

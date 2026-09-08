@@ -79,7 +79,7 @@ def _node(env: FakeSimEnv, name: str) -> Any:
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
 
-    class _SimHALNode(HALLifecycleNodeBase):  # type: ignore[misc, valid-type]
+    class _SimHALNode(HALLifecycleNodeBase):
         def _create_hal(self) -> object:
             return SimAttachedHAL(env, description)
 

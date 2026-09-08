@@ -93,7 +93,7 @@ def main(args: Any = None) -> None:
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class RewardMonitorNode(Node):  # type: ignore[misc]
+    class RewardMonitorNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Subscribe camera Image(s), buffer frames, serve query_task_progress."""
 
         def __init__(self) -> None:  # noqa: PLR0915  # reason: node ctor wires cameras + reward backend + critic + scoring-gate in one place

@@ -57,7 +57,7 @@ def main(args: Any = None) -> None:
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class SceneVlmNode(Node):  # type: ignore[misc]
+    class SceneVlmNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Subscribe camera Image(s), cache frames, serve query_scene."""
 
         def __init__(self) -> None:

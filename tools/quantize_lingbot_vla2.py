@@ -78,6 +78,7 @@ def _frugal_load_model_weights(self: Any, path: str, strict: bool = True) -> Non
     seen: set[str] = set()
     for shard_path in files:
         shard: dict[str, Any] = {}
+        # reason: safetensors ships no type stubs for safe_open
         with safe_open(shard_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
             for key in f.keys():  # noqa: SIM118  # reason: safe_open is not a dict; no __contains__
                 shard[key] = f.get_tensor(key)

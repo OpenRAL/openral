@@ -50,7 +50,7 @@ from rclpy.qos import (
 try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
 except ImportError:  # pragma: no cover
-    IDLPromptStamped = None  # type: ignore[assignment, misc]
+    IDLPromptStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
 
 
 __all__ = ["DEFAULT_SOURCES", "PromptRouterNode"]

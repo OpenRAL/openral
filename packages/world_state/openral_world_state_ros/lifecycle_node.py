@@ -90,7 +90,7 @@ if _ROS2_AVAILABLE:
         "error": 3,
     }
 
-    class _WorldStateLifecycleNode(LifecycleNode):  # type: ignore[misc]
+    class _WorldStateLifecycleNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Managed lifecycle node for the World State aggregator.
 
         Parameters (ROS 2 node params):

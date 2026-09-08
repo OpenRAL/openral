@@ -230,11 +230,10 @@ def _import_molmoact2() -> tuple[Any, Any, Any]:
     AutoImageProcessor.register(
         MolmoAct2Config, slow_image_processor_class=MolmoAct2ImageProcessor, exist_ok=True
     )
-    # reason: transformers ships the Auto*.register classmethods unannotated
-    AutoVideoProcessor.register(  # type: ignore[no-untyped-call]
+    AutoVideoProcessor.register(  # type: ignore[no-untyped-call]  # reason: transformers untyped
         MolmoAct2Config, MolmoAct2VideoProcessor, exist_ok=True
     )
-    AutoProcessor.register(  # type: ignore[no-untyped-call]
+    AutoProcessor.register(  # type: ignore[no-untyped-call]  # reason: transformers untyped
         MolmoAct2Config, MolmoAct2Processor, exist_ok=True
     )
     return MolmoAct2ForConditionalGeneration, MolmoAct2Config, MolmoAct2Processor

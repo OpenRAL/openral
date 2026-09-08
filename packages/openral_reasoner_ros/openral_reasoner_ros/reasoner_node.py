@@ -167,10 +167,10 @@ try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
     from openral_msgs.msg import WorldStateStamped as IDLWorldStateStamped
 except ImportError:  # pragma: no cover — only firing when openral_msgs absent
-    IDLExecuteRskill = None  # type: ignore[assignment, misc]
-    IDLFailureTrigger = None  # type: ignore[assignment, misc]
-    IDLPromptStamped = None  # type: ignore[assignment, misc]
-    IDLWorldStateStamped = None  # type: ignore[assignment, misc]
+    IDLExecuteRskill = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
+    IDLFailureTrigger = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
+    IDLPromptStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
+    IDLWorldStateStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
 
 # lifecycle_msgs ships with ROS 2; the LifecycleTransitionTool dispatcher
 # uses srv/ChangeState + Transition.TRANSITION_* constants.
@@ -178,8 +178,8 @@ try:  # pragma: no cover — gated by sourced ROS install
     from lifecycle_msgs.msg import Transition as IDLTransition
     from lifecycle_msgs.srv import ChangeState as IDLChangeState
 except ImportError:  # pragma: no cover
-    IDLChangeState = None  # type: ignore[assignment, misc]
-    IDLTransition = None  # type: ignore[assignment, misc]
+    IDLChangeState = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
+    IDLTransition = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
 
 # std_msgs ships with ROS 2 Jazzy; this is the empty payload the
 # ``ral skill install`` / ``ral skill remove`` CLI fires on
@@ -189,7 +189,7 @@ except ImportError:  # pragma: no cover
 try:  # pragma: no cover — gated by sourced ROS install
     from std_msgs.msg import Empty as IDLEmpty
 except ImportError:  # pragma: no cover
-    IDLEmpty = None  # type: ignore[assignment, misc]
+    IDLEmpty = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
 
 # std_msgs/String — the reward monitor's active-task signal (2026-06-29). The
 # reasoner publishes the EXACT instruction the VLA is running (the active subtask)
@@ -199,7 +199,7 @@ except ImportError:  # pragma: no cover
 try:  # pragma: no cover — gated by sourced ROS install
     from std_msgs.msg import String as IDLString
 except ImportError:  # pragma: no cover
-    IDLString = None  # type: ignore[assignment, misc]
+    IDLString = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
 
 
 __all__ = ["ReasonerNode"]

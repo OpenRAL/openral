@@ -95,7 +95,7 @@ def assert_joints_within_declared_limits(state: object, description: RobotDescri
         if joint.name not in by_name:
             continue
         pos = by_name[joint.name]
-        lo, hi = joint.position_limits  # type: ignore[misc]
+        lo, hi = joint.position_limits  # type: ignore[misc]  # reason: filter doesn't narrow None
         if not (lo - _LIMIT_TOL_RAD <= pos <= hi + _LIMIT_TOL_RAD):
             violations.append(f"{joint.name}={pos:+.4f} outside [{lo:+.4f}, {hi:+.4f}]")
     assert not violations, (

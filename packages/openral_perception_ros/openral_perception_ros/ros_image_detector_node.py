@@ -181,7 +181,7 @@ def main(args: Any = None) -> None:
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
-    class RosImageObjectDetectorNode(LifecycleNode):  # type: ignore[misc]
+    class RosImageObjectDetectorNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Subscribe camera Image(s), detect objects, publish + serve queries.
 
         A *managed* lifecycle node. The (GPU-heavy) detector backend

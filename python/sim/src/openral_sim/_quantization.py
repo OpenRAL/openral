@@ -619,9 +619,7 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
         return None
 
     try:
-        # safetensors ships a stub for `safe_open` only as a class wrapper;
-        # mypy --strict flags the call as untyped. The library is widely
-        # used and stable; the ignore is the maintenance-cheap path.
+        # reason: safetensors ships no type stubs for safe_open
         with safe_open(weights_path, framework="pt") as f:  # type: ignore[no-untyped-call]
             return set(f.keys())
     except (OSError, ValueError):

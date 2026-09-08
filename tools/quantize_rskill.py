@@ -58,7 +58,7 @@ def _resolve_policy_class(dotted: str) -> type:
         )
     mod_name, _, attr = dotted.rpartition(".")
     module = importlib.import_module(mod_name)
-    return getattr(module, attr)  # type: ignore[no-any-return]
+    return getattr(module, attr)  # type: ignore[no-any-return]  # reason: getattr returns Any
 
 
 def _load_lerobot_policy(source_repo: str, policy_class: type) -> Any:

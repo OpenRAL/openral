@@ -226,7 +226,7 @@ def main(args: Any = None) -> None:
     from sensor_msgs.msg import CameraInfo, Image
     from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
-    class PyCuVSLAMNode(Node):  # type: ignore[misc]
+    class PyCuVSLAMNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
         """Stereo cuVSLAM tracker publishing the ``map → odom`` TF edge."""
 
         def __init__(self) -> None:

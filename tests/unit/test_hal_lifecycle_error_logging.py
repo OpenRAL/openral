@@ -45,7 +45,7 @@ def test_hal_unexpected_configure_error_logs_traceback_and_returns_failure(
     from openral_hal.lifecycle import HALLifecycleNodeBase
     from rclpy.lifecycle import TransitionCallbackReturn
 
-    class _BoomHAL(HALLifecycleNodeBase):  # type: ignore[misc, valid-type]
+    class _BoomHAL(HALLifecycleNodeBase):
         def _create_hal(self) -> object:
             # Untyped error — NOT ROSConfigError / ROSRuntimeError, so it bypasses
             # the base's typed except and would otherwise reach rclpy's silent ERROR.
