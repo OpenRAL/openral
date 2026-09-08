@@ -586,11 +586,22 @@ Four things had to be discovered to make it run at all, each worth keeping:
       clear ~10 payload stops — the 13-round battery yielded 4. Then
       `tools/adr0101_recovery.py` over it, and compare against the offline 48/51.
 
-      **Not run 2026-09-08:** `q-laptop` was at load 19.1 with a live deploy graph
-      and 2.1 GB of another session's GPU. The GPU would fit, but CPU contention
-      at that load pushes MuJoCo rollouts into the 420 s deadline and manufactures
-      `deadline-no-grasp`, which would corrupt the measurement rather than
-      produce it. Waiting is the correct call, not `--force-shared-gpu`.
+      **Attempted and blocked 2026-09-08 — the block is VRAM, and it is exact.**
+      Launched utensil-weighted at seeds 10-45; the XR-1 sidecar crashed at boot
+      on every round with `torch.OutOfMemoryError`, producing 20 s policy-free
+      rounds. Both were deleted rather than kept, since a policy-free round
+      measures nothing.
+
+      The arithmetic, from the sidecar's own traceback: GPU capacity **7.53 GiB**,
+      of which **24 MiB free**. Another project's job (`workspace/RAL-1`) holds
+      **2.41 GiB**, the XR-1 checkpoint needs **~3.66 GiB** (CLAUDE.md's
+      live-validated figure), and MuJoCo's EGL context plus the deploy graph take
+      the rest. It does not fit, and `--force-shared-gpu` does not create memory.
+
+      *A caution recorded because it was reversed once and should not be again:*
+      the first read of this said "the GPU would fit" from free-VRAM arithmetic
+      that omitted the renderer and the graph. It does not fit. **This battery
+      needs the other GPU job stopped, or `spark`.**
 - [x] **Re-derived the false-positive rate on a repaired instrument — it is
       71 %, unchanged.** Thirteen rounds, `adr0101-live-*`, 2026-09-07. Seven
       stops: five of a physically clear robot (+0.67 … +24.86 mm), two real
