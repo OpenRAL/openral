@@ -24,8 +24,7 @@ Mirrors ``openral_sim.policies.rldx``:
 * **Vendoring is intractable.** ~6 kLOC of tightly coupled model code
   (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` + ``qwen3vl_in_vla``
   + ``flex_attention``) plus ``lingbotvla/ops`` Triton kernels and a
-  ``sys.path``-based layout — not the handful of files the in-process
-  MolmoAct2/SmolVLA adapters vendor.
+  ``sys.path``-based layout.
 * **No ``config.json`` architecture in the HF release.** It's a 31-byte
   ``{"vlm_family":"qwen3_vl"}`` stub; real architecture dims live in
   ``configs/vla/robotwin/robotwin.yaml``, owned by the sidecar's repo
@@ -33,10 +32,10 @@ Mirrors ``openral_sim.policies.rldx``:
 
 So the sidecar runs the upstream ``LingbotVLAv2Server`` in its own py3.12 +
 torch-2.9.1 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +
-msgpack, exactly like the rldx / rlbench-3dda sidecars. The boot helper
-``tools/lingbot_vla2_sidecar.py`` (openral interpreter) auto-provisions the
-clone + venv on first use, then execs the server ``tools/_lingbot_vla2_server.py``
-(sidecar venv) — same two-file boot/server split as the qwen-vlm sidecar.
+msgpack. The boot helper ``tools/lingbot_vla2_sidecar.py`` (openral
+interpreter) auto-provisions the clone + venv on first use, then execs
+``tools/_lingbot_vla2_server.py`` (sidecar venv) — the same two-file
+boot/server split as the qwen-vlm sidecar.
 
 Observation / action contract (verified against the upstream configs)
 ---------------------------------------------------------------------

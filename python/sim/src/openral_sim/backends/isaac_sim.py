@@ -1,13 +1,13 @@
 r"""Isaac Sim scene adapter — drives an Isaac Lab env through an out-of-process sidecar.
 
-NVIDIA Isaac Sim (Omniverse Kit + PhysX + RTX) ships per-interpreter
-wheels: 4.x→py3.10, 5.x→py3.11, 6.x→py3.12. The openral workspace pins
-``>=3.12,<3.13``, and Isaac Sim's stack (its own torch / CUDA build, the rigid
-``SimulationApp``-before-``omni.*`` import order, a libgomp/OpenMP ``LD_PRELOAD``
-clash with the VLA torch stack) makes an in-process load impractical inside the
-3.12 venv. So — exactly like the RLDX-1 policy sidecar
-(``openral_sim.policies.rldx``) — we run Isaac Lab in its own py3.11 venv and
-talk to it over ZMQ REQ/REP framed by msgpack.
+NVIDIA Isaac Sim (Omniverse Kit + PhysX + RTX) ships per-interpreter wheels:
+4.x→py3.10, 5.x→py3.11, 6.x→py3.12. The openral workspace pins
+``>=3.12,<3.13``, and Isaac Sim's stack (its own torch / CUDA build, the
+rigid ``SimulationApp``-before-``omni.*`` import order, a libgomp/OpenMP
+``LD_PRELOAD`` clash with the VLA torch stack) makes an in-process load
+impractical inside the 3.12 venv. So — like the RLDX-1 policy sidecar
+(``openral_sim.policies.rldx``) — Isaac Lab runs in its own py3.11 venv,
+reached over ZMQ REQ/REP framed by msgpack.
 
 This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar

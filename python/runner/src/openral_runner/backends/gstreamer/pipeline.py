@@ -465,11 +465,11 @@ def build_pipeline_string(spec: PipelineSpec, platform: Platform | None = None) 
       NVIDIA, ``avdec_h264`` on CPU-only.
     * Colour convert: ``nvvidconv`` on Tegra; ``nvvideoconvert`` on the
       DeepStream tier (on-GPU, NVMM-native); ``videoconvert`` on desktop
-      NVIDIA (open-core bundles no DeepStream — H.264 dec stays on the
-      GPU but colour conversion runs on the CPU) and CPU-only. When the
-      leg terminates in system-memory ``BGR``, ``nvvidconv`` is bridged
-      via ``BGRx`` + ``videoconvert`` (it advertises no packed ``BGR``);
-      see ``bgr_convert_chain``.
+      NVIDIA (open-core bundles no DeepStream — H.264 dec stays on the GPU
+      but colour conversion runs on the CPU) and CPU-only. When the leg
+      terminates in system-memory ``BGR``, ``nvvidconv`` bridges via
+      ``BGRx`` + ``videoconvert`` (it advertises no packed ``BGR``); see
+      ``bgr_convert_chain``.
     * Memory: ``video/x-raw(memory:NVMM)`` caps when
       ``spec.enable_nvmm`` AND the platform supports it (Tegra → NV12,
       DeepStream → RGBA); ``video/x-raw`` (system memory) otherwise.

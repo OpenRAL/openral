@@ -24,23 +24,25 @@ underscores): ``<owner>/rskill-<model>-<robot>-<task>-<quantization>``
 (weight-bearing kinds — ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS``, consistent
 with ``model_family`` for a VLA; ``<robot>`` ∈ ``EmbodimentTag`` incl.
 ``any``/``multi``; ``<task>`` author-chosen, shape ``^[a-z0-9][a-z0-9_]*$``;
-``<quantization>`` ∈ ``{fp32, fp16, bf16, int8, nf4}``, schema ``int4`` maps to
-``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for ``ros_action``/
-``ros_service`` (no weights, no quant segment); ``<owner>/rskill-playbook-<name>``
-for ``kind: playbook``. Enforced by ``_enforce_repo_name``, which calls
-``openral_core.schemas.repo_name_is_canonical`` / ``expected_repo_name``;
-hard-fails both dry-run and ``--publish`` unless ``--fix-name``.
+``<quantization>`` ∈ ``{fp32, fp16, bf16, int8, nf4}``, schema ``int4`` maps
+to ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for
+``ros_action``/``ros_service`` (no weights, no quant segment);
+``<owner>/rskill-playbook-<name>`` for ``kind: playbook``. Enforced by
+``_enforce_repo_name`` (``openral_core.schemas.repo_name_is_canonical`` /
+``expected_repo_name``); hard-fails dry-run and ``--publish`` unless
+``--fix-name``.
 
 Design constraints: private by default; ``--public`` requires
-``manifest.is_commercial_use_allowed`` (license-lineage §9) and is
-re-verified against the API post-``create_repo``. Requires an HF token with
+``manifest.is_commercial_use_allowed`` (license-lineage §9), re-verified
+against the API post-``create_repo``. Requires an HF token with
 ``repo.write`` scope. Validates ``openral_core.schemas.RSkillManifest``
-before any network call, then ``openral_cli._rskill_doc_validator.validate_rskill_docs``
-as a hard gate (§6.4: missing/short README, missing
-sections, template sentinels ``TEMPLATE_ORG``/``TODO:``, or template
-placeholders in ``description``/``paper_url``/``weights_uri``/``source_repo``)
-— reported in dry-run too. Uploads via ``HfApi.upload_folder`` with
-``ignore_patterns`` excluding non-distributable files.
+before any network call, then
+``openral_cli._rskill_doc_validator.validate_rskill_docs`` as a hard gate
+(§6.4: missing/short README, missing sections, template sentinels
+``TEMPLATE_ORG``/``TODO:``, or template placeholders in
+``description``/``paper_url``/``weights_uri``/``source_repo``) — reported in
+dry-run too. Uploads via ``HfApi.upload_folder`` with ``ignore_patterns``
+excluding non-distributable files.
 """
 
 from __future__ import annotations

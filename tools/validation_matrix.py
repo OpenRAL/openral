@@ -639,25 +639,25 @@ def adjudicate_ground_truth(
        admissible gap (the real gap adds the collision model's corner slop, the larger term on
        every panda link — 45-88 mm vs. 21.7 mm), so ``discrepancy <= budget`` still proves
        ``within-quantization`` without a published budget, but ``discrepancy > budget`` proves
-       nothing → ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone produced
-       two false-positives; one re-derives as ``within-quantization`` once a real budget exists.
+       nothing → ``unadjudicated``. Judging the 2026-08-22 rounds on the voxel term alone
+       produced two false-positives; one re-derives as ``within-quantization`` once a real
+       budget exists.
 
-       A link-vs-link self stop never reaches this rule: the kernel names two robot links, but the
-       probe's robot side excludes the whole robot from the far side, so
-       ``nearest_robot_world_pairs`` can only offer one party's clearance to the *world* — a
-       different question. Scoring under the self-pair's identity is what turned a genuine
-       ``panda_link5``/``panda_link7`` stop at −31.97 mm into ``false-positive`` off link5's 212 mm
-       clearance to a kitchen island; such a stop is ``unadjudicated`` until the snapshot carries a
-       link-vs-link pair.
+       A link-vs-link self stop never reaches this rule: the kernel names two robot links, but
+       the probe excludes the whole robot from its far side, so ``nearest_robot_world_pairs`` can
+       only offer one party's clearance to the *world* — a different question. Scoring under the
+       self-pair's identity turned a genuine ``panda_link5``/``panda_link7`` stop at −31.97 mm
+       into ``false-positive`` off link5's 212 mm clearance to a kitchen island; such a stop is
+       ``unadjudicated`` until the snapshot carries a link-vs-link pair.
 
     3. A truncated probe, missing snapshot, or unknown budget → ``unadjudicated`` (with
        ``unadjudicated_reason``). An untruncated probe returning no pair is not missing data — it
        proves the nearest geometry is beyond ``distmax_m``, used as a strict lower bound.
 
     4. Finally, the ladder's conclusion is withdrawn to ``unadjudicated`` unless the probe attests
-       certified distances (``probe_is_distance_certified``) — every rule above reads a number
-       off that probe, and ``mujoco.mj_geomDistance`` (used before this landed) is wrong by
-       15-108 mm on this pair class, silently. Runs last so the record names what was withdrawn
+       certified distances (``probe_is_distance_certified``): every rule above reads a number off
+       that probe, and ``mujoco.mj_geomDistance`` (used before this landed) is wrong by 15-108 mm
+       on this pair class, silently. Runs last so the record names what was withdrawn
        (``withdrawn from 'real-contact': …``). Withdraws verdicts, reverses none.
 
     Args:

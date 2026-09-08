@@ -6,37 +6,33 @@ https://github.com/RLWRLD/RLDX-1 `rldx/eval/run_rldx_server.py`, a ZMQ
 REP server (`tcp://<host>:<port>`) holding `RLDXPolicy`, answering
 `get_action`/`reset`/`ping`.
 
-In-process load was rejected: `rldx` pins `requires-python=="3.10.*"`,
+In-process load is rejected: `rldx` pins `requires-python=="3.10.*"`,
 `numpy==1.26.4`, `torch==2.7.0`, `transformers==4.57.0`,
 `flash-attn==2.7.4.post1`, vs. openral's py3.12/numpy>=2/torch>=2.10/
-transformers>=5 (CLAUDE.md §3) — downgrading breaks smolvla, pi05,
-xVLA, ACT, DP. `RLWRLD/RLDX-1-FT-*` checkpoints ship no
-`modeling_rldx.py`, so no `trust_remote_code` escape exists;
-`--no-deps` install cascades through 15+ version-incompatible packages
-(albumentations 2.x vs 1.4, lmdb, av, dm-tree) and still hits
-transformers 5.x vs. code written for 4.57. Reimplementing means
-porting ~25 kLOC of Triton/MSAT flow-matching code — out of scope.
+transformers>=5 (CLAUDE.md §3) — downgrading breaks smolvla, pi05, xVLA, ACT,
+DP. `RLWRLD/RLDX-1-FT-*` checkpoints ship no `modeling_rldx.py` (no
+`trust_remote_code` escape); `--no-deps` install cascades through 15+
+version-incompatible packages (albumentations 2.x vs 1.4, lmdb, av, dm-tree)
+and still hits transformers 5.x vs. code written for 4.57. Reimplementing
+means porting ~25 kLOC of Triton/MSAT flow-matching code — out of scope. So
+the upstream server runs in its own Python 3.10 venv (one venv reused across
+every checkpoint, at `~/.cache/openral/rldx-sidecar/source/.venv`, never one
+per rSkill), driven over ZMQ from this adapter.
 
-So the upstream server runs in its own Python 3.10 venv (one venv
-reused across every checkpoint, at
-`~/.cache/openral/rldx-sidecar/source/.venv`, never one per rSkill),
-driven over ZMQ from this adapter.
-
-Auto-managed lifecycle: `__post_init__` pings `host:port`; on failure,
-if `auto_spawn=True` (default; `OPENRAL_RLDX_AUTO_SPAWN=0` or
-`vla.extra.auto_spawn: false` to disable) it `Popen`s
-``tools.rldx_sidecar`` with the manifest-resolved model id, port,
-quantization, embodiment tag, then polls ping until answer or
-`boot_timeout_s` elapses (default 900s — first boot includes upstream
-`git clone` + `uv sync`). `close()` terminates only the child this
-adapter spawned; a pre-existing/shared server is left running.
-
-Registered as a `POLICIES` entry; manifest `model_family: "rldx"` selects it.
+Auto-managed lifecycle: `__post_init__` pings `host:port`; on failure, if
+`auto_spawn=True` (default; `OPENRAL_RLDX_AUTO_SPAWN=0` or
+`vla.extra.auto_spawn: false` to disable) it `Popen`s ``tools.rldx_sidecar``
+with the manifest-resolved model id, port, quantization, embodiment tag, then
+polls ping until answer or `boot_timeout_s` elapses (default 900s — first
+boot includes upstream `git clone` + `uv sync`). `close()` terminates only
+the child this adapter spawned; a pre-existing/shared server is left
+running. Registered as a `POLICIES` entry; manifest `model_family: "rldx"`
+selects it.
 
 Wire protocol — source of truth `rldx/policy/server_client.py` +
-`rldx/eval/run_rldx_server.py` upstream (Apache-2.0). Transport:
-`zmq.REQ`<->`zmq.REP` framed by msgpack; ndarrays via `np.save` into an
-in-memory buffer wrapped as `{"__ndarray_class__": True, "as_npy": <bytes>}`.
+`rldx/eval/run_rldx_server.py` upstream (Apache-2.0). `zmq.REQ`<->`zmq.REP`
+framed by msgpack; ndarrays via `np.save` into an in-memory buffer wrapped as
+`{"__ndarray_class__": True, "as_npy": <bytes>}`.
 
 Request::
 
@@ -1721,17 +1717,15 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
         image_size       -- video frame resize target (default 256, the
                             LiberoEnv native resolution).
         timeout_ms       -- per-request ZMQ recv timeout (default 60_000).
-                            First call after sidecar boot is slow because
-                            the policy hasn't loaded; raise this for big
-                            checkpoints.
+                            First call after boot is slow (policy still
+                            loading); raise for big checkpoints.
         camera_keys      -- override the (agentview, wrist) camera pair
                             when your scene doesn't follow the LIBERO
                             convention.
         auto_spawn       -- when True (default) the adapter forks
                             ``tools/rldx_sidecar.py`` if no server is
                             already listening on ``host:port``; set False
-                            to preserve the older "boot it yourself"
-                            workflow.
+                            to boot it yourself.
         boot_timeout_s   -- max seconds to wait for the spawned sidecar
                             to answer ``ping`` (default 900 — the first
                             boot includes the upstream ``git clone`` +

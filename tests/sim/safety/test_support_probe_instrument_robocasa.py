@@ -3,38 +3,37 @@
 Issue #190. ``openral_hal._sim_attachment_evidence._probe_support_hits`` — the
 producer of every ``support_witness`` an attachment message carries — measured
 with ``mujoco.mj_geomDistance``, the instrument PR #170 withdrew from the
-E-stop evidence path, until it was converted to
+E-stop evidence path in favor of
 ``openral_hal.convex_distance.convex_geom_distance``. This file pins two
-recorded pairs through the probe, so the witness path has something that fails
-if it ever starts attesting a contact that is not there.
+recorded pairs through the probe so the witness path fails if it ever starts
+attesting a contact that is not there.
 
-The second pair (bottom of this file) is the one that shows the defect
-*inside the witness window*: the layout-9 ``robot0_link7_collision`` vs
-``fridge_right_group_freezer_door_main`` pair the instrument was characterised
-on. There ``mj_geomDistance`` returns ``0.000`` at the probe's own 1 mm window
-with a witness segment half a metre off both geoms, and the pre-conversion
-loop produced a **phantom support hit** from it — penetration ``0.0``, a
-contact point in empty space, a face normal read off the door at a point not
-on the door. The converted probe attests nothing there, for a stated reason.
+The second pair (bottom of this file) shows the defect *inside the witness
+window*: layout-9 ``robot0_link7_collision`` vs
+``fridge_right_group_freezer_door_main``, the pair the instrument was
+characterised on. ``mj_geomDistance`` returns ``0.000`` at the probe's own
+1 mm window with a witness segment half a metre off both geoms; the
+pre-conversion loop produced a **phantom support hit** from it — penetration
+``0.0``, a contact point in empty space, a face normal read off the door at a
+point not on the door. The converted probe attests nothing there.
 
-The pair is the sharpest of #170's four re-measured false zeros — the
+The first pair is the sharpest of #170's four re-measured false zeros — the
 ``2026-08-23-master-s1`` baguette stop, ``robot0_link1_collision`` against
 ``counter_1_left_group_top_left_1``, recorded at ``0.000 m`` and certified at
-**+107.930 mm** — because it is the only **solid↔solid** one: #139's
-collidability filter would not have caught it, and the same round measured
-``robot0_g12_vis``, a visual shell coincident with that same collision geom,
-against the same world geom at ``0.107931 m``. One pair, two coincident robot
-geoms, one right and one ``0.000``.
+**+107.930 mm**. It is the only **solid↔solid** one of the four: #139's
+collidability filter would not have caught it. The same round measured
+``robot0_g12_vis``, a visual shell coincident with that collision geom,
+against the same world geom at ``0.107931 m`` — one pair, two coincident
+robot geoms, one right and one ``0.000``.
 
 The state is rebuilt the way PR #170 and the 2026-08-23 census rebuilt it
-(``docs/reference/collision-validation-evidence.md``, "Reconstruction method"):
-the round's own scene YAML at its own seed, the robot driven to the
-``robot_joint_state`` that round's ``sim.estop_ground_truth_snapshot``
+(``docs/reference/collision-validation-evidence.md``, "Reconstruction
+method"): the round's own scene YAML at its own seed, the robot driven to
+the ``robot_joint_state`` that round's ``sim.estop_ground_truth_snapshot``
 published, the torso — an OmronMobileBase lift no manifest joint covers — set
-from ``base_frame_tf``, then **verified** against that same TF. Two independent
-checks say the reconstruction is the recorded configuration: the base body
-lands within a micrometre of the TF, and the coincident ``robot0_g12_vis``
-reproduces the round's own ``0.107931 m`` to 1e-7 m.
+from ``base_frame_tf``, then **verified** against that same TF: the base
+body lands within a micrometre of the TF, and the coincident
+``robot0_g12_vis`` reproduces the round's own ``0.107931 m`` to 1e-7 m.
 
 What is pinned:
 

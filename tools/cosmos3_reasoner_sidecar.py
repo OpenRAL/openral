@@ -1,35 +1,35 @@
 """Boot the NVIDIA Cosmos 3 reasoner behind vLLM's OpenAI-compatible API.
 
-Serves the ``cosmos3-edge`` reasoner model (``OPENRAL_REASONER_MODEL=cosmos3-edge``,
+Serves the ``cosmos3-edge`` reasoner model
+(``OPENRAL_REASONER_MODEL=cosmos3-edge``,
 ``openral_reasoner.cosmos3.Cosmos3ToolUseClient``): the reasoner tower of
 NVIDIA Cosmos 3, default 4B on-device Edge tier (``nvidia/Cosmos3-Edge``,
 OpenMDW-1.1, commercial OK). vLLM serves only the reasoner tower via
-chat-completions + tool calling (CLAUDE.md §3: typed tool-use, no free-form
-JSON). Out-of-process for dependency isolation (vLLM pins its own torch/CUDA)
-and VRAM isolation — same ``uv`` venv + ``os.execvpe`` pattern as
+chat-completions + tool calling (CLAUDE.md §3: typed tool-use, no
+free-form JSON). Out-of-process for dependency + VRAM isolation (vLLM pins
+its own torch/CUDA) — same ``uv`` venv + ``os.execvpe`` pattern as
 ``tools/qwen_vlm_sidecar.py``. ``--tool-call-parser`` defaults to ``hermes``
 (Qwen3-VL-compatible; Nano/Super are Qwen3-VL-initialised, Edge is a
-Nemotron backbone that keeps the message format).
+Nemotron backbone keeping the message format).
 
 Edge ships as a diffusers ``Cosmos3OmniPipeline`` (weights under
 ``transformer/``, ``vision_encoder/``). Transformers-fallback vLLM only
-resolves bare top-level filenames, so ``materialize_reasoner_view``
-builds a flat symlinked view (RTX 4070 8 GB: ~6.4 GB resident BF16,
-8192-token KV). Native vLLM (vllm-project/vllm#48291) reads the diffusers
-layout by path and the flattened view **breaks** it (Jetson AGX Thor, vLLM
-0.28.0: ``RuntimeError: Cannot find any model weights``) — serve the
-snapshot as-is there (3 shards, 4.66 GiB, 5.71 s).
-``vllm_has_native_edge_model`` asks the venv's ``ModelRegistry`` rather
-than comparing version strings.
+resolves bare top-level filenames, so ``materialize_reasoner_view`` builds a
+flat symlinked view (RTX 4070 8 GB: ~6.4 GB resident BF16, 8192-token KV).
+Native vLLM (vllm-project/vllm#48291) reads the diffusers layout by path and
+the flattened view **breaks** it (Jetson AGX Thor, vLLM 0.28.0:
+``RuntimeError: Cannot find any model weights``) — serve the snapshot as-is
+there (3 shards, 4.66 GiB, 5.71 s). ``vllm_has_native_edge_model`` asks the
+venv's ``ModelRegistry`` rather than comparing version strings.
 
 Lock resolves differently per platform: x86_64 pins vLLM 0.24.0, whose
 Transformers fallback loads Edge but crashes in
-``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids``; model itself is
-sound at ~46 tok/s under plain ``transformers.generate``). aarch64 resolves
-vLLM 0.28.0, which already carries #48291 and loads natively (validated live
-tool call on RTX 4070, 1.5-2 s/tick warm, ``--kv-cache-dtype fp8`` for the
-8192 window). Retire ``materialize_reasoner_view`` once every platform
-resolves a vLLM with #48291. Full findings:
+``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids``; the model itself
+is sound at ~46 tok/s under plain ``transformers.generate``). aarch64
+resolves vLLM 0.28.0, which already carries #48291 and loads natively
+(validated live tool call on RTX 4070, 1.5-2 s/tick warm, ``--kv-cache-dtype
+fp8`` for the 8192 window). Retire ``materialize_reasoner_view`` once every
+platform resolves a vLLM with #48291. Full findings:
 ``docs/reference/cosmos3-edge-reasoner.md``.
 
 Usage::

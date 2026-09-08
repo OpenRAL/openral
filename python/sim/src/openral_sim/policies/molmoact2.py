@@ -8,13 +8,13 @@ conditioning (arXiv:2605.02881). The LIBERO finetune
 the depth-reasoning ``-Think`` variant), edging out π0.5.
 
 Unlike the other in-tree VLA adapters, MolmoAct2 is not a lerobot
-``PreTrainedPolicy`` with a ``select_action`` queue — it is driven through its
+``PreTrainedPolicy`` with a ``select_action`` queue — it's driven through its
 own ``predict_action`` API. Its model graph is built by the in-tree
 ``lerobot.policies.molmoact2.molmoact2_hf_model.MolmoAct2ForConditionalGeneration``
-class (lerobot 0.6.0 vendors the exact Ai2 modeling/config/processor code the
-upstream repos ship as ``trust_remote_code`` custom code). This adapter
-imports that class directly and loads via ``from_pretrained``/``from_config``
-— no ``AutoModelForImageTextToText``, no ``trust_remote_code=True``:
+class (lerobot 0.6.0 vendors the exact Ai2 modeling/config/processor code
+upstream ships as ``trust_remote_code`` custom code). This adapter imports
+that class directly and loads via ``from_pretrained``/``from_config`` — no
+``AutoModelForImageTextToText``, no ``trust_remote_code=True``:
 
 - Bare rSkill reference required as weights URI (the manifest is the
   robot/sensor/IO contract; the eval layer never loads weights without one).

@@ -621,21 +621,20 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
 
     The two lists together must describe exactly **one** connected tree: any
     link the movable ``joints`` don't reach (a rigidly mounted hand, a
-    bimanual rig's arm pedestals) belongs in ``fixed_attachments``; a manifest
-    that leaves it out is rejected rather than lowered with that subtree
-    dumped at the origin. Links are emitted in topological order (every
-    parent before its children) so kernel forward kinematics can resolve each
-    from its already-computed parent frame; a link's per-row joint index is
-    its defining joint's position in ``robot.joints`` (same ordering as the
-    envelope joint arrays and ``ActionChunk.flat``).
+    bimanual rig's arm pedestals) belongs in ``fixed_attachments``; a
+    manifest that leaves it out is rejected rather than lowered with that
+    subtree dumped at the origin. Links are emitted in topological order
+    (every parent before its children) so kernel forward kinematics can
+    resolve each from its already-computed parent frame; a link's per-row
+    joint index is its defining joint's position in ``robot.joints`` (same
+    ordering as the envelope joint arrays and ``ActionChunk.flat``).
 
-    A boxed link declaring
-    ``LinkCollisionGeometry.tight_geometry`` also
+    A boxed link declaring ``LinkCollisionGeometry.tight_geometry`` also
     lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget,
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
-    these drive the kernel's staged arm-link-vs-world-voxel narrow phase; the
-    box arrays are still emitted unchanged since the box remains the
-    broad-phase bound. A manifest declaring none lowers exactly as before.
+    these drive the kernel's staged arm-link-vs-world-voxel narrow phase; box
+    arrays are still emitted unchanged since the box remains the broad-phase
+    bound. A manifest declaring none lowers exactly as before.
 
     Args:
         robot: The robot manifest. No collision geometry → returns

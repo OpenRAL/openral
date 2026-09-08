@@ -10,39 +10,36 @@ under the workspace's own ``transformers``
 (``Sam2Segmenter``).
 
 Driven by the HAL's vision attachment-evidence producer at attach / detach /
-regrasp events — one shot per event, never per frame. It runs *here*, beside the
-detector rSkills on the runner/GStreamer graph side, because the HAL is
-deliberately kept torch-free: the HAL asks over the service instead of importing
-a model.
+regrasp events — one shot per event, never per frame. Runs here, beside the
+detector rSkills on the runner/GStreamer graph side, because the HAL is kept
+torch-free and asks over the service instead of importing a model.
 
 This is the **geometric** counterpart of the object-localization detector node
 (``openral_perception_ros.ros_image_detector_node``, which serves
-``locate_in_view`` for a free-text query). Separate nodes because a segmenter
-answers a different question with a different contract: no label vocabulary, no
-score threshold, a point in and masks out.
+``locate_in_view`` for a free-text query): a different contract — no label
+vocabulary, no score threshold, a point in and masks out.
 
-**Where the intrinsics live.** The request carries a 3-D point, not a pixel,
-precisely so camera intrinsics stay on this side of the boundary. This node
-transforms that point from the request's ``frame_id`` into the camera's optical
-frame through TF2 (the only source of coordinate frames — CLAUDE.md §2), then
-projects it with the **manifest's** ``SensorSpec.intrinsics``, rescaled to the
-frame actually received. Nothing here hardcodes a pixel or a frame id.
+**Intrinsics.** The request carries a 3-D point, not a pixel, so intrinsics
+stay on this side of the boundary. This node transforms that point from the
+request's ``frame_id`` into the camera's optical frame through TF2 (the only
+source of coordinate frames — CLAUDE.md §2), then projects it with the
+**manifest's** ``SensorSpec.intrinsics``, rescaled to the frame received.
+Nothing here hardcodes a pixel or a frame id.
 
-**Why the reply is plural.** With ``segmenter.multimask`` the model emits three
-nested hypotheses per point prompt (roughly subpart / part / whole). Only
+**Why the reply is plural.** With ``segmenter.multimask`` the model emits
+three nested hypotheses per point prompt (subpart / part / whole). Only
 geometry can say which is the payload, and this node has no depth — so it
-returns every candidate that cleared ``min_mask_area_px``, area ascending, and
-the HAL picks. It must not, and does not, pick by the model's own score: a
-mis-aimed prompt was measured returning a mask covering 59.8% of a real frame at
-this model's **top** score of 0.977.
+returns every candidate that cleared ``min_mask_area_px``, area ascending,
+and the HAL picks. It does not pick by the model's own score: a mis-aimed
+prompt was measured returning a mask covering 59.8% of a real frame at this
+model's **top** score of 0.977.
 
-**Lifecycle.** A *managed* lifecycle node, mirroring
-``ros_image_detector_node``: cameras, subscriptions and the service live for the
-configured→cleanup span; the model is built **and warmed** on ``on_activate``
-and released on ``on_deactivate``, so its VRAM can be freed like any other
-perception model. The warm-up is not optional — the first forward pass was
-measured at ~742 ms against ~53 ms warmed, and only the warmed figure fits
-inside the ~100 ms deferred-ack barrier the HAL holds while it calls this.
+**Lifecycle.** A *managed* lifecycle node, mirroring ``ros_image_detector_node``:
+cameras/subscriptions/service live for the configured→cleanup span; the model
+is built **and warmed** on ``on_activate``, released on ``on_deactivate``.
+Warm-up is not optional — first forward pass measured ~742 ms vs ~53 ms
+warmed, and only the warmed figure fits inside the ~100 ms deferred-ack
+barrier the HAL holds while it calls this.
 
 Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Each id MUST be

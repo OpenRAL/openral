@@ -1,16 +1,18 @@
 """The declared target's own geometry, fired deterministically (ADR-0098).
 
-The sibling ``test_safety_kernel_place_allowance_band.py`` drives ADR-0097's blanket
-allowance on this same rig. This file drives the half that replaces the guess: when the
-declaration ships the target's own primitives, a cell is adjudicated against the modelled
-receptacle instead of the 25 mm cube it was quantised into, moving the gate from the
-payload's standoff margin to the surface itself.
+The sibling ``test_safety_kernel_place_allowance_band.py`` drives ADR-0097's
+blanket allowance on this same rig. This file drives the half that replaces
+the guess: when the declaration ships the target's own primitives, a cell is
+adjudicated against the modelled receptacle instead of the 25 mm cube it was
+quantised into, moving the gate from the payload's standoff margin to the
+surface itself.
 
-Why a live test, not gtests alone: #188's graded-velocity band shipped as dead code that
-three unit tests missed because the fixture and logic shared the same wrong picture. Same
-near-miss here — the first implementation kept the standoff margin against the declared body,
-invisible to collision gtests run at margin 0 (where gating at ``margin`` and at ``0`` are
-algebraically identical). This runs the real ``safety_kernel_node`` binary at the deployed
+Live test, not gtests alone, because #188's graded-velocity band shipped as
+dead code three unit tests missed — fixture and logic shared the same wrong
+picture. Same near-miss risk here: the first implementation kept the
+standoff margin against the declared body, invisible to collision gtests run
+at margin 0 (where gating at ``margin`` and at ``0`` are algebraically
+identical). This runs the real ``safety_kernel_node`` binary at the deployed
 margin, where they are not.
 
 Rig is the sibling's, unchanged; the two files differ in one field:
@@ -31,10 +33,11 @@ q (m)            d_cell (m)  d_body (m)  declared, box only  declared + geometry
 0.0950           −0.0275     −0.0150     REFUSED, latched    REFUSED, latched
 ===============  ==========  ==========  ==================  =====================
 
-Row 1: blanket allowance refuses a payload with 17.5 mm measured clearance because it's
-judging a cube whose face isn't where the shelf is. Row 3: past the advisory band the stop is
-the latched one it always was, evidence naming ``place:<target>`` rather than ``voxel_<n>``
-— quoting the body's distance under the cell's identity is the defect class #187 stopped.
+Row 1: blanket allowance refuses a payload with 17.5 mm measured clearance
+because it's judging a cube whose face isn't where the shelf is. Row 3: past
+the advisory band the stop is the latched one it always was, evidence naming
+``place:<target>`` rather than ``voxel_<n>`` — quoting the body's distance
+under the cell's identity is the defect class #187 stopped.
 
 Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + colcon-built kernel.
 ``scripts/ros_live_tests.sh`` is the only runner (``just test-ros-live``, docker-build

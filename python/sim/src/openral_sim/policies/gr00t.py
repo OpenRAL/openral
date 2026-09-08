@@ -15,15 +15,15 @@ In-process NF4
 --------------
 Native ``GrootPolicy`` has no quantization knob and loads the ~3 B model in
 fp32 params / bf16 compute (~6 GB), which will not co-fit an 8 GB card. The
-transformers ``BitsAndBytesConfig`` / ``device_map`` path is unavailable —
-it requires ``accelerate``, which the workspace venv does not carry. So this
-reuses OpenRAL's accelerate-free
-``openral_sim._quantization.quantize_nf4_in_place`` (same mechanism as
-pi05 / molmoact2): after a normal CPU load, the Qwen3-VL backbone's large
-``nn.Linear`` layers are rewritten into ``bnb.nn.Linear4bit`` shells, then
-``policy.to(cuda)`` packs them to NF4. Only the backbone is quantized; the
-small diffusion action head stays bf16, preserving action quality and
-side-stepping the GR00T DiT ``TimestepEncoder`` uint8 bug (bug (b) below).
+transformers ``BitsAndBytesConfig`` / ``device_map`` path needs
+``accelerate``, which the workspace venv does not carry, so this reuses
+OpenRAL's accelerate-free ``openral_sim._quantization.quantize_nf4_in_place``
+(same mechanism as pi05 / molmoact2): after a normal CPU load, the Qwen3-VL
+backbone's large ``nn.Linear`` layers are rewritten into
+``bnb.nn.Linear4bit`` shells, then ``policy.to(cuda)`` packs them to NF4.
+Only the backbone is quantized; the small diffusion action head stays bf16,
+preserving action quality and side-stepping the GR00T DiT
+``TimestepEncoder`` uint8 bug (bug (b) below).
 
 The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
 native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under

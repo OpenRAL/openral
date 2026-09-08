@@ -1,63 +1,53 @@
 """Policy-family dependency probing — shared by reasoner + skill_runner.
 
-The policy factories in ``openral_sim.policies`` live behind opt-in
-extras groups (``sim`` / ``libero`` / ``metaworld`` / ``robocasa``):
-``transformers``, ``bitsandbytes``, ``lerobot[…]``, etc. When the right
-group isn't installed the factory raises ``ImportError`` deep inside
-lerobot, which (a) is confusing to surface and (b) leaves
-partially-loaded modules in ``sys.modules`` so subsequent calls fail
-with a *different* ``cannot import name 'X'`` cascade error.
+The policy factories in ``openral_sim.policies`` live behind opt-in extras
+groups (``sim`` / ``libero`` / ``metaworld`` / ``robocasa``): ``transformers``,
+``bitsandbytes``, ``lerobot[…]``, etc. When the right group isn't installed
+the factory raises ``ImportError`` deep inside lerobot — confusing to surface,
+and it leaves partially-loaded modules in ``sys.modules`` so subsequent calls
+fail with a *different* ``cannot import name 'X'`` cascade error.
 
-This module is the single source of truth for two related contracts:
+Two contracts live here:
 
-* ``model_family_install_hint`` — the actionable uv-sync command for
-  each known family. Used by ``openral_rskill_ros.rskill_runner_node``
-  when translating a factory ``ImportError`` into ``ROSRuntimeError``.
-* ``can_import_policy_family`` / ``filter_importable_manifests``
-  — pre-flight probes used by the reasoner at ``on_configure`` to drop
-  rSkills whose deps aren't installed before the palette is built, so
-  the operator sees one warning at boot ("dropped X: missing
-  transformers; run ``just sync --all-packages --group sim``") instead
-  of a per-tick failure at goal dispatch time.
+* ``model_family_install_hint`` — the actionable uv-sync command for each
+  known family, used by ``openral_rskill_ros.rskill_runner_node`` when
+  translating a factory ``ImportError`` into ``ROSRuntimeError``.
+* ``can_import_policy_family`` / ``filter_importable_manifests`` — pre-flight
+  probes the reasoner runs at ``on_configure`` to drop rSkills whose deps
+  aren't installed before the palette is built, so the operator sees one
+  warning at boot ("dropped X: missing transformers; run ``just sync
+  --all-packages --group sim``") instead of a per-tick dispatch failure.
 
-All install commands recommended by this module go through
-``just sync --all-packages --group <X>`` rather than bare
-``uv sync --group <X>``. ``--all-packages`` is required so the
-workspace members (openral-core, openral-cli, …) survive the install
-— ``uv sync`` without it would uninstall every workspace member and
-the next ROS launch would fail with ``No module named 'openral_core'``.
-``just sync`` additionally repairs the ``hf-libero==0.1.3``
+Install commands always use ``just sync --all-packages --group <X>``, never
+bare ``uv sync --group <X>``: ``--all-packages`` keeps the workspace members
+(openral-core, openral-cli, …) installed — plain ``uv sync`` would uninstall
+them and the next ROS launch would fail with ``No module named
+'openral_core'``. ``just sync`` also repairs the ``hf-libero==0.1.3``
 distutils-uninstall trap before+after the sync.
 
-The probe never instantiates a factory or loads weights. By default it
-only resolves the *top-level* package of each required import via
-``importlib.util.find_spec`` — measured at ~0 ms, and the same idiom
-``openral_cli.deploy_sim._omdet_runtime_available`` already uses for
-this class of decision.
+The probe never instantiates a factory or loads weights: by default it only
+resolves the *top-level* package of each required import via
+``importlib.util.find_spec`` (~0 ms, the same idiom
+``openral_cli.deploy_sim._omdet_runtime_available`` uses). It deliberately
+skips the deep module — ``lerobot/policies/__init__.py`` eagerly imports
+every policy family's config class, so touching ``lerobot.policies.<anything>``
+costs the whole tree (measured 6.6 s, and identically so via ``find_spec``,
+which must import the parent to find the child). That cost was being paid in
+three processes per deploy (CLI preflight, reasoner palette seed,
+``runtime_node``) when only ``runtime_node`` needs the modules resolved.
 
-It deliberately does NOT import the deep module. ``lerobot/policies/
-__init__.py`` eagerly imports the configuration class of *every* policy
-family, so touching ``lerobot.policies.<anything>`` costs the whole tree
-— measured 6.6 s, and identically so via ``find_spec`` (which must import
-the parent package to find the child). That price was being paid in
-*three* processes per deploy (the CLI preflight, the reasoner's palette
-seed, and ``runtime_node``) when only ``runtime_node`` needs the modules
-resolved.
+The fast probe catches a dependency group that was never installed; it
+cannot catch one that's installed but *broken* (a half-written editable
+``.pth``, say) — that still surfaces at dispatch via
+``rskill_runner_node``'s ``ROSRuntimeError``. Set
+``OPENRAL_STRICT_POLICY_PROBE=1`` to restore the deep import probe when that
+distinction matters.
 
-The fast probe catches the failure this module exists to catch — a
-dependency group that was never installed. It cannot catch a group that
-is installed but *broken* (a half-written editable ``.pth``, say). That
-case still surfaces at dispatch, where
-``openral_rskill_ros.rskill_runner_node`` already translates the
-factory's ``ImportError`` into a ``ROSRuntimeError`` carrying
-``model_family_install_hint``. Set ``OPENRAL_STRICT_POLICY_PROBE=1``
-to restore the deep import probe when that distinction matters.
-
-Adding a new policy family: register a new entry in
-``_FAMILY_REQUIRED_IMPORTS`` AND ``_FAMILY_INSTALL_HINTS``.
-The reasoner's ``test_reasoner_palette_filters_unimportable_families``
-test (and ``test_known_model_families_get_concrete_install_hints``)
-walks both dicts so a half-registered family fails at unit-test time.
+Adding a new policy family: register it in both
+``_FAMILY_REQUIRED_IMPORTS`` and ``_FAMILY_INSTALL_HINTS`` —
+``test_reasoner_palette_filters_unimportable_families`` and
+``test_known_model_families_get_concrete_install_hints`` walk both dicts, so
+a half-registered family fails at unit-test time.
 """
 
 from __future__ import annotations

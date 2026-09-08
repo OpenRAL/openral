@@ -13,13 +13,13 @@ to ``query_scene``, advance, or enter the replanning ladder. The signal is
 **advisory** — it never actuates (CLAUDE.md §1.1).
 
 This is the reward counterpart of the scene-VLM node
-(``openral_perception_ros.scene_vlm_node``, which serves ``query_scene``).
-The rolling buffer lives here, node-side; reward backends score on demand.
+(``openral_perception_ros.scene_vlm_node``, which serves ``query_scene``); the
+rolling buffer lives here, node-side, and reward backends score on demand.
 
-**Frame-source agnostic.** It subscribes the same camera image topic the VLA
+**Frame-source agnostic.** Subscribes the same camera image topic the VLA
 consumes — fed by the GStreamer tee on real hardware or the sim HAL camera
-publisher in ``deploy-sim`` (no GStreamer). Frame timestamps use the node clock,
-so eviction/staleness behave identically against a sim clock and a real clock.
+publisher in ``deploy-sim`` (no GStreamer). Frame timestamps use the node
+clock, so eviction/staleness behave identically against a sim or real clock.
 
 Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Empty = a single
