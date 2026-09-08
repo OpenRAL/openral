@@ -11,26 +11,25 @@ and a hard pin on ``torch==2.8.0`` / ``transformers==4.57.3`` / ``triton==3.4.0`
 
 Why an out-of-process sidecar (not in-process, not vendored)
 -----------------------------------------------------------
-Mirrors the :mod:`openral_sim.policies.rldx` rationale:
+Mirrors :mod:`openral_sim.policies.rldx`:
 
 * **Dep stack cannot coexist.** ``lingbotvla`` pins ``torch==2.8.0`` +
-  ``triton==3.4.0`` + ``transformers==4.57.3``; the openral workspace is
-  ``torch>=2.9`` / ``transformers>=5`` (CLAUDE.md §3). Force-installing would
-  clobber smolvla / pi05 / ACT / GR00T (the documented ``--group`` clobber).
-  (The boot helper does override the torch half of that pin set up to 2.9.1 /
-  triton 3.5.1 — torch 2.8.0 publishes no linux-aarch64 ``cu128`` wheel, see
-  ``docs/reference/aarch64-support.md``. ``transformers==4.57.3`` still can't
-  coexist, so the sidecar stays out-of-process regardless.)
-* **Vendoring is intractable.** The inference path is ~6 kLOC of tightly
-  coupled model code (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` +
-  ``qwen3vl_in_vla`` + ``flex_attention``) plus ``lingbotvla/ops`` Triton
-  kernels and a ``sys.path``-based package layout — not the handful of files
-  the in-process MolmoAct2 / SmolVLA adapters vendor.
-* **The HF release ships no ``config.json`` architecture.** ``config.json`` is
-  a 31-byte ``{"vlm_family":"qwen3_vl"}`` stub; the real architecture dims live
-  in the repo's ``configs/vla/robotwin/robotwin.yaml`` training config, which
-  the sidecar owns in its repo checkout. There is no ``trust_remote_code``
-  escape.
+  ``triton==3.4.0`` + ``transformers==4.57.3`` vs. the workspace's
+  ``torch>=2.9`` / ``transformers>=5`` (CLAUDE.md §3); force-installing would
+  clobber smolvla/pi05/ACT/GR00T. The boot helper overrides the torch half
+  to 2.9.1/triton 3.5.1 (torch 2.8.0 publishes no linux-aarch64 ``cu128``
+  wheel, see ``docs/reference/aarch64-support.md``), but
+  ``transformers==4.57.3`` still can't coexist, so the sidecar stays
+  out-of-process regardless.
+* **Vendoring is intractable.** ~6 kLOC of tightly coupled model code
+  (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` + ``qwen3vl_in_vla``
+  + ``flex_attention``) plus ``lingbotvla/ops`` Triton kernels and a
+  ``sys.path``-based layout — not the handful of files the in-process
+  MolmoAct2/SmolVLA adapters vendor.
+* **No ``config.json`` architecture in the HF release.** It's a 31-byte
+  ``{"vlm_family":"qwen3_vl"}`` stub; real architecture dims live in
+  ``configs/vla/robotwin/robotwin.yaml``, owned by the sidecar's repo
+  checkout. No ``trust_remote_code`` escape.
 
 So the sidecar runs the upstream ``LingbotVLAv2Server`` in its own py3.12 +
 torch-2.9.1 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +

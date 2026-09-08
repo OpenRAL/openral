@@ -1,14 +1,11 @@
 r"""Benchmark runner — loop a ``list[BenchmarkScene]`` and emit a :class:`RSkillEvalResult`.
 
-This runner later dropped an earlier ``BenchmarkSpec`` wrapper class, so a
-benchmark suite is now a bare ``list[BenchmarkScene]`` on disk
-(``benchmarks/<suite_id>.yaml``) and in
-memory. The suite id is the filename stem. The runner is the **only**
-way to produce a ``rskills/<vla>/eval/<suite_id>.json`` with
-``reproduced_locally=true``; hand-edited JSONs continue to be valid but
-they carry ``reproduced_locally=false`` and a ``reproduction_cli`` that
-points back at ``openral benchmark run`` so users can close the loop
-locally.
+A benchmark suite is a bare ``list[BenchmarkScene]`` on disk
+(``benchmarks/<suite_id>.yaml``) and in memory; the suite id is the
+filename stem. The runner is the **only** way to produce a
+``rskills/<vla>/eval/<suite_id>.json`` with ``reproduced_locally=true``;
+hand-edited JSONs remain valid but carry ``reproduced_locally=false`` and
+a ``reproduction_cli`` pointing back at ``openral benchmark run``.
 
 The runner is intentionally a thin layer over :class:`SimRunner`:
 
@@ -149,11 +146,10 @@ def filter_scenes_for_skill(
     The suite analogue of :func:`check_benchmark_task_compatibility`: instead of
     raising on a single mismatched scene, a suite run keeps the scenes the
     rSkill is trained for and skips the rest (the caller logs the skips and
-    raises only when *nothing* matches). This both delivers "run my rSkill
-    against everything it supports" in one command and closes the
-    task-compatibility gate's suite-path gap (mismatched tasks were
-    previously run and silently scored 0, because the suite path never
-    called the gate).
+    raises only when *nothing* matches). Delivers "run my rSkill against
+    everything it supports" in one command, and closes the task-compatibility
+    gate's suite-path gap — the suite path never called the gate, so a
+    mismatched task ran and silently scored 0.
 
     Args:
         scenes: The suite's scenes (pre-validated by ``raise_on_invalid_suite``).

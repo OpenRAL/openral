@@ -168,11 +168,8 @@ def _resolve_step_instruction(
     Three candidate sources, in strict precedence order:
 
     1. ``instruction_override`` — the user's explicit ``--instruction`` CLI
-       flag (``None`` when not passed). An explicit override ALWAYS wins,
-       even over a scene's per-episode language. ``--instruction`` was
-       previously silent on scenes that publish ``obs["task"]`` (for example,
-       RoboCasa sampled-object language), so the
-       robot ignored it (CLAUDE.md §1.4 — explicit beats implicit).
+       flag (``None`` when not passed). Always wins, even over a scene's
+       per-episode language (CLAUDE.md §1.4 — explicit beats implicit).
     2. ``obs["task"]`` — the env's per-episode language, when the scene
        adapter populated it with a non-empty ``str``. RoboCasa interpolates
        the *sampled* object name here, so it is genuinely more correct than
@@ -392,14 +389,11 @@ class SimRunner(InferenceRunnerBase):
         # Validate before the (expensive) env / policy build so misconfigs
         # fail fast without burning GPU time.
         self.manifest, self._env_cfg = _check_rskill_compatibility(self._env_cfg)
-        # SAPIEN-backed scenes (simpler-env / ManiSkill3 bridge envs)
-        # need to know at gym.make() time whether to advertise
-        # `render_mode='human'` — that toggle is what tells SAPIEN to
-        # build a live viewer instead of an offscreen render target. The
-        # SCENES factory only sees ``env_cfg``, so we publish the flag
-        # through an env var scoped to the build window. MuJoCo-backed
-        # adapters ignore the var (their viewer opens lazily from
-        # ``mujoco_handles()`` on first reset, not at construct time).
+        # SAPIEN-backed scenes (simpler-env/ManiSkill3) need `render_mode`
+        # ='human' at gym.make() time to build a live viewer instead of an
+        # offscreen target; the SCENES factory only sees `env_cfg`, so the
+        # flag is published via an env var scoped to the build window.
+        # MuJoCo adapters ignore it (viewer opens lazily on first reset).
         prev_view_env = os.environ.get(_VIEW_ENV)
         if self._view:
             os.environ[_VIEW_ENV] = "1"
@@ -627,12 +621,7 @@ class SimRunner(InferenceRunnerBase):
             "eval.step", attributes={"step": self._step_idx}
         ) as step_span:
             t0 = time.perf_counter()
-            # Resolve the instruction the policy is prompted with. An explicit
-            # ``--instruction`` override wins over everything; otherwise the
-            # env's per-episode ``obs["task"]`` language (e.g. RoboCasa
-            # interpolates the sampled object name into ``get_ep_meta()["lang"]``) wins,
-            # falling back to the static YAML instruction. See
-            # :func:`_resolve_step_instruction`.
+            # See :func:`_resolve_step_instruction` for precedence.
             obs_task = self._obs.get("task") if isinstance(self._obs, dict) else None
             instruction = _resolve_step_instruction(
                 instruction_override=self._instruction_override,
@@ -1021,67 +1010,41 @@ _SEQUENTIAL_INIT_ENV = "OPENRAL_SIM_SEQUENTIAL_INIT"
 # :func:`_open_viewer_and_pacing` and so ignore this var.
 _VIEW_ENV = "OPENRAL_SIM_VIEW"
 
-# Scene-id prefixes that are known to race against the lerobot/transformers
-# import chain when ``make_env`` and ``make_policy`` run on parallel
-# threads. Two distinct race classes have been observed:
+# Scene-id prefixes known to race the lerobot/transformers import chain when
+# `make_env` / `make_policy` run on parallel threads. Three race classes:
 #
-# 1. ``openarm_`` / ``tabletop_push`` — the scene factory imports a module
-#    that transitively pulls ``transformers`` onto the env thread, racing the
-#    same lazy ``transformers`` submodule attributes lerobot's policy factory is
-#    resolving on the policy thread. The trigger differs per scene:
-#      * ``openarm_`` imports robosuite + robosuite_models in its env factory
-#        (robosuite's deps pull transformers).
-#      * ``tabletop_push`` resolves ``assets.mjcf`` (via ``resolve_asset``)
-#        to load the arm MJCF,
-#        which imports ``openral_hal._mujoco_arm`` → ``openral_hal._base``;
-#        that chain transitively imports transformers. (Verified:
-#        ``import openral_hal._mujoco_arm`` leaves ``transformers`` in
-#        ``sys.modules``.) Note ``so101_box`` is NOT affected — it resolves the
-#        SO-101 MJCF by importing ``robot_descriptions`` directly, never
-#        ``_mujoco_arm``, so nothing pulls transformers onto its env thread.
-#    Either way the ``transformers._LazyModule`` attr lookup is not thread-safe
-#    under concurrent import; symptom is ``ImportError: cannot import name
-#    'AutoConfig' from 'transformers'`` surfaced as ROSConfigError("requires
-#    torch + lerobot[libero]").
+# 1. `openarm_` / `tabletop_push` / `robocasa/`: the env factory imports
+#    robosuite (directly for openarm_/robocasa, or via
+#    `openral_hal._mujoco_arm` -> `openral_hal._base` for tabletop_push's
+#    `resolve_asset`), which transitively pulls `transformers` onto the env
+#    thread, racing the policy thread's lerobot resolution of the same lazy
+#    `transformers` submodule attrs. `so101_box` is unaffected (imports
+#    `robot_descriptions` directly, never `_mujoco_arm`). Symptom:
+#    `ImportError: cannot import name 'AutoConfig' from 'transformers'`
+#    (surfaced as `ROSConfigError("requires torch + lerobot[libero]")`) for
+#    the transformers race, or (robocasa/-specific) CPython
+#    `_load_unlocked`'s `sys.modules.pop` -> `KeyError:
+#    'robosuite.renderers.viewer.mjviewer_renderer'` (non-deterministic —
+#    observed on rldx-ft-robocasa but not rldx-ft-rc365 on the same scene).
 #
-# 2. ``maniskill3`` / ``simpler_env`` (both SAPIEN-backed) — the policy
-#    factory's ``torch.set_default_dtype(bfloat16)`` window (transient
-#    inside smolvla / pi05 / lerobot processor build) leaks into the env
-#    thread's SAPIEN ``gym.make`` call. SAPIEN renders an internal tensor
-#    using the active default dtype during env construction, and bf16
-#    is not a supported ScalarType for its image path. Symptom is
-#    ``TypeError: Got unsupported ScalarType BFloat16 was raised from
-#    the environment creator for PickCube-v1`` (or any SAPIEN env).
-#    ``openral benchmark run --suite maniskill3_panda`` and
-#    ``openral sim run --config scenes/simpler_env_widowx_*``
-#    both trip this when the policy is bf16; sequential init avoids
-#    the dtype window overlap entirely.
+# 2. `maniskill3` / `simpler_env` (SAPIEN-backed): the policy factory's
+#    transient `torch.set_default_dtype(bfloat16)` window (smolvla / pi05 /
+#    lerobot processor build) leaks into the env thread's SAPIEN
+#    `gym.make`, which renders an internal tensor at the active default
+#    dtype — bf16 is unsupported there. Symptom: `TypeError: Got
+#    unsupported ScalarType BFloat16 ... PickCube-v1` (or any SAPIEN env);
+#    seen via `openral benchmark run --suite maniskill3_panda` and
+#    `openral sim run --config scenes/simpler_env_widowx_*` with a bf16 policy.
 #
-# We force sequential init for any scene whose id starts with one of
-# these prefixes; the user-facing ``OPENRAL_SIM_SEQUENTIAL_INIT=1`` env
-# var still works as an explicit manual override for combos we haven't
-# yet catalogued. Add new prefixes here as concurrency races surface;
-# the alternative (always-sequential) would cost the LIBERO / MetaWorld
-# combos their ~5-10 s parallel-init win for no benefit. (RoboCasa was
-# previously assumed safe here too, but its robosuite import races the
-# same way openarm's does — see prefix 3 below.)
+# Forced sequential for any scene id starting with one of these prefixes;
+# `OPENRAL_SIM_SEQUENTIAL_INIT=1` remains a manual override for uncatalogued
+# combos. Always-sequential would cost LIBERO/MetaWorld their ~5-10s
+# parallel-init win, so new prefixes are added only as races surface.
 _RACE_PRONE_SCENE_PREFIXES: tuple[str, ...] = (
     "openarm_",
     "tabletop_push",
     "maniskill3",
     "simpler_env",
-    # 3. ``robocasa/`` (kitchen ``robocasa/<task>`` + GR1 ``robocasa/gr1/<task>``)
-    #    — same class-1 race as ``openarm_``: the RoboCasa env factory imports
-    #    robosuite (``ensure_backend_deps`` → ``_has_module("robosuite")`` →
-    #    ``importlib.util.find_spec`` which *executes* ``robosuite/__init__``)
-    #    on the env thread while the policy thread imports robosuite-adjacent
-    #    modules. Concurrent import of the same submodule trips CPython's
-    #    ``_load_unlocked`` ``sys.modules.pop`` → ``KeyError:
-    #    'robosuite.renderers.viewer.mjviewer_renderer'`` (non-deterministic:
-    #    rldx-ft-rc365 won the race, rldx-ft-robocasa lost it on the same
-    #    scene). The earlier "RoboCasa+RLDX benefits from parallel init" note
-    #    was wrong — robosuite's heavy import makes it as race-prone as
-    #    openarm. The ~5-10 s parallel win is not worth a hard import crash.
     "robocasa/",
 )
 
@@ -1097,37 +1060,20 @@ def _build_env_and_policy(
 ) -> tuple[SimRollout, PolicyAdapter]:
     """Build (env, policy) — concurrently by default, sequentially on opt-out.
 
-    Encapsulates the GH-134 parallelisation so :meth:`SimRunner.activate`
-    stays readable and so the behaviour is unit-testable in isolation
-    (see ``tests/unit/test_sim_runner_parallel_init.py``).
-
-    The two side effects we care about are bounded:
-
-    * **No shared mutable state** between :func:`make_env` and
-      :func:`make_policy` — both only read the immutable
-      :class:`SimEnvironment` Pydantic model and dispatch to their
-      respective registries (``SCENES`` / ``POLICIES``).
-    * **Exception propagation** is verbatim — the helper does not catch
-      :class:`ROSError` (or anything else) on either side. The first
-      exception observed wins; the other future is allowed to finish
-      so its resources can be cleaned up on the worker thread without
-      racing with the caller.
+    GH-134 parallelisation; see ``tests/unit/test_sim_runner_parallel_init.py``.
+    ``make_env``/``make_policy`` share no mutable state (both only read the
+    immutable ``SimEnvironment`` model). Exceptions propagate verbatim; if
+    both sides raise, the env-build exception wins (awaited first) and the
+    policy-build exception is suppressed via ``contextlib.suppress``.
 
     Args:
         env_cfg: Validated :class:`openral_core.SimEnvironment`.
 
     Returns:
-        ``(env, policy)`` — both fully constructed and ready for the
-        runner to drive.
+        ``(env, policy)``, both fully constructed.
 
     Raises:
-        openral_core.exceptions.ROSError: Whatever :func:`make_env` or
-            :func:`make_policy` raises, re-raised verbatim. If both sides
-            raise, the env-build exception wins (it is awaited first);
-            the policy-build exception is suppressed via
-            :class:`contextlib.suppress` to surface the env failure
-            cleanly without losing the env traceback to a chained
-            policy traceback.
+        openral_core.exceptions.ROSError: Whatever ``make_env``/``make_policy`` raises.
     """
     env_opt_in = os.environ.get(_SEQUENTIAL_INIT_ENV, "").strip() == "1"
     scene_forced = _scene_requires_sequential_init(env_cfg)
@@ -1168,15 +1114,10 @@ def _build_env_and_policy(
         try:
             env = env_future.result()
         except BaseException:
-            # The policy future may still be running. Allow it to finish
-            # so its resources get cleaned up on the worker thread; we
-            # suppress its exception here because the caller is already
-            # going to receive the env failure (the first one we saw)
-            # and chaining the policy traceback onto it would muddy the
-            # report. The worker thread itself does NOT swallow the
-            # exception — Future.exception() captures it on the future,
-            # and the executor logs it via the worker's default
-            # __exit__ shutdown(wait=True).
+            # Let the policy future finish so its resources are cleaned up
+            # on the worker thread; suppress its exception here (the caller
+            # gets the env failure, the first one seen) — the worker itself
+            # doesn't swallow it, Future.exception() still captures it.
             with contextlib.suppress(BaseException):
                 policy_future.result()
             raise

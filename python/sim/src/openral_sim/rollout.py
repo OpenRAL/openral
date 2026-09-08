@@ -120,11 +120,9 @@ class SimRollout(Protocol):
               clock-less backends (PushT) and sidecars whose wire protocol does
               not carry elapsed time.
 
-            Like the other extensions it is intentionally NOT part of the
-            Protocol, so a clock-less adapter need not stub it. Callers MUST
-            use ``getattr(env, "sim_time_ns", None)`` and treat both a missing
-            attribute and a ``None`` return as "no sim clock" (fall back to
-            wall time).
+            Callers MUST use ``getattr(env, "sim_time_ns", None)`` and treat
+            both a missing attribute and a ``None`` return as "no sim clock"
+            (fall back to wall time).
 
         ``task_success(self) -> bool | None``
             — the backend's OWN task-success predicate, read on demand
@@ -164,11 +162,10 @@ class SimRollout(Protocol):
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
 
-        Every extension above is intentionally *not* part of the Protocol
-        so adapters do not need to stub a method they cannot honour;
-        callers MUST use ``getattr(env, "<name>", None)`` and treat both
-        a missing attribute and a ``None`` return as "unsupported"
-        (for the viewer hooks: "viewer unsupported").
+        None of the above is part of the Protocol, so adapters need not
+        stub a method they cannot honour; callers MUST use
+        ``getattr(env, "<name>", None)`` and treat both a missing attribute
+        and a ``None`` return as "unsupported".
     """
 
     scene: SceneSpec

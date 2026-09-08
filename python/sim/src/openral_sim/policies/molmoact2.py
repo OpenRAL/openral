@@ -7,14 +7,14 @@ conditioning (arXiv:2605.02881). The LIBERO finetune
 (``allenai/MolmoAct2-LIBERO``) scores 97.2 % on the LIBERO suite (98.1 % for
 the depth-reasoning ``-Think`` variant), edging out π0.5.
 
-Unlike the other in-tree VLA adapters, MolmoAct2 is not a lerobot ``PreTrainedPolicy``
-with a ``select_action`` queue — it is driven through its own
-:meth:`predict_action` API. Its model graph is built by the **in-tree**
+Unlike the other in-tree VLA adapters, MolmoAct2 is not a lerobot
+``PreTrainedPolicy`` with a ``select_action`` queue — it is driven through its
+own :meth:`predict_action` API. Its model graph is built by the in-tree
 ``lerobot.policies.molmoact2.molmoact2_hf_model.MolmoAct2ForConditionalGeneration``
-class (lerobot 0.6.0 vendors the exact Ai2 modeling/config/processor code that
-the upstream repos ship as ``trust_remote_code`` custom code). This adapter
-imports that class directly and loads via ``from_pretrained`` / ``from_config``
-— **no** ``AutoModelForImageTextToText``, **no** ``trust_remote_code=True``:
+class (lerobot 0.6.0 vendors the exact Ai2 modeling/config/processor code the
+upstream repos ship as ``trust_remote_code`` custom code). This adapter
+imports that class directly and loads via ``from_pretrained``/``from_config``
+— no ``AutoModelForImageTextToText``, no ``trust_remote_code=True``:
 
 - Bare rSkill reference required as weights URI (the manifest is the
   robot/sensor/IO contract; the eval layer never loads weights without one).
@@ -101,32 +101,30 @@ _DEFAULT_NUM_STEPS = 10
 # predict_action returns a batched (B, n_action_steps, action_dim) chunk.
 _BATCHED_CHUNK_NDIM = 3
 # Operator-facing override for the image processor's multi-crop count
-# (MolmoAct2ImageProcessor.max_crops, checkpoint default 8). Mirrors the existing
-# OPENRAL_SIM_SEQUENTIAL_INIT env knob convention. Each extra crop adds a 378 px
-# tile (≈729 patches → ≈182 pooled image tokens) with quadratic attention cost,
-# so it is a *secondary* activation lever. NOTE (measured on an 8 GiB RTX 4070,
-# transformers 5.x): on the SO-101/LIBERO checkpoints the inference peak is set
-# by the LM token-embedding step (~6 GiB resident + a ~1.5 GiB embedding `cat`),
-# NOT the vision crops — so capping crops does not by itself change the peak, and
-# transformers 5.x's *fast* MolmoAct2ImageProcessor does not honour ``max_crops``
-# the way the slow one did. The actual 8 GiB enabler is the CUDA expandable-
-# segments allocator (see :func:`_enable_expandable_segments`). This knob is kept
-# for the slow-processor path and much larger frames. Precedence:
-# ``vla.extra["image_max_crops"]`` → ``OPENRAL_MOLMOACT2_MAX_CROPS`` env →
-# ``manifest.image_preprocessing.image_max_crops`` → ``None`` (checkpoint default 8).
+# (MolmoAct2ImageProcessor.max_crops, checkpoint default 8). Each extra crop
+# adds a 378px tile (~729 patches -> ~182 pooled image tokens) with quadratic
+# attention cost, so it's a secondary activation lever: measured on an 8 GiB
+# RTX 4070 (transformers 5.x), the SO-101/LIBERO checkpoints' inference peak
+# is set by the LM token-embedding step (~6 GiB resident + ~1.5 GiB embedding
+# `cat`), not vision crops — capping crops alone doesn't change the peak, and
+# transformers 5.x's fast MolmoAct2ImageProcessor doesn't honour `max_crops`
+# the way the slow one did. The actual 8 GiB enabler is the CUDA
+# expandable-segments allocator (:func:`_enable_expandable_segments`); this
+# knob is kept for the slow-processor path and larger frames. Precedence:
+# `vla.extra["image_max_crops"]` -> `OPENRAL_MOLMOACT2_MAX_CROPS` env ->
+# `manifest.image_preprocessing.image_max_crops` -> None (checkpoint default 8).
 _MAX_CROPS_ENV = "OPENRAL_MOLMOACT2_MAX_CROPS"
 
-# MolmoAct2 NF4 is ~6 GiB resident (the bf16 vocab embeddings + vision tower
-# dominate; the nf4 Linears are ~3.5 GiB) and peaks ~7.63 GiB during a chunk —
-# right at the edge of an 8 GiB consumer card (a "8 GB" laptop GPU exposes only
-# ~7.6 GiB usable). Without the CUDA caching allocator's expandable-segments mode
-# the first forward's ~1.5 GiB embedding `cat` cannot be placed contiguously and
-# OOMs even with several hundred MiB nominally free. expandable_segments fixes the
-# fragmentation and the rollout fits reproducibly. bitsandbytes 4-bit + a tight
-# card is the textbook case for this setting.
-# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
-# and warns on every process start when the old spelling is present, so resolve
-# it from the installed torch instead of hardcoding either name.
+# MolmoAct2 NF4 is ~6 GiB resident (bf16 vocab embeddings + vision tower
+# dominate; nf4 Linears are ~3.5 GiB) and peaks ~7.63 GiB during a chunk —
+# at the edge of an 8 GiB card (usable ~7.6 GiB). Without the CUDA caching
+# allocator's expandable-segments mode, the first forward's ~1.5 GiB
+# embedding `cat` can't be placed contiguously and OOMs with hundreds of MiB
+# nominally free; expandable_segments fixes the fragmentation so the rollout
+# fits reproducibly (bitsandbytes 4-bit + a tight card is the textbook case).
+# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+# and warns on every process start when the old spelling is present, so
+# resolve it from the installed torch instead of hardcoding either name.
 _CUDA_ALLOC_ENV = installed_alloc_conf_var()
 _EXPANDABLE_SEGMENTS = "expandable_segments:True"
 
@@ -173,29 +171,24 @@ def _molmoact2_phase(name: str, **fields: Any) -> Any:
 def _import_molmoact2() -> tuple[Any, Any, Any]:
     """Import lerobot's in-tree MolmoAct2 model + config + processor classes.
 
-    lerobot 0.6.0 vendors the Ai2 MolmoAct2 modeling/config/processor code that
-    the upstream repos ship as ``trust_remote_code`` custom code. This adapter
-    builds the model graph from that in-tree class directly — **no**
-    ``AutoModelForImageTextToText``, **no** ``trust_remote_code=True``. The
-    in-tree graph is byte-for-byte structurally identical to the upstream
-    custom code (same 1295 ``state_dict`` keys), so the NF4 prequant pack loads
-    key-for-key.
+    lerobot 0.6.0 vendors the Ai2 MolmoAct2 modeling/config/processor code the
+    upstream repos ship as ``trust_remote_code`` custom code; this adapter
+    builds the model graph from that in-tree class directly — no
+    ``AutoModelForImageTextToText``, no ``trust_remote_code=True``. The
+    in-tree graph is structurally identical to the upstream custom code (same
+    1295 ``state_dict`` keys), so the NF4 prequant pack loads key-for-key.
 
-    The processor stack (``MolmoAct2Processor`` → ``MolmoAct2ImageProcessor`` /
-    ``MolmoAct2VideoProcessor`` / ``Qwen2Tokenizer``) is registered with the
+    The processor stack (``MolmoAct2Processor`` -> ``MolmoAct2ImageProcessor``/
+    ``MolmoAct2VideoProcessor``/``Qwen2Tokenizer``) is registered with the
     transformers ``Auto*`` registries (idempotently) so
-    ``MolmoAct2Processor.from_pretrained(source_repo)`` resolves its sub-
-    processors from the checkpoint's ``processor_config.json`` ``auto_map``
-    without executing any remote code.
+    ``MolmoAct2Processor.from_pretrained(source_repo)`` resolves its
+    sub-processors from the checkpoint's ``processor_config.json`` ``auto_map``
+    without executing remote code.
 
     Returns ``(MolmoAct2ForConditionalGeneration, MolmoAct2Config,
-    MolmoAct2Processor)``. All untyped (``Any``) because neither lerobot nor
-    transformers ship strict stubs in this workspace — same convention the
-    lerobot adapters use for their inline policy-class imports.
-
-    This function is the single model-class seam — isolating the model-class
-    import in one place keeps the load path swappable (e.g. for an A/B check
-    against the old remote-code class).
+    MolmoAct2Processor)``, all untyped (``Any``) since neither lerobot nor
+    transformers ship strict stubs here — the single model-class import seam,
+    kept swappable for an A/B check against the old remote-code class.
 
     Raises:
         ROSConfigError: If lerobot / transformers / torch are not installed.
@@ -264,11 +257,10 @@ def _hf_offline_if_cached(repo_id: str, probe_file: str = "config.json") -> Any:
     ``probe_file`` must name the file the inner block actually fetches: the
     ``from_pretrained`` load gate probes ``config.json`` (pulled by the load),
     while the ``predict_action`` wrap probes ``norm_stats.json`` (fetched lazily
-    on the first inference). Gating on ``config.json`` there was a bug — on a
-    first run the model load warms ``config.json`` but never ``norm_stats.json``,
-    so the offline flag blocked the lazy norm-stats download with a
-    ``LocalEntryNotFoundError`` that surfaced as "normalization stats file is
-    missing".
+    on the first inference) — gating the latter on ``config.json`` instead
+    would block the first-run lazy norm-stats download with a
+    ``LocalEntryNotFoundError`` ("normalization stats file is missing"), since
+    the model load warms ``config.json`` but never ``norm_stats.json``.
     """
     import huggingface_hub.constants as _hc
     from huggingface_hub import try_to_load_from_cache

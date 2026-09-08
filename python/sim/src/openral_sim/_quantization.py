@@ -388,8 +388,7 @@ def detect_prequantized_nf4(spec: VLASpec) -> str | None:  # noqa: PLR0911  # re
     safetensors load + 100s of size-mismatch warnings) is wasted work,
     because ``load_prequantized_state_for_rskill`` will overwrite
     every Linear weight + every residual key from the pack a few
-    seconds later. See ADR notes / git blame on the pi05 adapter for
-    why we keep `from_pretrained` as the slow fallback.
+    seconds later.
     """
     weights_uri = (spec.weights_uri or "").strip()
     if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):

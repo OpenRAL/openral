@@ -13,13 +13,12 @@ This module is the single source of truth for two related contracts:
 * :func:`model_family_install_hint` — the actionable uv-sync command for
   each known family. Used by :mod:`openral_rskill_ros.rskill_runner_node`
   when translating a factory ``ImportError`` into ``ROSRuntimeError``.
-* :func:`can_import_policy_family` /
-  :func:`filter_importable_manifests` — pre-flight probes used by the
-  reasoner at ``on_configure`` to drop rSkills whose deps aren't
-  installed *before* the palette is built. This way the operator sees
-  one warning at boot ("dropped X: missing transformers; run
-  ``just sync --all-packages --group sim``"), not a confusing per-tick
-  failure at goal dispatch time.
+* :func:`can_import_policy_family` / :func:`filter_importable_manifests`
+  — pre-flight probes used by the reasoner at ``on_configure`` to drop
+  rSkills whose deps aren't installed before the palette is built, so
+  the operator sees one warning at boot ("dropped X: missing
+  transformers; run ``just sync --all-packages --group sim``") instead
+  of a per-tick failure at goal dispatch time.
 
 All install commands recommended by this module go through
 ``just sync --all-packages --group <X>`` rather than bare
@@ -43,8 +42,7 @@ family, so touching ``lerobot.policies.<anything>`` costs the whole tree
 the parent package to find the child). That price was being paid in
 *three* processes per deploy (the CLI preflight, the reasoner's palette
 seed, and ``runtime_node``) when only ``runtime_node`` needs the modules
-resolved. An earlier version of this docstring claimed "≈100 ms for the
-lerobot tree"; that was wrong by ~65x.
+resolved.
 
 The fast probe catches the failure this module exists to catch — a
 dependency group that was never installed. It cannot catch a group that

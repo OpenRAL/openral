@@ -393,24 +393,19 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
             maybe_compile_chunk_forward(policy, spec.extra, device, torch)
 
     # Two ACT shapes coexist in tree:
-    #
-    # - **Modern** (`manifest.processors is not None`): the upstream
-    #   checkpoint ships ``policy_preprocessor.json`` /
-    #   ``policy_postprocessor.json`` sidecars (e.g.
-    #   ``Deepkar/libero-test-act`` wrapped by ``rskills/act-libero``).
-    #   We materialize them via per-file ``hf_hub_download`` (driven by
-    #   ``manifest.processors``) and let the lerobot factory compose the
-    #   pipeline. This is the "rSkill self-containment audit Gap 1+3"
-    #   path — no implicit snapshot_download.
-    #
-    # - **Legacy** (`manifest.processors is None`): the
-    #   ``lerobot/act_aloha_sim_transfer_cube_human`` / `_insertion_human`
-    #   checkpoints pre-date the PolicyProcessorPipeline migration and
-    #   carry their norm stats inside ``model.safetensors``. The schema
-    #   permits these to omit the processors block; the existing
-    #   ``_try_load_act_norm_stats`` path below reads the safetensors
-    #   directly. ``rskills/act-aloha`` / ``act-aloha-insertion`` keep
-    #   working unchanged.
+    # - Modern (`manifest.processors is not None`): upstream ships
+    #   `policy_preprocessor.json`/`policy_postprocessor.json` sidecars
+    #   (e.g. `Deepkar/libero-test-act` wrapped by `rskills/act-libero`),
+    #   materialized via per-file `hf_hub_download` (driven by
+    #   `manifest.processors`) and composed by the lerobot factory — the
+    #   "rSkill self-containment audit Gap 1+3" path, no implicit
+    #   snapshot_download.
+    # - Legacy (`manifest.processors is None`): `lerobot/act_aloha_sim_
+    #   transfer_cube_human`/`_insertion_human` pre-date the
+    #   PolicyProcessorPipeline migration and carry norm stats inside
+    #   `model.safetensors`; the schema permits omitting `processors`, and
+    #   `_try_load_act_norm_stats` below reads the safetensors directly
+    #   (`rskills/act-aloha`/`act-aloha-insertion`).
     preprocessor: Any | None = None
     postprocessor: Any | None = None
 
@@ -528,12 +523,12 @@ def _apply_temporal_ensemble(policy: Any, spec_extra: dict[str, Any]) -> float |
     enables ensembling; ``None`` falls back to plain chunked execution.
 
     Paper default is ``0.01``; the published
-    ``lerobot/act_aloha_sim_transfer_cube_human`` checkpoint ships with
-    the field set to ``None`` so plain chunked execution wins by default
-    — that's the difference between the harness's previous 0.46 and the
-    paper's 0.95 on aloha_transfer_cube. This helper restores the paper
-    value unless ``vla.extra.temporal_ensemble_coeff`` overrides; pass
-    ``null`` (YAML) / ``None`` (Python) to disable.
+    ``lerobot/act_aloha_sim_transfer_cube_human`` checkpoint ships with the
+    field set to ``None`` so plain chunked execution wins by default — 0.46
+    on aloha_transfer_cube vs. the paper's 0.95 with ensembling enabled.
+    This helper restores the paper value unless
+    ``vla.extra.temporal_ensemble_coeff`` overrides; pass ``null`` (YAML) /
+    ``None`` (Python) to disable.
 
     Args:
         policy: A lerobot ACTPolicy with a ``config.temporal_ensemble_coeff``
