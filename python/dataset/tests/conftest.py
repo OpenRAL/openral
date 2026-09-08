@@ -34,7 +34,7 @@ def repo_root() -> Path:
 
 @pytest.fixture(scope="session")
 def so100_robot(repo_root: Path) -> RobotDescription:
-    """Real SO-100 follower :class:`RobotDescription` from ``robots/so100_follower/``.
+    """Real SO-100 follower ``RobotDescription`` from ``robots/so100_follower/``.
 
     6 joints, 6-D action, 2 RGB cameras. Used by every recorder/sink test.
     """
@@ -43,7 +43,7 @@ def so100_robot(repo_root: Path) -> RobotDescription:
 
 @pytest.fixture(scope="session")
 def aloha_robot(repo_root: Path) -> RobotDescription:
-    """Real Aloha bimanual :class:`RobotDescription` from ``robots/aloha_bimanual/``.
+    """Real Aloha bimanual ``RobotDescription`` from ``robots/aloha_bimanual/``.
 
     14 joints (7+7 bimanual), 14-D action, 1 RGB camera (`top`), 50 Hz.
     Used by multi-robot smoke tests to prove the bridge isn't

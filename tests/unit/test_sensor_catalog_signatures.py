@@ -6,7 +6,7 @@ Per the auto-provisioning plan, ``openral detect`` resolves a probed device
 the *real* intrinsics, FOV, encoding and rate — never invented from
 v4l2 introspection.
 
-These tests use the real global :data:`CATALOG` populated by every
+These tests use the real global ``CATALOG`` populated by every
 vendor module on import; per CLAUDE.md §1.11 there are no mocks.
 """
 

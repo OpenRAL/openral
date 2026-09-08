@@ -1,6 +1,6 @@
-"""LIBERO scene adapter — wraps :class:`lerobot.envs.libero.LiberoEnv`.
+"""LIBERO scene adapter — wraps ``lerobot.envs.libero.LiberoEnv``.
 
-Driven by a :class:`openral_core.SimScene` config, this adapter is
+Driven by a ``openral_core.SimScene`` config, this adapter is
 the canonical entry point for LIBERO physics-backed rollouts (used by
 ``scenes/benchmark/libero_spatial.yaml`` and other rSkill-backed configs).
 
@@ -14,7 +14,7 @@ Task ID convention
 ``"<suite>/<task_id>"`` where ``<suite>`` is one of
 ``libero_spatial``, ``libero_object``, ``libero_goal``, ``libero_10`` and
 ``<task_id>`` is an integer index inside that suite. The suite name MUST
-also be the ``scene.id`` so :class:`openral_core.SimEnvironment`
+also be the ``scene.id`` so ``openral_core.SimEnvironment``
 cross-field validation passes.
 """
 
@@ -70,8 +70,8 @@ def _parse_task_id(task_id: str, scene_id: str) -> int:
     """Parse ``"<suite>/<int>"`` and validate ``<suite> == scene_id``.
 
     Args:
-        task_id: Composite task identifier from :class:`TaskSpec.id`.
-        scene_id: Expected suite name from :class:`SceneSpec.id`.
+        task_id: Composite task identifier from ``TaskSpec.id``.
+        scene_id: Expected suite name from ``SceneSpec.id``.
 
     Returns:
         The integer task index.
@@ -98,7 +98,7 @@ def _parse_task_id(task_id: str, scene_id: str) -> int:
 
 @dataclass
 class _LiberoSim:
-    """Thin :class:`SimRollout` wrapper around ``LiberoEnv``."""
+    """Thin ``SimRollout`` wrapper around ``LiberoEnv``."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -121,7 +121,7 @@ class _LiberoSim:
         horizon/success and hard-raises on a post-terminal step. Walk
         ``_env``/``env``/``unwrapped`` until we find the object carrying both
         ``ignore_done`` and ``horizon`` (robust to robosuite's cross-release
-        re-layering) so :meth:`enable_continuous` targets the right env.
+        re-layering) so ``enable_continuous`` targets the right env.
         """
         seen: set[int] = set()
         stack: list[Any] = [self._env]
@@ -143,12 +143,12 @@ class _LiberoSim:
         wrong for a multi-task deploy where the reasoner/mission own episode
         boundaries, and it orphans the MuJoCo viewer. Set the robosuite env's
         ``ignore_done`` so a continued (post-terminal) step does not raise, and
-        :meth:`step` then swallows the inline reset. No-op for ``openral sim run``.
+        ``step`` then swallows the inline reset. No-op for ``openral sim run``.
 
         ``LiberoEnv`` builds its underlying ``OffScreenRenderEnv`` *lazily* (on
         first ``reset``/``step``), and ``SimAttachedHAL`` calls this at
         ``__init__`` time — before ``connect()`` does the first reset — so the
-        robosuite env usually does not exist yet here. :meth:`reset` therefore
+        robosuite env usually does not exist yet here. ``reset`` therefore
         re-applies ``ignore_done`` after every reset; the eager attempt below
         only covers an already-built env.
         """
@@ -270,7 +270,7 @@ class _LiberoSim:
     def mujoco_handles(self) -> tuple[mujoco.MjModel, mujoco.MjData] | None:
         """Reach through lerobot+robosuite to expose the underlying MuJoCo handles.
 
-        ``self._env`` is lerobot's :class:`LiberoEnv`, which holds
+        ``self._env`` is lerobot's ``LiberoEnv``, which holds
         robosuite's ``OffScreenRenderEnv`` on its private ``_env`` attr;
         that env exposes ``.sim`` (a ``robosuite.utils.binding_utils.MjSim``)
         whose ``.model._model`` / ``.data._data`` are the raw
@@ -297,7 +297,7 @@ class _LiberoSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; the LIBERO env rewinds the clock on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -364,7 +364,7 @@ def _seed_libero_config_if_absent() -> None:
     (and any non-interactive process — a deploy-sim subprocess, a cron CI run)
     that ``input()`` raises ``OSError: reading from stdin while output is
     captured``, crashing the very first ``from lerobot.envs.libero import
-    LiberoEnv`` before :func:`_ensure_libero_config_matches_active_install`
+    LiberoEnv`` before ``_ensure_libero_config_matches_active_install``
     below ever gets a chance to run.
 
     LIBERO only prompts when ``$LIBERO_CONFIG_PATH/config.yaml`` (default
@@ -374,7 +374,7 @@ def _seed_libero_config_if_absent() -> None:
     LIBERO writes the correct defaults for the active install itself (no
     fragile re-derivation of its path layout here), then we restore ``input``.
     Idempotent — a no-op once the config exists, so the real
-    :func:`_ensure_libero_config_matches_active_install` still owns the
+    ``_ensure_libero_config_matches_active_install`` still owns the
     cross-venv repair on every subsequent build.
     """
     import builtins
@@ -439,7 +439,7 @@ def _ensure_libero_config_matches_active_install() -> None:
 
 
 def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
-    """Lazily import ``lerobot.envs.libero`` and build a :class:`_LiberoSim`."""
+    """Lazily import ``lerobot.envs.libero`` and build a ``_LiberoSim``."""
     if env_cfg.scene.id not in _LIBERO_SUITES:
         raise ROSConfigError(
             f"libero scene id must be one of {_LIBERO_SUITES}, got {env_cfg.scene.id!r}"

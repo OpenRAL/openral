@@ -4,7 +4,7 @@
 TOPReward (``lerobot.rewards.topreward``) is a zero-shot, clip-level reward:
 ``compute_reward`` returns one ``log P("True" | video, instruction)`` scalar.
 Per-frame progress is the prefix sweep lerobot ships in
-:mod:`lerobot.rewards.topreward.compute_rabc_weights` (score growing prefixes,
+``lerobot.rewards.topreward.compute_rabc_weights`` (score growing prefixes,
 min-max normalise per episode, interpolate to ``[0, 1]`` per frame); this
 script reuses that machinery and adds only NF4 quantization of the Qwen3-VL
 backbone, since lerobot 0.6.0 loads reward models bf16 and an 8B/4B bf16 VLM
@@ -56,7 +56,7 @@ from transformers import BitsAndBytesConfig, Qwen3VLForConditionalGeneration
 class NF4TOPRewardModel(TOPRewardModel):  # type: ignore[misc]  # reason: lerobot model is untyped.
     """TOPReward whose Qwen3-VL backbone is loaded in NF4 (4-bit) to fit 8 GB.
 
-    lerobot's :class:`TOPRewardModel.__init__` hard-codes ``model_kwargs`` with
+    lerobot's ``TOPRewardModel.__init__`` hard-codes ``model_kwargs`` with
     no quantization knob, so we override it to inject a bitsandbytes NF4 config.
     Everything downstream (``compute_reward``, the processor) is unchanged — the
     model is still a frozen zero-shot scorer.

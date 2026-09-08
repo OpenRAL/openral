@@ -1,13 +1,13 @@
 """Gripper-effort grasp trigger: debounce, hysteresis, regrasp, effort-channel health.
 
-State snapshots are real :class:`openral_core.JointState` over the real
+State snapshots are real ``openral_core.JointState`` over the real
 ``robots/so101_follower/robot.yaml`` manifest — joint names, ``role: "gripper"``
 resolution and ``effort_limit`` all come from the shipped robot (CLAUDE.md §1.11).
 
 Effort *values* are chosen by these tests to pin trigger behaviour at, above and
 below its own thresholds. Whether an SO-101's Feetech servos actually report
 those numbers is hardware validation, not covered here — see
-:func:`~openral_hal._grasp_trigger.assess_effort_readback`, exercised by the
+``assess_effort_readback``, exercised by the
 last test in this file.
 """
 

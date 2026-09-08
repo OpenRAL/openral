@@ -1,10 +1,10 @@
 """Lifecycle smoke test for ``openral_hal_ur5e``.
 
 Drives the standard managed-lifecycle transition path against the generic
-``_HALLifecycleNode`` from :mod:`openral_hal.lifecycle` using the real
+``_HALLifecycleNode`` from ``openral_hal.lifecycle`` using the real
 ``UR5eHAL`` factory.  The HAL pulls its MJCF lazily from the
 ``robot_descriptions`` package and ships its canonical
-:class:`openral_core.RobotDescription` (``UR5e_DESCRIPTION``) — so this
+``openral_core.RobotDescription`` (``UR5e_DESCRIPTION``) — so this
 smoke exercises the same RobotDescription wiring used at runtime, not a
 stub.
 

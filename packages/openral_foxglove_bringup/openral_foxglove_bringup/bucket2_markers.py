@@ -100,7 +100,7 @@ def capsule_markers(
         object_id: Per-obstacle label string.  Length N (may be empty strings).
 
     Returns:
-        One :class:`MarkerSpec` per obstacle, index-parallel with the inputs.
+        One ``MarkerSpec`` per obstacle, index-parallel with the inputs.
 
     Raises:
         ValueError: If ``len(radius) != len(half_length)``, the 6N invariant

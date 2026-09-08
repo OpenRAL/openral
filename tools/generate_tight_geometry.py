@@ -124,7 +124,7 @@ def link_mesh_in_box_frame(
 def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
     """Triangle indices for ``geom_name``'s mesh, local to its own vertex block.
 
-    Indexes the same vertex order :func:`link_mesh_in_box_frame` returns, so
+    Indexes the same vertex order ``link_mesh_in_box_frame`` returns, so
     ``faces`` from this function and ``points`` from that one describe one
     consistent triangle mesh.
     """
@@ -163,9 +163,9 @@ def hull_overhang_m(
     Args:
         hull_points: The hull's own vertices, box-frame, the same array
             ``scipy.spatial.ConvexHull`` was built from.
-        mesh_points: Real mesh vertices, box-frame (:func:`link_mesh_in_box_frame`).
+        mesh_points: Real mesh vertices, box-frame (``link_mesh_in_box_frame``).
         mesh_faces: Real mesh triangle indices into ``mesh_points``
-            (:func:`link_mesh_faces`).
+            (``link_mesh_faces``).
         samples_per_edge: Barycentric grid resolution per hull facet (24 gives
             325 samples/facet). A sampled lower bound on the true continuous
             supremum (measured max creeps up a couple % per doubling), which
@@ -307,7 +307,7 @@ def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget:
 def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> dict[str, Any]:
     """Build the DOP slabs and (when it fits the budget) the exact hull.
 
-    Returns a mapping ready for :class:`openral_core.schemas.TightCollisionGeometry`,
+    Returns a mapping ready for ``openral_core.schemas.TightCollisionGeometry``,
     plus the diagnostics a reviewer needs: vertex counts and the achieved inward
     margin of the DOP inside the shipped box.
     """

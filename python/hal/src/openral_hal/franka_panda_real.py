@@ -3,8 +3,8 @@
 Targets a **physical** Panda driven through ``franka_ros2`` (``libfranka`` +
 ``franka_hardware``) and a ``ros2_control`` joint trajectory controller —
 the production sibling of the MuJoCo-backed
-:class:`openral_hal.franka_panda.FrankaPandaHAL`; both expose
-:data:`FRANKA_PANDA_DESCRIPTION` so upper layers see one normative robot
+``openral_hal.franka_panda.FrankaPandaHAL``; both expose
+``FRANKA_PANDA_DESCRIPTION`` so upper layers see one normative robot
 regardless of where the joints physically live.
 
 License posture (CLAUDE.md §7.4): the Franka FCI/``libfranka`` stack is
@@ -13,10 +13,10 @@ commercial); ``franka_ros2`` is Apache-2.0. The manifest declares
 ``sdk_kind: "closed_with_api"`` and sets ``hal.real`` to this adapter.
 
 Transport: the hot path is ``ros2_control``; this module does not import
-``rclpy`` and instead delegates to :class:`openral_hal.ros_control.RosControlHAL`,
+``rclpy`` and instead delegates to ``openral_hal.ros_control.RosControlHAL``,
 which takes injected ``publish_fn``/``state_fn`` callables. The lifecycle
 node in ``packages/openral_hal_franka`` wires real publishers/subscribers at
-runtime; unit tests inject :class:`SimTransport` for the same code path
+runtime; unit tests inject ``SimTransport`` for the same code path
 without ROS 2 installed.
 
 Example:
@@ -63,7 +63,7 @@ _DEFAULT_FRANKA_JOINT_STATE_TOPIC: str = "/joint_states"
 
 # Default e-stop / error-recovery topic used by ``franka_ros2`` controllers.
 # Publishing to this topic resets the FCI from a reflex-triggered halt; the
-# safety supervisor uses it after handling an :class:`ROSEStopRequested`.
+# safety supervisor uses it after handling an ``ROSEStopRequested``.
 _DEFAULT_FRANKA_ESTOP_TOPIC: str = "/error_recovery/goal"
 
 _PublishFn = Callable[[str, dict[str, object]], None]
@@ -86,7 +86,7 @@ FRANKA_PANDA_REAL_DESCRIPTION = make_real_description(
 class FrankaPandaRealHAL:
     """HAL adapter for a physical Franka Emika Panda over the FCI.
 
-    The adapter wraps :class:`RosControlHAL` and adds Franka-specific
+    The adapter wraps ``RosControlHAL`` and adds Franka-specific
     configuration: the FCI hostname, the ``franka_ros2`` controller name, and
     an explicit error-recovery topic used by the safety supervisor after
     ``estop()``.
@@ -104,18 +104,18 @@ class FrankaPandaRealHAL:
             ``sensor_msgs/JointState``.  Defaults to ``"/joint_states"``.
         command_topic: ROS 2 topic for joint trajectory commands.  Defaults
             to ``"/<controller_name>/joint_trajectory"`` (set by
-            :class:`RosControlHAL`).
+            ``RosControlHAL``).
         error_recovery_topic: ROS 2 topic the safety supervisor publishes to
-            after handling an :class:`ROSEStopRequested` so the FCI clears
+            after handling an ``ROSEStopRequested`` so the FCI clears
             its reflex state.  Defaults to ``"/error_recovery/goal"``.
         publish_fn: Callable forwarding messages to ROS 2 topics.  Production
             use injects the lifecycle node's publisher; tests inject
-            :class:`SimTransport.publish`.
+            ``SimTransport.publish``.
         state_fn: Callable returning the latest raw joint state as a dict.
             Production use injects the lifecycle node's subscriber callback;
-            tests inject :class:`SimTransport.state`.
+            tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading before
-            :class:`ROSPerceptionStale` is raised.  Defaults to ``0.2 s``
+            ``ROSPerceptionStale`` is raised.  Defaults to ``0.2 s``
             (tighter than the ``RosControlHAL`` default because the FCI
             feedback lands at 1 kHz).
 
@@ -174,7 +174,7 @@ class FrankaPandaRealHAL:
 
     @property
     def description(self) -> RobotDescription:
-        """Normative :class:`RobotDescription` for the Franka Panda."""
+        """Normative ``RobotDescription`` for the Franka Panda."""
         return self._inner.description
 
     @property
@@ -227,7 +227,7 @@ class FrankaPandaRealHAL:
         """Forward an action chunk to the ``franka_ros2`` controller.
 
         Args:
-            action: The :class:`Action` produced by the Skill or safety
+            action: The ``Action`` produced by the Skill or safety
                 shaper.
 
         Raises:
@@ -243,7 +243,7 @@ class FrankaPandaRealHAL:
         """Trigger an emergency stop on the FCI.
 
         Publishes a zero-velocity hold to the controller, marks the inner
-        adapter disconnected, and raises :class:`ROSEStopRequested` so the
+        adapter disconnected, and raises ``ROSEStopRequested`` so the
         safety supervisor can log the incident.  The supervisor is
         responsible for calling ``error_recovery`` (via
         ``error_recovery_topic``) before re-arming the robot.

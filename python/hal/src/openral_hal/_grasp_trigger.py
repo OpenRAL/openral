@@ -1,10 +1,10 @@
 """Gripper-effort grasp trigger — when to ask perception "what is in the jaws?".
 
-:mod:`~openral_hal._vision_attachment_evidence` is *told* that a grasp happened;
+``_vision_attachment_evidence`` is *told* that a grasp happened;
 it does not decide it. This module is that decision, and only that: a debounced
 state machine over the gripper joint's effort channel in the typed
-:class:`~openral_core.JointState` the HAL already reads every tick. It emits
-:class:`GraspEvent` s — ATTACH, REGRASP, DETACH — which the vision attachment
+``JointState`` the HAL already reads every tick. It emits
+``GraspEvent`` s — ATTACH, REGRASP, DETACH — which the vision attachment
 bridge turns into ``SegmentInView`` calls.
 
 Pure: no ROS, no numpy, no I/O, no clock. The caller supplies the state
@@ -19,7 +19,7 @@ thin object. Effort is what distinguishes them: closing onto an object stalls
 the servo and the effort readback rises. A single tick over the threshold is not
 enough, though: effort spikes transiently on every jaw acceleration, and a
 one-tick spike would fire a segmentation (and a payload attachment) for a grasp
-that never happened. :attr:`GraspTriggerConfig.consecutive_ticks` is the
+that never happened. ``GraspTriggerConfig.consecutive_ticks`` is the
 debounce, and the thresholds carry hysteresis so a payload held right at the
 boundary does not chatter attach/detach.
 
@@ -33,9 +33,9 @@ boundary does not chatter attach/detach.
    trusted as the sole attach signal on SO-101 hardware.
 
    This is deliberately left as a falsifiable measurement rather than a guessed
-   constant. :func:`assess_effort_readback` is the test hook: record a real
+   constant. ``assess_effort_readback`` is the test hook: record a real
    open → close-on-object → hold → open sequence on the arm, feed the
-   :class:`~openral_core.JointState` snapshots in, and read the verdict. A
+   ``JointState`` snapshots in, and read the verdict. A
    channel that is absent, all-zero, or constant across a sequence that
    *physically* loaded the jaws is unusable, and the attach trigger then needs a
    different signal entirely (tactile, current sense, or an explicit skill-level
@@ -91,14 +91,14 @@ class GraspEvent(str, Enum):
 
 @dataclass(frozen=True)
 class GraspTriggerConfig:
-    """Debounce and threshold configuration for :class:`GripperEffortTrigger`.
+    """Debounce and threshold configuration for ``GripperEffortTrigger``.
 
     .. warning::
 
        **None of these values is benchmarked.** Each is a conservative starting
        point and a calibration point that must be tuned per robot — and on
        SO-101 specifically, the underlying effort channel itself is unverified
-       (see the module docstring and :func:`assess_effort_readback`).
+       (see the module docstring and ``assess_effort_readback``).
 
     Attributes:
         attach_effort_fraction: Fraction of the gripper joint's manifest
@@ -106,7 +106,7 @@ class GraspTriggerConfig:
             *Calibration point*, ``0.30``.
         release_effort_fraction: Fraction at or below which a loaded gripper
             counts as released. Strictly below
-            :attr:`attach_effort_fraction` — the gap is the hysteresis band
+            ``attach_effort_fraction`` — the gap is the hysteresis band
             that stops a payload held near the threshold from chattering
             attach/detach every tick. *Calibration point*, ``0.10``.
         consecutive_ticks: How many consecutive samples must agree before a
@@ -129,7 +129,7 @@ class GraspTriggerConfig:
 class EffortReadbackHealth:
     """Verdict on whether a recorded effort channel can drive a grasp trigger.
 
-    The output of :func:`assess_effort_readback` — the falsification hook for
+    The output of ``assess_effort_readback`` — the falsification hook for
     the open question in this module's docstring.
 
     Attributes:
@@ -167,7 +167,7 @@ def gripper_joint(description: RobotDescription) -> object:
         description: The robot manifest.
 
     Returns:
-        The gripper :class:`~openral_core.JointSpec`.
+        The gripper ``JointSpec``.
 
     Raises:
         ROSConfigError: If the manifest declares no gripper-role joint, or more
@@ -191,9 +191,9 @@ def assess_effort_readback(
 ) -> EffortReadbackHealth:
     """Judge a recorded effort trace as a grasp signal — the SO-101 test hook.
 
-    Feed this the :class:`~openral_core.JointState` snapshots captured while a
+    Feed this the ``JointState`` snapshots captured while a
     real arm opens, closes onto an object, holds, and releases. If the verdict
-    is not ``usable``, :class:`GripperEffortTrigger` cannot be trusted on that
+    is not ``usable``, ``GripperEffortTrigger`` cannot be trusted on that
     robot and the attach trigger needs a different signal — see the module
     docstring. This function measures; it does not assume.
 
@@ -203,7 +203,7 @@ def assess_effort_readback(
             ``effort_limit`` (the scale the span is judged against).
 
     Returns:
-        The :class:`EffortReadbackHealth` verdict.
+        The ``EffortReadbackHealth`` verdict.
 
     Raises:
         ROSConfigError: If the manifest has no single gripper joint, or that
@@ -272,13 +272,13 @@ def _effort_of(state: JointState, joint_name: str) -> float | None:
 class GripperEffortTrigger:
     """Debounced attach / regrasp / detach events from gripper effort.
 
-    Fed one :class:`~openral_core.JointState` per HAL read tick; returns a
-    :class:`GraspEvent` on the tick a transition is confirmed, and ``None``
-    otherwise. Confirmation needs :attr:`GraspTriggerConfig.consecutive_ticks`
+    Fed one ``JointState`` per HAL read tick; returns a
+    ``GraspEvent`` on the tick a transition is confirmed, and ``None``
+    otherwise. Confirmation needs ``GraspTriggerConfig.consecutive_ticks``
     agreeing samples, so a transient effort spike never fires an attachment.
 
     Ticks where the gripper carries **no** effort value at all are not silently
-    ignored: they are counted in :attr:`missing_effort_ticks` so the caller can
+    ignored: they are counted in ``missing_effort_ticks`` so the caller can
     surface a driver that publishes an empty effort channel instead of quietly
     never attaching (CLAUDE.md §1.4).
 
@@ -361,7 +361,7 @@ class GripperEffortTrigger:
             state: The tick's joint state, as read from the HAL.
 
         Returns:
-            The confirmed :class:`GraspEvent`, or ``None`` when this tick
+            The confirmed ``GraspEvent``, or ``None`` when this tick
             confirms nothing.
         """
         effort = _effort_of(state, self._joint_name)

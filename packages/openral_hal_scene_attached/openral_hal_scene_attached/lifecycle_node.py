@@ -2,7 +2,7 @@
 """Generic scene-attached HAL lifecycle node for deploy-sim.
 
 The node is intentionally sim-only in practice: ``openral deploy sim`` injects a
-``sim_env_yaml`` parameter and :func:`openral_hal.build_hal` returns
+``sim_env_yaml`` parameter and ``openral_hal.build_hal`` returns
 ``SimAttachedHAL`` before consulting any robot-specific ``hal.sim`` entrypoint.
 It exists for simulator-owned embodiments such as SimplerEnv WidowX and
 RoboTwin AgileX, where the simulator sidecar owns the robot model and OpenRAL

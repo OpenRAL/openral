@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.UR5eHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.UR5eHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` UR5e MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →

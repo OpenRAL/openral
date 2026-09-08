@@ -27,7 +27,7 @@ class _Geom:
     ``derive_robot_relative_height_band`` takes ``description: Any`` on purpose
     (the node must not import ``openral_core`` to compute a band), so this is
     the real calling contract, not a stand-in for ``LinkCollisionGeometry``. It
-    exists to place a *real* :class:`openral_core.BoxShape` at an orientation no
+    exists to place a *real* ``openral_core.BoxShape`` at an orientation no
     shipped manifest happens to use, and to carry the one shape kind the schema
     cannot express yet.
     """

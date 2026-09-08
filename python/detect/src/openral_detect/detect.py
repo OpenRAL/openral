@@ -1,12 +1,12 @@
 """Umbrella entry point — `detect_hardware()`.
 
 Runs every probe sequentially and aggregates the results into a single
-:class:`DetectionReport`.  Probes are wrapped in
+``DetectionReport``.  Probes are wrapped in
 ``openral_observability.tracing.safety_span`` so the whole detection
 pass shows up as a single span tree in OTel.
 
 The function is **synchronous and never raises**.  Probe failures append
-typed warnings to :attr:`DetectionReport.warnings`; missing optional
+typed warnings to ``DetectionReport.warnings``; missing optional
 dependencies are *expected* and produce a one-line note, not an error.
 """
 
@@ -55,7 +55,7 @@ def detect_hardware(
         exclude: Probe names to skip even when ``include`` covers them.
 
     Returns:
-        A :class:`DetectionReport` with every requested probe populated.
+        A ``DetectionReport`` with every requested probe populated.
 
     Example:
         >>> from openral_detect import detect_hardware

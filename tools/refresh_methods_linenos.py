@@ -11,7 +11,7 @@ moves. This script re-derives each marker from the current source tree:
   backticked code span (``class X(...)``, ``def``-style ``name(args) -> ret``,
   ``@dataclass X``, ``const X: ...``, ``prop a, b, c``). Indented bullets
   resolve inside the enclosing top-level ``class`` entry's scope.
-* Symbols are located with :mod:`ast`; unresolved entries are reported and
+* Symbols are located with ``ast``; unresolved entries are reported and
   left untouched (a stale entry is a defect to fix by hand, not to guess).
 
 Usage::

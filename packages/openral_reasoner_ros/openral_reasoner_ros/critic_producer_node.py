@@ -4,10 +4,10 @@
 Subscribes ``/openral/critic/score`` (``openral_msgs/CriticScore``, published by
 reward models — Robometer today, future SARM/success classifiers), routes each
 ``(critic_id, score, threshold)`` sample through a
-:class:`~openral_reasoner.CriticWatchdogGroup`, and on a **stall or success**
+``CriticWatchdogGroup``, and on a **stall or success**
 publishes a Tier-C ``FailureTrigger`` (``KIND_CRITIC``/``SEVERITY_FAIL``, the
 ``CriticEvidence``, ``trace_id`` propagated) on ``/openral/failure/critic`` via
-:class:`~openral_observability.failure_bus.FailureBusPublisher`. ``reasoner_node``
+``FailureBusPublisher``. ``reasoner_node``
 maps that FAIL event onto a forced Tier-C tick (``ReasonerCore.tick(force=True,
 tier="C")``).
 

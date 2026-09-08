@@ -22,7 +22,7 @@ three files. If a version bump ever lacks one, add an entry under
 — **that HF dataset repo does not exist yet and must be populated first.**
 
 Failure mode: a network-less host or upstream outage must never crash the
-dashboard (CLAUDE.md §1.11). :func:`ensure_vad_assets` is best-effort — each
+dashboard (CLAUDE.md §1.11). ``ensure_vad_assets`` is best-effort — each
 failure is a loud ``structlog`` warning, never a silent ``except: pass``, and
 the mic button degrades client-side (``/api/config``'s ``voice_prompt_enabled``
 flag; see ``dashboard.js``) rather than throwing at click time.
@@ -143,7 +143,7 @@ def _place(cached: Path, target: Path) -> None:
 def ensure_vad_assets() -> bool:
     """Fetch and place every pinned VAD asset, best-effort.
 
-    For each entry in :data:`PINNED_VAD_ASSETS`: skip if already served from
+    For each entry in ``PINNED_VAD_ASSETS``: skip if already served from
     ``static/vendor/vad/`` (a real repo checkout, or a previous run already
     placed it); otherwise re-use a verified cache hit, or download + verify
     into the cache, then hard-link/copy it into the served static directory.
@@ -151,7 +151,7 @@ def ensure_vad_assets() -> bool:
     Never raises. A download or verification failure for one asset is logged
     as a ``structlog`` warning and does not stop the others; failures leave
     that asset (and therefore the voice-prompt feature — see
-    :func:`vad_assets_available`) unavailable rather than serving a
+    ``vad_assets_available``) unavailable rather than serving a
     corrupt/unverified file.
 
     Returns:

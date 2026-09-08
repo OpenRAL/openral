@@ -7,8 +7,8 @@ frame. It is honoured by **free-axis** scene adapters only (``mock``,
 guard. Adapters anchor the pose on the robot manifest's ``base_frame``
 (``RobotDescription.base_frame``), so no robot-side schema change is
 needed — the existing field is sufficient. ``base_pose`` lives on
-:class:`DeployScene` and is inherited by :class:`SimScene` and
-:class:`BenchmarkScene` (the three-tier scene hierarchy).
+``DeployScene`` and is inherited by ``SimScene`` and
+``BenchmarkScene`` (the three-tier scene hierarchy).
 
 CLAUDE.md §1.11: real schemas, real CLI runner, no mocks. The CLI guard
 fires at config-build time, so no physics dependency is needed to

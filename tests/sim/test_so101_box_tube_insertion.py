@@ -1,6 +1,6 @@
 """Sim tests for the ``so101_box`` tube-insertion scene.
 
-Exercises the full :class:`SimRollout` Protocol end-to-end against a
+Exercises the full ``SimRollout`` Protocol end-to-end against a
 real composed MJCF: model compile, factory build, ``reset()``,
 ``step()`` with a zero action, observation shape, mujoco_handles
 re-entry, and the geometric success check under four synthetic poses
@@ -68,7 +68,7 @@ pytestmark = [
 
 @pytest.fixture
 def env_cfg():
-    """Build a real :class:`SimEnvironment` for the so101_box scene."""
+    """Build a real ``SimEnvironment`` for the so101_box scene."""
     from openral_core.schemas import (
         SceneSpec,
         SimEnvironment,

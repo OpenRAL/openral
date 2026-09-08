@@ -3,7 +3,7 @@
 Exercises the robot ⨯ skill envelope intersection algebra, the
 loosening-rejection contract, and the flat-YAML kernel
 bridge format. No mocks (CLAUDE.md §1.11): every fixture is a real
-:class:`openral_core.RobotDescription` / :class:`RSkillManifest`
+``openral_core.RobotDescription`` / ``RSkillManifest``
 constructed from real in-tree YAMLs.
 """
 

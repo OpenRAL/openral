@@ -1,4 +1,4 @@
-"""Unit tests for :class:`openral_runner.ROSPublishingHAL`.
+"""Unit tests for ``openral_runner.ROSPublishingHAL``.
 
 Replaces a motor-driving HAL with a publisher of ``openral_msgs/ActionChunk`` on
 ``/openral/candidate_action``, keeping ``DeployRunner._tick_impl``'s contract intact.
@@ -34,7 +34,7 @@ from openral_runner.ros_publishing_hal import ROSPublishingHAL, _row_major_flatt
 
 
 def _so100_like_description() -> RobotDescription:
-    """Real :class:`RobotDescription` with six revolute joints (SO-100-shaped)."""
+    """Real ``RobotDescription`` with six revolute joints (SO-100-shaped)."""
     joints = [
         JointSpec(
             name=f"j{i}",

@@ -239,7 +239,7 @@ class SilhouetteProbe(Node):  # type: ignore[misc]  # reason: rclpy ships no py.
     def _payload_masks(self, points_xy: Any) -> tuple[Any, int, int]:
         """Union mask of the attached objects' projections, placed and declared counts.
 
-        Thin wrapper over :func:`payload_mask` so the counting rule it got wrong
+        Thin wrapper over ``payload_mask`` so the counting rule it got wrong
         can be tested without a graph; see that function.
         """
         state = self.state

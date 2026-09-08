@@ -1,10 +1,10 @@
-"""SimRunner — per-step :class:`InferenceRunner` for the simulation runtime.
+"""SimRunner — per-step ``InferenceRunner`` for the simulation runtime.
 
 Sim and hardware share one tick semantic — one inference step per tick.
-:class:`DeployRunner` ticks at e.g. 30 Hz on a real robot; :class:`SimRunner`
+``DeployRunner`` ticks at e.g. 30 Hz on a real robot; ``SimRunner``
 ticks as fast as the env + policy let it, with each tick advancing one
 ``env.step``. Episodes are a derived view: SimRunner accumulates per-tick
-data into a private buffer and emits an :class:`EpisodeResult` whenever the
+data into a private buffer and emits an ``EpisodeResult`` whenever the
 env terminates / truncates or the per-episode step budget is reached.
 """
 
@@ -212,11 +212,11 @@ def _count_policy_input_cameras(policy: object, env_cfg: SimEnvironment) -> int:
 
 @dataclass
 class _EpisodeBuffer:
-    """Per-episode accumulation buffer used by :class:`SimRunner`.
+    """Per-episode accumulation buffer used by ``SimRunner``.
 
     Mirrors the lists ``run_episode`` used to materialise locally, but as
     an instance owned by the runner so it survives between ``_tick_impl``
-    calls. Reset on each episode boundary by :meth:`SimRunner._finalize_episode`.
+    calls. Reset on each episode boundary by ``SimRunner._finalize_episode``.
     """
 
     latencies: list[float] = field(default_factory=list)
@@ -244,16 +244,16 @@ class _EpisodeBuffer:
 
 
 class SimRunner(InferenceRunnerBase):
-    """One-tick = one-env-step :class:`InferenceRunner` for sim rollouts.
+    """One-tick = one-env-step ``InferenceRunner`` for sim rollouts.
 
-    Drives a single (robot × scene × task × VLA) :class:`SimEnvironment`
-    for ``env_cfg.n_episodes`` episodes. Each call to :meth:`tick`
+    Drives a single (robot × scene × task × VLA) ``SimEnvironment``
+    for ``env_cfg.n_episodes`` episodes. Each call to ``tick``
     advances by one tick of one of two flavours:
 
       * **Reset tick** — emitted at the start of each episode (and once
         more after a terminated / truncated step). Calls ``env.reset``
-        and ``policy.reset``, finalises the previous :class:`EpisodeResult`
-        if any, and returns a :class:`TickResult` with
+        and ``policy.reset``, finalises the previous ``EpisodeResult``
+        if any, and returns a ``TickResult`` with
         ``action_applied=False`` and ``inference_ms == 0.0``.
       * **Step tick** — runs ``policy.step`` + ``env.step``. Records
         latency, reward, ``terminated`` / ``truncated``, and (when
@@ -261,24 +261,24 @@ class SimRunner(InferenceRunnerBase):
         frame, joint state, and action. When the env signals termination
         the next tick will be a reset tick.
 
-    :meth:`_should_terminate` returns ``True`` once ``n_episodes``
+    ``_should_terminate`` returns ``True`` once ``n_episodes``
     EpisodeResults have been emitted, so callers can pass an upper-bound
     ``max_ticks`` (typically ``n_episodes * (max_steps + 1)``) and rely
     on the hook for the real stop condition.
 
     Args:
-        env_cfg: Validated :class:`openral_core.SimEnvironment`.
+        env_cfg: Validated ``openral_core.SimEnvironment``.
         view: Open a passive ``mujoco.viewer`` window during the rollout.
             Only valid for MuJoCo-backed scenes that expose
             ``mujoco_handles()``.
         strict_view: When ``view`` is True and the env adapter does not
-            expose ``mujoco_handles()``, raise :class:`ROSConfigError`
+            expose ``mujoco_handles()``, raise ``ROSConfigError``
             instead of warning and continuing offscreen.
         deadline_overrun_policy: Forwarded to the base class. Defaults to
             WARN since sim rollouts are not real-time.
 
     Attributes:
-        episode_results: One :class:`EpisodeResult` per completed episode,
+        episode_results: One ``EpisodeResult`` per completed episode,
             populated as ticks complete.
         manifest: The validated rSkill manifest, or ``None`` for mock
             policies that carry no weights.
@@ -297,22 +297,22 @@ class SimRunner(InferenceRunnerBase):
         deadline_overrun_policy: DeadlineOverrunPolicy = DeadlineOverrunPolicy.WARN,
         recorder: RolloutRecorder | None = None,
     ) -> None:
-        """Build the runner; defer env / policy construction to :meth:`activate`.
+        """Build the runner; defer env / policy construction to ``activate``.
 
         Args:
-            env_cfg: Validated :class:`openral_core.SimEnvironment`.
+            env_cfg: Validated ``openral_core.SimEnvironment``.
             view: Open a passive ``mujoco.viewer`` window during the rollout.
             strict_view: Raise on missing viewer handles instead of warning.
             instruction_override: An explicit ``--instruction`` CLI value that
                 must win over a scene's per-episode ``obs["task"]`` language
                 (for example, RoboCasa sampled object).
                 ``None`` when the user passed nothing — the env/YAML language
-                then takes over. See :func:`_resolve_step_instruction`.
+                then takes over. See ``_resolve_step_instruction``.
             deadline_overrun_policy: Forwarded to the base class.
-            recorder: Optional :class:`openral_dataset.RolloutRecorder`.
+            recorder: Optional ``openral_dataset.RolloutRecorder``.
                 When set, per-step state / images / action plus episode
                 boundaries are fanned out to the recorder's sinks in
-                addition to the existing :class:`_EpisodeBuffer`. The
+                addition to the existing ``_EpisodeBuffer``. The
                 buffer drives the in-memory video / json / benchmark
                 pipeline; the recorder drives the durable LeRobotDataset
                 v3 path. The two are additive — the recorder is never
@@ -368,11 +368,11 @@ class SimRunner(InferenceRunnerBase):
         ``make_env`` (MuJoCo XML compile / dataset prefetch — ~30–60 s on
         LIBERO / RoboCasa) and ``make_policy`` (PaliGemma 3.4B graph
         allocation + NF4 quantization — ~100–150 s on π0.5) are independent:
-        both only read the immutable :class:`SimEnvironment` and share no
+        both only read the immutable ``SimEnvironment`` and share no
         mutable state. By default they run concurrently on a 2-worker
         ``ThreadPoolExecutor`` (the GIL is released by MuJoCo C calls and
         the torch / safetensors load path), so the wall-clock for
-        :meth:`activate` collapses to ``max(env_ms, policy_ms)`` instead
+        ``activate`` collapses to ``max(env_ms, policy_ms)`` instead
         of their sum. See GH-134.
 
         Set ``OPENRAL_SIM_SEQUENTIAL_INIT=1`` to force the legacy
@@ -383,8 +383,8 @@ class SimRunner(InferenceRunnerBase):
         no swallowed traceback. If the policy build raises while the env
         build is still running, the env future is left to finish on the
         worker thread (cancellation of a started future is a no-op in
-        Python's executor model); :meth:`deactivate` is responsible for
-        closing it if :meth:`activate` raised after a partial assignment.
+        Python's executor model); ``deactivate`` is responsible for
+        closing it if ``activate`` raised after a partial assignment.
         """
         # Validate before the (expensive) env / policy build so misconfigs
         # fail fast without burning GPU time.
@@ -514,7 +514,7 @@ class SimRunner(InferenceRunnerBase):
     def _on_deadline_overrun(self, result: TickResult) -> None:
         """Sim ticks intentionally ignore the base-class rate budget.
 
-        :class:`DeployRunner` ticks at a real-time cadence so deadline
+        ``DeployRunner`` ticks at a real-time cadence so deadline
         overruns matter — they mean the robot is starving on stale
         actions. Sim is not real-time: it runs as fast as the policy +
         env allow. The base class still enforces ``rate_hz`` because we
@@ -621,7 +621,7 @@ class SimRunner(InferenceRunnerBase):
             "eval.step", attributes={"step": self._step_idx}
         ) as step_span:
             t0 = time.perf_counter()
-            # See :func:`_resolve_step_instruction` for precedence.
+            # See ``_resolve_step_instruction`` for precedence.
             obs_task = self._obs.get("task") if isinstance(self._obs, dict) else None
             instruction = _resolve_step_instruction(
                 instruction_override=self._instruction_override,
@@ -738,7 +738,7 @@ class SimRunner(InferenceRunnerBase):
         terminated: bool,
         truncated: bool,
     ) -> None:
-        """Fan one step's payload out to the attached :class:`RolloutRecorder`.
+        """Fan one step's payload out to the attached ``RolloutRecorder``.
 
         Splits into its own helper to keep ``_step_tick`` readable;
         called only when ``self._recorder is not None``. The state /
@@ -791,7 +791,7 @@ class SimRunner(InferenceRunnerBase):
     # ── Episode finalisation ────────────────────────────────────────────────
 
     def _finalize_episode(self) -> None:
-        """Build an :class:`EpisodeResult` from the per-step buffer and emit it."""
+        """Build an ``EpisodeResult`` from the per-step buffer and emit it."""
         env_cfg = self._env_cfg
         latencies = self._buf.latencies
         mean_lat = float(np.mean(latencies)) if latencies else 0.0
@@ -909,7 +909,7 @@ def _check_rskill_compatibility(
     Strict-by-construction: every sim eval flows through the rSkill manifest
     so the embodiment / sensor / capability contract is exercised on every
     rollout. The render resolution is raised to satisfy the rSkill's camera
-    minimums (see :func:`_required_render_resolution`), and the robot's RGB
+    minimums (see ``_required_render_resolution``), and the robot's RGB
     sensor intrinsics are synced to the actual render size before the sensor
     gate — robot.yaml declares a nominal size, but in sim the rendered frame is
     really ``scene.observation_*``.
@@ -918,10 +918,10 @@ def _check_rskill_compatibility(
         openral_core.exceptions.ROSConfigError: ``vla.weights_uri`` carries
             an ``hf://`` scheme (sim runner requires a locally-resolvable
             rSkill), or ``robot_id`` is not registered in
-            :data:`openral_sim.ROBOTS`.
+            ``openral_sim.ROBOTS``.
         openral_core.exceptions.ROSCapabilityMismatch: The manifest's
             embodiment tags, capability flags, or sensor requirements do
-            not intersect the robot's :class:`RobotDescription`.
+            not intersect the robot's ``RobotDescription``.
 
     Returns:
         ``(manifest, env_cfg)`` where ``env_cfg`` may carry a bumped render
@@ -1001,13 +1001,13 @@ def _check_rskill_compatibility(
 
 
 _SEQUENTIAL_INIT_ENV = "OPENRAL_SIM_SEQUENTIAL_INIT"
-# Set to "1" by :meth:`SimRunner.activate` for the duration of the
+# Set to "1" by ``SimRunner.activate`` for the duration of the
 # scene build when ``--view`` is on. Read by scene factories whose
 # underlying engine builds its live viewer at construct time
 # (currently the SAPIEN/ManiSkill3 ``simpler_env`` backend, which
 # accepts ``render_mode='human'`` to ``gym.make``). MuJoCo-backed
 # adapters open the viewer lazily after ``reset()`` via
-# :func:`_open_viewer_and_pacing` and so ignore this var.
+# ``_open_viewer_and_pacing`` and so ignore this var.
 _VIEW_ENV = "OPENRAL_SIM_VIEW"
 
 # Scene-id prefixes known to race the lerobot/transformers import chain when
@@ -1067,7 +1067,7 @@ def _build_env_and_policy(
     policy-build exception is suppressed via ``contextlib.suppress``.
 
     Args:
-        env_cfg: Validated :class:`openral_core.SimEnvironment`.
+        env_cfg: Validated ``openral_core.SimEnvironment``.
 
     Returns:
         ``(env, policy)``, both fully constructed.
@@ -1172,12 +1172,12 @@ def _seed_global_rngs(seed: int) -> None:
 class _SapienViewerProxy:
     """Adapt a SAPIEN/ManiSkill3 env with ``render_mode='human'`` to the runner's viewer contract.
 
-    The runner only invokes :meth:`sync` (after each applied step) and
-    :meth:`close` (during teardown). For SAPIEN the live window is owned
-    by the env itself — :meth:`sync` just pumps the next frame via
+    The runner only invokes ``sync`` (after each applied step) and
+    ``close`` (during teardown). For SAPIEN the live window is owned
+    by the env itself — ``sync`` just pumps the next frame via
     ``env.viewer_render()`` (which in turn calls ``self._env.render()``
-    on the underlying gym env), and :meth:`close` is a no-op since the
-    rollout's own :meth:`close` tears down the env and its viewer
+    on the underlying gym env), and ``close`` is a no-op since the
+    rollout's own ``close`` tears down the env and its viewer
     together.
     """
 
@@ -1205,7 +1205,7 @@ def _open_viewer_and_pacing(
 
     * Adapter exposes ``viewer_render(self) -> None`` — the underlying
       engine owns the viewer (SAPIEN / ManiSkill3 ``render_mode='human'``
-      etc.). Return a :class:`_SapienViewerProxy` that the runner can
+      etc.). Return a ``_SapienViewerProxy`` that the runner can
       ``.sync()`` after each step.
     * Adapter exposes ``mujoco_handles(self) -> (MjModel, MjData) | None``
       — open a passive ``mujoco.viewer`` and pace from
@@ -1259,9 +1259,9 @@ def _aim_viewer_camera(viewer: Any, env: SimRollout, mj_model: Any, mj_data: Any
     """Set the viewer's opening camera + geom visibility.
 
     * Hides robosuite/RoboCasa collision shells (the red kitchen / green robot)
-      via :func:`apply_robosuite_visual_geomgroups` so textures render; no-op on
+      via ``apply_robosuite_visual_geomgroups`` so textures render; no-op on
       dm_control/gym scenes.
-    * Sets the **free** camera's opening pose via :func:`initial_viewer_camera`
+    * Sets the **free** camera's opening pose via ``initial_viewer_camera``
       (eye at the authored overview camera, orbit pivot on the robot base, else
       the base-aligned default). The camera stays ``mjCAMERA_FREE`` so the user
       keeps full mouse control — drag to orbit, scroll to zoom; we only set the

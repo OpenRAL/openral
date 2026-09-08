@@ -1,4 +1,4 @@
-"""Unit tests for :class:`openral_observability.DiagnosticsHeartbeat`.
+"""Unit tests for ``openral_observability.DiagnosticsHeartbeat``.
 
 Two tiers: construction/validation (no rclpy — rejects bad inputs, stays
 inert until ``create_publisher`` runs) and live publish/subscribe (gated on

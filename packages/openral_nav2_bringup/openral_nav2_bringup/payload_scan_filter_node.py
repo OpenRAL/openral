@@ -150,7 +150,7 @@ def points_in_convex_polygon(
     Half-plane test: inside iff left of (or on) every directed edge. ``margin_m`` offsets each edge
     outward (mitres corners, a superset of the true offset region); default is zero, the safe
     direction for a self-filter. Convexity/winding is verified, not assumed — the caller's polygon
-    comes from :func:`~openral_nav2_bringup._footprint_geometry.convex_hull_2d` (always CCW convex),
+    comes from ``convex_hull_2d`` (always CCW convex),
     but a bad hand-supplied outline would misclassify concavities as robot; failing the check raises
     and the self-filter removes nothing.
 
@@ -240,7 +240,7 @@ def filter_scan_ranges(
         placements: ``(shape_type, shape_dimensions, transform)`` per attached
             primitive, each transform placing it in the **scan** frame. Empty
             disables the payload half.
-        margin_m: Containment margin passed to :func:`points_in_primitive`.
+        margin_m: Containment margin passed to ``points_in_primitive``.
         self_polygon: The robot's **bare chassis** outline, CCW convex, in the
             frame ``base_from_scan`` maps the scan into. ``None`` disables the
             self half, which is what the node passes on any failure to resolve

@@ -18,7 +18,7 @@ Mirrors the LIBERO contract so act-libero/smolvla-libero drive it through
 * action: 7-D OSC-pose delta ``[dx, dy, dz, drx, dry, drz, gripper]`` — drives a
   Lula IK target (orientation held); ``gripper>0`` closes.
 
-Lifecycle/obs skeleton: :class:`_isaac_scene_base.IsaacSceneBase`. Props are OOD
+Lifecycle/obs skeleton: ``_isaac_scene_base.IsaacSceneBase``. Props are OOD
 for a LIBERO policy — this validates the pipeline runs, not task success.
 """
 

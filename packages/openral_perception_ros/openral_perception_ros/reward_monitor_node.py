@@ -13,7 +13,7 @@ to ``query_scene``, advance, or enter the replanning ladder. The signal is
 **advisory** — it never actuates (CLAUDE.md §1.1).
 
 This is the reward counterpart of the scene-VLM node
-(:mod:`openral_perception_ros.scene_vlm_node`, which serves ``query_scene``).
+(``openral_perception_ros.scene_vlm_node``, which serves ``query_scene``).
 The rolling buffer lives here, node-side; reward backends score on demand.
 
 **Frame-source agnostic.** It subscribes the same camera image topic the VLA

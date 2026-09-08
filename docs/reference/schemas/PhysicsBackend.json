@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PhysicsBackend",
-  "description": "Physics / scene backend used to instantiate a :class:`SceneSpec`.",
+  "description": "Physics / scene backend used to instantiate a ``SceneSpec``.",
   "type": "string",
   "enum": [
     "mujoco",

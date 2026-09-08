@@ -1,6 +1,6 @@
 """Live Intel RealSense device probe via ``pyrealsense2``.
 
-Returns one :class:`RealsenseDeviceInfo` per device the SDK can see.
+Returns one ``RealsenseDeviceInfo`` per device the SDK can see.
 Empty list when the SDK is not installed (Apple Silicon, headless CI),
 or when no devices are connected — never raises.
 """
@@ -16,7 +16,7 @@ def probe_realsense_devices(*, warnings: list[str] | None = None) -> list[Realse
     """Enumerate connected Intel RealSense devices.
 
     The ``model_id`` field is the canonical key used by
-    :class:`openral_sensors.SensorSignature` (kind=``"realsense"``)
+    ``openral_sensors.SensorSignature`` (kind=``"realsense"``)
     so the assembler can call ``CATALOG.find_by_signature(...)`` and
     materialize a fully-populated ``SensorBundle`` with real intrinsics.
     """

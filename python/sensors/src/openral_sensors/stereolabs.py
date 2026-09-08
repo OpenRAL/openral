@@ -1,6 +1,6 @@
 """StereoLabs ZED camera adapters — ZED Mini (ZED-M).
 
-``zed_mini_bundle`` builds a :class:`SensorBundle` for a StereoLabs ZED Mini
+``zed_mini_bundle`` builds a ``SensorBundle`` for a StereoLabs ZED Mini
 (left + right rectified RGB, stereo depth, 6-DoF IMU); registered under
 ``stereolabs/zed_mini``.
 
@@ -76,7 +76,7 @@ def zed_mini_bundle(
     width: int = 1280,
     height: int = 720,
 ) -> SensorBundle:
-    """Build a :class:`SensorBundle` for a StereoLabs ZED Mini.
+    """Build a ``SensorBundle`` for a StereoLabs ZED Mini.
 
     The bundle exposes four streams: left and right rectified RGB, host-computed
     stereo depth, and the on-device 6-DoF IMU.  Nominal intrinsics are the
@@ -97,7 +97,7 @@ def zed_mini_bundle(
         height: Per-eye stream height.
 
     Returns:
-        A :class:`SensorBundle` with ``sync="hardware"`` — the two eyes come
+        A ``SensorBundle`` with ``sync="hardware"`` — the two eyes come
         out of one sensor pair in a single UVC frame, so they are exposed
         simultaneously by construction.
 

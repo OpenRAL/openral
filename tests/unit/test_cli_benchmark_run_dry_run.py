@@ -1,6 +1,6 @@
 """``openral benchmark run --dry-run`` must predict what the real run does.
 
-Without applying :func:`openral_sim.benchmark.filter_scenes_for_skill` (the
+Without applying ``openral_sim.benchmark.filter_scenes_for_skill`` (the
 ``evaluated_tasks`` filter ``run_benchmark`` applies before any rollout), a
 zero-task pairing would dry-run clean then raise ``ROSCapabilityMismatch`` on
 the real run, and a partially covered suite would report an inflated episode

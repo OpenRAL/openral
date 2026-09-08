@@ -4,9 +4,9 @@ The runner no longer guesses checkpoint joint units — every joint-position
 rSkill declares ``action_contract.joint_units``, converted deg<->rad only
 when ``degrees``. Pins the two actuation-critical helpers:
 
-* :func:`_robot_state_to_policy` — robot radians → policy order, rad->deg
+* ``_robot_state_to_policy`` — robot radians → policy order, rad->deg
   for a degrees checkpoint (else ~57x too small → OOD).
-* :func:`_policy_action_to_robot` — policy action → robot order, deg->rad
+* ``_policy_action_to_robot`` — policy action → robot order, deg->rad
   for a degrees checkpoint (else ~57x too large → arm slams its limits).
 
 Gripper channels carry a motor unit, not an angle; ``gripper_scale`` maps the

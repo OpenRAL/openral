@@ -6,7 +6,7 @@ is a first-class ``transformers`` architecture
 (``AutoModelForZeroShotObjectDetection``) that loads under the runtime's own
 ``transformers>=5``. It runs **in process** — no sidecar, no ZMQ — selected
 as
-:attr:`~openral_runner.backends.gstreamer.objects_detector.DetectorTier.ZEROSHOT_HF`
+``ZEROSHOT_HF``
 for manifests whose ``detector.engine`` is ``zeroshot_hf``.
 
 One backend, two modes, chosen by the manifest's ``detector.mode``:
@@ -16,8 +16,8 @@ One backend, two modes, chosen by the manifest's ``detector.mode``:
   unprompted background producer beyond the 80 COCO classes the RT-DETR
   rSkills cover.
 * ``on_demand`` (e.g. ``rskills/omdet-turbo-locator``) — a prompted locator,
-  retargeted via :meth:`set_query` (``/openral/perception/detector_query``
-  topic) or one-shot via :meth:`detect_with_query` (the read-only
+  retargeted via ``set_query`` (``/openral/perception/detector_query``
+  topic) or one-shot via ``detect_with_query`` (the read-only
   ``locate_in_view`` service); a lightweight real-time alternative to the 3B
   LocateAnything VLM for simple "find X" queries.
 
@@ -25,14 +25,14 @@ One backend, two modes, chosen by the manifest's ``detector.mode``:
 
 Implements the same ``detect(frame_bgr, width, height, sensor_id) ->
 ObjectsMetadata | None`` interface as
-:class:`~openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`,
-so :class:`~openral_runner.backends.gstreamer.detector_runner.DetectorRunner`
+``ObjectsDetector``,
+so ``DetectorRunner``
 drives it from the same system-memory BGR camera-tee branch as the CPU ONNX
 and VLM-sidecar tiers.
 
 ``torch`` / ``transformers`` are imported lazily at first ``detect()`` so
 this module imports cleanly on hosts without the wheels (mirroring
-:mod:`~openral_runner.backends.gstreamer.objects_detector`).
+``objects_detector``).
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def build_objects_metadata_from_results(
     sensor_id: str,
     score_threshold: float,
 ) -> ObjectsMetadata | None:
-    """Build :class:`ObjectsMetadata` from decoded zero-shot detection results.
+    """Build ``ObjectsMetadata`` from decoded zero-shot detection results.
 
     Pure (no torch / transformers) so the conversion is unit-testable without a
     GPU or model load: callers pass already-decoded Python-native results (the
@@ -86,7 +86,7 @@ def build_objects_metadata_from_results(
         score_threshold: Minimum confidence to keep a detection.
 
     Returns:
-        :class:`ObjectsMetadata` sorted by descending confidence, or ``None`` if
+        ``ObjectsMetadata`` sorted by descending confidence, or ``None`` if
         no detection survives.
 
     Example:
@@ -176,7 +176,7 @@ class OmDetTurboDetector:
     """In-process Transformers zero-shot detector over a fixed class vocabulary.
 
     Loads ``AutoProcessor`` + ``AutoModelForZeroShotObjectDetection`` from
-    ``weights_source`` on first :meth:`detect`, moves the model to CUDA when
+    ``weights_source`` on first ``detect``, moves the model to CUDA when
     available (else CPU), and runs the **fixed** ``labels`` vocabulary against
     every frame. The model + processor load is deferred so construction is cheap
     and side-effect-free — the dispatch path and unit tests can build the
@@ -184,7 +184,7 @@ class OmDetTurboDetector:
 
     Args:
         labels: Fixed class vocabulary to detect every frame (non-empty).
-        model_id: Identifier embedded in every emitted :class:`ObjectsMetadata`.
+        model_id: Identifier embedded in every emitted ``ObjectsMetadata``.
         weights_source: HF repo id to load (e.g. ``omlab/omdet-turbo-swin-tiny-hf``).
         score_threshold: Minimum confidence to keep a detection.
         nms_threshold: IoU threshold for the post-processor's class-agnostic NMS.
@@ -300,7 +300,7 @@ class OmDetTurboDetector:
 
         For ``mode: on_demand`` detectors: the
         ``/openral/perception/detector_query`` topic retargets the continuous
-        leg by replacing the class list. Parsed via :func:`query_to_classes`.
+        leg by replacing the class list. Parsed via ``query_to_classes``.
 
         Raises:
             ROSConfigError: If ``text`` yields no non-empty class.
@@ -319,7 +319,7 @@ class OmDetTurboDetector:
             sensor_id: Sensor name forwarded to the emitted metadata.
 
         Returns:
-            :class:`ObjectsMetadata` with detections sorted by descending
+            ``ObjectsMetadata`` with detections sorted by descending
             confidence, or ``None`` if no detection survives the threshold.
         """
         return self._detect_classes(frame_bgr, width, height, sensor_id, self._labels)
@@ -331,7 +331,7 @@ class OmDetTurboDetector:
 
         Backs the read-only ``locate_in_view`` service: a reasoner
         query ("is X in view right now?") must not change what the continuous
-        leg detects. ``query`` is parsed via :func:`query_to_classes`.
+        leg detects. ``query`` is parsed via ``query_to_classes``.
 
         Raises:
             ROSConfigError: If ``query`` yields no non-empty class.

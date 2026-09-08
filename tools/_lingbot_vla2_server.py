@@ -4,8 +4,8 @@ Server side of the sidecar: loads upstream ``LingbotVLAv2Server`` (NF4 Qwen3-VL
 backbone + bf16 sparse-MoE expert) from robbyant/lingbot-vla-v2
 (https://github.com/robbyant/lingbot-vla-v2, Apache-2.0 code + weights) and
 answers ``ping``/``reset``/``get_action``/``close`` over ZMQ REQ/REP + msgpack,
-the same wire :class:`openral_sim.sidecar.SidecarClient` speaks. ``os.execvpe``-d
-by :mod:`tools.lingbot_vla2_sidecar` after the repo + torch-2.9 venv are
+the same wire ``openral_sim.sidecar.SidecarClient`` speaks. ``os.execvpe``-d
+by ``tools.lingbot_vla2_sidecar`` after the repo + torch-2.9 venv are
 provisioned; never imports ``openral_*`` (that stack pins transformers>=5,
 incompatible with the upstream transformers==4.57.3 pin — CLAUDE.md §3).
 
@@ -26,7 +26,7 @@ in place (``--quantization nf4``, MoE expert stays bf16); ``none`` loads bf16 fo
 flash-attn is not installed in the sidecar venv (absent from upstream
 requirements.txt, needs a source build) but upstream hardcodes
 ``flash_attention_2``, so configs are coerced to sdpa (default) or eager before
-and after model build (:func:`_install_attn_fallback`).
+and after model build (``_install_attn_fallback``).
 
 CLAUDE.md compliance: real upstream code in a real subprocess (no mocks, §1.11);
 py-version/dep isolation is the bridge (§3); Apache-2.0 weights, no license guard.
@@ -220,7 +220,7 @@ def _install_moe_logger() -> None:
     fallback path but never imports/defines ``logger``, so any MoE kernel fault
     raises ``NameError: name 'logger' is not defined`` instead of the real error
     — this masked a real ``PTXASError`` during aarch64 bring-up (cost a full boot
-    cycle). Same upstream-gap shape as :func:`_patch_eager_vision_rotary_v1`.
+    cycle). Same upstream-gap shape as ``_patch_eager_vision_rotary_v1``.
 
     Uses upstream's ``get_logger`` factory rather than ``logging.getLogger``:
     ``warning_once`` is only patched onto ``logging.Logger`` by
@@ -398,7 +398,7 @@ def _overlay_prequantized(vla: Any, ckpt_dir: str, *, torch: Any) -> None:
     """Load ``model.safetensors`` from ``ckpt_dir`` into the nf4 shells + bf16 rest.
 
     The backbone ``Linear4bit`` modules get their packed weights via
-    :func:`_install_prequantized_backbone`; every remaining bf16 tensor (MoE
+    ``_install_prequantized_backbone``; every remaining bf16 tensor (MoE
     expert, align heads, action MLPs, embeddings, vision tower) is applied with a
     non-strict ``load_state_dict`` (the consumed nf4 keys are dropped so PyTorch
     does not flag them as missing on the already-rebuilt modules). Prequant NF4 is

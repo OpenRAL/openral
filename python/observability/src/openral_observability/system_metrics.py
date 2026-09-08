@@ -2,19 +2,19 @@
 
 Daemon thread samples ``psutil`` + ``pynvml`` every N seconds into the
 OpenRAL meter for the dashboard's "System" card. Idempotent — calling
-:func:`start_system_metrics_collector` twice with the same interval is a
+``start_system_metrics_collector`` twice with the same interval is a
 no-op.
 
-Wired into the SDK lifecycle: :func:`openral_observability.configure_observability`
+Wired into the SDK lifecycle: ``openral_observability.configure_observability``
 starts it after the meter provider is installed,
-:func:`openral_observability.shutdown_observability` stops it before
+``openral_observability.shutdown_observability`` stops it before
 draining providers — callers don't invoke it directly.
 
 ``psutil`` / ``nvidia-ml-py`` (``pynvml``) are direct deps of
 ``openral-observability`` (CLAUDE.md §1.4, not transitive). ``pynvml``
 imports fine without an NVIDIA driver; ``nvmlInit()`` then fails and the
 GPU path no-ops while CPU/RAM keep flowing. If neither import succeeds,
-:func:`start_system_metrics_collector` returns ``False`` and the System
+``start_system_metrics_collector`` returns ``False`` and the System
 card stays empty.
 """
 
@@ -34,7 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 #: Per-(device, query) keys whose "not supported" degradation has already been
 #: logged, so an unsupported NVML call is reported once rather than on every
-#: sampling tick. See :func:`_nvml_query`.
+#: sampling tick. See ``_nvml_query``.
 _UNSUPPORTED_LOGGED: set[str] = set()
 
 _lock = threading.Lock()

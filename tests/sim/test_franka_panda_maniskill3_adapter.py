@@ -11,7 +11,7 @@ What is asserted
   ``scenes/benchmark/maniskill_pick_cube.yaml``
   with ``robot_id: franka_panda`` (free-axis scene, no fixed_robot).
 * The adapter resets the env from a seed and emits a populated
-  :class:`Observation` (non-empty RGB + non-empty state vector under the
+  ``Observation`` (non-empty RGB + non-empty state vector under the
   ``state_dict+rgb`` obs mode).
 * A canonical zero-action step propagates through the env and returns
   finite reward / a typed info dict.

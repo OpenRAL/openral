@@ -1,6 +1,6 @@
-"""Unit tests for :mod:`openral_runner.clock`.
+"""Unit tests for ``openral_runner.clock``.
 
-Property tested: :func:`precise_sleep` waits at least the requested duration
+Property tested: ``precise_sleep`` waits at least the requested duration
 and overshoots by less than a configurable tolerance — the cadence accuracy
 the inference runner depends on. No mocks; the test exercises the real
 ``time.perf_counter`` clock.

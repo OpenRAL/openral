@@ -3,7 +3,7 @@
 Per design §4.7, every ``openral`` CLI invocation opens a single
 ``cli.command`` span as the root of the trace tree. Every downstream span
 (``sim.run``, ``rskill.tick``, ``hal.send_action``, ``safety.check``, …)
-becomes a child of it, and :attr:`RunResult.trace_id` ends up being the
+becomes a child of it, and ``RunResult.trace_id`` ends up being the
 trace id of ``cli.command`` — making the trace trivially queryable from the
 printed output.
 
@@ -61,8 +61,8 @@ def cli_command_span(
         subcommand: ``openral`` subcommand name (``"sim run"``, ``"benchmark run"``,
             ``"skill install"``, …). Recorded as ``cli.subcommand``.
         mode: Optional ``openral.run.mode`` — one of
-            :data:`semconv.RUN_MODE_SIM` / :data:`semconv.RUN_MODE_HARDWARE` /
-            :data:`semconv.RUN_MODE_BENCHMARK`.
+            ``semconv.RUN_MODE_SIM`` / ``semconv.RUN_MODE_HARDWARE`` /
+            ``semconv.RUN_MODE_BENCHMARK``.
         run_id: Optional caller-supplied id (e.g. a ``RunResult.run_name``).
             Falls back to a new UUID4 hex when ``None`` — every invocation
             gets a stable identifier even in no-op mode.

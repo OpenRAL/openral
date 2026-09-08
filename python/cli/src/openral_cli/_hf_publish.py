@@ -1,16 +1,16 @@
 """Shared HF Hub publishing helpers — token resolution, scope check, ignore patterns.
 
-Lifted from :mod:`tools.rskill_publisher` so ``openral dataset push`` and the
+Lifted from ``tools.rskill_publisher`` so ``openral dataset push`` and the
 skill publisher share one path for token discovery, scope verification, and
 ignore-pattern filtering (CLAUDE.md §1.13).
 
-* :func:`resolve_token` — explicit token arg, else ``HF_TOKEN`` /
+* ``resolve_token`` — explicit token arg, else ``HF_TOKEN`` /
   ``HUGGINGFACE_HUB_TOKEN`` env vars; raises
-  :class:`openral_core.exceptions.ROSConfigError` with a hint when none found.
-* :func:`ensure_private` — re-fetches repo metadata after creation and aborts
+  ``openral_core.exceptions.ROSConfigError`` with a hint when none found.
+* ``ensure_private`` — re-fetches repo metadata after creation and aborts
   if the API reports it public (``create_repo(private=True)`` does not flip
   an existing public repo).
-* :data:`IGNORE_PATTERNS` — same secrets / build-artifact glob as
+* ``IGNORE_PATTERNS`` — same secrets / build-artifact glob as
   ``rskill_publisher``.
 """
 
@@ -86,7 +86,7 @@ def ensure_private(api: HfApi, repo_id: str, *, repo_type: str = "model") -> Non
     on the Hub.
 
     Args:
-        api: Authenticated :class:`huggingface_hub.HfApi` client.
+        api: Authenticated ``huggingface_hub.HfApi`` client.
         repo_id: The repository to verify (e.g. ``"openral/dataset-foo"``).
         repo_type: ``"model"`` (default — used by rSkills), ``"dataset"``
             (used by dataset uploads), or ``"space"``.

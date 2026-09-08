@@ -1,6 +1,6 @@
 """Sim rollout protocol — the typed contract every scene adapter must satisfy.
 
-A :class:`SimRollout` is what comes out of :func:`openral_sim.make_env`.
+A ``SimRollout`` is what comes out of ``openral_sim.make_env``.
 It is *gym-flavoured* (``reset``, ``step``, ``close``) but intentionally
 narrower so adapters can wrap any underlying engine (gymnasium, dm_env,
 custom) without leaking framework specifics into the eval layer.
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 def sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None:
     """Derive sim-time nanoseconds from a MuJoCo ``(model, data)`` handle pair.
 
-    Shared helper for the MuJoCo-backed :class:`SimRollout` adapters
+    Shared helper for the MuJoCo-backed ``SimRollout`` adapters
     (``robocasa`` / ``libero`` / ``metaworld`` / ``aloha`` / the native
     backends) so the ``data.time``-to-nanoseconds conversion lives in exactly
     one place. ``mujoco.MjData.time`` is the authoritative
@@ -57,7 +57,7 @@ Adapters SHOULD include at least:
     * ``"state"``  → 1-D float32 NumPy array of proprioception.
     * ``"task"``   → str natural-language instruction.
 
-The :class:`~openral_sim.policy.PolicyAdapter` is responsible for mapping
+The ``PolicyAdapter`` is responsible for mapping
 this dict to its own input format. This keeps the eval layer agnostic to VLA
 input conventions.
 """
@@ -86,7 +86,7 @@ class StepResult:
 class SimRollout(Protocol):
     """Minimal gym-style env contract used by the eval runner.
 
-    Every scene factory in :data:`openral_sim.SCENES` must return an
+    Every scene factory in ``openral_sim.SCENES`` must return an
     object satisfying this protocol.
 
     Attributes:
@@ -107,7 +107,7 @@ class SimRollout(Protocol):
 
             * MuJoCo-backed adapters return ``round(MjData.time * 1e9)`` (the
               physics clock advanced by ``model.opt.timestep`` per step) via
-              :func:`sim_time_ns_from_mujoco_handles`.
+              ``sim_time_ns_from_mujoco_handles``.
             * SAPIEN / ManiSkill-backed adapters derive elapsed control time
               from the live env's elapsed step counter and control timestep.
             * The value is **monotonic non-decreasing within a single
@@ -115,7 +115,7 @@ class SimRollout(Protocol):
               backends that rewind ``MjData.time`` to ``0`` on reset (e.g.
               robocasa) restart their clock, so a consumer that needs
               cross-reset monotonicity maintains its own offset (see
-              :meth:`openral_hal.sim_attached.SimAttachedHAL.sim_time_ns`).
+              ``openral_hal.sim_attached.SimAttachedHAL.sim_time_ns``).
             * Returns ``None`` when the backend has **no sim clock** —
               clock-less backends (PushT) and sidecars whose wire protocol does
               not carry elapsed time.
@@ -139,25 +139,25 @@ class SimRollout(Protocol):
               latch a terminal, or influence ``StepResult``.
 
             The ``sim run`` / benchmark path does NOT use this — it reads
-            ``StepResult.info[task.success_key]`` (see :class:`StepResult`).
+            ``StepResult.info[task.success_key]`` (see ``StepResult``).
             This extension exists for ``deploy sim``, whose continuous
             twin suppresses per-step task evaluation entirely, so the
             HAL polls the predicate for observability
-            (:meth:`openral_hal.sim_attached.SimAttachedHAL.task_success`).
+            (``openral_hal.sim_attached.SimAttachedHAL.task_success``).
 
         ``viewer_render(self) -> None``
             — Adapters whose underlying engine owns the live viewer
             and needs per-step pumping (e.g. SAPIEN / ManiSkill3 envs
-            constructed with ``render_mode='human'``). :class:`SimRunner`
+            constructed with ``render_mode='human'``). ``SimRunner``
             calls this once per applied step to pump the viewer; the
             adapter is responsible for promoting / opening the window
-            on the first call and tearing it down in :meth:`close`.
+            on the first call and tearing it down in ``close``.
 
         ``enable_intrinsic_viewer(self) -> None``
             — Adapters whose engine draws its own self-managed window
             and does not need per-step pumping (e.g. ``gym_pusht`` with
             ``render_mode="human"``; the engine updates the window inside
-            its own ``step`` / ``reset``). :class:`SimRunner` calls this
+            its own ``step`` / ``reset``). ``SimRunner`` calls this
             ONCE before the first ``reset()`` when ``--view`` is set, then
             skips both the MuJoCo viewer path AND the per-step
             ``viewer_render`` pump.
@@ -205,7 +205,7 @@ class EpisodeResult:
         frames: Captured RGB frames (HWC uint8) when ``record_video`` is True;
             empty otherwise.
         metadata: Free-form per-run metadata propagated from
-            :class:`openral_core.SimEnvironment.metadata`.
+            ``openral_core.SimEnvironment.metadata``.
     """
 
     success: bool = False

@@ -4,7 +4,7 @@ A blocking ``select_tool`` used to run on the single-threaded rclpy executor, qu
 other callback (goal results, deadline/"patience" timers, Tier-A safety preemptions) behind
 the LLM round-trip (live evidence: a 10 s patience timer fired at 76 s). LLM phase now runs
 on a worker thread; these tests pin the issue's acceptance criteria with an artificially slow
-:class:`FakeToolUseClient`:
+``FakeToolUseClient``:
 
 (a) goal result callback lands <1 s after server terminates, LLM call still in flight;
 (b) skill deadline timer fires within 1 s of deadline, LLM call still in flight;

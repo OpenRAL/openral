@@ -58,7 +58,7 @@ _NEAREST_PROBE_MAX_PAIRS = 32
 # the cost is `3 * n**2` `mj_ray` calls — 27 at the default, once, at a
 # terminal event. A depth-derived occupancy cell is always backed by a
 # *surface*, so surface sampling is the right test (see
-# :func:`voxel_backing_record`).
+# ``voxel_backing_record``).
 _VOXEL_BACKING_RAYS_PER_AXIS = 3
 # Tolerance on |q|^2 for a published grid orientation. Wide enough for a
 # quaternion that has been through a wire round-trip, far too tight for the
@@ -197,9 +197,9 @@ def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
     """Resolve a camera's frame from a ``read_images()`` dict, or ``None``.
 
     The two sim HALs key their frame dicts by different conventions:
-    :class:`~openral_hal.sim_attached.SimAttachedHAL` (scene-attached LIBERO /
+    ``SimAttachedHAL`` (scene-attached LIBERO /
     robocasa) keys by the VLA slot (``obs_key`` — ``camera1`` / ``camera2``),
-    while :class:`~openral_hal._mujoco_arm.MujocoArmHAL` (bare or composed
+    while ``MujocoArmHAL`` (bare or composed
     digital twin) keys by the sensor ``name``. Try the slot first, then fall
     back to the name so both conventions resolve.
 
@@ -216,7 +216,7 @@ def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
 def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
     """RGB camera specs that own a dedicated ``*_optical_frame``.
 
-    These are the cameras :meth:`SimSensorBridge._publish_camera_optical_tfs`
+    These are the cameras ``SimSensorBridge._publish_camera_optical_tfs``
     broadcasts a live ``base_frame -> <camera>_optical_frame`` TF for, so the
     world-state object-lift can project the world voxel map into them. A camera
     whose ``frame_id`` is a robot link (e.g. an eye-in-hand at ``panda_hand``)
@@ -488,9 +488,9 @@ def _nearest_pair_records(
     can be trusted at all.
 
     Bounded by construction: a vectorised distance-lower-bound prefilter
-    (:func:`_pair_distance_lower_bound`) reduces the O(n·m) pair set, then at
+    (``_pair_distance_lower_bound``) reduces the O(n·m) pair set, then at
     most ``max_calls`` exact distance calls run, shared fairly across the side
-    geoms by :func:`_round_robin_candidates` so no link can be starved out of
+    geoms by ``_round_robin_candidates`` so no link can be starved out of
     the report. Each of those is then offered a **certified** window
     rejection before it is solved — a separating-axis bound that *proves* the
     pair is outside ``distmax_m`` — which is what keeps the exact instrument
@@ -662,10 +662,10 @@ def kernel_checked_body_ids(model: Any, description: Any) -> frozenset[int]:
 def kernel_checked_link_bodies(model: Any, description: Any) -> dict[str, int]:
     """Map each kernel-checked link name to its MJCF body id.
 
-    The name-keyed form of :func:`kernel_checked_body_ids` — needed wherever a
+    The name-keyed form of ``kernel_checked_body_ids`` — needed wherever a
     diagnostic has to line a manifest ``collision_geometry`` entry up with the
     MuJoCo geometry it is supposed to enclose (see
-    :func:`collision_model_mesh_slop`). Links the model does not carry are
+    ``collision_model_mesh_slop``). Links the model does not carry are
     simply absent, so the caller can report the shortfall rather than guess.
     """
     import mujoco  # reason: optional sim dep
@@ -697,7 +697,7 @@ def _body_collision_points(model: Any, body_id: int) -> Any:
     Mesh geoms contribute their vertices; primitives contribute their bounding
     box corners, which *overstate* the primitive's extent and therefore
     understate the slop computed from them — the safe direction for a budget
-    (see :func:`collision_model_mesh_slop`). Visual-only geoms (neither
+    (see ``collision_model_mesh_slop``). Visual-only geoms (neither
     ``contype`` nor ``conaffinity``) are skipped: the kernel's OBB is
     documented as enclosing the *collision* mesh.
     """
@@ -742,7 +742,7 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
     **The number every world-voxel adjudication needs, and the one the
     2026-08-22 round did not have.** The safety kernel checks manifest
     ``collision_geometry`` OBBs against occupancy voxels; the near-miss probe
-    (:func:`estop_ground_truth_snapshot`) measures MuJoCo *mesh* against MuJoCo
+    (``estop_ground_truth_snapshot``) measures MuJoCo *mesh* against MuJoCo
     *mesh*. Those are different quantities, and subtracting one from the other
     without this term makes a legitimate conservative stop look like a false
     positive.
@@ -846,7 +846,7 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
 def _payload_collision_points(model: Any, data: Any, root_body_id: int) -> Any:
     """Sampled points on a payload subtree's SOLID geometry, in the root frame.
 
-    The payload counterpart of :func:`_body_collision_points`, and deliberately
+    The payload counterpart of ``_body_collision_points``, and deliberately
     *not* the same sampling. That one samples every primitive at the corners of
     a cube of its largest half-size, which overstates the geometry and so
     understates the robot-side slop — the safe direction there, because the
@@ -946,7 +946,7 @@ def attached_payload_mesh_slop(
     **The payload-side half of the adjudication budget, and the term the
     2026-08-22 attached-payload round did not have.** For a world-voxel stop
     only the robot link is an OBB — the other side is a voxel cube, and
-    :func:`collision_model_mesh_slop` plus the cell half-diagonal covers it.
+    ``collision_model_mesh_slop`` plus the cell half-diagonal covers it.
     An *attached-payload self-collision* stop has an OBB on **both** sides:
     the kernel checks the payload's published primitives against the link
     OBBs (``check_attached_self_collision``), while the ground-truth probe
@@ -960,7 +960,7 @@ def attached_payload_mesh_slop(
     puts that pair at +21.71 mm — a 54.15 mm representation gap, of which
     ``panda_link2``'s 48.22 mm corner slop is only the robot's share.
 
-    The payload's primitives come from :func:`extract_body_primitives`, which
+    The payload's primitives come from ``extract_body_primitives``, which
     lowers a *mesh* geom to its local AABB (and clusters geoms once there are
     more than ``max_primitives``). Both inflate; a sphere/box geom lowers
     exactly and contributes nothing. Rather than re-deriving that lowering,
@@ -1143,9 +1143,9 @@ def _voxel_cube_hits(
     blind to it.
 
     So a ray that strikes a non-collidable geom inside the cube is re-cast from
-    just past that strike, up to :data:`_VOXEL_BACKING_MAX_LAYERS` times, and
+    just past that strike, up to ``_VOXEL_BACKING_MAX_LAYERS`` times, and
     both the shell and whatever it hides are recorded. The verdict precedence
-    in :func:`voxel_backing_record` then does the rest: ``solid_world``
+    in ``voxel_backing_record`` then does the rest: ``solid_world``
     outranks ``noncollidable_world``, so the cell reads as explained by real
     geometry, while a cell with genuinely nothing solid behind the decoration
     still reads ``noncollidable_world``.
@@ -1207,7 +1207,7 @@ def _collidable_geoms_overlapping_cube(
 ) -> list[int]:
     """Collidable geoms whose world AABB overlaps the cell — what the rays can miss.
 
-    :func:`_voxel_cube_hits` walks a ray past a non-collidable strike and casts
+    ``_voxel_cube_hits`` walks a ray past a non-collidable strike and casts
     again, which finds a solid slab *behind* a decoration shell. It cannot find
     one **coincident** with it. RoboCasa builds every counter top that way:
     ``robocasa/models/fixtures/counter.py`` emits one full-span
@@ -1349,7 +1349,7 @@ def voxel_backing_record(
       longer become occupancy), a cell backed *only* by decoration is now a
       statement about the probe or a stale cell, not a live map defect —
       and since a shell usually wraps something, the ray is re-cast past it
-      (:func:`_voxel_cube_hits`) so the slab behind is found and
+      (``_voxel_cube_hits``) so the slab behind is found and
       ``solid_world`` wins. Still reported when genuinely all there is.
     * ``unbacked`` — nothing at all: a phantom or stale cell.
 
@@ -1529,19 +1529,19 @@ def voxel_backing_for_cell(
     attached_body_ids: frozenset[int],
     base_frame_body: str | None,
 ) -> dict[str, object] | None:
-    """:func:`voxel_backing_record` for one cached ``/openral/world_voxels`` cell.
+    """``voxel_backing_record`` for one cached ``/openral/world_voxels`` cell.
 
     The single place a cell dict is unpacked into that function's arguments, so
     the two callers cannot disagree about which of them they pass -- and they
     did. The in-snapshot path carried ``grid_orientation_xyzw``; the late path
-    (:meth:`SimSensorBridge._late_voxel_backing`) omitted it and silently took
+    (``SimSensorBridge._late_voxel_backing``) omitted it and silently took
     the identity default, which places the probe cube by the OctoMap lattice's
     axes only when those happen to be the base frame's. On a rotated base they
     are not: three world-collision stops measured on a live
     ``robocasa_baguette`` carry decoded to cells 2.9-3.1 m from the stopping
     link, and every one reported ``verdict: "unbacked"`` with 27 rays cast and
     0 hits -- a confident verdict about the wrong cube, which
-    :func:`voxel_backing_record`'s own contract calls worse than none.
+    ``voxel_backing_record``'s own contract calls worse than none.
 
     That is the path that matters. The snapshot is never delayed for the
     kernel's evidence, so the late path is where most stops are adjudicated:
@@ -1626,7 +1626,7 @@ def estop_ground_truth_snapshot(
         attached_body_ids: currently carried payload body ids (empty when
             nothing is attached).
         probe_body_ids: robot bodies the near-miss probes may rank — the
-            kernel-checked links from :func:`kernel_checked_body_ids`.
+            kernel-checked links from ``kernel_checked_body_ids``.
             ``None`` falls back to ``robot_body_ids`` and is reported as
             ``probe_robot_scope: "all_robot_bodies"``, which on a mobile base
             lets wheel↔floor pairs (0-2 mm, and deliberately unchecked by the
@@ -1635,17 +1635,17 @@ def estop_ground_truth_snapshot(
             The kernel's collision FK is base-relative, so its world pose is
             what maps a reconstructed configuration back into MuJoCo world
             coordinates.
-        joint_state: the HAL's :class:`~openral_core.JointState` at the stop
+        joint_state: the HAL's ``JointState`` at the stop
             (the same vector the kernel seeded ``q_meas`` from), or ``None``.
         description: the ``RobotDescription`` whose ``collision_geometry`` is
             the kernel's collision model. Supplying it turns on
-            ``adjudication_budget`` (:func:`collision_model_mesh_slop`) and
+            ``adjudication_budget`` (``collision_model_mesh_slop``) and
             widens the probe window to that budget.
         evidence_voxel: the world-voxel cell the kernel stopped on, as
             ``{"index": int, "origin": (x, y, z), "resolution": float,
             "size": (nx, ny, nz)}`` (optionally ``"frame_body"``). Supplying it
             turns on ``evidence_voxel_backing``
-            (:func:`voxel_backing_record`) — the only part of this record that
+            (``voxel_backing_record``) — the only part of this record that
             looks at the MAP rather than at MuJoCo alone.
         distmax_m: near-miss probe window *floor*. The window actually used is
             ``max(distmax_m, admissible_gap_m)`` and is reported as
@@ -1991,7 +1991,7 @@ def initial_configuration_stop_record(
     that stop is still at the initial configuration.
 
     Args:
-        snapshot: The :func:`estop_ground_truth_snapshot` record for this stop.
+        snapshot: The ``estop_ground_truth_snapshot`` record for this stop.
             Read for ``sim_time_s`` and the closest ``nearest_robot_world_pairs``
             entry; any missing key is simply omitted from the result.
         stop_seq: The bridge's monotonic stop counter, joining this line to the
@@ -2081,7 +2081,7 @@ class SimSensorBridge:
         on_step: Any = None,
         on_attachment_perception_ready: Any = None,
     ) -> None:
-        """Bind the node + HAL + manifest; opens no publishers until :meth:`setup`.
+        """Bind the node + HAL + manifest; opens no publishers until ``setup``.
 
         ``idle_hold_ms`` is the sim-only idle stepper's quiet window: it
         advances the env with a zero/HOLD action only when no real action has
@@ -2335,7 +2335,7 @@ class SimSensorBridge:
             depth=1,
         )
         # Record what the manifest declares, but do NOT advertise yet — each
-        # camera earns its topic in :meth:`_advertise_camera` on its first real
+        # camera earns its topic in ``_advertise_camera`` on its first real
         # frame. A manifest may declare a camera the *current* scene cannot
         # supply (robocasa's synthetic ``head`` nav cam is mobile-base-only and
         # opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM``, set only when a
@@ -2368,7 +2368,7 @@ class SimSensorBridge:
     def _advertise_camera(self, name: str) -> Any:
         """Create (once) and return the ``Image`` publisher for one camera.
 
-        Called from :meth:`_publish_images` the first time the backend supplies
+        Called from ``_publish_images`` the first time the backend supplies
         a frame for ``name``, so the topic set on the graph is exactly the set
         of cameras this scene can actually render — never a superset drawn from
         the manifest (CLAUDE.md §1.4, explicit beats implicit).
@@ -2377,7 +2377,7 @@ class SimSensorBridge:
         manifest camera can serve a pinhole consumer (cuVSLAM rig build, nvblox
         mono-depth framing) — link-framed cameras get TF from
         ``robot_state_publisher``, optical-frame cameras from
-        :meth:`_publish_camera_optical_tfs`. Both are published per-frame
+        ``_publish_camera_optical_tfs``. Both are published per-frame
         (VOLATILE) so a late-joining subscriber never misses a latched-once
         message.
         """
@@ -2403,7 +2403,7 @@ class SimSensorBridge:
     def _publish_images(self) -> None:
         """Republish cached camera frames from the HAL as sensor_msgs/Image.
 
-        Reads :meth:`SimAttachedHAL.read_images` (a dict of
+        Reads ``SimAttachedHAL.read_images`` (a dict of
         ``camera_name -> HWC uint8 NDArray``) and publishes each frame on
         ``/openral/cameras/<name>/image``.  The obs-key lookup (via
         ``_image_obs_key``) lets LIBERO-style scenes (keyed by VLA slot
@@ -2624,7 +2624,7 @@ class SimSensorBridge:
         gets it even joining late. Skipped for MOBILE bases — they publish a
         live ``odom -> base`` and a second parent for ``base`` would corrupt the
         tree (detected via
-        :func:`~openral_hal.mobile_base_bridge.describes_mobile_base`, the same
+        ``describes_mobile_base``, the same
         predicate the lifecycle node attaches the ``odom`` publisher on).
         """
         if self._world_base_published:
@@ -2673,7 +2673,7 @@ class SimSensorBridge:
         """Create the sim-only idle-step timer, gated on a callable ``idle_step``.
 
         Gate (the PRIMARY safety gate): the HAL exposes a callable ``idle_step``,
-        defined ONLY on :class:`~openral_hal.sim_attached.SimAttachedHAL`. A real
+        defined ONLY on ``SimAttachedHAL``. A real
         HAL never defines it, so the timer is never created against real
         hardware. This is the real guarantee, not "zero is harmless" (a zero
         vector is a HOLD in sim but "drive to 0 rad" — violent — on a real
@@ -2689,7 +2689,7 @@ class SimSensorBridge:
         (the existing camera timer republishes the freshened ``_last_obs``); no
         separate rate param is introduced. The single-threaded rclpy executor
         ensures the idle callback and ``_on_safe_action`` never run
-        concurrently, so :func:`should_idle_step`'s timestamp check is a
+        concurrently, so ``should_idle_step``'s timestamp check is a
         sufficient hand-off (no lock).
         """
         if not callable(getattr(self._hal, "idle_step", None)):
@@ -2716,7 +2716,7 @@ class SimSensorBridge:
     def _idle_step_tick(self) -> None:
         """Advance the sim one HOLD tick when no recent real action has arrived.
 
-        Yields to active skills via :func:`should_idle_step`; the camera-publish
+        Yields to active skills via ``should_idle_step``; the camera-publish
         timer then republishes the freshened ``_last_obs`` (publish path
         unchanged).
 
@@ -2782,7 +2782,7 @@ class SimSensorBridge:
         without one never advertise a scan topic.
 
         The publisher is created whenever a lidar is declared, regardless of
-        whether the HAL has live MuJoCo handles. :meth:`_compute_scan_ranges`
+        whether the HAL has live MuJoCo handles. ``_compute_scan_ranges``
         ray-casts against the scene when handles are bound (``SimAttachedHAL``)
         and emits a constant ``max_range`` no-hit fan otherwise (the in-process
         digital twin has no scene to ray-cast, so "no hit everywhere" is the
@@ -2818,7 +2818,7 @@ class SimSensorBridge:
 
         Lifted from ``openral_hal_panda_mobile.lifecycle_node._publish_scan`` /
         ``_compute_scan_ranges``. Uses the same
-        :func:`openral_sim.backends.robocasa.synthesize_laser_scan_2d` call
+        ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` call
         and identical no-hit fallback so nav-stack behaviour is bit-identical
         to the panda_mobile node.
         """
@@ -3151,7 +3151,7 @@ class SimSensorBridge:
         A revision that masks nothing new — an attestation-only re-publish, a
         partial detach — changes no perception geometry, so there is nothing to
         settle and the barrier releases immediately. The release is still
-        guarded by :meth:`attachment_action_ack_ready` so an earlier revision's
+        guarded by ``attachment_action_ack_ready`` so an earlier revision's
         outstanding depth/voxel frames are never skipped.
         """
         revision = int(msg.data)  # type: ignore[attr-defined]
@@ -3422,7 +3422,7 @@ class SimSensorBridge:
         synth must back-project at the render resolution so its cloud lines up
         with the RGB the detector ran on; this reads the live rendered RGB frame
         shape (the ground truth of what robosuite rendered) and returns
-        ``(width, height)`` so :func:`depth_synth_kwargs` can rescale the
+        ``(width, height)`` so ``depth_synth_kwargs`` can rescale the
         intrinsics. Returns ``None`` when no frame is available yet (the synth
         then falls back to the manifest's nominal intrinsics).
         """
@@ -3445,11 +3445,11 @@ class SimSensorBridge:
 
         The deploy-sim source for octomap_server. Each depth ``SensorSpec`` is
         ray-cast **once** per frame with
-        :func:`openral_sim.backends.depth_camera.synthesize_depth_image` into a
+        ``openral_sim.backends.depth_camera.synthesize_depth_image`` into a
         dense metric-depth raster, which is published three ways: as the
         ``32FC1`` ``sensor_msgs/Image`` (+ ``CameraInfo``) nvblox's projective
         integrator consumes, and — back-projected by
-        :func:`openral_hal.depth_cloud.points_from_depth_grid` — as the
+        ``openral_hal.depth_cloud.points_from_depth_grid`` — as the
         camera-optical-frame ``sensor_msgs/PointCloud2`` octomap_server lifts
         into the world map, alongside a live
         ``base_link -> <camera>_optical_frame`` TF. A camera whose MJCF name
@@ -3625,7 +3625,7 @@ class SimSensorBridge:
 
         Also retains the grid's *geometry* (never its occupancy bytes), which
         is what turns a ``b=voxel_<n>`` evidence line into a position the
-        ground-truth record can interrogate — see :meth:`_evidence_voxel`.
+        ground-truth record can interrogate — see ``_evidence_voxel``.
         """
         self._last_voxel_grid = {
             "origin": (
@@ -3674,7 +3674,7 @@ class SimSensorBridge:
         * ``/openral/candidate_action`` — the chunk the kernel was checking
           (the only reconstruction input for a PREDICTED-horizon stop).
         * ``/openral/failure/safety`` — the kernel's own
-          :class:`~openral_core.CollisionEvidence`, which carries
+          ``CollisionEvidence``, which carries
           ``horizon_step`` / ``link_a`` / ``min_distance_m``.
         * ``/openral/world_voxels`` — the grid geometry that turns that
           evidence's ``b=voxel_<n>`` index into a position, so the record can
@@ -3847,7 +3847,7 @@ class SimSensorBridge:
         adjudicated real-vs-false.
 
         Emits one ``sim.estop_ground_truth_snapshot`` JSON line:
-        :func:`estop_ground_truth_snapshot` (contacts, near-miss distances,
+        ``estop_ground_truth_snapshot`` (contacts, near-miss distances,
         joint state, base TF) plus the cached candidate chunks and the
         kernel's collision evidence when it has already landed. Diagnostics
         only — no gating, no actuation effect.
@@ -3948,7 +3948,7 @@ class SimSensorBridge:
         A ``safety.collision`` line names the cell only as ``voxel_<n>`` — an
         index into a grid the kernel does not republish. Pairing that index
         with the geometry of the last ``/openral/world_voxels`` message is what
-        lets :func:`voxel_backing_record` ask MuJoCo what is actually there.
+        lets ``voxel_backing_record`` ask MuJoCo what is actually there.
         Returns ``None`` when the stop was not a world-voxel stop, when no grid
         has been seen, or when the evidence is too old to attribute.
         """
@@ -4100,7 +4100,7 @@ class SimSensorBridge:
         """Set the viewer's opening **free-camera** pose (mouse stays live).
 
         Sets the initial viewpoint via
-        :func:`openral_hal.depth_cloud.initial_viewer_camera` — eye at the
+        ``openral_hal.depth_cloud.initial_viewer_camera`` — eye at the
         authored overview camera (``agentview`` / ``top`` / …) with the orbit
         pivot on the robot base, else the base-aligned default. The camera stays
         ``mjCAMERA_FREE`` so the user can drag to orbit and scroll to zoom; we
@@ -4140,7 +4140,7 @@ class SimSensorBridge:
     def _configure_cinecam_camera(self, mujoco: Any, model: Any, data: Any) -> Any:
         """Build the free-camera pose from the viewer default + env overrides.
 
-        Resolves the opening pose via :func:`initial_viewer_camera`, then applies
+        Resolves the opening pose via ``initial_viewer_camera``, then applies
         absolute overrides (``OPENRAL_CINECAM_AZ_DEG`` / ``_EL_DEG`` / ``_DIST_M``)
         and deltas (``_AZ_OFFSET_DEG`` / ``_EL_OFFSET_DEG`` / ``_DIST_DELTA_M``),
         resolves the base body for the follow-cam, and snapshots the final pose
@@ -4189,7 +4189,7 @@ class SimSensorBridge:
 
         Offscreen (EGL) render — robust against the onscreen GLFW viewer being
         unmapped/throttled by the desktop WM. Frame pose matches the viewer
-        (:func:`openral_hal.depth_cloud.initial_viewer_camera`); collision shells
+        (``openral_hal.depth_cloud.initial_viewer_camera``); collision shells
         are hidden so RoboCasa textures show. ``OPENRAL_CINECAM_SIZE`` (``WxH``,
         default ``1280x960``) and ``OPENRAL_CINECAM_FPS`` (default ``12``) tune it.
         """

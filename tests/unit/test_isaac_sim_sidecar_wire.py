@@ -1,6 +1,6 @@
 """Wire round-trip tests for the Isaac Sim sidecar backend.
 
-The Isaac Sim scene adapter (:mod:`openral_sim.backends.isaac_sim`) talks to an
+The Isaac Sim scene adapter (``openral_sim.backends.isaac_sim``) talks to an
 out-of-process Isaac Lab sidecar over ZMQ REQ/REP framed by msgpack — the same
 transport the RLDX-1 policy adapter uses. Booting real Isaac Sim costs a ~50 GB
 install + an RTX GPU + tens-of-seconds of Omniverse Kit startup, so these tests

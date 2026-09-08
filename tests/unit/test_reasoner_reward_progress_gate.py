@@ -5,7 +5,7 @@ Pure-Python (no rclpy / no openral_msgs): exercises the reasoner-internal
 
 * the ``## REWARD`` context section renders BOTH heads, distinctly labelled, so
   the LLM uses progress for persist-vs-replan and success for done-ness;
-* the per-task :class:`TaskLocateBudget` abandons the active subtask after N
+* the per-task ``TaskLocateBudget`` abandons the active subtask after N
   locate cycles without a skill dispatch, carrying a specific reason into the
   mission ledger so the next pick proceeds.
 """

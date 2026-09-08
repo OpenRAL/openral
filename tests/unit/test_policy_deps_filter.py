@@ -1,13 +1,13 @@
 """Tests for ``openral_sim.policy_deps`` — pre-flight palette filter.
 
-The reasoner calls :func:`filter_importable_manifests` at
+The reasoner calls ``filter_importable_manifests`` at
 ``on_configure`` to drop rSkills whose ``model_family`` lives behind
 an extras group that isn't installed in this venv. The skill_runner
-calls :func:`model_family_install_hint` to translate runtime
+calls ``model_family_install_hint`` to translate runtime
 ``ImportError`` into actionable error messages.
 
-Both contracts share :data:`_FAMILY_INSTALL_HINTS` /
-:data:`_FAMILY_REQUIRED_IMPORTS` — a half-registered family (one dict
+Both contracts share ``_FAMILY_INSTALL_HINTS`` /
+``_FAMILY_REQUIRED_IMPORTS`` — a half-registered family (one dict
 updated but not the other) fails these tests rather than at the
 operator's first ``openral deploy sim``.
 """
@@ -35,7 +35,7 @@ from openral_sim.policy_deps import (
 
 @dataclass
 class _StubManifest:
-    """Minimum-shape stand-in for :class:`openral_core.RSkillManifest`."""
+    """Minimum-shape stand-in for ``openral_core.RSkillManifest``."""
 
     name: str
     model_family: str

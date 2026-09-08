@@ -1,12 +1,12 @@
 """Inference runner Protocol.
 
-The :class:`InferenceRunner` Protocol is the contract every runner shape
+The ``InferenceRunner`` Protocol is the contract every runner shape
 satisfies — today the sim path (``openral_sim``-backed shim, future PR)
 and the hardware path (``openral_runner.deploy_runner.DeployRunner``,
 PR F). The Protocol is intentionally narrow so subclasses or shims only
 have to honour ``activate / tick / run / deactivate``; everything else
 (rate-limited loop, OTel parent span, latency budget enforcement) lives
-in :class:`openral_runner.base.InferenceRunnerBase`.
+in ``openral_runner.base.InferenceRunnerBase``.
 
 See the OpenRAL architecture docs for the full design.
 """
@@ -24,13 +24,13 @@ __all__ = ["InferenceRunner"]
 class InferenceRunner(Protocol):
     """Structural protocol for one inference loop iteration.
 
-    A runner ticks at :attr:`rate_hz`. Each tick records a
-    :class:`~openral_core.TickResult`; the aggregated
-    :class:`~openral_core.RunResult` is returned by :meth:`run`.
+    A runner ticks at ``rate_hz``. Each tick records a
+    ``TickResult``; the aggregated
+    ``RunResult`` is returned by ``run``.
 
     Attributes:
         rate_hz: Foreground tick rate. Default is 30 Hz to match the
-            :class:`~openral_world_state.WorldStateAggregator` publish rate.
+            ``WorldStateAggregator`` publish rate.
     """
 
     rate_hz: float
@@ -43,14 +43,14 @@ class InferenceRunner(Protocol):
         """Run one tick and return its record.
 
         Implementations call into the safety client *before*
-        :meth:`HAL.send_action`; the foreground tick is sync (lerobot-style)
-        and rate is enforced by :meth:`run` via
-        :func:`~openral_runner.clock.sleep_until`.
+        ``HAL.send_action``; the foreground tick is sync (lerobot-style)
+        and rate is enforced by ``run`` via
+        ``sleep_until``.
         """
         ...
 
     def run(self, max_ticks: int | None = None) -> RunResult:
-        """Run the rate-limited loop and return the aggregate :class:`RunResult`.
+        """Run the rate-limited loop and return the aggregate ``RunResult``.
 
         Args:
             max_ticks: Stop after this many ticks. ``None`` runs until the
@@ -60,5 +60,5 @@ class InferenceRunner(Protocol):
         ...
 
     def deactivate(self) -> None:
-        """Release the resources opened by :meth:`activate` (idempotent)."""
+        """Release the resources opened by ``activate`` (idempotent)."""
         ...

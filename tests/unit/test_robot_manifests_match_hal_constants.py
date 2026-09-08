@@ -7,7 +7,7 @@ envelope bump can't silently drift the YAML out of sync (issues #54-58).
 
 UR5e/UR10e/Franka/Sawyer/ALOHA pin to their ``*_REAL_DESCRIPTION`` (production
 manifests), derived from the sim baseline via
-:func:`openral_hal._real_description.make_real_description` — kinematics,
+``openral_hal._real_description.make_real_description`` — kinematics,
 safety envelope, capabilities and ``hal`` entrypoints are shared; only
 ``sdk_kind`` differs. G1/H1/Rizon4/OpenArm/Anvil-v2 pin to their sim baseline
 because none has a real-HW HAL yet (G1/H1 gated on the M2 C++ S0 cerebellum,

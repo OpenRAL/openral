@@ -12,7 +12,7 @@ Owns the chunk-rate safety boundary on the OpenRAL graph:
 * Exposes ``/openral/estop_reset`` (``std_srvs/Trigger``) — explicit recovery
   only; ``ROSEStopRequested`` is never auto-cleared (CLAUDE.md §10).
 * Publishes 1 Hz ``/diagnostics`` via
-  :class:`openral_observability.DiagnosticsHeartbeat`.
+  ``openral_observability.DiagnosticsHeartbeat``.
 
 Topic-shape lock for the safety boundary's first increment: the topic
 contract is real and tested; envelope checks are deliberately minimal so the
@@ -680,7 +680,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
         Despite the historical wording, this does **not** clamp: it returns a
         ``gripper_range`` violation, which the caller routes to
-        :meth:`_handle_violation` — drop the chunk and fire the e-stop. That
+        ``_handle_violation`` — drop the chunk and fire the e-stop. That
         is the deny-by-default contract (CLAUDE.md §3); nothing in OpenRAL
         silently corrects an out-of-range command into range, which is also
         why ``safety.clamped`` is a literal ``False`` at every site and

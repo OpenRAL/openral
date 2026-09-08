@@ -5,25 +5,25 @@ adapter so any future policy adapter (smolvla, xvla, pi0.6, ...) can
 reuse the same quantization rules + fast-path loader without
 copy-pasting:
 
-* :func:`quantize_nf4_in_place` -- walk a policy's module tree and
+* ``quantize_nf4_in_place`` -- walk a policy's module tree and
   rewrite every large ``torch.nn.Linear`` into a ``bnb.nn.Linear4bit``.
   Defers the actual nf4 pack to the next ``.to(device)`` call, just
   like bitsandbytes does when used via ``BitsAndBytesConfig``.
-* :func:`quantize_int8_in_place` -- sibling rewrite that swaps the
+* ``quantize_int8_in_place`` -- sibling rewrite that swaps the
   same large Linears for ``bnb.nn.Linear8bitLt`` (LLM.int8 mixed
   decomposition, ~50% the bf16 footprint, lossless on most attention
   workloads). Used when the rSkill manifest declares ``dtype: int8``.
   bitsandbytes only offers 4-bit and 8-bit Linear classes — there is
   no ``nf8``; ``int8`` here means LLM.int8, not torchao dynamic int8.
-* :func:`install_prequantized_linears` -- overlay a state dict produced
+* ``install_prequantized_linears`` -- overlay a state dict produced
   by ``tools/quantize_rskill.py`` directly onto already-rewritten
   Linear4bit modules. Uses ``Params4bit.from_prequantized`` to avoid
   the ~30 s on-line bf16->nf4 conversion the standard ``.to(cuda)``
   path triggers.
-* :func:`load_prequantized_state_for_rskill` -- combined entry point:
+* ``load_prequantized_state_for_rskill`` -- combined entry point:
   read the rSkill manifest, probe the Hub for a
   ``quantization_metadata.json`` sentinel, download the prequantized
-  weights, and call :func:`install_prequantized_linears`. The function
+  weights, and call ``install_prequantized_linears``. The function
   is a silent no-op when the rSkill ships bf16 weights, so adapters
   can call it unconditionally after their own ``quantize_nf4_in_place``.
   Only nf4 prequant packs are recognised today; int8 always runs the
@@ -92,9 +92,9 @@ def quantize_nf4_in_place(
         compute_dtype: Target dtype for bnb's de-quantized matmul output
             and for the small Linear bias terms.
         min_params: Per-Linear weight-element threshold. Defaults to
-            :data:`DEFAULT_MIN_PARAMS_TO_QUANTIZE`.
+            ``DEFAULT_MIN_PARAMS_TO_QUANTIZE``.
         new_modules_on_meta: When True, wrap the module-replacement walk
-            in :func:`accelerate.init_empty_weights` so each new
+            in ``accelerate.init_empty_weights`` so each new
             ``bnb.nn.Linear4bit`` is constructed on the ``meta`` device.
             Use this when the caller is going to ``to_empty(device=...)``
             the resulting tree (and overwrite every weight via a
@@ -182,7 +182,7 @@ def quantize_int8_in_place(
 ) -> None:
     """In-place rewrite of ``torch.nn.Linear`` modules to ``bnb.nn.Linear8bitLt``.
 
-    Same selection rule as :func:`quantize_nf4_in_place`: modules whose
+    Same selection rule as ``quantize_nf4_in_place``: modules whose
     ``weight.numel() >= min_params`` are rewritten, smaller projection
     heads stay in ``compute_dtype``. The bf16 weight is cloned into a
     ``bnb.nn.Int8Params`` placeholder; bitsandbytes packs it on the
@@ -201,12 +201,12 @@ def quantize_int8_in_place(
         compute_dtype: Target dtype for bnb's mixed-precision compute
             path. bf16 on CUDA matches what PaliGemma forward expects.
         min_params: Per-Linear weight-element threshold. Defaults to
-            :data:`DEFAULT_MIN_PARAMS_TO_QUANTIZE`.
+            ``DEFAULT_MIN_PARAMS_TO_QUANTIZE``.
         threshold: ``Linear8bitLt``'s outlier-detection threshold. The
             LLM.int8 paper uses 6.0; lower values keep more of the
             activation matrix in fp16 (slower, slightly more accurate).
         new_modules_on_meta: When True, wrap the module-replacement walk
-            in :func:`accelerate.init_empty_weights` so each new
+            in ``accelerate.init_empty_weights`` so each new
             ``bnb.nn.Linear8bitLt`` is constructed on the ``meta``
             device. Mirrors the nf4 path's identically-named kwarg:
             without it, the bnb constructor allocates a full bf16
@@ -231,7 +231,7 @@ def quantize_int8_in_place(
             "uv pip install 'bitsandbytes>=0.45'"
         ) from exc
 
-    # See the matching commentary in :func:`quantize_nf4_in_place` for
+    # See the matching commentary in ``quantize_nf4_in_place`` for
     # why the meta context wraps only the bnb constructor and not the
     # subsequent ``new.weight = ...`` assignment — under
     # ``init_empty_weights`` that assignment would be redirected to
@@ -311,7 +311,7 @@ def install_prequantized_linears(
 
     Args:
         policy: The policy ``nn.Module`` tree, after
-            :func:`quantize_nf4_in_place` has already swapped Linear
+            ``quantize_nf4_in_place`` has already swapped Linear
             modules for Linear4bit shells (with bf16 placeholder
             weights).
         state: The state dict loaded from the prequantized safetensors
@@ -451,8 +451,8 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     ship a ``quantization_metadata.json`` alongside
     ``model.safetensors``. When the rSkill's HF repo carries that
     metadata file with ``scheme == "nf4"``, we download the matching
-    safetensors and call :func:`install_prequantized_linears`. The
-    Linear4bit modules built by :func:`quantize_nf4_in_place` get
+    safetensors and call ``install_prequantized_linears``. The
+    Linear4bit modules built by ``quantize_nf4_in_place`` get
     their weights replaced by the prequantized data; the implicit
     bf16->nf4 packing that ``.to(device)`` would otherwise run is
     skipped.
@@ -465,8 +465,8 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
 
     Args:
         policy: Policy ``nn.Module`` already rewritten via
-            :func:`quantize_nf4_in_place`.
-        spec: The :class:`openral_core.VLASpec` carrying the
+            ``quantize_nf4_in_place``.
+        spec: The ``openral_core.VLASpec`` carrying the
             bare rSkill reference. The rSkill manifest's
             ``weights_uri`` field (after resolution) must point at an
             ``hf://`` repo for this function to do anything.
@@ -578,7 +578,7 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
 
     Reads only the safetensors header (~10 ms warm), so calling this
     eagerly during the build phase is cheap. Routes the file fetch
-    through :func:`_hf_download_cached_first` so the
+    through ``_hf_download_cached_first`` so the
     ``local_files_only=True`` fast path applies. Works for both
     prequantized packs (caller passes the nf4 prequant repo id) and
     bare source checkpoints (caller passes the bf16 source repo id —
@@ -638,7 +638,7 @@ def normalise_manifest_dtype(manifest: Any) -> str | None:
     (``"int4"``, ``"int8"``, ``"bf16"``, ``"fp32"`` ...) already match
     the keys the adapter's dispatch checks; this helper just guards
     against a manifest without a quantization block (``None`` →
-    :func:`default_dtype_for_device` kicks in at the call site).
+    ``default_dtype_for_device`` kicks in at the call site).
     """
     quant = getattr(manifest, "quantization", None)
     if quant is None:
@@ -659,12 +659,12 @@ def manifest_dtype(spec: Any, manifest: Any | None = None) -> str | None:
        operator pick a dtype without editing the rSkill manifest.
     2. ``manifest.quantization.dtype`` — the rSkill's pinned dtype,
        when an rSkill manifest is in hand. Mapped through
-       :func:`normalise_manifest_dtype` so the enum value (``"int4"``,
+       ``normalise_manifest_dtype`` so the enum value (``"int4"``,
        ``"int8"``, ``"bf16"`` ...) lands as a string the adapter's own
        dispatch already understands.
 
     Returns ``None`` when neither source supplies a dtype, leaving
-    :func:`default_dtype_for_device` to pick a CUDA-aware default.
+    ``default_dtype_for_device`` to pick a CUDA-aware default.
     """
     raw = spec.extra.get("dtype") if hasattr(spec, "extra") else None
     if raw:
@@ -724,7 +724,7 @@ def targeted_reset_parameters(policy: Any, *, covered_keys: set[str] | None) -> 
     When the prequant state load is about to overwrite a module's params
     anyway, the reset is pure waste — the init values are discarded a few
     seconds later. ``covered_keys`` is the set of safetensors keys we know
-    will land via :func:`install_prequantized_linears` + ``load_state_dict``.
+    will land via ``install_prequantized_linears`` + ``load_state_dict``.
     For any module whose immediate (non-recursive) parameter keys are a
     subset of ``covered_keys``, we skip reset. Modules carrying parameters
     that won't be filled fall through to the standard reset so their values
@@ -778,7 +778,7 @@ def tie_transformers_weights(policy: Any) -> None:
     ``tie_weights``. Calling it in pre-order (and skipping descendants of an
     already-tied module) keeps the tie state consistent so the missing tied
     slot does not eat a wasted ``normal_`` init in
-    :func:`targeted_reset_parameters`. Failures are non-fatal (a meta-init
+    ``targeted_reset_parameters``. Failures are non-fatal (a meta-init
     expert backbone can raise ``embed_tokens is not an nn.Module``); the
     worst case is paying the reset cost for that one slot.
     """

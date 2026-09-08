@@ -3,7 +3,7 @@
 Surfaces whether the L4T ``libnvbufsurface.so`` is available so
 ``rSkill.check_capabilities`` can refuse a skill that requires the NVMM
 zero-copy ingest path on a host that cannot provide it. Lives on
-:class:`ComputeSpec`, not :class:`RobotCapabilities`.
+``ComputeSpec``, not ``RobotCapabilities``.
 """
 
 from __future__ import annotations

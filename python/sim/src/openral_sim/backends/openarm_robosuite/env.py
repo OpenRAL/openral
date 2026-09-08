@@ -1,7 +1,7 @@
 """OpenArm v2 bimanual tabletop scene with direct joint-position targets.
 
-Pairs with :mod:`._assets` (which generates the MJCF) to expose a
-:class:`SimRollout` driven through the upstream OpenArm v2 MJCF position
+Pairs with ``._assets`` (which generates the MJCF) to expose a
+``SimRollout`` driven through the upstream OpenArm v2 MJCF position
 actuators. The 16-D action chunk emitted by the pi05 OpenArm checkpoints
 flows in as ``[left_j1..7, left_grip, right_j1..7, right_grip]``; the env
 splits it per arm, clips each joint target to the MJCF limits, writes
@@ -87,7 +87,7 @@ def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | Non
     """Validate a 3-vector from ``scene.backend_options``.
 
     Accepts ``None`` (returns ``None``), a YAML list / tuple, or a
-    whitespace-separated string. Raises :class:`ROSConfigError` with a
+    whitespace-separated string. Raises ``ROSConfigError`` with a
     descriptive message for any other shape.
     """
     if raw is None:
@@ -140,10 +140,10 @@ def _resolve_base_translation(env_cfg: SimEnvironment) -> tuple[float, float]:
     ``env_cfg.base_pose`` is the only knob —
     there is no legacy ``backend_options`` fallback and no hand-tuned
     default. A YAML that omits ``base_pose`` for this scene is a
-    :class:`ROSConfigError` at compose time.
+    ``ROSConfigError`` at compose time.
 
     The (z, x) projection is deliberate: the underlying
-    :func:`_lift_robot_bases` helper is translation-only, so non-zero
+    ``_lift_robot_bases`` helper is translation-only, so non-zero
     ``y`` and non-identity quaternion are rejected. Full 6-DOF
     mounting waits on the MJCF helper learning to rotate the bases.
     """
@@ -203,7 +203,7 @@ def _resolve_state_dim(
        with ``weights_uri="mock://noop"``).
 
     Args:
-        weights_uri: The :attr:`VLASpec.weights_uri` from the eval YAML.
+        weights_uri: The ``VLASpec.weights_uri`` from the eval YAML.
             Only bare rSkill references are inspected; explicit-scheme
             URIs (``hf://``, ``local://``, etc.) drop to ``fallback``.
         fallback: Dimension to return when no manifest is available
@@ -299,7 +299,7 @@ def _resolve_initial_pose_from_rskill(
 
     # Reorder from the rSkill's layout to robot.yaml left-first. The
     # bimanual layout splits the vector in two equal halves; per the
-    # cross-check in :func:`_resolve_state_dim`, ``state_dim`` must be
+    # cross-check in ``_resolve_state_dim``, ``state_dim`` must be
     # the total bimanual width so each arm's slice is ``state_dim // 2``.
     if action_layout == "right_first":
         half = state_dim // 2
@@ -334,7 +334,7 @@ def _arm_joint_names_for_side(
 ) -> list[str]:
     """Return the 7 MJCF arm joint names for ``side``.
 
-    Reads :attr:`~openral_core.JointSpec.sim_joint_name` off every
+    Reads ``sim_joint_name`` off every
     ``robot.yaml`` joint whose ``name`` starts with ``"{side}_joint"``,
     falling back to the legacy hardcoded ``openarm_{side}_joint{i}``
     pattern when no description is passed (lets hermetic tests build
@@ -373,7 +373,7 @@ def _build_arm_handles(
     """Look up actuator / joint indices for one arm in the composed MJCF.
 
     Joint names come from the per-joint ``sim_joint_name`` overrides
-    in :class:`~openral_core.RobotDescription` — falling
+    in ``RobotDescription`` — falling
     back to the previous hardcoded ``openarm_{side}_joint{i}`` strings
     when no description is passed (legacy / hermetic-test paths).
 
@@ -382,7 +382,7 @@ def _build_arm_handles(
     ``{side}_finger1_ctrl`` for the driven finger). The schema doesn't
     carry sim-actuator overrides today, so those remain in code; if a
     future fork renames actuators, add a ``sim_actuator_name`` field
-    on :class:`~openral_core.JointSpec`.
+    on ``JointSpec``.
 
     Args:
         model: Compiled MuJoCo model (composed with
@@ -540,7 +540,7 @@ class _OpenArmTabletopRollout:
 
         The expected width is ``self._state_dim``, derived at backend
         init from the rSkill's ``action_contract.dim`` (or the loaded
-        :class:`RobotDescription`'s joint count as the fallback).
+        ``RobotDescription``'s joint count as the fallback).
         Targets are written *directly* to the upstream OpenArm v2
         ``<position>`` actuators (``{side}_joint{i}_ctrl`` +
         ``{side}_finger1_ctrl``), inheriting the upstream MJCF's
@@ -739,7 +739,7 @@ class _OpenArmTabletopRollout:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())

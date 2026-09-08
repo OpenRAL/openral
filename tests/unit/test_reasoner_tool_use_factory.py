@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_reasoner.build_tool_use_client_from_env`.
+"""Unit tests for ``openral_reasoner.build_tool_use_client_from_env``.
 
 Drives the model-first env factory (ADR-0088) through every branch — curated
 registry models, the named endpoints (`anthropic` / `openrouter` / `gemini` /

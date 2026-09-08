@@ -2,7 +2,7 @@
 
 The point of this scene is that the robot is a **flag**: the same composer +
 rollout drives any position-controlled arm. So the suite runs the full
-:class:`openral_sim.SimRollout` Protocol — compose, ``reset``, ``step``,
+``openral_sim.SimRollout`` Protocol — compose, ``reset``, ``step``,
 observation shapes, geometric success — against **four different robots**
 (SO-100, SO-101, Franka, UR5e), resolving each robot's base MJCF from its real manifest.
 
@@ -53,7 +53,7 @@ pytestmark = [
 
 
 def _make_env(robot_id: str, *, backend_options: dict | None = None, cameras=("top", "front")):
-    """Build a real :class:`SimEnvironment` for the tabletop_push scene."""
+    """Build a real ``SimEnvironment`` for the tabletop_push scene."""
     from openral_core.schemas import SceneSpec, SimEnvironment, TaskSpec, VLASpec
 
     scene = SceneSpec(

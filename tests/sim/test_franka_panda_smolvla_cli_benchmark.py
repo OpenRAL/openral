@@ -87,15 +87,15 @@ def _make_tiny_libero_suite(tmp_path: Path) -> Path:
     As of June 2026, a benchmark suite is a bare ``list[BenchmarkScene]``
     YAML; ``suite_id`` is derived from the filename stem. We write to
     ``libero_spatial.yaml`` (not ``_tiny``) so the stem matches a valid
-    :data:`openral_core.BenchmarkName` literal — the test uses
+    ``openral_core.BenchmarkName`` literal — the test uses
     ``--no-update-manifest`` to keep the in-tree ``rskills/smolvla-libero/rskill.yaml``
     untouched, but the resolver still validates the stem on the way in.
 
-    The trim collapses the first :class:`BenchmarkScene` to a
+    The trim collapses the first ``BenchmarkScene`` to a
     single-episode, 20-step rollout and discards the remaining nine.
     Per-scene fields (robot_id / scene / metadata) carry through
     untouched so the suite invariants in
-    :func:`openral_core.raise_on_invalid_suite` still hold.
+    ``openral_core.raise_on_invalid_suite`` still hold.
     """
     import yaml
     from openral_core import load_benchmark_suite

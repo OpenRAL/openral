@@ -9,9 +9,9 @@ fix ``OpenAICompatibleToolUseClient.select_tool`` ran an unguarded
 
 These tests pin:
 - the guard converts a malformed / non-object payload into
-  :class:`ROSReasonerInvalidPlan` (a :class:`ROSPlanningError` the tick loop
+  ``ROSReasonerInvalidPlan`` (a ``ROSPlanningError`` the tick loop
   already handles), instead of a raw ``JSONDecodeError`` / ``dict()`` crash; and
-- :func:`reflect_on_invalid_plan` plus the ``## EXECUTION`` buffer carry the
+- ``reflect_on_invalid_plan`` plus the ``## EXECUTION`` buffer carry the
   decode error back into the next prompt so the model fixes its call.
 
 The only double is the ``openai`` SDK itself — a network boundary (CLAUDE.md

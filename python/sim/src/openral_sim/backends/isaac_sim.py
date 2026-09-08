@@ -6,10 +6,10 @@ wheels: 4.x→py3.10, 5.x→py3.11, 6.x→py3.12. The openral workspace pins
 ``SimulationApp``-before-``omni.*`` import order, a libgomp/OpenMP ``LD_PRELOAD``
 clash with the VLA torch stack) makes an in-process load impractical inside the
 3.12 venv. So — exactly like the RLDX-1 policy sidecar
-(:mod:`openral_sim.policies.rldx`) — we run Isaac Lab in its own py3.11 venv and
+(``openral_sim.policies.rldx``) — we run Isaac Lab in its own py3.11 venv and
 talk to it over ZMQ REQ/REP framed by msgpack.
 
-This module is the **openral side**: a thin :class:`SimRollout` that marshals
+This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar
 (``tools/isaac_sidecar.py``) and unwraps the responses. The sidecar owns the
 Omniverse app, the Franka manipulation env, PhysX stepping, and RTX camera
@@ -23,7 +23,7 @@ Lifecycle (mirrors the RLDX adapter's auto-spawn block)
   resolved scene config (task id, layout, obs size, instruction) and poll
   ``ping`` until it answers or ``boot_timeout_s`` elapses. First boot pays the
   tens-of-seconds Omniverse Kit start; ``boot_timeout_s`` defaults large.
-* :meth:`close` terminates only a child we spawned ourselves; a pre-existing
+* ``close`` terminates only a child we spawned ourselves; a pre-existing
   operator-launched sidecar is left running.
 
 Sidecar python resolution
@@ -35,7 +35,7 @@ install) is provisioned out of band by the user — there is no auto-install pla
 for it, unlike the lightweight openral-side ``isaac_client`` wire deps. Without
 the env var set we fall back to the cache default
 (``~/.cache/openral/isaac-sidecar/.venv/bin/python``) and raise a typed
-:class:`ROSConfigError` carrying the exact provisioning commands if absent.
+``ROSConfigError`` carrying the exact provisioning commands if absent.
 
 Scene category: **free-axis** (``fixed_robot=None``). The sidecar's env is
 Franka-based today but the scene is robot-flagged for forward compatibility with
@@ -165,7 +165,7 @@ _MAX_PHYSICAL_GRIPPER_TRAVEL_M = 0.1
 
 @dataclass
 class _IsaacSimSidecar:
-    """:class:`SimRollout` that proxies an Isaac Lab env over the sidecar.
+    """``SimRollout`` that proxies an Isaac Lab env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8, ``state`` 1-D float32, ``task`` str); we only
@@ -287,7 +287,7 @@ def _provision_isaac_venv() -> Path:
 
     Opt-in (``OPENRAL_ISAAC_AUTO_PROVISION=1``) because it is a multi-GB,
     RTX-only, license-gated download from NVIDIA's index. Uses the shared
-    :func:`ensure_pip_venv` provisioning order so it reuses an existing venv +
+    ``ensure_pip_venv`` provisioning order so it reuses an existing venv +
     sentinel, matching the LocateAnything / Qwen sidecars. Returns the venv
     python (``<home>/.venv/bin/python``).
     """
@@ -344,7 +344,7 @@ def _sidecar_python() -> Path:
     venv → a typed error carrying the exact manual commands.
 
     Auto-provision is tried *before* the existing-venv shortcut so a venv built
-    from superseded pins gets repaired: :func:`ensure_pip_venv` reuses it when
+    from superseded pins gets repaired: ``ensure_pip_venv`` reuses it when
     its sentinel still matches (cheap) and re-installs when it does not. The
     old order returned any existing venv untouched, which is why the stale
     nvJitLink of issue #89 survived every re-provision attempt.
@@ -570,7 +570,7 @@ def provision_isaac_sim() -> None:
     a terminal than as a lifecycle timeout.
 
     Idempotent — an existing venv short-circuits on its sentinel, so a warm
-    host pays one ``is_file()``. :func:`_build_isaac_sim_scene` resolves the
+    host pays one ``is_file()``. ``_build_isaac_sim_scene`` resolves the
     same interpreter again on the build path.
 
     Raises:

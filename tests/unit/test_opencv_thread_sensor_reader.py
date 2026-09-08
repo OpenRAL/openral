@@ -1,10 +1,10 @@
-"""Unit tests for :class:`OpenCVThreadSensorReader`.
+"""Unit tests for ``OpenCVThreadSensorReader``.
 
 No mocks (CLAUDE.md §1.11). Tests generate a short MJPG/AVI video on disk
 with ``cv2.VideoWriter`` and feed its path to a real
-:class:`OpenCVThreadSensorReader`. The reader's background thread
+``OpenCVThreadSensorReader``. The reader's background thread
 captures the file via the real ``cv2.VideoCapture``; assertions exercise
-the published :class:`SensorFrame` shape, the staleness contract, and
+the published ``SensorFrame`` shape, the staleness contract, and
 lifecycle idempotency.
 
 The fixture is skipped cleanly when ``opencv-python`` is not installed

@@ -228,7 +228,7 @@ def _collision_z_extent_m(description: Any) -> tuple[float, float] | None:
     at all — the documented sparse-geometry case the ``min_body_height_m``
     floor exists for. A manifest that declares geometry the derivation cannot
     place raises instead of quietly measuring the subset it can reach; see
-    :func:`derive_robot_relative_height_band`.
+    ``derive_robot_relative_height_band``.
     """
     transforms = _link_transforms_at_zero(description)
     z_values: list[float] = []
@@ -273,8 +273,8 @@ def derive_robot_relative_height_band(
 
     Lower edge = robot-relative floor + ``floor_clearance_m``. Upper edge =
     measured body height from footprint + collision/link geometry (each
-    shape's exact z span via :func:`_shape_z_span_m`, placed by
-    :func:`_link_transforms_at_zero`). Relative to ``base_frame``; the node
+    shape's exact z span via ``_shape_z_span_m``, placed by
+    ``_link_transforms_at_zero``). Relative to ``base_frame``; the node
     shifts it into ``global_frame`` via live TF per frame.
     ``min_body_height_m`` is the floor for a manifest with **no** collision
     geometry — not a fallback for geometry that failed to place.
@@ -415,7 +415,7 @@ def main(args: Any = None) -> None:
     from tf2_ros import Buffer, TransformException, TransformListener
 
     class DepthHeightFilterNode(Node):  # type: ignore[misc]
-        """ROS node wrapper around :func:`filter_depth_by_global_height`."""
+        """ROS node wrapper around ``filter_depth_by_global_height``."""
 
         def __init__(self) -> None:
             super().__init__("openral_nvblox_depth_height_filter")

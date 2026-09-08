@@ -2,7 +2,7 @@
 
 ManiSkill3 is opt-in via the ``maniskill3`` dependency group
 (``just sync --all-packages --group maniskill3``); without it this module still imports
-fine but the scene factory raises a typed :class:`ROSConfigError` with
+fine but the scene factory raises a typed ``ROSConfigError`` with
 the install hint.
 
 Task ID convention
@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 
 _MANISKILL3_SCENE_ID = "maniskill3"
 _DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
-# Mirrors the constant in :mod:`openral_sim.sim_runner` and
-# :mod:`openral_sim.backends.simpler_env`. :meth:`SimRunner.activate`
+# Mirrors the constant in ``openral_sim.sim_runner`` and
+# ``openral_sim.backends.simpler_env``. ``SimRunner.activate``
 # sets it to ``"1"`` for the duration of the scene-build window when
 # ``openral sim run --view`` is on; we read it here to decide whether to
 # build with deferred SAPIEN viewer plumbing.
@@ -71,7 +71,7 @@ def _reconcile_robot_uids(env_id: str, robot_uids: str) -> None:
     that only adds a ``hand_camera``) trips a false "not in the task's list of
     supported robots" warning even though it is genuinely usable. We walk the
     requested agent's MRO: if any base uid is supported, the variant is
-    accepted; otherwise raise a typed :class:`ROSCapabilityMismatch` at the
+    accepted; otherwise raise a typed ``ROSCapabilityMismatch`` at the
     scene boundary instead of MS3's vague warning + downstream crash.
 
     Args:
@@ -135,7 +135,7 @@ class _DropUnsupportedRobotWarning(logging.Filter):
 def _suppress_unsupported_robot_warning() -> Iterator[None]:
     """Silence MS3's false "not in the task's list of supported robots" warning.
 
-    Used around ``gym.make`` *after* :func:`_reconcile_robot_uids` has already
+    Used around ``gym.make`` *after* ``_reconcile_robot_uids`` has already
     validated the requested robot (so the warning is provably a false positive
     about a registered camera-variant). Only that one message is dropped; every
     other ``mani_skill`` log record passes through untouched.
@@ -213,7 +213,7 @@ def _sapien_sim_time_ns(env: object) -> int | None:
 
 @dataclass
 class _ManiSkill3Sim:
-    """Thin :class:`SimRollout` wrapper around a ManiSkill3 gym env.
+    """Thin ``SimRollout`` wrapper around a ManiSkill3 gym env.
 
     ManiSkill3 envs default to vectorised GPU rollouts; the eval-layer
     contract is single-env so we pass ``num_envs=1`` at construction and
@@ -227,7 +227,7 @@ class _ManiSkill3Sim:
     # Deferred-window mode for ``openral sim run --view`` (mirrors the
     # simpler_env backend in PR #160). When True the env was constructed
     # with ``render_mode=None`` and the SAPIEN viewer hasn't been opened
-    # yet; the first :meth:`viewer_render` call promotes
+    # yet; the first ``viewer_render`` call promotes
     # ``env.unwrapped.render_mode`` to ``"human"`` so the window opens
     # *after* the slow policy build, not during it.
     _view_pending: bool = False
@@ -263,7 +263,7 @@ class _ManiSkill3Sim:
     def viewer_render(self) -> None:
         """Pump the SAPIEN live viewer; promotes to ``human`` mode on first call.
 
-        Picked up by :func:`openral_sim.sim_runner._open_viewer_and_pacing` as
+        Picked up by ``openral_sim.sim_runner._open_viewer_and_pacing`` as
         the engine-owns-the-viewer hook. The first call promotes
         ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` (MS3's
         ``render_human`` then creates the SAPIEN viewer), deferred until after
@@ -361,7 +361,7 @@ def _extract_rgb(flat: Any) -> NDArray[np.uint8] | None:
     """Pull the first RGB camera stream out of a ManiSkill3 obs dict.
 
     Kept for backwards-compatibility / tests that probe a single stream;
-    the multi-camera surface used at runtime is :func:`_extract_rgb_streams`.
+    the multi-camera surface used at runtime is ``_extract_rgb_streams``.
     """
     streams = _extract_rgb_streams(flat)
     if not streams:
@@ -417,7 +417,7 @@ def _extract_state(flat: Any) -> NDArray[np.float32]:
 
 @SCENES.register(_MANISKILL3_SCENE_ID)
 def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
-    """Lazily import ``mani_skill`` and build a :class:`_ManiSkill3Sim`."""
+    """Lazily import ``mani_skill`` and build a ``_ManiSkill3Sim``."""
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("maniskill3")

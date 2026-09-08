@@ -217,7 +217,7 @@ def enumerate_can_interfaces(*, sysfs_net: str | None = None) -> list[CanInterfa
 
     Args:
         sysfs_net: Sysfs root for network devices.  Defaults to
-            :data:`SYSFS_NET`; override it to read a recorded fixture tree.
+            ``SYSFS_NET``; override it to read a recorded fixture tree.
 
     Returns:
         Interfaces sorted by name.  Empty on non-Linux hosts and on Linux
@@ -274,14 +274,14 @@ def enumerate_can_interfaces(*, sysfs_net: str | None = None) -> list[CanInterfa
 def can_link_state(interface: str, *, sysfs_net: str | None = None) -> tuple[bool, str]:
     """Report whether ``interface`` is an existing, up CAN link.
 
-    The single-interface counterpart to :func:`enumerate_can_interfaces`, for
+    The single-interface counterpart to ``enumerate_can_interfaces``, for
     the case where a caller already knows the name it needs and wants to say
     precisely what is wrong when it is unusable.
 
     Args:
         interface: SocketCAN interface name, e.g. ``"openarm_left"``.
         sysfs_net: Sysfs root for network devices.  Defaults to
-            :data:`SYSFS_NET`.
+            ``SYSFS_NET``.
 
     Returns:
         ``(is_up, reason)``.  ``reason`` is empty when the link is usable and
@@ -322,7 +322,7 @@ def preflight_can_links(
         hal_label: Name of the calling HAL, used to open the error message.
         remedy: Robot-specific operator guidance appended to the error.
         sysfs_net: Sysfs root for network devices.  Defaults to
-            :data:`SYSFS_NET`.
+            ``SYSFS_NET``.
 
     Returns:
         A health map of ``{f"{label}_can": "<name>" or "<name> (DOWN)"}``,

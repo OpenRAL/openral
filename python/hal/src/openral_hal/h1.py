@@ -2,11 +2,11 @@
 
 This module wraps the upstream DeepMind ``mujoco_menagerie`` H1 MJCF
 (``unitree_h1/h1.xml``, vendored via ``robot_descriptions``) as a
-:class:`openral_hal.HAL` Protocol implementation, following the same
-pattern as :class:`openral_hal.G1MujocoHAL` — the H1's bigger,
+``openral_hal.HAL`` Protocol implementation, following the same
+pattern as ``openral_hal.G1MujocoHAL`` — the H1's bigger,
 earlier sibling.
 
-Like :class:`G1MujocoHAL`, this HAL is a **digital-twin contract
+Like ``G1MujocoHAL``, this HAL is a **digital-twin contract
 validator**, not a useful humanoid sim: the H1 has a floating base and no
 S0 cerebellar controller, so it falls over under gravity and closed-loop
 convergence tests run with ``gravity_enabled=False``. The suite validates
@@ -302,7 +302,7 @@ H1_DESCRIPTION = RobotDescription(
 # ``ctrl[i] = x`` applies ``x`` N·m directly, not "drive joint i to position
 # x" (unlike G1/UR/Franka's ``position`` actuators with internal PD). To
 # preserve the HAL contract (every ``MujocoArmHAL`` subclass takes position
-# targets), :class:`H1MujocoHAL` runs a P+D position loop in software and
+# targets), ``H1MujocoHAL`` runs a P+D position loop in software and
 # writes the resulting torque to ``ctrl`` — mirrors the real ``unitree_sdk2``
 # driver (torque motor interface, position user interface). Gains are sized
 # so a 1-rad position error saturates near ``ctrlrange``, with critical-ish
@@ -333,8 +333,8 @@ class H1MujocoHAL(MujocoArmHAL):
 
     Drives the 19 actuated joints of the menagerie ``unitree_h1`` MJCF
     through MuJoCo's position-controlled actuators.  Exposes a 19-D
-    :class:`openral_core.Action` matching the joint order in
-    :data:`H1_DESCRIPTION` (left leg 5 → right leg 5 → torso 1 → left
+    ``openral_core.Action`` matching the joint order in
+    ``H1_DESCRIPTION`` (left leg 5 → right leg 5 → torso 1 → left
     arm 4 → right arm 4).
 
     .. warning::
@@ -351,7 +351,7 @@ class H1MujocoHAL(MujocoArmHAL):
             ``None``, the file is fetched lazily from
             ``robot_descriptions`` (``mujoco_menagerie/unitree_h1/h1.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to ``1``; raise it in tests
+            ``send_action``.  Defaults to ``1``; raise it in tests
             that assert the body has converged at the commanded pose.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time — required for the contract-validation
@@ -379,7 +379,7 @@ class H1MujocoHAL(MujocoArmHAL):
         """Initialise the H1 HAL; no MuJoCo state is created until ``connect()``.
 
         All MuJoCo wiring (MJCF URI, floating-base offsets) lives in
-        :data:`H1_DESCRIPTION.sim`.  The software PD gains
+        ``H1_DESCRIPTION.sim``.  The software PD gains
         stay here because they are H1-specific cerebellar substitute
         behavior, not arm-data.
         """

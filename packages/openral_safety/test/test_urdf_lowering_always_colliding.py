@@ -113,7 +113,7 @@ def test_inscribed_sphere_would_have_hidden_the_separation() -> None:
     Modelling each box by its inscribed sphere makes link5/link7 look disjoint
     almost everywhere — the exact inversion that dropped the pair from the sweep.
     A box must never be lowered to anything smaller than itself for a *collision*
-    verdict; :func:`bounding_capsule_segment` (over-covering) is for planners.
+    verdict; ``bounding_capsule_segment`` (over-covering) is for planners.
     """
     _model, geoms, _ = _load("panda_mobile")
     box5 = geoms["panda_link5"].shape

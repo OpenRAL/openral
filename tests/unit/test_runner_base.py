@@ -1,16 +1,16 @@
-"""Unit tests for :mod:`openral_runner.base` and the ``InferenceRunner`` Protocol.
+"""Unit tests for ``openral_runner.base`` and the ``InferenceRunner`` Protocol.
 
-No mocks. Uses a real in-process :class:`InferenceRunnerBase` subclass that
+No mocks. Uses a real in-process ``InferenceRunnerBase`` subclass that
 simulates per-tick latency via ``time.sleep`` and a real
-:class:`~openral_core.TickResult`. Asserts:
+``TickResult``. Asserts:
 
 * The Protocol's structural ``isinstance`` check accepts the base subclass.
-* :meth:`InferenceRunnerBase.run` ticks ``max_ticks`` times and aggregates
-  the per-tick timings into :class:`RunResult` (mean / p99).
+* ``InferenceRunnerBase.run`` ticks ``max_ticks`` times and aggregates
+  the per-tick timings into ``RunResult`` (mean / p99).
 * The 30 Hz cadence is honoured within ±2 ms over 10 ticks (≈ the cadence
   contract the hardware runner depends on).
-* :class:`DeadlineOverrunPolicy` is applied per the configured mode.
-* :meth:`activate` / :meth:`deactivate` toggle the ``_active`` flag and
+* ``DeadlineOverrunPolicy`` is applied per the configured mode.
+* ``activate`` / ``deactivate`` toggle the ``_active`` flag and
   re-running after deactivation works.
 """
 
@@ -123,7 +123,7 @@ def test_run_result_aggregates_timings_correctly() -> None:
 
 
 def test_run_result_empty_when_max_ticks_zero() -> None:
-    """``max_ticks=0`` returns an empty :class:`RunResult` (no ticks executed)."""
+    """``max_ticks=0`` returns an empty ``RunResult`` (no ticks executed)."""
     runner = FixedLatencyRunner(fake_inference_s=1e-3, rate_hz=30.0)
     runner.activate()
     runner.deactivate()
@@ -152,7 +152,7 @@ def test_deadline_overrun_warn_continues(caplog: pytest.LogCaptureFixture) -> No
 
 
 def test_deadline_overrun_raise_aborts() -> None:
-    """``RAISE`` policy raises :class:`ROSDeadlineMissed` on the first overrun."""
+    """``RAISE`` policy raises ``ROSDeadlineMissed`` on the first overrun."""
     runner = FixedLatencyRunner(
         fake_inference_s=20e-3,
         rate_hz=60.0,
@@ -283,7 +283,7 @@ def test_should_terminate_default_false_is_hardware_compatible() -> None:
 
 
 def test_should_terminate_breaks_run_loop_early() -> None:
-    """Subclass override stops :meth:`run` before ``max_ticks``."""
+    """Subclass override stops ``run`` before ``max_ticks``."""
     runner = StopAfterNRunner(stop_after=3, fake_inference_s=1e-3, rate_hz=100.0)
     # max_ticks deliberately far above stop_after — the hook is the real bound.
     result = runner.run(max_ticks=100)

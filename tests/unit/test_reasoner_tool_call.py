@@ -1,4 +1,4 @@
-"""Unit tests for :data:`openral_core.ReasonerToolCall`.
+"""Unit tests for ``openral_core.ReasonerToolCall``.
 
 Real Pydantic — no mocks. Tests cover the round-trip through the
 discriminated union, the rejection of unknown discriminators, and the

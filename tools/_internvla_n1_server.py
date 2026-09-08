@@ -5,8 +5,8 @@ Qwen2.5-VL-7B System-2 waypoint planner + NavDP DiT System-1 trajectory
 policy — in its own isolated venv (upstream InternNav pins
 ``transformers==4.51.0``, incompatible with the py3.12 workspace) and serves
 velocity commands over ZMQ REP. Client: the ``internvla_n1`` policy adapter
-(:mod:`openral_sim.policies.internvla_n1`), speaking the canonical
-:class:`openral_sim.sidecar.SidecarClient` frame
+(``openral_sim.policies.internvla_n1``), speaking the canonical
+``openral_sim.sidecar.SidecarClient`` frame
 (``{"endpoint": str, "data": {...}}`` + the ``__ndarray__``/npy codec).
 
 Wire protocol (msgpack, ZMQ REQ/REP):

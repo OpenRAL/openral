@@ -17,9 +17,9 @@ Fed to ``mujoco.MjModel.from_xml_string`` with an ``asset_root`` callback so
 OpenArm meshes load from the upstream cache without copying.
 
 The actuator inventory + ctrlrange/forcerange numbers, and the "top" camera
-placement, are derived from a loaded :class:`openral_core.RobotDescription`
-(:func:`actuator_specs_from_description`,
-:attr:`RobotDescription.scene_defaults.top_camera`) — no module-level copy of
+placement, are derived from a loaded ``openral_core.RobotDescription``
+(``actuator_specs_from_description``,
+``RobotDescription.scene_defaults.top_camera``) — no module-level copy of
 either; the YAML's ``scene.backend_options.top_camera_*`` keys still override.
 
 Honest scope note: only the structural composition is exercised today
@@ -63,7 +63,7 @@ ActuatorSpec = tuple[str, str, float, float, float]
 
 
 def load_openarm_description() -> RobotDescription:
-    """Return the OpenArm v2 :class:`RobotDescription` HAL constant.
+    """Return the OpenArm v2 ``RobotDescription`` HAL constant.
 
     The HAL constant ``openral_hal.openarm.OPENARM_DESCRIPTION`` is the
     in-code source of truth for the OpenArm v2 manifest; the YAML at
@@ -80,7 +80,7 @@ def load_openarm_description() -> RobotDescription:
 
 
 def _mjcf_joint_name(joint_name: str) -> str:
-    """Map a :class:`JointSpec` name onto the upstream MJCF joint name.
+    """Map a ``JointSpec`` name onto the upstream MJCF joint name.
 
     The OpenArm v2 manifest uses logical joint names like
     ``left_joint1`` / ``left_gripper`` (no ``openarm_`` prefix); the
@@ -94,7 +94,7 @@ def _mjcf_joint_name(joint_name: str) -> str:
 
 
 def _actuator_name(joint_name: str) -> str:
-    """Map a :class:`JointSpec` name onto the upstream MJCF actuator name."""
+    """Map a ``JointSpec`` name onto the upstream MJCF actuator name."""
     if joint_name.endswith("_gripper"):
         side = joint_name[: -len("_gripper")]
         return f"{side}_finger1_ctrl"
@@ -107,11 +107,11 @@ def actuator_specs_from_description(desc: RobotDescription) -> list[ActuatorSpec
     Replaces the previous module-level ``_JOINT_SPECS`` constant whose
     own docstring conceded it "Mirrors robots/openarm/robot.yaml" —
     that was two sources of truth. Now the table is computed at use
-    time from :attr:`RobotDescription.joints`, so the only place a
+    time from ``RobotDescription.joints``, so the only place a
     limit can drift is the manifest itself.
 
     Args:
-        desc: A loaded :class:`RobotDescription`. ``desc.joints`` must
+        desc: A loaded ``RobotDescription``. ``desc.joints`` must
             be the OpenArm v2 16-joint inventory (7 revolute arm + 1
             revolute gripper per side); each joint must carry
             ``position_limits`` and ``effort_limit``.
@@ -215,7 +215,7 @@ _SCENE_BODIES = dedent(
 
 
 # The default "top" camera placement is sourced from
-# :attr:`RobotDescription.scene_defaults.top_camera` on the robot
+# ``RobotDescription.scene_defaults.top_camera`` on the robot
 # manifest (see ``robots/openarm/robot.yaml`` and
 # ``OPENARM_DESCRIPTION`` in ``openral_hal.openarm``). The previous
 # module-level ``_DEFAULT_TOP_CAMERA_*`` constants — baked to the
@@ -414,7 +414,7 @@ def compose_openarm_tabletop_mjcf(
 
     The ``meshdir`` second element is the absolute path to the upstream
     MJCF's sibling ``assets/`` directory; callers pass it to
-    :func:`mujoco.MjModel.from_xml_string` so meshes resolve at compile
+    ``mujoco.MjModel.from_xml_string`` so meshes resolve at compile
     time without copying.
 
     Args:
@@ -448,8 +448,8 @@ def compose_openarm_tabletop_mjcf(
         top_camera_fovy: Vertical field-of-view in degrees for the
             ``top`` camera. ``None`` falls back to
             ``robot_description.scene_defaults.top_camera.fovy``.
-        robot_description: Loaded :class:`RobotDescription`. Defaults
-            to :func:`load_openarm_description` (the in-tree OpenArm
+        robot_description: Loaded ``RobotDescription``. Defaults
+            to ``load_openarm_description`` (the in-tree OpenArm
             HAL constant). Drives both the actuator inventory and the
             per-robot scene defaults so this composer no longer carries
             its own copy of either.

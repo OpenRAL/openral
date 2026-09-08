@@ -30,9 +30,9 @@ class WorldModel(Protocol):
     """Structural protocol for a World Action Model.
 
     Implementations predict a future trajectory given a starting
-    :class:`~openral_core.WorldState` and a candidate
-    :class:`~openral_core.Action` chunk. The planning layer feeds the
-    returned :class:`Rollout` into one of the three integration patterns
+    ``WorldState`` and a candidate
+    ``Action`` chunk. The planning layer feeds the
+    returned ``Rollout`` into one of the three integration patterns
     documented in CLAUDE.md §6.3.
 
     Attributes:
@@ -52,18 +52,18 @@ class WorldModel(Protocol):
         """Predict ``horizon`` steps of future state given ``action_chunk``.
 
         Args:
-            world_state: The starting :class:`~openral_core.WorldState`
+            world_state: The starting ``WorldState``
                 snapshot — typically the same one fed to the S1 skill.
-            action_chunk: The :class:`~openral_core.Action` chunk the
+            action_chunk: The ``Action`` chunk the
                 planning layer wants to gate or anticipate.
             horizon: Number of steps to predict. Must satisfy
                 ``0 < horizon <= max_horizon``.
 
         Returns:
-            A :class:`Rollout` of length ``horizon`` with predicted
+            A ``Rollout`` of length ``horizon`` with predicted
             states and (optionally) rewards.
 
         Raises:
-            ROSConfigError: When ``horizon`` exceeds :attr:`max_horizon`.
+            ROSConfigError: When ``horizon`` exceeds ``max_horizon``.
         """
         ...

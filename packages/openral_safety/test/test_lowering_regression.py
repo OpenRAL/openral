@@ -6,7 +6,7 @@ The C++ safety kernel checks self-collision (ACM) and world-collision against th
 ``robot.yaml``. The standardized-description-asset resolver change moves only
 *how the source files are located*, never the geometry — so re-lowering every
 robot through the provenance-correct dispatcher
-(:func:`openral_safety.urdf_lowering.lower_robot_auto`) MUST reproduce the
+(``openral_safety.urdf_lowering.lower_robot_auto``) MUST reproduce the
 committed values exactly. A drift is a release blocker (CLAUDE.md §3): it would
 change what the kernel checks without a paper trail. This is the concrete
 mitigation the hazard-log entry references; it exercises real manifests, real

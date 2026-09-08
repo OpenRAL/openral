@@ -1,8 +1,8 @@
 """Rosbag2ToLeRobotConverter — offline mcap rosbag2 → LeRobotDataset v3.
 
-Reads back the mcap file written by :class:`Rosbag2Sink` and produces a
-:class:`lerobot.datasets.LeRobotDataset` v3.0 via the same
-:class:`LeRobotDatasetSink` the online sim path uses: hardware execution →
+Reads back the mcap file written by ``Rosbag2Sink`` and produces a
+``lerobot.datasets.LeRobotDataset`` v3.0 via the same
+``LeRobotDatasetSink`` the online sim path uses: hardware execution →
 mcap bag → on-disk LeRobotDataset → HF Hub via `openral dataset push`.
 
 * Reads ``/openral/tick``, ``/openral/episode``, and
@@ -10,14 +10,14 @@ mcap bag → on-disk LeRobotDataset → HF Hub via `openral dataset push`.
   ``(episode_idx, step_idx)``). A camera declared on the robot but absent
   from the bag gets a zero frame at the bag-derived or robot-native shape.
 * `/openral/episode` markers segment the bag into episodes; a bag with none
-  is rejected with :class:`ROSConfigError` — no guessing episode bounds.
+  is rejected with ``ROSConfigError`` — no guessing episode bounds.
 * State/action/camera shapes are derived from the bag's own recorded data
   (works for any robot, not just ones with an ``observation_spec``/
   ``action_spec``); legacy metadata-only bags fall back to the robot spec.
 
 Per CLAUDE.md §1.11 — exercised in `python/dataset/tests/test_converter.py`
 against real bags, reloaded by a real
-:class:`lerobot.datasets.LeRobotDataset` reader.
+``lerobot.datasets.LeRobotDataset`` reader.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ _MCAP_INSTALL_HINT: Final[str] = (
 
 @dataclass(frozen=True)
 class DatasetSummary:
-    """Bookkeeping result returned by :meth:`Rosbag2ToLeRobotConverter.from_bag`.
+    """Bookkeeping result returned by ``Rosbag2ToLeRobotConverter.from_bag``.
 
     Attributes:
         output_root: Path to the produced LeRobotDataset v3 root.
@@ -94,7 +94,7 @@ class Rosbag2ToLeRobotConverter:
 
     The converter walks the mcap once, builds per-episode buffers from
     PHASE_START/PHASE_END pairs, then replays each episode through a
-    :class:`LeRobotDatasetSink` so the on-disk format is identical to
+    ``LeRobotDatasetSink`` so the on-disk format is identical to
     what the online sim path produces. ``next.success`` for every frame
     in an episode is set from the episode's PHASE_END marker — episode-level
     success, broadcast uniformly per-frame.
@@ -115,7 +115,7 @@ class Rosbag2ToLeRobotConverter:
 
         Args:
             bag_path: Path to the input ``.mcap`` file produced by
-                :class:`Rosbag2Sink`.
+                ``Rosbag2Sink``.
             robot: Robot description used to bind feature shapes (state
                 vector, action dim). Must match what the recorder used
                 at write time — mismatched shapes are caught at
@@ -130,7 +130,7 @@ class Rosbag2ToLeRobotConverter:
                 to ``robot.action_spec.control_freq_hz`` or 30.0.
 
         Returns:
-            :class:`DatasetSummary` describing what was written.
+            ``DatasetSummary`` describing what was written.
 
         Raises:
             ROSConfigError: When mcap is unimportable, the bag is
@@ -348,7 +348,7 @@ class Rosbag2ToLeRobotConverter:
         """Stamp the episode-level success flag onto every tick.
 
         Stored as a private ``_episode_success`` key on each tick dict
-        so :meth:`_replay_tick` can read it back without consulting the
+        so ``_replay_tick`` can read it back without consulting the
         surrounding episode buffer.
         """
         for tick in buf.ticks:

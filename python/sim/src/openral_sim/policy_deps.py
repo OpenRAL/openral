@@ -1,6 +1,6 @@
 """Policy-family dependency probing — shared by reasoner + skill_runner.
 
-The policy factories in :mod:`openral_sim.policies` live behind opt-in
+The policy factories in ``openral_sim.policies`` live behind opt-in
 extras groups (``sim`` / ``libero`` / ``metaworld`` / ``robocasa``):
 ``transformers``, ``bitsandbytes``, ``lerobot[…]``, etc. When the right
 group isn't installed the factory raises ``ImportError`` deep inside
@@ -10,10 +10,10 @@ with a *different* ``cannot import name 'X'`` cascade error.
 
 This module is the single source of truth for two related contracts:
 
-* :func:`model_family_install_hint` — the actionable uv-sync command for
-  each known family. Used by :mod:`openral_rskill_ros.rskill_runner_node`
+* ``model_family_install_hint`` — the actionable uv-sync command for
+  each known family. Used by ``openral_rskill_ros.rskill_runner_node``
   when translating a factory ``ImportError`` into ``ROSRuntimeError``.
-* :func:`can_import_policy_family` / :func:`filter_importable_manifests`
+* ``can_import_policy_family`` / ``filter_importable_manifests``
   — pre-flight probes used by the reasoner at ``on_configure`` to drop
   rSkills whose deps aren't installed before the palette is built, so
   the operator sees one warning at boot ("dropped X: missing
@@ -32,7 +32,7 @@ distutils-uninstall trap before+after the sync.
 The probe never instantiates a factory or loads weights. By default it
 only resolves the *top-level* package of each required import via
 ``importlib.util.find_spec`` — measured at ~0 ms, and the same idiom
-:func:`openral_cli.deploy_sim._omdet_runtime_available` already uses for
+``openral_cli.deploy_sim._omdet_runtime_available`` already uses for
 this class of decision.
 
 It deliberately does NOT import the deep module. ``lerobot/policies/
@@ -48,13 +48,13 @@ The fast probe catches the failure this module exists to catch — a
 dependency group that was never installed. It cannot catch a group that
 is installed but *broken* (a half-written editable ``.pth``, say). That
 case still surfaces at dispatch, where
-:mod:`openral_rskill_ros.rskill_runner_node` already translates the
+``openral_rskill_ros.rskill_runner_node`` already translates the
 factory's ``ImportError`` into a ``ROSRuntimeError`` carrying
-:func:`model_family_install_hint`. Set ``OPENRAL_STRICT_POLICY_PROBE=1``
+``model_family_install_hint``. Set ``OPENRAL_STRICT_POLICY_PROBE=1``
 to restore the deep import probe when that distinction matters.
 
 Adding a new policy family: register a new entry in
-:data:`_FAMILY_REQUIRED_IMPORTS` AND :data:`_FAMILY_INSTALL_HINTS`.
+``_FAMILY_REQUIRED_IMPORTS`` AND ``_FAMILY_INSTALL_HINTS``.
 The reasoner's ``test_reasoner_palette_filters_unimportable_families``
 test (and ``test_known_model_families_get_concrete_install_hints``)
 walks both dicts so a half-registered family fails at unit-test time.
@@ -145,7 +145,7 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
 
 
 # Model-family → ``uv sync --group …`` group names. Parallel to
-# :data:`_FAMILY_INSTALL_HINTS` but machine-readable so callers can
+# ``_FAMILY_INSTALL_HINTS`` but machine-readable so callers can
 # compose a single ``uv sync`` for the union of missing families
 # (deploy_sim's pre-flight prompt joins these across all blocked
 # rSkills into one command).
@@ -227,7 +227,7 @@ def model_family_install_groups(family: str) -> tuple[str, ...]:
     """Return the ``uv sync --group …`` group names that install ``family``.
 
     Empty tuple for unknown families (caller should fall back to
-    :func:`model_family_install_hint` for display). Empty tuple for
+    ``model_family_install_hint`` for display). Empty tuple for
     ``"mock"`` (no extras needed).
     """
     return _FAMILY_INSTALL_GROUPS.get(family, ())
@@ -246,8 +246,8 @@ def model_family_required_imports(family: str) -> tuple[str, ...]:
 def can_import_policy_family(family: str) -> tuple[bool, str | None]:
     """Probe whether ``family``'s policy factory can resolve its imports.
 
-    Resolves each entry in :data:`_FAMILY_REQUIRED_IMPORTS[family]` via
-    :func:`_can_import_modules` — top-level ``find_spec`` by default,
+    Resolves each entry in ``_FAMILY_REQUIRED_IMPORTS[family]`` via
+    ``_can_import_modules`` — top-level ``find_spec`` by default,
     or a full import under ``OPENRAL_STRICT_POLICY_PROBE=1``. Returns
     ``(True, None)`` on full success, else ``(False, reason)`` where
     ``reason`` carries the leaf import error. The strict tier also
@@ -261,7 +261,7 @@ def _can_import_modules(required: tuple[str, ...]) -> tuple[bool, str | None]:
     """Probe an explicit import set, cheaply by default.
 
     Resolves only the top-level package of each entry via
-    :func:`importlib.util.find_spec` unless ``OPENRAL_STRICT_POLICY_PROBE=1``
+    ``importlib.util.find_spec`` unless ``OPENRAL_STRICT_POLICY_PROBE=1``
     is set, in which case the historical deep-import probe runs instead.
     See the module docstring for why the deep probe is not the default.
     """
@@ -345,12 +345,12 @@ def filter_importable_manifests(
     """Return the subset of ``manifests`` whose policy family can be imported.
 
     Each manifest is expected to expose ``.model_family`` and ``.name``
-    (matches :class:`openral_core.RSkillManifest`). Dropped manifests
+    (matches ``openral_core.RSkillManifest``). Dropped manifests
     are reported via ``log_fn`` (e.g. ``self.get_logger().warning``)
     with an actionable install hint.
 
     Manifests whose ``model_family`` is not in
-    :data:`_FAMILY_REQUIRED_IMPORTS` are kept unchanged (unknown
+    ``_FAMILY_REQUIRED_IMPORTS`` are kept unchanged (unknown
     families are assumed importable — better to surface a clearer
     runtime error from the factory than to drop a manifest the
     operator may want).

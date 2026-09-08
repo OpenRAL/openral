@@ -560,7 +560,7 @@ _Pure `RobotDescription` → LeRobot v3 features dict mapping; no I/O, no lerobo
 - `features_from_robot(robot: RobotDescription, *, fps: float) -> dict[str, FeatureSpec]` — Build the LeRobot v3 features dict for the recorder. Reads `ObservationSpec.state_shape`, `ActionSpec.dim`, and `SensorSpec.vla_feature_key` (image modalities only) from the robot manifest. (L59)
 
 ### `python/dataset/src/openral_dataset/bag.py`
-_Mcap-backed :class:`DatasetSink` for online hardware recording._
+_Mcap-backed ``DatasetSink`` for online hardware recording._
 
 - `Rosbag2Sink(*, bag_path, compression="zstd")` — Writes every `RolloutRecorder` event into an mcap file readable by `ros2 bag info` / Foxglove / mcap-cli. Daemon writer thread + bounded `queue.Queue` → `write_frame` enqueues only; hot path never blocks on disk I/O. JSON-schema encoding (interoperable with ROS 2's `ros2msg` encoding for the same topics). Topics: `/openral/tick` (per-tick metadata **plus inline `observation_state` + `action` arrays**), `/openral/episode` (PHASE_START / PHASE_END markers), `/openral/dataset/image` (one base64 raw-u8 frame per camera per tick). The inline arrays + image frames make the bag self-sufficient for conversion — no separate `/joint_states` / camera-topic join needed. (L176)
   - `open_episode(header) -> None` — Open the bag on first call; emit Episode(PHASE_START). (L277)

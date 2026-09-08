@@ -1,9 +1,9 @@
 """reasoner_node ROS 2 lifecycle wrapper.
 
-Thin rclpy wrapper around :class:`openral_reasoner.ReasonerCore`.
+Thin rclpy wrapper around ``openral_reasoner.ReasonerCore``.
 Subscriptions, action client, service clients, and the tick timer live
-in :mod:`openral_reasoner_ros.reasoner_node`; the orchestrator itself
-stays rclpy-free in :mod:`openral_reasoner.core`.
+in ``openral_reasoner_ros.reasoner_node``; the orchestrator itself
+stays rclpy-free in ``openral_reasoner.core``.
 """
 
 from __future__ import annotations

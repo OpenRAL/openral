@@ -8,7 +8,7 @@ evolve the schema (rounding, list-truncation, thumbnail size) in one
 place.
 
 All helpers are safe to call on a no-op span (the default before
-:func:`configure_observability` runs); they're additive, never raise on
+``configure_observability`` runs); they're additive, never raise on
 missing optional fields, and silently truncate over-long lists so a
 24-DoF arm doesn't blow up the span size.
 """
@@ -25,7 +25,7 @@ from opentelemetry import trace
 from openral_observability import semconv
 
 #: Channel count identifying an RGB/BGR frame — the only layout the
-#: display-flip in :func:`emit_sensor_frame_span` knows how to rotate.
+#: display-flip in ``emit_sensor_frame_span`` knows how to rotate.
 _RGB_CHANNELS = 3
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ _MODALITY_BY_ENCODING: dict[str, str] = {
 
 
 def modality_for_encoding(encoding: object) -> str:
-    """Map a :class:`openral_core.FrameEncoding` (or its string value) to a modality label.
+    """Map a ``openral_core.FrameEncoding`` (or its string value) to a modality label.
 
     The dashboard's Perception card groups frames by modality
     (``rgb`` / ``mono`` / ``depth`` / ``raw``) — keep the mapping
@@ -107,9 +107,9 @@ def record_joint_state(
 ) -> None:
     """Attach per-joint robot-state attributes to a ``hal.read_state`` span.
 
-    Lists are truncated to :data:`_MAX_JOINTS` and rounded to 3 decimals
+    Lists are truncated to ``_MAX_JOINTS`` and rounded to 3 decimals
     (~1 mrad on revolute joints — plenty for a debug pane). Limits are
-    pulled from :class:`openral_core.JointSpec`; pass ``None`` per joint
+    pulled from ``openral_core.JointSpec``; pass ``None`` per joint
     when a robot exposes a free axis.
     """
     if names is not None:
@@ -177,7 +177,7 @@ def record_ee_poses(span: Span, ee_poses: Any) -> None:
 
     Accepts a mapping of ``ee_name → Pose6D``-like object (any object
     that yields ``xyz`` as a 3-tuple and ``quat_xyzw`` as a 4-tuple —
-    matches :class:`openral_core.Pose6D`). Poses are flattened as
+    matches ``openral_core.Pose6D``). Poses are flattened as
     ``openral.hal.ee.pose.<name>`` → ``[x, y, z, qx, qy, qz, qw]``.
     """
     if not ee_poses:
@@ -219,7 +219,7 @@ def record_sensor_frame_attrs(
     2.42 ms/frame at 320x240 q60 with Pillow dropping the GIL) — keep new
     callers within that envelope, since every thumbnail also transits the
     OTLP exporter. When set, the value is base64-encoded inline; downstream
-    consumers (including :mod:`openral_observability.dashboard`) decode it
+    consumers (including ``openral_observability.dashboard``) decode it
     for display.
     """
     if modality is not None:
@@ -331,7 +331,7 @@ def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
 
 
 def encode_frame_thumbnail(frame: Any) -> bytes | None:
-    """Encode a :class:`openral_core.SensorFrame` as a small JPEG thumbnail.
+    """Encode a ``openral_core.SensorFrame`` as a small JPEG thumbnail.
 
     Handles the encodings the dashboard knows how to render:
 

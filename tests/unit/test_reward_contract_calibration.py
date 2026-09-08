@@ -1,8 +1,8 @@
 """Unit tests for RewardContract progress calibration fields + ExecuteRskillTool overrides.
 
-Extends :class:`RewardContract` with four calibration fields
+Extends ``RewardContract`` with four calibration fields
 (``check_floor``, ``plateau_window_s``, ``plateau_tolerance``,
-``default_patience_s``) and :class:`ExecuteRskillTool` with two optional
+``default_patience_s``) and ``ExecuteRskillTool`` with two optional
 per-dispatch overrides (``patience_s``, ``progress_tolerance``).
 
 Validates against the REAL robometer-4b fixture (no mocks).

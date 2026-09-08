@@ -1,4 +1,4 @@
-""":class:`PandaMobileHAL` body_twist + joint_position contract.
+"""``PandaMobileHAL`` body_twist + joint_position contract.
 
 Exercises the HAL Protocol surface against in-memory state — no
 robosuite, no MuJoCo. Pinning the two-mode routing (BODY_TWIST for

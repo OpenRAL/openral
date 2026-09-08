@@ -1,7 +1,7 @@
 r"""openral_world_state ROS 2 lifecycle node.
 
-Wraps :class:`openral_world_state.WorldStateAggregator`. Subscribes
-``/joint_states``; publishes typed :class:`openral_msgs.msg.WorldStateStamped`
+Wraps ``openral_world_state.WorldStateAggregator``. Subscribes
+``/joint_states``; publishes typed ``openral_msgs.msg.WorldStateStamped``
 on ``/openral/world_state_fast`` (30 Hz) and ``/openral/world_state_slow``
 (5 Hz), both RELIABLE+VOLATILE+KL=1, same payload built once per fast tick —
 the slow topic re-publishes every Nth fast tick, ``N = round(fast_hz /
@@ -555,7 +555,7 @@ if _ROS2_AVAILABLE:
             Emits a ``sensors.read_latest`` OTel span per frame so the
             dashboard's Perception card populates (modality, encoding,
             geometry, age, JPEG thumbnail). The span name + attribute
-            shape mirror :meth:`DeployRunner._tick_impl`'s sensor read
+            shape mirror ``DeployRunner._tick_impl``'s sensor read
             so a single dashboard consumer handles both topologies.
             """
             from openral_core.schemas import FrameEncoding, SensorFrame
@@ -912,7 +912,7 @@ _IDL_DIAG_TO_STR: dict[int, str] = {
 def world_state_from_idl(msg: object) -> object:
     """Translate an ``openral_msgs.msg.WorldStateStamped`` → ``openral_core.WorldState``.
 
-    Symmetric inverse of :func:`build_world_state_stamped_msg`; feeds the
+    Symmetric inverse of ``build_world_state_stamped_msg``; feeds the
     reasoner_node's ``ContextRenderer``. ``WorldState.image_frames`` is always
     ``None`` — the co-located skill_runner reads frames from the shared
     aggregator, and the cross-process reasoner never needs pixels.
@@ -921,7 +921,7 @@ def world_state_from_idl(msg: object) -> object:
         msg: An ``openral_msgs.msg.WorldStateStamped`` instance.
 
     Returns:
-        A populated :class:`openral_core.WorldState`.
+        A populated ``openral_core.WorldState``.
     """
     from openral_core.schemas import DetectedObject, JointState, Pose6D, WorldState
 
@@ -1024,7 +1024,7 @@ def world_state_from_idl(msg: object) -> object:
 
 
 def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
-    """Convert ``geometry_msgs/Pose`` (position + orientation) → :class:`Pose6D`."""
+    """Convert ``geometry_msgs/Pose`` (position + orientation) → ``Pose6D``."""
     from openral_core.schemas import Pose6D
 
     return Pose6D(
@@ -1065,16 +1065,16 @@ def _place_declaration_from_idl(msg: object) -> object | None:
 
 
 def build_world_state_stamped_msg(node: object, world_state: object) -> object:
-    """Translate a Pydantic :class:`WorldState` into ``WorldStateStamped``.
+    """Translate a Pydantic ``WorldState`` into ``WorldStateStamped``.
 
     Pure-Python translation: parallel arrays are deterministic-ordered
     (sorted by key) so two consumers comparing snapshots at the same
     timestamp see the same byte layout.
 
     Args:
-        node: The publishing :class:`rclpy.lifecycle.LifecycleNode`. Only
+        node: The publishing ``rclpy.lifecycle.LifecycleNode``. Only
             used to stamp ``header.stamp`` via ``node.get_clock().now()``.
-        world_state: An :class:`openral_core.WorldState` snapshot.
+        world_state: An ``openral_core.WorldState`` snapshot.
 
     Returns:
         A populated ``openral_msgs.msg.WorldStateStamped``.
@@ -1122,7 +1122,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
 
 
 def _build_joint_state_msg(js: object, stamp: object, ros_joint_state_cls: type) -> object:
-    """Build a ``sensor_msgs/JointState`` from an :class:`openral_core.JointState`."""
+    """Build a ``sensor_msgs/JointState`` from an ``openral_core.JointState``."""
     ros_js = ros_joint_state_cls()
     ros_js.header.stamp = stamp
     ros_js.name = list(js.name)  # type: ignore[attr-defined]
@@ -1277,13 +1277,13 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:
-    """Convert an :class:`openral_core.Pose6D` to ``geometry_msgs/Pose``.
+    """Convert an ``openral_core.Pose6D`` to ``geometry_msgs/Pose``.
 
     Pose6D already carries a quaternion (xyzw), so this is a straight
     field copy — no rpy↔quat math, no tf_transformations dependency.
 
     Args:
-        pose: The :class:`openral_core.Pose6D` to convert.
+        pose: The ``openral_core.Pose6D`` to convert.
         pose_cls: The injected ``geometry_msgs/Pose`` class (passed in
             so this helper stays importable without rclpy).
         quat_cls: The injected ``geometry_msgs/Quaternion`` class.

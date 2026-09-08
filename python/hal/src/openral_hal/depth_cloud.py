@@ -6,17 +6,17 @@ A deploy-sim HAL node turns each depth ``SensorSpec`` into a
 feeding the safety kernel's world-collision check. Shared pieces so a node
 only wires publishers/timers:
 
-* :func:`is_depth_sensor` / :func:`mjcf_camera_name` / :func:`depth_synth_kwargs`
+* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs``
   — pure SensorSpec adapters (no ROS / MuJoCo import).
-* :func:`camera_optical_tf_to_base` — camera-optical-frame → base transform
+* ``camera_optical_tf_to_base`` — camera-optical-frame → base transform
   from the live MuJoCo poses.
-* :func:`points_from_depth_grid` — back-project a depth raster into an
+* ``points_from_depth_grid`` — back-project a depth raster into an
   ``(N, 3)`` optical-frame cloud (one ray-cast feeds both depth image and
-  cloud; see :func:`openral_hal.sim_sensor_bridge`).
-* :func:`pointcloud2_from_points_xyz` — pack an ``(N, 3)`` array into a
+  cloud; see ``openral_hal.sim_sensor_bridge``).
+* ``pointcloud2_from_points_xyz`` — pack an ``(N, 3)`` array into a
   ``sensor_msgs/PointCloud2``.
 
-Synth: :func:`openral_sim.backends.depth_camera.synthesize_depth_image`.
+Synth: ``openral_sim.backends.depth_camera.synthesize_depth_image``.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def depth_synth_kwargs(
     model: ``(u-cx)/fx, (v-cy)/fy``.
 
     When ``render_size`` is given (the scene's ``observation_width``/``height``),
-    intrinsics are rescaled to it first via :func:`openral_core.scale_intrinsics_to`
+    intrinsics are rescaled to it first via ``openral_core.scale_intrinsics_to``
     so the back-projected cloud matches the RGB the env rendered at that
     resolution. ``None`` keeps the manifest's nominal intrinsics.
     """
@@ -171,20 +171,20 @@ def resolve_base_body_name(model: Any, *, description: Any = None) -> str | None
 def resolve_base_frame_body_name(model: Any, *, description: Any = None) -> str | None:
     """Resolve the MJCF body whose pose the robot's ``base_frame`` TF carries.
 
-    Not always :func:`resolve_base_body_name` (ADR-0095). That resolves the
+    Not always ``resolve_base_body_name`` (ADR-0095). That resolves the
     chassis *root* — the right anchor for the depth self-filter's
     ``mj_multiRay`` body-exclude and the viewer's follow camera. This resolves
     the body ``base_frame`` denotes on ``/tf``, which any extrinsic published
     as ``base_frame -> <child>`` must be measured against. Tries
     ``<prefix>_support`` first, then falls back to
-    :func:`resolve_base_body_name`'s chassis candidates. Fixed-base arms
+    ``resolve_base_body_name``'s chassis candidates. Fixed-base arms
     (LIBERO franka, ur5e, …) have no ``_support`` body and resolve unchanged.
 
     Why they differ: on robosuite/RoboCasa mobile manipulators, OmronMobileBase
     stacks a geomless ground-level root (``mobilebase0_base``, world z 0) under
     a 0.70 m pedestal whose top plate (``mobilebase0_support``) carries the arm
     and cameras. ``base_link`` on ``/tf`` is that pedestal top —
-    :class:`~openral_hal.mobile_base_bridge.MobileBaseBridge` publishes
+    ``MobileBaseBridge`` publishes
     ``odom -> base_link`` from ``base_pose_6dof()`` (RoboCasa's
     ``robot0_base_pos``, z = 0.70 m), the convention the pi05 / rldx / XR-1
     state assemblers were trained against. Measuring against the ground-level
@@ -221,7 +221,7 @@ def preferred_viewer_camera_id(
 
     Returns the id of the first camera whose name contains a ``prefer``
     substring, else the first declared camera, else ``-1`` (caller falls back
-    to :func:`base_aligned_free_camera`).
+    to ``base_aligned_free_camera``).
 
     Why: scene cameras are authored to frame the action, avoiding the free
     orbit camera's occlusion in cluttered scenes (a base-centred orbit in a
@@ -314,7 +314,7 @@ def base_aligned_free_camera(
             yaw offset.
         azimuth_offset_deg: Bearing of the camera relative to the base +X axis.
             Only used as the fallback when a scene has no authored camera (see
-            :func:`preferred_viewer_camera_id`).
+            ``preferred_viewer_camera_id``).
         elevation_deg: Camera elevation (negative looks down).
         distance_scale: Orbit distance as a multiple of ``model.stat.extent``.
         max_distance_m: Hard cap on the orbit distance, since ``model.stat.extent``
@@ -375,10 +375,10 @@ def initial_viewer_camera(
     The viewer always uses a *free* camera (``mjCAMERA_FREE``, not
     ``mjCAMERA_FIXED``) so the user keeps mouse control (drag to orbit, scroll
     to zoom); this only sets the initial viewpoint. When the scene ships an
-    authored overview camera (:func:`preferred_viewer_camera_id`), the eye is
+    authored overview camera (``preferred_viewer_camera_id``), the eye is
     placed at that camera's world position with the orbit pivot on the robot
     base, so the opening view matches the authored vantage while staying
-    interactive. Otherwise falls back to :func:`base_aligned_free_camera`.
+    interactive. Otherwise falls back to ``base_aligned_free_camera``.
 
     MuJoCo places the eye at ``lookat - distance · f`` where the unit forward
     ``f = (cos el cos az, cos el sin az, sin el)``; the returned tuple recovers
@@ -524,7 +524,7 @@ def depth_image_from_grid(
 
     The dense, organised depth image nvblox's projective depth integrator
     consumes — produced by
-    :func:`openral_sim.backends.depth_camera.synthesize_depth_image`. Pixels are
+    ``openral_sim.backends.depth_camera.synthesize_depth_image``. Pixels are
     perpendicular optical-Z metres, ``0.0`` = no measurement (nvblox skips them).
 
     Args:
@@ -573,26 +573,26 @@ def points_from_depth_grid(
     link, an acknowledged payload): no depth, but the ray behind is free, so
     a ``max_range_m`` endpoint is emitted there, letting OctoMap clear
     occluded cells instead of leaving them frozen. Passing the mask
-    :func:`openral_sim.backends.depth_camera.synthesize_depth_frame` returns
+    ``openral_sim.backends.depth_camera.synthesize_depth_frame`` returns
     reproduces what
-    :func:`~openral_sim.backends.depth_camera.synthesize_depth_pointcloud`
+    ``synthesize_depth_pointcloud``
     would cast separately, from one ray-cast — one cast per camera per frame
     instead of two (depth image + cloud).
 
     Args:
         depth: ``(H, W)`` float32 depth raster in metres (optical-Z), ``0.0``
             where there is no measurement — i.e. what
-            :func:`openral_sim.backends.depth_camera.synthesize_depth_image`
-            returns and :func:`depth_image_from_grid` packs.
+            ``openral_sim.backends.depth_camera.synthesize_depth_image``
+            returns and ``depth_image_from_grid`` packs.
         fx: Focal length x **of this raster** (pixels) — for a strided synth the
             stride-scaled value, the same one the companion ``CameraInfo``
-            advertises (see :func:`camera_info_from_intrinsics`).
+            advertises (see ``camera_info_from_intrinsics``).
         fy: Focal length y of this raster (pixels).
         cx: Principal point x of this raster (pixels).
         cy: Principal point y of this raster (pixels).
         clearing: ``(H, W)`` bool mask of self-filtered rays with no farther
             surface, from
-            :func:`openral_sim.backends.depth_camera.synthesize_depth_frame`.
+            ``openral_sim.backends.depth_camera.synthesize_depth_frame``.
             ``None`` (the default) emits measured returns only.
         max_range_m: Euclidean range the clearing endpoints are placed at.
             Required when ``clearing`` marks any pixel.
@@ -662,7 +662,7 @@ def points_from_depth_grid(
 def depth_grid_from_image(msg: Any) -> NDArray[np.float64]:
     """Decode a ``sensor_msgs/Image`` depth frame into an ``(H, W)`` metre raster.
 
-    The inverse of :func:`depth_image_from_grid`, and the reader half the HAL's
+    The inverse of ``depth_image_from_grid``, and the reader half the HAL's
     vision attachment bridge needs: on real hardware the wrist depth arrives
     from a camera driver, not from the simulator that produced it here. Both
     REP-118 depth encodings are accepted, because both are shipped by drivers
@@ -720,7 +720,7 @@ def camera_info_from_intrinsics(
     """Build a pinhole ``sensor_msgs/CameraInfo`` for a synthesised depth image.
 
     The intrinsics are those of the **rasterised** image — for a strided depth
-    synth (:func:`openral_sim.backends.depth_camera.synthesize_depth_image`) the
+    synth (``openral_sim.backends.depth_camera.synthesize_depth_image``) the
     caller passes the stride-scaled values (``fx / stride`` … ``cy / stride``,
     ``width``/``height`` = the strided raster dims) so the model is consistent
     with the image nvblox receives.

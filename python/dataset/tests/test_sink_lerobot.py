@@ -1,7 +1,7 @@
 """End-to-end tests for ``openral_dataset.LeRobotDatasetSink``.
 
 Per CLAUDE.md §1.11 — uses the real
-:class:`lerobot.datasets.LeRobotDataset` writer (v3.0,
+``lerobot.datasets.LeRobotDataset`` writer (v3.0,
 codebase_version="3.0") and real SO-100 RobotDescription. Tests
 ``pytest.skip`` with a typed reason on hosts without lerobot
 installed.

@@ -2,10 +2,10 @@
 
 ``HalParameters.defaults`` puts a robot's HAL constructor kwargs (serial
 ``port``, ``robot_ip``, …) in ``robots/<id>/robot.yaml`` so
-:class:`openral_hal.lifecycle.ManifestHALLifecycleNode` can serve a
+``openral_hal.lifecycle.ManifestHALLifecycleNode`` can serve a
 parameterised HAL with no bespoke ``_create_hal``. Pins: schema (default-empty,
 round-trip, ``extra="forbid"``); every real manifest still loads with the new
-field; :func:`openral_hal.build_hal` threads ``hal.parameters.defaults`` into
+field; ``openral_hal.build_hal`` threads ``hal.parameters.defaults`` into
 the HAL constructor, with an explicit ``transport`` override winning and
 unaccepted keys dropped.
 

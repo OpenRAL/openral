@@ -9,11 +9,11 @@ concrete adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim) land in v0.3+.
 
 Ships the **Protocol surface only**:
 
-- :class:`WorldModel`: structural Protocol every WAM adapter satisfies
+- ``WorldModel``: structural Protocol every WAM adapter satisfies
   (``rollout(world_state, action_chunk, horizon) -> Rollout``).
-- :class:`Rollout`: Pydantic model holding predicted states, rewards,
+- ``Rollout``: Pydantic model holding predicted states, rewards,
   and the latency budget.
-- :class:`NullWorldModel`: identity stub returning the input state
+- ``NullWorldModel``: identity stub returning the input state
   unchanged for ``horizon`` steps; for plumbing tests.
 """
 

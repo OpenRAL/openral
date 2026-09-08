@@ -6,15 +6,15 @@ git clones, ``--no-deps`` pins of robosuite master, compiler env
 overrides (``CC=/usr/bin/gcc`` for LIBERO's robosuite==1.4 C
 extensions). One-prompt-and-go flow:
 
-* :class:`BackendInstallPlan` declares a sequence of subprocess steps
+* ``BackendInstallPlan`` declares a sequence of subprocess steps
   plus probe imports to detect "already installed".
-* :func:`ensure_backend_deps` short-circuits when the probes succeed,
+* ``ensure_backend_deps`` short-circuits when the probes succeed,
   otherwise prints a Rich banner with the full plan and auto-installs
   (default). Set ``OPENRAL_AUTO_INSTALL_DEPS=0`` to prompt instead.
-  Failures raise a typed :class:`ROSConfigError` with the verbatim
+  Failures raise a typed ``ROSConfigError`` with the verbatim
   commands so the user can finish out-of-band.
 
-Sibling of :mod:`openral_sim._assets` which handles the lazy-download
+Sibling of ``openral_sim._assets`` which handles the lazy-download
 of large CC-BY asset bundles after deps are in place.
 """
 
@@ -47,7 +47,7 @@ _DEFAULT_CACHE_HOME = Path.home() / ".cache" / "openral"
 _AUTO_INSTALL_ENV = "OPENRAL_AUTO_INSTALL_DEPS"
 
 _INSTALL_LOCK = threading.Lock()
-"""Serialises :func:`ensure_backend_deps` across threads.
+"""Serialises ``ensure_backend_deps`` across threads.
 
 ``SimRunner._build_env_and_policy`` builds env + policy concurrently on a
 2-worker ``ThreadPoolExecutor``. Without this lock both workers race into
@@ -59,7 +59,7 @@ banner is shown, the user answers once, and the second thread re-probes after
 the install has run (and short-circuits if the same plan covered both)."""
 """Set to ``1`` to skip the confirmation prompt and run the plan straight away.
 
-Honoured the same way :data:`openral_sim._assets._ROBOCASA_ALLOW_ENV`
+Honoured the same way ``openral_sim._assets._ROBOCASA_ALLOW_ENV``
 gates the asset-download prompt — useful in CI / Dockerfiles where
 interactive prompts are not available.
 """
@@ -76,9 +76,9 @@ class InstallStep:
 
     Attributes:
         description: One-line human description shown in the banner.
-        argv: Command + args list, executed via :func:`subprocess.run`
+        argv: Command + args list, executed via ``subprocess.run``
             (``shell=False``). The first entry is resolved through
-            :func:`shutil.which` so the plan can refer to ``"uv"`` /
+            ``shutil.which`` so the plan can refer to ``"uv"`` /
             ``"git"`` without hardcoding paths.
         env: Extra env vars layered on top of the parent process's
             environment for this step only. ``CC=/usr/bin/gcc`` for
@@ -106,11 +106,11 @@ class BackendInstallPlan:
             banner; declines to confirm count as a license refusal.
         probe: Zero-arg callable returning ``True`` when the backend
             is already installed. Runs at the start of
-            :func:`ensure_backend_deps` and again after the plan has
+            ``ensure_backend_deps`` and again after the plan has
             executed; the second probe gates the success message.
         steps: Ordered install steps. Each runs sequentially, stopping
             on the first non-zero exit.
-        manual_hint: String shown inside the :class:`ROSConfigError`
+        manual_hint: String shown inside the ``ROSConfigError``
             when the user refuses or a step fails -- gives them the
             exact commands to finish manually.
         repins: Top-level module names whose INSTALLED VERSION this plan
@@ -118,7 +118,7 @@ class BackendInstallPlan:
             the probe failed, i.e. the version on disk is not the one this
             backend needs -- so if such a module is already imported in
             this interpreter, running the steps would swap it underneath
-            live objects. :func:`_assert_no_live_dependency_swap` refuses
+            live objects. ``_assert_no_live_dependency_swap`` refuses
             that case; see it for why a ``sys.modules`` flush cannot fix it.
     """
 
@@ -141,7 +141,7 @@ def _has_module(module: str) -> bool:
     not trigger robocasa's import-time version assertions (which would
     raise AssertionError under a real numpy 2.x install if the clone's
     asserts have not yet been relaxed at provision time, see
-    :func:`_relax_robocasa_version_asserts_step`).
+    ``_relax_robocasa_version_asserts_step``).
     """
     try:
         return importlib.util.find_spec(module) is not None
@@ -198,7 +198,7 @@ def _robocasa_import_succeeds() -> bool:
 
     A plain ``import robocasa`` is enough now that the install plan relaxes
     the fork's import-time micro-version asserts at provision time
-    (:func:`_relax_robocasa_version_asserts_step`) — no runtime version spoof.
+    (``_relax_robocasa_version_asserts_step``) — no runtime version spoof.
     Runs in a fresh subprocess so any crash is isolated; ``True`` only on a
     clean exit.
     """
@@ -347,7 +347,7 @@ def _has_vlabench() -> bool:
 
     The ``rrt_algorithms`` probe covers the git-only data-gen dep that VLABench
     imports transitively (``dm_task`` → ``skill_lib`` → RRT); the plan writes a
-    site-packages stub for it (:func:`_vlabench_stub_rrt_step`), and a stray
+    site-packages stub for it (``_vlabench_stub_rrt_step``), and a stray
     ``uv sync`` can evict that stub, so probing it re-triggers the plan to
     rewrite it — same self-healing rationale as the robosuite editable-shadow
     cleanup. ``lerobot.envs.configs`` carries ``VLABenchEnv`` (the native 0.6.0
@@ -451,8 +451,8 @@ def _run_install_step(step: InstallStep, env: dict[str, str]) -> None:
 
     stdout+stderr are merged and echoed to this process's stderr byte-for-byte
     as they arrive, so `uv`'s carriage-return progress bars render live as if
-    the child owned the terminal. The last :data:`_STEP_TAIL_BYTES` are
-    retained so :func:`_step_failure_detail` can quote why a step failed —
+    the child owned the terminal. The last ``_STEP_TAIL_BYTES`` are
+    retained so ``_step_failure_detail`` can quote why a step failed —
     plain ``subprocess.run(..., check=True)`` raises a ``CalledProcessError``
     with only ``Command [...] returned non-zero exit status 2``, which is all
     that reaches ``ROSConfigError`` and downstream the rSkill runner's
@@ -557,7 +557,7 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
     the shadow as a **namespace package** and intercepts the import
     *before* the ``__editable__.{pkg}.pth`` finder gets a chance, so
     ``importlib.util.find_spec("<pkg>").origin`` returns ``None`` and
-    every probe in :func:`_has_robocasa_kitchen` / :func:`_has_robocasa_gr1`
+    every probe in ``_has_robocasa_kitchen`` / ``_has_robocasa_gr1``
     fails — even though the editable install is correct on disk.
 
     The step removes the shadow iff it exists and has no ``__init__.py``
@@ -617,7 +617,7 @@ _ROBOSUITE_PIN = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c"  # master @ 2026-08-
 
 
 def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
-    """Clone robosuite (if absent) and pin it to :data:`_ROBOSUITE_PIN`.
+    """Clone robosuite (if absent) and pin it to ``_ROBOSUITE_PIN``.
 
     Idempotent: a shallow master clone seeds the directory on first run,
     then we shallow-fetch the pinned commit and check it out detached.
@@ -642,7 +642,7 @@ def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
 
 
 def _robosuite_clone_hint(git: str, rs_dir: Path) -> str:
-    """Manual-install one-liner mirroring :func:`_robosuite_clone_step`."""
+    """Manual-install one-liner mirroring ``_robosuite_clone_step``."""
     return (
         f"{git} clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} ; "
         f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN} && "
@@ -883,7 +883,7 @@ def _robocasa_kitchen_clone_dir() -> Path:
     """Stable on-disk path for the robocasa kitchen clone (editable install anchor).
 
     Lives under ``$OPENRAL_CACHE_HOME/repos/robocasa-kitchen``. Same
-    rationale as :func:`_gr1_clone_dir` and :func:`_robosuite_clone_dir`:
+    rationale as ``_gr1_clone_dir`` and ``_robosuite_clone_dir``:
     editable installs anchor here forever. The earlier non-editable
     `uv pip install --no-deps "robocasa @ git+https://..."` path was a
     real wedge — the upstream sdist excludes the ``models/assets/`` tree
@@ -900,7 +900,7 @@ def _robocasa_kitchen_clone_dir() -> Path:
 def _robosuite_clone_dir() -> Path:
     """Stable on-disk path for the robosuite master clone.
 
-    Same rationale as :func:`_gr1_clone_dir`: editable installs anchor
+    Same rationale as ``_gr1_clone_dir``: editable installs anchor
     here. We need a patched master clone (with empty ``__init__.py``
     files dropped into ``robosuite/examples/`` and
     ``robosuite/examples/third_party_controller/``) because upstream
@@ -1206,7 +1206,7 @@ def _has_isaac_client() -> bool:
 
     The heavy ``isaacsim`` / ``isaaclab`` install lives in a separate py3.11
     sidecar venv, provisioned out-of-band; this probe only covers the
-    openral-side wire, same shape as :func:`_has_rldx_client`.
+    openral-side wire, same shape as ``_has_rldx_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1277,7 +1277,7 @@ def _has_robotwin_client() -> bool:
 
     The heavy SAPIEN + RoboTwin install lives in a separate py3.10 sidecar venv,
     provisioned out-of-band; this probe only covers the openral-side
-    wire, same shape as :func:`_has_isaac_client`.
+    wire, same shape as ``_has_isaac_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1288,7 +1288,7 @@ def _has_rlbench_client() -> bool:
     CoppeliaSim/PyRep + the peract RLBench fork live in a separate py3.10 sidecar
     venv, provisioned out-of-band (CoppeliaSim is proprietary and never
     vendored); this probe only covers the openral-side wire, same shape as
-    :func:`_has_isaac_client`.
+    ``_has_isaac_client``.
     """
     return _has_module("zmq") and _has_module("msgpack")
 
@@ -1988,18 +1988,18 @@ def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
 def ensure_backend_deps(backend_id: str) -> None:
     """Install ``backend_id`` deps if missing, after the user confirms.
 
-    Probes via the plan's :attr:`BackendInstallPlan.probe` and short-
+    Probes via the plan's ``BackendInstallPlan.probe`` and short-
     circuits when it returns ``True``. Otherwise prints a Rich banner
     listing every subprocess step + the license posture, asks
     auto-installs by default (set ``OPENRAL_AUTO_INSTALL_DEPS=0`` to
-    prompt via :func:`typer.confirm` instead), runs the steps in order,
+    prompt via ``typer.confirm`` instead), runs the steps in order,
     and re-probes.
 
     Thread-safe: ``SimRunner._build_env_and_policy`` builds env + policy
     on a 2-worker ``ThreadPoolExecutor``. When both sides need a first-
     install the two banners + ``typer.confirm`` reads would interleave on
     one stdout/stdin pair and the single ``y`` would only land in one of
-    the two prompts. The module-level :data:`_INSTALL_LOCK` serialises
+    the two prompts. The module-level ``_INSTALL_LOCK`` serialises
     the probe-prompt-install-reprobe sequence so the second waiter sees
     the first install's result and short-circuits when its own probe
     flips to ``True``.
@@ -2008,7 +2008,7 @@ def ensure_backend_deps(backend_id: str) -> None:
         ROSConfigError: When the user refuses, ``uv`` / ``git`` is
             missing, a step exits non-zero, or the post-install probe
             still fails. The error message embeds
-            :attr:`BackendInstallPlan.manual_hint` so the user has a
+            ``BackendInstallPlan.manual_hint`` so the user has a
             ready-to-paste fallback.
     """
     plan = get_plan(backend_id)

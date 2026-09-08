@@ -1,7 +1,7 @@
 """SimAttachedHAL — wrap any ``openral_sim.SimRollout`` as a HAL adapter.
 
-Generic bridge between :class:`openral_sim.SimRollout` and the
-:class:`openral_hal.HAL` Protocol the ROS lifecycle nodes consume. Runs the
+Generic bridge between ``openral_sim.SimRollout`` and the
+``openral_hal.HAL`` Protocol the ROS lifecycle nodes consume. Runs the
 HAL and the env in one process — a split HAL/env process pair left ``/scan``
 unable to ray-cast live MJCF geometry (no handle to ``MjModel``/``MjData``) —
 so the lifecycle node's ``mujoco_handle_provider`` can bind to
@@ -10,16 +10,16 @@ so the lifecycle node's ``mujoco_handle_provider`` can bind to
 ``read_state`` walks ``description.joints``, resolving each via
 ``JointSpec.sim_joint_name`` (or a matching env name) against the MJCF;
 ``send_action`` calls ``env.step(...)`` through a per-robot
-:class:`ActionPacker` (see :func:`pack_action_for_env`), so the HAL is
+``ActionPacker`` (see ``pack_action_for_env``), so the HAL is
 generic across any robot whose manifest declares the joint mapping.
 
 Also owns the **task-success signal**: ``deploy sim`` suppresses the
-backend's own per-step task evaluation, so :meth:`task_success` reads the
-backend's predicate and :meth:`_observe_task_success` logs
+backend's own per-step task evaluation, so ``task_success`` reads the
+backend's predicate and ``_observe_task_success`` logs
 ``sim.task_success`` on every change plus a terminal
-``sim.task_success_final`` at :meth:`disconnect` — reached on a
+``sim.task_success_final`` at ``disconnect`` — reached on a
 signal-driven teardown via
-:meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal` (SIGINT runs
+``openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal`` (SIGINT runs
 no lifecycle transition). Observability only (CLAUDE.md §1.4): never
 termination, reset, reward, or the action path.
 
@@ -145,7 +145,7 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 # arm_j1..arm_j7, gripper]``. Each entry maps a row of
 # ``Action.joint_targets`` (URDF-ordered) into the env action slot.
 # Override per-robot via the ``action_packer`` factory passed to
-# :class:`SimAttachedHAL`.
+# ``SimAttachedHAL``.
 
 # Tolerance for non-planar twist components (vz / wx / wy) — anything
 # above this is rejected with ROSConfigError. Mirror of
@@ -199,9 +199,9 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
     arm-only row fills ``[base_dim:base_dim+arm_dim]``; a full
     ``base_dim+arm_dim`` row fills ``[0:base_dim+arm_dim]``). Other modes
     raise ``ROSConfigError`` — the lifecycle node enforces the supported set
-    via :attr:`RobotDescription.capabilities.supported_control_modes`. A
+    via ``RobotDescription.capabilities.supported_control_modes``. A
     caller needing richer translation (whole-body humanoid, dexterous-hand)
-    passes its own :class:`ActionPacker`.
+    passes its own ``ActionPacker``.
 
     Args:
         action: The chunk to pack; only the first row is consumed
@@ -347,28 +347,28 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
 
 
 class SimAttachedHAL:
-    """HAL Protocol adapter that wraps an in-process :class:`SimRollout`.
+    """HAL Protocol adapter that wraps an in-process ``SimRollout``.
 
     Generic over robot embodiment. The active simulator is the source
-    of truth for state; actions flow through :func:`pack_action_for_env`
-    (or a caller-supplied :class:`ActionPacker`) into ``env.step()``.
+    of truth for state; actions flow through ``pack_action_for_env``
+    (or a caller-supplied ``ActionPacker``) into ``env.step()``.
 
     Args:
         env: The live simulator. Must implement
-            :class:`openral_sim.rollout.SimRollout` (``reset/step/
+            ``openral_sim.rollout.SimRollout`` (``reset/step/
             mujoco_handles`` at minimum).
         description: Normative robot manifest. Used to populate
-            :attr:`JointState.name` and to feed the
+            ``JointState.name`` and to feed the
             ``HALLifecycleNodeBase`` OTel attributes.
         action_packer: Optional override for the default packer.
-            Defaults to :func:`pack_action_for_env`.
+            Defaults to ``pack_action_for_env``.
         env_reset_seed: Seed forwarded to ``env.reset(seed=...)`` on
-            :meth:`connect`. ``None`` means "use the env's own
+            ``connect``. ``None`` means "use the env's own
             default" (typically ``0`` or non-deterministic).
         env_action_dim: The env's flat action dimensionality. When
             ``None`` the HAL probes ``env.action_dim`` or
             ``env._env.action_dim`` on connect; if neither is available
-            it raises :class:`ROSConfigError` naming the backend (it
+            it raises ``ROSConfigError`` naming the backend (it
             never guesses a width). Pass this only for an env whose
             action space genuinely isn't introspectable.
     """
@@ -385,21 +385,21 @@ class SimAttachedHAL:
         env_action_dim: int | None = None,
         body_twist_dt_s: float = 0.05,
     ) -> None:
-        """Bind the env + description; no env interaction until :meth:`connect`.
+        """Bind the env + description; no env interaction until ``connect``.
 
         Args:
-            env: A :class:`~openral_sim.rollout.SimRollout` providing
+            env: A ``SimRollout`` providing
                 ``reset`` / ``step`` and (optionally) ``mujoco_handles``.
-            description: The host :class:`RobotDescription` — joint
+            description: The host ``RobotDescription`` — joint
                 ordering, ``base_joints`` + ``sim_joint_name`` map.
             action_packer: Per-composition Action-to-env-vec translator;
-                defaults to :func:`pack_action_for_env`.
+                defaults to ``pack_action_for_env``.
             env_reset_seed: Optional seed forwarded to ``env.reset``.
             env_action_dim: Override the auto-probed env action width;
                 useful for envs whose action space isn't introspectable.
             body_twist_dt_s: Logical control timestep used when a
                 BODY_TWIST action is applied via direct base-qpos write.
-                Mirrors :attr:`PandaMobileHAL._dt_s` (default 0.05 — 20 Hz
+                Mirrors ``PandaMobileHAL._dt_s`` (default 0.05 — 20 Hz
                 nav control rate). In deploy-sim this is the action tick,
                 not a render cadence or wall-clock sleep: each tick advances
                 the base by ``velocity * dt`` and advances MuJoCo elapsed sim
@@ -431,9 +431,9 @@ class SimAttachedHAL:
         # ``send_action`` (always "stale" so an idle scene starts stepping).
         self._last_action_ns: int = 0
         # Cached observation from the most recent ``reset`` / ``step``.
-        # Used by :meth:`read_images` so the lifecycle node's camera
+        # Used by ``read_images`` so the lifecycle node's camera
         # publisher can republish whatever the env rendered without
-        # re-stepping the simulator. ``None`` until :meth:`connect`.
+        # re-stepping the simulator. ``None`` until ``connect``.
         self._last_obs: dict[str, Any] | None = None
         self._body_twist_dt_s: float = body_twist_dt_s
         # Built once per env on first read_state; reset on connect.
@@ -484,10 +484,10 @@ class SimAttachedHAL:
         # every ``env.reset``. A ``/clock`` publisher must never see time go
         # backwards, so we accumulate each finished episode's elapsed sim-time
         # into this offset right before each reset (in
-        # :meth:`_accumulate_sim_time_before_reset`) and add it to the live
-        # per-episode reading in :meth:`sim_time_ns`. Stays ``0`` for a
+        # ``_accumulate_sim_time_before_reset``) and add it to the live
+        # per-episode reading in ``sim_time_ns``. Stays ``0`` for a
         # clock-less wrapped rollout (whose every read is ``None``, so
-        # :meth:`sim_time_ns` returns ``None`` and the offset is never used).
+        # ``sim_time_ns`` returns ``None`` and the offset is never used).
         self._sim_time_offset_ns: int = 0
         # ── Task-success witness (observability only) ────────────────────
         # ``deploy sim`` suppresses the backend's own per-step task
@@ -556,7 +556,7 @@ class SimAttachedHAL:
         robosuite env on ``_env`` for gymnasium-shaped/kitchen envs.
 
         If neither resolves and no ``env_action_dim`` override was supplied
-        to the constructor, raises :class:`ROSConfigError` naming the
+        to the constructor, raises ``ROSConfigError`` naming the
         backend — a loud boot-time failure beats a wrong-width mid-run
         E-stop; this method never guesses a width (e.g. falling back to 11,
         the robosuite BASIC composite width).
@@ -584,7 +584,7 @@ class SimAttachedHAL:
         """Idempotent — release the env handle (we don't own its lifetime).
 
         Emits the terminal ``sim.task_success_final`` line first (see
-        :meth:`task_success`), so a deploy-sim session against a backend
+        ``task_success``), so a deploy-sim session against a backend
         that HAS a task-success predicate always closes with one greppable
         statement of whether the scene's task ended completed. Idempotent
         because the line only fires while still connected.
@@ -592,7 +592,7 @@ class SimAttachedHAL:
         Reached on BOTH teardown paths: the lifecycle ``cleanup`` /
         ``shutdown`` transition, and — since ``rclpy`` answers SIGINT by
         shutting the context without running any transition —
-        :meth:`openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal` in the
+        ``openral_hal.lifecycle.HALLifecycleNodeBase.shutdown_hal`` in the
         node ``main()``'s ``finally``. The signal path is the one every real
         ``openral deploy sim`` run takes; before it existed the verdict was
         emitted by no field run at all.
@@ -606,7 +606,7 @@ class SimAttachedHAL:
 
         Walks `description.joints` and looks up each joint's
         `sim_joint_name` (falling back to `name`) in the env's MJCF.
-        Returns the canonical :class:`JointState` the safety supervisor
+        Returns the canonical ``JointState`` the safety supervisor
         + the world_state aggregator consume.
 
         Raises:
@@ -778,7 +778,7 @@ class SimAttachedHAL:
             return
         # BODY_TWIST direct-qpos path: robosuite's BASIC controller doesn't
         # interpret ``pack_action_for_env``'s slots 0-2 as OmronMobileBase
-        # planar velocities, so mirror :meth:`PandaMobileHAL._apply_body_twist`
+        # planar velocities, so mirror ``PandaMobileHAL._apply_body_twist``
         # instead — rotate the body-frame twist into world frame, Euler-
         # integrate by ``body_twist_dt_s``, write the base qpos slots
         # directly, and skip ``env.step()`` so the arm dynamics don't churn.
@@ -989,7 +989,7 @@ class SimAttachedHAL:
         error explicitly instead of silently starting a new episode.
 
         The backend's task-success predicate IS read here, once per step,
-        and logged on every change (:meth:`_observe_task_success`). That is
+        and logged on every change (``_observe_task_success``). That is
         an observation, not an interpretation: the verdict reaches the log
         and nothing else — not termination, not reset, not the action path.
 
@@ -1033,9 +1033,9 @@ class SimAttachedHAL:
     def task_success(self) -> bool | None:
         """Return the wrapped backend's own task-success verdict, or ``None``.
 
-        Introspection accessor, same shape as :meth:`mujoco_handles`: the
+        Introspection accessor, same shape as ``mujoco_handles``: the
         ``task_success`` extension is optional on
-        :class:`~openral_sim.rollout.SimRollout`, so this forwards when the
+        ``SimRollout``, so this forwards when the
         backend defines it and returns ``None`` otherwise.
 
         The value is the simulator's ground truth — for RoboCasa, the task
@@ -1076,7 +1076,7 @@ class SimAttachedHAL:
         except Exception as exc:  # reason: an observability read must never break actuation
             self._task_success_probe_failed = True
             # Mirrored to stdout for the same reason the signal itself is
-            # (see :meth:`_emit_task_success`): "the signal is missing" and
+            # (see ``_emit_task_success``): "the signal is missing" and
             # "the signal says no" must never look alike in a run's log.
             self._emit_task_success(
                 _EVENT_TASK_SUCCESS_PROBE_FAILED,
@@ -1162,7 +1162,7 @@ class SimAttachedHAL:
            validation run's artifacts, which is the entire point of this
            signal — so it is mirrored as ``<event> <json>``, matching the
            ``sim.estop_ground_truth_snapshot`` line the sibling
-           :mod:`openral_hal.sim_sensor_bridge` writes into the same log.
+           ``openral_hal.sim_sensor_bridge`` writes into the same log.
         """
         payload: dict[str, object] = {
             "scene_id": self._scene_id(),
@@ -1181,7 +1181,7 @@ class SimAttachedHAL:
 
         On the ``deploy sim`` path this is the synthesised
         ``<scene_id>/_hal_deploy_noop`` (see
-        :func:`openral_hal.sim_bringup.build_sim_env_from_yaml`) — the scene
+        ``openral_hal.sim_bringup.build_sim_env_from_yaml``) — the scene
         id is the identifying half there, which is why both are logged.
         """
         return _spec_id(getattr(self._env, "task", None))
@@ -1194,8 +1194,8 @@ class SimAttachedHAL:
         env only steps on ``/openral/safe_action`` receipt, so an idle scene
         freezes physics and cameras go stale.
 
-        Safety: defined ONLY on :class:`SimAttachedHAL` — real HALs don't
-        define it, and :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`
+        Safety: defined ONLY on ``SimAttachedHAL`` — real HALs don't
+        define it, and ``SimSensorBridge``
         gates its idle timer on ``callable(getattr(hal, "idle_step", None))``,
         so the timer is never created against a real HAL. That method-only
         exclusion is the actual safety guarantee, not "zero is harmless": a
@@ -1211,14 +1211,14 @@ class SimAttachedHAL:
         can opt out via ``idle_action()`` returning its own hold vector (the
         BEHAVIOR-1K backend returns current joint targets).
 
-        ``_env_action_dim`` is resolved by :meth:`_probe_env_action_dim` from
+        ``_env_action_dim`` is resolved by ``_probe_env_action_dim`` from
         the backend's own ``action_dim``; a backend with no width and no
         override fails loudly at ``connect``, so the idle tick never builds a
         wrong-width zero vector.
 
         Args:
             wall_dt_s: Wall-clock seconds this tick represents. Accepted for
-                signature parity with :meth:`MujocoArmHAL.idle_step` and
+                signature parity with ``MujocoArmHAL.idle_step`` and
                 unused — a wrapped ``SimRollout`` owns its own per-``step``
                 sim-time stride.
 
@@ -1464,7 +1464,7 @@ class SimAttachedHAL:
     def _apply_body_twist_to_qpos(self, row: list[float]) -> None:
         """Euler-integrate a 6-vec body twist directly into MuJoCo base qpos.
 
-        Mirrors :meth:`PandaMobileHAL._apply_body_twist`. Rotates the
+        Mirrors ``PandaMobileHAL._apply_body_twist``. Rotates the
         body-frame velocity ``(vx, vy)`` into world frame by the
         current ``base_yaw``, then adds ``velocity * dt`` to each base
         joint's qpos slot. Yaw wraps to ``[-π, π]``.
@@ -1499,7 +1499,7 @@ class SimAttachedHAL:
             )
         model, data = handles
         # Resolve the three planar base joint names via the same lookup
-        # chain :attr:`base_pose` uses (description.base_joints +
+        # chain ``base_pose`` uses (description.base_joints +
         # sim_joint_name override, fallback to first three joints).
         bj = self.description.base_joints
         if bj is not None and len(bj) >= 3:  # noqa: PLR2004  # reason: x/y/yaw triple
@@ -1609,7 +1609,7 @@ class SimAttachedHAL:
         the last non-empty value per key.
 
         Crucially this includes ``raw_proprio`` — the ``/odom`` /
-        ``odom → base_link`` source via :meth:`base_pose_6dof`. Dropping
+        ``odom → base_link`` source via ``base_pose_6dof``. Dropping
         it (the original bug) left ``robot0_base_pos`` / ``robot0_base_quat``
         frozen at the connect-time pose: the base physically moved (we
         just wrote its qpos) but ``/odom`` reported it standing still, so
@@ -1647,7 +1647,7 @@ class SimAttachedHAL:
         Used by the panda_mobile ROS lifecycle node to bind its
         ``mujoco_handle_provider`` so ``/scan`` ray-casts against the
         live env instead of the no-hit fallback. Generic across
-        robots — any :class:`SimRollout` that exposes
+        robots — any ``SimRollout`` that exposes
         ``mujoco_handles()`` works.
         """
         return self._mujoco_handles()
@@ -1661,7 +1661,7 @@ class SimAttachedHAL:
         """Read the wrapped rollout's per-episode sim time, or ``None``.
 
         ``sim_time_ns`` is an OPTIONAL duck-typed extension of the
-        :class:`~openral_sim.rollout.SimRollout` protocol —
+        ``SimRollout`` protocol —
         clock-less adapters (PushT, the Isaac Sim sidecar) do not implement it.
         ``getattr`` narrows the missing-attribute case to ``None`` without
         catching exceptions; a backend that DOES implement it is trusted to
@@ -1681,8 +1681,8 @@ class SimAttachedHAL:
         ``MjData.time`` to 0 on reset, so without this the published value
         would jump backwards on each new episode. Reads the live per-episode
         sim time and, when the backend has a clock, adds it to
-        :attr:`_sim_time_offset_ns`. A clock-less backend (``None``) leaves the
-        offset untouched — :meth:`sim_time_ns` then also returns ``None``.
+        ``_sim_time_offset_ns``. A clock-less backend (``None``) leaves the
+        offset untouched — ``sim_time_ns`` then also returns ``None``.
         """
         elapsed = self._rollout_sim_time_ns()
         if elapsed is not None:
@@ -1693,8 +1693,8 @@ class SimAttachedHAL:
 
         The value a sim ``/clock`` publisher reads so the
         deploy-sim ROS graph runs on simulation time. Returns the wrapped
-        :class:`~openral_sim.rollout.SimRollout`'s per-episode sim time plus the
-        accumulated offset from prior lifecycle reconnects (:meth:`connect`
+        ``SimRollout``'s per-episode sim time plus the
+        accumulated offset from prior lifecycle reconnects (``connect``
         folds elapsed time into the offset before the backend rewinds its
         clock). The result is therefore
         **monotonic non-decreasing across ``env.reset``**, unlike the raw
@@ -1732,7 +1732,7 @@ class SimAttachedHAL:
     def _mujoco_handles(self) -> tuple[Any, Any] | None:
         """Return the env's MJCF (model, data) tuple, or None.
 
-        The :class:`SimRollout` protocol declares ``mujoco_handles()``
+        The ``SimRollout`` protocol declares ``mujoco_handles()``
         as optional — backends that don't run on MuJoCo (PushT,
         SimplerEnv on Bridge) don't implement it. ``getattr`` with a
         default narrows the missing-attribute case to ``None`` without
@@ -1760,7 +1760,7 @@ class SimAttachedHAL:
         """Monotonic ns timestamp of the last real action seen by ``send_action``.
 
         ``0`` until the first ``send_action``. The sim-only idle stepper reads
-        this (via :func:`~openral_hal.sim_sensor_bridge.should_idle_step`) to
+        this (via ``should_idle_step``) to
         yield the env to an active skill — it skips an idle tick whenever a
         real action arrived within the idle-hold window.
         """
@@ -1769,9 +1769,9 @@ class SimAttachedHAL:
     def read_images(self) -> dict[str, Any]:
         """Return the latest rendered camera frames keyed by camera name.
 
-        The wrapped :class:`SimRollout` returns rendered images on each
+        The wrapped ``SimRollout`` returns rendered images on each
         ``reset`` / ``step`` under the ``"images"`` slot of its
-        :class:`Observation` dict (per ``openral_sim.rollout`` schema).
+        ``Observation`` dict (per ``openral_sim.rollout`` schema).
         The HAL caches that slot so the panda_mobile lifecycle node's
         camera publisher can republish the frames as
         ``sensor_msgs/Image`` on ``/openral/cameras/<name>/image`` at
@@ -1779,13 +1779,13 @@ class SimAttachedHAL:
         and the path the rldx / pi05 / smolvla adapters consume via
         ``observation.images.<name>``. Frame keys match the canonical
         ``camera1`` / ``camera2`` / ``camera3`` aliases the robocasa
-        adapter exposes in :meth:`openral_sim.backends.robocasa.
-        _RoboCasaSim._wrap_obs` plus the raw robosuite keys
+        adapter exposes in ``openral_sim.backends.robocasa._RoboCasaSim._wrap_obs``
+        plus the raw robosuite keys
         (``robot0_agentview_left_image`` etc.); the caller chooses
         which subset to forward.
 
         Returns an empty dict when no observation has been cached yet
-        (e.g. before :meth:`connect`) or when the observation has no
+        (e.g. before ``connect``) or when the observation has no
         ``"images"`` slot (non-image backends). Never raises.
         """
         if self._last_obs is None:
@@ -1833,7 +1833,7 @@ class SimAttachedHAL:
     def base_pose(self) -> tuple[float, float, float]:
         """Current base ``(x, y, yaw)`` read from MJCF qpos.
 
-        Mirrors :attr:`PandaMobileHAL.base_pose` so the panda_mobile
+        Mirrors ``PandaMobileHAL.base_pose`` so the panda_mobile
         lifecycle node's ``/odom`` publisher works regardless of which
         HAL is wired in. Reads the three joint positions named in
         ``description.base_joints`` (typically
@@ -1898,7 +1898,7 @@ class SimAttachedHAL:
     ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]] | None:
         """Full 6-DoF base pose ``(xyz, quat_xyzw)`` from the cached robocasa obs.
 
-        The planar :attr:`base_pose` (``x, y, yaw``) sets ``z=0``/
+        The planar ``base_pose`` (``x, y, yaw``) sets ``z=0``/
         ``roll=pitch=0``, dropping the ~0.70 m platform height RoboCasa
         proprio (``robot0_base_pos[2]``) reports — the rldx/pi05 state
         assemblers read the base's full 6-DoF pose via
@@ -1918,7 +1918,7 @@ class SimAttachedHAL:
 
         Returns ``None`` when the wrapped obs has no ``raw_proprio`` slot
         (non-RoboCasa backend) or the keys are missing — the caller falls
-        back to the planar :attr:`base_pose`.
+        back to the planar ``base_pose``.
         """
         if self._last_obs is None:
             return None

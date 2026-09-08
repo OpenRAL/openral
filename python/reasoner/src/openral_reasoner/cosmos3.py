@@ -5,13 +5,13 @@ family: a Mixture-of-Transformers with an autoregressive **reasoner** tower
 (text/image/video in, text out; physical reasoning, task planning, 2D/3D
 grounding) and a diffusion **generator** tower (video/action out). OpenRAL
 uses only the reasoner tower, served behind an OpenAI-compatible
-chat-completions API — the surface :class:`OpenAICompatibleToolUseClient`
+chat-completions API — the surface ``OpenAICompatibleToolUseClient``
 already speaks (CLAUDE.md §3 tool-call contract preserved) — on-device
 (Jetson Thor / RTX), no cloud round-trip, no per-token cost.
 
 Serving paths (any OpenAI-compatible endpoint works; the first is managed):
 
-* **Managed local vLLM** (default) — :class:`Cosmos3ToolUseClient` probes
+* **Managed local vLLM** (default) — ``Cosmos3ToolUseClient`` probes
   ``OPENRAL_REASONER_ENDPOINT`` (default ``http://127.0.0.1:8901/v1``) and
   auto-starts ``tools/cosmos3_reasoner_sidecar.py`` when loopback and down
   (uv venv, then ``vllm serve nvidia/Cosmos3-Edge`` with tool calling).
@@ -159,11 +159,11 @@ def _endpoint_is_up(base_url: str, *, timeout_s: float = 2.0) -> bool:
 
 
 class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
-    """:class:`ToolUseClient` for the Cosmos 3 reasoner tower with managed serving.
+    """``ToolUseClient`` for the Cosmos 3 reasoner tower with managed serving.
 
-    The wire path is exactly :class:`OpenAICompatibleToolUseClient` (openai SDK
+    The wire path is exactly ``OpenAICompatibleToolUseClient`` (openai SDK
     ``tools`` / ``tool_calls``, ``tool_choice="required"``, image ``data:`` URIs
-    for :meth:`describe_image`); what this subclass adds is the **managed local
+    for ``describe_image``); what this subclass adds is the **managed local
     server lifecycle**: before the first call it probes the endpoint and, when
     the endpoint is loopback, down, and ``auto_start`` is on, spawns
     ``tools/cosmos3_reasoner_sidecar.py`` and waits for readiness. A child we
@@ -172,12 +172,12 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
 
     Args:
         model_id: Cosmos 3 checkpoint id served by the endpoint. Defaults to
-            :data:`DEFAULT_COSMOS3_MODEL` (``nvidia/Cosmos3-Edge``).
+            ``DEFAULT_COSMOS3_MODEL`` (``nvidia/Cosmos3-Edge``).
         api_key: Only needed for an endpoint fronted by auth
             (``vllm serve --api-key`` / a gateway); the managed local server
             enforces none.
         base_url: OpenAI-compatible endpoint. Defaults to
-            :data:`COSMOS3_BASE_URL` (``http://127.0.0.1:8901/v1``).
+            ``COSMOS3_BASE_URL`` (``http://127.0.0.1:8901/v1``).
         timeout_s: Per-call wall-clock timeout. Default 120 s — an on-device
             4B VLM's first inference after boot compiles kernels and is much
             slower than steady state.
@@ -188,7 +188,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             and the readiness probe must agree on one).
         boot_timeout_s: How long to wait for the spawned server to become
             ready. First boot provisions the venv and downloads weights —
-            keep this generous (default :data:`DEFAULT_BOOT_TIMEOUT_S`).
+            keep this generous (default ``DEFAULT_BOOT_TIMEOUT_S``).
 
     Example:
         >>> client = Cosmos3ToolUseClient(auto_start=False)
@@ -349,7 +349,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         """Start the managed sidecar now instead of on the first tick.
 
         ``_ensure_server`` is otherwise reached only from
-        :meth:`select_tool` / :meth:`describe_image`, i.e. on the
+        ``select_tool`` / ``describe_image``, i.e. on the
         reasoner's *first tick* — after the whole graph is already up and
         an operator is waiting on a decision. On a cold host that call
         provisions a venv and downloads ~9 GB before vLLM even starts

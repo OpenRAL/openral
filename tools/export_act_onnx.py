@@ -149,7 +149,7 @@ def export(out_path: Path, repo_id: str, *, device: str = "cpu", preprocess: str
     (the lerobot processor runs on the host). ``preprocess="device"``: image
     inputs are ``[0,1]`` RGB and the image normalize is baked into the graph —
     for the zero-copy NVMM path where an nvrtc kernel produces ``/255`` frames on
-    the GPU (:mod:`openral_rskill.act_nvmm`).
+    the GPU (``openral_rskill.act_nvmm``).
     """
     from lerobot.policies.act.modeling_act import ACTPolicy
     from lerobot.utils.constants import OBS_STATE

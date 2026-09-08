@@ -2,10 +2,10 @@
 
 `pi05-libero-int8` and `smolvla-libero` emit a 7-D LIBERO action that is a 6-D
 OSC end-effector delta plus a 1-D gripper command
-(:class:`ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER`). Declaring the
+(``ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER``). Declaring the
 representation in ``rskill.yaml`` makes deploy-sim expand the vector into
 ``cartesian_delta`` + ``gripper_position`` slots (via
-:func:`canonical_slots_for_representation`) instead of defaulting the whole
+``canonical_slots_for_representation``) instead of defaulting the whole
 vector to ``JOINT_POSITION``, which the joint-space franka envelope rejects.
 """
 

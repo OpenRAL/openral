@@ -4,7 +4,7 @@ The RoboCasa backend is opt-in via the ``robocasa`` dependency
 group (`just sync --all-packages --group robocasa` + a manual ``uv pip install
 "robocasa @ git+https://github.com/robocasa/robocasa.git"`` per
 ``pyproject.toml`` comments). Without it this module still imports
-cleanly but the scene factories raise a typed :class:`ROSConfigError`
+cleanly but the scene factories raise a typed ``ROSConfigError``
 with the install hint.
 
 Scene-id conventions
@@ -14,13 +14,13 @@ Scene-id conventions
   to ``robosuite.make(env_name=<task>, robots=[...])`` so the full
   RoboCasa catalogue is reachable without per-task adapter edits.
 * ``"robocasa"`` (no slash) for the **procedural** scenario surface:
-  the user authors a kitchen via :class:`RoboCasaBackendOptions` inside
+  the user authors a kitchen via ``RoboCasaBackendOptions`` inside
   ``SceneSpec.backend_options`` (mode='procedural'), and this adapter
   resolves the (style x layout x fixtures x objects x task_verb) tuple
   into the matching robosuite env.
 
 In both cases the env's CC-BY-4.0 kitchen assets are fetched lazily on
-first use via :func:`openral_sim._assets.ensure_robocasa_assets`.
+first use via ``openral_sim._assets.ensure_robocasa_assets``.
 """
 
 from __future__ import annotations
@@ -465,7 +465,7 @@ class _RoboCasaSim:
         RoboCasa/robosuite ground truth: every ``robocasa.environments.kitchen``
         task (and GR1 tabletop task) implements ``_check_success()`` against
         live MuJoCo state, unlike the reward monitor's ``reward.score`` (a
-        VLM's opinion). Two lookup paths (mirrors :meth:`mujoco_handles`): raw
+        VLM's opinion). Two lookup paths (mirrors ``mujoco_handles``): raw
         robosuite envs expose ``_check_success`` directly; the
         gymnasium-wrapped GR1 path hides it at ``env.unwrapped.env``.
 
@@ -474,8 +474,8 @@ class _RoboCasaSim:
             backend exposes no ``_check_success`` (not a failure signal).
 
         Note:
-            Not consulted by :meth:`step` -- ``deploy sim`` runs with
-            :meth:`enable_continuous` set, where success must never influence
+            Not consulted by ``step`` -- ``deploy sim`` runs with
+            ``enable_continuous`` set, where success must never influence
             termination; callers poll this for observability only.
         """
         for candidate in (
@@ -562,7 +562,7 @@ class _RoboCasaSim:
     def refresh_obs(self) -> Observation | None:
         """Re-read observations + cameras WITHOUT advancing physics.
 
-        Used by :class:`openral_hal.sim_attached.SimAttachedHAL` after a
+        Used by ``openral_hal.sim_attached.SimAttachedHAL`` after a
         BODY_TWIST qpos write. The ``sim run`` path works correctly because
         every iteration calls ``env.step(action)``, which re-renders cameras
         through robosuite's standard pipeline; the ``deploy sim`` BODY_TWIST
@@ -677,9 +677,9 @@ class _RoboCasaSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. RoboCasa rewinds the
+        Reads ``MjData.time`` off ``mujoco_handles``. RoboCasa rewinds the
         clock to 0 on ``reset``, so the value is monotonic only within an
-        episode — :class:`~openral_hal.sim_attached.SimAttachedHAL.sim_time_ns`
+        episode — ``sim_time_ns``
         adds the cross-reset offset.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -1068,7 +1068,7 @@ def _load_robot_description_by_id(robot_id: str) -> Any:
     Walks parents of this source file for a ``robots/<id>/robot.yaml``
     fixture; returns ``None`` when unreachable (e.g. a hermetic test
     fixture with no full workspace tree). A malformed YAML raises
-    :class:`~openral_core.exceptions.ROSConfigError` rather than silently
+    ``ROSConfigError`` rather than silently
     falling back to module-level joint-name defaults.
     """
     from pathlib import Path  # reason: stdlib defer
@@ -1220,10 +1220,10 @@ def _resolve_base_joint_qvel_addrs(
         model: Live ``mujoco.MjModel``.
         base_joint_names: Optional ``(forward, side, yaw)`` MJCF joint
             names. Supersedes the module-level
-            :data:`_OMRON_BASE_JOINT_NAMES` defaults — callers that
-            have access to a :class:`~openral_core.RobotDescription`
+            ``_OMRON_BASE_JOINT_NAMES`` defaults — callers that
+            have access to a ``RobotDescription``
             should read names from the per-joint
-            :attr:`~openral_core.JointSpec.sim_joint_name` field and
+            ``sim_joint_name`` field and
             pass them here so the helper never depends on hardcoded
             robosuite / robocasa naming conventions.
     """
@@ -1274,7 +1274,7 @@ def read_panda_mobile_base_velocity(
         model: Live ``mujoco.MjModel``.
         data: Live ``mujoco.MjData``.
         base_joint_names: Optional MJCF names override — see
-            :func:`_resolve_base_joint_qvel_addrs`.
+            ``_resolve_base_joint_qvel_addrs``.
 
     Raises:
         ROSConfigError: when the MJCF declares the base joints but one
@@ -1362,7 +1362,7 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
             looks up ``"base"`` (OmronMobileBase root); when that's also
             absent every beam is a no-op-exclude.
         base_joint_names: Optional MJCF joint-name triple override — see
-            :func:`_resolve_base_joint_qvel_addrs`.
+            ``_resolve_base_joint_qvel_addrs``.
         n_beams: Number of rays. 360 ≈ 1 deg resolution.
         max_range_m: Max sensor range. Beams with no hit return this
             value (NOT NaN, NOT inf).
@@ -1553,7 +1553,7 @@ def _single_scene_pin(ids: list[int] | int | None) -> int | None:
     legitimate but is not a pin and must not be enforced as one.
 
     Args:
-        ids: The field value straight off :class:`RoboCasaBackendOptions`.
+        ids: The field value straight off ``RoboCasaBackendOptions``.
 
     Returns:
         The pinned id, or ``None`` when the value denotes a pool.
@@ -1697,7 +1697,7 @@ def provision_robocasa(backend_id: str) -> None:
     """Install the fork and fetch its assets — the slow half of a first run.
 
     Clones + editable-installs the right ``robocasa`` fork and downloads the
-    ~11 GB asset bundle. Split out of :func:`_build_robocasa_sim` so
+    ~11 GB asset bundle. Split out of ``_build_robocasa_sim`` so
     ``openral deploy sim`` can run it in front of ``ros2 launch`` instead of
     letting it land inside the HAL's ``on_configure``, which
     ``tools/lifecycle_autostart.py`` bounds at 300 s — a deadline no fresh
@@ -1711,7 +1711,7 @@ def provision_robocasa(backend_id: str) -> None:
 
     Args:
         backend_id: ``"robocasa_kitchen"`` or ``"robocasa_gr1"`` — see
-            :func:`_robocasa_backend_id`.
+            ``_robocasa_backend_id``.
 
     Raises:
         ROSConfigError: When the install or the asset download fails, or

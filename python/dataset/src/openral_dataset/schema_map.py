@@ -7,8 +7,8 @@ construction: state shape from
 sensor whose modality is an image/depth stream and has a
 ``vla_feature_key``.
 
-:func:`features_from_robot` is the one pure function that builds it — no
-I/O, no lerobot dependency, so :class:`openral_dataset.LeRobotDatasetSink`
+``features_from_robot`` is the one pure function that builds it — no
+I/O, no lerobot dependency, so ``openral_dataset.LeRobotDatasetSink``
 stays testable on hosts without lerobot (the sink lazy-imports lerobot;
 this function doesn't import it at all).
 """
@@ -81,7 +81,7 @@ def features_from_robot(
         state_shape_override: Shape of the proprioception vector when
             the robot's ``observation_spec`` is missing or empty.
             Resolved from the first frame by the sink in the typical
-            sim path (see :class:`LeRobotDatasetSink._create_dataset`).
+            sim path (see ``LeRobotDatasetSink._create_dataset``).
         action_dim_override: Dimensionality of the action vector when
             the robot's ``action_spec`` is missing. Same fallback story
             as ``state_shape_override``.
@@ -95,7 +95,7 @@ def features_from_robot(
 
     Returns:
         Mapping from feature name (e.g. ``"observation.state"``) to
-        :class:`FeatureSpec`. Always contains the canonical
+        ``FeatureSpec``. Always contains the canonical
         bookkeeping features (``next.reward``, ``next.done``,
         ``next.success``, ``next.terminated``, ``next.truncated``) so
         sinks can write them unconditionally.

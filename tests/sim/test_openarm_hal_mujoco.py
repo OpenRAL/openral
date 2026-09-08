@@ -1,7 +1,7 @@
-"""Sim tests for :class:`openral_hal.OpenArmMujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.OpenArmMujocoHAL`` against real MuJoCo physics.
 
 These tests load the upstream ``enactic/openarm_mujoco`` **v2**
-bimanual MJCF (via :mod:`openral_hal._openarm_v2_assets`) and
+bimanual MJCF (via ``openral_hal._openarm_v2_assets``) and
 exercise the full HAL lifecycle — connect → read_state →
 send_action → estop / disconnect — against a real ``mj_step``
 loop.  No mocks; the closed-loop behaviour comes from MuJoCo's own
@@ -143,7 +143,7 @@ class TestOpenArmDescription:
 class TestUpstreamSchema:
     """Guard against silent ``enactic/openarm_mujoco`` v2 schema drift.
 
-    The :class:`OpenArmMujocoHAL` indexing relies on the v2 MJCF's
+    The ``OpenArmMujocoHAL`` indexing relies on the v2 MJCF's
     18-joint / 16-actuator layout in a fixed order (left arm 7 +
     left fingers 2 + right arm 7 + right fingers 2).  If a future
     upstream upgrade reorders joints or flips an actuator's mode,

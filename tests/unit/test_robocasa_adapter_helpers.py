@@ -187,8 +187,8 @@ def test_load_or_build_env_robot_guard_for_robocasa(tmp_path: pytest.TempPathFac
 
     The RoboCasa adapter declares ``fixed_robot="panda_mobile"``; carrying
     any ``robot_id:`` on the scene-side YAML raises a typed
-    :class:`ROSConfigError` at config-build time via
-    :func:`openral_sim.cli._load_or_build_env`.
+    ``ROSConfigError`` at config-build time via
+    ``openral_sim.cli._load_or_build_env``.
     """
     import tempfile
     from types import SimpleNamespace

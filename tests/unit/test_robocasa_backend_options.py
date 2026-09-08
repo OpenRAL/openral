@@ -1,4 +1,4 @@
-"""Schema validator tests for :class:`RoboCasaBackendOptions`.
+"""Schema validator tests for ``RoboCasaBackendOptions``.
 
 The RoboCasa scene adapter (issue #88 PR B, not yet on disk) consumes
 ``SceneSpec.backend_options`` via

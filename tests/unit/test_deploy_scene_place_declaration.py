@@ -2,12 +2,12 @@
 
 A *direct* dispatch has no reasoner in the loop to ground a place target per
 goal, so the committed scene is the only thing that knows where the task places
-its payload. :attr:`DeployScene.place_declaration` is that statement, and
+its payload. ``DeployScene.place_declaration`` is that statement, and
 ``openral deploy sim`` / ``deploy run`` inject it into the rSkill runner, which
 scopes it to each goal (armed on start, retracted on end / cancel / E-stop).
 
 What a scene may say is deliberately narrower than the wire type: it names a
-**target**, never a :class:`PlaceRegion`. The region is what buys the payload a
+**target**, never a ``PlaceRegion``. The region is what buys the payload a
 reduced world-collision margin, and it is sound only because a producer
 *measured* the declared target in the frame the occupancy grid uses. A scene
 file measures nothing, and ``panda_mobile`` is a mobile base, so a box typed

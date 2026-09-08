@@ -9,7 +9,7 @@ the depth-reasoning ``-Think`` variant), edging out π0.5.
 
 Unlike the other in-tree VLA adapters, MolmoAct2 is not a lerobot
 ``PreTrainedPolicy`` with a ``select_action`` queue — it is driven through its
-own :meth:`predict_action` API. Its model graph is built by the in-tree
+own ``predict_action`` API. Its model graph is built by the in-tree
 ``lerobot.policies.molmoact2.molmoact2_hf_model.MolmoAct2ForConditionalGeneration``
 class (lerobot 0.6.0 vendors the exact Ai2 modeling/config/processor code the
 upstream repos ship as ``trust_remote_code`` custom code). This adapter
@@ -30,7 +30,7 @@ imports that class directly and loads via ``from_pretrained``/``from_config``
   for free from lerobot's ``select_action``.
 
 NF4 quantization reuses the adapter-agnostic helpers in
-:mod:`openral_sim._quantization` (``quantize_nf4_in_place`` +
+``openral_sim._quantization`` (``quantize_nf4_in_place`` +
 ``load_prequantized_state_for_rskill``), the same ones π0.5 uses; they operate
 on any ``torch.nn.Module`` tree and make no π0.5-specific assumption. The
 bf16 MolmoAct2 backbone is ~11 GiB and OOMs an 8 GiB consumer GPU; NF4 brings
@@ -109,7 +109,7 @@ _BATCHED_CHUNK_NDIM = 3
 # `cat`), not vision crops — capping crops alone doesn't change the peak, and
 # transformers 5.x's fast MolmoAct2ImageProcessor doesn't honour `max_crops`
 # the way the slow one did. The actual 8 GiB enabler is the CUDA
-# expandable-segments allocator (:func:`_enable_expandable_segments`); this
+# expandable-segments allocator (``_enable_expandable_segments``); this
 # knob is kept for the slow-processor path and larger frames. Precedence:
 # `vla.extra["image_max_crops"]` -> `OPENRAL_MOLMOACT2_MAX_CROPS` env ->
 # `manifest.image_preprocessing.image_max_crops` -> None (checkpoint default 8).
@@ -133,7 +133,7 @@ def _enable_expandable_segments() -> None:
     """Enable the CUDA expandable-segments allocator for the MolmoAct2 load.
 
     Sets ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` via
-    :meth:`os.environ.setdefault` (an operator export wins) **before the first
+    ``os.environ.setdefault`` (an operator export wins) **before the first
     CUDA allocation** in this process. The caching allocator reads the variable
     lazily on its first allocation rather than at ``import torch``, so setting it
     here — at the top of the molmoact2 build, ahead of the model's first
@@ -370,7 +370,7 @@ class _MolmoAct2Adapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the model frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
@@ -495,7 +495,7 @@ def _resolve_max_crops(spec: VLASpec, manifest: Any | None) -> int | None:
     env → ``manifest.image_preprocessing.image_max_crops`` (the per-checkpoint
     default the rSkill ships, e.g. the SO-101 skill pins 4 for an out-of-the-box
     8 GiB fit) → ``None`` (keep the checkpoint default of 8). See
-    :data:`_MAX_CROPS_ENV`.
+    ``_MAX_CROPS_ENV``.
     """
     extra = spec.extra if hasattr(spec, "extra") else {}
     raw: Any = extra.get("image_max_crops")
@@ -534,8 +534,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     ``MolmoAct2ForConditionalGeneration`` (``model_cls``) and the in-tree
     ``MolmoAct2Config`` / ``MolmoAct2Processor`` — no ``trust_remote_code``.
     Returns ``(model, processor, use_nf4, torch_dtype)``. Split out of
-    :func:`_build_molmoact2` so the build function stays under the statement
-    cap; all phases stay wrapped in :func:`_molmoact2_phase`.
+    ``_build_molmoact2`` so the build function stays under the statement
+    cap; all phases stay wrapped in ``_molmoact2_phase``.
     """
     use_nf4 = dtype_str.lower() in {"nf4", "4bit", "int4"}
     torch_dtype = torch_dtype_for(torch, None if use_nf4 else dtype_str, device)
@@ -562,7 +562,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # graph on the meta device (shape, no storage), rewrite Linears to
     # ``Linear4bit`` shells (also meta), materialise real storage exactly once
     # via ``to_empty``, then let the prequant state load supply every weight.
-    # Mirrors the π0.5 nf4 fast path (see :mod:`openral_sim.policies.pi05`).
+    # Mirrors the π0.5 nf4 fast path (see ``openral_sim.policies.pi05``).
     # Unlike π0.5 we need no manual buffer reconstruction: MolmoAct2's
     # ``MolmoAct2RotaryEmbedding`` self-heals a meta/garbage ``inv_freq`` (it is
     # ``persistent=True`` → restored by the pack; the non-persistent cos/sin

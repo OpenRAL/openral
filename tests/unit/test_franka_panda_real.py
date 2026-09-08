@@ -1,9 +1,9 @@
-"""Unit tests for :class:`FrankaPandaRealHAL` — the real-hardware Franka adapter.
+"""Unit tests for ``FrankaPandaRealHAL`` — the real-hardware Franka adapter.
 
-The adapter wraps :class:`RosControlHAL` so the heavy hot-path logic is
+The adapter wraps ``RosControlHAL`` so the heavy hot-path logic is
 already covered by ``tests/unit/test_hal.py``; this file pins the
 Franka-specific surface (FCI metadata, manifest pointer, e-stop topic) and
-the closed-loop behaviour against :class:`SimTransport` (real, not mocked).
+the closed-loop behaviour against ``SimTransport`` (real, not mocked).
 """
 
 from __future__ import annotations

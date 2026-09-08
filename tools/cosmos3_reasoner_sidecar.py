@@ -1,7 +1,7 @@
 """Boot the NVIDIA Cosmos 3 reasoner behind vLLM's OpenAI-compatible API.
 
 Serves the ``cosmos3-edge`` reasoner model (``OPENRAL_REASONER_MODEL=cosmos3-edge``,
-:class:`openral_reasoner.cosmos3.Cosmos3ToolUseClient`): the reasoner tower of
+``openral_reasoner.cosmos3.Cosmos3ToolUseClient``): the reasoner tower of
 NVIDIA Cosmos 3, default 4B on-device Edge tier (``nvidia/Cosmos3-Edge``,
 OpenMDW-1.1, commercial OK). vLLM serves only the reasoner tower via
 chat-completions + tool calling (CLAUDE.md §3: typed tool-use, no free-form
@@ -13,13 +13,13 @@ Nemotron backbone that keeps the message format).
 
 Edge ships as a diffusers ``Cosmos3OmniPipeline`` (weights under
 ``transformer/``, ``vision_encoder/``). Transformers-fallback vLLM only
-resolves bare top-level filenames, so :func:`materialize_reasoner_view`
+resolves bare top-level filenames, so ``materialize_reasoner_view``
 builds a flat symlinked view (RTX 4070 8 GB: ~6.4 GB resident BF16,
 8192-token KV). Native vLLM (vllm-project/vllm#48291) reads the diffusers
 layout by path and the flattened view **breaks** it (Jetson AGX Thor, vLLM
 0.28.0: ``RuntimeError: Cannot find any model weights``) — serve the
 snapshot as-is there (3 shards, 4.66 GiB, 5.71 s).
-:func:`vllm_has_native_edge_model` asks the venv's ``ModelRegistry`` rather
+``vllm_has_native_edge_model`` asks the venv's ``ModelRegistry`` rather
 than comparing version strings.
 
 Lock resolves differently per platform: x86_64 pins vLLM 0.24.0, whose
@@ -28,7 +28,7 @@ Transformers fallback loads Edge but crashes in
 sound at ~46 tok/s under plain ``transformers.generate``). aarch64 resolves
 vLLM 0.28.0, which already carries #48291 and loads natively (validated live
 tool call on RTX 4070, 1.5-2 s/tick warm, ``--kv-cache-dtype fp8`` for the
-8192 window). Retire :func:`materialize_reasoner_view` once every platform
+8192 window). Retire ``materialize_reasoner_view`` once every platform
 resolves a vLLM with #48291. Full findings:
 ``docs/reference/cosmos3-edge-reasoner.md``.
 
@@ -200,7 +200,7 @@ def vllm_has_native_edge_model(py: Path) -> bool:
     `vllm#48291 <https://github.com/vllm-project/vllm/pull/48291>`_, after the
     0.24.0 release the x86 branch pins but before the 0.28.0 the aarch64
     branch resolves (see module docstring); decides how weights are served
-    in :func:`resolve_served_model`. Asks vLLM's registry rather than
+    in ``resolve_served_model``. Asks vLLM's registry rather than
     comparing version strings.
 
     Args:
@@ -236,7 +236,7 @@ def resolve_served_model(
     A local directory is served verbatim (``served_name=None``). A HF repo id
     is snapshot-downloaded; an Edge diffusers layout is served as-is when
     ``native_edge`` (see module docstring for why the two vLLM generations
-    read it differently), else via :func:`materialize_reasoner_view`.
+    read it differently), else via ``materialize_reasoner_view``.
     ``served_name = model`` keeps the client's ``model_id`` matching either
     way. Nano/Super (standard layout) are served by repo id directly.
 
@@ -244,7 +244,7 @@ def resolve_served_model(
         model: Repo id or local directory.
         home: Sidecar work directory the flattened view is built under.
         native_edge: Whether the serving vLLM has the native Edge model —
-            :func:`vllm_has_native_edge_model` answers this.
+            ``vllm_has_native_edge_model`` answers this.
 
     Returns:
         ``(serve_target, served_model_name_or_None)``.
@@ -283,7 +283,7 @@ def build_serve_argv(
     caps the KV cache: Cosmos 3 supports up to 256K tokens, far beyond an
     8-32 GB edge GPU; the default 8192 covers the system prompt + tool
     schemas (~4-5K tokens). ``served_model_name`` keeps the public id stable
-    when serving a local view dir (see :func:`resolve_served_model`).
+    when serving a local view dir (see ``resolve_served_model``).
     """
     argv = [
         str(vllm_bin),

@@ -6,11 +6,11 @@ not glob-discovered, so a new file forces conscious registration and the
 registries stand as the audit trail of what exists and its schema tier.
 
 Coverage:
-- :data:`_ROBOT_IDS`       → ``robots/<id>/robot.yaml``       via :class:`RobotDescription`
-- :data:`_BENCHMARK_STEMS` → ``scenes/benchmark/<stem>.yaml`` via :class:`BenchmarkScene`
-- :data:`_SIM_STEMS`       → ``scenes/sim/<stem>.yaml``       via :class:`SimScene`
-- :data:`_DEPLOY_STEMS`    → ``scenes/deploy/<stem>.yaml``    via :class:`DeployScene`
-- Per-robot sensor entries → :class:`SensorSpec` (intrinsics for RGB/depth/
+- ``_ROBOT_IDS``       → ``robots/<id>/robot.yaml``       via ``RobotDescription``
+- ``_BENCHMARK_STEMS`` → ``scenes/benchmark/<stem>.yaml`` via ``BenchmarkScene``
+- ``_SIM_STEMS``       → ``scenes/sim/<stem>.yaml``       via ``SimScene``
+- ``_DEPLOY_STEMS``    → ``scenes/deploy/<stem>.yaml``    via ``DeployScene``
+- Per-robot sensor entries → ``SensorSpec`` (intrinsics for RGB/depth/
   stereo; n_channels + range for lidar/point-cloud).
 
 New manifest: add it to the matching registry constant, then
@@ -246,7 +246,7 @@ _SENSOR_PARAMS = _collect_sensors()
 
 @pytest.mark.parametrize("robot_id", _ROBOT_IDS)
 def test_robot_manifest_validates(robot_id: str) -> None:
-    """``robots/<id>/robot.yaml`` round-trips through :class:`RobotDescription`."""
+    """``robots/<id>/robot.yaml`` round-trips through ``RobotDescription``."""
     from openral_core.schemas import RobotDescription
 
     desc = RobotDescription.from_yaml(str(_robot_yaml(robot_id)))
@@ -263,7 +263,7 @@ def test_robot_manifest_validates(robot_id: str) -> None:
     ids=[sid for sid, _ in _SENSOR_PARAMS],
 )
 def test_sensor_spec_validates(sensor_id: str, sensor_raw: dict[str, Any]) -> None:
-    """Each sensor entry in a robot manifest validates as :class:`SensorSpec`.
+    """Each sensor entry in a robot manifest validates as ``SensorSpec``.
 
     Modality-specific invariants enforced here (beyond Pydantic field typing):
 
@@ -293,7 +293,7 @@ def test_sensor_spec_validates(sensor_id: str, sensor_raw: dict[str, Any]) -> No
 
 @pytest.mark.parametrize("stem", _BENCHMARK_STEMS)
 def test_benchmark_scene_validates(stem: str) -> None:
-    """``scenes/benchmark/<stem>.yaml`` round-trips through :class:`BenchmarkScene`."""
+    """``scenes/benchmark/<stem>.yaml`` round-trips through ``BenchmarkScene``."""
     from openral_core.schemas import BenchmarkScene
 
     scene = BenchmarkScene.from_yaml(str(_scene_yaml("benchmark", stem)))
@@ -308,7 +308,7 @@ def test_benchmark_scene_validates(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _SIM_STEMS)
 def test_sim_scene_validates(stem: str) -> None:
-    """``scenes/sim/<stem>.yaml`` round-trips through :class:`SimScene`."""
+    """``scenes/sim/<stem>.yaml`` round-trips through ``SimScene``."""
     from openral_core.schemas import SimScene
 
     scene = SimScene.from_yaml(str(_scene_yaml("sim", stem)))
@@ -321,7 +321,7 @@ def test_sim_scene_validates(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _DEPLOY_STEMS)
 def test_deploy_scene_validates(stem: str) -> None:
-    """``scenes/deploy/<stem>.yaml`` round-trips through :class:`DeployScene`."""
+    """``scenes/deploy/<stem>.yaml`` round-trips through ``DeployScene``."""
     from openral_core.schemas import DeployScene
 
     scene = DeployScene.from_yaml(str(_scene_yaml("deploy", stem)))

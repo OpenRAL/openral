@@ -2,7 +2,7 @@
 
 Two small registries:
 
-- :func:`canonical_robot_path` — given a ``bh_robot_type`` produced by
+- ``canonical_robot_path`` — given a ``bh_robot_type`` produced by
   ``openral_cli.autodetect`` (USB VID/PID match, SocketCAN interface-name
   match, or DDS topic-prefix inference), return the path to the canonical
   ``robots/<name>/robot.yaml``.
@@ -11,9 +11,9 @@ Two small registries:
   ``RobotDescription.from_yaml(...)``, with detected sensors and compute
   spliced on top — the assembler never re-synthesises a known robot.
 
-- :func:`signature_for_realsense` / :func:`signature_for_v4l2` /
-  :func:`signature_for_usb_uvc` — convenience helpers that build the
-  matching :class:`openral_sensors.SensorSignature` for each probe
+- ``signature_for_realsense`` / ``signature_for_v4l2`` /
+  ``signature_for_usb_uvc`` — convenience helpers that build the
+  matching ``openral_sensors.SensorSignature`` for each probe
   output kind.  Centralised here so probes don't import the catalog and
   the assembler doesn't grow ad-hoc helpers.
 """
@@ -95,7 +95,7 @@ def canonical_robot_path(bh_robot_type: str) -> Path | None:
     """Resolve a ``bh_robot_type`` slug to a committed ``robots/<name>/robot.yaml``.
 
     Resolution is two-step: the slug is first translated through
-    :data:`_OPENRAL_ROBOT_TYPE_TO_DIR` (``"so100"`` → ``"so100_follower"``);
+    ``_OPENRAL_ROBOT_TYPE_TO_DIR`` (``"so100"`` → ``"so100_follower"``);
     if it is not a known alias the slug is tried **verbatim** as a
     ``robots/<slug>/`` directory name. The second step lets an explicit
     ``openral detect --robot <name>`` override target any committed robot by

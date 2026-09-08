@@ -1,9 +1,9 @@
 """DeployRunner throttles dashboard thumbnail emission to a fixed cadence.
 
 Real twin + real skill + real synthetic camera readers (no mocks per
-CLAUDE.md §1.11). A :class:`_SyntheticRgbReader` is a genuine
-:class:`~openral_runner.sensor_reader.SensorReader` implementation — it
-produces real RGB8 :class:`~openral_core.SensorFrame` objects that flow
+CLAUDE.md §1.11). A ``_SyntheticRgbReader`` is a genuine
+``SensorReader`` implementation — it
+produces real RGB8 ``SensorFrame`` objects that flow
 through the real Pillow encode path — analogous to a videotestsrc camera.
 The gate is wall-clock (``time.monotonic``) based, so the rate assertions
 allow jitter rather than demanding an exact count.

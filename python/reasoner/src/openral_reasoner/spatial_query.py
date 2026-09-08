@@ -1,13 +1,13 @@
 """Spatial-memory query bridge for the S2 reasoner.
 
-The reasoner emits the read-only :class:`~openral_core.RecallObjectTool` /
-:class:`~openral_core.ResolvePlaceTool` variants; this module turns such a tool
+The reasoner emits the read-only ``RecallObjectTool`` /
+``ResolvePlaceTool`` variants; this module turns such a tool
 call into a query, runs it against an injected spatial-memory backend,
 and renders the result as an LLM-readable text block to feed back into the
 reasoning loop (republished as a ``PromptStamped`` by ``reasoner_node`` — the
 "result-return via prompt cascade" path).
 
-The backend is duck-typed via :class:`SpatialMemoryQuerier` so this Layer-4
+The backend is duck-typed via ``SpatialMemoryQuerier`` so this Layer-4
 module does not import the Layer-2 ``openral_world_state`` package — the concrete
 ``SpatialMemory`` structurally satisfies the Protocol. These tools are
 **read-only** and hold no authority over actuation (CLAUDE.md §3).
@@ -41,7 +41,7 @@ ApproachRefiner = Callable[
 Called per match as ``refiner(viewpoint, target_xyz)``; returns the
 grid-validated (possibly snapped) viewpoint, or ``None`` when no reachable
 viewpoint exists within the search radius. Duck-typed (like
-:class:`SpatialMemoryQuerier`) so this Layer-4 module never imports the
+``SpatialMemoryQuerier``) so this Layer-4 module never imports the
 Layer-2 ``openral_world_state`` package — the reasoner node wires
 ``refine_approach_pose`` over its latched ``/map`` subscription."""
 
@@ -65,12 +65,12 @@ class SpatialMemoryQuerier(Protocol):
 
 
 def recall_object_tool_to_query(call: RecallObjectTool) -> RecallObjectQuery:
-    """Map a :class:`~openral_core.RecallObjectTool` to a :class:`RecallObjectQuery`."""
+    """Map a ``RecallObjectTool`` to a ``RecallObjectQuery``."""
     return RecallObjectQuery(text=call.query, limit=call.limit)
 
 
 def resolve_place_tool_to_query(call: ResolvePlaceTool) -> ResolvePlaceQuery:
-    """Map a :class:`~openral_core.ResolvePlaceTool` to a :class:`ResolvePlaceQuery`."""
+    """Map a ``ResolvePlaceTool`` to a ``ResolvePlaceQuery``."""
     return ResolvePlaceQuery(reference=call.reference)
 
 
@@ -84,7 +84,7 @@ def format_recall_object_result(
     *,
     blocked_node_ids: frozenset[str] = frozenset(),
 ) -> str:
-    """Render a :class:`RecallObjectResult` as an LLM-readable text block.
+    """Render a ``RecallObjectResult`` as an LLM-readable text block.
 
     ``blocked_node_ids`` marks matches whose approach
     viewpoint failed occupancy-grid refinement — rendered as an explicit
@@ -123,7 +123,7 @@ def format_recall_object_result(
 
 
 def format_resolve_place_result(reference: str, result: ResolvePlaceResult) -> str:
-    """Render a :class:`ResolvePlaceResult` as an LLM-readable text block."""
+    """Render a ``ResolvePlaceResult`` as an LLM-readable text block."""
     text = (
         f"spatial_memory: {reference!r} resolves to node {result.node_id} "
         f"at map {_fmt_xyz(result.goal.xyz)}"
@@ -157,13 +157,13 @@ def run_spatial_query_detailed(
 ) -> SpatialQueryOutcome:
     """Execute a read-only spatial-memory tool call; render text + report match.
 
-    Same behaviour as :func:`run_spatial_query` but also reports whether the
+    Same behaviour as ``run_spatial_query`` but also reports whether the
     query matched (``SpatialQueryOutcome.found``), so the caller can escalate a
     miss to a live perception check without re-parsing the rendered text.
 
     Args:
-        call: A :class:`~openral_core.RecallObjectTool` or
-            :class:`~openral_core.ResolvePlaceTool`.
+        call: A ``RecallObjectTool`` or
+            ``ResolvePlaceTool``.
         querier: The spatial-memory backend (e.g. a ``SpatialMemory``).
         now_ns: Current time in nanoseconds (recency filtering).
         from_node_id: Optional origin node for ``resolve_place`` path planning.
@@ -175,10 +175,10 @@ def run_spatial_query_detailed(
             through unchanged.
 
     Returns:
-        A :class:`SpatialQueryOutcome`. A miss (no match / unresolved reference)
+        A ``SpatialQueryOutcome``. A miss (no match / unresolved reference)
         is reported as text and ``found=False`` — never a fabricated pose
         (CLAUDE.md §1.2): ``resolve_place`` raises
-        :class:`~openral_core.exceptions.ROSObjectNotInMemory` internally, which
+        ``ROSObjectNotInMemory`` internally, which
         is caught and rendered as a "not in memory" message.
     """
     if isinstance(call, RecallObjectTool):
@@ -228,7 +228,7 @@ def run_spatial_query(
 ) -> str:
     """Execute a read-only spatial-memory tool call and render the result as text.
 
-    Thin wrapper over :func:`run_spatial_query_detailed` returning only the
+    Thin wrapper over ``run_spatial_query_detailed`` returning only the
     rendered text (the historical signature). See that function for argument
     and return-value semantics.
     """

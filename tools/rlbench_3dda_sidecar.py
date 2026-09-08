@@ -4,12 +4,12 @@ r"""3D Diffuser Actor policy sidecar — RLBench keyframe inference over ZMQ.
 over end-effector keyposes for RLBench. Its released PerAct 18-task checkpoint
 pins an older stack (``MohitShridhar/RLBench@peract`` + CLIP + an
 Ada-compatible torch build) that can't live in the py3.12 openral workspace —
-so, like the RLDX-1 adapter (:mod:`openral_sim.policies.rldx`), it runs in its
+so, like the RLDX-1 adapter (``openral_sim.policies.rldx``), it runs in its
 own venv as a long-lived process over ZMQ REQ/REP + msgpack.
 
 This file is the sidecar side (no openral import; owns the ``DiffuserActor``
 model, CLIP instruction embeddings, per-episode obs history at
-``num_history=3``). The openral side is :mod:`openral_sim.policies.rlbench_3dda`.
+``num_history=3``). The openral side is ``openral_sim.policies.rlbench_3dda``.
 
 Wire: ``ping -> {"ok", "model": "3d_diffuser_actor"}``, ``reset -> {"ok"}``
 (clears history), ``get_action -> {"action": (8,) float32 [xyz, quat,

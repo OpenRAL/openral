@@ -4,12 +4,12 @@ lerobot 0.6.0 ships a native, in-process ``GrootPolicy``
 (``lerobot.policies.groot``) that loads GR00T **N1.7** under the workspace's
 Python 3.12 — the Cosmos-Reason2 / Qwen3-VL backbone is a stock
 ``Qwen3VLForConditionalGeneration`` available in ``transformers>=5.4``. This
-adapter mirrors the in-process :mod:`openral_sim.policies.smolvla` adapter
+adapter mirrors the in-process ``openral_sim.policies.smolvla`` adapter
 rather than a sidecar.
 
 RLDX-1 (a GR00T-**N1.5** finetune) still runs in its ZMQ sidecar via the
 ``rldx`` adapter — native lerobot rejects N1.5 — so
-:class:`openral_sim.policies.rldx._Gr00tFamilySidecarAdapter` is untouched.
+``openral_sim.policies.rldx._Gr00tFamilySidecarAdapter`` is untouched.
 
 In-process NF4
 --------------
@@ -18,7 +18,7 @@ fp32 params / bf16 compute (~6 GB), which will not co-fit an 8 GB card. The
 transformers ``BitsAndBytesConfig`` / ``device_map`` path is unavailable —
 it requires ``accelerate``, which the workspace venv does not carry. So this
 reuses OpenRAL's accelerate-free
-:func:`openral_sim._quantization.quantize_nf4_in_place` (same mechanism as
+``openral_sim._quantization.quantize_nf4_in_place`` (same mechanism as
 pi05 / molmoact2): after a normal CPU load, the Qwen3-VL backbone's large
 ``nn.Linear`` layers are rewritten into ``bnb.nn.Linear4bit`` shells, then
 ``policy.to(cuda)`` packs them to NF4. Only the backbone is quantized; the
@@ -29,7 +29,7 @@ The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
 native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under
 Python 3.10, so a manifest with
 ``policy_extras.implementation=behavior_b1k_sidecar`` dispatches to
-:mod:`openral_sim.policies.behavior_groot` before the lerobot loader runs.
+``openral_sim.policies.behavior_groot`` before the lerobot loader runs.
 
 Embodiment mapping
 ------------------
@@ -322,7 +322,7 @@ class _GrootAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()

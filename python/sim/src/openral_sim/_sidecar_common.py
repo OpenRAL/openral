@@ -18,7 +18,7 @@ wrapper).
 The ``tools/<family>_sidecar.py`` boot helpers import this module — they run
 under the openral interpreter (which has ``openral_sim`` installed) to bootstrap
 the sidecar, *then* ``exec`` into the isolated 3.10 venv. The isolation
-(:func:`make_isolated_env`) only applies to that exec'd child.
+(``make_isolated_env``) only applies to that exec'd child.
 """
 
 from __future__ import annotations
@@ -76,10 +76,10 @@ def write_sidecar_identity(
 ) -> None:
     """Record which checkpoint a sidecar is about to serve on ``port``.
 
-    Written by :func:`run_sidecar` just before it execs the server (whether
+    Written by ``run_sidecar`` just before it execs the server (whether
     the boot was auto-spawned by the adapter or launched by hand by an
     operator), so *every* sidecar this repo starts is identifiable. The
-    adapter reads it back via :func:`read_sidecar_identity` before reusing a
+    adapter reads it back via ``read_sidecar_identity`` before reusing a
     pre-existing sidecar.
     """
     _SIDECAR_REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ def read_sidecar_identity(port: int) -> dict[str, str] | None:
     """Return the recorded identity for the sidecar on ``port``, or ``None``.
 
     ``None`` means no record exists — e.g. a sidecar booted before this
-    control landed, or by some path other than :func:`run_sidecar`. Callers
+    control landed, or by some path other than ``run_sidecar``. Callers
     treat that as "unverifiable" rather than "mismatched".
     """
     path = sidecar_identity_path(port)
@@ -177,7 +177,7 @@ def ensure_pip_venv(
     Returns the venv's ``python``. Shared provisioning order for the
     *pip-installable* sidecars (LocateAnything
     detector, Qwen scene-VLM, Isaac auto-provision) — distinct from
-    :func:`run_sidecar`, which clones + execs a 3.10 policy venv:
+    ``run_sidecar``, which clones + execs a 3.10 policy venv:
 
     1. An explicit ``override`` venv path (e.g. a ``--venv`` CLI arg) or the
        ``override_env`` environment variable points at an existing venv to reuse
@@ -191,7 +191,7 @@ def ensure_pip_venv(
 
     ``spec`` is the dependency spec ``install`` will apply — the pinned
     requirement strings, or a lockfile's text. It is hashed into the sentinel
-    (:func:`spec_marker`) so that **correcting a pin repairs existing venvs**:
+    (``spec_marker``) so that **correcting a pin repairs existing venvs**:
     a sentinel written from a different spec (or from the pre-digest ``ok``
     marker) no longer counts as provisioned, and ``install`` re-runs. Without
     it a venv is frozen at whatever it first resolved, with no supported way to
@@ -240,7 +240,7 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     Drops the workspace ``PYTHONPATH`` / ``PYTHONHOME`` (their 3.12 wheels would
     shadow the 3.10 venv and crash ``import transformers`` on a regex ABI
     mismatch), points at the venv, and disables torch.compile / inductor (which
-    stalls post-load on small GPUs). The caller follows with :func:`exec_server`.
+    stalls post-load on small GPUs). The caller follows with ``exec_server``.
 
     Also defaults the CUDA caching-allocator to ``expandable_segments:True``.
     On an 8 GB-class GPU the sidecar's 3B checkpoint load (NF4 quant peak via
@@ -309,7 +309,7 @@ def alloc_conf_var(torch_version: str | None) -> str:
 
 
 def installed_alloc_conf_var() -> str:
-    """:func:`alloc_conf_var` for the torch installed in *this* interpreter.
+    """``alloc_conf_var`` for the torch installed in *this* interpreter.
 
     For in-process policies (MolmoAct2, OpenVLA, the reward monitors), which set
     the allocator config on themselves rather than on a child. Read from
@@ -341,7 +341,7 @@ def venv_torch_version(venv: Path) -> str | None:
 def venv_ptxas(venv: Path) -> Path | None:
     """Return the ``nvidia-cuda-nvcc-cu12`` ``ptxas`` inside ``venv``, if present.
 
-    Split out of :func:`make_isolated_env` so a sidecar that execs by some other
+    Split out of ``make_isolated_env`` so a sidecar that execs by some other
     route — or a test — can ask the same question. Returns ``None`` when the
     wheel isn't installed, which is the normal case on x86_64.
     """

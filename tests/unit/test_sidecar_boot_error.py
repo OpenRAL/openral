@@ -4,7 +4,7 @@ A sidecar that *crashes* during boot (child exits non-zero — e.g. GR00T/RLDX
 processor KeyErrors because a pretrain base like RLDX-1-PT has no modality
 config for the requested embodiment) must NOT be reported as "did not answer
 ping within {timeout}s" — that reads as a hung bootstrap and misdirects the
-operator. :meth:`SidecarClient._boot_failure_error` distinguishes the two off
+operator. ``SidecarClient._boot_failure_error`` distinguishes the two off
 the captured child exit code.
 
 The live-but-silent case splits the same way (issue #89): never-bound-port

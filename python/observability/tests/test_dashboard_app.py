@@ -263,7 +263,7 @@ async def test_subscriber_queue_receives_ingest_payload(
 
     The actual ``/api/stream`` HTTP framing is exercised in the
     integration test on a real uvicorn socket
-    (:mod:`tests.integration.test_dashboard_end_to_end`); httpx's
+    (``tests.integration.test_dashboard_end_to_end``); httpx's
     ``ASGITransport`` buffers the full response body so a streaming
     endpoint deadlocks against it. Here we validate the store-level
     publish channel that the SSE generator awaits on.

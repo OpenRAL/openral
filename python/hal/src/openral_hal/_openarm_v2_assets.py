@@ -8,7 +8,7 @@ kv=1.5, fingers: kp=30 kv=0.2), proper ``ctrlrange``/``forcerange``,
 symmetric left/right finger gains, and 16 actuators total (one finger
 driver per side, the second follows via an ``<equality>`` constraint) —
 collapsing ~400 lines of software PD + workaround code in
-:class:`openral_hal.OpenArmMujocoHAL` to a trivial write-target →
+``openral_hal.OpenArmMujocoHAL`` to a trivial write-target →
 write-ctrl mapping (CLAUDE.md §1.4).
 
 Until ``robot_descriptions`` bumps its pin past PR #19, this module
@@ -58,7 +58,7 @@ def ensure_openarm_v2_mjcf() -> str:
     """Return the on-disk path to the v2 bimanual MJCF, fetching if needed.
 
     Idempotent: subsequent calls reuse the cached clone.  The repo
-    is checked out at :data:`_OPENARM_V2_PINNED_SHA` so the
+    is checked out at ``_OPENARM_V2_PINNED_SHA`` so the
     in-tree sim contract doesn't drift with upstream master.
 
     Raises:

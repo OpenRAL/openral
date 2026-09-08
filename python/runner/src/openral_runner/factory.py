@@ -3,10 +3,10 @@
 Two dict registries map a config id to its factory, each rejecting unknown ids
 with a typed ``ROSConfigError``:
 
-* ``SKILL_REGISTRY`` — :attr:`VLASpec.id` → :class:`Skill` factory. Today only
+* ``SKILL_REGISTRY`` — ``VLASpec.id`` → ``Skill`` factory. Today only
   ``gpu_passthrough`` (a no-op rSkill for plumbing verification).
-* ``SENSOR_BACKEND_REGISTRY`` — :attr:`SensorReaderConfig.backend` →
-  :class:`SensorReader` factory (``opencv_thread`` / ``gstreamer`` /
+* ``SENSOR_BACKEND_REGISTRY`` — ``SensorReaderConfig.backend`` →
+  ``SensorReader`` factory (``opencv_thread`` / ``gstreamer`` /
   ``galaxea_a1_camera_bridge``).
 
 Adding skills / backends is additive — append to the dict. The rSkill that
@@ -67,7 +67,7 @@ def _to_int(value: object, *, field: str, sensor_id: str) -> int:
 
 
 def _make_gpu_passthrough_skill(extra: dict[str, object]) -> rSkillBase:
-    """Build a :class:`GpuPassthroughSkill` from ``vla.extra`` overrides.
+    """Build a ``GpuPassthroughSkill`` from ``vla.extra`` overrides.
 
     Recognised ``extra`` keys:
         ``sensor_id`` (str, default ``"wrist_rgb"``): which
@@ -92,11 +92,11 @@ def _make_gpu_passthrough_skill(extra: dict[str, object]) -> rSkillBase:
 SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]] = {
     "gpu_passthrough": _make_gpu_passthrough_skill,
 }
-"""Registry of Skill factories. Keyed by :attr:`VLASpec.id`."""
+"""Registry of Skill factories. Keyed by ``VLASpec.id``."""
 
 
 def _make_opencv_thread_reader(cfg: SensorReaderConfig) -> SensorReader:
-    """Build an :class:`OpenCVThreadSensorReader` from a :class:`SensorReaderConfig`."""
+    """Build an ``OpenCVThreadSensorReader`` from a ``SensorReaderConfig``."""
     params = cfg.backend_params
     device_param = params.get("device")
     if device_param is None:
@@ -136,7 +136,7 @@ def _make_opencv_thread_reader(cfg: SensorReaderConfig) -> SensorReader:
 
 
 def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
-    """Build a :class:`GStreamerSensorReader` from a :class:`SensorReaderConfig`.
+    """Build a ``GStreamerSensorReader`` from a ``SensorReaderConfig``.
 
     The YAML may supply either a fully-formed ``pipeline`` string or a
     structured ``source / device / width / height / fps`` description that the
@@ -269,7 +269,7 @@ def _gstreamer_spec_from_params(
     cfg: SensorReaderConfig,
     source_param: object,
 ) -> PipelineSpec:
-    """Materialise a :class:`PipelineSpec` from a GStreamer SensorReaderConfig."""
+    """Materialise a ``PipelineSpec`` from a GStreamer SensorReaderConfig."""
     if not isinstance(source_param, str):
         raise ROSConfigError(
             f"SensorReaderConfig({cfg.sensor_id!r}).backend_params.source must be "
@@ -323,7 +323,7 @@ def _copy_bool_if_present(dst: dict[str, object], src: dict[str, object], key: s
 
 
 def _make_ros2_image_reader(cfg: SensorReaderConfig) -> SensorReader:
-    """Build a :class:`Ros2ImageSensorReader` from a :class:`SensorReaderConfig`.
+    """Build a ``Ros2ImageSensorReader`` from a ``SensorReaderConfig``.
 
     Imported lazily: the reader pulls ``rclpy`` at ``open()``, and the factory
     module must stay importable on hosts with no ROS install.
@@ -365,4 +365,4 @@ SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]
     "gstreamer": _make_gstreamer_reader,
     "galaxea_a1_camera_bridge": _make_galaxea_a1_camera_bridge_reader,
 }
-"""Registry of SensorReader factories. Keyed by :attr:`SensorReaderConfig.backend`."""
+"""Registry of SensorReader factories. Keyed by ``SensorReaderConfig.backend``."""

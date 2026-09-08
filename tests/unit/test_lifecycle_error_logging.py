@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_observability.log_lifecycle_errors`.
+"""Unit tests for ``openral_observability.log_lifecycle_errors``.
 
 Regression guard for the opaque ``runtime_node`` exit-code-4 failure: when a
 ``LifecycleNode`` transition callback raises, rclpy's
@@ -7,7 +7,7 @@ Regression guard for the opaque ``runtime_node`` exit-code-4 failure: when a
 ``# TODO(ivanpauno): log sth here`` in rclpy) — the host prints only the exit
 code, losing the traceback.
 
-:func:`log_lifecycle_errors` closes the gap: wraps the callback so any
+``log_lifecycle_errors`` closes the gap: wraps the callback so any
 uncaught exception is logged with its traceback via the node's ROS logger
 (``get_logger()`` → ``/rosout`` → launch console) and converted to a clean
 ``TransitionCallbackReturn.FAILURE``.

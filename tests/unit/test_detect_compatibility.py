@@ -1,4 +1,4 @@
-"""Tests for :func:`check_installed_rskills`.
+"""Tests for ``check_installed_rskills``.
 
 Real fixtures only (CLAUDE.md §1.11):
 - Real in-tree ``rskills/<name>/rskill.yaml`` manifests.

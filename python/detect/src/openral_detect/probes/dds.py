@@ -28,7 +28,7 @@ def probe_dds(
         warnings: Optional list to append non-fatal probe issues to.
 
     Returns:
-        A populated :class:`Ros2TopologyResult`.  Empty when ``ros2``
+        A populated ``Ros2TopologyResult``.  Empty when ``ros2``
         is not on ``$PATH`` or no topics are visible within ``timeout_s``.
     """
     try:

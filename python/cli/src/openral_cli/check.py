@@ -74,7 +74,7 @@ _LOAD_ERRORS = (ValidationError, ROSError, OSError, ValueError, yaml.YAMLError)
 
 
 class CheckFinding(BaseModel):
-    """One problem surfaced by :func:`check_description_graph`."""
+    """One problem surfaced by ``check_description_graph``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -310,7 +310,7 @@ def check_description_graph(
             sim-only imports). Default ``False`` keeps the check offline.
 
     Returns:
-        A :class:`GraphCheckReport`; ``report.ok`` is ``False`` when any
+        A ``GraphCheckReport``; ``report.ok`` is ``False`` when any
         error-severity finding was raised.
 
     Example:

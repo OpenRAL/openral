@@ -11,7 +11,7 @@ and a hard pin on ``torch==2.8.0`` / ``transformers==4.57.3`` / ``triton==3.4.0`
 
 Why an out-of-process sidecar (not in-process, not vendored)
 -----------------------------------------------------------
-Mirrors :mod:`openral_sim.policies.rldx`:
+Mirrors ``openral_sim.policies.rldx``:
 
 * **Dep stack cannot coexist.** ``lingbotvla`` pins ``torch==2.8.0`` +
   ``triton==3.4.0`` + ``transformers==4.57.3`` vs. the workspace's
@@ -53,7 +53,7 @@ robot config shipped upstream (``configs/robot_configs/robotwin.yaml`` +
 * **Action chunk**: the server returns unnormalized ``action.arm.position(12)``
   + ``action.effector.position(2)`` per step; the sidecar flattens them (in that
   key order) to a ``(chunk, 14)`` array under ``"action"``. This adapter replays
-  one 14-D step per :meth:`step`, refilling from the sidecar when the queue
+  one 14-D step per ``step``, refilling from the sidecar when the queue
   drains.
 
 Quantization: the 8 GB-class dev GPU cannot hold the 6.38 B model (fp32 25.5 GB
@@ -187,8 +187,8 @@ def _resolve_model_id(
 def _locate_sidecar_script() -> Path:
     """Find ``tools/lingbot_vla2_sidecar.py`` (the boot helper) relative to the repo.
 
-    The boot helper runs under the openral interpreter (:data:`sys.executable`)
-    so it can import :mod:`openral_sim._sidecar_common`; it clones the upstream
+    The boot helper runs under the openral interpreter (``sys.executable``)
+    so it can import ``openral_sim._sidecar_common``; it clones the upstream
     repo + builds the torch-2.9 venv on first use, then execs the server. The
     venv itself no longer needs to exist when this adapter is constructed —
     provisioning is the boot helper's job (escape hatch:
@@ -213,10 +213,10 @@ def _locate_sidecar_script() -> Path:
 
 @dataclass
 class _LingBotVla2Adapter:
-    """:class:`PolicyAdapter` proxying the LingBot-VLA 2.0 sidecar.
+    """``PolicyAdapter`` proxying the LingBot-VLA 2.0 sidecar.
 
     Predicts a full action chunk on the sidecar and replays one 16-D step per
-    :meth:`step`; the queue refills (a new sidecar inference) when it drains.
+    ``step``; the queue refills (a new sidecar inference) when it drains.
     """
 
     spec: VLASpec
@@ -388,7 +388,7 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
 
 @POLICIES.register("lingbot_vla2")
 def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
-    """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see :func:`_build_lingbot`."""
+    """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see ``_build_lingbot``."""
     return _build_lingbot(env_cfg, variant="v2")
 
 
@@ -397,6 +397,6 @@ def _build_lingbot_vla(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     """LingBot-VLA 1.0 (4B Qwen2.5-VL dense expert / posttrain-robotwin).
 
     Same obs contract + adapter as v2; the sidecar loads the V1 repo + venv and
-    runs ``tools/_lingbot_vla2_server.py --variant v1``. See :func:`_build_lingbot`.
+    runs ``tools/_lingbot_vla2_server.py --variant v1``. See ``_build_lingbot``.
     """
     return _build_lingbot(env_cfg, variant="v1")

@@ -8,7 +8,7 @@
 **without logging** — so the lifecycle-autostart driver sees only an opaque
 failure and the traceback is lost.
 
-The :func:`openral_observability.log_lifecycle_errors` decorator on the base's
+The ``openral_observability.log_lifecycle_errors`` decorator on the base's
 ``on_configure`` closes that gap for every HAL (UR5e/Franka/SO-100/OpenArm/
 panda_mobile/…) at once, since they all share this base. This test drives a
 minimal real subclass whose ``_create_hal`` raises an untyped error through a

@@ -1,4 +1,4 @@
-"""Tests for the single description-asset resolver :func:`resolve_asset`."""
+"""Tests for the single description-asset resolver ``resolve_asset``."""
 
 from __future__ import annotations
 

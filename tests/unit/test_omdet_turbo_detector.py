@@ -4,7 +4,7 @@ Two tiers:
 
 * **Pure conversion + manifest/dispatch** (always run, no GPU/torch):
   ``build_objects_metadata_from_results`` and the ``engine: zeroshot_hf``
-  manifest → :class:`OmDetTurboDetector` dispatch. Construction is lazy (the
+  manifest → ``OmDetTurboDetector`` dispatch. Construction is lazy (the
   model loads on first ``detect()``), so the dispatch path builds the backend
   without torch, transformers, or a GPU.
 * **Real end-to-end** (gated): load the real ``omlab/omdet-turbo-swin-tiny-hf``

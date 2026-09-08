@@ -1,9 +1,9 @@
-"""Phase 3 end-to-end — :class:`LookAtRskill` against live MoveIt.
+"""Phase 3 end-to-end — ``LookAtRskill`` against live MoveIt.
 
 Reuses the ``moveit_resources_panda_moveit_config`` demo harness from
-:mod:`test_moveit_joints_franka` (real ``move_group`` + fake hardware +
+``test_moveit_joints_franka`` (real ``move_group`` + fake hardware +
 ``robot_state_publisher``), drives the in-tree ``rskills/rskill-moveit-look-at``
-manifest with the real franka :class:`~openral_core.RobotDescription` (whose
+manifest with the real franka ``RobotDescription`` (whose
 ``wrist`` sensor is the LIBERO eye-in-hand on ``panda_hand``), and asserts —
 via TF, after the demo *executes* the planned motion — that ``panda_hand``'s
 optical axis (+Z) actually points at the requested target.

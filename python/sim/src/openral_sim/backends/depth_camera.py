@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Simulated depth camera → point cloud, via MuJoCo CPU ray-casting.
 
-3-D analogue of :func:`openral_sim.backends.robocasa.synthesize_laser_scan_2d`.
+3-D analogue of ``openral_sim.backends.robocasa.synthesize_laser_scan_2d``.
 Casts one ``mj_ray`` per (strided) pixel through a pinhole model anchored on a
 named MJCF camera; returns hits in the camera *optical* frame (REP-103: +x
 right, +y down, +z forward). Uses MuJoCo's analytic ray-caster, not a GL
@@ -387,8 +387,8 @@ def synthesize_depth_frame(
     to clear cells the robot occludes — collapsing both onto ``0.0`` would
     make the robot's silhouette write-only, leaving stale voxels forever. The
     raster keeps the sensor's ``0.0 = no measurement`` contract; the mask
-    feeds :func:`openral_hal.depth_cloud.points_from_depth_grid`, which
-    :func:`synthesize_depth_pointcloud` already emits as max-range endpoints.
+    feeds ``openral_hal.depth_cloud.points_from_depth_grid``, which
+    ``synthesize_depth_pointcloud`` already emits as max-range endpoints.
     Still one ``mj_ray`` per pixel per frame.
 
     Args:
@@ -467,8 +467,8 @@ def synthesize_depth_image(
 ) -> NDArray[np.float32]:
     """Ray-cast a dense ``32FC1`` depth image from a named MJCF camera.
 
-    Image counterpart of :func:`synthesize_depth_pointcloud`, sharing the same
-    ray-cast (:func:`_cast_depth_rays`) but keeping every pixel — nvblox's
+    Image counterpart of ``synthesize_depth_pointcloud``, sharing the same
+    ray-cast (``_cast_depth_rays``) but keeping every pixel — nvblox's
     projective integrator needs a dense raster, not the sparse hit-only cloud.
     Each pixel is *perpendicular optical-Z* depth in metres (``range · ẑ``,
     the ROS depth-image convention, not Euclidean range); ``0.0`` = no
@@ -478,7 +478,7 @@ def synthesize_depth_image(
     **Do not build an OctoMap cloud from this alone** — ``0.0`` can't
     distinguish "no return" from "free to ``max_range_m``" (self-filtered
     body), which OctoMap needs to clear occluded cells; use
-    :func:`synthesize_depth_frame` for both raster and clearing mask.
+    ``synthesize_depth_frame`` for both raster and clearing mask.
 
     Raster is at the **strided** resolution: ``(ceil(height/stride),
     ceil(width/stride))``; matching ``CameraInfo`` must scale intrinsics by

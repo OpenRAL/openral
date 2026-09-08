@@ -71,7 +71,7 @@ class SafetyStatusSubscriber:
 
         Args:
             store: The dashboard's telemetry store; every received status is
-                written to it via :meth:`TelemetryStore.set_safety_status`.
+                written to it via ``TelemetryStore.set_safety_status``.
         """
         self._store = store
         self._node: Any = None

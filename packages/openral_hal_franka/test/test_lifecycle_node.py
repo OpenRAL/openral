@@ -1,8 +1,8 @@
 """Lifecycle smoke test for ``openral_hal_franka``.
 
-Drives the generic ``_HALLifecycleNode`` (:mod:`openral_hal.lifecycle`) with
+Drives the generic ``_HALLifecycleNode`` (``openral_hal.lifecycle``) with
 the real ``FrankaPandaHAL`` factory and its canonical
-:class:`openral_core.RobotDescription` (``FRANKA_PANDA_DESCRIPTION``), so the
+``openral_core.RobotDescription`` (``FRANKA_PANDA_DESCRIPTION``), so the
 smoke exercises real wiring, not a stub.
 
 Phases: ``unconfigured → configure → inactive → activate → active``

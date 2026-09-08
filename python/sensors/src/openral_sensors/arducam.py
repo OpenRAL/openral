@@ -1,10 +1,10 @@
 """Arducam USB3 global-shutter camera adapters — B0495 (AR0234 colour).
 
-``arducam_b0495_spec`` builds a :class:`SensorSpec` for an Arducam B0495
+``arducam_b0495_spec`` builds a ``SensorSpec`` for an Arducam B0495
 (2.3 MP AR0234 global shutter over a Cypress FX3 USB 3.0 UVC bridge);
 registered in the catalog under ``arducam/b0495``.
 
-Separate from :mod:`openral_sensors.usb_uvc`: global shutter avoids the
+Separate from ``openral_sensors.usb_uvc``: global shutter avoids the
 rolling-shutter smear that would corrupt wrist/workspace views a VLA
 conditions on. Ships as a bare board with an M12 lens mount, so FOV and
 distortion are integrator-supplied; ``intrinsics`` stays unset unless the
@@ -77,7 +77,7 @@ def arducam_b0495_spec(
             with several identical B0495s can address a specific one.
 
     Returns:
-        A fully-materialised :class:`SensorSpec`.
+        A fully-materialised ``SensorSpec``.
 
     Example:
         >>> spec = arducam_b0495_spec(name="wrist", rate_hz=50.0)

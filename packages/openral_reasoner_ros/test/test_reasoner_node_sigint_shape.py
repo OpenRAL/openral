@@ -2,9 +2,9 @@
 
 Mirrors ``packages/openral_rskill_ros/test/test_runtime_node_sigint_shape.py``
 (landed in caae96f). ROS 2 Jazzy installs a SIGINT handler in
-:func:`rclpy.init` that shuts down the rclpy context and raises
-``KeyboardInterrupt`` out of :func:`rclpy.spin`. A bare ``rclpy.shutdown()``
-called after that (instead of :func:`rclpy.try_shutdown`) raises::
+``rclpy.init`` that shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of ``rclpy.spin``. A bare ``rclpy.shutdown()``
+called after that (instead of ``rclpy.try_shutdown``) raises::
 
     rclpy._rclpy_pybind11.RCLError: failed to shutdown:
     rcl_shutdown already called on the given context
@@ -73,7 +73,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in reasoner_node.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     Bare ``rclpy.shutdown()`` raises ``RCLError`` if SIGINT has
     already torn the context down — guaranteed on every operator

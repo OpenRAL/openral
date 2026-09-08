@@ -4,7 +4,7 @@ The full Tier-A/B/C/D preemption flow (callbacks driving the LLM)
 lives in ``tests/integration/test_reasoner_node_end_to_end.py``
 because it needs a real rclpy executor. This module covers the
 transport-agnostic surface — the ``tier`` argument on
-:meth:`ReasonerCore.tick` and its landing on the OTel span.
+``ReasonerCore.tick`` and its landing on the OTel span.
 """
 
 from __future__ import annotations

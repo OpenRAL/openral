@@ -1,6 +1,6 @@
 """Publisher helper for the namespaced FailureTrigger bus.
 
-The OpenRAL graph publishes typed :class:`openral_msgs.msg.FailureTrigger`
+The OpenRAL graph publishes typed ``openral_msgs.msg.FailureTrigger``
 events on six layer-namespaced topics::
 
     /openral/failure/hal
@@ -17,9 +17,9 @@ One source layer per topic; the reasoner (``openral_reasoner``, planned in
 F4) subscribes to the relevant subset and ``rqt_graph`` shows source
 provenance directly.
 
-Ships :class:`FailureSource`, :func:`topic_for`, the ``KIND_*``/``SEVERITY_*``
+Ships ``FailureSource``, ``topic_for``, the ``KIND_*``/``SEVERITY_*``
 IDL-mirror constants (so callers can build events without the generated
-IDL — handy for unit tests), and :class:`FailureBusPublisher` (opens a
+IDL — handy for unit tests), and ``FailureBusPublisher`` (opens a
 publisher on the source's topic, rate-limits ``(kind, severity)`` buckets
 with a token bucket, emits a 1 Hz ``KIND_SUPPRESSED_SUMMARY`` roll-up when
 buckets dropped). Import-safe without ``rclpy``: rclpy and the generated
@@ -114,7 +114,7 @@ class FailureSource(str, Enum):
     """One source layer per topic on the failure bus.
 
     The string value is the topic suffix appended to
-    :data:`TOPIC_PREFIX`. Use :func:`topic_for` to get the full topic.
+    ``TOPIC_PREFIX``. Use ``topic_for`` to get the full topic.
     """
 
     HAL = "hal"
@@ -154,9 +154,9 @@ DEFAULT_SUMMARY_PERIOD_S: float = 1.0
 
 
 class _TokenBucket:
-    """Per-bucket token bucket — caps :meth:`try_consume` at ``rate_hz``/s.
+    """Per-bucket token bucket — caps ``try_consume`` at ``rate_hz``/s.
 
-    Bucket capacity is exactly one token. On every :meth:`try_consume`
+    Bucket capacity is exactly one token. On every ``try_consume``
     call, accumulated tokens (``rate_hz * elapsed``) are clamped to the
     capacity ceiling. A bucket constructed with ``rate_hz=None`` is
     unlimited (``try_consume`` always returns ``True``).
@@ -203,16 +203,16 @@ class _TokenBucket:
 
 
 class FailureBusPublisher:
-    """ROS 2 publisher for :class:`openral_msgs.msg.FailureTrigger`.
+    """ROS 2 publisher for ``openral_msgs.msg.FailureTrigger``.
 
     One per ``(node, source)`` pair. Owns the publisher on
-    :func:`topic_for(source) <topic_for>`, per-``(kind, severity)``
+    ``topic_for(source)``, per-``(kind, severity)``
     token buckets, and the periodic ``KIND_SUPPRESSED_SUMMARY`` timer
     that emits a roll-up of dropped events.
 
     The publisher class is import-safe on hosts without ``rclpy``; the
     generated IDL and rclpy primitives are imported lazily inside
-    :meth:`create_publisher` and :meth:`publish`.
+    ``create_publisher`` and ``publish``.
 
     Example:
         >>> # Real usage requires a sourced ROS 2 install; see
@@ -233,8 +233,8 @@ class FailureBusPublisher:
     ) -> None:
         """Configure the publisher; does not open the ROS publisher.
 
-        Call :meth:`create_publisher` from ``on_configure`` to open the
-        ROS publisher, and :meth:`start` from ``on_activate`` to start
+        Call ``create_publisher`` from ``on_configure`` to open the
+        ROS publisher, and ``start`` from ``on_activate`` to start
         the suppressed-summary timer.
 
         Args:
@@ -242,12 +242,12 @@ class FailureBusPublisher:
                 ``rclpy.lifecycle.LifecycleNode``).
             source: Which layer this publisher represents.
             rate_limit_hz: Per-severity rate override. Defaults to
-                :data:`DEFAULT_RATE_LIMIT_HZ`. ``None`` value disables
+                ``DEFAULT_RATE_LIMIT_HZ``. ``None`` value disables
                 rate-limiting for that severity.
             summary_period_s: Cadence of the
                 ``KIND_SUPPRESSED_SUMMARY`` roll-up. Default 1.0 s.
             clock: Monotonic clock for the token buckets and the
-                summary window. Defaults to :func:`time.monotonic`.
+                summary window. Defaults to ``time.monotonic``.
                 Override in tests.
         """
         self._node = node
@@ -300,7 +300,7 @@ class FailureBusPublisher:
         """Start the 1 Hz ``KIND_SUPPRESSED_SUMMARY`` roll-up timer.
 
         Must be called from the owning node's ``on_activate``. No-op
-        when :meth:`create_publisher` has not run.
+        when ``create_publisher`` has not run.
         """
         if self._publisher is None or self._summary_timer is not None:
             return
@@ -335,20 +335,20 @@ class FailureBusPublisher:
         rskill_id: str = "",
         trace_id: str | None = None,
     ) -> bool:
-        """Emit one :class:`FailureTrigger`, subject to rate-limiting.
+        """Emit one ``FailureTrigger``, subject to rate-limiting.
 
         Args:
             kind: One of the ``KIND_*`` constants.
             severity: One of the ``SEVERITY_*`` constants.
-            evidence: Typed :data:`openral_core.FailureEvidence` payload
+            evidence: Typed ``openral_core.FailureEvidence`` payload
                 — must match the ``kind`` (e.g. ``KIND_FORCE`` →
-                :class:`ForceEvidence`). Not enforced at runtime so the
+                ``ForceEvidence``). Not enforced at runtime so the
                 publisher stays cheap; consumers validate via the
                 Pydantic discriminator.
             rskill_id: Identifier of the running skill, when known.
             trace_id: Override for the W3C ``traceparent`` field. When
                 ``None`` (default) the active OTel context is used via
-                :func:`openral_observability.propagation.current_traceparent`.
+                ``openral_observability.propagation.current_traceparent``.
 
         Returns:
             ``True`` if the event was published, ``False`` if the
@@ -387,10 +387,10 @@ class FailureBusPublisher:
     def _emit_summary_if_any(self) -> None:
         """Timer callback: if any events were dropped, publish a summary.
 
-        The summary is itself a :class:`FailureTrigger` with
+        The summary is itself a ``FailureTrigger`` with
         ``kind=KIND_SUPPRESSED_SUMMARY`` and
         ``severity=SEVERITY_WARN``; the payload's
-        :class:`SuppressedSummaryEvidence` carries parallel arrays of
+        ``SuppressedSummaryEvidence`` carries parallel arrays of
         the suppressed ``(kind, severity)`` pairs and their counts.
         """
         with self._counter_lock:

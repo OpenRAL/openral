@@ -1,10 +1,10 @@
 """Unit tests for the deploy-path-aware action-mode palette gate.
 
-Exercises two pure helpers in :mod:`openral_reasoner_ros.reasoner_node`:
+Exercises two pure helpers in ``openral_reasoner_ros.reasoner_node``:
 
-* :func:`_required_control_modes` — the :class:`ControlMode` s a skill's
+* ``_required_control_modes`` — the ``ControlMode`` s a skill's
   ``action_contract`` demands of the target robot.
-* :func:`_action_executable` — whether the deploy path (``real`` vs ``sim``) can
+* ``_action_executable`` — whether the deploy path (``real`` vs ``sim``) can
   execute those modes.
 
 All inputs are real fixtures (CLAUDE.md §1.11): ``RobotDescription`` manifests from

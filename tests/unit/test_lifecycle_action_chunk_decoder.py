@@ -1,15 +1,15 @@
 """Regression test for the ``/openral/safe_action`` decoder.
 
 The HAL lifecycle node's ``_on_safe_action`` used to hardcode every incoming
-chunk as :class:`ControlMode.JOINT_POSITION`, dropping the wire
+chunk as ``ControlMode.JOINT_POSITION``, dropping the wire
 ``control_mode`` field. Per-mode chunks (CARTESIAN_DELTA, GRIPPER_POSITION,
 BODY_TWIST) from the C++ safety kernel were silently misrouted into
 ``Action.joint_targets``, rejected by the HAL packer with a single WARN —
 visible only as "arm never moves in `openral deploy sim`".
 
-Pins :func:`openral_hal.lifecycle.decode_action_chunk` against every
+Pins ``openral_hal.lifecycle.decode_action_chunk`` against every
 control_mode the F1/F5 publisher emits. Real ``ActionChunk``-shaped inputs,
-real Pydantic :class:`Action` outputs, no mocks (CLAUDE.md §1.11) — the
+real Pydantic ``Action`` outputs, no mocks (CLAUDE.md §1.11) — the
 decoder is duck-typed so any object exposing the wire field names works.
 """
 
@@ -59,7 +59,7 @@ class TestDecodeActionChunk:
 
     def test_cartesian_delta_populates_typed_field_not_joint_targets(self) -> None:
         """The regression. CARTESIAN_DELTA must land in
-        :attr:`Action.cartesian_delta`, not :attr:`Action.joint_targets`.
+        ``Action.cartesian_delta``, not ``Action.joint_targets``.
         """
         chunk = FakeChunk(
             flat=[-0.97, -0.28, -0.27, 0.0, -0.34, -0.10],

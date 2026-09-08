@@ -144,7 +144,7 @@ def test_the_overlapping_witness_is_a_plane_point_and_the_direction_is_separate(
     the two: ``a``'s buried face is the whole slab underside, so its centroid
     lifts onto the ledge's top plane far outside the ledge itself, and
     ``witness_clearance_m`` correctly refutes it as a point on ``b``. That is
-    why :attr:`ConvexDistance.direction` exists and why nothing may recover a
+    why ``ConvexDistance.direction`` exists and why nothing may recover a
     contact direction by differencing the two witnesses — at a flush contact
     they coincide and carry no direction at all. #190: the support probe read
     a *lateral* box face normal at exactly such a point and tilted an attested

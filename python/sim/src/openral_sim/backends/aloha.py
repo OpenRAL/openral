@@ -1,6 +1,6 @@
 """gym-aloha scene adapter — wraps ``gym_aloha/AlohaTransferCube-v0``.
 
-Driven by a :class:`openral_core.SimEnvironment` config, this adapter is
+Driven by a ``openral_core.SimEnvironment`` config, this adapter is
 the canonical entry point for gym-aloha rollouts (used by
 ``tests/sim/test_aloha_bimanual_act_aloha.py``).
 
@@ -42,7 +42,7 @@ _ALOHA_SCENES: dict[str, str] = {
 
 @dataclass
 class _AlohaSim:
-    """Thin :class:`SimRollout` wrapper around a ``gym_aloha`` env."""
+    """Thin ``SimRollout`` wrapper around a ``gym_aloha`` env."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -89,7 +89,7 @@ class _AlohaSim:
         Returns ``None`` if the chain is broken.
 
         ``--view`` needs ``MUJOCO_GL=egl`` set before ``gym_aloha`` imports
-        (else the viewer window paints blank) — see :func:`_build_aloha_scene`.
+        (else the viewer window paints blank) — see ``_build_aloha_scene``.
         """
         env = getattr(self._env, "unwrapped", self._env)
         inner = getattr(env, "_env", None)
@@ -105,7 +105,7 @@ class _AlohaSim:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 
-        Reads dm_control's ``MjData.time`` off :meth:`mujoco_handles`. Monotonic
+        Reads dm_control's ``MjData.time`` off ``mujoco_handles``. Monotonic
         within an episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -138,7 +138,7 @@ class _AlohaSim:
 
 
 def _build_aloha_scene(env_cfg: SimEnvironment) -> _AlohaSim:
-    """Lazily import ``gym_aloha`` and build a :class:`_AlohaSim`.
+    """Lazily import ``gym_aloha`` and build a ``_AlohaSim``.
 
     Forces ``MUJOCO_GL=egl`` before importing gym_aloha so dm_control's
     ``Physics`` offscreen pipeline runs on EGL rather than monopolising GLFW —

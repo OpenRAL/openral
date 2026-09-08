@@ -1,6 +1,6 @@
 """Sim-tier test: in-process GR00T N1.7 (NF4) on an SO-101 fruit observation.
 
-The SO-101 counterpart to :mod:`tests.sim.test_franka_groot_libero`. It proves
+The SO-101 counterpart to ``tests.sim.test_franka_groot_libero``. It proves
 the generalized ``@POLICIES.register("gr00t")`` factory drives a **non-LIBERO**
 GR00T checkpoint: the ``rskills/gr00t-n17-so101-fruit`` manifest carries a 6-D
 ``state_contract`` / ``action_contract``, the ``new_embodiment`` GR00T tag, and

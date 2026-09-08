@@ -1,6 +1,6 @@
 """Regression test: ``--no-dashboard`` skips OTLP endpoint forwarding.
 
-Asserts :func:`sim_e2e.launch.compose_runtime_graph` builds every spawned node's
+Asserts ``sim_e2e.launch.compose_runtime_graph`` builds every spawned node's
 ``additional_env`` WITHOUT ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_PROTOCOL``
 when ``enable_dashboard=false``, WITH them when ``true``.
 
@@ -87,7 +87,7 @@ def _collect_additional_envs(*, enable_dashboard: bool) -> list[tuple[str, dict[
     Walks the entities ``compose_runtime_graph`` returns, picks the
     ``Node`` / ``LifecycleNode`` instances, and resolves each one's
     ``additional_env`` (a list of ``(key_substitutions, value_substitutions)``
-    tuples) via :func:`launch.utilities.perform_substitutions` against
+    tuples) via ``launch.utilities.perform_substitutions`` against
     the launch context — the same call ``ros2 launch`` makes before
     handing env to subprocess.Popen.
 

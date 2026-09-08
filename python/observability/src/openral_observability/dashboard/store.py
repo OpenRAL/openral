@@ -1,6 +1,6 @@
 """In-memory aggregator for the live dashboard.
 
-:class:`TelemetryStore` is the single shared object the OTLP/HTTP
+``TelemetryStore`` is the single shared object the OTLP/HTTP
 receiver writes into and the SSE / JSON endpoints read from. It is
 thread-safe (an asyncio task feeds it from request handlers; the SSE
 generator subscribes from another task) and bounded — every internal
@@ -14,9 +14,9 @@ violation, deadline missed, sensor stale, ...) and per-instrument
 rolling samples for metrics.
 
 Wire format: callers feed in already-decoded
-:class:`opentelemetry.proto.trace.v1.trace_pb2.ResourceSpans` /
-:class:`opentelemetry.proto.metrics.v1.metrics_pb2.ResourceMetrics`
-messages. The receiver in :mod:`openral_observability.dashboard.receivers`
+``opentelemetry.proto.trace.v1.trace_pb2.ResourceSpans`` /
+``opentelemetry.proto.metrics.v1.metrics_pb2.ResourceMetrics``
+messages. The receiver in ``openral_observability.dashboard.receivers``
 does the protobuf decode; the store never parses protobuf itself.
 """
 
@@ -132,7 +132,7 @@ _ANY_VALUE_DECODERS: dict[str, Any] = {
 def _is_headline_span(name: str) -> bool:
     """True when ``name`` earns an ``info`` row in the Event Log.
 
-    See :data:`_HEADLINE_SPANS` for why this is an allow-list rather than a
+    See ``_HEADLINE_SPANS`` for why this is an allow-list rather than a
     list of known-noisy spans.
     """
     return name in _HEADLINE_SPANS or name.startswith(_HEADLINE_SPAN_PREFIXES)
@@ -412,8 +412,8 @@ class TelemetryStore:
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
         # as a dedicated card. Latched/static keys (run mode, robot
-        # model, skill id, kernel) live in :attr:`_identity`; everything
-        # high-frequency lives under :attr:`_topics` keyed by topic name.
+        # model, skill id, kernel) live in ``_identity``; everything
+        # high-frequency lives under ``_topics`` keyed by topic name.
         # Bounded per-trace span index (bag↔OTel replay). Ordered dict so
         # eviction is FIFO on first-seen trace_id; each value is a deque
         # capped by _TRACE_INDEX_MAX_SPANS.
@@ -529,12 +529,12 @@ class TelemetryStore:
     def ingest_logs(self, payload: list[ResourceLogs]) -> int:
         """Decode + record a batch of ``ResourceLogs`` as event-log rows.
 
-        Each OTLP ``LogRecord`` becomes one :class:`TelemetryEvent`: the
+        Each OTLP ``LogRecord`` becomes one ``TelemetryEvent``: the
         body is the title, the instrumentation scope (logger) name is the
         kind, the record attributes are the attrs, and ``severity_number``
         maps to ``debug``/``info``/``warn``/``error``/``fatal`` via
-        :func:`_log_level`. This is the structlog→OTel bridge
-        (:mod:`openral_observability.logging`) surfacing on the UI — every
+        ``_log_level``. This is the structlog→OTel bridge
+        (``openral_observability.logging``) surfacing on the UI — every
         level incl. DEBUG ships to the dashboard's ``/v1/logs`` endpoint,
         which calls this (issue #318). Records land in the same bounded
         event ring as spans/span-events; the UI defaults the Debug chip
@@ -728,7 +728,7 @@ class TelemetryStore:
                 ``score_advisory`` (``None`` when the producer sent none).
             rskill_id: The producing segmenter rSkill, shown on the tile.
             stamp_unix: The attach instant the masks describe, as Unix seconds.
-            flip_180: As for :meth:`set_perception_detections`.
+            flip_180: As for ``set_perception_detections``.
         """
         with self._lock:
             overlays = self._topics["perception"].setdefault("overlays", {})
@@ -747,8 +747,8 @@ class TelemetryStore:
         """Register an asyncio queue that receives every state update.
 
         The caller (the SSE endpoint) awaits ``queue.get()`` in a loop
-        and must call :meth:`unsubscribe` when the client disconnects.
-        Bounded at :data:`_SUBSCRIBER_QUEUE_SIZE`; if a slow client
+        and must call ``unsubscribe`` when the client disconnects.
+        Bounded at ``_SUBSCRIBER_QUEUE_SIZE``; if a slow client
         causes the queue to fill the oldest delta is dropped so the
         producer never blocks.
         """
@@ -862,9 +862,9 @@ class TelemetryStore:
         """Append to the main ring, and mirror non-debug events into a protected lane.
 
         Two protected lanes, sized independently so neither starves the
-        other: the error lane (:data:`_ERROR_EVENT_RING_SIZE` — errors,
+        other: the error lane (``_ERROR_EVENT_RING_SIZE`` — errors,
         e-stops, safety violations, skill failures) and the headline lane
-        (:data:`_HEADLINE_EVENT_RING_SIZE` — routine info), on top of the
+        (``_HEADLINE_EVENT_RING_SIZE`` — routine info), on top of the
         main ring the high-rate debug stream cycles in seconds. Measured on
         a live `deploy sim`: the main ring held 201 rows, 193 of them
         `hal.read_state` (~7 s of history at 30 Hz); `world.scene_objects`
@@ -1201,9 +1201,9 @@ class TelemetryStore:
     ) -> None:
         """Stash the latest ``reasoner.tick`` attributes for the dashboard card.
 
-        :meth:`openral_reasoner.ReasonerCore.tick` emits one
+        ``openral_reasoner.ReasonerCore.tick`` emits one
         of these spans per orchestrator pass via
-        :func:`openral_observability.reasoner_span`. The dashboard's
+        ``openral_observability.reasoner_span``. The dashboard's
         Reasoner card reads the slot this writes (the Event Log carries
         the full history; this is the "headline latest" surface so the
         operator can see what the LLM just picked).
@@ -1533,7 +1533,7 @@ def _summarise_event(name: str, attrs: dict[str, Any]) -> str:
     ``openral.event.skill_failure.state`` / ``reasoner.rskill_id``. Without
     folding those into the title the dashboard event log + traces section show
     only the bare event name, so the operator can't see why the skill failed.
-    Mirrors :func:`_summarise_span` for spans.
+    Mirrors ``_summarise_span`` for spans.
     """
     short = name.rsplit(".", 1)[-1]  # openral.event.skill_failure -> skill_failure
     parts: list[str] = [short]

@@ -4,30 +4,30 @@ The failure bus reserves ``/openral/failure/critic`` for **Tier-C** triggers
 (2026-05-25 amendment taxonomy: ``safety→A``, ``hal/sensor/rskill/wam→B``,
 ``critic→C``) — the tier a stalled or completed task should signal on.
 
-Ships the **decision core**: :class:`CriticWatchdog`, a pure, import-safe
+Ships the **decision core**: ``CriticWatchdog``, a pure, import-safe
 state machine (no ``rclpy``) that consumes a stream of per-frame
 progress/critic scores and decides *when* to wake the reasoner — because
 progress has **stalled** or the attempt is **likely done** (success). Emits
-the real :class:`openral_core.CriticEvidence` (no invented schema) for a thin
+the real ``openral_core.CriticEvidence`` (no invented schema) for a thin
 ROS node to publish unchanged. The score source is abstract: any
 higher-is-better reward model (Robometer today, a future SARM, a success
 classifier, a heuristic) drives the same watchdog via a
-``(critic_id, score, threshold)`` stream. :class:`CriticWatchdogGroup`
-multiplexes one :class:`CriticWatchdog` per ``critic_id``.
+``(critic_id, score, threshold)`` stream. ``CriticWatchdogGroup``
+multiplexes one ``CriticWatchdog`` per ``critic_id``.
 
 Stall and success semantics are deterministic and fully covered by
-``tests/test_critic_watchdog.py``; see :meth:`CriticWatchdog.observe` for the
+``tests/test_critic_watchdog.py``; see ``CriticWatchdog.observe`` for the
 precise rules (success takes precedence when both would fire on one sample).
 
 Intended wiring: a critic producer node subscribes to
 ``/openral/critic/score`` (``openral_msgs/CriticScore``), routes samples
-through a :class:`CriticWatchdogGroup`, and on a non-``None`` return
+through a ``CriticWatchdogGroup``, and on a non-``None`` return
 publishes via ``FailureBusPublisher(node,
 FailureSource.CRITIC).publish(kind=KIND_CRITIC, severity=SEVERITY_FAIL,
-evidence=<CriticEvidence>)`` (:mod:`openral_observability.failure_bus`).
+evidence=<CriticEvidence>)`` (``openral_observability.failure_bus``).
 ``reasoner_node`` maps the resulting ``/openral/failure/critic`` (FAIL)
 event onto a forced Tier-C tick (``ReasonerCore.tick(..., force=True,
-tier="C")``). The producer calls :meth:`CriticWatchdogGroup.reset` on a
+tier="C")``). The producer calls ``CriticWatchdogGroup.reset`` on a
 reasoner context shift, mirroring ``ReasonerCore.reset_kind_streak``.
 
 Example:
@@ -62,7 +62,7 @@ class CriticWatchdog:
     """Progress-stall / success decision core for the Tier-C ``critic`` failure source.
 
     Pure logic and import-safe (no ``rclpy``): feed one score per frame via
-    :meth:`observe`; it returns a :class:`~openral_core.CriticEvidence` once
+    ``observe``; it returns a ``CriticEvidence`` once
     when a stall trips OR once when the score crosses the success threshold —
     whichever comes first — then latches until the condition clears. See the
     module docstring for the precise, deterministic stall and success semantics
@@ -70,7 +70,7 @@ class CriticWatchdog:
 
     Attributes:
         critic_id: Identifier of the upstream critic (e.g. the Robometer reward
-            rSkill id) stamped onto every emitted :class:`CriticEvidence`.
+            rSkill id) stamped onto every emitted ``CriticEvidence``.
         threshold: Pass threshold; observations at or above it are successes /
             recoveries; observations below it may eventually stall.
         stall_patience: Consecutive stalled observations required to fire a
@@ -102,7 +102,7 @@ class CriticWatchdog:
 
         Args:
             critic_id: Identifier of the upstream critic; copied onto every
-                emitted :class:`CriticEvidence`.
+                emitted ``CriticEvidence``.
             threshold: Pass threshold in the critic's native range. An
                 observation ``>= threshold`` is a recovery (no stall owed).
             stall_patience: Number of consecutive stalled observations before
@@ -149,25 +149,25 @@ class CriticWatchdog:
     def observe(self, score: float) -> CriticEvidence | None:
         """Feed one progress/critic score and decide whether to fire.
 
-        Fires a :class:`~openral_core.CriticEvidence` in two mutually exclusive
+        Fires a ``CriticEvidence`` in two mutually exclusive
         cases (success takes precedence when both would trigger on the same
         sample):
 
         * **Success** — ``score >= threshold`` and the success latch is not set:
           fires once, sets the success latch (cleared when score next drops
-          below threshold or on :meth:`reset`).
+          below threshold or on ``reset``).
         * **Stall** — ``stall_patience`` consecutive sub-threshold,
           non-improving observations while the stall latch is not set: fires
           once, sets the stall latch (cleared on progress, recovery, or
-          :meth:`reset`).
+          ``reset``).
 
         Args:
             score: One frame's progress/critic score (e.g. a Robometer
                 progress estimate ∈ [0, 1]) in the critic's native range.
 
         Returns:
-            A :class:`~openral_core.CriticEvidence` carrying this
-            :attr:`critic_id`, ``score`` and :attr:`threshold` on a stall or
+            A ``CriticEvidence`` carrying this
+            ``critic_id``, ``score`` and ``threshold`` on a stall or
             success fire; ``None`` otherwise. See the module docstring for the
             full semantics.
         """
@@ -219,7 +219,7 @@ class CriticWatchdog:
     def reset(self) -> None:
         """Clear all state when the reasoner context shifts / a new task starts.
 
-        Mirrors :meth:`ReasonerCore.reset_kind_streak`'s rationale. Forgets the
+        Mirrors ``ReasonerCore.reset_kind_streak``'s rationale. Forgets the
         running best, zeroes the stall counter, and clears both the stall latch
         and the success latch, so the next stall and the next success crossing
         both start fresh.
@@ -231,21 +231,21 @@ class CriticWatchdog:
 
 
 class CriticWatchdogGroup:
-    """Multiplex one :class:`CriticWatchdog` per ``critic_id``.
+    """Multiplex one ``CriticWatchdog`` per ``critic_id``.
 
     The Tier-C ``/openral/failure/critic`` source is shared by every reward
     model in the graph — the Robometer reward rSkill today, a future
     SARM, a success classifier, and so on. Each publishes self-describing score
     samples ``(critic_id, score, threshold)``; this group keys an **independent**
-    :class:`CriticWatchdog` per ``critic_id`` so one critic stalling fires its
-    own :class:`~openral_core.CriticEvidence` without disturbing the others.
+    ``CriticWatchdog`` per ``critic_id`` so one critic stalling fires its
+    own ``CriticEvidence`` without disturbing the others.
 
     Watchdogs are created lazily on first sight of a ``critic_id``, using that
     first sample's ``threshold`` and the group's shared ``stall_patience`` /
     ``min_delta``. The threshold is then **held stable** for that critic (a
-    reward model is expected to use a consistent pass bar); :meth:`reset`
+    reward model is expected to use a consistent pass bar); ``reset``
     rebinds it. Pure logic and import-safe (no ``rclpy``) — feed samples via
-    :meth:`observe`, mirror them onto the failure bus in the producer node.
+    ``observe``, mirror them onto the failure bus in the producer node.
 
     Attributes:
         stall_patience: Consecutive stalled observations each watchdog needs.
@@ -301,19 +301,19 @@ class CriticWatchdogGroup:
     def observe(self, *, critic_id: str, score: float, threshold: float) -> CriticEvidence | None:
         """Route one critic score sample to its per-``critic_id`` watchdog.
 
-        Lazily creates a :class:`CriticWatchdog` for an unseen ``critic_id``
+        Lazily creates a ``CriticWatchdog`` for an unseen ``critic_id``
         (binding ``threshold`` for that critic), then delegates to its
-        :meth:`CriticWatchdog.observe`.
+        ``CriticWatchdog.observe``.
 
         Args:
             critic_id: Identifier of the reward model that produced ``score``.
             score: One frame's higher-is-better score in the critic's range.
             threshold: The critic's pass bar; used only when first creating the
                 watchdog for ``critic_id`` (held stable thereafter — see
-                :meth:`reset` to rebind).
+                ``reset`` to rebind).
 
         Returns:
-            The firing critic's :class:`~openral_core.CriticEvidence`, or
+            The firing critic's ``CriticEvidence``, or
             ``None``. Exactly mirrors the underlying watchdog's contract.
         """
         watchdog = self._watchdogs.get(critic_id)
@@ -333,7 +333,7 @@ class CriticWatchdogGroup:
 
         Args:
             critic_id: Drop just this critic's watchdog, or **all** of them when
-                ``None`` (default). The next :meth:`observe` for a dropped
+                ``None`` (default). The next ``observe`` for a dropped
                 critic re-creates a fresh watchdog, rebinding its threshold.
         """
         if critic_id is None:

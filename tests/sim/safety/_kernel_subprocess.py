@@ -12,13 +12,13 @@ still draining, our discovery is on a different domain.
 
 This module also hosts the two helpers every kernel-twin test needs:
 
-* :func:`activate_kernel_node` — drive the safety_kernel_node lifecycle
+* ``activate_kernel_node`` — drive the safety_kernel_node lifecycle
   from ``unconfigured`` → ``active`` via ``ChangeState``.
-* :func:`kernel_param_args` — render the per-field ROS parameter
+* ``kernel_param_args`` — render the per-field ROS parameter
   ``-p key:=value`` argv list the kernel reads on ``on_configure`` from
-  a real :class:`~openral_core.RobotDescription` (via
-  :func:`openral_safety.envelope_loader.compute_intersection` +
-  :func:`kernel_params_from_envelope`). PR-K — the kernel has
+  a real ``RobotDescription`` (via
+  ``openral_safety.envelope_loader.compute_intersection`` +
+  ``kernel_params_from_envelope``). PR-K — the kernel has
   no envelope-file path anymore; everything flows through ROS
   parameters.
 """
@@ -141,23 +141,23 @@ def start_kernel(
     """Launch ``safety_kernel_node`` on an isolated DDS domain.
 
     Args:
-        source: Either a :class:`~openral_core.RobotDescription` (the
+        source: Either a ``RobotDescription`` (the
             envelope is synthesised from it via
-            :func:`kernel_param_args`) or a raw parameter dict (passed
-            through :func:`kernel_param_args_from_dict`). Tests that
+            ``kernel_param_args``) or a raw parameter dict (passed
+            through ``kernel_param_args_from_dict``). Tests that
             need to exercise a specific envelope edge case pass a dict;
             tests that drive a real robot pass the manifest.
         node_name: Unique node name (collisions on the same domain break
             the lifecycle service).
         domain_id: ROS_DOMAIN_ID for the kernel; defaults to
-            :func:`isolated_domain_id`.
+            ``isolated_domain_id``.
         estop_reset_cooldown_s: Tests use a short cooldown (≤100 ms).
         log_path: When given, redirects stdout+stderr to this file so
             the parent process can surface the kernel's logs on failure.
 
     Returns:
         ``subprocess.Popen`` for the kernel; callers should pass it to
-        :func:`terminate_kernel` in the test's finally block.
+        ``terminate_kernel`` in the test's finally block.
     """
     if shutil.which("ros2") is None:
         pytest.skip("ros2 binary not on PATH; source install/setup.bash first")

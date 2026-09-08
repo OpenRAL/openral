@@ -59,10 +59,10 @@ class OpenArmHILTransport:
         node: A live ``rclpy`` node owned by the caller (teardown is the
             caller's responsibility).
         joint_names: All 16 joint names in **ros2_control** order — i.e.
-            :meth:`OpenArmRealHAL.ros2_control_joint_names`, which is what
+            ``OpenArmRealHAL.ros2_control_joint_names``, which is what
             ``/joint_states`` is keyed by.
         command_topics: The four controller command topics, from
-            :meth:`OpenArmRealHAL.command_topics`.
+            ``OpenArmRealHAL.command_topics``.
         joint_state_topic: Aggregated ``sensor_msgs/JointState`` topic.
         time_from_start_s: Trajectory deadline for every published point. See
             the module docstring — this bounds the motion rate.
@@ -212,8 +212,8 @@ class OpenArmHILTransport:
     def wait_for_every_joint(self, deadline_s: float = 5.0) -> bool:
         """Block until every expected joint has been reported at least once.
 
-        Not "any message": :meth:`state` zero-fills an unreported joint, and
-        :class:`OpenArmRealHAL` builds a full 16-DoF vector regardless. A
+        Not "any message": ``state`` zero-fills an unreported joint, and
+        ``OpenArmRealHAL`` builds a full 16-DoF vector regardless. A
         partial ``/joint_states`` therefore reads as a *plausible pose* with
         zeros in it, which is the one input a motion test must never act on.
 

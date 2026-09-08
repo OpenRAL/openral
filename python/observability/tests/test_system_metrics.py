@@ -1,6 +1,6 @@
 """End-to-end coverage for the background system-metrics sampler.
 
-Drives :func:`openral_observability.system_metrics.start_system_metrics_collector`
+Drives ``openral_observability.system_metrics.start_system_metrics_collector``
 against the real OTel meter + in-memory reader (CLAUDE.md §1.11 / §5.4
 — no mocks) and asserts that the ``openral.system.*`` instruments
 receive at least one update. Skips cleanly if neither ``psutil`` nor

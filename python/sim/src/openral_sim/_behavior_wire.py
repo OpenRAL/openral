@@ -2,8 +2,8 @@
 
 Single source of truth for the OmniGibson evaluator's raw observation keys and
 the official R1Pro state/action widths, imported by the scene backend
-(:mod:`openral_sim.backends.behavior`), the policy adapter
-(:mod:`openral_sim.policies.behavior_groot`), and the ``openral behavior
+(``openral_sim.backends.behavior``), the policy adapter
+(``openral_sim.policies.behavior_groot``), and the ``openral behavior
 serve`` WebSocket bridge (``openral_cli.behavior``), which would otherwise
 each hand-copy the constants and drift independently.
 

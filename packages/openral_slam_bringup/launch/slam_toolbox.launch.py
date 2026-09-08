@@ -5,7 +5,7 @@ Includes the upstream ``slam_toolbox/async_slam_toolbox_node`` as a
 ``LifecycleNode`` parameterised from this package's
 ``config/slam_toolbox_2d.yaml``. The auto-transition stops at
 ``INACTIVE``; the Reasoner promotes to ``ACTIVE`` via
-:class:`~openral_core.LifecycleTransitionTool`, mirroring the
+``LifecycleTransitionTool``, mirroring the
 safety_kernel pattern in ``sim_e2e.launch.py:159``.
 
 Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py``

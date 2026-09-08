@@ -1,10 +1,10 @@
 """Vision attachment evidence for real hardware — masked wrist depth to payload geometry.
 
-Real-hardware counterpart of :mod:`~openral_hal._sim_attachment_evidence`,
+Real-hardware counterpart of ``_sim_attachment_evidence``,
 which reads MuJoCo ground truth (exact contacts, geoms, mass, kinematic
 class) — none of which exists on real hardware. This module answers the
 same question from a wrist RGB-D frame and a mask, emitting the
-**identical** :class:`~openral_core.AttachedCollisionObject` contract; the
+**identical** ``AttachedCollisionObject`` contract; the
 safety kernel cannot tell which producer filled it in.
 
 Flow: (1) a ``kind: "segmenter"`` rSkill (SAM 2.1) is prompted with one
@@ -24,12 +24,12 @@ covering 59.8% of the image (an entire tablecloth) at the model's
 *highest* score, 0.977. Gates instead check containment near the jaws, a
 per-axis payload extent cap, a scalar volume backstop, and a
 depth-validity fraction; the mask score is only recorded, as
-:attr:`VisionAttachmentReport.mask_score_advisory`.
+``VisionAttachmentReport.mask_score_advisory``.
 
-**On gate failure the attachment is not skipped**: :meth:`on_grasp` always
-returns an :class:`~openral_core.AttachedCollisionObject` — a rejected
+**On gate failure the attachment is not skipped**: ``on_grasp`` always
+returns an ``AttachedCollisionObject`` — a rejected
 mask degrades to a conservative jaw-span box stamped
-:attr:`~openral_core.AttachmentEvidenceKind.GRIPPER_FORCE` at low
+``GRIPPER_FORCE`` at low
 confidence, which is strictly safer than an invisible payload.
 
 Honest limitations — what this does NOT fix
@@ -45,7 +45,7 @@ Honest limitations — what this does NOT fix
 * **Transparent / thin objects.** Expected to fail the depth-validity gate
   and degrade to the fallback box. Not specially handled.
 * **Self-occlusion.** The far side is never observed; only partially
-  mitigated by :attr:`VisionGateConfig.view_ray_inflation_m`, an
+  mitigated by ``VisionGateConfig.view_ray_inflation_m``, an
   unbenchmarked free parameter.
 * **Mass / centre of mass / inertia.** Not estimable from vision;
   ``mass_kg`` and friends stay ``None``, unlike the simulator producer
@@ -56,7 +56,7 @@ Honest limitations — what this does NOT fix
   it does not decide it. Whether SO-101's feetech effort readback is
   trustworthy enough to be that trigger is unverified.
 
-Every threshold on :class:`VisionGateConfig` is a **calibration point, not
+Every threshold on ``VisionGateConfig`` is a **calibration point, not
 a measured constant** — see that class's docstring. The design work
 behind this module benchmarked latency, VRAM and mask quality, not gate
 thresholds; they are set conservatively and must be tuned per robot
@@ -132,7 +132,7 @@ class VisionGateConfig:
     the three axes are not equally constrained: the jaw axis has a hard physical
     bound (whatever is held fits between the jaws) while the other two are
     comparatively unbounded. A scalar volume conflates one hard constraint with
-    two soft ones. :attr:`max_payload_volume_m3` is kept as a cheap backstop for
+    two soft ones. ``max_payload_volume_m3`` is kept as a cheap backstop for
     the pathological case where all three axes sit just under their caps.
 
     Attributes:
@@ -144,7 +144,7 @@ class VisionGateConfig:
             **(jaw axis, then the two free axes)** after PCA axes are sorted by
             extent ascending. *Calibration point.* ``(0.10, 0.25, 0.25)``.
             **Not derivable from the manifest today**:
-            :class:`~openral_core.EndEffectorSpec` carries
+            ``EndEffectorSpec`` carries
             ``max_grip_force_n`` / ``max_payload_kg`` / ``workspace_radius_m``
             but **no jaw aperture or gripper span**, and SO-101's gripper
             ``position_limits`` are explicitly normalized units. Deriving the
@@ -166,9 +166,9 @@ class VisionGateConfig:
         jaw_span_m: Half-extent of the conservative fallback box, i.e. how far
             the jaws could be holding something. *Calibration point*, for the
             same missing-schema-field reason as
-            :attr:`max_payload_extents_m`. ``0.05`` m.
+            ``max_payload_extents_m``. ``0.05`` m.
         max_primitives: Bounded primitive count, matching
-            :attr:`~openral_core.AttachedCollisionObject.primitives`' own
+            ``primitives``' own
             ``max_length`` and the simulator producer's contract.
     """
 
@@ -193,7 +193,7 @@ class VisionAttachmentReport:
 
     The report always describes **one** candidate: the selected one when a mask
     was accepted, or the closest-to-acceptable one when every candidate was
-    rejected. :attr:`candidate_index` / :attr:`candidate_count` say which of how
+    rejected. ``candidate_index`` / ``candidate_count`` say which of how
     many, so the trace never hides that other hypotheses were considered.
 
     Attributes:
@@ -205,7 +205,7 @@ class VisionAttachmentReport:
         volume_m3: Fitted bounding-box volume.
         centroid_distance_m: Distance from the TCP to the fitted centroid.
         candidate_index: Which candidate this report describes, indexing the
-            ``masks`` sequence passed to :meth:`on_grasp`. ``-1`` when no
+            ``masks`` sequence passed to ``on_grasp``. ``-1`` when no
             candidate was supplied at all.
         candidate_count: How many candidates were evaluated.
         mask_score_advisory: The selected candidate's own model score. Recorded
@@ -241,7 +241,7 @@ def backproject_masked_depth(
         depth_m: ``(H, W)`` metric depth, same shape as ``mask``. Zero / NaN /
             out-of-range readings are treated as missing.
         intrinsics: Pinhole intrinsics matching the frame's resolution. Rescale
-            with :func:`openral_core.scale_intrinsics_to` first if they were
+            with ``openral_core.scale_intrinsics_to`` first if they were
             calibrated at a different size.
         min_depth_m: Readings at or below this are invalid.
         max_depth_m: Readings at or above this are invalid.
@@ -258,7 +258,7 @@ def backproject_masked_depth(
             intrinsics resolution does not match the frame.
 
     Rays leave pixel *centres* (``col + 0.5``), unlike
-    :func:`openral_hal.depth_cloud.points_from_depth_grid`, which inverts the depth synth's
+    ``openral_hal.depth_cloud.points_from_depth_grid``, which inverts the depth synth's
     own corner-indexed projection.
 
     Example:
@@ -446,21 +446,21 @@ def _quat_xyzw_from_rotation(rotation: NDArray[np.float64]) -> tuple[float, floa
 class VisionAttachmentEvidenceProducer:
     """Turn a segmenter mask plus wrist depth into a gated attachment.
 
-    Mirrors :class:`~openral_hal._sim_attachment_evidence.SimAttachmentEvidenceTracker`'s
+    Mirrors ``SimAttachmentEvidenceTracker``'s
     role — resolve the attach link and touch links from the manifest once, then
     emit complete attachment sets on grasp / release — but sources its geometry
     from perception rather than from MuJoCo ground truth.
 
     Unlike the simulator tracker this producer is **event-driven, not ticked**:
     it has no per-frame `update`. The caller decides that a grasp happened and
-    calls :meth:`on_grasp` once; per-frame carry masking stays geometric
+    calls ``on_grasp`` once; per-frame carry masking stays geometric
     containment against the primitive fitted here.
 
     Args:
         description: The robot manifest, read for the gripper's parent link and
             the finger links that are allowed to touch the payload.
         config: Gate thresholds. Every one is a calibration point — see
-            :class:`VisionGateConfig`.
+            ``VisionGateConfig``.
 
     Raises:
         ROSConfigError: If the manifest declares no gripper-role joints, or its
@@ -617,7 +617,7 @@ class VisionAttachmentEvidenceProducer:
 
         **Always returns an attachment.** A rejected grasp yields the
         conservative jaw-span box stamped
-        :attr:`~openral_core.AttachmentEvidenceKind.GRIPPER_FORCE` at low
+        ``GRIPPER_FORCE`` at low
         confidence — never ``None``, never a silent skip; the report names
         every failed gate so the fallback is visible in the trace
         (CLAUDE.md §1.4).
@@ -758,7 +758,7 @@ class VisionAttachmentEvidenceProducer:
         so the collision checker gets a crude box rather than an invisible
         payload.
 
-        Pure: :meth:`on_grasp` builds this before it knows the verdict (the
+        Pure: ``on_grasp`` builds this before it knows the verdict (the
         rejection path needs it for every candidate outcome), so the attached
         flag is flipped by the caller at its return points, not here.
         """

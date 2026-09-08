@@ -153,7 +153,7 @@ def _matrix_to_quat_xyzw(matrix: NDArray[np.float64]) -> tuple[float, float, flo
 def _quat_xyzw_to_matrix(quat_xyzw: tuple[float, float, float, float]) -> NDArray[np.float64]:
     """Unit quaternion ``(x, y, z, w)`` to a 3x3 rotation matrix.
 
-    The inverse of :func:`_matrix_to_quat_xyzw`, and needed for the same reason
+    The inverse of ``_matrix_to_quat_xyzw``, and needed for the same reason
     that function is: the declared place target's primitives (ADR-0098) are
     measured once in the target body's own frame and re-posed into the robot
     base frame on every publication, which is a rotation composition and not a
@@ -1004,8 +1004,8 @@ def contact_force_calibration() -> tuple[float, bool, str | None]:
 
     Returns:
         ``(scale, calibrated, reference)``. ``calibrated`` is ``True`` only when
-        an operator has set **both** :data:`_CONTACT_FORCE_SCALE_ENV` to a
-        finite positive scale and :data:`_CONTACT_FORCE_CALIBRATION_REF_ENV` to
+        an operator has set **both** ``_CONTACT_FORCE_SCALE_ENV`` to a
+        finite positive scale and ``_CONTACT_FORCE_CALIBRATION_REF_ENV`` to
         a non-empty name for it. Anything else — neither set, one set, an
         unparseable or non-positive scale — yields the identity scale,
         ``calibrated=False`` and no reference, which leaves the ADR-0100 force
@@ -1060,7 +1060,7 @@ def probe_contact_force(
     carrying a quarter of its weight, so any single one understates the
     press). Direction is the dominant contact's normal, in the payload's own
     frame. Magnitude is Newtons only under an explicit operator calibration
-    (:func:`contact_force_calibration`); otherwise the witness carries
+    (``contact_force_calibration``); otherwise the witness carries
     ``magnitude_calibrated=False`` and the kernel does not read it.
 
     **Absence of a return value is not evidence of absent contact**: reading

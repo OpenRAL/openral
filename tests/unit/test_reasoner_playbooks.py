@@ -1,6 +1,6 @@
 """Tests for playbook system-prompt injection (Phase 3).
 
-Covers :func:`~openral_reasoner.context.render_playbooks_block` against the real
+Covers ``render_playbooks_block`` against the real
 in-tree ``rskills/find-object`` playbook (no synthetic placeholders, §1.11).
 
 Run with:

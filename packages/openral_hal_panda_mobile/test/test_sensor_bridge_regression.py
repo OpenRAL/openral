@@ -4,7 +4,7 @@ the SimSensorBridge refactor (Phase 2 / T13).
 Before T13, panda_mobile's lifecycle node published ``/scan`` (ray-cast),
 ``/openral/cameras/front_depth/points`` (depth cloud → octomap input), and
 ``/odom`` directly in its own timers. T13 delegated the first two to the shared
-:class:`openral_hal.sim_sensor_bridge.SimSensorBridge`; ``/odom`` stayed in the
+``openral_hal.sim_sensor_bridge.SimSensorBridge``; ``/odom`` stayed in the
 node. A silent break on any of the three would blind the nav stack / safety
 kernel or lose odometry.
 

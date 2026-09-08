@@ -27,16 +27,16 @@ with ``model_family`` for a VLA; ``<robot>`` ∈ ``EmbodimentTag`` incl.
 ``<quantization>`` ∈ ``{fp32, fp16, bf16, int8, nf4}``, schema ``int4`` maps to
 ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for ``ros_action``/
 ``ros_service`` (no weights, no quant segment); ``<owner>/rskill-playbook-<name>``
-for ``kind: playbook``. Enforced by :func:`_enforce_repo_name`, which calls
-:func:`openral_core.schemas.repo_name_is_canonical` / ``expected_repo_name``;
+for ``kind: playbook``. Enforced by ``_enforce_repo_name``, which calls
+``openral_core.schemas.repo_name_is_canonical`` / ``expected_repo_name``;
 hard-fails both dry-run and ``--publish`` unless ``--fix-name``.
 
 Design constraints: private by default; ``--public`` requires
 ``manifest.is_commercial_use_allowed`` (license-lineage §9) and is
 re-verified against the API post-``create_repo``. Requires an HF token with
-``repo.write`` scope. Validates :class:`openral_core.schemas.RSkillManifest`
-before any network call, then :func:`openral_cli._rskill_doc_validator.
-validate_rskill_docs` as a hard gate (§6.4: missing/short README, missing
+``repo.write`` scope. Validates ``openral_core.schemas.RSkillManifest``
+before any network call, then ``openral_cli._rskill_doc_validator.validate_rskill_docs``
+as a hard gate (§6.4: missing/short README, missing
 sections, template sentinels ``TEMPLATE_ORG``/``TODO:``, or template
 placeholders in ``description``/``paper_url``/``weights_uri``/``source_repo``)
 — reported in dry-run too. Uploads via ``HfApi.upload_folder`` with
@@ -113,10 +113,10 @@ def _validate_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValidationRe
 
     Args:
         skill_dir: Path to the rSkill directory.
-        manifest: Already-loaded manifest from :func:`_validate_manifest`.
+        manifest: Already-loaded manifest from ``_validate_manifest``.
 
     Returns:
-        The :class:`openral_cli._rskill_doc_validator.DocValidationReport`.
+        The ``openral_cli._rskill_doc_validator.DocValidationReport``.
     """
     report = validate_rskill_docs(skill_dir, manifest)
     print()
@@ -127,9 +127,9 @@ def _validate_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValidationRe
 def _resolve_token(token_arg: str | None) -> str:
     """Resolve the HF token via the shared helper, exiting on missing token.
 
-    Wraps :func:`openral_cli._hf_publish.resolve_token` to preserve the
+    Wraps ``openral_cli._hf_publish.resolve_token`` to preserve the
     script's ``sys.exit(1)`` contract — Typer commands raise
-    :class:`ROSConfigError` and let the dispatcher handle the exit code,
+    ``ROSConfigError`` and let the dispatcher handle the exit code,
     but this stand-alone script needs the legacy SystemExit behaviour.
     """
     try:
@@ -150,7 +150,7 @@ def _validate_manifest(skill_dir: Path) -> RSkillManifest:  # type: ignore[name-
         skill_dir: Path to the local rSkill directory.
 
     Returns:
-        Validated :class:`openral_core.schemas.RSkillManifest`.
+        Validated ``openral_core.schemas.RSkillManifest``.
 
     Raises:
         SystemExit: If the manifest is missing or fails Pydantic validation.
@@ -223,7 +223,7 @@ def _enforce_repo_name(
 ) -> RSkillManifest:  # type: ignore[name-defined]  # noqa: F821
     """Enforce the ratified rSkill repo-naming grammar (see module docstring).
 
-    Validates via :func:`openral_core.schemas.repo_name_is_canonical`
+    Validates via ``openral_core.schemas.repo_name_is_canonical``
     (``kind`` + ``model_family``); no kind is exempt. ``fix_name=True``
     rewrites ``rskill.yaml`` to the suggested name from ``expected_repo_name``
     and reloads; ``fix_name=False`` hard-fails printing the suggestion. The
@@ -285,7 +285,7 @@ def _validate_task_space(manifest: RSkillManifest, skill_dir: Path) -> None:  # 
     """TaskSpace-contract Phase 2 — warn-only cross-layer task-space check at publish time.
 
     For an actuating rSkill (has ``action_contract``), checks it via
-    :func:`task_space_compatible` (``hal_mode="sim"``) against every in-tree
+    ``task_space_compatible`` (``hal_mode="sim"``) against every in-tree
     ``robots/<id>/robot.yaml`` matching the skill's ``embodiment_tags``, and
     warns per incompatible pair (slot/EE-name mismatch, joint-width overrun).
     Never fails the publish — Phase 4 makes this gate blocking.
@@ -385,9 +385,9 @@ def _bump_revision(manifest_path: Path, weights_uri_base: str, token: str) -> st
 def _ensure_private(api: HfApi, repo_id: str) -> None:  # type: ignore[name-defined]  # noqa: F821
     """Assert the repo is private; abort the script (sys.exit) if it is not.
 
-    Wraps :func:`openral_cli._hf_publish.ensure_private` for the script's
+    Wraps ``openral_cli._hf_publish.ensure_private`` for the script's
     legacy ``sys.exit(1)`` contract; the shared helper raises
-    :class:`ROSConfigError` instead.
+    ``ROSConfigError`` instead.
     """
     try:
         _ensure_private_shared(api, repo_id, repo_type="model")
@@ -400,7 +400,7 @@ def _ensure_private(api: HfApi, repo_id: str) -> None:  # type: ignore[name-defi
 def _ensure_public(api: HfApi, repo_id: str) -> None:  # type: ignore[name-defined]  # noqa: F821
     """Assert the repo is public; abort the script (sys.exit) if it is private.
 
-    The ``--public`` counterpart of :func:`_ensure_private` — catches the case
+    The ``--public`` counterpart of ``_ensure_private`` — catches the case
     where ``create_repo(exist_ok=True)`` reused a pre-existing *private* repo, so
     a ``--public`` publish never silently lands in a private repo (or vice
     versa).
@@ -441,7 +441,7 @@ def _publish(
         manifest: Validated manifest (name used as the HF repo ID).
         token: HF API token with ``repo.write`` scope.
         public: When ``True`` create/verify a **public** repo; otherwise private.
-            The caller (:func:`main`) only passes ``True`` after the license gate.
+            The caller (``main``) only passes ``True`` after the license gate.
 
     Returns:
         The HF Hub URL of the published repo.

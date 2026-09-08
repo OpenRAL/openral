@@ -115,7 +115,7 @@ def _flatten_defaults(menagerie_default: ET.Element) -> ET.Element:
 
     The menagerie XML organises defaults hierarchically (e.g. ``Rotation``
     nested inside ``so_arm100``). MuJoCo's compiler resolves this fine,
-    but robosuite's :meth:`MujocoXML._replace_defaults_inline` only
+    but robosuite's ``MujocoXML._replace_defaults_inline`` only
     looks at the **first** layer of children inside ``<default>`` — a
     body with ``class="Rotation"`` triggers a ``KeyError`` because
     ``Rotation`` is two levels deep.
@@ -212,7 +212,7 @@ def _write_robot_xml(menagerie_xml: ET.Element, mesh_dir: Path, out: Path) -> No
     root = ET.fromstring(ET.tostring(menagerie_xml))
 
     # 1. absolute mesh file paths. We can't rely on ``meshdir`` because
-    # robosuite's :class:`MujocoXML.resolve_asset_dependency` rewrites
+    # robosuite's ``MujocoXML.resolve_asset_dependency`` rewrites
     # every ``<mesh file="...">`` to ``os.path.join(self.folder, file)``
     # without honouring ``meshdir`` — so a relative file inside the
     # cache dir gets a wrong absolute path. Setting ``file`` to an
@@ -391,7 +391,7 @@ def _write_gripper_xml(menagerie_xml: ET.Element, mesh_dir: Path, out: Path) -> 
     # Reuse the menagerie's mesh asset list verbatim — robosuite's
     # `merge_assets` dedups so redeclaring the same names twice (also in
     # the arm XML) is fine. Absolute file paths for the same reason as
-    # in the arm XML (see :func:`_write_robot_xml`).
+    # in the arm XML (see ``_write_robot_xml``).
     asset_src = src.find("asset")
     if asset_src is not None:
         cloned = ET.fromstring(ET.tostring(asset_src))
@@ -587,7 +587,7 @@ def ensure_so100_assets() -> SO100Assets:
     so a menagerie upgrade invalidates the cache automatically.
 
     Returns:
-        :class:`SO100Assets` carrying absolute paths to both XMLs.
+        ``SO100Assets`` carrying absolute paths to both XMLs.
     """
     menagerie_mjcf, menagerie_dir = _menagerie_paths()
     mesh_dir = menagerie_dir / "assets"

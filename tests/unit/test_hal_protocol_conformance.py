@@ -1,13 +1,13 @@
 """HAL Protocol conformance — parametrized contract test for every concrete HAL.
 
-Pins the runtime contract :class:`openral_hal.protocol.HAL` declares
+Pins the runtime contract ``openral_hal.protocol.HAL`` declares
 (CLAUDE.md §5.1: "types are the contract") so a signature drift in any HAL
 implementation fails the unit lane immediately. One parametrized test per
-contract point, one entry in :data:`HAL_BUILDERS` per HAL, so a Protocol
+contract point, one entry in ``HAL_BUILDERS`` per HAL, so a Protocol
 change touches this file only instead of N HAL-specific ones.
 
 The five real-HW adapters (Franka FCI, Sawyer, ALOHA, UR5e, UR10e) run
-against an injected :class:`~openral_hal.sim_transport.SimTransport` (a
+against an injected ``SimTransport`` (a
 recorded RTDE-shaped fixture, CLAUDE.md §5.4); their HIL counterparts are
 ``tests/hil/test_{franka_panda,sawyer,aloha,ur5e,ur10e}.py``, gated by lab
 runner labels.
@@ -126,9 +126,9 @@ def _franka_builder() -> tuple[HAL, Callable[[], None]]:
 
 
 def _franka_real_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build a :class:`FrankaPandaRealHAL` against an in-memory transport.
+    """Build a ``FrankaPandaRealHAL`` against an in-memory transport.
 
-    No ``franka_ros2`` / ``libfranka``: a real :class:`SimTransport` records
+    No ``franka_ros2`` / ``libfranka``: a real ``SimTransport`` records
     publishes and feeds back zeroed joint state, exercising the full HAL
     Protocol contract without a ROS 2 install.
     """
@@ -151,7 +151,7 @@ def _franka_n_joints() -> list[str]:
 
 
 def _sawyer_real_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build a :class:`SawyerRealHAL` against an in-memory transport."""
+    """Build a ``SawyerRealHAL`` against an in-memory transport."""
     from openral_hal.sawyer_real import SAWYER_DESCRIPTION, SawyerRealHAL
 
     transport = SimTransport(n_joints=len(SAWYER_DESCRIPTION.joints))
@@ -164,7 +164,7 @@ def _sawyer_real_builder() -> tuple[HAL, Callable[[], None]]:
 
 
 def _aloha_builder() -> tuple[HAL, Callable[[], None]]:
-    """Build an :class:`AlohaHAL` against an in-memory transport."""
+    """Build an ``AlohaHAL`` against an in-memory transport."""
     from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
 
     transport = SimTransport(n_joints=len(ALOHA_DESCRIPTION.joints))
@@ -194,7 +194,7 @@ def _ur5e_real_builder() -> tuple[HAL, Callable[[], None]]:
 def _ur10e_real_builder() -> tuple[HAL, Callable[[], None]]:
     """Build a UR10eRealHAL backed by a SimTransport.
 
-    Same shape as :func:`_ur5e_real_builder`; HIL counterpart is ``tests/hil/test_ur10e.py``.
+    Same shape as ``_ur5e_real_builder``; HIL counterpart is ``tests/hil/test_ur10e.py``.
     """
     from openral_hal.ur_real import UR10eRealHAL
 

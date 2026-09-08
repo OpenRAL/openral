@@ -200,7 +200,7 @@ def phase_timer(
     logger.info(event_start, **fields)
 
     # Baseline for the major-fault delta reported on every heartbeat and on
-    # ``_done`` — see :func:`_rss_majflt`.
+    # ``_done`` — see ``_rss_majflt``.
     baseline = _rss_majflt()
     majflt_0 = baseline[1] if baseline is not None else 0
 

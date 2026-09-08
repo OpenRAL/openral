@@ -8,7 +8,7 @@ Typical usage::
     # (scene + task + VLA). The on-disk YAML is a ``SimScene`` (scene +
     # task, no VLA); the CLI composes the ``SimEnvironment`` from a
     # ``SimScene`` + an rSkill manifest. See ``openral sim run`` and
-    # :func:`openral_sim.cli._load_or_build_env` for the canonical
+    # ``openral_sim.cli._load_or_build_env`` for the canonical
     # compose path.
     env_cfg: SimEnvironment = ...  # composed by the CLI
     runner = SimRunner(env_cfg)

@@ -39,7 +39,7 @@ __all__ = ["PolicyTelemetry", "ScriptedPickPolicy"]
 
 @dataclass
 class PolicyTelemetry:
-    """Per-step diagnostics emitted by :meth:`ScriptedPickPolicy.step`.
+    """Per-step diagnostics emitted by ``ScriptedPickPolicy.step``.
 
     Useful for tests to assert on intermediate progress without
     re-deriving FK from the observation dict.
@@ -107,7 +107,7 @@ class ScriptedPickPolicy:
         """Produce one ``env.action_dim`` command + telemetry.
 
         Args:
-            env: The :class:`openral_sim.backends.so100_robosuite.env._So100Lift`
+            env: The ``openral_sim.backends.so100_robosuite.env._So100Lift``
                 instance. Read for table geometry (telemetry only — the
                 action itself is purely a function of ``obs``).
             obs: The robosuite observation dict from the previous
@@ -167,7 +167,7 @@ class ScriptedPickPolicy:
 
         # Cartesian delta normalised to the controller's [-1, 1] input
         # range. OSC_POSITION's ``output_max`` (set in
-        # :func:`so100_osc_controller_config`) maps the normalised
+        # ``so100_osc_controller_config``) maps the normalised
         # command back to metres.
         raw_delta = target - eef_pos
         normalised = np.clip(raw_delta / self.cartesian_step_m, -1.0, 1.0)

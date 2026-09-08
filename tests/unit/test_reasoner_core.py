@@ -1,8 +1,8 @@
-"""Unit tests for :class:`openral_reasoner.ReasonerCore`.
+"""Unit tests for ``openral_reasoner.ReasonerCore``.
 
 Real ContextRenderer + real ToolPalette + real Pydantic tool calls;
 the LLM endpoint is replaced by the deterministic
-:class:`FakeToolUseClient` from
+``FakeToolUseClient`` from
 ``tests/integration/fakes/fake_llm.py`` (CLAUDE.md §1.11 — fakes are
 permitted at process boundaries when named explicitly and under
 ``tests/<tier>/fakes/``).
@@ -51,7 +51,7 @@ def _renderer_with_prompt(text: str = "pick the cube") -> ContextRenderer:
 class _CaptureProcessor:
     """Minimal structlog processor that buffers events for assertion.
 
-    Drops every event (raises :exc:`structlog.DropEvent`) so test logs
+    Drops every event (raises ``structlog.DropEvent``) so test logs
     don't pollute pytest output.
     """
 
@@ -367,7 +367,7 @@ def test_force_bypasses_palette_empty_short_circuit() -> None:
     The contract of ``force=True`` is "an event demands attention,
     bypass the gating heuristics". A SEVERITY_FAIL preemption on a
     bare reasoner (no installed skills) must still reach the LLM so
-    it can pick :class:`EmitPromptTool` to escalate to the operator.
+    it can pick ``EmitPromptTool`` to escalate to the operator.
     """
     palette = ToolPalette(execute_rskill_ids=frozenset())
     client = FakeToolUseClient(

@@ -1,12 +1,12 @@
-"""ROS 2 image-publisher tee for :class:`GStreamerSensorReader`.
+"""ROS 2 image-publisher tee for ``GStreamerSensorReader``.
 
-When a sensor's :class:`~openral_core.SensorReaderConfig` sets
+When a sensor's ``SensorReaderConfig`` sets
 ``publish_to_ros = True``, the pipeline builder splits the GStreamer
 pipeline at a ``tee`` element with two named appsink branches:
 
 * ``bh_sink`` — the inference-path appsink the reader uses.
 * ``ros_sink`` — the ROS-side appsink fed into this module's
-  :class:`RosImagePublisher`, which republishes frames as
+  ``RosImagePublisher``, which republishes frames as
   ``sensor_msgs/Image`` on a configurable topic.
 
 The ROS branch always lifts frames to system memory before this
@@ -20,7 +20,7 @@ Rate-limiting is independent of the inference loop — the user picks a
 publisher's gate (the appsink's ``max-buffers=1 drop=true`` keeps the
 queue from growing).
 
-``rclpy`` is lazy-imported inside :meth:`RosImagePublisher.start` so
+``rclpy`` is lazy-imported inside ``RosImagePublisher.start`` so
 this module can be imported on hosts without a sourced ROS env (the
 reader's CPU path then carries on; the publisher just never starts).
 """
@@ -53,7 +53,7 @@ class RosImagePublisher:
     Args:
         sensor_id: Sensor name; embedded in the ROS node name to keep
             multi-camera processes from clashing.
-        appsink: The ``ros_sink`` :class:`Gst.Element` (typed ``Any``
+        appsink: The ``ros_sink`` ``Gst.Element`` (typed ``Any``
             here to avoid importing ``gi`` at module load).
         topic: ROS topic to publish on (e.g. ``/cameras/wrist_rgb/image_raw``).
         rate_hz: Maximum publish rate. Frames that arrive faster than
@@ -63,7 +63,7 @@ class RosImagePublisher:
         qos_depth: Depth of the publisher's QoS history queue.
 
     Raises:
-        RuntimeError: When :meth:`start` is called but ``rclpy`` is
+        RuntimeError: When ``start`` is called but ``rclpy`` is
             not importable. Construction itself is safe without ROS.
     """
 
@@ -77,7 +77,7 @@ class RosImagePublisher:
         node_name: str | None = None,
         qos_depth: int = _DEFAULT_QOS_DEPTH,
     ) -> None:
-        """Stash configuration; no ROS I/O until :meth:`start`."""
+        """Stash configuration; no ROS I/O until ``start``."""
         if not topic.startswith("/"):
             raise ValueError(
                 f"RosImagePublisher: topic must be absolute (start with '/'); got {topic!r}"
@@ -103,7 +103,7 @@ class RosImagePublisher:
 
     @property
     def is_started(self) -> bool:
-        """``True`` between :meth:`start` and :meth:`stop`."""
+        """``True`` between ``start`` and ``stop``."""
         return self._is_started
 
     def start(self) -> None:
@@ -219,7 +219,7 @@ class RosImagePublisher:
     def _claim_rate_slot(self) -> bool:
         """Return ``True`` and update the monotonic gate when a publish slot is due.
 
-        When :attr:`_rate_hz` is set, throttles publishes to at most
+        When ``_rate_hz`` is set, throttles publishes to at most
         ``rate_hz`` per second; otherwise the caller should not call this.
         """
         assert self._rate_hz is not None  # caller guards

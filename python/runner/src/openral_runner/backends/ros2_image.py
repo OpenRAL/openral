@@ -10,21 +10,21 @@ vendor SDK and only ever published as a ROS topic:
   SDK rectifies and stereo-matches on the host GPU and ``zed_wrapper``
   publishes the result on ``/<name>/depth/depth_registered``. Without this
   backend the catalog's ``stereolabs/zed_mini`` depth stream
-  (:func:`openral_sensors.stereolabs.zed_mini_bundle`) is undeliverable — the
+  (``openral_sensors.stereolabs.zed_mini_bundle``) is undeliverable — the
   bundle declares it, and nothing could subscribe.
 * Any other driver-owned stream: RealSense's aligned depth, Orbbec, a
   GMSL/Isaac driver, a rectified rig from a calibration node.
 
 So this reader owns no device. It subscribes, keeps the newest message in a
 one-slot buffer, and serves it through the same non-blocking
-:meth:`read_latest` staleness contract every other backend honours — a frame
-older than the budget raises :class:`ROSPerceptionStale` rather than being
+``read_latest`` staleness contract every other backend honours — a frame
+older than the budget raises ``ROSPerceptionStale`` rather than being
 returned quietly.
 
-Node ownership mirrors :class:`openral_sensors.ros_publisher.SensorRosPublisher`:
+Node ownership mirrors ``openral_sensors.ros_publisher.SensorRosPublisher``:
 a composed runtime injects its existing node, and a standalone caller gets a
 private node plus a background executor thread. ``rclpy`` is lazy-imported
-inside :meth:`open` so the runner stays importable on hosts without ROS.
+inside ``open`` so the runner stays importable on hosts without ROS.
 
 QoS defaults to the **sensor data** class of CLAUDE.md §2 (``BEST_EFFORT``,
 ``VOLATILE``, ``KEEP_LAST=5``). That is also the compatible-in-both-directions
@@ -78,7 +78,7 @@ _DEPTH16_MAX_MM: Final[int] = 65535
 def _depth32f_to_depth16(metres: NDArray[np.float32]) -> NDArray[np.uint16]:
     """Convert float32 metre depth to the uint16-millimetre DEPTH16 layout.
 
-    :class:`~openral_core.FrameEncoding` has no float-depth member, and the
+    ``FrameEncoding`` has no float-depth member, and the
     consumers downstream (nvblox, octomap, the world-cloud bridge) all speak
     the uint16-millimetre convention, so the conversion happens once here
     rather than at every reader.
@@ -108,16 +108,16 @@ def _depth32f_to_depth16(metres: NDArray[np.float32]) -> NDArray[np.uint16]:
 class Ros2ImageSensorReader:
     """Reader that serves frames from a ROS 2 ``sensor_msgs/Image`` topic.
 
-    The constructor only records configuration; :meth:`open` creates the
+    The constructor only records configuration; ``open`` creates the
     subscription (and, when no node was injected, the node and its executor
     thread).
 
     Args:
         sensor_id: Sensor name, matching
-            :attr:`~openral_core.SensorReaderConfig.sensor_id`.
+            ``sensor_id``.
         topic: Topic the vendor driver publishes on, e.g.
             ``/zed/depth/depth_registered``.
-        default_max_age_ms: Staleness budget applied when :meth:`read_latest`
+        default_max_age_ms: Staleness budget applied when ``read_latest``
             is called with ``max_age_ms=None``.
         reliability: ``"best_effort"`` (default) or ``"reliable"``. Leave it at
             the default unless a driver publishes RELIABLE *and* you need
@@ -143,7 +143,7 @@ class Ros2ImageSensorReader:
         qos_depth: int = 5,
         node: Any = None,
     ) -> None:
-        """Record configuration; :meth:`open` does the work."""
+        """Record configuration; ``open`` does the work."""
         if not topic:
             raise ROSConfigError(
                 f"Ros2ImageSensorReader({sensor_id!r}) requires a non-empty "
@@ -180,7 +180,7 @@ class Ros2ImageSensorReader:
         """Subscribe to the topic, spinning a private node when needed.
 
         Idempotent. Returns as soon as the subscription exists — no frame is
-        buffered yet, so :meth:`read_latest` raises until the driver publishes
+        buffered yet, so ``read_latest`` raises until the driver publishes
         one.
 
         Raises:
@@ -242,7 +242,7 @@ class Ros2ImageSensorReader:
     def close(self) -> None:
         """Tear down the subscription (and the private node, if we made one).
 
-        Idempotent, and safe to call after a partially-failed :meth:`open`.
+        Idempotent, and safe to call after a partially-failed ``open``.
 
         No ``is_open`` early return: ``open`` sets that flag *last*, so an
         ``open`` that raised after creating the node (or after calling
@@ -298,7 +298,7 @@ class Ros2ImageSensorReader:
             max_age_ms: Staleness budget; ``None`` uses the configured default.
 
         Returns:
-            The buffered :class:`~openral_core.SensorFrame`.
+            The buffered ``SensorFrame``.
 
         Raises:
             RuntimeError: The reader is closed.
@@ -336,7 +336,7 @@ class Ros2ImageSensorReader:
         Conversion failures are counted and logged, never raised — this runs on
         the executor thread, where an exception would kill the spin loop and
         silently stop the camera. A reader that stops receiving surfaces
-        through :meth:`read_latest`'s staleness contract instead, which is the
+        through ``read_latest``'s staleness contract instead, which is the
         channel the runner already watches.
         """
         try:
@@ -357,7 +357,7 @@ class Ros2ImageSensorReader:
         self._frames_received += 1
 
     def _to_frame(self, msg: Any) -> SensorFrame:
-        """Build a :class:`SensorFrame` from a ``sensor_msgs/Image``.
+        """Build a ``SensorFrame`` from a ``sensor_msgs/Image``.
 
         ``stamp_monotonic_ns`` is stamped at receipt by the caller because the
         staleness contract is monotonic; the message header carries the
@@ -366,7 +366,7 @@ class Ros2ImageSensorReader:
         ``msg.step`` is honoured rather than assumed equal to the packed row
         length: an Isaac/NITROS-aligned buffer or an ROI crop pads every row,
         and reshaping such a buffer to ``height x width`` raises — which
-        :meth:`_on_image` downgrades to a WARN, so the sensor would go
+        ``_on_image`` downgrades to a WARN, so the sensor would go
         permanently stale and read as a dead camera.
         """
         encoding = str(msg.encoding)

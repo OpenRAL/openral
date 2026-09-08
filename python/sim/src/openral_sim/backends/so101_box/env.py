@@ -1,7 +1,7 @@
 """``so101_box`` scene rollout — SO-101 in a parameterised box arena.
 
 Registers ``so101_box`` as a fixed-robot scene against ``so101_follower``.
-The rollout implements :class:`openral_sim.SimRollout`:
+The rollout implements ``openral_sim.SimRollout``:
 
 * ``reset(seed)`` randomises the (x, y, yaw) pose of both the
   slotted block and the cylindrical tube, both resting on the floor
@@ -24,7 +24,7 @@ The observation dict carries:
 
 The success signal — written to ``info[task.success_key]`` — fires
 when the tube is inserted vertically into the slotted block's hole
-within the configured tolerances (see :class:`BoxSceneOptions`).
+within the configured tolerances (see ``BoxSceneOptions``).
 """
 
 from __future__ import annotations
@@ -70,10 +70,10 @@ _RANGE_PAIR_LEN = 2
 
 
 def _options_from_backend_options(raw: dict[str, Any] | None) -> BoxSceneOptions:
-    """Build a :class:`BoxSceneOptions` from the YAML's ``scene.backend_options`` dict.
+    """Build a ``BoxSceneOptions`` from the YAML's ``scene.backend_options`` dict.
 
     Unknown keys are rejected loudly so YAML typos surface immediately.
-    Every field default lives on :class:`BoxSceneOptions`, so an empty
+    Every field default lives on ``BoxSceneOptions``, so an empty
     block is valid.
     """
     raw = dict(raw or {})
@@ -326,7 +326,7 @@ class _So101BoxRollout:
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns.
 
-        Reads ``MjData.time`` off :meth:`mujoco_handles`. Monotonic within an
+        Reads ``MjData.time`` off ``mujoco_handles``. Monotonic within an
         episode; rewinds on ``reset``.
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
@@ -517,12 +517,12 @@ class _So101BoxRollout:
         Three conditions, AND-ed (all must hold):
 
         1. The tube's long axis is within
-           :attr:`BoxSceneOptions.insertion_axis_tol_deg` of world -Z
+           ``BoxSceneOptions.insertion_axis_tol_deg`` of world -Z
            (tube is pointing down).
         2. The tube's lower tip is inside the block hole's XY footprint
-           (within :attr:`BoxSceneOptions.insertion_xy_tol_m`).
+           (within ``BoxSceneOptions.insertion_xy_tol_m``).
         3. The lower tip's Z is below the block's top face by at least
-           :attr:`BoxSceneOptions.insertion_depth_m`.
+           ``BoxSceneOptions.insertion_depth_m``.
         """
         tube_z_axis_world = self._tube_z_axis_world()
         # Verticality: the tube's long axis (cylinder's body-local +Z)
@@ -562,10 +562,10 @@ class _So101BoxRollout:
 
 @SCENES.register("so101_box", fixed_robot="so101_follower")
 def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
-    """Build the so101_box rollout from a composed :class:`SimEnvironment`.
+    """Build the so101_box rollout from a composed ``SimEnvironment``.
 
     ``env_cfg.scene.backend_options`` drives every dimension and
-    threshold via :func:`_options_from_backend_options`. The MJCF is
+    threshold via ``_options_from_backend_options``. The MJCF is
     composed once at build time; the same model is reused across all
     ``reset()`` calls.
 

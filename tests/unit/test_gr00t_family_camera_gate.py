@@ -4,10 +4,10 @@ GR00T/RLDX sidecar checkpoints read a fixed number of *distinct* camera streams
 positionally (LIBERO=2, RC365=3, GR1/Simpler=1), unlike the in-process lerobot
 adapters (smolvla/pi05/act) which adapt to ``scene.cameras``. Too few cameras
 used to surface only as an opaque ``observation.images[...]`` error after the
-multi-minute sidecar boot; :func:`_require_scene_cameras` turns that into an
-upfront :class:`ROSCapabilityMismatch`.
+multi-minute sidecar boot; ``_require_scene_cameras`` turns that into an
+upfront ``ROSCapabilityMismatch``.
 
-Real :class:`SceneSpec`/:class:`SimEnvironment` schemas (CLAUDE.md §1.11);
+Real ``SceneSpec``/``SimEnvironment`` schemas (CLAUDE.md §1.11);
 needs neither a GPU nor the ``gr00t`` opt-in group.
 """
 

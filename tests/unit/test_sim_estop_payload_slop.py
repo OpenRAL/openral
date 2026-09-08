@@ -15,7 +15,7 @@ voxel_half_diagonal``). An attached-payload self stop has no voxel and an OBB
 on both sides, so the payload's own corner slop applies instead; charging
 only the link's share under-counts the admissible gap.
 
-:func:`attached_payload_mesh_slop` is that missing term, pinned here.
+``attached_payload_mesh_slop`` is that missing term, pinned here.
 
 Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11).
 """

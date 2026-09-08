@@ -11,7 +11,7 @@ Same ZMQ REQ/REP + msgpack pattern as ``tools/locateanything_sidecar.py`` and
 ``tools/rldx_sidecar.py``.
 
 The openral side is
-:class:`openral_runner.backends.gstreamer.qwen_scene_vlm.QwenSceneVlm`, which
+``openral_runner.backends.gstreamer.qwen_scene_vlm.QwenSceneVlm``, which
 auto-spawns this sidecar and talks to ``_qwen_vlm_server.py`` over ZMQ.
 
 Usage::

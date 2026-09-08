@@ -1,12 +1,12 @@
-"""Unit tests for :class:`SawyerRealHAL` — the real-hardware Sawyer adapter.
+"""Unit tests for ``SawyerRealHAL`` — the real-hardware Sawyer adapter.
 
-The adapter wraps :class:`RosControlHAL`; the heavy hot-path logic is
+The adapter wraps ``RosControlHAL``; the heavy hot-path logic is
 already covered by ``tests/unit/test_hal.py``.  This file pins:
 
-- the :data:`SAWYER_DESCRIPTION` joint inventory + capability surface;
+- the ``SAWYER_DESCRIPTION`` joint inventory + capability surface;
 - the manifest pointer (closed_with_api → ``SawyerRealHAL``);
 - the closed-loop ``send_action`` / ``read_state`` path against a real
-  :class:`SimTransport` (no mocks, per CLAUDE.md §1.11 / §5.4).
+  ``SimTransport`` (no mocks, per CLAUDE.md §1.11 / §5.4).
 """
 
 from __future__ import annotations

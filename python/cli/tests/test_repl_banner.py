@@ -4,7 +4,7 @@ The banner is a white-bordered box that adapts to the terminal width: ``OPENRAL
 v<version>`` sits inline in the top border, the white (no-gradient) logo mark and
 the OPENRAL wordmark share the top line, the tagline sits beneath them, and a
 right-hand cell carries the community links above a divider above the quick-start
-commands. We render through a recording :class:`rich.console.Console` and assert on
+commands. We render through a recording ``rich.console.Console`` and assert on
 the exported plain text so the test is independent of terminal/TTY/colour state.
 """
 

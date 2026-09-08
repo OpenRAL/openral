@@ -114,8 +114,8 @@ class SensorCatalogEntry:
 class SensorCatalog:
     """In-memory registry of ``SensorCatalogEntry`` rows.
 
-    The default global instance is :data:`CATALOG`; tests should create a
-    private :class:`SensorCatalog` to avoid polluting the global registry.
+    The default global instance is ``CATALOG``; tests should create a
+    private ``SensorCatalog`` to avoid polluting the global registry.
 
     Example:
         >>> cat = SensorCatalog()

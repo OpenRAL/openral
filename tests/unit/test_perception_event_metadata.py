@@ -1,8 +1,8 @@
-"""Unit tests for :data:`openral_core.PerceptionEventMetadata`.
+"""Unit tests for ``openral_core.PerceptionEventMetadata``.
 
 Real Pydantic models — no mocks, no fixtures fabricated with placeholder
 strings (CLAUDE.md §1.11). Each test exercises the actual discriminator
-contract that :class:`PerceptionEventPublisher` relies on.
+contract that ``PerceptionEventPublisher`` relies on.
 """
 
 from __future__ import annotations

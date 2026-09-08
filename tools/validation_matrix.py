@@ -9,8 +9,8 @@ Subcommands (all read recorded artifacts only):
 * ``run`` — guardrails, then one ``openral deploy sim`` per scene (monitor + action dispatch),
   then ``verdicts``. Needs a GPU host with RoboCasa.
 * ``verdicts`` — pure/offline: derive ``verdicts.json`` (a
-  :class:`~openral_core.ValidationRoundVerdicts`) from a round directory.
-* ``diff`` — compare two rounds' ``verdicts.json`` into a :class:`~openral_core.ValidationRoundDiff`.
+  ``ValidationRoundVerdicts``) from a round directory.
+* ``diff`` — compare two rounds' ``verdicts.json`` into a ``ValidationRoundDiff``.
 * ``import-round`` — backfill metadata for the ~17 pre-harness rounds so they're queryable too.
 
 ``run`` refuses: a dirty worktree, a stale built overlay, a launcher outside this checkout, a
@@ -83,7 +83,7 @@ class SceneSpec:
     CLI flag (precedence: explicit-flag > scene ``runtime:`` > default). ``enable_reasoner`` has no
     flag — resolved from ``runtime:``, defaults ``True``
     (``openral_cli.deploy_sim.resolve_launch_invocation``) — so each round materialises a resolved
-    copy carrying :data:`SCENE_RUNTIME_PIN` (+ seed if it differs). The first live round died in
+    copy carrying ``SCENE_RUNTIME_PIN`` (+ seed if it differs). The first live round died in
     every scene under 1s on a nonexistent ``--no-enable-reasoner`` flag.
     """
 
@@ -349,7 +349,7 @@ def grid_resolution_from_monitor(records: Sequence[Mapping[str, Any]]) -> float 
     Returns:
         The first reported resolution in metres, or ``None`` when the run
         published no grid (octomap off, the graph never reached activation, or
-        — see :func:`monitor_subscription_records` — the monitor received
+        — see ``monitor_subscription_records`` — the monitor received
         nothing at all).
     """
     for record in records:
@@ -399,7 +399,7 @@ def build_witness_timeline(
         deploy_lines: Lines of the deploy log.
 
     Returns:
-        A :class:`~openral_core.ValidationWitnessTimeline`.
+        A ``ValidationWitnessTimeline``.
     """
     from openral_core import ValidationWitnessTimeline  # reason: deferred
 
@@ -523,9 +523,9 @@ def probe_is_distance_certified(snapshot: Mapping[str, Any]) -> bool:
     fixture-vs-panda-mesh pairs: measured ``+0.000000`` where truth is ``+0.148512 mm`` (126 mm
     witness segment outside both geoms); in the checked-in rounds, ``0.000 m`` where the certified
     distance is ``+14.806 mm`` (08-22 fridge), ``+82.185 mm`` (08-23 fridge), ``+107.930 mm``
-    (08-23 baguette, solid pair) — each a reading rule 1 of :func:`adjudicate_ground_truth`
+    (08-23 baguette, solid pair) — each a reading rule 1 of ``adjudicate_ground_truth``
     promotes to ``real-contact``. Same attestation shape as
-    :func:`probe_is_collidability_filtered`, same fail-closed effect: an unattested snapshot cannot
+    ``probe_is_collidability_filtered``, same fail-closed effect: an unattested snapshot cannot
     support a verdict resting on it — the stop becomes ``unadjudicated``, never a reversal.
 
     Args:
@@ -594,7 +594,7 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
 
 
 def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
-    """The hull-fidelity half of :func:`hal_admissible_gap_m` (#221).
+    """The hull-fidelity half of ``hal_admissible_gap_m`` (#221).
 
     The box term is a snapshot-wide upper bound; the hull term is per-link (never maxed across
     links), so it is summed from the two links the kernel named. Either link missing a measured
@@ -627,13 +627,13 @@ def adjudicate_ground_truth(
     The rule, in order:
 
     1. Any probed pair at or below 0 m → ``real-contact``, if the probe attests both sides were
-       collidability-filtered (:func:`probe_is_collidability_filtered`) — ``contype``/``conaffinity``
+       collidability-filtered (``probe_is_collidability_filtered``) — ``contype``/``conaffinity``
        exclusions suppress MuJoCo contacts at real interpenetration, so distance is the test, not
        the contact list. Unattested → the 0 m pair may be a visual mesh → ``unadjudicated``.
     2. Else compare the named party's clearance to the kernel's reported depth. Beyond the
        admissible gap → ``false-positive``; within it → ``within-quantization`` (conservative,
-       correct). Gap comes from the HAL's own ``adjudication_budget`` (:func:`hal_admissible_gap_m`)
-       when the snapshot carries one, else :func:`quantization_budget_m`.
+       correct). Gap comes from the HAL's own ``adjudication_budget`` (``hal_admissible_gap_m``)
+       when the snapshot carries one, else ``quantization_budget_m``.
 
        The fallback is asymmetric on purpose: the voxel term is a strict lower bound on the true
        admissible gap (the real gap adds the collision model's corner slop, the larger term on
@@ -655,7 +655,7 @@ def adjudicate_ground_truth(
        proves the nearest geometry is beyond ``distmax_m``, used as a strict lower bound.
 
     4. Finally, the ladder's conclusion is withdrawn to ``unadjudicated`` unless the probe attests
-       certified distances (:func:`probe_is_distance_certified`) — every rule above reads a number
+       certified distances (``probe_is_distance_certified``) — every rule above reads a number
        off that probe, and ``mujoco.mj_geomDistance`` (used before this landed) is wrong by
        15-108 mm on this pair class, silently. Runs last so the record names what was withdrawn
        (``withdrawn from 'real-contact': …``). Withdraws verdicts, reverses none.
@@ -665,7 +665,7 @@ def adjudicate_ground_truth(
         stop: The kernel's verdict, if the run was stopped.
         grid_resolution_m: Occupancy-grid cell size, from the monitor.
         monitor_records: How many records the monitor received
-            (:func:`monitor_subscription_records`), so a missing grid
+            (``monitor_subscription_records``), so a missing grid
             resolution can name the right cause: ``0`` means the monitor was
             deaf for the whole run, which is a harness fault, not an early stop.
 
@@ -1062,7 +1062,7 @@ def classify_outcome(
     grasped: bool,
     artifacts_complete: bool,
 ) -> str:
-    """Bucket one scene into exactly one :data:`~openral_core.ValidationOutcome`.
+    """Bucket one scene into exactly one ``ValidationOutcome``.
 
     Ordering is load-bearing. Task success wins outright. An initial-configuration
     stop is classified as such *before* the ground-truth adjudication runs,
@@ -1133,7 +1133,7 @@ def scene_verdict_from_artifacts(
         stem: Artifact filename stem.
 
     Returns:
-        A :class:`~openral_core.ValidationSceneVerdict`.
+        A ``ValidationSceneVerdict``.
     """
     from openral_core import ValidationSceneVerdict  # reason: deferred
 
@@ -1293,7 +1293,7 @@ def diff_rounds(
         baseline: The round to compare against.
 
     Returns:
-        A :class:`~openral_core.ValidationRoundDiff`.
+        A ``ValidationRoundDiff``.
     """
     from openral_core import (  # reason: deferred
         ValidationRoundDiff,
@@ -1471,7 +1471,7 @@ def collision_scale_env() -> dict[str, float]:
     """The #188 graded-velocity band this round will actually run with.
 
     The band reaches the kernel through ``OPENRAL_COLLISION_SCALE_*`` env vars
-    (``sim_e2e.launch.py`` reads them), which :func:`assert_no_safety_overrides`
+    (``sim_e2e.launch.py`` reads them), which ``assert_no_safety_overrides``
     cannot see — it inspects argv. Recorded rather than refused: arming the band
     *is* the point of the A/B battery, and what must never happen is a round
     that armed it and cannot afterwards be told apart from one that did not.
@@ -1708,7 +1708,7 @@ def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, P
     """Write the round's resolved scene copy and return ``(path_for_metadata, file)``.
 
     The tracked scene is never touched. The copy carries exactly two round-level
-    pins: the seed, and :data:`SCENE_RUNTIME_PIN` — the reasoner, which is the
+    pins: the seed, and ``SCENE_RUNTIME_PIN`` — the reasoner, which is the
     one stack knob with no CLI flag. The result is re-parsed to prove the splice
     landed, and checked against the tracked scene so no safety key moved.
 
@@ -1798,7 +1798,7 @@ def wait_for_dds_transport_ready(
     ``monitor_started``/``monitor_stopped``.
 
     So the monitor starts on the far side of the marker
-    (:data:`~openral_cli.deploy_sim.DDS_TRANSPORT_READY_MARKER`, printed after the purge, before
+    (``DDS_TRANSPORT_READY_MARKER``, printed after the purge, before
     ``ros2 launch``) — the sim clock doesn't start until the HAL node comes up (tens of seconds
     later), so #145's early-stop coverage (a scene tripping the kernel at sim t≈4.7 s) still fully
     records.
@@ -2288,7 +2288,7 @@ def stack_tokens(argv: Sequence[str]) -> list[str]:
     are dropped: what is left is the stack the whole round shared.
 
     Args:
-        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+        argv: A resolved ``ros2 launch`` argv, from ``parse_launch_argv``.
 
     Returns:
         The stack tokens, sorted.
@@ -2308,7 +2308,7 @@ def robot_facts_from_launch_argv(argv: Sequence[str]) -> dict[str, str]:
     lost to. Derived, never assumed: an unrecognised shape yields ``{}``.
 
     Args:
-        argv: A resolved ``ros2 launch`` argv, from :func:`parse_launch_argv`.
+        argv: A resolved ``ros2 launch`` argv, from ``parse_launch_argv``.
 
     Returns:
         ``{"repo_root": ..., "robot_id": ..., "robot_manifest_path": ...}``, or

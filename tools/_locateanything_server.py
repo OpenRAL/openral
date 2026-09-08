@@ -1,6 +1,6 @@
 """LocateAnything-3B inference server — runs INSIDE the isolated sidecar venv.
 
-Exec'd by :mod:`tools.locateanything_sidecar` inside a ``transformers==4.57.1``
+Exec'd by ``tools.locateanything_sidecar`` inside a ``transformers==4.57.1``
 virtualenv (see that file for why it can't share the runtime's
 ``transformers>=5`` env). Loads the NF4 bitsandbytes-quantized model once and
 answers detection requests over ZMQ REP + msgpack.
@@ -8,7 +8,7 @@ answers detection requests over ZMQ REP + msgpack.
 Deliberately thin: returns the model's raw generated text. ``<ref>``/``<box>``
 parsing, degenerate-box filtering, and ``ObjectsMetadata`` construction live
 in the main-env backend
-(:mod:`openral_runner.backends.gstreamer.locateanything_detector`), unit-testable
+(``openral_runner.backends.gstreamer.locateanything_detector``), unit-testable
 without a GPU or this venv.
 
 Wire protocol (msgpack dict in, msgpack dict out, ZMQ REQ/REP):

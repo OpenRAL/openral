@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.UR10eHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.UR10eHAL`` against real MuJoCo physics.
 
 Mirrors the UR5e test suite but verifies the **distinct safety / capability
 envelope** of the larger UR10e (higher payload, slower shoulder, larger

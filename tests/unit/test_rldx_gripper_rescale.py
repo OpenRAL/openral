@@ -5,8 +5,8 @@ LIBERO's robosuite OSC controller wants ``[-1,+1]`` with the opposite sign
 (-1=open/+1=close). Without a rescale, raw ``~0`` values never actuate the
 gripper and pick-and-place tasks deterministically fail.
 
-Exercises the real :func:`openral_sim.policies.rldx._rldx_gripper_to_libero`
-and :meth:`_RLDXSidecarAdapter._assemble_libero_chunk` with the exact
+Exercises the real ``openral_sim.policies.rldx._rldx_gripper_to_libero``
+and ``_RLDXSidecarAdapter._assemble_libero_chunk`` with the exact
 ``(1, T=16, 1)`` wire shape upstream ``rldx/policy/rldx_policy.py`` emits.
 No mocks (CLAUDE.md §1.11).
 """

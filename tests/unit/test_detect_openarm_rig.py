@@ -1,6 +1,6 @@
 """End-to-end assembly for a CAN-attached OpenArm cell: two PCAN-USB Pro FD
 channels (``openarm_left``/``openarm_right``), two Arducam B0495 cameras, a
-ZED Mini stereo head, assembled into a :class:`~openral_core.RobotDescription`.
+ZED Mini stereo head, assembled into a ``RobotDescription``.
 
 Real per CLAUDE.md §1.11: committed ``robots/openarm/robot.yaml``, the real
 ``CATALOG``; device facts (VID/PIDs, product strings, CAN bitrates) read off

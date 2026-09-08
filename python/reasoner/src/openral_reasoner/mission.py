@@ -1,25 +1,25 @@
 """Typed mission state for sequential multi-task deploy goals.
 
 An operator goal may carry several ordered subtasks (``--initial-task``, or a
-live ``/openral/prompt``), parsed into an ordered list of :class:`TaskState`
+live ``/openral/prompt``), parsed into an ordered list of ``TaskState``
 with at most one ``active``/``verifying`` at a time; the reasoner advances
 the queue only when the active task verifies complete. Splitting is simple
 and deterministic; richer decomposition (the ``decompose-mission`` playbook)
-layers on top via :meth:`MissionState.subdivide_active`.
+layers on top via ``MissionState.subdivide_active``.
 
 **Hierarchical subdivision on replan** (#123): when the active task is
 blocked (reward gate ``abandon``, ladder exhausted), the reasoner may
 decompose it into finer subtasks instead of only handing off. The data model
-stays **flat**: :meth:`MissionState.subdivide_active` splices the blocked
+stays **flat**: ``MissionState.subdivide_active`` splices the blocked
 task in place with its children (``t2 → t2.1, t2.2``), so the ``## MISSION``
-ledger and dashboard need no change. :attr:`TaskState.depth` bounds
-re-decomposition (:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`), so a
+ledger and dashboard need no change. ``TaskState.depth`` bounds
+re-decomposition (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), so a
 perpetually-blocked task terminates in human-handoff rather than
 subdividing forever.
 
 Reasoner-internal (no rclpy, no Pydantic): plain dataclasses, fully
 unit-testable. The ROS node drives transitions;
-:class:`~openral_reasoner.context.ContextRenderer` renders the ledger.
+``ContextRenderer`` renders the ledger.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
 """Max re-decomposition depth (#123).
 
 A task at the queue root has ``depth == 0``; its children from one
-:meth:`MissionState.subdivide_active` are ``depth == 1``; their children
+``MissionState.subdivide_active`` are ``depth == 1``; their children
 ``depth == 2``. Once a blocked task is already at this depth, subdivision is
 refused (``subdivide_active`` returns ``None``) and the caller falls back to
 ``human-handoff`` — bounding the ladder so a perpetually-blocked task cannot
@@ -65,7 +65,7 @@ DEFAULT_MAX_TASK_LOCATE_ATTEMPTS: int = 3
 
 Max locate cycles the reasoner may spend on a single active mission (sub)task
 *without* reaching an ``execute_rskill`` dispatch before the subtask is
-abandoned. Distinct from the :class:`~openral_reasoner.active_search.SearchProgress`
+abandoned. Distinct from the ``SearchProgress``
 miss budget: that resets on a locate HIT, so a live locate-loop where
 ``locate_in_view`` keeps hitting (``found=True``) but never dispatches a skill
 never terminates. This budget counts every locate cycle regardless of hit/miss."""
@@ -75,15 +75,15 @@ never terminates. This budget counts every locate cycle regardless of hit/miss."
 class TaskLocateBudget:
     """Per-task ``locate_in_view`` cycle budget.
 
-    Unlike :class:`SearchProgress` (misses only, resets on a hit), this counts
+    Unlike ``SearchProgress`` (misses only, resets on a hit), this counts
     every locate cycle — hit or miss — spent on the *active mission task*
     without an ``execute_rskill`` dispatch, so a task whose object stays
     visible but never gets actioned still terminates instead of re-locating
     forever.
 
-    :meth:`charge` is called once per locate dispatch with the active task
+    ``charge`` is called once per locate dispatch with the active task
     id; it auto-resets when the task changes and returns ``True`` once
-    exhausted. :meth:`reset` is called on real progress (an
+    exhausted. ``reset`` is called on real progress (an
     ``execute_rskill`` dispatch).
 
     Example:
@@ -247,7 +247,7 @@ class TaskState:
     Attributes:
         task_id: Stable id within the mission (``"t1"``, ``"t2"``, …).
         text: The subtask instruction handed to the reasoner as the active goal.
-        status: Lifecycle position (:data:`TaskStatus`).
+        status: Lifecycle position (``TaskStatus``).
         attempts: Number of ``execute_rskill`` dispatches made for this task —
             the loop guard for the replanning ladder.
         last_rskill_id: rSkill id of the most recent attempt, or ``None``.
@@ -256,8 +256,8 @@ class TaskState:
             (e.g. ``"success=0.91"``, ``"stalled@0.73"``, ``"unverified"``).
         depth: Re-decomposition depth (see #123). A task split
             from the operator goal is ``0``; a child spliced in by
-            :meth:`MissionState.subdivide_active` is ``parent.depth + 1``. Bounds
-            the subdivision ladder against :data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`.
+            ``MissionState.subdivide_active`` is ``parent.depth + 1``. Bounds
+            the subdivision ladder against ``DEFAULT_MAX_SUBDIVIDE_DEPTH``.
     """
 
     task_id: str
@@ -276,7 +276,7 @@ class MissionState:
     Owns the deterministic sequencing the LLM is no longer trusted to do: the
     active task is the only goal injected each tick; the queue advances only when
     the node verifies the active task complete (or abandons it after the ladder is
-    exhausted). All mutators return the newly-active :class:`TaskState` (or
+    exhausted). All mutators return the newly-active ``TaskState`` (or
     ``None`` when the mission is finished) so the caller can re-inject the next
     goal and wake the reasoner.
 
@@ -396,7 +396,7 @@ class MissionState:
         """Move the active task ``verifying → active`` to re-offer a fresh decision.
 
         The reward gate moves the active task to ``verifying`` while it queries the
-        monitor (:meth:`mark_verifying`). When the node offers subdivision on a
+        monitor (``mark_verifying``). When the node offers subdivision on a
         blocked task (#123) instead of abandoning it, it calls this so the normal
         dispatch / ``subdivide_active`` cycle resumes from ``active``. No-op
         (returns the current active task or ``None``) when nothing is ``verifying``.
@@ -429,9 +429,9 @@ class MissionState:
         change.
 
         Refused (returns ``None``) when the active task is already at
-        ``max_depth`` (:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`), when there is no
+        ``max_depth`` (``DEFAULT_MAX_SUBDIVIDE_DEPTH``), when there is no
         active task, or when ``subtasks`` is empty after trimming — the
-        caller falls back to :meth:`abandon_active`.
+        caller falls back to ``abandon_active``.
 
         Returns:
             The newly-active first child, or ``None`` when subdivision was
@@ -484,10 +484,10 @@ class MissionState:
     def to_state_dict(self) -> dict[str, object]:
         """Full round-trippable snapshot of the queue (statuses, attempts, depth).
 
-        Unlike :meth:`to_summary` (a lossy telemetry view), this carries every
-        :class:`TaskState` field so a crashed/restarted reasoner can resume the
+        Unlike ``to_summary`` (a lossy telemetry view), this carries every
+        ``TaskState`` field so a crashed/restarted reasoner can resume the
         mission exactly where it stopped instead of resetting every ladder
-        bound (see :mod:`openral_reasoner.persistence`).
+        bound (see ``openral_reasoner.persistence``).
 
         Example:
             >>> m = MissionState(["pick the bowl", "place the butter"])
@@ -514,7 +514,7 @@ class MissionState:
 
     @classmethod
     def from_state_dict(cls, state: dict[str, object]) -> MissionState:
-        """Rebuild a mission from :meth:`to_state_dict` output (exact resume)."""
+        """Rebuild a mission from ``to_state_dict`` output (exact resume)."""
         mission = cls([])
         raw_tasks = state.get("tasks")
         if not isinstance(raw_tasks, list):

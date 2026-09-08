@@ -11,7 +11,7 @@ enactic assets, so this module maintains a pinned clone of the
 ``models/anvil_openarm_bimanual.xml`` applies the Anvil deltas (and the
 visual-only CAD bracket meshes) on top of the upstream
 ``enactic/openarm_mujoco`` v2 files.  The pattern mirrors
-:mod:`openral_hal._openarm_v2_assets` (the enactic v2 out-pin), with one
+``openral_hal._openarm_v2_assets`` (the enactic v2 out-pin), with one
 extra step: the generated MJCF references the stock link meshes from the
 ``upstream/openarm_mujoco`` git submodule (the bracket STL lives in the
 anvil repo's own ``models/assets/``), so the clone must also initialise
@@ -51,7 +51,7 @@ def _cache_dir() -> Path:
 
     Honours ``$OPENRAL_CACHE_DIR`` for tests / CI; falls back to
     ``~/.cache/openral`` — the same convention
-    :mod:`openral_hal._openarm_v2_assets` uses.
+    ``openral_hal._openarm_v2_assets`` uses.
     """
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
     return base / "anvil_openarm_v2"
@@ -61,7 +61,7 @@ def ensure_anvil_openarm_v2_mjcf() -> str:
     """Return the on-disk path to the Anvil 2.0 bimanual MJCF, fetching if needed.
 
     Idempotent: subsequent calls reuse the cached clone.  The repo is
-    checked out at :data:`_ANVIL_PINNED_SHA` and its mesh submodule is
+    checked out at ``_ANVIL_PINNED_SHA`` and its mesh submodule is
     initialised, so the in-tree sim contract doesn't drift with either
     upstream.
 

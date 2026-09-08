@@ -1,12 +1,12 @@
 """Remaining cartesian rSkills declare an explicit OSC action contract.
 
 These checkpoints emit a 7-D action (6-D OSC end-effector delta + 1-D
-gripper, :class:`ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER`) even
+gripper, ``ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER``) even
 though dim (7) differs from the embodiment's actuated-joint count — the
 tell-tale sign it's cartesian, not joint-space. Declaring the
 representation in ``rskill.yaml`` makes deploy-sim expand it into
 ``cartesian_delta`` + ``gripper_position`` slots (via
-:func:`canonical_slots_for_representation`) instead of defaulting to
+``canonical_slots_for_representation``) instead of defaulting to
 ``JOINT_POSITION``, which the joint-space envelope rejects.
 
 Follows the two LIBERO examples in ``test_libero_action_contracts.py``;

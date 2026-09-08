@@ -3,18 +3,18 @@
 Walks the real ``rskills/*/rskill.yaml`` files (no mocks, no synthetic
 manifests) and asserts:
 
-1. Every manifest loads under the new :class:`RSkillManifest` schema
+1. Every manifest loads under the new ``RSkillManifest`` schema
    (the new ``description`` / ``actions`` fields are required; the file
    on disk must satisfy them).
 2. Every manifest's ``actions`` is non-empty and resolves into
-   :class:`RSkillAction` enum members (closed vocabulary).
+   ``RSkillAction`` enum members (closed vocabulary).
 3. ``description`` is non-empty and within the schema limit.
 4. ``objects`` / ``scenes`` (free-form lists) round-trip as lists of
    strings.
 
-Also exercises :class:`RSkillManifest.actions` with hypothesis to
+Also exercises ``RSkillManifest.actions`` with hypothesis to
 confirm the closed vocabulary is enforced — anything not in
-:class:`RSkillAction` is rejected.
+``RSkillAction`` is rejected.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_intree_manifest_loads_with_action_vocabulary(manifest_path: Path) -> No
 
 
 def test_every_intree_rskill_discovered_with_actions() -> None:
-    """The shared :func:`discover_intree_rskills` produces actions for every manifest."""
+    """The shared ``discover_intree_rskills`` produces actions for every manifest."""
     manifests = list(discover_intree_rskills())
     assert manifests, "no in-tree rskills discovered"
     for name, manifest in manifests:

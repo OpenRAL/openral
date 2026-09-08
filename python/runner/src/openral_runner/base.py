@@ -1,18 +1,18 @@
 """Shared base for inference runners.
 
-:class:`InferenceRunnerBase` owns the rate-limited loop, the OTel
-``rskill.tick`` parent span, the per-tick :class:`TickResult` collection,
-the aggregate :class:`RunResult` (mean / p99 timings, budget violations,
+``InferenceRunnerBase`` owns the rate-limited loop, the OTel
+``rskill.tick`` parent span, the per-tick ``TickResult`` collection,
+the aggregate ``RunResult`` (mean / p99 timings, budget violations,
 trace id), and the deadline-overrun policy. Subclasses implement
-:meth:`_tick_impl` which performs one actual tick and returns its
-:class:`TickResult`; the base records the per-stage timings on the parent
+``_tick_impl`` which performs one actual tick and returns its
+``TickResult``; the base records the per-stage timings on the parent
 span and decides whether the cadence was honoured.
 
 The base is plain Python: it does not import HAL, sensors, or ROS. The
-two concrete runners — :class:`SimRunner` (in ``openral_sim``, future
-PR) and :class:`DeployRunner` (in ``openral_runner.deploy_runner``,
+two concrete runners — ``SimRunner`` (in ``openral_sim``, future
+PR) and ``DeployRunner`` (in ``openral_runner.deploy_runner``,
 PR F) — wire their respective input / output stacks into the
-:meth:`_tick_impl` hook.
+``_tick_impl`` hook.
 """
 
 from __future__ import annotations
@@ -64,23 +64,23 @@ def _percentile(samples: list[float], q: float) -> float:
 class InferenceRunnerBase(ABC):
     """Abstract base class for inference runners.
 
-    Concrete subclasses override :meth:`_tick_impl` to perform one tick
+    Concrete subclasses override ``_tick_impl`` to perform one tick
     against their input/output stack (sim env vs real HAL + sensors). The
     base class provides:
 
-    * Rate-limited :meth:`run` using
-      :func:`~openral_runner.clock.sleep_until`.
+    * Rate-limited ``run`` using
+      ``sleep_until``.
     * One OTel ``rskill.tick`` parent span per tick (via
-      :func:`~openral_observability.rskill_span`). The base attaches
-      per-stage timing attributes lifted from the returned :class:`TickResult`
+      ``rskill_span``). The base attaches
+      per-stage timing attributes lifted from the returned ``TickResult``
       so child spans (``inference_span`` / ``safety_span``) automatically
       correlate.
-    * :class:`RunResult` aggregation: mean / p99 inference and tick latencies,
+    * ``RunResult`` aggregation: mean / p99 inference and tick latencies,
       budget-violation count, OTel trace id, save_dir, and arbitrary
       ``metadata``.
     * Deadline-overrun policy: ``warn`` logs + records on the parent span;
       ``drop`` is reported (the subclass is responsible for the action
-      itself); ``raise`` raises :class:`ROSDeadlineMissed` (test mode).
+      itself); ``raise`` raises ``ROSDeadlineMissed`` (test mode).
 
     Args:
         rate_hz: Foreground tick rate. Default 30 Hz.
@@ -88,10 +88,10 @@ class InferenceRunnerBase(ABC):
         runner_name: Span ``skill.id`` attribute — useful when multiple
             runners share a trace.
         latency_budget_ms: If set, ticks whose ``tick_ms`` exceeds this
-            count toward :attr:`RunResult.budget_violations`. ``None``
+            count toward ``RunResult.budget_violations``. ``None``
             disables the check.
         save_dir: Optional artefact directory, forwarded into
-            :class:`RunResult`. The base class does not write anything; the
+            ``RunResult``. The base class does not write anything; the
             subclass owns that.
     """
 
@@ -137,7 +137,7 @@ class InferenceRunnerBase(ABC):
 
     @abstractmethod
     def _tick_impl(self, tick_idx: int) -> TickResult:
-        """Run one tick and return a populated :class:`TickResult`.
+        """Run one tick and return a populated ``TickResult``.
 
         The base class wraps every call in a ``rskill.tick`` span and lifts
         the returned timings onto that span. Subclasses should not open the
@@ -153,12 +153,12 @@ class InferenceRunnerBase(ABC):
     def _should_terminate(self) -> bool:
         """Subclass hook: early-exit signal evaluated after each tick.
 
-        Default returns ``False`` so :class:`DeployRunner` runs until
-        ``max_ticks`` (or :meth:`deactivate`) as before. :class:`SimRunner`
+        Default returns ``False`` so ``DeployRunner`` runs until
+        ``max_ticks`` (or ``deactivate``) as before. ``SimRunner``
         overrides this to stop once ``n_episodes`` have completed without
         depending on the caller picking the exact tick budget. The hook is
         consulted after the tick is recorded and deadline-overrun
-        bookkeeping is done, before :func:`sleep_until` waits on the next
+        bookkeeping is done, before ``sleep_until`` waits on the next
         deadline.
         """
         return False
@@ -177,8 +177,8 @@ class InferenceRunnerBase(ABC):
         """Begin a new episode on this runner.
 
         Hardware path uses this to open a new episode on the attached
-        :class:`openral_dataset.RolloutRecorder` (and, transitively,
-        on the :class:`Rosbag2Sink` or :class:`LeRobotDatasetSink`).
+        ``openral_dataset.RolloutRecorder`` (and, transitively,
+        on the ``Rosbag2Sink`` or ``LeRobotDatasetSink``).
 
         Args:
             task_string: Natural-language task instruction; lands on
@@ -203,12 +203,12 @@ class InferenceRunnerBase(ABC):
 
         Args:
             success: Episode-level outcome. The downstream
-                :class:`openral_dataset.RolloutRecorder` tags every
+                ``openral_dataset.RolloutRecorder`` tags every
                 frame's ``next.success`` from this value at conversion
                 time (PR4).
 
         Raises:
-            NotImplementedError: As for :meth:`episode_start` —
+            NotImplementedError: As for ``episode_start`` —
                 subclasses without an episode boundary contract reject
                 the call so wiring bugs are loud.
         """
@@ -220,12 +220,12 @@ class InferenceRunnerBase(ABC):
     def tick(self) -> TickResult:
         """Single-tick entry point (public Protocol method).
 
-        Wraps :meth:`_tick_impl` in a ``rskill.tick`` OTel parent span and
+        Wraps ``_tick_impl`` in a ``rskill.tick`` OTel parent span and
         attaches the per-stage timing attributes returned in the
-        :class:`TickResult`. Records the tick on the
+        ``TickResult``. Records the tick on the
         ``openral.tick.duration`` histogram and increments
         ``openral.safety.violations`` on any safety violation. Does
-        **not** enforce cadence — call :meth:`run` for that.
+        **not** enforce cadence — call ``run`` for that.
         """
         idx = self._tick_idx
         # LTTng entry/exit around the whole tick. No-op
@@ -307,20 +307,20 @@ class InferenceRunnerBase(ABC):
     def run(self, max_ticks: int | None = None) -> RunResult:
         """Rate-limited tick loop.
 
-        Iterates :meth:`tick` at :attr:`rate_hz` until ``max_ticks`` is
-        reached or :meth:`deactivate` is called from elsewhere. After each
+        Iterates ``tick`` at ``rate_hz`` until ``max_ticks`` is
+        reached or ``deactivate`` is called from elsewhere. After each
         tick, the next deadline is computed as ``previous_deadline +
-        1 / rate_hz`` and :func:`sleep_until` waits for it. When the tick
+        1 / rate_hz`` and ``sleep_until`` waits for it. When the tick
         overruns the deadline, the configured
-        :class:`DeadlineOverrunPolicy` decides whether to ``warn`` / ``drop``
+        ``DeadlineOverrunPolicy`` decides whether to ``warn`` / ``drop``
         / ``raise``.
 
         Args:
             max_ticks: Stop after this many ticks. ``None`` means "run
-                until :meth:`deactivate`".
+                until ``deactivate``".
 
         Returns:
-            Aggregated :class:`RunResult` (mean / p99 timings, budget
+            Aggregated ``RunResult`` (mean / p99 timings, budget
             violations, trace id).
 
         Raises:
@@ -401,7 +401,7 @@ class InferenceRunnerBase(ABC):
         return True, suppressed, worst_ms
 
     def _on_deadline_overrun(self, result: TickResult) -> None:
-        """Apply the configured :class:`DeadlineOverrunPolicy`.
+        """Apply the configured ``DeadlineOverrunPolicy``.
 
         Always increments ``openral.tick.deadline_misses`` and emits a
         ``openral.event.deadline_missed`` span event on the current
@@ -468,7 +468,7 @@ class InferenceRunnerBase(ABC):
         budget_violations: int,
         trace_id: str | None,
     ) -> RunResult:
-        """Aggregate per-tick records into a :class:`RunResult`."""
+        """Aggregate per-tick records into a ``RunResult``."""
         n = len(results)
         if n == 0:
             return RunResult(

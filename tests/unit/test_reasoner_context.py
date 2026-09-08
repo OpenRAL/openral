@@ -1,4 +1,4 @@
-"""Unit tests for :class:`openral_reasoner.ContextRenderer`.
+"""Unit tests for ``openral_reasoner.ContextRenderer``.
 
 Real Pydantic schemas + real ContextRenderer — no mocks. Tests assert
 deterministic rendering, rolling-buffer behaviour, and the drain-once

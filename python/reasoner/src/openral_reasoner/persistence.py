@@ -40,7 +40,7 @@ class ReasonerLadderState(BaseModel):
         mission: The mission ledger snapshot, or ``None`` when no mission
             was active.
         subdivide_offered: Task ids already offered one subdivision
-            (:class:`~openral_reasoner.mission.MissionState` #123 bound).
+            (``MissionState`` #123 bound).
         collective_nudges: Per-task collective-decompose nudge counts.
         locate_task_id: Task the per-task locate budget is charging, or None.
         locate_count: Locate cycles charged against ``locate_task_id``.

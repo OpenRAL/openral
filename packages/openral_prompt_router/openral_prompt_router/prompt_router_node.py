@@ -2,7 +2,7 @@
 """``prompt_router_node`` lifecycle node.
 
 Single node that fans in operator prompts from any external source
-into a normalised :class:`openral_msgs/PromptStamped` stream on
+into a normalised ``openral_msgs/PromptStamped`` stream on
 ``/openral/prompt``. In v1 the only external adapter is the CLI
 (``openral prompt "do X"`` publishes directly to ``/openral/prompt_in/cli``,
 which this node forwards onto ``/openral/prompt`` after enriching the
@@ -91,7 +91,7 @@ class PromptRouterNode(LifecycleNode):
     Args:
         node_name: ROS node name; default ``openral_prompt_router``.
         sources: Mapping ``source_name → priority``. Defaults to
-            :data:`DEFAULT_SOURCES`. A deployment YAML may restrict
+            ``DEFAULT_SOURCES``. A deployment YAML may restrict
             this set; the router only listens to sources declared
             here (per capability review §3.F10, the "per-source allowlist").
     """
@@ -236,7 +236,7 @@ class PromptRouterNode(LifecycleNode):
 
     @property
     def forwarded_count(self) -> int:
-        """Number of prompts the router has forwarded since :meth:`on_configure`."""
+        """Number of prompts the router has forwarded since ``on_configure``."""
         return self._forwarded_count
 
 

@@ -6,12 +6,12 @@ on the aloha-agilex embodiment (14-DoF, 7 per arm; action 14-D joint-space).
 
 RoboTwin's stack (SAPIEN, CuRobo, mplib, pytorch3d) pins **Python 3.10 + CUDA 12.1**
 and an incompatible torch build — it cannot share the openral ``>=3.12`` venv. So,
-exactly like the Isaac Sim scene backend (:mod:`openral_sim.backends.isaac_sim`) and
-the RLDX-1 policy sidecar (:mod:`openral_sim.policies.rldx`), we run it in its own
+exactly like the Isaac Sim scene backend (``openral_sim.backends.isaac_sim``) and
+the RLDX-1 policy sidecar (``openral_sim.policies.rldx``), we run it in its own
 sidecar venv and talk to it over ZMQ REQ/REP framed by msgpack
-(:class:`openral_sim.sidecar.SidecarClient`).
+(``openral_sim.sidecar.SidecarClient``).
 
-This module is the **openral side**: a thin :class:`SimRollout` that marshals
+This module is the **openral side**: a thin ``SimRollout`` that marshals
 ``reset`` / ``step`` / ``render`` / ``close`` to the sidecar
 (``tools/robotwin_sidecar.py``) and unwraps the responses. The sidecar owns the
 SAPIEN simulation, the aloha-agilex robot, and the three RoboTwin cameras — it wraps
@@ -31,7 +31,7 @@ interpreter from ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (absolute path to the
 sidecar venv's ``python``), else a cache default, else (opt-in
 ``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) we provision it. The provisioning installs
 LeRobot 0.6 + the RoboTwin SAPIEN stack + downloads assets (a multi-GB,
-Linux-only job); without opt-in we raise a typed :class:`ROSConfigError`
+Linux-only job); without opt-in we raise a typed ``ROSConfigError``
 carrying the exact manual recipe.
 
 Licensing (CLAUDE.md §1.9): RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0) are
@@ -170,7 +170,7 @@ def _task_name_for_env(env_cfg: SimEnvironment) -> str:
 
 @dataclass
 class _RoboTwinSimSidecar:
-    """:class:`SimRollout` that proxies a RoboTwin SAPIEN env over the sidecar.
+    """``SimRollout`` that proxies a RoboTwin SAPIEN env over the sidecar.
 
     Observations come back from the sidecar already in the eval-layer shape
     (``images`` dict of HWC uint8 keyed by the RoboTwin camera names, ``state`` 1-D
@@ -291,7 +291,7 @@ def _provision_robotwin_venv() -> Path:
     """Create the robotwin sidecar venv from the pinned LeRobot + SAPIEN install.
 
     Opt-in (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) because it is a multi-GB,
-    Linux-only download. Uses the shared :func:`ensure_pip_venv`
+    Linux-only download. Uses the shared ``ensure_pip_venv``
     provisioning order so it reuses an existing venv + sentinel. Returns the venv
     python (``<home>/.venv/bin/python``).
 
@@ -360,7 +360,7 @@ def _sidecar_python() -> Path:
 
     Auto-provision precedes the existing-venv shortcut so a venv built from
     superseded pins is repaired rather than returned untouched (same ordering
-    fix as the Isaac backend — see :func:`ensure_pip_venv`'s ``spec``).
+    fix as the Isaac backend — see ``ensure_pip_venv``'s ``spec``).
     """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
@@ -413,7 +413,7 @@ def _robotwin_root() -> Path:
     """Resolve the RoboTwin checkout root the sidecar must run from.
 
     RoboTwin imports use process-relative ``assets/...`` paths, and
-    :class:`SidecarClient` deliberately strips parent ``PYTHONPATH`` for ABI safety.
+    ``SidecarClient`` deliberately strips parent ``PYTHONPATH`` for ABI safety.
     Pass the checkout root explicitly so the sidecar can chdir and add it to
     ``sys.path`` before LeRobot imports the task package.
     """
@@ -444,7 +444,7 @@ def provision_robotwin() -> None:
     backend's own 600 s sidecar boot budget.
 
     Idempotent — an existing venv short-circuits on its sentinel.
-    :func:`_build_robotwin_scene` resolves the same interpreter again.
+    ``_build_robotwin_scene`` resolves the same interpreter again.
 
     Raises:
         ROSConfigError: When the venv is absent and auto-provisioning is off,

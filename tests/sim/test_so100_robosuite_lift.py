@@ -2,21 +2,21 @@
 
 Exercises the full pipeline:
 
-* :class:`openral_sim.backends.so100_robosuite.SO100` registers as
+* ``openral_sim.backends.so100_robosuite.SO100`` registers as
   a robosuite robot model + gripper that the gripper/robot factories
   can load by name;
-* :func:`make_so100_lift_env` builds a :class:`Lift`-derived env that
+* ``make_so100_lift_env`` builds a ``Lift``-derived env that
   resets and steps against real MuJoCo physics, with robosuite's
   stock ``OSC_POSITION`` (3-DOF Cartesian) controller wiring for the
   arm and a ``SimpleGripController`` for the jaw;
-* :class:`ScriptedPickPolicy` walks the env through approach →
+* ``ScriptedPickPolicy`` walks the env through approach →
   descend → close → lift, exercising joint-position commands +
   gripper torque, and at least **attempts to grasp** the block on
   the table (gets the gripper site to within a few cm of the cube,
   closes the jaw on contact).
 
 No mocks. The test loads the upstream DeepMind ``mujoco_menagerie``
-SO-100 MJCF via :mod:`robot_descriptions`, rewrites it into the
+SO-100 MJCF via ``robot_descriptions``, rewrites it into the
 robosuite-compatible body/gripper format at import time, and runs a
 real ``mj_step`` loop. When robosuite or its assets are unavailable
 on the runner, the module skips with a typed reason rather than
@@ -117,7 +117,7 @@ pytestmark = [
 
 
 class TestRobotModelRegistration:
-    """:class:`SO100` and :class:`SO100Gripper` must surface in the robosuite
+    """``SO100`` and ``SO100Gripper`` must surface in the robosuite
     factories so downstream env constructors can resolve them by name."""
 
     def test_so100_registered_in_robosuite(self) -> None:
@@ -314,7 +314,7 @@ class TestScriptedPolicy:
 
     def test_gripper_closes_during_close_phase(self, rollout) -> None:
         _telemetry, summary = rollout
-        # The Jaw joint range is [-0.174, 0.5] (see :func:`_assets`). Under the
+        # The Jaw joint range is [-0.174, 0.5] (see ``_assets``). Under the
         # scripted open(+1) command the jaw rests near ~0.10 (not the -0.174
         # lower limit), then closes fully to the 0.5 upper limit — an achievable
         # sweep of ~0.40 rad, not the full 0.674. Assert it both (a) reaches the

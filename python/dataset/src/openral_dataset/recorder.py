@@ -2,12 +2,12 @@
 
 The recorder is decoupled from any specific sink. The same recorder feeds:
 
-* :class:`openral_dataset.LeRobotDatasetSink` — writes a LeRobotDataset v3.0
+* ``openral_dataset.LeRobotDatasetSink`` — writes a LeRobotDataset v3.0
   (codebase_version="3.0") directly from the live rollout (online sim path).
-* :class:`openral_dataset.Rosbag2Sink` — writes an mcap rosbag2 of joints,
+* ``openral_dataset.Rosbag2Sink`` — writes an mcap rosbag2 of joints,
   world_state, camera streams, and ``/openral/tick`` metadata (online
   hardware path).
-* :class:`openral_dataset.Rosbag2ToLeRobotConverter` — reads a bag back and
+* ``openral_dataset.Rosbag2ToLeRobotConverter`` — reads a bag back and
   feeds the same ``DatasetSink`` interface to produce a v3 dataset (offline).
 
 The recorder owns no I/O. ``record_frame()`` calls fan out to every attached
@@ -135,7 +135,7 @@ class EpisodeSummary:
 
 
 class DatasetSink(Protocol):
-    """Fan-out target for :class:`RolloutRecorder`.
+    """Fan-out target for ``RolloutRecorder``.
 
     A sink receives one ``open_episode`` call per episode, zero or more
     ``write_frame`` calls during the episode, and exactly one
@@ -172,12 +172,12 @@ class RolloutRecorder:
 
     Args:
         robot: Normative robot description; used by sinks to bind feature
-            shapes via :func:`openral_dataset.features_from_robot`.
+            shapes via ``openral_dataset.features_from_robot``.
         task_string: Default natural-language task instruction
-            (overridable per-episode in :meth:`episode_start`).
+            (overridable per-episode in ``episode_start``).
         fps: Recording cadence in Hz. Locks the LeRobot v3 encoder's
             fps and the converter's tick-grid spacing.
-        sinks: One or more :class:`DatasetSink` implementations.
+        sinks: One or more ``DatasetSink`` implementations.
         repo_id: Optional HF Hub repo id (e.g. ``openral/dataset-pick-cube``).
             When set, lands on the OTel span attribute
             ``openral.dataset.repo_id`` for trace-to-dataset joins.
@@ -239,7 +239,7 @@ class RolloutRecorder:
     def expected_state_shape(self) -> tuple[int, ...]:
         """State-vector shape required by attached sinks.
 
-        Pulled from :class:`openral_core.ObservationSpec.state_shape`.
+        Pulled from ``openral_core.ObservationSpec.state_shape``.
         Callers that can't readily produce the proprioception vector
         (e.g. sim envs that don't surface ``state`` in their obs dict)
         use this to build a same-shape zero placeholder rather than
@@ -253,13 +253,13 @@ class RolloutRecorder:
     def expected_image_keys(self) -> tuple[str, ...]:
         """Camera keys (without ``observation.images.`` prefix) the sinks expect.
 
-        Derived from :class:`openral_core.RobotDescription.sensors` —
+        Derived from ``openral_core.RobotDescription.sensors`` —
         every sensor with both an image modality (``rgb`` / ``depth`` /
         ``rgbd`` / ``thermal`` / ``ir``) and a ``vla_feature_key`` becomes
         a camera key.
 
         Sim callers use this to build the ``images`` mapping for
-        :meth:`record_frame` — typically by writing the same
+        ``record_frame`` — typically by writing the same
         ``env.render()`` output to every declared camera key (sim envs
         usually expose one observation viewpoint that mirrors what the
         VLA sees through every robot camera).
@@ -303,7 +303,7 @@ class RolloutRecorder:
 
         Raises:
             RuntimeError: If an episode is already open. Call
-                :meth:`episode_end` first.
+                ``episode_end`` first.
         """
         if self._finalized:
             raise RuntimeError("RolloutRecorder is finalized; cannot start new episodes")
@@ -357,12 +357,12 @@ class RolloutRecorder:
                 ``observation.images.`` prefix) to ``(H, W, 3) uint8`` RGB.
             action: ``(action_dim,) float32``. Shape is verified against
                 ``RobotDescription.action_spec.dim``.
-            reward: Per-step reward (see :class:`DatasetFrame.reward`).
+            reward: Per-step reward (see ``DatasetFrame.reward``).
             terminated: Env-signalled natural completion (see
-                :class:`DatasetFrame.terminated`).
-            truncated: Step-budget hit (see :class:`DatasetFrame.truncated`).
+                ``DatasetFrame.terminated``).
+            truncated: Step-budget hit (see ``DatasetFrame.truncated``).
             stamp_ns: Frame wall clock in nanoseconds; defaults to
-                :func:`time.time_ns` when ``None``.
+                ``time.time_ns`` when ``None``.
             trace_id: Override for the per-frame OTel ``trace_id`` (32 hex).
                 When ``None`` (the online path) the id is captured from the
                 active ``rskill.tick`` span. The offline bag→LeRobot
@@ -376,7 +376,7 @@ class RolloutRecorder:
             The new frame_idx within the current episode.
 
         Raises:
-            RuntimeError: If no episode is open. Call :meth:`episode_start` first.
+            RuntimeError: If no episode is open. Call ``episode_start`` first.
             ValueError: If ``observation_state`` or ``action`` shapes do
                 not match the robot's specs.
         """
@@ -457,7 +457,7 @@ class RolloutRecorder:
                 converter does the equivalent reconstruction offline).
 
         Returns:
-            The :class:`EpisodeSummary` (also handed to every sink).
+            The ``EpisodeSummary`` (also handed to every sink).
 
         Raises:
             RuntimeError: If no episode is open.

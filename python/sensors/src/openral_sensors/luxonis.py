@@ -1,6 +1,6 @@
 """Luxonis OAK-D family sensor adapters.
 
-``oak_d_pro_bundle`` builds a :class:`SensorBundle` for a Luxonis OAK-D Pro
+``oak_d_pro_bundle`` builds a ``SensorBundle`` for a Luxonis OAK-D Pro
 (RGB + stereo depth + IMU), with nominal intrinsics from the Luxonis
 datasheet at the default stream resolutions (1920×1080 RGB, 1280×800 depth);
 registered under ``luxonis/oak_d_pro``. Replace with calibrated values from
@@ -84,7 +84,7 @@ def oak_d_pro_bundle(
     depth_width: int = 1280,
     depth_height: int = 800,
 ) -> SensorBundle:
-    """Build a :class:`SensorBundle` for a Luxonis OAK-D Pro.
+    """Build a ``SensorBundle`` for a Luxonis OAK-D Pro.
 
     The bundle exposes three streams: RGB (IMX378), depth (OV9282
     global-shutter stereo) and the on-device BNO086 IMU. Nominal
@@ -110,7 +110,7 @@ def oak_d_pro_bundle(
         depth_height: Depth stream height.
 
     Returns:
-        A :class:`SensorBundle` with ``sync="hardware"`` and 5 ms
+        A ``SensorBundle`` with ``sync="hardware"`` and 5 ms
         tolerance (RVC2 syncs RGB + depth on-device).
 
     Example:
@@ -188,7 +188,7 @@ def _scale_intrinsics(base: IntrinsicsPinhole, width: int, height: int) -> Intri
     """Rescale a pinhole intrinsics tuple linearly to a new (width, height).
 
     Used when a caller picks a non-default stream resolution. Thin wrapper over
-    :func:`openral_core.scale_intrinsics_to` (the canonical linear-rescale
+    ``openral_core.scale_intrinsics_to`` (the canonical linear-rescale
     helper); the distortion model is preserved and coefficients are assumed
     normalised.
     """

@@ -10,7 +10,7 @@ lowered kinematics shifted, and the only thing that would disagree was a YAML
 comment. This is issue #102's third acceptance item — "a regression for the
 nominal valid pose and a nearby genuinely colliding fixture pose" — with the
 pair the start-state census
-(:doc:`../../../docs/reference/robocasa-start-state-census`) identified.
+(``../../../docs/reference/robocasa-start-state-census``) identified.
 
 Three states, all on the real kitchen: the shipped pin at reset, the layout it
 replaced at reset, and — the colliding half of that acceptance item — the
@@ -23,7 +23,7 @@ Real kitchen, real manifest, real kernel binary, no mocks (CLAUDE.md §1.11):
    is read at reset with zero actions applied.
 2. A 25 mm occupancy grid is built around the arm from that kitchen's own
    geometry, cell by cell, through the shipped
-   :func:`openral_hal.sim_sensor_bridge.voxel_backing_record` — the same probe
+   ``openral_hal.sim_sensor_bridge.voxel_backing_record`` — the same probe
    the E-stop evidence path uses to ask what backs a cell. A cell is occupied
    when a **solid** (collidable) world geom passes through it.
 3. The real ``safety_kernel_node`` is launched from
@@ -278,13 +278,13 @@ def _pose_in_fixture(
     robot_bodies: frozenset[int],
     positions: list[float],
 ) -> tuple[list[float], str, float]:
-    """Move the arm to :data:`_COLLIDING_POSE_DEG` and certify that it is in the wood.
+    """Move the arm to ``_COLLIDING_POSE_DEG`` and certify that it is in the wood.
 
     The kernel refusals this file otherwise measures are envelope refusals —
     correct, but at 20-67 mm of corner slop they say nothing about whether any
     mesh is inside any fixture. This pose is, and the depth is measured before
     the kernel is asked, by the shipped
-    :func:`~openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` scoped to
+    ``estop_ground_truth_snapshot`` scoped to
     the kernel-checked links.
 
     The adjudicator is that probe's certified convex distance and **not**
@@ -340,9 +340,9 @@ def _build_grid(model: Any, data: Any, robot_bodies: frozenset[int]) -> tuple[An
     """A base-frame 25 mm occupancy grid over the arm's neighbourhood.
 
     Bounded by the seven kernel-checked links' own bounding spheres plus
-    :data:`_PAD`, so it holds the nearest cell of every link the kernel checks
+    ``_PAD``, so it holds the nearest cell of every link the kernel checks
     without rasterising a whole kitchen. Occupancy comes from
-    :func:`~openral_hal.sim_sensor_bridge.voxel_backing_record`, one call per
+    ``voxel_backing_record``, one call per
     cell, and a cell counts as occupied only for a ``solid_world`` backing —
     the census's criterion, and the one the near-miss probes use.
     """

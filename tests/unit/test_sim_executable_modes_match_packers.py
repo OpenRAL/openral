@@ -1,16 +1,16 @@
 """Lockstep proof: ``SIM_EXECUTABLE_CONTROL_MODES`` == the sim HAL packers.
 
 The reasoner's ``hal_mode="sim"`` palette gate admits a VLA rSkill only when
-every :class:`ControlMode` its action contract demands is in
-:data:`openral_core.SIM_EXECUTABLE_CONTROL_MODES`. That constant is only safe
+every ``ControlMode`` its action contract demands is in
+``openral_core.SIM_EXECUTABLE_CONTROL_MODES``. That constant is only safe
 if it exactly matches what the default sim HAL packers can execute — admit a
 mode no packer implements and the skill boots, then E-stops mid-run.
 
-Pins both directions against the REAL packers in :mod:`openral_hal.sim_attached`
-(CLAUDE.md §1.11 — no mocks): :func:`pack_action_for_env` (free-function packer),
-:meth:`SimAttachedHAL._pack_with_composite_split` (robosuite composite-slot
+Pins both directions against the REAL packers in ``openral_hal.sim_attached``
+(CLAUDE.md §1.11 — no mocks): ``pack_action_for_env`` (free-function packer),
+``SimAttachedHAL._pack_with_composite_split`` (robosuite composite-slot
 packer), and BODY_TWIST's direct-qpos interception in
-:meth:`SimAttachedHAL.send_action` (not a packer ``else`` branch).
+``SimAttachedHAL.send_action`` (not a packer ``else`` branch).
 
 A mode counts as **handled** by a packer when a representative chunk does NOT
 raise the packer's unsupported-mode ``ROSConfigError`` (message contains
@@ -91,7 +91,7 @@ def _panda_mobile() -> RobotDescription:
 
 
 def _representative_action(mode: ControlMode) -> Action:
-    """A real :class:`Action` of ``mode`` whose payload reaches the mode's branch.
+    """A real ``Action`` of ``mode`` whose payload reaches the mode's branch.
 
     Widths are chosen so a handled mode passes its in-branch shape guard
     (so it never raises for the wrong reason); for the unhandled modes the

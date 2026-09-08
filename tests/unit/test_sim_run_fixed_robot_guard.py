@@ -3,7 +3,7 @@
 Sim backends that hard-wire a single robot (LIBERO → Franka, MetaWorld →
 Sawyer, PushT → 2-D pusher, gym-aloha → bimanual, RoboCasa → PandaMobile) used
 to let ``--robot`` / ``robot_id:`` silently swap robots underneath the user.
-The CLI now raises a typed :class:`ROSConfigError` at config-build time, before
+The CLI now raises a typed ``ROSConfigError`` at config-build time, before
 any rollout starts.
 
 Canonical invocation::

@@ -1,10 +1,10 @@
 """High-precision cadence helpers for the inference runner.
 
-The :class:`~openral_runner.InferenceRunner` foreground loop ticks at
+The ``InferenceRunner`` foreground loop ticks at
 the runner rate (default 30 Hz to match
-:class:`~openral_world_state.WorldStateAggregator`). To hit that cadence
+``WorldStateAggregator``). To hit that cadence
 on hosts where ``time.sleep`` has ~1-2 ms jitter, the runner uses
-:func:`precise_sleep` — a hybrid that delegates the bulk of the wait to
+``precise_sleep`` — a hybrid that delegates the bulk of the wait to
 ``time.sleep`` and then busy-waits the final millisecond on
 ``time.perf_counter()``. This is the same shape lerobot uses in
 ``src/lerobot/scripts/lerobot_record.py:record_loop``.
@@ -60,7 +60,7 @@ def precise_sleep(duration_s: float) -> None:
 def sleep_until(deadline_perf_counter_s: float) -> None:
     """Sleep until ``time.perf_counter() >= deadline_perf_counter_s``.
 
-    Convenience wrapper around :func:`precise_sleep` that takes an absolute
+    Convenience wrapper around ``precise_sleep`` that takes an absolute
     monotonic deadline instead of a relative duration. Useful for the
     rate-limited loop pattern::
 

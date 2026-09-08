@@ -1,8 +1,8 @@
 """Built-in sim backends for eval — registered at import time.
 
-Mirrors :mod:`openral_sim.policies` but for the scene half of the
+Mirrors ``openral_sim.policies`` but for the scene half of the
 ``(robot × scene × task × VLA)`` quad. To add a new sim backend, drop a
-module here and register a factory in :data:`openral_sim.SCENES`.
+module here and register a factory in ``openral_sim.SCENES``.
 
 The factories themselves are responsible for lazily importing heavy backends
 (robosuite, libero, metaworld, mujoco, …) so installing ``openral-sim``

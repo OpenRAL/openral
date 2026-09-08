@@ -1,19 +1,19 @@
 """Single sim/real HAL construction seam.
 
-:func:`build_hal` turns a :class:`RobotDescription` + ``mode`` into a
-:class:`~openral_hal.protocol.HAL`. ROS lifecycle nodes (``deploy sim``),
+``build_hal`` turns a ``RobotDescription`` + ``mode`` into a
+``HAL``. ROS lifecycle nodes (``deploy sim``),
 the runner factory (``deploy run``), and the deploy-sim CLI all route
 through it, so HAL *type* lives only in the manifest's ``hal:`` block.
 
 Routing: ``mode="sim"`` + ``sim_env_yaml`` builds
-:class:`~openral_hal.sim_attached.SimAttachedHAL` around the scene's
-:class:`~openral_sim.rollout.SimRollout` (bypasses ``hal.sim``); plain
+``SimAttachedHAL`` around the scene's
+``SimRollout`` (bypasses ``hal.sim``); plain
 ``mode="sim"`` uses ``hal.sim``, or derives
-:meth:`MujocoArmHAL.from_description` when ``hal.sim`` is ``None`` and a
+``MujocoArmHAL.from_description`` when ``hal.sim`` is ``None`` and a
 ``sim:`` block exists; ``mode="real"`` uses ``hal.real`` with ``transport``
 kwargs (``port``, ``robot_ip``, ``fci_ip``). Missing HAL →
-:class:`ROSCapabilityMismatch`; ``sim_env_yaml`` with ``mode="real"`` →
-:class:`ROSConfigError`.
+``ROSCapabilityMismatch``; ``sim_env_yaml`` with ``mode="real"`` →
+``ROSConfigError``.
 
 Construction: a constructor accepting ``description`` receives it;
 otherwise the class self-describes from its accepted ``transport`` keys.
@@ -47,7 +47,7 @@ def build_hal(
 
     Args:
         description: The robot manifest (typically loaded via
-            :meth:`RobotDescription.from_yaml`).
+            ``RobotDescription.from_yaml``).
         mode: ``"sim"`` for the simulation HAL (``deploy sim`` / ``sim run``
             harness), ``"real"`` for the real-hardware HAL (``deploy run``).
         transport: Constructor kwargs for the real HAL (serial ``port``,
@@ -57,10 +57,10 @@ def build_hal(
             an explicit ``deploy run`` transport override wins.
         sim_env_yaml: Path to a SimScene YAML. When
             provided with ``mode="sim"``, returns a
-            :class:`~openral_hal.sim_attached.SimAttachedHAL` wrapping the
-            scene's :class:`~openral_sim.rollout.SimRollout`; bypasses the
+            ``SimAttachedHAL`` wrapping the
+            scene's ``SimRollout``; bypasses the
             bare-twin / ``hal.sim`` class. Mutually exclusive with
-            ``mode="real"`` — raises :class:`~openral_core.exceptions.ROSConfigError`
+            ``mode="real"`` — raises ``ROSConfigError``
             if both are supplied.
 
     Returns:

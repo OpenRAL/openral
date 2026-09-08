@@ -1,7 +1,7 @@
 """Tests for ``tools/rskill_publisher.py``.
 
 The publisher is a CLI script with no Python package wrapper; imported via
-:mod:`importlib` from its file path so the test exercises exactly the script
+``importlib`` from its file path so the test exercises exactly the script
 users invoke with ``uv run python tools/rskill_publisher.py``.
 
 All HF Hub I/O (``HfApi.create_repo``, ``upload_folder``, ``model_info``) is

@@ -1,7 +1,7 @@
 """Integration tests for the ROS 2 reasoner/supervisor graph's ``rskill_runner_node``.
 
-Drives the real :class:`RskillRunnerNode` + the colocated :class:`_WorldStateLifecycleNode`
-+ a real :class:`SafetyPassthroughNode` through ``rclpy`` (in-process equivalent of
+Drives the real ``RskillRunnerNode`` + the colocated ``_WorldStateLifecycleNode``
++ a real ``SafetyPassthroughNode`` through ``rclpy`` (in-process equivalent of
 ``launch_testing`` per the existing repo convention) and asserts the end-to-end topic flow
 that the ROS 2 reasoner/supervisor graph's step 1 locks:
 
@@ -15,11 +15,11 @@ that the ROS 2 reasoner/supervisor graph's step 1 locks:
    dispatch path actually raised (``FAILURE_NONE`` on success).
 
 Per CLAUDE.md §1.11 / §5.4: no mocks. The skill is a real
-:class:`rSkillBase` subclass (``_ConstantSkill``) that emits a constant
+``rSkillBase`` subclass (``_ConstantSkill``) that emits a constant
 six-DoF joint-position chunk — not a `MagicMock`. The
 `WorldStateAggregator` is the production class; the skill_runner_node
 calls ``aggregator.snapshot()`` in-process via the shared instance the
-:func:`compose_so100_runtime` factory hands it.
+``compose_so100_runtime`` factory hands it.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _make_constant_skill() -> Any:
-    """Return a real :class:`rSkillBase` subclass — no mocks."""
+    """Return a real ``rSkillBase`` subclass — no mocks."""
     from openral_core.schemas import Action, ControlMode
     from openral_rskill.base import rSkillBase
 

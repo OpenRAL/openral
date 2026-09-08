@@ -16,7 +16,7 @@ overlays drawn, nothing else breaks).
   `/openral/perception/masks`: the segmenter node's diagnostic
   re-publication of its `SegmentInView` service replies (off by default
   behind `publish_debug_masks`, so subscribing is free when unused). Decoded
-  with :func:`mono8_mask_to_png_b64` into `TelemetryStore.set_perception_masks`.
+  with ``mono8_mask_to_png_b64`` into `TelemetryStore.set_perception_masks`.
 
 Read-only: subscribes and writes to the store only — no publisher, no
 service client, no robot authority. Overlays are advisory display only.
@@ -147,9 +147,9 @@ class PerceptionOverlaySubscriber:
         Args:
             store: The dashboard's telemetry store; every decoded detection set
                 is written to it via
-                :meth:`TelemetryStore.set_perception_detections`, and every
+                ``TelemetryStore.set_perception_detections``, and every
                 decoded mask set via
-                :meth:`TelemetryStore.set_perception_masks`.
+                ``TelemetryStore.set_perception_masks``.
         """
         self._store = store
         self._node: Any = None
@@ -223,7 +223,7 @@ class PerceptionOverlaySubscriber:
     def masks_available(self) -> bool:
         """True when the mask subscription is live (needs `SegmentMasks` built).
 
-        Separate from :attr:`available` because the two legs can differ: an
+        Separate from ``available`` because the two legs can differ: an
         older `openral_msgs` overlay carries `PromptStamped` but not
         `SegmentMasks`, and losing masks must not read as losing overlays.
         """

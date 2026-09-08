@@ -2,7 +2,7 @@
 
 Runs Depth Anything 3 (`depth-anything/DA3-SMALL` by default) in its own
 isolated venv and serves metric depth over a ZMQ REP socket using msgpack
-frames — the same wire pattern as :mod:`tools._locateanything_server`. The
+frames — the same wire pattern as ``tools._locateanything_server``. The
 openral-side client lives in the `openral_perception_ros` depth-provider node,
 which republishes the result as a `32FC1` depth Image + CameraInfo for nvblox.
 

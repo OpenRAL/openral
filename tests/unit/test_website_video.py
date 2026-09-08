@@ -1,7 +1,7 @@
 """Unit tests for the clean website world-view MP4 writer.
 
 Exercises ``openral_sim._website_video.save_world_mp4`` and the
-``videos.json`` manifest merge with a real :class:`EpisodeResult` and real
+``videos.json`` manifest merge with a real ``EpisodeResult`` and real
 imageio/ffmpeg muxing — no mocks (CLAUDE.md §1.11).
 """
 

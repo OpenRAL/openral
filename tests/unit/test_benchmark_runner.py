@@ -61,7 +61,7 @@ def _mini_suite(
 
     Every BenchmarkScene shares the same scene / robot / protocol /
     metadata — the suite-level invariants in
-    :func:`openral_core.raise_on_invalid_suite` require it. Tasks differ
+    ``openral_core.raise_on_invalid_suite`` require it. Tasks differ
     only in ``task.id``.
 
     Returns:

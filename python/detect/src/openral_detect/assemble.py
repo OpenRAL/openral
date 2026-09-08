@@ -1,17 +1,17 @@
-"""Assemble a complete :class:`RobotDescription` from a `DetectionReport`.
+"""Assemble a complete ``RobotDescription`` from a `DetectionReport`.
 
 1. **Pick a base**: known robot signature (``so100`` / ``aloha`` / …) with a
-   committed ``robots/<name>/robot.yaml`` → :meth:`RobotDescription.from_yaml`,
+   committed ``robots/<name>/robot.yaml`` → ``RobotDescription.from_yaml``,
    untouched except for sensor/compute enrichment; otherwise a minimal
    scaffold.
 2. **Enrich sensors**: each detected camera (RealSense, V4L2 USB UVC) →
-   :class:`openral_sensors.SensorSignature` → ``CATALOG.build(entry.id, ...)``
+   ``openral_sensors.SensorSignature`` → ``CATALOG.build(entry.id, ...)``
    for a fully-populated ``SensorSpec`` / ``SensorBundle`` (real intrinsics,
    FOV, encoding, rate); serial numbers and ``needs_calibration`` land in
    ``SensorSpec.metadata``.
-3. **Populate** :class:`~openral_core.ComputeSpec` on ``compute_edge``
+3. **Populate** ``ComputeSpec`` on ``compute_edge``
    (Jetson/embedded SoC) or ``compute_local`` (discrete NVIDIA / Apple
-   Silicon / CPU-only) via :func:`build_compute_spec` — the same function
+   Silicon / CPU-only) via ``build_compute_spec`` — the same function
    ``openral doctor`` calls, so both commands agree.
 
 Never raises on a missing catalog entry — falls back to a generic
@@ -57,22 +57,22 @@ __all__ = ["assemble_robot_description", "build_compute_spec"]
 
 
 def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeSpec:
-    """Build a :class:`~openral_core.ComputeSpec` from a GPU probe + report.
+    """Build a ``ComputeSpec`` from a GPU probe + report.
 
-    Extracts the same fields that :func:`assemble_robot_description` writes into
+    Extracts the same fields that ``assemble_robot_description`` writes into
     ``RobotDescription.compute_edge`` / ``compute_local``, so callers that only
     need the compute spec (e.g. ``openral doctor``) do not have to run the full
     assembly pipeline.
 
     Args:
         gpu: The GPU probe result (nvidia, jetson, apple_silicon fields).
-        report: The full :class:`DetectionReport`; its
-            :meth:`~DetectionReport.derived_runtimes` /
-            :meth:`~DetectionReport.derived_dtypes` methods are used to derive
+        report: The full ``DetectionReport``; its
+            ``derived_runtimes`` /
+            ``derived_dtypes`` methods are used to derive
             the runtime + dtype lists.
 
     Returns:
-        A fully-populated :class:`~openral_core.ComputeSpec` instance.
+        A fully-populated ``ComputeSpec`` instance.
         All fields default to zero / ``None`` / empty when no accelerator was
         detected, matching the semantics of an empty host.
     """
@@ -102,11 +102,11 @@ def assemble_robot_description(
     force_robot_type: str | None = None,
     enrich_cameras: bool = True,
 ) -> RobotDescription:
-    """Build a :class:`RobotDescription` from a probed host.
+    """Build a ``RobotDescription`` from a probed host.
 
     Args:
-        detection: A :class:`DetectionReport` produced by
-            :func:`openral_detect.detect_hardware`.
+        detection: A ``DetectionReport`` produced by
+            ``openral_detect.detect_hardware``.
         base_description: Caller-supplied canonical description to use as
             the base.  When ``None``, the assembler resolves the inferred
             ``bh_robot_type`` (from USB matches or DDS inference) to
@@ -122,7 +122,7 @@ def assemble_robot_description(
             is supplied.
         enrich_cameras: When ``True`` (default), detected cameras (RealSense
             bundles, V4L2 ``camera_N`` specs) are appended onto the base
-            description's sensor list via :func:`_enrich_sensors`. Pass
+            description's sensor list via ``_enrich_sensors``. Pass
             ``False`` to skip that append and leave ``sensors`` /
             ``sensor_bundles`` exactly as the base description defines them —
             the interactive ``openral detect`` sensor wizard passes ``False``
@@ -130,14 +130,14 @@ def assemble_robot_description(
             enrichment always run regardless of this flag.
 
     Returns:
-        A fully-populated :class:`RobotDescription` ready to be written to
-        disk and consumed by :func:`openral_detect.check_installed_rskills`.
+        A fully-populated ``RobotDescription`` ready to be written to
+        disk and consumed by ``openral_detect.check_installed_rskills``.
 
         When the base manifest declares ``hal.parameters.can_bus_bindings``,
         the CAN interface names in ``hal.parameters.defaults`` are replaced
         with the ones actually found on this host — see
-        :func:`_enrich_can_buses`. Any binding that cannot be resolved
-        unambiguously appends to :attr:`DetectionReport.warnings` and leaves
+        ``_enrich_can_buses``. Any binding that cannot be resolved
+        unambiguously appends to ``DetectionReport.warnings`` and leaves
         the manifest value alone.
 
     Raises:
@@ -337,8 +337,8 @@ def _build_v4l2_camera(
     device on the host — coincidence-prone, so last.
 
     Returns:
-        A :class:`SensorSpec` for a single-stream camera, or a
-        :class:`SensorBundle` when the catalog entry describes a multi-stream
+        A ``SensorSpec`` for a single-stream camera, or a
+        ``SensorBundle`` when the catalog entry describes a multi-stream
         device (a stereo head resolves to left/right/depth/IMU from one node).
     """
     entry = None
@@ -409,7 +409,7 @@ def _build_v4l2_camera(
 
 
 def _merge_compute(existing: ComputeSpec | None, probed: ComputeSpec) -> ComputeSpec:
-    """Merge a freshly-probed :class:`ComputeSpec` with any existing static spec.
+    """Merge a freshly-probed ``ComputeSpec`` with any existing static spec.
 
     Static manifest values (e.g. ``endpoint``, ``network_latency_ms``) are
     preserved; probed values (runtimes, VRAM, TOPS) take the max so a

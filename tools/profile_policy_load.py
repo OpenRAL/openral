@@ -5,7 +5,7 @@ Use when a policy load takes a surprising amount of time and you want to know
 which phase to attack. Drives ``openral_sim.factory.make_policy`` end-to-end
 against the given rSkill manifest, captures every
 ``<prefix>_<name>_{start,heartbeat,done}`` event from
-:mod:`openral_rskill._diagnostics.phase_timer`, and renders a phase/elapsed_s/
+``openral_rskill._diagnostics.phase_timer``, and renders a phase/elapsed_s/
 share table. Captures the same events ``openral dashboard`` ingests via OTel,
 so the numbers match what an operator sees live.
 

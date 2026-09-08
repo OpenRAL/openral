@@ -10,7 +10,7 @@ failed when somebody tried to publish it — which is exactly how
 token, no ``<quantization>`` segment) and stayed unpublishable.
 
 This asserts the same predicate the publisher uses,
-:func:`openral_core.schemas.repo_name_is_canonical`, against every real
+``openral_core.schemas.repo_name_is_canonical``, against every real
 manifest on disk via ``discover_intree_rskills`` — no mocks, no synthetic
 fixtures (CLAUDE.md §1.11).
 """

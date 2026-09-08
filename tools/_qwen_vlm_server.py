@@ -1,10 +1,10 @@
 """Qwen3.5-4B scene-VLM inference server — runs INSIDE the isolated sidecar venv.
 
-Exec'd by :mod:`tools.qwen_vlm_sidecar` (see that file for why out-of-process).
+Exec'd by ``tools.qwen_vlm_sidecar`` (see that file for why out-of-process).
 Loads the NF4 bitsandbytes-quantized model once and answers scene questions
 over ZMQ REP + msgpack. Deliberately thin: returns the model's answer text
 verbatim; the main-env backend
-(:mod:`openral_runner.backends.gstreamer.qwen_scene_vlm`) only strips
+(``openral_runner.backends.gstreamer.qwen_scene_vlm``) only strips
 whitespace, keeping the protocol unit-testable without a GPU.
 
 Wire protocol (msgpack dict in/out, ZMQ REQ/REP):

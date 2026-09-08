@@ -1,25 +1,25 @@
 """Manifest → detector-backend dispatch for ``kind: detector`` rSkills.
 
 A GStreamer-free seam (no ``gi`` import) so the runtime↔backend selection is
-unit-testable without a live pipeline. :class:`~.detector_runner.DetectorRunner`
+unit-testable without a live pipeline. ``DetectorRunner``
 delegates construction here.
 
 Dispatch keys on the manifest's ``detector.engine`` first (when set), then
 falls back to the legacy ``runtime``-based selection:
 
 * ``engine: zeroshot_hf`` → the in-process Transformers open-vocabulary detector
-  (:class:`~.omdet_turbo_detector.OmDetTurboDetector`,
-  :attr:`~.objects_detector.DetectorTier.ZEROSHOT_HF`) run over a fixed
+  (``OmDetTurboDetector``,
+  ``ZEROSHOT_HF``) run over a fixed
   vocabulary. No ``onnx_path``; the model loads under the runtime's own
   ``transformers``.
 * ``runtime: onnx`` / ``tensorrt`` (or ``engine: rtdetr_onnx``) → an ONNX-backed
-  detector (:class:`~.objects_detector.ObjectsDetector` CPU tier or
-  :class:`~.nvmm_detector.NvmmObjectsDetector` NVMM tier), built from the
+  detector (``ObjectsDetector`` CPU tier or
+  ``NvmmObjectsDetector`` NVMM tier), built from the
   caller-resolved ``onnx_path``.
 * ``runtime: pytorch`` (or ``engine: vlm_sidecar``) → the out-of-process
   open-vocabulary VLM detector
-  (:class:`~.locateanything_detector.LocateAnythingDetector`,
-  :attr:`~.objects_detector.DetectorTier.VLM_SIDECAR`). No ``onnx_path`` is
+  (``LocateAnythingDetector``,
+  ``VLM_SIDECAR``). No ``onnx_path`` is
   needed; the model runs in an isolated sidecar.
 """
 
@@ -78,10 +78,10 @@ def detector_node_wiring(mode: DetectorMode) -> DetectorNodeWiring:
       current view).
 
     Args:
-        mode: The manifest's :attr:`DetectorContract.mode`.
+        mode: The manifest's ``DetectorContract.mode``.
 
     Returns:
-        The :class:`DetectorNodeWiring` policy for ``mode``.
+        The ``DetectorNodeWiring`` policy for ``mode``.
 
     Example:
         >>> detector_node_wiring(DetectorMode.CONTINUOUS).run_continuous_leg

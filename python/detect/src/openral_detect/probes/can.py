@@ -53,7 +53,7 @@ def diagnose_can_matches(matches: list[CanMatchRecord]) -> list[str]:
     This names the condition instead.
 
     Args:
-        matches: The matched rows from a :class:`CanProbeResult`.
+        matches: The matched rows from a ``CanProbeResult``.
 
     Returns:
         Zero or more warning lines, in match order.
@@ -91,7 +91,7 @@ def probe_can(*, warnings: list[str] | None = None) -> CanProbeResult:
             owns aggregation).
 
     Returns:
-        A populated :class:`CanProbeResult`.  Empty on non-Linux hosts and
+        A populated ``CanProbeResult``.  Empty on non-Linux hosts and
         on Linux hosts with no CAN controller.
 
     Example:

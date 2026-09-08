@@ -7,11 +7,11 @@ snapshot on demand.
 Diagnostics: each tracked component (joint state, sensor bundle, EE) gets a
 ``WorldState.diagnostics`` entry — ``"ok"`` (updated within
 ``staleness_limit_s``), ``"stale"`` (not), or ``"error"`` (latched via
-:meth:`set_error`). Staleness is **latched**: once stale, a component stays
+``set_error``). Staleness is **latched**: once stale, a component stays
 ``"stale"`` until a fresh update arrives, so the Reasoner sees it across
 snapshot boundaries.
 
-Hot path: :meth:`snapshot` is the only hot-path method — it locks, samples
+Hot path: ``snapshot`` is the only hot-path method — it locks, samples
 all injected state, classifies staleness, and returns an immutable model.
 Update methods are called from ROS 2 subscriber callbacks.
 
@@ -108,7 +108,7 @@ class WorldStateAggregator:
 
     The aggregator holds no ROS 2 imports.  All data arrives via typed update
     methods called from subscriber callbacks in the enclosing ROS 2 lifecycle
-    node.  :meth:`snapshot` can be called from any thread; internal state is
+    node.  ``snapshot`` can be called from any thread; internal state is
     protected by a reentrant lock.
 
     Args:
@@ -122,11 +122,11 @@ class WorldStateAggregator:
         policy_state_staleness_limit_s: Separate window for the step-locked
             ``policy_state`` component, published once per simulator step
             rather than at a fixed rate. Default ``5.0 s`` — see
-            :data:`DEFAULT_POLICY_STATE_STALENESS_S`.
+            ``DEFAULT_POLICY_STATE_STALENESS_S``.
         clock_fn: Callable returning the current time in nanoseconds; defaults
             to ``time.time_ns``. Override in tests. Stamps arrivals/staleness
             only — place-declaration liveness uses the attachment stream's own
-            clock (see :meth:`update_attached_objects`), never this one.
+            clock (see ``update_attached_objects``), never this one.
 
     Example:
         >>> from openral_core.schemas import JointState
@@ -308,16 +308,16 @@ class WorldStateAggregator:
     def update_image_frame(self, sensor_name: str, frame: SensorFrame) -> None:
         """Record an inline pixel payload for a named sensor.
 
-        Unlike :meth:`update_image` (topic ref only), stores the actual
-        :class:`SensorFrame` so :meth:`snapshot` carries pixels inline via
-        :attr:`WorldState.image_frames` — the path a Skill uses without its
+        Unlike ``update_image`` (topic ref only), stores the actual
+        ``SensorFrame`` so ``snapshot`` carries pixels inline via
+        ``WorldState.image_frames`` — the path a Skill uses without its
         own ROS subscription (CLAUDE.md §6.1, Layer 1→2→3). Accepts sensor
         names not declared in ``RobotDescription.sensor_bundles``: synthetic
         digital-twin cameras live in the active MJCF, not the robot manifest.
 
         Args:
-            sensor_name: Camera id; key in :attr:`WorldState.image_frames`.
-            frame: Validated :class:`SensorFrame` (``data``/``topic``/``handle``).
+            sensor_name: Camera id; key in ``WorldState.image_frames``.
+            frame: Validated ``SensorFrame`` (``data``/``topic``/``handle``).
         """
         stamp = self._clock_fn()
         with self._lock:
@@ -418,7 +418,7 @@ class WorldStateAggregator:
 
                 Liveness is evaluated against ``stamp_ns`` (this message's own
                 stream-clock stamp) — the only clock it is comparable with. This
-                is the single evaluation point; :meth:`snapshot` publishes what
+                is the single evaluation point; ``snapshot`` publishes what
                 is stored here.
 
         Raises:
@@ -456,7 +456,7 @@ class WorldStateAggregator:
         """Latch an explicit diagnostic status for a named component.
 
         Use to surface hardware faults or driver errors that go beyond
-        mere staleness.  The forced status persists until :meth:`clear_error`
+        mere staleness.  The forced status persists until ``clear_error``
         is called.
 
         Args:
@@ -623,7 +623,7 @@ class WorldStateAggregator:
     ) -> None:
         """Lift this tick's snapshot diagnostics onto the span + metric instruments.
 
-        Called from inside :meth:`snapshot` under ``self._lock``. Compares
+        Called from inside ``snapshot`` under ``self._lock``. Compares
         the current stale / latched-error sets against the previous tick
         to fire ``openral.event.staleness_latched`` /
         ``openral.event.error_latched`` events only on transitions.

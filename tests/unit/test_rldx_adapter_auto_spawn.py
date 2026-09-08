@@ -1,7 +1,7 @@
 """Unit tests for the RLDX-1 auto-managed sidecar adapter — openral-side only, no
 upstream rldx package or GPU model needed. Per CLAUDE.md §1.11, no mocks: exercises
-real :class:`RSkillManifest` fixtures under ``rskills/rldx1-*``, the real
-``@POLICIES.register("rldx")`` factory, and a real :class:`socket.socket` listener for
+real ``RSkillManifest`` fixtures under ``rskills/rldx1-*``, the real
+``@POLICIES.register("rldx")`` factory, and a real ``socket.socket`` listener for
 the "port busy → don't double-spawn" guard.
 
 Not covered here (sim-tier, needs GPU + upstream rldx checkout): live ZMQ round-trips,
@@ -198,7 +198,7 @@ def test_try_ping_fast_fails_on_dead_port_at_production_timeout() -> None:
     Regression: ZMQ REQ on tcp:// connects lazily, so ``recv()`` blocked the full
     ``RCVTIMEO`` (60 000 ms default) instead of failing fast, stalling every cold-start
     ``openral sim run`` 60 s between ``rldx_sidecar_connecting`` and ``launching
-    server``. Fix gates the ZMQ leg behind :meth:`_is_port_busy`'s TCP probe; pins the
+    server``. Fix gates the ZMQ leg behind ``_is_port_busy``'s TCP probe; pins the
     timeout here.
     """
     import time

@@ -2,14 +2,14 @@
 
 This module wraps the upstream DeepMind ``mujoco_menagerie`` SO-100 MJCF
 (``trs_so_arm100/so_arm100.xml``, vendored via ``robot_descriptions``) as a
-:class:`openral_hal.HAL` Protocol implementation, mirroring the
-:class:`openral_hal.UR5eHAL` / :class:`openral_hal.FrankaPandaHAL` pattern.
+``openral_hal.HAL`` Protocol implementation, mirroring the
+``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL`` pattern.
 
 It complements two existing SO-100 paths in the repo:
 
-* :class:`openral_hal.SO100FollowerHAL` — talks to the **real** lerobot
+* ``openral_hal.SO100FollowerHAL`` — talks to the **real** lerobot
   driver over USB serial.  Production path.
-* :class:`openral_hal.SO100DigitalTwin` — kinematic-only in-process state
+* ``openral_hal.SO100DigitalTwin`` — kinematic-only in-process state
   holder (no physics).  Used as a drop-in for ``SO100FollowerHAL`` in
   unit tests.
 
@@ -20,7 +20,7 @@ component or ``pytest.skip`` — nothing in between").
 
 Joint inventory
 ---------------
-The menagerie XML and the canonical :data:`openral_hal.SO100_DESCRIPTION`
+The menagerie XML and the canonical ``openral_hal.SO100_DESCRIPTION``
 use different names — the menagerie follows the SO-ARM-100 mechanical
 naming (``Rotation``, ``Pitch``, ``Elbow``, …), while lerobot and the
 description use functional names (``shoulder_pan``, ``shoulder_lift``,
@@ -70,16 +70,16 @@ class SO100MujocoHAL(MujocoArmHAL):
 
     The HAL exposes the canonical 6 SO-100 joints (5 arm + 1 gripper) on
     its public surface, using the lerobot-style names from
-    :data:`openral_hal.SO100_DESCRIPTION`.  Internally it drives the
+    ``openral_hal.SO100_DESCRIPTION``.  Internally it drives the
     Menagerie MJCF's 6 position actuators (``Rotation``, ``Pitch``,
     ``Elbow``, ``Wrist_Pitch``, ``Wrist_Roll``, ``Jaw``) and maps the
     revolute Jaw range ``[-0.174, 1.75]`` rad to a normalised ``[0, 1]``
     gripper channel — so the same 6-DoF action chunk drives the sim twin
-    and the real hardware HAL (:class:`openral_hal.SO100FollowerHAL`)
+    and the real hardware HAL (``openral_hal.SO100FollowerHAL``)
     identically.
 
     The MJCF position limits are tighter than the conservative
-    ``[-π, π]`` declared on :data:`openral_hal.SO100_DESCRIPTION`; commands
+    ``[-π, π]`` declared on ``openral_hal.SO100_DESCRIPTION``; commands
     outside the MJCF range are clipped by MuJoCo's own position
     controllers.  Tests should command targets inside the menagerie
     range (e.g. ``Rotation`` is ``[-1.92, 1.92]``).
@@ -89,7 +89,7 @@ class SO100MujocoHAL(MujocoArmHAL):
             ``None``, the file is fetched lazily from
             ``robot_descriptions`` (``mujoco_menagerie/trs_so_arm100/so_arm100.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to ``1``; raise it in tests
+            ``send_action``.  Defaults to ``1``; raise it in tests
             that assert the arm has settled at the commanded pose.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
@@ -116,7 +116,7 @@ class SO100MujocoHAL(MujocoArmHAL):
         """Initialise the SO-100 MuJoCo HAL; no MuJoCo state is created until ``connect()``.
 
         All wiring (MJCF URI, joint indices, Jaw ``affine_low_high`` gripper
-        read mode) lives in :data:`SO100_DESCRIPTION.sim`.
+        read mode) lives in ``SO100_DESCRIPTION.sim``.
         """
         self._init_from_description(
             SO100_DESCRIPTION,

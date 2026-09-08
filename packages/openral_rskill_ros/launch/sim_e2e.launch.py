@@ -310,7 +310,7 @@ def _build_nav2_include(
 ) -> object:
     """Construct the IncludeLaunchDescription for upstream Nav2.
 
-    Pulled out of :func:`compose_runtime_graph` for line-count hygiene. Nav2 is always-on
+    Pulled out of ``compose_runtime_graph`` for line-count hygiene. Nav2 is always-on
     (unlike slam_toolbox, which idles until activate): its in-stack
     ``lifecycle_manager_navigation`` brings the planner / controller / behavior / smoother /
     velocity_smoother sub-nodes to ACTIVE automatically. The Reasoner triggers Nav2 by
@@ -318,7 +318,7 @@ def _build_nav2_include(
     rSkill, not by lifecycle-transitioning the planner.
 
     ``use_sim_time`` is derived from the graph-wide clock authority (see
-    :func:`_resolve_clock_origin`), never hardcoded: with no ``/clock`` on the bus it must be
+    ``_resolve_clock_origin``), never hardcoded: with no ``/clock`` on the bus it must be
     ``False`` so Nav2's controller loop and costmaps run on wall-clock, matching the HAL's
     wall-clock ``/scan`` + odom→base_link TF — ``true`` with no ``/clock`` pins every Nav2 node
     at t=0 ("loop rate inf Hz"), producing an empty costmap → collision.
@@ -361,8 +361,8 @@ def _build_visual_slam_includes(
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
 
-    Pulled out of :func:`compose_runtime_graph` so the impl→launch-file selection and per-scene
-    stereo-camera remaps are unit-testable (mirrors :func:`_build_nav2_include`).
+    Pulled out of ``compose_runtime_graph`` so the impl→launch-file selection and per-scene
+    stereo-camera remaps are unit-testable (mirrors ``_build_nav2_include``).
 
     ``visual_impl`` picks the engine — ``"pycuvslam"`` composes the in-process PyCuVSLAM wheel
     node (``pycuvslam.launch.py``, rectified stereo, no Isaac ROS apt stack); anything else
@@ -530,12 +530,12 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
 def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: object) -> list:  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
     """Resolve every launch arg, load ``robot.yaml``, build the graph.
 
-    Bound to an :class:`~launch.actions.OpaqueFunction` in
-    :func:`generate_launch_description` so the launch args resolve to
+    Bound to an ``OpaqueFunction`` in
+    ``generate_launch_description`` so the launch args resolve to
     concrete strings before they reach
-    :class:`launch_ros.actions.LifecycleNode` (which doesn't accept
-    :class:`~launch.substitutions.LaunchConfiguration` in every field).
-    The name mirrors :func:`openral_rskill_ros.compose_runtime` — same
+    ``launch_ros.actions.LifecycleNode`` (which doesn't accept
+    ``LaunchConfiguration`` in every field).
+    The name mirrors ``openral_rskill_ros.compose_runtime`` — same
     "build the runtime in one place" semantics, scoped to the launch
     layer instead of the in-process composer.
     """
@@ -1384,7 +1384,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # in-process PyCuVSLAM wheel) is chosen by ``slam_visual_impl`` — a
             # host property, not a capability. Both single-source the node spec
             # from the openral_slam_bringup launch files; see
-            # :func:`_build_visual_slam_includes`.
+            # ``_build_visual_slam_includes``.
             slam_share = get_package_share_directory("openral_slam_bringup")
             # Mono RGBD frames its DA3 depth at the camera's TF frame so nvblox
             # can place it via the HAL's live camera TF; resolve that frame from

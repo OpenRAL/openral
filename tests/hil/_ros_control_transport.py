@@ -52,7 +52,7 @@ _CONTROL_QOS = QoSProfile(
 def _make_trajectory_publisher(node: Node, command_topic: str) -> Publisher:
     """Create a ``trajectory_msgs/JointTrajectory`` publisher with the HIL QoS.
 
-    Shared with :mod:`tests.hil._aloha_ros_transport` so the per-arm and
+    Shared with ``tests.hil._aloha_ros_transport`` so the per-arm and
     per-gripper publishers in the bimanual bridge use the same QoS profile
     as the single-controller bridge.
     """
@@ -64,10 +64,10 @@ class RosControlHILTransport:
 
     Subscribes to ``joint_state_topic`` and re-publishes commanded
     trajectories on ``command_topic``.  The most recent joint state is
-    cached and surfaced via :meth:`state` so the HAL's ``read_state()`` can
+    cached and surfaced via ``state`` so the HAL's ``read_state()`` can
     return it without blocking.
 
-    The class is intended to be used as a fixture; call :meth:`spin_once`
+    The class is intended to be used as a fixture; call ``spin_once``
     inside the test loop to drain incoming joint-state messages.
 
     Args:

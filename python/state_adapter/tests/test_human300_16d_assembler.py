@@ -3,7 +3,7 @@
 No mocks (CLAUDE.md §1.11). The TF lookup is a real callable
 (``tf_lookup: TfLookup``), implemented in-test as a dict-backed function
 that returns real ``TransformView`` dataclasses. The schema models
-(:class:`StateContractBindings`) are real Pydantic instances. The only
+(``StateContractBindings``) are real Pydantic instances. The only
 thing absent is the live ROS graph — the skill_runner integration test
 exercises the rclpy boundary.
 """
@@ -27,7 +27,7 @@ from openral_state_adapter.layouts.human300_16d import assemble_human300_16d
 def _make_tf_lookup(table: dict[tuple[str, str], TransformView]) -> TfLookup:
     """Build a real ``TfLookup`` from a frame-pair table.
 
-    Raises :class:`LookupError` for missing pairs — same semantics as a
+    Raises ``LookupError`` for missing pairs — same semantics as a
     real ``tf2_ros.Buffer.lookup_transform`` failure (the production
     wrapper translates ``tf2.LookupException`` into Python ``KeyError``
     / ``LookupError``).

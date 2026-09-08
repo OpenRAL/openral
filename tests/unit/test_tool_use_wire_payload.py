@@ -6,7 +6,7 @@ Covers three wire-level fixes:
    key alongside ``parameters`` (strict endpoints 400 on it; lenient ones
    silently double every tool schema's token cost per call).
 2. The ``wait`` no-op tool is offered on both providers' surfaces and decodes
-   to :class:`openral_core.WaitTool`.
+   to ``openral_core.WaitTool``.
 3. Slug-colliding rskill ids (``a.b`` vs ``a_b``) get distinct tool names and
    the decoder resolves each back to the right skill.
 """

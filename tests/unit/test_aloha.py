@@ -1,13 +1,13 @@
-"""Unit tests for :class:`AlohaHAL` — the Trossen ALOHA bimanual adapter.
+"""Unit tests for ``AlohaHAL`` — the Trossen ALOHA bimanual adapter.
 
 The ALOHA exposes a 14-DoF action vector (left arm 6 + left gripper 1 +
 right arm 6 + right gripper 1) split across four ros2_control controllers.
 This file pins:
 
-- the :data:`ALOHA_DESCRIPTION` joint inventory + bimanual capability;
+- the ``ALOHA_DESCRIPTION`` joint inventory + bimanual capability;
 - the manifest pointer (closed_with_api → ``AlohaHAL``);
-- the per-arm + per-gripper command split in :meth:`AlohaHAL.send_action`,
-  exercised against a real :class:`SimTransport` (no mocks per CLAUDE.md
+- the per-arm + per-gripper command split in ``AlohaHAL.send_action``,
+  exercised against a real ``SimTransport`` (no mocks per CLAUDE.md
   §1.11 / §5.4);
 - the e-stop semantics.
 """

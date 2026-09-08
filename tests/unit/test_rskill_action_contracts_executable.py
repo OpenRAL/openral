@@ -83,7 +83,7 @@ def _resolve_tag_to_fixture(tag: str, fixtures: set[str]) -> str | None:
     """Map an embodiment tag to an in-tree robot fixture dir, or ``None``.
 
     Direct ``robots/<tag>/robot.yaml`` match wins; otherwise an alias in
-    :data:`_TAG_ALIASES` that itself resolves to a fixture; otherwise ``None``
+    ``_TAG_ALIASES`` that itself resolves to a fixture; otherwise ``None``
     (the tag is a sim-benchmark / class alias with no robot fixture).
     """
     if tag in fixtures:
@@ -125,7 +125,7 @@ def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]:
     """Re-derived ``reasoner_node._required_control_modes`` (ROS-free).
 
     No ``action_contract`` → no constraint (empty set). ``representation`` →
-    :func:`control_modes_for_representation`. ``slots`` → each non-discard slot's
+    ``control_modes_for_representation``. ``slots`` → each non-discard slot's
     mode. Bare ``dim`` → ``{JOINT_POSITION}``.
     """
     contract = manifest.action_contract
@@ -233,7 +233,7 @@ def test_at_least_one_case_collected() -> None:
 def test_vla_action_contract_executable_on_embodiment(case: tuple[Path, str]) -> None:
     """Every VLA rSkill's action contract is executable on each declared robot.
 
-    Skips names in :data:`_KNOWN_DEFERRED`; the companion self-policing test
+    Skips names in ``_KNOWN_DEFERRED``; the companion self-policing test
     proves each deferred skill is *still* genuinely failing the rule.
     """
     manifest_path, fixture = case

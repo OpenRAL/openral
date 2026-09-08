@@ -1,10 +1,10 @@
 """Skill ABC contract — parametrized contract test for every concrete Skill.
 
 CLAUDE.md §5.1: "types are the contract". Pins the runtime contract
-:class:`openral_rskill.Skill` declares so a signature drift in any Skill
+``openral_rskill.Skill`` declares so a signature drift in any Skill
 subclass fails the unit lane immediately instead of waiting for a sim or HIL
 run. A new Skill subclass author verifies the Protocol by appending a
-one-line entry to :data:`SKILL_BUILDERS` — no new test file needed.
+one-line entry to ``SKILL_BUILDERS`` — no new test file needed.
 
 Covers: lifecycle transitions (unconfigured -> inactive -> active ->
 finalized), illegal-transition errors, ``step()`` state gating, error-state

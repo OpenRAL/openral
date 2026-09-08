@@ -10,7 +10,7 @@ Stops short of two things:
 - Actuation: nothing commands a joint. HAL connects, bus preflight runs, then disconnects.
   ADR-0102 checks build real command messages but through the adapter's ``publish_fn`` seam,
   so they never reach the wire — see
-  :func:`test_the_policys_flat_vector_reaches_the_four_controllers_intact`.
+  ``test_the_policys_flat_vector_reaches_the_four_controllers_intact``.
 - Inference: loading 6.74 GiB BF16 weights + forward pass is a different tier of test (needs
   the policy's processors, gated behind the PaliGemma tokenizer). This checks the plumbing
   around the policy, not the policy.

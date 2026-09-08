@@ -61,8 +61,8 @@ def _install_deps_aarch64(*, source: Path, quantization: str) -> Path:
 
     Same venv/Python(3.10) as the ``uv sync`` path this replaces; only the
     resolution changes. ``uv pip install -e <source>`` does what ``uv sync``
-    does minus the x86_64-only ``uv.lock``; :data:`_AARCH64_OVERRIDE` makes
-    that set resolvable. Goes through :func:`ensure_pip_venv` so the sentinel
+    does minus the x86_64-only ``uv.lock``; ``_AARCH64_OVERRIDE`` makes
+    that set resolvable. Goes through ``ensure_pip_venv`` so the sentinel
     is keyed on the override text — a corrected pin repairs an existing venv.
     """
 
@@ -125,7 +125,7 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     of ``$VIRTUAL_ENV``; we let it and return that path — fighting uv on venv
     placement splits model deps and quant deps across two venvs. On aarch64
     ``uv sync`` cannot succeed (``torchcodec==0.4.0`` has no aarch64 wheel), so
-    :func:`_install_deps_aarch64` runs instead; other platforms use the path
+    ``_install_deps_aarch64`` runs instead; other platforms use the path
     below unchanged.
     """
     if platform.machine() == "aarch64":

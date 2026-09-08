@@ -48,7 +48,7 @@ def memory_exporter() -> Iterator[InMemorySpanExporter]:
 
 @pytest.fixture
 def exporter(memory_exporter: InMemorySpanExporter) -> InMemorySpanExporter:
-    """Alias of :func:`memory_exporter` — matches the reasoner tests' fixture name."""
+    """Alias of ``memory_exporter`` — matches the reasoner tests' fixture name."""
     return memory_exporter
 
 
@@ -90,7 +90,7 @@ def ros_init() -> Iterator[None]:
 
 @pytest.fixture(scope="module")
 def _rclpy_ctx(ros_init: None) -> None:
-    """Alias of :func:`ros_init` — matches test_hal_lifecycle_manifest.py's fixture name."""
+    """Alias of ``ros_init`` — matches test_hal_lifecycle_manifest.py's fixture name."""
     return ros_init
 
 
@@ -237,7 +237,7 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> 
 
 
 def _renderer_with_prompt() -> Any:
-    """A :class:`~openral_reasoner.ContextRenderer` carrying one prompt."""
+    """A ``ContextRenderer`` carrying one prompt."""
     from openral_reasoner import ContextRenderer, PromptRecord
 
     r = ContextRenderer()

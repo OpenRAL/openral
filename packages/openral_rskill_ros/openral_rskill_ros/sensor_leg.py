@@ -1,29 +1,29 @@
 """Real-mode camera leg: open every deploy-bound sensor and publish to ROS.
 
 Real hardware has no camera publisher (unlike the sim HAL, which publishes frames itself).
-Physical ``/dev/video*`` devices are described by :attr:`~openral_core.SensorSpec.deploy_binding`
+Physical ``/dev/video*`` devices are described by ``deploy_binding``
 — on the robot manifest for robot-mounted cameras (wrist/head), on
-:attr:`~openral_core.DeployScene.sensors` for workcell-mounted ones (overhead/front).
+``sensors`` for workcell-mounted ones (overhead/front).
 
-:func:`open_deploy_sensor_readers` opens one reader per bound spec and publishes to
+``open_deploy_sensor_readers`` opens one reader per bound spec and publishes to
 ``<topic_prefix>/<name>/image`` (BEST_EFFORT QoS, matching WorldState's subscription):
 
 * ``gstreamer`` — native in-pipeline ROS tee.
 * ``opencv_thread`` (or any tee-less backend) — wrapped in a polling
-  :class:`~openral_sensors.ros_publisher.SensorRosPublisher`. Calibrated ``intrinsics`` also
+  ``SensorRosPublisher``. Calibrated ``intrinsics`` also
   publish ``CameraInfo`` on ``<topic_prefix>/<name>/camera_info`` (sim HAL's layout), enabling
   mono visual SLAM on real hardware.
 
 **Direct aggregator path (zero-copy vision path).** When ``aggregator`` is passed (reader,
-aggregator, and skill runner share one process), an :class:`_AggregatorPump` per reader writes
+aggregator, and skill runner share one process), an ``_AggregatorPump`` per reader writes
 ``read_latest()`` frames straight into ``WorldStateAggregator.update_image_frame`` — no ROS
 serialize round trip, NVMM ``SensorFrame.handle`` stays intact — and emits the dashboard span
 at full reader cadence. List these sensors in WorldState's ``direct_image_frame_sensors`` so
 ``_on_image`` skips them; the ROS tee keeps serving its other subscribers (detector, reward
 monitor, reasoner).
 
-Call :meth:`SensorLeg.start` only after the composed ROS lifecycle nodes are configured; own
-teardown via :meth:`SensorLeg.close`. Wired in by ``runtime_node`` when ``deploy_config`` is
+Call ``SensorLeg.start`` only after the composed ROS lifecycle nodes are configured; own
+teardown via ``SensorLeg.close``. Wired in by ``runtime_node`` when ``deploy_config`` is
 set (real deploys only).
 """
 
@@ -104,13 +104,13 @@ def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> N
     """Emit the dashboard's ``sensors.read_latest`` span for a pump-fed frame.
 
     WorldState's ``_on_image`` normally produces this span, but the ROS tee caps at
-    :data:`_MAX_FALLBACK_TOPIC_RATE_HZ` (3 Hz) — pump-fed cameras emit here instead, at full
+    ``_MAX_FALLBACK_TOPIC_RATE_HZ`` (3 Hz) — pump-fed cameras emit here instead, at full
     reader cadence, and ``_on_image`` skips them.
 
     Affordable: Pillow drops the GIL for resize/encode, measured 2.42 ms/frame at 320x240 q60
     (60 thumbnails/s costs 4.5% of a competing thread's GIL time, vs 89.5% for the uncapped
     full-res topic). Display-only. Shares
-    :func:`openral_observability.producer.emit_sensor_frame_span` with ``_on_image`` so
+    ``openral_observability.producer.emit_sensor_frame_span`` with ``_on_image`` so
     pump-fed and tee-fed cameras render identically.
     """
     from openral_observability import producer as ral_producer
@@ -138,7 +138,7 @@ class _AggregatorPump:
 
     # reader/aggregator duck-typed (SensorReader / WorldStateAggregator): imports stay deferred.
     def __init__(self, reader: Any, sensor_name: str, aggregator: Any, rate_hz: float) -> None:
-        """Stash config; the polling thread starts in :meth:`start`."""
+        """Stash config; the polling thread starts in ``start``."""
         self._reader = reader
         self._sensor_name = sensor_name
         self._aggregator = aggregator
@@ -204,10 +204,10 @@ class SensorLeg:
     """Open readers + prepared publishers for one deploy session.
 
     Attributes:
-        readers: Open :class:`SensorReader` instances, one per deploy-bound
-            :class:`SensorSpec` (gstreamer readers publish via their
+        readers: Open ``SensorReader`` instances, one per deploy-bound
+            ``SensorSpec`` (gstreamer readers publish via their
             internal ROS tee).
-        publishers: Prepared :class:`SensorRosPublisher` pumps for the
+        publishers: Prepared ``SensorRosPublisher`` pumps for the
             readers without a native ROS tee. Parallel list, NOT
             index-aligned with ``readers``.
     """
@@ -305,7 +305,7 @@ def slam_camera_names(runtime: object | None) -> frozenset[str]:
     """Camera names feeding visual SLAM, which must never be rate-capped.
 
     cuVSLAM / PyCuVSLAM lose the track on a starved stream, so these cameras keep full cadence
-    regardless of :data:`_MAX_FALLBACK_TOPIC_RATE_HZ`. Derived from the scene's
+    regardless of ``_MAX_FALLBACK_TOPIC_RATE_HZ``. Derived from the scene's
     ``DeployRuntime`` rather than a hand-written per-binding override, so a stereo deploy can't
     silently degrade a tracking input by forgetting the flag.
 
@@ -348,7 +348,7 @@ def apply_launch_overrides(
     Scene YAML's ``enable_object_detector`` / ``enable_slam`` are tri-state (``None`` = auto),
     resolved by the deploy CLI at launch time (detector ON when a backend exists; SLAM
     auto-enables from the robot manifest). The runtime node re-reads the original YAML, so
-    :func:`slam_camera_names` / :func:`topic_frame_size` consuming the raw block would treat an
+    ``slam_camera_names`` / ``topic_frame_size`` consuming the raw block would treat an
     auto-enabled leg as OFF and silently starve the cameras the detector/SLAM nodes subscribe to.
 
     Each ``None`` override keeps the scene's value (bare ``runtime_node`` runs unchanged); a
@@ -404,7 +404,7 @@ def topic_frame_size(runtime: object | None) -> tuple[int, int] | None:
     * **object detector** — declares ``input_size`` 640; which camera it watches is a runtime
       detail, so the whole topic stays native.
     * **visual SLAM** — cuVSLAM triangulates against calibrated intrinsics; per-camera exemption
-      is handled via :func:`slam_camera_names`, but a SLAM scene keeps every camera native
+      is handled via ``slam_camera_names``, but a SLAM scene keeps every camera native
       rather than betting the name list is complete.
 
     Args:
@@ -428,19 +428,19 @@ def _fallback_topic_rate_hz(spec: SensorSpec, uncapped: Collection[str] = ()) ->
 
     Capture rate and topic rate differ: readers keep running at full fps (the policy reads the
     freshest frame in-process), but republishing each frame through rclpy costs a GIL-held 900
-    KiB conversion per tick — see :data:`_MAX_FALLBACK_TOPIC_RATE_HZ`. A scene asking for a
+    KiB conversion per tick — see ``_MAX_FALLBACK_TOPIC_RATE_HZ``. A scene asking for a
     *slower* rate than the cap is honoured as-is; the cap only ever lowers.
 
     Two ways out of the cap, in precedence order:
 
-    1. ``uncapped`` — camera names kept at full cadence. Filled from :func:`slam_camera_names`,
+    1. ``uncapped`` — camera names kept at full cadence. Filled from ``slam_camera_names``,
        so visual SLAM is exempt automatically.
     2. ``backend_params["topic_rate_hz"]`` — an exact cadence for any other rate-sensitive
        out-of-process consumer.
 
     Args:
         spec: A sensor spec carrying a ``deploy_binding``.
-        uncapped: Camera names exempt from the cap (see :func:`slam_camera_names`).
+        uncapped: Camera names exempt from the cap (see ``slam_camera_names``).
 
     Returns:
         The full configured rate when exempt, else ``backend_params["topic_rate_hz"]`` when set
@@ -515,28 +515,28 @@ def open_deploy_sensor_readers(
     """Open deploy-bound sensors and prepare their ROS publishing resources.
 
     Args:
-        sensors: Robot-manifest sensors plus :attr:`DeployScene.sensors` (caller concatenates).
-            Specs without a :attr:`~openral_core.SensorSpec.deploy_binding` are skipped.
+        sensors: Robot-manifest sensors plus ``DeployScene.sensors`` (caller concatenates).
+            Specs without a ``deploy_binding`` are skipped.
         topic_prefix: WorldState's ``camera_topic_prefix``. Final topic is
             ``<topic_prefix>/<spec.name>/image``.
         aggregator: The composed runtime's shared ``WorldStateAggregator``. When set, each
-            opened reader also gets an in-process :class:`_AggregatorPump` (zero-copy NVMM
-            handles intact), and the sensor is recorded in :attr:`SensorLeg.direct_sensors` —
+            opened reader also gets an in-process ``_AggregatorPump`` (zero-copy NVMM
+            handles intact), and the sensor is recorded in ``SensorLeg.direct_sensors`` —
             forward that list to WorldState's ``direct_image_frame_sensors`` parameter.
         ros_node: Existing composed ROS node that owns image publishers. When omitted, each
             fallback publisher owns its own private node.
         uncapped_sensors: Camera names exempt from the fallback publisher's rate cap
-            (:data:`_MAX_FALLBACK_TOPIC_RATE_HZ`). ``runtime_node`` fills this from
-            :func:`slam_camera_names`.
+            (``_MAX_FALLBACK_TOPIC_RATE_HZ``). ``runtime_node`` fills this from
+            ``slam_camera_names``.
         topic_max_size: Optional ``(width, height)`` ceiling for the fallback topic;
             ``CameraInfo`` intrinsics are rescaled to match. Cameras in ``uncapped_sensors`` are
-            exempt. ``runtime_node`` fills this from :func:`topic_frame_size`. ``None`` publishes
+            exempt. ``runtime_node`` fills this from ``topic_frame_size``. ``None`` publishes
             at capture size.
 
     Returns:
-        A :class:`SensorLeg` holding open readers and prepared publishers. Call
-        :meth:`SensorLeg.start` after the owning ROS lifecycle nodes are configured, then
-        :meth:`SensorLeg.close` on shutdown.
+        A ``SensorLeg`` holding open readers and prepared publishers. Call
+        ``SensorLeg.start`` after the owning ROS lifecycle nodes are configured, then
+        ``SensorLeg.close`` on shutdown.
 
     Raises:
         ROSConfigError: A binding names an unknown backend, or a backend's optional dependency

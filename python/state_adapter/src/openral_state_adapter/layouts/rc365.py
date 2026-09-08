@@ -1,6 +1,6 @@
 """``rc365`` layout assembler.
 
-``rc365`` and :mod:`openral_state_adapter.layouts.human300_16d` describe the
+``rc365`` and ``openral_state_adapter.layouts.human300_16d`` describe the
 same 16-D physical state — ``[base_to_eef.pos(3), base_to_eef.quat(4),
 world_to_base.pos(3), world_to_base.quat(4), gripper_qpos(2)] = 16``. They
 differ only in how downstream policy adapters slice it:
@@ -16,7 +16,7 @@ differ only in how downstream policy adapters slice it:
 
 Slicing is the policy's concern, not the assembler's, so this module just
 registers the existing
-:func:`~openral_state_adapter.layouts.human300_16d.assemble_human300_16d`
+``assemble_human300_16d``
 under the ``rc365`` key. New layouts that differ in shape (field order,
 frame convention, gripper encoding) still get their own assembler file.
 """

@@ -1,26 +1,26 @@
 """Generic ROS 2 managed lifecycle node wrapper for any HAL adapter.
 
-Wraps any :class:`openral_hal.protocol.HAL` Protocol implementation as a
+Wraps any ``openral_hal.protocol.HAL`` Protocol implementation as a
 ``rclpy.lifecycle.LifecycleNode`` so every per-robot package (``UR5e``,
 ``FrankaPanda``, ``SO100Follower``, ``OpenArm``, …) shares the same
 publisher / subscriber / heartbeat / OTel-span wiring.
 
 Three ways to use this module, in decreasing preference:
 
-1. **Manifest-driven** (preferred — issue #191): :func:`make_lifecycle_main_from_manifest`
-   spins up :class:`ManifestHALLifecycleNode`, which reads ``robot_yaml`` +
+1. **Manifest-driven** (preferred — issue #191): ``make_lifecycle_main_from_manifest``
+   spins up ``ManifestHALLifecycleNode``, which reads ``robot_yaml`` +
    ``hal_mode`` ROS parameters and builds its HAL via
-   :func:`openral_hal.build_hal` — construction kwargs (serial ``port``,
+   ``openral_hal.build_hal`` — construction kwargs (serial ``port``,
    ``robot_ip``) live in the manifest's ``hal.parameters.defaults`` block, so
    adding a robot needs only a ``robot.yaml`` + a HAL class, no new node class.
-2. **Zero-parameter HALs** (legacy): :func:`make_lifecycle_main` with a
+2. **Zero-parameter HALs** (legacy): ``make_lifecycle_main`` with a
    callable returning a fresh HAL; for constructors with no ROS parameters.
 3. **Bespoke parameterised HALs** (OpenArm cameras/viewer/MJCF scene;
-   panda_mobile mobile base): subclass :class:`HALLifecycleNodeBase`,
-   implement :meth:`HALLifecycleNodeBase._create_hal` plus the optional hooks
-   (:meth:`_heartbeat_extra_fields`, :meth:`on_configure_post_hal`,
-   :meth:`on_activate_post_subs`, :meth:`on_deactivate_pre_teardown`,
-   :meth:`on_cleanup_pre_disconnect`). Tracked for collapse into (1) under
+   panda_mobile mobile base): subclass ``HALLifecycleNodeBase``,
+   implement ``HALLifecycleNodeBase._create_hal`` plus the optional hooks
+   (``_heartbeat_extra_fields``, ``on_configure_post_hal``,
+   ``on_activate_post_subs``, ``on_deactivate_pre_teardown``,
+   ``on_cleanup_pre_disconnect``). Tracked for collapse into (1) under
    issue #191 (Phases 2-3).
 
 The base class owns: the standard publishers (``/joint_states`` +
@@ -34,10 +34,10 @@ ROS 2 imports are deferred so this module imports cleanly without a live
 ROS 2 install (pure-Python CI / linting).
 
 Lifecycle transitions:
-``configure`` → :meth:`_create_hal` + ``connect()`` → :meth:`on_configure_post_hal`.
-``activate`` → start joint-state timer + safe_action/estop subs → :meth:`on_activate_post_subs`.
-``deactivate`` → :meth:`on_deactivate_pre_teardown` → stop timers / destroy subs+pubs.
-``cleanup`` → :meth:`on_cleanup_pre_disconnect` → ``disconnect()``.
+``configure`` → ``_create_hal`` + ``connect()`` → ``on_configure_post_hal``.
+``activate`` → start joint-state timer + safe_action/estop subs → ``on_activate_post_subs``.
+``deactivate`` → ``on_deactivate_pre_teardown`` → stop timers / destroy subs+pubs.
+``cleanup`` → ``on_cleanup_pre_disconnect`` → ``disconnect()``.
 ``shutdown`` → force-disconnect.
 
 Example (manifest-driven, the preferred path)::
@@ -80,7 +80,7 @@ def decode_action_chunk(msg: object) -> object | None:
     """Reverse the action-chunk wire encoding back into a typed ``Action``.
 
     The publisher (``ros_publishing_hal._flatten_action_payload``) packs
-    the typed :class:`openral_core.schemas.Action` into ``ActionChunk``'s
+    the typed ``openral_core.schemas.Action`` into ``ActionChunk``'s
     ``flat`` + ``n_dof`` + ``horizon`` + ``control_mode`` fields. This
     is the inverse — used by the HAL lifecycle node's
     ``_on_safe_action`` callback after the C++ safety kernel
@@ -180,7 +180,7 @@ def _hal_duration_metric(metric_name: str, hal_adapter: str) -> Iterator[None]:
 
     Pairs with the `hal.read_state` / `hal.send_action` spans so trace and
     metric are emitted from one place. Both instruments were previously
-    recorded only by :class:`openral_runner.DeployRunner`, which the ROS
+    recorded only by ``openral_runner.DeployRunner``, which the ROS
     deploy graph does not instantiate — `rskill_runner_node` runs its own
     tick loop — so a live `openral deploy run` produced the spans and no
     latency histogram whatsoever.
@@ -228,8 +228,8 @@ def make_lifecycle_main(
         node_name: ROS 2 node name (e.g. ``"openral_hal_ur5e"``).
         hal_factory: Zero-argument callable returning a fresh HAL
             instance. For HALs with ROS-parameterised constructors,
-            subclass :class:`HALLifecycleNodeBase` directly and
-            implement :meth:`_create_hal`.
+            subclass ``HALLifecycleNodeBase`` directly and
+            implement ``_create_hal``.
 
     Returns:
         A zero-argument ``main()`` callable suitable as a console-script
@@ -279,9 +279,9 @@ def make_lifecycle_main(
 def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
     """Build a ``main()`` for a manifest-driven HAL lifecycle node.
 
-    Unlike :func:`make_lifecycle_main` (a single hardcoded HAL class), the
+    Unlike ``make_lifecycle_main`` (a single hardcoded HAL class), the
     returned node reads two ROS parameters and constructs its HAL through
-    :func:`openral_hal.build_hal`: ``robot_yaml`` (str, required) — path to
+    ``openral_hal.build_hal``: ``robot_yaml`` (str, required) — path to
     ``robots/<id>/robot.yaml``; ``hal_mode`` (str, default ``"sim"``) —
     ``"sim"`` (``deploy sim`` / ``sim run``) or ``"real"`` (``deploy run``).
     One node serves both modes for every robot — "add a robot" needs only a
@@ -346,7 +346,7 @@ if _ROS2_AVAILABLE:
     class HALLifecycleNodeBase(LifecycleNode):  # type: ignore[misc]  # reason: rclpy is untyped at runtime
         """Generic managed lifecycle node base class wrapping a HAL adapter.
 
-        Subclasses **must** override :meth:`_create_hal`. The other hook
+        Subclasses **must** override ``_create_hal``. The other hook
         methods (``_heartbeat_extra_fields``, ``on_configure_post_hal``,
         ``on_activate_post_subs``, ``on_deactivate_pre_teardown``,
         ``on_cleanup_pre_disconnect``) have empty defaults — override
@@ -732,15 +732,15 @@ if _ROS2_AVAILABLE:
             return TransitionCallbackReturn.SUCCESS
 
         def on_shutdown(self, state: object) -> TransitionCallbackReturn:
-            """Force-disconnect on shutdown — mirrors :meth:`on_cleanup`."""
+            """Force-disconnect on shutdown — mirrors ``on_cleanup``."""
             return self.on_cleanup(state)
 
         def shutdown_hal(self) -> None:
             """Disconnect the HAL on a signal-driven process teardown.
 
             ``rclpy`` answers SIGINT by shutting the context down and raising
-            out of :func:`rclpy.spin` without ever requesting the lifecycle
-            ``shutdown`` transition, so :meth:`on_shutdown`/:meth:`on_cleanup`
+            out of ``rclpy.spin`` without ever requesting the lifecycle
+            ``shutdown`` transition, so ``on_shutdown``/``on_cleanup``
             (and ``HAL.disconnect`` with them) never run — this is the only
             place that reaches ``disconnect`` on that path. Every real
             ``openral deploy sim`` session ends this way
@@ -974,7 +974,7 @@ if _ROS2_AVAILABLE:
             """``/openral/safe_action`` callback.
 
             Decodes the action-chunk wire shape back into the typed
-            :class:`Action` via :func:`decode_action_chunk`. Hardcoding
+            ``Action`` via ``decode_action_chunk``. Hardcoding
             ``ControlMode.JOINT_POSITION`` here (the prior behaviour)
             silently misrouted per-mode chunks: a 6-D CARTESIAN_DELTA
             arrived looking like a 6-joint JOINT_POSITION row and the
@@ -1031,7 +1031,7 @@ if _ROS2_AVAILABLE:
             tick must clear whichever are present, not only the first wired
             (CLAUDE.md §1.4).
 
-            Invariant this imposes on a holder: :meth:`_on_attachment_perception_ready`
+            Invariant this imposes on a holder: ``_on_attachment_perception_ready``
             re-checks all of them, so one holder's notify can be swallowed
             while another is still busy — safe only because every holder
             re-issues its own notify whenever it settles (the sim bridge from
@@ -1290,10 +1290,10 @@ if _ROS2_AVAILABLE:
     class _FactoryHALLifecycleNode(HALLifecycleNodeBase):
         """Thin subclass that takes a zero-arg HAL factory.
 
-        Used by :func:`make_lifecycle_main` for HAL adapters whose
+        Used by ``make_lifecycle_main`` for HAL adapters whose
         constructor has no ROS parameters worth exposing (UR5e / UR10e
         / Franka). The factory is stored at construction time and
-        invoked by :meth:`_create_hal`.
+        invoked by ``_create_hal``.
         """
 
         def __init__(self, node_name: str, hal_factory: HALFactory) -> None:
@@ -1306,13 +1306,13 @@ if _ROS2_AVAILABLE:
     class ManifestHALLifecycleNode(HALLifecycleNodeBase):
         """Manifest-driven node: builds its HAL via ``build_hal(mode=...)``.
 
-        Used by :func:`make_lifecycle_main_from_manifest`. Reads
+        Used by ``make_lifecycle_main_from_manifest``. Reads
         ``robot_yaml`` + ``hal_mode`` params and routes through the single
         resolver seam, so one node class serves sim and real for every robot.
 
         The HAL's construction kwargs (serial ``port``, ``robot_ip``, …) come
         from the manifest's ``hal.parameters.defaults`` block,
-        threaded by :func:`openral_hal.build_hal` — so a parameterised robot
+        threaded by ``openral_hal.build_hal`` — so a parameterised robot
         needs no bespoke ``_create_hal`` subclass, only a manifest entry. This
         is the generic node that the per-robot lifecycle packages collapse
         into (issue #191).
@@ -1569,7 +1569,7 @@ if _ROS2_AVAILABLE:
             return response
 
         def on_activate_post_subs(self) -> TransitionCallbackReturn:
-            """Attach the :class:`SimSensorBridge` (cameras / depth / scan / viewer)."""
+            """Attach the ``SimSensorBridge`` (cameras / depth / scan / viewer)."""
             from openral_hal.sim_sensor_bridge import SimSensorBridge
 
             assert self._hal is not None

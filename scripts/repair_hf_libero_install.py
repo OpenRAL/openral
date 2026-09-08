@@ -94,7 +94,7 @@ def repair(site_packages: Path) -> int:
 
 
 def main() -> int:
-    """CLI entry: parse ``--venv`` and run :func:`repair` against its site-packages."""
+    """CLI entry: parse ``--venv`` and run ``repair`` against its site-packages."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--venv",

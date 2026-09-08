@@ -1,12 +1,12 @@
 """Unit tests for the eval registry, factory, and SimRunner contract gate.
 
-:class:`SimRunner` is strict by construction (``_check_rskill_compatibility``):
+``SimRunner`` is strict by construction (``_check_rskill_compatibility``):
 every sim eval needs an rSkill manifest and a registered
-:class:`RobotDescription`. To exercise the factory + episode loop without a
-real rSkill: drive :class:`SimRunner` against the mock scene via the
+``RobotDescription``. To exercise the factory + episode loop without a
+real rSkill: drive ``SimRunner`` against the mock scene via the
 ``"placeholder"`` sentinel (short-circuits manifest load); assert
-:func:`_check_rskill_compatibility` rejects misconfigured
-:class:`SimEnvironment` values.
+``_check_rskill_compatibility`` rejects misconfigured
+``SimEnvironment`` values.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _mock_env(**overrides: object) -> SimEnvironment:
 
 
 def _runnable_env(**overrides: object) -> SimEnvironment:
-    """Like :func:`_mock_env` but with the placeholder URI SimRunner accepts."""
+    """Like ``_mock_env`` but with the placeholder URI SimRunner accepts."""
     overrides.setdefault(
         "vla",
         VLASpec(
@@ -127,7 +127,7 @@ def test_make_env_and_make_policy_roundtrip_mock() -> None:
 
 
 def test_sim_runner_mock_loop() -> None:
-    """:class:`SimRunner` rolls out the mock scene end-to-end against zero policy."""
+    """``SimRunner`` rolls out the mock scene end-to-end against zero policy."""
     env_cfg = _runnable_env()
     runner = SimRunner(env_cfg)
     runner.activate()

@@ -8,7 +8,7 @@ lifecycle node in the graph. Centralising it here keeps cadence,
 
 Imports ``rclpy`` and ``diagnostic_msgs`` lazily so the module stays
 import-safe on pure-Python hosts (CI, tests without a colcon build).
-Consumers that never call :meth:`DiagnosticsHeartbeat.start` pay zero ROS
+Consumers that never call ``DiagnosticsHeartbeat.start`` pay zero ROS
 cost.
 
 Diagnostics answers *"what is the system state right now"*; the namespaced
@@ -51,10 +51,10 @@ class DiagnosticsHeartbeat:
     Lifecycle:
 
     * Construct in ``__init__`` — no ROS work yet.
-    * Call :meth:`create_publisher` in ``on_configure`` — opens the publisher.
-    * Call :meth:`start` in ``on_activate`` — starts the timer.
-    * Call :meth:`stop` in ``on_deactivate`` — cancels the timer.
-    * Call :meth:`destroy` in ``on_cleanup`` — destroys the publisher.
+    * Call ``create_publisher`` in ``on_configure`` — opens the publisher.
+    * Call ``start`` in ``on_activate`` — starts the timer.
+    * Call ``stop`` in ``on_deactivate`` — cancels the timer.
+    * Call ``destroy`` in ``on_cleanup`` — destroys the publisher.
 
     Args:
         node: The owning ``rclpy.lifecycle.LifecycleNode``. The helper
@@ -68,7 +68,7 @@ class DiagnosticsHeartbeat:
             ``"safety"``). Recorded as ``DiagnosticStatus.name``.
         status_fn: Zero-arg callable returning
             ``(level, message, key_values)`` where ``level`` is one of
-            :class:`Level`, ``message`` is a short human-readable
+            ``Level``, ``message`` is a short human-readable
             summary, and ``key_values`` is a flat ``dict[str, str]`` of
             extra metadata.
         rate_hz: Publish rate. Defaults to 1.0 Hz;
@@ -121,7 +121,7 @@ class DiagnosticsHeartbeat:
     def create_publisher(self) -> None:
         """Open the ``/diagnostics`` publisher. Call from ``on_configure``.
 
-        Idempotent: re-calling without a prior :meth:`destroy` is a
+        Idempotent: re-calling without a prior ``destroy`` is a
         no-op so the lifecycle ``cleanup → configure`` round trip stays
         safe.
         """
@@ -138,8 +138,8 @@ class DiagnosticsHeartbeat:
     def start(self) -> None:
         """Start the 1 Hz publish timer. Call from ``on_activate``.
 
-        Requires :meth:`create_publisher` to have been called first;
-        otherwise raises :class:`RuntimeError` (a missed configure step
+        Requires ``create_publisher`` to have been called first;
+        otherwise raises ``RuntimeError`` (a missed configure step
         is a programmer error, not a runtime degraded mode).
         """
         if self._publisher is None:
@@ -167,7 +167,7 @@ class DiagnosticsHeartbeat:
     def destroy(self) -> None:
         """Destroy the publisher. Call from ``on_cleanup`` / ``on_shutdown``.
 
-        Idempotent: also calls :meth:`stop` so a single ``destroy()``
+        Idempotent: also calls ``stop`` so a single ``destroy()``
         from ``on_shutdown`` handles the unsorted-state case.
         """
         self.stop()

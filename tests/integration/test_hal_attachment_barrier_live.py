@@ -77,7 +77,7 @@ def _payload(description: Any, *, stamp_ns: int, witnessed: bool) -> Any:
 
     ``witnessed=True`` is the ADR-0097 place attestation: same ``object_id``,
     same ``evidence_ref`` (so the perception mask is byte-identical), plus a
-    real :class:`~openral_core.SupportContactWitness`.
+    real ``SupportContactWitness``.
     """
     from openral_core import (
         AttachedCollisionObject,

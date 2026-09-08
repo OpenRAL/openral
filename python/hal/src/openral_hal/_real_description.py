@@ -1,19 +1,19 @@
 """Internal helper to derive a real-hardware ``RobotDescription`` from a sim baseline.
 
 Both the UR (PR #60, ``ur_real.py``) and the Franka / Sawyer / ALOHA (issues
-#56, #57, #58) real-HW HALs need to publish a :class:`RobotDescription`
+#56, #57, #58) real-HW HALs need to publish a ``RobotDescription``
 that shares kinematics + safety envelope + capabilities + HAL entrypoints
 with a "sim baseline" but flips the ``sdk_kind`` to a closed-with-api license
 posture. The sim and real HAL import strings both live in the
 shared ``hal: HalEntrypoints`` block (``hal.sim`` / ``hal.real``), so the real
 description inherits the same ``hal`` from *base* and only ``sdk_kind`` differs.
 
-This module exposes one helper, :func:`make_real_description`, so every
+This module exposes one helper, ``make_real_description``, so every
 real-HW adapter spells the derivation the same way and a future contributor
 adding a sixth real-HW arm doesn't reinvent the pattern.
 
 The module is **internal** (leading underscore) — it is not re-exported
-from :mod:`openral_hal`.
+from ``openral_hal``.
 
 Example:
     >>> from openral_hal._real_description import make_real_description
@@ -52,13 +52,13 @@ def make_real_description(
 ) -> RobotDescription:
     """Return a copy of *base* with the real-HW ``sdk_kind`` license posture.
 
-    The returned :class:`RobotDescription` shares every other field with
+    The returned ``RobotDescription`` shares every other field with
     *base* — joint specs, end-effectors, safety envelope, capabilities,
     sensors, ``onboard_compute``, ``observation_spec`` / ``action_spec``, and
     the ``hal`` entrypoints (``hal.sim`` / ``hal.real``). Only
     ``sdk_kind`` is overridden.
 
-    Implementation is :meth:`pydantic.BaseModel.model_copy` with an
+    Implementation is ``pydantic.BaseModel.model_copy`` with an
     ``update`` dict; the result is a shallow copy so consumers that mutate
     nested fields (they shouldn't) would mutate *base* too.
 
@@ -66,9 +66,9 @@ def make_real_description(
         base: The sim baseline manifest (already carrying the shared
             ``hal: HalEntrypoints`` block with both sim + real entrypoints).
         sdk_kind: New ``sdk_kind``; one of ``"open"``, ``"closed_with_api"``,
-            or ``"closed"`` per the :class:`RobotDescription` schema.
+            or ``"closed"`` per the ``RobotDescription`` schema.
 
     Returns:
-        A new :class:`RobotDescription` with the overridden ``sdk_kind``.
+        A new ``RobotDescription`` with the overridden ``sdk_kind``.
     """
     return base.model_copy(update={"sdk_kind": sdk_kind})

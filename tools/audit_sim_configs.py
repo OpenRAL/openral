@@ -309,13 +309,13 @@ class _VramSampler:
 def _check_compat(spec: ConfigSpec) -> AuditRow:
     """Cheap in-process compatibility gate (``--check-compatibility``).
 
-    Sim/benchmark rows: load the YAML via :func:`openral_core.load_scene_strict`,
-    then validate the rSkill manifest via :class:`openral_core.RSkillManifest`.
-    Deploy rows: load as :class:`openral_core.DeployScene` and assert
+    Sim/benchmark rows: load the YAML via ``openral_core.load_scene_strict``,
+    then validate the rSkill manifest via ``openral_core.RSkillManifest``.
+    Deploy rows: load as ``openral_core.DeployScene`` and assert
     ``robot_id`` resolves in ``openral_cli.deploy_sim._ROBOT_HAL_REGISTRY``.
 
     Returns:
-        An :class:`AuditRow` with ``status="pass-compat"`` on success or
+        An ``AuditRow`` with ``status="pass-compat"`` on success or
         ``"fail-compat"`` on any schema/lookup error. No subprocess, no GPU;
         single-digit seconds even with cold imports.
     """
@@ -397,8 +397,8 @@ def _check_compat(spec: ConfigSpec) -> AuditRow:
 def _build_run_cmd(spec: ConfigSpec) -> list[str]:
     """Build the `uv run ... openral <subcmd>` argv for sim / benchmark rows.
 
-    Split out of :func:`_run_one` so the deploy-tier launch path
-    (:func:`_run_one_deploy`) can stay focused on lifecycle teardown.
+    Split out of ``_run_one`` so the deploy-tier launch path
+    (``_run_one_deploy``) can stay focused on lifecycle teardown.
     """
     if spec.run_mode == "sim":
         # SimScene tier: `openral sim run --config scenes/sim/<scene>.yaml`.
@@ -622,7 +622,7 @@ def _classify_or_fallback(
     wall_s: float,
     peak_vram: int | None,
 ) -> AuditRow:
-    """Deploy-mode wrapper around :func:`_classify` that defaults to ``fail-other``
+    """Deploy-mode wrapper around ``_classify`` that defaults to ``fail-other``
     when no pattern matches (rather than 'pass')."""
     status = _classify(returncode, combined)
     if status == "pass" and returncode != 0:

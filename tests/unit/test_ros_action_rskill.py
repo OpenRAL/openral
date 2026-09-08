@@ -1,4 +1,4 @@
-""":class:`ROSActionRskill` adapter behaviour.
+"""``ROSActionRskill`` adapter behaviour.
 
 The hot-path tests use the adapter's existing fallback-setter and
 dotted-accessor implementations against synthetic message-shaped

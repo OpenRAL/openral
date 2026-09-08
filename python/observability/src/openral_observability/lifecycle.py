@@ -9,7 +9,7 @@ literal ``# TODO(ivanpauno): log sth here`` in upstream rclpy — logs
 ``exit code 4``; the real exception/traceback is gone, turning a one-line
 ``ModuleNotFound`` into an opaque crash (CLAUDE.md §1.4).
 
-:func:`log_lifecycle_errors` decorates those callbacks: on an uncaught
+``log_lifecycle_errors`` decorates those callbacks: on an uncaught
 exception it logs the full traceback via the node's ROS logger
 (``get_logger()`` → ``/rosout`` → launch console) and returns a clean
 ``TransitionCallbackReturn.FAILURE`` instead of letting rclpy's silent
@@ -19,7 +19,7 @@ in the well-defined ``unconfigured``/``inactive`` state rather than
 
 Imports ``rclpy`` lazily (inside the wrapper) so the module stays
 import-safe on pure-Python hosts, matching
-:mod:`openral_observability.diagnostics`.
+``openral_observability.diagnostics``.
 """
 
 from __future__ import annotations

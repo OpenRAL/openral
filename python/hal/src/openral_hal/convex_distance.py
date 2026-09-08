@@ -111,7 +111,7 @@ class ConvexDistance:
             it is NOT a point on ``b``'s surface and ``witness_clearance_m``
             will refute it as one. Read it as "where ``a``'s buried face meets
             ``b``'s supporting plane", and take the direction from
-            :attr:`direction`, never by differencing the two witnesses.
+            ``direction``, never by differencing the two witnesses.
         direction: Unit direction from ``b`` toward ``a`` — the separating
             direction on the GJK branch and the minimum-translation axis on
             the SAT branch. ``None`` when the pair was not solved (beyond the
@@ -612,7 +612,7 @@ def convex_geom_distance(
         arc_segments: Polygon resolution for the bracketed round types.
 
     Returns:
-        A :class:`ConvexDistance`. ``certified`` is ``False`` — with a reason —
+        A ``ConvexDistance``. ``certified`` is ``False`` — with a reason —
         when a geom has no bounded convex hull (plane, heightfield, SDF), when a
         round type's bracket is wider than 0.1 mm, when the separating-axis
         certificate does not close, or when an overlapping pair's exact axis set

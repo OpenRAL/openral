@@ -1,23 +1,23 @@
-"""GStreamer-backed :class:`SensorReader` (CPU appsink path).
+"""GStreamer-backed ``SensorReader`` (CPU appsink path).
 
-:class:`GStreamerSensorReader` runs a user-supplied (or
-:class:`PipelineSpec`-generated) pipeline terminating in ``appsink``,
+``GStreamerSensorReader`` runs a user-supplied (or
+``PipelineSpec``-generated) pipeline terminating in ``appsink``,
 mirroring the latest-only contract of
-:class:`~openral_runner.backends.opencv_thread.OpenCVThreadSensorReader`:
-:meth:`open` sets PLAYING, connects ``new-sample``, and spawns a daemon
+``OpenCVThreadSensorReader``:
+``open`` sets PLAYING, connects ``new-sample``, and spawns a daemon
 thread draining the bus for ERROR/EOS; the callback latches the latest
 mapped frame (monotonic + wall-clock stamps) under a ``Lock``;
-:meth:`read_latest` is non-blocking, raising :class:`ROSPerceptionStale`
+``read_latest`` is non-blocking, raising ``ROSPerceptionStale``
 when stale or unset.
 
 Imports ``gi.repository`` at module load — requires the ``gstreamer``
 extra (``pip install openral-runner[gstreamer]``);
-:mod:`openral_runner.backends.gstreamer.pipeline` has no such requirement.
+``openral_runner.backends.gstreamer.pipeline`` has no such requirement.
 
-CPU path delivers :class:`~openral_core.SensorFrame` with ``data=bytes``,
+CPU path delivers ``SensorFrame`` with ``data=bytes``,
 ``encoding`` ∈ {BGR8, RGB8, MONO8}. NVMM/CUDA zero-copy (commit #3) populates
 ``handle`` + ``encoding`` ∈ {CUDA_NV12 Tegra, CUDA_RGBA x86 DeepStream} via
-:meth:`_on_new_sample`, same Protocol surface.
+``_on_new_sample``, same Protocol surface.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ _GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]] = {
 
 
 class GStreamerSensorReader:
-    """:class:`SensorReader` backed by a GStreamer pipeline.
+    """``SensorReader`` backed by a GStreamer pipeline.
 
     Two construction modes:
 
@@ -91,7 +91,7 @@ class GStreamerSensorReader:
        GStreamer string terminating in an ``appsink``. The reader
        ensures the appsink is named (default ``bh_sink``) so it can
        look it up.
-    2. *Generated from spec*. Pass ``spec=`` (a :class:`PipelineSpec`)
+    2. *Generated from spec*. Pass ``spec=`` (a ``PipelineSpec``)
        and optionally ``platform=`` to override platform detection.
        The reader materialises the pipeline string itself.
 
@@ -99,15 +99,15 @@ class GStreamerSensorReader:
 
     Args:
         sensor_id: Sensor name used by the runner to correlate frames
-            with :class:`~openral_core.SensorReaderConfig`.
+            with ``SensorReaderConfig``.
         pipeline: Full GStreamer pipeline string (explicit mode).
-        spec: :class:`PipelineSpec` to materialise (generated mode).
+        spec: ``PipelineSpec`` to materialise (generated mode).
         platform: Override platform detection for generated mode.
         appsink_name: Name of the openral appsink. Defaults to
             ``bh_sink``; only override when supplying an explicit
             ``pipeline`` whose appsink uses a different name.
         default_max_age_ms: Default staleness budget applied when
-            :meth:`read_latest` is called with ``max_age_ms=None``.
+            ``read_latest`` is called with ``max_age_ms=None``.
 
     Raises:
         ROSConfigError: When both / neither of ``pipeline`` / ``spec``
@@ -130,7 +130,7 @@ class GStreamerSensorReader:
         ros_rate_hz: float | None = None,
         default_max_age_ms: int = _DEFAULT_MAX_AGE_MS,
     ) -> None:
-        """Stash configuration; no GStreamer I/O until :meth:`open`."""
+        """Stash configuration; no GStreamer I/O until ``open``."""
         if (pipeline is None) == (spec is None):
             raise ROSConfigError(
                 f"GStreamerSensorReader({sensor_id!r}) requires exactly one of "
@@ -347,14 +347,14 @@ class GStreamerSensorReader:
     # ── Hot path ────────────────────────────────────────────────────────────
 
     def read_latest(self, max_age_ms: int | None = None) -> SensorFrame:
-        """Return the most recent buffered frame as a :class:`SensorFrame`.
+        """Return the most recent buffered frame as a ``SensorFrame``.
 
         Args:
             max_age_ms: Maximum acceptable frame age. ``None`` falls back to
                 the constructor's ``default_max_age_ms``.
 
         Returns:
-            A populated :class:`SensorFrame` whose ``data`` field holds
+            A populated ``SensorFrame`` whose ``data`` field holds
             the pixel bytes and ``encoding`` reflects the negotiated
             caps format.
 
@@ -499,7 +499,7 @@ class GStreamerSensorReader:
         return int(Gst.FlowReturn.OK)
 
     def _handle_nvmm_buffer(self, buffer: Any, structure: Any) -> int:  # noqa: ANN401  # reason: Gst.Buffer / Gst.Structure — duck-typed
-        """NVMM zero-copy path: map → wrap as :class:`NvBufSurfaceHandle` → latch ``handle``.
+        """NVMM zero-copy path: map → wrap as ``NvBufSurfaceHandle`` → latch ``handle``.
 
         Holds a reference to the GStreamer buffer for the lifetime of
         the latched slot (released when the next frame arrives) so the
@@ -652,9 +652,9 @@ class GStreamerSensorReader:
     def _wrap_in_pipeline(element: Gst.Element) -> Gst.Pipeline:
         """Wrap a bare element returned by parse_launch in a Pipeline bin.
 
-        ``Gst.parse_launch`` returns a single :class:`Gst.Element` only when
+        ``Gst.parse_launch`` returns a single ``Gst.Element`` only when
         the string is a single element (e.g. ``"appsink"``). For our multi-
-        element pipelines it returns a :class:`Gst.Pipeline` already, so this
+        element pipelines it returns a ``Gst.Pipeline`` already, so this
         helper is hit only by edge-case tests / single-element specs.
         """
         pipeline = Gst.Pipeline.new(None)

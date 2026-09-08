@@ -40,7 +40,7 @@ _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudB
 - `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. Logs `dataset_recorder.armed` (with `output_path`) at construction and, at `destroy()`, `dataset_recorder.summary` (episode + frame totals) or — when no episode marker ever fired, i.e. no rSkill executed — a `dataset_recorder.nothing_recorded` warning, so an empty recording is never silent. `destroy()` flushes the pending tick, closes the episode, finalizes the bag, releases the subscriptions; idempotent. (L86)
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
-_:class:`SensorReader` Protocol — seam between per-sensor capture backends and the inference runner._
+_``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._
 
 - `class SensorReader(Protocol)` — `@runtime_checkable` Protocol; concrete backends live under `openral_runner.backends`. (L29)
   - attr `sensor_id: str` — matches `SensorReaderConfig.sensor_id`.
@@ -50,7 +50,7 @@ _:class:`SensorReader` Protocol — seam between per-sensor capture backends and
   - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Non-blocking peek at the most recent buffered frame; raises `ROSPerceptionStale` if no frame yet or freshest exceeds budget. (L71)
 
 ### `python/runner/src/openral_runner/backends/opencv_thread.py`
-_:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-camera-thread pattern._
+_``OpenCVThreadSensorReader`` — default backend. Mirrors lerobot's per-camera-thread pattern._
 
 - module constant `_COLOR_NDIM = 3` — Number of dims for an OpenCV colour frame (`(H, W, 3)`); mono is `(H, W)`. Used to derive `SensorFrame.channels`. (L39)
 - module constant `_CROP_LEN = 4` — A crop is `(x, y, width, height)`.
@@ -66,7 +66,7 @@ _:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-ca
   - `_read_loop()` — Background daemon: `cv2.VideoCapture.read` → `_latest_frame + _latest_stamp_*_ns` under lock; sleeps `1/fps` on read failure / EOF. (L330)
 
 ### `python/runner/src/openral_runner/backends/ros2_image.py`
-_:class:`Ros2ImageSensorReader` — the backend for streams a device cannot emit.  A StereoLabs ZED presents ONE side-by-side UVC node over USB; its depth is computed on the host GPU by the ZED SDK and only ever **published**.  Same for RealSense aligned depth.  The catalog's `stereolabs/zed_mini` bundle has always declared a depth stream; before this backend nothing could subscribe to it, so the declaration was undeliverable._
+_``Ros2ImageSensorReader`` — the backend for streams a device cannot emit.  A StereoLabs ZED presents ONE side-by-side UVC node over USB; its depth is computed on the host GPU by the ZED SDK and only ever **published**.  Same for RealSense aligned depth.  The catalog's `stereolabs/zed_mini` bundle has always declared a depth stream; before this backend nothing could subscribe to it, so the declaration was undeliverable._
 
 - module constant `_DIRECT_ENCODINGS` — `sensor_msgs/Image.encoding` → `(FrameEncoding, numpy dtype, channels)` for `rgb8` / `bgr8` / `mono8` / `8UC1` / `8UC3` / `mono16` / `16UC1`. Anything not listed is refused **by name**, not misread as pixels.
 - module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` — float metre depth (what the ZED SDK publishes), converted on the way in.
@@ -242,7 +242,7 @@ _Library deploy runner used by runtime nodes; the public deploy CLI now shells t
   views. Other backends still dispatch through `SENSOR_BACKEND_REGISTRY`.
 
 ### `python/runner/src/openral_runner/deploy_runner.py`
-_:class:`DeployRunner` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient._
+_``DeployRunner`` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient._
 
 - `class DeployRunner(InferenceRunnerBase)` — First end-to-end closer of the `WorldState → Skill → safety → HAL` loop on real hardware / digital twins. The runner is the safety-supervisor boundary per CLAUDE.md §10: catches `ROSSafetyViolation` from the SafetyClient, records it on the `TickResult`, withholds the `HAL.send_action` call (does not re-raise because withholding IS the mitigation today). (L72)
   - `__init__(*, hal, skill, aggregator, sensor_readers=(), safety_client=None, recorder=None, **base_kwargs)` — Caller must pre-`configure()`+`activate()` the skill; runner manages HAL + reader open/close. Defaults `safety_client` to `NullSafetyClient`. Dashboard JPEG thumbnails are emitted at a private fixed cadence. Optional `recorder` is a `openral_dataset.RolloutRecorder`; when set, `episode_start` / `episode_end` drive its lifecycle and every tick fans out via `record_frame`. (L114)
@@ -255,7 +255,7 @@ _:class:`DeployRunner` — concrete `InferenceRunnerBase` subclass composing HAL
   - `_hal_adapter_label` — Lower-cased class name of the HAL adapter, used as the closed-set `openral.hal.adapter` value on spans + metrics. (L157)
 
 ### `python/runner/src/openral_runner/safety.py`
-_:class:`SafetyClient` stub — Python-side seam for the future C++ safety kernel (CLAUDE.md §6 Layer 6)._
+_``SafetyClient`` stub — Python-side seam for the future C++ safety kernel (CLAUDE.md §6 Layer 6)._
 
 - `class SafetyClient(Protocol)` — `@runtime_checkable` Protocol. `check_action(action)` returns `None` to allow or raises `ROSSafetyViolation` to reject. The inference runner catches at its supervisor boundary; never silently caught per CLAUDE.md §10. (L40)
   - attr `envelope: SafetyEnvelope` — the envelope checked against.

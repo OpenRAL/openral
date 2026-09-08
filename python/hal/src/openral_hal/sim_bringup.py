@@ -1,21 +1,21 @@
-"""Build an :class:`openral_sim.SimRollout` from a SimScene/DeployScene YAML path.
+"""Build an ``openral_sim.SimRollout`` from a SimScene/DeployScene YAML path.
 
 Shared helper for any HAL ROS lifecycle node that flips into
 ``SimAttachedHAL`` mode via a ``sim_env_yaml`` ROS parameter:
 
 1. Resolve ``sim_env_yaml`` to an absolute path (walking parents of this
    source file when relative).
-2. Load it as a :class:`~openral_core.SimScene` (``openral sim run
-   --config``) or :class:`~openral_core.DeployScene` (``openral deploy sim
+2. Load it as a ``SimScene`` (``openral sim run
+   --config``) or ``DeployScene`` (``openral deploy sim
    --config``) — for DeployScene the HAL synthesises a noop
-   :class:`~openral_core.TaskSpec` (it drives ``env.step`` directly and
+   ``TaskSpec`` (it drives ``env.step`` directly and
    never consults the task's ``id``/``instruction``/``max_steps``/
-   ``success_key``). :class:`~openral_core.BenchmarkScene` YAMLs are
+   ``success_key``). ``BenchmarkScene`` YAMLs are
    rejected with a redirect to ``openral benchmark scene``.
-3. Wrap scene + task in a :class:`~openral_core.SimEnvironment` with a
-   dummy :class:`~openral_core.VLASpec` (never invoked — the lifecycle node
-   drives ``env.step`` via :meth:`SimAttachedHAL.send_action`).
-4. Look up the scene's factory in :data:`openral_sim.SCENES` and instantiate.
+3. Wrap scene + task in a ``SimEnvironment`` with a
+   dummy ``VLASpec`` (never invoked — the lifecycle node
+   drives ``env.step`` via ``SimAttachedHAL.send_action``).
+4. Look up the scene's factory in ``openral_sim.SCENES`` and instantiate.
 
 Generic across robots — the only per-HAL piece is ``robot_id_fallback``
 (``None`` default; e.g. the panda_mobile lifecycle node passes
@@ -25,7 +25,7 @@ Most backends ignore ``task.id`` (so101, robocasa, native MjSpec), so the
 synthesised task carries an inert ``_hal_deploy_noop`` suffix. LIBERO's
 index-parsing suites (``"<suite>/<int>"``) have no taskless floor — each
 suite task is a distinct MuJoCo scene — so
-:func:`_synthesise_deploy_task_id` gives them a concrete index (``0``)
+``_synthesise_deploy_task_id`` gives them a concrete index (``0``)
 instead; deploy-sim never reads the task's success criterion.
 """
 
@@ -80,9 +80,9 @@ def _load_scene_for_hal(path: str) -> SimScene:
 
     The HAL only ever needs ``scene`` / ``robot_id`` / ``base_pose`` /
     ``seed`` from the YAML; the task block is plumbing the
-    :class:`SimEnvironment` schema requires but the HAL never invokes
+    ``SimEnvironment`` schema requires but the HAL never invokes
     (see module docstring). When the YAML omits ``task:`` (DeployScene),
-    a noop :class:`TaskSpec` is synthesised so the HAL boots without the
+    a noop ``TaskSpec`` is synthesised so the HAL boots without the
     operator having to author a fake task.
     """
     raw_obj = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -167,7 +167,7 @@ def build_sim_env_from_yaml(
     *,
     robot_id_fallback: str | None = None,
 ) -> tuple[SimRollout, int | None]:
-    """Resolve a SimScene YAML path to a live :class:`SimRollout`.
+    """Resolve a SimScene YAML path to a live ``SimRollout``.
 
     Args:
         sim_env_yaml: Path to a SimScene **or** DeployScene YAML on disk
@@ -176,26 +176,26 @@ def build_sim_env_from_yaml(
             ROS parameter values are cwd-naïve so the lifecycle node
             can't rely on the operator's invoke directory. DeployScene
             YAMLs (env-only, no ``task:``) gain a synthesised noop
-            :class:`TaskSpec` so the SimEnvironment schema is satisfied;
-            see :func:`_load_scene_for_hal`.
+            ``TaskSpec`` so the SimEnvironment schema is satisfied;
+            see ``_load_scene_for_hal``.
         robot_id_fallback: Robot id to plug into the constructed
-            :class:`SimEnvironment` when the YAML omits ``robot_id``
+            ``SimEnvironment`` when the YAML omits ``robot_id``
             (robocasa-shaped fixtures forbid it). ``None`` means
             "trust the YAML / SCENES registry" and the loader will
             raise if neither source supplies one.
 
     Returns:
-        ``(env, seed)`` — the instantiated :class:`SimRollout` env and
+        ``(env, seed)`` — the instantiated ``SimRollout`` env and
         the YAML's ``seed`` field (both DeployScene and SimScene default to 0).
         The caller is responsible for plumbing the seed
-        into ``env.reset(seed=...)`` (via :class:`SimAttachedHAL`'s
+        into ``env.reset(seed=...)`` (via ``SimAttachedHAL``'s
         ``env_reset_seed`` kwarg) so that the deploy_sim and sim_run
         paths reach the same episode of the same scene from the same YAML.
 
     Raises:
         ROSConfigError: when the YAML can't be located, is a
             BenchmarkScene, is neither a valid SimScene nor DeployScene,
-            the scene id isn't registered in :data:`openral_sim.SCENES`,
+            the scene id isn't registered in ``openral_sim.SCENES``,
             or the schema validators reject the loaded fields.
     """
     yaml_path = Path(sim_env_yaml)
@@ -268,7 +268,7 @@ HAL_TRANSITION_TIMEOUT_MARGIN_S = 60.0
 def hal_transition_timeout_s(deploy_config: str | None) -> str:
     """Per-transition budget for the HAL autostart, derived from the scene.
 
-    Lives beside :func:`build_sim_env_from_yaml` because that is the call
+    Lives beside ``build_sim_env_from_yaml`` because that is the call
     whose duration this bounds: the launch file spawns
     ``tools/lifecycle_autostart.py`` with this value to wait on the
     ``on_configure`` transition that runs the function above.

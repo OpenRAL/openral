@@ -142,13 +142,13 @@ def attached_dashboard(*, enabled: bool, port: int = 4318) -> Iterator[bool]:
     Behaviour:
 
     * ``enabled=False`` — yield ``False`` immediately, no child spawned.
-    * ``enabled=True`` — delegate to :func:`spawn_dashboard`; if it
-      yields a URL, re-run :func:`configure_observability` so the
+    * ``enabled=True`` — delegate to ``spawn_dashboard``; if it
+      yields a URL, re-run ``configure_observability`` so the
       current process re-binds onto the freshly-attached endpoint;
       otherwise yield ``False`` (workload continues unattached).
     * On exit (regardless of attach success / workload outcome): if we
-      were attached, drain via :func:`shutdown_observability` *before*
-      the child SIGINT in :func:`spawn_dashboard`'s ``finally`` so the
+      were attached, drain via ``shutdown_observability`` *before*
+      the child SIGINT in ``spawn_dashboard``'s ``finally`` so the
       last span/metric batch lands instead of churning on
       ``Connection refused`` after the receiver is gone.
 

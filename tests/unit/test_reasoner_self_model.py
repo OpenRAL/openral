@@ -1,8 +1,8 @@
 """Tests for the reasoner robot self-model.
 
-:func:`~openral_reasoner.context.render_robot_self_model` against real
+``render_robot_self_model`` against real
 ``robots/<id>/robot.yaml`` fixtures (CLAUDE.md §1.11) and
-:class:`~openral_reasoner.context.ContextRenderer` surfacing ``## ROBOT`` iff
+``ContextRenderer`` surfacing ``## ROBOT`` iff
 a self-model is supplied.
 """
 

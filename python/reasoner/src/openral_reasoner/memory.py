@@ -4,7 +4,7 @@ A persistent, human-readable **semantic** memory for the S2 reasoner,
 complementary to the *geometric* scene graph. Holds preferences,
 corrections/lessons, durable home facts, an object-location log, and
 open tasks. The reasoner reads it as the ``## MEMORY`` context block and
-edits it through the :class:`~openral_core.MemoryWriteTool` op (never a
+edits it through the ``MemoryWriteTool`` op (never a
 free-form rewrite). Advisory only — a wrong memory yields a bad plan the
 C++ safety kernel still vetoes (CLAUDE.md §1.1).
 
@@ -51,7 +51,7 @@ def _rank(entry: MemoryEntry) -> tuple[bool, float, str]:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class MemoryEntry:
-    """One remembered fact in a :class:`MemoryStore`."""
+    """One remembered fact in a ``MemoryStore``."""
 
     section: MemorySection
     content: str
@@ -66,7 +66,7 @@ class MemoryEntry:
 
 
 class MemoryStore:
-    """Ordered set of :class:`MemoryEntry` rendered to / parsed from ``MEMORY.md``."""
+    """Ordered set of ``MemoryEntry`` rendered to / parsed from ``MEMORY.md``."""
 
     def __init__(self, entries: list[MemoryEntry] | None = None) -> None:
         """Hold an ordered list of memory entries (empty by default)."""

@@ -11,7 +11,7 @@ separately and passed as a ``file:`` upstream; ``--rename`` strips the
 **Portable mesh refs.** The yourdfpy round-trip absolutizes every mesh
 ``filename`` into the vendoring machine's ``robot_descriptions`` cache (once
 broke collision lowering fleet-wide in CI — empty ACMs). For ``rd:``
-upstreams, :func:`_portable_mesh_refs` rewrites cache-absolute paths to
+upstreams, ``_portable_mesh_refs`` rewrites cache-absolute paths to
 ``rd:<module>:<path-relative-to-repository>``, expanded at load time by
 ``openral_safety.urdf_lowering`` through the same pinned clone.
 
@@ -19,7 +19,7 @@ upstreams, :func:`_portable_mesh_refs` rewrites cache-absolute paths to
 ``package://`` mesh paths, fatal for already-flat upstream URDFs
 (so100/so101/gr1/h1). Those are copied verbatim with joint-name-only renames
 (``<joint name="X"`` / mimic/transmission ``joint="X"`` refs; links untouched)
-applied via ``re.sub`` on the raw XML. A :class:`list` of ``(pattern, repl)``
+applied via ``re.sub`` on the raw XML. A ``list`` of ``(pattern, repl)``
 pairs is applied in order: so100/so101 take six numeric renames, gr1/h1 take
 a ``_joint``-suffix strip.
 """
@@ -262,7 +262,7 @@ def _read_raw_text(upstream: str) -> str:
 def _with_provenance_raw(xml: str, *, id: str, src: str) -> str:
     """Insert the provenance comment into a raw-text URDF, preserving its bytes.
 
-    Unlike :func:`_with_provenance` (which rewrites the XML declaration emitted
+    Unlike ``_with_provenance`` (which rewrites the XML declaration emitted
     by the yourdfpy round-trip), this keeps the upstream document verbatim and
     only inserts the provenance comment on the line *after* the declaration (or
     at the top if there is none), matching the document's own newline style so

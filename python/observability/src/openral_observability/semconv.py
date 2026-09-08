@@ -182,11 +182,11 @@ SPAN_SAFETY_CHECK: Final[str] = "safety.check"
 SPAN_REWARD_SCORE: Final[str] = "reward.score"
 """One span per reward-monitor assessment (service query or critic tick)."""
 SPAN_REASONER_TICK: Final[str] = "reasoner.tick"
-"""One span per :meth:`openral_reasoner.ReasonerCore.tick`."""
+"""One span per ``openral_reasoner.ReasonerCore.tick``."""
 SPAN_DEPLOY_BRINGUP: Final[str] = "deploy.bringup"
 """One span per managed-lifecycle transition callback.
 
-Emitted by the :func:`openral_observability.log_lifecycle_errors` decorator,
+Emitted by the ``openral_observability.log_lifecycle_errors`` decorator,
 so every node that already uses it is covered without a call-site change.
 Until this existed nothing measured bringup at all: the "HAL ``on_configure``
 takes ~6 s, or ~27 s on a cold robocasa kitchen" figures that justify the
@@ -212,7 +212,7 @@ REASONER_FORCE: Final[str] = "reasoner.force"
 # trace alone. These two split it: provider time, and the prompt size that
 # drives it.
 REASONER_LLM_S: Final[str] = "reasoner.llm_s"
-"""Wall-clock of the LLM round-trip alone (:meth:`ReasonerCore.run_prepared_llm`)."""
+"""Wall-clock of the LLM round-trip alone (``ReasonerCore.run_prepared_llm``)."""
 REASONER_PROMPT_TOKENS: Final[str] = "reasoner.prompt_tokens"
 """Provider-reported prompt (input) tokens for the tick's call, cache reads
 included. Absent when the client does not surface usage."""

@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.H1MujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.H1MujocoHAL`` against real MuJoCo physics.
 
 These tests load the ``mujoco_menagerie`` Unitree H1 MJCF (via
 ``robot_descriptions``) and exercise the full HAL lifecycle — connect →
@@ -155,7 +155,7 @@ class TestH1Description:
 class TestMenagerieSchema:
     """Guard against silent ``mujoco_menagerie`` schema drift.
 
-    The :class:`H1MujocoHAL` indexing assumes the floating-base + 19
+    The ``H1MujocoHAL`` indexing assumes the floating-base + 19
     actuated-joint order documented in ``h1.py``.  If a future
     menagerie upgrade reorders joints, these guards fail before the
     closed-loop tests do and point at the right place.

@@ -1,17 +1,17 @@
-""":class:`ReasonerCore`.
+"""``ReasonerCore``.
 
 The transport-agnostic orchestrator that closes
 context → LLM → typed tool call. The ROS-side
 ``openral_reasoner_ros.reasoner_node`` wraps this class with the
 lifecycle, subscriptions, and dispatch plumbing; the core itself has
 no rclpy dependency so it is fully unit-testable against a
-:class:`FakeToolUseClient`.
+``FakeToolUseClient``.
 
 The reasoner:
 
 * Holds **no** authority over actuation (never publishes
   ``ActionChunk``).
-* Picks exactly one typed :data:`~openral_core.ReasonerToolCall` per tick.
+* Picks exactly one typed ``ReasonerToolCall`` per tick.
 * Enforces a bounded retry counter per identical call to prevent storms.
 """
 
@@ -91,7 +91,7 @@ class PreparedTick:
     (``seq``, ``prompts``, ``started``, the open OTel span). The ``seq`` and
     ``prompts`` snapshots matter: events that arrive while the LLM call is in
     flight were **not** rendered into the model's context, so
-    :meth:`~ReasonerCore.finish_tick` must mark seen / drain only what the
+    ``finish_tick`` must mark seen / drain only what the
     model actually saw.
     """
 
@@ -107,8 +107,8 @@ class PreparedTick:
     tier: str
     llm_s: float = 0.0
     """Wall-clock of the LLM round-trip alone, written by
-    :meth:`~ReasonerCore.run_prepared_llm` (the only field the LLM phase
-    mutates) and read back by :meth:`~ReasonerCore.finish_tick`. Split out
+    ``run_prepared_llm`` (the only field the LLM phase
+    mutates) and read back by ``finish_tick``. Split out
     from the tick's ``elapsed_s`` because a slow tick is otherwise
     unattributable: provider time and reasoner overhead look identical."""
     prompt_tokens: int | None = None
@@ -118,13 +118,13 @@ class PreparedTick:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReasonerTickResult:
-    """Outcome of a single :meth:`ReasonerCore.tick` invocation.
+    """Outcome of a single ``ReasonerCore.tick`` invocation.
 
     Attributes:
         tool_call: The validated tool call selected by the LLM, or
             ``None`` when the tick was suppressed (rate-limited,
             palette empty, etc.).
-        error: A :class:`ROSPlanningError` subclass when the tick
+        error: A ``ROSPlanningError`` subclass when the tick
             failed, or ``None`` on success.
         elapsed_s: Wall-clock time the tick took, end-to-end.
         suppressed_reason: When ``tool_call is None and error is None``,
@@ -144,22 +144,22 @@ class ReasonerTickResult:
     ``EmitPromptTool`` ``PromptStamped.metadata_json`` so the F7
     bag↔OTel correlator can join the published prompt back to the
     reasoner span that produced it. ``None`` when no
-    real :class:`TracerProvider` is installed."""
+    real ``TracerProvider`` is installed."""
 
 
 class ReasonerCore:
     """Transport-agnostic reasoner orchestrator.
 
     The class is intentionally narrow: it consumes the current
-    :class:`ContextRenderer` + :class:`ToolPalette` and produces a
+    ``ContextRenderer`` + ``ToolPalette`` and produces a
     typed tool call. Wiring (subscriptions, action clients, service
     calls) lives in the ROS lifecycle node.
 
     Args:
-        client: A :class:`ToolUseClient` instance. In tests this is
-            usually :class:`FakeToolUseClient` (under
+        client: A ``ToolUseClient`` instance. In tests this is
+            usually ``FakeToolUseClient`` (under
             ``tests/integration/fakes/``); in production it is one of
-            the SDK-backed clients from :mod:`openral_reasoner.tool_use`.
+            the SDK-backed clients from ``openral_reasoner.tool_use``.
         min_interval_s: Hard lower bound between consecutive ticks, in
             seconds. Mandated as 100 ms (0.1 s).
         retry_cap_per_kind: Maximum number of consecutive ticks the
@@ -172,12 +172,12 @@ class ReasonerCore:
             place, all ``execute_rskill`` — never trips the cap, while a
             genuine loop re-issuing the same call against unchanged
             context still does. The read-only search tools
-            (:data:`_RETRY_CAP_EXEMPT_TOOLS`) are transparent to the cap:
+            (``_RETRY_CAP_EXEMPT_TOOLS``) are transparent to the cap:
             their own budgets (``SearchProgress``, ``TaskLocateBudget``)
             bound them and terminate in an explicit human-handoff, which
             the cap's silent hold must never preempt.
         system_prompt: Override the
-            :data:`~openral_reasoner.tool_use.DEFAULT_SYSTEM_PROMPT`.
+            ``DEFAULT_SYSTEM_PROMPT``.
             ``None`` keeps the default.
         clock: Monotonic clock source (seconds). Override in tests.
 
@@ -197,7 +197,7 @@ class ReasonerCore:
         system_prompt: str | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Stash configuration; no LLM call until :meth:`tick`."""
+        """Stash configuration; no LLM call until ``tick``."""
         if min_interval_s < 0:
             raise ValueError(
                 f"ReasonerCore.min_interval_s must be >= 0; got {min_interval_s!r}",
@@ -265,8 +265,8 @@ class ReasonerCore:
     ) -> ReasonerTickResult:
         """Run one orchestrator pass, synchronously.
 
-        Composition of the three phases (:meth:`prepare_tick` →
-        :meth:`run_prepared_llm` → :meth:`finish_tick`) on the calling
+        Composition of the three phases (``prepare_tick`` →
+        ``run_prepared_llm`` → ``finish_tick``) on the calling
         thread. The ROS node runs the LLM phase on a worker thread instead
         (issue #21 — a blocking ``select_tool`` starves the rclpy executor);
         this method remains the single-threaded contract for tests and
@@ -274,9 +274,9 @@ class ReasonerCore:
 
         Args:
             world_state: Latest WorldState snapshot or ``None``.
-            renderer: The reasoner's :class:`ContextRenderer`. Prompts
+            renderer: The reasoner's ``ContextRenderer``. Prompts
                 are drained on a successful tick.
-            palette: Current :class:`ToolPalette`.
+            palette: Current ``ToolPalette``.
             force: When ``True`` bypasses **both** gating heuristics
                 (the min-interval rate-limit and the palette-empty
                 short-circuit) so an event-preempted tick from a
@@ -292,10 +292,10 @@ class ReasonerCore:
                 Recorded on the OTel span as ``reasoner.tier`` for
                 trace-filtering on the dashboard — observability only;
                 per-tier preemption thresholds live in
-                :class:`~openral_reasoner_ros.ReasonerNode`.
+                ``ReasonerNode``.
 
         Returns:
-            A :class:`ReasonerTickResult`.
+            A ``ReasonerTickResult``.
         """
         prep = self.prepare_tick(
             world_state=world_state,
@@ -329,12 +329,12 @@ class ReasonerCore:
         Cheap and non-blocking — safe (and required) on the rclpy executor
         thread, since it reads and snapshots state that executor callbacks
         mutate (the renderer, the palette reference). Returns a suppressed
-        :class:`ReasonerTickResult` when a gate fires, else a
-        :class:`PreparedTick` whose blocking LLM phase
-        (:meth:`run_prepared_llm`) may run on any thread and whose
-        :meth:`finish_tick` must run back on the owning thread.
+        ``ReasonerTickResult`` when a gate fires, else a
+        ``PreparedTick`` whose blocking LLM phase
+        (``run_prepared_llm``) may run on any thread and whose
+        ``finish_tick`` must run back on the owning thread.
 
-        Args/semantics are those of :meth:`tick`.
+        Args/semantics are those of ``tick``.
         """
         started = self._clock()
         # min-interval gate — gate BEFORE opening the
@@ -423,7 +423,7 @@ class ReasonerCore:
         # explicitly. Bypassed when ``force=True``: an event-preempted tick
         # (SEVERITY_FAIL FailureTrigger or a new operator prompt) demands
         # the LLM's attention even with no skills installed — at minimum it
-        # can pick :class:`EmitPromptTool` to escalate to the operator;
+        # can pick ``EmitPromptTool`` to escalate to the operator;
         # gating here would silently swallow SEVERITY_FAIL preemptions on a
         # bare reasoner.
         if (
@@ -465,11 +465,11 @@ class ReasonerCore:
         nothing but the client and the immutable snapshots inside ``prep``.
         Runs under the tick span (per-thread attach) so client-internal
         spans nest correctly; exception recording is deferred to
-        :meth:`finish_tick` (single recorder).
+        ``finish_tick`` (single recorder).
 
         Raises:
             ROSPlanningError: Provider/transport/decode failures, exactly
-                as :meth:`ToolUseClient.select_tool` raises them.
+                as ``ToolUseClient.select_tool`` raises them.
         """
         with use_span(
             prep.span, end_on_exit=False, record_exception=False, set_status_on_exception=False
@@ -505,10 +505,10 @@ class ReasonerCore:
         the traceparent, and ends the tick span.
 
         Args:
-            prep: The matching :meth:`prepare_tick` output.
+            prep: The matching ``prepare_tick`` output.
             call: The selected tool call (success path).
             error: The exception the LLM phase raised. A
-                :class:`ROSPlanningError` becomes ``ReasonerTickResult.error``;
+                ``ROSPlanningError`` becomes ``ReasonerTickResult.error``;
                 anything else is recorded on the span and **re-raised** —
                 the pre-split behavior of an unexpected client bug.
         """
@@ -617,7 +617,7 @@ class ReasonerCore:
             )
 
 
-# Re-export :class:`ROSReasonerInvalidPlan` so test code can ``from
+# Re-export ``ROSReasonerInvalidPlan`` so test code can ``from
 # openral_reasoner.core import ROSReasonerInvalidPlan`` without
 # reaching into ``openral_core.exceptions``.
 __all__ += ["ROSReasonerInvalidPlan"]

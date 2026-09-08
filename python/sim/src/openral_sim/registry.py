@@ -1,9 +1,9 @@
 """Registries that map ID strings to backend factories.
 
 Three registries:
-    * :data:`SCENES`   — ``scene_id`` -> :class:`~openral_sim.rollout.SimRollout` factory.
-    * :data:`POLICIES` — ``vla_id``   -> :class:`~openral_sim.policy.PolicyAdapter` factory.
-    * :data:`ROBOTS`   — ``robot_id`` -> :class:`~openral_core.RobotDescription` factory.
+    * ``SCENES``   — ``scene_id`` -> ``SimRollout`` factory.
+    * ``POLICIES`` — ``vla_id``   -> ``PolicyAdapter`` factory.
+    * ``ROBOTS``   — ``robot_id`` -> ``RobotDescription`` factory.
 
 The factory functions are kept thin so the registry stays serialisation-friendly
 (IDs are plain strings inside YAML configs).  Heavy backend imports happen inside
@@ -45,7 +45,7 @@ class _Registry(Generic[T]):
 
     The registry stores plain callables; the type variable ``T`` describes the
     object the callable returns, not the callable itself, so users get the
-    expected type from :meth:`get` (``mypy --strict`` happy).
+    expected type from ``get`` (``mypy --strict`` happy).
 
     Attributes:
         kind: Human-readable label used in error messages (``"scene"``, …).
@@ -77,7 +77,7 @@ class _Registry(Generic[T]):
                 always instantiates Franka, MetaWorld always instantiates
                 Sawyer, etc.) the scene declares it here. The CLI then
                 rejects any ``--robot`` / ``robot_id`` value that disagrees
-                with a typed :class:`ROSConfigError`, instead of silently
+                with a typed ``ROSConfigError``, instead of silently
                 running the scene's hardcoded robot. Leave ``None`` for
                 free-axis scenes (``mock``, ``maniskill3``, ``simpler_env``).
             provision: Only meaningful on the ``SCENES`` registry. Declares
@@ -85,7 +85,7 @@ class _Registry(Generic[T]):
                 asset download, fork clone, or sidecar-venv build that the
                 factory would otherwise trigger on its first call. Callers
                 that can afford to do slow work up front (``openral deploy
-                sim`` before ``ros2 launch``) run it via :meth:`provision`
+                sim`` before ``ros2 launch``) run it via ``provision``
                 so it does not land inside the HAL's ``on_configure``, a
                 callback ``tools/lifecycle_autostart.py`` bounds at 300 s.
                 Must be idempotent — the factory calls the same helpers
@@ -118,7 +118,7 @@ class _Registry(Generic[T]):
         """Return the scene's hard-fixed robot id, or ``None`` if free-axis.
 
         Returns ``None`` for unregistered ``name`` as well — callers that
-        care about "does this scene exist" should use :meth:`get`.
+        care about "does this scene exist" should use ``get``.
         """
         return self._fixed_robots.get(name)
 
@@ -128,7 +128,7 @@ class _Registry(Generic[T]):
         ``None`` means "nothing slow to do ahead of time" — either the
         backend needs no out-of-tree assets, or ``name`` is not registered
         at all. Both are a no-op for the caller, so this deliberately does
-        not raise on an unknown id the way :meth:`get` does: a preflight is
+        not raise on an unknown id the way ``get`` does: a preflight is
         advisory and the scene resolver owns reporting a bad scene id.
         """
         return self._provisioners.get(name)

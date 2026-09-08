@@ -138,8 +138,8 @@ def assess_from_score(
 ) -> dict[str, Any]:
     """Summarize one scored window into the reward-monitor ``assess()`` dict.
 
-    Shared by :class:`~openral_runner.backends.reward.robometer_reward.RobometerInProcessReward`
-    and :class:`~openral_runner.backends.reward.topreward_reward.TOPRewardMonitor` so both
+    Shared by ``RobometerInProcessReward``
+    and ``TOPRewardMonitor`` so both
     backends report the same shape to ``reward_monitor_node`` / the Reasoner's
     ``query_task_progress`` path.
 

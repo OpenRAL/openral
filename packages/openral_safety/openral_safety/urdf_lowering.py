@@ -9,7 +9,7 @@ that ``robot.yaml`` carries and ``collision_params_from_description`` consumes:
 * **ACM** — adjacent pairs, plus pairs *proved* always-colliding over their own
   relative-DoF subspace, plus the hand-reviewed rows of the SRDF
   ``disable_collisions`` block where one exists. Every verdict is taken with the
-  **kernel's own** predicates (:mod:`openral_safety.kernel_predicates`) at the
+  **kernel's own** predicates (``openral_safety.kernel_predicates``) at the
   robot's own ``self_collision_margin_m``, so the generated matrix is about the
   robot the kernel actually checks. No RNG: the result is reproducible.
 
@@ -215,7 +215,7 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
     """One conservative ``LinkCollisionGeometry`` per URDF link with a ``<collision>``.
 
     Primitive collisions map by exact analytic bounds (box → 8 corners; cylinder →
-    cap rims; sphere → an exact :class:`SphereShape`); mesh collisions load their
+    cap rims; sphere → an exact ``SphereShape``); mesh collisions load their
     vertices (``trimesh``) and PCA-fit a bounding capsule. All vertices are first
     transformed by the ``<collision><origin>`` into the link frame, so the emitted
     ``origin_xyz_rpy`` is link-relative (what the kernel's forward kinematics
@@ -309,7 +309,7 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
 
 # ── ACM: certified "always-colliding" over each pair's relative-DoF subspace ───
 # A pair enters the ACM here only under the **always-colliding** justification (see
-# :func:`acm_for_geometry`): the kernel's trip condition holds at *every* reachable
+# ``acm_for_geometry``): the kernel's trip condition holds at *every* reachable
 # configuration — a proof, not a sample, since "every" must mean every.
 # 1. Relative pose of two links depends only on the joints between them (``panda_link5``
 #    <-> ``panda_link7`` moves with ``panda_joint6``+``panda_joint7`` only, a 2-D subspace of
@@ -449,7 +449,7 @@ def _chain_transforms(chain: list[object], values: dict[str, _Arr], n: int) -> _
     Each joint contributes its fixed ``origin`` followed by its own motion: a
     rotation about ``axis`` for revolute/continuous, a translation along ``axis``
     for prismatic. Joints absent from ``values`` are held at zero — correct
-    because :func:`_relative_chains` guarantees every joint that can change the
+    because ``_relative_chains`` guarantees every joint that can change the
     pair's relative transform is present.
     """
     import numpy as np
@@ -543,7 +543,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
 ) -> bool:
     """Is the kernel's trip condition **provably** true at every reachable pose?
 
-    The always-colliding justification for an ACM entry (:func:`acm_for_geometry`)
+    The always-colliding justification for an ACM entry (``acm_for_geometry``)
     is only sound when the check it removes is a constant. Decided over the
     pair's relative-DoF subspace, using the kernel's own predicates at the
     robot's own margin, by branch-and-bound over boxes of joint space (not by
@@ -560,7 +560,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     that shrinks ε fastest and revisit.
 
     Always-colliding requires every cell to certify. Returns ``False`` on:
-    exhausted refinement budget, exceeding :data:`_CERTIFY_MAX_DOF`, an
+    exhausted refinement budget, exceeding ``_CERTIFY_MAX_DOF``, an
     undetermined relative pose, or both links declaring ``tight_geometry``
     (the kernel checks those at exact-hull fidelity, which this function's
     box-based ``shape_distance`` cannot bound in the certifying direction).
@@ -665,11 +665,11 @@ def acm_for_geometry(
 
     The kernel checks collisions with ``geoms``, so the ACM is decided against the
     *same* primitives, with the *same* predicates
-    (:mod:`openral_safety.kernel_predicates`), at the *same* ``margin_m``. A pair
+    (``openral_safety.kernel_predicates``), at the *same* ``margin_m``. A pair
     is exempted under exactly one of three justifications: **adjacent** (directly
     joint-connected); **always-colliding** (the kernel's trip condition holds at
     every reachable configuration — a proof over the pair's relative-DoF
-    subspace via :func:`_certified_always_colliding`, never a sample); or
+    subspace via ``_certified_always_colliding``, never a sample); or
     **never-able-to-collide** (hand-reviewed SRDF ``disable_collisions`` rows,
     when ``srdf_path`` is given). So with an SRDF: ``ACM = adjacent ∪ always ∪
     SRDF``; without one: ``ACM = adjacent ∪ always`` — every other pair stays
@@ -686,7 +686,7 @@ def acm_for_geometry(
     Deterministic: no RNG is involved anywhere in this function.
 
     Args:
-        urdf_path: Concrete on-disk URDF path (see :func:`_load_urdf`).
+        urdf_path: Concrete on-disk URDF path (see ``_load_urdf``).
         geoms: The per-link primitives the kernel will load, by link name.
         srdf_path: Optional SRDF whose ``disable_collisions`` rows are unioned in.
         margin_m: The robot's ``safety.self_collision_margin_m``. The kernel trips
@@ -724,7 +724,7 @@ def sample_acm_from_urdf(
 ) -> _AcmPairs:
     """The ACM from a URDF alone (the no-SRDF fallback).
 
-    Lowers the URDF's own collision geometry and runs :func:`acm_for_geometry`
+    Lowers the URDF's own collision geometry and runs ``acm_for_geometry``
     without an SRDF, so the result is ``adjacent ∪ always-colliding`` and nothing
     else: with no mesh ground truth and no human in the loop, a pair that is only
     *sometimes* colliding stays checked.
@@ -732,7 +732,7 @@ def sample_acm_from_urdf(
     Args:
         urdf_path: Concrete on-disk URDF path.
         margin_m: The robot's ``safety.self_collision_margin_m`` (see
-            :func:`acm_for_geometry`).
+            ``acm_for_geometry``).
 
     Returns:
         The disabled pairs, as unordered two-element frozensets.
@@ -778,7 +778,7 @@ def _rd_mesh_filename_handler(urdf_path: str) -> object:
     Every other ref falls through to yourdfpy's stock resolution (absolute paths,
     relative-to-URDF, ``package://`` heuristics) unchanged; in particular
     openarm's unresolvable ``package://openarm_description`` refs must KEEP
-    failing so :func:`select_lowering` keeps routing openarm to its MJCF path.
+    failing so ``select_lowering`` keeps routing openarm to its MJCF path.
     """
     import functools
     import importlib
@@ -803,10 +803,10 @@ def _load_urdf(urdf_path: str) -> object:
     """Load a yourdfpy model from a concrete on-disk URDF file path.
 
     The asset grammar is resolved upstream by
-    :func:`openral_core.assets.resolve_asset` (``rd:`` modules download their
+    ``openral_core.assets.resolve_asset`` (``rd:`` modules download their
     pre-expanded URDF, ``file:`` refs resolve against the manifest dir), so this
     helper only loads a real file — no URI dispatch beyond the vendored-mesh
-    ``rd:<module>:<relpath>`` refs :func:`_rd_mesh_filename_handler` expands.
+    ``rd:<module>:<relpath>`` refs ``_rd_mesh_filename_handler`` expands.
     Collision-scene-graph build + collision meshes on, visual meshes off,
     identical to the previous loader.
     """
@@ -1060,7 +1060,7 @@ def lower_robot(
             SRDF refs (the vendored arms, every in-tree SRDF) resolve against it.
 
     Returns:
-        A :class:`LoweredCollisionModel`.
+        A ``LoweredCollisionModel``.
 
     Raises:
         ROSConfigError: If ``assets.urdf`` is unset (and no sim MJCF) or a
@@ -1205,7 +1205,7 @@ def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None
       (openarm, whose vendored URDF's collision meshes are ``package://`` refs
       that don't resolve). An SRDF on such a robot does NOT flip it to the URDF
       path (there is no geometry to lower there); instead
-      :func:`lower_robot_from_mjcf` unions the SRDF's ``disable_collisions``
+      ``lower_robot_from_mjcf`` unions the SRDF's ``disable_collisions``
       into its sweep, so deliberate hand exemptions carry an explicit,
       reviewable paper trail.
 
@@ -1239,7 +1239,7 @@ def lower_robot_auto(
     geometry_only: bool = False,
     manifest_dir: Path | None = None,
 ) -> LoweredCollisionModel:
-    """Lower ``robot`` via the provenance-correct source (:func:`select_lowering`).
+    """Lower ``robot`` via the provenance-correct source (``select_lowering``).
 
     The single dispatch the CLI (``openral collision lower``/``check``) and the
     byte-identical regression test both call, so routing can never diverge
@@ -1248,8 +1248,8 @@ def lower_robot_auto(
     keeps the manifest geometry and recomputes the ACM).
 
     Raises:
-        ROSConfigError: Propagated from :func:`select_lowering` /
-            :func:`lower_robot` / :func:`lower_robot_from_mjcf`.
+        ROSConfigError: Propagated from ``select_lowering`` /
+            ``lower_robot`` / ``lower_robot_from_mjcf``.
     """
     if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
         return lower_robot_from_mjcf(robot, manifest_dir=manifest_dir)

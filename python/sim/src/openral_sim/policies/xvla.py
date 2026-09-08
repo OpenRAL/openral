@@ -1,4 +1,4 @@
-"""xVLA policy adapter — wraps :class:`lerobot.policies.xvla.XVLAPolicy`.
+"""xVLA policy adapter — wraps ``lerobot.policies.xvla.XVLAPolicy``.
 
 xVLA's IO contract is structurally distinct from SmolVLA, so it gets its own
 adapter rather than reusing the SmolVLA one:
@@ -121,7 +121,7 @@ class _XVLAAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()

@@ -291,7 +291,7 @@ class TestOpenarmRobosuitePlan:
     """
 
     def test_plan_is_registered(self) -> None:
-        """`openarm_robosuite` is addressable via :func:`get_plan`."""
+        """`openarm_robosuite` is addressable via ``get_plan``."""
         plan = get_plan("openarm_robosuite")
         assert plan.backend_id == "openarm_robosuite"
 
@@ -647,7 +647,7 @@ class TestEnsureBackendDepsLock:
         class InstrumentedLock:
             """``_INSTALL_LOCK`` stand-in that flags a contended acquire.
 
-            Wraps a real :class:`threading.Lock`; when ``acquire`` would block
+            Wraps a real ``threading.Lock``; when ``acquire`` would block
             (already held), sets ``second_acquire_blocking`` first so the test
             can observe thread B parked at the lock deterministically.
             """

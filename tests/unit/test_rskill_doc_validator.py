@@ -238,7 +238,7 @@ def test_template_description_blocks_publish(tmp_path: Path) -> None:
 
 
 def test_every_placeholder_marker_in_description_is_caught(tmp_path: Path) -> None:
-    """Each marker in :data:`PLACEHOLDER_MANIFEST_DESCRIPTION_MARKERS` is detected."""
+    """Each marker in ``PLACEHOLDER_MANIFEST_DESCRIPTION_MARKERS`` is detected."""
     for marker in PLACEHOLDER_MANIFEST_DESCRIPTION_MARKERS:
         description = f"{marker} — example padding to clear the min-length bar."
         yaml_body = _VALID_MANIFEST_YAML.replace(

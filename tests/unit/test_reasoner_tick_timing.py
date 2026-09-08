@@ -5,9 +5,9 @@ drifts from 6 s to 99 s over a mission cannot be blamed on the provider or on
 the reasoner. These tests pin the two attributions the trace now carries:
 ``reasoner.llm_s`` (provider round-trip alone) and ``reasoner.prompt_tokens``.
 
-Real :class:`ReasonerCore` + real OTel SDK + real
-:class:`InMemorySpanExporter`; the only double is
-:class:`FakeToolUseClient` at the LLM process boundary (CLAUDE.md §1.11).
+Real ``ReasonerCore`` + real OTel SDK + real
+``InMemorySpanExporter``; the only double is
+``FakeToolUseClient`` at the LLM process boundary (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations

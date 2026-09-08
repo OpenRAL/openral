@@ -3,14 +3,14 @@
 `depth-anything/DA3-SMALL` ships as the `depth-anything-3` package (not
 transformers-native), so it runs out-of-process in its own Python 3.12 venv,
 talking to the `openral_perception_ros` depth-provider node over ZMQ REQ/REP +
-msgpack (same pattern as :mod:`tools.locateanything_sidecar`). The provider
+msgpack (same pattern as ``tools.locateanything_sidecar``). The provider
 republishes as `32FC1` depth Image + CameraInfo for nvblox.
 
 Measured on an 8 GB Ada (RTX 4070 Laptop): DA3-SMALL loads in ~5 s, ~0.27 GB
 peak, ~27 Hz.
 
 aarch64 (GB10 / DGX Spark, Jetson Thor) uses a different install recipe — see
-:data:`_AARCH64_REQUIREMENTS`, :func:`_defer_pycolmap_import`, and
+``_AARCH64_REQUIREMENTS``, ``_defer_pycolmap_import``, and
 docs/reference/aarch64-support.md.
 
 Usage::
@@ -97,7 +97,7 @@ _AARCH64_REQUIREMENTS = (
     "pyzmq",
     "msgpack",
 )
-# Pinned exactly because :func:`_defer_pycolmap_import` is anchored to this
+# Pinned exactly because ``_defer_pycolmap_import`` is anchored to this
 # release's source text; a silent upgrade must not silently skip the rewrite.
 _AARCH64_DA3 = "depth-anything-3==0.1.1"
 

@@ -5,7 +5,7 @@ joint_state from a different executor thread than the one stepping the sim:
 the holder must hand readers a *complete* frame (never torn) and must never
 require touching the simulator from the reader thread (it stores plain data).
 
-No mocks — :class:`ProprioFrame` carries real ``JointState`` Pydantic models and
+No mocks — ``ProprioFrame`` carries real ``JointState`` Pydantic models and
 plain tuples (CLAUDE.md §1.11).
 """
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """RoboTwin 2.0 scene sidecar — runs the SAPIEN dual-arm env in a separate venv.
 
-RoboTwin side of the backend in :mod:`openral_sim.backends.robotwin` (py3.12),
+RoboTwin side of the backend in ``openral_sim.backends.robotwin`` (py3.12),
 auto-spawned under the venv named by ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON``.
 Constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
 --env.type=robotwin``) and serves ZMQ REP + msgpack/ndarray framing
@@ -12,7 +12,7 @@ Constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
     render -> {"frame": uint8 HWC|None}   close -> {"ok"}
     observation = {"images": {"head_camera",...}, "state": 14-D float32, "task": str}
 
-RoboTwin/SAPIEN/LeRobot import lazily inside :func:`main` so `--help` doesn't
+RoboTwin/SAPIEN/LeRobot import lazily inside ``main`` so `--help` doesn't
 need the heavy venv.
 
 Licensing: RoboTwin (MIT), SAPIEN (MIT), LeRobot (Apache-2.0). CUDA-12.1-pinned,
@@ -186,7 +186,7 @@ class _RoboTwinEnv:
     Builds a single gym env and adapts its observations to ``{"images", "state",
     "task"}``. LeRobot's robotwin obs is a dict with ``pixels`` (per-camera HWC
     uint8) + ``agent_pos``; we re-key the env's native cameras
-    (:data:`_ENV_CAMERA_NAMES`) to the openral scene camera names (the canonical
+    (``_ENV_CAMERA_NAMES``) to the openral scene camera names (the canonical
     camera-slot names) in order and expose ``agent_pos`` as ``state``.
     """
 

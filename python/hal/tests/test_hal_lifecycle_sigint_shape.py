@@ -2,15 +2,15 @@
 
 Mirrors ``packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py``
 (abd594f) and the runtime_node guard (caae96f). ROS 2 Jazzy's SIGINT handler
-(:func:`rclpy.init`) shuts down the rclpy context and raises
-``KeyboardInterrupt`` out of :func:`rclpy.spin`; a bare ``try/finally`` with
+(``rclpy.init``) shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of ``rclpy.spin``; a bare ``try/finally`` with
 plain ``rclpy.shutdown()`` then crashes with ``RCLError: rcl_shutdown already
 called on the given context`` on every Ctrl-C, masking the
 ``KeyboardInterrupt`` and stalling the launch shutdown supervisor past the
 30 s ``shutdown_grace`` window (SIGKILL, ``ros2 launch`` exit 250).
 
 Both ``main()`` factories in ``openral_hal.lifecycle``
-(:func:`make_lifecycle_main`, :func:`make_lifecycle_main_from_manifest`) must
+(``make_lifecycle_main``, ``make_lifecycle_main_from_manifest``) must
 wrap every spin in ``try/except (KeyboardInterrupt, ExternalShutdownException)
 /finally``; this module parses ``lifecycle.py`` as Python and asserts that
 *shape* (structural, not behavioural). The HAL lifecycle node is robot
@@ -65,7 +65,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in the HAL lifecycle.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     """
     bare_calls: list[int] = []

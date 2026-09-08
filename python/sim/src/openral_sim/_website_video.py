@@ -1,6 +1,6 @@
 """Clean single-view MP4 helper for website hero videos.
 
-Unlike :mod:`openral_sim._video` (the 3-panel *debug* montage), this writes
+Unlike ``openral_sim._video`` (the 3-panel *debug* montage), this writes
 *only* the world/viewer render — the frame an operator sees in the MuJoCo
 viewer — with no VLA-input panel, no joint plot, and no burned-in overlays.
 
@@ -17,7 +17,7 @@ the policy's observation resolution, so recording does not change task outcomes.
 Implementation notes
 --------------------
 * Uses imageio + imageio-ffmpeg for MP4 muxing (libx264, yuv420p) — same codec
-  path as :mod:`openral_sim._video`.
+  path as ``openral_sim._video``.
 * Each frame is center-cropped to a square, then resized to ``size × size`` so
   the file is display-ready square (the component still cover-crops, harmlessly).
 """
@@ -48,10 +48,10 @@ def save_world_mp4(
     size: int = _DEFAULT_SIZE,
     min_duration_s: float = 2.0,
 ) -> Path:
-    """Write a clean square world-view MP4 for one :class:`EpisodeResult`.
+    """Write a clean square world-view MP4 for one ``EpisodeResult``.
 
     Args:
-        result: An :class:`EpisodeResult` produced by :class:`SimRunner` with
+        result: An ``EpisodeResult`` produced by ``SimRunner`` with
             ``record_video=True``. Only ``frames`` (the rollout/world view) is
             used; ``vla_input_frames`` and ``joint_positions`` are ignored.
         path: Destination ``.mp4`` file. Parent directories are created.
@@ -139,7 +139,7 @@ def write_world_videos(
         scene: Scene id for the filename + manifest (e.g. ``libero_spatial``).
         rskill: rSkill basename for the filename + manifest (e.g. ``smolvla-libero``).
         section: Website section the clip belongs to (``benchmark`` / ``sim`` / ``deploy``).
-        size: Square output edge in pixels, passed to :func:`save_world_mp4`.
+        size: Square output edge in pixels, passed to ``save_world_mp4``.
         fps: Playback frame rate.
 
     Returns:

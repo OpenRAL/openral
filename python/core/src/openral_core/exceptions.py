@@ -150,13 +150,13 @@ class ROSRskillGoalSatisfied(ROSError):
     """A wrapped-ROS rSkill has finished its goal successfully.
 
     Used as a typed completion signal raised by
-    :meth:`openral_rskill.ros_action_rskill.ROSActionRskill._step_impl` after
+    ``openral_rskill.ros_action_rskill.ROSActionRskill._step_impl`` after
     the last waypoint of a one-shot planner (e.g. MoveIt) has been emitted,
     or after a result-only wrapped action (e.g. Nav2 ``NavigateToPose``)
     reports success. The ``ExecuteRskill`` action server catches this
     specifically and closes the goal with ``success=True``.
 
-    This is NOT an error — it inherits :class:`ROSError` only to stay
+    This is NOT an error — it inherits ``ROSError`` only to stay
     inside the OpenRAL exception surface so it is greppable and discoverable
     via the standard hierarchy. It must be caught ONLY at the
     ``rskill_runner_node`` execute-callback boundary; everywhere else it is

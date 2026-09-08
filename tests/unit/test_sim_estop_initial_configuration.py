@@ -8,9 +8,9 @@ from ``fridge_main_group_freezer_door`` (joint velocity ~0). The scene reset
 had *spawned* the robot interpenetrating the freezer door; the kernel was
 right to refuse it, but the stop record read like an ordinary mid-task one.
 
-Drives :func:`~openral_hal.sim_sensor_bridge.initial_configuration_stop_record`
+Drives ``initial_configuration_stop_record``
 against a snapshot from the real
-:func:`~openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` over a
+``estop_ground_truth_snapshot`` over a
 compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11): a stop with
 nothing applied (must classify) vs. after the HAL has actuated (must not).
 """

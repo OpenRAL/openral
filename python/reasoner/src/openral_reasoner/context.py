@@ -1,12 +1,12 @@
-""":class:`ContextRenderer` — renders the reasoner's per-tick prompt context.
+"""``ContextRenderer`` — renders the reasoner's per-tick prompt context.
 
 Builds the structured **text** context the reasoner LLM consumes each
 tick. No pixels in v1: the context is a rolling text
 digest of
 
-* the latest :class:`~openral_core.WorldState` snapshot (joint state,
+* the latest ``WorldState`` snapshot (joint state,
   EE pose, staleness, control mode);
-* the recent :class:`FailureTrigger` events received per source bus
+* the recent ``FailureTrigger`` events received per source bus
   (FIFO buffers, one per ``/openral/failure/<source>``);
 * the recent ``/openral/perception/<kind>`` events;
 * any pending operator prompts.
@@ -70,7 +70,7 @@ class FailureEventRecord:
     """One entry in the reasoner's rolling failure buffer.
 
     Constructed by the reasoner_node on each
-    :class:`openral_msgs/FailureTrigger` arrival.
+    ``openral_msgs/FailureTrigger`` arrival.
     """
 
     source: str  # /openral/failure/<source>
@@ -101,7 +101,7 @@ class PromptRecord:
         metadata_json: ``PromptStamped.metadata_json``. The F10
             ``prompt_router_node`` stamps a ``{"source": "...",
             "priority": <int>}`` field into this JSON; the reasoner's
-            :meth:`ContextRenderer.append_prompt` reads ``priority`` to
+            ``ContextRenderer.append_prompt`` reads ``priority`` to
             order the drain (human-source prompts override queued
             auto-prompts).
         stamp_ns: Arrival timestamp in nanoseconds.
@@ -109,7 +109,7 @@ class PromptRecord:
             ``10`` matches the auto-cascade priority documented on
             ``PromptRouterNode.DEFAULT_SOURCES``; the router fills
             ``100`` for human-source prompts. Tests construct
-            :class:`PromptRecord` directly with the desired priority;
+            ``PromptRecord`` directly with the desired priority;
             production code paths leave the default and let
             ``append_prompt`` parse it from ``metadata_json``.
     """
@@ -127,7 +127,7 @@ class ExecutionEventRecord:
     Inner Monologue: a typed one-line outcome appended
     after every dispatched skill — on *success as well as failure*, so the LLM
     reasons on what actually happened (closed loop) instead of only seeing
-    failures. On failure it also carries a :attr:`reflection` strategy hint
+    failures. On failure it also carries a ``reflection`` strategy hint
     (Decision 2.3, Reflexion).
     """
 
@@ -145,10 +145,10 @@ class RewardStateRecord:
     Robometer-4B emits **two distinct heads** with different meanings, and the
     LLM must use each for the right decision:
 
-    * :attr:`progress` — task *closeness* (0=untouched, 1=done). This is the
+    * ``progress`` — task *closeness* (0=untouched, 1=done). This is the
         head the verdict gates on (it reaches ~0.80-0.86 on a genuine success);
         the LLM should weigh it for *persist-vs-replan*.
-    * :attr:`success` — done-*confidence* (a separate probability that is
+    * ``success`` — done-*confidence* (a separate probability that is
         empirically compressed, ~0.56-0.79 even on a real success); the LLM
         should weigh it for *done-ness*, not as the primary completion bar.
 
@@ -229,7 +229,7 @@ def reflect_on_failure(
 def reflect_on_reward_plateau(progress_now: float) -> str:
     """One-line strategy hint for a reward-plateau failure.
 
-    Distinct from :func:`reflect_on_failure`: there the *controller* faulted
+    Distinct from ``reflect_on_failure``: there the *controller* faulted
     (timeout / abort) so "shorten the horizon or substitute a skill" is right.
     Here the skill executed **without a fault** — it just didn't accomplish the
     task (the reward signal says the object was not picked / placed). The wrong
@@ -336,7 +336,7 @@ def render_robot_self_model(description: RobotDescription) -> str:
 
     A one-time, deterministic summary of what the robot *is and can do* —
     embodiment, DOF, end-effectors, locomotion, payload, capability flags, and
-    cameras (with field-of-view) — derived from the :class:`RobotDescription`.
+    cameras (with field-of-view) — derived from the ``RobotDescription``.
     The reasoner injects this as the ``## ROBOT`` context section (computed once
     at configure time) so the LLM can judge feasibility — "is the target in
     reach / in view?" — before dispatching a skill, instead of guessing (the
@@ -403,14 +403,14 @@ class ContextRenderer:
     """Stateful structured-text builder for the reasoner LLM.
 
     Rolling buffers retain the most recent
-    :data:`DEFAULT_BUFFER_SIZE` items per category by default; older
-    events fall off. The :meth:`render` method produces a deterministic
+    ``DEFAULT_BUFFER_SIZE`` items per category by default; older
+    events fall off. The ``render`` method produces a deterministic
     text block given the current world state plus the buffer contents.
 
     Args:
         buffer_size: Per-category retention. Smaller values keep the
             prompt cheap; larger values give the LLM more history.
-            Default :data:`DEFAULT_BUFFER_SIZE`.
+            Default ``DEFAULT_BUFFER_SIZE``.
 
     Example:
         >>> r = ContextRenderer()
@@ -427,7 +427,7 @@ class ContextRenderer:
         Args:
             buffer_size: Per-category rolling-buffer retention.
             robot_model: Pre-rendered robot self-model text (from
-                :func:`render_robot_self_model`), rendered as the
+                ``render_robot_self_model``), rendered as the
                 ``## ROBOT`` section. ``None`` omits the section (e.g. before the
                 robot description is loaded).
         """
@@ -492,7 +492,7 @@ class ContextRenderer:
         """Set (or clear) the static robot self-model rendered as ``## ROBOT``.
 
         Called once after the ``RobotDescription`` is loaded. Static config, not
-        an event: it does not touch the rolling buffers or bump :attr:`seq`, so
+        an event: it does not touch the rolling buffers or bump ``seq``, so
         it is safe to call on a live renderer.
         """
         self._robot_model = robot_model
@@ -501,7 +501,7 @@ class ContextRenderer:
         """Set (or clear) the ``## MEMORY`` block — the self-maintained MEMORY.md.
 
         Re-set after each ``memory_write`` so the LLM sees
-        the updated memory next tick. Static config — does not bump :attr:`seq`.
+        the updated memory next tick. Static config — does not bump ``seq``.
         """
         self._memory_block = memory_block
 
@@ -510,9 +510,9 @@ class ContextRenderer:
     def set_mission(self, mission: MissionState | None) -> None:
         """Set (or clear) the active mission rendered as ``## MISSION``.
 
-        A new mission is a new goal — an **event** — so this bumps :attr:`seq`
+        A new mission is a new goal — an **event** — so this bumps ``seq``
         to wake an otherwise-idle heartbeat (unlike the static
-        :meth:`set_robot_model` / :meth:`set_memory_block`). The active task's
+        ``set_robot_model`` / ``set_memory_block``). The active task's
         text is the goal the reasoner pursues until it is verified and the queue
         advances.
         """
@@ -522,12 +522,12 @@ class ContextRenderer:
     def set_in_view(self, objects: ObjectsMetadata | None) -> None:
         """Set (or clear) the camera-space ``in_view`` enumeration.
 
-        The latest continuous-detector :class:`ObjectsMetadata` — 2D detections
+        The latest continuous-detector ``ObjectsMetadata`` — 2D detections
         with stable ``det_id``s — rendered as the ``in_view[<camera>]`` line in
         WORLD_STATE. Depth-free: it grounds a goal noun onto a concrete object
         even when the 3D ``scene_objects`` line is empty (RGB-only / no lift).
 
-        :attr:`seq` bumps only when the *rendered enumeration changes* (an
+        ``seq`` bumps only when the *rendered enumeration changes* (an
         object appears, disappears, changes label, or its pixel centre moves).
         A continuous detector republishes every frame; bumping unconditionally
         made the heartbeat-idle gate permanently ineffective — the LLM was
@@ -549,7 +549,7 @@ class ContextRenderer:
         (``state="running"``), and on the terminal result (``None``).
         Surfacing the phase matters: a cold load can otherwise read as a
         stalled task and spuriously escalate to the operator (observed
-        live, 2026-07-20). Every transition bumps :attr:`seq`; re-asserting
+        live, 2026-07-20). Every transition bumps ``seq``; re-asserting
         the same state is a no-op.
         """
         new = None if rskill_id is None else (rskill_id, stamp_ns, state)
@@ -573,14 +573,14 @@ class ContextRenderer:
     def note_located(self, objects: ObjectsMetadata | None) -> None:
         """Persist open-vocab ``locate_in_view`` hits into the sticky ``located`` line.
 
-        Complements :meth:`set_in_view` (the continuous detector's
+        Complements ``set_in_view`` (the continuous detector's
         fixed-vocab frame, overwritten every tick): when the reasoner
         confirms a goal noun via the open-vocab ``locate_in_view`` detector
         (e.g. ``basket``, ``ketchup`` — labels the fixed indoor vocabulary
         mislabels as ``tray``/``bottle``), the hit is kept here keyed by
-        lowercased label (latest bbox wins, capped at :attr:`_LOCATED_CAP`)
+        lowercased label (latest bbox wins, capped at ``_LOCATED_CAP``)
         so it survives the next clobber. A confirmed detection is an
-        event, so this bumps :attr:`seq`. ``None``/empty is a no-op.
+        event, so this bumps ``seq``. ``None``/empty is a no-op.
 
         Example:
             >>> from openral_core import ObjectDetection2D, ObjectsMetadata
@@ -620,7 +620,7 @@ class ContextRenderer:
         The ``located`` line is documented to the LLM as the *authoritative*
         grounding, but its hits describe where objects were when they were
         confirmed — a fresh operator goal (often after the robot has moved
-        things) must not inherit stale authority. Bumps :attr:`seq` when
+        things) must not inherit stale authority. Bumps ``seq`` when
         anything was actually dropped.
         """
         if self._located:
@@ -634,7 +634,7 @@ class ContextRenderer:
         Surfaces **both** reward heads (progress closeness +
         success done-confidence), distinctly labelled, so the LLM uses progress
         for persist-vs-replan and success for done-ness. A fresh assessment is an
-        **event**, so this bumps :attr:`seq` to wake an otherwise-idle heartbeat.
+        **event**, so this bumps ``seq`` to wake an otherwise-idle heartbeat.
 
         Example:
             >>> r = ContextRenderer()
@@ -658,23 +658,23 @@ class ContextRenderer:
 
     @property
     def mission(self) -> MissionState | None:
-        """The active :class:`MissionState`, or ``None``.
+        """The active ``MissionState``, or ``None``.
 
         The node mutates it in place for non-waking bookkeeping
-        (:meth:`MissionState.record_attempt` / :meth:`MissionState.mark_verifying`);
-        completion/abandonment go through :meth:`advance_mission` so the next
+        (``MissionState.record_attempt`` / ``MissionState.mark_verifying``);
+        completion/abandonment go through ``advance_mission`` so the next
         active task wakes the reasoner.
         """
         return self._mission
 
     def advance_mission(self, *, done: bool, verdict: str) -> TaskState | None:
-        """Terminate the active task and activate the next, bumping :attr:`seq`.
+        """Terminate the active task and activate the next, bumping ``seq``.
 
         ``done=True`` marks the active task ``done`` (verified complete);
         ``done=False`` marks it ``abandoned`` (ladder exhausted / unverifiable).
         Advancing the queue is an event — the new active task must wake the
-        reasoner to dispatch it — so this bumps :attr:`seq` whenever a mission is
-        present. Returns the newly-active :class:`TaskState`, or ``None`` when the
+        reasoner to dispatch it — so this bumps ``seq`` whenever a mission is
+        present. Returns the newly-active ``TaskState``, or ``None`` when the
         mission is finished. A no-op (no mission / no active task) does not bump.
         """
         if self._mission is None:
@@ -697,7 +697,7 @@ class ContextRenderer:
     def append_execution(self, record: ExecutionEventRecord) -> None:
         """Push a skill execution outcome onto the rolling buffer.
 
-        A completed skill is a meaningful event, so this bumps :attr:`seq` —
+        A completed skill is a meaningful event, so this bumps ``seq`` —
         the success/failure feedback should wake an otherwise-idle heartbeat.
         """
         self._executions.append(record)
@@ -715,7 +715,7 @@ class ContextRenderer:
         the in-flight skill (recorded as a ``safety_estop`` failure + failed
         execution), and once safety state is reset those records are stale
         — left in context they make the LLM keep refusing to retry. Bumps
-        :attr:`seq` so an otherwise-idle heartbeat re-evaluates.
+        ``seq`` so an otherwise-idle heartbeat re-evaluates.
         """
         if self._failures or self._executions:
             self._failures.clear()
@@ -737,7 +737,7 @@ class ContextRenderer:
 
         After resolution, the record is inserted so the buffer stays
         ordered by priority descending then arrival ascending. When
-        the buffer would exceed :attr:`_buffer_size`, the oldest entry
+        the buffer would exceed ``_buffer_size``, the oldest entry
         in the **lowest-priority** band is evicted (high-priority
         prompts never get dropped to make room for a low-priority
         arrival).
@@ -991,13 +991,13 @@ class ContextRenderer:
     def seq(self) -> int:
         """Monotonic mutation counter.
 
-        Increments on every successful :meth:`append_failure`,
-        :meth:`append_perception`, or :meth:`append_prompt`. Used by
-        :class:`~openral_reasoner.core.ReasonerCore` to short-circuit a
+        Increments on every successful ``append_failure``,
+        ``append_perception``, or ``append_prompt``. Used by
+        ``ReasonerCore`` to short-circuit a
         heartbeat tick when no event has arrived since the last
         successful tick ("heartbeat_idle").
 
-        Not reset by :meth:`drain_prompts` — the buffer is empty
+        Not reset by ``drain_prompts`` — the buffer is empty
         afterwards but the renderer has still "seen" the prompt.
         """
         return self._seq
@@ -1009,14 +1009,14 @@ class ContextRenderer:
 
         Prompts are pull-once events — once the reasoner has seen one
         on a tick it should not see the same one again, so the
-        reasoner_node calls :meth:`drain_prompts` after each
-        successful :meth:`render`. Records come back ordered by
+        reasoner_node calls ``drain_prompts`` after each
+        successful ``render``. Records come back ordered by
         priority descending (then arrival ascending).
 
         Args:
             seen: When given, drain **only** these records (matched by
                 identity) and keep the rest. Used by the phased tick
-                (:meth:`~openral_reasoner.ReasonerCore.finish_tick`): a
+                (``finish_tick``): a
                 prompt that arrived while the LLM call was in flight was
                 never rendered into the model's context, so it must
                 survive for the next tick. ``None`` (default) drains
@@ -1038,7 +1038,7 @@ def _extract_priority(metadata_json: str) -> int:
     Returns ``10`` (the default auto-cascade priority) when the JSON
     is empty / malformed / does not contain a top-level integer
     ``priority`` field. Mirrors the field
-    :func:`PromptRouterNode._on_inbound` writes on every fan-out.
+    ``PromptRouterNode._on_inbound`` writes on every fan-out.
     """
     if not metadata_json:
         return DEFAULT_PROMPT_PRIORITY

@@ -93,8 +93,8 @@ def quantize_nf4_in_place(root: object, compute_dtype: object) -> int:
 def install_linear4bit_shells(root: object, compute_dtype: object) -> int:
     """Replace large ``nn.Linear`` with EMPTY ``Linear4bit`` shells (no packing).
 
-    Used on a meta-device skeleton so :func:`install_prequantized` can drop in the
-    saved packed weights. Same selection rule as :func:`quantize_nf4_in_place`.
+    Used on a meta-device skeleton so ``install_prequantized`` can drop in the
+    saved packed weights. Same selection rule as ``quantize_nf4_in_place``.
     """
     import bitsandbytes as bnb
     import torch

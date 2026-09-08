@@ -14,7 +14,7 @@ Franka on a ground plane, red cube in front, two RTX cameras (``camera1`` front
 agent-view, ``camera2`` eye-in-hand on ``panda_hand``, for the LIBERO two-camera
 contract). Action: 8-vector ``[dq0..dq6, gripper]`` (>0 open, <=0 close). Reward
 is cube height; succeeds above ``_LIFT_SUCCESS_Z``. Lifecycle/obs skeleton:
-:class:`_isaac_scene_base.IsaacSceneBase`.
+``_isaac_scene_base.IsaacSceneBase``.
 
 ``camera1``/``camera2`` are legacy ordinal keys the HAL bridge maps via
 ``vla_feature_key`` fallback. TODO: pass canonical scene-side camera names

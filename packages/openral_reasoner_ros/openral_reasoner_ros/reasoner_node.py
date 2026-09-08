@@ -9,21 +9,21 @@ Subscribes: ``/openral/world_state_slow`` (``WorldStateStamped``, 5 Hz),
 Heartbeat tick at ``tick_hz`` (default 0.2 Hz). Out-of-band tick on a
 ``FailureTrigger`` with ``severity>=SEVERITY_FAIL`` (``>=SEVERITY_WARN`` on
 ``/openral/failure/safety``, Tier A) or a new ``/openral/prompt``, subject to
-:class:`~openral_reasoner.ReasonerCore`'s 100 ms min-interval (reasoner+supervisor
+``ReasonerCore``'s 100 ms min-interval (reasoner+supervisor
 design §4). Idle heartbeats short-circuit with ``suppressed_reason="heartbeat_idle"``.
 
-Dispatches :data:`~openral_core.ReasonerToolCall`:
+Dispatches ``ReasonerToolCall``:
 
-* :class:`ExecuteRskillTool` → action goal on ``/openral/execute_rskill`` (F1
+* ``ExecuteRskillTool`` → action goal on ``/openral/execute_rskill`` (F1
   ``rskill_runner_node``); ``FailureTrigger`` on ``/openral/failure/rskill``
   (``KIND_CONTROLLER`` on reject/abort/unavailable, ``KIND_TIMEOUT`` past
   ``deadline_s``).
-* :class:`LifecycleTransitionTool` → ``<node>/change_state``
+* ``LifecycleTransitionTool`` → ``<node>/change_state``
   (``lifecycle_msgs/srv/ChangeState``); ``"shutdown"`` is deliberately absent
   from the palette (CLAUDE.md §6 Layer 6).
-* :class:`ReloadGstPipelineTool` → ``/openral/sensors/<sensor_id>/reload_pipeline``.
+* ``ReloadGstPipelineTool`` → ``/openral/sensors/<sensor_id>/reload_pipeline``.
   **Deferred**: F6 sensor-package IDL not yet on disk; logs a warning and acks.
-* :class:`EmitPromptTool` → republish on the target ``PromptStamped`` topic.
+* ``EmitPromptTool`` → republish on the target ``PromptStamped`` topic.
 
 Never publishes ``openral_msgs/ActionChunk`` (reasoner+supervisor design §4:
 "Holds no authority over actuation").
@@ -312,7 +312,7 @@ _LIFECYCLE_SERVER_PROBE_S: float = 0.1
 # Reasoner+supervisor design, 2026-05-25 amendment — trigger taxonomy. Maps each failure
 # source to its tier so the reasoner_node stamps a ``reasoner.tier``
 # attribute on the OTel span (observability only — the preemption
-# threshold per source is decided inline in :meth:`_on_failure`). Tier
+# threshold per source is decided inline in ``_on_failure``). Tier
 # labels: A=safety, B=replan-class (hal/sensor/rskill/wam), C=critic,
 # D=operator/perception (handled in their own callbacks).
 _FAILURE_TIER_FOR_SOURCE: dict[str, str] = {
@@ -395,11 +395,11 @@ def _detect_gpu_free_vram_gb() -> float:
 
 
 def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]:
-    """The :class:`ControlMode` s a skill's ``action_contract`` demands.
+    """The ``ControlMode`` s a skill's ``action_contract`` demands.
 
     Pure helper (no ROS spin). Read in order of specificity: no
-    ``action_contract`` → empty set (admitted by :func:`_action_executable`);
-    ``representation`` set → :func:`control_modes_for_representation`; ``slots``
+    ``action_contract`` → empty set (admitted by ``_action_executable``);
+    ``representation`` set → ``control_modes_for_representation``; ``slots``
     set → each slot's ``control_mode`` (``None`` slots skipped); bare ``dim``
     only (legacy rosbag2↔LeRobotDataset bridge contract) → ``{JOINT_POSITION}``.
 
@@ -427,10 +427,10 @@ def _action_executable(
     """Whether the deploy path can execute a skill's action modes.
 
     Pure helper (no ROS spin). ``hal_mode == "sim"`` uses
-    :data:`openral_core.SIM_EXECUTABLE_CONTROL_MODES` (a robosuite OSC/composite
+    ``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` (a robosuite OSC/composite
     controller synthesises cartesian+gripper+base goals into joint commands);
-    otherwise the robot's declared :attr:`RobotCapabilities.supported_control_modes`.
-    Both sides are coerced to :class:`ControlMode` (``RobotCapabilities`` doesn't
+    otherwise the robot's declared ``RobotCapabilities.supported_control_modes``.
+    Both sides are coerced to ``ControlMode`` (``RobotCapabilities`` doesn't
     set ``use_enum_values``, so a hand-built description may carry raw strings).
 
     Args:
@@ -548,7 +548,7 @@ def _rskill_failure_kind(result: Any) -> int:
 
     The uint8 ``failure_kind`` is authoritative: ``rskill_runner_node`` sets it
     on every branch of ``_execute_locked`` straight from the caught exception
-    type (CLAUDE.md §5). Falls back to :data:`_LEGACY_FAILURE_REASON_PREFIXES`
+    type (CLAUDE.md §5). Falls back to ``_LEGACY_FAILURE_REASON_PREFIXES``
     only when a failed result still carries ``FAILURE_NONE`` (the IDL default,
     from a runner predating the field); see that table's note.
 
@@ -575,7 +575,7 @@ def _palette_after_rskill_failure(
 ) -> ToolPalette:
     """Drop a skill after a typed, session-persistent availability failure.
 
-    Classifies on the ``failure_kind`` uint8 (see :func:`_rskill_failure_kind`),
+    Classifies on the ``failure_kind`` uint8 (see ``_rskill_failure_kind``),
     not on the ``failure_reason`` prose it used to prefix-match.
     """
     if failure_kind == 0:  # FAILURE_NONE — unclassified, never "permanently broken"
@@ -629,7 +629,7 @@ def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
 
 
 class ReasonerNode(LifecycleNode):
-    """ROS 2 lifecycle wrapper around :class:`ReasonerCore` (reasoner + supervisor graph F4).
+    """ROS 2 lifecycle wrapper around ``ReasonerCore`` (reasoner + supervisor graph F4).
 
     Args:
         node_name: ROS node name. Default ``openral_reasoner``.
@@ -637,22 +637,22 @@ class ReasonerNode(LifecycleNode):
             reasoner is event-driven (reasoner+supervisor design amendment
             2026-05-25): failure/prompt arrivals preempt with ``force=True``;
             the timer is the safety net for "no progress, nothing fired".
-            Idle heartbeats short-circuit inside :class:`ReasonerCore` with
+            Idle heartbeats short-circuit inside ``ReasonerCore`` with
             ``suppressed_reason="heartbeat_idle"``.
-        client: Optional pre-built :class:`ToolUseClient`. When ``None``,
-            :meth:`on_configure` builds one from ``OPENRAL_REASONER_*`` env vars
-            via :func:`build_tool_use_client_from_env`. Tests pass a
-            :class:`FakeToolUseClient`.
-        palette: Optional pre-built :class:`ToolPalette`. When ``None``,
-            :meth:`on_configure` builds an empty one (populated later via
+        client: Optional pre-built ``ToolUseClient``. When ``None``,
+            ``on_configure`` builds one from ``OPENRAL_REASONER_*`` env vars
+            via ``build_tool_use_client_from_env``. Tests pass a
+            ``FakeToolUseClient``.
+        palette: Optional pre-built ``ToolPalette``. When ``None``,
+            ``on_configure`` builds an empty one (populated later via
             ``skill_registry_changed``). Tests inject a palette directly.
         robot_capabilities: The active robot's capabilities, required for the
             ``/openral/skill_registry_changed`` refresh path to rebuild the
             palette; ``None`` leaves the palette fixed and logs a warning on
             each refresh event.
-        commercial_deployment: Forwarded to :func:`build_tool_palette` on every
+        commercial_deployment: Forwarded to ``build_tool_palette`` on every
             refresh — when ``True``, skills with
-            :attr:`RSkillManifest.is_commercial_use_allowed` ``False`` are
+            ``RSkillManifest.is_commercial_use_allowed`` ``False`` are
             filtered out (defense-in-depth, CLAUDE.md §1.9).
     """
 
@@ -1556,7 +1556,7 @@ class ReasonerNode(LifecycleNode):
     def _adjudicate_completion_async(
         self, task_text: str, done: Callable[[bool | None], None]
     ) -> None:
-        """Run :meth:`_adjudicate_completion` off-executor; deliver the verdict back (#21).
+        """Run ``_adjudicate_completion`` off-executor; deliver the verdict back (#21).
 
         ``describe_image`` shares the LLM timeout budget (10 s cloud / 60 s
         local) and used to run inside a service done-callback, starving the
@@ -1601,7 +1601,7 @@ class ReasonerNode(LifecycleNode):
 
         Shared by the native ``"complete"`` verdict branch and the
         VLM-confirmed ``"vlm_check"`` branch of
-        :meth:`_on_mission_verify_response`. Calls
+        ``_on_mission_verify_response``. Calls
         ``advance_mission(done=True)``, resets the per-kind tick streak when
         a next task is activated, emits the mission-complete summary when the
         queue drains, and forces a Tier-C tick.
@@ -1670,7 +1670,7 @@ class ReasonerNode(LifecycleNode):
     def _band_edges(self) -> tuple[float, float]:
         """Three-tier verdict band edges from the active reward calibration (§1/§5).
 
-        Thin adapter over :func:`openral_reasoner.completion.resolve_band_edges`
+        Thin adapter over ``openral_reasoner.completion.resolve_band_edges``
         — the live ``RewardContract`` when wired, else the system fallback.
         """
         c = self._reward_contract
@@ -1684,7 +1684,7 @@ class ReasonerNode(LifecycleNode):
     def _effective_patience_s(self, call: ExecuteRskillTool) -> float:
         """Patience ceiling for a dispatch (§2/§3).
 
-        Thin adapter over :func:`openral_reasoner.completion.resolve_patience_s`
+        Thin adapter over ``openral_reasoner.completion.resolve_patience_s``
         (LLM ``patience_s`` override > reward-model ``default_patience_s`` >
         legacy ``deadline_s``). The result is sent as the goal's ``deadline_s``
         (the runner's backstop) and arms the reasoner-side timer; the
@@ -1826,9 +1826,9 @@ class ReasonerNode(LifecycleNode):
         """Rebuild the tool palette from the local rSkill registry.
 
         Fired by ``ral skill install|remove``. Walks the on-disk registry,
-        loads each :class:`~openral_core.RSkillManifest`, and runs
-        :func:`build_tool_palette` against the active
-        :attr:`robot_capabilities`, then calls :meth:`set_palette`.
+        loads each ``RSkillManifest``, and runs
+        ``build_tool_palette`` against the active
+        ``robot_capabilities``, then calls ``set_palette``.
 
         Without ``robot_capabilities`` set on the constructor, logs a warning
         and leaves the palette alone (no embodiment tags to match against).
@@ -1837,7 +1837,7 @@ class ReasonerNode(LifecycleNode):
         # Two refresh sources: (a) ``rskill_search_paths`` set on the constructor (deploy_sim
         # path) → re-run the full seed pipeline so in-tree manifests + the wrapped-ROS
         # graph-availability filter re-evaluate; (b) only the installed-skills registry exists
-        # (``ral skill install`` path) → fall back to :meth:`_rebuild_palette_from_registry`.
+        # (``ral skill install`` path) → fall back to ``_rebuild_palette_from_registry``.
         # Without (a), wrapped-ROS rSkills never re-enter the palette when Nav2/MoveIt finish
         # bringing up, since ``rSkill.list_installed()`` only sees globally-installed skills.
         search_paths: list[str] = list(
@@ -1878,7 +1878,7 @@ class ReasonerNode(LifecycleNode):
         )
 
     def _rebuild_palette_from_registry(self) -> ToolPalette:
-        """Load the installed rSkill manifests and run :func:`build_tool_palette`.
+        """Load the installed rSkill manifests and run ``build_tool_palette``.
 
         ``openral_rskill`` is a heavy dep (pulls torch); lazy-imported
         here so the reasoner_node module stays cheap to import.
@@ -2210,10 +2210,10 @@ class ReasonerNode(LifecycleNode):
 
         Triggered once at lifecycle ``on_configure``. Reads two ROS parameters
         set by the launch: ``robot_yaml`` (absolute path to
-        ``robots/<id>/robot.yaml``, loaded via :meth:`RobotDescription.from_yaml`;
-        its :attr:`~RobotDescription.capabilities` becomes the filter basis for
-        :func:`build_tool_palette`, replacing a ``None`` constructor-supplied
-        :attr:`_robot_capabilities`) and ``rskill_search_paths`` (glob roots for
+        ``robots/<id>/robot.yaml``, loaded via ``RobotDescription.from_yaml``;
+        its ``capabilities`` becomes the filter basis for
+        ``build_tool_palette``, replacing a ``None`` constructor-supplied
+        ``_robot_capabilities``) and ``rskill_search_paths`` (glob roots for
         ``*/rskill.yaml``; empty/unset skips the seed step). Failure of either
         path is non-fatal (falls back to the ``/openral/skill_registry_changed``
         refresh path); per-file errors are warned, not raised.
@@ -2587,12 +2587,12 @@ class ReasonerNode(LifecycleNode):
         flight is coalesced (``force`` wins) and replayed after the in-flight
         pass finishes — flat stack, one LLM call at a time. Since #21 the
         blocking LLM phase runs on a worker thread: ``_tick_in_flight`` spans
-        prepare → worker round-trip → :meth:`_finish_llm_tick`, and the
+        prepare → worker round-trip → ``_finish_llm_tick``, and the
         executor stays free in between for goal results, patience timers, and
         Tier-A preemptions.
 
         Args:
-            force: Bypasses :class:`ReasonerCore`'s ``min_interval`` and
+            force: Bypasses ``ReasonerCore``'s ``min_interval`` and
                 ``heartbeat_idle`` gates. Set by callbacks that preempt
                 (Tier A safety + operator prompts).
             tier: Trigger tier driving this call — ``"A"``/``"B"``/``"C"``/``"D"``
@@ -2643,7 +2643,7 @@ class ReasonerNode(LifecycleNode):
         """Marshal ``fn`` onto the rclpy executor thread. Thread-safe.
 
         Appends to the inbox and wakes the executor via the guard
-        condition; :meth:`_drain_executor_inbox` runs ``fn`` on the next
+        condition; ``_drain_executor_inbox`` runs ``fn`` on the next
         spin. After cleanup (guard destroyed) the callable is dropped —
         the generation check in the callables makes that safe.
         """
@@ -2673,7 +2673,7 @@ class ReasonerNode(LifecycleNode):
 
         Returns ``True`` when the blocking LLM phase went to the worker
         thread (finish + single-flight release deferred to
-        :meth:`_finish_llm_tick`); ``False`` when the tick completed
+        ``_finish_llm_tick``); ``False`` when the tick completed
         synchronously (suppressed by a gate, or no core yet).
         """
         # Decode the latest /openral/world_state_slow IDL message into a
@@ -2743,9 +2743,9 @@ class ReasonerNode(LifecycleNode):
         error: BaseException | None,
         generation: int,
     ) -> None:
-        """Executor-thread continuation of :meth:`_start_tick` (worker done).
+        """Executor-thread continuation of ``_start_tick`` (worker done).
 
-        Runs :meth:`ReasonerCore.finish_tick` (bookkeeping + span close),
+        Runs ``ReasonerCore.finish_tick`` (bookkeeping + span close),
         handles the result exactly as the synchronous path did, then
         releases the single-flight window and replays the coalesced queued
         tick, if any. A round-trip that lands after deactivate/cleanup
@@ -2803,11 +2803,11 @@ class ReasonerNode(LifecycleNode):
     def _dispatch(self, call: Any, *, traceparent: str | None = None) -> None:  # noqa: PLR0911, PLR0912  # reason: one return/branch per tool variant — a flat dispatch table is clearer than collapsing the isinstance branches
         """Route a typed tool call onto the ROS graph.
 
-        :class:`EmitPromptTool` publishes inline. :class:`ExecuteRskillTool`
+        ``EmitPromptTool`` publishes inline. ``ExecuteRskillTool``
         sends an action goal on ``/openral/execute_rskill`` and wires
         feedback/result/timeout into ``/openral/failure/rskill``.
-        :class:`LifecycleTransitionTool` calls ``<node>/change_state``.
-        :class:`ReloadGstPipelineTool` remains a log-and-acknowledge
+        ``LifecycleTransitionTool`` calls ``<node>/change_state``.
+        ``ReloadGstPipelineTool`` remains a log-and-acknowledge
         stub pending the F6 sensor-package service IDL.
         """
         # Active object search §3 — any non-search dispatch ends the search episode, so the
@@ -2890,10 +2890,10 @@ class ReasonerNode(LifecycleNode):
         *,
         traceparent: str | None,
     ) -> None:
-        """Publish a :class:`PromptStamped` on ``call.target_topic``.
+        """Publish a ``PromptStamped`` on ``call.target_topic``.
 
         The active OTel traceparent (captured by
-        :meth:`ReasonerCore.tick` while the ``reasoner.tick`` span is
+        ``ReasonerCore.tick`` while the ``reasoner.tick`` span is
         open) is stamped into ``metadata_json`` so the F7 bag↔OTel
         correlator can join the published prompt back to the reasoner
         span that produced it.
@@ -2984,7 +2984,7 @@ class ReasonerNode(LifecycleNode):
         # escalation per query term per search streak so a repeated miss can't spam the detector; if
         # locate also misses, the normal budget/handoff path resumes.
         #
-        # ``resolve_place`` escalates on the same policy — see :func:`_search_term`
+        # ``resolve_place`` escalates on the same policy — see ``_search_term``
         # for why it used to be excluded and what that cost.
         search_term = _search_term(call)
         if (
@@ -3096,7 +3096,7 @@ class ReasonerNode(LifecycleNode):
         Returns ``True`` when the active subtask was abandoned on the budget — the
         caller must then NOT dispatch the locate. Without an active mission task
         there is no per-task budget (a standalone ``locate_in_view`` is unbounded
-        here; the :class:`SearchProgress` miss budget still applies in the
+        here; the ``SearchProgress`` miss budget still applies in the
         response handler), so this is a no-op returning ``False``.
 
         On exhaustion: append the displayed reason to ``## EXECUTION`` (so the
@@ -3180,7 +3180,7 @@ class ReasonerNode(LifecycleNode):
     ) -> None:
         """Ask a live VLM detector if an object is in view; re-prompt with the answer.
 
-        Complement to :meth:`_dispatch_spatial_query` (remembered objects): calls
+        Complement to ``_dispatch_spatial_query`` (remembered objects): calls
         the detector node's ``/openral/perception/locate_in_view`` service on the
         CURRENT frame. Async (``call_async`` + done-callback) so the ~1-2 s VLM
         inference never blocks the executor; the answer is republished as a
@@ -3188,7 +3188,7 @@ class ReasonerNode(LifecycleNode):
         the prompt cascade). Read-only: no actuation, no ``FailureTrigger``.
 
         Before dispatching, charges this cycle against the per-task locate budget
-        (:class:`TaskLocateBudget`, VLM-adjudicated completion amendment); once
+        (``TaskLocateBudget``, VLM-adjudicated completion amendment); once
         spent without an ``execute_rskill`` dispatch, the subtask is abandoned
         instead of locating again, since a live locate-loop otherwise persists
         (``locate_in_view`` keeps HITTING and never consumes the miss budget).
@@ -3313,7 +3313,7 @@ class ReasonerNode(LifecycleNode):
     ) -> None:
         """Ask a scene VLM an open-ended question; re-prompt with the answer.
 
-        The complement to :meth:`_dispatch_locate_in_view` (object localization): this
+        The complement to ``_dispatch_locate_in_view`` (object localization): this
         calls the perception node's ``/openral/perception/query_scene`` service to ask
         the scene VLM about the CURRENT frame's state ("has the robot grasped the
         mug?", "is the task complete?"). The call is async (``call_async`` +
@@ -3508,7 +3508,7 @@ class ReasonerNode(LifecycleNode):
         task. Without a reward monitor the task stays active and the LLM/playbook
         drives — never an auto-complete on deadline alone (no fake success). Issues
         a windowed ``query_task_progress`` for the active task; the gate runs in
-        :meth:`_on_mission_verify_response`.
+        ``_on_mission_verify_response``.
         """
         mission = self._renderer.mission
         if mission is None:
@@ -3730,8 +3730,8 @@ class ReasonerNode(LifecycleNode):
     ) -> None:
         """Apply a resolved verify verdict: retry / complete / abandon (±subdivision).
 
-        Shared tail of :meth:`_on_mission_verify_response` and its async VLM
-        continuation :meth:`_on_vlm_completion_verdict`.
+        Shared tail of ``_on_mission_verify_response`` and its async VLM
+        continuation ``_on_vlm_completion_verdict``.
         """
         if action == "retry":
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
@@ -3809,7 +3809,7 @@ class ReasonerNode(LifecycleNode):
 
         Frame_id ``openral_reasoner`` so it reaches operator surfaces but the
         reasoner's own subscriber filters it (no feedback loop). A new operator
-        goal supersedes the finished mission via :meth:`_on_prompt`.
+        goal supersedes the finished mission via ``_on_prompt``.
         """
         if self._prompt_pub is None:
             return
@@ -3841,12 +3841,12 @@ class ReasonerNode(LifecycleNode):
         reasoner playbooks ``decompose-mission``):
 
         * **subdivide** (id set) — flat-splice the named *active* blocked task in
-          place with finer children via :meth:`MissionState.subdivide_active`
+          place with finer children via ``MissionState.subdivide_active``
           (depth-bounded). Only the active task may be subdivided; a stale /
           non-active id is logged and ignored.
         * **populate** (id empty) — replace the whole queue with a better
           decomposition of the operator goal, but only before any task has been
-          attempted (:meth:`MissionState.has_started`) so a refinement never
+          attempted (``MissionState.has_started``) so a refinement never
           discards in-flight progress.
 
         Edits the S2 ledger only — no actuation. A forced Tier-C tick wakes the
@@ -3941,14 +3941,14 @@ class ReasonerNode(LifecycleNode):
     ) -> None:
         """Self-prompt forcing a collective task to be enumerated + decomposed.
 
-        Emitted by the execute gate (:meth:`_dispatch_execute_rskill`) when the
+        Emitted by the execute gate (``_dispatch_execute_rskill``) when the
         active task targets a collective/quantified set ("put ALL the objects in
         the basket"). A skill acts on one specific object, so the LLM must look at
         the live ``scene_objects`` list (already in its context every tick) and
         split the task into one concrete subtask per object before any actuation.
         frame_id ``mission`` so the reasoner consumes it next tick (cascade source)
         without rebuilding the deterministic queue — same channel as
-        :meth:`_emit_subdivision_invite`.
+        ``_emit_subdivision_invite``.
         """
         if self._prompt_pub is None:
             return
@@ -4032,7 +4032,7 @@ class ReasonerNode(LifecycleNode):
         """Apply one explicit MEMORY.md edit, persist it, and confirm (§3 / Phase 4c).
 
         The reasoner's first **write-capable** tool: an ``add``/``update``/``supersede``/
-        ``delete`` op over a typed :class:`~openral_core.MemorySection` — never a
+        ``delete`` op over a typed ``MemorySection`` — never a
         free-form rewrite (the writer half of the Statler reader/writer split). The
         edit is applied to the live store, any entry that *left* the file (an
         ``update``-replaced or ``delete``-removed prior) is appended to the archival
@@ -4098,10 +4098,10 @@ class ReasonerNode(LifecycleNode):
         self._reprompt_memory(text, traceparent=traceparent)
 
     def _manifest_for_rskill(self, rskill_id: str) -> RSkillManifest | None:
-        """The :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
+        """The ``RSkillManifest`` for ``rskill_id`` (cached), or None.
 
         VLA/reward VRAM-fit pairing — the pre-dispatch gate needs the VLA's
-        ``min_vram_gb``. The cache is primed by :meth:`_seed_palette` from the
+        ``min_vram_gb``. The cache is primed by ``_seed_palette`` from the
         very manifests the LLM is offered, so **every** palette skill resolves;
         the ``rSkill.list_installed()`` fallback below covers only ids that
         reached the graph some other way (a Hub-installed skill not on any
@@ -4225,15 +4225,15 @@ class ReasonerNode(LifecycleNode):
         *,
         traceparent: str | None,
     ) -> None:
-        """Send an :class:`ExecuteRskill.Goal` to ``/openral/execute_rskill``.
+        """Send an ``ExecuteRskill.Goal`` to ``/openral/execute_rskill``.
 
-        Feedback streams via :meth:`_on_execute_rskill_feedback` (warning
+        Feedback streams via ``_on_execute_rskill_feedback`` (warning
         channel — visible to the operator). Goal-response and result
-        futures attach :meth:`_on_execute_rskill_goal_response` and
-        :meth:`_on_execute_rskill_result`; both paths emit a
-        :class:`FailureTrigger` on ``/openral/failure/rskill`` on
+        futures attach ``_on_execute_rskill_goal_response`` and
+        ``_on_execute_rskill_result``; both paths emit a
+        ``FailureTrigger`` on ``/openral/failure/rskill`` on
         rejection/abort. A one-shot deadline timer fires
-        :meth:`_on_execute_rskill_deadline` when ``call.deadline_s`` is
+        ``_on_execute_rskill_deadline`` when ``call.deadline_s`` is
         positive, producing a ``KIND_TIMEOUT`` event.
         """
         # Grounding gate: a skill acts on ONE specific object, so refuse to
@@ -4592,7 +4592,7 @@ class ReasonerNode(LifecycleNode):
         Feedback is NOT rare in practice — a VLA goal streams one message per
         action chunk (600+ per goal observed live, 2026-07-20), and logging
         each at WARNING drowned the operator log. Keep the operator-visible
-        warning but emit at most one per :data:`_FEEDBACK_LOG_PERIOD_S`
+        warning but emit at most one per ``_FEEDBACK_LOG_PERIOD_S``
         (suppressed messages go to DEBUG so a trace-level investigation still
         has every chunk).
         """
@@ -5013,7 +5013,7 @@ class ReasonerNode(LifecycleNode):
         traceparent: str | None,
         trace_id: str | None = None,
     ) -> None:
-        """Publish a :class:`FailureTrigger` on ``/openral/failure/rskill``.
+        """Publish a ``FailureTrigger`` on ``/openral/failure/rskill``.
 
         ``trace_id`` (when supplied — e.g. propagated by the action
         server's result) takes precedence; otherwise the reasoner's

@@ -1,6 +1,6 @@
-""":func:`_tool_palette_to_anthropic_tools` emits one tool per skill.
+"""``_tool_palette_to_anthropic_tools`` emits one tool per skill.
 
-Drives the real :class:`RSkillManifest` loader against in-tree
+Drives the real ``RSkillManifest`` loader against in-tree
 ``rskills/*/rskill.yaml``, builds a real palette, and asserts on the LLM-facing
 tool schema:
 
@@ -11,9 +11,9 @@ tool schema:
    its action/object/scene tags, so the LLM picks on semantics, not slug.
 3. Per-skill ``input_schema`` drops ``rskill_id`` from properties/required — the
    tool name already identifies the skill.
-4. :func:`_decode_tool_payload` round-trips an ``execute_rskill__<slug>`` call to
+4. ``_decode_tool_payload`` round-trips an ``execute_rskill__<slug>`` call to
    the canonical ``rskill_id``, validating against
-   :class:`~openral_core.ReasonerToolCall`.
+   ``ReasonerToolCall``.
 5. Palettes with only ``execute_rskill_ids`` (no per-skill metadata) collapse to
    a single ``execute_rskill`` tool with an enum schema.
 

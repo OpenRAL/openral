@@ -6,7 +6,7 @@ stops (``panda_link7`` −15.06 mm predicted-horizon, ``panda_link7`` −4.79 mm
 reactive, ``panda_link1`` −17.28 mm reactive) that the snapshot early-returned on
 because nothing was attached, so none could be adjudicated real-vs-false.
 
-Drives :func:`openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot` against a
+Drives ``openral_hal.sim_sensor_bridge.estop_ground_truth_snapshot`` against a
 real compiled ``MjModel``/``MjData`` (no mocks, CLAUDE.md §1.11) across the three
 shapes a stop takes: arm inside a fixture, arm a few mm away (margin stop, no
 MuJoCo contact), and carried payload (pre-existing case, unchanged).

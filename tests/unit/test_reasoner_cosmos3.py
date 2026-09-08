@@ -3,13 +3,13 @@
 Covers the env-driven factory branch, the managed-server lifecycle decisions
 (autostart on/off, loopback-only, endpoint-up short-circuit), sidecar script
 resolution, and the tool-call wire path through
-:class:`~openral_reasoner.cosmos3.Cosmos3ToolUseClient`.
+``Cosmos3ToolUseClient``.
 
 §1.11 rule: the only doubles are the ``openai`` SDK object at the network
 boundary (mirroring ``test_reasoner_invalid_plan_feedback.py``) and a
 monkeypatched HTTP endpoint probe — both process/network boundaries. No
 openral types are mocked; palettes are built with the real
-:func:`build_tool_palette` against a real :class:`RobotCapabilities`.
+``build_tool_palette`` against a real ``RobotCapabilities``.
 
 Run with:
     uv run pytest tests/unit/test_reasoner_cosmos3.py -v

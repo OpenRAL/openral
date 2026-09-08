@@ -5,8 +5,8 @@ port 5757, so ``SidecarClient`` could silently adopt a *lingering* sidecar from 
 different scene and serve its wrong layout (wrong action_dim / camera count /
 frame size). Two defences, both exercised here without booting Isaac:
 
-1. :func:`_scene_default_port` gives each scene its own stable default port.
-2. :meth:`SidecarClient._assert_identity` rejects an existing sidecar whose
+1. ``_scene_default_port`` gives each scene its own stable default port.
+2. ``SidecarClient._assert_identity`` rejects an existing sidecar whose
    ``ping`` identity contradicts the requested scene.
 
 See ``docs/audit/test-audit-report.md`` §5a.
@@ -76,7 +76,7 @@ def test_shipped_isaac_scenes_exist() -> None:
 
 def test_no_shipped_isaac_scene_pins_a_port() -> None:
     """The original bug: every Isaac scene hard-coded ``port: 5757`` in
-    backend_options, which *overrides* :func:`_scene_default_port` and made all
+    backend_options, which *overrides* ``_scene_default_port`` and made all
     scenes share one endpoint. Ship scenes must leave ``port`` unset so each gets
     its own derived port; an operator can still override per-invocation.
     """

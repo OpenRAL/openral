@@ -5,14 +5,14 @@ Apache-2.0 code+weights) pins ``torch==2.8.0``/``transformers==4.57.3``/
 ``triton==3.4.0`` and carries custom Triton MoE kernels + a ``sys.path``-based
 layout — incompatible with the openral py3.12/transformers>=5 workspace
 (CLAUDE.md §3). Runs the upstream ``LingbotVLAv2Server`` out-of-process,
-driven from :mod:`openral_sim.policies.lingbot_vla2` over ZMQ REQ/REP +
+driven from ``openral_sim.policies.lingbot_vla2`` over ZMQ REQ/REP +
 msgpack (same transport as rldx / rlbench-3dda).
 
 Auto-provisions on first use, under the openral interpreter:
-1. **Clone** ``lingbot-vla-v2`` at :data:`_PINNED_SHA` into ``<home>/source``
+1. **Clone** ``lingbot-vla-v2`` at ``_PINNED_SHA`` into ``<home>/source``
    (``$OPENRAL_LINGBOT_VLA2_REPO`` overrides with an existing checkout).
 2. **Venv** — Python 3.12 from upstream ``requirements.txt`` under
-   :data:`_V2_OVERRIDES` (torch 2.9.1 / triton 3.5.1, not upstream's
+   ``_V2_OVERRIDES`` (torch 2.9.1 / triton 3.5.1, not upstream's
    aarch64-less 2.8.0/3.4.0) plus ``pyzmq`` + ``bitsandbytes``. flash-attn is
    deliberately not installed — the server coerces to sdpa/eager.
    (``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` overrides with an existing
@@ -79,7 +79,7 @@ _NVRTC_OVERRIDE = (
 # uninstallable there. 2.9.1+cu128 (-> triton 3.5.1) does ship aarch64. Fed to
 # `uv pip install --overrides`; lingbotvla runs off sys.path (not installed),
 # so it has no metadata cap to fight. V1 is NOT covered — see
-# :func:`_install_v1`. See docs/reference/aarch64-support.md.
+# ``_install_v1``. See docs/reference/aarch64-support.md.
 _TORCH_PIN = "torch==2.9.1"
 _TORCHVISION_PIN = "torchvision==0.24.1"
 _TORCHAUDIO_PIN = "torchaudio==2.9.1"
@@ -211,7 +211,7 @@ def _ensure_venv(
 
     ``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` reuses an existing interpreter.
     Otherwise builds Python 3.12 from upstream ``requirements.txt`` (cu128)
-    under :data:`_V2_OVERRIDES`, plus ``pyzmq`` + ``bitsandbytes``.
+    under ``_V2_OVERRIDES``, plus ``pyzmq`` + ``bitsandbytes``.
     """
     override = os.environ.get(venv_env)
     if override:

@@ -1,18 +1,18 @@
 """``LookAtRskill`` — aim a robot camera at a 3-D point via MoveGroup.
 
-A :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` whose goal is not
+A ``ROSActionRskill`` whose goal is not
 authored as raw MoveGroup constraints but as a small ``look_at`` block
 (``target_xyz`` + ``camera``), lowered at dispatch time into MoveGroup
 **pose-goal** constraints:
 
 1. Resolve the named camera from ``RobotDescription.sensors`` (default
-   ``"wrist"``; :class:`~openral_core.exceptions.ROSConfigError` listing the
+   ``"wrist"``; ``ROSConfigError`` listing the
    available sensors when absent — explicit beats implicit).
 2. Look up the camera's *current* pose over TF2 (the only source of frames,
    CLAUDE.md) in the goal frame.
 3. Place the camera goal: at its current position (pure re-aim) or at
    ``standoff_m`` from the target along the current line of approach.
-4. Orient it with :func:`~openral_world_state.geometry.compute_gaze_pose`
+4. Orient it with ``compute_gaze_pose``
    (ROS optical convention: camera ``+Z`` hits the target) and lower the
    result into ``position_constraints`` + ``orientation_constraints`` for the
    camera's link. Roll about the optical axis is left free (tolerance π) —
@@ -143,7 +143,7 @@ class LookAtRskill(ROSActionRskill):
       tolerances.
 
     The lowering needs the camera's *current* pose, which only TF can give —
-    so it happens lazily on the first :meth:`step` (the host node is spinning
+    so it happens lazily on the first ``step`` (the host node is spinning
     by then), right before the parent dispatches the wrapped MoveGroup goal.
     """
 

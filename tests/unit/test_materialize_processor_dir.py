@@ -2,10 +2,10 @@
 
 Closes Gap 1 + Gap 3 of the rSkill self-containment audit. Verifies:
 
-- :func:`parse_hf_file_uri` splits URIs the schema accepts (with/without
+- ``parse_hf_file_uri`` splits URIs the schema accepts (with/without
   revision pin; nested file paths).
-- :func:`materialize_processor_dir` calls
-  :func:`huggingface_hub.hf_hub_download` per URI with the exact
+- ``materialize_processor_dir`` calls
+  ``huggingface_hub.hf_hub_download`` per URI with the exact
   ``(repo_id, filename, revision)`` triplet from the manifest's
   ``processors`` block — NOT ``snapshot_download``.
 - The returned directory exposes lerobot-canonical filenames

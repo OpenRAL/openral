@@ -4,7 +4,7 @@
 ``MobileBaseBridge._publish_odom``) and ``constant_scan_no_hit_ranges`` are
 plain Python functions, unit-testable without booting rclpy or the ROS msg
 IDL. CLAUDE.md §1.11 — real components, real schemas; frame ids are read
-from the robot's :class:`~openral_core.RobotDescription`.
+from the robot's ``RobotDescription``.
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ def av() -> Callable[[object], AnyValue]:
 
 @pytest.fixture
 def _find_metric() -> Callable[[InMemoryMetricReader, str], object | None]:
-    """Return a lookup for a named metric in an :class:`InMemoryMetricReader` snapshot."""
+    """Return a lookup for a named metric in an ``InMemoryMetricReader`` snapshot."""
 
     def _find_metric(reader: InMemoryMetricReader, name: str) -> object | None:
         data = reader.get_metrics_data()
@@ -79,7 +79,7 @@ def memory_exporter() -> Iterator[InMemorySpanExporter]:
 def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
     """Replace the global MeterProvider with one whose reader keeps data in memory.
 
-    Use :meth:`InMemoryMetricReader.get_metrics_data` to inspect emitted
+    Use ``InMemoryMetricReader.get_metrics_data`` to inspect emitted
     instruments; the reader caches the latest data point per attribute set
     so tests can assert on aggregated state.
     """

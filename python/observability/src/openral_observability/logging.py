@@ -8,16 +8,16 @@ Wires structlog so that:
    ``LoggerProvider`` via ``LoggingHandler`` — logs ship as OTLP log
    records to the same collector as the spans.
 3. Records below the ``OPENRAL_LOG_LEVEL`` floor (default ``INFO``, see
-   :func:`resolve_log_level`) are dropped by the stdlib level check before
+   ``resolve_log_level``) are dropped by the stdlib level check before
    render/export.
 
-The bridge is global and idempotent (:func:`install_structlog_bridge`), so
-a spawned worker gets it unchanged after running :func:`configure_observability`
-(or :func:`configure_worker_observability`). Multiprocess workers (the
+The bridge is global and idempotent (``install_structlog_bridge``), so
+a spawned worker gets it unchanged after running ``configure_observability``
+(or ``configure_worker_observability``). Multiprocess workers (the
 dispatcher, the future fleet supervisor) correlate logs/spans to the parent
-trace via :func:`openral_observability.propagation.traceparent_env` (parent
-env) and :func:`configure_worker_observability` /
-:func:`openral_observability.propagation.attach_traceparent_from_env`
+trace via ``openral_observability.propagation.traceparent_env`` (parent
+env) and ``configure_worker_observability`` /
+``openral_observability.propagation.attach_traceparent_from_env``
 (worker attach); ``trace_context_processor`` then stamps the parent's
 ``trace_id`` / ``span_id`` on every worker log line.
 """
@@ -71,7 +71,7 @@ def resolve_log_level() -> int:
     """Resolve the OpenRAL log floor from ``OPENRAL_LOG_LEVEL``.
 
     Accepts a level name (``DEBUG`` / ``info`` / ``WARNING`` / …) or an
-    integer. Anything unparseable falls back to :data:`_DEFAULT_LEVEL`
+    integer. Anything unparseable falls back to ``_DEFAULT_LEVEL``
     rather than raising — a typo in an env var must not take down a
     deploy, and a too-quiet logger is easier to notice than a crash at
     bring-up.

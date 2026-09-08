@@ -1,11 +1,11 @@
-"""End-to-end tests for :class:`DetectorRunner` — live, no mocks (CLAUDE.md §1.11).
+"""End-to-end tests for ``DetectorRunner`` — live, no mocks (CLAUDE.md §1.11).
 
 Live e2e: real ``rskills/rtdetr-coco-r18/rskill.yaml``, a live ``videotestsrc``
 GStreamer pipeline with a named bus tee, a deterministic 4-class ONNX (shared
 with ``test_objects_detector.py``); asserts detections, model_id, tee
 attach/detach, and that the pipeline survives ``stop()``.
 
-Non-live: a ``kind: vla`` manifest raises :exc:`ROSConfigError` at
+Non-live: a ``kind: vla`` manifest raises ``ROSConfigError`` at
 construction, before any GStreamer call.
 
 Gates: skips if ``gi``, ``onnxruntime``, or ``onnx`` is absent.

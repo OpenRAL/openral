@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`openral_reasoner.mission`.
+"""Unit tests for ``openral_reasoner.mission``.
 
 The deterministic mission queue that fixes the multi-task deploy gap: an
 operator goal carrying several ordered subtasks is split, sequenced one-active

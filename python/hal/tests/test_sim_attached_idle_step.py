@@ -1,10 +1,10 @@
 """Sim-only free-running idle stepper for deploy-sim.
 
 In ``openral deploy sim`` the MuJoCo env lives only in the HAL node via
-:class:`~openral_hal.sim_attached.SimAttachedHAL`, and ``env.step()`` runs only
+``SimAttachedHAL``, and ``env.step()`` runs only
 from ``send_action`` — reached only while a skill is executing. When idle the
 env froze, so camera frames went stale and the perception /
-object-detector bus saw a dead scene. :meth:`SimAttachedHAL.idle_step` advances
+object-detector bus saw a dead scene. ``SimAttachedHAL.idle_step`` advances
 the env one tick with a zero/HOLD action so cameras keep rendering.
 
 These tests exercise the real LIBERO (robosuite OSC_POSE) digital twin the way
@@ -201,7 +201,7 @@ class _RecordingLogger:
 class _RecordingNode:
     """Minimal stand-in for the rclpy LifecycleNode (the framework boundary).
 
-    The HAL under test is a *real* :class:`SimAttachedHAL`; only the rclpy node
+    The HAL under test is a *real* ``SimAttachedHAL``; only the rclpy node
     (a process/framework boundary, CLAUDE.md §1.11) is stubbed, exposing just
     the ``create_timer`` / ``get_logger`` surface ``SimSensorBridge`` touches.
     """

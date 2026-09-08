@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_rskill._diagnostics.phase_timer`.
+"""Unit tests for ``openral_rskill._diagnostics.phase_timer``.
 
 The seam every VLA adapter's ``_build_*`` factory wraps each load phase
 with, so a multi-second ``Policy.from_pretrained`` shows up in the operator

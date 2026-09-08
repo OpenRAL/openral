@@ -7,8 +7,8 @@ Each scene-driven CLI (``openral deploy sim``, ``openral sim run``,
 * ``SimScene`` — scene + task, eval fields optional (defaults filled).
 * ``BenchmarkScene`` — scene + task + ``n_episodes`` / ``seed`` / ``metadata``.
 
-Because :class:`SimScene` extends :class:`DeployScene` and :class:`BenchmarkScene`
-extends :class:`SimScene`, a YAML one tier *too rich* still validates against the
+Because ``SimScene`` extends ``DeployScene`` and ``BenchmarkScene``
+extends ``SimScene``, a YAML one tier *too rich* still validates against the
 expected tier silently — that would let a benchmark eval spec slip into
 ``openral sim run`` and lose its episode count.  This module centralises the
 rejection logic so every CLI gets the same redirect message.
@@ -146,7 +146,7 @@ def _load_as_benchmark(path: str, raw: dict[str, object]) -> BenchmarkScene:
 
 
 def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
-    """Load a bare list of :class:`BenchmarkScene`s from ``benchmarks/<id>.yaml``.
+    """Load a bare list of ``BenchmarkScene``s from ``benchmarks/<id>.yaml``.
 
     A benchmark suite YAML is a bare YAML list at the root; the suite id is
     derived from the filename stem (e.g. ``benchmarks/libero_spatial.yaml`` →
@@ -156,7 +156,7 @@ def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
 
     Per-scene Pydantic validation runs here. Suite-level invariants
     (uniformity, uniqueness, non-empty) are NOT enforced here; call
-    :func:`raise_on_invalid_suite` separately (typically with
+    ``raise_on_invalid_suite`` separately (typically with
     ``suite_id=Path(path).stem``) so tests can construct invalid in-memory
     suites without touching the filesystem.
 
@@ -164,13 +164,13 @@ def load_benchmark_suite(path: str) -> list[BenchmarkScene]:
         path: Filesystem path to a benchmark YAML file.
 
     Returns:
-        Validated list of :class:`BenchmarkScene`s in YAML order.
+        Validated list of ``BenchmarkScene``s in YAML order.
 
     Raises:
         FileNotFoundError: If ``path`` does not exist.
         ROSConfigError: If the YAML root is not a list (legacy dict-shape
             gets an explicit redirect), or any entry fails
-            :class:`BenchmarkScene` validation.
+            ``BenchmarkScene`` validation.
 
     Example:
         >>> from pathlib import Path
@@ -224,7 +224,7 @@ def raise_on_invalid_suite(
     *,
     suite_id: str,
 ) -> None:
-    """Raise :class:`ROSConfigError` if ``scenes`` violates suite-level invariants.
+    """Raise ``ROSConfigError`` if ``scenes`` violates suite-level invariants.
 
     Originally enforced inside ``BenchmarkSpec.model_post_init`` (deleted in
     June 2026). Extracted as a free function so callers can validate freshly
@@ -245,7 +245,7 @@ def raise_on_invalid_suite(
     budget).
 
     Args:
-        scenes: The list of :class:`BenchmarkScene`s to validate.
+        scenes: The list of ``BenchmarkScene``s to validate.
         suite_id: The suite identifier — embedded in every error message so
             failures point back to the right ``benchmarks/<id>.yaml`` file.
 

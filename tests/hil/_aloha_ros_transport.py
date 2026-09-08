@@ -52,7 +52,7 @@ _CONTROL_QOS = QoSProfile(
 # (left arm 6, left gripper 1, right arm 6, right gripper 1).  See
 # ``python/hal/src/openral_hal/aloha.py`` and
 # ``ALOHA_REAL_DESCRIPTION.joints`` — re-derived from the public manifest
-# by :func:`make_aloha_hil_transport`.
+# by ``make_aloha_hil_transport``.
 _LEFT_ARM_SLICE = slice(0, 6)
 _LEFT_GRIPPER_INDEX = 6
 _RIGHT_ARM_SLICE = slice(7, 13)

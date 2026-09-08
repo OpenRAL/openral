@@ -1,22 +1,22 @@
-"""Unit tests for :class:`openral_sensors.ros_publisher.SensorRosPublisher`.
+"""Unit tests for ``openral_sensors.ros_publisher.SensorRosPublisher``.
 
 Two test tiers:
 
 * **Construction / validation** — no rclpy required. Asserts the
   publisher rejects bad inputs (non-absolute topic, non-positive rate)
-  and stays unstarted until :meth:`start`.
+  and stays unstarted until ``start``.
 * **Live publish/subscribe** — gated on rclpy via
   ``pytest.importorskip``. Drives a real
-  :class:`SensorRosPublisher` against a fake-but-real
-  :class:`SensorReader` (no MagicMock: a small in-memory reader that
-  returns a precomputed :class:`SensorFrame`), then opens an rclpy
+  ``SensorRosPublisher`` against a fake-but-real
+  ``SensorReader`` (no MagicMock: a small in-memory reader that
+  returns a precomputed ``SensorFrame``), then opens an rclpy
   subscriber in the same process and asserts the round-trip arrives.
 
 Per CLAUDE.md §1.11 — fake doubles live at the **process / network
 boundary** (rclpy is the network boundary here, and we use a real
 in-process rclpy publisher + subscriber, not a mock). The reader
 double is a real Python class implementing the
-:class:`SensorReaderLike` Protocol, not a ``MagicMock``.
+``SensorReaderLike`` Protocol, not a ``MagicMock``.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class _FakeReader:
     """Real ``SensorReader``-shaped object that yields a precomputed frame.
 
     NOT a mock: an explicit, named class implementing the
-    :class:`SensorReaderLike` Protocol. The publisher's contract is
+    ``SensorReaderLike`` Protocol. The publisher's contract is
     duck-typed on ``open / close / read_latest / sensor_id / is_open``.
     """
 
@@ -54,7 +54,7 @@ class _FakeReader:
 
 
 def _make_frame(width: int = 16, height: int = 12) -> SensorFrame:
-    """Build an RGB8 :class:`SensorFrame` with a known repeating pixel pattern.
+    """Build an RGB8 ``SensorFrame`` with a known repeating pixel pattern.
 
     Tiles ``0..255`` to the exact byte count the geometry implies. The size is
     a parameter because a frame must be able to match a real manifest's

@@ -1,8 +1,8 @@
 """Unit tests for the OTel reasoner.tick instrumentation.
 
-Real :class:`ReasonerCore` + real OTel SDK + real
-:class:`InMemorySpanExporter` (the only test double is
-:class:`FakeToolUseClient` at the LLM process boundary per CLAUDE.md
+Real ``ReasonerCore`` + real OTel SDK + real
+``InMemorySpanExporter`` (the only test double is
+``FakeToolUseClient`` at the LLM process boundary per CLAUDE.md
 §1.11). The InMemorySpanExporter ships with the OTel SDK as a
 zero-overhead, real exporter — it isn't a mock.
 """

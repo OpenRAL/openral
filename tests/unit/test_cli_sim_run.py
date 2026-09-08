@@ -155,7 +155,7 @@ def test_bh_sim_run_dry_run_rejects_incompatible_embodiment() -> None:
     """`--dry-run` must run the embodiment gate a real rollout hits.
 
     Regression: the dry-run branch returned before ``SimRunner.activate``'s
-    :func:`openral_sim.sim_runner._check_rskill_compatibility` call, so a
+    ``openral_sim.sim_runner._check_rskill_compatibility`` call, so a
     franka_panda rSkill paired with the pusht scene printed a happy plan and
     exited 0 — making ``--dry-run`` useless as a CI wiring check.
     """

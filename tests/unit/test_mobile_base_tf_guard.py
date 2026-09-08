@@ -7,7 +7,7 @@ for a mobile robot, whose ``MobileBaseBridge`` already publishes a live
 ``odom -> base_link``. Two parents for one frame splits ``/tf``:
 ``map -> base_link`` stops resolving and Nav2's global costmap times out.
 
-Both the guard and the ``odom`` publisher call :func:`describes_mobile_base`
+Both the guard and the ``odom`` publisher call ``describes_mobile_base``
 to agree on "mobile". Validated against real ``robots/*/robot.yaml``
 manifests — no mocks (CLAUDE.md §1.11).
 

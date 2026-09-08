@@ -5,10 +5,10 @@ Wraps any ``lerobot.policies.*`` checkpoint that follows the SmolVLA
 ``smolvla_metaworld``, ``pi05_libero``, and any compatible finetune.
 
 The adapter only accepts bare rSkill references in
-:attr:`VLASpec.weights_uri`. The rSkill manifest is the contract between
+``VLASpec.weights_uri``. The rSkill manifest is the contract between
 robot/sensors/preprocessing and the policy weights — the eval layer never
 loads weights without one. The manifest is resolved to a bare HF Hub repo id
-via :func:`openral_rskill.loader.resolve_rskill_to_hf`.
+via ``openral_rskill.loader.resolve_rskill_to_hf``.
 
 Like the other adapters, this module imports torch / lerobot / transformers
 lazily so installing ``openral-sim`` never pulls them transitively.
@@ -282,7 +282,7 @@ class _SmolVLAAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
@@ -305,7 +305,7 @@ class _SmolVLAAdapter:
         The co-located sensor leg delivers frames as NVMM
         descriptors in ``observation["image_handles"]``. When the TRT runtime
         is attached and every camera slot has a handle, encode them with
-        :class:`NvmmVisionEncoder` (same cached vision engine, straight on the
+        ``NvmmVisionEncoder`` (same cached vision engine, straight on the
         device pointers) and stash the embeddings on the sampler — the pixel
         tensors in the batch are then placeholders.
 
@@ -395,7 +395,7 @@ class _SmolVLAAdapter:
 
         The fast pop path skips ``_build_batch`` (which normally records the
         preview), but the eval-layer debug video samples
-        :meth:`last_input_frame` every env step — without this it would show
+        ``last_input_frame`` every env step — without this it would show
         one frozen frame per chunk.
         """
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame

@@ -1,8 +1,8 @@
-"""Hermetic unit tests for :class:`openral_hal.sim_attached.SimAttachedHAL`.
+"""Hermetic unit tests for ``openral_hal.sim_attached.SimAttachedHAL``.
 
 CLAUDE.md §1.11 — real schemas + real Protocol exercise. The
-:class:`SimRollout` Protocol boundary is satisfied by the test-only
-:class:`tests.unit.fakes.fake_sim_env.FakeSimEnv` (a narrow recorder,
+``SimRollout`` Protocol boundary is satisfied by the test-only
+``tests.unit.fakes.fake_sim_env.FakeSimEnv`` (a narrow recorder,
 not a mock — see its docstring for which Protocol slice it
 implements). The HAL Protocol is structural; what's under test is:
 

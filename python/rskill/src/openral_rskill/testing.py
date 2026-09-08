@@ -7,9 +7,9 @@ module supplies the assertion helper against the manifest contract.
 
 Public surface
 --------------
-- :func:`assert_within_budget` — assert a measured per-step latency is
-  within the manifest's :class:`openral_core.RSkillLatencyBudget`.
-- :class:`LatencyBudgetExceededError` — raised on overrun.
+- ``assert_within_budget`` — assert a measured per-step latency is
+  within the manifest's ``openral_core.RSkillLatencyBudget``.
+- ``LatencyBudgetExceededError`` — raised on overrun.
 
 A plain ``AssertionError`` subclass (not ``ROSRuntimeError``): a crisp
 pytest failure with the budget delta, not the operational exception the
@@ -40,9 +40,9 @@ _Stage = Literal["per_chunk", "warmup", "load"]
 
 
 class LatencyBudgetExceededError(AssertionError):
-    """Raised by :func:`assert_within_budget` when a measurement exceeds the budget.
+    """Raised by ``assert_within_budget`` when a measurement exceeds the budget.
 
-    Inherits from :class:`AssertionError` so pytest reports it as a normal
+    Inherits from ``AssertionError`` so pytest reports it as a normal
     test failure with the diff in the failure message.
 
     Attributes:

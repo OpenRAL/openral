@@ -1,6 +1,6 @@
 """ACT (Action Chunking Transformer) policy adapter.
 
-Wraps :class:`lerobot.policies.act.modeling_act.ACTPolicy` (Zhao et al.,
+Wraps ``lerobot.policies.act.modeling_act.ACTPolicy`` (Zhao et al.,
 2023). ACT's IO contract differs from SmolVLA / π0.5:
 
 - One observation key per camera (``observation.images.<name>``);
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 def _load_manifest_for_spec(spec: Any) -> Any:
     """Load the rSkill manifest from ``spec.weights_uri`` (bare rSkill reference).
 
-    Also used by :mod:`openral_sim.backends.libero`. Returns ``None`` for
+    Also used by ``openral_sim.backends.libero``. Returns ``None`` for
     explicit-scheme URIs (``hf://``, ``local://``, etc.) so legacy tests that
     construct such a ``weights_uri`` still work.
     """
@@ -184,7 +184,7 @@ class _ACTAdapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
 
         The TRT/NVMM device executor is released first and explicitly — its
         engine + activation workspace live outside torch's caching allocator,

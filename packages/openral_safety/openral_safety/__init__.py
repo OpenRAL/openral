@@ -1,6 +1,6 @@
 """openral_safety ROS 2 package — skeleton only.
 
-The :class:`SafetySupervisorNode` here is a placeholder lifecycle node
+The ``SafetySupervisorNode`` here is a placeholder lifecycle node
 that opens / closes the standard managed-lifecycle transitions. It
 carries no enforcement logic — the real safety enforcer is the C++
 kernel under ``cpp/openral_safety_kernel/`` (planned; CLAUDE.md §6.1

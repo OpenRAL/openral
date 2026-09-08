@@ -1,7 +1,7 @@
 """openral inference runner — hardware-side counterpart to ``openral_sim``.
 
-Hosts the :class:`InferenceRunner` Protocol + :class:`InferenceRunnerBase`
-shared between sim and hardware paths, the :class:`SensorReader` Protocol,
+Hosts the ``InferenceRunner`` Protocol + ``InferenceRunnerBase``
+shared between sim and hardware paths, the ``SensorReader`` Protocol,
 and the per-backend sensor readers (``openral_runner.backends``).
 
 Public surface:
@@ -16,9 +16,9 @@ Public surface:
 - ``SafetyClient`` / ``NullSafetyClient``: pre-action safety seam called
   before HAL dispatch; ``NullSafetyClient`` is a no-op stub pending the
   real C++ safety kernel (CLAUDE.md §6 Layer 6).
-- ``DeployRunner``: concrete :class:`InferenceRunnerBase` composing a real
-  :class:`HAL`, :class:`Skill`, :class:`WorldStateAggregator`, a list of
-  :class:`SensorReader`s, and a :class:`SafetyClient`.
+- ``DeployRunner``: concrete ``InferenceRunnerBase`` composing a real
+  ``HAL``, ``Skill``, ``WorldStateAggregator``, a list of
+  ``SensorReader``s, and a ``SafetyClient``.
 - ``precise_sleep`` / ``sleep_until``: cadence helpers (mirrors lerobot's
   ``precise_sleep`` shape).
 

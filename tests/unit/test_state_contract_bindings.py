@@ -6,7 +6,7 @@ Pins the per-layout binding policy: task-space layouts (``human300_16d`` /
 admit-with-adapter filter and the runtime state assembler both depend
 on this invariant.
 
-No mocks (CLAUDE.md §1.11) — drives real :class:`StateContract` Pydantic
+No mocks (CLAUDE.md §1.11) — drives real ``StateContract`` Pydantic
 validation.
 """
 

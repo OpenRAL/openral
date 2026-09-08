@@ -2,19 +2,19 @@
 
 Enforces that an rSkill directory ships with a *useful* README and a
 filled-in manifest before it can be published to the HF Hub. The schema-level
-Pydantic validators on :class:`openral_core.schemas.RSkillManifest` answer "is
+Pydantic validators on ``openral_core.schemas.RSkillManifest`` answer "is
 this YAML well-formed"; this validator answers "is this rSkill ready for
 someone who isn't the author to install and run" (CLAUDE.md §6.4:
 ``README.md`` with a runnable example is required packaging alongside
 ``rskill.yaml``, weights, and ``eval/``). ``tools/rskill_publisher.py`` imports
-:func:`validate_rskill_docs` as a hard gate; its dry-run path emits the same
+``validate_rskill_docs`` as a hard gate; its dry-run path emits the same
 report.
 
 README checks:
 
 * ``README.md`` exists; body is ``>= _MIN_README_BODY_LENGTH`` bytes.
 * Headings cover the canonical sections (what/how/how-trained — see
-  :data:`README_REQUIRED_SECTIONS`).
+  ``README_REQUIRED_SECTIONS``).
 * No unresolved template sentinels (``TEMPLATE_ORG``/``TEMPLATE_ID``,
   ``TODO:``, ``FIXME``, ``<fill-in>``).
 * A preview image/video (``![](…)``, ``<img>``, ``<video>``) — **warning**
@@ -145,7 +145,7 @@ _DELEGATION_MARKER_PATTERN: Final[re.Pattern[str]] = re.compile(
 
 
 class DocValidationIssue(BaseModel):
-    """One problem surfaced by :func:`validate_rskill_docs`.
+    """One problem surfaced by ``validate_rskill_docs``.
 
     Attributes:
         severity: ``"error"`` blocks publishing; ``"warning"`` is
@@ -187,12 +187,12 @@ class DocValidationReport(BaseModel):
 
     @property
     def errors(self) -> list[DocValidationIssue]:
-        """The subset of :attr:`issues` with ``severity == "error"``."""
+        """The subset of ``issues`` with ``severity == "error"``."""
         return [i for i in self.issues if i.severity == "error"]
 
     @property
     def warnings(self) -> list[DocValidationIssue]:
-        """The subset of :attr:`issues` with ``severity == "warning"``."""
+        """The subset of ``issues`` with ``severity == "warning"``."""
         return [i for i in self.issues if i.severity == "warning"]
 
 
@@ -202,7 +202,7 @@ class DocValidationReport(BaseModel):
 def validate_rskill_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValidationReport:
     """Validate an rSkill directory's README and manifest documentation.
 
-    Composes :func:`_validate_readme` and :func:`_validate_manifest_content`
+    Composes ``_validate_readme`` and ``_validate_manifest_content``
     into one report so the publisher can render a single block of issues
     rather than failing piecemeal.
 
@@ -210,11 +210,11 @@ def validate_rskill_docs(skill_dir: Path, manifest: RSkillManifest) -> DocValida
         skill_dir: Path to the rSkill directory (the parent of
             ``rskill.yaml`` and ``README.md``).
         manifest: Already-loaded, schema-valid manifest. Callers obtain
-            this via :meth:`RSkillManifest.from_yaml` before calling here.
+            this via ``RSkillManifest.from_yaml`` before calling here.
 
     Returns:
-        :class:`DocValidationReport` with one issue per problem found.
-        Iterate :attr:`DocValidationReport.errors` to decide whether to
+        ``DocValidationReport`` with one issue per problem found.
+        Iterate ``DocValidationReport.errors`` to decide whether to
         block publishing.
 
     Example:
@@ -243,7 +243,7 @@ def _validate_readme(skill_dir: Path) -> list[DocValidationIssue]:
 
     Honors single-hop delegation via the
     ``<!-- openral:rskill-readme-delegates-to: <path> -->`` marker (see
-    :data:`DELEGATION_MARKER_NAME`): when present, the section checks run
+    ``DELEGATION_MARKER_NAME``): when present, the section checks run
     against the resolved sibling README instead of this one. Placeholder
     and length checks still apply to the stub itself.
     """
@@ -506,7 +506,7 @@ def _validate_manifest_content(manifest: RSkillManifest) -> list[DocValidationIs
 
 
 def format_report(report: DocValidationReport) -> str:
-    """Render a human-readable summary of a :class:`DocValidationReport`.
+    """Render a human-readable summary of a ``DocValidationReport``.
 
     Used by ``tools/rskill_publisher.py`` and ``openral rskill new`` for the
     publish-readiness banner. Errors are prefixed with ``error:`` and

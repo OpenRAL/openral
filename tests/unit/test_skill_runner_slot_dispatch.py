@@ -1,13 +1,13 @@
 """Unit tests for ``_dispatch_slots`` in ``rskill_runner_node``.
 
 Exercises the pure byte-routing function that splits a flat policy action vector into
-typed :class:`openral_core.Action` objects per the manifest's
-:class:`openral_core.ActionContract.slots` declaration.
+typed ``openral_core.Action`` objects per the manifest's
+``openral_core.ActionContract.slots`` declaration.
 
 The module is gated behind ``_ROS2_AVAILABLE`` (``rclpy`` import), so it's loaded
 directly via ``importlib.util.spec_from_file_location`` rather than the package
 ``__init__``, to exercise helpers without booting ROS 2. Assumes
-:class:`ActionContract` validation already enforced slot coverage + per-mode field
+``ActionContract`` validation already enforced slot coverage + per-mode field
 requirements; only byte-routing is covered here.
 """
 

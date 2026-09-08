@@ -1,9 +1,9 @@
-"""Sim tests for :class:`openral_hal.AnvilOpenArmV2MujocoHAL` against real MuJoCo physics.
+"""Sim tests for ``openral_hal.AnvilOpenArmV2MujocoHAL`` against real MuJoCo physics.
 
 These tests load the **Anvil OpenARM 2.0** bimanual MJCF — the standard
 Enactic OpenArm v2 with Anvil's documented range deltas (J1 +/-135 deg,
 J6 -45..+70 deg of radial deviation) and the wrist support bracket — via
-:mod:`openral_hal._anvil_openarm_v2_assets`, and exercise the full HAL
+``openral_hal._anvil_openarm_v2_assets``, and exercise the full HAL
 lifecycle (connect → read_state → send_action → estop / disconnect)
 against a real ``mj_step`` loop.  No mocks; the closed-loop behaviour
 comes from the MJCF's own native ``<position>`` actuators, exactly like

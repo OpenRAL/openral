@@ -2,7 +2,7 @@
 """rclpy → OTLP bridge for the octomap occupied-voxel cloud.
 
 The OpenRAL dashboard is OTLP-only — it never subscribes to ROS topics
-directly. :class:`WorldCloudBridge` subscribes (given an existing
+directly. ``WorldCloudBridge`` subscribes (given an existing
 ``rclpy.node.Node``) to the ``sensor_msgs/PointCloud2`` octomap_server
 publishes on ``/octomap_point_cloud_centers`` (occupied voxel centers, the
 map the safety kernel gates on), transforms it into ``base_link`` via TF2,
@@ -12,8 +12,8 @@ metadata + PNG as attributes. The dashboard store's matching handler
 populates ``_topics["pointcloud"]`` from the span (see
 ``openral_observability.dashboard.store``).
 
-The pure render functions (:func:`crop_points_to_box`,
-:func:`encode_world_cloud_png`, :func:`world_cloud_span_attributes`) take
+The pure render functions (``crop_points_to_box``,
+``encode_world_cloud_png``, ``world_cloud_span_attributes``) take
 plain ``(N, 3)`` arrays so the dashboard contract is testable without ROS.
 
 Composed into ``RskillRunnerNode`` via
@@ -256,7 +256,7 @@ def _apply_transform(points: NDArray[np.float32], tf: Any) -> NDArray[np.float32
 class WorldCloudBridge:
     """rclpy → OTLP bridge for ``/octomap_point_cloud_centers``.
 
-    Mirrors :class:`openral_runner.slam_bridge.SlamMapBridge`: constructed
+    Mirrors ``openral_runner.slam_bridge.SlamMapBridge``: constructed
     against an existing ``rclpy.node.Node`` so the PointCloud2 subscription
     shares the runner's executor. On each accepted message it reads the
     cloud, transforms it into ``base_frame`` via TF2, crops, renders the
@@ -264,9 +264,9 @@ class WorldCloudBridge:
 
     Args:
         node: Host ``rclpy.node.Node``; the subscription + TF listener are
-            created on it. :meth:`destroy` releases the subscription.
+            created on it. ``destroy`` releases the subscription.
         topic: PointCloud2 topic. Defaults to
-            :data:`WORLD_CLOUD_TOPIC_DEFAULT`.
+            ``WORLD_CLOUD_TOPIC_DEFAULT``.
         base_frame: tf2 frame to express the cloud in (the robot frame).
         source_node_name: identifier surfaced on the dashboard card.
         publish_interval_s: minimum wall-clock interval between spans.

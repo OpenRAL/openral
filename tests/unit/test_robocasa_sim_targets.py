@@ -11,7 +11,7 @@ That is not hypothetical. ``test_kernel_fridge_layout_pin_start_state.py`` was
 added by #224 and sat outside any list until #232 went looking, which is how
 the gap was found at all.
 
-Sibling of :mod:`tests.unit.test_ros_live_targets`, same reasoning, different
+Sibling of ``tests.unit.test_ros_live_targets``, same reasoning, different
 suite — except that one guards a list with a CI lane behind it and this one
 guards a list with only a human behind it, which makes it matter more, not
 less.

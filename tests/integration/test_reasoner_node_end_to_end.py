@@ -12,7 +12,7 @@ workflow — the only CI surface with a real rclpy + colcon overlay). Locally::
     just test-ros-live            # whole suite; `-k <expr>` narrows it
 
 Exercises ``/openral/prompt_in/cli`` → ``/openral/prompt`` → reasoner tick →
-dispatch with a real :class:`FakeToolUseClient` (only test double allowed at
+dispatch with a real ``FakeToolUseClient`` (only test double allowed at
 the LLM process boundary, CLAUDE.md §1.11).
 """
 

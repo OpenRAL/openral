@@ -9,7 +9,7 @@ This module provides three independent probes:
 
 2. **SocketCAN matching** — maps deliberately-named CAN / CAN FD interfaces
    (``openarm_left``, …) to known robot types.  The enumeration itself is
-   robot-agnostic and lives in :mod:`openral_core.can`, so a HAL's
+   robot-agnostic and lives in ``openral_core.can``, so a HAL's
    connect-time bus preflight and this probe read the kernel through the same
    code; what is here is the robot-identification half.  This is the transport
    that USB-serial enumeration structurally cannot see: a CAN adapter
@@ -390,7 +390,7 @@ def match_known_devices(devices: list[UsbDevice]) -> list[UsbMatch]:
 
     Returns:
         List of `UsbMatch` for every device whose ``(vid, pid)``
-        pair appears in :data:`_VID_PID_TABLE`.  Devices with unknown
+        pair appears in ``_VID_PID_TABLE``.  Devices with unknown
         VID/PID (vid=0) are excluded.
 
     Example:
@@ -460,7 +460,7 @@ def scan_dds_topics(timeout_s: float = 5.0) -> list[DdsTopic]:
 def infer_robot_from_topics(topics: list[DdsTopic]) -> str | None:
     """Infer a robot type from DDS topic names.
 
-    Checks each topic name against :data:`_TOPIC_ROBOT_MAP` prefix matches.
+    Checks each topic name against ``_TOPIC_ROBOT_MAP`` prefix matches.
     Returns the first match found (in topic-name alphabetical order).
 
     Args:
@@ -547,7 +547,7 @@ def can_adapter_name(iface: CanInterface) -> str:
     """Human-readable name for the USB adapter behind a CAN interface.
 
     Args:
-        iface: One row from :func:`enumerate_can_interfaces`.
+        iface: One row from ``enumerate_can_interfaces``.
 
     Returns:
         The catalogued adapter name (``"PEAK PCAN-USB Pro FD"``), else the
@@ -590,12 +590,12 @@ def match_can_interfaces(interfaces: list[CanInterface]) -> list[CanMatch]:
     kernel knows about a controller, not that a robot is wired to it.
 
     Args:
-        interfaces: Output of :func:`enumerate_can_interfaces`.
+        interfaces: Output of ``enumerate_can_interfaces``.
 
     Returns:
-        One :class:`CanMatch` per matched robot type, in robot-type order,
+        One ``CanMatch`` per matched robot type, in robot-type order,
         each carrying every interface that matched it.  Empty when no
-        interface name matches :data:`_CAN_NAME_ROBOT_TABLE`.
+        interface name matches ``_CAN_NAME_ROBOT_TABLE``.
 
     Example:
         >>> from openral_cli.autodetect import match_can_interfaces
@@ -630,7 +630,7 @@ def infer_robot_from_can(interfaces: list[CanInterface]) -> str | None:
     """Infer a robot type from SocketCAN interface names.
 
     Args:
-        interfaces: Output of :func:`enumerate_can_interfaces`.
+        interfaces: Output of ``enumerate_can_interfaces``.
 
     Returns:
         A robot type string (e.g. ``"openarm"``) when an up interface's name

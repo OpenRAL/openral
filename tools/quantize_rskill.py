@@ -1,14 +1,14 @@
 r"""Quantize a lerobot policy and upload the result to the HuggingFace Hub.
 
 Policy-agnostic counterpart to the in-process fast-path in
-:mod:`openral_sim._quantization`. Loads any lerobot policy via
+``openral_sim._quantization``. Loads any lerobot policy via
 ``from_pretrained``, quantizes in place, saves ``model.safetensors`` +
 ``quantization_metadata.json``, and uploads to a target rSkill repo. The
-adapter's :func:`load_prequantized_state_for_rskill` detects the metadata
+adapter's ``load_prequantized_state_for_rskill`` detects the metadata
 sentinel and skips the on-line nf4 conversion
-(:func:`openral_sim._quantization.quantize_nf4_in_place`, ~90 s/checkpoint
+(``openral_sim._quantization.quantize_nf4_in_place``, ~90 s/checkpoint
 on a 4070-mobile) on every subsequent launch by installing the packed
-weights directly via :func:`install_prequantized_linears`.
+weights directly via ``install_prequantized_linears``.
 
 Not part of CI — a one-shot Hub-mutating tool gated on ``HF_TOKEN``. Upload
 is bandwidth-bound: ~15-30 min on home WiFi for a ~2 GiB nf4 bundle.
@@ -352,7 +352,7 @@ def _save_state(
 def _bnb_quantization_config(scheme: str) -> dict[str, Any]:
     """Return the ``transformers`` BitsAndBytesConfig block matching ``scheme``.
 
-    Mirrors what :mod:`openral_sim._quantization` builds at runtime (nf4
+    Mirrors what ``openral_sim._quantization`` builds at runtime (nf4
     Linear4bit, bf16 compute + double-quant; or int8 Linear8bitLt, threshold
     6.0, fp16 weights disabled). Stamping it into config.json lets the Hub
     auto-tag the repo; without it the source's bf16 config.json is copied

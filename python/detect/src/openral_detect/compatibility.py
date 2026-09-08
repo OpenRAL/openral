@@ -1,8 +1,8 @@
 """rSkill compatibility report — `check_installed_rskills`.
 
 Walks installed rSkills and reports which can run on the assembled
-:class:`RobotDescription`.  Reuses the production
-:meth:`rSkill.check_compatibility` so the report uses the same semantics
+``RobotDescription``.  Reuses the production
+``rSkill.check_compatibility`` so the report uses the same semantics
 as the runtime loader — no parallel logic.
 
 When the local registry is empty (a fresh checkout that has not run
@@ -58,7 +58,7 @@ class SectionVerdict(BaseModel):
 
     A single row of the per-section breakdown emitted when a caller asks
     for compatibility of one specific rSkill against the host's detected
-    :class:`RobotDescription`.  Six sections cover the dimensions a user
+    ``RobotDescription``.  Six sections cover the dimensions a user
     will reasonably ask about: embodiment, capability flags, GPU runtime,
     GPU dtype, sensors, actuators.
 
@@ -122,20 +122,20 @@ def check_installed_rskills(
     registry_path: Path | None = None,
     rskills_dir: Path | None = None,
 ) -> CompatibilityReport:
-    """Run :meth:`rSkill.check_compatibility` against every installed skill.
+    """Run ``rSkill.check_compatibility`` against every installed skill.
 
     Args:
-        robot: Assembled :class:`RobotDescription` (typically the output
-            of :func:`assemble_robot_description`).
+        robot: Assembled ``RobotDescription`` (typically the output
+            of ``assemble_robot_description``).
         registry_path: Optional override for the local rSkill registry
             file.  Default: the user's per-host registry resolved by
-            :meth:`rSkill.list_installed`.
+            ``rSkill.list_installed``.
         rskills_dir: Optional path to walk for in-tree ``rskill.yaml``
             files (CI / development convenience).  Each yaml found is
             evaluated alongside the entries from the local registry.
 
     Returns:
-        A :class:`CompatibilityReport` ready for table rendering.
+        A ``CompatibilityReport`` ready for table rendering.
     """
     rows: list[RSkillCompatRow] = []
     seen_paths: set[str] = set()
@@ -160,7 +160,7 @@ def check_installed_rskills(
 
 
 def _entry_for_in_tree(manifest_path: Path) -> InstalledRSkillEntry:
-    """Build a synthetic :class:`InstalledRSkillEntry` for an in-tree manifest.
+    """Build a synthetic ``InstalledRSkillEntry`` for an in-tree manifest.
 
     Used by ``--rskills-dir`` so we can run compatibility against a fresh
     checkout that has not run ``ral skill install``.
@@ -239,8 +239,8 @@ _CLASSIFICATION_KEYWORDS: tuple[tuple[str, FailureKind], ...] = (
 def _classify(message: str) -> FailureKind:
     """Coarse classification of a ``ROSCapabilityMismatch`` message.
 
-    Matches keywords from :meth:`rSkill.check_capabilities` /
-    :meth:`rSkill.check_sensors` so the table renderer can color rows by
+    Matches keywords from ``rSkill.check_capabilities`` /
+    ``rSkill.check_sensors`` so the table renderer can color rows by
     failure family.  Returns the most specific match; falls back to
     ``"capability_flag"``.
     """
@@ -287,7 +287,7 @@ def _evaluate_sections(
     """Run each rSkill ↔ robot check independently and collect verdicts.
 
     Calls the **production** per-section static methods on
-    :class:`rSkill` (no parallel logic). Six sections in fixed order:
+    ``rSkill`` (no parallel logic). Six sections in fixed order:
     embodiment, capability_flags, gpu_runtime, gpu_dtype, sensors, and
     an informational actuators line.
     """
@@ -365,25 +365,25 @@ def _evaluate_sections(
 def check_single_rskill(rskill_id: str, robot: RobotDescription) -> CompatibilityReport:
     """Resolve ``rskill_id`` and report its compatibility with ``robot``.
 
-    Resolution follows :func:`openral_rskill.loader.load_rskill_manifest`:
+    Resolution follows ``openral_rskill.loader.load_rskill_manifest``:
     bare in-tree name, ``<org>/rskill-<name>`` HF Hub alias, or arbitrary
     HF Hub repo id.  No scheme stripping is needed — ``weights_uri`` stores
     bare references directly.
 
-    Returns a :class:`CompatibilityReport` with exactly one
-    :class:`RSkillCompatRow`.  The row's ``sections`` list holds the
-    per-section verdicts (six entries; see :class:`SectionVerdict`).
+    Returns a ``CompatibilityReport`` with exactly one
+    ``RSkillCompatRow``.  The row's ``sections`` list holds the
+    per-section verdicts (six entries; see ``SectionVerdict``).
     Aggregate ``compatible`` is true when **every non-informational**
     section passes; the first failing section becomes the row-level
     ``reason`` / ``failure_kind``.
 
     Args:
         rskill_id: The rSkill identifier as printed by ``openral rskill list``.
-        robot: The host's assembled :class:`RobotDescription` (typically
-            from :func:`openral detect`).
+        robot: The host's assembled ``RobotDescription`` (typically
+            from ``openral detect``).
 
     Returns:
-        A one-row :class:`CompatibilityReport` ready for table or JSON
+        A one-row ``CompatibilityReport`` ready for table or JSON
         rendering.
 
     Example:

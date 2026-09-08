@@ -7,10 +7,10 @@ Pins every sim test to its own DDS domain — see the module-level ``os.environ`
 for why that is a correctness requirement here, and the one setting that must NOT be added
 alongside it.
 
-Exposes :func:`compose_sim_env`, the test-side equivalent of ``openral sim run``'s
+Exposes ``compose_sim_env``, the test-side equivalent of ``openral sim run``'s
 ``_load_or_build_env``: on-disk YAMLs under ``scenes/sim/`` and ``scenes/benchmark/`` are
-:class:`SimScene` / :class:`BenchmarkScene` shapes, and the runtime :class:`SimEnvironment` is
-composed by the CLI from a :class:`SimScene` plus a loaded rSkill manifest (never loaded from
+``SimScene`` / ``BenchmarkScene`` shapes, and the runtime ``SimEnvironment`` is
+composed by the CLI from a ``SimScene`` plus a loaded rSkill manifest (never loaded from
 YAML directly) — tests must compose the same way. ``load_scene_strict`` accepts a
 ``BenchmarkScene`` YAML transparently when ``expected=SimScene``.
 """
@@ -73,9 +73,9 @@ def compose_sim_env(
     n_episodes: int = 1,
     max_steps: int | None = None,
 ) -> SimEnvironment:
-    """Compose a :class:`SimEnvironment` from a ``SimScene`` YAML + rSkill URI.
+    """Compose a ``SimEnvironment`` from a ``SimScene`` YAML + rSkill URI.
 
-    Mirrors :func:`openral_sim.cli._load_or_build_env` so the sim
+    Mirrors ``openral_sim.cli._load_or_build_env`` so the sim
     tests exercise the same composition the production CLI uses.
 
     Args:
@@ -90,7 +90,7 @@ def compose_sim_env(
             value.
 
     Returns:
-        A composed :class:`SimEnvironment` ready for :class:`SimRunner`.
+        A composed ``SimEnvironment`` ready for ``SimRunner``.
     """
     from openral_rskill.loader import load_rskill_manifest
     from openral_sim.registry import SCENES
@@ -272,7 +272,7 @@ def hal() -> Any:
 
 @pytest.fixture(scope="module")
 def scene_env(_scene_config: Path) -> Any:
-    """Load *_scene_config* as a :class:`~openral_core.BenchmarkScene`, skipping if absent."""
+    """Load *_scene_config* as a ``BenchmarkScene``, skipping if absent."""
     from openral_core import BenchmarkScene, load_scene_strict
 
     if not _scene_config.exists():

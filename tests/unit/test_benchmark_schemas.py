@@ -2,15 +2,15 @@
 
 A benchmark suite on disk is a bare ``list[BenchmarkScene]`` + a ``suite_id``
 derived from the YAML filename stem. Suite-level invariants live in
-:func:`openral_core.raise_on_invalid_suite`, which raises
-:class:`ROSConfigError` (not ``pydantic.ValidationError``) so the suite id
+``openral_core.raise_on_invalid_suite``, which raises
+``ROSConfigError`` (not ``pydantic.ValidationError``) so the suite id
 can be embedded in the error message.
 
 ``ProtocolSpec`` is a standalone schema for design/report tooling, not part
 of ``BenchmarkScene``.
 
 The catalogue-fixture parametric test exercises every YAML under
-``benchmarks/`` via :func:`openral_core.load_benchmark_suite` (CLAUDE.md
+``benchmarks/`` via ``openral_core.load_benchmark_suite`` (CLAUDE.md
 §1.11 — real fixtures, no mocks).
 """
 
@@ -554,7 +554,7 @@ def test_benchmarks_catalogue_fixture_loads_and_passes_invariants(
     CLAUDE.md §1.11 — real fixtures; a typo/drift in any catalogue YAML
     fails loud and points at the file.
 
-    Suite invariants (:func:`raise_on_invalid_suite`) guarantee uniformity
+    Suite invariants (``raise_on_invalid_suite``) guarantee uniformity
     of ``robot_id``/``n_episodes``/``metadata``; ``success_key``/
     ``max_steps`` MAY differ per-task by contract, but every shipped suite
     is uniform on ``success_key``.

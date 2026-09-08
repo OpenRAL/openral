@@ -17,7 +17,7 @@ rest of the episode (the base halts; episode termination is the env's /
 reasoner's call).
 
 **Depth** is sourced monocularly from the DA3 sidecar
-(:mod:`openral_sim.da3_depth`) — the same ``depth-anything/DA3-SMALL`` model the
+(``openral_sim.da3_depth``) — the same ``depth-anything/DA3-SMALL`` model the
 SLAM/nvblox stack uses — so it is real metric depth and works identically on a
 sim-rendered RGB frame and a real camera (no robot depth sensor required). The
 DualVLN checkpoint's ``nextdit`` System-1 is RGB+latent conditioned and does not
@@ -94,7 +94,7 @@ def _locate_sidecar_script() -> Path:
 
 @dataclass
 class _InternVLAN1Adapter:
-    """:class:`PolicyAdapter` proxying the InternVLA-N1 sidecar.
+    """``PolicyAdapter`` proxying the InternVLA-N1 sidecar.
 
     Depth is sourced monocularly from the DA3 sidecar (``_da3``) rather than a
     robot depth sensor, so the same adapter runs on a sim-rendered RGB frame and

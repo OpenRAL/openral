@@ -1,6 +1,6 @@
 """Regression test: ``sim_e2e.launch.py`` produces no empty-list ROS params.
 
-Asserts :func:`sim_e2e.launch.compose_runtime_graph` builds the ``openral_safety_kernel``
+Asserts ``sim_e2e.launch.compose_runtime_graph`` builds the ``openral_safety_kernel``
 LifecycleNode's parameter dict with NO empty list/tuple values, for every robot in the
 in-tree catalogue.
 
@@ -85,7 +85,7 @@ def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
 
 
 def _make_launch_context(robot_yaml: Path) -> object:
-    """Return a :class:`launch.LaunchContext` populated from the launch itself.
+    """Return a ``launch.LaunchContext`` populated from the launch itself.
 
     The defaults come from executing the launch's own
     ``DeclareLaunchArgument`` entities, as ``test_no_dashboard_otlp_env.py``
@@ -208,7 +208,7 @@ def test_fixed_base_arm_kernel_params_have_no_empty_lists(robot_id: str) -> None
 def test_mobile_base_arm_kernel_params_have_collision_base_dofs(robot_id: str) -> None:
     """Mobile-base robots: ``collision_base_dofs`` is present and non-empty.
 
-    Pairs with :func:`test_fixed_base_arm_kernel_params_have_no_empty_lists`
+    Pairs with ``test_fixed_base_arm_kernel_params_have_no_empty_lists``
     so the symmetric "omit-when-empty, include-when-populated" contract is
     pinned end-to-end. panda_mobile declares ``base_joints`` in its
     manifest; the param must reach the kernel so the FK can zero the

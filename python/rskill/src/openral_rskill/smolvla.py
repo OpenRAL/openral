@@ -1,15 +1,15 @@
 """SmolVLA adapter — Skill implementation for the SmolVLA family of VLAs.
 
-:class:`SmolVLAAdapter` is a full :class:`~openral_rskill.base.Skill`
+``SmolVLAAdapter`` is a full ``Skill``
 implementation that loads any ``SmolVLAPolicy``-compatible checkpoint from
 the HuggingFace Hub and drives a
-:class:`~openral_rskill.executor.ChunkedExecutor` (background-thread chunk
+``ChunkedExecutor`` (background-thread chunk
 pre-fetcher — see that module's docstring for the architecture and timing
 contract) from within the standard Skill lifecycle.
 
 Observation convention (SO-100 default)
 -----------------------------------------
-The ``obs_fn`` callable maps :class:`~openral_core.schemas.WorldState`
+The ``obs_fn`` callable maps ``WorldState``
 to a raw SmolVLA input dict:
 
 .. code-block:: python
@@ -21,7 +21,7 @@ to a raw SmolVLA input dict:
         "task":                       ["<prompt>"]
     }
 
-The default ``obs_fn`` used by :class:`SO100SmolVLASkill` builds this from
+The default ``obs_fn`` used by ``SO100SmolVLASkill`` builds this from
 ``world_state.joint_state.position`` and expects images to be populated by
 the caller via ``extra_images``.  For other robots, pass a custom ``obs_fn``.
 
@@ -76,19 +76,19 @@ _SO100_JOINT_NAMES: tuple[str, ...] = (
 class SmolVLAAdapter(rSkillBase):
     """Skill implementation that drives any SmolVLA-family policy.
 
-    Implements the full :class:`~openral_rskill.base.Skill` lifecycle:
+    Implements the full ``Skill`` lifecycle:
 
     - ``configure()``: fetches the checkpoint from HF Hub, builds the
       preprocessor, moves the model to ``device``, and optionally quantizes.
     - ``activate()``: runs a warm-up inference; starts the
-      :class:`ChunkedExecutor` background thread.
+      ``ChunkedExecutor`` background thread.
     - ``step(world_state)``: calls ``obs_fn`` → preprocessor → executor;
-      returns a single-step :class:`~openral_core.schemas.Action`.
+      returns a single-step ``Action``.
     - ``deactivate()`` / ``shutdown()``: stops the executor thread, frees GPU.
 
     Args:
         repo_id: HuggingFace Hub repo ID, e.g. ``"lerobot/smolvla_base"``.
-        obs_fn: Callable mapping :class:`~openral_core.schemas.WorldState`
+        obs_fn: Callable mapping ``WorldState``
             to a raw SmolVLA input dict (un-preprocessed).  Must return tensors
             on ``device`` or CPU (they are moved to ``device`` after
             preprocessing).
@@ -96,7 +96,7 @@ class SmolVLAAdapter(rSkillBase):
             the ``task`` key inside ``obs_fn``.
         device: PyTorch device string, e.g. ``"cuda:0"`` or ``"cpu"``.
         n_dof: Degrees of freedom of the robot's action space (default 6 for
-            SO-100).  Used to shape the returned :class:`Action`.
+            SO-100).  Used to shape the returned ``Action``.
         n_cameras: Number of camera slots the deploy actually feeds. ``None``
             defaults to ``len(policy.config.image_features)``. Pass the
             manifest's RGB ``sensors_required`` count for checkpoints that
@@ -105,8 +105,8 @@ class SmolVLAAdapter(rSkillBase):
             warmup to the real cameras and is threaded to the TRT export so the
             engine never attends a phantom camera.
         prefetch_at: Steps before chunk end at which background pre-fetch is
-            triggered.  See :class:`ChunkedExecutor`.
-        name: Skill name passed to the :class:`~openral_rskill.base.Skill`
+            triggered.  See ``ChunkedExecutor``.
+        name: Skill name passed to the ``Skill``
             base class.
         version: SemVer string.
         embodiment_tags: Embodiment tags for capability matching.
@@ -265,7 +265,7 @@ class SmolVLAAdapter(rSkillBase):
         )
 
     def _activate_impl(self) -> None:
-        """Reset the policy and start the :class:`ChunkedExecutor`."""
+        """Reset the policy and start the ``ChunkedExecutor``."""
         assert self._policy is not None
         self._policy.reset()
         self._executor = ChunkedExecutor(self._policy, prefetch_at=self._prefetch_at)
@@ -299,14 +299,14 @@ class SmolVLAAdapter(rSkillBase):
         """One S1 control step.
 
         Converts ``world_state`` via ``obs_fn`` + preprocessor, then calls the
-        :class:`ChunkedExecutor` (which either pops from the cached queue or
+        ``ChunkedExecutor`` (which either pops from the cached queue or
         triggers a new chunk inference).
 
         Args:
             world_state: Current world state snapshot.
 
         Returns:
-            A single-step :class:`~openral_core.schemas.Action` with
+            A single-step ``Action`` with
             ``control_mode=JOINT_POSITION`` and ``horizon=1``.
 
         Raises:
@@ -390,7 +390,7 @@ def _so100_obs_fn(
 class SO100SmolVLASkill(SmolVLAAdapter):
     """Convenience SmolVLAAdapter pre-configured for the SO-100 6-DoF arm.
 
-    Uses :func:`_so100_obs_fn` to convert :class:`WorldState` to SmolVLA
+    Uses ``_so100_obs_fn`` to convert ``WorldState`` to SmolVLA
     inputs.  Pass ``extra_images`` at runtime via ``step_kwargs`` or patch
     ``obs_fn`` after construction for multi-camera setups.
 
@@ -400,7 +400,7 @@ class SO100SmolVLASkill(SmolVLAAdapter):
         device: Inference device (default ``"cuda:0"``).
         extra_images: Camera images injected into every ``_step_impl`` call.
             If ``None``, a synthetic image is used (smoke-test only).
-        **kwargs: Forwarded to :class:`SmolVLAAdapter`.
+        **kwargs: Forwarded to ``SmolVLAAdapter``.
 
     Example:
         >>> from openral_rskill.smolvla import SO100SmolVLASkill
@@ -425,7 +425,7 @@ class SO100SmolVLASkill(SmolVLAAdapter):
             repo_id: HF Hub checkpoint ID.
             device: Inference device.
             extra_images: Optional camera image tensors.
-            **kwargs: Extra args forwarded to :class:`SmolVLAAdapter`.
+            **kwargs: Extra args forwarded to ``SmolVLAAdapter``.
         """
 
         def obs_fn(ws: WorldState) -> dict[str, Any]:

@@ -17,7 +17,7 @@ env directly; the deploy path (``openral deploy sim``) assembles it here
 from live TF + ``JointState``. Without this layout the skill_runner falls
 back to the raw joint-space vector, driving an EE-pose-trained policy
 incoherently. Task-space sibling of
-:mod:`~openral_state_adapter.layouts.human300_16d` (base-relative, 16-D,
+``human300_16d`` (base-relative, 16-D,
 mobile base); LIBERO is fixed-base, so EE pose is absolute in the world
 frame, matching robosuite's ``robot0_eef_pos``.
 """

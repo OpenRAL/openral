@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`openral_observability.dashboard.store`.
+"""Unit tests for ``openral_observability.dashboard.store``.
 
 Tests feed real ``ResourceSpans`` / ``ResourceMetrics`` protobuf
 messages — built via ``opentelemetry-proto`` directly — into the

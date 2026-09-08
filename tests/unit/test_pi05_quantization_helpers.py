@@ -4,7 +4,7 @@ Exercises both ``quantize_nf4_in_place`` and ``quantize_int8_in_place``
 against a real ``torch.nn.Module`` whose Linears straddle the 4M-param
 selection threshold. The test verifies that large Linears get swapped
 for the matching ``bitsandbytes`` Linear class and small ones are left
-untouched -- the same contract :func:`openral_sim.policies.pi05._build_pi05`
+untouched -- the same contract ``openral_sim.policies.pi05._build_pi05``
 relies on before its first ``.to(<cuda>)`` call.
 
 Skipped when ``torch`` or ``bitsandbytes`` isn't importable (CLAUDE.md
@@ -31,7 +31,7 @@ def _build_module() -> torch.nn.Module:
     Returns a module exposing:
 
     * ``big`` (2048 × 2048 = 4_194_304 params) -- crosses
-      :data:`DEFAULT_MIN_PARAMS_TO_QUANTIZE`. Must be rewritten.
+      ``DEFAULT_MIN_PARAMS_TO_QUANTIZE``. Must be rewritten.
     * ``small`` (64 × 64 = 4_096 params) -- well below. Must stay
       ``torch.nn.Linear``.
     """

@@ -3,8 +3,8 @@
 ``env_cfg.base_pose`` is the only knob — there
 is no legacy ``backend_options`` fallback and no hand-tuned default.
 
-CLAUDE.md §1.11: no mocks. Real :class:`SimEnvironment` instances, the
-real resolver function, the real :class:`Pose6D` schema.
+CLAUDE.md §1.11: no mocks. Real ``SimEnvironment`` instances, the
+real resolver function, the real ``Pose6D`` schema.
 """
 
 from __future__ import annotations

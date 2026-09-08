@@ -1,6 +1,6 @@
 """``JointGoalRskill`` — move the arm to a joint configuration via MoveGroup.
 
-A :class:`~openral_rskill.ros_action_rskill.ROSActionRskill` whose goal is a
+A ``ROSActionRskill`` whose goal is a
 ``joint`` block (``joint_names`` + ``positions``), lowered at dispatch time into
 a MoveGroup ``joint_constraints`` goal. The clean, LLM-facing replacement for
 hand-writing the ``request.goal_constraints[0].joint_constraints`` array in

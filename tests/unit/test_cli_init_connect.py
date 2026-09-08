@@ -7,7 +7,7 @@ camera`` lives in ``test_sensors.py``.
 
 The SO-100 serial port is a hardware boundary no CI box has, so the HAL
 is substituted with the recording fake in
-:mod:`tests.unit.fakes.fake_so100_hal` (CLAUDE.md §1.11 boundary double).
+``tests.unit.fakes.fake_so100_hal`` (CLAUDE.md §1.11 boundary double).
 Assertions target CLI behavior, never mock call bookkeeping.
 
 Coverage: unsupported robot type → exit 1; happy path (joint summary

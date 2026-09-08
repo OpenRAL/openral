@@ -34,7 +34,7 @@ def probe_v4l2_cameras(*, warnings: list[str] | None = None) -> list[V4l2CameraI
         warnings: Optional list to append non-fatal probe issues to.
 
     Returns:
-        One :class:`V4l2CameraInfo` per camera *device* (a single node group;
+        One ``V4l2CameraInfo`` per camera *device* (a single node group;
         the lowest-numbered ``/dev/videoN`` is reported).  Empty on
         non-Linux hosts and on hosts with no camera attached.
     """

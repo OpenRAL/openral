@@ -1,9 +1,9 @@
 """π0.5 (Physical Intelligence) policy adapter.
 
-Wraps :class:`lerobot.policies.pi05.modeling_pi05.PI05Policy`. Same
+Wraps ``lerobot.policies.pi05.modeling_pi05.PI05Policy``. Same
 observation contract as SmolVLA on LIBERO (8-D state + 2 RGB cameras),
 different lerobot policy class and a 3.4 B-parameter PaliGemma backbone.
-Mirrors :mod:`openral_sim.policies.smolvla`: bare rSkill reference as
+Mirrors ``openral_sim.policies.smolvla``: bare rSkill reference as
 weights URI, lerobot ``make_pre_post_processors`` factory, batch built
 from the eval-layer ``Observation`` (flat ``state`` + ``images`` dict).
 
@@ -181,7 +181,7 @@ class _PI05Adapter:
 
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
-        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        See ``openral_rskill._vla_core.release_torch_modules``.
         """
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
@@ -288,7 +288,7 @@ def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
     plain ``Tensor.to`` instead of ``Int8Params.cuda`` — bnb's int8 pack
     never fires and the ~7 GiB bf16 model lands on the GPU as bf16, OOMing
     an 8 GiB card. The nf4 fast path avoids this via
-    :func:`install_prequantized_linears` / ``Params4bit.from_prequantized``;
+    ``install_prequantized_linears`` / ``Params4bit.from_prequantized``;
     int8 has no prequant pack, so this re-wraps the bf16 storage in a
     fresh ``Int8Params(has_fp16_weights=False)`` so the next
     ``policy.to(<cuda>)`` dispatches through ``Int8Params.cuda`` (packs
@@ -332,7 +332,7 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
     built on meta (``init_empty_weights``) and materialised to real CPU
     storage (``to_empty``); this fills that storage with the source bf16
     weights so the upcoming ``policy.to(<cuda>)`` has data for bnb's int8
-    pack. Routes through :func:`_hf_download_cached_first` so
+    pack. Routes through ``_hf_download_cached_first`` so
     ``local_files_only=True`` skips the HF Hub HEAD on a warm cache. Logs
     ``missing``/``unexpected`` key counts via structlog.
 
@@ -398,7 +398,7 @@ def _resolve_pretrained_path(spec: Any, repo_id: str) -> str:
     Three URI shapes: an absolute local path is returned verbatim (a
     pre-converted lerobot checkpoint dir); a bare rSkill reference with a
     manifest ``processors`` block downloads exactly the two processor
-    files via :func:`openral_sim.policies._processors.resolve_processor_dir`
+    files via ``openral_sim.policies._processors.resolve_processor_dir``
     (mirrors SmolVLA / modern-ACT); a bare HF Hub repo id is
     snapshot-downloaded. The prequantized fast path
     (``load_prequantized_state_for_rskill``) pulls only ``config.json`` +

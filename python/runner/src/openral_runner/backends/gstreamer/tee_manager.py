@@ -1,28 +1,28 @@
 """Runtime tee-branch manager for the GStreamer perception bus.
 
-:class:`TeeManager` owns the named ``tee`` of a running camera pipeline
-(:data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`) and
+``TeeManager`` owns the named ``tee`` of a running camera pipeline
+(``TEE_NAME``) and
 attaches/detaches consumer branches via dynamic pad add/remove — the
 mechanism the S2 reasoner drives through ``ExecuteRskill``: activating a
 detector rSkill attaches a branch, deactivating detaches it.
 
 Each branch is ``<leaky queue> ! <caller elements>``, the same isolation
 policy the static builder applies via
-:func:`~openral_runner.backends.gstreamer.pipeline.leaky_branch`
-(:data:`~openral_runner.backends.gstreamer.pipeline.LEAKY_BRANCH_QUEUE`), so
+``leaky_branch``
+(``LEAKY_BRANCH_QUEUE``), so
 a stalled/crashing consumer drops its own frames rather than
 backpressuring the policy leg.
 
-:meth:`attach` requests a tee src pad, parses the branch into a bin, adds
+``attach`` requests a tee src pad, parses the branch into a bin, adds
 it, links, and syncs to PLAYING (safe on a live tee — the leaky queue
-absorbs the pre-roll window). :meth:`detach` installs an IDLE pad probe;
+absorbs the pre-roll window). ``detach`` installs an IDLE pad probe;
 when it fires (between buffers, on the streaming thread) the branch is
 unlinked, its request pad released, and the bin torn down to ``NULL`` — the
 canonical safe-detach pattern for a flowing pipeline.
 
-Imports ``gi`` at load like :mod:`~openral_runner.backends.gstreamer.reader`
+Imports ``gi`` at load like ``reader``
 — requires the ``gstreamer`` optional-extra; the
-:mod:`~openral_runner.backends.gstreamer.pipeline` builder is import-safe
+``pipeline`` builder is import-safe
 everywhere.
 """
 
@@ -55,7 +55,7 @@ __all__ = ["BranchHandle", "TeeManager"]
 # Request-pad template name for ``GstTee`` src pads.
 _REQUEST_PAD_TEMPLATE: Final[str] = "src_%u"
 
-# How long :meth:`TeeManager.detach` waits for its IDLE probe to fire before
+# How long ``TeeManager.detach`` waits for its IDLE probe to fire before
 # logging a warning. On a flowing pipeline the probe fires within a frame or
 # two; the timeout only guards a stalled / NULL pipeline.
 _DETACH_TIMEOUT_S: Final[float] = 5.0
@@ -63,10 +63,10 @@ _DETACH_TIMEOUT_S: Final[float] = 5.0
 
 @dataclass
 class BranchHandle:
-    """Opaque handle to a branch attached by :meth:`TeeManager.attach`.
+    """Opaque handle to a branch attached by ``TeeManager.attach``.
 
-    Returned by :meth:`TeeManager.attach` and passed back to
-    :meth:`TeeManager.detach`. Callers treat it as opaque; the private fields
+    Returned by ``TeeManager.attach`` and passed back to
+    ``TeeManager.detach``. Callers treat it as opaque; the private fields
     carry the GStreamer objects the manager needs to tear the branch down.
 
     Attributes:
@@ -85,7 +85,7 @@ class TeeManager:
         pipeline: A ``Gst.Pipeline`` that is (or will be) PLAYING and contains a
             ``tee`` named *tee_name*.
         tee_name: Name of the bus tee to manage. Defaults to
-            :data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`.
+            ``TEE_NAME``.
 
     Raises:
         ROSConfigError: If *pipeline* has no element named *tee_name*.
@@ -128,7 +128,7 @@ class TeeManager:
                 detach key.
 
         Returns:
-            A :class:`BranchHandle` to pass to :meth:`detach`.
+            A ``BranchHandle`` to pass to ``detach``.
 
         Raises:
             ROSConfigError: If *name* is already attached, or *elements* is not a
@@ -195,11 +195,11 @@ class TeeManager:
         thread of a flowing pipeline).
 
         Args:
-            handle: The handle returned by :meth:`attach`.
+            handle: The handle returned by ``attach``.
 
         Raises:
             ROSRuntimeError: If removal does not complete within
-                :data:`_DETACH_TIMEOUT_S` — the pipeline is stalled. The IDLE
+                ``_DETACH_TIMEOUT_S`` — the pipeline is stalled. The IDLE
                 probe remains installed and finishes removal once data flows
                 again; the caller should treat the branch as not-yet-removed.
         """

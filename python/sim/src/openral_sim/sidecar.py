@@ -5,12 +5,12 @@ per-interpreter wheels; RLDX-1 pins py3.10 + an incompatible torch stack), so
 they run in their own venv as a long-lived process and are driven over a ZMQ
 ``REQ`` ↔ ``REP`` socket framed by msgpack. This module is the **canonical
 openral-side transport** for that pattern: a numpy-aware msgpack codec plus a
-:class:`SidecarClient` that owns the socket, optionally auto-spawns the child
+``SidecarClient`` that owns the socket, optionally auto-spawns the child
 process, and answers typed errors.
 
 New sidecar integrations (the Isaac Sim scene backend,
-:mod:`openral_sim.backends.isaac_sim`) consume this directly. The RLDX-1 policy
-adapter (:mod:`openral_sim.policies.rldx`) predates it and keeps its own copy —
+``openral_sim.backends.isaac_sim``) consume this directly. The RLDX-1 policy
+adapter (``openral_sim.policies.rldx``) predates it and keeps its own copy —
 its wire codec is locked to the upstream server's ``__ndarray_class__`` sentinel
 and its real path (a Qwen3-VL sidecar) cannot be exercised in CI — so migrating
 it is deferred; this module is the shape it should move toward.
@@ -119,7 +119,7 @@ def encode_ndarray(obj: Any) -> Any:
 
 
 def decode_ndarray(obj: dict[str, Any]) -> Any:
-    """Msgpack ``object_hook``: reverse :func:`encode_ndarray`.
+    """Msgpack ``object_hook``: reverse ``encode_ndarray``.
 
     A sentinel dict missing the ``npy`` payload (corrupt / drifted frame) is
     returned unchanged rather than raising a bare ``KeyError`` mid-unpack.
@@ -169,7 +169,7 @@ class SidecarClient:
         host / port: ZMQ endpoint.
         timeout_ms: REQ send/recv timeout (one slow GPU step must not read as a
             dead sidecar — keep generous).
-        boot_timeout_s: How long :meth:`connect` waits for an auto-spawned child
+        boot_timeout_s: How long ``connect`` waits for an auto-spawned child
             to answer its first ping.
         launch_argv: Full command to spawn the sidecar (interpreter + script +
             args). Only used when ``auto_spawn`` and no sidecar is already up.
@@ -307,7 +307,7 @@ class SidecarClient:
         return reply
 
     def require(self, reply: dict[str, Any], key: str) -> Any:
-        """:func:`require_key` bound to this client's ``name`` for error text."""
+        """``require_key`` bound to this client's ``name`` for error text."""
         return require_key(reply, key, name=self.name)
 
     def close(self) -> None:
@@ -325,7 +325,7 @@ class SidecarClient:
 
         A ZMQ REQ socket whose ``recv`` timed out is stuck in EFSM (strict
         send→recv pairing); every later ``send`` then raises until reopened.
-        :meth:`_try_ping` recreates on failure so boot polling does not wedge.
+        ``_try_ping`` recreates on failure so boot polling does not wedge.
         """
         import zmq  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in sidecar group
 
@@ -345,7 +345,7 @@ class SidecarClient:
     def _ping_reply(self) -> dict[str, Any] | None:
         """Ping behind a cheap TCP probe; return the reply, or None if none answered.
 
-        The reply carries the sidecar's identity, which :meth:`_assert_identity`
+        The reply carries the sidecar's identity, which ``_assert_identity``
         checks before an existing sidecar is adopted.
         """
         if not self._is_port_busy():
@@ -396,8 +396,8 @@ class SidecarClient:
         The sidecar runs in its own session (PID == PGID), so we signal the
         whole process group — that takes down any grandchildren (e.g. the Isaac
         Kit subprocess) too. The PID is read from the on-disk identity record
-        :func:`write_sidecar_identity` left for this port. Raises
-        :class:`ROSConfigError` if the port can't be freed (so the caller never
+        ``write_sidecar_identity`` left for this port. Raises
+        ``ROSConfigError`` if the port can't be freed (so the caller never
         silently adopts the wrong-scene sidecar via the post-reap ping).
         """
         identity = read_sidecar_identity(self.port)

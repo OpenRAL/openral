@@ -2,10 +2,10 @@
 
 The reasoner is the slow planning loop (CLAUDE.md §6.2 — S2;
 event-driven with a 0.2 Hz heartbeat since the 2026-05-25 amendment)
-that consumes a :class:`~openral_core.WorldState` snapshot, a rolling
-buffer of :class:`FailureEventRecord` / :class:`PerceptionEventRecord`
-/ :class:`PromptRecord`, and emits **exactly one** typed
-:data:`~openral_core.ReasonerToolCall` per tick via the LLM's
+that consumes a ``WorldState`` snapshot, a rolling
+buffer of ``FailureEventRecord`` / ``PerceptionEventRecord``
+/ ``PromptRecord``, and emits **exactly one** typed
+``ReasonerToolCall`` per tick via the LLM's
 structured tool-use API. The ROS-side ``reasoner_node`` (in
 ``packages/openral_reasoner_ros``) wraps this core with rclpy
 subscriptions and dispatch plumbing.

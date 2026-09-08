@@ -133,7 +133,7 @@ def _make_wrapper(*, work: Path, source: Path, args: argparse.Namespace) -> Path
 
     The server logic lives in ``tools/_internvla_n1_server.py`` (a checked-in
     file, unlike rldx whose wrapper embeds monkey-patches); the shim only
-    pins ``sys.argv`` so :func:`openral_sim._sidecar_common.exec_server`'s
+    pins ``sys.argv`` so ``openral_sim._sidecar_common.exec_server``'s
     no-args exec contract holds. (``source`` unused — the server resolves
     ``internnav`` from the venv's editable install.)
     """

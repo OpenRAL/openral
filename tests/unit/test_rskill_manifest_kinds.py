@@ -5,8 +5,8 @@ of these rules surfaces here instead of as a silent VLA-on-wrapper /
 wrapper-on-VLA bug downstream.
 
 No mocks (CLAUDE.md §1.11) — every test constructs a real
-:class:`~openral_core.RSkillManifest` against a real
-:class:`~openral_core.RosIntegration` literal that matches the on-disk
+``RSkillManifest`` against a real
+``RosIntegration`` literal that matches the on-disk
 shape of ``rskills/rskill-moveit-joints/rskill.yaml``.
 """
 

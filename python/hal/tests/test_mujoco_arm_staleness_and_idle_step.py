@@ -1,7 +1,7 @@
 """Bare ``MujocoArmHAL`` staleness recovery + idle-step (deploy-sim regression).
 
 Two coupled regressions from ``openral deploy sim`` against a bare
-:class:`~openral_hal._mujoco_arm.MujocoArmHAL` (e.g. ``OpenArmMujocoHAL``):
+``MujocoArmHAL`` (e.g. ``OpenArmMujocoHAL``):
 
 1. **Latched ``ROSPerceptionStale``.** ``read_state`` reads live in-process
    ``MjData`` but refreshed the staleness clock only on the success path, so a

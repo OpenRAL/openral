@@ -1,4 +1,4 @@
-"""Unit tests for :class:`TickResult` v2 (amendment 1).
+"""Unit tests for ``TickResult`` v2 (amendment 1).
 
 The amendment added five optional sim-only fields
 (``step_idx``, ``episode_idx``, ``reward``, ``terminated``, ``truncated``)

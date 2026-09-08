@@ -71,7 +71,7 @@ _LABELS_5 = ["person", "bicycle", "car", "dog", "cat"]
 def _write_rtdetr_like_onnx_5class(path: pathlib.Path) -> None:
     """Write a deterministic RT-DETR-like ONNX with 5 classes to *path*.
 
-    Unlike :func:`_write_rtdetr_like_onnx`, ``num_classes`` is 5 so the logits
+    Unlike ``_write_rtdetr_like_onnx``, ``num_classes`` is 5 so the logits
     output is ``(1, 2, 5)`` while boxes stays ``(1, 2, 4)`` — the two outputs
     are now distinguishable purely by shape (``last_dim != 4 → logits``), which
     is the production identification path. Output order is deliberately
@@ -153,7 +153,7 @@ def onnx_path_5class(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
 
 class TestObjectsDetectorDetect:
-    """Tests for :meth:`ObjectsDetector.detect`."""
+    """Tests for ``ObjectsDetector.detect``."""
 
     def test_detect_returns_thresholded_detections(self, detector: ObjectsDetector) -> None:
         """Two queries pass the 0.5 threshold; q2 (≈0.007) is filtered out."""
@@ -255,7 +255,7 @@ class TestObjectsDetectorDetect:
 
 
 class TestObjectsDetectorSummarise:
-    """Tests for :meth:`ObjectsDetector.summarise`."""
+    """Tests for ``ObjectsDetector.summarise``."""
 
     def test_summarise_counts_labels(self, detector: ObjectsDetector) -> None:
         """Counter aggregation: 2x car + 1x person, and sensor_id in output."""
@@ -298,7 +298,7 @@ class TestObjectsDetectorSummarise:
 
 
 class TestTierSelection:
-    """Tests for :func:`select_detector_tier` and :func:`make_objects_detector`."""
+    """Tests for ``select_detector_tier`` and ``make_objects_detector``."""
 
     def test_select_tier_cpu_without_nvinfer(self) -> None:
         """On CPU_ONLY platform, tier is CPU_ONNX — unless nvinfer is present."""

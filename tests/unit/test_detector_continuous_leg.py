@@ -5,7 +5,7 @@ dropped empty results silently, making a crashing detector (e.g. CUDA OOM
 under VLA co-residency on an 8 GB card) indistinguishable on
 ``/openral/perception/objects`` from a quiet scene — both leave the topic
 empty, the contract world-state eviction relies on.
-:func:`classify_continuous_tick` maps each tick's outcome to a log level.
+``classify_continuous_tick`` maps each tick's outcome to a log level.
 
 ``openral_perception_ros`` is ament_cmake; skips cleanly if the workspace
 overlay isn't sourced (ros2-test CI sources ``install/setup.bash``).

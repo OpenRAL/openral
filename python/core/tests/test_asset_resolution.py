@@ -1,7 +1,7 @@
 """All-robots asset resolution + URDF/MJCF/SRDF validity.
 
 Every ``robots/*/robot.yaml`` is parametrized through
-:func:`openral_core.assets.resolve_asset`; declared assets are loaded with the
+``openral_core.assets.resolve_asset``; declared assets are loaded with the
 real parser for their kind (``yourdfpy`` URDF, ``mujoco`` MJCF, the
 safety-kernel SRDF parser).
 
@@ -9,11 +9,11 @@ Skip/xfail policy — no faked passes:
 
 * MJCF needing an absent optional sim dep → ``pytest.skip``.
 * ``menagerie:`` refs are unwired (Task 1 YAGNI); ``widowx``'s MJCF asserts
-  :class:`AssetRefError` rather than skipping.
+  ``AssetRefError`` rather than skipping.
 * h1, so100_follower, so101_follower ship a vendored, joint-name-patched URDF
   matching the manifest (so100/so101 also vendor their Apache-2.0 meshes under
   ``robots/<id>/assets/`` with the upstream LICENSE) — no xfail needed.
-* gr1 stays :data:`xfail`: upstream (Wiki-GRx-Models) URDF is GPL-3.0,
+* gr1 stays ``xfail``: upstream (Wiki-GRx-Models) URDF is GPL-3.0,
   copy-left, rejected from open-core without TSC review (CLAUDE.md §1.9).
 """
 
@@ -96,8 +96,8 @@ def test_declared_urdf_parses_and_matches_hal_joints(mf: Path) -> None:
     The check is narrowed to non-gripper / non-base joints: gripper and virtual
     base DoFs (``base_x``/``base_y``/``base_yaw``) are part of the HAL contract
     but are deliberately absent from the arm URDF. Robots whose upstream URDF
-    uses an entirely different joint-naming convention are :data:`xfail`-ed with
-    a documented reason (see :data:`_URDF_JOINT_NAME_MISMATCH`).
+    uses an entirely different joint-naming convention are ``xfail``-ed with
+    a documented reason (see ``_URDF_JOINT_NAME_MISMATCH``).
     """
     pytest.importorskip("yourdfpy")
     import yourdfpy

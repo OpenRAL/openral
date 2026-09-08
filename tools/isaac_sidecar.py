@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Isaac Sim scene sidecar — runs Isaac Lab in its own py3.11 venv.
 
-Isaac side of the backend in :mod:`openral_sim.backends.isaac_sim` (py3.12),
+Isaac side of the backend in ``openral_sim.backends.isaac_sim`` (py3.12),
 auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
 Omniverse Kit headless, builds a Franka arm + liftable cube + tiled RGB camera
 scene, and serves ZMQ REP + msgpack/ndarray framing:
@@ -12,7 +12,7 @@ scene, and serves ZMQ REP + msgpack/ndarray framing:
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
 IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
-— heavy imports live inside :func:`main`, not module scope.
+— heavy imports live inside ``main``, not module scope.
 
 Sets ``OMNI_KIT_ACCEPT_EULA=YES`` (running this accepts the NVIDIA Omniverse
 license). Kit is proprietary and never vendored (CLAUDE.md §1.9) — this only

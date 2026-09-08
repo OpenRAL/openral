@@ -1,7 +1,7 @@
 """Pin ``auto_select_quant`` outputs across the supported Jetson targets.
 
 Regression guard: if the heuristic in
-:func:`openral_rskill.quantization.auto_select_quant` changes, the Jetson
+``openral_rskill.quantization.auto_select_quant`` changes, the Jetson
 families will not silently change dtype.
 
 Orin Nano / Xavier NX: design predicted `int4`, but the heuristic returns

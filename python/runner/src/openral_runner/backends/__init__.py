@@ -1,9 +1,9 @@
-"""Per-backend :class:`SensorReader` implementations.
+"""Per-backend ``SensorReader`` implementations.
 
-The default :class:`OpenCVThreadSensorReader` is always available
+The default ``OpenCVThreadSensorReader`` is always available
 (``opencv-python`` is declared as the ``opencv`` optional-extra on
-``openral-runner``). :class:`GStreamerSensorReader` and
-:class:`Ros2ImageSensorReader` gate on their respective optional deps and
+``openral-runner``). ``GStreamerSensorReader`` and
+``Ros2ImageSensorReader`` gate on their respective optional deps and
 import lazily so the package stays importable on hosts without GStreamer /
 rclpy. The factory reaches both by full module path rather than through this
 package, so neither is re-exported here.

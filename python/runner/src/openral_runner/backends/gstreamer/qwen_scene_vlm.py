@@ -7,11 +7,11 @@ verification ("has the robot grasped the mug?", "is the task complete?",
 "did we drop the object?").
 
 The model runs NF4 in an isolated sidecar process
-(:mod:`tools.qwen_vlm_sidecar`) for dependency / VRAM isolation; this backend is
+(``tools.qwen_vlm_sidecar``) for dependency / VRAM isolation; this backend is
 the ZMQ client. It mirrors the lifecycle of
-:class:`~openral_runner.backends.gstreamer.locateanything_detector.LocateAnythingDetector`
+``LocateAnythingDetector``
 (lazy connect, auto-spawn, teardown only the child we started) but its result is
-*text*, not :class:`~openral_core.ObjectsMetadata` — a scene VLM is a reasoning
+*text*, not ``ObjectsMetadata`` — a scene VLM is a reasoning
 aid, not a localizer (use the detector for boxes).
 """
 
@@ -241,7 +241,7 @@ def build_scene_vlm(
     host: str = "127.0.0.1",
     port: int = 5759,
 ) -> QwenSceneVlm:
-    """Build a :class:`QwenSceneVlm` from a ``kind: "vlm"`` rSkill manifest.
+    """Build a ``QwenSceneVlm`` from a ``kind: "vlm"`` rSkill manifest.
 
     Args:
         manifest: A validated rSkill manifest with ``kind == "vlm"``.
@@ -249,8 +249,8 @@ def build_scene_vlm(
         port: Sidecar port to connect to.
 
     Returns:
-        A lazily-connecting :class:`QwenSceneVlm` (no sidecar spawned until the
-        first :meth:`QwenSceneVlm.query`).
+        A lazily-connecting ``QwenSceneVlm`` (no sidecar spawned until the
+        first ``QwenSceneVlm.query``).
 
     Raises:
         ROSConfigError: If the manifest is not ``kind == "vlm"``.

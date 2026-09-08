@@ -174,11 +174,11 @@ def _check_conflicts(group: str, already_installed: frozenset[str]) -> None:
         group: Name of the group about to be installed.
         already_installed: Names of groups previously installed into the
             current target venv. Detected via importlib.metadata best-effort
-            in :func:`_detect_installed_groups`.
+            in ``_detect_installed_groups``.
 
     Raises:
         ROSConfigError: when installing ``group`` would violate an entry in
-            :data:`_CONFLICTS`.
+            ``_CONFLICTS``.
     """
     for conflict_set in _CONFLICTS:
         if group in conflict_set:
@@ -246,7 +246,7 @@ def _run_uv_pip_install(group: str, python: str) -> int:
     """Invoke ``uv pip install --python <python> <packages…>`` and stream output.
 
     Args:
-        group: Dependency-group name; must be a key in :data:`_GROUPS`.
+        group: Dependency-group name; must be a key in ``_GROUPS``.
         python: Absolute path to the target interpreter.
 
     Returns:
@@ -264,7 +264,7 @@ def _install_group(group: str, *, force: bool) -> None:
     """Install one dependency group into the active managed venv.
 
     Args:
-        group: Group name. Must be a key in :data:`_GROUPS`.
+        group: Group name. Must be a key in ``_GROUPS``.
         force: When ``True``, bypass the libero ↔ robocasa conflict check.
 
     Raises:

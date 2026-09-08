@@ -1,13 +1,13 @@
 """Unit + integration tests for the GStreamer perception event tee.
 
-Exercises the real :class:`PerceptionEventPublisher` against a real
+Exercises the real ``PerceptionEventPublisher`` against a real
 GStreamer pipeline. The live publish/subscribe round-trip is gated on
 ``OPENRAL_TEST_ROS_LIVE=1`` — gates exist because
 ``rclpy`` + DDS can clash with a prior glib pulled in transitively by
 ``torch`` / ``pyarrow`` during the regular pytest run.
 
 No mocks. The two pure-Python detector tests run unconditionally and
-exercise :class:`MotionDetector` / :class:`SceneChangeDetector` over a
+exercise ``MotionDetector`` / ``SceneChangeDetector`` over a
 hand-crafted BGR byte buffer — closer to the real GStreamer payload than
 any fake would be.
 """

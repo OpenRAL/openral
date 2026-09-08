@@ -1,6 +1,6 @@
 """Action-chunk executor — overlap inference for chunk N+1 with execution of chunk N.
 
-This module provides :class:`ChunkedExecutor`, a background-thread pre-fetcher
+This module provides ``ChunkedExecutor``, a background-thread pre-fetcher
 for lerobot action-chunk policies exposing ``predict_action_chunk`` and
 ``config.n_action_steps`` — or, via ``chunk_fn``, for any adapter whose forward
 is not a bare ``predict_action_chunk`` call.
@@ -91,7 +91,7 @@ class ChunkedExecutor:
                 whose forward is not a bare ``policy.predict_action_chunk``
                 (extra autocast contexts, chunk-level decode/postprocessing,
                 non-lerobot APIs). The payload is whatever
-                :meth:`select_action` was given — the executor treats it
+                ``select_action`` was given — the executor treats it
                 opaquely, so it need not be a lerobot batch dict. The chunk
                 may be a ``(batch, chunk, dof)`` tensor OR any sequence of
                 per-step actions. Instrumented by the same

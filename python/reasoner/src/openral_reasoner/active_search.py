@@ -1,18 +1,18 @@
 """Bounded active object search over the scene graph.
 
 When a spatial-memory recall misses (``ROSObjectNotInMemory`` / empty
-``RecallObjectResult``), this turns a :class:`~openral_core.SceneGraph`
+``RecallObjectResult``), this turns a ``SceneGraph``
 into a **bounded, ranked frontier** of places to check, so the S2
 Reasoner can drive a search loop that terminates.
 
 Two responsibilities, both pure-Python (``openral_core`` only):
 
-- **Candidate frontier** — :func:`plan_active_search` ranks places by a
+- **Candidate frontier** — ``plan_active_search`` ranks places by a
   generic heuristic (occluding containers first, then standable places).
   Semantic prioritization among candidates is the LLM's job via its
   commonsense priors; this supplies the bounded set it chooses from.
-- **The bound** — :class:`SearchBudget` caps the frontier and, via
-  :class:`SearchProgress`, the attempt count. Exhaustion is the terminal
+- **The bound** — ``SearchBudget`` caps the frontier and, via
+  ``SearchProgress``, the attempt count. Exhaustion is the terminal
   *human-handoff* rung of the replanning ladder.
 """
 
@@ -112,7 +112,7 @@ def plan_active_search(
 
 
 class SearchProgress:
-    """Tracks attempts against a :class:`SearchBudget` (the runaway bound).
+    """Tracks attempts against a ``SearchBudget`` (the runaway bound).
 
     The reasoner increments this on each search step; once attempts reach
     ``budget.max_attempts`` the search is **exhausted** and the caller hands off

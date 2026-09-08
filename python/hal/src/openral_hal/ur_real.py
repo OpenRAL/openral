@@ -1,19 +1,19 @@
 """Real-hardware HAL adapters for the Universal Robots UR5e and UR10e.
 
-Where :mod:`openral_hal.ur` ships MuJoCo-backed sim adapters, this module
+Where ``openral_hal.ur`` ships MuJoCo-backed sim adapters, this module
 wraps ``ur_robot_driver`` (URCap/RTDE) under the same
-:class:`openral_hal.protocol.HAL` Protocol so a real arm is reachable
+``openral_hal.protocol.HAL`` Protocol so a real arm is reachable
 without changing Skill/Reasoner code. Real-HW path:
-:class:`~openral_hal.ros_control.RosControlHAL` + a ``ros2_control``
+``RosControlHAL`` + a ``ros2_control``
 controller manager driven by ``ur_robot_driver``, which runs as a ROS 2
 node exposing ``/joint_states`` + a ``scaled_joint_trajectory_controller``
 command channel (RFC §5.1 control QoS), and speaks RTDE to the URCap's
 ``external_control`` program on the teach pendant.
 
-Wrapper over bare :class:`RosControlHAL`: pins UR-series defaults
+Wrapper over bare ``RosControlHAL``: pins UR-series defaults
 (controller name, joint-trajectory topic differ from a generic
 ``ros2_control`` deployment); advertises typed
-:data:`UR5e_REAL_DESCRIPTION`/:data:`UR10e_REAL_DESCRIPTION` constants the
+``UR5e_REAL_DESCRIPTION``/``UR10e_REAL_DESCRIPTION`` constants the
 manifests (``robots/ur5e``/``robots/ur10e``) pin to; surfaces the
 deadman/E-stop subscription contract the safety supervisor expects.
 
@@ -75,19 +75,19 @@ UR10e_REAL_DESCRIPTION = make_real_description(
 class _URRealHAL(RosControlHAL):
     """Shared implementation for the UR5e and UR10e real-hardware adapters.
 
-    Wraps :class:`RosControlHAL` with UR-driver-specific defaults: the
+    Wraps ``RosControlHAL`` with UR-driver-specific defaults: the
     ``scaled_joint_trajectory_controller`` controller name and the standard
     ``/joint_states`` topic that ``ur_robot_driver`` publishes to.
 
     The deadman subscription contract is left to the safety supervisor (the
-    HAL records the topic it expects via :attr:`deadman_topic`).  Per
+    HAL records the topic it expects via ``deadman_topic``).  Per
     CLAUDE.md §7.7 the HAL never silences a ``ROSEStopRequested`` raised by
-    :meth:`estop`.
+    ``estop``.
 
     Args:
-        description: One of :data:`UR5e_REAL_DESCRIPTION` /
-            :data:`UR10e_REAL_DESCRIPTION` (or any UR-shaped
-            :class:`RobotDescription`).
+        description: One of ``UR5e_REAL_DESCRIPTION`` /
+            ``UR10e_REAL_DESCRIPTION`` (or any UR-shaped
+            ``RobotDescription``).
         robot_ip: Static IP of the UR controller (the URCap ``external_control``
             program connects back to the driver here).  Recorded for
             observability / launch-file generation; the driver is expected to
@@ -96,7 +96,7 @@ class _URRealHAL(RosControlHAL):
             ``scaled_joint_trajectory_controller`` shipped by
             ``ur_robot_driver``.
         joint_state_topic: ROS 2 topic the driver publishes joint state on.
-        publish_fn / state_fn: Inject a :class:`~openral_hal.sim_transport.SimTransport`
+        publish_fn / state_fn: Inject a ``SimTransport``
             (or any callable pair) at construction time to drive the adapter
             in unit / integration tests without a live ROS 2 stack.
         staleness_limit_s: Maximum age of a ``read_state()`` reading before
@@ -137,7 +137,7 @@ class UR5eRealHAL(_URRealHAL):
     Drives a real UR5e via ``ros2_control`` + ``ur_robot_driver`` (URCap +
     RTDE).  The Python adapter itself contains no ``rclpy`` import — the
     transport is injected, so the same class drives the real arm in
-    production and a :class:`~openral_hal.sim_transport.SimTransport` in
+    production and a ``SimTransport`` in
     unit tests.
 
     Args:
@@ -186,12 +186,12 @@ class UR5eRealHAL(_URRealHAL):
 class UR10eRealHAL(_URRealHAL):
     """Real-hardware HAL adapter for the Universal Robots UR10e.
 
-    Identical to :class:`UR5eRealHAL` except for the wrapped
-    :class:`RobotDescription` (12.5 kg payload, 1.30 m reach, larger
+    Identical to ``UR5eRealHAL`` except for the wrapped
+    ``RobotDescription`` (12.5 kg payload, 1.30 m reach, larger
     torques) — ``ur_robot_driver`` itself is the same binary for both arms,
     differentiated by the URDF and per-joint envelope.
 
-    Args mirror :class:`UR5eRealHAL`.
+    Args mirror ``UR5eRealHAL``.
 
     Example::
 

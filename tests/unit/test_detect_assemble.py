@@ -1,4 +1,4 @@
-"""Tests for :func:`openral_detect.assemble_robot_description`.
+"""Tests for ``openral_detect.assemble_robot_description``.
 
 Exercises the identify-then-enrich flow end-to-end with **real**
 fixtures — the canonical ``robots/so100_follower/robot.yaml`` and the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Galaxea A1 ROS 1 sidecar for :class:`openral_hal.galaxea_a1.GalaxeaA1HAL`.
+"""Galaxea A1 ROS 1 sidecar for ``openral_hal.galaxea_a1.GalaxeaA1HAL``.
 
 Run this file inside a ROS Noetic environment with the operator-provided A1
 SDK sourced.  It owns roscore, the official serial driver, and the official

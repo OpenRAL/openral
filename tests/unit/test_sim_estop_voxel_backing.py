@@ -8,11 +8,11 @@ non-robot was in the window". Two defects pinned here:
 
 1. Window too narrow: kernel distances are OBB-to-voxel, probe distances mesh-to-mesh. A box around
    a rounded link is sub-mm on faces but 23-88 mm out at corners (measured against
-   ``panda_mj_description``); :func:`collision_model_mesh_slop` makes that a number and the snapshot
+   ``panda_mj_description``); ``collision_model_mesh_slop`` makes that a number and the snapshot
    widens the window by it.
 2. Robot body invisible to the probe: if the depth self-filter fails to keep the robot out of the
    world map, the probe (which excludes robot bodies) reports nothing.
-   :func:`voxel_backing_record` classifies against ALL geometry, so self-occupancy becomes a
+   ``voxel_backing_record`` classifies against ALL geometry, so self-occupancy becomes a
    verdict.
 
 ``test_self_filter_covers_base_and_mount_including_unprefixed`` pins self-filter coverage of

@@ -6,7 +6,7 @@ time. Re-implementing Pydantic validation in C++ would duplicate the
 source-of-truth schema (CLAUDE.md §1.3) and create drift; instead, this
 Python helper reads the Pydantic manifests once, validates the
 intersection, and converts the result to a ROS-parameter dict that the
-kernel reads via :func:`load_envelope_from_ros_parameters`
+kernel reads via ``load_envelope_from_ros_parameters``
 (added 2026-05-24).
 
 The legacy flat-YAML envelope-file path the kernel used before this
@@ -17,8 +17,8 @@ The safety envelope contract enforced here:
 * The robot manifest declares the **ceiling**.
 * Each rSkill manifest may declare a **tighter envelope**.
 * **Loosening beyond the robot ceiling is rejected at goal-acceptance**
-  (never silently honored) — :func:`compute_intersection` raises
-  :class:`~openral_core.exceptions.ROSConfigError`.
+  (never silently honored) — ``compute_intersection`` raises
+  ``ROSConfigError``.
 
 CLAUDE.md §1.4 ("Explicit beats implicit"): the loader rejects, never
 clamps. A skill that asks for a max force higher than the robot's
@@ -72,7 +72,7 @@ class EnvelopeIntersection:
         joint_position_min: Per-joint lower bound (rad or m).
         joint_position_max: Per-joint upper bound (rad or m).
         joint_velocity_max: Per-joint max |velocity|, already pre-multiplied
-            by :attr:`SafetyEnvelope.max_joint_speed_factor`.
+            by ``SafetyEnvelope.max_joint_speed_factor``.
         joint_torque_max: Per-joint max |effort| (Nm or N).
         workspace_box_min_xyz: Cartesian workspace AABB lower corner; ``None``
             when both the robot and the skill leave it unset.
@@ -311,7 +311,7 @@ def compute_intersection(
             tighten the robot ceiling before skill intersection.
 
     Returns:
-        An :class:`EnvelopeIntersection` ready to be serialized for the
+        An ``EnvelopeIntersection`` ready to be serialized for the
         C++ kernel.
 
     Raises:
@@ -397,7 +397,7 @@ def compute_intersection(
 
 
 def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, object]:
-    """Translate :class:`EnvelopeIntersection` → safety_kernel ROS parameters.
+    """Translate ``EnvelopeIntersection`` → safety_kernel ROS parameters.
 
     The C++ safety kernel (``cpp/openral_safety_kernel/``) reads its envelope
     exclusively from per-field ROS parameters (added 2026-05-24). Canonical
@@ -412,7 +412,7 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
 
     Args:
         envelope: Validated envelope intersection (typically from
-            :func:`compute_intersection`).
+            ``compute_intersection``).
 
     Returns:
         A dict mapping each ROS parameter name to a value of the right
@@ -471,9 +471,9 @@ class _Edge:
     """One parent→child edge of the collision tree.
 
     ``dof_index`` is the edge's column in ``RobotDescription.joints`` for a
-    movable joint, or ``-1`` for a rigid :class:`~openral_core.FixedAttachment`
+    movable joint, or ``-1`` for a rigid ``FixedAttachment``
     (which has no commanded column). ``joint_type`` is
-    :attr:`~openral_core.JointType.FIXED` for an attachment, so the existing
+    ``FIXED`` for an attachment, so the existing
     ``_JOINT_KIND_CODE`` lookup already lowers it to the kernel's static kind.
     """
 
@@ -611,9 +611,9 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
 ) -> dict[str, object]:
     """Flatten a robot's collision geometry into safety_kernel ROS parameters.
 
-    Lowers :attr:`RobotDescription.collision_geometry` +
-    :attr:`~RobotDescription.allowed_collision_pairs` + the kinematic chain
-    (``joints`` **and** :attr:`~RobotDescription.fixed_attachments`, with their
+    Lowers ``RobotDescription.collision_geometry`` +
+    ``allowed_collision_pairs`` + the kinematic chain
+    (``joints`` **and** ``fixed_attachments``, with their
     ``origin_xyz``/``origin_rpy``/``axis_xyz``) into the flat parallel arrays
     the C++ kernel's ``load_collision_model`` reads. The manifest stays the
     normative kinematic source; this never parses URDF/MJCF (the offline
@@ -630,7 +630,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     envelope joint arrays and ``ActionChunk.flat``).
 
     A boxed link declaring
-    :attr:`~openral_core.schemas.LinkCollisionGeometry.tight_geometry` also
+    ``tight_geometry`` also
     lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget,
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
     these drive the kernel's staged arm-link-vs-world-voxel narrow phase; the
@@ -645,7 +645,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
             (default ``0.0`` = collide on touch).
 
     Returns:
-        A ROS-parameter dict to merge into :func:`kernel_params_from_envelope`'s
+        A ROS-parameter dict to merge into ``kernel_params_from_envelope``'s
         output.
 
     Raises:
@@ -862,8 +862,8 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
     unsafe.
 
     Args:
-        params: The dict from :func:`collision_params_from_description` (or
-            :func:`~openral_safety.mjcf_lowering.lower_collision_params`).
+        params: The dict from ``collision_params_from_description`` (or
+            ``lower_collision_params``).
 
     Returns:
         The deepest collision-link index, or ``-1`` when there is no collision

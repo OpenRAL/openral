@@ -1,7 +1,7 @@
 """Emit the durable spatial-memory objects as an OTel span for the dashboard.
 
 Spatial memory is observability-visible: this module renders the
-``object``-kind nodes of a :class:`~openral_core.SceneGraph` onto a single
+``object``-kind nodes of a ``SceneGraph`` onto a single
 ``world.scene_objects`` span. The dashboard ingests it over OTLP and
 shows the objects both as a table card and as labelled markers on the SLAM 2D
 map (same ``map`` frame as the robot pose).

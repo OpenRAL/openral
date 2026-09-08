@@ -1,9 +1,9 @@
-""":func:`build_tool_palette` carries per-skill metadata.
+"""``build_tool_palette`` carries per-skill metadata.
 
-Drives the real :class:`RSkillManifest` loader against the in-tree
+Drives the real ``RSkillManifest`` loader against the in-tree
 ``rskills/*/rskill.yaml`` files (no synthetic manifests), then asserts
-that the palette returned by :func:`build_tool_palette` carries
-:class:`RSkillToolEntry` records with the manifest's description /
+that the palette returned by ``build_tool_palette`` carries
+``RSkillToolEntry`` records with the manifest's description /
 actions / objects / scenes — not just opaque ids.
 
 Per CLAUDE.md §1.11 / §5.4: no mocks, no smoke tests. Every assertion

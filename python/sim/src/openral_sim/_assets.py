@@ -18,7 +18,7 @@ Conventions
 - An env-var bypass (``OPENRAL_ALLOW_ROBOCASA_ASSETS=1`` for
   RoboCasa) skips the prompt for CI.
 
-Refusal raises :class:`ROSConfigError` with the manual-fetch command so
+Refusal raises ``ROSConfigError`` with the manual-fetch command so
 users can authorise the download out-of-band.
 """
 

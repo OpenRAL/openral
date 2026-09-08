@@ -206,7 +206,7 @@ class _STTUnavailableError(RuntimeError):
 def _transcribe_sync(audio: bytes) -> tuple[str, str]:
     """Load (once, cached) the local Whisper model and transcribe ``audio``.
 
-    Blocking CPU work — call via :func:`asyncio.to_thread`, never on the event
+    Blocking CPU work — call via ``asyncio.to_thread``, never on the event
     loop. Returns ``(text, model_name)``. The model, device and compute type
     are env-selectable (``OPENRAL_STT_MODEL`` / ``_DEVICE`` / ``_COMPUTE``),
     defaulting to ``base.en`` on CPU with int8 quantization so it runs on any

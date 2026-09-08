@@ -171,7 +171,7 @@ def test_gripper_empty_payload_rejected() -> None:
 
 
 def test_cartesian_pose_still_rejected() -> None:
-    """CARTESIAN_POSE carries a :class:`Pose6D` not a flat tuple — not yet wired."""
+    """CARTESIAN_POSE carries a ``Pose6D`` not a flat tuple — not yet wired."""
     from openral_core import Pose6D
 
     a = Action(

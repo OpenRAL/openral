@@ -6,11 +6,11 @@ to ``transformers==4.57.1``; the openral runtime is ``transformers>=5``
 custom code calls (``config.rope_theta``, GenerationMixin inheritance,
 ``_check_and_adjust_attn_implementation``). It therefore runs out-of-process,
 talking to
-:class:`openral_runner.backends.gstreamer.locateanything_detector.LocateAnythingDetector`
-over ZMQ REQ/REP + msgpack (same pattern as :mod:`tools.rldx_sidecar`). No
+``openral_runner.backends.gstreamer.locateanything_detector.LocateAnythingDetector``
+over ZMQ REQ/REP + msgpack (same pattern as ``tools.rldx_sidecar``). No
 upstream repo to clone — the model is custom-code on the Hub — so the sidecar
 is just the pinned venv plus the thin server in
-:mod:`tools._locateanything_server`.
+``tools._locateanything_server``.
 
 Usage::
 

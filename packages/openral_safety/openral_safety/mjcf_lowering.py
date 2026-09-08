@@ -231,7 +231,7 @@ def _body_joint(mj: Any, model: Any, body: int) -> tuple[int, _Vec]:
 
     The ``dof_index`` (the commanded-joint column this link tracks) is NOT
     decided here — it is assigned by movable-joint order in
-    :func:`lower_collision_params`, because the MJCF's own joint names do not
+    ``lower_collision_params``, because the MJCF's own joint names do not
     match the manifest's (e.g. ``Rotation`` vs ``shoulder_pan``); matching by
     name silently froze every link's FK at the rest pose (see
     ``tests/sim/safety/test_mjcf_lowering_dof_index.py``).
@@ -285,7 +285,7 @@ def lower_collision_params(
         no lowerable collision geometry (every collidable geom is a mesh/plane,
         e.g. the SO-101 ``new_calib`` MJCF), in which case it returns just
         ``{"self_collision_enabled": False}`` (same disabled sentinel as
-        :func:`collision_params_from_description`) so the kernel runs its scalar
+        ``collision_params_from_description``) so the kernel runs its scalar
         envelope check and the launch never forwards an empty-list ROS param.
     """
     import mujoco as mj

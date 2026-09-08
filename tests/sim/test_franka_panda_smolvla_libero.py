@@ -92,7 +92,7 @@ def env_cfg():
     """Load the canonical SmolVLA-LIBERO sim env, capped at one short episode.
 
     Yields:
-        :class:`openral_core.SimEnvironment` ready for ``SimRunner``.
+        ``openral_core.SimEnvironment`` ready for ``SimRunner``.
     """
     from tests.sim.conftest import compose_sim_env
 

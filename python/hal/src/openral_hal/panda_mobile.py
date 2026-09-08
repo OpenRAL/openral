@@ -3,18 +3,18 @@
 In-process digital-twin HAL for the ``panda_mobile`` embodiment: a Franka
 7-DoF arm mounted on a holonomic three-DoF planar base. The real
 robosuite/robocasa-backed sim adapter that drives MuJoCo physics lives in
-:mod:`openral_sim.backends.robocasa`; this module provides the *HAL
+``openral_sim.backends.robocasa``; this module provides the *HAL
 Protocol* surface (``connect``/``disconnect``/``read_state``/
 ``send_action``/``estop``) so the safety supervisor, ``RskillRunnerNode``,
 and dashboard can be exercised without a robosuite/MuJoCo install.
 
 Maintains 11-DoF state: base ``base_x``/``base_y`` (m), ``base_yaw`` (rad)
-via :attr:`~openral_core.ControlMode.BODY_TWIST` (six-float
+via ``BODY_TWIST`` (six-float
 ``joint_targets``; only vx/vy/wz honoured, per the planar-base convention
-on :class:`~openral_core.schemas.ControlMode.BODY_TWIST`); arm
-``panda_joint1..7`` via :attr:`~openral_core.ControlMode.JOINT_POSITION`
+on ``BODY_TWIST``); arm
+``panda_joint1..7`` via ``JOINT_POSITION``
 (seven floats); gripper (1 DoF) via
-:attr:`~openral_core.ControlMode.GRIPPER_POSITION`.
+``GRIPPER_POSITION``.
 
 Example:
     >>> from openral_hal.panda_mobile import PandaMobileHAL
@@ -54,10 +54,10 @@ def _load_panda_mobile_description() -> RobotDescription:
     the single source of truth.
 
     Returns:
-        :class:`~openral_core.RobotDescription` for ``panda_mobile``.
+        ``RobotDescription`` for ``panda_mobile``.
 
     Raises:
-        :class:`~openral_core.exceptions.ROSConfigError`: when the YAML
+        ``ROSConfigError``: when the YAML
             is missing or malformed.
     """
     here = Path(__file__).resolve()
@@ -116,13 +116,13 @@ class PandaMobileHAL:
     """In-process digital-twin HAL for the panda_mobile embodiment.
 
     Maintains 10-DoF qpos state in memory. Routing per
-    :attr:`Action.control_mode`:
+    ``Action.control_mode``:
 
-    * :attr:`ControlMode.BODY_TWIST` — Euler-integrates base pose using
+    * ``ControlMode.BODY_TWIST`` — Euler-integrates base pose using
       the planar components of the twist (linear x, linear y,
       angular z). Each ``send_action`` call advances by
       ``dt_s`` seconds (default ``0.05`` — 20 Hz nav control rate).
-    * :attr:`ControlMode.JOINT_POSITION` — sets the seven arm joints
+    * ``ControlMode.JOINT_POSITION`` — sets the seven arm joints
       directly when the action carries seven targets; sets all ten
       slots when ten targets are supplied (base position + arm).
 
@@ -141,7 +141,7 @@ class PandaMobileHAL:
         initial_pose: list[float] | None = None,
         dt_s: float = 0.05,
     ) -> None:
-        """Latch initial 10-DoF state. No I/O until :meth:`connect`."""
+        """Latch initial 10-DoF state. No I/O until ``connect``."""
         if initial_pose is None:
             self._qpos: list[float] = [0.0] * len(PANDA_MOBILE_JOINT_NAMES)
         elif len(initial_pose) == len(PANDA_MOBILE_BASE_JOINT_NAMES):
@@ -186,7 +186,7 @@ class PandaMobileHAL:
         self._connected = False
 
     def read_state(self) -> JointState:
-        """Return a fresh 10-DoF :class:`JointState` snapshot."""
+        """Return a fresh 10-DoF ``JointState`` snapshot."""
         if not self._connected:
             raise ROSConfigError("PandaMobileHAL.read_state called before connect().")
         import time  # noqa: PLC0415
@@ -204,7 +204,7 @@ class PandaMobileHAL:
 
         Accepts ``JOINT_POSITION``, ``BODY_TWIST``, ``CARTESIAN_DELTA``,
         ``GRIPPER_POSITION``; each reads its payload from the matching
-        :class:`Action` field (joint_targets, body_twist, cartesian_delta,
+        ``Action`` field (joint_targets, body_twist, cartesian_delta,
         gripper).
 
         Raises:
@@ -259,7 +259,7 @@ class PandaMobileHAL:
     def estop(self) -> None:
         """Latch the estop flag. Subsequent ``send_action`` calls no-op.
 
-        The latch can only be cleared by calling :meth:`reset_estop`,
+        The latch can only be cleared by calling ``reset_estop``,
         mirroring the supervisor's recovery contract: estops never
         auto-clear.
         """
@@ -358,7 +358,7 @@ class PandaMobileHAL:
         The digital-twin HAL has no Jacobian / kinematic chain to
         translate ``[dx, dy, dz, drx, dry, drz]`` into joint motion
         — real motion lives in the sim-attached path
-        (:class:`openral_hal.sim_attached.SimAttachedHAL` →
+        (``openral_hal.sim_attached.SimAttachedHAL`` →
         robosuite OSC). Here we just stamp the latest commanded
         delta onto ``self._last_cartesian_delta`` so the lifecycle
         node's diagnostics + the dashboard's command-vs-reality

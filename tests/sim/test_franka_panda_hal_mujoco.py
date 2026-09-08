@@ -1,4 +1,4 @@
-"""Sim tests for :class:`openral_hal.FrankaPandaHAL` against real MuJoCo.
+"""Sim tests for ``openral_hal.FrankaPandaHAL`` against real MuJoCo.
 
 The Panda HAL exposes 8 joints: 7 revolute arm joints + 1 synthetic gripper
 channel reported in ``[0, 1]`` (0 = closed, 1 = fully open).  Internally the

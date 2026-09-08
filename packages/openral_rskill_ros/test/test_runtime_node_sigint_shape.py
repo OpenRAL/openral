@@ -1,7 +1,7 @@
 """runtime_node SIGINT teardown contract — structural regression guard.
 
-ROS 2 Jazzy's :func:`rclpy.init` SIGINT handler shuts down the rclpy context and raises
-``KeyboardInterrupt`` out of :py:meth:`Executor.spin`. Before this guard, ``runtime_node``
+ROS 2 Jazzy's ``rclpy.init`` SIGINT handler shuts down the rclpy context and raises
+``KeyboardInterrupt`` out of ``Executor.spin``. Before this guard, ``runtime_node``
 wrapped ``executor.spin()`` in a bare ``try/finally`` calling plain ``rclpy.shutdown()`` in
 ``finally``, so every SIGINT crashed with::
 
@@ -74,7 +74,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in runtime_node.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     Bare ``rclpy.shutdown()`` raises ``RCLError`` if SIGINT has
     already torn the context down — guaranteed on every operator

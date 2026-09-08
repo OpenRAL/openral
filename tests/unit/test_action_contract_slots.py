@@ -1,7 +1,7 @@
 """Unit + property tests for ``ActionContract.slots``.
 
-Covers: per-mode field requirements on :class:`ActionSlot` (ee/frame/
-joint_names per control_mode); :class:`ActionContract` coverage invariants
+Covers: per-mode field requirements on ``ActionSlot`` (ee/frame/
+joint_names per control_mode); ``ActionContract`` coverage invariants
 (every index in ``[0, dim)`` in exactly one slot, no gaps/overlaps);
 discard-slot semantics; JSON round-trip; and the property that any
 non-overlapping partition of ``[0, dim)`` with correct per-mode fields

@@ -1,4 +1,4 @@
-"""Unit tests for :func:`openral_reasoner.build_tool_palette`.
+"""Unit tests for ``openral_reasoner.build_tool_palette``.
 
 Loads **real** ``rskill.yaml`` manifests from ``rskills/`` (CLAUDE.md
 §1.11 — real components, no mocks) and asserts the palette filter
@@ -53,7 +53,7 @@ def test_palette_includes_capability_matched_skill() -> None:
 def test_palette_excludes_unresolved_scaffold_template() -> None:
     """The ``rskills/template/`` scaffold is never offered as a dispatchable skill.
 
-    Regression: without the :meth:`RSkillManifest.is_scaffold_placeholder` gate,
+    Regression: without the ``RSkillManifest.is_scaffold_placeholder`` gate,
     ``rskills/template/rskill.yaml`` (``name: TEMPLATE_ORG/rskill-TEMPLATE_ID``,
     ``role: s1``) parsed as a valid manifest and got dispatched by the reasoner.
     """

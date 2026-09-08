@@ -2,9 +2,9 @@
 
 This module wraps the upstream DeepMind ``mujoco_menagerie`` G1 MJCF
 (``unitree_g1/g1.xml``, vendored via ``robot_descriptions``) as a
-:class:`openral_hal.HAL` Protocol implementation, extending the
-:class:`openral_hal.UR5eHAL` / :class:`openral_hal.FrankaPandaHAL` /
-:class:`openral_hal.SO100MujocoHAL` pattern to a 29-DoF bipedal
+``openral_hal.HAL`` Protocol implementation, extending the
+``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL`` /
+``openral_hal.SO100MujocoHAL`` pattern to a 29-DoF bipedal
 humanoid.
 
 The default HAL is a **digital-twin contract validator** with the
@@ -219,7 +219,7 @@ def _g1_parent_child(joint_name: str) -> tuple[str, str]:
     floating-base root, then ``<side>_<segment>_link`` for the body
     above each joint.  Strict accuracy isn't necessary (these fields
     are descriptive metadata for the JointSpec, not used by the HAL
-    contract), but using stable names keeps :class:`RobotDescription`
+    contract), but using stable names keeps ``RobotDescription``
     diffs readable.
     """
     # The "previous" link in each chain.  ``waist_*`` lifts off the pelvis;
@@ -379,8 +379,8 @@ class G1MujocoHAL(MujocoArmHAL):
 
     Drives the 29 actuated joints of the menagerie ``unitree_g1`` MJCF
     through MuJoCo's position-controlled actuators.  Exposes a
-    29-D :class:`openral_core.Action` matching the joint order in
-    :data:`G1_DESCRIPTION` (left leg 6 → right leg 6 → waist 3 → left
+    29-D ``openral_core.Action`` matching the joint order in
+    ``G1_DESCRIPTION`` (left leg 6 → right leg 6 → waist 3 → left
     arm 7 → right arm 7).
 
     .. warning::
@@ -395,7 +395,7 @@ class G1MujocoHAL(MujocoArmHAL):
             ``robot_descriptions``
             (``mujoco_menagerie/unitree_g1/g1.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to ``1``; raise it in tests
+            ``send_action``.  Defaults to ``1``; raise it in tests
             that assert the body has converged at the commanded pose.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time — required for the contract-validation
@@ -425,11 +425,11 @@ class G1MujocoHAL(MujocoArmHAL):
         """Initialise the G1 HAL; no MuJoCo state is created until ``connect()``.
 
         All wiring (MJCF URI, floating-base offsets) lives in
-        :data:`G1_DESCRIPTION.sim`.
+        ``G1_DESCRIPTION.sim``.
 
         Args:
             mjcf_path: Optional override for the MJCF file path.
-            settle_steps: MuJoCo physics steps per :meth:`send_action`.
+            settle_steps: MuJoCo physics steps per ``send_action``.
             gravity_enabled: When ``False``, gravity is zeroed at connect.
             staleness_limit_s: Maximum age of a cached state.
             body_twist_dt_s: Logical control timestep one BODY_TWIST

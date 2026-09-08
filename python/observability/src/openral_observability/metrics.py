@@ -2,19 +2,19 @@
 
 Module-level lazy accessors for every metric instrument an OpenRAL layer
 emits. The functions return ``opentelemetry.metrics.*`` instruments
-backed by the currently installed :class:`~opentelemetry.metrics.MeterProvider`
+backed by the currently installed ``MeterProvider``
 — including the no-op provider in place when
-:func:`~openral_observability.configure_observability` has not yet
+``configure_observability`` has not yet
 been called with an endpoint. This keeps the helpers safe to import and
 call from anywhere (hot path included).
 
 Instruments are cached per-name on the active meter so the per-call
 overhead is one dict lookup. The cache is keyed on the meter object
-identity, so swapping the global :class:`MeterProvider` (the test
+identity, so swapping the global ``MeterProvider`` (the test
 fixture pattern) invalidates the cache automatically.
 
 Cardinality discipline (design §9): metric labels are restricted to the
-closed-set vocabularies declared in :mod:`openral_observability.semconv`.
+closed-set vocabularies declared in ``openral_observability.semconv``.
 High-cardinality dimensions (``tick.idx``, ``trace_id``, raw prompts) go
 on spans, never on metrics.
 """
@@ -62,13 +62,13 @@ _INSTRUMENT_CACHE: dict[tuple[int, str], Any] = {}
 
 
 def get_meter() -> Meter:
-    """Return the OpenRAL :class:`~opentelemetry.metrics.Meter`.
+    """Return the OpenRAL ``Meter``.
 
-    Resolves against the currently installed :class:`MeterProvider`. When
+    Resolves against the currently installed ``MeterProvider``. When
     no provider has been installed, the API ships a no-op provider so the
     returned meter still produces working (silent) instruments. This makes
-    it safe to call :func:`get_tick_duration().record(...)` even when
-    :func:`configure_observability` was never called.
+    it safe to call ``get_tick_duration().record(...)`` even when
+    ``configure_observability`` was never called.
     """
     return metrics.get_meter(_METER_NAME)
 
@@ -197,7 +197,7 @@ def get_tick_deadline_misses() -> Counter:
 
 
 def get_safety_violations() -> Counter:
-    """``openral.safety.violations`` — :class:`ROSSafetyViolation` family counter.
+    """``openral.safety.violations`` — ``ROSSafetyViolation`` family counter.
 
     Labels: ``check_name``, ``severity`` (both closed sets).
     """

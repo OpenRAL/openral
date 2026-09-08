@@ -1,6 +1,6 @@
 """Tests for the ``kind: "detector"`` rSkill manifest variant.
 
-:class:`~openral_core.schemas.DetectorContract` Hypothesis round-trip + JSON
+``DetectorContract`` Hypothesis round-trip + JSON
 Schema validation, the real ``rskills/rtdetr-coco-r18`` fixture, and the
 validator boundary rules for each required/forbidden field.
 """

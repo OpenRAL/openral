@@ -4,10 +4,10 @@ RLBench (James et al. 2020, arXiv:1909.12271) needs CoppeliaSim + PyRep, a
 ~py3.10 stack that can't load into the py3.12 openral workspace (PyRep builds a
 Cython extension against CoppeliaSim 4.1.0; the released 3D keyframe policies
 pin ``MohitShridhar/RLBench@peract``) — so, like
-:mod:`openral_sim.backends.isaac_sim`, it runs in its own venv over ZMQ
+``openral_sim.backends.isaac_sim``, it runs in its own venv over ZMQ
 REQ/REP + msgpack. This file is the sidecar side (no openral import, owns
 CoppeliaSim/task/keyframe executor); the openral side is
-:mod:`openral_sim.backends.rlbench`.
+``openral_sim.backends.rlbench``.
 
 Wire (mirrors ``tools/isaac_sidecar.py``): ``ping -> {"ok", "action_dim": 8,
 "task", "layout": "rlbench"}``, ``reset``/``step -> {"observation", "reward",
@@ -20,7 +20,7 @@ the planned motion until the end-effector is within 5 mm of target (matches the
 upstream 3D-policy evaluators).
 
 License (CLAUDE.md §1.9): CoppeliaSim is proprietary (free EDU license), never
-vendored — externally provisioned (see :mod:`openral_sim.backends.rlbench`).
+vendored — externally provisioned (see ``openral_sim.backends.rlbench``).
 RLBench and PyRep are open source.
 """
 
@@ -96,7 +96,7 @@ def _coppeliasim_time_ns(env: Any) -> int | None:
 def _is_planner_path_failure(exc: BaseException) -> bool:
     """True when *exc* is a RLBench/PyRep motion-planner path-finding failure.
 
-    See :data:`_PLANNER_FAILURE_EXC_NAMES`. Walks the exception's MRO so
+    See ``_PLANNER_FAILURE_EXC_NAMES``. Walks the exception's MRO so
     subclasses of the known planner errors are matched too.
     """
     return any(t.__name__ in _PLANNER_FAILURE_EXC_NAMES for t in type(exc).__mro__)

@@ -1,6 +1,6 @@
 """Backing logic for ``openral replay`` and ``openral record``.
 
-The CLI surface lives in :mod:`openral_cli.main`; this module contains
+The CLI surface lives in ``openral_cli.main``; this module contains
 the heavy lifting so the CLI module stays import-cheap. Separating it
 also makes the logic unit-testable without spawning ``openral`` through
 typer.
@@ -102,8 +102,8 @@ def build_record_command(
         output_dir: ``-o`` directory for ``ros2 bag record``. Created
             on demand by the recorder.
         storage: rosbag2 storage backend; ``mcap`` (the openral default)
-            interoperates with :mod:`openral_dataset.bag` and
-            :mod:`openral_observability.replay.bag_reader`.
+            interoperates with ``openral_dataset.bag`` and
+            ``openral_observability.replay.bag_reader``.
         extra_topics: Verbatim topics to append to the profile's list.
         extra_regex: Additional regex patterns to OR into ``--regex``.
 
@@ -111,7 +111,7 @@ def build_record_command(
         argv list, ready for ``subprocess``.
 
     Raises:
-        ValueError: When ``profile`` is not in :data:`RECORD_PROFILES`.
+        ValueError: When ``profile`` is not in ``RECORD_PROFILES``.
     """
     if profile not in RECORD_PROFILES:
         msg = f"unknown record profile {profile!r}; expected one of {sorted(RECORD_PROFILES)}"
@@ -131,7 +131,7 @@ def build_record_command(
 
 @dataclass(frozen=True)
 class ReplayResult:
-    """Output of :func:`run_replay` — both summary + the joined timeline.
+    """Output of ``run_replay`` — both summary + the joined timeline.
 
     Attributes:
         trace_id: The trace_id used for the join. ``None`` when the bag
@@ -140,7 +140,7 @@ class ReplayResult:
         bag_trace_ids: Distinct trace_ids discovered in the bag with
             counts. Useful when the user did not pass ``--trace`` and
             the function had to auto-pick.
-        timeline: Chronological list of :class:`TimelineEntry`.
+        timeline: Chronological list of ``TimelineEntry``.
         bag_path: The mcap file actually read.
     """
 
@@ -225,7 +225,7 @@ def run_record(
     SIGINT and SIGTERM received by the parent are forwarded to the
     child as **SIGINT** — ``rosbag2 record`` only flushes
     ``metadata.yaml`` on a clean Ctrl-C. The default
-    :func:`subprocess.run` signal handling would send SIGTERM through,
+    ``subprocess.run`` signal handling would send SIGTERM through,
     which kills the recorder hard and leaves a 0-byte bag.
 
     Raises:
@@ -281,6 +281,6 @@ def run_record(
 
 
 def write_timeline(result: ReplayResult, out_path: Path) -> None:
-    """Persist a :class:`ReplayResult` as pretty-printed JSON to ``out_path``."""
+    """Persist a ``ReplayResult`` as pretty-printed JSON to ``out_path``."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result.to_json(), indent=2, sort_keys=False), encoding="utf-8")

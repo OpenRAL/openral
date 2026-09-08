@@ -17,7 +17,7 @@ mesh collision — correct for onboarding, but looser than a hand-fitted
 oriented box. ``panda_mobile`` carries boxes (#103); re-lowering from
 ``rd:panda_description`` would replace all seven with capsules of
 **1.9-3.7x the volume** and **1.4-1.5x the circumradius**. So ``lower``
-compares against the shipped geometry (:func:`geometry_loosening`) and
+compares against the shipped geometry (``geometry_loosening``) and
 **refuses to write** a looser one — no override flag (CLAUDE.md §3): dropping
 tighter geometry means deleting it from the manifest first, a reviewable diff.
 """
@@ -258,7 +258,7 @@ def geometry_loosening(
         lowered: what ``openral collision lower`` would write in its place.
 
     Returns:
-        One :class:`GeometryLoosening` per affected link, worst volume ratio
+        One ``GeometryLoosening`` per affected link, worst volume ratio
         first. Empty when nothing would get looser.
 
     Example:
@@ -388,7 +388,7 @@ def inject_joint_fk(text: str, joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]]) 
 
 
 def render_blocks(model: LoweredCollisionModel) -> tuple[str, str]:
-    """Render a :class:`LoweredCollisionModel` to ``(geometry_block, acm_block)`` YAML.
+    """Render a ``LoweredCollisionModel`` to ``(geometry_block, acm_block)`` YAML.
 
     Both blocks open with a generated-provenance comment so a reader knows the tool
     owns them; floats are rounded to 4 dp for a stable, reviewable diff.
@@ -467,7 +467,7 @@ def _lowered_text(
     into the on-disk text — touching only the requested block(s).
 
     The third element is the geometry-loosening report
-    (:func:`geometry_loosening`), computed here because this is the one place
+    (``geometry_loosening``), computed here because this is the one place
     that holds the committed manifest and the tool's replacement for it at the
     same time. It is empty whenever the geometry block would not be rewritten at
     all (``--acm-only``, or an MJCF-sourced robot whose hand geometry the tool

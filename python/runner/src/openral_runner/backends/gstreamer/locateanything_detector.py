@@ -5,17 +5,17 @@ Qwen2.5-3B) that, given an RGB image and a free-text query, emits structured
 ``<ref>label</ref><box><x1><y1><x2><y2></box>`` tokens (coordinates normalized
 to ``[0, 1000]``). It cannot share the runtime's ``transformers>=5`` env, so it
 runs in an isolated ``transformers==4.57.1`` sidecar process
-(:mod:`tools.locateanything_sidecar`); this backend is the ZMQ client.
+(``tools.locateanything_sidecar``); this backend is the ZMQ client.
 
 It implements the same ``detect(frame_bgr, width, height, sensor_id) ->
 ObjectsMetadata | None`` interface as
-:class:`~openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`,
-so :class:`~openral_runner.backends.gstreamer.detector_runner.DetectorRunner`
+``ObjectsDetector``,
+so ``DetectorRunner``
 can drive it from a camera tee (wired in a later PR).
 
 **Open-vocabulary query (static default + dynamic override).** The query
 defaults to the manifest's ``detector.labels`` (joined with ``</c>`` for the
-multi-category prompt). :meth:`LocateAnythingDetector.set_query` overrides it at
+multi-category prompt). ``LocateAnythingDetector.set_query`` overrides it at
 runtime — the hook the S2 reasoner will drive once the goal-params path is wired.
 
 **Confidence.** LocateAnything is a grounding model: it emits boxes but no
@@ -102,7 +102,7 @@ def build_objects_metadata(
     fallback_label: str = "object",
     norm: int = 1000,
 ) -> ObjectsMetadata | None:
-    """Build :class:`ObjectsMetadata` from a raw grounding answer.
+    """Build ``ObjectsMetadata`` from a raw grounding answer.
 
     Normalized boxes are scaled into the ``width`` x ``height`` pixel space and
     clipped to frame bounds. Returns ``None`` if no valid detections remain.

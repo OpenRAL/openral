@@ -1,8 +1,8 @@
 """rskill_runner_node SIGINT teardown contract — structural guard.
 
 Mirrors ``test_runtime_node_sigint_shape.py`` (landed in caae96f) and the reasoner guard
-from abd594f. ROS 2 Jazzy's :func:`rclpy.init` SIGINT handler shuts down the rclpy context
-and raises ``KeyboardInterrupt`` out of :func:`rclpy.spin`.
+from abd594f. ROS 2 Jazzy's ``rclpy.init`` SIGINT handler shuts down the rclpy context
+and raises ``KeyboardInterrupt`` out of ``rclpy.spin``.
 
 Before this guard, ``rskill_runner_node.main`` wrapped ``rclpy.spin(node)`` in a bare
 ``try/finally`` calling plain ``rclpy.shutdown()`` in ``finally``, so every operator Ctrl-C
@@ -66,7 +66,7 @@ def test_imports_external_shutdown_exception() -> None:
 def test_no_bare_rclpy_shutdown_call() -> None:
     """``rclpy.shutdown()`` may not be called anywhere in rskill_runner_node.
 
-    All shutdown sites must use :func:`rclpy.try_shutdown`, which is
+    All shutdown sites must use ``rclpy.try_shutdown``, which is
     idempotent and a no-op when the context is already shut down.
     """
     bare_calls: list[int] = []

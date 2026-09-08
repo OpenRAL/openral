@@ -1,9 +1,9 @@
 """Tests for reasoner execution feedback + reflection.
 
 Covers:
-- :func:`~openral_reasoner.context.reflect_on_failure` /
-  :func:`~openral_reasoner.context.reflect_on_retry_cap` (deterministic hints).
-- :class:`~openral_reasoner.context.ContextRenderer` ``## EXECUTION`` section:
+- ``reflect_on_failure`` /
+  ``reflect_on_retry_cap`` (deterministic hints).
+- ``ContextRenderer`` ``## EXECUTION`` section:
   success + failure feedback, the Reflexion hint on failures, ``seq`` bump, and
   section ordering.
 

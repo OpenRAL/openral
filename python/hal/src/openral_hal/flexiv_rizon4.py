@@ -6,7 +6,7 @@ The MuJoCo digital twin loads the upstream DeepMind
 ``mujoco_menagerie`` Rizon 4 MJCF (``flexiv_rizon4/flexiv_rizon4.xml``,
 vendored via ``robot_descriptions.rizon4_mj_description``) and drives
 the 7 position-controlled actuators directly via the shared
-:class:`openral_hal._mujoco_arm.MujocoArmHAL` base.
+``openral_hal._mujoco_arm.MujocoArmHAL`` base.
 
 This adapter is **structurally identical** to the UR / Franka HAL twins
 (single-arm, no gripper, no floating base, position actuators).  The
@@ -23,7 +23,7 @@ menagerie MJCF pins them verbatim.
 The Rizon 4 has no gripper, no floating base, and a single keyframe
 that is **not** applied at ``connect()`` (every joint defaults to
 qpos=0 which is inside every joint range — same convention as
-:class:`openral_hal.UR5eHAL` / :class:`openral_hal.FrankaPandaHAL`).
+``openral_hal.UR5eHAL`` / ``openral_hal.FrankaPandaHAL``).
 
 Example:
     >>> from openral_hal import Rizon4MujocoHAL, RIZON4_DESCRIPTION
@@ -181,9 +181,9 @@ class Rizon4MujocoHAL(MujocoArmHAL):
     """HAL adapter for the Flexiv Rizon 4 (MuJoCo-backed simulation).
 
     Drives the 7 position-controlled actuators of the menagerie
-    ``flexiv_rizon4`` MJCF through :class:`MujocoArmHAL`.  Exposes a
-    7-D :class:`openral_core.Action` matching the joint order in
-    :data:`RIZON4_DESCRIPTION` (``joint1`` ... ``joint7``).
+    ``flexiv_rizon4`` MJCF through ``MujocoArmHAL``.  Exposes a
+    7-D ``openral_core.Action`` matching the joint order in
+    ``RIZON4_DESCRIPTION`` (``joint1`` ... ``joint7``).
 
     Args:
         mjcf_path: Optional override for the MJCF file path.  When
@@ -191,7 +191,7 @@ class Rizon4MujocoHAL(MujocoArmHAL):
             ``robot_descriptions``
             (``mujoco_menagerie/flexiv_rizon4/flexiv_rizon4.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.  Defaults to ``1``; raise it in tests
+            ``send_action``.  Defaults to ``1``; raise it in tests
             that assert the arm has settled at the commanded pose.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
@@ -217,7 +217,7 @@ class Rizon4MujocoHAL(MujocoArmHAL):
     ) -> None:
         """Initialise the Rizon 4 HAL; no MuJoCo state is created until ``connect()``.
 
-        All wiring lives in :data:`RIZON4_DESCRIPTION.sim`.
+        All wiring lives in ``RIZON4_DESCRIPTION.sim``.
         """
         self._init_from_description(
             RIZON4_DESCRIPTION,

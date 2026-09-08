@@ -51,7 +51,7 @@ def resolve_device(spec: VLASpec) -> str:
     on Apple Silicon, then ``"cpu"``. Any other value is returned as-is.
 
     Args:
-        spec: The :class:`openral_core.VLASpec` from a SimEnvironment config.
+        spec: The ``openral_core.VLASpec`` from a SimEnvironment config.
 
     Returns:
         A torch device string (``"cpu"``, ``"cuda:0"``, ``"mps"``).
@@ -103,7 +103,7 @@ def resolve_rskill_repo_id(weights_uri: str, *, adapter_name: str) -> str:
 def resolve_rskill_repo_revision(weights_uri: str, *, adapter_name: str) -> tuple[str, str | None]:
     """Resolve a bare rSkill reference to ``(repo_id_or_path, revision)``.
 
-    Like :func:`resolve_rskill_repo_id`, but also returns the optional
+    Like ``resolve_rskill_repo_id``, but also returns the optional
     ``@<branch-or-sha>`` revision pin so callers can thread it into
     ``from_pretrained`` / ``snapshot_download`` (HF ignores an ``@<sha>`` glued
     onto the repo id — security audit 2026-06, finding H4). Emits a structured
@@ -172,7 +172,7 @@ def resolve_image_preprocessing(
         spec_extra: ``VLASpec.extra`` dict from the SimEnvironment YAML.
 
     Returns:
-        A fresh :class:`openral_core.ImagePreprocessing` instance
+        A fresh ``openral_core.ImagePreprocessing`` instance
         combining the inputs by precedence.
     """
     from openral_core import ImagePreprocessing as _ImagePreprocessing
@@ -419,7 +419,7 @@ def maybe_compile_chunk_forward(
     * **CUDA-graph modes clone their output.** Under ``reduce-overhead``
       / ``max-autotune`` the compiled callable may return views of a
       static replay buffer; the wrapper routes every output through
-      :func:`_clone_chunk_output` so queued action views are never
+      ``_clone_chunk_output`` so queued action views are never
       overwritten by the next chunk's replay (the pre-fetch pattern in
       ``ChunkedExecutor`` holds chunk-N views while chunk N+1 runs).
 
@@ -635,7 +635,7 @@ _RTC_KEYS = frozenset(
 
 
 def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
-    """Parse ``policy_extras.rtc`` into a lerobot :class:`RTCConfig` (or ``None``).
+    """Parse ``policy_extras.rtc`` into a lerobot ``RTCConfig`` (or ``None``).
 
     Args:
         spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
@@ -718,7 +718,7 @@ def rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bo
     Raises:
         ROSConfigError: The ``rtc`` block is malformed — a bad manifest fails here
             rather than surviving to the later parse in
-            :func:`build_chunk_executor`; the error is identical either way.
+            ``build_chunk_executor``; the error is identical either way.
     """
     cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
     return cfg is not None and bool(cfg.enabled)
@@ -732,7 +732,7 @@ def build_chunk_executor(
     chunk_size: int | None = None,
     adapter_name: str = "policy",
 ) -> ChunkedExecutor | None:
-    """Build + start a :class:`ChunkedExecutor` for a chunked adapter.
+    """Build + start a ``ChunkedExecutor`` for a chunked adapter.
 
     Pop ticks come from the executor-owned buffer, so no observation batch is
     built and no policy call runs. ``chunk_prefetch`` enables background
@@ -743,7 +743,7 @@ def build_chunk_executor(
     history) — those cannot use a chunk buffer at all and must keep the
     plain per-tick path.
 
-    A ``policy_extras.rtc`` block (see :func:`_parse_rtc_config`) additionally
+    A ``policy_extras.rtc`` block (see ``_parse_rtc_config``) additionally
     installs the policy's lerobot ``RTCProcessor`` — ``config.rtc_config`` is
     set and ``init_rtc_processor()`` called *before* the executor is built —
     and hands the same ``RTCConfig`` to the executor so it serves actions from
@@ -754,7 +754,7 @@ def build_chunk_executor(
         spec_extra: The ``VLASpec.extra`` dict.
         policy: lerobot-style policy (default chunk producer + reset target).
         chunk_fn: Custom chunk producer for adapters whose forward is not a
-            bare ``predict_action_chunk`` — see :class:`ChunkedExecutor`.
+            bare ``predict_action_chunk`` — see ``ChunkedExecutor``.
         chunk_size: Actions consumed per inference; defaults to
             ``policy.config.n_action_steps``.
         adapter_name: Label for the enable log line.
@@ -926,9 +926,9 @@ def _hf_download_cached_first(
 def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:
     """Split an ``hf://owner/repo[@rev]/path/to/file`` URI into its parts.
 
-    Used by :func:`materialize_processor_dir` to drive per-file
+    Used by ``materialize_processor_dir`` to drive per-file
     ``huggingface_hub.hf_hub_download`` calls from a
-    :class:`openral_core.RSkillProcessors` URI. Closes Gap 1 + Gap 3 of
+    ``openral_core.RSkillProcessors`` URI. Closes Gap 1 + Gap 3 of
     the rSkill self-containment audit: the adapter no longer needs to
     ``snapshot_download(repo_id)`` and trust that the artefact happens to
     live at a particular filename.
@@ -978,11 +978,11 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
 
     Closes Gap 1 + Gap 3 of the rSkill self-containment audit. Replaces
     the implicit ``snapshot_download(repo_id)`` path with two explicit
-    :func:`huggingface_hub.hf_hub_download` calls driven by
+    ``huggingface_hub.hf_hub_download`` calls driven by
     ``manifest.processors``. The downloads are then symlinked under the
     fixed names ``policy_preprocessor.json`` /
     ``policy_postprocessor.json`` that
-    :func:`lerobot.policies.factory.make_pre_post_processors` reads when
+    ``lerobot.policies.factory.make_pre_post_processors`` reads when
     given a ``pretrained_path``.
 
     Single seam — both the SmolVLA and the modern-ACT adapter call this
@@ -1151,7 +1151,7 @@ def call_make_processors_cached_first(
 
     Adapters whose preprocessor has no tokenizer step (ACT, Diffusion
     Policy) hit the ``return None`` early-out in
-    :func:`_read_tokenizer_repo_from_preprocessor` and fall through to a
+    ``_read_tokenizer_repo_from_preprocessor`` and fall through to a
     plain passthrough call. Cold caches do the same — the inner load is
     free to talk to the Hub and warm the cache exactly once.
 
@@ -1161,7 +1161,7 @@ def call_make_processors_cached_first(
             Injected to avoid an import at the wrapper level so opt-in
             install groups (``just sync --all-packages --group sim``) stay opt-in.
         policy_config: ``policy.config`` — the
-            :class:`lerobot.configs.policies.PreTrainedConfig` instance.
+            ``lerobot.configs.policies.PreTrainedConfig`` instance.
         pretrained_path: Absolute path to the directory containing
             ``policy_preprocessor.json`` / ``policy_postprocessor.json``.
             Forwarded verbatim to the inner call; ``None`` is treated as
@@ -1414,7 +1414,7 @@ def suppress_hf_weight_init() -> Iterator[None]:
     Safety: only sound when the checkpoint supplies **every** parameter —
     otherwise a param that would have been randomly initialised is left as
     whatever ``malloc`` returned. Callers must therefore validate the loaded
-    model; :func:`assert_all_parameters_finite` is the guard used by the
+    model; ``assert_all_parameters_finite`` is the guard used by the
     SmolVLA adapter.
 
     Process-global for the duration (it patches the ``PreTrainedModel``
@@ -1455,7 +1455,7 @@ def assert_all_parameters_finite(
 
     Uninitialised memory read as float is overwhelmingly NaN or a wild
     magnitude, so this catches a checkpoint that failed to cover the graph
-    while :func:`suppress_hf_weight_init` was active. Without the check a
+    while ``suppress_hf_weight_init`` was active. Without the check a
     partially-loaded policy would silently emit garbage actions; the safety
     kernel would clamp them, but the robot would still move wrongly.
 

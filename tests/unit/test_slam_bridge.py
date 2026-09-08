@@ -2,7 +2,7 @@
 
 Two layers:
 
-1. :func:`encode_occupancy_grid_png` is a pure function — tested
+1. ``encode_occupancy_grid_png`` is a pure function — tested
    directly against synthetic ``nav_msgs/OccupancyGrid``-shaped data.
 2. The dashboard store handler for ``slam.occupancy_grid`` spans is
    tested by manufacturing a minimal OTLP ``Span`` payload and

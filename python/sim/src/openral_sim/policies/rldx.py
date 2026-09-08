@@ -25,7 +25,7 @@ driven over ZMQ from this adapter.
 Auto-managed lifecycle: `__post_init__` pings `host:port`; on failure,
 if `auto_spawn=True` (default; `OPENRAL_RLDX_AUTO_SPAWN=0` or
 `vla.extra.auto_spawn: false` to disable) it `Popen`s
-:mod:`tools.rldx_sidecar` with the manifest-resolved model id, port,
+``tools.rldx_sidecar`` with the manifest-resolved model id, port,
 quantization, embodiment tag, then polls ping until answer or
 `boot_timeout_s` elapses (default 900s — first boot includes upstream
 `git clone` + `uv sync`). `close()` terminates only the child this
@@ -317,7 +317,7 @@ _SIDECAR_PORT_MAX = 40000
 def _resolve_state_layout(manifest: Any) -> str:
     """Map an rSkill manifest's ``state_contract.layout`` to a sidecar layout.
 
-    Returns one of :data:`_RLDX_NON_DEFAULT_LAYOUTS` when the manifest declares
+    Returns one of ``_RLDX_NON_DEFAULT_LAYOUTS`` when the manifest declares
     it, else ``"libero"`` (the flat LIBERO contract). Shared by the ``rldx``
     and ``gr00t`` factories so both dispatch obs assembly off the manifest
     instead of hardcoding a single embodiment.
@@ -339,7 +339,7 @@ def _require_scene_cameras(
     single-view fallback. On a scene that renders too few, the missing stream
     only surfaces as an opaque ``observation.images[...]`` error mid-rollout —
     after the (multi-minute) sidecar boot. Surfacing it here turns that into a
-    clear, upfront :class:`ROSCapabilityMismatch`.
+    clear, upfront ``ROSCapabilityMismatch``.
 
     A scene that declares **no** ``cameras`` is the adapter-default case (LIBERO
     renders ``camera1``+``camera2`` itself), so only an *explicit, too-short*
@@ -394,7 +394,7 @@ def _resolve_sidecar_port(
 ) -> int:
     """Resolve the sidecar port: env pin > vla.extra pin > per-identity default.
 
-    The per-identity default (:func:`_derive_sidecar_port`) replaces the old
+    The per-identity default (``_derive_sidecar_port``) replaces the old
     hard 5555 so different checkpoints don't collide on one port and silently
     reuse each other's sidecar.
     """
@@ -486,7 +486,7 @@ def _encode_ndarray(obj: Any) -> Any:
 
 
 def _decode_ndarray(obj: dict[str, Any]) -> Any:
-    """Msgpack ``object_hook``: reverse :func:`_encode_ndarray`."""
+    """Msgpack ``object_hook``: reverse ``_encode_ndarray``."""
     if "__ndarray_class__" in obj:
         return np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
     return obj
@@ -747,13 +747,13 @@ class _Gr00tFamilySidecarAdapter:
         nothing is on the other end, instead of returning the raw
         ECONNREFUSED a TCP connect would surface in microseconds. To
         keep cold-start connects fast (no sidecar yet → spawn one), we
-        gate the ZMQ leg behind the cheap :meth:`_is_port_busy` TCP
-        probe. Side benefit: :meth:`_wait_for_boot` now polls at the
+        gate the ZMQ leg behind the cheap ``_is_port_busy`` TCP
+        probe. Side benefit: ``_wait_for_boot`` now polls at the
         ~2 s sleep rate instead of being throttled to the 60 s RCVTIMEO,
         which also shortens child-death detection during boot.
 
         On ZMQ-leg failure we recreate the REQ socket -- see
-        :meth:`_init_socket` for why the EFSM state of REQ makes
+        ``_init_socket`` for why the EFSM state of REQ makes
         per-attempt resets mandatory.
         """
         if not self._is_port_busy():
@@ -837,7 +837,7 @@ class _Gr00tFamilySidecarAdapter:
         The child is launched in its own session/process group so a
         Ctrl-C against the openral process (e.g. ``openral sim run``) does
         not also abort the multi-minute first-boot ``uv sync``. We rely
-        on :meth:`close` / atexit to clean up.
+        on ``close`` / atexit to clean up.
         """
         if self._is_port_busy():
             # Race: somebody else just bound the port between our ping
@@ -1264,7 +1264,7 @@ class _Gr00tFamilySidecarAdapter:
     def _pick_single_camera(
         self, observation: Observation, scene_key: str, *, buf_key: str
     ) -> NDArray[np.uint8]:
-        """Single-camera variant of :meth:`_pick_images` for GR1 / RC365."""
+        """Single-camera variant of ``_pick_images`` for GR1 / RC365."""
         images = observation.get("images", {})
         img = images.get(scene_key)
         if img is None:
@@ -1407,7 +1407,7 @@ class _Gr00tFamilySidecarAdapter:
         """Stack LIBERO-flat ``action.x .. action.gripper`` into ``(T, 7)``.
 
         The gripper column is rescaled to the LIBERO/robosuite convention
-        — see :func:`_rldx_gripper_to_libero` — because the RLDX policy
+        — see ``_rldx_gripper_to_libero`` — because the RLDX policy
         emits gripper in the RLDS dataset convention (``[0, 1]`` with
         ``0=close, 1=open``) while ``LiberoEnv.step`` consumes
         ``[-1, +1]`` with ``-1=open, +1=close`` (GH-133). Without this
@@ -1512,7 +1512,7 @@ class _Gr00tFamilySidecarAdapter:
         Both layouts leave the gripper column AS-IS at the raw policy
         ``gripper_close`` value in [0, 1]. WidowX's binarisation + the
         Google-style sticky-gripper state machine are applied in
-        :meth:`step` against the per-chunk popleft, not here — the
+        ``step`` against the per-chunk popleft, not here — the
         state machine spans applied steps and would otherwise lose
         its across-chunk continuity at every replan boundary. The
         environment-side step path then receives MS3's
@@ -1542,7 +1542,7 @@ class _Gr00tFamilySidecarAdapter:
             slabs.append(arr)
         chunk = np.concatenate(slabs, axis=-1).astype(np.float32)  # (T, 7)
         # No per-chunk gripper postproc — the per-step sticky machine
-        # in :meth:`step` reads the raw closedness directly. Google's
+        # in ``step`` reads the raw closedness directly. Google's
         # sticky-gripper (when wired) will share the same per-step
         # hook for symmetry.
         return chunk
@@ -1698,7 +1698,7 @@ def _rldx_gripper_to_libero(gripper: NDArray[np.float32]) -> NDArray[np.float32]
     Returns:
         Float32 array of the same shape with values in ``{-1, 0, +1}``,
         ready to feed straight into LIBERO's 7-D action vector at
-        index ``6`` (see :data:`_RLDX_ACTION_AXES`).
+        index ``6`` (see ``_RLDX_ACTION_AXES``).
     """
     g = np.asarray(gripper, dtype=np.float32)
     out: NDArray[np.float32] = (-np.sign(2.0 * g - 1.0)).astype(np.float32)

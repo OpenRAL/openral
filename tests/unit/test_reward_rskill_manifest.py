@@ -1,6 +1,6 @@
 """Tests for the ``kind: "reward"`` rSkill manifest variant.
 
-:class:`~openral_core.schemas.RewardContract` Hypothesis round-trip + JSON
+``RewardContract`` Hypothesis round-trip + JSON
 Schema validation, the real ``rskills/robometer-4b`` fixture, and the
 validator boundary rules for each required/forbidden field.
 """

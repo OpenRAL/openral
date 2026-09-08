@@ -782,7 +782,7 @@ class TestJointUnitsDeclared:
     checkpoint falls back to a stats heuristic that mis-detected a
     degrees-trained SmolVLA SO-101 checkpoint as radians and drove a real arm
     into its joint limits (issue #135).
-    :meth:`RSkillManifest._check_joint_units_declared` makes this a hard,
+    ``RSkillManifest._check_joint_units_declared`` makes this a hard,
     fail-loud requirement.
     """
 
@@ -836,7 +836,7 @@ class TestRSkillEnvelope:
     is optional and defaults to ``None``. When set, the C++ safety kernel
     (cpp/openral_safety_kernel/) enforces the intersection of the
     skill envelope and the robot ceiling; the intersection algebra and the
-    loosening-rejection live in :mod:`openral_safety.envelope_loader`, not
+    loosening-rejection live in ``openral_safety.envelope_loader``, not
     here on the schema.
     """
 

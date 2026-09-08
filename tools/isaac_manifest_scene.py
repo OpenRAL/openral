@@ -366,7 +366,7 @@ class IsaacManifestScene(IsaacSceneBase):
         ``n_channels`` beams over ``[-π, π]`` (bridge convention) in the
         base_link frame, rotated to world by base yaw; each ray starts at
         ``range_min_m``. Self-hits (the robot's own body) are skipped by
-        identity per beam — see :func:`resolve_beam_range` for the resolution
+        identity per beam — see ``resolve_beam_range`` for the resolution
         and the #194 rationale. ``None`` when the manifest declares no lidar.
         """
         if self._scan_query is None or self._lidar is None:

@@ -20,7 +20,7 @@ source of truth for the safety kernel envelope.
 ``robot.yaml`` via Pydantic at launch time, calls
 ``openral_safety.envelope_loader.compute_intersection(robot, skill=None)``
 + ``kernel_params_from_envelope(...)``, and forwards each field of the
-resulting :class:`EnvelopeIntersection` as a ROS parameter on the kernel
+resulting ``EnvelopeIntersection`` as a ROS parameter on the kernel
 node (``cpp/openral_safety_kernel/src/envelope.cpp`` — `n_dof`,
 `joint_position_min/max`, `joint_velocity_max`, `joint_torque_max`, scalar
 caps, deadman flag). The legacy ``envelope_file:=PATH`` path was removed.
@@ -321,7 +321,7 @@ _ROBOT_HAL_REGISTRY["panda_mobile_vslam"] = replace(
 class LaunchInvocation:
     """Resolved ``ros2 launch`` argv + the metadata that built it.
 
-    Returned by :func:`resolve_launch_invocation` so the dispatcher can
+    Returned by ``resolve_launch_invocation`` so the dispatcher can
     pretty-print under ``--dry-run`` and the unit tests can assert on
     the resolved fields without touching ``subprocess``.
     """
@@ -463,7 +463,7 @@ class LaunchInvocation:
     enable_reward_monitor: bool
     """Whether the Robometer reward monitor is brought up
     co-active with the VLA. When true the deploy preflight checks the VLA↔reward
-    VRAM pairing (:func:`_preflight_reward_vram_fit`) before bringing up ROS."""
+    VRAM pairing (``_preflight_reward_vram_fit``) before bringing up ROS."""
     reward_monitor_manifest: str
     """The RESOLVED reward-monitor manifest path. Defaults from the
     capability-matched VLA palette's ``reward_rskill_name`` (the pairing the
@@ -647,7 +647,7 @@ def _omdet_runtime_available() -> bool:
     (``openral_runner.backends.gstreamer.omdet_turbo_detector.OmDetTurboDetector``)
     needs ``transformers`` + ``timm`` — the ``omdet`` dependency group. When they
     are absent (a checkout that only synced the base group),
-    :func:`resolve_launch_invocation` gracefully falls back to the in-tree
+    ``resolve_launch_invocation`` gracefully falls back to the in-tree
     RT-DETR COCO ONNX so ``deploy sim`` still brings up a detector instead of the
     node hard-failing at backend build.
 
@@ -664,7 +664,7 @@ def _object_detector_onnx_present(path: Path) -> bool:
 
     The weights (``rskills/rtdetr-coco-r18/model.onnx``, ~2 MB) are gitignored, so
     they are present on a weights-fetched dev host but absent in a bare CI
-    checkout. :func:`resolve_launch_invocation` downgrades the detector leg off
+    checkout. ``resolve_launch_invocation`` downgrades the detector leg off
     when neither omdet deps nor these weights can build a backend. Factored out so
     tests can exercise the fallback-selection logic without the gitignored binary.
     """
@@ -795,7 +795,7 @@ def _capability_matched_manifests(
 
     Loads every ``rskills/*/rskill.yaml`` and runs the same
     capability/role/license filter the reasoner seeds at ``on_configure``
-    (:func:`openral_reasoner.palette.build_tool_palette`), returning the matched
+    (``openral_reasoner.palette.build_tool_palette``), returning the matched
     manifests. ``openral deploy sim`` does not preselect a VLA — the reasoner picks
     one at runtime from exactly this set — so reward resolution + the VRAM
     preflight both reason over it (the "VLA known at launch" is the *palette*, not a
@@ -907,10 +907,10 @@ def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA class
     resident alongside it. The reasoner enforces this per-VLA at
     dispatch (``_refuse_unfittable_vla``) — but only *after* ROS is up. This is the
     pre-LAUNCH gate: build the same capability-matched VLA palette the reasoner
-    will, and run :func:`openral_core.schemas.assert_vla_reward_fits` for each VLA
+    will, and run ``openral_core.schemas.assert_vla_reward_fits`` for each VLA
     against the reward model + the GPU budget.
 
-    The contract mirrors :func:`_preflight_palette_deps`: it is advisory per-VLA
+    The contract mirrors ``_preflight_palette_deps``: it is advisory per-VLA
     (the reasoner drops a non-fitting VLA from dispatch anyway) and a HARD gate only
     when the palette would be empty of *runnable* policies — i.e. **no** matched VLA
     can dispatch with the reward model resident. In that case the deploy could
@@ -1637,7 +1637,7 @@ def _ros2_argv_head() -> list[str]:
 
     ``/opt/ros/<distro>/bin/ros2`` has a ``#!/usr/bin/python3`` shebang, so a
     bare ``ros2 launch`` parses ``sim_e2e.launch.py`` under the *system*
-    interpreter. :func:`_prepare_launch_env` puts the venv site dir on
+    interpreter. ``_prepare_launch_env`` puts the venv site dir on
     ``PYTHONPATH``, but ``PYTHONPATH`` only prepends — any distribution the
     venv does not carry still resolves out of ``/usr/lib/python3/dist-packages``,
     an ABI risk when mixing apt-compiled extensions with the venv's NumPy.
@@ -1709,7 +1709,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
       process start, which is noise on every launch.
     * Clean stale Fast-DDS SHM (``_apply_rmw_default``).
     * **Confine a sim to its own host and DDS domain** (``hal_mode="sim"``,
-      :func:`~openral_cli._dds_scope.confine_sim_scope`). A sim graph lives on
+      ``confine_sim_scope``). A sim graph lives on
       one host; left on the default domain 0 with subnet discovery it joins
       whatever else is on the LAN, which on 2026-09-05 was a live OpenArm
       (#227). ``deploy run`` is deliberately **not** confined — a real robot's
@@ -1818,10 +1818,10 @@ def _assert_graph_unoccupied_or_exit(env: dict[str, str], *, hal_mode: str) -> N
     """Refuse the launch when another robot is already on this ROS graph.
 
     Thin CLI wrapper: the rule and its wording live in
-    :mod:`openral_cli._dds_scope`; this turns the typed refusal into the exit
+    ``openral_cli._dds_scope``; this turns the typed refusal into the exit
     code the operator sees. Kept out of ``run_preflight`` on purpose — it has to
     run against ``venv_env``, the scope actually about to be used, which does
-    not exist until :func:`_prepare_launch_env` has confined it.
+    not exist until ``_prepare_launch_env`` has confined it.
     """
     from openral_cli._dds_scope import assert_graph_unoccupied  # reason: deferred
 
@@ -1969,7 +1969,7 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     """Return True when ``cmdline`` matches an openral deploy-graph process.
 
     Pure predicate over a space-joined ``/proc/<pid>/cmdline`` string so
-    the needle set (:data:`_ORPHAN_GRAPH_NEEDLES`) is unit-testable
+    the needle set (``_ORPHAN_GRAPH_NEEDLES``) is unit-testable
     without spawning real processes.
 
     A tuple needle matches only when EVERY element is present, which is how
@@ -2175,7 +2175,7 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     exactly that: its evidence monitor attached ~6 ms after the
     deploy started, and every one of the 24 ``run_monitor.jsonl``
     files contains two lines. The purge is therefore *announced*:
-    :data:`DDS_TRANSPORT_READY_MARKER` is printed on the line after
+    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after
     it, so a co-process can wait for it and create its participant on
     the far side. It is printed on the Cyclone/Zenoh paths too, where
     nothing was purged — a waiter needs the signal either way.
@@ -2220,7 +2220,7 @@ def _clean_stale_fastrtps_shm() -> int:
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
     """Build the package-list the preflight discovery check must validate.
 
-    Pulled out of :func:`deploy_sim_command` for line-count hygiene
+    Pulled out of ``deploy_sim_command`` for line-count hygiene
     and so future opt-in bringup wrappers extend a single list.
     """
     pkgs = ["openral_rskill_ros", invocation.hal.package]
@@ -2385,10 +2385,10 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
 ) -> None:
     """Prompt to install missing extras before the reasoner palette empties.
 
-    Mirrors :meth:`ReasonerNode._maybe_seed_palette_from_search_paths`:
+    Mirrors ``ReasonerNode._maybe_seed_palette_from_search_paths``:
     loads ``<repo_root>/rskills/*/rskill.yaml``, builds the
-    capability-filtered :class:`~openral_reasoner.palette.ToolPalette`
-    against the robot's :class:`~openral_core.RobotCapabilities`, then
+    capability-filtered ``ToolPalette``
+    against the robot's ``RobotCapabilities``, then
     probes each capability-matching manifest's ``model_family`` for
     importability. Surfaces missing extras *before* the launch
     instead of letting the reasoner silently drop them at
@@ -2397,7 +2397,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
 
     This is ADVISORY, not a gate. The reasoner ALREADY drops
     unimportable rSkills at ``on_configure``
-    (:func:`openral_sim.policy_deps.filter_importable_manifests`) and
+    (``openral_sim.policy_deps.filter_importable_manifests``) and
     runs the importable remainder. The palette is robot-WIDE — a single
     franka config matches six model families (act / molmoact2 / pi05 /
     rldx / smolvla / xvla), so a partially-installed venv is the common
@@ -2410,7 +2410,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
     * default / ``OPENRAL_AUTO_INSTALL_DEPS=1`` → install the union of
       missing groups via ``just sync --all-packages --group …``
       (cwd=repo_root), re-probe, and continue. Same env var honoured by
-      :mod:`openral_sim._assets` / :mod:`openral_sim._deps`. A non-zero
+      ``openral_sim._assets`` / ``openral_sim._deps``. A non-zero
       ``just sync`` is a real failure → ``typer.Exit``.
     * ``OPENRAL_AUTO_INSTALL_DEPS=0`` on a TTY → ``typer.confirm`` the
       same install; on yes install+re-probe; on no → drop blocked skills.
@@ -3108,7 +3108,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     # Provision the scene's sim backend now, not inside the HAL's
     # ``on_configure``. Deliberately AFTER the overlay check above, so a
     # missing ``openral_rskill_ros`` fails in a second instead of after an
-    # 11 GB download. See :func:`_preflight_scene_assets`.
+    # 11 GB download. See ``_preflight_scene_assets``.
     _preflight_scene_assets(config)
 
     _reap_orphans_with_log()

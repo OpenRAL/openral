@@ -237,7 +237,7 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
 def franka_panda_with_sensors(
     catalog_ids: list[str] | None = None,
 ) -> RobotDescription:
-    """Return a copy of :data:`FRANKA_PANDA_DESCRIPTION` with catalog sensors attached.
+    """Return a copy of ``FRANKA_PANDA_DESCRIPTION`` with catalog sensors attached.
 
     The Franka Panda research community reference setup uses a wrist-mounted
     RealSense D435i; pass ``None`` to get that default, or override.
@@ -247,7 +247,7 @@ def franka_panda_with_sensors(
             reference loadout (``["intel/realsense_d435i"]``).
 
     Returns:
-        A new :class:`RobotDescription` with ``sensors`` / ``sensor_bundles``
+        A new ``RobotDescription`` with ``sensors`` / ``sensor_bundles``
         populated.
 
     Example:
@@ -277,7 +277,7 @@ class FrankaPandaHAL(MujocoArmHAL):
             the file is fetched lazily from ``robot_descriptions``
             (``mujoco_menagerie/franka_emika_panda/panda.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            :meth:`send_action`.
+            ``send_action``.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
             time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -303,7 +303,7 @@ class FrankaPandaHAL(MujocoArmHAL):
         """Initialise the Panda HAL; no MuJoCo state is created until ``connect()``.
 
         All wiring (MJCF URI, joint indices, gripper config) lives in
-        :data:`FRANKA_PANDA_DESCRIPTION.sim`.
+        ``FRANKA_PANDA_DESCRIPTION.sim``.
         """
         self._init_from_description(
             FRANKA_PANDA_DESCRIPTION,

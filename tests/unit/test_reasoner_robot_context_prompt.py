@@ -1,8 +1,8 @@
-"""Unit tests for :func:`openral_reasoner.render_robot_context_prompt`.
+"""Unit tests for ``openral_reasoner.render_robot_context_prompt``.
 
 Option B: the reasoner's system prompt carries a
 ``## THIS ROBOT`` block built from the active robot's
-:class:`~openral_core.RobotCapabilities`. We validate against real
+``RobotCapabilities``. We validate against real
 ``robots/`` fixtures (CLAUDE.md §1.11) — ``panda_mobile`` (a wheeled
 mobile manipulator) and ``so100_follower`` (a fixed-base arm) — to
 exercise both locomotion branches with real capability data, never
