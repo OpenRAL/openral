@@ -174,10 +174,9 @@ class TestProtocolConformance:
         finally:
             hal.disconnect()
 
-    def test_disconnect_idempotent(self, hal: AlohaHAL) -> None:
-        hal.connect()
-        hal.disconnect()
-        hal.disconnect()
+    # test_disconnect_idempotent moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
 
 
 # ── send_action: 4-way command split ──────────────────────────────────────────

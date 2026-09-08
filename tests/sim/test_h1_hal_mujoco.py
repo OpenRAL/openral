@@ -313,13 +313,12 @@ class TestClosedLoopMujoco:
     the floating base falls instantly with gravity on — see the suite
     docstring)."""
 
-    def test_send_action_holds_zero_pose(self, connected_hal: H1MujocoHAL) -> None:
+    def test_send_action_holds_zero_pose(
+        self, connected_hal: H1MujocoHAL, assert_send_action_holds_zero_pose
+    ) -> None:
         # Commanding zero on every actuator should leave every joint at
         # zero (the menagerie's default rest pose with gravity off).
-        connected_hal.send_action(_zero_action())
-        state = connected_hal.read_state()
-        for i, q in enumerate(state.position):
-            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
+        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     def test_left_arm_converges_to_target(self, connected_hal: H1MujocoHAL) -> None:
         target = [0.0] * 19

@@ -314,6 +314,36 @@ def test_hal_estop_always_raises_estoprequested(hal_name: str) -> None:
         cleanup()
 
 
+@pytest.mark.parametrize("hal_name", ["FrankaPandaRealHAL", "SawyerRealHAL"])
+def test_hal_send_action_after_estop_fails(hal_name: str) -> None:
+    """After ``estop()`` raises, ``send_action`` fails without a reconnect.
+
+    Was two byte-identical per-file unit tests
+    (test_franka_panda_real.py / test_sawyer_real.py). Narrowly
+    parametrized rather than joining ``HAL_BUILDERS`` at large: only these
+    two adapters' own test files asserted this "estop leaves send_action
+    failing until reconnect" contract, and the other builders (sim HALs,
+    RosControlHAL) were never proven to share it.
+    """
+    from openral_core.schemas import Action  # reason: keep imports lazy
+
+    hal, cleanup = HAL_BUILDERS[hal_name]()
+    try:
+        n = len(hal.description.joints)
+        action = Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[[0.0] * n],
+        )
+        hal.connect()
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        with pytest.raises(ROSRuntimeError):
+            hal.send_action(action)
+    finally:
+        cleanup()
+
+
 def test_estoprequested_is_safety_violation_subclass() -> None:
     """One-time structural check — ``ROSEStopRequested`` must inherit from
     ``ROSSafetyViolation`` so safety-supervisor handlers catching the latter

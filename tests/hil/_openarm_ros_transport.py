@@ -42,12 +42,16 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState as RosJointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from tests.hil._ros_control_transport import _CONTROL_QOS, _make_trajectory_publisher
+from tests.hil._ros_control_transport import (
+    _CONTROL_QOS,
+    _JointStateCache,
+    _make_trajectory_publisher,
+)
 
 __all__ = ["OpenArmHILTransport"]
 
 
-class OpenArmHILTransport:
+class OpenArmHILTransport(_JointStateCache):
     """4-way ``rclpy`` bridge for the bimanual OpenArm HIL tests.
 
     Owns one ``JointTrajectory`` publisher per controller plus one
@@ -147,17 +151,7 @@ class OpenArmHILTransport:
         traj.points.append(point)
         publisher.publish(traj)
 
-    def state(self) -> dict[str, object]:
-        """Latest joint state in the transport's joint-name order."""
-        positions: list[float] = []
-        velocities: list[float] = []
-        efforts: list[float] = []
-        for name in self._joint_names:
-            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
-            positions.append(p)
-            velocities.append(v)
-            efforts.append(e)
-        return {"position": positions, "velocity": velocities, "effort": efforts}
+    # state() comes from _JointStateCache.
 
     # -- Helpers --------------------------------------------------------------
 

@@ -30,6 +30,7 @@ from openral_reasoner import (
 )
 
 from tests.integration.fakes.fake_llm import FakeToolUseClient
+from tests.unit.conftest import _CaptureProcessor
 
 
 def _palette(*skills: str) -> ToolPalette:
@@ -46,23 +47,6 @@ def _renderer_with_prompt(text: str = "pick the cube") -> ContextRenderer:
     r = ContextRenderer()
     r.append_prompt(PromptRecord(text=text, metadata_json="", stamp_ns=0))
     return r
-
-
-class _CaptureProcessor:
-    """Minimal structlog processor that buffers events for assertion.
-
-    Drops every event (raises ``structlog.DropEvent``) so test logs
-    don't pollute pytest output.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def __call__(self, logger: Any, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
-        del logger, method
-        name = str(event_dict.pop("event", ""))
-        self.events.append((name, dict(event_dict)))
-        raise structlog.DropEvent
 
 
 @pytest.fixture

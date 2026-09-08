@@ -177,10 +177,9 @@ class TestProtocolConformance:
         finally:
             hal.disconnect()
 
-    def test_disconnect_idempotent(self, hal: SawyerRealHAL) -> None:
-        hal.connect()
-        hal.disconnect()
-        hal.disconnect()
+    # test_disconnect_idempotent moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent
+    # (parametrized over HAL_BUILDERS, "SawyerRealHAL" included).
 
     def test_send_action_publishes_to_sawyer_controller(
         self, hal: SawyerRealHAL, transport: SimTransport
@@ -216,9 +215,6 @@ class TestSafety:
             hal.estop()
         assert any(topic == "/robot/set_super_stop" for topic, _msg in transport.calls)
 
-    def test_after_estop_send_action_fails(self, hal: SawyerRealHAL) -> None:
-        hal.connect()
-        with pytest.raises(ROSEStopRequested):
-            hal.estop()
-        with pytest.raises(ROSRuntimeError):
-            hal.send_action(_hold_action())
+    # test_after_estop_send_action_fails moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_send_action_after_estop_fails
+    # (parametrized over "FrankaPandaRealHAL" / "SawyerRealHAL").

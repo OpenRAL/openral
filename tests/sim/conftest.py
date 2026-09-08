@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -278,3 +279,41 @@ def scene_env(_scene_config: Path) -> Any:
     if not _scene_config.exists():
         pytest.skip(f"sim config not found at {_scene_config}")
     return load_scene_strict(str(_scene_config), BenchmarkScene)
+
+
+@pytest.fixture
+def assert_manifest_has_latency_budget() -> Callable[[Any], None]:
+    """Factory: assert an ``RSkillManifest`` declares a positive per-chunk latency budget.
+
+    Shared by the VLA sim suites' ``test_manifest_has_latency_budget``
+    (pusht/diffusion, franka_panda/smolvla/libero, aloha/act) — same
+    one-line manifest contract, one body. Each caller keeps its own test
+    method (its file + class name already identifies the rSkill on
+    failure), only the assertion body is shared.
+    """
+
+    def _assert(manifest: Any) -> None:
+        budget = manifest.latency_budget
+        assert budget is not None
+        assert budget.per_chunk_ms > 0
+
+    return _assert
+
+
+@pytest.fixture
+def assert_send_action_holds_zero_pose() -> Callable[[Any, Any], None]:
+    """Factory: assert a connected MuJoCo HAL holds zero pose after a zero-target ``send_action``.
+
+    Shared by the humanoid/bimanual closed-loop suites (H1, G1, OpenArm)
+    whose "commanding zero holds zero" body is identical — only the HAL
+    class, joint count and the caller's own ``_zero_action()`` helper
+    differ.
+    """
+
+    def _assert(connected_hal: Any, zero_action: Any) -> None:
+        connected_hal.send_action(zero_action)
+        state = connected_hal.read_state()
+        for i, q in enumerate(state.position):
+            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
+
+    return _assert

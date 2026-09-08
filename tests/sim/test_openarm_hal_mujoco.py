@@ -245,13 +245,6 @@ def hal() -> OpenArmMujocoHAL:
     return OpenArmMujocoHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: OpenArmMujocoHAL) -> OpenArmMujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _zero_action(horizon: int = 1) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,
@@ -372,11 +365,10 @@ class TestClosedLoopMujoco:
     budget).
     """
 
-    def test_hold_zero_pose(self, connected_hal: OpenArmMujocoHAL) -> None:
-        connected_hal.send_action(_zero_action())
-        state = connected_hal.read_state()
-        for i, q in enumerate(state.position):
-            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
+    def test_hold_zero_pose(
+        self, connected_hal: OpenArmMujocoHAL, assert_send_action_holds_zero_pose
+    ) -> None:
+        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     # 0.15 rad is the largest magnitude that fits inside every arm
     # joint's MJCF ctrlrange — ``left_joint2`` is bounded to

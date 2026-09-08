@@ -191,7 +191,9 @@ def _kernel_params() -> dict[str, object]:
 _COLLISION_LINE = re.compile(r"safety\.collision .*place_allowance_active=(\d)")
 
 
-def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
+def test_place_allowance_band_accepts_only_with_a_live_declaration(
+    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+) -> None:
     """The allowance decides a verdict, and discloses itself when it does not.
 
     Four phases against one unchanging payload, grid and margin — the only thing
@@ -280,33 +282,23 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                     executor.spin_once(timeout_sec=0.05)
 
                 # ── The world the kernel checks against ──────────────────────
+                # Shared with the sibling test_safety_kernel_place_target_geometry.py
+                # via tests/integration/conftest.py (byte-identical closures).
                 def publish_grid() -> None:
-                    grid = OccupancyVoxels()
-                    grid.header.frame_id = "base"
-                    grid.header.stamp = helper.get_clock().now().to_msg()
-                    grid.origin = Point(x=_GRID_ORIGIN_M, y=_GRID_ORIGIN_M, z=_GRID_ORIGIN_M)
-                    # A synthetic base-aligned lattice. `OccupancyVoxels` is an
-                    # oriented grid, and its unset orientation is the all-zero
-                    # quaternion, which every consumer refuses rather than
-                    # reading as identity — so say identity.
-                    grid.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-                    grid.resolution = _RESOLUTION_M
-                    grid.size_x = _GRID_N
-                    grid.size_y = _GRID_N
-                    grid.size_z = _GRID_N
-                    occupancy = [0] * (_GRID_N**3)
-                    occupancy[_OCC_INDEX] = 1
-                    grid.occupancy = occupancy
-                    voxel_pub.publish(grid)
-                    spin(0.4)
+                    publish_occupancy_grid(
+                        voxel_pub,
+                        helper,
+                        spin,
+                        grid_origin_m=_GRID_ORIGIN_M,
+                        resolution_m=_RESOLUTION_M,
+                        grid_n=_GRID_N,
+                        occ_index=_OCC_INDEX,
+                    )
 
                 def publish_joint_state() -> None:
-                    js = JointState()
-                    js.header.stamp = helper.get_clock().now().to_msg()
-                    js.name = ["carriage"]
-                    js.position = [0.0]
-                    joint_pub.publish(js)
-                    spin(0.2)
+                    publish_carriage_joint_state(
+                        joint_pub, helper, spin, joint_names=["carriage"], positions=[0.0]
+                    )
 
                 def publish_attachment(*, declared: bool) -> None:
                     """One carried payload; the declaration is the only variable.
@@ -392,15 +384,7 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration() -> None:
                     spin(0.4)  # settle: a late accept/estop must still be visible
 
                 def reset_estop() -> None:
-                    assert reset_client.wait_for_service(timeout_sec=5.0)
-                    spin(0.3)  # clear the reset cooldown
-                    future = reset_client.call_async(Trigger.Request())
-                    end = time.time() + 5.0
-                    while time.time() < end and not future.done():
-                        executor.spin_once(timeout_sec=0.02)
-                    assert future.done() and future.result().success, "estop reset refused"
-                    estops.clear()
-                    spin(0.3)
+                    reset_kernel_estop(reset_client, executor, spin, estops)
 
                 def new_disclosures(seen: int) -> list[int]:
                     """`place_allowance_active` flags of collision lines past ``seen``."""

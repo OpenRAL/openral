@@ -86,7 +86,7 @@ def test_query_scene_independent_of_detector_available() -> None:
     assert "query_scene" not in names
 
 
-def test_qwen_vlm_extra_declares_sidecar_client_deps() -> None:
+def test_qwen_vlm_extra_declares_sidecar_client_deps(expand_dependency_group) -> None:
     """The node-side ZMQ client transport is a declared dependency.
 
     Regression guard: ``QwenSceneVlm`` lazily imports ``zmq`` + ``msgpack``;
@@ -101,22 +101,7 @@ def test_qwen_vlm_extra_declares_sidecar_client_deps() -> None:
     groups = pyproject["dependency-groups"]
     assert "qwen-vlm" in groups, "missing `qwen-vlm` dependency group"
 
-    def _expand(name: str, _seen: set[str] | None = None) -> list[str]:
-        """Recursively expand PEP 735 include-group references to package strings."""
-        if _seen is None:
-            _seen = set()
-        if name in _seen:
-            return []
-        _seen.add(name)
-        result: list[str] = []
-        for entry in groups.get(name, []):
-            if isinstance(entry, dict) and "include-group" in entry:
-                result.extend(_expand(entry["include-group"], _seen))
-            elif isinstance(entry, str):
-                result.append(entry)
-        return result
-
-    group = " ".join(_expand("qwen-vlm"))
+    group = " ".join(expand_dependency_group(groups, "qwen-vlm"))
     assert "pyzmq" in group and "msgpack" in group
 
 

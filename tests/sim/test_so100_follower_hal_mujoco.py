@@ -121,13 +121,6 @@ def hal() -> SO100MujocoHAL:
     return SO100MujocoHAL(gravity_enabled=False, settle_steps=2000)
 
 
-@pytest.fixture()
-def connected_hal(hal: SO100MujocoHAL) -> SO100MujocoHAL:
-    hal.connect()
-    yield hal
-    hal.disconnect()
-
-
 def _zero_action(horizon: int = 1) -> Action:
     return Action(
         control_mode=ControlMode.JOINT_POSITION,

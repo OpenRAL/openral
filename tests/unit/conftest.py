@@ -10,7 +10,7 @@ don't exercise those paths pay nothing at collection time.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -260,3 +260,36 @@ def _script_targets(script: Path) -> set[str]:
         for line in block.group(1).splitlines()
         if (stripped := line.strip()) and not stripped.startswith("#")
     }
+
+
+# ── PEP 735 ``dependency-groups`` include-group expansion ─────────────────────
+
+
+@pytest.fixture
+def expand_dependency_group() -> Callable[..., list[str]]:
+    """Factory: recursively expand a PEP 735 ``dependency-groups`` include-group reference.
+
+    Returns ``expand(groups, name) -> list[str]``, flattening
+    ``{"include-group": ...}`` entries into the package strings they
+    reference (used by the optional-dependency-group regression tests to
+    check a lazily-imported extra like ``pyzmq``/``msgpack`` is really
+    declared, not just assumed present).
+    """
+
+    def _expand(
+        groups: dict[str, list[Any]], name: str, _seen: set[str] | None = None
+    ) -> list[str]:
+        if _seen is None:
+            _seen = set()
+        if name in _seen:
+            return []
+        _seen.add(name)
+        result: list[str] = []
+        for entry in groups.get(name, []):
+            if isinstance(entry, dict) and "include-group" in entry:
+                result.extend(_expand(groups, entry["include-group"], _seen))
+            elif isinstance(entry, str):
+                result.append(entry)
+        return result
+
+    return _expand

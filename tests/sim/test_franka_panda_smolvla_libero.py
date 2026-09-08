@@ -139,10 +139,10 @@ class TestSmolVLALiberoManifest:
         keys = {s.vla_feature_key for s in sensors}
         assert keys == {"observation.images.camera1", "observation.images.camera2"}
 
-    def test_manifest_has_latency_budget(self, skill_manifest) -> None:
-        budget = skill_manifest.manifest.latency_budget
-        assert budget is not None
-        assert budget.per_chunk_ms > 0
+    def test_manifest_has_latency_budget(
+        self, skill_manifest, assert_manifest_has_latency_budget
+    ) -> None:
+        assert_manifest_has_latency_budget(skill_manifest.manifest)
 
 
 class TestSmolVLALiberoIOContract:
