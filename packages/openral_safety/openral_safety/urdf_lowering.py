@@ -355,37 +355,6 @@ _MJCF_RNG_SEED = 20260610
 _MJCF_N_SAMPLES = 2000
 
 
-def _world_segment(
-    link_tf: _Arr, p0: tuple[float, float, float], p1: tuple[float, float, float]
-) -> tuple[list[float], list[float]]:
-    """Transform a link-frame segment by the 4×4 link pose into the base frame."""
-    import numpy as np
-
-    rot, trans = link_tf[:3, :3], link_tf[:3, 3]
-    w0 = rot @ np.asarray(p0, dtype=np.float64) + trans
-    w1 = rot @ np.asarray(p1, dtype=np.float64) + trans
-    return list(w0), list(w1)
-
-
-def _joint_limit_arrays(model: object) -> tuple[_Arr, _Arr]:
-    """(lower, upper) sampling bounds per actuated joint (continuous → [-π, π])."""
-    import numpy as np
-
-    lo: list[float] = []
-    hi: list[float] = []
-    for joint in model.actuated_joints:  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-        limit = getattr(joint, "limit", None)
-        lower = getattr(limit, "lower", None) if limit is not None else None
-        upper = getattr(limit, "upper", None) if limit is not None else None
-        if lower is None or upper is None or lower == upper:
-            lo.append(-math.pi)
-            hi.append(math.pi)
-        else:
-            lo.append(float(lower))
-            hi.append(float(upper))
-    return np.asarray(lo, dtype=np.float64), np.asarray(hi, dtype=np.float64)
-
-
 def _parent_joint_map(model: object) -> dict[str, object]:
     """``child_link -> the URDF joint that drives it``. One parent per link (a tree)."""
     return {j.child: j for j in model.robot.joints}  # type: ignore[attr-defined]  # reason: yourdfpy URDF
