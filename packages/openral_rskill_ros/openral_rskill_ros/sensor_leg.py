@@ -34,7 +34,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 
@@ -92,12 +92,6 @@ _MAX_FALLBACK_TOPIC_RATE_HZ = 3.0
 #: in-process at full capture resolution, which is what ACT (no resize at all,
 #: 640x480 exact) and SmolVLA (its own 512x512 pad-resize) actually consume.
 _DEFAULT_TOPIC_MAX_SIZE: Final[tuple[int, int]] = (320, 240)
-
-
-class _Closeable(Protocol):
-    """Structural type for anything with a no-arg close/stop."""
-
-    def close(self) -> None: ...  # pragma: no cover — Protocol
 
 
 def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> None:

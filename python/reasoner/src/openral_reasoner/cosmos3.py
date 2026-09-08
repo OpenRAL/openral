@@ -116,12 +116,6 @@ def find_cosmos3_sidecar_script() -> Path:
     )
 
 
-def _base_url_is_loopback(base_url: str) -> bool:
-    """True when ``base_url``'s host is a loopback name (autostart territory)."""
-    host = urllib.parse.urlparse(base_url).hostname or ""
-    return host in _LOOPBACK_HOSTS
-
-
 def _managed_port(base_url: str) -> int | None:
     """The explicit port of a loopback ``base_url``, or ``None`` if unmanaged.
 
