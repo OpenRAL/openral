@@ -35,19 +35,11 @@ __all__ = ["InferenceRunnerBase"]
 
 log = structlog.get_logger(__name__)
 
-# Minimum gap between deadline-miss WARN lines, per runner.
-#
-# A host that is genuinely too slow misses its budget on EVERY tick, so this
-# logged once per tick — up to 30 Hz — and WARNING is the one band an
-# operator cannot filter away in the dashboard's Event Log. The failure is
-# real and worth surfacing, but it is a *sustained condition*, not 30
-# independent events per second, and at that rate it buries the very context
-# needed to diagnose it.
-#
-# Only the log line is rate-limited. `openral.tick.deadline_misses` still
-# counts every miss and every `rskill.tick` span still carries its
-# `deadline_missed` event, so nothing that aggregates loses precision — the
-# metric remains the honest rate signal, which is what it is for.
+# Minimum gap between deadline-miss WARN lines, per runner. A sustained
+# overrun would otherwise log at up to 30 Hz and bury the dashboard's Event
+# Log (WARNING can't be filtered away there). Only the log line is
+# rate-limited: `openral.tick.deadline_misses` counts every miss and every
+# `rskill.tick` span still carries its `deadline_missed` event.
 _DEADLINE_LOG_PERIOD_S = 5.0
 
 
@@ -289,19 +281,13 @@ class InferenceRunnerBase(ABC):
         if self._latency_budget_ms is not None:
             tick_attrs[semconv.METRIC_THRESHOLD_MS] = self._latency_budget_ms
         ral_metrics.record_histogram_ms(ral_metrics.get_tick_duration(), result.tick_ms, tick_attrs)
-        # `openral.inference.duration` is NOT recorded here. It is emitted by
-        # `openral_observability.inference_span`, which every VLA adapter opens
-        # around the real chunk compute.
-        #
-        # This line used to record it too, and the two were not the same
-        # quantity: `result.inference_ms` is `Skill.step` wall-time — the chunk
-        # *dispatch* cost, which for a ChunkedExecutor is near-zero on the ticks
-        # that just replay a cached action — while the span times the inference
-        # itself. Same instrument, two meanings, and two disjoint label sets
-        # (`{rskill.id}` here vs `{kind}` on the span), so the eval/sim path
-        # doubled its sample count and computed p95 over a mixed population.
-        # The dispatch cost is still on the tick span as `rskill.inference_ms`
-        # and in the run summary's avg/p99, where it is unambiguous.
+        # `openral.inference.duration` is NOT recorded here — it's emitted by
+        # `openral_observability.inference_span`, opened by each VLA adapter
+        # around the real chunk compute. `result.inference_ms` is `Skill.step`
+        # wall-time (the dispatch cost, near-zero for a ChunkedExecutor replaying
+        # a cached action) — a different quantity, on a different label set
+        # (`{rskill.id}` vs `{kind}`). It's still surfaced as `rskill.inference_ms`
+        # on the tick span and in the run summary's avg/p99.
         if result.safety_violations:
             # ``safety_violations`` is a list of human-readable strings on
             # ``TickResult``; the counter just records that the tick had

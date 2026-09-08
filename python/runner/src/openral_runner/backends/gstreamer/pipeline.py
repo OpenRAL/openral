@@ -1,23 +1,18 @@
 """GStreamer pipeline-string builder + platform detection.
 
-This module is import-safe on hosts without GStreamer or PyGObject: it
-does **not** import ``gi`` at module load. All it does is
+Import-safe on hosts without GStreamer or PyGObject: never imports ``gi`` at
+module load. Responsibilities:
 
-1. Detect what kind of NVIDIA platform we are on
-   (:class:`Platform`) by reading ``/etc/nv_tegra_release`` and
-   probing ``gst-inspect-1.0`` for the presence of specific elements
-   (``nvarguscamerasrc`` on Tegra, ``nvh264dec`` on desktop NVIDIA).
-2. Build a GStreamer pipeline string from a typed
-   :class:`PipelineSpec`, selecting the right source / decoder /
-   format-converter elements for the detected platform.
-3. Ensure the trailing ``appsink`` element carries a known name
-   (default ``bh_sink``) so the reader can fetch it via
-   ``Gst.Bin.get_by_name``.
+1. Detect the NVIDIA platform (:class:`Platform`) via ``/etc/nv_tegra_release``
+   and ``gst-inspect-1.0`` probes for ``nvarguscamerasrc`` (Tegra) /
+   ``nvh264dec`` (desktop NVIDIA).
+2. Build a pipeline string from a typed :class:`PipelineSpec`, selecting
+   source / decoder / converter elements per platform.
+3. Ensure the trailing ``appsink`` carries a known name (default
+   ``bh_sink``) via ``Gst.Bin.get_by_name``.
 
-The output is fed verbatim to ``Gst.parse_launch`` inside the reader.
-Keeping the builder a pure-Python
-string transformer means every code path can be unit-tested on
-stock Ubuntu without NVIDIA plugins or PyGObject.
+Output is fed verbatim to ``Gst.parse_launch`` in the reader; the pure-Python
+string builder is unit-testable without NVIDIA plugins or PyGObject.
 """
 
 from __future__ import annotations
@@ -115,37 +110,28 @@ _NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"
 class Platform(str, Enum):
     """The kind of host the runner is executing on.
 
-    ``TEGRA`` (Jetson / Spark) uses NVIDIA's L4T multimedia stack:
-    ``nvarguscamerasrc`` for MIPI CSI, ``nvv4l2decoder`` for H.264 /
-    HEVC, ``nvvidconv`` for NVMM-aware colour conversion. Buffers
-    flow in ``video/x-raw(memory:NVMM)`` caps and can be lifted to
+    ``TEGRA`` (Jetson / Spark): L4T multimedia stack — ``nvarguscamerasrc``
+    (MIPI CSI), ``nvv4l2decoder`` (H.264/HEVC), ``nvvidconv`` (NVMM-aware
+    colour convert). Buffers are ``video/x-raw(memory:NVMM)``, liftable to
     CUDA zero-copy via ``libnvbufsurface.so``.
 
-    ``NVIDIA_DEEPSTREAM`` is x86_64 with a full DeepStream install —
-    the OpenRAL Pro image (``openral-pro``'s ``docker/Dockerfile.pro``,
-    which ``FROM``s the GStreamer-free ``openral:x86`` and installs the
-    DeepStream + NVMM + TensorRT stack; shipped as
-    ``openral:x86-deepstream-latest``). Detected by the presence of
-    **both** ``nvjpegdec`` and ``nvvideoconvert``. On this tier the main
-    reader pipeline is NVMM-native: ``nvjpegdec`` decodes
-    MJPG **directly into** ``video/x-raw(memory:NVMM)`` (the decoded
-    frame is born in GPU memory; only the compressed JPEG crosses PCIe)
-    and ``nvvideoconvert`` colour-converts on-GPU, so the appsink
-    receives NVMM buffers the reader lifts to a CUDA device pointer via
+    ``NVIDIA_DEEPSTREAM``: x86_64 with DeepStream (the OpenRAL Pro image,
+    ``docker/Dockerfile.pro`` FROMs ``openral:x86`` + DeepStream/NVMM/TensorRT,
+    tagged ``openral:x86-deepstream-latest``). Detected by **both**
+    ``nvjpegdec`` and ``nvvideoconvert`` present. ``nvjpegdec`` decodes MJPG
+    directly into ``video/x-raw(memory:NVMM)`` (only the compressed JPEG
+    crosses PCIe); ``nvvideoconvert`` colour-converts on-GPU; the appsink
+    receives NVMM buffers lifted to a CUDA device pointer via
     ``libnvbufsurface.so``.
 
-    ``NVIDIA_DESKTOP`` is x86_64 with an NVIDIA GPU and the
-    ``gstreamer1.0-plugins-bad`` ``nvcodec`` family installed but **no**
-    DeepStream. nvcodec ships the H.264 / H.265 / AV1 dec/enc family
-    (``nvh264dec``, ``nvh264enc``, …) and ``cudaupload`` /
-    ``cudadownload``, but not ``nvvideoconvert``. The pipeline builder
-    (``_build_convert``) falls back to stock ``videoconvert`` on this
-    branch; the GPU path covers decode/encode only, and no element in
-    the reader pipeline produces ``memory:NVMM`` caps.
+    ``NVIDIA_DESKTOP``: x86_64 with an NVIDIA GPU and
+    ``gstreamer1.0-plugins-bad`` ``nvcodec`` (``nvh264dec``, ``nvh264enc``,
+    ``cudaupload``/``cudadownload``) but no DeepStream, hence no
+    ``nvvideoconvert``. ``_build_convert`` falls back to stock
+    ``videoconvert``; no element in the reader pipeline produces
+    ``memory:NVMM`` caps.
 
-    ``CPU_ONLY`` is the fallback: stock GStreamer plugins, no
-    NVIDIA-specific elements. Frames flow in system memory; the
-    NVMM path is unavailable.
+    ``CPU_ONLY``: stock GStreamer plugins only, system memory, no NVMM path.
     """
 
     TEGRA = "tegra"
@@ -371,29 +357,22 @@ def nvmm_convert_element() -> str | None:
 def bgr_convert_chain(convert: str) -> str:
     """Return ``convert`` extended so the chain can emit system-memory ``BGR``.
 
-    The two NVMM-aware converters do **not** advertise the same system-memory
-    src caps, so "which element did we resolve" decides how ``format=BGR`` has
-    to be negotiated:
+    The two NVMM-aware converters diverge on system-memory src caps:
 
-    * DeepStream's ``nvvideoconvert`` lists packed 3-byte ``BGR``, so
-      ``nvvideoconvert ! video/x-raw,format=BGR`` links directly — no extra
-      CPU copy is inserted on a DeepStream host.
-    * The Tegra/L4T ``nvvidconv`` does **not**. Its system-memory
-      ``video/x-raw`` src template on a Jetson AGX Thor (plain L4T, no
-      DeepStream) is::
+    * DeepStream's ``nvvideoconvert`` lists packed 3-byte ``BGR`` — links
+      directly, no extra CPU copy.
+    * Tegra/L4T ``nvvidconv`` does not. Its system-memory ``video/x-raw`` src
+      template on a Jetson AGX Thor (plain L4T, no DeepStream) is::
 
           {I420, UYVY, YUY2, YVYU, NV12, NV16, NV24, GRAY8, BGRx, RGBA, Y42B, Y444}
 
-      ``BGRx`` is offered, plain ``BGR`` is not, so pinning ``format=BGR``
-      straight onto ``nvvidconv`` fails at ``Gst.parse_launch`` time with
-      ``could not link nvvconv0 to <sink>, nvvconv0 can't handle caps``.
-      The fix is to land on ``BGRx`` and let a stock ``videoconvert`` drop the
-      padding byte.
+      ``BGRx`` is offered, ``BGR`` is not — pinning ``format=BGR`` directly
+      fails at ``Gst.parse_launch`` with ``could not link nvvconv0 to <sink>,
+      nvvconv0 can't handle caps``. Fix: land on ``BGRx``, let stock
+      ``videoconvert`` drop the padding byte.
 
-    The decision is made on the resolved element **name**, never on a guess
-    about the platform, so a host that happens to have both elements gets the
-    chain matching whichever one :func:`nvmm_convert_element` (or the
-    platform table) actually picked.
+    Decision is made on the resolved element **name**, matching whichever
+    :func:`nvmm_convert_element` picked.
 
     Args:
         convert: The colour-convert element already resolved for this host —
@@ -401,7 +380,7 @@ def bgr_convert_chain(convert: str) -> str:
             ``videoconvert``.
 
     Returns:
-        Either ``convert`` unchanged (it can emit ``BGR`` itself) or a
+        Either ``convert`` unchanged, or a
         ``<convert> ! video/x-raw,format=BGRx ! videoconvert`` chain. The
         caller appends its own ``! video/x-raw,format=BGR[,...]`` capsfilter
         either way.

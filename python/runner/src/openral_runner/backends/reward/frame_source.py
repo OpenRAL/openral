@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass
+from typing import Any
 
 _NS_PER_S = 1_000_000_000
 
@@ -125,3 +126,40 @@ def trend(series: list[float]) -> float:
     num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, series, strict=True))
     den = sum((x - mean_x) ** 2 for x in xs)
     return num / den if den else 0.0
+
+
+# |progress trend per sample| below this reads as "stalled" (no meaningful change).
+# Shared by RobometerInProcessReward.assess and TOPRewardMonitor.assess.
+_STALL_TREND_EPS = 0.002
+
+
+def assess_from_score(
+    progress: list[float], success: list[float], *, success_threshold: float, frames_seen: int
+) -> dict[str, Any]:
+    """Summarize one scored window into the reward-monitor ``assess()`` dict.
+
+    Shared by :class:`~openral_runner.backends.reward.robometer_reward.RobometerInProcessReward`
+    and :class:`~openral_runner.backends.reward.topreward_reward.TOPRewardMonitor` so both
+    backends report the same shape to ``reward_monitor_node`` / the Reasoner's
+    ``query_task_progress`` path.
+
+    Args:
+        progress: Per-frame progress series in ``[0, 1]``, newest last.
+        success: Per-frame success series in ``[0, 1]``, newest last.
+        success_threshold: Pass bar for ``succeeded``.
+        frames_seen: Number of frames the score was computed over.
+
+    Returns:
+        ``progress_now`` / ``success_now`` / ``progress_trend`` / ``success_trend`` /
+        ``stalled`` / ``succeeded`` / ``frames_seen``.
+    """
+    p_trend = trend(progress)
+    return {
+        "progress_now": progress[-1],
+        "success_now": success[-1],
+        "progress_trend": p_trend,
+        "success_trend": trend(success),
+        "stalled": abs(p_trend) < _STALL_TREND_EPS,
+        "succeeded": success[-1] >= success_threshold,
+        "frames_seen": frames_seen,
+    }

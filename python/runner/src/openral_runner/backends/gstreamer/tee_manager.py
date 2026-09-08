@@ -1,31 +1,29 @@
 """Runtime tee-branch manager for the GStreamer perception bus.
 
-A :class:`TeeManager` owns the named ``tee`` of a *running* camera pipeline
-(:data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`) and attaches /
-detaches consumer branches on the live pipeline via dynamic pad add / remove.
-This is the mechanism the S2 reasoner drives through ``ExecuteRskill``: activating
-a detector rSkill attaches a branch; deactivating it detaches the branch.
+:class:`TeeManager` owns the named ``tee`` of a running camera pipeline
+(:data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`) and
+attaches/detaches consumer branches via dynamic pad add/remove — the
+mechanism the S2 reasoner drives through ``ExecuteRskill``: activating a
+detector rSkill attaches a branch, deactivating detaches it.
 
-Each branch is built as ``<leaky queue> ! <caller elements>`` so a stalled or
-crashing consumer drops its own frames instead of backpressuring the policy leg
-— the same leaky-branch isolation policy the static pipeline builder applies
-via :func:`~openral_runner.backends.gstreamer.pipeline.leaky_branch`, shared here
-through :data:`~openral_runner.backends.gstreamer.pipeline.LEAKY_BRANCH_QUEUE`.
+Each branch is ``<leaky queue> ! <caller elements>``, the same isolation
+policy the static builder applies via
+:func:`~openral_runner.backends.gstreamer.pipeline.leaky_branch`
+(:data:`~openral_runner.backends.gstreamer.pipeline.LEAKY_BRANCH_QUEUE`), so
+a stalled/crashing consumer drops its own frames rather than
+backpressuring the policy leg.
 
-Lifecycle:
+:meth:`attach` requests a tee src pad, parses the branch into a bin, adds
+it, links, and syncs to PLAYING (safe on a live tee — the leaky queue
+absorbs the pre-roll window). :meth:`detach` installs an IDLE pad probe;
+when it fires (between buffers, on the streaming thread) the branch is
+unlinked, its request pad released, and the bin torn down to ``NULL`` — the
+canonical safe-detach pattern for a flowing pipeline.
 
-* :meth:`attach` requests a ``tee`` src pad, parses the branch into a bin, adds
-  it to the pipeline, links the pad, and syncs the branch to PLAYING. Adding is
-  safe on a live tee — the leaky queue absorbs the brief pre-roll window.
-* :meth:`detach` installs an ``IDLE`` pad probe on the branch's ``tee`` pad; when
-  the pad next goes idle (between buffers, on the streaming thread) the probe
-  unlinks the branch, releases the request pad, and tears the bin down to
-  ``NULL``. This is the canonical safe-detach pattern for a flowing pipeline.
-
-Like :mod:`~openral_runner.backends.gstreamer.reader`, this module imports
-``gi`` at load and therefore requires the ``gstreamer`` optional-extra; the
-:mod:`~openral_runner.backends.gstreamer.pipeline` builder it depends on is
-import-safe everywhere.
+Imports ``gi`` at load like :mod:`~openral_runner.backends.gstreamer.reader`
+— requires the ``gstreamer`` optional-extra; the
+:mod:`~openral_runner.backends.gstreamer.pipeline` builder is import-safe
+everywhere.
 """
 
 from __future__ import annotations

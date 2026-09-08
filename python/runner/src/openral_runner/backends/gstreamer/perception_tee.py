@@ -1,32 +1,26 @@
 """Perception event tee for :class:`GStreamerSensorReader`.
 
-When a sensor's :class:`~openral_core.SensorReaderConfig` enables the
-event leg via :attr:`PipelineSpec.enable_event_tee`, the pipeline builder
-adds a third ``tee`` branch terminating in
-``appsink name=event_sink`` (default). Frames pulled from that appsink
-are fed to a list of :class:`EventDetector` instances; whenever a
-detector emits a :data:`~openral_core.PerceptionEventMetadata`, the
-publisher fans it out as a ``openral_msgs/PromptStamped`` on the
-per-kind topic ``/openral/perception/<kind>``.
+When :attr:`PipelineSpec.enable_event_tee` is set, the pipeline builder
+adds a third ``tee`` branch terminating in ``appsink name=event_sink``
+(default). Frames pulled from that appsink feed a list of
+:class:`EventDetector` instances; a detector's
+:data:`~openral_core.PerceptionEventMetadata` is fanned out as
+``openral_msgs/PromptStamped`` on ``/openral/perception/<kind>``.
 
-The contract is intentionally narrow:
-
-* Three legs (policy / observability / event) share the same upstream
-  GStreamer pipeline and, on hosts with the OpenRAL Pro NVMM plugin
-  installed, the same shared CUDA context singleton (``cuda_context`` —
-  moved to openral-pro). The
-  event leg lifts frames to system memory before the appsink — Python
-  detectors consume numpy arrays, never NVMM handles.
-* Per-kind topics, per capability review §3 (F6). The
-  topology is symmetric with :mod:`openral_observability.failure_bus`'s
-  ``/openral/failure/<source>`` layout.
-* Token-bucket rate-limit at each detector (default 5 Hz), so a noisy
-  motion source can't storm the reasoner. Dropped events are counted
-  but not summarised — the reasoner does not steer on perception
-  events the way it steers on failures (FailureBus owns the
-  ``KIND_SUPPRESSED_SUMMARY`` roll-up).
+* Three legs (policy / observability / event) share the upstream pipeline
+  and, with the OpenRAL Pro NVMM plugin, the shared ``cuda_context`` CUDA
+  singleton (moved to openral-pro). The event leg lifts frames to system
+  memory before the appsink — detectors consume numpy arrays, never NVMM
+  handles.
+* Per-kind topics, per capability review §3 (F6); symmetric with
+  :mod:`openral_observability.failure_bus`'s ``/openral/failure/<source>``
+  layout.
+* Token-bucket rate-limit per detector (default 5 Hz). Dropped events are
+  counted but not summarised — the reasoner doesn't steer on perception
+  events the way it does on failures (FailureBus owns
+  ``KIND_SUPPRESSED_SUMMARY``).
 * :mod:`rclpy` is lazy-imported inside :meth:`PerceptionEventPublisher.start`
-  so this module is import-safe on hosts without a sourced ROS env.
+  so this module is import-safe without a sourced ROS env.
 """
 
 from __future__ import annotations

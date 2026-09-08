@@ -1,28 +1,25 @@
 """HAL adapter that publishes ``ActionChunk`` on ROS.
 
-`ROSPublishingHAL` satisfies the existing
-:class:`openral_hal.protocol.HAL` Protocol but **does not drive motors
-directly**. Instead:
+`ROSPublishingHAL` satisfies :class:`openral_hal.protocol.HAL` but **does
+not drive motors directly**:
 
 * ``send_action`` serialises the :class:`openral_core.Action` into
-  ``openral_msgs/ActionChunk`` and publishes it on
+  ``openral_msgs/ActionChunk`` and publishes on
   ``/openral/candidate_action`` with RELIABLE / VOLATILE / KL=1 QoS.
-* ``read_state`` returns the most recent ``JointState`` cached from a
-  ``/joint_states`` subscription opened on a host
-  ``rclpy.lifecycle.LifecycleNode``.
-* ``connect`` / ``disconnect`` open / close the publisher and
-  subscription on that host node — the adapter holds no rclpy node of
-  its own (composing into the host's executor keeps QoS / lifecycle /
-  shutdown in one place per CLAUDE.md §6.1).
+* ``read_state`` returns the latest ``JointState`` cached from a
+  ``/joint_states`` subscription on a host ``rclpy.lifecycle.LifecycleNode``.
+* ``connect`` / ``disconnect`` open / close that publisher + subscription
+  on the host node — the adapter holds no rclpy node of its own (composing
+  into the host's executor keeps QoS / lifecycle / shutdown in one place
+  per CLAUDE.md §6.1).
 
-This is the **single change** to the in-process hot path:
-``DeployRunner._tick_impl`` keeps calling
-``hal.send_action(action)`` — only the sink moves from motors to a ROS
-topic, behind which sits ``safety_node`` → ``<robot>_hal_node``.
+Single change to the in-process hot path: ``DeployRunner._tick_impl`` still
+calls ``hal.send_action(action)`` — only the sink moves from motors to a
+ROS topic, behind which sits ``safety_node`` → ``<robot>_hal_node``.
 
-`trace_id` is sourced from the active OTel context;
-``rskill_id`` / ``rskill_revision`` are set per goal by the
-``rskill_runner_node`` (an injected getter avoids tight-coupling).
+``trace_id`` is sourced from the active OTel context; ``rskill_id`` /
+``rskill_revision`` are set per goal by ``rskill_runner_node`` (an
+injected getter avoids tight-coupling).
 """
 
 from __future__ import annotations
@@ -310,15 +307,14 @@ class ROSPublishingHAL:
                 deadline and no safety stop is latched.
 
         Note:
-            This is a **grouped-dispatch** wait: an action with
-            ``tick_group_size <= 1`` returns below without blocking, so a
-            single-surface policy never reaches the safety check here at all.
-            Reading the seam on the ungrouped path is the owning node's job —
-            ``rskill_runner_node`` polls the same
-            :meth:`~RskillRunnerNode._safety_abort_reason` before each
-            inference tick. Do not add a check to the early return: this
-            adapter must stay a sink, and a per-publish safety gate here would
-            duplicate the kernel's own decision.
+            Grouped-dispatch wait only: ``tick_group_size <= 1`` returns
+            below without blocking, so a single-surface policy never reaches
+            this safety check. The ungrouped path's seam is polled by
+            ``rskill_runner_node`` via
+            :meth:`~RskillRunnerNode._safety_abort_reason` before each tick;
+            don't add a check to the early return — this adapter stays a
+            sink, and a per-publish gate here would duplicate the kernel's
+            own decision.
         """
         group_size = int(action.tick_group_size)
         if group_size <= 1:

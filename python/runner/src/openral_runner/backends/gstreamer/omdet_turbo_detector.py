@@ -1,42 +1,38 @@
 """In-process open-vocabulary detector backed by a Transformers zero-shot model.
 
-Unlike the LocateAnything sidecar (a heavy VLM pinned to ``transformers==4.57.1``,
-hence out-of-process), a zero-shot detection
-model such as ``omlab/omdet-turbo-swin-tiny-hf`` is a first-class
-``transformers`` architecture (``AutoModelForZeroShotObjectDetection``) that
-loads under the runtime's own ``transformers>=5``. It therefore runs **in
-process** — no sidecar venv, no ZMQ — and is selected as
+Unlike the LocateAnything sidecar (pinned to ``transformers==4.57.1``, hence
+out-of-process), a zero-shot model such as ``omlab/omdet-turbo-swin-tiny-hf``
+is a first-class ``transformers`` architecture
+(``AutoModelForZeroShotObjectDetection``) that loads under the runtime's own
+``transformers>=5``. It runs **in process** — no sidecar, no ZMQ — selected
+as
 :attr:`~openral_runner.backends.gstreamer.objects_detector.DetectorTier.ZEROSHOT_HF`
 for manifests whose ``detector.engine`` is ``zeroshot_hf``.
 
-**Both detector modes, chosen by the rSkill manifest.** OmDet-Turbo
-is open-vocabulary, so this one backend serves either invocation mode; which one
-is intended is declared by the manifest's ``detector.mode``:
+One backend, two modes, chosen by the manifest's ``detector.mode``:
 
-* ``continuous`` (e.g. ``rskills/omdet-turbo-indoor``) — the manifest's
-  ``detector.labels`` is a **fixed** vocabulary detected every frame. Running a
-  frozen large vocabulary makes it behave like a closed large-vocabulary
-  detector — an unprompted background producer that populates the world object
-  list with far more than the 80 COCO classes the RT-DETR rSkills cover.
-* ``on_demand`` (e.g. ``rskills/omdet-turbo-locator``) — a prompted locator. The
-  reasoner retargets it via :meth:`set_query` (the
-  ``/openral/perception/detector_query`` topic) or asks one-shot via
-  :meth:`detect_with_query` (the read-only ``locate_in_view`` service).
-  A lightweight, real-time alternative to the 3B LocateAnything VLM for simple
-  "find X" queries.
+* ``continuous`` (e.g. ``rskills/omdet-turbo-indoor``) — a **fixed**
+  ``detector.labels`` vocabulary detected every frame; behaves as an
+  unprompted background producer beyond the 80 COCO classes the RT-DETR
+  rSkills cover.
+* ``on_demand`` (e.g. ``rskills/omdet-turbo-locator``) — a prompted locator,
+  retargeted via :meth:`set_query` (``/openral/perception/detector_query``
+  topic) or one-shot via :meth:`detect_with_query` (the read-only
+  ``locate_in_view`` service); a lightweight real-time alternative to the 3B
+  LocateAnything VLM for simple "find X" queries.
 
 ``labels`` is the static default vocabulary either way.
 
-It implements the same ``detect(frame_bgr, width, height, sensor_id) ->
+Implements the same ``detect(frame_bgr, width, height, sensor_id) ->
 ObjectsMetadata | None`` interface as
 :class:`~openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`,
 so :class:`~openral_runner.backends.gstreamer.detector_runner.DetectorRunner`
-drives it from the same system-memory BGR camera-tee branch as the CPU ONNX and
-VLM-sidecar tiers.
+drives it from the same system-memory BGR camera-tee branch as the CPU ONNX
+and VLM-sidecar tiers.
 
-``torch`` / ``transformers`` are imported lazily at first ``detect()`` so this
-module imports cleanly on hosts without the wheels (mirroring the ONNXRuntime
-lazy-import in :mod:`~openral_runner.backends.gstreamer.objects_detector`).
+``torch`` / ``transformers`` are imported lazily at first ``detect()`` so
+this module imports cleanly on hosts without the wheels (mirroring
+:mod:`~openral_runner.backends.gstreamer.objects_detector`).
 """
 
 from __future__ import annotations

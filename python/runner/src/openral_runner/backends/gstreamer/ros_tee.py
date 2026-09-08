@@ -33,7 +33,6 @@ import time
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
-from openral_core import FrameEncoding
 
 if TYPE_CHECKING:
     from rclpy.node import Node
@@ -46,15 +45,6 @@ log = structlog.get_logger(__name__)
 # Default QoS depth for the image publisher. Matches gscam2's default
 # (``sensor_data``-style: shallow, BEST_EFFORT-friendly).
 _DEFAULT_QOS_DEPTH: Final[int] = 5
-
-# Map our :class:`FrameEncoding` to the ROS string encoding (`sensor_msgs/Image.encoding`).
-# Only the CPU-side encodings make sense here — the NVMM path never
-# reaches the ROS publisher (ROS path is always lifted to system memory).
-_OPENRAL_TO_ROS_ENCODING: Final[dict[FrameEncoding, str]] = {
-    FrameEncoding.BGR8: "bgr8",
-    FrameEncoding.RGB8: "rgb8",
-    FrameEncoding.MONO8: "mono8",
-}
 
 
 class RosImagePublisher:

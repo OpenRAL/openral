@@ -2,28 +2,24 @@
 """rclpy → OTLP bridge for the octomap occupied-voxel cloud.
 
 The OpenRAL dashboard is OTLP-only — it never subscribes to ROS topics
-directly. This module ships :class:`WorldCloudBridge`, a small consumer
-constructed against an existing ``rclpy.node.Node`` that subscribes to the
-``sensor_msgs/PointCloud2`` octomap_server publishes on
-``/octomap_point_cloud_centers`` (occupied voxel centers — the
-octomap world map the safety kernel gates on), transforms the points into the
-robot ``base_link`` frame via TF2, crops them to a local box, renders an
-oblique "chase-cam" perspective PNG colored by distance from the robot,
-and emits one ``world.pointcloud`` OTel span carrying the metadata + PNG
-as attributes.
-
-The dashboard store has a matching handler that populates
-``_topics["pointcloud"]`` from the span (see
+directly. :class:`WorldCloudBridge` subscribes (given an existing
+``rclpy.node.Node``) to the ``sensor_msgs/PointCloud2`` octomap_server
+publishes on ``/octomap_point_cloud_centers`` (occupied voxel centers, the
+map the safety kernel gates on), transforms it into ``base_link`` via TF2,
+crops to a local box, renders an oblique "chase-cam" PNG colored by
+distance, and emits one ``world.pointcloud`` OTel span carrying the
+metadata + PNG as attributes. The dashboard store's matching handler
+populates ``_topics["pointcloud"]`` from the span (see
 ``openral_observability.dashboard.store``).
 
 The pure render functions (:func:`crop_points_to_box`,
 :func:`encode_world_cloud_png`, :func:`world_cloud_span_attributes`) take
 plain ``(N, 3)`` arrays so the dashboard contract is testable without ROS.
 
-Composed into the existing ``RskillRunnerNode`` via
-``packages/openral_rskill_ros/openral_rskill_ros/compose.py`` so it shares
-the runner's rclpy executor; constructing it manually outside compose is
-supported for tests.
+Composed into ``RskillRunnerNode`` via
+``packages/openral_rskill_ros/openral_rskill_ros/compose.py`` to share the
+runner's rclpy executor; manual construction outside compose is supported
+for tests.
 """
 
 from __future__ import annotations

@@ -360,13 +360,8 @@ class ObjectsDetector:
     * **logits** — shape ``(1, N, num_classes)`` — pre-sigmoid class scores.
     * **boxes** — shape ``(1, N, 4)`` — normalised cxcywh in ``[0, 1]``.
 
-    The two outputs are identified at session-load time by shape: among all
-    3-D outputs (ndim == 3), the output whose last dimension is exactly 4 is
-    boxes; the other is logits.  When ``num_classes == 4`` both 3-D outputs
-    have the same last dimension, so index order is used as a tiebreaker
-    (index 0 = logits, index 1 = boxes), which matches the standard RT-DETR /
-    D-FINE export convention.  Outputs with ndim != 3 (e.g. an ``images``
-    passthrough) are ignored during identification.
+    The two outputs are identified at session-load time by shape — see
+    :func:`identify_rtdetr_outputs`.
 
     ``onnxruntime`` is lazy-imported at construction time so importing this
     module does not fail on hosts without the wheel.

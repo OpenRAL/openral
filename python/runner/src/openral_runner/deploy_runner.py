@@ -1,10 +1,8 @@
 """Hardware inference runner.
 
-:class:`DeployRunner` is the first concrete subclass of
-:class:`~openral_runner.InferenceRunnerBase` and closes the
-inference loop end-to-end on real hardware (or a digital twin):
-
-::
+:class:`DeployRunner` is the first concrete
+:class:`~openral_runner.InferenceRunnerBase` subclass, closing the inference
+loop end-to-end on real hardware (or a digital twin)::
 
     for each tick at rate_hz:
         for each SensorReader:
@@ -20,22 +18,19 @@ inference loop end-to-end on real hardware (or a digital twin):
             record on TickResult.safety_violations
             do NOT call hal.send_action — set action_applied=False
 
-The runner does not manage the :class:`~openral_rskill.Skill`
-lifecycle: callers must :meth:`Skill.configure` + :meth:`Skill.activate`
-before constructing the runner. The runner does manage HAL connection
-and SensorReader open/close as part of its own
+The runner does not manage :class:`~openral_rskill.Skill` lifecycle —
+callers must :meth:`Skill.configure` + :meth:`Skill.activate` first. It
+does manage HAL connection and SensorReader open/close via its own
 :meth:`activate` / :meth:`deactivate`.
 
-In-process image frames flow through the inference hot path
-unchanged (``SensorReader.read_latest()`` → ``WorldState.image_frames``
-via the aggregator). When a host needs the same frames on a ROS topic
-— for the rosbag2 recorder, Foxglove, or
-``rqt_image_view`` — :class:`openral_sensors.ros_publisher.SensorRosPublisher`
-runs as a *parallel* consumer of the same reader from its own thread.
-The GStreamer backend additionally provides a zero-copy tee via
-:class:`openral_runner.backends.gstreamer.ros_tee.RosImagePublisher`;
-the sensors-side publisher is the universal-but-copying fallback for
-OpenCV / RealSense / mock readers.
+In-process frames flow ``SensorReader.read_latest()`` →
+``WorldState.image_frames`` unchanged. For a ROS topic (rosbag2, Foxglove,
+``rqt_image_view``), :class:`openral_sensors.ros_publisher.SensorRosPublisher`
+runs as a parallel consumer; the GStreamer backend also provides a
+zero-copy tee via
+:class:`openral_runner.backends.gstreamer.ros_tee.RosImagePublisher` (the
+sensors-side publisher is the universal-but-copying fallback for
+OpenCV / RealSense / mock readers).
 """
 
 from __future__ import annotations
@@ -350,14 +345,11 @@ class DeployRunner(InferenceRunnerBase):
                     # wall-clock to get the freshness budget.
                     age_ms = (tick_wall_ns - frame.stamp_wall_ns) / 1e6
                     modality = _modality_for_encoding(frame.encoding)
-                    # Per-camera thumbnail gate (dashboard preview): encode +
-                    # attach a JPEG only when due at the private cadence, so most
-                    # ticks carry zero image bytes and skip the encode — the
-                    # trace path stays light while the dashboard refreshes at
-                    # ~25 Hz. ``encode_frame_thumbnail`` returns None for
-                    # unrenderable frames (DEPTH16/CUDA_NV12/RAW) or topic-ref /
-                    # GPU-handle frames; the gate has already advanced, so a
-                    # non-renderable camera does not retry the encode each tick.
+                    # Per-camera thumbnail gate (dashboard preview): encode + attach
+                    # a JPEG only when due at ~25 Hz, so most ticks skip the encode.
+                    # ``encode_frame_thumbnail`` returns None for unrenderable frames
+                    # (DEPTH16/CUDA_NV12/RAW) or topic-ref/GPU-handle frames; the gate
+                    # has already advanced, so a non-renderable camera doesn't retry.
                     thumb_bytes = (
                         ral_producer.encode_frame_thumbnail(frame)
                         if self._thumbnail_due(reader.sensor_id, self._thumbnail_clock())
