@@ -337,7 +337,7 @@ Detects and repairs `$LIBERO_CONFIG_PATH/config.yaml` (default `~/.libero/config
 ### `tools/refresh_methods_linenos.py`
 _Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check` reports drift and exits 1._
 
-- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]` — Rewrite one inventory file's markers; returns the changed-marker count and the unresolved-entry descriptions. (L148)
+- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]` — Rewrite one inventory file's markers; returns the changed-marker count and the unresolved-entry descriptions. (L173)
 
 ### `tools/topreward_per_frame_demo.py`
 _Per-frame TOPReward progress over one recorded episode, rendered as an overlay video. NF4 on an 8 GB GPU._
