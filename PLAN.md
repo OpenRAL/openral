@@ -548,12 +548,30 @@ Four things had to be discovered to make it run at all, each worth keeping:
       makes the venv's `include-system-site-packages = false` apply and closes
       the whole apt-shadowing class. **This is the `spark`-side launch failure,
       distinct from the harness one above.**
-- [ ] **Re-derive ADR-0101's 94 % from post-fix live-map rounds.** Unblocked
-      2026-09-07: the foreign 1.9 GB GPU process that caused the XR-1 sidecar to
-      OOM on `q-laptop`'s 8 GB is gone (175 MiB of 8151 in use). The offline
-      figure rests on certified mesh truth, which the backing-probe defect never
-      touched, so the two *should* agree — that agreement is worth checking
-      rather than assuming before any implementation leans on it.
+- [ ] **Re-derive ADR-0101's 94 % from post-fix live-map rounds.** The offline
+      figure rests on certified mesh truth, which no backing-probe defect ever
+      touched, so it stands as it is; what needs re-deriving is the **live-map**
+      half — the ADR's premise that these are "cells no real body explains" is a
+      *backing-class* claim, and both backing fixes changed how that class is
+      computed.
+
+      **Checked 2026-09-08: existing data cannot serve, and this is the precise
+      reason.** Only rounds at or after `448818c` carry both the coincident-
+      geometry sweep and the robot-only-backing sweep. Exactly two exist
+      (`selfocc-fridge-s2`, `selfocc-utensil-s4`) and **both are `robot_world`
+      start-state stops**. There is no post-fix round anywhere on disk with a
+      payload-vs-`voxel_` stop, which is the only class the ADR's 94 % is about.
+
+      **What it needs:** a fresh battery on a sha ≥ `448818c`, `utensil`-weighted
+      (it is the scene that reliably reaches the carry phase), enough rounds to
+      clear ~10 payload stops — the 13-round battery yielded 4. Then
+      `tools/adr0101_recovery.py` over it, and compare against the offline 48/51.
+
+      **Not run 2026-09-08:** `q-laptop` was at load 19.1 with a live deploy graph
+      and 2.1 GB of another session's GPU. The GPU would fit, but CPU contention
+      at that load pushes MuJoCo rollouts into the 420 s deadline and manufactures
+      `deadline-no-grasp`, which would corrupt the measurement rather than
+      produce it. Waiting is the correct call, not `--force-shared-gpu`.
 - [x] **Re-derived the false-positive rate on a repaired instrument — it is
       71 %, unchanged.** Thirteen rounds, `adr0101-live-*`, 2026-09-07. Seven
       stops: five of a physically clear robot (+0.67 … +24.86 mm), two real
