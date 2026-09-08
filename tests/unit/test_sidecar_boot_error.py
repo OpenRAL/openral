@@ -1,18 +1,16 @@
 """Unit tests for SidecarClient boot-failure error classification.
 
-A sidecar that *crashes* during boot (child exits non-zero — e.g. the GR00T/RLDX
-processor KeyErrors because a pretrain base like RLDX-1-PT has no modality config
-for the requested embodiment) must NOT be reported as "did not answer ping within
-{timeout}s" — that reads like a slow/hung bootstrap and sends the operator down
-the wrong path. :meth:`SidecarClient._boot_failure_error` distinguishes the two
-off the captured child exit code.
+A sidecar that *crashes* during boot (child exits non-zero — e.g. GR00T/RLDX
+processor KeyErrors because a pretrain base like RLDX-1-PT has no modality
+config for the requested embodiment) must NOT be reported as "did not answer
+ping within {timeout}s" — that reads as a hung bootstrap and misdirects the
+operator. :meth:`SidecarClient._boot_failure_error` distinguishes the two off
+the captured child exit code.
 
-The live-but-silent case splits the same way (issue #89): a child that never
-bound the port may be slow *or* stalled, and one that bound it but never
-answered is neither. Advising "raise the boot timeout" is only right for the
-first, so the message must not assert the slow reading — Isaac's Kit reached
-``app ready`` in 12 s and then burned the remaining 1188 s on a failed
-extension load.
+The live-but-silent case splits the same way (issue #89): never-bound-port
+may be slow or stalled; bound-but-mute is neither, so "raise the boot
+timeout" must not be asserted there — Isaac's Kit reached ``app ready`` in
+12s then burned the remaining 1188s on a failed extension load.
 """
 
 from __future__ import annotations

@@ -1,16 +1,8 @@
 """Tests for the ``kind: "reward"`` rSkill manifest variant.
 
-Covers:
-- :class:`~openral_core.schemas.RewardContract` Hypothesis round-trip +
-  JSON-Schema validation.
-- Contract test: load ``rskills/robometer-4b/rskill.yaml`` via
-  :meth:`~openral_core.schemas.RSkillManifest.model_validate` and assert
-  the key guarantees.
-- Validator boundary tests: each required/forbidden field rule raises
-  :exc:`pydantic.ValidationError` exactly.
-
-Run with:
-    uv run pytest tests/unit/test_reward_rskill_manifest.py -v
+:class:`~openral_core.schemas.RewardContract` Hypothesis round-trip + JSON
+Schema validation, the real ``rskills/robometer-4b`` fixture, and the
+validator boundary rules for each required/forbidden field.
 """
 
 from __future__ import annotations

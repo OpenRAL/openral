@@ -1,16 +1,9 @@
 """Unit tests for ``_resolve_state_dim`` in the openarm_robosuite backend.
 
-The openarm tabletop sim backend used to hardcode ``_OBS_STATE_DIM = 16``
-at module scope, tying it to a single rSkill checkpoint. Per CLAUDE.md
-§6.4, every rSkill that wants to participate in the dataset bridge
-declares ``state_contract.dim`` and ``action_contract.dim`` — so the
-backend now derives the action / observation width from the manifest
-at backend init.
-
-CLAUDE.md §1.11: real schemas, real rSkill manifests, no mocks. We
-exercise the resolver against a real on-disk rSkill manifest fixture
-(its ``state_contract.dim``) and against the openarm robot.yaml's joint
-count as the fallback.
+Backend derives observation/action width from the rSkill manifest's
+``state_contract.dim`` / ``action_contract.dim`` (CLAUDE.md §6.4) instead of a
+hardcoded constant tied to one checkpoint, falling back to the openarm
+robot.yaml's joint count when no rSkill resolves.
 """
 
 from __future__ import annotations
@@ -35,10 +28,8 @@ def test_state_dim_falls_back_when_uri_is_none() -> None:
 def test_state_dim_uses_fallback_when_rskill_unresolvable() -> None:
     """A bare reference that does not resolve drops to fallback.
 
-    Per the docstring, network / missing-package errors are swallowed
-    so test fixtures without HF Hub access stay green; the downstream
-    rSkill loader surfaces the real error when it later tries to
-    actually load the policy weights.
+    Network/missing-package errors are swallowed here so fixtures without HF Hub
+    access stay green; the loader surfaces the real error when it later loads weights.
     """
     assert (
         _resolve_state_dim(
@@ -116,8 +107,6 @@ def test_state_dim_rejects_state_action_mismatch(tmp_path) -> None:
     the observation.state slot, so they must agree.
     """
     pytest.importorskip("openral_rskill")
-    # Build a minimal rskill.yaml on disk with mismatched dims. We
-    # reuse the loader's local-resolve path by pointing at the directory.
     rskill_dir = tmp_path / "test-mismatched-rskill"
     rskill_dir.mkdir()
     (rskill_dir / "rskill.yaml").write_text(

@@ -1,39 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Near-miss probe scope + payload probes — the four gaps the field round exposed.
+"""Near-miss probe scope + payload probes — five gaps a field adjudication round exposed:
 
-The first adjudication round on the Spark used the stop record for real
-verdicts and found four ways it could mislead:
+1. Whole-robot scope saturates on mobilebase↔floor contact (0-2 mm), burying an arm
+   17-30 mm inside a freezer door (``collision_geometry`` excludes base_link/finger_pair).
+2. A carried payload logged only realized contacts, so a payload↔world margin stop had
+   nothing to adjudicate.
+3. Payload↔robot-link self-pairs were never probed (``sink_cup``↔``panda_link5`` at
+   -0.62 mm).
+4. ``robot_world_contacts == []`` isn't "nothing touching": contype/conaffinity
+   exclusions suppress contacts.
+5. Round 5/6: probe measured non-collidable marker geometry, reporting a phantom
+   "-134 mm inside cab_1_left_group_reg_main" (a RoboCasa region marker).
 
-1. On a mobile manipulator every reported pair saturated on
-   ``mobilebase``↔floor contact at 0-2 mm — the robot merely standing on the
-   ground, geometry the manifest deliberately keeps OUT of
-   ``collision_geometry`` — which hid an arm that was 17-30 mm inside a
-   freezer door and would have produced a WRONG verdict.
-2. A carried payload logged only *realized* contacts, so a payload↔world
-   margin stop had nothing to adjudicate with.
-3. Payload↔robot-link self-pairs were never probed at all, leaving a
-   ``sink_cup``↔``panda_link5`` stop at −0.62 mm unadjudicable.
-4. ``robot_world_contacts == []`` reads as "nothing was touching", which is
-   false: MuJoCo contype/conaffinity exclusions suppress contacts entirely.
+Fixture separates solidity from suppression: ``freezer_door`` is solid but
+bitmask-disjoint from the robot (contype=2/conaffinity=2 vs default 1/1) so MuJoCo
+reports no contact however deep the arm goes — must still be measured.
+``cab_1_left_group_reg_main`` has neither contype nor conaffinity — not solid, never
+kernel-checked, must never be measured.
 
-Round 5/6 added a fifth: the probe measured against **non-collidable marker
-geometry** and reported "payload −134 mm inside ``cab_1_left_group_reg_main``"
-— a RoboCasa region marker, physically meaningless. Solidity and suppression
-are different things, and this fixture now models both separately:
-
-* ``freezer_door`` is SOLID but its bitmasks are disjoint from the robot's
-  (``contype=2 conaffinity=2`` vs the default ``1``/``1``), so MuJoCo generates
-  no contact however deep the arm goes — the real shape of the field's "arm
-  30 mm inside a door with ``ncon == 0``", and the exact case the near-miss
-  probe exists to adjudicate. It must keep being measured.
-* ``cab_1_left_group_reg_main`` carries neither ``contype`` nor
-  ``conaffinity``: it is not solid at all, cannot collide with anything, and is
-  never checked by the kernel. It must never be measured.
-
-These drive the real ``robots/panda_mobile/robot.yaml`` manifest (whose
-``collision_geometry`` covers ``panda_link1..7`` and deliberately omits
-``base_link`` and ``panda_finger_pair``) against a real compiled MuJoCo model
-of a wheeled base on a floor plane — no mocks (CLAUDE.md §1.11).
+Drives the real ``robots/panda_mobile/robot.yaml`` manifest (``collision_geometry``
+covers ``panda_link1..7``, omits base_link/finger_pair) against a real compiled MuJoCo
+model — no mocks (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -47,19 +34,15 @@ from openral_hal.sim_sensor_bridge import estop_ground_truth_snapshot, kernel_ch
 
 mujoco = pytest.importorskip("mujoco")
 
-# A robocasa-shaped mobile manipulator: `mobilebase0_*` chassis + four wheels
-# resting on a floor plane, `robot0_link1..7` arm, `gripper0_*` fingers, and
-# the two world fixtures the field stops involved. Joint names are the exact
-# `sim_joint_name`s panda_mobile's manifest declares, so both the self-filter
-# (prefix-derived) and the kernel scope (child_link-derived) resolve for real.
+# Robocasa-shaped mobile manipulator (mobilebase0_* chassis+wheels, robot0_link1..7 arm,
+# gripper0_* fingers) plus the two world fixtures the field stops involved. Joint names
+# match panda_mobile's manifest sim_joint_names exactly, so both the self-filter and
+# kernel scope resolve for real.
 #
-# `freezer_door` is solid with bitmasks disjoint from the robot's
-# (2/2 vs the default 1/1) — the field pathology: MuJoCo generates NO contact
-# for it however deep the arm goes, yet it is a real obstacle and must be
-# measured. `cab_1_left_group_reg_main` is the opposite: a RoboCasa region
-# marker with neither contype nor conaffinity, overlapping both the arm and the
-# payload's parking spot. It is not solid, so measuring against it invents the
-# "-134 mm inside" phantom of rounds 5/6.
+# freezer_door: solid, bitmask-disjoint from the robot (2/2 vs default 1/1) — MuJoCo
+# generates no contact regardless of penetration depth, yet it's a real obstacle.
+# cab_1_left_group_reg_main: neither contype nor conaffinity — not solid, overlaps both
+# the arm and the payload's parking spot; measuring against it is the rounds 5/6 phantom.
 _MJCF = """
 <mujoco model="estop_probe_scope">
   <option gravity="0 0 0"/>
@@ -236,12 +219,10 @@ def test_kernel_scope_is_the_manifests_collision_geometry() -> None:
 
 
 def test_unscoped_probe_saturates_on_base_floor_pairs() -> None:
-    """The field failure, reproduced: whole-robot scope buries the arm in floor noise.
+    """The field failure reproduced: whole-robot scope buries the arm in floor noise.
 
-    The base rests on eight floor contact points at 0.000 m. A margin stop —
-    the arm 5 mm off the freezer door, exactly the class the probe exists to
-    adjudicate — sorts behind all eight, so every reported slot is the robot
-    standing on the ground and the arm is invisible.
+    8 base-floor contacts at 0.000 m outrank the arm's 5 mm margin stop off the
+    freezer door, so every reported slot is the ground and the arm is invisible.
     """
     model, data = _model_data(door_x=_ARM_NEAR_DOOR_X)
     snapshot = estop_ground_truth_snapshot(
@@ -288,13 +269,11 @@ def test_kernel_scoped_probe_surfaces_the_arm_at_the_door() -> None:
 
 
 def test_penetration_survives_a_starved_call_budget() -> None:
-    """A tiny budget truncates the far end: real interpenetration still gets probed.
+    """A tiny call budget still finds real interpenetration, not just plane noise.
 
-    The floor plane is unbounded (``geom_rbound == 0``), so it formally ranks
-    ahead of every other candidate — that is how a kitchen floor consumed the
-    whole call budget in the field. Planes now rank behind genuine
-    bounding-sphere overlap, so even at ``max_calls=2`` with the whole robot
-    in scope the arm inside the door is found.
+    Planes have ``geom_rbound == 0`` (unbounded) — the field bug where a kitchen
+    floor consumed the whole budget — but now rank behind genuine bounding-sphere
+    overlap, so ``max_calls=2`` still surfaces the arm inside the door.
     """
     model, data = _model_data(door_x=_ARM_IN_DOOR_X)
     snapshot = estop_ground_truth_snapshot(
@@ -391,11 +370,9 @@ def test_payload_robot_self_pair_is_probed() -> None:
 def test_region_marker_never_reports_a_phantom_robot_world_penetration() -> None:
     """A non-collidable marker swallowing the arm is not an obstacle it is inside.
 
-    ``cab_1_left_group_reg_main`` overlaps ``robot0_link7`` by ~0.3 m here.
-    With neither ``contype`` nor ``conaffinity`` it cannot collide with
-    anything and the kernel never checks it, so a signed distance against it is
-    not a penetration — it is the round 5/6 phantom that read "payload −134 mm
-    inside cab_1_left_group_reg_main". The real door 5 mm away must still rank.
+    ``cab_1_left_group_reg_main`` (no contype/conaffinity) overlaps ``robot0_link7``
+    by ~0.3 m — this is the round 5/6 phantom ("payload −134 mm inside
+    cab_1_left_group_reg_main"). The real door 5 mm away must still rank.
     """
     model, data = _model_data(door_x=_ARM_NEAR_DOOR_X)
     snapshot = estop_ground_truth_snapshot(
@@ -467,12 +444,11 @@ def test_unattached_stop_emits_no_payload_probes() -> None:
 
 
 def test_link_link_self_pairs_are_probed(caplog: pytest.LogCaptureFixture) -> None:
-    """#216: the pair a `kind=self` stop between two bare links names.
+    """#216: link-link self pairs (a `kind=self` stop) are now probed.
 
-    Before this the probe could not produce one at all — every other probe
-    excludes the whole robot from its far side — so the 2026-09-04 battery's
-    `panda_link5`/`panda_link7` stop had no ground truth, and the harness scored
-    it against a kitchen island instead (#208).
+    Previously every other probe excluded the robot from its own far side, so the
+    2026-09-04 battery's `panda_link5`/`panda_link7` stop had no ground truth and
+    scored against a kitchen island instead (#208).
     """
     del caplog
     model, data = _model_data()
@@ -489,14 +465,12 @@ def test_link_link_self_pairs_are_probed(caplog: pytest.LogCaptureFixture) -> No
         # Both sides are robot links. Nothing from the world may leak in.
         assert str(pair["body_a"]).startswith(("robot0_", "mobilebase0_"))
         assert str(pair["body_b"]).startswith(("robot0_", "mobilebase0_"))
-        # A link's own geoms touch by construction; the kernel skips the pair
-        # (`lb == lb2`) and a 0 m self-pair would sort straight to the top and
-        # bury whichever pair actually stopped the run.
+        # A link's own geoms touch by construction (kernel skips lb == lb2); a 0 m
+        # self-pair would sort to the top and bury the pair that actually stopped.
         assert pair["body_a"] != pair["body_b"]
 
-    # The mirror is gone too: with one body set on both sides every pair would
-    # otherwise appear as (a, b) and (b, a), doubling the records and halving
-    # the effective `max_pairs`.
+    # Mirror pairs removed: with one body set on both sides, (a,b)/(b,a) would
+    # double the records and halve the effective `max_pairs`.
     seen = [frozenset({str(p["body_a"]), str(p["body_b"])}) for p in pairs]
     assert len(seen) == len({frozenset(s) for s in seen})
 
@@ -508,13 +482,11 @@ def test_link_link_self_pairs_are_probed(caplog: pytest.LogCaptureFixture) -> No
 def test_the_link_link_budget_is_published_and_carries_no_voxel_term() -> None:
     """A link-vs-link stop has an OBB on both sides and no voxel on either.
 
-    Charging it the world block's `corner_slop + voxel_half_diagonal` would
-    budget a comparison the stop never made. The BOX case's budget is a
-    snapshot-wide upper bound (`2 * max_corner_slop`); the HULL case has no
-    snapshot-wide equivalent, because a hull's overhang past its source mesh
-    is a per-link quantity a consumer sums from `collision_model_slop.links`
-    for the two specific links the kernel named (openral#221) — never maxed
-    across links the way the box term is.
+    Charging it the world block's `corner_slop + voxel_half_diagonal` would budget
+    a comparison never made. BOX budget is a snapshot-wide upper bound
+    (`2 * max_corner_slop`); HULL has no such equivalent — per-link hull overhang
+    (openral#221) is summed from `collision_model_slop.links` for the two named
+    links, never maxed across links.
     """
     model, data = _model_data()
     snapshot = estop_ground_truth_snapshot(

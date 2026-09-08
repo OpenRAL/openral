@@ -1,20 +1,16 @@
 """Deploy-sim camera-slot realignment in rskill_runner_node.
 
-Deploy-sim keys ``WorldState.image_frames`` by the manifest SENSOR NAME
-(the ``/openral/cameras/<name>/image`` topic basename), but VLA adapters
-resolve their ``camera_keys`` and look up ``obs["images"]`` by the VLA
-slot (``camera1`` / ``camera2`` / ...) — the LIBERO convention
-``openral sim run`` and the rldx adapter already use. Without a realignment
-a manifest whose RGB sensors are descriptively named (franka: ``top`` /
-``wrist``) hands the pi0.5 adapter
-``obs["images"]["top"]`` while it looks up ``camera1`` and its
-``cam_alias`` maps ``camera1 -> image`` for the checkpoint — so the
-policy sees no frames.
+Deploy-sim keys ``WorldState.image_frames`` by the manifest SENSOR NAME (the
+``/openral/cameras/<name>/image`` topic basename), but VLA adapters resolve
+``obs["images"]`` by VLA slot (``camera1``/``camera2``/... — the LIBERO
+convention ``openral sim run`` and the rldx adapter use). Without realignment
+a descriptively-named manifest (franka: ``top``/``wrist``) hands the pi0.5
+adapter ``obs["images"]["top"]`` while it looks up ``camera1``, so the policy
+sees no frames.
 
-These tests pin the two helpers that realign the namespaces plus the
-``_build_runtime_skill_from_manifest`` scene-camera override, using real
-``robots/franka_panda/robot.yaml`` + real ``SensorFrame`` objects (no
-mocks, CLAUDE.md §1.11).
+Pins the two realignment helpers plus the ``_build_runtime_skill_from_manifest``
+scene-camera override, using real ``robots/franka_panda/robot.yaml`` + real
+``SensorFrame`` objects (no mocks, CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -197,13 +193,11 @@ class TestBuildRuntimeSkillSceneCameras:
     ) -> None:
         """Sensor-name ``scene_cameras`` (what runtime_node passes) → VLA slots.
 
-        ``runtime_node`` forwards ``camera_names`` (manifest sensor names,
-        e.g. ``top`` / ``wrist``) as ``scene_cameras``; the
-        adapter needs the VLA slots (``camera1`` / ``camera2``) so its
-        ``cam_alias`` maps ``camera1 -> image`` for the checkpoint. Capture
-        the ``env_cfg.scene.cameras`` the policy factory receives by
-        monkey-patching ``make_policy`` at the lerobot/torch process
-        boundary (CLAUDE.md §1.11) to raise before the heavy import.
+        ``runtime_node`` forwards manifest sensor names (e.g. ``top``/``wrist``)
+        as ``scene_cameras``; the adapter needs VLA slots (``camera1``/``camera2``)
+        for its checkpoint's ``cam_alias``. Captures ``env_cfg.scene.cameras`` by
+        monkey-patching ``make_policy`` at the lerobot/torch process boundary
+        (CLAUDE.md §1.11) to raise before the heavy import.
         """
         import openral_sim.factory as _sim_factory
 
@@ -234,12 +228,9 @@ class TestBuildRuntimeSkillSceneCameras:
     ) -> None:
         """A description with RGB sensors always wins, even if the caller passed slots.
 
-        Documents the intentional supersede in ``_build_runtime_skill_from_manifest``:
-        the manifest's VLA slots replace any caller-supplied ``scene_cameras``
-        when the description declares RGB sensors. Here the supplied value
-        already equals the derived slots, so the override is idempotent — but
-        the assertion pins that the manifest, not the caller, is the source of
-        truth.
+        Intentional supersede in ``_build_runtime_skill_from_manifest``: manifest
+        VLA slots replace any caller-supplied ``scene_cameras`` once the description
+        declares RGB sensors — the manifest, not the caller, is the source of truth.
         """
         import openral_sim.factory as _sim_factory
 

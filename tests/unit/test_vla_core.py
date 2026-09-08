@@ -295,16 +295,12 @@ def test_to_numpy_action_detaches_grad() -> None:
     assert out.shape == (4,)
 
 
-# ---------------------------------------------------------------------------
-# call_make_processors_cached_first — HF revalidation suppression
-# ---------------------------------------------------------------------------
-#
-# Reproduces the multi-HEAD HF burst the user reported when reloading a pi05
-# rSkill against a warm paligemma tokenizer cache. The wrapper reads the
-# preprocessor JSON, probes the local HF cache for the tokenizer it needs,
-# and flips ``huggingface_hub.constants.HF_HUB_OFFLINE`` for the duration of
-# the inner ``make_pre_post_processors`` call so transformers' AutoTokenizer
-# fast-paths to cache-only reads (``is_offline_mode()`` returns ``True``).
+# ── call_make_processors_cached_first — HF revalidation suppression ──────────
+# Reproduces the multi-HEAD HF burst from reloading a pi05 rSkill against a
+# warm paligemma tokenizer cache. The wrapper probes the local HF cache for
+# the tokenizer, then flips ``huggingface_hub.constants.HF_HUB_OFFLINE`` for
+# the inner ``make_pre_post_processors`` call so AutoTokenizer fast-paths to
+# cache-only reads (``is_offline_mode()`` returns ``True``).
 
 
 def _write_preprocessor_json(directory: Any, tokenizer_name: str | None) -> None:
@@ -639,10 +635,10 @@ class TestAssertAllParametersFinite:
     def test_raises_on_all_zero_weight_matrix(self) -> None:
         """Fresh zero pages are finite — the other uninitialised state.
 
-        A parameter a non-strict load skipped (key renamed after a
-        dependency bump) lands on freshly-mapped all-zero memory under
-        suppressed init; isfinite passes and the policy would silently emit
-        wrong actions. A trained weight MATRIX is never exactly all-zero.
+        A skipped non-strict-load key (renamed after a dependency bump) lands on
+        freshly-mapped all-zero memory under suppressed init; isfinite passes and
+        the policy would silently emit wrong actions. A trained weight MATRIX is
+        never exactly all-zero.
         """
         from openral_rskill._vla_core import assert_all_parameters_finite
 

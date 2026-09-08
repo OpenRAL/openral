@@ -1,18 +1,14 @@
 """Unit tests for ``openral_sim.policies._policy_loading`` shared helpers.
 
-These exercise the manifest-resolution helper that replaced the
-per-adapter ``_load_manifest_for_spec`` copies in pi05 / rldx / smolvla,
-plus the dtype-resolution helpers that moved out of ``pi05.py`` into
-``openral_sim._quantization``. Per CLAUDE.md §1.11 / §5.4 every fixture
-is a real :class:`openral_core.RSkillManifest` loaded from the canonical
-on-disk YAMLs under ``rskills/``; nothing is mocked.
+Covers the manifest-resolution helper that replaced per-adapter
+``_load_manifest_for_spec`` copies in pi05/rldx/smolvla, and the dtype helpers
+moved out of ``pi05.py`` into ``openral_sim._quantization``. Per CLAUDE.md
+§1.11/§5.4 every fixture is a real ``RSkillManifest`` loaded from on-disk YAMLs
+under ``rskills/``.
 
-The dtype tests stand in for the old in-pi05 unit coverage that used
-to live alongside ``_manifest_dtype`` / ``_torch_dtype_for`` /
-``_default_dtype``. ``torch`` is imported via :func:`pytest.importorskip`
-so a bare ``openral-sim`` install without the ``sim`` group still
-collects (the helpers themselves are torch-free; only this test's
-assertions need a real ``torch.dtype`` to compare against).
+``torch`` is imported via ``pytest.importorskip`` so a bare ``openral-sim``
+install without the ``sim`` group still collects — the helpers themselves are
+torch-free; only these assertions need a real ``torch.dtype``.
 """
 
 from __future__ import annotations

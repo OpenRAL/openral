@@ -2,27 +2,22 @@
 """The near-miss probe measures between SOLID geoms, on every side.
 
 A geom with neither ``contype`` nor ``conaffinity`` cannot collide with
-anything: MuJoCo never generates a contact for it and the safety kernel never
-checks it, so a signed distance against one is not a penetration. The world side
-of the probe has excluded them since rounds 5/6 reported the payload "134 mm
-inside ``cab_1_left_group_reg_main``", a RoboCasa region marker.
+anything — MuJoCo never generates a contact for it, the safety kernel never
+checks it — so a signed distance against one is not a penetration. The world
+side already excludes them (rounds 5/6: payload "134 mm inside
+``cab_1_left_group_reg_main``", a RoboCasa region marker).
 
-The **robot and payload sides were not filtered**, and scoping a probe side by
-*body* does not scope it to solid geometry — a robosuite link body carries its
-visual meshes alongside its collision geom, and an attached payload carries its
-own region bounding box. The 2026-08-23 validation round produced two verdicts
-off exactly that:
-
-* fridge — ``robot0_g42_vis ~ fridge_main_group_g43 @ 0.000 m``, adjudicated
-  ``real-contact``, while the same link's ``robot0_link7_collision`` was
-  2.5 mm clear;
-* baguette / sink_cup — ``obj_reg_bbox``, the payload's own region marker,
-  ranked ahead of every solid payload geom.
+Robot and payload sides were NOT filtered: scoping a probe side by *body*
+does not scope it to solid geometry — a robosuite link body carries visual
+meshes alongside its collision geom, and an attached payload carries its own
+region bbox. 2026-08-23 round found two false ``real-contact`` verdicts from
+this: fridge (``robot0_g42_vis ~ fridge_main_group_g43 @ 0.000 m`` while the
+link's collision geom was 2.5 mm clear) and baguette/sink_cup (``obj_reg_bbox``
+ranked ahead of every solid payload geom).
 
 Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11). Each
 configuration puts a visual shell exactly at 0.000 m from a fixture while the
-solid geometry it wraps is provably clear, so a probe that still ranks the
-shell first is unambiguous.
+solid geometry it wraps is provably clear.
 """
 
 from __future__ import annotations

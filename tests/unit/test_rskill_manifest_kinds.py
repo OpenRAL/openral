@@ -250,10 +250,9 @@ def test_ros_integration_default_goal_json_must_be_json_dict() -> None:
 def test_every_intree_rskill_manifest_declares_kind() -> None:
     """Migration: no manifest may rely on a default for ``kind``.
 
-    The schema field is required (no default) so this also doubles as
-    proof that the migration script ran on every in-tree rskill. The
-    test fails loud (with the offending paths) if any new manifest
-    lands without ``kind:``.
+    The field is required (no default), so this also proves the migration
+    script ran on every in-tree rskill. Fails loud with offending paths if
+    a new manifest lands without ``kind:``.
     """
     repo_root = pathlib.Path(__file__).resolve().parents[2]
     rskills_dir = repo_root / "rskills"

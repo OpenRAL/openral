@@ -1,35 +1,24 @@
 """:func:`_tool_palette_to_anthropic_tools` emits one tool per skill.
 
-Drives the real :class:`RSkillManifest` loader against the in-tree
-``rskills/*/rskill.yaml`` files, builds a real palette, then asserts
-on the shape of the LLM-facing tool schema:
+Drives the real :class:`RSkillManifest` loader against in-tree
+``rskills/*/rskill.yaml``, builds a real palette, and asserts on the LLM-facing
+tool schema:
 
-1. The fixed scaffold gains one ``execute_rskill__<slug>`` per skill
-   when the palette carries ``N`` skills, alongside the always-present
-   tools (``reload_gst_pipeline`` / ``lifecycle_transition`` /
-   ``emit_prompt`` / ``decompose_mission``).
+1. N skills → N ``execute_rskill__<slug>`` tools + the always-present
+   ``reload_gst_pipeline`` / ``lifecycle_transition`` / ``emit_prompt`` /
+   ``decompose_mission``.
+2. Each per-skill tool's ``description`` includes the manifest description and
+   its action/object/scene tags, so the LLM picks on semantics, not slug.
+3. Per-skill ``input_schema`` drops ``rskill_id`` from properties/required — the
+   tool name already identifies the skill.
+4. :func:`_decode_tool_payload` round-trips an ``execute_rskill__<slug>`` call to
+   the canonical ``rskill_id``, validating against
+   :class:`~openral_core.ReasonerToolCall`.
+5. Palettes with only ``execute_rskill_ids`` (no per-skill metadata) collapse to
+   a single ``execute_rskill`` tool with an enum schema.
 
-2. Each per-skill tool's ``description`` includes the manifest's
-   description text and the structured action / object / scene tags so
-   the LLM can pick on semantics (not slug).
-
-3. The per-skill tool's ``input_schema`` drops ``rskill_id`` from
-   ``properties`` and ``required`` — the tool name already identifies
-   the skill, so the LLM only needs ``prompt`` / ``deadline_s``.
-
-4. :func:`_decode_tool_payload` round-trips a per-skill tool call:
-   given a ``execute_rskill__<slug>`` name, it resolves the canonical
-   ``rskill_id`` and the call validates against the
-   :class:`~openral_core.ReasonerToolCall` union.
-
-5. Palettes carrying only ``execute_rskill_ids`` (no per-skill metadata
-   — synthetic test palettes, the default empty palette) collapse to
-   the single-``execute_rskill``-with-enum schema.
-
-Per CLAUDE.md §1.11: no mocks. The palette is the real palette built
-from the real on-disk manifests; the Anthropic / OpenAI clients
-themselves are not exercised (their SDKs are an external boundary —
-covered separately by integration tests with the FakeToolUseClient).
+Per CLAUDE.md §1.11: real palette from real on-disk manifests; the Anthropic/OpenAI
+SDKs themselves are covered separately by integration tests (FakeToolUseClient).
 """
 
 from __future__ import annotations

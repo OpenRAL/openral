@@ -6,14 +6,14 @@ transformer, two 480x640 cameras):
     call 1   330.4 ms      <- 10x the 33.3 ms budget at 30 Hz
     call 2+   14.9 ms
 
-Charged to tick 1 that is a guaranteed deadline miss, and under
-``DeadlineOverrunPolicy.DROP`` the robot's first commanded action is
-discarded. After wiring the warm-up into ``activate()``, the same
-checkpoint's first real tick measured 14.9 ms — inside budget.
+Charged to tick 1, that's a deadline miss and, under
+``DeadlineOverrunPolicy.DROP``, a discarded first action. After wiring the
+warm-up into ``activate()``, the first real tick measured 14.9 ms — inside
+budget.
 
-Uses a real ``torch.nn.Module`` with a real lerobot-shaped config rather
-than a mock (CLAUDE.md §1.11): the thing under test is precisely whether
-shapes are read correctly off a config and fed to a real forward pass.
+Uses a real ``torch.nn.Module`` with a real lerobot-shaped config (CLAUDE.md
+§1.11): tests whether shapes are read off the config and fed to a real
+forward pass.
 """
 
 from __future__ import annotations

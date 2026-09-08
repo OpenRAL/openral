@@ -1,22 +1,14 @@
 """Unit tests for the stateless helpers in the RoboCasa scene adapter.
 
-These cover the pieces of `openral_sim.backends.robocasa` that do
-NOT require robocasa / robosuite to be installed:
+Covers pieces of `openral_sim.backends.robocasa` that don't require
+robocasa/robosuite installed: `_validate_backend_options` (typed
+`RoboCasaBackendOptions` validation), `_resolve_env_name` (scene_id ->
+robosuite env_name), curated scene-id registration in `SCENES`,
+`read_panda_mobile_base_velocity` (qvel -> body-frame twist), and
+`synthesize_laser_scan_2d` (mj_ray per beam).
 
-* `_validate_backend_options` -- the typed `RoboCasaBackendOptions`
-  wrapper around `SceneSpec.backend_options`.
-* `_resolve_env_name` -- the (scene_id, opts) -> robosuite env_name
-  resolver (prebuilt vs procedural).
-* Scene-id registration -- the curated atomic-task ids land in
-  `SCENES` with `fixed_robot="panda_mobile"`.
-* `read_panda_mobile_base_velocity` -- de-rotates qvel into the body
-  frame using the OmronMobileBase joint names.
-* `synthesize_laser_scan_2d` -- one ``mj_ray`` per beam against a
-  synthetic MuJoCo XML with one known-distance box.
-
-CLAUDE.md §1.11 -- real schemas, real registry, real MuJoCo bindings.
-The mujoco import is gated on ``pytest.importorskip`` so this module
-still loads on hosts without the optional dep.
+CLAUDE.md §1.11: real schemas/registry/MuJoCo bindings. `mujoco` is
+gated behind `pytest.importorskip` so this module loads without it.
 """
 
 from __future__ import annotations

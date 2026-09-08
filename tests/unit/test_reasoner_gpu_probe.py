@@ -3,9 +3,6 @@
 `_detect_gpu_total_vram_gb` shells out to ``nvidia-smi`` so the reasoner_node can
 size the VLA+reward pair check without importing torch. It must parse MiB→GiB and
 degrade to ``0.0`` (→ the caller skips the check) on any failure.
-
-Run with:
-    uv run pytest tests/unit/test_reasoner_gpu_probe.py -v
 """
 
 from __future__ import annotations

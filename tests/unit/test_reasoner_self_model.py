@@ -1,13 +1,9 @@
 """Tests for the reasoner robot self-model.
 
-Covers:
-- :func:`~openral_reasoner.context.render_robot_self_model` against real
-  ``robots/<id>/robot.yaml`` fixtures (no synthetic placeholders, CLAUDE.md §1.11).
-- :class:`~openral_reasoner.context.ContextRenderer` surfacing the ``## ROBOT``
-  section when (and only when) a self-model is supplied.
-
-Run with:
-    uv run pytest tests/unit/test_reasoner_self_model.py -v
+:func:`~openral_reasoner.context.render_robot_self_model` against real
+``robots/<id>/robot.yaml`` fixtures (CLAUDE.md §1.11) and
+:class:`~openral_reasoner.context.ContextRenderer` surfacing ``## ROBOT`` iff
+a self-model is supplied.
 """
 
 from __future__ import annotations

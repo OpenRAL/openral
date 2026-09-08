@@ -146,16 +146,12 @@ def test_reasoner_span_helper_no_op_without_provider() -> None:
 def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
     """The dashboard store's ``reasoner.tick`` handler populates ``_topics["reasoner"]``.
 
-    The Reasoner emits one ``reasoner.tick`` span per orchestrator pass
-    via ``openral_observability.reasoner_span``. The dashboard's
-    headline-family map routes that span name into the per-tick
-    ``_topics["reasoner"]`` slot the operator-facing card reads.
-
-    This test mirrors ``test_slam_bridge.test_dashboard_store_picks_up
-    _slam_occupancy_grid_span`` — builds a single OTLP span by hand,
-    feeds it through ``TelemetryStore.ingest_spans``, asserts the
-    ``snapshot()["topics"]["reasoner"]`` slot carries every attribute
-    the card renderer expects.
+    The Reasoner emits one ``reasoner.tick`` span per orchestrator pass via
+    ``openral_observability.reasoner_span``; the dashboard routes it into the
+    per-tick ``_topics["reasoner"]`` slot the operator card reads. Builds a
+    single OTLP span by hand (mirrors
+    ``test_slam_bridge.test_dashboard_store_picks_up_slam_occupancy_grid_span``)
+    and asserts every attribute the card renderer expects survives ingest.
     """
     pytest.importorskip("opentelemetry.proto")
     from openral_observability.dashboard.store import TelemetryStore
@@ -206,11 +202,10 @@ def test_skill_failure_event_log_title_carries_reason() -> None:
     """A skill_failure span event surfaces its state + rSkill in the event-log title.
 
     The dashboard ingests OTLP, not the ROS FailureTrigger bus, so the only
-    thing it sees is the ``openral.event.skill_failure`` span event. Its concrete
-    state (timeout / vram_insufficient / …) rides on the
-    ``openral.event.skill_failure.state`` attribute. Without folding that into the
-    event-log title the operator sees only the bare event name and can't tell WHY
-    the skill failed — this guards the ``_summarise_event`` enrichment.
+    signal is the ``openral.event.skill_failure`` span event; its concrete
+    state (timeout/vram_insufficient/…) rides on the
+    ``openral.event.skill_failure.state`` attribute. Guards the
+    ``_summarise_event`` enrichment that folds it into the title.
     """
     pytest.importorskip("opentelemetry.proto")
     from openral_observability.dashboard.store import TelemetryStore

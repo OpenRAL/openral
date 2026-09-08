@@ -1,27 +1,17 @@
 """Unit tests for the RSkillManifest schema (V1) and ``rskill.yaml`` loader.
 
-Covers the rSkill *package* contract (CLAUDE.md §6.4 / RFC §1.4, §8.7) — the
-on-disk descriptor distributed via HuggingFace Hub. Distinct from the
-in-process ``Skill`` ABC (tested in ``test_skill.py``).
+Covers the rSkill *package* contract (CLAUDE.md §6.4 / RFC §1.4, §8.7) —
+distinct from the in-process ``Skill`` ABC (tested in ``test_skill.py``).
 
-``schema_version`` stays at ``"0.1"`` deliberately: the schema has not
-been published, so the surface was extended in place rather than
-bumping. That extension added two symmetric guards on top of the initial
-shape:
-
-- ``actuators_required`` mirrors ``sensors_required`` on the output side
-  (required, ``min_length=1``).
-- ``"custom"`` is a tenth allowed embodiment tag; when present, the
-  manifest MUST set ``embodiment_extra`` declaring the rig's sensor +
-  actuator surface, and every actuator must have ``n_dof`` and
-  ``vla_action_key`` set explicitly.
-
-V1 already tightened: HF Hub regex on ``name`` / ``fallback_skill_id``,
-SemVer on ``version``, ``hf://`` / ``local://`` discriminator on
-``weights_uri``, closed Literal sets for ``embodiment_tags`` /
-``model_family`` / ``benchmarks`` keys, required ``chunk_size``, and the
-derived ``is_commercial_use_allowed`` property in place of the removed
-free-field ``commercial_use_allowed``.
+``schema_version`` stays "0.1" (unpublished, so extended in place rather than
+bumped). V1 additions: ``actuators_required`` mirrors ``sensors_required``
+(required, ``min_length=1``); ``"custom"`` embodiment tag requires
+``embodiment_extra`` plus explicit ``n_dof``/``vla_action_key`` on every
+actuator. Also tightened: HF Hub regex on name/fallback_skill_id, SemVer on
+version, ``hf://``/``local://`` discriminator on weights_uri, closed Literal
+sets for embodiment_tags/model_family/benchmarks keys, required chunk_size,
+derived ``is_commercial_use_allowed`` (replaces removed free-field
+``commercial_use_allowed``).
 """
 
 from __future__ import annotations
@@ -788,13 +778,12 @@ class TestInTreeManifests:
 class TestJointUnitsDeclared:
     """Every joint-position rSkill must declare ``action_contract.joint_units``.
 
-    The skill_runner converts deg↔rad at the policy boundary; an undeclared
-    checkpoint falls back to a stats-magnitude heuristic that silently
-    mis-detected a degrees-trained SmolVLA SO-101 checkpoint as radians and
-    drove a real arm into its joint limits (issue #135). The schema validator
-    (:meth:`RSkillManifest._check_joint_units_declared`) makes this a hard,
-    fail-loud requirement so a new joint-position rSkill cannot merge without a
-    verified declaration.
+    skill_runner converts deg↔rad at the policy boundary; an undeclared
+    checkpoint falls back to a stats heuristic that mis-detected a
+    degrees-trained SmolVLA SO-101 checkpoint as radians and drove a real arm
+    into its joint limits (issue #135).
+    :meth:`RSkillManifest._check_joint_units_declared` makes this a hard,
+    fail-loud requirement.
     """
 
     def test_every_intree_joint_position_manifest_declares_units(self) -> None:
@@ -895,15 +884,11 @@ class TestRSkillEnvelope:
         assert m2.envelope.max_ee_speed_m_s == 0.2
 
     def test_extra_field_inside_envelope_rejected(self) -> None:
-        # SafetyEnvelope is a plain BaseModel; verify a nonsensical extra
-        # is rejected per Pydantic's default behavior on the nested model.
         d = _minimal_manifest_dict()
         d["envelope"] = {"max_force_n": 5.0, "garbage_field": 999.0}
-        # SafetyEnvelope does not declare extra="forbid" today — the field
-        # is silently ignored, matching how every other in-tree
-        # RobotDescription.safety block is consumed. This test pins the
-        # current behavior so a future tightening (extra="forbid") is an
-        # explicit decision rather than an accident.
+        # SafetyEnvelope doesn't declare extra="forbid" — extra fields are silently
+        # ignored, matching every other in-tree RobotDescription.safety block. Pins
+        # current behavior so a future tightening is a deliberate decision.
         m = RSkillManifest.model_validate(d)
         assert m.envelope is not None
         assert m.envelope.max_force_n == 5.0

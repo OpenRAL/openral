@@ -1,22 +1,12 @@
 """Unit tests for :mod:`openral_runner.safety`.
 
-No mocks (CLAUDE.md §1.11). Uses real
-:class:`~openral_core.Action` instances and the real
-:class:`~openral_core.SafetyEnvelope`. Verifies:
-
-* The Protocol structural check accepts :class:`NullSafetyClient`.
-* The stub's ``check_action`` returns ``None`` and opens a real OTel
-  ``safety.check`` span (captured via an in-process
-  :class:`InMemorySpanExporter`).
-* The span carries the documented attributes
-  (``safety.control_mode``, ``safety.horizon``,
-  ``safety.envelope_max_ee_speed_m_s``,
-  ``safety.envelope_max_force_n``, ``safety.severity``,
-  ``safety.check_name``).
-* A custom Protocol-conforming subclass that raises
-  :class:`ROSSafetyViolation` propagates the exception (CLAUDE.md §10:
-  never silently caught).
-* The default envelope is non-empty so traces aren't degenerate.
+No mocks (CLAUDE.md §1.11): real :class:`~openral_core.Action` and
+:class:`~openral_core.SafetyEnvelope`. Pins the Protocol structural check,
+the ``safety.check`` OTel span and its attributes (``safety.control_mode``,
+``safety.horizon``, ``safety.envelope_max_ee_speed_m_s``,
+``safety.envelope_max_force_n``, ``safety.severity``, ``safety.check_name``),
+and that a raised :class:`ROSSafetyViolation` propagates rather than being
+silently caught (CLAUDE.md §10).
 """
 
 from __future__ import annotations

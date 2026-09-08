@@ -1,28 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """The payload side of the adjudication budget — the other OBB in a self stop.
 
-The 2026-08-22 ``baguette`` round logged an attached-payload SELF stop:
-``attached:sim:obj_main`` vs ``panda_link2`` at −4.63 mm, while the
-ground-truth probe in the same snapshot put the nearest payload *mesh*
-75.86 mm from that link. Read as a straight subtraction that looks like the
-evidence named the wrong body by tens of millimetres — the same class as the
-defect ``fold_pair`` exists to prevent.
+The 2026-08-22 ``baguette`` round logged an attached-payload SELF stop
+(``attached:sim:obj_main`` vs ``panda_link2``) at -4.63 mm, while the
+ground-truth probe put the nearest payload mesh 75.86 mm from that link —
+looking like a misattributed defect (the class ``fold_pair`` guards against).
+It wasn't: reproducing the kernel's own arithmetic puts the pair at
++21.71 mm, ``panda_link2`` genuinely nearest (``panda_link1`` runner-up,
+25.5 mm further; pinned in the kernel's own ``BaguettePayloadSelfStop``
+gtests). The gap is representation, not error.
 
-It was not. Reproducing the kernel's own arithmetic from the manifest OBBs and
-the snapshot poses puts that pair at **+21.71 mm** at the measured
-configuration, with ``panda_link2`` genuinely the nearest checked link and
-``panda_link1`` the runner-up 25.5 mm further out (pinned in the kernel's own
-``BaguettePayloadSelfStop`` gtests). The gap is representation, not error.
+The budget only covered the world-voxel case (``corner_slop(link) +
+voxel_half_diagonal``). An attached-payload self stop has no voxel and an OBB
+on both sides, so the payload's own corner slop applies instead; charging
+only the link's share under-counts the admissible gap.
 
-But the budget that makes such a gap legible only covered the *world-voxel*
-case: ``corner_slop(link) + voxel_half_diagonal``. An attached-payload self
-stop has **no voxel and an OBB on both sides** — the kernel checks the
-payload's published primitives against the link OBBs — so the voxel term does
-not apply and the payload's own corner slop does. Charging only the link's
-share under-counts the admissible gap, which is exactly how a conservative,
-correct stop reads as a misattributed one.
-
-:func:`attached_payload_mesh_slop` is that missing term, and this pins it.
+:func:`attached_payload_mesh_slop` is that missing term, pinned here.
 
 Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11).
 """
@@ -40,17 +33,12 @@ from openral_hal.sim_sensor_bridge import (
 
 mujoco = pytest.importorskip("mujoco")
 
-# A gripper holding two payloads, one of each lowering the producer performs.
-#
-# `mesh_payload` is a regular octahedron with vertices at ±_R on each axis.
-# `extract_body_primitives` lowers a MESH geom to its local AABB, so its
-# primitive is the enclosing CUBE — loose at every corner by construction, and
-# loose by an amount that is exact rather than estimated: the cube corner
-# (h, h, h) is `h*sqrt(2)` from the nearest vertex (h, 0, 0).
-#
-# `box_payload` is a real box geom, which lowers EXACTLY. It is what proves the
-# measurement charges slop only where the producer actually creates it, rather
-# than inflating every payload uniformly.
+# `mesh_payload`: octahedron with vertices at ±_R on each axis.
+# `extract_body_primitives` lowers a MESH geom to its enclosing AABB (cube),
+# loose by an exact amount: cube corner (h,h,h) is `h*sqrt(2)` from vertex
+# (h,0,0).
+# `box_payload`: a real box geom lowers EXACTLY — proves slop is charged only
+# where the producer actually creates it, not a uniform inflation.
 _R = 0.03
 _OCTAHEDRON_VERTS = f"{_R} 0 0  {-_R} 0 0  0 {_R} 0  0 {-_R} 0  0 0 {_R}  0 0 {-_R}"
 _MJCF = f"""

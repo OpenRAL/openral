@@ -216,9 +216,6 @@ def test_cartesian_delta_rejects_wrong_width() -> None:
     """
     hal = PandaMobileHAL()
     hal.connect()
-    # Build a malformed Action by setting cartesian_delta directly
-    # after construction (Pydantic Action enforces the 6-tuple on
-    # construction; this exercises the HAL's defence-in-depth check).
     a = Action(
         control_mode=ControlMode.CARTESIAN_DELTA,
         horizon=1,

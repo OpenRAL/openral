@@ -1,25 +1,20 @@
 """Unit tests for the rSkill runner's execution-budget enforcement.
 
-Regression cover for a live SO-101 bench observation: a goal whose first
-inference took **144.5 s** against a resolved **45 s** budget still closed
-``SUCCEEDED``. ``_run_until_done_or_deadline`` exited via a bare ``return``
-on *every* path — completion, cancel, and deadline alike — so the caller
-could not tell them apart and fell through to ``result.success = True``.
-That both misreports the run and denies the reasoner's replanning ladder
-the signal it needs (CLAUDE.md §3, "deadline fallback mandatory").
+Regression cover: a live SO-101 bench goal whose first inference took 144.5 s
+against a resolved 45 s budget still closed ``SUCCEEDED`` —
+``_run_until_done_or_deadline`` exited via a bare ``return`` on every path
+(completion, cancel, deadline), so the caller couldn't tell them apart. That
+both misreports the run and denies the reasoner's replanning ladder its
+signal (CLAUDE.md §3, "deadline fallback mandatory").
 
-These tests pin the budget predicate: whether the loop must stop, and the
-elapsed time recorded for the abort reason.
+These tests pin the budget predicate and the elapsed time recorded on abort.
 
-**No ROS context is created.** ``_deadline_lapsed`` needs exactly two
-things from its instance — a real ``rclpy`` logger and the
-``_last_deadline_elapsed_s`` slot — so the real function is bound to a
-minimal holder carrying both. An earlier version of this file built a real
-``RskillRunnerNode``; its module-scoped ``rclpy.shutdown()`` tore the
-global context out from under every later rclpy test in ``tests/unit`` and
-took the suite from 2m18s to >15m. The logger below is genuine
-(``rclpy.logging.get_logger``), so the warning path is still exercised —
-this is a fixture, not a mock of the code under test (CLAUDE.md §1.11).
+No ROS context is created: ``_deadline_lapsed`` only needs a real ``rclpy``
+logger and the ``_last_deadline_elapsed_s`` slot, so it's bound to a minimal
+holder instead of a full ``RskillRunnerNode`` — an earlier version built one
+and its module-scoped ``rclpy.shutdown()`` broke every later rclpy test in
+this dir, taking the suite from 2m18s to >15m (CLAUDE.md §1.11: fixture, not
+a mock of the code under test).
 """
 
 from __future__ import annotations

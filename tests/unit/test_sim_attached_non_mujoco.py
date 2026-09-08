@@ -213,11 +213,9 @@ def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
 
 
 def test_incomplete_action_group_fails_on_first_tick_transition() -> None:
-    """An incomplete group raises instead of silently never stepping.
-
-    A skill that emits fewer typed slots per tick than the backend's
-    ``action_group_size`` (or a safety supervisor persistently rejecting one
-    slot) previously froze the sim forever with only a stdout print.
+    """An incomplete group (fewer typed slots per tick than ``action_group_size``)
+    raises instead of silently never stepping — it previously froze the sim with
+    only a stdout print.
     """
     from openral_core.exceptions import ROSRuntimeError
 

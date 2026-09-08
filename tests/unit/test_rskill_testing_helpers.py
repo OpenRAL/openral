@@ -1,23 +1,11 @@
 """Unit tests for ``openral_rskill.testing.assert_within_budget``.
 
-The helper is the single enforcement point for the CLAUDE.md §5.4 mandate
-that *"latency budgets declared per skill; CI fails if exceeded on the
-reference host"*.  Sim tests measure latency; this helper turns those
-measurements into pytest assertions tied to the manifest contract.
+Enforcement point for CLAUDE.md §5.4: latency budgets declared per skill; CI
+fails if exceeded on the reference host. Sim tests measure latency; this
+helper turns measurements into pytest assertions against the manifest.
 
-Coverage
---------
-- Strict pass: measurement at or below budget passes.
-- Strict fail: measurement above budget raises ``LatencyBudgetExceededError``
-  with stage / measured / budget fields populated.
-- Tolerance: a measurement within ``tolerance_pct`` over budget passes.
-- Tolerance: a measurement above ``tolerance_pct`` over budget fails.
-- Optional stages (``warmup``, ``load``) silently pass when unset on the
-  manifest.
-- Optional stages enforce when set.
-- Defensive: negative ``measured_ms`` or ``tolerance_pct`` raise
-  ``ValueError`` (catches accidental sign flips in callers).
-- Failure message includes ``rskill_id`` when supplied.
+Covers: strict pass/fail, ``tolerance_pct``, optional warmup/load stages,
+negative-input guards, and failure-message content (rskill_id, delta%).
 """
 
 from __future__ import annotations

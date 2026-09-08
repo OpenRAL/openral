@@ -1,17 +1,15 @@
 """Unit tests for the reasoner's ``world.scene_objects`` emit-on-change gate.
 
-The span is triggered from the 0.2 Hz heartbeat (`_start_tick`), which used to
-re-emit the FULL object list as JSON every 5 s even for a static (or empty)
-scene — 720 zero-information event rows per hour in the dashboard feed. The
-gate keys on the SEMANTIC scene content (id / label / pose to 1 cm /
-is_container) with a keepalive so a restarted collector still repopulates.
+The span fires from the 0.2 Hz heartbeat (`_start_tick`), which used to
+re-emit the FULL object list every 5 s even for a static scene — 720
+zero-information event rows per hour. The gate keys on SEMANTIC content
+(id / label / pose to 1 cm / is_container) with a keepalive so a restarted
+collector still repopulates.
 
-Real components throughout (CLAUDE.md §1.11): a real ``SpatialMemory`` built
-from the ``home_scene_graph.json`` fixture, and a real in-memory OTel exporter
-counting actual emitted spans — same harness as
-``tests/unit/test_scene_objects_span.py``. The node method is bound to a
-minimal holder (no ROS context), same trick as
-``tests/unit/test_skill_runner_deadline.py``.
+Real ``SpatialMemory`` from the ``home_scene_graph.json`` fixture + a real
+in-memory OTel exporter (CLAUDE.md §1.11), same harness as
+``test_scene_objects_span.py``; the node method is bound to a minimal holder
+(no ROS context), same trick as ``test_skill_runner_deadline.py``.
 """
 
 from __future__ import annotations

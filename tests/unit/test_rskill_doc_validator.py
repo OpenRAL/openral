@@ -163,9 +163,7 @@ def test_short_readme_blocks_publish(tmp_path: Path) -> None:
 
 def test_readme_missing_license_section_blocks_publish(tmp_path: Path) -> None:
     readme = _GOOD_README.replace("## License", "## Legalese-ish")
-    # The substring "license" doesn't appear in any heading now; section fails.
-    # Note: "license" might still appear in the body (it does), but the
-    # validator scans headings only — that's the point.
+    # Validator scans headings only, not body text, so renaming the heading fails it.
     readme_clean = readme.replace("Apache-2.0, matching the wrapped upstream weights.", "")
     skill_dir, manifest = _write_skill_dir(tmp_path, readme=readme_clean)
     report = validate_rskill_docs(skill_dir, manifest)
@@ -176,14 +174,10 @@ def test_readme_missing_license_section_blocks_publish(tmp_path: Path) -> None:
 
 def test_readme_missing_robots_section_blocks_publish(tmp_path: Path) -> None:
     readme = _GOOD_README.replace("## Supported robots", "## Compatibility")
-    # "compatibility" doesn't match any of robot/embodiment/supported,
-    # but "Supported robots" did. With it renamed, the section is missing.
     skill_dir, manifest = _write_skill_dir(tmp_path, readme=readme)
     report = validate_rskill_docs(skill_dir, manifest)
-    # Note: "supported" is still in the substring list; we have to make sure
-    # neither "robot" nor "embodiment" nor "supported" survives anywhere.
-    # The README still says "Sensors required" → "supported" not present.
-    # The README still says nothing about "robot" / "embodiment".
+    # Section matcher looks for robot/embodiment/supported; renaming the heading
+    # removes all three, so the section reads as missing.
     assert not report.is_valid
     robot_errors = [
         i for i in report.errors if "robot" in i.field.lower() or "embodiment" in i.field.lower()

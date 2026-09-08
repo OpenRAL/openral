@@ -1,50 +1,35 @@
 """Repo-wide safeguard: every VLA rSkill's ``action_contract`` is executable
 on each declared embodiment.
 
-This is the regression net behind the worked sweeps
-(``test_libero_action_contracts.py`` / ``test_cartesian_rskill_contracts.py``):
-those assert the *specific* skills that were fixed; this walks **every**
-``rskills/*/rskill.yaml`` so a *future* cartesian rSkill cannot silently ship a
-bare ``action_contract.dim`` (no ``representation`` / ``slots``) that the
-skill_runner would mis-dispatch as ``JOINT_POSITION`` on a non-matching robot —
-the exact bug this guards against for the LIBERO class.
+Broader net than the worked sweeps (``test_libero_action_contracts.py`` /
+``test_cartesian_rskill_contracts.py``): walks every ``rskills/*/rskill.yaml`` so a
+future cartesian rSkill can't ship a bare ``action_contract.dim`` that skill_runner
+would mis-dispatch as ``JOINT_POSITION`` on a non-matching robot.
 
-The check is pure ``openral_core`` (representation / slots / dim vs the robot's
-joints + a sim-executable control-mode set). It deliberately does **not** import
-``openral_reasoner_ros.reasoner_node`` (that pulls rclpy + openral_msgs); the
-small gate rule is re-derived here so the validator runs under a bare
-``uv run --no-sync`` without a ROS environment. It mirrors
-``reasoner_node._required_control_modes`` and uses the canonical
-``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` (amended 2026-06-04 —
-single source of truth shared by the reasoner gate and the HAL packers, so this
-validator can no longer drift from what the deploy-sim path actually executes).
+Pure ``openral_core`` — no ``openral_reasoner_ros.reasoner_node`` import (that pulls
+rclpy + openral_msgs), so this runs under bare ``uv run --no-sync``. Mirrors
+``reasoner_node._required_control_modes`` and the canonical
+``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` (amended 2026-06-04, shared source of
+truth with the HAL packers).
 
-The per-(skill, robot) rule, in order of contract specificity:
+Per-(skill, robot) rule, in order of contract specificity:
 
-* ``action_contract is None`` → no action constraint → pass.
+* ``action_contract is None`` → no constraint → pass.
 * ``representation`` set → ``control_modes_for_representation(representation)``;
-  additionally ``canonical_slots_for_representation`` must resolve without error
-  against the robot (proves the cartesian/gripper layout binds to a real
-  end-effector and the dim is wide enough).
-* ``slots`` set → ``{s.control_mode for s in slots if s.control_mode}`` (the
-  ActionSlot cross-validator already proved coverage + per-mode fields at load).
-* Bare ``dim`` only → implicitly joint-space (``{JOINT_POSITION}``); additionally
-  ``dim`` must equal the robot's actuated-joint count. A mismatch means a
-  cartesian (or otherwise non-joint) skill is under-declared — it would default
-  the whole vector to ``JOINT_POSITION`` and trip the joint-space envelope. The
-  one principled relaxation: robots with actuated *dexterous hands* carry
-  actuated DoF (finger joints) that ``robots/<id>/robot.yaml`` does not enumerate
-  in ``joints``, so the strict equality becomes ``dim >= len(joints)`` for them
-  (still rejects a too-small / cartesian-masquerading vector).
+  ``canonical_slots_for_representation`` must also resolve against the robot
+  (proves the cartesian/gripper layout binds to a real end-effector).
+* ``slots`` set → ``{s.control_mode for s in slots if s.control_mode}``.
+* Bare ``dim`` only → implicitly ``{JOINT_POSITION}``; ``dim`` must equal the
+  robot's actuated-joint count, except robots with actuated dexterous hands
+  (finger joints not enumerated in ``robot.yaml``'s ``joints``), where the check
+  relaxes to ``dim >= len(joints)``.
 
-For declared (representation / slots) contracts the required modes must also be
-a subset of the deploy-sim-executable set
-``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` ({JOINT_POSITION, JOINT_VELOCITY,
-CARTESIAN_DELTA, GRIPPER_POSITION, BODY_TWIST, COMPOSITE_MODE}) — i.e. the
-deploy-sim OSC / composite path can actually pack and execute them. Real-mode
-executability against a specific robot's ``supported_control_modes`` is the
-reasoner gate's runtime job; this test guards declaration sanity,
-sim-executability, and the bare-dim==joints invariant.
+For ``representation``/``slots`` contracts, required modes must also be a subset of
+``SIM_EXECUTABLE_CONTROL_MODES`` ({JOINT_POSITION, JOINT_VELOCITY, CARTESIAN_DELTA,
+GRIPPER_POSITION, BODY_TWIST, COMPOSITE_MODE}) — the deploy-sim OSC/composite path
+must be able to pack and execute them. Real-mode executability against a specific
+robot's ``supported_control_modes`` is the reasoner gate's runtime job; this test
+guards declaration sanity, sim-executability, and bare-dim==joints.
 """
 
 from __future__ import annotations
@@ -67,17 +52,11 @@ _REPO = Path(__file__).resolve().parents[2]
 _RSKILLS_ROOT = _REPO / "rskills"
 _ROBOTS_ROOT = _REPO / "robots"
 
-# Deploy-sim executable control modes are the canonical
-# ``openral_core.SIM_EXECUTABLE_CONTROL_MODES`` (amended 2026-06-04):
-# the exact set the default sim HAL action-packers
-# (``openral_hal.sim_attached``) can pack + execute via the robosuite
-# OSC / composite controller in the MuJoCo twin, pinned to the packers by
-# ``tests/unit/test_sim_executable_modes_match_packers.py``. ``COMPOSITE_MODE`` is
-# included (the robosuite-composite multiplexer flag); the modes that
-# no packer implements (JOINT_TORQUE / JOINT_TRAJECTORY / CARTESIAN_POSE /
-# GRIPPER_BINARY) are excluded — admitting them here would let an
-# unexecutable-in-sim contract pass declaration validation, the very kind of
-# latent false-admit this gate removes.
+# SIM_EXECUTABLE_CONTROL_MODES (amended 2026-06-04): the modes openral_hal.sim_attached's
+# action packers can pack + execute via the robosuite OSC/composite controller in the
+# MuJoCo twin, pinned by test_sim_executable_modes_match_packers.py. Modes with no packer
+# (JOINT_TORQUE, JOINT_TRAJECTORY, CARTESIAN_POSE, GRIPPER_BINARY) are excluded —
+# admitting them here would let an unexecutable-in-sim contract pass declaration validation.
 
 # Embodiment-tag aliases → canonical ``robots/<dir>`` fixture name. The closed
 # ``EmbodimentTag`` vocabulary already uses ``franka_panda`` directly, but tags
@@ -118,10 +97,6 @@ def _resolve_tag_to_fixture(tag: str, fixtures: set[str]) -> str | None:
 # Known deferred exception, keyed by the manifest's ``name`` field. The test
 # SKIPS validation for these names but ALSO asserts each is *still* failing
 # (below) so the exception self-removes the moment the skill is fixed.
-#
-# (smolvla-metaworld was here until the
-# ``DELTA_EE_3D_PLUS_GRIPPER`` representation it needed was added; its contract now
-# declares a 3-D EE delta + gripper and passes the rule, so it was removed.)
 _KNOWN_DEFERRED: dict[str, str] = {
     "OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32": (
         "3D Diffuser Actor emits end-effector cartesian_pose trajectories; the "

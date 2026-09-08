@@ -287,17 +287,12 @@ def _omdet_runtime_present() -> bool:
 
 
 def _cuda_arch_supported_by_torch_build() -> bool:
-    # The stock `pytorch-cu128` torch/torchvision wheels compile kernels for a
-    # fixed arch list (`sm_70` … `sm_120` for torch 2.9.1) and ship no
-    # `compute_*` PTX entry to JIT from, so on an older GPU — e.g. a Pascal
-    # GTX 1060, `sm_61` — *every* CUDA kernel launch dies with
-    # `CUDA error: no kernel image is available for execution on the device`.
-    # `torch.cuda.is_available()` is still True there, so the nms probe below
-    # would raise (as `torch.AcceleratorError`, a `RuntimeError` subclass) at
-    # *collection* time. Compare the device capability against the compiled
-    # arch list instead of discovering it by launching: a failed launch can
-    # leave the CUDA context poisoned for every later test in the session,
-    # whereas this check touches no kernel at all.
+    # Stock `pytorch-cu128` wheels compile kernels for a fixed arch list
+    # (`sm_70`..`sm_120` for torch 2.9.1), no `compute_*` PTX to JIT from. On an
+    # older GPU (Pascal GTX 1060, `sm_61`) every kernel launch dies with "no
+    # kernel image is available", raising `torch.AcceleratorError` at
+    # collection time and poisoning the CUDA context for later tests. Compare
+    # device capability against the compiled arch list instead of launching.
     if importlib.util.find_spec("torch") is None:
         return True  # handled by _omdet_runtime_present's import gate instead
     import torch
@@ -320,18 +315,14 @@ def _cuda_arch_supported_by_torch_build() -> bool:
 
 
 def _torchvision_cuda_nms_present() -> bool:
-    # pyproject.toml pins torchvision to the `pytorch-cu128` index on
-    # aarch64-linux specifically because the plain PyPI aarch64 wheel is
-    # CPU-only: its `_C.so` never registers a CUDA kernel for
-    # `torchvision::nms`, so the (CPU-registered, CUDA-absent) op raises
-    # `NotImplementedError` the moment OmDet-Turbo's post-processing calls
-    # `batched_nms` on GPU boxes. Both wheels report the same `0.24.1` version
-    # string (no `+cu128` local tag), so an aarch64 venv provisioned *before*
-    # this pin landed satisfies `uv sync` without reinstalling torchvision —
-    # `uv sync --frozen --reinstall-package torchvision` is required to pick up
-    # the CUDA build (see docs/reference/aarch64-support.md). Detect that stale
-    # state directly rather than let the e2e test crash on it: skip only when
-    # the installed torchvision genuinely cannot run CUDA nms.
+    # pyproject.toml pins torchvision to `pytorch-cu128` on aarch64-linux
+    # because the plain PyPI aarch64 wheel is CPU-only (`torchvision::nms` has
+    # no CUDA kernel), raising `NotImplementedError` on `batched_nms`. Both
+    # wheels report the same `0.24.1` string (no `+cu128` tag), so a venv
+    # provisioned before this pin landed satisfies `uv sync` without
+    # reinstalling — needs `uv sync --frozen --reinstall-package torchvision`
+    # (docs/reference/aarch64-support.md). Detect the stale state directly
+    # rather than let the e2e test crash on it.
     if importlib.util.find_spec("torchvision") is None:
         return True  # handled by _omdet_runtime_present's import gate instead
     import torch

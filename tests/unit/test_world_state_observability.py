@@ -141,11 +141,10 @@ def test_never_received_component_does_not_latch(
 ) -> None:
     """A component with no data yet is stale, but has not *latched*.
 
-    `world_state` subscribes before the HAL publishes its first `joint_state`,
-    so on a real SO-101 this fired a WARN at T+0.00 with the HAL activating
-    0.25 s later — on every single bringup, in the one severity band an
-    operator cannot filter away. "Never received" is not "went stale"; the
-    component is still surfaced through `diag` and the components_stale gauge.
+    `world_state` subscribes before the HAL publishes its first `joint_state`:
+    on a real SO-101 this fired a WARN at T+0.00, HAL activating 0.25s later,
+    on every bringup. "Never received" is not "went stale" — still surfaced
+    via `diag` and the components_stale gauge.
     """
     clock = _FakeClock()
     agg = WorldStateAggregator(

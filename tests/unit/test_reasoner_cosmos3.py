@@ -303,12 +303,10 @@ def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_warm_starts_the_sidecar_without_a_tick(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``warm()`` reaches ``_ensure_server`` — the whole point of the seam.
+    """``warm()`` reaches ``_ensure_server`` without waiting for the first tick.
 
-    Without it the sidecar boots lazily from ``select_tool``, i.e. on the
-    reasoner's first tick, after the graph is already up and an operator is
-    waiting. On a cold host that is a venv provision plus a ~9 GB download;
-    bringup has minutes of unrelated work to overlap it with.
+    Otherwise the sidecar boots lazily on the reasoner's first tick — a venv
+    provision plus a ~9 GB download — with the operator already waiting.
     """
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     client = build_tool_use_client_from_env()

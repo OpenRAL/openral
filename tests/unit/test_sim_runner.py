@@ -271,11 +271,9 @@ def test_tick_results_increment_tick_idx() -> None:
 
 # ── Per-step instruction precedence (--instruction override) ─────────────────
 #
-# Regression for the silent `--instruction` override loss: a scene whose
-# env exposes a per-episode `obs["task"]` language (for example, RoboCasa
-# sampled object name) used to unconditionally beat the user's explicit
-# `--instruction`. An explicit override MUST win; the env language must still
-# win when the user passed nothing.
+# Regression: a scene's per-episode obs["task"] language (e.g. RoboCasa's sampled
+# object name) used to unconditionally beat an explicit --instruction. Priority:
+# explicit override > env language > static YAML instruction.
 
 
 def test_explicit_override_beats_env_language() -> None:
