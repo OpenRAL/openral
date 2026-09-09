@@ -65,6 +65,16 @@ _DIRECT_ENCODINGS: Final[dict[str, tuple[FrameEncoding, str, int]]] = {
     "16UC1": (FrameEncoding.DEPTH16, "uint16", 1),
 }
 
+# Four-channel colour, mapped onto its three-channel sibling by dropping the
+# alpha byte. The ZED wrapper publishes `bgra8` on
+# `rgb/color/rect/image` — its default colour layout — and the alpha plane is
+# a constant 255 that carries nothing. Refusing it left the context camera's
+# `/openral/cameras/context/image` permanently empty on the real OpenArm cell
+# while the driver was healthy and streaming: every frame raised, `_on_image`
+# downgraded it to a WARN, and the panel read "no data" for a reason visible
+# only in the log.
+_ALPHA_ENCODINGS: Final[dict[str, str]] = {"bgra8": "bgr8", "rgba8": "rgb8"}
+
 # Float depth in METRES, which is what the ZED SDK and several other drivers
 # publish. Converted to DEPTH16 millimetres on the way in — see
 # `_depth32f_to_depth16`.
@@ -378,15 +388,29 @@ class Ros2ImageSensorReader:
             array: NDArray[Any] = _depth32f_to_depth16(metres)
             frame_encoding, channels = FrameEncoding.DEPTH16, 1
         else:
-            mapped = _DIRECT_ENCODINGS.get(encoding)
+            without_alpha = _ALPHA_ENCODINGS.get(encoding)
+            mapped = _DIRECT_ENCODINGS.get(without_alpha or encoding)
             if mapped is None:
                 raise ROSConfigError(
                     f"unsupported sensor_msgs/Image encoding {encoding!r} on "
                     f"{self._topic!r}; supported: "
-                    f"{sorted(_DIRECT_ENCODINGS) + sorted(_FLOAT_DEPTH_ENCODINGS)}"
+                    f"{sorted(_DIRECT_ENCODINGS) + sorted(_ALPHA_ENCODINGS)}"
+                    f" + {sorted(_FLOAT_DEPTH_ENCODINGS)}"
                 )
             frame_encoding, dtype, channels = mapped
-            array = _rows(raw, _byte_order(msg) + _dtype_code(dtype), msg, height, width, channels)
+            # Unpack all four planes so `step` and the row stride still line
+            # up, then drop alpha. `tobytes()` re-packs the non-contiguous
+            # slice, so the frame stays a tight `height x width x 3` buffer.
+            array = _rows(
+                raw,
+                _byte_order(msg) + _dtype_code(dtype),
+                msg,
+                height,
+                width,
+                channels + 1 if without_alpha is not None else channels,
+            )
+            if without_alpha is not None:
+                array = array[..., :channels]
 
         return SensorFrame(
             sensor_id=self.sensor_id,
