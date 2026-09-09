@@ -567,41 +567,25 @@ Four things had to be discovered to make it run at all, each worth keeping:
       makes the venv's `include-system-site-packages = false` apply and closes
       the whole apt-shadowing class. **This is the `spark`-side launch failure,
       distinct from the harness one above.**
-- [ ] **Re-derive ADR-0101's 94 % from post-fix live-map rounds.** The offline
-      figure rests on certified mesh truth, which no backing-probe defect ever
-      touched, so it stands as it is; what needs re-deriving is the **live-map**
-      half — the ADR's premise that these are "cells no real body explains" is a
-      *backing-class* claim, and both backing fixes changed how that class is
-      computed.
+- [x] **Re-derive ADR-0101's 94 % from post-fix live-map rounds — done
+      2026-09-09, on `spark`.** 36 `utensil` rounds at `448818c4` (both
+      backing-probe fixes), which is a condition no `q-laptop` round had ever
+      met. **24 of 28 payload stops recovered (86 %)** against the offline 48/51
+      (94 %): Fisher two-sided **p = 0.237**, so the rate survives its own
+      re-derivation.
 
-      **Checked 2026-09-08: existing data cannot serve, and this is the precise
-      reason.** Only rounds at or after `448818c` carry both the coincident-
-      geometry sweep and the robot-only-backing sweep. Exactly two exist
-      (`selfocc-fridge-s2`, `selfocc-utensil-s4`) and **both are `robot_world`
-      start-state stops**. There is no post-fix round anywhere on disk with a
-      payload-vs-`voxel_` stop, which is the only class the ADR's 94 % is about.
+      **What did not survive is the clearance distribution.** Median recovered
+      clearance is **8.56 mm, against the offline 16.2 mm** — half. The mechanism
+      would be suppressing cells whose true surface is twice as close as the
+      offline figure implied, which shrinks the margin its own modelling error
+      has to fit inside. Two of the four that correctly still stop are within
+      0.1 mm of the surface. **The WG should rule on 8.56 mm, not 16.2 mm** — and
+      that argues harder for the ADR's own suppression-off first landing.
 
-      **What it needs:** a fresh battery on a sha ≥ `448818c`, `utensil`-weighted
-      (it is the scene that reliably reaches the carry phase), enough rounds to
-      clear ~10 payload stops — the 13-round battery yielded 4. Then
-      `tools/adr0101_recovery.py` over it, and compare against the offline 48/51.
+      Side effect worth keeping: the stop decomposition now rests on **n = 28**
+      rather than n = 4 — payload **−9.93 mm** beyond the voxel term, link
+      **+4.28 mm**. The exhaustion conclusion holds harder than when drawn.
 
-      **Attempted and blocked 2026-09-08 — the block is VRAM, and it is exact.**
-      Launched utensil-weighted at seeds 10-45; the XR-1 sidecar crashed at boot
-      on every round with `torch.OutOfMemoryError`, producing 20 s policy-free
-      rounds. Both were deleted rather than kept, since a policy-free round
-      measures nothing.
-
-      The arithmetic, from the sidecar's own traceback: GPU capacity **7.53 GiB**,
-      of which **24 MiB free**. Another project's job (`workspace/RAL-1`) holds
-      **2.41 GiB**, the XR-1 checkpoint needs **~3.66 GiB** (CLAUDE.md's
-      live-validated figure), and MuJoCo's EGL context plus the deploy graph take
-      the rest. It does not fit, and `--force-shared-gpu` does not create memory.
-
-      *A caution recorded because it was reversed once and should not be again:*
-      the first read of this said "the GPU would fit" from free-VRAM arithmetic
-      that omitted the renderer and the graph. It does not fit. **This battery
-      needs the other GPU job stopped, or `spark`.**
 - [x] **Re-derived the false-positive rate on a repaired instrument — it is
       71 %, unchanged.** Thirteen rounds, `adr0101-live-*`, 2026-09-07. Seven
       stops: five of a physically clear robot (+0.67 … +24.86 mm), two real
@@ -688,23 +672,19 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] ~~**NEW: the residual may be map inflation, not geometry.**~~ **Struck the
       same day it was raised** — the tripping cells contain the true surface
       point, so they are not displaced toward the sensor.
-- [x] **Half of these scenes never reach the kernel — quantified 2026-09-08.**
-      Counted across all 26 rounds by where the round ends: `utensil` reaches the
-      carry phase in **27 %** of rounds (6/15 never grasp, 5/15 stop at reset),
-      `fridge` in **18 %** (7/11 never grasp). The carry phase holds 71 % of
-      stops and every stop ADR-0101 targets.
+- [x] ~~**Half of these scenes never reach the kernel**~~ — **measured, then
+      refuted 2026-09-09, and the first measurement was mine.** Across 26
+      `q-laptop` rounds the carry-phase yield was 18-27 % with 40-64 %
+      `deadline-no-grasp`, and that was recorded as a property of the *policy*.
+      Thirty-six rounds on `spark` produced **zero** `deadline-no-grasp` and
+      **78 %** payload stops. Same policy, different host: the figure was a 420 s
+      deadline meeting a machine at load 19 with a shared GPU.
 
-      **This is a measurement-cost finding and it sizes every battery from here
-      on.** `utensil` yields 4 payload stops per 15 rounds, so ADR-0101's ~10
-      payload stops is **≈38 rounds, ~6 h wall clock** — budgeting that by round
-      count instead of by yield is exactly how a battery ends up underpowered,
-      which has happened on this page more than once.
-
-      Two things follow that are not collision work: the start-state class is
-      *cheaper* to measure than the carry class (18-33 % vs 18-27 %), so anything
-      testable there should be; and `deadline-no-grasp` is the biggest lever on
-      measurement throughput but is a **policy** property — no collision change
-      will ever be observed in those 40-64 % of rounds.
+      So there is no scene-selection problem to fix here, and the battery-sizing
+      advice derived from it was wrong for an idle host. What stands is narrower
+      and more useful: **`deadline-no-grasp` is a load symptom first**, which
+      also means the ceiling battery's own policy-free exclusions deserve
+      re-reading in that light.
 
 - [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
