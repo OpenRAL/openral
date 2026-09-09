@@ -1286,10 +1286,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
 
     # Cameras that will actually publish on a real deploy: a declared RGB sensor
     # only gets a reader (and therefore a topic) when it carries a
-    # `deploy_binding`. `robots/openarm` declares a `top` camera for sim with no
-    # binding, so on the real cell `/openral/cameras/top/image` has zero
-    # publishers and a Foxglove panel pointed at it reads "Image topic does not
-    # exist" — indistinguishable from a broken camera. The Foxglove layout is
+    # `deploy_binding`. A sim-only sensor has none — `robots/openarm` declares
+    # its `top` camera as a MuJoCo render — so on a real cell that slot has zero
+    # publishers while the Foxglove bridge still advertises the channel (its
+    # allowlist is the pattern `/openral/cameras/.*/image`), and the panel reads
+    # "Image topic does not exist", indistinguishable from a broken camera. A
+    # deploy scene fixes that by binding the slot to real hardware, as
+    # `openarm_restock_shelf.yaml` does for `top`. The Foxglove layout is
     # generated from this list rather than a hardcoded default, which cannot
     # know the scene (see `_write_foxglove_layout`).
     bound_rgb_camera_names = [

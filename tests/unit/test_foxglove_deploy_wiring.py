@@ -47,11 +47,16 @@ def test_the_deploy_launch_spawns_the_bucket2_converter() -> None:
     )
 
 
-def test_the_scene_binds_the_cameras_the_layout_should_show() -> None:
-    """The bound set is what publishes; it is not the declared set.
+def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
+    """A declared-but-unbound RGB slot is a panel that can never fill.
 
-    Pins the actual asymmetry that produced the empty panels: the manifest
-    declares a camera the real deploy never binds.
+    The manifest's `top` is the SIM overhead camera — a MuJoCo render with no
+    `deploy_binding` — so on the real cell `/openral/cameras/top/image` had
+    zero publishers while the bridge still advertised the channel (its
+    allowlist is the pattern `/openral/cameras/.*/image`). In the viewer that
+    is indistinguishable from a dead camera. The scene now overrides `top`
+    with the ZED head camera, so every slot this deploy surfaces has a
+    publisher behind it.
     """
     scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
@@ -62,14 +67,46 @@ def test_the_scene_binds_the_cameras_the_layout_should_show() -> None:
         s["name"] for s in _rgb_sensors(scene)
     }
 
-    assert {"wrist_left", "wrist_right"} <= bound, (
-        f"expected the wrist cameras to be bound: {bound}"
+    assert {"top", "wrist_left", "wrist_right"} <= bound, (
+        f"expected all three rig cameras to be bound: {bound}"
     )
-    assert "top" in declared, "fixture moved: openarm no longer declares a `top` camera"
-    assert "top" not in bound, (
-        "`top` is now deploy-bound — if that is intentional the layout should include it, "
-        "but the point of this test is that declared != bound"
+    assert declared - bound == set(), (
+        f"{sorted(declared - bound)} are declared but never bound, so their panels "
+        "would advertise a channel with no publisher — the failure that reads as a "
+        "dead camera. Bind them in the scene or drop the declaration."
     )
+
+
+def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on() -> None:
+    """Renaming the slot must not rename the policy's input.
+
+    The scene's `top` overrides the manifest's `top` field-wise, and the
+    manifest's is the sim overhead camera carrying
+    `observation.images.base`. The policy reads by `vla_feature_key`, not by
+    sensor name, and was trained with the ZED on
+    `observation.images.context` — so letting the manifest's key survive the
+    merge would hand it an OOD base stream and an empty context stream, with
+    every node healthy and no error anywhere.
+    """
+    scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
+
+    scene_top = next(s for s in _rgb_sensors(scene) if s["name"] == "top")
+    manifest_top = next(s for s in _rgb_sensors(manifest) if s["name"] == "top")
+
+    assert scene_top["vla_feature_key"] == "observation.images.context"
+    assert manifest_top["vla_feature_key"] == "observation.images.base", (
+        "fixture moved: the sim `top` no longer carries the key this override "
+        "has to shadow"
+    )
+    # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
+    # so anything the sim entry declares and the scene omits survives into the
+    # real deploy — sim intrinsics on a ZED, for instance.
+    for field in ("frame_id", "rate_hz", "intrinsics", "encoding", "vendor", "model"):
+        assert field in scene_top, (
+            f"the sim `top` sets {field!r}; the override must restate it or the "
+            "MuJoCo value silently describes the ZED"
+        )
 
 
 def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:

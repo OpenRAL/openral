@@ -33,7 +33,7 @@ hal:
     right_arm_controller: "right_joint_trajectory_controller"
     right_gripper_controller: "right_gripper_controller"
 
-# Vendor sensor drivers this cell needs on the bus. The `context` camera's
+# Vendor sensor drivers this cell needs on the bus. The `top` camera's
 # binding below subscribes `/zed/zed_node/...`; this is what publishes it, so
 # `openral deploy run` brings the ZED up itself instead of an operator starting
 # it in a second terminal (forget, and the camera panel is silently empty).
@@ -62,17 +62,28 @@ drivers:
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
 sensors:
-  # ── context — ZED Mini head camera ──────────────────────────────────────
+  # ── top — ZED Mini head camera ──────────────────────────────────────────
   # ZED streams BOTH lenses in one UVC frame (1344x376 YUYV, left then right);
   # policy trained on LEFT LENS ONLY (training's observation.images.context is
   # [376, 672, 3]), hence the crop below. Worth getting right because getting
   # it wrong is silent: without the crop the reader delivers a valid,
   # correctly-typed 1344x376 two-half-width image indistinguishable downstream
   # from a legitimate frame — the policy just acts on an OOD observation.
-  # `top` in the robot manifest is the SIM overhead camera
-  # (observation.images.base), deliberately untouched — different physical
-  # camera, different feature key, hence a new scene-level entry not an override.
-  - name: context
+  #
+  # This entry OVERRIDES the robot manifest's `top`, which is the SIM overhead
+  # camera (a MuJoCo render at frame `world`, observation.images.base). Same
+  # slot, different physical camera — so every field the sim entry sets is
+  # restated below and `merge_deploy_sensors` replaces it wholesale. The one
+  # that must not drift is `vla_feature_key`: the policy was trained on
+  # `observation.images.context` and reads by feature key, not by sensor name,
+  # so the key stays `context` however this slot is spelled. Point it at
+  # `observation.images.base` and the policy silently receives an empty
+  # context stream and an OOD base stream.
+  #
+  # The name is the Foxglove/topic slot: `/openral/cameras/top/image`. Before
+  # this override the cell published `context` and left `top` advertised with
+  # zero publishers, which reads in the viewer exactly like a dead camera.
+  - name: top
     modality: rgb
     frame_id: openarm_head_camera_optical_frame
     parent_frame: openarm_base
