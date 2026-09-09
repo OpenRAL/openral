@@ -1,0 +1,5 @@
+deploy sim → robot=panda_mobile (manifest.name=panda_mobile) hal_package=openral_hal_panda_mobile hal_node_name=openral_hal_panda_mobile
+    [... elided: real run, trimmed for the fixture ...]
+[python3-13]     raise RuntimeError(msg)
+[python3-13] RuntimeError: transition 'configure' on '/openral_hal_panda_mobile' did not advance the FSM within 300.0s (post-call state='', response.success=None)
+[ERROR] [python3-13]: process has died [pid 3265244, exit code 1, cmd '/usr/bin/python3 /home/allopart/workspace/openral-217-with204/tools/lifecycle_autostart.py --node /openral_hal_panda_mobile --target active --service-timeout-s 60.0 --transition-timeout-s 300.0'].

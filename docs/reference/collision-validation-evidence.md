@@ -2535,24 +2535,44 @@ correlating with nothing continuous. It also means re-running the battery
 unchanged on an idle host would have fixed nothing reliably: the defect was in
 the launch configuration, not in the host.
 
-**What the corrected numbers look like.** Filtering both arms by delivered
-throughput — which drops **no** completion, and attrits the two arms almost
-identically (57 % vs 51 %), so it is not arm-biased:
+**A second silent mode, found by asking what the first one missed.** The bond
+teardown explains 31 of the 47 starved runs. Of the remaining 16, **12 never
+brought their graph up at all** — `RuntimeError: transition 'configure' on
+'/openral_hal_panda_mobile' did not advance the FSM within 300.0s`. That one is
+*loud*, it raises; it still landed in `deadline-no-grasp`, because that bucket
+is defined by absence and a graph that never started produces absence too. The
+signature appears in 12 runs, every one `deadline-no-grasp`, and in **no** run
+that completed its task or was stopped by the kernel — so it needs no threshold
+and no clock, only the observation that a completed lifecycle transition is a
+precondition for a run existing. It ships as `_lifecycle_never_came_up`.
 
-| min chunks/s | OFF | ON | gap |
-| ---: | ---: | ---: | ---: |
-| 0.00 (as published) | 14/46 = 30.4 % | 1/43 = 2.3 % | **28 pts** |
-| 0.20 | 14/22 = 63.6 % | 1/22 = 4.5 % | 59 pts |
-| 0.50 | 14/20 = 70.0 % | 1/21 = 4.8 % | **65 pts** |
+Together the two detectors void 43 of the 47 starved runs and **not one healthy
+run**. Four remain unexplained and are left in, which biases the corrected
+figures *down*.
 
-It plateaus from 0.2 upward, and Fisher *strengthens* rather than weakens:
-`p = 2.4e-04 → 1.3e-05`.
+**The corrected numbers, re-adjudicated by the shipped detectors** — no
+threshold, no hand-chosen cutoff, reproducible from committed code against the
+archived artifacts:
+
+| | valid runs | completed | rate |
+| --- | ---: | ---: | ---: |
+| world-voxel gate **OFF** | 21 | 14 | **66.7 %** |
+| world-voxel gate **ON** | 25 | 1 | **4.0 %** |
+
+**A 62.7-point gap**, against the published 29. Fisher *strengthens* rather
+than weakens: `p = 2.4e-04 → 5.8e-06`. 25 runs are voided out of the off arm
+and 18 out of the on arm, so the filter is not arm-biased, and it removes **no**
+completion from either.
+
+A throughput sweep agrees independently and is what found the mode in the first
+place: cutting on delivered chunks/s puts the arms at 63.6 % vs 4.5 % (at 0.20)
+and 70.0 % vs 4.8 % (at 0.50), plateauing from 0.2 upward.
 
 **So #256's reading is confirmed and sharpened.** The contrast was never in
 danger — both arms were hit about equally, which is exactly what the paired
 design was built to absorb. The **absolutes** were badly deflated, and with
 them the headline: **the 29-point figure is a lower bound, and a loose one.**
-The real ceiling gap is nearer 60–70 points. The programme's justification is
+Re-adjudicated, the gap is **62.7 points**. The programme's justification is
 *stronger* than the ledger recorded, not weaker. Treat every absolute
 completion rate in the 2026-09-07 entry as a floor until the re-run lands.
 
@@ -2566,8 +2586,10 @@ completion rate in the 2026-09-07 entry as a floor until the re-run lands.
    liveness timeout on the navigation stack, not a safety check: the E-stop
    path is `openral_safety_kernel` and is untouched. Raised, not disabled, so
    a server that really dies is still caught.
-2. `validation_matrix._nav2_bond_teardown` — a run voided this way is now a
-   `harness-error`, not a policy outcome. The threshold sits in a measured
+2. `validation_matrix._nav2_bond_teardown` **and
+   `_lifecycle_never_came_up`** — a run voided either way is now a
+   `harness-error`, not a policy outcome. Together they catch 43 of the 47
+   starved runs and no healthy one. The threshold sits in a measured
    99 s empty gap (worst dead run `t0 + 100.8 s`, earliest healthy teardown
    `t0 + 199.6 s`) and is declined outright on a `_deploy_excerpt.log`, which
    begins mid-run: a missed teardown leaves the old behaviour, a false one

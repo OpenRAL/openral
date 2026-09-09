@@ -221,7 +221,13 @@ reported as `deadline-no-grasp` with exit 0. A scene is a `harness-error` when
    99 s gap and is declined outright on a `_deploy_excerpt.log`, which begins
    mid-run. The trigger itself is now much rarer — `BOND_TIMEOUT_S` in
    `openral_nav2_bringup/launch/nav2.launch.py` raises Nav2's 4 s default to
-   30 s.
+   30 s; or
+7. a lifecycle node never completed a transition — `RuntimeError: transition
+   'configure' on '/openral_hal_panda_mobile' did not advance the FSM within
+   300.0s` — so the graph never came up at all. This one is loud, but it landed
+   in `deadline-no-grasp` for the same reason: that bucket is defined by
+   absence, and a graph that never started produces absence too. 12 more of the
+   same 89 runs.
 
 The reason is recorded in the verdict's `harness_error_reason`, named in
 `NOTES.md`, and the round exits **4**.

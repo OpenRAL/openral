@@ -1022,6 +1022,52 @@ def _nav2_bond_teardown(deploy_lines: Sequence[str]) -> str:
     return ""
 
 
+_LIFECYCLE_FSM_TIMEOUT: Final[re.Pattern[str]] = re.compile(
+    r"transition '([\w]+)' on '([^']*)' did not advance the FSM within ([\d.]+)s"
+)
+
+
+def _lifecycle_never_came_up(deploy_lines: Sequence[str]) -> str:
+    """Say whether a lifecycle node never completed a transition.
+
+    A graph whose nodes never reached ACTIVE never ran, so whatever the log
+    shows afterwards is not a policy outcome. Unlike the Nav2 bond teardown
+    this one is loud — it raises — but it still landed in `deadline-no-grasp`,
+    because that bucket is defined by absence and a graph that never started
+    produces absence too.
+
+    Needs no threshold and no clock: a completed transition is a precondition
+    for a run existing at all. Measured over the 89 valid runs of the
+    2026-09-06 ceiling battery (issue #256) it appears in 12, every one of them
+    bucketed `deadline-no-grasp`, and in no run that completed its task or was
+    stopped by the kernel.
+
+    Args:
+        deploy_lines: Lines of the deploy log.
+
+    Returns:
+        A human-readable reason, empty when every transition advanced.
+
+    Example:
+        >>> _lifecycle_never_came_up(
+        ...     [
+        ...         "[python3-13] RuntimeError: transition 'configure' on"
+        ...         " 'openral_hal' did not advance the FSM within 300.0s"
+        ...     ]
+        ... )
+        "lifecycle transition 'configure' on 'openral_hal' never advanced (300.0s)"
+        >>> _lifecycle_never_came_up(["[a] all good"])
+        ''
+    """
+    for line in deploy_lines:
+        hit = _LIFECYCLE_FSM_TIMEOUT.search(line)
+        if hit is None:
+            continue
+        node = hit.group(2) or "<unnamed>"
+        return f"lifecycle transition {hit.group(1)!r} on {node!r} never advanced ({hit.group(3)}s)"
+    return ""
+
+
 def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str]) -> str:
     """Say why this scene's artifacts are not a run at all, or return ``""``.
 
@@ -1039,7 +1085,9 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
     4. there is no deploy log at all;
     5. Nav2's lifecycle manager lost a server bond early and tore the whole
        navigation stack down, leaving a graph that is up but inert for the rest
-       of the deadline (see ``_nav2_bond_teardown``).
+       of the deadline (see ``_nav2_bond_teardown``);
+    6. a lifecycle node never completed a transition, so the graph never came
+       up at all (see ``_lifecycle_never_came_up``).
 
     Args:
         run_dir: The scene's directory inside the round.
@@ -1084,7 +1132,7 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
             first.strip(),
         )
         return f"the deploy CLI rejected its own argv before the graph started: {detail}"
-    return _nav2_bond_teardown(deploy_lines)
+    return _nav2_bond_teardown(deploy_lines) or _lifecycle_never_came_up(deploy_lines)
 
 
 _TRACEBACK_HEADER: Final[str] = "Traceback (most recent call last):"

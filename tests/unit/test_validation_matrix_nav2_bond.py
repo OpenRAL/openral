@@ -55,6 +55,24 @@ def test_late_bond_loss_leaves_a_real_run_alone(name: str) -> None:
     assert vm._nav2_bond_teardown(_lines(name)) == ""
 
 
+def test_a_graph_that_never_came_up_is_not_a_policy_outcome() -> None:
+    """A lifecycle transition that never advanced means the run never ran.
+
+    Loud, unlike the bond teardown — it raises — but it landed in the same
+    bucket, because `deadline-no-grasp` is defined by absence and a graph that
+    never started produces absence too. 12 of the battery's 89 valid runs.
+    """
+    reason = vm._lifecycle_never_came_up(_lines("utensil_off_r01_never_came_up"))
+    assert "never advanced" in reason
+    assert "configure" in reason
+    assert vm.detect_launch_failure(FIXTURES, "missing", _lines("utensil_off_r01_never_came_up"))
+
+
+def test_a_healthy_run_has_no_lifecycle_timeout() -> None:
+    """The signature must not appear in a run that completed its task."""
+    assert vm._lifecycle_never_came_up(_lines("fridge_off_r10_completed")) == ""
+
+
 def test_a_mid_run_excerpt_is_never_anchored() -> None:
     """An excerpt starts mid-run, so its first stamp is not the run's start.
 
