@@ -1,0 +1,20 @@
+# zed_wrapper parameter override for the OpenArm cell.
+#
+# Referenced from `scenes/deploy/openarm_restock_shelf.yaml`'s `drivers:` entry
+# as a scene-relative path, so the setting travels with the scene instead of
+# living in an operator's home directory.
+#
+# Positional tracking OFF on purpose. With it on, the wrapper publishes its own
+# map -> odom -> zed_camera_link chain — and the manifest already parents
+# zed_camera_link to `openarm_base`, so the frame would have TWO parents. A TF
+# frame with two parents is not a tree: lookups become order-dependent and
+# octomap_server silently drops clouds. The camera is rigidly bolted to the rig,
+# so its pose belongs to the robot's tree, not to visual odometry.
+/**:
+    ros__parameters:
+        pos_tracking:
+            pos_tracking_enabled: false
+        general:
+            grab_resolution: 'HD1080'
+        depth:
+            depth_mode: 'NEURAL_LIGHT'

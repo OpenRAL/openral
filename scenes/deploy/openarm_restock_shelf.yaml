@@ -33,6 +33,30 @@ hal:
     right_arm_controller: "right_joint_trajectory_controller"
     right_gripper_controller: "right_gripper_controller"
 
+# Vendor sensor drivers this cell needs on the bus. The `context` camera's
+# binding below subscribes `/zed/zed_node/...`; this is what publishes it, so
+# `openral deploy run` brings the ZED up itself instead of an operator starting
+# it in a second terminal (forget, and the camera panel is silently empty).
+#
+# `publish_tf:=false` suppresses only the wrapper's visual-odometry
+# odom->zed_camera_link; the internal zed_camera_link -> zed_left_camera_frame
+# chain comes from the wrapper's own state publisher and is NOT gated by it —
+# octomap_server needs that chain to resolve the cloud's frame. The mount
+# (openarm_base -> zed_camera_link) is the manifest's job, not the wrapper's.
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm
+      publish_tf: "false"
+      publish_map_tf: "false"
+      # Scene-relative: any `*_path` arg is resolved against this file's
+      # directory (same rule as `calibration_dir`), so no home directory is
+      # baked into a committed scene. Carries `pos_tracking_enabled: false`,
+      # without which zed_camera_link gets a second TF parent and octomap
+      # silently drops every cloud.
+      ros_params_override_path: drivers/zedm_openarm_override.yaml
+
 sensors:
   # ── context — ZED Mini head camera ──────────────────────────────────────
   # ZED streams BOTH lenses in one UVC frame (1344x376 YUYV, left then right);

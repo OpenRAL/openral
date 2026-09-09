@@ -345,6 +345,53 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
+def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, imported lazily
+    """Include the vendor sensor drivers a deploy scene declares.
+
+    A ``deploy_binding`` with a ``ros2_*`` backend subscribes to a topic somebody
+    else publishes; these launches are that somebody. Until the scene could name
+    them, an operator started the driver by hand in a second terminal — and the
+    failure when they forgot was a silently empty camera panel, never an error,
+    because subscribing to an unpublished topic is perfectly legal.
+
+    Resolved through ``FindPackageShare`` so the launch comes from the sourced
+    overlay like any other vendor package. Nothing is caught here: a scene naming
+    a package that is not installed should fail at launch-parse time, loudly,
+    rather than start a graph whose cameras can never fill.
+    """
+    from launch.actions import IncludeLaunchDescription
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+    from launch.substitutions import PathJoinSubstitution
+    from launch_ros.substitutions import FindPackageShare
+
+    scene_dir = pathlib.Path(deploy_config).parent
+
+    def _resolve(key: str, value: str) -> str:
+        """Resolve a relative ``*_path`` argument against the scene's directory.
+
+        A driver's config file belongs with the scene that needs it, not in an
+        operator's home directory — a committed scene carrying
+        ``/home/<someone>/...`` works on exactly one machine. Same rule the CLI
+        already applies to ``calibration_dir``. Only ``*_path`` keys and only
+        relative values, so an absolute path still wins.
+        """
+        if key.endswith("_path") and value and not pathlib.Path(value).is_absolute():
+            return str((scene_dir / value).resolve())
+        return value
+
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution(
+                    [FindPackageShare(d.package), "launch", d.launch_file],
+                )
+            ),
+            launch_arguments=tuple((k, _resolve(k, v)) for k, v in d.args.items()),
+        )
+        for d in scene_drivers
+    ]
+
+
 def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:
     """Generate a Foxglove layout for the cameras this deploy actually publishes.
 
@@ -1212,10 +1259,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
     # leg — WorldState must subscribe to them too.
     scene_sensors: list[SensorSpec] = []
+    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     if deploy_config:
         from openral_core import DeployScene
 
-        scene_sensors = list(DeployScene.from_yaml(deploy_config).sensors)
+        _scene = DeployScene.from_yaml(deploy_config)
+        scene_sensors = list(_scene.sensors)
+        scene_drivers = list(_scene.drivers)
         scene_rgb = [
             s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
         ]
@@ -1425,6 +1475,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         if real_bringup is not None:
             extra_nodes.append(real_bringup)
             vendor_owns_robot_description = True
+        # Vendor sensor drivers the scene declares (a ZED wrapper, a RealSense
+        # node…). Real path only: on the sim path cameras are rendered, not
+        # driven. These publish the topics the scene's `ros2_*` sensor bindings
+        # read, so they go up with the graph.
+        if scene_drivers:
+            extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
 
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
