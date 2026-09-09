@@ -872,3 +872,24 @@ pattern in `tools/schema_export.py`.*
     the other a promptable segmenter) — a shared base for six lines would
     cost more to read than the duplication it removes.
 
+42. **The world-voxel grid derivation, in three places — *left duplicated,
+    pinned by test.*** `deploy_e2e.launch.py::_world_voxel_max_cells` derives
+    `(2R/res + 1)^3` from `_octomap_coverage_radius()`, and
+    `tools/voxel_transport_probe.py::per_axis` re-derives it from its own
+    `RADIUS_M = 1.05` literal. Neither can import the other — the launch file
+    is not an importable package, and the probe must run standalone under a
+    sourced overlay. Consolidating needs a new shared module for four lines.
+    The drift is the danger, not the repetition: a probe sizing its message
+    off a stale radius would time the wrong grid and still report a clean
+    number, and the wire latency it reports is what the 25 -> 15 mm trade is
+    settled on. `test_deploy_e2e_voxel_resolution.py::test_the_transport_probe_sizes_the_grid_the_kernel_reserves`
+    pins the two together instead.
+43. **The quantisation budget, twice — *left duplicated, pinned by test.***
+    `tools/validation_matrix.py::quantization_budget_m` is the canonical half
+    body-diagonal; `tools/stop_ee_speed.py::QUANTISATION_GAIN_M` writes out
+    the *difference* of two of them for 25 and 15 mm. Same reason as 42 (two
+    standalone scripts, no shared module) and the same failure mode — 8.66 mm
+    is what every staleness figure in `PLAN.md` §5 is weighed against, so a
+    silent drift would re-argue the lever on a wrong number.
+    `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from`
+    pins it.
