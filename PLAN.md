@@ -612,7 +612,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
       That also answers the latency question the `link3`/`link4`/`link6` change
       raised, on the shipped configuration rather than by extrapolation.
 - [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **now with the WG,
-      2026-09-09: hazard-log Entry 027** (`OpenRAL/management#36`). Every cost
+      2026-09-09: hazard-log Entry 027** (`OpenRAL/management#36`), tracked as
+      **#253**. Every cost
       term measured, the asymmetry named (deterministic 8.66 mm gain against a
       probabilistic staleness cost), and the one thing that does not exist stated
       in the record: no live A/B of completion rate, which the WG may reasonably
@@ -880,7 +881,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
       re-reading in that light.
 
 - [ ] **Implement ADR-0101** once ruled on — **the ruling now has the live-map
-      numbers it was missing, 2026-09-09** (`OpenRAL/management#36`): 86 % on
+      numbers it was missing, 2026-09-09** (`OpenRAL/management#36`, tracked as
+      **#254**): 86 % on
       n=28, Fisher p=0.237 against the offline 94 %, but median recovered
       clearance **8.56 mm against 16.2 mm**. The WG should rule on 8.56 mm; it
       strengthens the ADR's own suppression-off first landing. Original text: — the one lever with headroom left.
@@ -889,6 +891,25 @@ Four things had to be discovered to make it run at all, each worth keeping:
       leans on it: the offline figure rests on certified mesh truth, which was
       never affected by the probe defect, but the two should now agree and that
       agreement is worth checking rather than assuming.
+
+### Filed as issues, 2026-09-09
+
+The two rulings above are **#253** (15 mm resolution) and **#254** (ADR-0101).
+Two findings from this week that are nobody's open item otherwise:
+
+- **#256 — the ceiling battery's absolute rates are lower bounds.** It ran both
+  arms simultaneously under contention and excluded only sidecar-crash runs, not
+  `deadline-no-grasp`. The *contrast* survives (paired design, shared load), but
+  31.1 % / 2.3 % — and therefore **the 29-point figure this whole programme is
+  justified by** — are floors measured on a loaded host. `spark` produces zero
+  `deadline-no-grasp` on these scenes; re-running the A/B there would settle it.
+- **#255 — a full-tier test-ordering flake** unrelated to collision work, which
+  under `-x` stops the run and silently skips everything after it. **Closed the
+  same day: already fixed on `master` by `855fe1b`**, which landed in #244 hours
+  after the issue was filed. The cause was not a missing teardown — ROS 2's
+  `launch.logging` calls `logging.setLoggerClass(LaunchLogger)` at import, and
+  that class sets `propagate = False`, so any test that imports `launch` first
+  severs propagation for every logger created afterwards in the process.
 
 ### Ceiling-run mechanics worth keeping
 
