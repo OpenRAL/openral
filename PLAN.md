@@ -427,7 +427,12 @@ Four things had to be discovered to make it run at all, each worth keeping:
       checked by forcing the budget to 0.001 ms to read the real numbers out.
       That also answers the latency question the `link3`/`link4`/`link6` change
       raised, on the shipped configuration rather than by extrapolation.
-- [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **un-struck 2026-09-07, and
+- [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **now with the WG,
+      2026-09-09: hazard-log Entry 027** (`OpenRAL/management#36`). Every cost
+      term measured, the asymmetry named (deterministic 8.66 mm gain against a
+      probabilistic staleness cost), and the one thing that does not exist stated
+      in the record: no live A/B of completion rate, which the WG may reasonably
+      require first. Nothing further is mine until it is ruled on. — **un-struck 2026-09-07, and
       the strike was mine.** It was the one lever struck on an *estimate* rather
       than a measurement, and measuring it moved the number by **32×**: p99
       **0.825 ms** at 15 mm, not the estimated 26.7 ms, against a 33 ms ceiling
@@ -686,7 +691,11 @@ Four things had to be discovered to make it run at all, each worth keeping:
       also means the ceiling battery's own policy-free exclusions deserve
       re-reading in that light.
 
-- [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
+- [ ] **Implement ADR-0101** once ruled on — **the ruling now has the live-map
+      numbers it was missing, 2026-09-09** (`OpenRAL/management#36`): 86 % on
+      n=28, Fisher p=0.237 against the offline 94 %, but median recovered
+      clearance **8.56 mm against 16.2 mm**. The WG should rule on 8.56 mm; it
+      strengthens the ADR's own suppression-off first landing. Original text: — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
       ADR's 94 % should be re-derived from post-fix rounds before implementation
       leans on it: the offline figure rests on certified mesh truth, which was
