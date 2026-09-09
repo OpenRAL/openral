@@ -1244,6 +1244,51 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     )
 
 
+def test_bh_preflight_refuses_when_just_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rig without `just` must be told so, not handed a subprocess traceback.
+
+    `just` is a separate binary from the workspace's `uv`, so a host can be
+    fully provisioned — venv synced, colcon built, every ROS package resolving
+    — and still die here. Before this guard the failure was
+    `FileNotFoundError: [Errno 2] ... 'just'` raised out of `subprocess`, which
+    names neither what wanted `just` nor how to get it. Hit on the lab Thor.
+
+    The refusal is deliberate: falling back to a bare `uv sync` would drop
+    `--all-packages` and uninstall the workspace members, breaking the very
+    launch the install was meant to enable (see the call site's comment 1).
+    """
+    import sys as _sys
+
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import policy_deps as _pd
+
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
+
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
+    monkeypatch.setattr(
+        _pd, "can_import_policy_family", lambda _family: (False, "forced miss for test")
+    )
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        deploy_sim.shutil, "which", lambda name: None if name == "just" else "/usr/bin/" + name
+    )
+
+    with pytest.raises(ROSConfigError) as ei:
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
+    message = str(ei.value)
+    assert "uv tool install rust-just" in message, (
+        f"the refusal must name the remedy; got:\n{message}"
+    )
+    assert "OPENRAL_AUTO_INSTALL_DEPS=0" in message, (
+        f"the refusal must name the way past it; got:\n{message}"
+    )
+
+
 def test_bh_preflight_accept_propagates_auto_install_consent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

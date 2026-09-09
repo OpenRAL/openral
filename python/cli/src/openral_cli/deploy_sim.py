@@ -2514,6 +2514,22 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
         #      detector every frame — ``/openral/perception/objects`` stayed
         #      empty (issue #12). ``openral_sim._deps._robocasa_kitchen_plan``
         #      already uses ``--inexact`` for the same reason.
+        # Resolved eagerly: `just` is a separate binary from the workspace's
+        # `uv`, and a rig provisioned without it fails here with a bare
+        # `FileNotFoundError: 'just'` from subprocess — a traceback that names
+        # neither the missing tool's purpose nor how to get it. Observed on the
+        # lab Thor, whose deploy died after a clean build for want of one
+        # `uv tool install`.
+        if shutil.which("just") is None:
+            raise ROSConfigError(
+                f"this deploy needs extras {sorted(install_groups)} installed, which "
+                "goes through `just sync` — and `just` is not on PATH. Install it with "
+                "`uv tool install rust-just` (then ensure ~/.local/bin is on PATH), or "
+                "set OPENRAL_AUTO_INSTALL_DEPS=0 to skip the install and launch with "
+                "whatever is already in the venv. Refusing rather than dropping to a "
+                "bare `uv sync`, which without --all-packages uninstalls the workspace "
+                "members and breaks the launch it was meant to enable."
+            )
         install_cmd = ["just", "sync", "--all-packages", "--inexact", *groups_argv]
 
     # Install by default; set OPENRAL_AUTO_INSTALL_DEPS=0 to prompt on a
