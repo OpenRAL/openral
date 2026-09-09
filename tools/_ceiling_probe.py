@@ -109,6 +109,41 @@ def _bond_teardown(deploy_log: Path) -> str:
     return str(vm._nav2_bond_teardown(lines))
 
 
+def _record(
+    *,
+    outcome: str,
+    success: bool | None,
+    detail: str,
+    started: float,
+    config_path: str,
+    dispatch_timed_out: bool,
+    load_start: list[float],
+    goal_log: Path,
+    deploy_log: Path,
+) -> dict[str, object]:
+    """One round's record, in the one shape every exit path returns.
+
+    Built here rather than at each ``return`` so a run that ends early cannot
+    quietly omit the fields issue #256 added: the host load, the delivered
+    chunk count and the Nav2 teardown flag are least dispensable on exactly the
+    runs that fail before dispatch.
+    """
+    return {
+        "outcome": outcome,
+        "success": success,
+        "detail": detail,
+        "wall_s": round(time.time() - started, 1),
+        "config": config_path,
+        "dispatch_timed_out": dispatch_timed_out,
+        # Issue #256: without these, a run starved by host load is
+        # indistinguishable in the record from one the policy genuinely failed.
+        "load_start": load_start,
+        "load_end": [round(v, 2) for v in os.getloadavg()],
+        "chunks": _chunks_from_goal_log(goal_log),
+        "nav2_bond_teardown": _bond_teardown(deploy_log) or None,
+    }
+
+
 def run_one(
     # `validation_matrix.SceneSpec`, from an untyped sibling script imported by
     # path, so its real type is unavailable to mypy.
@@ -162,13 +197,20 @@ def run_one(
             else:
                 server_up = vm._wait_for_action_server(proc, 600)
             if not server_up:
-                return {
-                    "outcome": "harness-error",
-                    "detail": "/openral/execute_rskill never appeared",
-                    "success": None,
-                    "wall_s": round(time.time() - started, 1),
-                    "config": config_path,
-                }
+                # Same shape as the normal return: a run that never got its
+                # action server is exactly the one whose host load matters, so
+                # it must not be the record that omits it.
+                return _record(
+                    outcome="harness-error",
+                    success=None,
+                    detail="/openral/execute_rskill never appeared",
+                    started=started,
+                    config_path=config_path,
+                    dispatch_timed_out=False,
+                    load_start=load_start,
+                    goal_log=goal_log,
+                    deploy_log=deploy_log,
+                )
             time.sleep(5.0)
             # A dispatch that overruns its own timeout must cost ONE round, not
             # the worker. Under 8-way contention four workers died here with an
@@ -207,20 +249,17 @@ def run_one(
                 os.killpg(os.getpgid(proc.pid), 9)
 
     success, detail = _success_from_log(deploy_log)
-    return {
-        "outcome": "ran" if success is not None else "harness-error",
-        "success": success,
-        "detail": detail,
-        "wall_s": round(time.time() - started, 1),
-        "config": config_path,
-        "dispatch_timed_out": dispatch_timed_out,
-        # Issue #256: without these, a run starved by host load is
-        # indistinguishable in the record from one the policy genuinely failed.
-        "load_start": load_start,
-        "load_end": [round(v, 2) for v in os.getloadavg()],
-        "chunks": _chunks_from_goal_log(goal_log),
-        "nav2_bond_teardown": _bond_teardown(deploy_log) or None,
-    }
+    return _record(
+        outcome="ran" if success is not None else "harness-error",
+        success=success,
+        detail=detail,
+        started=started,
+        config_path=config_path,
+        dispatch_timed_out=dispatch_timed_out,
+        load_start=load_start,
+        goal_log=goal_log,
+        deploy_log=deploy_log,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
