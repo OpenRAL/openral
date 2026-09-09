@@ -1636,7 +1636,8 @@ were baguette runs, which is what made it look like the bellwether scene; at a
 
 **What it does and does not license.** It does **not** say turn the gate off —
 6 of 91 stops in the 2026-09-06 battery were real contact. It is a ceiling: it
-says the geometry levers are competing for **up to 29 points of completion**,
+says the geometry levers are competing for **at least 29 points of completion**
+(read "up to" here until the #256 correction; the bound runs the other way),
 concentrated in the payload class, rather than for noise. Taken with the
 decomposition below, that is what moved the programme from "consider closing"
 to "pull the two measured levers".
@@ -1987,11 +1988,18 @@ survive any geometry work.
 2.3 % gate-on completion rate in the ceiling battery. One success is not a rate
 either, but it is the first `completed` this branch has recorded.
 
-**Five of thirteen rounds never grasped.** `deadline-no-grasp` is the policy
-failing to pick the object up at all, with no kernel involvement. Combined with
-the ceiling result, it is a reminder that on these scenes roughly half of what
-looks like collision-programme failure is the policy not reaching the phase
-where the kernel matters.
+**Five of thirteen rounds never grasped.** `deadline-no-grasp` is *recorded* as
+the policy failing to pick the object up at all, with no kernel involvement.
+
+> **Corrected 2026-09-09 (#256).** That reading does not hold. `deadline-no-grasp`
+> is defined by absence — no success, no stop — which is also what a silently
+> dead graph produces, and in the ceiling battery 31 of 89 valid runs in this
+> bucket had had their whole Nav2 stack torn down mid-run by a 4 s bond timeout.
+> The inference that followed here — "roughly half of what looks like
+> collision-programme failure is the policy not reaching the phase where the
+> kernel matters" — is **withdrawn**: an unknown share of it was the instrument.
+> Check a run's delivered chunk count before reading this bucket as a policy
+> property.
 
 
 ### 2026-09-07 — `link1envelope-*`: eight rounds, no result, and why that is worth recording

@@ -472,7 +472,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
       before giving up any protection.
 - [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
       the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
-      cost dwarfs the drop it was chasing. The alternative is re-scoping it to
+      cost — a floor, and on the #256 correction nearer 60-70 — dwarfs the drop
+      it was chasing. The alternative is re-scoping it to
       the single remaining suspect (#202's ACM retirement) rather than a full
       bisect. Needs a human call.
 - [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`
