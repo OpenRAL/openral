@@ -205,9 +205,8 @@ LatticeDiff lattice_diff(const octomap::OcTree& tree, const tf2::Transform& base
     for (std::uint32_t iy = 0; iy < grid.size_y; ++iy) {
       for (std::uint32_t ix = 0; ix < grid.size_x; ++ix) {
         const tf2::Vector3 c = base_to_octomap * cell_center(grid, ix, iy, iz);
-        const octomap::OcTreeNode* node = tree.search(
-            octomap::point3d(static_cast<float>(c.x()), static_cast<float>(c.y()),
-                             static_cast<float>(c.z())));
+        const octomap::OcTreeNode* node = tree.search(octomap::point3d(
+            static_cast<float>(c.x()), static_cast<float>(c.y()), static_cast<float>(c.z())));
         const bool tree_occupied = node != nullptr && tree.isNodeOccupied(node);
         const bool grid_occupied = grid.occupancy[index_of(grid, ix, iy, iz)] != 0;
         diff.missing += (tree_occupied && !grid_occupied) ? 1 : 0;
@@ -386,8 +385,8 @@ TEST(OctreeToGrid, AGridStraddlingTheOctreesKeyRangeStillSeesEveryLeaf) {
   octomap::OcTree tree(0.1);  // addressable to ±3276.8 m
   tree.updateNode(octomap::point3d(3276.05F, 0.05F, 0.05F), true);
 
-  const auto grid = bridge::rasterize_octree_to_grid(
-      tree, tf2::Transform::getIdentity(), ball(3276.5, 0.05, 0.05, 1.0), "base_link");
+  const auto grid = bridge::rasterize_octree_to_grid(tree, tf2::Transform::getIdentity(),
+                                                     ball(3276.5, 0.05, 0.05, 1.0), "base_link");
   ASSERT_FALSE(grid.occupancy.empty()) << "the lattice must still be placeable out here";
   EXPECT_EQ(occupied_count(grid), 1) << "the fallback walk must still find the leaf";
 }
