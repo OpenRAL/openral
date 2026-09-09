@@ -405,7 +405,7 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
     return includes
 
 
-def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:
+def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -> str | None:
     """Generate a Foxglove layout for the cameras this deploy actually publishes.
 
     The shipped ``config/openral_layout.json`` is generated for
@@ -413,7 +413,12 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:
     out of the robot manifest and the deploy scene, and they differ per robot
     (``top`` / ``context`` / ``wrist_left`` / ``camera1``…). A panel pointed at a
     slot this deploy has no publisher for renders "Image topic does not exist",
-    which looks exactly like a dead camera.
+    which looks exactly like a dead camera. The 3D panels have the same
+    problem one level up: they follow a TF frame, and Foxglove draws an empty
+    scene — no robot, no point clouds, no markers — when that frame is not in
+    the tree. The library default is the ROS-conventional ``base_link``, which
+    OpenArm does not broadcast (its root is ``openarm_base``), so the robot's
+    own ``base_frame`` is threaded through rather than guessed.
 
     A layout is imported client-side, so no launch argument can push one into
     the viewer — but the launch is the only place that knows the answer, so it
@@ -428,7 +433,10 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:
         from openral_foxglove_bringup.layout import build_layout
 
         path = pathlib.Path(tempfile.gettempdir()) / f"openral_layout_{robot_id}.json"
-        path.write_text(json.dumps(build_layout(cameras), indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(build_layout(cameras, follow_frame=base_frame), indent=2),
+            encoding="utf-8",
+        )
     except (ImportError, OSError, ValueError) as exc:
         print(f"[deploy_e2e] could not write a scene-matched Foxglove layout: {exc!r}", flush=True)
         return None
@@ -2226,7 +2234,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
-        layout_path = _write_foxglove_layout(bound_rgb_camera_names, description.name)
+        layout_path = _write_foxglove_layout(
+            bound_rgb_camera_names, description.name, description.base_frame
+        )
         if layout_path is not None:
             print(
                 f"[deploy_e2e] foxglove: ws://127.0.0.1:{foxglove_port} — import the "

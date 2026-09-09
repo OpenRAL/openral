@@ -149,10 +149,10 @@ def _nav_panel() -> dict[str, Any]:
     }
 
 
-def _bucket2_panel() -> dict[str, Any]:
+def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the Bucket-2 converter outputs, close in on the robot."""
     return {
-        "followTf": "base_link",
+        "followTf": follow_frame,
         "scene": {},
         "cameraState": {
             "perspective": True,
@@ -244,8 +244,13 @@ def build_layout(
             scene's ``cameras:`` list.
         compressed: Point the Image panels at the ``/compressed`` siblings
             (needs ``republish_compressed:=true`` on the bridge launch).
-        follow_frame: TF frame the hero 3D panel follows. ``base_link`` keeps
-            the robot centred; ``map`` pins the view to the world origin.
+        follow_frame: TF frame the 3D panels follow. Must be a frame the
+            robot actually broadcasts: Foxglove renders nothing at all — no
+            model, no clouds, no markers — when the follow frame is absent
+            from TF, so the ROS-conventional ``base_link`` default is wrong
+            for any robot that names its root otherwise (OpenArm broadcasts
+            ``openarm_base``). Pass ``RobotDescription.base_frame``. ``map``
+            pins the view to the world origin instead.
 
     Returns:
         A Foxglove layout dict, ready to serialise to JSON and import.
@@ -279,7 +284,7 @@ def build_layout(
         # Bucket-2 close-up: the converter's collision capsules + voxel grid on
         # their own, tight on the robot. The hero panel shows the same two
         # topics in world context; this one is for inspecting the geometry.
-        "3D!bucket2": _bucket2_panel(),
+        "3D!bucket2": _bucket2_panel(follow_frame),
         # ``[:]`` slices every joint, so the plot fits any DOF count instead
         # of the six indices the hand-written layout hard-coded.
         "Plot!joints": _plot(

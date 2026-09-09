@@ -96,8 +96,7 @@ def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on
 
     assert scene_top["vla_feature_key"] == "observation.images.context"
     assert manifest_top["vla_feature_key"] == "observation.images.base", (
-        "fixture moved: the sim `top` no longer carries the key this override "
-        "has to shadow"
+        "fixture moved: the sim `top` no longer carries the key this override has to shadow"
     )
     # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
     # so anything the sim entry declares and the scene omits survives into the
@@ -112,7 +111,8 @@ def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on
 def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
     """The layout must come from the deploy, not from a fixed default."""
     text = _LAUNCH.read_text(encoding="utf-8")
-    assert "_write_foxglove_layout(bound_rgb_camera_names" in text, (
+    call = text.split("_write_foxglove_layout(", 2)[-1]
+    assert call.lstrip().startswith("bound_rgb_camera_names"), (
         "the layout must be generated from the deploy-bound cameras; a hardcoded "
         "default cannot know the scene"
     )
@@ -124,3 +124,43 @@ def test_the_shipped_default_matches_how_manifests_spell_wrist_cameras() -> None
     layout = pytest.importorskip("openral_foxglove_bringup.layout")
     assert "wrist_left" in layout.DEFAULT_CAMERAS
     assert "left_wrist" not in layout.DEFAULT_CAMERAS
+
+
+def test_the_launch_gives_the_layout_the_robots_own_base_frame() -> None:
+    """A 3D panel following a frame TF never broadcasts renders nothing at all.
+
+    Not "no point cloud" — the whole scene: no robot model, no octomap voxels,
+    no Bucket-2 markers. `build_layout`'s default is the ROS-conventional
+    `base_link`, and OpenArm's root is `openarm_base`, so the generated layout
+    opened onto an empty 3D view while every topic underneath it was
+    publishing. Observed on the cell with the ZED cloud live at 3.3 Hz.
+    """
+    text = _LAUNCH.read_text(encoding="utf-8")
+    assert "follow_frame=base_frame" in text, (
+        "the generated layout must follow the robot's own base frame, not the "
+        "library's base_link default"
+    )
+    assert "description.base_frame" in text, (
+        "the base frame must come from the robot manifest, which is the only thing that knows it"
+    )
+
+
+def test_both_3d_panels_follow_the_same_frame() -> None:
+    """The Bucket-2 panel had `base_link` hardcoded past the parameter.
+
+    Threading `follow_frame` only into the hero panel would have left the
+    collision/voxel panel — the one whose entire job is to show the world model
+    — blank on exactly the robots the fix was for.
+    """
+    layout = pytest.importorskip("openral_foxglove_bringup.layout")
+    built = layout.build_layout(["top"], follow_frame="openarm_base")
+    panels = {
+        panel_id: cfg["followTf"]
+        for panel_id, cfg in built["configById"].items()
+        if isinstance(cfg, dict) and "followTf" in cfg
+    }
+    robot_relative = {k: v for k, v in panels.items() if v != "map"}
+    assert robot_relative, f"no robot-relative 3D panel found in {panels}"
+    assert set(robot_relative.values()) == {"openarm_base"}, (
+        f"every robot-relative panel must follow the requested frame: {panels}"
+    )

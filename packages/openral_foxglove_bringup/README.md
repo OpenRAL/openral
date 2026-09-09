@@ -53,6 +53,16 @@ read-only status: it sits in the safety plane this package promises never to
 advertise, so exposing it needs safety-WG sign-off (CLAUDE.md §3). Read the
 latch state on the dashboard's *Safety · current state* card.
 
+Vendor driver namespaces are **not** on any list either. `zed_wrapper`'s
+`/zed/zed_node/point_cloud/cloud_registered` is the raw stereo cloud the
+OpenArm cell feeds to `octomap_server`; what reaches Foxglove is the world
+model built from it — `/octomap_point_cloud_centers` and
+`/openral/world_voxels_cloud` — not the driver's own output. That is the
+allowlist working as designed (the bridge speaks OpenRAL's topic contract, not
+a per-vendor one), but it does mean "I can see no cloud from my camera" is the
+expected result and not a fault. Add the vendor topic to `SCENE_TOPICS` only
+if you want the dense cloud on the wire, and mind the bandwidth.
+
 > **Bag size:** `record.launch.py` records exactly what the bridge exposes
 > (one source of truth), so a scene publishing depth images and point clouds
 > now produces a substantially larger MCAP than before the depth group
@@ -161,7 +171,17 @@ python -m openral_foxglove_bringup.layout \
 python -m openral_foxglove_bringup.layout --cameras head left_wrist --compressed
 # keep the hero view pinned to the world origin rather than the robot:
 python -m openral_foxglove_bringup.layout --follow-frame map
+# ...or at the robot's own root, when it does not use the base_link default:
+python -m openral_foxglove_bringup.layout --follow-frame openarm_base
 ```
+
+`--follow-frame` defaults to the ROS-conventional `base_link`, and a robot
+that names its root otherwise (OpenArm broadcasts `openarm_base`) needs it
+passed. Getting it wrong is not a partial failure: Foxglove renders **nothing**
+in a 3D panel whose follow frame is absent from TF — no robot model, no point
+clouds, no collision markers — while every topic underneath keeps publishing.
+The generated layout takes this from `RobotDescription.base_frame`, so it is
+only the hand-run generator above that needs the flag.
 
 The shipped `config/openral_layout.json` is this generator's output for
 `DEFAULT_CAMERAS` (`top` / `wrist_left` / `wrist_right`); regenerate it in place
@@ -177,7 +197,7 @@ actually publishes* and logs the path:
 
 ```
 [deploy_e2e] foxglove: ws://127.0.0.1:8765 — import the scene-matched layout
-  from /tmp/openral_layout_<robot>.json (cameras: context, wrist_left, wrist_right)
+  from /tmp/openral_layout_<robot>.json (cameras: top, wrist_left, wrist_right)
 ```
 
 Import that one. `DEFAULT_CAMERAS` cannot know your scene; it is only the
