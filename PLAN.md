@@ -144,8 +144,9 @@ simultaneously:
 > heartbeat timeout tearing down the whole navigation stack — and were scored
 > `deadline-no-grasp`, a policy failure they were not. Excluding runs the
 > policy was never given a fair share of compute puts the arms at **66.7 % vs
-> 4.0 %**, a gap of **62.7 points** rather than 29, with Fisher strengthening
-> to `p = 5.8e-06`. The direction and the decision below are
+> 4.0 %**. **Re-measured on the fixed harness 2026-09-10: 62.5 % vs 2.7 %, a
+> 59.8-point gap, `p = 3.1e-08`** — the two agree within 3 points by independent
+> routes, so the gap is about **twice** the 29 recorded here. The direction and the decision below are
 > unaffected; only the size is, and it moves in the programme's favour. Fixed
 > and re-running — see `docs/reference/collision-validation-evidence.md`.
 
@@ -173,7 +174,8 @@ recover it — it should be dropped from the collision programme's scorecard.
 were real contact, and the gate-off arm here is a *ceiling*, not a
 configuration. The number says how much headroom the §5 levers are competing
 for: **at least 29 points** — see the #256 correction above, which re-adjudicates
-it to 62.7 — concentrated in the payload class.
+it to 62.7 and whose re-measurement puts it at 59.8 — concentrated in the
+payload class.
 
 ---
 
@@ -384,8 +386,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] **Ceiling experiment** — done, 2026-09-07. 31.1 % vs 2.3 %, p = 3.5e-04.
       Result in §4. **Both absolutes are floors** (#256): a Nav2 bond teardown
       voided 31 of the 89 runs and they were scored as policy failures.
-      Corrected reading 66.7 % vs 4.0 %, a 62.7-point gap; re-running on the
-      fixed harness.
+      Corrected reading 66.7 % vs 4.0 %; **re-measured 2026-09-10 at 62.5 % vs
+      2.7 %, a 59.8-point gap** (`p = 3.1e-08`).
 - [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
       points of completion — and on the corrected reading nearer 60-70 — so the
       §5 levers are competing for real headroom rather than for noise.
@@ -473,8 +475,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
       before giving up any protection.
 - [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
       the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
-      cost — a floor, and 62.7 on the #256 re-adjudication — dwarfs the drop
-      it was chasing. The alternative is re-scoping it to
+      cost — a floor; measured at 59.8 on 2026-09-10 — dwarfs the drop it was
+      chasing. The alternative is re-scoping it to
       the single remaining suspect (#202's ACM retirement) rather than a full
       bisect. Needs a human call.
 - [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`

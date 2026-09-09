@@ -1591,7 +1591,8 @@ accept in advance that it can only report a null.
 > Nav2 bond teardown and scored as `deadline-no-grasp` — a policy failure they
 > were not. The **contrast holds and its significance strengthens**; the
 > absolutes and the 29-point figure do not. See "the ceiling battery's
-> `deadline-no-grasp` bucket was a Nav2 teardown" at the end of this page.
+> `deadline-no-grasp` bucket was a Nav2 teardown" at the end of this page, and
+> the re-measurement that followed it: **62.5 % vs 2.7 %, a 59.8-point gap**.
 
 The measurement nobody had taken. After a month of collision work, completion
 had gone from 25 % (2026-08-26) to 5-10 % (2026-09-06), and no round in this
@@ -1630,7 +1631,12 @@ p = 5.4e-02 dropping `utensil`).
 
 **`baguette` should leave the collision scorecard.** It is 0 % with the gate
 off, so it is policy-bound and cannot report on collision work in either
-direction. Four of the five task completions in this ledger's whole history
+direction.
+
+> **Withdrawn 2026-09-10.** On the fixed harness `baguette` completed **1/3**
+> with the gate off. The 0/11 that produced this conclusion was partly starved
+> runs, not a policy ceiling. Weak, not dead — keep it on the scorecard until
+> it has ten valid rounds. Four of the five task completions in this ledger's whole history
 were baguette runs, which is what made it look like the bellwether scene; at a
 0 % ceiling it is not one.
 
@@ -2609,6 +2615,58 @@ completion rate in the 2026-09-07 entry as a floor until the re-run lands.
 instrument failure falls into, because it is defined by absence — no success,
 no stop — and absence is what a dead graph produces. It needs a positive
 liveness check beside it, not a subtraction.
+
+### 2026-09-10 — the ceiling, re-measured on a fixed harness: 62.5 % vs 2.7 %
+
+The re-run #256 asked for, on the harness that stopped scoring dead graphs as
+policy failures. `q-laptop`, `WORKERS=2`, 10 rounds x 4 scenes x 2 arms, arms
+interleaved by scene so both see identical host conditions. **80 runs, 69
+valid, and zero Nav2 bond teardowns** — against roughly 35 % of runs in the
+2026-09-06 battery.
+
+| scene | gate **OFF** | gate **ON** | p |
+| --- | ---: | ---: | ---: |
+| `utensil` | **9/10 (90 %)** | 0/10 (0 %) | 0.0002 |
+| `fridge` | **7/10 (70 %)** | 0/10 (0 %) | 0.002 |
+| `sink_cup` | 3/9 (33 %) | 1/10 (10 %) | 0.25 |
+| `baguette` | 1/3 (33 %) | 0/7 (0 %) | 0.30 |
+| **pooled** | **20/32 = 62.5 %** | **1/37 = 2.7 %** | **3.1e-08** |
+
+**A 59.8-point gap.** Three numbers now exist for the same quantity:
+
+| | OFF | ON | gap |
+| --- | ---: | ---: | ---: |
+| as published, 2026-09-07 | 31.1 % | 2.3 % | 29 pts |
+| the archive re-adjudicated (#256) | 66.7 % | 4.0 % | 62.7 pts |
+| **this run, measured** | **62.5 %** | **2.7 %** | **59.8 pts** |
+
+The re-adjudication and the fresh measurement agree within 3 points by
+independent routes — one corrects a denominator on old artifacts, the other
+never had the defect. The published pair is the outlier. **The 29-point figure
+was a floor, and the true gap is about twice it.**
+
+**`baguette` is not a 0 % scene.** The 2026-09-07 entry concluded it "should
+leave the collision scorecard" because it completed 0/11 with the gate off, and
+therefore could not report on collision work in either direction. It scored
+**1/3** here. That conclusion was itself partly an artifact of starved runs and
+is **withdrawn**; the scene is weak, not dead. It should stay on the scorecard
+until measured on a full ten valid rounds.
+
+**What is owed.** A concurrent GPU job on the host during the opening lanes
+cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
+`fridge`, `utensil` and `sink_cup-on` lanes lost none. The symptom is the sim
+node going quiet so no `sim.task_success_final` is ever printed, which makes the
+run's outcome unreadable; one was confirmed OOM-killed by the kernel, the rest
+carry no kernel record and the mechanism is unidentified. The probe **refuses to
+score** these rather than guessing, so they do not corrupt the rates — but
+`baguette-off` rests on 3 valid rounds instead of 10, and the pooled OFF figure
+is correspondingly weighted toward the strong scenes. **Read the per-scene table
+above, not the pooled rate**, until the top-up lands. The deficit and its
+commands are in `CORRUPTED.md` in the round directory.
+
+Two further asymmetries worth stating: the arms are unbalanced (32 valid OFF
+against 37 ON, because the gate stops runs early and fewer are lost), and the
+gate-off arm runs longer per scene since nothing stops it.
 
 ## Related
 
