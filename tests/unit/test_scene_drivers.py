@@ -112,3 +112,17 @@ def test_a_scene_without_drivers_is_valid() -> None:
     """Most workcells open their cameras directly and need no driver."""
     core = pytest.importorskip("openral_core")
     assert core.DeployScene.model_fields["drivers"].default_factory() == []  # type: ignore[misc]  # reason: pydantic FieldInfo
+
+
+def test_an_unresolvable_driver_package_says_what_to_do() -> None:
+    """ "Package not found" alone does not point at the overlay you forgot.
+
+    A vendor driver is normally built into its *own* colcon workspace —
+    `zed_wrapper` lives in a `zed_ws`, not in the OpenRAL overlay — so the real
+    cause is almost always an unsourced workspace. This bit the first real run
+    of the feature.
+    """
+    text = _LAUNCH.read_text(encoding="utf-8")
+    assert "PackageNotFoundError" in text, "the package must be resolved eagerly, not lazily"
+    assert "install/setup.bash" in text, "the error must name the remedy"
+    assert "ROSConfigError" in text, "a bad scene is a config error (CLAUDE.md §5)"

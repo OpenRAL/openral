@@ -354,15 +354,18 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
     failure when they forgot was a silently empty camera panel, never an error,
     because subscribing to an unpublished topic is perfectly legal.
 
-    Resolved through ``FindPackageShare`` so the launch comes from the sourced
-    overlay like any other vendor package. Nothing is caught here: a scene naming
-    a package that is not installed should fail at launch-parse time, loudly,
-    rather than start a graph whose cameras can never fill.
+    Resolved eagerly with ``get_package_share_directory`` rather than a lazy
+    ``FindPackageShare`` substitution, so an unresolvable package fails here with
+    a message naming the scene, the driver and the likely cause. A vendor driver
+    is usually built into *its own* colcon workspace (``zed_wrapper`` lives in a
+    ``zed_ws``, not in the OpenRAL overlay), and a package is only findable if
+    that workspace is sourced — the substitution's own error says just "package
+    not found", which does not point at the overlay you forgot.
     """
+    from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
     from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
-    from launch.substitutions import PathJoinSubstitution
-    from launch_ros.substitutions import FindPackageShare
+    from openral_core.exceptions import ROSConfigError
 
     scene_dir = pathlib.Path(deploy_config).parent
 
@@ -379,17 +382,27 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
             return str((scene_dir / value).resolve())
         return value
 
-    return [
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution(
-                    [FindPackageShare(d.package), "launch", d.launch_file],
-                )
-            ),
-            launch_arguments=tuple((k, _resolve(k, v)) for k, v in d.args.items()),
+    includes = []
+    for d in scene_drivers:
+        try:
+            share = get_package_share_directory(d.package)
+        except PackageNotFoundError as exc:
+            raise ROSConfigError(
+                f"{pathlib.Path(deploy_config).name} declares driver "
+                f"{d.package!r}, which is not on the ament path. A vendor driver "
+                f"is usually built into its own colcon workspace — source that "
+                f"overlay before `openral deploy run` (e.g. "
+                f"`source ~/<ws>/install/setup.bash`), or drop the driver from "
+                f"the scene's `drivers:` if this cell does not have it. Refusing "
+                f"rather than starting a graph whose sensors can never publish."
+            ) from exc
+        includes.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(share, "launch", d.launch_file)),
+                launch_arguments=tuple((k, _resolve(k, v)) for k, v in d.args.items()),
+            )
         )
-        for d in scene_drivers
-    ]
+    return includes
 
 
 def _write_foxglove_layout(cameras: list[str], robot_id: str) -> str | None:

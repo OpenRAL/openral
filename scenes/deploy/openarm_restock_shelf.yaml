@@ -43,6 +43,10 @@ hal:
 # chain comes from the wrapper's own state publisher and is NOT gated by it —
 # octomap_server needs that chain to resolve the cloud's frame. The mount
 # (openarm_base -> zed_camera_link) is the manifest's job, not the wrapper's.
+# The driver's package must be on the ament path when `deploy run` starts —
+# a vendor driver is normally built into its OWN colcon workspace, so source
+# that overlay too (`source ~/zed_ws/install/setup.bash`), not just the
+# OpenRAL one. An unresolvable package is refused at launch-parse time.
 drivers:
   - package: zed_wrapper
     launch_file: zed_camera.launch.py
