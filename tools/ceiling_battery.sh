@@ -4,7 +4,8 @@
 # Answers PLAN.md §4: what does XR-1 complete on these four scenes with the
 # world-voxel gate OFF vs ON, same commit and host.
 #
-# EIGHT WORKERS, 4 scenes x 2 arms, SIMULTANEOUSLY: both arms see identical
+# 4 scenes x 2 arms; WORKERS (default 2) run at once, both arms interleaved
+# so they see identical
 # host conditions (CPU contention, thermal drift) at the same moment, so
 # neither can masquerade as an effect, and wall time halves. Ten rounds each
 # gives 40 runs per arm — 0.91 power against the 8% -> 40% case the fork turns
@@ -14,7 +15,7 @@
 # `count_publishers` to decide, see tests/sim/conftest.py); all workers share
 # ONE XR-1 sidecar (see below).
 #
-# Usage:  ROUNDS=10 bash tools/ceiling_battery.sh
+# Usage:  ROUNDS=10 WORKERS=2 bash tools/ceiling_battery.sh
 set -eo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -51,30 +52,53 @@ mkdir -p "$OUT"
 # policy-free runs in ~35 s.
 RSKILL="OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"
 
-echo "=== staging 8 workers ==="
-i=0; pids=(); labels=()
-for gate in off on; do
-  for scene in "${SCENES[@]}"; do
-    domain=$((60 + i))
-    log="$OUT/worker-${scene}-${gate}.log"
-    echo "  w$i  $scene/$gate  domain=$domain  -> $log"
-    ROS_DOMAIN_ID=$domain nohup uv run --no-sync python tools/_ceiling_probe.py \
-      --scene "$scene" --gate "$gate" --rounds "$ROUNDS" \
-      --rskill "$RSKILL" --out "$OUT" > "$log" 2>&1 &
-    pids+=($!); labels+=("$scene/$gate")
-    i=$((i+1))
-    # The FIRST worker gets a long head start: it is the one that spawns the
-    # shared sidecar, and a second client that pings before the model has
-    # loaded will try to spawn its own on the same port, lose the bind, and die
-    # with "xr1 sidecar process exited with code 1 during boot" — the same error
-    # seen on q-laptop. After it is up the rest only need graph-bring-up spacing.
-    if [ "$i" -eq 1 ]; then sleep 210; else sleep 30; fi
-  done
-done
+# WORKERS caps how many of the 8 run at once. It exists because running all 8
+# was what made the 2026-09-06 battery unreadable (issue #256): with the stack
+# that heavily oversubscribed, a Nav2 server would miss its bond heartbeat,
+# `lifecycle_manager_navigation` would tear the whole navigation stack down,
+# and the run would idle out its 420 s deadline doing nothing — scored as the
+# policy failing to grasp. 31 of 89 valid runs died that way. Raising
+# `BOND_TIMEOUT_S` (packages/openral_nav2_bringup/launch/nav2.launch.py) is the
+# fix for the cascade; keeping the host un-oversubscribed is the belt to that
+# braces, and is also what makes the ABSOLUTE completion rates mean anything.
+WORKERS="${WORKERS:-2}"
 
-echo "=== $((i)) workers up; waiting ==="
+run_worker() {  # $1 = index, $2 = scene, $3 = gate
+  local domain=$((60 + $1))
+  local log="$OUT/worker-${2}-${3}.log"
+  echo "  w${1}  ${2}/${3}  domain=$domain  -> $log"
+  ROS_DOMAIN_ID=$domain uv run --no-sync python tools/_ceiling_probe.py \
+    --scene "$2" --gate "$3" --rounds "$ROUNDS" \
+    --rskill "$RSKILL" --out "$OUT" > "$log" 2>&1
+}
+export -f run_worker
+export OUT ROUNDS RSKILL
+
+echo "=== 8 workers, $WORKERS at a time ==="
+# Interleaved BY SCENE, not grouped by arm: with WORKERS=2 the two live lanes
+# are the same scene's off and on arm, so the arms stay paired under identical
+# host conditions — the property the whole battery design rests on. Grouping by
+# gate would run all of OFF, then all of ON, and any drift in host state
+# between the two halves would masquerade as the gate's effect.
+i=0
+for scene in "${SCENES[@]}"; do
+  for gate in off on; do
+    echo "$i $scene $gate"
+    i=$((i+1))
+  done
+done > "$OUT/worklist.txt"
+
+# Worker 0 goes first and ALONE for 210 s: it is the one that spawns the shared
+# XR-1 sidecar, and a second client that pings before the model has loaded will
+# try to spawn its own on the same port, lose the bind, and die with "xr1
+# sidecar process exited with code 1 during boot".
+read -r i0 s0 g0 < "$OUT/worklist.txt"
+run_worker "$i0" "$s0" "$g0" &
+first=$!
+sleep 210
+
+tail -n +2 "$OUT/worklist.txt" \
+  | xargs -P "$((WORKERS > 1 ? WORKERS - 1 : 1))" -L 1 bash -c 'run_worker "$@"' _
 fail=0
-for n in "${!pids[@]}"; do
-  wait "${pids[$n]}" || { echo "!!! ${labels[$n]} exited non-zero"; fail=$((fail+1)); }
-done
-echo "=== CEILING_BATTERY_DONE (${fail} workers non-zero) ==="
+wait "$first" || { echo "!!! ${s0}/${g0} exited non-zero"; fail=1; }
+echo "=== CEILING_BATTERY_DONE (${fail} non-zero on the lead worker) ==="

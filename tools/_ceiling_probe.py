@@ -36,6 +36,7 @@ import contextlib
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -79,6 +80,35 @@ def _success_from_log(deploy_log: Path) -> tuple[bool | None, str]:
     return ever, json.dumps(payload, sort_keys=True)
 
 
+def _chunks_from_goal_log(goal_log: Path) -> int | None:
+    """Action chunks the policy delivered inside the deadline, or ``None``.
+
+    The single number that says whether a run was given a fair trial: a healthy
+    run delivers 1.2-1.8 chunks/s, while one starved by host load or killed by
+    a Nav2 teardown delivers ~0.04/s and cannot reach a grasp whatever the
+    policy does (issue #256).
+    """
+    try:
+        text = goal_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    seen = re.findall(r'"latest_chunk":\s*(\d+)', text)
+    return int(seen[-1]) if seen else None
+
+
+def _bond_teardown(deploy_log: Path) -> str:
+    """Whether Nav2 tore its own stack down early in this run.
+
+    Delegates to the harness's detector so the probe and
+    ``tools/validation_matrix.py`` agree on what a voided run looks like.
+    """
+    try:
+        lines = deploy_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return str(vm._nav2_bond_teardown(lines))
+
+
 def run_one(
     # `validation_matrix.SceneSpec`, from an untyped sibling script imported by
     # path, so its real type is unavailable to mypy.
@@ -94,6 +124,7 @@ def run_one(
     deploy_log = run_dir / f"{stem}_deploy.log"
     goal_log = run_dir / f"{stem}_goal.log"
 
+    load_start = [round(v, 2) for v in os.getloadavg()]
     config_path, config_file = vm.materialise_scene(spec, seed, run_dir)
     launcher = vm.resolve_launcher()
     gate_flag = (
@@ -183,6 +214,12 @@ def run_one(
         "wall_s": round(time.time() - started, 1),
         "config": config_path,
         "dispatch_timed_out": dispatch_timed_out,
+        # Issue #256: without these, a run starved by host load is
+        # indistinguishable in the record from one the policy genuinely failed.
+        "load_start": load_start,
+        "load_end": [round(v, 2) for v in os.getloadavg()],
+        "chunks": _chunks_from_goal_log(goal_log),
+        "nav2_bond_teardown": _bond_teardown(deploy_log) or None,
     }
 
 
