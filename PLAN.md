@@ -130,13 +130,24 @@ robot passing through a simulated cabinet.
 
 ### ANSWERED — 2026-09-07, on `spark`
 
-**The gate costs 29 points of completion.** 88 valid runs, 4 scenes x 2 arms,
-10-12 per cell, same commit (`80027b18`) and host, arms run simultaneously:
+**The gate costs AT LEAST 29 points of completion.** 88 valid runs, 4 scenes
+x 2 arms, 10-12 per cell, same commit (`80027b18`) and host, arms run
+simultaneously:
 
 | | valid runs | completed | rate |
 | --- | ---: | ---: | ---: |
-| world-voxel gate **OFF** | 45 | **14** | **31.1 %** |
-| world-voxel gate **ON** (shipped) | 43 | **1** | **2.3 %** |
+| world-voxel gate **OFF** | 45 | **14** | **31.1 %** (floor) |
+| world-voxel gate **ON** (shipped) | 43 | **1** | **2.3 %** (floor) |
+
+> **Both rates are lower bounds** (issue #256, 2026-09-09). 31 of these 89
+> valid runs were killed mid-run by a Nav2 bond teardown — the default 4 s
+> heartbeat timeout tearing down the whole navigation stack — and were scored
+> `deadline-no-grasp`, a policy failure they were not. Excluding runs the
+> policy was never given a fair share of compute puts the arms nearer **64-70 %
+> vs 4.5 %**, a gap of **60-70 points** rather than 29, with Fisher
+> strengthening to `p = 1.3e-05`. The direction and the decision below are
+> unaffected; only the size is, and it moves in the programme's favour. Fixed
+> and re-running — see `docs/reference/collision-validation-evidence.md`.
 
 **Fisher p = 3.5e-04**, power 0.97 against this effect. Leave-one-scene-out
 confirms no single scene carries it (p = 1.3e-02 … 5.4e-02 worst case).
@@ -161,7 +172,8 @@ recover it — it should be dropped from the collision programme's scorecard.
 **Do not read this as "turn the gate off".** 6 of 91 stops in the #204 battery
 were real contact, and the gate-off arm here is a *ceiling*, not a
 configuration. The number says how much headroom the §5 levers are competing
-for: **up to 29 points**, concentrated in the payload class.
+for: **at least 29 points** — see the #256 correction above, which puts the
+true figure nearer 60-70 — concentrated in the payload class.
 
 ---
 
@@ -370,10 +382,12 @@ Four things had to be discovered to make it run at all, each worth keeping:
    404'd against the real Hub and produced policy-free runs in ~35 s.
 
 - [x] **Ceiling experiment** — done, 2026-09-07. 31.1 % vs 2.3 %, p = 3.5e-04.
-      Result in §4.
-- [x] **Close-vs-continue** — **continue.** The gate is worth 29 points of
-      completion, so the §5 levers are competing for real headroom rather than
-      for noise.
+      Result in §4. **Both absolutes are floors** (#256): a Nav2 bond teardown
+      voided 31 of the 89 runs and they were scored as policy failures.
+      Corrected reading ~64-70 % vs ~4.5 %; re-running on the fixed harness.
+- [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
+      points of completion — and on the corrected reading nearer 60-70 — so the
+      §5 levers are competing for real headroom rather than for noise.
 - [x] ~~**Lever 1: the payload bounding box**~~ — **struck by measurement,
       2026-09-07.** This entry predates §5's reordering and kept the old
       numbering. The payload *is* 71 % of stops, but the decomposition shows its

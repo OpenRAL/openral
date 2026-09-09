@@ -1188,7 +1188,7 @@ machine). That is a rollout difference rather than an effect of the fix: the
 producer emits a **bit-identical** witness on this scene before and after it
 (same support, 0.065 mm, 0.117 m patch, same normal), because the tilt defect
 only bites where a *neighbouring* support geom sits laterally offset under the
-payload, which this scene's reset geometry does not present. 
+payload, which this scene's reset geometry does not present.
 The missing separation itself has a mechanism, and it is one already on record.
 `update_support_contact_witnesses` (`collision.cpp:1828`) keeps a witness alive
 while `support_witness_still_in_contact` still finds occupancy under the
@@ -1585,6 +1585,13 @@ accept in advance that it can only report a null.
 
 
 ### 2026-09-07 — the ceiling: what the policy does with the gate off (31.1 % vs 2.3 %)
+
+> **Superseded in part (2026-09-09, issue #256).** The rates below are **lower
+> bounds**, and loose ones. 31 of these 89 valid runs were killed mid-run by a
+> Nav2 bond teardown and scored as `deadline-no-grasp` — a policy failure they
+> were not. The **contrast holds and its significance strengthens**; the
+> absolutes and the 29-point figure do not. See "the ceiling battery's
+> `deadline-no-grasp` bucket was a Nav2 teardown" at the end of this page.
 
 The measurement nobody had taken. After a month of collision work, completion
 had gone from 25 % (2026-08-26) to 5-10 % (2026-09-06), and no round in this
@@ -2444,6 +2451,134 @@ OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
 Recorded here in full, including the estimate it replaces, because this is the
 fourth time this week a number that came from reasoning rather than from the
 instrument turned out to be wrong — and the other three were mine too.
+
+### 2026-09-09 — the ceiling battery's `deadline-no-grasp` bucket was a Nav2 teardown, not a policy failure
+
+Issue #256 asked whether the ceiling battery's **absolute** rates (31.1 % vs
+2.3 %) were deflated by host load, and proposed re-running on an idle host to
+find out. They are deflated, but not by load in the way the question assumed,
+and no re-run was needed to establish it: the battery's own artifacts survived
+on `spark` (111 run directories under `openral-217-with204/outputs/ceiling/`)
+and the answer is in them.
+
+**The reconstruction reproduces the published headline**, which is what makes
+the rest of it trustworthy: re-deriving each run's outcome from its
+`run_deploy.log` alone gives 14 completions in the gate-off arm and 1 in the
+gate-on arm, against the published 14/45 and 1/43. Bucketing the
+non-completions is what the original never did:
+
+| gate | completed | e-stop | deadline-**after**-grasp | deadline-**no**-grasp | valid |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **OFF** | 14 | 0 | 4 | **28** | 46 |
+| **ON** | 1 | 18 | 3 | **21** | 43 |
+
+**61 % of the gate-off denominator never grasped.** And `run_goal.log` carries
+a throughput measure nobody had read: `latest_chunk`, the action chunks the
+policy delivered inside the 420 s deadline.
+
+| | n | median chunks | range |
+| --- | ---: | ---: | --- |
+| completed | 15 | **544** | 233–769 |
+| `deadline-no-grasp` | 37 | **16** | 0–128 |
+
+The two do not overlap at all. Runs that ended early measure 1.15–1.8
+chunks/s; a 420 s run that delivered 16 chunks ran at 0.04/s. **Those runs
+were never given a trial** — a policy handed 16 action chunks cannot reach a
+grasp whatever its quality.
+
+**The cause is not contention, and not the shared sidecar.** Both were the
+obvious suspects — the battery ran eight workers against one XR-1 sidecar —
+and both are wrong. A serialised ZMQ queue degrades as `1/N`; what is there is
+bimodal. And once concurrency is measured at a *fixed instant* rather than
+over each run's own window (a fast run is a short run, so it overlaps fewer
+others — the naive measure is circular), concurrency stops predicting anything:
+runs with zero or one other worker active are starved 33 % and 100 % of the
+time.
+
+**What actually killed them.** Inside a starved run the log goes silent for
+563 s, and immediately before the silence
+`lifecycle_manager_navigation` begins deactivating. Nav2 tears down the
+**entire** navigation stack when a managed server misses its bond heartbeat,
+and the default timeout is **4 s**. The cause line, twelve lines up:
+
+| server that lost its bond | runs |
+| --- | ---: |
+| `controller_server` | 25 |
+| `planner_server` | 4 |
+| `collision_monitor` | 2 |
+| `behavior_server` / `smoother_server` | 1 each |
+
+Across all 89 valid runs, a bond lost early splits them perfectly — **31
+flagged, and not one `completed` or `estop` run among them**:
+
+| | starved | healthy |
+| --- | ---: | ---: |
+| bond lost early | **31** | **0** |
+| not | 16 | 42 |
+
+The teardown prints no traceback and exits non-zero nowhere. The graph stays
+up and inert, burns the rest of its deadline, and the harness scored the corpse
+as `deadline-no-grasp` — the policy failing to grasp.
+
+**This reconciles the host-load table in #256 without the load hypothesis
+being quite right.** A 4 s heartbeat is a *threshold* event, so it is
+load-sensitive (idle `spark` → 0 of these; loaded `q-laptop` → 40–64 %) while
+correlating with nothing continuous. It also means re-running the battery
+unchanged on an idle host would have fixed nothing reliably: the defect was in
+the launch configuration, not in the host.
+
+**What the corrected numbers look like.** Filtering both arms by delivered
+throughput — which drops **no** completion, and attrits the two arms almost
+identically (57 % vs 51 %), so it is not arm-biased:
+
+| min chunks/s | OFF | ON | gap |
+| ---: | ---: | ---: | ---: |
+| 0.00 (as published) | 14/46 = 30.4 % | 1/43 = 2.3 % | **28 pts** |
+| 0.20 | 14/22 = 63.6 % | 1/22 = 4.5 % | 59 pts |
+| 0.50 | 14/20 = 70.0 % | 1/21 = 4.8 % | **65 pts** |
+
+It plateaus from 0.2 upward, and Fisher *strengthens* rather than weakens:
+`p = 2.4e-04 → 1.3e-05`.
+
+**So #256's reading is confirmed and sharpened.** The contrast was never in
+danger — both arms were hit about equally, which is exactly what the paired
+design was built to absorb. The **absolutes** were badly deflated, and with
+them the headline: **the 29-point figure is a lower bound, and a loose one.**
+The real ceiling gap is nearer 60–70 points. The programme's justification is
+*stronger* than the ledger recorded, not weaker. Treat every absolute
+completion rate in the 2026-09-07 entry as a floor until the re-run lands.
+
+**What shipped with this entry** (all under #256):
+
+1. `BOND_TIMEOUT_S = 30.0` on `lifecycle_manager_navigation`. It could not go
+   in the params file — upstream `navigation_launch.py` hands that node only
+   `{autostart, node_names}` and never the params file, so a block there is
+   silently ignored, which is the trap this fix had to step around. Applied as
+   a scoped `SetParameter` and **verified on the live node**. This is a
+   liveness timeout on the navigation stack, not a safety check: the E-stop
+   path is `openral_safety_kernel` and is untouched. Raised, not disabled, so
+   a server that really dies is still caught.
+2. `validation_matrix._nav2_bond_teardown` — a run voided this way is now a
+   `harness-error`, not a policy outcome. The threshold sits in a measured
+   99 s empty gap (worst dead run `t0 + 100.8 s`, earliest healthy teardown
+   `t0 + 199.6 s`) and is declined outright on a `_deploy_excerpt.log`, which
+   begins mid-run: a missed teardown leaves the old behaviour, a false one
+   would silently drop a real result out of the denominator.
+   `tests/unit/test_validation_matrix_nav2_bond.py` pins both directions
+   against real logs from this battery, including the tightest healthy case.
+3. The ceiling probe records host `loadavg`, delivered chunk count and any
+   bond teardown **alongside each round's verdict** — #256's "record per-round
+   load and stop this recurring", and the reason this took a log
+   reconstruction to find rather than a query.
+4. `ceiling_battery.sh` gains `WORKERS` (default **2**, was a hard 8) and
+   interleaves its worklist by scene, so the two live lanes are one scene's
+   off and on arm and the arms stay paired under identical conditions.
+
+**The lesson, which is the same one as the 2026-09-09 correction below it.**
+`deadline-no-grasp` is not a policy property. It is the bucket every silent
+instrument failure falls into, because it is defined by absence — no success,
+no stop — and absence is what a dead graph produces. It needs a positive
+liveness check beside it, not a subtraction.
 
 ## Related
 

@@ -1,0 +1,6 @@
+deploy sim → robot=panda_mobile (manifest.name=panda_mobile) hal_package=openral_hal_panda_mobile hal_node_name=openral_hal_panda_mobile
+[static_transform_publisher-6] [INFO] [1788730745.557623891] [static_base_link_to_base_scan]: Spinning until stopped - publishing transform
+    [... elided: real run, trimmed for the fixture ...]
+[runtime_node-2] 2026-09-06 23:42:24 [error    ] ros_publishing_hal.safety_abort action_applied_topic=/openral/action_applied reason='/openral/safety_status:stale (last update 3.0s ago > 3.0s; safety publisher may be gone)' tick=321
+[lifecycle_manager-24] [INFO] [1788730945.114840635] [lifecycle_manager_navigation]: [34m[1mHave not received a heartbeat from smoother_server.[0m[0m
+[lifecycle_manager-24] [ERROR] [1788730945.114888923] [lifecycle_manager_navigation]: CRITICAL FAILURE: SERVER smoother_server IS DOWN after not receiving a heartbeat for 4000 ms. Shutting down related nodes.

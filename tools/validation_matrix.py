@@ -966,6 +966,10 @@ _NAV2_BOND_LOSS_EARLY_S: Final[float] = 120.0
 _NAV2_BOND_LOST: Final[re.Pattern[str]] = re.compile(r"Have not received a heartbeat from ([\w_]+)")
 _ROS_LOG_TIME: Final[re.Pattern[str]] = re.compile(r"\[(\d{9,11}\.\d+)\]")
 
+#: First line `openral deploy sim` writes, and the proof that a deploy log
+#: begins where the run begins rather than partway through it.
+_DEPLOY_BANNER_PREFIX: Final[str] = "deploy sim"
+
 
 def _nav2_bond_teardown(deploy_lines: Sequence[str]) -> str:
     """Say which Nav2 server lost its bond early enough to void the run.
@@ -979,6 +983,7 @@ def _nav2_bond_teardown(deploy_lines: Sequence[str]) -> str:
     Example:
         >>> _nav2_bond_teardown(
         ...     [
+        ...         "deploy sim \u2192 robot=panda_mobile",
         ...         "[runtime_node-2] [INFO] [1788722700.0] [x]: up",
         ...         "[lifecycle_manager-24] [ERROR] [1788722730.0]"
         ...         " [lifecycle_manager_navigation]: Have not received a"
@@ -986,9 +991,18 @@ def _nav2_bond_teardown(deploy_lines: Sequence[str]) -> str:
         ...     ]
         ... )
         'Nav2 tore down its stack 30.0s in: no heartbeat from controller_server'
-        >>> _nav2_bond_teardown(["[a] [INFO] [1.0] [x]: nothing to see"])
+        >>> _nav2_bond_teardown(["deploy sim", "[a] [INFO] [1.0] [x]: quiet"])
         ''
     """
+    first = next((ln for ln in deploy_lines if ln.strip()), "")
+    if not first.startswith(_DEPLOY_BANNER_PREFIX):
+        # Elapsed time is measured from the log's first stamp, which is only
+        # the run's start when the log starts at the run's start. A
+        # `<stem>_deploy_excerpt.log` begins mid-run (`argv: ros2 launch ...`),
+        # so anchoring on it would read a late bond loss as an early one and
+        # void a healthy run. Decline instead: a missed teardown leaves the
+        # pre-existing behaviour, a false one silently drops a real result.
+        return ""
     first_t: float | None = None
     for line in deploy_lines:
         stamp = _ROS_LOG_TIME.search(line)
