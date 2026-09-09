@@ -608,6 +608,33 @@
       "title": "IntrinsicsPinhole",
       "type": "object"
     },
+    "LaunchInclude": {
+      "additionalProperties": false,
+      "description": "A vendor ROS 2 launch file a deploy has to bring up alongside the graph.\n\nSome sensors are not opened by OpenRAL at all \u2014 they are published by the\nvendor's own driver, and the scene's ``SensorDeployBinding`` merely\n*subscribes* to what that driver puts on the bus (``backend:\nros2_image``). The binding names the topic but not who publishes it, so\nuntil this existed an operator had to start the driver by hand in a second\nterminal and every camera fed that way was silently empty when they forgot.\n\nSame shape as the HAL's ``real_bringup.launch.py`` convention, but declared\nas data rather than by file name: a driver needs *arguments* (which camera\nmodel, which override YAML), and those are host-specific \u2014 which is exactly\nwhat a ``DeployScene`` is for.\n\nResolved through ``FindPackageShare``, so the launch comes from the sourced\noverlay like any other vendor package, and a missing package fails loudly at\nlaunch-parse time rather than leaving a topic quietly unpublished.\n\nAttributes:\n    package: ROS 2 package providing the launch file.\n    launch_file: File name inside that package's ``launch/`` directory.\n    args: Launch arguments, forwarded verbatim. Values are strings because\n        that is what ``ros2 launch`` takes; ``\"true\"``/``\"false\"`` for\n        booleans.\n\nExample:\n    >>> LaunchInclude(package=\"zed_wrapper\", launch_file=\"zed_camera.launch.py\").args\n    {}",
+      "properties": {
+        "package": {
+          "title": "Package",
+          "type": "string"
+        },
+        "launch_file": {
+          "title": "Launch File",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "object"
+        }
+      },
+      "required": [
+        "package",
+        "launch_file"
+      ],
+      "title": "LaunchInclude",
+      "type": "object"
+    },
     "PhysicsBackend": {
       "description": "Physics / scene backend used to instantiate a ``SceneSpec``.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld,\n        and VLABench (native lerobot 0.6.0 VLABenchEnv, in-process).\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The\n        engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm\n        benchmark backend runs it out-of-process via a py3.10 sidecar.\n        ManiSkill3 scenes predate this slot and historically\n        declared ``MUJOCO`` \u2014 new SAPIEN backends use this value.\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.\n    COPPELIASIM: CoppeliaSim/PyRep \u2014 the RLBench benchmark backend, driven\n        out-of-process via a py3.10 sidecar.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
       "enum": [
@@ -1622,6 +1649,13 @@
         "$ref": "#/$defs/SensorSpec"
       },
       "title": "Sensors",
+      "type": "array"
+    },
+    "drivers": {
+      "items": {
+        "$ref": "#/$defs/LaunchInclude"
+      },
+      "title": "Drivers",
       "type": "array"
     },
     "hal": {
