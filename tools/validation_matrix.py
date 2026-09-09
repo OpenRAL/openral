@@ -691,25 +691,40 @@ def adjudicate_ground_truth(
     payload_world = list(snapshot.get("nearest_payload_world_pairs") or [])
     payload_robot = list(snapshot.get("nearest_payload_robot_pairs") or [])
     link_link = list(snapshot.get("nearest_link_link_pairs") or [])
-    # NOT `+ link_link`: adjacent links overlap permanently (allowed-collision matrix, kernel never
-    # checks them), so folding them in makes `nearest_any <= 0` vacuously true and stamps EVERY
-    # stop `real-contact`. Measured on `2026-09-07-adr0101-live-1`: link3/4 -36.3mm, link5/6
-    # -23.0mm, link4/5 -4.6mm, all certified+permitted, while the tripping payload sat +24.9mm
-    # clear. Self pair added back below once the kernel's meant pair is known (#220 regression).
+    # NOT `+ link_link`. Adjacent robot links overlap permanently by design —
+    # they are in the robot's allowed-collision matrix and the kernel never
+    # checks them — so folding them in here makes `nearest_any <= 0` vacuously
+    # true and stamps EVERY stop `real-contact`. Measured on
+    # `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at -36.3 mm,
+    # `link5`/`link6` at -23.0 mm, `link4`/`link5` at -4.6 mm, all certified,
+    # all permitted, while the payload that actually tripped the kernel sat
+    # +24.9 mm clear of the counter. The named self pair is added back below,
+    # once it is known which pair the kernel meant (#220 regression).
     all_pairs = robot_pairs + payload_world + payload_robot
 
-    # Must match the probe whose pairs are read below: reading `nearest_probe_coverage`
-    # (robot-vs-world) for a payload stop lets an untruncated robot probe vouch for a payload probe
-    # never consulted — same error class as scoring against the wrong bodies (#208, #228).
+    # The coverage block has to be the one for the probe whose pairs are read
+    # below. Reading `nearest_probe_coverage` (the robot-vs-world probe) for a
+    # payload stop lets an untruncated robot probe assert "nothing within
+    # distmax" about a payload probe that was never consulted — evidence from
+    # the wrong instrument, the same error class as scoring against the wrong
+    # bodies (#208, #228). Chosen alongside the pair set, not before it.
     coverage_key = "nearest_probe_coverage"
 
-    # Link-vs-link self stop: `nearest_robot_world_pairs` only holds link-vs-WORLD pairs (HAL's
-    # robot probe excludes the whole robot from the far side,
-    # `sim_sensor_bridge._nearest_pairs`/`other_excluded`) — taking party_a's world clearance under
-    # the self-pair's identity is how panda_link5/link7 at -31.97mm was scored false-positive off
-    # link5's 212mm world clearance. #216 added a link<->link probe: HULL-fidelity stops still need
-    # #221's per-link `hull_overhang_m` for BOTH links (`hal_admissible_gap_m`) — a missing budget,
-    # not a missing pair, kept distinct in the reason.
+    # A link-vs-link self stop names two ROBOT links, and this snapshot cannot
+    # speak to that pair at all: the HAL's robot probe excludes the whole robot
+    # from the far side (`sim_sensor_bridge._nearest_pairs`, `other_excluded`),
+    # so `nearest_robot_world_pairs` only ever holds link-vs-WORLD pairs. Taking
+    # `party_a`'s world clearance here answers a different question than the
+    # kernel asked and quotes it under the self-pair's identity — which is how
+    # `panda_link5`/`panda_link7` at -31.97 mm was scored `false-positive` off
+    # link5's 212 mm clearance to a kitchen island.
+    #
+    # #216 gave the HAL a link<->link probe, so a snapshot that carries one can
+    # answer the question after all. A stop the kernel judged at HULL fidelity
+    # scores only when #221's per-link `hull_overhang_m` is measured for BOTH
+    # links `hal_admissible_gap_m` names; otherwise it still cannot be scored,
+    # and it is the missing *budget* that stops it, not a missing pair — the
+    # two are worth keeping distinct in the reason.
     self_pair = stop.kind == "self" and not stop.involves_payload
     self_pair_unprobed = self_pair and not link_link
 
@@ -1624,6 +1639,38 @@ def collision_scale_env() -> dict[str, float]:
     return out
 
 
+def octomap_resolution_env() -> dict[str, float]:
+    """The world-voxel resolution this round will actually run with.
+
+    ``deploy_e2e.launch.py`` reads ``OPENRAL_OCTOMAP_RESOLUTION_M`` and derives the
+    kernel's ``world_voxel_max_cells`` from it. Same shape as
+    :func:`collision_scale_env`, and recorded for the same reason: a finer grid
+    shrinks the kernel's quantisation term, so it is **less** conservative, and
+    a round that ran one must never be indistinguishable afterwards from a round
+    that did not.
+
+    ``argv``-based :func:`assert_no_safety_overrides` cannot see it -- this is
+    an environment variable, and the guard inspects the launch argv.
+
+    Returns:
+        ``{"octomap_resolution_m": <value>}`` when the override is set and in
+        the range the launch honours, otherwise empty (the round ran the shipped
+        default and the metadata says nothing rather than something false).
+    """
+    raw = os.environ.get("OPENRAL_OCTOMAP_RESOLUTION_M", "").strip()
+    if not raw:
+        return {}
+    try:
+        value = float(raw)
+    except ValueError:
+        # The launch falls back to the shipped default on an unparseable value,
+        # so the round did not run with it either.
+        return {}
+    if not (0.001 <= value <= 0.5):
+        return {}
+    return {"octomap_resolution_m": value}
+
+
 def assert_no_safety_overrides(argv: Sequence[str]) -> None:
     """Refuse any argv token that looks like a safety-knob override.
 
@@ -1885,15 +1932,22 @@ def materialise_scene(spec: SceneSpec, seed: int, run_dir: Path) -> tuple[str, P
 def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
     """The environment both the launch AND this harness's own `ros2` calls use.
 
-    Must carry the sim DDS scope: since #227/#231 `openral deploy sim` confines itself via
-    `openral_cli._dds_scope.confine_sim_scope` (`ROS_DOMAIN_ID=77`,
-    `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so sim and a real robot can't share a graph, but
-    this harness didn't — so the graph came up on domain 77 while `_wait_for_action_server` polled
-    domain 0 for 600s and reported "never appeared". Every post-#231 scene failed this way as
-    `harness-error` beside a healthy graph (measured 2026-09-07, `robocasa_drawer_utensil`:
-    `ROS_DOMAIN_ID=77 ros2 action list` showed `/openral/execute_rskill` throughout). Applied here,
-    not left to the child, because `confine_sim_scope`'s `setdefault` lets the deploy inherit this
-    value while an operator's own exported scope still wins on both sides.
+    **It must carry the sim DDS scope.** Since #227/#231 `openral deploy sim`
+    confines itself with `openral_cli._dds_scope.confine_sim_scope`
+    (`ROS_DOMAIN_ID=77`, `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) so a
+    simulation and a real robot cannot share a graph. The deploy applied that
+    to itself, and this harness did not — so the graph came up on domain 77
+    while `_wait_for_action_server` polled `ros2 action list` on domain 0, saw
+    nothing for its full 600 s, and reported "action server never appeared".
+    Every scene of every round on post-#231 master failed that way, as
+    `harness-error`, with a perfectly healthy graph running beside it: measured
+    2026-09-07 on `robocasa_drawer_utensil`, where `ROS_DOMAIN_ID=77 ros2
+    action list` showed `/openral/execute_rskill` the whole time.
+
+    Applying it *here* rather than letting the child do it is what makes the two
+    agree: `confine_sim_scope` uses `setdefault`, so the deploy inherits this
+    value instead of choosing its own, and an operator who exports their own
+    scope still wins on both sides.
     """
     env = os.environ.copy()
     confine_sim_scope(env)
@@ -1958,16 +2012,32 @@ def _wait_for_action_server(
 ) -> bool:
     """Poll ``ros2 action list`` until the rSkill action server appears.
 
-    Uses the launch's own ``env``, with the daemon, after a one-shot ``ros2 daemon stop`` — not
-    ``--no-daemon``: its one-shot node's discovery window is too short to see a genuinely
-    advertised action (measured 2026-09-07: ``ros2 action list`` found ``/openral/execute_rskill``
-    up, ``--no-daemon`` didn't, same domain, repeatably — every scene reported "never appeared").
-    Stopping the daemon first avoids the other hazard, a stale daemon from an unscoped shell
-    answering for the wrong graph (#227): the daemon this loop uses is started here, in ``env``, on
-    this round's scope. Discovery needs a few seconds to settle after a restart, hence the poll.
+    Under the launch's own ``env``, and **with** the daemon after a one-shot
+    ``ros2 daemon stop``.
+
+    This used to pass ``--no-daemon``, for a real hazard: the CLI daemon is a
+    long-lived process that answers from the environment *it* was started with,
+    so one left over from an unscoped shell reports a different graph than the
+    round is running on — the false reading that made
+    ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`` look broken while it was working
+    (#227). But ``--no-daemon`` builds a one-shot node whose discovery window is
+    too short to see an action that is genuinely advertised: measured
+    2026-09-07 against a live graph with ``/openral/execute_rskill`` up,
+    ``ros2 action list`` found it and ``ros2 action list --no-daemon`` did not,
+    on the same domain, repeatably. So the poll could never succeed and every
+    scene of every round reported "action server never appeared".
+
+    Stopping the daemon first closes the original hazard from the other side:
+    the daemon the loop then uses is started by this call, in ``env``, on this
+    round's scope, so it cannot report some other graph's action server — which
+    would mean waiting on, or being satisfied by, the wrong one. Discovery still
+    needs a few seconds to settle after a restart, so the first poll can miss;
+    that is exactly what a polling loop is for.
     """
-    # Kill any daemon from another environment first, so the one this loop uses is started here,
-    # in `env`, on this round's DDS scope (see docstring).
+    # Kill any daemon started from ANOTHER environment before polling, so the
+    # one this loop uses is started by this call, in `env`, and therefore on
+    # this round's DDS scope. That is the hazard `--no-daemon` was reaching for;
+    # this addresses it without paying its cost (see the note above).
     subprocess.run(["ros2", "daemon", "stop"], capture_output=True, text=True, check=False, env=env)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -2656,6 +2726,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "stack_argv": [*STACK_ARGV, *args.deploy_arg],
         "safety_overrides_absent": True,
         "collision_scale": collision_scale_env(),
+        "octomap_resolution": octomap_resolution_env(),
         "gpu_name": gpu_name,
         # DDS scope the round ran on, unrecorded until #227 — no round before 2026-09-05 can be
         # checked for sharing a graph (the 2026-09-04 `post200-2` fridge round still can't answer

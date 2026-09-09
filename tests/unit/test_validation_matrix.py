@@ -1475,15 +1475,24 @@ def test_payload_vs_link_with_no_payload_robot_pairs_is_unadjudicated() -> None:
 def test_permitted_adjacent_link_overlap_is_not_evidence_of_contact() -> None:
     """An ACM-allowed link overlap must not stamp an unrelated stop `real-contact`.
 
-    Regression for #220 (shipped 2026-09-05): folding the new link-vs-link
-    pairs into `nearest_any` made adjacent-link overlaps (always negative,
-    permanently allowed by the ACM) satisfy the *any pair ≤ 0 m → real-contact*
-    rule vacuously, so **every** adjudicable stop was stamped `real-contact`
-    regardless of the tripping party's real clearance. Here the kernel stopped
-    the carried payload against a voxel while it sat +24.86 mm clear of the
-    counter, with `link3`/`link4` at −36.3 mm, `link5`/`link6` at −23.0 mm,
-    `link4`/`link5` at −4.6 mm all certified-permitted noise. Honest verdict:
-    `within-quantization`.
+    Regression for a defect #220 introduced and shipped to `master` on
+    2026-09-05. That PR gave the HAL a link-vs-link probe so a self stop could
+    finally be scored against the pair the kernel named. The pairs were then
+    folded into the adjudicator's `nearest_any`, which drives its first and
+    most decisive rule: *any probed pair at or below 0 m → `real-contact`*.
+
+    Adjacent robot links overlap permanently — they are in the robot's
+    allowed-collision matrix and the kernel never checks them — so from #220
+    onward `nearest_any <= 0` was vacuously true and **every** adjudicable stop
+    was stamped `real-contact`, whatever the tripping party's real clearance.
+
+    On this round the kernel stopped the carried payload against a voxel while
+    the payload sat **+24.86 mm clear** of the counter. The snapshot also
+    records `robot0_link3`/`link4` at −36.3 mm, `link5`/`link6` at −23.0 mm and
+    `link4`/`link5` at −4.6 mm: all certified, all permitted, none of them what
+    the kernel stopped for. The honest verdict is `within-quantization` — a
+    stop of a physically clear robot — and reading it as `real-contact` inverts
+    the one measurement the collision programme exists to make.
     """
     from openral_core import ValidationStopEvidence
 
@@ -1523,8 +1532,9 @@ def test_a_named_self_pair_still_reaches_nearest_any() -> None:
     """Excluding permitted overlaps must not deafen the self-stop path.
 
     The fix drops `nearest_link_link_pairs` from `nearest_any` wholesale and
-    adds back only the pair the kernel named — otherwise a genuine link-vs-link
-    self stop in real overlap would stop being detectable as contact.
+    adds back only the pair the kernel named. If that add-back were missing, a
+    genuine link-vs-link self stop in real overlap would stop being detectable
+    as contact — trading one blind spot for its mirror image.
     """
     from openral_core import ValidationStopEvidence
 
@@ -1548,3 +1558,32 @@ def test_a_named_self_pair_still_reaches_nearest_any() -> None:
     assert adjudication is not None
     assert adjudication.nearest_any_m is not None
     assert adjudication.nearest_any_m < -0.03, "the named self pair must still be seen"
+
+
+def test_an_octomap_resolution_override_is_recorded_not_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round on a finer grid must be distinguishable afterwards from one that was not.
+
+    A finer world-voxel grid shrinks the kernel's quantisation term, so it stops
+    *later* and *nearer* -- the override is less conservative, not more.
+    ``assert_no_safety_overrides`` inspects the launch argv and cannot see an
+    environment variable, so the recording in the round metadata is the only
+    thing standing between a 15 mm round and a 25 mm one in the ledger.
+    """
+    monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", "0.015")
+    assert validation_matrix.octomap_resolution_env() == {"octomap_resolution_m": 0.015}
+
+
+def test_an_octomap_resolution_the_launch_ignores_is_not_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recording a value the launch refused would misdescribe the round.
+
+    ``_octomap_resolution`` falls back to the shipped default on anything
+    unparseable or outside ``[0.001, 0.5]``, so the round ran at 25 mm. Metadata
+    claiming otherwise is worse than metadata saying nothing.
+    """
+    for bad in ("", "   ", "not-a-number", "0", "-0.015", "1.5"):
+        monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", bad)
+        assert validation_matrix.octomap_resolution_env() == {}, bad
