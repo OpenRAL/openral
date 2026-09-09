@@ -2391,6 +2391,81 @@ Three consequences worth separating:
   should be weighted.
 
 
+### 2026-09-09 — ADR-0101's 94 % re-derived from the live map: 86 %, and the clearances are half
+
+Thirty-six `utensil` rounds on **`spark`** at `448818c4`, the sha carrying both
+backing-probe fixes — the condition the re-derivation required and which no
+round on `q-laptop` had ever met. Run through `tools/adr0101_recovery.py`:
+
+| | offline (certified truth) | **live map, re-derived** |
+| --- | ---: | ---: |
+| payload-vs-`voxel_` stops | 51 | **28** |
+| would be recovered | 48 (**94 %**) | **24 (86 %)** |
+| would still stop | 3 | 4 |
+| **median recovered clearance** | **16.2 mm** | **8.56 mm** |
+| minimum recovered clearance | 0.1 mm | **1.84 mm** |
+
+**The rates agree.** 24/28 against 48/51 is Fisher two-sided **p = 0.237** — no
+evidence they differ. ADR-0101's headline survives its own re-derivation, which
+is what the plan asked and what the ADR needed before implementation leans on it.
+
+**The clearances do not, and this is the finding.** The median recovered stop sits
+at **8.56 mm of real air, not 16.2 mm** — half. The mechanism would be
+suppressing cells whose true surface is twice as close as the offline analysis
+implied, so its own modelling error (pose, fit, and on hardware the perception
+residual) eats a correspondingly larger share of the budget. The one number that
+moved the *other* way is the minimum, 1.84 mm against 0.1 mm — the offline
+battery's single scariest stop has no counterpart here.
+
+The four that correctly still stop are −5.79, −0.09, −0.09 and −0.01 mm against
+`counter_2_right_group_main`, `counter_main_main_group_main` and
+`stack_2_right_group_2_door_main`. Two of them are inside a tenth of a
+millimetre of the surface, which is exactly the class the suppression step must
+never let through.
+
+By fixture the recoverable stops are again dominated by one counter
+(`counter_2_right_group_main` ×14 of 24), reproducing §3's shape on a different
+scene seed set.
+
+**The decomposition, now on n = 28 instead of n = 4:**
+
+| class | n | median excess | beyond voxel | |
+| --- | ---: | ---: | ---: | --- |
+| payload | 28 | +11.73 mm | **−9.93 mm** | no geometry headroom |
+| link | 7 | +25.93 mm | **+4.28 mm** | a little left |
+
+The exhaustion conclusion held at n=4 and holds harder at n=28: the payload class
+has nothing a tighter envelope can recover, and the link class has ~4 mm.
+
+### 2026-09-09 — correction: the "18–27 % carry-phase yield" was q-laptop's load, not the policy
+
+The 2026-09-08 entry above measured, across 26 `q-laptop` rounds, that only
+18–27 % of rounds reach the carry phase and 40–64 % end `deadline-no-grasp`. It
+read that as a property of the policy and sized future batteries from it.
+
+**Thirty-six rounds on `spark` refute it:**
+
+| outcome | n |
+| --- | ---: |
+| `estop-collision-within-quantization` | 29 |
+| `estop-collision-real` | 4 |
+| `estop-collision-false-positive` | 1 |
+| `estop-initial-configuration` | 1 |
+| `completed` | 1 |
+| **`deadline-no-grasp`** | **0** |
+
+**Zero rounds failed to grasp**, against 40 % on `q-laptop`, and 28 of 36 (78 %)
+produced a payload stop against 27 %. The policy is the same; the host is not.
+`deadline-no-grasp` is what a 420 s deadline does on a machine at load 19 with a
+shared GPU — it is a *host* measurement that was recorded as a policy one.
+
+Two things follow. The battery-sizing advice in that entry is wrong for an idle
+host: 36 rounds yielded 28 payload stops, not the ~10 the q-laptop yield
+predicted. And **`deadline-no-grasp` should be read as a load symptom first**,
+not as evidence about the policy — which also means the ceiling battery's own
+policy-free exclusions deserve re-reading in that light.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
