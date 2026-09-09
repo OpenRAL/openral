@@ -15,6 +15,20 @@
         pos_tracking:
             pos_tracking_enabled: false
         general:
-            grab_resolution: 'HD1080'
+            # HD720, not HD1080. The ZED-M shares one 5 Gbit/s hub uplink with
+            # both Arducams on this cell (`lsusb -t`: all three hang off Bus 002
+            # Dev 002), and at 1920x1080 the SDK opened the camera and then
+            # dropped it repeatedly mid-stream — "Connection issue detected:
+            # CAMERA REBOOTING" on a ~2.8 s retry loop, with no frame ever
+            # reaching the bus. HD720 roughly halves the pixel rate.
+            grab_resolution: 'HD720'
         depth:
             depth_mode: 'NEURAL_LIGHT'
+            # Off so `pos_tracking_enabled: false` above actually holds. The SDK
+            # force-enables positional tracking whenever depth stabilization is
+            # on ("POSITIONAL TRACKING disabled in the parameters, but forced to
+            # ENABLE because required by `depth.depth_stabilization > 0`"), which
+            # silently defeated the setting this file exists for. Stabilization
+            # smooths depth temporally using that tracking; octomap integrates
+            # over time anyway, so the smoothing buys nothing here.
+            depth_stabilization: 0

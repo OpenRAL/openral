@@ -89,6 +89,11 @@ def test_the_zed_override_keeps_positional_tracking_off() -> None:
     cfg = yaml.safe_load((_SCENE.parent / str(override)).read_text(encoding="utf-8"))
     params = cfg["/**"]["ros__parameters"]
     assert params["pos_tracking"]["pos_tracking_enabled"] is False
+    # …and the setting has to actually hold. The SDK force-enables positional
+    # tracking whenever depth stabilization is on, which silently defeated the
+    # flag above until this was pinned — observed live on the cell as
+    # "POSITIONAL TRACKING disabled in the parameters, but forced to ENABLE".
+    assert params["depth"]["depth_stabilization"] == 0
 
 
 def test_drivers_are_included_on_the_real_path_only() -> None:
