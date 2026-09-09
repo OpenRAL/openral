@@ -207,7 +207,30 @@ def _octomap_clamping_max(hal_mode: str) -> float:
 
 
 def _octomap_resolution(hal_mode: str) -> float:
-    """Use manipulation-scale voxels in sim without changing real maps."""
+    """Use manipulation-scale voxels in sim without changing real maps.
+
+    ``OPENRAL_OCTOMAP_RESOLUTION_M`` overrides it, for the resolution battery in
+    ``PLAN.md`` §5. Same mechanism as the #188 graded band's
+    ``OPENRAL_COLLISION_SCALE_*``: an env var the launch reads and
+    ``validation_matrix.py`` records, so a round that changed it can never be
+    mistaken afterwards for one that did not.
+
+    **A finer grid is LESS conservative**, not more: the cell half-diagonal is
+    the kernel's quantisation term, so shrinking it makes the kernel stop later
+    and nearer. That is the point of the experiment and the reason this is an
+    override rather than a new default -- it needs the measurement in §5 plus a
+    safety-WG ruling before any value but the shipped one ships.
+    """
+    override = os.environ.get("OPENRAL_OCTOMAP_RESOLUTION_M", "").strip()
+    if override:
+        try:
+            value = float(override)
+        except ValueError:
+            value = 0.0
+        # A resolution the lattice cannot place is not an experiment, it is a
+        # silently empty grid. Fall through to the shipped default.
+        if 0.001 <= value <= 0.5:
+            return value
     return 0.025 if hal_mode == "sim" else 0.05
 
 
@@ -229,6 +252,21 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
     locomotion = getattr(description.capabilities, "locomotion", None) or ["none"]
     mobile = any(kind != "none" for kind in locomotion)
     return (description.odom_frame if mobile else base_frame), base_frame
+
+
+def _world_voxel_max_cells(resolution_m: float) -> int:
+    """Cells the published coverage ball needs at ``resolution_m``.
+
+    This was written out by hand as ``614125`` with a comment explaining it was
+    ``85^3``, the worst case for :func:`_octomap_coverage_radius` at 25 mm cells
+    including the one cell per axis the lattice snap can add. A derived constant
+    kept by hand is exactly what goes wrong when the resolution moves: at 15 mm
+    the ball needs 141^3 = 2 803 221 cells, and a kernel still reserving 614 125
+    rejects every grid it is sent -- which reads as "no world" and is a
+    fail-*open* on the world check.
+    """
+    per_axis = int(2.0 * _octomap_coverage_radius() / resolution_m) + 1
+    return per_axis**3
 
 
 def _octomap_coverage_radius() -> float:
@@ -1089,10 +1127,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # manipulation; exact OBB-vs-cube overlap still E-stops. Real
             # deploy keeps 2 cm.
             "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
-            # 85^3, the worst case for `_octomap_coverage_radius()` at the sim's
-            # 25 mm cells including the one cell per axis the lattice snap can
-            # add. See the kernel's own default for what this reserves.
-            "world_voxel_max_cells": 614125,
+            # Derived from the coverage ball and the octree resolution rather
+            # than pinned: 85^3 = 614 125 at the shipped 25 mm, 141^3 at 15 mm.
+            # See `_world_voxel_max_cells` for why a hand-kept derived constant
+            # is the wrong shape here.
+            "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
             "world_voxel_deadline_ms": 1000.0,
         }
 

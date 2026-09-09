@@ -113,6 +113,7 @@ _The four-scene collision-stack validation matrix as one versioned command. Reco
 - `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2632)
 - `cmd_verdicts(round_dir, *, stem=None) -> int` / `cmd_diff(round_dir, baseline_dir, out_path) -> int` / `cmd_import(args) -> int` / `cmd_run(args) -> int` — Subcommand bodies. `stem=None` reads the round's recorded `artifact_stem`. (L1516, L1849, L1777, L1889)
 - `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2830)
+- `octomap_resolution_env() -> dict[str, float]` — The world-voxel resolution the round will actually run with, read from `OPENRAL_OCTOMAP_RESOLUTION_M` (which `deploy_e2e.launch.py` honours in `[0.001, 0.5]`, and from which the kernel's `world_voxel_max_cells` is derived). Same mechanism as `collision_scale_env`, opposite direction: a **finer** grid shrinks the kernel's quantisation term, so the round is *less* conservative than the shipped default. Returns `{}` — not a value — when the override is absent or out of range, because the round then ran at the default and metadata claiming otherwise would misdescribe it. (L1642)
 
 ### `tools/_validation_matrix_monitor.py`
 _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS graph. Recovered verbatim from `attach_monitor4.py`. Records the attachment stream, the kernel's `FailureTrigger.evidence_json`, the occupied-cell **set** hash (a frozen map keeps an identical set, which a count cannot detect), the `PlaceDeclaration` + producer-measured region, and an `.npz` snapshot at every E-stop **and** periodically while a payload is carried (an E-stop-only monitor records nothing on a run that passes). Needs ROS 2 sourced._
@@ -226,8 +227,29 @@ _Package and publish a local rSkill directory to the HF Hub._
 ### `tools/generate_tight_geometry.py` (additions)
 
 - `refine_dop_to_budget(points, dop_lo, dop_hi, budget) -> Points` — a ≤`budget`-vertex convex envelope strictly tighter than the 26-DOP, for a link whose exact hull is over `MAX_TIGHT_HULL_VERTICES`. Starts from the DOP and intersects it with the exact hull's own face planes, worst-violation first, skipping any plane that would overrun the budget. Every candidate plane is tangent to `conv(mesh)`, so containment stays definitional and the result is `⊆ DOP ⊆ box` by construction — which a subset-then-expand approach cannot guarantee (expansion escapes the DOP slabs; `panda_link1`'s DOP has 0.083 mm of room inside its box). Refuses rather than emit an envelope that cuts its mesh. On `panda_link1`: 0.18 mm median / 0.65 mm max support gap against the DOP's 4.52 / 25.68 mm. Measured, but **not shipped** — under a live battery that tightening moved link1's stops by 0.0003 mm, so no manifest declares a refined envelope; the routine is here for a link where the measurement comes out differently.
-- `link_mesh_faces(xml_path: Path, geom_name: str) -> Points` — Triangle indices for `geom_name`'s mesh, local to its own vertex block; indexes the same vertex order `link_mesh_in_box_frame` returns, so the two together describe one consistent triangle mesh. (L124)
 - `_OVERHANG_BATCH: int`, `_OVERHANG_MAX_SAMPLES: int` — bound `hull_overhang_m`'s peak memory and total sample count. The single-call form asked for 57.8 GiB on a 320-vertex envelope over a 12k-triangle mesh. Coarsening lowers a sampled lower bound, and `_check` fails only when a declared overhang is *below* a fresh resample, so it can only make that gate more permissive, never wrongly fail a correct manifest.
+
+### `tools/voxel_transport_probe.py`
+
+- `RADIUS_M: float` — the shipped coverage radius (1.05 m), so grid sizes are the deployed ones.
+- `qos() -> QoSProfile` — the kernel's own `/openral/world_voxels` profile: `RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`.
+- `per_axis(res: float) -> int` / `make_msg(res: float) -> tuple[Any, int]` — cells per axis and a full-size `OccupancyVoxels` at that resolution.
+- `run_pub(res, count)` / `run_sub(res, count)` — one role each, emitting JSON; run as separate **processes** so intra-process short-circuiting cannot hide the transport.
+- `run_sweep(resolutions, count) -> int` — drives both roles per resolution and prints the table, reporting the RMW measured.
+- CLI: `uv run python tools/voxel_transport_probe.py sweep [--resolutions ...] [--count N]`. Needs a sourced ROS 2 overlay.
+
+Measures the third cost term on the 25 → 15 mm lever — the dense `uint8[]` on the wire, 0.61 MB → 2.80 MB per publish at 10 Hz — as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
+
+### `tools/stop_ee_speed.py`
+
+- `EE_BODY: str` — `link7`, the body the payload attaches to, so its linear velocity is the carried object's.
+- `QUANTISATION_GAIN_M: float` — what 25 → 15 mm recovers (the two cells' half-diagonal difference), the figure staleness cost is weighed against.
+- `StopSpeed(NamedTuple)` — `round_id`, `stop_class`, `ee_speed_mps`, `base_speed_mps`; `.is_carry` selects `attached_payload`, `.world_speed_mps` adds the base contribution worst-case-aligned.
+- `collect(round_dirs) -> list[StopSpeed]` — end-effector speed at each stop, from the round's recorded `robot_joint_state` through `mj_jacBody` on the real Panda model. Matches arm joints on their trailing index (`panda_jointN` → `jointN`) and **raises** if none matched, because a silent mismatch reads as a perfectly stationary arm.
+- `summarise(stops) -> dict[str, Any]` / `render(stops, summary) -> str` — per-class medians and maxima, and the net millimetres at the two staleness figures the wire probe measured.
+- CLI: `uv run python tools/stop_ee_speed.py <round dirs...> [--json]`. Needs MuJoCo and the robosuite Panda assets; reads recorded artifacts only.
+
+Settles the 25 → 15 mm trade: carry-phase stops are 0.051 m/s median / 0.265 m/s max, start-state stops exactly 0.
 
 ### `tools/stop_excess.py`
 

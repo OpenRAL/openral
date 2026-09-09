@@ -425,13 +425,28 @@ the two clear start-state stops sit at +23.13 mm and +22.01 mm, beyond what even
 competing: ADR-0101 removes the voxel term entirely for the fixtures it models,
 and this shrinks it for everything else.
 
-**The honest limit of this measurement.** It measures the kernel *consuming* a
-grid, not the bridge *producing* one. `packages/openral_octomap_bridge`'s
-octree→grid conversion at a finer tree resolution is unmeasured, and octomap's
-own resolution would have to change with it; the 0.63 MB message also crosses
-DDS every cycle (that part *is* in the round trip above). It is also one pose in
-one layout — the window is sized by where the links are. Before shipping a
-resolution change, the bridge side needs its own measurement.
+**The limits this measurement had, and what closed them (2026-09-08).** It
+measured the kernel *consuming* a grid, and named two terms it could not see.
+Both are now measured:
+
+* **the bridge producing one** —
+  `test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`: **1.60 ms**
+  at 15 mm against a 100 ms publish period, from 0.88 ms at 25 mm. Nearly flat,
+  because the marking loop iterates occupied leaves, a *surface*. 12.5 mm is
+  refused outright by the bridge's own `kMaxCells = 4 000 000` guard;
+* **the message on the wire** — `tools/voxel_transport_probe.py`: nothing
+  dropped and the rate held at every size, but publish→receive latency triples,
+  p99 **19-23 ms → 68-83 ms**. That is map staleness, and it is the term that
+  bites.
+
+The staleness is settled against measured arm speed rather than assumed:
+carry-phase stops run 0.051 m/s median and 0.265 m/s max, start-state stops
+exactly 0, so the trade is **net positive in three of four corners** and free for
+the whole start-state class (`tools/stop_ee_speed.py`).
+
+It remains one pose in one layout — the window is sized by where the links are —
+and the carry-phase speeds come from n=5 stops of *this* policy. Those are the
+two limits that stand.
 
 Reproduce with the shipped test:
 
@@ -596,7 +611,12 @@ Four things had to be discovered to make it run at all, each worth keeping:
       checked by forcing the budget to 0.001 ms to read the real numbers out.
       That also answers the latency question the `link3`/`link4`/`link6` change
       raised, on the shipped configuration rather than by extrapolation.
-- [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **un-struck 2026-09-07, and
+- [ ] **Lever 3: voxel resolution 25 -> 15 mm** — **now with the WG,
+      2026-09-09: hazard-log Entry 027** (`OpenRAL/management#36`). Every cost
+      term measured, the asymmetry named (deterministic 8.66 mm gain against a
+      probabilistic staleness cost), and the one thing that does not exist stated
+      in the record: no live A/B of completion rate, which the WG may reasonably
+      require first. Nothing further is mine until it is ruled on. — **un-struck 2026-09-07, and
       the strike was mine.** It was the one lever struck on an *estimate* rather
       than a measurement, and measuring it moved the number by **32×**: p99
       **0.825 ms** at 15 mm, not the estimated 26.7 ms, against a 33 ms ceiling
@@ -610,10 +630,53 @@ Four things had to be discovered to make it run at all, each worth keeping:
       Not sufficient alone (the two clear start-state stops are +22 to +23 mm)
       and it composes with lever 2 rather than competing.
 
-      **Not yet actionable.** What is measured is the kernel *consuming* a grid.
-      `packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
-      resolution is unmeasured, and it is the other half of the cost. That
-      measurement is the next step on this lever, not a manifest edit.
+      **Producer measured 2026-09-08 — it is not the obstacle either.**
+      `test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`, real
+      octree, real rasterizer: **1.60 ms at 15 mm** against a 100 ms publish
+      period, from 0.88 ms at 25 mm. Nearly flat, for the same reason the
+      consumer was — the marking loop iterates occupied leaves, a *surface*,
+      while only the dense buffer scales with volume. **12.5 mm is refused
+      outright** by `octree_to_grid.cpp`'s `kMaxCells = 4 000 000` guard, so it
+      needs that raised; 15 mm does not.
+
+      **And a correction to this item, which was also mine.** The un-strike
+      claimed 15 mm "needs no change to `world_voxel_max_cells`; it is 376 680
+      cells", dismissing §5's 2.8 M as a whole-kitchen grid. Both halves wrong:
+      the ball is sized by the arm's reach (`_octomap_coverage_radius` measures
+      1016 mm, ships 1.05 m), so 15 mm needs **141³ = 2 803 221** cells and §5's
+      original figure was right. The cap consequence is real — a kernel still
+      reserving 614 125 rejects every grid, which reads as "no world" and is a
+      **fail-open on the world check**. `_world_voxel_max_cells` now derives the
+      cap from the resolution, which is what makes the lever safe to pull.
+
+      **Wire measured 2026-09-08 — and it is the term that bites.**
+      `tools/voxel_transport_probe.py`, two processes over real DDS at the
+      deployed 10 Hz under the kernel's own QoS: nothing is dropped and the rate
+      holds at every size, but publish→receive latency triples, from p99
+      **19-23 ms** at 25 mm to **68-83 ms** at 15 mm. That latency is map
+      **staleness**, and staleness is millimetres too.
+
+      **Settled 2026-09-08, and in favour of the lever.**
+      `tools/stop_ee_speed.py` measures how fast the arm actually is at each
+      stop, from the recorded joint state through the real Panda Jacobian:
+      carry-phase **0.051 m/s median, 0.265 m/s max** (n=5); start-state
+      **exactly 0.000** (n=7, the arm has not moved yet). Base contributes
+      ≤0.0013 m/s.
+
+      | | median stop | fastest stop |
+      | --- | ---: | ---: |
+      | median staleness | **+7.89 mm** | **+4.68 mm** |
+      | p99 staleness | **+5.84 mm** | **−5.93 mm** |
+
+      Net positive in three of four corners, and the whole start-state class —
+      43 % of stops — takes the full 8.66 mm with **no** staleness cost at all.
+      All three cost terms are now measured: kernel 0.825 ms, rasterize 1.60 ms,
+      wire +15/+55 ms.
+
+      **Actionable, with two caveats to carry into the change.** n=5 carry-phase
+      stops is thin, and the speeds are *this* policy's — a faster one moves the
+      p99 corner from marginal to routine. Widening n is the thing to do before
+      the manifest edit, not instead of it.
 - [ ] ~~**Drop `baguette` from the collision scorecard**~~ — **withdrawn
       2026-09-10.** It completed **1/3** with the gate off on the fixed harness,
       so the 0/11 behind this was partly starved runs, not a policy ceiling.
@@ -644,12 +707,15 @@ Four things had to be discovered to make it run at all, each worth keeping:
       conservative first landing: ship the model as observability with
       suppression **off** and measure how often it *would* have explained a stop
       before giving up any protection.
-- [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
-      the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
-      cost — a floor; measured at 59.8 on 2026-09-10 — dwarfs the drop it was
-      chasing. The alternative is re-scoping it to
-      the single remaining suspect (#202's ACM retirement) rather than a full
-      bisect. Needs a human call.
+- [x] **Decide #217** — **done: closed COMPLETED 2026-09-06**, before this item
+      was written, which is why it lingered here. The #204 A/B ran at the size
+      the power analysis specified (60 runs per arm, alternating rounds) and came
+      back **null with teeth**: success 5.0 % vs 10.0 %, Fisher p = 0.491, at
+      0.85 power against a 25 %→5 % effect. #204 converted an *instrument* off
+      `mj_geomDistance` and never had a mechanism by which it would move
+      completions; it is off the suspect list. The closing comment carries the
+      full table.
+
 - [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`
       stops (94 %) would be recovered, median true clearance 16.2 mm; the 3 that
       correctly still stop are real penetration (−0.25, −2.02, −2.76 mm).
@@ -694,12 +760,25 @@ Four things had to be discovered to make it run at all, each worth keeping:
       makes the venv's `include-system-site-packages = false` apply and closes
       the whole apt-shadowing class. **This is the `spark`-side launch failure,
       distinct from the harness one above.**
-- [ ] **Re-derive ADR-0101's 94 % from post-fix live-map rounds.** Unblocked
-      2026-09-07: the foreign 1.9 GB GPU process that caused the XR-1 sidecar to
-      OOM on `q-laptop`'s 8 GB is gone (175 MiB of 8151 in use). The offline
-      figure rests on certified mesh truth, which the backing-probe defect never
-      touched, so the two *should* agree — that agreement is worth checking
-      rather than assuming before any implementation leans on it.
+- [x] **Re-derive ADR-0101's 94 % from post-fix live-map rounds — done
+      2026-09-09, on `spark`.** 36 `utensil` rounds at `448818c4` (both
+      backing-probe fixes), which is a condition no `q-laptop` round had ever
+      met. **24 of 28 payload stops recovered (86 %)** against the offline 48/51
+      (94 %): Fisher two-sided **p = 0.237**, so the rate survives its own
+      re-derivation.
+
+      **What did not survive is the clearance distribution.** Median recovered
+      clearance is **8.56 mm, against the offline 16.2 mm** — half. The mechanism
+      would be suppressing cells whose true surface is twice as close as the
+      offline figure implied, which shrinks the margin its own modelling error
+      has to fit inside. Two of the four that correctly still stop are within
+      0.1 mm of the surface. **The WG should rule on 8.56 mm, not 16.2 mm** — and
+      that argues harder for the ADR's own suppression-off first landing.
+
+      Side effect worth keeping: the stop decomposition now rests on **n = 28**
+      rather than n = 4 — payload **−9.93 mm** beyond the voxel term, link
+      **+4.28 mm**. The exhaustion conclusion holds harder than when drawn.
+
 - [x] **Re-derived the false-positive rate on a repaired instrument — it is
       71 %, unchanged.** Thirteen rounds, `adr0101-live-*`, 2026-09-07. Seven
       stops: five of a physically clear robot (+0.67 … +24.86 mm), two real
@@ -786,12 +865,25 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] ~~**NEW: the residual may be map inflation, not geometry.**~~ **Struck the
       same day it was raised** — the tripping cells contain the true surface
       point, so they are not displaced toward the sensor.
-- [ ] **Half of these scenes never reach the kernel.** Five of thirteen rounds
-      ended `deadline-no-grasp` — the policy never picked the object up. With
-      the ceiling result (0 % for `baguette` gate-off), this bounds how much of
-      the scorecard collision work can move at all, and argues for scene
-      selection being part of the programme rather than a fixed input.
-- [ ] **Implement ADR-0101** once ruled on — the one lever with headroom left.
+- [x] ~~**Half of these scenes never reach the kernel**~~ — **measured, then
+      refuted 2026-09-09, and the first measurement was mine.** Across 26
+      `q-laptop` rounds the carry-phase yield was 18-27 % with 40-64 %
+      `deadline-no-grasp`, and that was recorded as a property of the *policy*.
+      Thirty-six rounds on `spark` produced **zero** `deadline-no-grasp` and
+      **78 %** payload stops. Same policy, different host: the figure was a 420 s
+      deadline meeting a machine at load 19 with a shared GPU.
+
+      So there is no scene-selection problem to fix here, and the battery-sizing
+      advice derived from it was wrong for an idle host. What stands is narrower
+      and more useful: **`deadline-no-grasp` is a load symptom first**, which
+      also means the ceiling battery's own policy-free exclusions deserve
+      re-reading in that light.
+
+- [ ] **Implement ADR-0101** once ruled on — **the ruling now has the live-map
+      numbers it was missing, 2026-09-09** (`OpenRAL/management#36`): 86 % on
+      n=28, Fisher p=0.237 against the offline 94 %, but median recovered
+      clearance **8.56 mm against 16.2 mm**. The WG should rule on 8.56 mm; it
+      strengthens the ADR's own suppression-off first landing. Original text: — the one lever with headroom left.
       Note the fix above changes what the *live-map* evidence will say, so the
       ADR's 94 % should be re-derived from post-fix rounds before implementation
       leans on it: the offline figure rests on certified mesh truth, which was
