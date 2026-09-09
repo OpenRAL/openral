@@ -86,3 +86,50 @@ def test_without_the_override_the_shipped_defaults_are_unchanged(
     monkeypatch.delenv("OPENRAL_OCTOMAP_RESOLUTION_M", raising=False)
     assert launch_module._octomap_resolution("sim") == 0.025
     assert launch_module._octomap_resolution("real") == 0.05
+
+
+def _load_tool(name: str) -> object:
+    """``tools/`` is not an installed package — load by path, as the other tool tests do."""
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "tools" / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_transport_probe_sizes_the_grid_the_kernel_reserves(launch_module: object) -> None:
+    """The probe's cell derivation is a hand-copy of the launch file's; pin them together.
+
+    ``voxel_transport_probe`` re-derives the grid from its own ``RADIUS_M``
+    literal rather than importing ``_octomap_coverage_radius``, because the
+    launch file is not importable as a package. If the shipped radius ever
+    moves, the probe would keep timing a message of the *old* size while the
+    kernel reserved the new one — and the wire latency it reports is the term
+    the whole 25 -> 15 mm trade is settled on. A wrong-sized message would not
+    fail; it would quietly measure the wrong lever.
+    """
+    pytest.importorskip("openral_msgs", reason="the probe imports openral_msgs at module level")
+    probe = _load_tool("voxel_transport_probe")
+
+    assert launch_module._octomap_coverage_radius() == probe.RADIUS_M
+    for resolution in (0.025, 0.015, 0.0125):
+        assert probe.per_axis(resolution) ** 3 == launch_module._world_voxel_max_cells(resolution)
+
+
+def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() -> None:
+    """8.66 mm is the difference of two half body-diagonals, not a typed-in constant.
+
+    ``stop_ee_speed.QUANTISATION_GAIN_M`` is what every staleness figure in
+    PLAN.md §5 is weighed against, and ``validation_matrix.quantization_budget_m``
+    is the canonical form of the same derivation. They are written out
+    separately, so they can drift apart silently.
+    """
+    stop_ee_speed = _load_tool("stop_ee_speed")
+    validation_matrix = _load_tool("validation_matrix")
+
+    expected = validation_matrix.quantization_budget_m(
+        0.025
+    ) - validation_matrix.quantization_budget_m(0.015)
+    assert pytest.approx(expected) == stop_ee_speed.QUANTISATION_GAIN_M
+    assert pytest.approx(8.66, abs=0.01) == stop_ee_speed.QUANTISATION_GAIN_M * 1e3
