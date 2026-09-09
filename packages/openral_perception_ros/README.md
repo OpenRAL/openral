@@ -59,7 +59,7 @@ so the geometry is consistent (per the object-lift design).
 ## Launch
 
 Not invoked directly in practice — it's wired into the generic
-`sim_e2e.launch.py` graph behind the `enable_object_detector` launch
+`deploy_e2e.launch.py` graph behind the `enable_object_detector` launch
 argument, driven by the CLI:
 
 ```bash

@@ -81,7 +81,7 @@ enum class EnvelopeLoadStatus : std::uint8_t {
 
 /// Build the envelope from this node's ROS parameters.
 ///
-/// Python sim_e2e.launch.py unpacks robots/<id>/robot.yaml via Pydantic at
+/// Python deploy_e2e.launch.py unpacks robots/<id>/robot.yaml via Pydantic at
 /// launch time, calls
 /// openral_safety.envelope_loader.kernel_params_from_envelope, and forwards
 /// each canonical field as a ROS parameter here. This loader reads them

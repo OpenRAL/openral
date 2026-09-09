@@ -38,7 +38,7 @@ using WireObject = openral_msgs::msg::AttachedCollisionObject;
 
 namespace {
 
-// The deploy-sim octomap_server parameters (sim_e2e.launch.py).
+// The deploy-sim octomap_server parameters (deploy_e2e.launch.py).
 constexpr double kResolution = 0.025;
 constexpr double kOccupancyThres = 0.8;
 constexpr double kClampingMax = 0.85;

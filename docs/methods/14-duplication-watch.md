@@ -386,7 +386,7 @@ contributor should look at before adding similar code.
     `packages/openral_rskill_ros/test/_launch_test_common.py` +
     sys.path-injecting `conftest.py`, mirroring `python/hal/tests/conftest.py`.
     Five more `_import_launch_module` copies remain in sibling
-    `test_sim_e2e_*.py` files — out of this pass's scope, worth a follow-up.
+    `test_deploy_e2e_*.py` files — out of this pass's scope, worth a follow-up.
 
 23. **Reward-monitor `assess()` — *resolved.*** `RobometerInProcessReward.assess`
     (`backends/reward/robometer_reward.py`) and `TOPRewardMonitor.assess`

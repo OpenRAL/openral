@@ -495,7 +495,7 @@ Four things had to be discovered to make it run at all, each worth keeping:
       unaffected — checked, not assumed.
 - [x] **Fixed the launch parser's interpreter** (separate branch,
       `fix/deploy-run-jetson-bringup`). `/opt/ros/<distro>/bin/ros2` carries a
-      `#!/usr/bin/python3` shebang, so `ros2 launch` parsed `sim_e2e.launch.py`
+      `#!/usr/bin/python3` shebang, so `ros2 launch` parsed `deploy_e2e.launch.py`
       under the *system* interpreter; `PYTHONPATH` only prepends, so anything the
       venv lacks still resolved out of `dist-packages`. On a Jetson AGX Thor with
       `python3-pandas` that aborted the whole launch with `ValueError:

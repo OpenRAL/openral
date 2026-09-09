@@ -6,9 +6,9 @@ Includes the upstream ``slam_toolbox/async_slam_toolbox_node`` as a
 ``config/slam_toolbox_2d.yaml``. The auto-transition stops at
 ``INACTIVE``; the Reasoner promotes to ``ACTIVE`` via
 ``LifecycleTransitionTool``, mirroring the
-safety_kernel pattern in ``sim_e2e.launch.py:159``.
+safety_kernel pattern in ``deploy_e2e.launch.py:159``.
 
-Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py``
+Composed into ``packages/openral_rskill_ros/launch/deploy_e2e.launch.py``
 when the ``enable_slam`` launch argument is ``true``.
 """
 

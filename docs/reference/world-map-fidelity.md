@@ -58,7 +58,7 @@ map and the geometry that produced it are snapshotted at the same instant:
   ACTIVE in-process, owning the real `SimAttachedHAL` + `SimSensorBridge` and
   rendering depth from the real MuJoCo model;
 - the real `octomap_server_node` (`ros-jazzy-octomap-server`), parameterised
-  **verbatim** from `sim_e2e.launch.py`'s `hal_mode="sim"` branch — resolution
+  **verbatim** from `deploy_e2e.launch.py`'s `hal_mode="sim"` branch — resolution
   0.025 m, `occupancy_thres` 0.8, `sensor_model.miss` 0.4, `sensor_model.max`
   0.85, `sensor_model.max_range` 4.0, `filter_speckles` true, frame `odom`;
 - the real `openral_octomap_bridge/octomap_voxel_bridge` — `base_link`, a 1.6 m
@@ -494,7 +494,7 @@ Analytic, from the shipped sim parameters — `prob_hit` 0.7, `prob_miss` 0.4,
 | two hits | 1.694 | above — becomes one |
 | confirmed cell, then one clearing ray | 1.289 | below — free again |
 
-The thresholds behave exactly as their comment in `sim_e2e.launch.py` claims:
+The thresholds behave exactly as their comment in `deploy_e2e.launch.py` claims:
 two frames to create a safety voxel, one clearing ray to remove it. **So a
 persistent phantom cannot be a threshold artefact.** It can only survive where
 no ray ever passes — behind the first surface a ray strikes, or outside the

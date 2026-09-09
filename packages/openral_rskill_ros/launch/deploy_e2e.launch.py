@@ -20,11 +20,13 @@ Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import site
 import subprocess
 import sys
+import tempfile
 import uuid
 
 # `ros2 launch` runs under the system Python by default; the launch's
@@ -62,9 +64,47 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
-from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
+from openral_foxglove_bringup.topics import (
+    ASSET_URI_ALLOWLIST,
+    BUCKET1_TOPIC_WHITELIST,
+    READ_ONLY_CAPABILITIES,
+)
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+def _resolve_repo_root() -> pathlib.Path:
+    """Locate the repo root from wherever this launch file is running.
+
+    ``parents[3]`` is correct only from the source tree
+    (``<repo>/packages/openral_rskill_ros/launch/``). ``ros2 launch`` resolves
+    the file through the ament index, so it normally runs from the *installed*
+    copy at ``<repo>/install/share/openral_rskill_ros/launch/`` — where the same
+    index lands on ``<repo>/install`` and every path built from it
+    (``tools/lifecycle_autostart.py``, ``rskills/``, ``.venv/bin/openral``)
+    points at a directory that does not exist. A `--symlink-install` layout
+    resolves back through the symlink to the source tree and hides this, which
+    is why it survived: it only bites on a copied install, i.e. after a clean
+    build.
+
+    The consequence was not a launch failure. The graph came up and the
+    per-node autostart processes died individually with exit code 2 (python:
+    no such file), leaving the safety kernel and the reasoner parked
+    unconfigured while every other node reported healthy.
+
+    Reuses ``openral_rskill.loader._find_repo_root_from`` — the repo already
+    has this search (``pyproject.toml`` + ``rskills/``), and a second copy here
+    would be a second thing to keep true. Falls back to the old arithmetic when
+    no marked ancestor exists, which is the genuinely-installed-elsewhere case
+    where none of these repo-relative paths are meaningful anyway.
+    """
+    here = pathlib.Path(__file__).resolve()
+    try:
+        from openral_rskill.loader import _find_repo_root_from
+    except ImportError:  # pragma: no cover  # reason: workspace not on the path
+        return here.parents[3]
+    return _find_repo_root_from(here) or here.parents[3]
+
+
+_REPO_ROOT = _resolve_repo_root()
 _RSKILLS_DIR = str(_REPO_ROOT / "rskills")
 
 _VENV_RAL = _REPO_ROOT / ".venv" / "bin" / "openral"
@@ -305,6 +345,180 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
+def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, imported lazily
+    """Include the vendor sensor drivers a deploy scene declares.
+
+    A ``deploy_binding`` with a ``ros2_*`` backend subscribes to a topic somebody
+    else publishes; these launches are that somebody. Until the scene could name
+    them, an operator started the driver by hand in a second terminal — and the
+    failure when they forgot was a silently empty camera panel, never an error,
+    because subscribing to an unpublished topic is perfectly legal.
+
+    Resolved eagerly with ``get_package_share_directory`` rather than a lazy
+    ``FindPackageShare`` substitution, so an unresolvable package fails here with
+    a message naming the scene, the driver and the likely cause. A vendor driver
+    is usually built into *its own* colcon workspace (``zed_wrapper`` lives in a
+    ``zed_ws``, not in the OpenRAL overlay), and a package is only findable if
+    that workspace is sourced — the substitution's own error says just "package
+    not found", which does not point at the overlay you forgot.
+    """
+    from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+    from launch.actions import IncludeLaunchDescription
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+    from openral_core.exceptions import ROSConfigError
+
+    scene_dir = pathlib.Path(deploy_config).parent
+
+    def _resolve(key: str, value: str) -> str:
+        """Resolve a relative ``*_path`` argument against the scene's directory.
+
+        A driver's config file belongs with the scene that needs it, not in an
+        operator's home directory — a committed scene carrying
+        ``/home/<someone>/...`` works on exactly one machine. Same rule the CLI
+        already applies to ``calibration_dir``. Only ``*_path`` keys and only
+        relative values, so an absolute path still wins.
+        """
+        if key.endswith("_path") and value and not pathlib.Path(value).is_absolute():
+            return str((scene_dir / value).resolve())
+        return value
+
+    includes = []
+    for d in scene_drivers:
+        try:
+            share = get_package_share_directory(d.package)
+        except PackageNotFoundError as exc:
+            raise ROSConfigError(
+                f"{pathlib.Path(deploy_config).name} declares driver "
+                f"{d.package!r}, which is not on the ament path. A vendor driver "
+                f"is usually built into its own colcon workspace — source that "
+                f"overlay before `openral deploy run` (e.g. "
+                f"`source ~/<ws>/install/setup.bash`), or drop the driver from "
+                f"the scene's `drivers:` if this cell does not have it. Refusing "
+                f"rather than starting a graph whose sensors can never publish."
+            ) from exc
+        includes.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(share, "launch", d.launch_file)),
+                launch_arguments=tuple((k, _resolve(k, v)) for k, v in d.args.items()),
+            )
+        )
+    return includes
+
+
+def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -> str | None:
+    """Generate a Foxglove layout for the cameras this deploy actually publishes.
+
+    The shipped ``config/openral_layout.json`` is generated for
+    ``layout.DEFAULT_CAMERAS``, which is a guess: camera slots are sensor names
+    out of the robot manifest and the deploy scene, and they differ per robot
+    (``top`` / ``context`` / ``wrist_left`` / ``camera1``…). A panel pointed at a
+    slot this deploy has no publisher for renders "Image topic does not exist",
+    which looks exactly like a dead camera. The 3D panels have the same
+    problem one level up: they follow a TF frame, and Foxglove draws an empty
+    scene — no robot, no point clouds, no markers — when that frame is not in
+    the tree. The library default is the ROS-conventional ``base_link``, which
+    OpenArm does not broadcast (its root is ``openarm_base``), so the robot's
+    own ``base_frame`` is threaded through rather than guessed.
+
+    A layout is imported client-side, so no launch argument can push one into
+    the viewer — but the launch is the only place that knows the answer, so it
+    writes the correct layout to a file and logs the path for the operator to
+    import once. Returns that path, or ``None`` when there is nothing to
+    generate or the write fails (a viz convenience must never take the graph
+    down with it).
+    """
+    if not cameras:
+        return None
+    try:
+        from openral_foxglove_bringup.layout import build_layout
+
+        path = pathlib.Path(tempfile.gettempdir()) / f"openral_layout_{robot_id}.json"
+        path.write_text(
+            json.dumps(build_layout(cameras, follow_frame=base_frame), indent=2),
+            encoding="utf-8",
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"[deploy_e2e] could not write a scene-matched Foxglove layout: {exc!r}", flush=True)
+        return None
+    return str(path)
+
+
+#: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
+#: A HAL package that ships ``launch/<this>`` declares, by that fact alone, the
+#: controller graph its real HAL publishes to — no manifest field and no
+#: per-robot branch in this launch file. ``hal_package`` is already threaded in
+#: from ``resolve_launch_invocation``, so the package is known here for free.
+REAL_BRINGUP_LAUNCH = "real_bringup.launch.py"
+
+
+def _build_real_bringup_include(hal_package: str) -> object | None:
+    """Include ``hal_package``'s vendor ros2_control bringup, if it ships one.
+
+    Every real-hardware HAL in this repo publishes to controllers it does not
+    start: ``controller_manager`` is C++ at 400 Hz+ and belongs under a vendor
+    bringup launch, not under a Python HAL (CLAUDE.md §1.5). Until this include
+    existed, ``deploy run`` assumed that graph was already up, so an operator
+    brought it up out-of-band from a second terminal — which put a *second*
+    ``/joint_states`` publisher on the bus and tripped the shared-graph guard
+    (``openral_cli._dds_scope``, #227) on the documented bring-up path. Starting
+    it here keeps that guard meaningful: one graph, one publisher, and no
+    escape hatch needed to deploy a real robot — the occupied-graph refusal is
+    now unwaivable (``openral_cli._dds_scope``).
+
+    Returns ``None`` when the package ships no such file — the case for every
+    HAL whose controller graph is started elsewhere (a vendor daemon, a
+    robot-side controller) and for every sim-only HAL. Callers must only reach
+    here on ``hal_mode == "real"``.
+
+    No launch arguments are forwarded. The vendor launch's own defaults are
+    required to agree with the HAL's constants already — that agreement is what
+    ``tests/hil/test_openarm_bringup_agreement.py`` guards — so passing a second
+    copy of the CAN interface names through here would create a way for the two
+    to disagree without any test noticing.
+
+    The include starts concurrently with the HAL lifecycle node, not before it.
+    The HAL's ``connect()`` preflights the CAN links (up regardless of
+    controllers) and does not block on ``/joint_states``, so for the few seconds
+    the controllers take to spawn it logs ``read_state failed: Joint state is
+    N s old`` and then recovers once the broadcaster is active. That is
+    warn-only and self-healing; sequencing it behind a controller-active event
+    handler would buy a quieter log and nothing else.
+
+    A vendor bringup typically also spawns its own ``robot_state_publisher``,
+    alongside the one this file derives from ``assets.urdf``. Both are kept: the
+    manifest URDF is load-bearing (for OpenArm it carries ``openarm_base``, the
+    ``world`` bridge and the sensor mounts, none of which the vendor xacro
+    describes), so suppressing it loses frames something downstream reads.
+
+    Their ``/tf`` output is additive only because both now spell joints and
+    links the same way. It was not: the vendored OpenArm URDF used to strip the
+    ``openarm_`` prefix, and two spellings of one robot on ``/robot_description``
+    empty out ``joint_state_broadcaster`` (its ``use_urdf_to_filter`` publishes
+    only joints the URDF also names) while freezing this node's tree at the rest
+    pose, since none of its joint names match the arm's ``/joint_states``. Both
+    failures are silent. The names are standardised upstream-side now, and the
+    caller additionally keeps this node off ``/robot_description`` whenever a
+    vendor bringup owns it — see the remapping at the node itself.
+    """
+    from ament_index_python.packages import (
+        PackageNotFoundError,
+        get_package_share_directory,
+    )
+    from launch.actions import IncludeLaunchDescription
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+    try:
+        share = get_package_share_directory(hal_package)
+    except PackageNotFoundError:
+        # A pure-Python HAL package has no share directory. Not an error: it
+        # simply ships no bringup.
+        return None
+    bringup_path = os.path.join(share, "launch", REAL_BRINGUP_LAUNCH)
+    if not os.path.isfile(bringup_path):
+        return None
+    return IncludeLaunchDescription(PythonLaunchDescriptionSource(bringup_path))
+
+
 def _build_nav2_include(
     robot_yaml: str, *, use_sim_time: bool, slam_backend: str = "lidar"
 ) -> object:
@@ -522,7 +736,7 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
     try:
         path = resolve_asset(ref, "urdf", manifest_dir=manifest_dir)
     except AssetRefError as exc:
-        print(f"[sim_e2e] could not resolve urdf ref {ref!r}: {exc}", flush=True)
+        print(f"[deploy_e2e] could not resolve urdf ref {ref!r}: {exc}", flush=True)
         return None
     return None if path is None else str(path)
 
@@ -775,13 +989,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 collision_params = mjcf_params
             else:
                 print(
-                    "[sim_e2e] MJCF has no primitive collision geometry; "
+                    "[deploy_e2e] MJCF has no primitive collision geometry; "
                     "keeping the manifest self-collision model.",
                     flush=True,
                 )
         except Exception as exc:  # never let a geometry hiccup block the boot
             print(
-                f"[sim_e2e] MJCF self-collision lowering failed: {exc!r}; using manifest geometry",
+                f"[deploy_e2e] MJCF self-collision lowering failed: {exc!r}; "
+                "using manifest geometry",
                 flush=True,
             )
     if workcell is not None and workcell.extra_allowed_collision_pairs:
@@ -792,7 +1007,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         after = list(collision_params.get("collision_allowed_pairs", []))
         if len(after) > len(before):
             for a, b in workcell.extra_allowed_collision_pairs:
-                print(f"[sim_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
+                print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
@@ -1057,19 +1272,42 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # to the legacy triple if the manifest declares no RGB sensors (e.g. pure-base robots).
     rgb_camera_names = [s.name for s in description.sensors if s.modality == "rgb"]
     if not rgb_camera_names:
-        rgb_camera_names = ["top", "left_wrist", "right_wrist"]
+        # `wrist_left`/`wrist_right` is how `robots/*/robot.yaml` spells these;
+        # the transposed `left_wrist` this used to fall back to matched no
+        # camera on any robot in the repo.
+        rgb_camera_names = ["top", "wrist_left", "wrist_right"]
     # Workcell-mounted cameras (DeployScene.sensors) publish on the same
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
     # leg — WorldState must subscribe to them too.
     scene_sensors: list[SensorSpec] = []
+    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     if deploy_config:
         from openral_core import DeployScene
 
-        scene_sensors = list(DeployScene.from_yaml(deploy_config).sensors)
+        _scene = DeployScene.from_yaml(deploy_config)
+        scene_sensors = list(_scene.sensors)
+        scene_drivers = list(_scene.drivers)
         scene_rgb = [
             s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
         ]
         rgb_camera_names = [*rgb_camera_names, *scene_rgb]
+
+    # Cameras that will actually publish on a real deploy: a declared RGB sensor
+    # only gets a reader (and therefore a topic) when it carries a
+    # `deploy_binding`. A sim-only sensor has none — `robots/openarm` declares
+    # its `top` camera as a MuJoCo render — so on a real cell that slot has zero
+    # publishers while the Foxglove bridge still advertises the channel (its
+    # allowlist is the pattern `/openral/cameras/.*/image`), and the panel reads
+    # "Image topic does not exist", indistinguishable from a broken camera. A
+    # deploy scene fixes that by binding the slot to real hardware, as
+    # `openarm_restock_shelf.yaml` does for `top`. The Foxglove layout is
+    # generated from this list rather than a hardcoded default, which cannot
+    # know the scene (see `_write_foxglove_layout`).
+    bound_rgb_camera_names = [
+        s.name
+        for s in (*description.sensors, *scene_sensors)
+        if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
+    ]
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",
@@ -1251,6 +1489,23 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
     #   it, so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list = []
+
+    # Vendor ros2_control bringup, on the real path only — see
+    # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
+    # single graph with a single /joint_states publisher.
+    vendor_owns_robot_description = False
+    if hal_mode == "real":
+        real_bringup = _build_real_bringup_include(hal_package)
+        if real_bringup is not None:
+            extra_nodes.append(real_bringup)
+            vendor_owns_robot_description = True
+        # Vendor sensor drivers the scene declares (a ZED wrapper, a RealSense
+        # node…). Real path only: on the sim path cameras are rendered, not
+        # driven. These publish the topics the scene's `ros2_*` sensor bindings
+        # read, so they go up with the graph.
+        if scene_drivers:
+            extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
+
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
@@ -1264,6 +1519,22 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     name="robot_state_publisher",
                     namespace="",
                     output="log",
+                    # When a vendor bringup is in the graph it publishes its own
+                    # `/robot_description`, and `controller_manager` reads that
+                    # topic on Jazzy. Ours describes the same robot under the
+                    # same names but declares `mock_components/GenericSystem`
+                    # where the vendor declares the real hardware plugin — so a
+                    # controller_manager that latched ours would come up with
+                    # mock hardware: controllers active, `/joint_states`
+                    # plausible, and the arm never moving. Step off the topic
+                    # rather than race for it. `/tf` is unaffected (that is this
+                    # node's actual job here) and the manifest URDF stays
+                    # readable at the `/openral/` name.
+                    remappings=(
+                        [("robot_description", "/openral/robot_description")]
+                        if vendor_owns_robot_description
+                        else []
+                    ),
                     parameters=[
                         {
                             "robot_description": robot_description_xml,
@@ -1947,6 +2218,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "port": int(foxglove_port),
                     "tls": False,
                     "capabilities": READ_ONLY_CAPABILITIES,
+                    # What a viewer may fetch to draw the URDF. Upstream's
+                    # default refuses a dot in a directory segment, which
+                    # rejects every versioned asset path — see topics.py.
+                    "asset_uri_allowlist": ASSET_URI_ALLOWLIST,
                     "topic_whitelist": BUCKET1_TOPIC_WHITELIST,
                     # Keep the upstream 10 MB send buffer for camera frames.
                     "send_buffer_limit": 10_000_000,
@@ -1958,6 +2233,37 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             ],
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
+
+        layout_path = _write_foxglove_layout(
+            bound_rgb_camera_names, description.name, description.base_frame
+        )
+        if layout_path is not None:
+            print(
+                f"[deploy_e2e] foxglove: ws://127.0.0.1:{foxglove_port} — import the "
+                f"scene-matched layout from {layout_path} "
+                f"(cameras: {', '.join(bound_rgb_camera_names)})",
+                flush=True,
+            )
+
+        # Bucket-2 converter. The layout's collision/voxel panels read
+        # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,
+        # which are `visualization_msgs` / `sensor_msgs` re-publications of the
+        # custom `openral_msgs` world types — Foxglove renders the standard
+        # types natively and the custom ones not at all. Nothing else in the
+        # graph produces them, so without this the panels sit empty on every
+        # deploy while the underlying world state is perfectly healthy.
+        # Read-only viz: it subscribes two topics and publishes two, and
+        # actuates nothing.
+        nodes.append(
+            Node(
+                package="openral_foxglove_bringup",
+                executable="bucket2_markers",
+                name="openral_bucket2_markers",
+                output="log",
+                parameters=[{"use_sim_time": use_sim_time}],
+                additional_env=otel_env,
+            )
+        )
 
     return [*nodes, *autostart]
 

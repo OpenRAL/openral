@@ -1,4 +1,4 @@
-"""Visual-SLAM impl selection + stereo-rig wiring in ``sim_e2e.launch.py``.
+"""Visual-SLAM impl selection + stereo-rig wiring in ``deploy_e2e.launch.py``.
 
 Hermetic (no live ROS graph). Asserts:
 
@@ -9,7 +9,7 @@ Hermetic (no live ROS graph). Asserts:
   only when navigating.
 * The two new launch args are declared with the documented defaults.
 
-Same import/skip pattern as ``test_sim_e2e_clock_domain`` — the module's heavy
+Same import/skip pattern as ``test_deploy_e2e_clock_domain`` — the module's heavy
 imports are deferred, so only ``launch`` / ``launch_ros`` are needed to load it.
 """
 
@@ -22,7 +22,7 @@ from types import ModuleType
 
 import pytest
 
-_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 
 
 def _import_launch_module() -> ModuleType:
@@ -31,7 +31,9 @@ def _import_launch_module() -> ModuleType:
     pytest.importorskip("openral_foxglove_bringup.topics")
     if not os.environ.get("ROS_DISTRO"):
         pytest.skip("ROS_DISTRO not set — launch_ros requires a sourced ROS 2 install.")
-    spec = importlib.util.spec_from_file_location("openral_sim_e2e_vslam_under_test", _LAUNCH_FILE)
+    spec = importlib.util.spec_from_file_location(
+        "openral_deploy_e2e_vslam_under_test", _LAUNCH_FILE
+    )
     if spec is None or spec.loader is None:
         pytest.fail(f"failed to build module spec for {_LAUNCH_FILE}")
     mod = importlib.util.module_from_spec(spec)

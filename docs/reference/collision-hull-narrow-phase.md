@@ -135,7 +135,7 @@ variant sees an identical grid — deliberately adverse, since real clutter is
 spread out rather than pressed against every link.
 
 `world_voxel_margin_m` is **0.0 in sim** and **0.02 on real hardware**
-(`packages/openral_rskill_ros/launch/sim_e2e.launch.py`), so both are measured.
+(`packages/openral_rskill_ros/launch/deploy_e2e.launch.py`), so both are measured.
 
 **At the sim margin (0.0 m) — the configuration `panda_mobile` actually runs:**
 

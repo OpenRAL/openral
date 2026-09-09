@@ -352,7 +352,7 @@ RUN bash -lc 'set -eo pipefail \
     && rm -rf build log'
 
 # The launch resolves its _REPO_ROOT as parents[3] of the installed
-# sim_e2e.launch.py — i.e. /workspace/install — and from there looks up
+# deploy_e2e.launch.py — i.e. /workspace/install — and from there looks up
 # tools/lifecycle_autostart.py, rskills/, scenes/, and .venv/bin/openral.
 # colcon does not install the non-ROS trees, so link them into install/.
 RUN ln -sfn /workspace/tools   /workspace/install/tools \

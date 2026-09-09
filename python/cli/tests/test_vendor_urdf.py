@@ -50,22 +50,40 @@ def test_vendor_ur5e_output_is_well_formed_xml(tmp_path: Path) -> None:
     assert dom.getElementsByTagName("robot")[0].getAttribute("name") == "ur5e"
 
 
-def test_vendor_openarm_strips_prefix(tmp_path: Path) -> None:
-    """File-path upstream + rename: ``openarm_`` prefix stripped from references."""
+def test_vendor_openarm_keeps_the_upstream_prefix(tmp_path: Path) -> None:
+    """openarm vendors under upstream's own names — no rename by default.
+
+    The vendored URDF is not free to pick a spelling. The arm's ros2_control
+    graph, its ``/joint_states``, its MJCF and
+    ``OpenArmRealHAL.ros2_control_joint_names()`` all say ``openarm_left_joint1``.
+    Stripping the prefix here (as this did until the wire names were
+    standardised) leaves the URDF as the only artefact spelling it differently,
+    which empties ``joint_state_broadcaster`` and freezes
+    ``robot_state_publisher``'s tree — both silently.
+    """
+    src = Path("/tmp/openarm_description/output.urdf")
+    if not src.exists():
+        pytest.skip("openarm upstream not cloned to /tmp/openarm_description")
+    out = vendor_urdf("openarm", upstream=f"file:{src}", out_dir=tmp_path)
+    text = out.read_text()
+    assert "${" not in text
+    assert 'name="openarm_left_joint1"' in text
+    assert 'name="openarm_right_joint1"' in text
+    assert 'name="left_joint1"' not in text
+
+
+def test_an_explicit_rename_still_applies(tmp_path: Path) -> None:
+    """Dropping openarm's default must not disable the rename mechanism itself.
+
+    Other robots rely on it (``_RAW_RENAMES``), and a caller can still pass one.
+    """
     src = Path("/tmp/openarm_description/output.urdf")
     if not src.exists():
         pytest.skip("openarm upstream not cloned to /tmp/openarm_description")
     out = vendor_urdf(
-        "openarm",
-        upstream=f"file:{src}",
-        out_dir=tmp_path,
-        rename=(r'"openarm_', '"'),
+        "openarm", upstream=f"file:{src}", out_dir=tmp_path, rename=(r'"openarm_', '"')
     )
-    text = out.read_text()
-    assert "${" not in text
-    assert 'name="left_joint1"' in text
-    assert 'name="right_joint1"' in text
-    assert '"openarm_left_joint1"' not in text
+    assert 'name="left_joint1"' in out.read_text()
 
 
 # ── Raw-text mode: joint-name-patched URDFs for so100/so101/gr1/h1 ──

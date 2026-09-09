@@ -6,7 +6,7 @@ the control mode the stops actually came from?*
 
 Setup is the deploy graph's, not a fixture's — the real ``safety_kernel_node``
 binary, configured from ``robots/panda_mobile/robot.yaml`` exactly as
-``sim_e2e.launch.py`` configures it (envelope + collision model +
+``deploy_e2e.launch.py`` configures it (envelope + collision model +
 ``collision_base_dofs`` + ``collision_joint_names`` + ``collision_ee_link_index``),
 driven with ``CARTESIAN_DELTA`` chunks, which is the robocasa arm mode.
 
@@ -93,7 +93,7 @@ _DELTA = 0.02
 
 
 def _kernel_params(*, band_m: float) -> dict[str, object]:
-    """Kernel params as `sim_e2e.launch.py` emits them, plus the #188 band."""
+    """Kernel params as `deploy_e2e.launch.py` emits them, plus the #188 band."""
     desc = RobotDescription.from_yaml(_MANIFEST)
     collision = collision_params_from_description(desc)
     params: dict[str, object] = dict(kernel_params_from_envelope(compute_intersection(desc, None)))

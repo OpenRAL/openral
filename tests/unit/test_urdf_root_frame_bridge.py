@@ -110,7 +110,8 @@ def test_openarm_bridge_matches_the_offset_in_its_urdf() -> None:
     """The OpenArm bridge's 0.698 m is the URDF's own pedestal height, not a memory.
 
     `openarm_base` (this manifest's frame, where the arm bases sit at z=0) is the
-    URDF's `left_base_link` height; the URDF puts that 0.698 m above `body_link0`,
+    URDF's `openarm_left_base_link` height; the URDF puts that 0.698 m above
+    `openarm_body_link0`,
     which is identity to the root `world`. So the root expressed in `openarm_base`
     is -0.698 in z.
     """
@@ -121,11 +122,11 @@ def test_openarm_bridge_matches_the_offset_in_its_urdf() -> None:
     root = ET.parse(_ROBOTS / "openarm" / "openarm.urdf").getroot()
     joints = {j.get("name"): j for j in root.findall("joint")}
 
-    arm_mount = joints["left_base_link_mount_joint"]
-    assert arm_mount.find("parent").get("link") == "body_link0"
+    arm_mount = joints["openarm_left_base_link_mount_joint"]
+    assert arm_mount.find("parent").get("link") == "openarm_body_link0"
     pedestal_z = float(arm_mount.find("origin").get("xyz").split()[2])
 
-    body_mount = joints["body_link0_mount_joint"]
+    body_mount = joints["openarm_body_link0_mount_joint"]
     assert body_mount.find("parent").get("link") == "world"
     assert [float(v) for v in body_mount.find("origin").get("xyz").split()] == [0.0, 0.0, 0.0]
 

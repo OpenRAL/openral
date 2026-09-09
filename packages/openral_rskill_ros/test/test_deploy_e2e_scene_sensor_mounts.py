@@ -1,6 +1,6 @@
 """A workcell-mounted sensor's static transform must reach /tf_static.
 
-``sim_e2e.launch.py`` turns a sensor's ``parent_frame`` + ``static_transform_xyz_rpy`` into
+``deploy_e2e.launch.py`` turns a sensor's ``parent_frame`` + ``static_transform_xyz_rpy`` into
 a ``static_transform_publisher`` so its readings are located by TF instead of mislabelled
 into an existing frame. That loop iterated ``description.sensors`` only (the robot
 manifest), so a camera declared in ``DeployScene.sensors`` could never get its mount
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
 # A workcell camera on the OpenArm cell: parented to the manifest's own base
 # frame, 0.20 m up and pitched down — the shape of a real head-camera mount.
@@ -58,7 +58,7 @@ sensors:
 
 
 def _import_launch_module() -> object:
-    spec = importlib.util.spec_from_file_location("sim_e2e_launch_mounts", _LAUNCH_FILE)
+    spec = importlib.util.spec_from_file_location("deploy_e2e_launch_mounts", _LAUNCH_FILE)
     assert spec is not None and spec.loader is not None, f"failed to spec {_LAUNCH_FILE}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -159,3 +159,65 @@ forward fine. Cosmetic, upstream.
 because the host's miniforge Python 3.13 shadows ROS's 3.12 and breaks ros2cli
 `--ros-args` remap forwarding (unrelated to this package). The real deploy-sim
 above made that stand-in unnecessary.
+
+## Layout rebuild + wider allowlist (2026-09-07) — what is NOT yet verified
+
+The layout moved from a hand-written file to `layout.py`'s generator (hero 3D
+scene + one Image panel per camera slot + tabbed telemetry), and the Bucket-1
+allowlist grew a depth/reconstruction group and a telemetry group. Verified
+hermetically (76 tests): the generator's output only references exposed topics
+for five different camera-slot lists, no generated layout contains a
+write-capable panel or a 3D publish target, the shipped JSON is exactly the
+generator's output, the allowlist is exactly its four named groups, no pattern
+matches an arbitrary `/openral/…` topic, and the command/safety plane
+(`estop`, `estop_reset`, `execute_rskill`, `prompt`, `safe_action`,
+`candidate_action`, `safety_status`) stays unmatched.
+
+### Cross-checked against `foxglove-sdk` (2026-09-08)
+
+`foxglove/foxglove-sdk` @ `3e59568`, `python/foxglove/layouts/__init__.py`, is
+the public inventory of Foxglove's panels and their config schemas. Read
+against it, the **panel config dicts this layout emits are exact**:
+
+| Panel | Config keys confirmed against the SDK |
+|---|---|
+| Log | `searchTerms`, `minLogLevel`, `topicToRender` |
+| Diagnostics summary | `minLevel`, `pinnedIds`, `topicToRender`, `hardwareIdFilter`, `sortByLevel` |
+| State Transitions | `paths`, `isSynced` |
+| Plot | `paths`, `showLegend`, `xAxisVal`, `followingViewWidth` |
+| Image | `imageMode.imageTopic` |
+
+It also confirms the write-capable panel set the read-only guard must exclude:
+`Teleop`, `Publish`, `Parameters`, `ServiceCall` — the last of which the guard
+was missing (it listed `CallService`) and now covers under both spellings.
+
+**The SDK is NOT authoritative for the panel type prefixes**, and this is the
+trap worth writing down: it is a *different serialisation*. The SDK emits a
+nested `{"type":"panel","panelType":…}` tree; this layout uses the app's
+`configById` format keyed `"<PanelType>!<id>"`, and the two disagree — the SDK
+writes the 3D panel as **`ThreeDee`** where every real `configById` layout
+(ours, and e.g. `husarion/foxglove-docker`'s `FoxgloveDefaultLayout.json`)
+writes **`3D`**. So the SDK's `Log` / `DiagnosticsSummary` do **not** mean our
+`RosOut` / `DiagnosticSummary` are wrong; the systematic rename is consistent
+with the app format having kept the legacy strings.
+
+**Still not verified — needs a live Foxglove client** (this environment has no
+installable browser, see the 2026-06-16 row):
+
+- **Panel type prefixes.** `3D`, `Image`, `Plot`, `RawMessages` and `Tab` are
+  corroborated by real `configById` layouts. `RosOut` (Log),
+  `DiagnosticSummary`, `StateTransitions` and `TopicGraph` are this layout's
+  best reading of the legacy app strings and remain unconfirmed against a
+  running client. A wrong prefix degrades to an "unknown panel" tile in that
+  slot only — the rest of the layout still loads.
+- **Message-path slicing.** `/joint_states.position[:]` replaces six
+  hard-coded indices so the plot fits any DOF count; the `[:]` slice syntax is
+  unconfirmed here.
+- **Live delivery on the new topics.** The depth and telemetry groups were
+  proven to pass the allowlist, not to stream — most need a deploy posture
+  (`--enable-octomap`, an nvblox/cuVSLAM scene, a reward monitor) that was not
+  running.
+
+Camera slots no longer need the panel's topic dropdown as the primary escape
+hatch: regenerate with `python -m openral_foxglove_bringup.layout --cameras …`
+for the scene's own `cameras:` list.

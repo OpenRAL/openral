@@ -161,7 +161,7 @@ def test_derive_height_band_bridges_the_declared_urdf_root(
     ``joints`` enumerates only movable joints, so UR's upstream URDF root
     (``base_link``) is not a child of any of them; the bridge is
     ``assets.urdf.root_frame`` + ``base_to_root_xyz_rpy`` — the same pair
-    ``sim_e2e.launch.py`` publishes as a static TF. Reading it keeps the band
+    ``deploy_e2e.launch.py`` publishes as a static TF. Reading it keeps the band
     covering the arm instead of collapsing onto the ``min_body_height_m`` floor.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))

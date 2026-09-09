@@ -9193,6 +9193,44 @@ class BenchmarkMetadata(BaseModel):
     simulator: str | None = None
 
 
+class LaunchInclude(BaseModel):
+    """A vendor ROS 2 launch file a deploy has to bring up alongside the graph.
+
+    Some sensors are not opened by OpenRAL at all — they are published by the
+    vendor's own driver, and the scene's ``SensorDeployBinding`` merely
+    *subscribes* to what that driver puts on the bus (``backend:
+    ros2_image``). The binding names the topic but not who publishes it, so
+    until this existed an operator had to start the driver by hand in a second
+    terminal and every camera fed that way was silently empty when they forgot.
+
+    Same shape as the HAL's ``real_bringup.launch.py`` convention, but declared
+    as data rather than by file name: a driver needs *arguments* (which camera
+    model, which override YAML), and those are host-specific — which is exactly
+    what a ``DeployScene`` is for.
+
+    Resolved through ``FindPackageShare``, so the launch comes from the sourced
+    overlay like any other vendor package, and a missing package fails loudly at
+    launch-parse time rather than leaving a topic quietly unpublished.
+
+    Attributes:
+        package: ROS 2 package providing the launch file.
+        launch_file: File name inside that package's ``launch/`` directory.
+        args: Launch arguments, forwarded verbatim. Values are strings because
+            that is what ``ros2 launch`` takes; ``"true"``/``"false"`` for
+            booleans.
+
+    Example:
+        >>> LaunchInclude(package="zed_wrapper", launch_file="zed_camera.launch.py").args
+        {}
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    package: str
+    launch_file: str
+    args: dict[str, str] = Field(default_factory=dict)
+
+
 class DeployRuntime(BaseModel):
     """Committed deploy-posture toggles for a workcell scene.
 
@@ -9367,6 +9405,19 @@ class DeployScene(BaseModel):
 
     Entries whose ``deploy_binding`` is set are opened by the real-deploy
     sensor leg and published on ``/openral/cameras/<name>/image``."""
+    drivers: list[LaunchInclude] = Field(default_factory=list)
+    """Vendor sensor drivers this workcell needs on the bus.
+
+    A ``deploy_binding`` with a ``ros2_*`` backend subscribes to a topic somebody
+    else publishes; these are the launches that publish them. ``deploy run``
+    includes each one on the real path (``hal_mode:=real``) before the sensor leg
+    starts reading, so a camera reached over ROS comes up with the graph instead
+    of needing a second terminal — the failure mode otherwise is a silently empty
+    panel, not an error.
+
+    Empty for a workcell whose sensors OpenRAL opens directly (``opencv_thread``,
+    ``gstreamer``): those need no driver. Ignored on the sim path, where cameras
+    are rendered rather than driven."""
     hal: HalParameters | None = None
     """Deploy-time HAL binding for this workcell.
 

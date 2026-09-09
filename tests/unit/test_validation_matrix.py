@@ -895,7 +895,9 @@ def test_the_monitor_gate_waits_for_the_deploys_own_readiness_line(tmp_path: Pat
     from openral_cli.deploy_sim import DDS_TRANSPORT_READY_MARKER
 
     log = tmp_path / "run_deploy.log"
-    log.write_text("  argv: ros2 launch openral_rskill_ros sim_e2e.launch.py\n", encoding="utf-8")
+    log.write_text(
+        "  argv: ros2 launch openral_rskill_ros deploy_e2e.launch.py\n", encoding="utf-8"
+    )
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         # Not there yet: the purge has not run, so joining now loses the SHM.
@@ -1143,7 +1145,7 @@ def test_collision_scale_env_ignores_a_value_the_launch_would_ignore(
 ) -> None:
     """An unparseable value is not recorded, because it did not take effect.
 
-    ``sim_e2e.launch.py`` drops an unparseable band rather than guessing, so
+    ``deploy_e2e.launch.py`` drops an unparseable band rather than guessing, so
     recording it would misdescribe the round.
     """
     monkeypatch.setenv("OPENRAL_COLLISION_SCALE_PROXIMITY_M", "0,05")

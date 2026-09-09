@@ -570,9 +570,22 @@ if _ROS2_AVAILABLE:
             # without per-node remapping. The legacy `~/joint_states`
             # publication is kept for back-compat with existing CLI
             # consumers.
-            self._joint_state_pub = self.create_publisher(
-                RosJointState, "/joint_states", control_qos
-            )
+            #
+            # Except on a real ros2_control robot, where the vendor's
+            # `joint_state_broadcaster` owns that topic — see
+            # `_attach_ros_control_transport`, which is where this decision is
+            # explained. It cannot enforce it by destroying the publisher: it
+            # runs in `on_configure` and these are created in `on_activate`, so
+            # the destroy landed on `None` and activation then recreated the
+            # publisher it had just "dropped" — while still logging that it had.
+            # The result on every real deploy was this node publishing its own
+            # 16-DoF state at 30 Hz onto the same topic the broadcaster drives
+            # at 750 Hz. Deciding it here, where the publisher is created, is
+            # the only place the decision can actually hold.
+            if self._ros_control_transport is None:
+                self._joint_state_pub = self.create_publisher(
+                    RosJointState, "/joint_states", control_qos
+                )
             self._publisher = self.create_publisher(RosJointState, "~/joint_states", control_qos)
             self._policy_state_pub = self.create_publisher(
                 Float32MultiArray,
@@ -1574,6 +1587,14 @@ if _ROS2_AVAILABLE:
             # world_state aggregator reads exactly this topic). Drop the global
             # publisher and keep the namespaced `~/joint_states`, which
             # collides with nothing.
+            #
+            # `on_activate` is what honours this, by not creating the global
+            # publisher at all when a transport is attached. Destroying it here
+            # cannot work: this runs during `on_configure`, before the
+            # publishers exist. The destroy below is kept only for the
+            # re-configure path (CONFIGURE after a CLEANUP+CONFIGURE cycle that
+            # left one behind); on a first bring-up it is a no-op by design,
+            # not by accident.
             if self._joint_state_pub is not None:
                 self.destroy_publisher(self._joint_state_pub)
                 self._joint_state_pub = None

@@ -206,3 +206,25 @@ the metric surface — and Jaeger renders them beautifully — **after** the run
 For the Day 30 demo and for on-robot debugging, the operator wants
 a *live* pane that updates as the robot moves. `openral dashboard` is
 that pane; it does not replace Jaeger for post-hoc analysis.
+
+## Relationship to the Foxglove surface
+
+`openral deploy sim --foxglove` brings up a second, read-only pane
+(`packages/openral_foxglove_bringup`) that owns the **live ROS scene**: the
+robot's URDF posed by TF inside the occupancy grid and voxel map, one Image
+panel per camera slot, plus the ROS-side telemetry plane — `/rosout`,
+`/diagnostics`, `WorldStateStamped`, episode transitions, reward scores,
+detected objects.
+
+The two are complementary, not alternatives, and **nothing here has been
+retired in favour of Foxglove**. This dashboard remains the only surface for:
+
+- traces (the trace chip, `/api/traces`, the Jaeger deep link) and OTLP metric
+  histograms — Foxglove has no span or histogram model;
+- `openral sim run` and `openral benchmark run`, which run HAL-only with no ROS
+  graph for a bridge to bridge;
+- every write path — E-stop, prompt (text + voice), skill execute, param set.
+  The bridge advertises no `clientPublish`, and the e-stop deliberately uses
+  this dashboard's launch-time, pre-matched publisher;
+- the latched safety state, since `/openral/safety_status` is withheld from the
+  bridge pending safety-WG sign-off.

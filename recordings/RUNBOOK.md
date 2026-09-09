@@ -115,7 +115,7 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 ## Teardown between scenes
 ```bash
-pkill -f sim_e2e.launch.py            # stop the deploy-sim graph
+pkill -f deploy_e2e.launch.py            # stop the deploy-sim graph
 pkill -f isaac_sidecar.py             # stop Isaac sidecar (clips 3/4)
 nvidia-smi                            # confirm VRAM freed before the next scene
 ```

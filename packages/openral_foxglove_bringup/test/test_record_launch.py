@@ -54,12 +54,17 @@ _FORBIDDEN_TOPIC_LITERALS = [
     "/openral/prompt_in/dashboard",
 ]
 
-# Topics the layout is allowed to reference: the Bucket-1 whitelist plus the
-# two Bucket-2 converter output topics.
+# Topics the shipped layout is allowed to reference, written out as literals
+# rather than derived from ``BUCKET1_TOPIC_WHITELIST``. That redundancy is the
+# point: a regex in ``topics.py`` that accidentally widens (say
+# ``/openral/.*``) would still satisfy a derived check, but not this one.
+# Keep in step with ``layout.build_layout`` — every camera slot in
+# ``layout.DEFAULT_CAMERAS`` needs its image topic here.
 _EXPECTED_ALLOWED: set[str] = {
+    # Scene
     "/openral/cameras/top/image",
-    "/openral/world_collisions_markers",
-    "/openral/world_voxels_cloud",
+    "/openral/cameras/wrist_left/image",
+    "/openral/cameras/wrist_right/image",
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",
@@ -68,6 +73,16 @@ _EXPECTED_ALLOWED: set[str] = {
     "/robot_description",
     "/tf",
     "/tf_static",
+    # Bucket-2 converter outputs
+    "/openral/world_collisions_markers",
+    "/openral/world_voxels_cloud",
+    # Telemetry mirrored from the OTel dashboard's cards
+    "/openral/world_state_fast",
+    "/openral/policy_state",
+    "/openral/episode",
+    "/openral/critic/score",
+    "/openral/perception/objects",
+    "/openral/attachment_state",
 }
 
 

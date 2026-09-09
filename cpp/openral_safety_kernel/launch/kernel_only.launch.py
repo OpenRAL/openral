@@ -9,7 +9,7 @@ the manifest via Pydantic, synthesises the envelope via
 forwards each canonical field as a ROS parameter on the kernel node
 (there is no envelope-file path).
 
-Production deployments compose this into ``sim_e2e.launch.py`` with
+Production deployments compose this into ``deploy_e2e.launch.py`` with
 the rest of the graph (rskill_runner_node, world_state_node, HAL,
 deadman_watchdog).
 """

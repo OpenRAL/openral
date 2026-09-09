@@ -23,10 +23,20 @@ _TIER_LOADERS = {"sim": SimScene, "benchmark": BenchmarkScene, "deploy": DeployS
 
 
 def _yamls(subdir: str) -> list[Path]:
+    """Every scene in a tier — its own YAMLs, not its subdirectories'.
+
+    A scene is a top-level file in its tier; every one in the repo is. A tier's
+    subdirectories hold data a scene *references* rather than more scenes:
+    `scenes/deploy/calibration/` (per-robot calibration) and
+    `scenes/deploy/drivers/` (parameter overrides for third-party ROS nodes a
+    `DeployScene.drivers` entry launches). Those are not `DeployScene`s and must
+    not be validated as one — `rglob` swept them in, so adding a `.yaml` under
+    either broke collection for the whole tier.
+    """
     tier_dir = SCENES_DIR / subdir
     if not tier_dir.exists():
         return []
-    return sorted(tier_dir.rglob("*.yaml"))
+    return sorted(tier_dir.glob("*.yaml"))
 
 
 @pytest.mark.parametrize(

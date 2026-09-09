@@ -2,7 +2,7 @@
 
 ROS 2 lifecycle-node wrapper around `openral_hal.OpenArmMujocoHAL` so the
 Enactic **OpenArm v2** 16-DoF bimanual arm can participate in the
-`openral deploy sim` graph (`sim_e2e.launch.py` → C++ safety kernel → HAL).
+`openral deploy sim` graph (`deploy_e2e.launch.py` → C++ safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot openarm` via
 `_ROBOT_HAL_REGISTRY["openarm"]` (see
@@ -26,7 +26,7 @@ controllers — it never starts `controller_manager` itself (same pattern as
 graph on the real CAN bus before the HAL can move anything, and until this
 launch file existed nothing in this repo did.
 
-`launch/openarm_real_bringup.launch.py` is that something: a thin include of
+`launch/real_bringup.launch.py` is that something: a thin include of
 upstream `openarm_bringup`'s `openarm.bimanual.launch.py` with
 `use_fake_hardware:=false` and this HAL's own CAN interface defaults
 (`openarm_left` / `openarm_right`, matching `OpenArmRealHAL`'s
@@ -60,10 +60,24 @@ rule to match the defaults above — or pass `left_can_interface:=` /
 `right_can_interface:=` overrides.
 
 Then, with people clear of the arms (activation enables the motors and returns
-them toward zero):
+them toward zero), `openral deploy run` starts this graph itself:
 
 ```bash
-ros2 launch openral_hal_openarm openarm_real_bringup.launch.py
+openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml
+```
+
+`deploy_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
+`hal_mode:=real` and the HAL package ships that file — the file name *is* the
+declaration, so nothing names it in a manifest. Do not also launch it by hand:
+a second copy puts a second `/joint_states` publisher on the graph, and
+`openral deploy run` then refuses to start at all (the shared-graph guard in
+`openral_cli._dds_scope`, #227).
+
+To bring the controllers up on their own — verifying the CAN wiring before
+involving the rest of the stack — the launch file is still directly runnable:
+
+```bash
+ros2 launch openral_hal_openarm real_bringup.launch.py
 ```
 
 Verify before trusting `/joint_states`. CAN traffic and controller "active"
@@ -81,9 +95,12 @@ A per-second `controller_manager` overrun warning at 750 Hz is expected on a USB
 CAN-FD adapter (its ~1.1 ms read round-trip eats the 1.33 ms budget; effective
 rate ~600 Hz).
 
-Only then start this package's lifecycle node with `hal_mode:=real`. It attaches
-its `RosControlTransport` automatically and leaves the global `/joint_states` to
-the controller's own `joint_state_broadcaster`.
+This package's lifecycle node runs with `hal_mode:=real` in the same graph. It
+attaches its `RosControlTransport` automatically and leaves the global
+`/joint_states` to the controller's own `joint_state_broadcaster`. It starts
+concurrently with the bringup rather than after it, so while the controllers
+spawn it logs `read_state failed: Joint state is N s old` for a few seconds and
+then recovers on its own — warn-only, and not a fault.
 
 ### Checking the transport without the arm
 

@@ -18,7 +18,7 @@ triggers navigation by dispatching the ``OpenRAL/rskill-nav2-mobile_base-navigat
 wrapped-action rSkill (``NavigateToPose`` goal to ``/navigate_to_pose``), not by
 lifecycle-transitioning the planner.
 
-Composed into ``packages/openral_rskill_ros/launch/sim_e2e.launch.py`` when ``enable_nav2=true``.
+Composed into ``packages/openral_rskill_ros/launch/deploy_e2e.launch.py`` when ``enable_nav2=true``.
 """
 
 from __future__ import annotations

@@ -422,7 +422,7 @@ looks like.
 kitchen rather than on a synthetic MJCF:
 
 * `/openral/world_voxels` has exactly one producer — `octomap_server`'s
-  `cloud_in`, remapped to the HAL's depth cloud (`sim_e2e.launch.py`). No other
+  `cloud_in`, remapped to the HAL's depth cloud (`deploy_e2e.launch.py`). No other
   path writes occupancy.
 * `depth_cloud.robot_self_body_ids` resolves **21** bodies on the live
   `PickPlaceCounterToDrawer` model, and that set contains every body the
@@ -1005,7 +1005,7 @@ yaw, and the kernel's differential oracle pins identity-grid behaviour to
 **Two harness findings from the same session**, both of which the harness exists
 to catch and both now fixed:
 
-* the first attempt bucketed **all four scenes `harness-error`** — `sim_e2e.launch.py`
+* the first attempt bucketed **all four scenes `harness-error`** — `deploy_e2e.launch.py`
   spawns `octomap_server`, no `package.xml` declared it, and
   `scripts/check_ros_build_deps.sh` derives its required set from those files,
   so it cleared a host that could not launch. Fixed by declaring the
@@ -1222,7 +1222,7 @@ the consequence: **a battery run on master measures Path B alone**, and any
 reading of §10's "A + B" gate from the default arm alone would be measuring
 one path and naming two. The second arm sets the
 band through the `OPENRAL_COLLISION_SCALE_PROXIMITY_M` seam
-(`sim_e2e.launch.py:126`) at the same `0.05 m / k=20 / min=0.1` the #188 A/B
+(`deploy_e2e.launch.py:126`) at the same `0.05 m / k=20 / min=0.1` the #188 A/B
 used, and `verdicts.json` records `collision_scale` per round so which arm a
 round belongs to is a recorded fact, not an operator's memory.
 

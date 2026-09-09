@@ -1,7 +1,7 @@
 """HAL autostart budget must outlast what ``on_configure`` actually does.
 
 ``tools/lifecycle_autostart.py`` bounds each lifecycle transition;
-``sim_e2e.launch.py`` spawns it for the HAL, which for a sidecar backend boots
+``deploy_e2e.launch.py`` spawns it for the HAL, which for a sidecar backend boots
 the simulator in-process inside ``connect()`` → ``_wait_for_boot``.
 
 Boot budgets exceed the old fixed 300 s literal (``isaac_sim`` 900 s,

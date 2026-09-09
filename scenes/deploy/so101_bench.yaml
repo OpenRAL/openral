@@ -101,7 +101,7 @@ runtime:
   spatial_memory_ingest: true
   # Deliberately null: the MoveIt approach path needs a move_group server in
   # the deploy graph, and the SO-101 has no MoveIt config in-repo (no SRDF /
-  # moveit_config; sim_e2e.launch spawns no move_group). Setting an
+  # moveit_config; deploy_e2e.launch spawns no move_group). Setting an
   # approach_skill_id here would make EVERY ExecuteRskill goal abort at the
   # pre-inference approach step ("fatal approach attempt failed"). The
   # starting-pose reset instead rides the HAL's ResetToPose service —

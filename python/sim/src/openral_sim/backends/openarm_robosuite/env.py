@@ -470,7 +470,7 @@ class _OpenArmTabletopRollout:
     # from the rSkill's ``starting_pose`` so the episode starts at the
     # policy's training-distribution centre instead of the MJCF default
     # zero pose. ``None`` falls back to the "elbows at π/2" home pose
-    # (matches the live ``sim_e2e.launch.py`` HAL).
+    # (matches the live ``deploy_e2e.launch.py`` HAL).
     _initial_pose_robot_order: NDArray[np.float32] | None = None
     # Total state / action vector width, sourced from the rSkill
     # manifest's ``state_contract.dim`` (or ``action_contract.dim``)
@@ -493,7 +493,7 @@ class _OpenArmTabletopRollout:
         #      centre so the policy's first inference lands on a familiar
         #      observation).
         #   2. Elbows at +π/2 fallback — same elbow-bent home the live
-        #      ``sim_e2e.launch.py`` HAL uses.
+        #      ``deploy_e2e.launch.py`` HAL uses.
         if self._initial_pose_robot_order is not None:
             pose = self._initial_pose_robot_order
             half = self._state_dim // 2
@@ -779,8 +779,8 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
     from robosuite.utils.binding_utils import MjSim
 
     # Read MJCF compose knobs from the scene config. Defaults mirror
-    # the live ROS launch (``sim_e2e.launch.py``) so ``openral sim run``
-    # and ``ros2 launch ... sim_e2e.launch.py`` build the SAME
+    # the live ROS launch (``deploy_e2e.launch.py``) so ``openral sim run``
+    # and ``ros2 launch ... deploy_e2e.launch.py`` build the SAME
     # scene — bases lifted above the table top, shifted forward into
     # the workspace, white skybox so the dataset's lighting reads
     # cleanly.
@@ -805,7 +805,7 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
     # Compose with strip_actuators=False so the upstream OpenArm v2
     # ``<position>`` actuators (per-joint kp/kv tuned classes) survive
     # — same contract the live ``OpenArmMujocoHAL.send_action`` uses
-    # via the sim_e2e.launch.py path. The custom PD / OSC paths
+    # via the deploy_e2e.launch.py path. The custom PD / OSC paths
     # are deliberately gone; this env writes position targets straight
     # to ``data.ctrl`` and lets the MJCF's PD law do the work.
     xml, meshdir = compose_openarm_tabletop_mjcf(

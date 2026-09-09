@@ -4,9 +4,10 @@ Xacro-only arms (ur5e/ur10e/rizon4) ship a ``XACRO_PATH`` in
 ``robot_descriptions``; its ``yourdfpy`` loader runs ``xacrodoc`` to expand
 every ``${…}``, then the result is serialized with a provenance header.
 ``openarm`` ships only MJCF upstream, so its flattened URDF is cloned
-separately and passed as a ``file:`` upstream; ``--rename`` strips the
-``openarm_`` joint/link prefix to the HAL convention (``left_joint1..7`` /
-``right_joint1..7``).
+separately and passed as a ``file:`` upstream. Its names are vendored **as
+upstream spells them** (``openarm_left_joint1``): the vendored URDF has to agree
+with the arm's own ros2_control graph and ``/joint_states``, which no rename
+here can change. See ``_RENAME``.
 
 **Portable mesh refs.** The yourdfpy round-trip absolutizes every mesh
 ``filename`` into the vendoring machine's ``robot_descriptions`` cache (once
@@ -70,9 +71,21 @@ _RAW_RENAMES: dict[str, list[tuple[str, str]]] = {
     "h1": [(r'name="([^"]*)_joint"', r'name="\1"')],
 }
 
-# Joint-name normalization to the OpenRAL HAL convention. openarm: strip the
-# "openarm_" prefix so joints become left_joint1..7 / right_joint1..7.
-_RENAME: dict[str, tuple[str, str]] = {"openarm": (r'"openarm_', '"')}
+# Per-robot default rename applied to a `rd:`/`file:` upstream. Empty today.
+#
+# `openarm` used to strip the `openarm_` prefix here so joints read
+# `left_joint1..7`, matching the manifest's logical joint names. That made the
+# vendored URDF the only artefact in the repo using that spelling: the arm's
+# ros2_control graph, its `/joint_states`, its MJCF and `OpenArmRealHAL.
+# ros2_control_joint_names()` all say `openarm_left_joint1`. Two conventions on
+# one `/robot_description` topic empty out `joint_state_broadcaster`, whose
+# `use_urdf_to_filter` publishes only joints the URDF also names — and a
+# `robot_state_publisher` fed the stripped URDF never matches a name on the real
+# arm's `/joint_states`, so its whole tree stays at the rest pose in `/tf`.
+# The manifest's logical names stay as they are: they are the action-vector
+# contract, shared with other robots and pinned by published rSkill manifests,
+# and `sim_joint_name` / `ros2_control_joint_names()` are the declared bridges.
+_RENAME: dict[str, tuple[str, str]] = {}
 
 # A ``(pattern, repl)`` rename is a 2-tuple; named to satisfy the magic-value lint.
 _PAIR_LEN = 2

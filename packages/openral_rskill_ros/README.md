@@ -95,7 +95,7 @@ runtime = compose_so100_runtime(robot_name="so100")
 
 One generic launch file ships with this package:
 
-* `launch/sim_e2e.launch.py` — the robot-agnostic
+* `launch/deploy_e2e.launch.py` — the robot-agnostic
   graph: `runtime_node` (composed `world_state` + `skill_runner`) +
   C++ `safety_kernel_node` + reasoner + prompt router + HAL. Every
   robot-specific bit is a launch argument resolved at startup by an
@@ -111,7 +111,7 @@ One generic launch file ships with this package:
   2. validates `robots/<robot_id>/robot.yaml` via
      `RobotDescription.validate_for_e2e_pipeline()` and asserts the
      manifest's `name` is in the HAL's `supported_robot_names`;
-  3. shells `ros2 launch openral_rskill_ros sim_e2e.launch.py …`.
+  3. shells `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
 
   The launch's `OpaqueFunction` then loads `robot.yaml`, calls
   `openral_safety.envelope_loader.compute_intersection(robot, None)`,
@@ -124,7 +124,7 @@ One generic launch file ships with this package:
   Direct invocation (for debugging the launch itself):
 
   ```bash
-  ros2 launch openral_rskill_ros sim_e2e.launch.py \
+  ros2 launch openral_rskill_ros deploy_e2e.launch.py \
       robot_yaml:=$PWD/robots/openarm/robot.yaml \
       hal_package:=openral_hal_openarm \
       hal_executable:=lifecycle_node.py \

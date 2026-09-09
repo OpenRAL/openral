@@ -2,7 +2,7 @@
 
 ROS 2 lifecycle-node wrapper around `openral_hal.H1MujocoHAL` so the
 Unitree H1 humanoid (19-DoF) can participate in the `openral deploy sim` graph
-(`sim_e2e.launch.py` → C++ safety kernel → HAL).
+(`deploy_e2e.launch.py` → C++ safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot h1` via
 `_ROBOT_HAL_REGISTRY["h1"]` (see

@@ -100,7 +100,7 @@ error and publishes nothing.**
 History: the old sim box was 1.6 m (fit the kernel's then 262,144-cell cap).
 Measured against `panda_mobile`'s manifest `collision_geometry`, its checked
 arm reach is **1016 mm** from the grid centre — up to **124 mm** outside the
-old grid. `sim_e2e.launch.py` now covers 1.05 m and the kernel's cap is sized
+old grid. `deploy_e2e.launch.py` now covers 1.05 m and the kernel's cap is sized
 to hold it.
 
 ### The ≤1-resolution inflation toward the sensor is octomap's, and stays

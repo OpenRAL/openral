@@ -2,7 +2,7 @@
 
 ROS 2 lifecycle-node wrapper around `openral_hal.Rizon4MujocoHAL` so the
 Flexiv Rizon 4 7-DoF arm can participate in the `openral deploy sim` graph
-(`sim_e2e.launch.py` → C++ safety kernel → HAL).
+(`deploy_e2e.launch.py` → C++ safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot rizon4` via
 `_ROBOT_HAL_REGISTRY["rizon4"]` (see

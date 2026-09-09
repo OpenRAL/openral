@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`openarm_real_bringup.launch.py` must agree with `OpenArmRealHAL`'s constants.
+"""`real_bringup.launch.py` must agree with `OpenArmRealHAL`'s constants.
 
 The launch file's CAN-interface and controller-name defaults are a hand-copied mirror of
 `openral_hal.openarm_real`'s private constants (see that module's docstring: the launch file
@@ -29,7 +29,7 @@ _LAUNCH_PATH = (
     / "packages"
     / "openral_hal_openarm"
     / "launch"
-    / "openarm_real_bringup.launch.py"
+    / "real_bringup.launch.py"
 )
 
 try:

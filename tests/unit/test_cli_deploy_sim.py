@@ -11,6 +11,7 @@ No mocks (CLAUDE.md §1.11). The CLI is exercised via Typer's
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -79,7 +80,7 @@ def test_bh_deploy_sim_dry_run_openarm() -> None:
     assert "manifest.name=openarm_v2" in flat
     assert "hal_package=openral_hal_openarm" in flat
     assert "hal_node_name=openral_hal_openarm" in flat
-    assert "sim_e2e.launch.py" in flat
+    assert "deploy_e2e.launch.py" in flat
     assert "robots/openarm/robot.yaml" in flat
     # Envelope is synthesised at launch time from robot.yaml — never a file.
     assert "synthesised at launch time" in flat
@@ -138,7 +139,7 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     assert invocation.argv_template[_head : _head + 3] == [
         "launch",
         "openral_rskill_ros",
-        "sim_e2e.launch.py",
+        "deploy_e2e.launch.py",
     ]
     assert "envelope_file:=" not in joined  # no file path of any kind
     assert "HAL_PARAMS_FILE_PLACEHOLDER" in joined
@@ -1240,6 +1241,51 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
         "preflight install command must pass --inexact so installing one group "
         "does not uninstall another run-critical group's packages (e.g. the "
         f"omdet detector's timm); got:\n{cmd_line}"
+    )
+
+
+def test_bh_preflight_refuses_when_just_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rig without `just` must be told so, not handed a subprocess traceback.
+
+    `just` is a separate binary from the workspace's `uv`, so a host can be
+    fully provisioned — venv synced, colcon built, every ROS package resolving
+    — and still die here. Before this guard the failure was
+    `FileNotFoundError: [Errno 2] ... 'just'` raised out of `subprocess`, which
+    names neither what wanted `just` nor how to get it. Hit on the lab Thor.
+
+    The refusal is deliberate: falling back to a bare `uv sync` would drop
+    `--all-packages` and uninstall the workspace members, breaking the very
+    launch the install was meant to enable (see the call site's comment 1).
+    """
+    import sys as _sys
+
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import policy_deps as _pd
+
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
+
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
+    monkeypatch.setattr(
+        _pd, "can_import_policy_family", lambda _family: (False, "forced miss for test")
+    )
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        deploy_sim.shutil, "which", lambda name: None if name == "just" else "/usr/bin/" + name
+    )
+
+    with pytest.raises(ROSConfigError) as ei:
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
+    message = str(ei.value)
+    assert "uv tool install rust-just" in message, (
+        f"the refusal must name the remedy; got:\n{message}"
+    )
+    assert "OPENRAL_AUTO_INSTALL_DEPS=0" in message, (
+        f"the refusal must name the way past it; got:\n{message}"
     )
 
 
@@ -2497,11 +2543,23 @@ def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
 
     Anchors on the indented runtime keys, which appear once each; the same
     words also occur in the scene's comment header and must stay untouched.
+
+    Both the enable flag and any pinned ``octomap_cloud_topic`` are rewritten
+    from whatever the committed scene currently says, rather than replacing one
+    known literal. These tests assert what ``resolve_launch_invocation`` does
+    with a *given* octomap posture, so they must set that posture outright: when
+    the fixture anchored on ``enable_octomap: false`` and the scene was later
+    turned on with a pinned cloud topic, the replace silently no-ops and the
+    "unpinned" case inherited the scene's pin — failing a test about the
+    resolver for a reason that had nothing to do with the resolver.
     """
     text = (_REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml").read_text(
         encoding="utf-8"
     )
-    text = text.replace("\n  enable_octomap: false\n", f"\n  enable_octomap: true\n{extra}")
+    text = re.sub(r"\n  octomap_cloud_topic:[^\n]*\n", "\n", text)
+    text = re.sub(
+        r"\n  enable_octomap: (?:true|false)\n", f"\n  enable_octomap: true\n{extra}", text
+    )
     scene = tmp_path / "openarm_octomap.yaml"
     scene.write_text(text, encoding="utf-8")
     return scene

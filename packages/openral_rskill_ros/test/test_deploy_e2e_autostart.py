@@ -1,4 +1,4 @@
-"""Regression test for the one-shot autostart in ``sim_e2e.launch.py``.
+"""Regression test for the one-shot autostart in ``deploy_e2e.launch.py``.
 
 Guards single-resident-skill VRAM eviction (unload-on-switch).
 
@@ -25,17 +25,17 @@ from types import ModuleType
 
 import pytest
 
-_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "sim_e2e.launch.py"
+_LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 
 
 def _import_launch_module() -> ModuleType:
-    """Import ``sim_e2e.launch.py`` by absolute path (skip without a ROS overlay)."""
+    """Import ``deploy_e2e.launch.py`` by absolute path (skip without a ROS overlay)."""
     pytest.importorskip("launch")
     pytest.importorskip("launch_ros")
     if not os.environ.get("ROS_DISTRO"):
         pytest.skip("ROS_DISTRO not set — launch_ros requires a sourced ROS 2 install.")
     spec = importlib.util.spec_from_file_location(
-        "openral_sim_e2e_autostart_under_test", _LAUNCH_FILE
+        "openral_deploy_e2e_autostart_under_test", _LAUNCH_FILE
     )
     if spec is None or spec.loader is None:
         pytest.fail(f"failed to build module spec for {_LAUNCH_FILE}")

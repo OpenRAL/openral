@@ -3898,6 +3898,21 @@ def deploy_run(
         "--dashboard-port",
         help="Dashboard OTLP port.",
     ),
+    foxglove: bool = typer.Option(
+        False,
+        "--foxglove/--no-foxglove",
+        help="Spawn the read-only Foxglove scene view.",
+    ),
+    foxglove_port: int = typer.Option(
+        8765,
+        "--foxglove-port",
+        help="Foxglove WebSocket port.",
+    ),
+    initial_task: str | None = typer.Option(
+        None,
+        "--initial-task",
+        help="Operator goal delivered to the reasoner at startup.",
+    ),
     enable_reward_monitor: bool | None = typer.Option(
         None,
         "--enable-reward-monitor/--no-enable-reward-monitor",
@@ -3929,7 +3944,7 @@ def deploy_run(
 
     Unlike `openral deploy sim`, this drives the **real** hardware HAL: it
     resolves the robot from `--config` (a DeployScene) and shells the SAME
-    `sim_e2e.launch.py` graph with `hal_mode:=real` — the HAL lifecycle node +
+    `deploy_e2e.launch.py` graph with `hal_mode:=real` — the HAL lifecycle node +
     C++ safety kernel + reasoner + world state (+ SLAM/Nav2 when the robot
     declares a lidar). The HAL's `connect()` fails loudly if no hardware is
     attached; a simulation-only robot raises ROSCapabilityMismatch (use
@@ -3970,6 +3985,9 @@ def deploy_run(
             hal_param_overrides=overrides,
             hal_mode="real",
             enable_dashboard=dashboard,
+            enable_foxglove=foxglove,
+            foxglove_port=foxglove_port,
+            initial_task_prompt=initial_task,
             enable_reward_monitor=enable_reward_monitor,
             reward_monitor_manifest=reward_monitor_manifest,
         )

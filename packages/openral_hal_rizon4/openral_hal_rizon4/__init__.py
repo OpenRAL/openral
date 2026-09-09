@@ -2,5 +2,5 @@
 
 Provides a managed lifecycle node that bridges the Rizon4MujocoHAL adapter to
 ROS 2 topics + lifecycle management. Used by openral deploy sim via
-``sim_e2e.launch.py``.
+``deploy_e2e.launch.py``.
 """

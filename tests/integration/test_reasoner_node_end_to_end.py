@@ -328,7 +328,7 @@ def test_recall_object_query_reprompts_with_spatial_memory_result() -> None:
 def test_spatial_memory_path_param_preloads_query_backend() -> None:
     """spatial_memory_path ROS param (not constructor injection) loads a SpatialMemory backend.
 
-    This is the wiring sim_e2e.launch.py uses; asserts the full RecallObjectTool
+    This is the wiring deploy_e2e.launch.py uses; asserts the full RecallObjectTool
     dispatch → re-prompt path works against the preloaded map.
     """
     rclpy = pytest.importorskip("rclpy")
@@ -367,7 +367,7 @@ def test_spatial_memory_path_param_preloads_query_backend() -> None:
                 ],
             ],
         )
-        # No injected backend — wired via the ROS param, as sim_e2e.launch.py does
+        # No injected backend — wired via the ROS param, as deploy_e2e.launch.py does
         # (`spatial_memory_path:=<path>`).
         reasoner = ReasonerNode(
             client=client,
@@ -1939,7 +1939,7 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
     """Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
 
     Real deploy path: a saved nav2 map.yaml loaded by ``nav2_map_server`` (what
-    sim_e2e.launch.py brings up for ``map_path``), latching ``/map``. Asserts (a) the
+    deploy_e2e.launch.py brings up for ``map_path``), latching ``/map``. Asserts (a) the
     map reaches ``/map``, (b) the reasoner consumes it into its occupancy grid, (c)
     ``recall_object`` still answers with the bundle's scene graph also wired.
     """

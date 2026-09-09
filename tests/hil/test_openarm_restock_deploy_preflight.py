@@ -332,14 +332,16 @@ def test_a_standalone_gripper_action_raises_instead_of_vanishing() -> None:  # p
 @requires_cameras
 @pytest.mark.parametrize(
     "sensor_name,expected_wh",
-    [("context", (672, 376)), ("wrist_left", (960, 600)), ("wrist_right", (960, 600))],
+    [("top", (672, 376)), ("wrist_left", (960, 600)), ("wrist_right", (960, 600))],
 )
 def test_each_camera_delivers_the_shape_the_policy_trained_on(
     sensor_name: str, expected_wh: tuple[int, int]
 ) -> None:  # pragma: no cover
     """Open the real camera through its scene binding and check the frame shape.
 
-    ``context`` is the one that matters: the ZED Mini streams both lenses in a
+    ``top`` — the ZED head camera, which overrides the manifest's sim overhead
+    slot of the same name — is the one that matters: the ZED Mini streams both
+    lenses in a
     single 1344x376 frame and the policy trained on the left lens alone
     (the dataset's ``observation.images.context`` is ``[376, 672, 3]``). Without
     the binding's crop the reader yields a perfectly valid image containing two

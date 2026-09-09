@@ -76,6 +76,21 @@ def _rgb_msg(height: int = 2, width: int = 3) -> Image:
     return msg
 
 
+def _bgra_msg(height: int = 2, width: int = 3) -> Image:
+    """The ZED wrapper's default colour layout on `rgb/color/rect/image`."""
+    msg = Image()
+    msg.height, msg.width = height, width
+    msg.encoding = "bgra8"
+    msg.is_bigendian = 0
+    msg.step = width * 4
+    # Colour bytes double as their flat index; alpha is the constant 255 the
+    # ZED actually publishes, so a failure to strip it is visible in the data.
+    msg.data = bytes(
+        b"".join(bytes((3 * i, 3 * i + 1, 3 * i + 2, 255)) for i in range(height * width))
+    )
+    return msg
+
+
 def _depth32f_msg(values: list[list[float]]) -> Image:
     array = np.asarray(values, dtype=np.float32)
     msg = Image()
@@ -100,6 +115,33 @@ class TestLiveRoundTrip:
             frame = reader.read_latest(max_age_ms=5_000)
             assert frame.encoding is FrameEncoding.RGB8
             assert (frame.height, frame.width, frame.channels) == (2, 3, 3)
+            assert frame.data == bytes(range(18))
+        finally:
+            reader.close()
+            sub_node.destroy_node()
+            node.destroy_node()
+
+    def test_a_bgra8_frame_loses_its_alpha_instead_of_being_refused(self, isolated_ros) -> None:
+        """The ZED's colour topic is `bgra8`, and refusing it looks like a dead camera.
+
+        `zed_wrapper` publishes `bgra8` on `rgb/color/rect/image`. Before the
+        four-channel mapping every frame raised out of `_frame_from_msg`,
+        `_on_image` downgraded it to a WARN, and the reader went permanently
+        stale — so `/openral/cameras/context/image` had zero publishers while
+        the driver was healthy and streaming, which is indistinguishable from
+        an unplugged camera. Observed on the OpenArm cell.
+        """
+        topic = "/test_zed/rgb/color/rect/image"
+        node, publisher = _publisher(isolated_ros, topic)
+        sub_node = _sub_node(isolated_ros)
+        reader = Ros2ImageSensorReader(sensor_id="context", topic=topic, node=sub_node)
+        reader.open()
+        try:
+            _pump_until_frame(reader, sub_node, node, publisher, _bgra_msg(), isolated_ros)
+            frame = reader.read_latest(max_age_ms=5_000)
+            assert frame.encoding is FrameEncoding.BGR8
+            assert (frame.height, frame.width, frame.channels) == (2, 3, 3)
+            # Alpha dropped, colour order and row packing untouched.
             assert frame.data == bytes(range(18))
         finally:
             reader.close()
