@@ -283,6 +283,35 @@ can only reach the 3 link stops. **No amount of geometry work can recover the
 penetrating to advisory. It does **not** clear the three real contacts, which
 is correct: those are the stops the kernel exists for.
 
+**Correction (same day): the 18.9 mm median is bimodal, and only half of it is
+the cell.** Splitting the same 20 adjudicable stops by how much of the excess a
+25 mm cell can actually account for:
+
+| class | n | excess over certified truth | which lever reaches it |
+| --- | ---: | --- | --- |
+| **A — genuinely touching** (real gap ≤ 0) | 3 | 1.0, 10.9, 11.0 mm | **none, correctly** — these must keep stopping |
+| **B — quantisation** (clear, excess ≤ 21.65 mm) | 8 | 9.5 … 19.5 mm | **#253**, voxel 25 → 15 mm |
+| **C — not explained by the cell** (excess > 21.65 mm) | 9 | **23.4 … 84.6 mm** | **#254 / ADR-0101** — occupancy no nearby real body explains |
+
+Class C is the one that changes the lever order. An excess of 84.6 mm cannot be
+a 25 mm cell's half-diagonal under any argument, so **a finer grid does not
+reach those stops at all** — that is arithmetic, not judgement. Four of the nine
+are `utensil` against `counter_1_right_group_top_0`, the counter the payload was
+lifted *from*, which is the stale pre-attach silhouette the attach sweep window
+exists to clear; the rest name a surface tens of millimetres from anything the
+certified probe could find.
+
+And within class B, three stops already have an excess under **12.99 mm** — a
+15 mm grid's own half-diagonal — so they would not clear either. **25 → 15 mm
+plausibly converts 5 of 20 stops; class C is 9 of 20.** The two levers are still
+complementary, but the claim above that "the over-approximation *is* the cell"
+holds for 8 stops and is wrong for 9. `#253` and `#254` carry this split.
+
+*Method note:* a finer cell moves the kernel's reported depth **toward**
+certified truth rather than subtracting a fixed amount from it, so a genuinely
+touching pair keeps stopping at any resolution. Reasoning by subtraction on the
+reported depth gives the wrong answer for class A and was corrected here.
+
 **Which phase the stops happen in — and it is never the pick.** Traced each
 stop against the run's own `automatic sim attachment revision` (grasp),
 `support_witness_separated` (payload leaves its support) and
