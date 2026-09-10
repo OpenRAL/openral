@@ -389,7 +389,7 @@ Four things had to be discovered to make it run at all, each worth keeping:
       Corrected reading 66.7 % vs 4.0 %; **re-measured 2026-09-10 at 62.5 % vs
       2.7 %, a 59.8-point gap** (`p = 3.1e-08`).
 - [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
-      points of completion — and on the corrected reading nearer 60-70 — so the
+      points of completion — **measured at 59.8 on 2026-09-10** — so the
       §5 levers are competing for real headroom rather than for noise.
 - [x] ~~**Lever 1: the payload bounding box**~~ — **struck by measurement,
       2026-09-07.** This entry predates §5's reordering and kept the old
