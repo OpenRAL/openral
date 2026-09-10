@@ -1,0 +1,6 @@
+deploy sim → robot=panda_mobile (manifest.name=panda_mobile) hal_package=openral_hal_panda_mobile hal_node_name=openral_hal_panda_mobile
+[static_transform_publisher-5] [INFO] [1788722816.824323974] [static_base_link_to_panda_link0]: Spinning until stopped - publishing transform
+    [... elided: real run, trimmed for the fixture ...]
+[runtime_node-2] [INFO] [1788723220.550811105] [openral_skill_runner]: rskill_runner.place_declaration_retracted target=sim:fridgesidebyside_main_group_1_fridge_drawer0
+[lifecycle_manager-24] [INFO] [1788723222.705796928] [lifecycle_manager_navigation]: [34m[1mHave not received a heartbeat from controller_server.[0m[0m
+[lifecycle_manager-24] [ERROR] [1788723222.705848144] [lifecycle_manager_navigation]: CRITICAL FAILURE: SERVER controller_server IS DOWN after not receiving a heartbeat for 4000 ms. Shutting down related nodes.

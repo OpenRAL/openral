@@ -947,6 +947,127 @@ def _launch_exception_detail(deploy_lines: Sequence[str]) -> str:
     return tail.replace(_LAUNCH_EXCEPTION_NOISE, "").strip()
 
 
+#: How early a lost Nav2 server bond means the run never had a working graph.
+#:
+#: ``lifecycle_manager_navigation`` tears down the WHOLE Nav2 stack when a
+#: managed server misses its bond heartbeat. The teardown is silent: no
+#: traceback, no non-zero exit, the graph simply stops doing anything and the
+#: run idles out its deadline. Scored naively that reads as the policy failing
+#: to grasp.
+#:
+#: The same message also appears during ordinary shutdown, so the timestamp is
+#: what distinguishes the two. Measured over the 89 valid runs of the
+#: 2026-09-06 ceiling battery (issue #256): every run killed by the cascade
+#: lost its bond by ``t0 + 100.8 s``, and the earliest loss in a run that had
+#: already completed its task was ``t0 + 199.6 s``. Nothing lands in between.
+#: This constant sits in that gap.
+_NAV2_BOND_LOSS_EARLY_S: Final[float] = 120.0
+
+_NAV2_BOND_LOST: Final[re.Pattern[str]] = re.compile(r"Have not received a heartbeat from ([\w_]+)")
+_ROS_LOG_TIME: Final[re.Pattern[str]] = re.compile(r"\[(\d{9,11}\.\d+)\]")
+
+#: First line `openral deploy sim` writes, and the proof that a deploy log
+#: begins where the run begins rather than partway through it.
+_DEPLOY_BANNER_PREFIX: Final[str] = "deploy sim"
+
+
+def _nav2_bond_teardown(deploy_lines: Sequence[str]) -> str:
+    """Say which Nav2 server lost its bond early enough to void the run.
+
+    Args:
+        deploy_lines: Lines of the deploy log.
+
+    Returns:
+        A human-readable reason, empty when no early bond loss is recorded.
+
+    Example:
+        >>> _nav2_bond_teardown(
+        ...     [
+        ...         "deploy sim \u2192 robot=panda_mobile",
+        ...         "[runtime_node-2] [INFO] [1788722700.0] [x]: up",
+        ...         "[lifecycle_manager-24] [ERROR] [1788722730.0]"
+        ...         " [lifecycle_manager_navigation]: Have not received a"
+        ...         " heartbeat from controller_server",
+        ...     ]
+        ... )
+        'Nav2 tore down its stack 30.0s in: no heartbeat from controller_server'
+        >>> _nav2_bond_teardown(["deploy sim", "[a] [INFO] [1.0] [x]: quiet"])
+        ''
+    """
+    first = next((ln for ln in deploy_lines if ln.strip()), "")
+    if not first.startswith(_DEPLOY_BANNER_PREFIX):
+        # Elapsed time is measured from the log's first stamp, which is only
+        # the run's start when the log starts at the run's start. A
+        # `<stem>_deploy_excerpt.log` begins mid-run (`argv: ros2 launch ...`),
+        # so anchoring on it would read a late bond loss as an early one and
+        # void a healthy run. Decline instead: a missed teardown leaves the
+        # pre-existing behaviour, a false one silently drops a real result.
+        return ""
+    first_t: float | None = None
+    for line in deploy_lines:
+        stamp = _ROS_LOG_TIME.search(line)
+        if stamp is None:
+            continue
+        when = float(stamp.group(1))
+        if first_t is None:
+            first_t = when
+        lost = _NAV2_BOND_LOST.search(line)
+        if lost is None:
+            continue
+        elapsed = when - first_t
+        if elapsed > _NAV2_BOND_LOSS_EARLY_S:
+            # Late enough to be ordinary shutdown, after the run did its work.
+            return ""
+        return f"Nav2 tore down its stack {elapsed:.1f}s in: no heartbeat from {lost.group(1)}"
+    return ""
+
+
+_LIFECYCLE_FSM_TIMEOUT: Final[re.Pattern[str]] = re.compile(
+    r"transition '([\w]+)' on '([^']*)' did not advance the FSM within ([\d.]+)s"
+)
+
+
+def _lifecycle_never_came_up(deploy_lines: Sequence[str]) -> str:
+    """Say whether a lifecycle node never completed a transition.
+
+    A graph whose nodes never reached ACTIVE never ran, so whatever the log
+    shows afterwards is not a policy outcome. Unlike the Nav2 bond teardown
+    this one is loud — it raises — but it still landed in `deadline-no-grasp`,
+    because that bucket is defined by absence and a graph that never started
+    produces absence too.
+
+    Needs no threshold and no clock: a completed transition is a precondition
+    for a run existing at all. Measured over the 89 valid runs of the
+    2026-09-06 ceiling battery (issue #256) it appears in 12, every one of them
+    bucketed `deadline-no-grasp`, and in no run that completed its task or was
+    stopped by the kernel.
+
+    Args:
+        deploy_lines: Lines of the deploy log.
+
+    Returns:
+        A human-readable reason, empty when every transition advanced.
+
+    Example:
+        >>> _lifecycle_never_came_up(
+        ...     [
+        ...         "[python3-13] RuntimeError: transition 'configure' on"
+        ...         " 'openral_hal' did not advance the FSM within 300.0s"
+        ...     ]
+        ... )
+        "lifecycle transition 'configure' on 'openral_hal' never advanced (300.0s)"
+        >>> _lifecycle_never_came_up(["[a] all good"])
+        ''
+    """
+    for line in deploy_lines:
+        hit = _LIFECYCLE_FSM_TIMEOUT.search(line)
+        if hit is None:
+            continue
+        node = hit.group(2) or "<unnamed>"
+        return f"lifecycle transition {hit.group(1)!r} on {node!r} never advanced ({hit.group(3)}s)"
+    return ""
+
+
 def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str]) -> str:
     """Say why this scene's artifacts are not a run at all, or return ``""``.
 
@@ -961,7 +1082,12 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
        clean run;
     3. the deploy CLI rejected its own argv, so ``click`` wrote a usage error
        where the graph's output would have been;
-    4. there is no deploy log at all.
+    4. there is no deploy log at all;
+    5. Nav2's lifecycle manager lost a server bond early and tore the whole
+       navigation stack down, leaving a graph that is up but inert for the rest
+       of the deadline (see ``_nav2_bond_teardown``);
+    6. a lifecycle node never completed a transition, so the graph never came
+       up at all (see ``_lifecycle_never_came_up``).
 
     Args:
         run_dir: The scene's directory inside the round.
@@ -1006,7 +1132,7 @@ def detect_launch_failure(run_dir: Path, stem: str, deploy_lines: Sequence[str])
             first.strip(),
         )
         return f"the deploy CLI rejected its own argv before the graph started: {detail}"
-    return ""
+    return _nav2_bond_teardown(deploy_lines) or _lifecycle_never_came_up(deploy_lines)
 
 
 _TRACEBACK_HEADER: Final[str] = "Traceback (most recent call last):"

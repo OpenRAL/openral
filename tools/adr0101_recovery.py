@@ -9,7 +9,8 @@ evidence.md`). A stop is "recovered" if the probe's certified payload-to-real-
 body distance at the moment of the stop is > 0.
 
 Not claimed: a stop removed mid-carry is a run that continues, not a
-completion — the ceiling run bounds completion separately at 29 points. The
+completion — the ceiling run bounds completion separately at 29 points (a
+floor; see #256, which puts the corrected gap nearer 60-70). The
 minimum recovered clearance matters as much as the median (ADR-0101's
 suppression-off first landing rests on it).
 

@@ -130,13 +130,25 @@ robot passing through a simulated cabinet.
 
 ### ANSWERED — 2026-09-07, on `spark`
 
-**The gate costs 29 points of completion.** 88 valid runs, 4 scenes x 2 arms,
-10-12 per cell, same commit (`80027b18`) and host, arms run simultaneously:
+**The gate costs AT LEAST 29 points of completion.** 88 valid runs, 4 scenes
+x 2 arms, 10-12 per cell, same commit (`80027b18`) and host, arms run
+simultaneously:
 
 | | valid runs | completed | rate |
 | --- | ---: | ---: | ---: |
-| world-voxel gate **OFF** | 45 | **14** | **31.1 %** |
-| world-voxel gate **ON** (shipped) | 43 | **1** | **2.3 %** |
+| world-voxel gate **OFF** | 45 | **14** | **31.1 %** (floor) |
+| world-voxel gate **ON** (shipped) | 43 | **1** | **2.3 %** (floor) |
+
+> **Both rates are lower bounds** (issue #256, 2026-09-09). 31 of these 89
+> valid runs were killed mid-run by a Nav2 bond teardown — the default 4 s
+> heartbeat timeout tearing down the whole navigation stack — and were scored
+> `deadline-no-grasp`, a policy failure they were not. Excluding runs the
+> policy was never given a fair share of compute puts the arms at **66.7 % vs
+> 4.0 %**. **Re-measured on the fixed harness 2026-09-10: 62.5 % vs 2.7 %, a
+> 59.8-point gap, `p = 3.1e-08`** — the two agree within 3 points by independent
+> routes, so the gap is about **twice** the 29 recorded here. The direction and the decision below are
+> unaffected; only the size is, and it moves in the programme's favour. Fixed
+> and re-running — see `docs/reference/collision-validation-evidence.md`.
 
 **Fisher p = 3.5e-04**, power 0.97 against this effect. Leave-one-scene-out
 confirms no single scene carries it (p = 1.3e-02 … 5.4e-02 worst case).
@@ -161,7 +173,9 @@ recover it — it should be dropped from the collision programme's scorecard.
 **Do not read this as "turn the gate off".** 6 of 91 stops in the #204 battery
 were real contact, and the gate-off arm here is a *ceiling*, not a
 configuration. The number says how much headroom the §5 levers are competing
-for: **up to 29 points**, concentrated in the payload class.
+for: **at least 29 points** — see the #256 correction above, which re-adjudicates
+it to 62.7 and whose re-measurement puts it at 59.8 — concentrated in the
+payload class.
 
 ---
 
@@ -198,8 +212,133 @@ term, which is the OBB corner slop (`panda_link6`: 53.35 mm).
 | --- | --- | --- | --- | --- |
 | 1 | **`tight_geometry` on `panda_link6`** (and `link3`/`link4`, which have none) | 18 of 29 link stops, incl. the whole `voxel_352030` class | ~33 mm of the link excess | **one manifest edit**; `tools/generate_tight_geometry.py` exists |
 | 2 | **Promote the fixtures the payload passes to modeled geometry** | 51 of 70 payload stops (the `voxel_` ones) | removes the voxel term entirely for those | moderate — generalises ADR-0098/#200 from the *declared place target* to the fixture the payload is near |
-| 3 | **Voxel resolution 25 → 15 mm** | the quantisation term in *every* stop class, payload and link alike | **8.7 mm** of the 21.65 mm voxel half-diagonal | **un-struck 2026-09-07** — measured p99 **0.825 ms**, not the estimated 26.7 ms |
+| 3 | **Voxel resolution 25 → 15 mm** — **now the first lever, see the 2026-09-10 stop census below** | the quantisation term in *every* stop class; **86 % of gate-ON stops are payload**, whose primitives are already tight, so geometry cannot reach them | **8.7 mm** of the 21.65 mm voxel half-diagonal — against a **measured median 18.9 mm over-approximation** and a median **+10.8 mm** of real clearance at the stop | **un-struck 2026-09-07** — measured p99 **0.825 ms**, not the estimated 26.7 ms. Octomap-bridge conversion cost still unmeasured |
 | 4 | ~~Payload as a tight hull~~ | — | **−1.5 mm: none** | struck; measured out |
+
+### 2026-09-10 — the stop census that makes lever 3 first, not third
+
+Every gate-**ON** stop in the 2026-09-10 re-run, traced from the kernel's own
+verdict to the certified mesh distance in the same run's ground-truth snapshot.
+This is the measurement that reorders §5.
+
+**What stopped them.** Of 37 valid gate-ON runs, **22 were stopped by the
+kernel** and 15 merely ran out of deadline. All 22 are `kind=world`, and
+
+| party the kernel named | stops |
+| --- | ---: |
+| **the carried payload** (`attached:sim:obj_main`) | **19** |
+| `panda_link1` / `link6` / `link7` | 1 each |
+
+Every one reported penetration — median **−6.4 mm**, worst −23.4 mm.
+
+**What was actually there.** Each snapshot carries certified GJK distances from
+the stopped body to real collidable geometry. Sorted by how close the contact
+really was:
+
+| scene | party the kernel named | kernel depth | **certified real gap** | nearest real surface |
+| --- | --- | ---: | ---: | --- |
+| `fridge` | `*payload*` | -11.7 mm | **-0.7 mm** | `fridgesidebyside_main_group_1_g25` |
+| `sink_cup` | `*payload*` | -11.2 mm | **-0.2 mm** | `island_island_group_top_right_0` |
+| `baguette` | `*payload*` | -1.1 mm | **-0.1 mm** | `counter_1_left_group_top_left_1` |
+| `fridge` | `*payload*` | -14.8 mm | **+0.0 mm** | `fridgesidebyside_main_group_1_g25` |
+| `fridge` | `*payload*` | -12.1 mm | **+0.2 mm** | `fridgesidebyside_main_group_1_g25` |
+| `fridge` | `*payload*` | -15.8 mm | **+3.7 mm** | `fridgesidebyside_main_group_1_g25` |
+| `utensil` | `*payload*` | -5.1 mm | **+4.4 mm** | `stack_1_right_group_2_door_g1` |
+| `utensil` | `*payload*` | -9.6 mm | **+8.5 mm** | `counter_1_right_group_top_0` |
+| `sink_cup` | `*payload*` | -0.4 mm | **+9.1 mm** | `island_island_group_top_left_2` |
+| `baguette` | `panda_link1` | -15.7 mm | **+9.3 mm** | `obj_g15` |
+| `utensil` | `*payload*` | -1.0 mm | **+12.3 mm** | `counter_1_right_group_top_0` |
+| `utensil` | `*payload*` | -8.6 mm | **+14.8 mm** | `counter_1_right_group_top_0` |
+| `utensil` | `*payload*` | -2.8 mm | **+15.4 mm** | `stack_1_right_group_2_door_g1` |
+| `utensil` | `*payload*` | -6.8 mm | **+18.0 mm** | `counter_1_right_group_top_0` |
+| `utensil` | `*payload*` | -6.1 mm | **+23.5 mm** | `counter_1_right_group_top_0` |
+| `utensil` | `*payload*` | -5.0 mm | **+27.3 mm** | `counter_1_right_group_top_0` |
+| `fridge` | `panda_link6` | -6.0 mm | **+43.4 mm** | `fridgesidebyside_main_group_1_g28` |
+| `sink_cup` | `*payload*` | -5.9 mm | **+45.0 mm** | `island_island_group_top_front_0` |
+| `baguette` | `*payload*` | -8.1 mm | **+48.5 mm** | `counter_1_left_group_top_left_1` |
+| `sink_cup` | `panda_link7` | -23.4 mm | **+61.2 mm** | `island_island_group_top_front_1` |
+| `baguette` | `*payload*` | -1.9 mm | — | no snapshot |
+| `baguette` | `*payload*` | -4.2 mm | — | no snapshot |
+
+**So it is not a contact problem.** Only **3 of 20** were genuinely touching,
+and those three graze at −0.7, −0.2 and −0.1 mm. The median stop fires with
+**+10.8 mm of real clearance**; six fire with more than 20 mm, the worst being
+`panda_link7` stopped at −23.4 mm while **61.2 mm clear** of anything.
+
+**The over-approximation is the voxel cell, not the geometry.** Median excess
+of certified gap over reported depth is **18.9 mm** — essentially the 25 mm
+cell's half-diagonal, `25·√3/2 = 21.65 mm`. An occupied cell asserts only that
+*something is somewhere inside that cube*, so every surface is inflated by up to
+that much regardless of how tight the primitives are.
+
+**Which is why the lever order changes.** The stop population is now **86 %
+payload** (19 of 22), and lever 4 already measured payload primitives as tight
+(**−1.5 mm** beyond the voxel term). Tight link geometry — lever 1, shipped —
+can only reach the 3 link stops. **No amount of geometry work can recover the
+18.9 mm, because it is not geometry.** Lever 3 is the only one that touches it.
+
+25 → 15 mm takes the half-diagonal from 21.65 mm to **12.99 mm**, recovering
+**8.7 mm**. Against the certified-clearance column above that clears the whole
+8.5–18 mm band outright — roughly 6 of the 20 stops — and moves others from
+penetrating to advisory. It does **not** clear the three real contacts, which
+is correct: those are the stops the kernel exists for.
+
+**Which phase the stops happen in — and it is never the pick.** Traced each
+stop against the run's own `automatic sim attachment revision` (grasp),
+`support_witness_separated` (payload leaves its support) and
+`place_declaration_armed` markers:
+
+| phase | stops |
+| --- | ---: |
+| **PLACING** — a place declaration was armed before the stop | **11** |
+| **CARRYING** — lifted clear of support, no declaration yet | **7** |
+| grasped but not yet lifted | 1 |
+| an arm link, not the payload | 3 |
+| approach / before the grasp | **0** |
+
+It splits by scene: `baguette`, `sink_cup` and `fridge` stop **at the place**;
+`utensil` (`PickPlaceCounterToDrawer`) stops **in transit** — all 7 of its
+payload stops are mid-carry.
+
+**What the placing stops actually hit** is the part that picks the lever:
+
+| what the payload hit | stops | `place_allowance_active` |
+| --- | ---: | --- |
+| **a world voxel that is *not* the declared target** | **9** | `False` |
+| the declared place target | 2 | `False` |
+
+So in 9 of 11 the payload was approaching its target and clipped the
+*surrounding* occupancy — the counter top beside the drop point, the shelf next
+to it — not the thing it was declared to place onto. The allowance is scoped to
+`target_id`, so it correctly does not cover them, and `place_allowance_active`
+is `False` on **all 22** stop lines.
+
+**This makes levers 2 and 3 complementary, not competing**, which §5 asserted
+and this measures:
+
+- **Lever 2** reaches the **9 placing stops** — the exemption machinery already
+  exists there and is simply scoped too narrowly.
+- **Lever 3** reaches the **8 carrying stops** as well, because mid-transit
+  there is no declaration to widen: nothing to exempt against, only the
+  21.65 mm cell inflation to shrink. `utensil` — the scene with the highest
+  gate-off ceiling at **9/10** — is *entirely* carrying stops, so lever 3 is
+  what unlocks it.
+
+**Open before acting on lever 2:** the two stops that hit the declared target
+with the allowance inactive are unexplained — the support witness is the other
+half of what arms it, and whether it had dropped there has not been checked.
+
+**Still owed before this is a manifest edit** (unchanged from 2026-09-07): the
+measured p99 of **0.825 ms** is the kernel *consuming* a grid.
+`packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
+resolution is still unmeasured and is the other half of the cost. There is an
+`experiment/voxel-resolution-15mm-v2` branch; its state has not been reviewed
+against this evidence.
+
+**Caveat.** 20 of the 22 stops carry a snapshot; two `baguette` stops do not.
+And these are gate-ON runs from the battery whose opening lanes lost 11 runs to
+a concurrent GPU job — the stop census is unaffected by that (a stopped run is a
+stop regardless), but the per-scene counts inherit the same thin `baguette`.
 
 ### Resolution was struck on an estimate, and the estimate was wrong (lever 3)
 
@@ -370,10 +509,13 @@ Four things had to be discovered to make it run at all, each worth keeping:
    404'd against the real Hub and produced policy-free runs in ~35 s.
 
 - [x] **Ceiling experiment** — done, 2026-09-07. 31.1 % vs 2.3 %, p = 3.5e-04.
-      Result in §4.
-- [x] **Close-vs-continue** — **continue.** The gate is worth 29 points of
-      completion, so the §5 levers are competing for real headroom rather than
-      for noise.
+      Result in §4. **Both absolutes are floors** (#256): a Nav2 bond teardown
+      voided 31 of the 89 runs and they were scored as policy failures.
+      Corrected reading 66.7 % vs 4.0 %; **re-measured 2026-09-10 at 62.5 % vs
+      2.7 %, a 59.8-point gap** (`p = 3.1e-08`).
+- [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
+      points of completion — **measured at 59.8 on 2026-09-10** — so the
+      §5 levers are competing for real headroom rather than for noise.
 - [x] ~~**Lever 1: the payload bounding box**~~ — **struck by measurement,
       2026-09-07.** This entry predates §5's reordering and kept the old
       numbering. The payload *is* 71 % of stops, but the decomposition shows its
@@ -430,7 +572,11 @@ Four things had to be discovered to make it run at all, each worth keeping:
       `packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
       resolution is unmeasured, and it is the other half of the cost. That
       measurement is the next step on this lever, not a manifest edit.
-- [x] **Drop `baguette` from the collision scorecard** — recorded 2026-09-07 in
+- [ ] ~~**Drop `baguette` from the collision scorecard**~~ — **withdrawn
+      2026-09-10.** It completed **1/3** with the gate off on the fixed harness,
+      so the 0/11 behind this was partly starved runs, not a policy ceiling.
+      Weak, not dead; keep it until it has ten valid rounds. Original reasoning,
+      recorded 2026-09-07 in
       the ceiling entry of `docs/reference/collision-validation-evidence.md`:
       0/11 with the gate **off**, so it is policy-bound and cannot report on
       collision work in either direction. Four of the five task completions in
@@ -458,7 +604,8 @@ Four things had to be discovered to make it run at all, each worth keeping:
       before giving up any protection.
 - [ ] **Decide #217** — recommended: close it. #204 is excluded at 0.85 power,
       the suspect window is narrowed to pre-`34e7b5f`, and the standing 29-point
-      cost dwarfs the drop it was chasing. The alternative is re-scoping it to
+      cost — a floor; measured at 59.8 on 2026-09-10 — dwarfs the drop it was
+      chasing. The alternative is re-scoping it to
       the single remaining suspect (#202's ACM retirement) rather than a full
       bisect. Needs a human call.
 - [x] **Quantified ADR-0101's recovery offline** — 48 of 51 payload-vs-`voxel_`

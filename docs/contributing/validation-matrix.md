@@ -185,7 +185,7 @@ Per scene, one `outcome`:
 | `estop-collision-within-quantization` | The kernel was conservative by an amount that gap accounts for. Correct behaviour, not a defect. |
 | `estop-collision-unadjudicated` | The ground-truth probe was truncated or absent, no budget was known, or the probe does not attest that both of its sides were collidability-filtered. **Not** a synonym for "fine"; `ground_truth.unadjudicated_reason` says which. |
 | `estop-initial-configuration` | The stop landed before any action reached the HAL, so the refused configuration is the one the scene reset produced. A scene-config defect; no margin change can clear it. Outranks the ground-truth adjudication. |
-| `deadline-after-grasp` / `deadline-no-grasp` | No stop and no success — the run ran out of deadline, with or without a grasp. |
+| `deadline-after-grasp` / `deadline-no-grasp` | No stop and no success — the run ran out of deadline, with or without a grasp. **Read `deadline-no-grasp` as an instrument symptom first**: it is defined by absence (no success, no stop), which is exactly what a silently dead graph produces. Check the run's delivered chunk count before reading it as a policy property (#256). |
 | `harness-error` | The run produced no usable artifact set. Never read as a clean deadline. |
 
 ### What counts as "no usable artifact set"
@@ -208,8 +208,26 @@ reported as `deadline-no-grasp` with exit 0. A scene is a `harness-error` when
 4. `<stem>_goal.log` has output but no JSON status line — the dispatcher raised
    before any goal reached a terminal state. Every raising path in
    `_validation_matrix_dispatch.py` is a harness failure; a genuine deadline
-   overrun still prints `{"status": -1, …}`, and stays a deadline; or
-5. there is no deploy log at all.
+   overrun still prints `{"status": -1, …}`, and stays a deadline;
+5. there is no deploy log at all; or
+6. Nav2's `lifecycle_manager_navigation` lost a managed server's bond heartbeat
+   early in the run and tore the **whole** navigation stack down. This is the
+   one that leaves a *healthy-looking* log: no traceback, nothing exits
+   non-zero, the graph simply goes inert and idles out its deadline. It scored
+   as `deadline-no-grasp` — the policy failing to grasp — for 31 of the 89
+   valid runs in the 2026-09-06 ceiling battery, 25 of them naming
+   `controller_server` (issue #256). The same message also appears late in runs
+   that did their work, so the test is *when*: the threshold sits in a measured
+   99 s gap and is declined outright on a `_deploy_excerpt.log`, which begins
+   mid-run. The trigger itself is now much rarer — `BOND_TIMEOUT_S` in
+   `openral_nav2_bringup/launch/nav2.launch.py` raises Nav2's 4 s default to
+   30 s; or
+7. a lifecycle node never completed a transition — `RuntimeError: transition
+   'configure' on '/openral_hal_panda_mobile' did not advance the FSM within
+   300.0s` — so the graph never came up at all. This one is loud, but it landed
+   in `deadline-no-grasp` for the same reason: that bucket is defined by
+   absence, and a graph that never started produces absence too. 12 more of the
+   same 89 runs.
 
 The reason is recorded in the verdict's `harness_error_reason`, named in
 `NOTES.md`, and the round exits **4**.

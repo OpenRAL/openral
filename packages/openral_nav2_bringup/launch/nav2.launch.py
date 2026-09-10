@@ -28,9 +28,33 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+
+#: How long ``lifecycle_manager_navigation`` waits for a managed server's bond
+#: heartbeat before declaring it dead and tearing down the whole Nav2 stack.
+#:
+#: Nav2's default is 4.0 s, and on a loaded host that is short enough to be
+#: missed by a scheduling hiccup rather than by a real fault. The cascade is
+#: silent and total: the manager deactivates every server, the graph stays up
+#: doing nothing, and the run burns its deadline with no error printed. In the
+#: 2026-09-06 ceiling battery this killed 31 of 89 valid runs, every one of
+#: which the harness then scored as a policy failure (`deadline-no-grasp`) —
+#: see ``docs/reference/collision-validation-evidence.md`` and issue #256.
+#: Twenty-five of the 31 named ``controller_server``.
+#:
+#: This is a liveness timeout on the navigation stack, NOT a safety check: the
+#: E-stop path is ``openral_safety_kernel``, which is unaffected. Raising it
+#: trades a slower reaction to a genuinely hung server for not mistaking a
+#: descheduled one for a dead one. It is not disabled (``0.0``), so a server
+#: that really dies is still caught.
+BOND_TIMEOUT_S = 30.0
 
 
 def _params_path_for_backend(backend: str) -> str:
@@ -212,15 +236,29 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
         param_rewrites=rewrites,
         convert_types=True,
     )
+    from launch_ros.actions import SetParameter  # reason: launch-time only
+
     actions: list[object] = [
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(_upstream_navigation_launch()),
-            launch_arguments={
-                "params_file": resolved_params,
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "autostart": LaunchConfiguration("autostart"),
-                "use_composition": LaunchConfiguration("use_composition"),
-            }.items(),
+        # `bond_timeout` cannot go in the params file: upstream
+        # `navigation_launch.py` hands `lifecycle_manager_navigation` only
+        # `{autostart, node_names}` and never the params file, so a
+        # `lifecycle_manager_navigation:` block there is silently ignored. Set
+        # as a scoped override instead; the servers that do not declare it
+        # ignore the override.
+        GroupAction(
+            scoped=True,
+            actions=[
+                SetParameter(name="bond_timeout", value=BOND_TIMEOUT_S),
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(_upstream_navigation_launch()),
+                    launch_arguments={
+                        "params_file": resolved_params,
+                        "use_sim_time": LaunchConfiguration("use_sim_time"),
+                        "autostart": LaunchConfiguration("autostart"),
+                        "use_composition": LaunchConfiguration("use_composition"),
+                    }.items(),
+                ),
+            ],
         )
     ]
     payload_scan_filter = LaunchConfiguration("payload_scan_filter").perform(context)  # type: ignore[attr-defined]

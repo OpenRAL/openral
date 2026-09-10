@@ -53,6 +53,49 @@ Requires upstream `ros-${ROS_DISTRO}-navigation2` / `nav2_bringup` (in the deplo
 images) and a map source — `openral_slam_bringup` (slam_toolbox `/map` for lidar,
 or cuVSLAM+nvblox `/map` for visual).
 
+## The bond timeout, and why it is 30 s not 4 s (issue #256)
+
+`lifecycle_manager_navigation` holds a *bond* with every server it manages
+(`controller_server`, `planner_server`, `smoother_server`, `behavior_server`,
+`collision_monitor`). When one misses its heartbeat for `bond_timeout`, the
+manager declares it dead and **deactivates the entire Nav2 stack**. Nav2's
+default is **4 s**, which on a loaded host is short enough to be missed by a
+scheduling hiccup rather than by a real fault.
+
+The failure is silent and total, which is what makes it dangerous to measure
+against: no traceback, nothing exits non-zero, and the graph stays *up*. It
+simply stops navigating. A validation run then burns its whole deadline doing
+nothing and gets scored as the policy failing — `deadline-no-grasp`. In the
+2026-09-06 ceiling battery this killed **31 of 89 valid runs**, 25 of them
+naming `controller_server`, and every one was counted against the policy
+(`docs/reference/collision-validation-evidence.md`).
+
+`BOND_TIMEOUT_S = 30.0` in `launch/nav2.launch.py` raises it. Two things about
+how, both load-bearing:
+
+- **It cannot go in the params file.** Upstream `navigation_launch.py` passes
+  `lifecycle_manager_navigation` only `{autostart, node_names}` and never the
+  params file, so a `lifecycle_manager_navigation:` block in
+  `config/nav2_*.yaml` is silently ignored. It is applied as a `SetParameter`
+  inside a scoped `GroupAction` around the include instead. Confirm it on a
+  live graph, not by reading the yaml:
+
+  ```bash
+  ros2 param get /lifecycle_manager_navigation bond_timeout   # -> 30.0
+  ```
+
+- **It is a liveness timeout, not a safety check.** The E-stop path is
+  `openral_safety_kernel` (see the boundary section below) and is untouched by
+  this. Raising it trades a slower reaction to a genuinely hung server against
+  not mistaking a descheduled one for a dead one. It is **raised, not disabled**
+  (`0.0` would turn bond monitoring off entirely), so a server that really dies
+  is still caught.
+
+A related trigger was fixed earlier and is documented on `collision_monitor` in
+`config/nav2_panda_mobile.yaml`: pointing it at a `base_footprint` the
+`panda_mobile` HAL never publishes wedged it in a TF-lookup loop, stopping its
+heartbeat and cascading the same way.
+
 ## The Nav2 ↔ safety-kernel boundary
 
 Two independent world models run side by side here, and conflating them is the

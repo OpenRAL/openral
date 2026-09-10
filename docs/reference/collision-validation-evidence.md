@@ -1188,7 +1188,7 @@ machine). That is a rollout difference rather than an effect of the fix: the
 producer emits a **bit-identical** witness on this scene before and after it
 (same support, 0.065 mm, 0.117 m patch, same normal), because the tilt defect
 only bites where a *neighbouring* support geom sits laterally offset under the
-payload, which this scene's reset geometry does not present. 
+payload, which this scene's reset geometry does not present.
 The missing separation itself has a mechanism, and it is one already on record.
 `update_support_contact_witnesses` (`collision.cpp:1828`) keeps a witness alive
 while `support_witness_still_in_contact` still finds occupancy under the
@@ -1586,6 +1586,14 @@ accept in advance that it can only report a null.
 
 ### 2026-09-07 — the ceiling: what the policy does with the gate off (31.1 % vs 2.3 %)
 
+> **Superseded in part (2026-09-09, issue #256).** The rates below are **lower
+> bounds**, and loose ones. 31 of these 89 valid runs were killed mid-run by a
+> Nav2 bond teardown and scored as `deadline-no-grasp` — a policy failure they
+> were not. The **contrast holds and its significance strengthens**; the
+> absolutes and the 29-point figure do not. See "the ceiling battery's
+> `deadline-no-grasp` bucket was a Nav2 teardown" at the end of this page, and
+> the re-measurement that followed it: **62.5 % vs 2.7 %, a 59.8-point gap**.
+
 The measurement nobody had taken. After a month of collision work, completion
 had gone from 25 % (2026-08-26) to 5-10 % (2026-09-06), and no round in this
 ledger, the census, or the survey had ever run the policy with the world-voxel
@@ -1623,13 +1631,19 @@ p = 5.4e-02 dropping `utensil`).
 
 **`baguette` should leave the collision scorecard.** It is 0 % with the gate
 off, so it is policy-bound and cannot report on collision work in either
-direction. Four of the five task completions in this ledger's whole history
+direction.
+
+> **Withdrawn 2026-09-10.** On the fixed harness `baguette` completed **1/3**
+> with the gate off. The 0/11 that produced this conclusion was partly starved
+> runs, not a policy ceiling. Weak, not dead — keep it on the scorecard until
+> it has ten valid rounds. Four of the five task completions in this ledger's whole history
 were baguette runs, which is what made it look like the bellwether scene; at a
 0 % ceiling it is not one.
 
 **What it does and does not license.** It does **not** say turn the gate off —
 6 of 91 stops in the 2026-09-06 battery were real contact. It is a ceiling: it
-says the geometry levers are competing for **up to 29 points of completion**,
+says the geometry levers are competing for **at least 29 points of completion**
+(read "up to" here until the #256 correction; the bound runs the other way),
 concentrated in the payload class, rather than for noise. Taken with the
 decomposition below, that is what moved the programme from "consider closing"
 to "pull the two measured levers".
@@ -1980,11 +1994,18 @@ survive any geometry work.
 2.3 % gate-on completion rate in the ceiling battery. One success is not a rate
 either, but it is the first `completed` this branch has recorded.
 
-**Five of thirteen rounds never grasped.** `deadline-no-grasp` is the policy
-failing to pick the object up at all, with no kernel involvement. Combined with
-the ceiling result, it is a reminder that on these scenes roughly half of what
-looks like collision-programme failure is the policy not reaching the phase
-where the kernel matters.
+**Five of thirteen rounds never grasped.** `deadline-no-grasp` is *recorded* as
+the policy failing to pick the object up at all, with no kernel involvement.
+
+> **Corrected 2026-09-09 (#256).** That reading does not hold. `deadline-no-grasp`
+> is defined by absence — no success, no stop — which is also what a silently
+> dead graph produces, and in the ceiling battery 31 of 89 valid runs in this
+> bucket had had their whole Nav2 stack torn down mid-run by a 4 s bond timeout.
+> The inference that followed here — "roughly half of what looks like
+> collision-programme failure is the policy not reaching the phase where the
+> kernel matters" — is **withdrawn**: an unknown share of it was the instrument.
+> Check a run's delivered chunk count before reading this bucket as a policy
+> property.
 
 
 ### 2026-09-07 — `link1envelope-*`: eight rounds, no result, and why that is worth recording
@@ -2444,6 +2465,233 @@ OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
 Recorded here in full, including the estimate it replaces, because this is the
 fourth time this week a number that came from reasoning rather than from the
 instrument turned out to be wrong — and the other three were mine too.
+
+### 2026-09-09 — the ceiling battery's `deadline-no-grasp` bucket was a Nav2 teardown, not a policy failure
+
+Issue #256 asked whether the ceiling battery's **absolute** rates (31.1 % vs
+2.3 %) were deflated by host load, and proposed re-running on an idle host to
+find out. They are deflated, but not by load in the way the question assumed,
+and no re-run was needed to establish it: the battery's own artifacts survived
+on `spark` (111 run directories under `openral-217-with204/outputs/ceiling/`)
+and the answer is in them.
+
+**The reconstruction reproduces the published headline**, which is what makes
+the rest of it trustworthy: re-deriving each run's outcome from its
+`run_deploy.log` alone gives 14 completions in the gate-off arm and 1 in the
+gate-on arm, against the published 14/45 and 1/43. Bucketing the
+non-completions is what the original never did:
+
+| gate | completed | e-stop | deadline-**after**-grasp | deadline-**no**-grasp | valid |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **OFF** | 14 | 0 | 4 | **28** | 46 |
+| **ON** | 1 | 18 | 3 | **21** | 43 |
+
+**61 % of the gate-off denominator never grasped.** And `run_goal.log` carries
+a throughput measure nobody had read: `latest_chunk`, the action chunks the
+policy delivered inside the 420 s deadline.
+
+| | n | median chunks | range |
+| --- | ---: | ---: | --- |
+| completed | 15 | **544** | 233–769 |
+| `deadline-no-grasp` | 37 | **16** | 0–128 |
+
+The two do not overlap at all. Runs that ended early measure 1.15–1.8
+chunks/s; a 420 s run that delivered 16 chunks ran at 0.04/s. **Those runs
+were never given a trial** — a policy handed 16 action chunks cannot reach a
+grasp whatever its quality.
+
+**The cause is not contention, and not the shared sidecar.** Both were the
+obvious suspects — the battery ran eight workers against one XR-1 sidecar —
+and both are wrong. A serialised ZMQ queue degrades as `1/N`; what is there is
+bimodal. And once concurrency is measured at a *fixed instant* rather than
+over each run's own window (a fast run is a short run, so it overlaps fewer
+others — the naive measure is circular), concurrency stops predicting anything:
+runs with zero or one other worker active are starved 33 % and 100 % of the
+time.
+
+**What actually killed them.** Inside a starved run the log goes silent for
+563 s, and immediately before the silence
+`lifecycle_manager_navigation` begins deactivating. Nav2 tears down the
+**entire** navigation stack when a managed server misses its bond heartbeat,
+and the default timeout is **4 s**. The cause line, twelve lines up:
+
+| server that lost its bond | runs |
+| --- | ---: |
+| `controller_server` | 25 |
+| `planner_server` | 4 |
+| `collision_monitor` | 2 |
+| `behavior_server` / `smoother_server` | 1 each |
+
+Across all 89 valid runs, a bond lost early splits them perfectly — **31
+flagged, and not one `completed` or `estop` run among them**:
+
+| | starved | healthy |
+| --- | ---: | ---: |
+| bond lost early | **31** | **0** |
+| not | 16 | 42 |
+
+The teardown prints no traceback and exits non-zero nowhere. The graph stays
+up and inert, burns the rest of its deadline, and the harness scored the corpse
+as `deadline-no-grasp` — the policy failing to grasp.
+
+**This reconciles the host-load table in #256 without the load hypothesis
+being quite right.** A 4 s heartbeat is a *threshold* event, so it is
+load-sensitive (idle `spark` → 0 of these; loaded `q-laptop` → 40–64 %) while
+correlating with nothing continuous. It also means re-running the battery
+unchanged on an idle host would have fixed nothing reliably: the defect was in
+the launch configuration, not in the host.
+
+**A second silent mode, found by asking what the first one missed.** The bond
+teardown explains 31 of the 47 starved runs. Of the remaining 16, **12 never
+brought their graph up at all** — `RuntimeError: transition 'configure' on
+'/openral_hal_panda_mobile' did not advance the FSM within 300.0s`. That one is
+*loud*, it raises; it still landed in `deadline-no-grasp`, because that bucket
+is defined by absence and a graph that never started produces absence too. The
+signature appears in 12 runs, every one `deadline-no-grasp`, and in **no** run
+that completed its task or was stopped by the kernel — so it needs no threshold
+and no clock, only the observation that a completed lifecycle transition is a
+precondition for a run existing. It ships as `_lifecycle_never_came_up`.
+
+Together the two detectors void 43 of the 47 starved runs and **not one healthy
+run**. Four remain unexplained and are left in, which biases the corrected
+figures *down*.
+
+**The corrected numbers, re-adjudicated by the shipped detectors** — no
+threshold, no hand-chosen cutoff, reproducible from committed code against the
+archived artifacts:
+
+| | valid runs | completed | rate |
+| --- | ---: | ---: | ---: |
+| world-voxel gate **OFF** | 21 | 14 | **66.7 %** |
+| world-voxel gate **ON** | 25 | 1 | **4.0 %** |
+
+**A 62.7-point gap**, against the published 29. Fisher *strengthens* rather
+than weakens: `p = 2.4e-04 → 5.8e-06`. 25 runs are voided out of the off arm
+and 18 out of the on arm, so the filter is not arm-biased, and it removes **no**
+completion from either.
+
+A throughput sweep agrees independently and is what found the mode in the first
+place: cutting on delivered chunks/s puts the arms at 63.6 % vs 4.5 % (at 0.20)
+and 70.0 % vs 4.8 % (at 0.50), plateauing from 0.2 upward.
+
+**So #256's reading is confirmed and sharpened.** The contrast was never in
+danger — both arms were hit about equally, which is exactly what the paired
+design was built to absorb. The **absolutes** were badly deflated, and with
+them the headline: **the 29-point figure is a lower bound, and a loose one.**
+Re-adjudicated, the gap is **62.7 points**. The programme's justification is
+*stronger* than the ledger recorded, not weaker. Treat every absolute
+completion rate in the 2026-09-07 entry as a floor until the re-run lands.
+
+**What shipped with this entry** (all under #256):
+
+1. `BOND_TIMEOUT_S = 30.0` on `lifecycle_manager_navigation`. It could not go
+   in the params file — upstream `navigation_launch.py` hands that node only
+   `{autostart, node_names}` and never the params file, so a block there is
+   silently ignored, which is the trap this fix had to step around. Applied as
+   a scoped `SetParameter` and **verified on the live node**. This is a
+   liveness timeout on the navigation stack, not a safety check: the E-stop
+   path is `openral_safety_kernel` and is untouched. Raised, not disabled, so
+   a server that really dies is still caught.
+2. `validation_matrix._nav2_bond_teardown` **and
+   `_lifecycle_never_came_up`** — a run voided either way is now a
+   `harness-error`, not a policy outcome. Together they catch 43 of the 47
+   starved runs and no healthy one. The threshold sits in a measured
+   99 s empty gap (worst dead run `t0 + 100.8 s`, earliest healthy teardown
+   `t0 + 199.6 s`) and is declined outright on a `_deploy_excerpt.log`, which
+   begins mid-run: a missed teardown leaves the old behaviour, a false one
+   would silently drop a real result out of the denominator.
+   `tests/unit/test_validation_matrix_nav2_bond.py` pins both directions
+   against real logs from this battery, including the tightest healthy case.
+3. The ceiling probe records host `loadavg`, delivered chunk count and any
+   bond teardown **alongside each round's verdict** — #256's "record per-round
+   load and stop this recurring", and the reason this took a log
+   reconstruction to find rather than a query.
+4. `ceiling_battery.sh` gains `WORKERS` (default **2**, was a hard 8) and
+   interleaves its worklist by scene, so the two live lanes are one scene's
+   off and on arm and the arms stay paired under identical conditions.
+
+**The lesson, which is the same one as the 2026-09-09 correction below it.**
+`deadline-no-grasp` is not a policy property. It is the bucket every silent
+instrument failure falls into, because it is defined by absence — no success,
+no stop — and absence is what a dead graph produces. It needs a positive
+liveness check beside it, not a subtraction.
+
+### 2026-09-10 — the ceiling, re-measured on a fixed harness: 62.5 % vs 2.7 %
+
+The re-run #256 asked for, on the harness that stopped scoring dead graphs as
+policy failures. `q-laptop`, `WORKERS=2`, 10 rounds x 4 scenes x 2 arms, arms
+interleaved by scene so both see identical host conditions. **80 runs, 69
+valid, and zero Nav2 bond teardowns** — against roughly 35 % of runs in the
+2026-09-06 battery.
+
+| scene | gate **OFF** | gate **ON** | p |
+| --- | ---: | ---: | ---: |
+| `utensil` | **9/10 (90 %)** | 0/10 (0 %) | 0.0002 |
+| `fridge` | **7/10 (70 %)** | 0/10 (0 %) | 0.002 |
+| `sink_cup` | 3/9 (33 %) | 1/10 (10 %) | 0.25 |
+| `baguette` | 1/3 (33 %) | 0/7 (0 %) | 0.30 |
+| **pooled** | **20/32 = 62.5 %** | **1/37 = 2.7 %** | **3.1e-08** |
+
+**A 59.8-point gap.** Three numbers now exist for the same quantity:
+
+| | OFF | ON | gap |
+| --- | ---: | ---: | ---: |
+| as published, 2026-09-07 | 31.1 % | 2.3 % | 29 pts |
+| the archive re-adjudicated (#256) | 66.7 % | 4.0 % | 62.7 pts |
+| **this run, measured** | **62.5 %** | **2.7 %** | **59.8 pts** |
+
+The re-adjudication and the fresh measurement agree within 3 points by
+independent routes — one corrects a denominator on old artifacts, the other
+never had the defect. The published pair is the outlier. **The 29-point figure
+was a floor, and the true gap is about twice it.**
+
+**`baguette` is not a 0 % scene.** The 2026-09-07 entry concluded it "should
+leave the collision scorecard" because it completed 0/11 with the gate off, and
+therefore could not report on collision work in either direction. It scored
+**1/3** here. That conclusion was itself partly an artifact of starved runs and
+is **withdrawn**; the scene is weak, not dead. It should stay on the scorecard
+until measured on a full ten valid rounds.
+
+**What the gate-ON arm was actually stopped by.** 22 of the 37 valid gate-ON
+runs were stopped by the kernel (the other 15 ran out of deadline). All 22 are
+`kind=world`, and **19 of 22 name the carried payload**, not an arm link
+(`panda_link1`/`link6`/`link7`, one each). Every one reported penetration,
+median −6.4 mm.
+
+Traced to the certified GJK distance in each run's own ground-truth snapshot,
+only **3 of 20** were genuinely touching — and those graze at −0.7, −0.2 and
+−0.1 mm. The median stop fires with **+10.8 mm of real clearance**, six fire
+with more than 20 mm, and the worst is `panda_link7` stopped at −23.4 mm while
+**61.2 mm clear**. Median over-approximation: **18.9 mm**, which is essentially
+the 25 mm cell half-diagonal (`25·√3/2 = 21.65 mm`).
+
+That reorders the levers, and the full per-stop table is in `PLAN.md` §5: the
+stop population is 86 % payload, payload primitives were already measured tight
+(−1.5 mm beyond the voxel term), so **no geometry work can recover the 18.9 mm
+— it is not geometry, it is the cell**. Voxel resolution (lever 3) is the only
+lever that reaches it.
+
+Two of the 22 stops carry no snapshot, both `baguette`. Adjudicating these with
+`adjudicate_ground_truth` is **not** valid here: the ceiling probe writes no
+monitor file, so grid resolution comes back `None` and the budget falls back to
+the 88.2 mm max *link* corner slop — the wrong yardstick for a payload stop. The
+figures above compare against certified geometry directly and need no budget.
+
+**What is owed.** A concurrent GPU job on the host during the opening lanes
+cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
+`fridge`, `utensil` and `sink_cup-on` lanes lost none. The symptom is the sim
+node going quiet so no `sim.task_success_final` is ever printed, which makes the
+run's outcome unreadable; one was confirmed OOM-killed by the kernel, the rest
+carry no kernel record and the mechanism is unidentified. The probe **refuses to
+score** these rather than guessing, so they do not corrupt the rates — but
+`baguette-off` rests on 3 valid rounds instead of 10, and the pooled OFF figure
+is correspondingly weighted toward the strong scenes. **Read the per-scene table
+above, not the pooled rate**, until the top-up lands. The deficit and its
+commands are in `CORRUPTED.md` in the round directory.
+
+Two further asymmetries worth stating: the arms are unbalanced (32 valid OFF
+against 37 ON, because the gate stops runs early and fewer are lost), and the
+gate-off arm runs longer per scene since nothing stops it.
 
 ## Related
 
