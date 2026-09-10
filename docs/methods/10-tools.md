@@ -247,6 +247,19 @@ Measures the third cost term on the 25 → 15 mm lever — the dense `uint8[]` o
 
 Settles the 25 → 15 mm trade: carry-phase stops are 0.051 m/s median / 0.265 m/s max, start-state stops exactly 0.
 
+### `tools/resolution_ab.sh`
+
+_The 25 mm vs 15 mm world-voxel A/B (#253). Both arms are gate-ON; the only difference is `OPENRAL_OCTOMAP_RESOLUTION_M`, which `deploy_e2e.launch.py` validates and `validation_matrix.py` records, so a round that changed it can never afterwards be mistaken for one that did not. The primary endpoint is **not** completion rate — against the predicted 2.7 % → 10.8 % that needs 200 runs/arm for 80 % power (`tools/round_power.py`), ~33 h on one host, and at the 40/arm a battery gives, power is 0.11. It is the paired, continuous quantity the mechanism actually predicts: per stop, the over-approximation (certified mesh gap minus reported depth), whose half-diagonal goes 21.65 mm → 12.99 mm, so the prediction is a **−8.66 mm shift**._
+
+_**Concurrency is one scene, both arms** — not a worker count. The paired endpoint is void unless a scene's two lanes met the same host, so they start together and a barrier holds the next scene until both finish. The first version wrote a scene-interleaved worklist and fed it to `xargs -P`, which is not the same thing: a worker holds its slot for all `ROUNDS` rounds, so only the first pair overlapped and later lanes drifted by a lane's duration. On 2026-09-10 `baguette` came out paired (3/10 unreadable vs 3/10, `p = 1.0`) and `sink_cup` did not — 25 mm alone 18:50–19:19, 15 mm alone 19:19–19:37 after ~30 rounds of host wear — and its 7/10-vs-0/10 gap read as a resolution effect until the order was checked. `ROUNDS` and `SIDECAR_BOOT_S` are the knobs; `RUN_WORKER_CMD` is a test seam that substitutes the lane body so the scheduling can be exercised without 10 h of GPU. `tests/unit/test_resolution_ab_pairing.py`._
+
+### `tools/resolution_ab_report.py`
+
+- `_stops(arm_dir) -> list[dict[str, Any]]` — every stop under one arm, with its certified truth when the run recorded one, plus the run's `started_at` / `wall_s` window.
+- `main(argv=None) -> int` — CLI over the A/B's output root; writes `report.json` beside it.
+
+_Pure and offline, so a battery run on one commit can be re-reported by another. Four sections. **PRIMARY** is the paired over-approximation per stop against `HALF_DIAGONAL_MM`. **INTEGRITY** prints each arm's *observed* `resolution_m`, read back from the HAL's voxel backing record, and flags `MISMATCH` when an arm did not run at the resolution it claims — an arm that silently fell back to the 0.025 default cannot pass unnoticed. **PAIRING** reports what fraction of a scene's combined span its two arms overlapped, and flags `NOT PAIRED` below 50 %; data predating `started_at` is reported as unverifiable rather than passed. **SECONDARY** counts completions and stops and states in the output that it is under-powered, excluding runs with `chunks in (0, None)` — the #263 correction that moved the ceiling battery from 62.5/2.7 to 80.0/4.3. `tests/unit/test_resolution_ab_report_pairing.py`._
+
 ### `tools/stop_excess.py`
 
 - `half_diagonal(resolution_m: float) -> float` — half a cubic cell's body diagonal, the grid's worst-case error.

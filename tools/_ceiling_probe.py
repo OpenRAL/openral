@@ -134,6 +134,11 @@ def _record(
         "outcome": outcome,
         "success": success,
         "detail": detail,
+        # Absolute, not just a duration: an A/B whose arms are supposed to run
+        # concurrently can only be shown to have done so from wall-clock
+        # windows. Reconstructing them from directory mtimes afterwards is how
+        # the 2026-09-10 pairing failure was caught, a run too late.
+        "started_at": round(started, 1),
         "wall_s": round(time.time() - started, 1),
         "config": config_path,
         "dispatch_timed_out": dispatch_timed_out,

@@ -23,7 +23,22 @@
 # `validation_matrix.py` records, so a round that changed it can never be
 # mistaken afterwards for one that did not.
 #
-# Usage:  ROUNDS=10 WORKERS=2 bash tools/resolution_ab.sh
+# CONCURRENCY IS FIXED AT ONE SCENE, BOTH ARMS. The paired endpoint above only
+# means anything if the two arms met the same host, so the two live lanes must
+# be the same scene's 25 mm and 15 mm, start together and finish together. The
+# first version of this script wrote a scene-interleaved worklist and then fed
+# it to `xargs -P`, which is not the same thing: each worker holds its slot for
+# all ROUNDS rounds, so only the FIRST pair ever overlapped and every later
+# lane drifted by about one lane's duration. In the 2026-09-10 run `baguette`
+# was paired and `sink_cup` was not — its 25 mm arm ran 18:50-19:19 and its
+# 15 mm arm 19:19-19:37, alone, after ~30 rounds of host wear. That lane then
+# showed 7/10 unreadable runs against 0/10 and read as a resolution effect
+# until the order was checked. So: launch a scene's two arms together, barrier,
+# next scene. No `xargs`, no WORKERS knob — two graphs is also q-laptop's
+# ceiling. If a bigger host makes several scenes at once worth it, add whole
+# SCENES to the inner group, never a bare parallelism count.
+#
+# Usage:  ROUNDS=10 bash tools/resolution_ab.sh
 set -eo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -37,7 +52,8 @@ source install/setup.bash
 set -u
 
 ROUNDS="${ROUNDS:-10}"
-WORKERS="${WORKERS:-2}"
+# Only the first lane pays this; a scheduling test overrides it to keep short.
+SIDECAR_BOOT_S="${SIDECAR_BOOT_S:-210}"
 OUT="${OUT:-outputs/resolution-ab/$(date +%F)}"
 SCENES=(baguette sink_cup fridge utensil)
 RSKILL="OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"
@@ -48,33 +64,47 @@ run_worker() {  # $1 = index, $2 = scene, $3 = resolution in metres
   local tag="${2}-${3}"
   local log="$OUT/worker-${tag}.log"
   echo "  w${1}  ${2} @ ${3} m  domain=$domain  -> $log"
+  # Test seam: a harness can substitute the lane body to exercise the
+  # scheduling below without 10 h of GPU. Unset in every real run.
+  if [ -n "${RUN_WORKER_CMD:-}" ]; then
+    OPENRAL_OCTOMAP_RESOLUTION_M="$3" ROS_DOMAIN_ID=$domain \
+      $RUN_WORKER_CMD "$1" "$2" "$3" > "$log" 2>&1
+    return
+  fi
   OPENRAL_OCTOMAP_RESOLUTION_M="$3" ROS_DOMAIN_ID=$domain \
     uv run --no-sync python tools/_ceiling_probe.py \
       --scene "$2" --gate on --rounds "$ROUNDS" \
       --rskill "$RSKILL" --out "$OUT/$3" > "$log" 2>&1
 }
-export -f run_worker
-export OUT ROUNDS RSKILL
 
-# Interleaved by scene so the two live lanes are the SAME scene at both
-# resolutions — the arms stay paired under identical host conditions, which is
-# what the paired endpoint rests on.
+: > "$OUT/worklist.txt"
+echo "=== ${#SCENES[@]} scenes x 2 arms, ROUNDS=$ROUNDS, both arms of a scene concurrent"
+
 i=0
-for scene in "${SCENES[@]}"; do
-  for res in 0.025 0.015; do
-    echo "$i $scene $res"
-    i=$((i+1))
-  done
-done > "$OUT/worklist.txt"
-
-echo "=== $i workers, $WORKERS at a time, ROUNDS=$ROUNDS"
-read -r i0 s0 r0 < "$OUT/worklist.txt"
-run_worker "$i0" "$s0" "$r0" &
-first=$!
-sleep 210   # worker 0 boots the shared XR-1 sidecar alone
-
-tail -n +2 "$OUT/worklist.txt" \
-  | xargs -P "$((WORKERS > 1 ? WORKERS - 1 : 1))" -L 1 bash -c 'run_worker "$@"' _
 fail=0
-wait "$first" || { echo "!!! ${s0}@${r0} exited non-zero"; fail=1; }
-echo "=== RESOLUTION_AB_DONE (${fail} non-zero on the lead worker) ==="
+booted=0
+for scene in "${SCENES[@]}"; do
+  pids=()
+  lanes=()
+  for res in 0.025 0.015; do
+    echo "$i $scene $res" >> "$OUT/worklist.txt"
+    run_worker "$i" "$scene" "$res" &
+    pids+=("$!")
+    lanes+=("${scene}@${res}")
+    if [ "$booted" -eq 0 ]; then
+      # The very first lane boots the XR-1 sidecar the whole battery shares.
+      # Its partner has to wait that out ONCE; every later pair starts together.
+      sleep "$SIDECAR_BOOT_S"
+      booted=1
+    fi
+    i=$((i + 1))
+  done
+  # Barrier: the next scene does not start until BOTH arms of this one are done,
+  # which is what keeps each pair's host conditions common.
+  for n in "${!pids[@]}"; do
+    wait "${pids[$n]}" || { echo "!!! ${lanes[$n]} exited non-zero"; fail=$((fail + 1)); }
+  done
+  echo "--- ${scene}: both arms done"
+done
+
+echo "=== RESOLUTION_AB_DONE (${fail} lane(s) non-zero) ==="

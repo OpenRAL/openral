@@ -61,6 +61,8 @@ def _stops(arm_dir: Path) -> list[dict[str, Any]]:
                 "excess_mm": None,
                 "resolution_m": None,
                 "not_ready_attempts": record.get("dispatch_not_ready_attempts") or [],
+                "started_at": record.get("started_at"),
+                "wall_s": record.get("wall_s"),
             }
             # Prove this run really ran at its arm's resolution. The HAL echoes
             # the grid's own `resolution_m` in the voxel backing record, so an
@@ -136,6 +138,34 @@ def main(argv: list[str] | None = None) -> int:
             f"{arm:>8}  observed resolution_m={seen or 'none recorded'}"
             f"   re-dispatched={retried}  gave-up={gave_up}{flag}"
         )
+
+    print("\nPAIRING — did a scene's two arms actually meet the same host?")
+    print("The primary endpoint is paired, so an arm that ran alone after the other")
+    print("finished is not comparable however many rounds it has.")
+    windows: dict[tuple[str, str], tuple[float, float]] = {}
+    for arm, rows in arms.items():
+        for scene in {r["scene"] for r in rows}:
+            spans = [
+                (r["started_at"], r["started_at"] + (r["wall_s"] or 0.0))
+                for r in rows
+                if r["scene"] == scene and r.get("started_at")
+            ]
+            if spans:
+                windows[(scene, arm)] = (min(s for s, _ in spans), max(e for _, e in spans))
+    scenes = sorted({scene for scene, _ in windows})
+    if not scenes:
+        print("  no run recorded `started_at` — pre-2026-09-10 data, pairing unverifiable")
+    for scene in scenes:
+        coarse_window = windows.get((scene, "0.025"))
+        fine_window = windows.get((scene, "0.015"))
+        if not (coarse_window and fine_window):
+            print(f"{scene:>10}  only one arm present — not a pair")
+            continue
+        overlap = min(coarse_window[1], fine_window[1]) - max(coarse_window[0], fine_window[0])
+        span = max(coarse_window[1], fine_window[1]) - min(coarse_window[0], fine_window[0])
+        frac = overlap / span if span > 0 else 0.0
+        flag = "" if frac >= 0.5 else "   <-- NOT PAIRED, do not read this scene's shift"
+        print(f"{scene:>10}  arms overlap {frac * 100:5.1f}% of their combined span{flag}")
 
     print("\nSECONDARY — counts. UNDER-POWERED: 80% power on completion needs 200 runs/arm")
     print("(tools/round_power.py --baseline 0.027 --alternative 0.108). Do not read a")
