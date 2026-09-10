@@ -37,6 +37,7 @@ import inspect
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -144,6 +145,46 @@ def _record(
     }
 
 
+def _reap_domain(domain: str, sig: int) -> int:
+    """Signal every ROS node left on `domain`, returning how many were hit.
+
+    `ros2 launch` starts the octomap nodes in their own session, so the
+    `killpg` in `run_one` never reaches them: every round leaked an
+    `octomap_server_node` + `octomap_voxel_bridge` pair. The wasted CPU and
+    RSS are the small half of the damage — each orphan also keeps its
+    Fast-DDS `/dev/shm` segments and its `fastrtps_port<N>_el` lock file
+    open, so a later round on the same domain fails `open_and_lock_file`,
+    the policy is handed 0 chunks, and the round buckets `harness-error`
+    with no line in any log naming the cause.
+
+    Measured on q-laptop 2026-09-10: 46 orphans surviving up to 23.7 h
+    across the ceiling battery and the first resolution A/B — 30 % of a
+    core, 826 MB, 253 stale shm segments. A single round launched alone at
+    load 1.2 still died with `latest_chunk: 0`.
+
+    `ROS_DOMAIN_ID` is the ownership key, and `--ros-args` is what separates
+    a node from this probe and the worker shell, which share the domain and
+    must survive the sweep. SIGTERM first: Fast-DDS unlinks its own segments
+    on a graceful exit and leaks them on SIGKILL.
+    """
+    hit = 0
+    needle = f"ROS_DOMAIN_ID={domain}\0".encode()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if needle not in (entry / "environ").read_bytes():
+                continue
+            if b"--ros-args" not in (entry / "cmdline").read_bytes():
+                continue
+        except OSError:  # reason: the process exited between iterdir and the read
+            continue
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(int(entry.name), sig)
+            hit += 1
+    return hit
+
+
 def run_one(
     # `validation_matrix.SceneSpec`, from an untyped sibling script imported by
     # path, so its real type is unavailable to mypy.
@@ -247,6 +288,10 @@ def run_one(
                 proc.wait(timeout=60)
             with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(os.getpgid(proc.pid), 9)
+            domain = env.get("ROS_DOMAIN_ID", "")
+            if domain and _reap_domain(domain, signal.SIGTERM):
+                time.sleep(5.0)
+                _reap_domain(domain, signal.SIGKILL)
 
     success, detail = _success_from_log(deploy_log)
     return _record(

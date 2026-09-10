@@ -1686,6 +1686,8 @@ gate-off arm also runs longer per scene, because nothing stops it early. And
 `_kill_orphan_openral_graph_processes()` matches by argv signature and cannot
 tell a sibling from an orphan — so the parallel workers needed
 `OPENRAL_SKIP_ORPHAN_REAP=1`, which is deliberately not a committed default.
+(**Read by nothing until 2026-09-10** — see the entry for that date. The
+workers were being reaped by each other for this entire round.)
 
 
 ### 2026-09-07 — the backing probe was stopping at decoration, and the reconstructed grid was 32 % too sparse
@@ -2719,3 +2721,81 @@ gate-off arm runs longer per scene since nothing stops it.
   sweep window, and the rasterization change #135 made.
 - [Design decisions](../decisions.md) — how ADR numbers are cited here and
   where the records live.
+
+### 2026-09-10 — the world-voxel nodes were the one graph member no reaper matched
+
+Not a validation round: an instrument defect found while testing whether a
+15 mm A/B needed `WORKERS=1` to survive. It does not — the memory hypothesis
+was wrong, and so was the resolution hypothesis that replaced it.
+
+**What was found.** 46 orphaned processes alive on q-laptop, oldest **23.7 h**,
+spanning the ceiling battery and the first resolution A/B. Every one of them
+`octomap_server_node` or `octomap_voxel_bridge`; nothing else. Two independent
+gaps let exactly that pair survive and nothing else:
+
+- `ros2 launch` starts them in their **own session**, so the ceiling probe's
+  `os.killpg(os.getpgid(proc.pid), …)` never reached them;
+- they were the only graph member absent from `_ORPHAN_GRAPH_NEEDLES`, so the
+  CLI's argv-signature sweep never matched them either.
+
+**Why it corrupts runs.** Not the RSS — 46 orphans hold 826 MB and 30 % of a
+core, which a 15 GB host absorbs. Each orphan keeps its Fast-DDS `/dev/shm`
+segments and its `fastrtps_port<N>_el` lock file open (253 stale segments were
+resident). The next run **on that domain** then fails:
+
+```
+RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port7002: open_and_lock_file failed
+{"latest_chunk": 0, "status": -1, "success": false}
+```
+
+The graph survives, the policy is handed zero action chunks, no
+`sim.task_success_final` is printed, and the round buckets `harness-error` —
+the same absence-defined bucket that hid the Nav2 bond teardown (2026-09-09).
+A run's own prior round is what poisons it, so a per-worker `ROS_DOMAIN_ID`
+gives no protection at all.
+
+**Demonstrated, not inferred.** One `robocasa_baguette` round at 15 mm,
+launched **alone** on an otherwise quiet host (load 1.2):
+
+| | before the fix | after the fix |
+| --- | ---: | ---: |
+| outcome | `harness-error` | **`ran`** (scored) |
+| `latest_chunk` | **0** | **248** |
+| wall | 630.5 s | 223.8 s |
+| orphans left behind | 2 | **0** |
+
+`WORKERS=1` was therefore never the lever. The poison is accumulated state, so
+it scales with rounds *completed*, not with workers running — a 10-hour serial
+battery is the worst case for it, not the safe one.
+
+**A second defect, found in the same place.** `OPENRAL_SKIP_ORPHAN_REAP=1` is
+described as load-bearing in `tools/ceiling_battery.sh`, `PLAN.md` §5 and
+`docs/methods/10-tools.md`, and was **read by no code in any commit**. Since
+the argv signature is identical across the battery's concurrent workers, every
+worker's startup sweep was killing its siblings' live graphs — which is the
+already-recorded "worker 1 never got its action server, 626 s to timeout",
+never attributed to this. It is honoured now, and opting out of the argv sweep
+now means opting into `_reap_domain`, which scopes by `ROS_DOMAIN_ID` and can
+tell a sibling from a leftover.
+
+**What this retracts.** The first resolution A/B showed 10/20 unreadable runs
+at 15 mm against 3/23 at 25 mm (Fisher `p = 0.018`), which was on its way to
+being read as 15 mm costing memory. It decomposes by lane:
+
+| lane | arms interleaved? | 15 mm | 25 mm | `p` |
+| --- | --- | ---: | ---: | ---: |
+| `baguette` | **yes** | 3/10 | 3/10 | 1.0 |
+| `sink_cup` | **no** — 15 mm ran strictly last | 7/10 | 0/10 | 0.003 |
+
+The only lane with the battery's paired design intact shows **no effect
+whatever**. `sink_cup` ran its 15 mm arm after ~30 rounds of orphan
+accumulation. The asymmetry is run order. Peak RSS from the instrumented round
+says the same thing directly: HAL/MuJoCo 3246 MB, XR-1 sidecar 1845 MB,
+`runtime_node` 874 MB — against `octomap_server_node` **95 MB** and
+`octomap_voxel_bridge` **55 MB**. One graph is ~6.8 GB and octomap is ~2 % of
+it; the dense grid is a `uint8[]`, 0.6 MB at 25 mm and 2.8 MB at 15 mm.
+Resolution moves host memory by kilobytes.
+
+**Consequence for the rerun.** It goes at `WORKERS=2`, and it must be a full
+A/B rather than a top-up of the failures: `sink_cup`'s arms were never
+interleaved, so its runs are not exchangeable with `baguette`'s.
