@@ -2710,8 +2710,18 @@ a **live** graph: the producer was proven at unit tier against a real compiled
 `panda_mj_description` MjModel and the real `panda_mobile` manifest, and the
 adjudicator against the archived battery, but no real
 `sim.estop_ground_truth_snapshot` had been observed carrying it. Two single
-rounds on q-laptop (RTX 5070 Laptop 8 GB, host otherwise idle, one round per
-`ROS_DOMAIN_ID`) close it.
+rounds on q-laptop (RTX 5070 Laptop 8 GB, one round per `ROS_DOMAIN_ID`) close it.
+
+**Host state, stated precisely.** The host was verified idle at launch — no
+`octomap` orphans, no live deploy graph, GPU at 15 MiB. Another session's
+resolution A/B battery then started a worker at ~20:27, during the first round;
+its own deploy graphs came up at 20:41, after both rounds here had finished
+(20:32:56 and 20:36:00), so no two live graphs ever overlapped, though its XR-1
+sidecar was loading on the same 8 GB GPU during the second round. Nothing about a
+JSON field's presence is contention-sensitive, and the one timing-flavoured
+observation below (a gate-on round completing) is only *harder* under load, not
+easier — but "otherwise idle" would overstate what was true for the whole
+window.
 
 **The round that stopped.** `utensil`, gate **on**, domain 72 — a kernel stop at
 `sim_time_s = 20.4`, `stop_class: attached_payload`, one snapshot line. Its
