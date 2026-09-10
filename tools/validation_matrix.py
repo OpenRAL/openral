@@ -597,8 +597,24 @@ def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidenc
     """The hull-fidelity half of ``hal_admissible_gap_m`` (#221).
 
     The box term is a snapshot-wide upper bound; the hull term is per-link (never maxed across
-    links), so it is summed from the two links the kernel named. Either link missing a measured
-    overhang (no stage-2 hull, or no source mesh) leaves the pair with no budget.
+    links), so it is summed from the two links the kernel named.
+
+    The ``link_link.rule`` the HAL publishes already says the hull term applies "when **both**
+    links ship stage-2 tight geometry"; this is the implementation catching up with it (#260).
+
+    A link with no stage-2 hull at all is **not** an unadjudicable pair. ``hull_hull_distance``
+    returns the box bound untouched when either side has no hull vertices, and deliberately leaves
+    ``depth_is_box_bound`` clear — its contract is "a hull refinement was attempted and fell back",
+    and here none was attempted. Reading that clear flag as "the kernel measured at hull fidelity"
+    charged a hull budget to a plain box measurement, and since the link has no overhang either, the
+    pair could never be adjudicated: `panda_link1` ships no stage-2 hull **by decision** (#191 — its
+    refined envelope moved its own stops by 0.0003 mm and was withdrawn), so every self-pair naming
+    it landed `unadjudicated` forever. Two of the seven self stops in the 2026-09-10 ceiling battery
+    were exactly that. The box term is the right budget for those, and it is what the kernel
+    actually measured with.
+
+    A link that *has* a hull but whose overhang was never measured still leaves the pair with no
+    budget — there the kernel really did refine, and nothing bounds the hull-to-mesh gap.
     """
     slop = budget.get("collision_model_slop")
     links = slop.get("links") if isinstance(slop, dict) else None
@@ -608,11 +624,27 @@ def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidenc
     link_b = links.get(stop.party_b)
     if not isinstance(link_a, dict) or not isinstance(link_b, dict):
         return None
+    if _lacks_stage2_hull(link_a) or _lacks_stage2_hull(link_b):
+        link_block = budget.get("link_link")
+        if not isinstance(link_block, dict):
+            return None
+        return _as_float(link_block.get("admissible_gap_box_m"))
     overhang_a = _as_float(link_a.get("hull_overhang_m"))
     overhang_b = _as_float(link_b.get("hull_overhang_m"))
     if overhang_a is None or overhang_b is None:
         return None
     return round(overhang_a + overhang_b, 6)
+
+
+def _lacks_stage2_hull(link: Mapping[str, Any]) -> bool:
+    """Whether this link is known to carry no stage-2 hull (#260).
+
+    Only ``False`` on the field is load-bearing. A snapshot recorded before the HAL published
+    ``has_stage2_hull`` omits it, and absence must not be read as "no hull" — that would hand the
+    box budget to genuine hull measurements on every historical round and turn correct stops into
+    ``within-quantization``. Absent means "unknown", and unknown keeps the old behaviour.
+    """
+    return link.get("has_stage2_hull") is False
 
 
 def adjudicate_ground_truth(

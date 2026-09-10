@@ -773,7 +773,9 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
         nearest sampled collision point — and ``hull_overhang_m`` (#221): the
         link's declared stage-2 hull's own overhang past its source mesh, or
         ``None`` when the link ships no hull or the hull's overhang was never
-        measured. ``{}`` when the manifest declares no
+        measured — ``has_stage2_hull`` (#260) separates those two cases, which
+        a consumer needs because only the second leaves a pair unadjudicable.
+        ``{}`` when the manifest declares no
         collision geometry, so the caller reports "no budget" rather than
         assuming zero.
 
@@ -820,6 +822,7 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
         worst = max(worst, corner_slop)
         tight = getattr(entry, "tight_geometry", None)
         overhang = None if tight is None else tight.hull_overhang_m
+        hull_vertices = () if tight is None else (tight.hull_vertices_m or ())
         links[name] = {
             "obb_half_extents_m": [round(float(v), 6) for v in half],
             "face_slop_m": [round(float(v), 6) for v in (half - extent)],
@@ -830,6 +833,15 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
             # never measured. `hal_admissible_gap_m` sums two links' entries
             # to budget a hull-fidelity self-collision stop.
             "hull_overhang_m": None if overhang is None else round(float(overhang), 6),
+            # Whether a stage-2 hull exists for this link at all (#260). A
+            # `None` overhang is two different facts — no hull, or a hull whose
+            # overhang was never measured — and only the second leaves a pair
+            # unadjudicable. Without this a consumer cannot tell them apart and
+            # charges a hull budget for a pair the kernel measured with boxes:
+            # `panda_link1` ships no stage-2 hull by decision (its refined
+            # envelope moved its own stops by 0.0003 mm and was withdrawn), so
+            # every self-pair naming it was permanently `unadjudicated`.
+            "has_stage2_hull": bool(len(hull_vertices)),
         }
     return {
         "links": links,
