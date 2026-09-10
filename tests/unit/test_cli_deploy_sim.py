@@ -1717,7 +1717,7 @@ def test_deploy_run_preflight_can_still_be_skipped(monkeypatch: pytest.MonkeyPat
         _ds, "assert_ros2_packages_discoverable", lambda *_a, **_kw: called.append("overlay_check")
     )
     monkeypatch.setattr(
-        _ds, "_kill_orphan_openral_graph_processes", lambda *_a, **_kw: called.append("reap")
+        deploy_sim, "_kill_orphan_openral_graph_processes", lambda *_a, **_kw: called.append("reap")
     )
     monkeypatch.setattr(_ds, "_run_launch", lambda *_a, **_kw: 0)
 
@@ -1876,6 +1876,64 @@ def test_orphan_needles_cover_tf_publishers_and_sidecar() -> None:
     # prefix is still tf2_ros, so this WOULD match) — but an unrelated
     # editor / shell must not.
     assert not _cmdline_is_openral_graph_process("vim /etc/hosts")
+
+
+def test_orphan_needles_cover_the_world_voxel_nodes() -> None:
+    """The octomap pair was the one graph member the sweep never matched.
+
+    `ros2 launch` starts them in their own session, so a caller's ``killpg``
+    misses them too — between the two gaps they were the only nodes that could
+    survive indefinitely, and 46 of them (oldest 23.7 h) were found alive on
+    q-laptop on 2026-09-10. The cost is not the RSS: each holds its Fast-DDS
+    ``fastrtps_port<N>_el`` lock file, so the next run on that domain fails
+    ``open_and_lock_file`` and its policy is handed 0 chunks.
+
+    Real argv signatures read from ``/proc/<pid>/cmdline`` of the survivors.
+    """
+    voxel_bridge = (
+        "/home/u/workspace/openral/install/lib/openral_octomap_bridge/octomap_voxel_bridge "
+        "--ros-args -r __node:=openral_octomap_voxel_bridge "
+        "--params-file /tmp/launch_params_ab12cd"
+    )
+    octomap_server = (
+        "/opt/ros/jazzy/lib/octomap_server/octomap_server_node "
+        "--ros-args -r __node:=openral_octomap_server "
+        "-r cloud_in:=/openral/points --params-file /tmp/launch_params_ef34gh"
+    )
+    assert _cmdline_is_openral_graph_process(voxel_bridge)
+    assert _cmdline_is_openral_graph_process(octomap_server)
+    # ``octomap_server_node`` is an upstream binary any stack may run — the ZED
+    # lesson above — so a co-running one under a different node name survives.
+    foreign_server = (
+        "/opt/ros/jazzy/lib/octomap_server/octomap_server_node "
+        "--ros-args -r __node:=zed_octomap_server -r __ns:=/zed"
+    )
+    assert not _cmdline_is_openral_graph_process(foreign_server)
+
+
+def test_reap_is_skipped_when_parallel_workers_share_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OPENRAL_SKIP_ORPHAN_REAP=1`` was documented in three places, read in none.
+
+    The sweep matches by argv signature, which is identical across the
+    battery's concurrent workers, so worker B's startup reap killed worker A's
+    live graph. ``tools/ceiling_battery.sh`` has exported this since it went
+    parallel; until now it bought nothing, and worker 1 idled 626 s to its
+    timeout having never seen its action server.
+    """
+    called: list[str] = []
+    monkeypatch.setattr(
+        deploy_sim, "_kill_orphan_openral_graph_processes", lambda *_a, **_kw: called.append("reap")
+    )
+
+    monkeypatch.setenv("OPENRAL_SKIP_ORPHAN_REAP", "1")
+    deploy_sim._reap_orphans_with_log()
+    assert called == [], "a concurrent sibling's graph must survive the sweep"
+
+    monkeypatch.delenv("OPENRAL_SKIP_ORPHAN_REAP")
+    deploy_sim._reap_orphans_with_log()
+    assert called == ["reap"], "the default is still to reap"
 
 
 def test_scan_params_derived_from_robot_yaml_lidar() -> None:

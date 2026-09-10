@@ -1885,6 +1885,18 @@ def _reap_orphans_with_log() -> None:
     fastrtps_port7000`` on the safety_kernel, slam_toolbox,
     prompt_router, etc.
     """
+    if os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") == "1":
+        # Parallel workers (``tools/ceiling_battery.sh``) share a host and an
+        # argv signature, so this sweep cannot tell a concurrent sibling from a
+        # crash leftover — worker B's startup reap kills worker A's live graph.
+        # The battery has exported this since it went parallel and the docs
+        # describe it as load-bearing, but nothing read it until now, which is
+        # why worker 1 "never got its action server" and idled 626 s to its
+        # timeout. Opting out means opting into a teardown-side sweep that CAN
+        # tell siblings apart: `_reap_domain` in ``tools/_ceiling_probe.py``,
+        # scoped by ``ROS_DOMAIN_ID``.
+        _console.print("[yellow]orphan reap skipped (OPENRAL_SKIP_ORPHAN_REAP=1)[/yellow]")
+        return
     killed = _kill_orphan_openral_graph_processes()
     if killed:
         _console.print(
@@ -1962,6 +1974,20 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "openral_perception_ros/reward_monitor_node.py",
     "openral_perception_ros/ros_image_detector_node.py",
     "openral_reasoner_ros/critic_producer_node.py",
+    # World-voxel nodes. These were the ONE graph member missing from the set,
+    # and `ros2 launch` starts them in their own session, so neither this sweep
+    # nor a caller's ``killpg`` reached them: every run leaked an
+    # ``octomap_server_node`` + ``octomap_voxel_bridge`` pair that kept holding
+    # ``/dev/shm/fastrtps_*`` and its ``fastrtps_port<N>_el`` lock file. The
+    # next run on that domain then failed ``open_and_lock_file``, its policy
+    # was handed 0 chunks, and it scored as an ordinary non-completion. 46 such
+    # orphans, oldest 23.7 h, were found on q-laptop on 2026-09-10 — every one
+    # octomap, nothing else, which is what a single missing needle looks like.
+    # The bridge is our own package binary, so the path alone is unambiguous.
+    # ``octomap_server_node`` is upstream and shared — the same ZED lesson as
+    # the TF publishers above — so it is scoped by our node name.
+    "openral_octomap_bridge/octomap_voxel_bridge",
+    ("/lib/octomap_server/octomap_server_node", "__node:=openral_octomap_server"),
 )
 
 

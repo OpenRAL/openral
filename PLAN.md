@@ -522,6 +522,19 @@ Four things had to be discovered to make it run at all, each worth keeping:
    action server, 626 s to timeout). Gated behind `OPENRAL_SKIP_ORPHAN_REAP=1`,
    uncommitted and spark-local. Each worker has its own `ROS_DOMAIN_ID`, hence
    its own fastrtps SHM port, so the reap is not what was protecting them.
+
+   **Corrected 2026-09-10:** that env var was read by nothing, in any commit —
+   the battery believed it had opted out and had not, so every worker's
+   startup sweep was killing its siblings for the whole life of the parallel
+   design. It is honoured now. The same investigation found the sweep's needle
+   set missing the `octomap_voxel_bridge` / `octomap_server_node` pair, which
+   `ros2 launch` also starts in its own session: the only graph members that
+   neither the sweep nor a `killpg` could reach. They accumulated one pair per
+   round — 46 alive on q-laptop, oldest 23.7 h — and each holds the
+   `fastrtps_port<N>_el` lock file that makes the *next* run on that domain
+   fail `open_and_lock_file` and receive 0 action chunks. So the premise above
+   is half wrong: a per-worker `ROS_DOMAIN_ID` does **not** protect a worker,
+   because the poison is left behind on its own domain by its own prior round.
 2. **The XR-1 sidecar is stateless and can be shared.** `_xr1_server.py`'s
    `reset()` is literally `return`; all episode state (history deques, action
    queue) is client-side in `openral_sim/policies/xr1.py`. One sidecar serves
