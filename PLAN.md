@@ -283,6 +283,51 @@ can only reach the 3 link stops. **No amount of geometry work can recover the
 penetrating to advisory. It does **not** clear the three real contacts, which
 is correct: those are the stops the kernel exists for.
 
+**Which phase the stops happen in — and it is never the pick.** Traced each
+stop against the run's own `automatic sim attachment revision` (grasp),
+`support_witness_separated` (payload leaves its support) and
+`place_declaration_armed` markers:
+
+| phase | stops |
+| --- | ---: |
+| **PLACING** — a place declaration was armed before the stop | **11** |
+| **CARRYING** — lifted clear of support, no declaration yet | **7** |
+| grasped but not yet lifted | 1 |
+| an arm link, not the payload | 3 |
+| approach / before the grasp | **0** |
+
+It splits by scene: `baguette`, `sink_cup` and `fridge` stop **at the place**;
+`utensil` (`PickPlaceCounterToDrawer`) stops **in transit** — all 7 of its
+payload stops are mid-carry.
+
+**What the placing stops actually hit** is the part that picks the lever:
+
+| what the payload hit | stops | `place_allowance_active` |
+| --- | ---: | --- |
+| **a world voxel that is *not* the declared target** | **9** | `False` |
+| the declared place target | 2 | `False` |
+
+So in 9 of 11 the payload was approaching its target and clipped the
+*surrounding* occupancy — the counter top beside the drop point, the shelf next
+to it — not the thing it was declared to place onto. The allowance is scoped to
+`target_id`, so it correctly does not cover them, and `place_allowance_active`
+is `False` on **all 22** stop lines.
+
+**This makes levers 2 and 3 complementary, not competing**, which §5 asserted
+and this measures:
+
+- **Lever 2** reaches the **9 placing stops** — the exemption machinery already
+  exists there and is simply scoped too narrowly.
+- **Lever 3** reaches the **8 carrying stops** as well, because mid-transit
+  there is no declaration to widen: nothing to exempt against, only the
+  21.65 mm cell inflation to shrink. `utensil` — the scene with the highest
+  gate-off ceiling at **9/10** — is *entirely* carrying stops, so lever 3 is
+  what unlocks it.
+
+**Open before acting on lever 2:** the two stops that hit the declared target
+with the allowance inactive are unexplained — the support witness is the other
+half of what arms it, and whether it had dropped there has not been checked.
+
 **Still owed before this is a manifest edit** (unchanged from 2026-09-07): the
 measured p99 of **0.825 ms** is the kernel *consuming* a grid.
 `packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
