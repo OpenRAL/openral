@@ -496,6 +496,24 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     assert slop["unresolved_links"] == []
     assert float(slop["max_corner_slop_m"]) > 0.020  # type: ignore[arg-type]
 
+    # `has_stage2_hull` (#260), against the real manifest rather than a stub.
+    # A `None` overhang is two different facts and only one of them leaves a
+    # self-pair unadjudicable, so the block has to say which. `panda_link1`
+    # ships no stage-2 hull BY DECISION — #191 withdrew its refined envelope
+    # for moving link1's own stops by 0.0003 mm — and every other kernel-checked
+    # link carries one.
+    assert link1["has_stage2_hull"] is False  # type: ignore[index]
+    assert link1["hull_overhang_m"] is None  # type: ignore[index]
+    hulled = {
+        name: blk
+        for name, blk in slop["links"].items()  # type: ignore[union-attr]
+        if name != "panda_link1"
+    }
+    assert hulled, "the manifest must still carry hulls to contrast against"
+    for name, blk in hulled.items():
+        assert blk["has_stage2_hull"] is True, name
+        assert blk["hull_overhang_m"] is not None, name
+
 
 def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> None:
     """A cell holding both a visual shell and the slab it wraps reads `solid_world`.
