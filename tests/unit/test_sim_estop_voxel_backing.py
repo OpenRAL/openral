@@ -31,6 +31,7 @@ import pytest
 from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
     collision_model_mesh_slop,
+    estop_ground_truth_snapshot,
     voxel_backing_for_cell,
     voxel_backing_record,
 )
@@ -456,6 +457,30 @@ def test_an_index_outside_the_grid_is_refused_not_guessed() -> None:
     assert record["rays_cast"] == 0
 
 
+def _real_panda_and_manifest() -> tuple[Any, Any]:
+    """The real upstream Panda MjModel paired with the real `panda_mobile` manifest.
+
+    Only the joint NAME binding differs between them: `panda_mobile`'s
+    ``sim_joint_name``s are robosuite's (``robot0_joint1``) and upstream ships
+    them bare (``joint1``). Rebinding the names keeps both the geometry under
+    test and the manifest that declares it real — nothing here is a stand-in
+    for either.
+    """
+    from openral_core import RobotDescription
+
+    descriptions = pytest.importorskip("robot_descriptions.loaders.mujoco")
+    try:
+        panda = descriptions.load_robot_description("panda_mj_description")
+    except Exception as exc:  # reason: description fetch is a network dependency
+        pytest.skip(f"panda_mj_description unavailable: {exc}")
+    manifest = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").model_dump()
+    for joint in manifest["joints"]:
+        sim_name = joint.get("sim_joint_name") or ""
+        if sim_name.startswith("robot0_joint"):
+            joint["sim_joint_name"] = sim_name.removeprefix("robot0_")
+    return panda, RobotDescription.model_validate(manifest)
+
+
 def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     """The budget term the round did not have, against the REAL Panda meshes.
 
@@ -467,25 +492,8 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     rounded link cannot be otherwise. That corner term is what makes a kernel
     OBB-to-voxel distance and a probe mesh-to-mesh distance comparable.
     """
-    from openral_core import RobotDescription
-
-    descriptions = pytest.importorskip("robot_descriptions.loaders.mujoco")
-    try:
-        panda = descriptions.load_robot_description("panda_mj_description")
-    except Exception as exc:  # reason: description fetch is a network dependency
-        pytest.skip(f"panda_mj_description unavailable: {exc}")
-
-    # The real manifest's OBBs against the real upstream meshes. Only the joint
-    # NAME binding differs: panda_mobile's `sim_joint_name`s are robosuite's
-    # (`robot0_joint1`), and upstream ships them bare (`joint1`). Rebinding the
-    # names keeps both the geometry under test and the manifest that declares
-    # it real — nothing here is a stand-in for either.
-    manifest = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").model_dump()
-    for joint in manifest["joints"]:
-        sim_name = joint.get("sim_joint_name") or ""
-        if sim_name.startswith("robot0_joint"):
-            joint["sim_joint_name"] = sim_name.removeprefix("robot0_")
-    slop = collision_model_mesh_slop(panda, RobotDescription.model_validate(manifest))
+    panda, description = _real_panda_and_manifest()
+    slop = collision_model_mesh_slop(panda, description)
 
     link1 = slop["links"]["panda_link1"]  # type: ignore[index]
     # Faces: sub-millimetre. The OBBs really do hug the meshes.
@@ -513,6 +521,54 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     for name, blk in hulled.items():
         assert blk["has_stage2_hull"] is True, name
         assert blk["hull_overhang_m"] is not None, name
+
+
+def test_the_snapshot_publishes_the_slop_block_where_the_adjudicator_reads_it() -> None:
+    """`has_stage2_hull` has to arrive under ``adjudication_budget``, not at the top level.
+
+    The producer is pinned above and the consumer
+    (``tools/validation_matrix.py::_lacks_stage2_hull``) is pinned in
+    ``tests/unit/test_self_pair_box_budget.py``, but both stop at the edges of
+    the record and nothing asserted the path between them: the snapshot nests
+    the block at ``adjudication_budget.collision_model_slop``, and a reader
+    that looks for a top-level ``collision_model_slop`` finds ``None`` and
+    concludes the field was never published. That happened while reading the
+    live 2026-09-10 round
+    (``docs/reference/data/estop-snapshot-has-stage2-hull-2026-09-10.jsonl``),
+    where the field was in fact present.
+
+    Real MjModel, real manifest, real snapshot builder — the same components the
+    live round used, minus the ROS graph.
+    """
+    panda, description = _real_panda_and_manifest()
+    data = mujoco.MjData(panda)
+    mujoco.mj_forward(panda, data)
+
+    snapshot = estop_ground_truth_snapshot(
+        panda,
+        data,
+        robot_body_ids=frozenset(range(panda.nbody)),
+        description=description,
+    )
+
+    budget = snapshot["adjudication_budget"]
+    assert isinstance(budget, dict), "the snapshot published no adjudication budget at all"
+    slop = budget["collision_model_slop"]
+    assert isinstance(slop, dict), (
+        "`collision_model_slop` is absent from the budget block — the adjudicator reads it "
+        "from there, so a self pair naming a hull-less link would go unadjudicated (#260)"
+    )
+    links = slop["links"]
+    assert links["panda_link1"]["has_stage2_hull"] is False
+    assert links["panda_link1"]["hull_overhang_m"] is None
+    for name, blk in links.items():
+        if name == "panda_link1":
+            continue
+        assert blk["has_stage2_hull"] is True, name
+    # The other half of what `_link_link_hull_gap_m` needs from the same block.
+    assert float(budget["link_link"]["admissible_gap_box_m"]) > 0.0
+    # Nothing top-level: a reader that expects it there is reading the wrong key.
+    assert "collision_model_slop" not in snapshot
 
 
 def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> None:
