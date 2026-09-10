@@ -347,17 +347,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--rskill", required=True, help="rSkill dir carrying this worker's port.")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--start-round",
+        type=int,
+        default=1,
+        help=(
+            "Number the first round N instead of 1 and append to any existing records.json. "
+            "Lets a caller drive rounds one at a time — which is how the resolution A/B "
+            "alternates its two arms round by round on a host that fits only one graph."
+        ),
+    )
     args = parser.parse_args(argv)
 
     spec = next(s for s in vm.MATRIX if s.key == args.scene)
     out = args.out / f"{args.scene}-{args.gate}"
     out.mkdir(parents=True, exist_ok=True)
-    records: list[dict[str, object]] = []
-    for n in range(1, args.rounds + 1):
+    ledger = out / "records.json"
+    records: list[dict[str, object]] = (
+        json.loads(ledger.read_text(encoding="utf-8")) if ledger.is_file() else []
+    )
+    for n in range(args.start_round, args.start_round + args.rounds):
         rec = run_one(spec, args.gate, args.seed, out / f"r{n:02d}", args.rskill)
         rec |= {"round": n, "scene": args.scene, "gate": args.gate}
         records.append(rec)
-        (out / "records.json").write_text(json.dumps(records, indent=1), encoding="utf-8")
+        ledger.write_text(json.dumps(records, indent=1), encoding="utf-8")
         print(
             f"[{args.scene}/{args.gate}] r{n:02d} success={rec['success']} "
             f"{rec['wall_s']}s {rec['outcome']}",

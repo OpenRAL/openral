@@ -139,33 +139,42 @@ def main(argv: list[str] | None = None) -> int:
             f"   re-dispatched={retried}  gave-up={gave_up}{flag}"
         )
 
-    print("\nPAIRING — did a scene's two arms actually meet the same host?")
-    print("The primary endpoint is paired, so an arm that ran alone after the other")
-    print("finished is not comparable however many rounds it has.")
-    windows: dict[tuple[str, str], tuple[float, float]] = {}
+    print("\nPAIRING — did each round's two arms meet the same host?")
+    print("The endpoint is paired per round, so the question is not whether the arms")
+    print("ran on the same evening but whether round n of one sat next to round n of")
+    print("the other. Lanes that ran back to back fail this however many rounds they have.")
+    starts: dict[tuple[str, str, int], float] = {}
+    walls: list[float] = []
     for arm, rows in arms.items():
-        for scene in {r["scene"] for r in rows}:
-            spans = [
-                (r["started_at"], r["started_at"] + (r["wall_s"] or 0.0))
-                for r in rows
-                if r["scene"] == scene and r.get("started_at")
-            ]
-            if spans:
-                windows[(scene, arm)] = (min(s for s, _ in spans), max(e for _, e in spans))
-    scenes = sorted({scene for scene, _ in windows})
-    if not scenes:
+        for r in rows:
+            if r.get("started_at"):
+                starts[(r["scene"], arm, int(r["round"]))] = float(r["started_at"])
+                if r.get("wall_s"):
+                    walls.append(float(r["wall_s"]))
+    if not starts:
         print("  no run recorded `started_at` — pre-2026-09-10 data, pairing unverifiable")
-    for scene in scenes:
-        coarse_window = windows.get((scene, "0.025"))
-        fine_window = windows.get((scene, "0.015"))
-        if not (coarse_window and fine_window):
-            print(f"{scene:>10}  only one arm present — not a pair")
+    typical = statistics.median(walls) if walls else 0.0
+    # A paired round should sit within a couple of rounds of its partner. Three
+    # typical rounds is slack enough for one retry on either side and still an
+    # order of magnitude under the half-lane gap that back-to-back lanes give.
+    budget = 3.0 * typical
+    for scene in sorted({scene for scene, _, _ in starts}):
+        rounds = sorted({n for sc, _arm, n in starts if sc == scene})
+        gaps = [
+            abs(starts[(scene, "0.015", n)] - starts[(scene, "0.025", n)])
+            for n in rounds
+            if (scene, "0.015", n) in starts and (scene, "0.025", n) in starts
+        ]
+        if not gaps:
+            print(f"{scene:>10}  no round has both arms — not a pair")
             continue
-        overlap = min(coarse_window[1], fine_window[1]) - max(coarse_window[0], fine_window[0])
-        span = max(coarse_window[1], fine_window[1]) - min(coarse_window[0], fine_window[0])
-        frac = overlap / span if span > 0 else 0.0
-        flag = "" if frac >= 0.5 else "   <-- NOT PAIRED, do not read this scene's shift"
-        print(f"{scene:>10}  arms overlap {frac * 100:5.1f}% of their combined span{flag}")
+        worst = max(gaps)
+        flag = "" if worst <= budget else "   <-- NOT PAIRED, do not read this scene's shift"
+        print(
+            f"{scene:>10}  {len(gaps):>3} paired rounds   median gap "
+            f"{statistics.median(gaps):>6.0f}s   worst {worst:>6.0f}s "
+            f"(budget {budget:.0f}s){flag}"
+        )
 
     print("\nSECONDARY — counts. UNDER-POWERED: 80% power on completion needs 200 runs/arm")
     print("(tools/round_power.py --baseline 0.027 --alternative 0.108). Do not read a")

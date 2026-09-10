@@ -60,9 +60,9 @@ def _run(root: Path) -> str:
 
 
 def test_arms_that_ran_back_to_back_are_flagged_not_paired(tmp_path: Path) -> None:
-    """The sink_cup shape: one arm runs, finishes, then the other starts."""
+    """The sink_cup shape: one arm runs all its rounds, then the other starts."""
     _lane(tmp_path, "0.025", "sink_cup", first_start=1_000_000.0)
-    _lane(tmp_path, "0.015", "sink_cup", first_start=1_000_400.0)  # starts after the first ends
+    _lane(tmp_path, "0.015", "sink_cup", first_start=1_000_400.0)  # a whole lane later
 
     out = _run(tmp_path)
     assert "PAIRING" in out
@@ -71,13 +71,15 @@ def test_arms_that_ran_back_to_back_are_flagged_not_paired(tmp_path: Path) -> No
 
 
 def test_arms_that_ran_together_are_not_flagged(tmp_path: Path) -> None:
-    """The baguette shape: both arms live across the same window."""
+    """The alternating shape: round n of each arm is minutes from its partner."""
+    # Alternating: each arm's round n sits one round away from its partner's.
     _lane(tmp_path, "0.025", "baguette", first_start=1_000_000.0)
-    _lane(tmp_path, "0.015", "baguette", first_start=1_000_005.0)
+    _lane(tmp_path, "0.015", "baguette", first_start=1_000_100.0)
 
     out = _run(tmp_path)
     assert "PAIRING" in out
     assert "NOT PAIRED" not in out, out
+    assert "3 paired rounds" in out, out
 
 
 def test_data_without_a_timestamp_says_so_instead_of_passing(tmp_path: Path) -> None:
