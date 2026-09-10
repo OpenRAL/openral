@@ -121,6 +121,7 @@ def _record(
     load_start: list[float],
     goal_log: Path,
     deploy_log: Path,
+    attempts: list[str] | None = None,
 ) -> dict[str, object]:
     """One round's record, in the one shape every exit path returns.
 
@@ -142,6 +143,10 @@ def _record(
         "load_end": [round(v, 2) for v in os.getloadavg()],
         "chunks": _chunks_from_goal_log(goal_log),
         "nav2_bond_teardown": _bond_teardown(deploy_log) or None,
+        # Every dispatch the graph was not assembled for, in order (#262).
+        # Empty when the run dispatched first time; a trailing `GAVE UP:` entry
+        # means the graph never assembled, so the round is not a policy result.
+        "dispatch_not_ready_attempts": list(attempts or ()),
     }
 
 
@@ -258,28 +263,49 @@ def run_one(
             # uncaught TimeoutExpired, two of them before recording a single
             # round.
             dispatch_timed_out = False
-            try:
-                with goal_log.open("wb") as goal_sink:
-                    subprocess.run(
-                        [
-                            str(vm.REPO_ROOT / ".venv" / "bin" / "python"),
-                            str(vm.REPO_ROOT / "tools" / "_validation_matrix_dispatch.py"),
-                            "--deadline-s",
-                            str(DEADLINE_S),
-                            "--rskill-id",
-                            rskill,
-                            "--prompt",
-                            spec.prompt,
-                        ],
-                        cwd=vm.REPO_ROOT,
-                        env=env,
-                        stdout=goal_sink,
-                        stderr=goal_sink,
-                        check=False,
-                        timeout=DEADLINE_S + 600,
-                    )
-            except subprocess.TimeoutExpired:
-                dispatch_timed_out = True
+            # The action server answering does not mean the graph is assembled:
+            # the TF tree can still be two disjoint trees and a declared camera
+            # can still have published nothing. The fixed 5 s above covered that
+            # on an idle host and did not under contention (#262) — 10 of 18
+            # runs in the first resolution A/B died at 0.4 s with
+            # `ConnectivityException`, each scored as a policy failure. So
+            # re-dispatch while the ONLY thing wrong is that the graph is not up
+            # yet, bounded, and record every attempt: a retry invisible in the
+            # artifacts is the hidden fallback CLAUDE.md §1.4 forbids.
+            attempts: list[str] = []
+            ready_deadline = time.time() + vm.DISPATCH_READY_TIMEOUT_S
+            while True:
+                try:
+                    with goal_log.open("wb") as goal_sink:
+                        subprocess.run(
+                            [
+                                str(vm.REPO_ROOT / ".venv" / "bin" / "python"),
+                                str(vm.REPO_ROOT / "tools" / "_validation_matrix_dispatch.py"),
+                                "--deadline-s",
+                                str(DEADLINE_S),
+                                "--rskill-id",
+                                rskill,
+                                "--prompt",
+                                spec.prompt,
+                            ],
+                            cwd=vm.REPO_ROOT,
+                            env=env,
+                            stdout=goal_sink,
+                            stderr=goal_sink,
+                            check=False,
+                            timeout=DEADLINE_S + 600,
+                        )
+                except subprocess.TimeoutExpired:
+                    dispatch_timed_out = True
+                    break
+                not_ready = vm.dispatch_not_ready_reason(goal_log)
+                if not not_ready:
+                    break
+                if time.time() >= ready_deadline:
+                    attempts.append(f"GAVE UP: {not_ready}")
+                    break
+                attempts.append(not_ready)
+                time.sleep(vm.DISPATCH_RETRY_INTERVAL_S)
             time.sleep(5.0)
         finally:
             with contextlib.suppress(ProcessLookupError, OSError):
@@ -304,6 +330,7 @@ def run_one(
         load_start=load_start,
         goal_log=goal_log,
         deploy_log=deploy_log,
+        attempts=attempts,
     )
 
 
