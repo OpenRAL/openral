@@ -353,9 +353,22 @@ and this measures:
   gate-off ceiling at **9/10** — is *entirely* carrying stops, so lever 3 is
   what unlocks it.
 
-**Open before acting on lever 2:** the two stops that hit the declared target
-with the allowance inactive are unexplained — the support witness is the other
-half of what arms it, and whether it had dropped there has not been checked.
+**Answered 2026-09-10 — the place allowance is not broken (#259).** Both the
+declaration and the support witness arm at every placing stop.
+`place_allowance_active` is literally `allowance > 0.0` in the kernel
+(`collision.cpp:1865`), and `place_approach_allowance` is non-zero only for a
+cell **inside the declared target's box** — so `0` on the 20 latched stops means
+"this cell is not the declared target", which is true of all of them
+(`voxel_*`, `place_target=` empty). Where a cell *is* the target, it works: the
+two advisory-band refusals name `b=place:sim:cab_1_left_group_main#…` and the
+advisory path requires `allowance > 0.0`, so the allowance was live and
+downgraded a latch to an advisory. ADR-0098 argues for exactly this scoping.
+
+So lever 2 is a **conservatism decision**, in the same class as #253 and #254 —
+not a bug fix with free upside. The earlier reading here ("the allowance never
+armed at all, which would be a larger bug") was a parsing artifact: advisory log
+lines omit `place_allowance_active`, and `parse_kernel_collision` defaults an
+absent field to `False`.
 
 **What is still owed on lever 3 — corrected 2026-09-10 on unification with the
 resolution branch.** The octree→grid conversion is **not** unmeasured: the lever-3
@@ -959,11 +972,12 @@ In order, each chosen because it is unblocked and its answer changes the next on
    changes. It goes first because it is unblocked, needs no ruling, and until it
    lands any self stop naming a stage-1-only link is unscorable, which is how
    this was mistaken for a false positive in the first place.
-2. **Answer #259's open question before designing anything:** why is
-   `place_allowance_active` false on all 20 stops with 9 declarations armed?
-   Check `support_contact_witness` at those 9 stops from the archived logs. If the
-   allowance never engages, that is a bug fix worth up to 9 of 20 stops at zero
-   conservatism — and it changes what the WG is being asked in #253/#254.
+2. ~~**Answer #259's open question**~~ — **done 2026-09-10, and it was not a
+   bug.** The allowance arms, the witness arms, and `place_allowance_active=0`
+   correctly means "this cell is not the declared target". Widening the scope is
+   a conservatism decision like #253/#254, not free. Item promoted out; what
+   remains under #259 is lever 2 itself, which needs a ruling rather than an
+   investigation.
 3. **Run the live 15 mm A/B #253 says is missing.** `OPENRAL_OCTOMAP_RESOLUTION_M=0.015`,
    `tools/ceiling_battery.sh`, `WORKERS=2`, 10 rounds, gate-ON only, on `q-laptop`
    with nothing else on the GPU. **Prediction to falsify:** ≈5 of 20 stops
