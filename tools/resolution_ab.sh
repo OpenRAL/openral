@@ -23,20 +23,30 @@
 # `validation_matrix.py` records, so a round that changed it can never be
 # mistaken afterwards for one that did not.
 #
-# CONCURRENCY IS FIXED AT ONE SCENE, BOTH ARMS. The paired endpoint above only
-# means anything if the two arms met the same host, so the two live lanes must
-# be the same scene's 25 mm and 15 mm, start together and finish together. The
-# first version of this script wrote a scene-interleaved worklist and then fed
-# it to `xargs -P`, which is not the same thing: each worker holds its slot for
-# all ROUNDS rounds, so only the FIRST pair ever overlapped and every later
-# lane drifted by about one lane's duration. In the 2026-09-10 run `baguette`
-# was paired and `sink_cup` was not — its 25 mm arm ran 18:50-19:19 and its
-# 15 mm arm 19:19-19:37, alone, after ~30 rounds of host wear. That lane then
-# showed 7/10 unreadable runs against 0/10 and read as a resolution effect
-# until the order was checked. So: launch a scene's two arms together, barrier,
-# next scene. No `xargs`, no WORKERS knob — two graphs is also q-laptop's
-# ceiling. If a bigger host makes several scenes at once worth it, add whole
-# SCENES to the inner group, never a bare parallelism count.
+# ONE GRAPH AT A TIME, ARMS ALTERNATING ROUND BY ROUND. The paired endpoint is
+# void unless a scene's 25 mm and 15 mm rounds met the same host, and there are
+# two ways to get that wrong. The first version fed a scene-interleaved worklist
+# to `xargs -P`, which does not interleave anything: a worker holds its slot for
+# all ROUNDS rounds, so only the first pair overlapped. On 2026-09-10 `sink_cup`
+# ran its arms 29 minutes apart and its 7/10-vs-0/10 unreadable-run gap read as
+# a resolution effect; `baguette`, the one lane that stayed paired, was 3/10 vs
+# 3/10, p = 1.0.
+#
+# Running the two lanes genuinely concurrently fixes the pairing and breaks the
+# host. Measured on q-laptop the same evening: baseline occupancy is ~9.1 GB of
+# 15.4 GB (browser, editor sessions, the shared XR-1 sidecar) and ONE deploy
+# graph adds ~4.9 GB — HAL/MuJoCo 3.2, runtime_node 0.9, the Nav2 stack ~0.8.
+# Two graphs is ~18.9 GB against 15.4. The second attempt exhausted all 4 GB of
+# swap, load averages hit 225, and 9 of 20 `baguette` rounds came back
+# unreadable — worse than the run it was replacing.
+#
+# So: one graph live at any instant, and the arms alternate round by round —
+# r01@25mm, r01@15mm, r02@25mm, ... Adjacent rounds are minutes apart, which is
+# TIGHTER pairing than concurrent lanes ever gave (those only share a window,
+# not an instant), and nothing contends. It costs wall-clock, not validity:
+# ~4.5 h for 4 scenes x 10 rounds instead of a ~2.5 h run that produces
+# nothing usable. A host with headroom (spark, 121 GB) could run whole SCENES
+# in parallel — never the two arms of one scene against each other.
 #
 # Usage:  ROUNDS=10 bash tools/resolution_ab.sh
 set -eo pipefail
@@ -59,52 +69,40 @@ SCENES=(baguette sink_cup fridge utensil)
 RSKILL="OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"
 mkdir -p "$OUT"
 
-run_worker() {  # $1 = index, $2 = scene, $3 = resolution in metres
-  local domain=$((80 + $1))
-  local tag="${2}-${3}"
-  local log="$OUT/worker-${tag}.log"
-  echo "  w${1}  ${2} @ ${3} m  domain=$domain  -> $log"
-  # Test seam: a harness can substitute the lane body to exercise the
-  # scheduling below without 10 h of GPU. Unset in every real run.
-  if [ -n "${RUN_WORKER_CMD:-}" ]; then
-    OPENRAL_OCTOMAP_RESOLUTION_M="$3" ROS_DOMAIN_ID=$domain \
-      $RUN_WORKER_CMD "$1" "$2" "$3" > "$log" 2>&1
+# One round of one arm. Serial by construction: the caller waits for it.
+run_round() {  # $1 = scene, $2 = resolution in metres, $3 = round number
+  local domain
+  case "$2" in 0.025) domain=80 ;; 0.015) domain=81 ;; *) echo "bad arm $2" >&2; return 2 ;; esac
+  local log="$OUT/worker-${1}-${2}.log"
+  if [ -n "${RUN_ROUND_CMD:-}" ]; then
+    OPENRAL_OCTOMAP_RESOLUTION_M="$2" ROS_DOMAIN_ID=$domain \
+      $RUN_ROUND_CMD "$1" "$2" "$3" >> "$log" 2>&1
     return
   fi
-  OPENRAL_OCTOMAP_RESOLUTION_M="$3" ROS_DOMAIN_ID=$domain \
+  OPENRAL_OCTOMAP_RESOLUTION_M="$2" ROS_DOMAIN_ID=$domain \
     uv run --no-sync python tools/_ceiling_probe.py \
-      --scene "$2" --gate on --rounds "$ROUNDS" \
-      --rskill "$RSKILL" --out "$OUT/$3" > "$log" 2>&1
+      --scene "$1" --gate on --rounds 1 --start-round "$3" \
+      --rskill "$RSKILL" --out "$OUT/$2" >> "$log" 2>&1
 }
 
-: > "$OUT/worklist.txt"
-echo "=== ${#SCENES[@]} scenes x 2 arms, ROUNDS=$ROUNDS, both arms of a scene concurrent"
-
-i=0
+echo "=== ${#SCENES[@]} scenes x 2 arms x $ROUNDS rounds, ONE graph at a time"
 fail=0
 booted=0
 for scene in "${SCENES[@]}"; do
-  pids=()
-  lanes=()
-  for res in 0.025 0.015; do
-    echo "$i $scene $res" >> "$OUT/worklist.txt"
-    run_worker "$i" "$scene" "$res" &
-    pids+=("$!")
-    lanes+=("${scene}@${res}")
-    if [ "$booted" -eq 0 ]; then
-      # The very first lane boots the XR-1 sidecar the whole battery shares.
-      # Its partner has to wait that out ONCE; every later pair starts together.
-      sleep "$SIDECAR_BOOT_S"
-      booted=1
-    fi
-    i=$((i + 1))
-  done
-  # Barrier: the next scene does not start until BOTH arms of this one are done,
-  # which is what keeps each pair's host conditions common.
-  for n in "${!pids[@]}"; do
-    wait "${pids[$n]}" || { echo "!!! ${lanes[$n]} exited non-zero"; fail=$((fail + 1)); }
+  for n in $(seq 1 "$ROUNDS"); do
+    for res in 0.025 0.015; do
+      printf '  %s r%02d @ %s m ... ' "$scene" "$n" "$res"
+      if run_round "$scene" "$res" "$n"; then echo "ok"; else
+        echo "NON-ZERO"; fail=$((fail + 1))
+      fi
+      if [ "$booted" -eq 0 ]; then
+        # The first round boots the XR-1 sidecar the whole battery then shares.
+        sleep "$SIDECAR_BOOT_S"
+        booted=1
+      fi
+    done
   done
   echo "--- ${scene}: both arms done"
 done
 
-echo "=== RESOLUTION_AB_DONE (${fail} lane(s) non-zero) ==="
+echo "=== RESOLUTION_AB_DONE (${fail} round(s) non-zero) ==="

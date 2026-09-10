@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The A/B's two arms have to meet the same host, so they have to run together.
+"""The A/B's two arms have to meet the same host, and only one graph fits on it.
 
-The primary endpoint is the *paired* over-approximation per stop, which means
-nothing unless a scene's 25 mm and 15 mm lanes saw the same machine. The first
-version of `tools/resolution_ab.sh` wrote a scene-interleaved worklist and fed
-it to `xargs -P`: each worker holds its slot for all ROUNDS rounds, so only the
-first pair ever overlapped and every later lane drifted by about one lane's
-duration.
+Two ways to get this wrong, both paid for. The first version fed a
+scene-interleaved worklist to `xargs -P`, which does not interleave anything —
+a worker holds its slot for all ROUNDS rounds, so only the first pair
+overlapped. On 2026-09-10 `sink_cup` ran its arms 29 minutes apart and its
+7/10-vs-0/10 unreadable-run gap read as a resolution effect; `baguette`, the
+one lane that stayed paired, was 3/10 against 3/10.
 
-In the 2026-09-10 run that produced `baguette` paired (3/10 unreadable runs
-against 3/10, Fisher p = 1.0) and `sink_cup` not — its 25 mm arm ran alone
-18:50-19:19 and its 15 mm arm alone 19:19-19:37, after ~30 rounds of host wear
-(7/10 against 0/10, p = 0.003). That read as a resolution effect until the
-order was checked, so the scheduling is asserted here rather than described in
-a comment.
+Running the lanes genuinely concurrently fixed the pairing and broke the host:
+baseline occupancy on q-laptop is ~9.1 GB of 15.4 and one deploy graph adds
+~4.9 GB, so two exhausted all 4 GB of swap, drove load averages to 225, and
+returned 9 of 20 rounds unreadable.
 
-Exercises the real script through its `RUN_WORKER_CMD` seam — no stub of the
-scheduler itself, only of the 10-hour lane body it drives.
+So the arms alternate round by round with one graph live at a time, which is
+tighter pairing than concurrent lanes gave — adjacent rounds share an instant,
+not merely a window. Exercises the real script through its `RUN_ROUND_CMD`
+seam; only the round body is substituted, never the scheduling under test.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -32,8 +31,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "resolution_ab.sh"
 
-# The script sources the ROS distro and this worktree's own overlay before it
-# schedules anything, so a host without a built workspace cannot run it at all.
 _OVERLAY = REPO / "install" / "setup.bash"
 _ROS = Path("/opt/ros/jazzy/setup.bash")
 pytestmark = pytest.mark.skipif(
@@ -46,108 +43,88 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def lane_recorder(tmp_path: Path) -> Path:
-    """A stand-in lane that records when it started and stopped, then exits."""
-    script = tmp_path / "lane.sh"
+def round_recorder(tmp_path: Path) -> Path:
+    """A stand-in round: appends its identity and whether a peer was live."""
+    script = tmp_path / "round.sh"
     script.write_text(
         "#!/usr/bin/env bash\n"
-        'printf "%s %s %s start %s\\n" "$1" "$2" "$3" "$(date +%s.%N)" >> "$LANE_LOG"\n'
-        "sleep 1\n"
-        'printf "%s %s %s end %s\\n" "$1" "$2" "$3" "$(date +%s.%N)" >> "$LANE_LOG"\n'
+        # A lock that a concurrent round would find already taken.
+        'if ! mkdir "$LIVE_DIR" 2>/dev/null; then echo "CONCURRENT" >> "$ROUND_LOG"; fi\n'
+        'printf "%s %s %s %s\\n" "$1" "$2" "$3" "$ROS_DOMAIN_ID" >> "$ROUND_LOG"\n'
+        'rmdir "$LIVE_DIR" 2>/dev/null\n'
     )
     script.chmod(0o755)
     return script
 
 
-def _windows(lane_log: Path) -> dict[tuple[str, str], tuple[float, float]]:
-    """`(scene, resolution) -> (start, end)` from the recorder's log."""
-    out: dict[tuple[str, str], list[float]] = {}
-    for line in lane_log.read_text().splitlines():
-        _idx, scene, res, event, stamp = line.split()
-        out.setdefault((scene, res), [0.0, 0.0])[0 if event == "start" else 1] = float(stamp)
-    return {k: (v[0], v[1]) for k, v in out.items()}
-
-
-def test_both_arms_of_a_scene_overlap_and_scenes_do_not(
-    tmp_path: Path, lane_recorder: Path
-) -> None:
-    lane_log = tmp_path / "lanes.log"
-    out = tmp_path / "ab"
+def _run(tmp_path: Path, recorder: Path, rounds: str = "2") -> list[list[str]]:
+    round_log = tmp_path / "rounds.log"
     env = {
         **os.environ,
-        "ROUNDS": "1",
+        "ROUNDS": rounds,
         "SIDECAR_BOOT_S": "0",
-        "OUT": str(out),
-        "RUN_WORKER_CMD": str(lane_recorder),
-        "LANE_LOG": str(lane_log),
+        "OUT": str(tmp_path / "ab"),
+        "RUN_ROUND_CMD": str(recorder),
+        "ROUND_LOG": str(round_log),
+        "LIVE_DIR": str(tmp_path / "live.lock"),
     }
     proc = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=300, check=False
+        ["bash", str(SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
-    assert "RESOLUTION_AB_DONE (0 lane(s) non-zero)" in proc.stdout
-
-    windows = _windows(lane_log)
-    scenes = sorted({scene for scene, _ in windows})
-    assert len(scenes) >= 2, windows
-
-    for scene in scenes:
-        coarse = windows[(scene, "0.025")]
-        fine = windows[(scene, "0.015")]
-        # Overlap: each arm starts before the other has finished.
-        assert coarse[0] < fine[1] and fine[0] < coarse[1], (
-            f"{scene}: arms did not overlap — 0.025 {coarse}, 0.015 {fine}. "
-            "This is the sink_cup failure; the paired endpoint is void without it."
-        )
-
-    # And the barrier holds: no scene starts before the previous one is done.
-    by_scene = {
-        scene: (
-            min(windows[(scene, r)][0] for r in ("0.025", "0.015")),
-            max(windows[(scene, r)][1] for r in ("0.025", "0.015")),
-        )
-        for scene in scenes
-    }
-    ordered = sorted(by_scene.values())
-    for earlier, later in pairwise(ordered):
-        assert earlier[1] <= later[0], (
-            f"scenes overlapped: {earlier} then {later}. Three live graphs is more "
-            "than this host carries, and it breaks the pairing of both."
-        )
+    assert "RESOLUTION_AB_DONE (0 round(s) non-zero)" in proc.stdout
+    return [line.split() for line in round_log.read_text().splitlines()]
 
 
-def test_every_lane_gets_its_own_ros_domain(tmp_path: Path, lane_recorder: Path) -> None:
-    """Two concurrent lanes on one domain would see each other's nodes."""
-    lane_log = tmp_path / "lanes.log"
-    out = tmp_path / "ab"
-    domain_log = tmp_path / "domains.log"
-    recorder = tmp_path / "lane_domain.sh"
-    recorder.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s %s %s %s\\n" "$2" "$3" "$ROS_DOMAIN_ID" '
-        '"$OPENRAL_OCTOMAP_RESOLUTION_M" >> "$DOMAIN_LOG"\n'
-        'printf "%s %s %s start 0\\n" "$1" "$2" "$3" >> "$LANE_LOG"\n'
-        'printf "%s %s %s end 1\\n" "$1" "$2" "$3" >> "$LANE_LOG"\n'
+def test_arms_alternate_round_by_round(tmp_path: Path, round_recorder: Path) -> None:
+    rows = _run(tmp_path, round_recorder)
+
+    assert "CONCURRENT" not in {row[0] for row in rows}, (
+        "two rounds were live at once; one deploy graph is all this host holds"
     )
+    # Within a scene, the arms alternate and round numbers ascend in pairs.
+    by_scene: dict[str, list[tuple[str, str]]] = {}
+    for scene, res, rnd, _domain in rows:
+        by_scene.setdefault(scene, []).append((res, rnd))
+    assert len(by_scene) >= 2, rows
+    for scene, seq in by_scene.items():
+        assert seq == [(res, str(n)) for n in (1, 2) for res in ("0.025", "0.015")], (
+            f"{scene}: {seq}"
+        )
+
+
+def test_each_arm_keeps_its_own_domain(tmp_path: Path, round_recorder: Path) -> None:
+    """The arms must not share a ROS domain, or one round's leftovers reach the next."""
+    rows = _run(tmp_path, round_recorder)
+    domains = {res: {row[3] for row in rows if row[1] == res} for res in ("0.025", "0.015")}
+    assert domains["0.025"] == {"80"}, domains
+    assert domains["0.015"] == {"81"}, domains
+
+
+def test_a_failing_round_is_counted_not_swallowed(tmp_path: Path) -> None:
+    """A non-zero round must reach the summary line, not be lost to `set -e`."""
+    recorder = tmp_path / "boom.sh"
+    recorder.write_text("#!/usr/bin/env bash\nexit 3\n")
     recorder.chmod(0o755)
     env = {
         **os.environ,
         "ROUNDS": "1",
         "SIDECAR_BOOT_S": "0",
-        "OUT": str(out),
-        "RUN_WORKER_CMD": str(recorder),
-        "LANE_LOG": str(lane_log),
-        "DOMAIN_LOG": str(domain_log),
+        "OUT": str(tmp_path / "ab"),
+        "RUN_ROUND_CMD": str(recorder),
     }
     proc = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=300, check=False
+        ["bash", str(SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
-
-    rows = [line.split() for line in domain_log.read_text().splitlines()]
-    domains = [row[2] for row in rows]
-    assert len(domains) == len(set(domains)), f"domain reused across lanes: {rows}"
-    # And the arm's resolution reaches the lane, which is the only difference
-    # between the two arms of a pair.
-    for scene, res, _domain, exported in rows:
-        assert exported == res, f"{scene}: lane got {exported}, lane is {res}"
+    assert "RESOLUTION_AB_DONE (8 round(s) non-zero) ===" in proc.stdout, proc.stdout[-500:]
