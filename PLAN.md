@@ -144,9 +144,12 @@ simultaneously:
 > heartbeat timeout tearing down the whole navigation stack — and were scored
 > `deadline-no-grasp`, a policy failure they were not. Excluding runs the
 > policy was never given a fair share of compute puts the arms at **66.7 % vs
-> 4.0 %**. **Re-measured on the fixed harness 2026-09-10: 62.5 % vs 2.7 %, a
-> 59.8-point gap, `p = 3.1e-08`** — the two agree within 3 points by independent
-> routes, so the gap is about **twice** the 29 recorded here. The direction and the decision below are
+> 4.0 %**. Re-measured on the fixed harness 2026-09-10 at 62.5 % vs 2.7 % — and
+> **corrected again the same day (#262) to 80.0 % vs 4.3 %, a 75.7-point gap,
+> `p = 5.5e-08`**, once the 21 of 69 runs whose graph was not assembled at
+> dispatch (TF tree disjoint, camera not publishing) are excluded. So the gap is
+> about **2.6x** the 29 recorded here, and once the policy actually acts `fridge`
+> and `utensil` complete **7/7** and **9/9** with the gate off. The direction and the decision below are
 > unaffected; only the size is, and it moves in the programme's favour. Fixed
 > and re-running — see `docs/reference/collision-validation-evidence.md`.
 
@@ -174,8 +177,8 @@ recover it — it should be dropped from the collision programme's scorecard.
 were real contact, and the gate-off arm here is a *ceiling*, not a
 configuration. The number says how much headroom the §5 levers are competing
 for: **at least 29 points** — see the #256 correction above, which re-adjudicates
-it to 62.7 and whose re-measurement puts it at 59.8 — concentrated in the
-payload class.
+it to 62.7 and whose re-measurement, corrected for unassembled graphs (#262),
+puts it at 75.7 — concentrated in the payload class.
 
 ---
 
@@ -624,8 +627,9 @@ Four things had to be discovered to make it run at all, each worth keeping:
 - [x] **Ceiling experiment** — done, 2026-09-07. 31.1 % vs 2.3 %, p = 3.5e-04.
       Result in §4. **Both absolutes are floors** (#256): a Nav2 bond teardown
       voided 31 of the 89 runs and they were scored as policy failures.
-      Corrected reading 66.7 % vs 4.0 %; **re-measured 2026-09-10 at 62.5 % vs
-      2.7 %, a 59.8-point gap** (`p = 3.1e-08`).
+      Corrected reading 66.7 % vs 4.0 %; re-measured 2026-09-10, then corrected
+      again for unassembled graphs (#262): **80.0 % vs 4.3 %, a 75.7-point gap**
+      (`p = 5.5e-08`).
 - [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
       points of completion — **measured at 59.8 on 2026-09-10** — so the
       §5 levers are competing for real headroom rather than for noise.

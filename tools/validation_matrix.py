@@ -2157,6 +2157,70 @@ def wait_for_dds_transport_ready(
     return ""
 
 
+#: Dispatch failures that mean "the graph is not assembled yet", not "the run failed".
+#:
+#: A goal that returns in under a second naming one of these has not exercised the
+#: policy at all: the TF tree is still two disjoint trees, or a camera the rSkill
+#: declares has published no frame. The graph is up — the action server answered — but
+#: the pieces the dispatcher reads are not.
+#:
+#: Measured 2026-09-10 (#262). A fixed `time.sleep(5.0)` between the action server
+#: appearing and the dispatch is enough on an idle host and is not enough under
+#: contention: **6 `ConnectivityException` + 17 camera failures across 78 goal logs** in
+#: the ceiling battery, and 10 of 18 runs in the first resolution A/B. Every one scored
+#: as a policy failure, because the graph survives, prints `sim.task_success_final` at
+#: teardown, and reads as an ordinary non-completion.
+_DISPATCH_NOT_READY: Final[tuple[str, ...]] = (
+    "ConnectivityException",
+    "not part of the same tree",
+    "expected camera",
+)
+
+#: How long to keep re-dispatching a run whose graph is not assembled, and the gap
+#: between attempts. Bounded deliberately: a graph still disjoint after this is a real
+#: failure, not a slow start, and has to be recorded as one.
+DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0
+DISPATCH_RETRY_INTERVAL_S: Final[float] = 12.0
+
+
+def dispatch_not_ready_reason(goal_log: Path) -> str:
+    """Why this dispatch says the graph was not assembled yet, or ``""``.
+
+    Empty for a goal that ran — including one that failed for a real reason — so a
+    genuine E-stop, deadline or capability mismatch is never retried. A goal that
+    delivered any action chunk is never in this class whatever it says afterwards.
+
+    Args:
+        goal_log: The run's ``<stem>_goal.log``.
+
+    Returns:
+        The failure reason when it is a readiness failure, else ``""``.
+
+    Example:
+        >>> import pathlib, tempfile
+        >>> d = pathlib.Path(tempfile.mkdtemp())
+        >>> _ = (d / "g.log").write_text(
+        ...     '{"status": 6, "failure_reason": "ConnectivityException: no tree"}'
+        ... )
+        >>> dispatch_not_ready_reason(d / "g.log")
+        'ConnectivityException: no tree'
+        >>> _ = (d / "h.log").write_text('{"status": -1, "latest_chunk": 400}')
+        >>> dispatch_not_ready_reason(d / "h.log")
+        ''
+    """
+    try:
+        text = goal_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    goal, _ = parse_goal_log(text.splitlines())
+    if goal is None:
+        return ""
+    if _as_int(goal.get("latest_chunk")):
+        return ""
+    reason = str(goal.get("failure_reason") or "")
+    return reason if any(needle in reason for needle in _DISPATCH_NOT_READY) else ""
+
+
 def _wait_for_action_server(
     proc: subprocess.Popen[bytes], timeout_s: int, env: dict[str, str] | None = None
 ) -> bool:

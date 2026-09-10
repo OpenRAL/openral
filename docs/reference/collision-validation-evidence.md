@@ -2970,6 +2970,45 @@ its own stops by 0.0003 mm), and the adjudicator read the deliberately-clear
 found no overhang to charge it with. Every self-pair naming `link1` was
 permanently `unadjudicated`. Filed as **#260**; `PLAN.md` §5 carries the table.
 
+**Corrected 2026-09-10 — 30 % of the runs never got a policy, and both rates are
+floors again (#262).** The same battery's goal logs carry **6
+`ConnectivityException`** (the TF tree still two disjoint trees when the goal was
+dispatched) and **17 `ROSConfigError: XR-1 expected camera …`** across 78 logs.
+Each returns in ~0.4 s having delivered **zero action chunks**, and each was
+scored as the policy failing — because the graph survives, prints
+`sim.task_success_final` at teardown, and reads as an ordinary non-completion.
+**21 of the 69 valid runs delivered zero chunks.** Excluding them:
+
+| | as published | policy-free | **corrected** |
+| --- | ---: | ---: | ---: |
+| gate **OFF** | 20/32 = 62.5 % | 7 | **20/25 = 80.0 %** |
+| gate **ON** | 1/37 = 2.7 % | 14 | **1/23 = 4.3 %** |
+| gap | 59.8 pts | | **75.7 pts**, Fisher `p = 5.5e-08` |
+
+Per scene, and this is the sharper picture: once the policy actually acts,
+`fridge` is **7/7** and `utensil` **9/9** with the gate off, against 0/5 and 0/8
+with it on.
+
+| scene | OFF | ON | p |
+| --- | ---: | ---: | ---: |
+| `utensil` | **9/9 (100 %)** | 0/8 | 0.00002 |
+| `fridge` | **7/7 (100 %)** | 0/5 | 0.0013 |
+| `sink_cup` | 3/6 (50 %) | 1/5 (20 %) | 0.35 |
+| `baguette` | 1/3 (33 %) | 0/5 | 0.38 |
+
+**The cause is a fixed readiness wait**, not load in general: the harness waits
+for the action server, sleeps **5 s**, and dispatches. That is enough on an idle
+host and not under contention. Fixed in #262 by re-dispatching, bounded and
+recorded, while the only thing wrong is that the graph is not assembled yet.
+
+**This is the third time the same mistake has been made on this page**, and it
+was mine each time: a bucket defined by absence read as a policy property. #256
+found it for `deadline-no-grasp`, #257's own entry warned "read `latest_chunk`
+on every record before believing any rate" — and then published a rate without
+doing so. The stop census and the class split are unaffected: **0 of the 22
+gate-ON stops occurred in a zero-chunk run**, since a stop requires the arm to
+have moved.
+
 **What is owed.** A concurrent GPU job on the host during the opening lanes
 cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
 `fridge`, `utensil` and `sink_cup-on` lanes lost none. The symptom is the sim
