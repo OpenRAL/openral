@@ -978,12 +978,31 @@ In order, each chosen because it is unblocked and its answer changes the next on
    a conservatism decision like #253/#254, not free. Item promoted out; what
    remains under #259 is lever 2 itself, which needs a ruling rather than an
    investigation.
-3. **Run the live 15 mm A/B #253 says is missing.** `OPENRAL_OCTOMAP_RESOLUTION_M=0.015`,
-   `tools/ceiling_battery.sh`, `WORKERS=2`, 10 rounds, gate-ON only, on `q-laptop`
-   with nothing else on the GPU. **Prediction to falsify:** ≈5 of 20 stops
-   convert (class B minus the 3 under 12.99 mm); if fewer than 3 do, the class-B
-   bound is wrong. Read `latest_chunk` and the bond-teardown flag on every
-   record before believing any rate.
+3. **Run the live 15 mm A/B #253 says is missing.** `tools/resolution_ab.sh`,
+   `ROUNDS=10`, gate-ON on both arms, on `q-laptop` with nothing else on the
+   GPU. **Prediction to falsify:** ≈5 of 20 stops convert (class B minus the 3
+   under 12.99 mm); if fewer than 3 do, the class-B bound is wrong. Read
+   `latest_chunk` and the bond-teardown flag on every record before believing
+   any rate.
+
+   **A first attempt on 2026-09-10 was voided, twice over, and both causes are
+   now fixed — do not re-run against the old instrument.** (a) Every round
+   leaked an octomap node pair whose Fast-DDS lock file starved the *next* run
+   on that domain to zero action chunks (openral #265; the dated entry in
+   `docs/reference/collision-validation-evidence.md`). (b) The runner said it
+   interleaved the arms and did not: `xargs -P` holds a slot for all `ROUNDS`
+   rounds, so only the first pair overlapped. `sink_cup` ran its two arms 29
+   minutes apart and its 7/10-vs-0/10 unreadable-run gap read as a resolution
+   effect; `baguette`, the one lane that stayed paired, was 3/10 vs 3/10,
+   `p = 1.0`. The scheduler now runs one scene's two arms together behind a
+   barrier, records carry an absolute `started_at`, and the report's PAIRING
+   section refuses to certify a scene whose arms overlapped less than half
+   their combined span. **There is no `WORKERS` knob any more** — the paired
+   design fixes concurrency at two lanes.
+
+   None of the 43 rounds from the voided attempt are poolable with the rerun:
+   `sink_cup`'s arms were never exchangeable, and `fridge` got 2 rounds on one
+   arm and none on the other. It is a fresh full battery, ~10 h.
 4. **Widen the carry-speed sample** from n=5 with this battery's 8 carrying-phase
    stops (`tools/stop_ee_speed.py` over `openral-256/outputs/ceiling/2026-09-09-fixed`).
    It is the staleness half of #253's trade and is a two-hour job.
