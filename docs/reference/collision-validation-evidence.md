@@ -2652,6 +2652,31 @@ therefore could not report on collision work in either direction. It scored
 is **withdrawn**; the scene is weak, not dead. It should stay on the scorecard
 until measured on a full ten valid rounds.
 
+**What the gate-ON arm was actually stopped by.** 22 of the 37 valid gate-ON
+runs were stopped by the kernel (the other 15 ran out of deadline). All 22 are
+`kind=world`, and **19 of 22 name the carried payload**, not an arm link
+(`panda_link1`/`link6`/`link7`, one each). Every one reported penetration,
+median −6.4 mm.
+
+Traced to the certified GJK distance in each run's own ground-truth snapshot,
+only **3 of 20** were genuinely touching — and those graze at −0.7, −0.2 and
+−0.1 mm. The median stop fires with **+10.8 mm of real clearance**, six fire
+with more than 20 mm, and the worst is `panda_link7` stopped at −23.4 mm while
+**61.2 mm clear**. Median over-approximation: **18.9 mm**, which is essentially
+the 25 mm cell half-diagonal (`25·√3/2 = 21.65 mm`).
+
+That reorders the levers, and the full per-stop table is in `PLAN.md` §5: the
+stop population is 86 % payload, payload primitives were already measured tight
+(−1.5 mm beyond the voxel term), so **no geometry work can recover the 18.9 mm
+— it is not geometry, it is the cell**. Voxel resolution (lever 3) is the only
+lever that reaches it.
+
+Two of the 22 stops carry no snapshot, both `baguette`. Adjudicating these with
+`adjudicate_ground_truth` is **not** valid here: the ceiling probe writes no
+monitor file, so grid resolution comes back `None` and the budget falls back to
+the 88.2 mm max *link* corner slop — the wrong yardstick for a payload stop. The
+figures above compare against certified geometry directly and need no budget.
+
 **What is owed.** A concurrent GPU job on the host during the opening lanes
 cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
 `fridge`, `utensil` and `sink_cup-on` lanes lost none. The symptom is the sim
