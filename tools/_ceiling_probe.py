@@ -143,7 +143,7 @@ def _record(
         "load_end": [round(v, 2) for v in os.getloadavg()],
         "chunks": _chunks_from_goal_log(goal_log),
         "nav2_bond_teardown": _bond_teardown(deploy_log) or None,
-        # Every dispatch the graph was not assembled for, in order (#262).
+        # Every dispatch the graph was not assembled for, in order (#263).
         # Empty when the run dispatched first time; a trailing `GAVE UP:` entry
         # means the graph never assembled, so the round is not a policy result.
         "dispatch_not_ready_attempts": list(attempts or ()),
@@ -266,7 +266,7 @@ def run_one(
             # The action server answering does not mean the graph is assembled:
             # the TF tree can still be two disjoint trees and a declared camera
             # can still have published nothing. The fixed 5 s above covered that
-            # on an idle host and did not under contention (#262) — 10 of 18
+            # on an idle host and did not under contention (#263) — 10 of 18
             # runs in the first resolution A/B died at 0.4 s with
             # `ConnectivityException`, each scored as a policy failure. So
             # re-dispatch while the ONLY thing wrong is that the graph is not up

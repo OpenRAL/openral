@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{'arm':>8} {'valid':>6} {'completed':>10} {'stopped':>8} {'teardowns':>10}")
     for arm, rows in sorted(arms.items(), reverse=True):
         # A run whose graph never assembled delivered no action chunks and is not
-        # a policy result (#262). Excluding it is the correction that moved the
+        # a policy result (#263). Excluding it is the correction that moved the
         # ceiling battery from 62.5/2.7 to 80.0/4.3.
         valid = [
             r for r in rows if r["outcome"] != "harness-error" and r["chunks"] not in (0, None)

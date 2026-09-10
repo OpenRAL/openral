@@ -2971,7 +2971,7 @@ found no overhang to charge it with. Every self-pair naming `link1` was
 permanently `unadjudicated`. Filed as **#260**; `PLAN.md` §5 carries the table.
 
 **Corrected 2026-09-10 — 30 % of the runs never got a policy, and both rates are
-floors again (#262).** The same battery's goal logs carry **6
+floors again (#263).** The same battery's goal logs carry **6
 `ConnectivityException`** (the TF tree still two disjoint trees when the goal was
 dispatched) and **17 `ROSConfigError: XR-1 expected camera …`** across 78 logs.
 Each returns in ~0.4 s having delivered **zero action chunks**, and each was
@@ -2998,7 +2998,7 @@ with it on.
 
 **The cause is a fixed readiness wait**, not load in general: the harness waits
 for the action server, sleeps **5 s**, and dispatches. That is enough on an idle
-host and not under contention. Fixed in #262 by re-dispatching, bounded and
+host and not under contention. Fixed in #263 by re-dispatching, bounded and
 recorded, while the only thing wrong is that the graph is not assembled yet.
 
 **This is the third time the same mistake has been made on this page**, and it

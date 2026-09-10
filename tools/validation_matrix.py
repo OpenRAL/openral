@@ -2164,7 +2164,7 @@ def wait_for_dds_transport_ready(
 #: declares has published no frame. The graph is up — the action server answered — but
 #: the pieces the dispatcher reads are not.
 #:
-#: Measured 2026-09-10 (#262). A fixed `time.sleep(5.0)` between the action server
+#: Measured 2026-09-10 (#263). A fixed `time.sleep(5.0)` between the action server
 #: appearing and the dispatch is enough on an idle host and is not enough under
 #: contention: **6 `ConnectivityException` + 17 camera failures across 78 goal logs** in
 #: the ceiling battery, and 10 of 18 runs in the first resolution A/B. Every one scored
