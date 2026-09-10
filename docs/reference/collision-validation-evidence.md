@@ -2705,6 +2705,78 @@ Two further asymmetries worth stating: the arms are unbalanced (32 valid OFF
 against 37 ON, because the gate stops runs early and fewer are lost), and the
 gate-off arm runs longer per scene since nothing stops it.
 
+### 2026-09-10 — `has_stage2_hull` observed on a live round, and a gate-on `fridge` run that completed
+
+The closing gap on #260 was that nothing had watched the new field travel through
+a **live** graph: the producer was proven at unit tier against a real compiled
+`panda_mj_description` MjModel and the real `panda_mobile` manifest, and the
+adjudicator against the archived battery, but no real
+`sim.estop_ground_truth_snapshot` had been observed carrying it. Two single
+rounds on q-laptop (RTX 5070 Laptop 8 GB, one round per `ROS_DOMAIN_ID`) close it.
+
+**Host state, stated precisely.** The host was verified idle at launch — no
+`octomap` orphans, no live deploy graph, GPU at 15 MiB. Another session's
+resolution A/B battery then started a worker at ~20:27, during the first round;
+its own deploy graphs came up at 20:41, after both rounds here had finished
+(20:32:56 and 20:36:00), so no two live graphs ever overlapped, though its XR-1
+sidecar was loading on the same 8 GB GPU during the second round. Nothing about a
+JSON field's presence is contention-sensitive, and the one timing-flavoured
+observation below (a gate-on round completing) is only *harder* under load, not
+easier — but "otherwise idle" would overstate what was true for the whole
+window.
+
+**The round that stopped.** `utensil`, gate **on**, domain 72 — a kernel stop at
+`sim_time_s = 20.4`, `stop_class: attached_payload`, one snapshot line. Its
+`adjudication_budget.collision_model_slop.links` reads, on the live wire:
+
+| link | `has_stage2_hull` | `hull_overhang_m` | `corner_slop_m` |
+| --- | --- | --- | --- |
+| `panda_link1` | **`false`** | `null` | 0.0534 |
+| `panda_link2` | `true` | 0.000217 | 0.048215 |
+| `panda_link3` | `true` | 0.000485 | 0.08644 |
+| `panda_link4` | `true` | 0.000217 | 0.08822 |
+| `panda_link5` | `true` | 0.000259 | 0.045327 |
+| `panda_link6` | `true` | 0.000234 | 0.053349 |
+| `panda_link7` | `true` | 0.0000890 | 0.028274 |
+
+Exactly the shape the manifest declares: `panda_link1` alone ships no stage-2
+hull (#191 withdrew its refined envelope for moving link1's own stops by
+0.0003 mm), every other kernel-checked link carries one with a measured overhang.
+The raw line is `data/estop-snapshot-has-stage2-hull-2026-09-10.jsonl`.
+
+**Driving the adjudicator with that live record.** This stop is
+`attached_payload`, so its own adjudication does not take the link↔link branch —
+the branch #260 changed. Asking `hal_admissible_gap_m` what the *same live
+budget block* yields for a self pair:
+
+| pair | budget |
+| --- | --- |
+| `link1`↔`link6` (link1 has no hull) | **0.17644 m** — the box term |
+| `link1`↔`link7` (link1 has no hull) | **0.17644 m** — the box term |
+| `link6`↔`link7` (both hulled) | 0.000323 m — the #221 overhang sum |
+| `link5`↔`link7` (`depth_is_box_bound` set) | 0.17644 m — unchanged by #260 |
+
+Before #261 the first two returned `None`. The 176.44 mm is the live
+`link_link.admissible_gap_box_m`, and it matches the figure the archived-battery
+replay produced to the digit — two independent routes to the same budget.
+
+**A gate-on round that completed the task.** The first round attempted was
+`fridge`, gate **on**, domain 71: it ran 470 s, delivered **753** action chunks,
+never tripped the kernel, and reported `ever_succeeded: true`. It therefore
+emitted no snapshot at all, which is why a second round was needed. Worth
+recording on its own: `fridge`-on was **0/10** in the 2026-09-10 ceiling battery,
+so a single gate-on completion is outside that lane's measured rate. One round is
+not a rate — it is a reminder that the battery's per-scene zeroes are small
+samples, not impossibilities.
+
+**Method note.** The field is nested at
+`adjudication_budget.collision_model_slop`, not at a top-level
+`collision_model_slop` — a first pass at reading the live line looked at the
+wrong key and reported the field absent. Nothing in the tree asserts the nesting:
+the producer test checks `collision_model_mesh_slop` directly and the adjudicator
+tests build the budget dict by hand. That plumbing predates #260 and is not
+wrong, but it is unpinned.
+
 ## Related
 
 - [RoboCasa start-state collision census](robocasa-start-state-census.md) — every
