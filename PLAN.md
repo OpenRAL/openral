@@ -212,7 +212,7 @@ term, which is the OBB corner slop (`panda_link6`: 53.35 mm).
 | --- | --- | --- | --- | --- |
 | 1 | **`tight_geometry` on `panda_link6`** (and `link3`/`link4`, which have none) | 18 of 29 link stops, incl. the whole `voxel_352030` class | ~33 mm of the link excess | **one manifest edit**; `tools/generate_tight_geometry.py` exists |
 | 2 | **Promote the fixtures the payload passes to modeled geometry** | 51 of 70 payload stops (the `voxel_` ones) | removes the voxel term entirely for those | moderate — generalises ADR-0098/#200 from the *declared place target* to the fixture the payload is near |
-| 3 | **Voxel resolution 25 → 15 mm** — **now the first lever, see the 2026-09-10 stop census below** | the quantisation term in *every* stop class; **86 % of gate-ON stops are payload**, whose primitives are already tight, so geometry cannot reach them | **8.7 mm** of the 21.65 mm voxel half-diagonal — against a **measured median 18.9 mm over-approximation** and a median **+10.8 mm** of real clearance at the stop | **un-struck 2026-09-07** — measured p99 **0.825 ms**, not the estimated 26.7 ms. Octomap-bridge conversion cost still unmeasured |
+| 3 | **Voxel resolution 25 → 15 mm** — **with the WG as #253**; every cost term measured (kernel 0.825 ms, rasterize 1.60 ms, wire +55 ms p99, see the item below) | **class B only** — the 8 of 20 gate-ON stops whose excess a 25 mm cell can account for (≤ 21.65 mm); it does **not** reach class C (9 of 20, excess 23–85 mm, → lever 2 / #254) nor the 3 real contacts | **8.66 mm** of the 21.65 mm half-diagonal; **5 of 20 stops** plausibly clear at 15 mm (3 of class B already sit under 12.99 mm) | one parameter, reversible; staleness cost is probabilistic and priced against carry speed (n=5, now widenable to n=13) |
 | 4 | ~~Payload as a tight hull~~ | — | **−1.5 mm: none** | struck; measured out |
 
 ### 2026-09-10 — the stop census that makes lever 3 first, not third
@@ -357,17 +357,61 @@ and this measures:
 with the allowance inactive are unexplained — the support witness is the other
 half of what arms it, and whether it had dropped there has not been checked.
 
-**Still owed before this is a manifest edit** (unchanged from 2026-09-07): the
-measured p99 of **0.825 ms** is the kernel *consuming* a grid.
-`packages/openral_octomap_bridge`'s octree→grid conversion at a finer tree
-resolution is still unmeasured and is the other half of the cost. There is an
-`experiment/voxel-resolution-15mm-v2` branch; its state has not been reviewed
-against this evidence.
+**What is still owed on lever 3 — corrected 2026-09-10 on unification with the
+resolution branch.** The octree→grid conversion is **not** unmeasured: the lever-3
+item below records it at **1.60 ms at 15 mm** (`RasterizationCostAcrossTreeResolutions`),
+together with the kernel (0.825 ms) and the wire (+55 ms p99, the term that bites).
+What remains is exactly what #253 lists: (1) a **live 15 mm A/B** — the ceiling
+battery is now a working instrument to run it in, `WORKERS=2`; (2) widening the
+carry-speed sample from n=5 — this battery adds 8 carrying-phase stops; (3) nothing
+on hardware. The `experiment/voxel-resolution-15mm-v2` branch is PR #252, rebased
+onto this plan on 2026-09-10 with both records unified here.
 
 **Caveat.** 20 of the 22 stops carry a snapshot; two `baguette` stops do not.
 And these are gate-ON runs from the battery whose opening lanes lost 11 runs to
 a concurrent GPU job — the stop census is unaffected by that (a stopped run is a
 stop regardless), but the per-scene counts inherit the same thin `baguette`.
+
+### 2026-09-10 — the ceiling itself is depressed by self-collision false positives
+
+The world-voxel check is **off** in the gate-OFF arm, so any kernel stop there is
+the envelope or self-collision path — no voxel, no quantisation term, nothing
+lever 2 or lever 3 can touch. Seven of the 32 valid gate-OFF runs carry one;
+five of those runs failed. Traced to the certified distance **for the exact pair
+the kernel named**, out of the same run's ground-truth snapshot:
+
+| scene | kernel pair | kernel depth | **certified, that pair** | run |
+| --- | --- | ---: | ---: | --- |
+| `sink_cup` | `link5` ↔ `link7` | −26.6 mm | **+3.5 mm** | failed |
+| `sink_cup` | `link5` ↔ `link7` | −32.2 mm | **+1.4 mm** | failed |
+| `sink_cup` | `link5` ↔ `link7` | −29.6 mm | **+4.9 mm** | failed |
+| `utensil` | `link1` ↔ `link7` | −1.7 mm | **+87.9 mm** | completed |
+| `baguette` | *payload* ↔ `link1` | −1.6 mm | **+69.2 mm** | failed |
+| `baguette` | *payload* ↔ `link1` | −0.2 mm | **+25.2 mm** | failed |
+| `fridge` | `link1` ↔ `link6` | −2.8 mm | not in snapshot | completed |
+
+**Every adjudicable one is a false positive.** The `link5`↔`link7` trio reports
+~30 mm of penetration on a pair that is 1–5 mm *clear* — a ~30 mm
+over-approximation with **no voxel in the path at all**. That is the pair whose
+ACM exemption #191 retired as "proven real", and all seven links ship stage-2
+`tight_geometry` on `master`; so either the hull for `link5`/`link7` is not
+tight where these configurations put it, or the retirement was premature. This
+plan does not decide which. The payload↔`link1` pair is the
+`check_attached_self_collision` path and is 25–70 mm out.
+
+**Why this is a lever and where it sits.** These stops are *inside the gate-OFF
+ceiling* — they cost completions with the world check off — so fixing them
+raises the **62.5 %** the whole programme is measured against, and they recur
+in gate-ON (the 3 link stops there). It is the cheapest thing on this page:
+hull fidelity on two named links and one named pair, adjudicable from artifacts
+already on disk. **It has no issue.** Filing one is the first item under "What
+to test next".
+
+*Probe caveat, so nobody reads a number wrongly:* the snapshot's nearest
+link↔link pair is `link5`↔`link6` at −23 to −28 mm in every one of these runs.
+That is an **adjacent** pair overlapping at its joint by construction; the
+kernel never fired on it in 80 runs, so it is handled and is not a missed stop.
+The pair-specific rows above are the ones that mean something.
 
 ### Resolution was struck on an estimate, and the estimate was wrong (lever 3)
 
@@ -678,6 +722,16 @@ Four things had to be discovered to make it run at all, each worth keeping:
       stops is thin, and the speeds are *this* policy's — a faster one moves the
       p99 corner from marginal to routine. Widening n is the thing to do before
       the manifest edit, not instead of it.
+
+      **Reach, bounded 2026-09-10 (#258).** "Recovers 8.7 mm in every stop
+      class" is true of the *term* and not of the *stops*: tracing the 20
+      adjudicable gate-ON stops to certified truth, only **8** have an excess a
+      25 mm cell can account for, and 3 of those already sit under a 15 mm
+      cell's 12.99 mm. **25 → 15 mm plausibly converts 5 of 20.** The other 9
+      have an excess of 23–85 mm that no cell explains — that population is
+      #254's, and this lever cannot touch it. The three real contacts survive
+      at any resolution (a finer cell moves reported depth *toward* truth; it
+      does not subtract from it).
 - [ ] ~~**Drop `baguette` from the collision scorecard**~~ — **withdrawn
       2026-09-10.** It completed **1/3** with the gate off on the fixed harness,
       so the 0/11 behind this was partly starved runs, not a policy ceiling.
@@ -872,7 +926,9 @@ Four things had to be discovered to make it run at all, each worth keeping:
       `deadline-no-grasp`, and that was recorded as a property of the *policy*.
       Thirty-six rounds on `spark` produced **zero** `deadline-no-grasp` and
       **78 %** payload stops. Same policy, different host: the figure was a 420 s
-      deadline meeting a machine at load 19 with a shared GPU.
+      deadline meeting a machine at load 19 with a shared GPU. **The mechanism
+      was found in #257:** Nav2's 4 s bond timeout tearing the whole nav stack
+      down, silently — not load per se, but a threshold load trips.
 
       So there is no scene-selection problem to fix here, and the battery-sizing
       advice derived from it was wrong for an idle host. What stands is narrower
@@ -892,6 +948,37 @@ Four things had to be discovered to make it run at all, each worth keeping:
       never affected by the probe defect, but the two should now agree and that
       agreement is worth checking rather than assuming.
 
+### What to test next — recommendation, 2026-09-10
+
+In order, each chosen because it is unblocked and its answer changes the next one:
+
+1. **File and adjudicate the self-collision false positives above.** No WG ruling
+   needed — it is a fidelity bug, not a conservatism trade. Adjudicate every
+   `kind=self` stop in both arms with the pair-specific certified distance, and
+   regenerate the `link5`/`link7` hulls against the configurations that trip.
+   **Success criterion:** the three `sink_cup` stops read within the
+   hull-overhang budget of their +1.4…+4.9 mm. This raises the ceiling every
+   other lever is measured against, so it goes first.
+2. **Answer #259's open question before designing anything:** why is
+   `place_allowance_active` false on all 20 stops with 9 declarations armed?
+   Check `support_contact_witness` at those 9 stops from the archived logs. If the
+   allowance never engages, that is a bug fix worth up to 9 of 20 stops at zero
+   conservatism — and it changes what the WG is being asked in #253/#254.
+3. **Run the live 15 mm A/B #253 says is missing.** `OPENRAL_OCTOMAP_RESOLUTION_M=0.015`,
+   `tools/ceiling_battery.sh`, `WORKERS=2`, 10 rounds, gate-ON only, on `q-laptop`
+   with nothing else on the GPU. **Prediction to falsify:** ≈5 of 20 stops
+   convert (class B minus the 3 under 12.99 mm); if fewer than 3 do, the class-B
+   bound is wrong. Read `latest_chunk` and the bond-teardown flag on every
+   record before believing any rate.
+4. **Widen the carry-speed sample** from n=5 with this battery's 8 carrying-phase
+   stops (`tools/stop_ee_speed.py` over `openral-256/outputs/ceiling/2026-09-09-fixed`).
+   It is the staleness half of #253's trade and is a two-hour job.
+5. **The top-up** (`CORRUPTED.md`, 11 runs, one lane at a time) — so `baguette-off`
+   stops resting on 3 valid rounds.
+
+Not on the list: anything against the **43 % of gate-ON runs that never get
+stopped at all**. That is a policy limit, and no collision lever reaches it.
+
 ### Filed as issues, 2026-09-09
 
 The two rulings above are **#253** (15 mm resolution) and **#254** (ADR-0101).
@@ -903,6 +990,12 @@ Two findings from this week that are nobody's open item otherwise:
   31.1 % / 2.3 % — and therefore **the 29-point figure this whole programme is
   justified by** — are floors measured on a loaded host. `spark` produces zero
   `deadline-no-grasp` on these scenes; re-running the A/B there would settle it.
+- **#258 — the 18.9 mm over-approximation is bimodal**, correcting #257's "it is
+  the cell": true for 8 stops, wrong for 9 (excess 23–85 mm). Merged.
+- **#259 — the place allowance is scoped to the declared target.** 9 of 20 gate-ON
+  stops fire with a declaration armed and `place_allowance_active` **false**,
+  the payload clipping occupancy *beside* the target. Six were genuinely clear.
+  Open question inside it: the allowance never armed on **any** of 20 stops.
 - **#255 — a full-tier test-ordering flake** unrelated to collision work, which
   under `-x` stops the run and silently skips everything after it. **Closed the
   same day: already fixed on `master` by `855fe1b`**, which landed in #244 hours
