@@ -2665,6 +2665,16 @@ with more than 20 mm, and the worst is `panda_link7` stopped at −23.4 mm while
 **61.2 mm clear**. Median over-approximation: **18.9 mm**, which is essentially
 the 25 mm cell half-diagonal (`25·√3/2 = 21.65 mm`).
 
+**Corrected the same day — the 18.9 mm median is bimodal.** Of the 20
+adjudicable stops, **3** are genuinely touching, **8** have an excess a 25 mm
+cell can account for (≤ 21.65 mm), and **9** have an excess of **23.4–84.6 mm**,
+which no cell of that size can explain. A finer grid reaches the middle class
+only: 25 → 15 mm plausibly converts **5 of 20**, while the unexplained class is
+**9 of 20** and belongs to ADR-0101 / #254. Note also that a finer cell moves
+reported depth *toward* certified truth rather than subtracting a fixed amount,
+so reasoning by subtraction misclassifies the touching stops. `PLAN.md` §5
+carries the table.
+
 That reorders the levers, and the full per-stop table is in `PLAN.md` §5: the
 stop population is 86 % payload, payload primitives were already measured tight
 (−1.5 mm beyond the voxel term), so **no geometry work can recover the 18.9 mm
