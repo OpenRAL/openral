@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A dispatch that failed because the graph was not up yet is not a policy result.
 
-Issue #262. The harness waits for `/openral/execute_rskill` to appear, sleeps a
+Issue #263. The harness waits for `/openral/execute_rskill` to appear, sleeps a
 fixed 5 s, and dispatches. The action server answering does not mean the graph
 is assembled: the TF tree can still be two disjoint trees, and a camera the
 rSkill declares can still have published nothing.

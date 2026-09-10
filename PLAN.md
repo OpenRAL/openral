@@ -145,7 +145,7 @@ simultaneously:
 > `deadline-no-grasp`, a policy failure they were not. Excluding runs the
 > policy was never given a fair share of compute puts the arms at **66.7 % vs
 > 4.0 %**. Re-measured on the fixed harness 2026-09-10 at 62.5 % vs 2.7 % — and
-> **corrected again the same day (#262) to 80.0 % vs 4.3 %, a 75.7-point gap,
+> **corrected again the same day (#263) to 80.0 % vs 4.3 %, a 75.7-point gap,
 > `p = 5.5e-08`**, once the 21 of 69 runs whose graph was not assembled at
 > dispatch (TF tree disjoint, camera not publishing) are excluded. So the gap is
 > about **2.6x** the 29 recorded here, and once the policy actually acts `fridge`
@@ -177,7 +177,7 @@ recover it — it should be dropped from the collision programme's scorecard.
 were real contact, and the gate-off arm here is a *ceiling*, not a
 configuration. The number says how much headroom the §5 levers are competing
 for: **at least 29 points** — see the #256 correction above, which re-adjudicates
-it to 62.7 and whose re-measurement, corrected for unassembled graphs (#262),
+it to 62.7 and whose re-measurement, corrected for unassembled graphs (#263),
 puts it at 75.7 — concentrated in the payload class.
 
 ---
@@ -628,7 +628,7 @@ Four things had to be discovered to make it run at all, each worth keeping:
       Result in §4. **Both absolutes are floors** (#256): a Nav2 bond teardown
       voided 31 of the 89 runs and they were scored as policy failures.
       Corrected reading 66.7 % vs 4.0 %; re-measured 2026-09-10, then corrected
-      again for unassembled graphs (#262): **80.0 % vs 4.3 %, a 75.7-point gap**
+      again for unassembled graphs (#263): **80.0 % vs 4.3 %, a 75.7-point gap**
       (`p = 5.5e-08`).
 - [x] **Close-vs-continue** — **continue.** The gate is worth at least 29
       points of completion — **measured at 59.8 on 2026-09-10** — so the
