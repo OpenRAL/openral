@@ -372,46 +372,45 @@ And these are gate-ON runs from the battery whose opening lanes lost 11 runs to
 a concurrent GPU job — the stop census is unaffected by that (a stopped run is a
 stop regardless), but the per-scene counts inherit the same thin `baguette`.
 
-### 2026-09-10 — the ceiling itself is depressed by self-collision false positives
+### 2026-09-10 — the gate-OFF arm's own kernel stops, and a scoring gap they exposed
 
 The world-voxel check is **off** in the gate-OFF arm, so any kernel stop there is
 the envelope or self-collision path — no voxel, no quantisation term, nothing
-lever 2 or lever 3 can touch. Seven of the 32 valid gate-OFF runs carry one;
-five of those runs failed. Traced to the certified distance **for the exact pair
-the kernel named**, out of the same run's ground-truth snapshot:
+lever 2 or lever 3 can touch. Seven of the 32 valid gate-OFF runs carry one.
 
-| scene | kernel pair | kernel depth | **certified, that pair** | run |
-| --- | --- | ---: | ---: | --- |
-| `sink_cup` | `link5` ↔ `link7` | −26.6 mm | **+3.5 mm** | failed |
-| `sink_cup` | `link5` ↔ `link7` | −32.2 mm | **+1.4 mm** | failed |
-| `sink_cup` | `link5` ↔ `link7` | −29.6 mm | **+4.9 mm** | failed |
-| `utensil` | `link1` ↔ `link7` | −1.7 mm | **+87.9 mm** | completed |
-| `baguette` | *payload* ↔ `link1` | −1.6 mm | **+69.2 mm** | failed |
-| `baguette` | *payload* ↔ `link1` | −0.2 mm | **+25.2 mm** | failed |
-| `fridge` | `link1` ↔ `link6` | −2.8 mm | not in snapshot | completed |
+**They are not false positives.** An earlier draft of this entry said they were,
+by comparing the kernel's reported depth against the certified mesh distance
+*without charging the pair its budget* — the exact error
+`hal_admissible_gap_m`'s docstring warns about, which "turns correct stops into
+`false-positive`". Run through the shipped adjudicator instead, every one that
+scores at all scores **`within-quantization`**: correct, conservative behaviour.
 
-**Every adjudicable one is a false positive.** The `link5`↔`link7` trio reports
-~30 mm of penetration on a pair that is 1–5 mm *clear* — a ~30 mm
-over-approximation with **no voxel in the path at all**. That is the pair whose
-ACM exemption #191 retired as "proven real", and all seven links ship stage-2
-`tight_geometry` on `master`; so either the hull for `link5`/`link7` is not
-tight where these configurations put it, or the retirement was premature. This
-plan does not decide which. The payload↔`link1` pair is the
-`check_attached_self_collision` path and is 25–70 mm out.
+| scene | kernel pair | depth | `depth_is_box_bound` | verdict |
+| --- | --- | ---: | --- | --- |
+| `sink_cup` ×3 | `link5` ↔ `link7` | −27…−32 mm | **true** | `within-quantization` |
+| `fridge` | `link1` ↔ `link6` | −2.8 mm | false | **`unadjudicated`** |
+| `utensil` | `link1` ↔ `link7` | −1.7 mm | false | **`unadjudicated`** |
+| `baguette` ×2 | *payload* ↔ `link1` | −1.6, −0.2 mm | false | `within-quantization` |
 
-**Why this is a lever and where it sits.** These stops are *inside the gate-OFF
-ceiling* — they cost completions with the world check off — so fixing them
-raises the **62.5 %** the whole programme is measured against, and they recur
-in gate-ON (the 3 link stops there). It is the cheapest thing on this page:
-hull fidelity on two named links and one named pair, adjudicable from artifacts
-already on disk. **It has no issue.** Filing one is the first item under "What
-to test next".
+The `link5`↔`link7` trio is the kernel finding its **hulls genuinely overlapping**
+and reporting the loose OBB bound, because it runs no expanding-polytope step —
+`collision.cpp` names this exact pair in its own comment ("−31.97 mm for a
+~1.5 mm hull interpenetration"). It discloses that with `depth_is_box_bound`,
+and the adjudicator charges the 176.4 mm box budget. Working as designed.
 
-*Probe caveat, so nobody reads a number wrongly:* the snapshot's nearest
-link↔link pair is `link5`↔`link6` at −23 to −28 mm in every one of these runs.
-That is an **adjacent** pair overlapping at its joint by construction; the
-kernel never fired on it in 80 runs, so it is handled and is not a missed stop.
-The pair-specific rows above are the ones that mean something.
+**What is real is a scoring gap, filed as #260.** `depth_is_box_bound` means "a
+hull refinement was *attempted* and fell back" — deliberately clear when no
+refinement happened at all (`SelfCollisionHull.TheFlagIsClearedWhenNoHullRefinementHappened`).
+`hal_admissible_gap_m` read the clear flag as "measured at hull fidelity",
+charged a hull budget, found no measured overhang, and gave up. **`panda_link1`
+ships no stage-2 hull by decision** — Path C above withdrew its refined envelope
+because it moved link1's own stops by 0.0003 mm — so *every* self-pair naming
+link1 was permanently `unadjudicated`. The `link_link.rule` the HAL publishes
+already says the hull term applies "when **both** links ship stage-2 tight
+geometry"; the implementation never checked it.
+
+Two of seven here, and it is silent: the pair scores `unadjudicated`, which
+reads as missing evidence rather than as a scorer that cannot see this case.
 
 ### Resolution was struck on an estimate, and the estimate was wrong (lever 3)
 
@@ -952,13 +951,14 @@ Four things had to be discovered to make it run at all, each worth keeping:
 
 In order, each chosen because it is unblocked and its answer changes the next one:
 
-1. **File and adjudicate the self-collision false positives above.** No WG ruling
-   needed — it is a fidelity bug, not a conservatism trade. Adjudicate every
-   `kind=self` stop in both arms with the pair-specific certified distance, and
-   regenerate the `link5`/`link7` hulls against the configurations that trip.
-   **Success criterion:** the three `sink_cup` stops read within the
-   hull-overhang budget of their +1.4…+4.9 mm. This raises the ceiling every
-   other lever is measured against, so it goes first.
+1. **#260 — the self-pair scoring gap above.** Filed and fixed in a draft PR:
+   the HAL publishes `has_stage2_hull` per link, and the adjudicator charges the
+   box budget when either link has no hull. Replayed over the archived battery
+   the two stuck stops go `unadjudicated` → `within-quantization`, and the
+   already-correct `link5`↔`link7` stop is untouched. Diagnostics-only — no stop
+   changes. It goes first because it is unblocked, needs no ruling, and until it
+   lands any self stop naming a stage-1-only link is unscorable, which is how
+   this was mistaken for a false positive in the first place.
 2. **Answer #259's open question before designing anything:** why is
    `place_allowance_active` false on all 20 stops with 9 declarations armed?
    Check `support_contact_witness` at those 9 stops from the archived logs. If the

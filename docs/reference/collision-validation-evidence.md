@@ -2951,19 +2951,24 @@ monitor file, so grid resolution comes back `None` and the budget falls back to
 the 88.2 mm max *link* corner slop — the wrong yardstick for a payload stop. The
 figures above compare against certified geometry directly and need no budget.
 
-**The gate-OFF arm's own kernel stops are hull-fidelity false positives.**
-With the world check off, seven of 32 valid gate-OFF runs still carry a kernel
-stop — envelope or self-collision, no voxel in the path. Traced to the certified
-distance for the *exact pair named*: `panda_link5`↔`panda_link7` three times at
-−26.6/−32.2/−29.6 mm reported against **+3.5/+1.4/+4.9 mm** certified;
-`link1`↔`link7` at −1.7 mm against **+87.9 mm**; payload↔`link1` twice at
-−1.6/−0.2 mm against **+69.2/+25.2 mm**; one `link1`↔`link6` pair absent from
-its snapshot. Every adjudicable one is a false positive, five of the seven runs
-failed, and they sit *inside the ceiling* — the 62.5 % is itself depressed by
-them. The `link5`↔`link7` pair is the one #191 retired the ACM exemption for.
-Note the snapshot's *nearest* link pair is always the adjacent `link5`↔`link6`
-at −25 mm, which the kernel correctly never fires on; only the pair-specific row
-means anything. `PLAN.md` §5 carries the table and the recommendation.
+**The gate-OFF arm's own kernel stops, and the scoring gap they exposed.** With
+the world check off, seven of 32 valid gate-OFF runs still carry a kernel stop —
+envelope or self-collision, no voxel in the path. An earlier draft of this entry
+called them false positives; that was wrong, and it was made by comparing the
+kernel's depth against certified mesh truth **without charging the pair its
+budget** — the error `hal_admissible_gap_m` exists to prevent. Through the
+shipped adjudicator, every one that scores at all scores `within-quantization`.
+The three `panda_link5`↔`panda_link7` stops are the kernel finding its hulls
+genuinely overlapping and reporting the loose OBB bound (it runs no
+expanding-polytope step; `collision.cpp` names this pair in its own comment),
+disclosed via `depth_is_box_bound` and budgeted at 176.4 mm.
+
+What is real is that **two of the seven cannot be scored at all**: `panda_link1`
+ships no stage-2 hull by decision (#191 withdrew its refined envelope for moving
+its own stops by 0.0003 mm), and the adjudicator read the deliberately-clear
+`depth_is_box_bound` as "measured at hull fidelity", charged a hull budget, and
+found no overhang to charge it with. Every self-pair naming `link1` was
+permanently `unadjudicated`. Filed as **#260**; `PLAN.md` §5 carries the table.
 
 **What is owed.** A concurrent GPU job on the host during the opening lanes
 cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
