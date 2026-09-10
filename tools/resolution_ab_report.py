@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import statistics
 import sys
@@ -58,7 +59,21 @@ def _stops(arm_dir: Path) -> list[dict[str, Any]]:
                 "depth_mm": None,
                 "certified_mm": None,
                 "excess_mm": None,
+                "resolution_m": None,
+                "not_ready_attempts": record.get("dispatch_not_ready_attempts") or [],
             }
+            # Prove this run really ran at its arm's resolution. The HAL echoes
+            # the grid's own `resolution_m` in the voxel backing record, so an
+            # arm that silently fell back to the 0.025 default cannot pass
+            # unnoticed. Only stopped runs carry one; that is enough to attest
+            # the arm.
+            for line in lines:
+                if '"resolution_m"' in line:
+                    with contextlib.suppress(IndexError, ValueError):
+                        row["resolution_m"] = float(
+                            line.split('"resolution_m"')[1].split(":")[1].split(",")[0].strip(" }")
+                        )
+                    break
             stop = vm.parse_kernel_collision(lines)
             if stop is not None:
                 row["depth_mm"] = stop.min_distance_m * 1000.0
@@ -111,12 +126,28 @@ def main(argv: list[str] | None = None) -> int:
             predicted = HALF_DIAGONAL_MM[fine] - HALF_DIAGONAL_MM[coarse]
             print(f"\n  measured shift {shift:+.1f} mm   predicted {predicted:+.2f} mm")
 
+    print("\nINTEGRITY — the resolution each arm's graph actually ran at, and re-dispatches")
+    for arm, rows in sorted(arms.items(), reverse=True):
+        seen = sorted({r["resolution_m"] for r in rows if r["resolution_m"] is not None})
+        retried = sum(1 for r in rows if r["not_ready_attempts"])
+        gave_up = sum(1 for r in rows if any("GAVE UP" in a for a in r["not_ready_attempts"]))
+        flag = "" if seen == [float(arm)] else "   <-- MISMATCH, arm did not run at its resolution"
+        print(
+            f"{arm:>8}  observed resolution_m={seen or 'none recorded'}"
+            f"   re-dispatched={retried}  gave-up={gave_up}{flag}"
+        )
+
     print("\nSECONDARY — counts. UNDER-POWERED: 80% power on completion needs 200 runs/arm")
     print("(tools/round_power.py --baseline 0.027 --alternative 0.108). Do not read a")
     print("null here as a refutation.")
     print(f"{'arm':>8} {'valid':>6} {'completed':>10} {'stopped':>8} {'teardowns':>10}")
     for arm, rows in sorted(arms.items(), reverse=True):
-        valid = [r for r in rows if r["outcome"] != "harness-error"]
+        # A run whose graph never assembled delivered no action chunks and is not
+        # a policy result (#262). Excluding it is the correction that moved the
+        # ceiling battery from 62.5/2.7 to 80.0/4.3.
+        valid = [
+            r for r in rows if r["outcome"] != "harness-error" and r["chunks"] not in (0, None)
+        ]
         print(
             f"{arm:>8} {len(valid):>6} {sum(1 for r in valid if r['success']):>10} "
             f"{sum(1 for r in valid if r['depth_mm'] is not None):>8} "
