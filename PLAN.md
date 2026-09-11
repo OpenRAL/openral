@@ -982,31 +982,33 @@ In order, each chosen because it is unblocked and its answer changes the next on
    a conservatism decision like #253/#254, not free. Item promoted out; what
    remains under #259 is lever 2 itself, which needs a ruling rather than an
    investigation.
-3. **Run the live 15 mm A/B #253 says is missing.** `tools/resolution_ab.sh`,
-   `ROUNDS=10`, gate-ON on both arms, on `q-laptop` with nothing else on the
-   GPU. **Prediction to falsify:** ≈5 of 20 stops convert (class B minus the 3
-   under 12.99 mm); if fewer than 3 do, the class-B bound is wrong. Read
-   `latest_chunk` and the bond-teardown flag on every record before believing
-   any rate.
+3. ~~**Run the live 15 mm A/B #253 says is missing.**~~ — **done 2026-09-11, and
+   the lever is struck.** Third attempt, clean: 80 rounds, 79 valid, 0 bond
+   teardowns, both arms verified at their observed `resolution_m`, every round
+   paired at a median separation of 0 s. Same-party paired shift **+5.9 mm**,
+   95 % CI **[−5.7, +17.7]**; the predicted **−8.66 mm** is outside it, 2.6 se
+   away, and the sign test is 11/12, `p = 1.000`. Wrong sign, not a weak
+   confirmation.
 
-   **A first attempt on 2026-09-10 was voided, twice over, and both causes are
-   now fixed — do not re-run against the old instrument.** (a) Every round
-   leaked an octomap node pair whose Fast-DDS lock file starved the *next* run
-   on that domain to zero action chunks (openral #265; the dated entry in
-   `docs/reference/collision-validation-evidence.md`). (b) The runner said it
-   interleaved the arms and did not: `xargs -P` holds a slot for all `ROUNDS`
-   rounds, so only the first pair overlapped. `sink_cup` ran its two arms 29
-   minutes apart and its 7/10-vs-0/10 unreadable-run gap read as a resolution
-   effect; `baguette`, the one lane that stayed paired, was 3/10 vs 3/10,
-   `p = 1.0`. The scheduler now runs one scene's two arms together behind a
-   barrier, records carry an absolute `started_at`, and the report's PAIRING
-   section refuses to certify a scene whose arms overlapped less than half
-   their combined span. **There is no `WORKERS` knob any more** — the paired
-   design fixes concurrency at two lanes.
+   **It is null because the voxel term was never the big one.** The carried
+   payload is lowered to a **local AABB** and no hull path exists for payloads:
+   its box reaches a median **50.78 mm** (max 88.22 mm) beyond the mesh,
+   against a 21.65 mm half-diagonal at 25 mm and 12.99 mm at 15 mm — **2.3–3.9×
+   the whole quantisation term**. Filed as **#266**, which is now the lever
+   this line used to be. 15 mm also makes the concentration worse: payload
+   stops go 79 % → 97 % of all stops, and the grid goes 0.6 → 2.8 MB at 10 Hz
+   (28 MB/s of DDS against 6).
 
-   None of the 43 rounds from the voided attempt are poolable with the rerun:
-   `sink_cup`'s arms were never exchangeable, and `fridge` got 2 rounds on one
-   arm and none on the other. It is a fresh full battery, ~10 h.
+   **The stops are a carrying problem.** 53 of 59 have the payload already
+   grasped, 0 occur while reaching for an ungrasped object, and only 9 of the
+   53 hit the fixture they were dispatched to — 44 hit transit scenery. This
+   re-labels the *11 placing / 7 carrying* census in §5 above; reconcile the
+   two definitions before either is cited again.
+
+   Re-ask the resolution question **after #266**, not before: at n=16 same-party
+   pairs (sd 22.2 mm) this excludes an effect the size of −8.66 mm but could not
+   resolve −3 mm.
+
 4. **Widen the carry-speed sample** from n=5 with this battery's 8 carrying-phase
    stops (`tools/stop_ee_speed.py` over `openral-256/outputs/ceiling/2026-09-09-fixed`).
    It is the staleness half of #253's trade and is a two-hour job.
