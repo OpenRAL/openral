@@ -5492,15 +5492,48 @@ TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
             osk::AttachIngestStatus::kOk);
   EXPECT_EQ(out.primitives[0].hull_index, -1) << "a hull outside its own DOP is dropped";
 
-  // An over-budget hull is refused WHOLE, never truncated to the first
-  // kMaxTightHullVertices -- a truncated hull no longer contains its mesh.
+  // An over-budget hull keeps its SLABS and drops its vertices -- stage 1,
+  // the same representation the producer emits for the same condition. It is
+  // never TRUNCATED to the first kMaxTightHullVertices: a truncated hull no
+  // longer contains its mesh.
   osk::AttachedPrimitiveInput over_budget = honest;
   over_budget.hull_vertices.assign(static_cast<std::size_t>(osk::kMaxTightHullVertices) + 1,
                                    osk::Vec3{0.0, 0.0, 0.0});
   in.primitives = {over_budget};
   ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
             osk::AttachIngestStatus::kOk);
-  EXPECT_EQ(out.primitives[0].hull_index, -1);
+  ASSERT_EQ(out.primitives[0].hull_index, 0) << "the slabs still bound the payload";
+  EXPECT_EQ(out.hulls[0].vertex_count, 0) << "stage 1 only, not a truncated hull";
+
+  // 13 zero slabs pass finite, not-inverted and inside-any-box, and collapse
+  // the payload to a POINT -- after which every cell reads as clear. Reachable
+  // from a producer that resized the arrays and forgot to fill them, so it
+  // must fail DOWN to the box rather than be obeyed.
+  osk::AttachedPrimitiveInput degenerate = honest;
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    degenerate.dop_lo[i] = 0.0;
+    degenerate.dop_hi[i] = 0.0;
+  }
+  degenerate.hull_vertices.clear();
+  in.primitives = {degenerate};
+  ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
+            osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(out.primitives[0].hull_index, -1) << "a payload with no extent is not a payload";
+
+  // The same, through the shipped entry point: a degenerate refinement must
+  // not make an occupied cell the payload sits on read as clear.
+  {
+    osk::CollisionModel m = hand_model();
+    osk::CollisionScratch sc;
+    sc.link_world = {identity(), identity(), identity(), identity()};
+    osk::AttachedModel att;
+    append_object(att, 1, identity(), {octahedron_box_prim(0.1, identity(), 0)});
+    att.hulls = {osk::LinkHull{}};  // all-zero slabs, no vertices
+    std::vector<std::uint8_t> occ(125, 0);
+    occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+    const auto hit = osk::check_attached_voxel_collision(m, att, sc, make_grid(occ), 0.0);
+    EXPECT_TRUE(hit.hit) << "a zeroed TightPose must never be able to clear the payload's own cell";
+  }
 
   // And a publisher that ships nothing keeps the shipped path.
   osk::AttachedPrimitiveInput plain = honest;

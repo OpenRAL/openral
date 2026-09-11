@@ -741,6 +741,33 @@ points; the box is the points' own AABB grown by 1e-4 m. No optimiser tolerance
 appears anywhere, so the broad-phase window — sized from the box alone — never
 moves.
 
+**The first link holds only for a POLYTOPE, and that is not a technicality.**
+`solid ⊆ conv(sampled surface points)` is an equality for a mesh or a box and
+runs *the wrong way* for anything curved. `geom_surface_points` samples a
+sphere at its six axis poles, so the support of those points along the 26-DOP's
+first corner axis is `r/√3 = 0.577 r` while the sphere reaches `r` — a 50 mm
+sphere cut **21.13 mm inside its own surface**, larger than the 12.99 mm
+half-diagonal of a 15 mm voxel. The kernel would then report the payload
+farther from an occupied cell than it is: a *missed* stop, the one direction
+this change must never produce.
+
+Nothing downstream can catch it. The schema validator and `validate_tight_hull`
+compare only the three box axes, and the ten diagonal slabs have no box bound
+to violate. So it is refused at the last place that still knows what the
+geometry *is*: `geom_is_polytope` gates both lowering paths, and **one
+ungroundable geom disqualifies its whole cluster** — a DOP is a single solid
+bounding all of them and cannot be sound for only some. Costless in practice
+(a payload lowered one geom at a time never reaches the cluster path, and the
+four A/B scenes cluster meshes only) and pinned by
+`test_a_curved_geom_never_grounds_a_refinement`, which asserts the 21.13 mm
+deficit rather than describing it.
+
+The kernel adds the one degeneracy the slabs can express and the proof cannot
+exclude: 13 zero `lo` and 13 zero `hi` are finite, not inverted, and inside any
+box, yet collapse the payload to a **point**. Reachable from a producer that
+resized the arrays and forgot to fill them, so `validate_tight_hull` requires
+positive extent on the three box axes and falls back to the box.
+
 Conservatism, stated in the right direction: every stage is a **lower bound** on
 the true mesh-to-cell clearance, and the kernel takes the max of the ones it
 computed. A max of lower bounds is a lower bound. So the refinement can only

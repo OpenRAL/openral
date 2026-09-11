@@ -386,6 +386,17 @@ TightGeometryStatus validate_tight_hull(const LinkHull& hull, const Vec3& half_e
     if (hull.dop_lo[k] < -hev[k] || hull.dop_hi[k] > hev[k]) {
       return TightGeometryStatus::kEscapesBox;
     }
+    // A solid has positive extent on its own three axes. Without this a wire
+    // refinement of 13 zero lo and 13 zero hi passes every check above —
+    // finite, not inverted, inside any box — and collapses the payload to a
+    // POINT, after which `dop_cell_lower_bound` reports clearance the payload
+    // does not have for every cell. That is reachable from an ordinary
+    // producer bug (resize the arrays to 13, forget to fill them), not only
+    // from a deliberate lie, and it disables the payload-vs-world check in
+    // silence. Refusing it falls back to the box.
+    if (!(hull.dop_hi[k] > hull.dop_lo[k])) {
+      return TightGeometryStatus::kDegenerate;
+    }
   }
   if (hull.vertex_count == 0) {
     return TightGeometryStatus::kOk;  // stage 1 only
@@ -1601,13 +1612,17 @@ int accept_tight(AttachedModel& out, const AttachedPrimitiveInput& pin, std::siz
   }
   const std::size_t budget = static_cast<std::size_t>(kMaxTightHullVertices);
   const std::size_t first = slot * budget;
-  const std::size_t count = pin.hull_vertices.size();
-  // No hull store configured, or a hull over the kernel's stage-2 cost budget.
-  // Either way the refinement is refused WHOLE — never truncated to the first
-  // `budget` vertices, which would be a hull that no longer contains its mesh.
-  if (first + budget > out.hull_vertices.size() || count > budget) {
-    return -1;
+  if (first + budget > out.hull_vertices.size()) {
+    return -1;  // no hull store configured; the box stays the model
   }
+  // Over the stage-2 cost budget: keep the SLABS and drop the vertices, which
+  // is stage 1 only — the same representation the producer emits for the same
+  // condition (`_tight_geometry_from_points`), and the same one `panda_link1`
+  // ships. Refusing the whole refinement here would throw away a DOP that
+  // validates, and would leave the two sides of the wire disagreeing about
+  // what "over budget" means. The vertices are never TRUNCATED to the first
+  // `budget` of them: a truncated hull no longer contains its mesh.
+  const std::size_t count = pin.hull_vertices.size() > budget ? 0 : pin.hull_vertices.size();
   LinkHull hull;
   hull.vertex_first = static_cast<int>(first);
   hull.vertex_count = static_cast<int>(count);

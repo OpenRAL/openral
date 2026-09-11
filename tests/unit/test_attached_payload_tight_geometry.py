@@ -64,6 +64,20 @@ _MJCF = f"""
          runs: that path merges several geoms into one box and is the looser of
          the two, and it is the one a real RoboCasa baguette (16 primitives)
          takes. -->
+    <!-- More geoms than the cap AGAIN, but this cluster mixes a mesh with a
+         sphere, a capsule and a cylinder. `conv(sampled surface points)` is the
+         solid for a polytope and strictly INSIDE it for anything curved, so a
+         DOP built from these samples would cut inside the real geometry — the
+         kernel would then report the payload farther from an occupied cell
+         than it is. This body is the regression fixture for that. -->
+    <body name="curved_cluster_payload" pos="0.5 1.6 0.5">
+      <freejoint name="curved_cluster_payload_free"/>
+      <geom name="c0" type="mesh" mesh="octahedron" pos="0 0 0"/>
+      <geom name="c1" type="sphere" size="0.05" pos="0.12 0 0"/>
+      <geom name="c2" type="capsule" size="0.02 0.04" pos="0.24 0 0"/>
+      <geom name="c3" type="cylinder" size="0.02 0.04" pos="0.36 0 0"/>
+      <geom name="c4" type="mesh" mesh="octahedron" pos="0.48 0 0"/>
+    </body>
     <body name="many_mesh_payload" pos="0.5 1.2 0.5">
       <freejoint name="many_mesh_payload_free"/>
       <geom name="m0" type="mesh" mesh="octahedron" pos="0 0 0"/>
@@ -333,3 +347,147 @@ def test_the_budget_discloses_which_primitives_the_kernel_refined() -> None:
     # The box term itself is untouched: the self-collision budget it feeds is
     # measured against the same box the kernel still checks there.
     assert objects["mesh_payload"]["corner_slop_m"] == pytest.approx(_R * math.sqrt(2.0), abs=3e-4)
+
+
+def test_a_curved_geom_never_grounds_a_refinement() -> None:
+    """The containment hole a sampled surface opens, and the guard that closes it.
+
+    Every #266 containment argument rests on ``solid ⊆ conv(sampled points)``.
+    For a **polytope** that holds with equality. For a curved surface it runs
+    the wrong way: ``geom_surface_points`` samples a sphere at its six axis
+    poles, so the support of those points along the 26-DOP's first corner axis
+    is ``r/√3 = 0.577 r`` while the sphere reaches ``r``. A 50 mm-radius sphere
+    would be cut **21.13 mm inside its own surface** — more than the 12.99 mm
+    half-diagonal of a 15 mm voxel, so the kernel would report clearance the
+    payload does not have and miss a stop.
+
+    Nothing downstream catches it: the schema validator and the kernel's
+    ``validate_tight_hull`` compare only the three box axes, and the diagonal
+    slabs have no box bound to violate. It has to be refused here, at the last
+    place that still knows what the geometry *is*.
+    """
+    from openral_hal._sim_attachment_evidence import geom_is_polytope, geom_surface_points
+
+    model, _ = _compiled()
+
+    # The deficit itself, so the constant in the guard's docstring is checked
+    # and not merely asserted in prose.
+    sphere = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "c1"))
+    assert not geom_is_polytope(model, sphere)
+    r = float(model.geom_size[sphere][0])
+    corner = np.asarray(DOP_AXES[3])
+    sampled = float((geom_surface_points(model, sphere) @ corner).max())
+    assert sampled == pytest.approx(r / math.sqrt(3.0), abs=1e-9)
+    assert r - sampled == pytest.approx(0.02113, abs=1e-5), "the 21.13 mm cut, in metres"
+
+    # A mesh and a box ARE polytopes; their samples bound them exactly.
+    for name in ("c0", "c4"):
+        assert geom_is_polytope(
+            model, int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name))
+        )
+    box = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "box_payload_g0"))
+    assert geom_is_polytope(model, box)
+
+    # And the producer refuses the whole cluster rather than emitting a DOP
+    # that is sound for the meshes and unsound for the sphere beside them.
+    prims = _primitives("curved_cluster_payload", max_primitives=2)
+    assert len(prims) == 2, "the cluster path must actually have run"
+    assert all(p.tight_geometry is None for p in prims), (
+        "one ungroundable geom disqualifies its whole cluster — a DOP is a single "
+        "solid bounding all of them and cannot be sound for only some"
+    )
+
+
+def test_a_degenerate_refinement_is_not_a_payload() -> None:
+    """13 zero slabs pass finite/not-inverted/inside-the-box, and erase the payload.
+
+    Reachable from an ordinary producer bug — resize the arrays to 13, forget
+    to fill them — not only from a deliberate lie. The kernel's
+    ``validate_tight_hull`` now requires positive extent on the three box axes
+    so it falls back to the box; this pins the wire decode's half, which must
+    hand that refinement over rather than quietly normalise it away.
+    """
+
+    class _Pose:
+        class _V:
+            x = y = z = w = 0.0
+
+        position = _V()
+        orientation = _V()
+
+    class _Msg:
+        SHAPE_SPHERE = 1
+        SHAPE_CAPSULE = 2
+        SHAPE_BOX = 3
+        shape_type = 3
+        shape_dimensions: ClassVar[list[float]] = [0.1, 0.1, 0.1]
+        tight_dop_lo: ClassVar[list[float]] = [0.0] * 13
+        tight_dop_hi: ClassVar[list[float]] = [0.0] * 13
+        tight_hull_vertices: ClassVar[list[float]] = []
+        pose_in_object = _Pose()
+
+    decoded = AttachedCollisionPrimitive.from_idl(_Msg(), object_id="sim:x")
+    assert decoded.tight_geometry is not None
+    assert decoded.tight_geometry.dop_hi_m == (0.0,) * 13, (
+        "the decode reports what arrived; refusing a degenerate solid is the "
+        "kernel's job, and hiding it here would hide the producer bug too"
+    )
+
+
+def test_a_malformed_refinement_fails_down_rather_than_raising() -> None:
+    """One bad message must not take down a subscriber the kernel survives.
+
+    ``ingest_attached_objects`` drops a refinement it cannot prove and keeps
+    the payload as its box. If this decoder raised, the same bytes would kill
+    the world-state callback while the kernel ran on — two behaviours for one
+    wire condition, which is the defect regardless of which is stricter.
+    """
+
+    class _Pose:
+        class _V:
+            x = y = z = w = 0.0
+
+        position = _V()
+        orientation = _V()
+
+    def _msg(lo: list[float], hi: list[float], hull: list[float]) -> object:
+        class _Msg:
+            SHAPE_SPHERE = 1
+            SHAPE_CAPSULE = 2
+            SHAPE_BOX = 3
+            shape_type = 3
+            shape_dimensions: ClassVar[list[float]] = [0.1, 0.1, 0.1]
+            pose_in_object = _Pose()
+
+        m = _Msg()
+        m.tight_dop_lo = lo  # type: ignore[attr-defined]
+        m.tight_dop_hi = hi  # type: ignore[attr-defined]
+        m.tight_hull_vertices = hull  # type: ignore[attr-defined]
+        return m
+
+    good_lo, good_hi = [-0.05] * 13, [0.05] * 13
+
+    # Half-filled slabs: no refinement at all, because half a chain is no bound.
+    assert (
+        AttachedCollisionPrimitive.from_idl(_msg(good_lo, [], []), object_id="sim:x").tight_geometry
+        is None
+    )
+    assert (
+        AttachedCollisionPrimitive.from_idl(_msg([], good_hi, []), object_id="sim:x").tight_geometry
+        is None
+    )
+    assert (
+        AttachedCollisionPrimitive.from_idl(
+            _msg([-0.05] * 4, good_hi, []), object_id="sim:x"
+        ).tight_geometry
+        is None
+    )
+
+    # A ragged or over-budget hull drops the VERTICES and keeps the slabs —
+    # stage 1, which is what the kernel and the producer both do with it.
+    for hull in ([0.01, 0.0], [0.0] * (3 * (MAX_TIGHT_HULL_VERTICES + 1))):
+        tight = AttachedCollisionPrimitive.from_idl(
+            _msg(good_lo, good_hi, hull), object_id="sim:x"
+        ).tight_geometry
+        assert tight is not None, "the slabs survive an unusable hull"
+        assert tight.hull_vertices_m == ()

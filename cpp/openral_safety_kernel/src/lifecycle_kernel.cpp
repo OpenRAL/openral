@@ -137,7 +137,16 @@ void decode_tight_geometry(const openral_msgs::msg::AttachedCollisionPrimitive& 
     out.dop_lo[i] = prim.tight_dop_lo[static_cast<std::size_t>(i)];
     out.dop_hi[i] = prim.tight_dop_hi[static_cast<std::size_t>(i)];
   }
+  // Bounded before a byte is reserved: `tight_hull_vertices` is an unbounded
+  // `float64[]` and this runs inside the safety node's subscriber. Past the
+  // budget the vertices are worthless anyway (`accept_tight` keeps the slabs
+  // and runs stage 1), so decoding them would be an unbounded allocation in
+  // exchange for nothing.
   const std::size_t n = prim.tight_hull_vertices.size() / 3;
+  if (n > static_cast<std::size_t>(kMaxTightHullVertices)) {
+    out.has_tight = true;  // the slabs above still stand; stage 1 only
+    return;
+  }
   out.hull_vertices.reserve(n);
   for (std::size_t v = 0; v < n; ++v) {
     out.hull_vertices.push_back(Vec3{prim.tight_hull_vertices[3 * v],
@@ -2182,7 +2191,11 @@ void SafetyKernelLifecycleNode::on_world_state(
         fail_closed();
         return;
       }
-      in.primitives.push_back(pin);
+      // Moved, not copied: `AttachedPrimitiveInput` now owns a vertex vector,
+      // and a copy duplicates up to kMaxTightHullVertices Vec3 per primitive
+      // (~123 kB for a fully refined object) on every world-state message, in
+      // a node whose whole contract is allocation discipline.
+      in.primitives.push_back(std::move(pin));
     }
     attached_ingest_scratch_.push_back(std::move(in));
   }

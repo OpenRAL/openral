@@ -358,6 +358,52 @@ def _resolve_robot_bodies(
     return bodies
 
 
+def geom_is_polytope(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    geom: int,
+) -> bool:
+    """Is ``conv(geom_surface_points(geom))`` the geom's own solid?
+
+    True for a **mesh** and a **box** and nothing else, and the distinction is
+    load-bearing rather than pedantic: every containment argument in #266 rests
+    on ``solid ⊆ conv(sampled points)``, and for a *curved* surface that
+    inclusion runs the wrong way. ``geom_surface_points`` samples a sphere at
+    its six axis poles, so the support of those points along the 26-DOP's first
+    corner axis is ``r/√3 = 0.577 r`` while the sphere reaches ``r`` — a
+    50 mm-radius sphere would be cut **21.13 mm inside its own surface**, more
+    than the 12.99 mm half-diagonal of a 15 mm voxel. The kernel would then
+    report a payload farther from an occupied cell than it is, which is a
+    missed stop, not a conservative one.
+
+    Nothing downstream can catch it: ``check_tight_geometry_fits_box`` and the
+    kernel's ``validate_tight_hull`` compare only the three box axes, and the
+    diagonal slabs have no box bound to violate. So it is refused here, at the
+    one place that still knows what the geometry *is*.
+
+    A capsule, cylinder, ellipsoid, plane, heightfield and SDF are all
+    therefore refusals. They cost nothing today: a payload lowered one geom at a
+    time never reaches this path (``_primitive_from_geom`` lowers a sphere to a
+    ``SphereShape``, which the kernel checks exactly), and the four RoboCasa A/B
+    scenes cluster meshes only.
+
+    Example:
+        >>> import mujoco
+        >>> m = mujoco.MjModel.from_xml_string(
+        ...     '<mujoco><worldbody><body name="b">'
+        ...     '<geom name="g" type="sphere" size="0.05"/>'
+        ...     "</body></worldbody></mujoco>"
+        ... )
+        >>> geom_is_polytope(m, 0)
+        False
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    return int(model.geom_type[geom]) in {
+        int(mujoco.mjtGeom.mjGEOM_MESH),
+        int(mujoco.mjtGeom.mjGEOM_BOX),
+    }
+
+
 def geom_surface_points(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     geom: int,
@@ -594,9 +640,19 @@ def _primitive_from_geom(
         half_extents = np.asarray(model.geom_aabb[geom_id, 3:], dtype=np.float64) + 1e-4
         translation = translation + rotation @ center
         shape = BoxShape(half_extents_m=tuple(float(value) for value in half_extents))
-        tight = _tight_geometry_from_points(
-            geom_surface_points(model, geom_id) - center,
-            half_extents,
+        # `geom_is_polytope` rather than "whatever this branch happens to catch":
+        # the branch covers heightfield, SDF and ellipsoid alongside mesh, and
+        # for those `conv(sampled points)` does not contain the geom. They
+        # sample empty today, so the guard changes nothing — it states the
+        # condition the containment chain needs instead of leaving it to a
+        # sampler's return value.
+        tight = (
+            _tight_geometry_from_points(
+                geom_surface_points(model, geom_id) - center,
+                half_extents,
+            )
+            if geom_is_polytope(model, geom_id)
+            else None
         )
     return AttachedCollisionPrimitive(
         shape=shape,
@@ -707,6 +763,16 @@ def _clustered_box_primitives(
         )
         for geom_id in geom_ids
     ]
+    # Per geom, may its points be used to bound it? Two ways they may not, and
+    # both are silent without this: a CURVED geom's samples lie strictly inside
+    # it (`geom_is_polytope`), and a geom with no enumerable surface at all
+    # (plane, heightfield, SDF, ellipsoid) contributes nothing here while still
+    # growing the cluster's BOX through its AABB corners below — leaving the DOP
+    # tangent to its neighbours and that geom's whole volume unchecked.
+    groundable = [
+        bool(geom_is_polytope(model, geom_id) and surface_by_geom[index].shape[0])
+        for index, geom_id in enumerate(geom_ids)
+    ]
     centers = np.asarray([corners.mean(axis=0) for corners in corners_by_geom])
     split_axis = int(np.argmax(np.ptp(centers, axis=0)))
     ordered = sorted(range(len(geom_ids)), key=lambda index: float(centers[index, split_axis]))
@@ -724,6 +790,12 @@ def _clustered_box_primitives(
             [surface_by_geom[int(index)] for index in cluster] + [np.zeros((0, 3))],
             axis=0,
         )
+        # One ungroundable geom disqualifies the WHOLE cluster: the DOP is a
+        # single solid bounding all of them, so it cannot be sound for some and
+        # unsound for the rest. `None` is the honest answer — the cluster is
+        # then checked as the plain box, exactly as before #266.
+        if not all(groundable[int(index)] for index in cluster):
+            cluster_surface = np.zeros((0, 3))
         primitives.append(
             AttachedCollisionPrimitive(
                 shape=BoxShape(

@@ -3062,32 +3062,32 @@ class ContactForceWitness(BaseModel):
 def _tight_geometry_from_idl(msg: object) -> TightCollisionGeometry | None:
     """Decode a duck-typed primitive's optional stage-2 refinement.
 
-    ``None`` whenever the wire carries no slabs — the pre-#266 message, and
-    every primitive whose sim geom lowered exactly and has nothing to refine.
-    A *partial* refinement is an error rather than a silent drop: the slabs and
-    the hull are one containment chain, and half of one is not a bound.
+    ``None`` whenever the wire carries no usable refinement: the pre-#266
+    message, every primitive whose sim geom lowered exactly and has nothing to
+    refine, **and** anything malformed.
 
-    Raises:
-        ValueError: The slab arity is wrong, or the hull coordinate count is
-            not a multiple of three.
+    Malformed **fails down**, and that is the whole design of this function.
+    The kernel's ``ingest_attached_objects`` drops a refinement it cannot prove
+    and keeps the payload as its box; if this raised instead, one bad producer
+    message would keep the kernel running while killing the world-state
+    subscriber callback that decodes the very same bytes
+    (``openral_world_state_ros.lifecycle_node``,
+    ``openral_hal.sim_sensor_bridge``). Two behaviours for one wire condition
+    is the defect — not which of them is stricter.
+
+    The refinement is dropped whole, never half-kept: the slabs and the hull
+    are one containment chain, and half of one is not a bound. An over-budget
+    or ragged hull drops the **vertices only** and keeps the slabs, which is
+    stage 1 — the same thing the kernel does with it, and the same thing the
+    producer emits for the same condition.
     """
     dop_lo = [float(value) for value in getattr(msg, "tight_dop_lo", ())]
     dop_hi = [float(value) for value in getattr(msg, "tight_dop_hi", ())]
-    if not dop_lo and not dop_hi:
-        return None
-    if len(dop_lo) != len(DOP_AXES) or len(dop_hi) != len(DOP_AXES):
-        msg_text = (
-            f"Attached primitive tight geometry needs {len(DOP_AXES)} slab bounds per side, "
-            f"got {len(dop_lo)} lo / {len(dop_hi)} hi"
-        )
-        raise ValueError(msg_text)
     flat = [float(value) for value in getattr(msg, "tight_hull_vertices", ())]
-    if len(flat) % 3 != 0:
-        msg_text = (
-            f"Attached primitive hull carries {len(flat)} coordinates, not a whole number "
-            "of xyz vertices"
-        )
-        raise ValueError(msg_text)
+    if len(dop_lo) != len(DOP_AXES) or len(dop_hi) != len(DOP_AXES):
+        return None  # absent, or a half-filled pair of slab arrays
+    if len(flat) % 3 != 0 or len(flat) // 3 > MAX_TIGHT_HULL_VERTICES:
+        flat = []  # unusable hull; the slabs still bound the payload
     return TightCollisionGeometry(
         dop_lo_m=tuple(dop_lo),
         dop_hi_m=tuple(dop_hi),
