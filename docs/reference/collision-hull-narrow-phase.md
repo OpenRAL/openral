@@ -794,11 +794,62 @@ Three things this says plainly:
 2. **13–23 mm of corner slop, and 8–14 mm of worst-direction support excess, is
    what the box was adding in these scenes.** These are the shipped scenes at
    seed 1, not the A/B's own payload set (median 50.78 mm) — those rounds are
-   gitignored on q-laptop, and re-scoring them is §10.6's owed work.
+   gitignored on q-laptop, and re-scoring them is §10.7's owed work.
 3. **The wire costs 0.4–21 kB per payload**, and the producer went 0.37–0.44 ms
    → 0.51–1.10 ms per lowering.
 
-### 10.5 What is deliberately untouched
+### 10.5 What the real kernel gives back, measured
+
+§10.4 is geometry. This is the **kernel's own verdict**, through the shipped
+binary: real `safety_kernel_node`, real `openral_msgs` IDL, a real dense
+occupancy grid, and a real RoboCasa payload's lowered primitives on a 1-DoF
+prismatic carriage, so the commanded joint value *is* the payload's position.
+Zero margins and no declaration, so the refusal boundary is purely geometric —
+"where does the kernel's model of the payload first claim contact with the
+cell". Swept twice against byte-identical everything else: once with the wire's
+`tight_*` fields stripped (the pre-#266 box), once with them.
+
+| payload | stage | recovered travel: min / **median** / max |
+|---|---|---|
+| `PickPlaceCounterToCabinet` `obj_main` (1 primitive, 98-vertex hull) | 1 + 2 | 5.10 / **17.65** / 28.40 mm |
+| `PickPlaceCounterToSink` `obj_main` (2 primitives, over budget → DOP only) | 1 only | 0.00 / **8.75** / 18.70 mm |
+
+16 orientations each (index 0 as produced, the rest uniform random), rotated
+about the primitive's own centre so the sweep measures the *shape* rather than
+the payload's internal offset; boundary located by ascending scan to 0.1 mm.
+
+Three things worth reading off it:
+
+1. **The recovery is real and it is the right size.** §10.1's whole point is
+   that [#253](https://github.com/OpenRAL/openral/issues/253) was shrinking the
+   small term: its predicted gain was **8.66 mm**, and it measured null. The
+   stage-1-only payload here — the *field-typical* case, since a real
+   collision mesh is over the vertex budget — gives back **8.75 mm median**
+   through the same kernel. Stage 2 roughly doubles that.
+2. **Never negative, 32 orientations out of 32.** The refinement never stopped
+   the carriage earlier than the box did. That is §10.3's soundness argument
+   observed rather than argued, on the shipped binary.
+3. **0.00 mm happens, and is correct.** At a face-on approach the box is
+   already tight — a box is only loose at its corners — so there is nothing
+   to give back. The median matters; the minimum is not a defect.
+
+**What this is not.** One occupied cell is not a kitchen, and a carriage is not
+a policy. It measures the size of the conservatism removed, not how often that
+conservatism was costing a task. The stop-rate and completion-rate questions
+are still §10.7's owed work.
+
+Reproduce (one-shot analysis, not checked in — §7's rule): dump a payload's
+lowered primitives with `extract_body_primitives` against a RoboCasa scene,
+then drive `start_kernel` / `activate_kernel_node` from
+`tests/sim/safety/_kernel_subprocess.py` with the carriage rig of
+`tests/integration/test_safety_kernel_place_allowance_band.py`. Two traps cost
+a rebuild each: the occupancy grid has a **deadline**, and a sweep that outlives
+it turns every chunk into a `voxel_unavailable` refusal that reads exactly like
+a geometric one (assert `FailureTrigger.KIND_COLLISION`, never a bare refusal);
+and the kernel **latches** on refusal, so a reset is only evidence the latch is
+gone once a known-safe chunk is accepted again.
+
+### 10.6 What is deliberately untouched
 
 * **ADR-0098's place-target adjudication.** Its `target_distance ≤ d + allowance`
   bound keeps reading the **shipped box** distance. That bound is calibrated
@@ -814,7 +865,7 @@ Three things this says plainly:
   tighter payload would shorten the exemption's life. Left on the box, which is
   today's behaviour.
 
-### 10.6 Adjudicating a round after this change
+### 10.7 Adjudicating a round after this change
 
 `attached_payload_mesh_slop` now publishes **`n_stage2_primitives`** per object.
 `corner_slop_m` remains the right budget for an attached-payload **self** stop.
@@ -829,11 +880,11 @@ rather than the box. The DOP's overhang past the mesh has no vertex-set closed
 form the way the corner slop does (it is a face-sampling question, like
 `hull_overhang_m`), and nothing needs it until an archived round is re-scored.
 
-### 10.7 Relationship to the other open items
+### 10.8 Relationship to the other open items
 
 * **[#253](https://github.com/OpenRAL/openral/issues/253)** (25 → 15 mm voxels) — orthogonal, and this is the larger lever. #266 does not need that ruling.
 * **[#259](https://github.com/OpenRAL/openral/issues/259)** (place-allowance scope) — reaches the 33 *placing* stops. #266 reaches all 53 stops with a payload grasped, regardless of phase.
-* **[#264](https://github.com/OpenRAL/openral/issues/264)** (`has_stage2_hull` as a kernel-side disclosure) — §10.6 is the payload half of it.
+* **[#264](https://github.com/OpenRAL/openral/issues/264)** (`has_stage2_hull` as a kernel-side disclosure) — §10.7 is the payload half of it.
 
 ---
 

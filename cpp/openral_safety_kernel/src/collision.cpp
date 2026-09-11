@@ -1575,9 +1575,22 @@ namespace {
 // whole attachment over an unprovable refinement would drop the payload's
 // geometry entirely, which is the UNSAFE direction; dropping only the
 // refinement leaves the primitive checked as the plain box, i.e. exactly
-// today's behaviour. The one thing never done is to load geometry whose
-// containment is unproven, because the broad-phase window is sized from the
-// box alone.
+// today's behaviour.
+//
+// What this proof does and does NOT buy, stated precisely because the
+// tempting summary is wrong. It proves the refinement is a subset of the box,
+// so the broad-phase window — sized from `half_extents` alone — still visits
+// every cell the narrow phase might need. It does NOT prove the refinement
+// bounds the payload's real geometry, and it cannot: the kernel never sees a
+// mesh. A producer that publishes 13 in-box-but-fictional slabs shrinks its
+// own payload and loses stops it should have had.
+//
+// That is not a trust boundary this adds. `half_extents` is producer-supplied
+// too, checked only for finite-and-positive, so the same producer could
+// already under-report the payload by publishing a 1 um box. The refinement
+// travels under exactly the trust its own box already has, and the mesh-side
+// half of the containment chain is discharged where the mesh exists — in
+// `_tight_geometry_from_points`, against the payload's own vertices.
 //
 // `slot` is the primitive's own index, so a hull's storage is a pure function
 // of the slot it refines: the two buffers are pre-sized to the primitive cap
@@ -1812,10 +1825,19 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       // refinement (#266). Built in the GRID's axes, which the staged path
       // requires rather than merely prefers: its cells must be axis-aligned
       // cubes. -1 (no refinement) leaves every line below on the shipped path.
-      const int hull_index = prim.hull_index;
+      // Range-checked ONCE, here, so the init below and every use inside the
+      // cell loop read the same predicate. Two different conditions is how a
+      // later edit ends up refining against a default-constructed TightPose —
+      // whose zeroed slabs report clearance the geometry does not have, i.e.
+      // it fails OPEN. `accept_tight` already bounds the index; this makes
+      // that a local property rather than one held at a distance.
+      const int hull_index = (prim.hull_index >= 0 &&
+                              static_cast<std::size_t>(prim.hull_index) < attached.hulls.size())
+                                 ? prim.hull_index
+                                 : -1;
       TightPose tight;
       GjkWitness witness;
-      if (hull_index >= 0 && static_cast<std::size_t>(hull_index) < attached.hulls.size()) {
+      if (hull_index >= 0) {
         tight_pose_init(attached.hulls[static_cast<std::size_t>(hull_index)],
                         attached.hull_vertices.empty() ? nullptr : attached.hull_vertices.data(),
                         prim_g, half_side, tight);

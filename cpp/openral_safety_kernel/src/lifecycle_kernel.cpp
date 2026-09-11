@@ -113,12 +113,17 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
 /// the tag given.
 /// Copy a primitive's optional stage-2 refinement off the wire (#266).
 ///
-/// Shape only — nothing here is trusted. `ingest_attached_objects` proves
-/// containment against the primitive's own box before any of it is used, and
-/// silently drops what it cannot prove. A malformed refinement therefore leaves
-/// `has_tight` false and the primitive is checked as the plain box: a producer
-/// cannot widen the kernel's window by publishing nonsense, only fail to
-/// narrow it.
+/// Shape only — nothing here is interpreted. `ingest_attached_objects` proves
+/// the refinement is inside the primitive's own box before any of it is used,
+/// and silently drops what it cannot prove. A malformed refinement therefore
+/// leaves `has_tight` false and the primitive is checked as the plain box, so
+/// a producer publishing nonsense cannot make the kernel's broad-phase window
+/// skip a cell.
+///
+/// It cannot prove the refinement bounds the real payload — the kernel never
+/// sees a mesh — but that is not a trust this decode adds: `shape_dimensions`
+/// is producer-supplied on the same message under the same trust, so a
+/// producer able to lie here could already lie there. See `accept_tight`.
 void decode_tight_geometry(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
                            AttachedPrimitiveInput& out) {
   out.has_tight = false;

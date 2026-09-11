@@ -509,6 +509,14 @@ def _tight_geometry_from_points(
     # A slab that already reaches the box buys nothing and risks tripping the
     # containment check on a float; the AABB the caller grew by 1e-4 leaves
     # exactly that much room, so clamp rather than emit an escaping slab.
+    #
+    # The first three axes ONLY, because they are the only ones compared to the
+    # box: `check_tight_geometry_fits_box` and the kernel's `validate_tight_hull`
+    # both test `-half <= dop_lo[k] <= dop_hi[k] <= half` for k in {0,1,2} and
+    # nothing else — a 26-DOP lies inside its own first three slabs, so those
+    # three prove containment for the whole polytope. The ten diagonal slabs
+    # have no box bound to exceed, and clamping them would only loosen the
+    # tangent halfspaces the refinement exists to provide.
     dop_lo[:3] = np.maximum(dop_lo[:3], -half_extents)
     dop_hi[:3] = np.minimum(dop_hi[:3], half_extents)
     # Stage 2, when it fits. The kernel's stage 2 is a support-function scan,
