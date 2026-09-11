@@ -902,10 +902,47 @@ generous gap. This is the `has_stage2_hull` lesson of
 [#260](https://github.com/OpenRAL/openral/issues/260), on the payload side: the
 fact is published rather than inferred from the round's date.
 
-**Still owed:** a world-voxel payload term measured against the *refinement*
-rather than the box. The DOP's overhang past the mesh has no vertex-set closed
-form the way the corner slop does (it is a face-sampling question, like
-`hull_overhang_m`), and nothing needs it until an archived round is re-scored.
+**Landed, and it was a fix rather than an addition.** There was no
+payload-vs-world block at all: `hal_admissible_gap_m` routed that class to the
+**top-level** one, which composes the worst *robot link*'s corner slop with the
+cell half-diagonal — a budget for a pair the stop is not about. On the
+2026-08-23 rounds that is 88.22 mm (`panda_link4`) where the payload's own model
+needs ~31 mm, and it is **97 %** of the 15 mm A/B's stops. An over-large budget
+does not fail loudly; it silently excuses, which is the direction that hides a
+real defect.
+
+`adjudication_budget.payload_world_voxel` now carries
+`payload_model_overhang + voxel_half_diagonal`. The overhang is measured over
+whichever solid the kernel *actually checks* — the refinement's DOP where one
+ships, the box otherwise — by enumerating that solid's **vertices**, because
+distance to a convex set is a convex function and its maximum over a polytope is
+attained at one. The 26-DOP's vertices come from direct enumeration of its 2600
+plane triples, vectorised; no halfspace-intersection library and no new
+dependency.
+
+Deliberately the DOP and **not** the stage-2 hull, even where a hull ships: the
+hull is budget-capped (`kMaxStage2PerCheck`) and the kernel falls back to the
+DOP whenever the cap binds, so the DOP is the bound that always holds. Charging
+the hull's tighter number would under-budget exactly the stops that exhausted
+the cap.
+
+Measured on three real RoboCasa payloads at 25 mm:
+
+| payload | box corner slop | **model overhang** | budget was | **budget is** |
+|---|---:|---:|---:|---:|
+| `CounterToCabinet` `obj_main` | 34.88 mm | **10.18 mm** | 56.53 mm | **31.83 mm** |
+| `CounterToSink` `obj_main` | 29.18 mm | **8.73 mm** | 50.83 mm | **30.38 mm** |
+| `FridgeShelfToDrawer` `obj_main` | 33.12 mm | **8.99 mm** | 54.77 mm | **30.64 mm** |
+
+(The "was" column is the *payload*-termed composition; the shipped behaviour was
+looser still, at the link's 88.22 mm.) Two independent routes agree on the
+magnitude: the 8.7–10.2 mm overhang measured here against the mesh, and the
+8.75 mm median recovery §10.5 measured through the live kernel.
+
+A snapshot recorded before the block existed still resolves to the old number
+rather than losing its budget — absence must read as "this round predates the
+block", never as "this stop has no budget", which would turn every archived
+payload-world stop `unadjudicated` at a stroke (#260's lesson, again).
 
 ### 10.8 Relationship to the other open items
 

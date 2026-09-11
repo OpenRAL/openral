@@ -896,6 +896,111 @@ def _payload_collision_points(model: Any, data: Any, root_body_id: int) -> Any:
     return np.vstack(chunks) if chunks else np.zeros((0, 3))
 
 
+_DOP_VERTEX_EPS = 1e-9
+"""Slack for the 3x3 solves behind `_dop_vertices`, in metres and determinant.
+
+Numerical, not geometric: it rejects three planes that share a direction and
+admits a vertex the solve placed a nanometre outside its own halfspaces. Nine
+orders below the 25 mm lattice this budget is compared against.
+"""
+
+
+def _dop_vertices(dop_lo: Any, dop_hi: Any) -> Any:
+    """Vertices of a 26-DOP, from its 26 halfspaces.
+
+    The DOP is ``{x : lo[i] <= u_i.x <= hi[i]}`` over ``DOP_AXES``. Its vertices
+    are where three of those 26 planes meet and the remaining 23 still hold, so
+    they are enumerated directly: 2600 triples, one 3x3 solve each, vectorised.
+    No halfspace-intersection library, no interior point to seed, and no
+    dependency this module does not already have.
+
+    Why vertices at all: the quantity an adjudicator needs is how far the
+    kernel's MODEL of the payload reaches past the real mesh, and for a convex
+    model that is ``max over the model of dist(x, mesh)``. Distance to a convex
+    set is a convex function, so its maximum over a polytope is attained at a
+    **vertex** — the same reason a box's term is its corner slop and not
+    something sampled over its faces.
+
+    Returns:
+        ``(n, 3)`` vertices in the DOP's own frame, or an empty array when the
+        polytope is degenerate.
+    """
+    import itertools
+
+    import numpy as np
+    from openral_core.schemas import DOP_AXES
+
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    normals = np.vstack([axes, -axes])
+    offsets = np.concatenate(
+        [np.asarray(dop_hi, dtype=np.float64), -np.asarray(dop_lo, dtype=np.float64)]
+    )
+    triples = np.asarray(list(itertools.combinations(range(len(normals)), 3)), dtype=np.int64)
+    a = normals[triples]  # (m, 3, 3)
+    b = offsets[triples]  # (m, 3)
+    # Skip the near-singular triples (three planes sharing a direction) before
+    # solving, so a LinAlgError cannot take the whole snapshot down.
+    keep = np.abs(np.linalg.det(a)) > _DOP_VERTEX_EPS
+    if not keep.any():
+        return np.zeros((0, 3))
+    # `b[..., None]` because NumPy 2 reads a stack of (m, 3) right-hand sides
+    # as ONE (m, 3) matrix, not m vectors — solve then complains that m != 3.
+    points: Any = np.linalg.solve(a[keep], b[keep][..., None])[..., 0]
+    # A candidate is a vertex only if every OTHER halfspace still contains it.
+    # The tolerance absorbs the 3x3 solve, nothing geometric.
+    inside = (points @ normals.T <= offsets + _DOP_VERTEX_EPS).all(axis=1)
+    return np.unique(np.round(points[inside], 9), axis=0)
+
+
+def _payload_model_overhang_m(prim: Any, points: Any) -> float:
+    """How far ONE payload primitive's kernel model reaches past the real mesh.
+
+    The payload-side analogue of a link's ``hull_overhang_m`` (#221), and the
+    term a **world-voxel** payload stop needs. ``corner_slop_m`` beside it is
+    the box's, which stays correct for a payload **self** stop (box vs box
+    either way) and over-states this one by exactly what the refinement
+    recovered — which is how a real defect hides behind a generous budget.
+
+    Measured over whichever solid the kernel actually checks: the refinement's
+    DOP when the primitive carries one (#266), the box otherwise. Both are
+    convex, so the maximum is at a vertex in both cases — the box's eight
+    corners, or the DOP's.
+
+    Deliberately the DOP and not the stage-2 hull, even when a hull ships: the
+    hull is budget-capped (``kMaxStage2PerCheck``) and the kernel falls back to
+    the DOP whenever the cap binds, so the DOP is the bound that always holds.
+    Charging the hull's tighter number would under-budget exactly the stops that
+    exhausted the cap.
+    """
+    import numpy as np
+
+    half_extents = getattr(prim.shape, "half_extents_m", None)
+    if half_extents is None:
+        return 0.0  # a sphere/capsule primitive is checked as itself; no overhang
+    rot = _quat_xyzw_to_matrix(prim.pose_in_object.quat_xyzw)
+    centre = np.asarray(prim.pose_in_object.xyz, dtype=np.float64)
+    local = (points - centre) @ rot  # payload surface in the primitive's frame
+    tight = prim.tight_geometry
+    if tight is None:
+        half = np.asarray(half_extents, dtype=np.float64)
+        vertices = np.asarray(
+            [
+                (sx * half[0], sy * half[1], sz * half[2])
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ]
+        )
+    else:
+        vertices = _dop_vertices(tight.dop_lo_m, tight.dop_hi_m)
+        if vertices.shape[0] == 0:
+            return float("inf")  # degenerate: say "no budget", never zero
+    # Vertex to nearest sampled surface point. The same approximation
+    # `corner_slop_m` already makes, and in the same direction: a sample set
+    # under-states the surface, so the distance to it over-states the overhang.
+    return float(max(np.min(np.linalg.norm(local - v, axis=1)) for v in vertices))
+
+
 def attached_payload_mesh_slop(
     model: Any,
     data: Any,
@@ -960,6 +1065,7 @@ def attached_payload_mesh_slop(
     objects: dict[str, object] = {}
     unresolved: list[str] = []
     worst = 0.0
+    worst_overhang = 0.0
     for body_id in sorted(attached_body_ids):
         named = _body_names(model, frozenset({int(body_id)}))
         name = named[0] if named else f"body_{int(body_id)}"
@@ -978,8 +1084,10 @@ def attached_payload_mesh_slop(
             unresolved.append(name)
             continue
         corner_slop = 0.0
+        model_overhang = 0.0
         boxes = 0
         for prim in prims:
+            model_overhang = max(model_overhang, _payload_model_overhang_m(prim, points))
             # Only BOX primitives can be loose: a sphere/capsule geom lowers to
             # a sphere/capsule the kernel checks as such, with no corner to
             # overhang. Boxes are where the mesh AABB and the cluster merge
@@ -1000,7 +1108,14 @@ def attached_payload_mesh_slop(
                             corner_slop, float(np.min(np.linalg.norm(local - corner, axis=1)))
                         )
         worst = max(worst, corner_slop)
+        worst_overhang = max(worst_overhang, model_overhang)
         objects[name] = {
+            # The WORLD-VOXEL term (#266): how far the solid the kernel checks
+            # -- the refinement's DOP, or the box when there is none -- reaches
+            # past this payload's real mesh. `corner_slop_m` below is the box's
+            # and stays the SELF-stop term; charging it to a world-voxel stop
+            # over-budgets a refined primitive by the whole recovery.
+            "model_overhang_m": round(model_overhang, 6),
             "n_primitives": len(prims),
             "n_box_primitives": boxes,
             "corner_slop_m": round(corner_slop, 6),
@@ -1019,6 +1134,7 @@ def attached_payload_mesh_slop(
     return {
         "objects": objects,
         "max_corner_slop_m": round(worst, 6),
+        "max_model_overhang_m": round(worst_overhang, 6),
         "unresolved_objects": sorted(unresolved),
         "method": (
             "published primitive corner -> nearest sampled payload collision "
@@ -1686,6 +1802,11 @@ def estop_ground_truth_snapshot(
     # stop read as a misattributed one.
     payload_slop = attached_payload_mesh_slop(model, data, attached_body_ids=attached)
     max_payload_slop: Any = payload_slop.get("max_corner_slop_m", 0.0)
+    # #266: the world-voxel payload composition. `inf` when a degenerate
+    # refinement left the overhang unmeasurable — the consumer must then read
+    # "no budget", never a zero it would score a correct stop against.
+    max_payload_overhang: Any = payload_slop.get("max_model_overhang_m", 0.0)
+    payload_world_budget = float(max_payload_overhang or 0.0) + voxel_half_diagonal
     self_budget = float(max_slop or 0.0) + float(max_payload_slop or 0.0)
     # Widen the probe window to whichever comparison this stop needs, never
     # narrow it: a window derived below the default would recreate
@@ -1797,6 +1918,32 @@ def estop_ground_truth_snapshot(
             "collision_model_slop": slop or None,
             # The self-collision half. Distinct from the block above because
             # the geometry is: no voxel is involved, and BOTH sides are OBBs.
+            # The payload-vs-WORLD-VOXEL half (#266), and the block the
+            # adjudicator was missing entirely: 97 % of the 2026-09-10 A/B's
+            # 15 mm stops were this class, and every one of them was charged
+            # the top-level ROBOT LINK's corner slop — a term for a pair the
+            # stop does not involve. One OBB-or-DOP and one voxel, so the
+            # composition is the payload's own model overhang plus the cell
+            # half-diagonal.
+            "payload_world_voxel": {
+                "rule": (
+                    "an attached-payload WORLD stop (collision_kind 'world', "
+                    "link_a 'attached:<id>') is checked payload-model to voxel "
+                    "cube, with no robot link on either side. The admissible "
+                    "gap against a mesh-to-mesh probe is "
+                    "payload_model_overhang + voxel_half_diagonal. The overhang "
+                    "is measured over whichever solid the kernel checks -- the "
+                    "#266 refinement's DOP where one ships, the box otherwise "
+                    "-- so it is NOT max_payload_corner_slop_m, which is the "
+                    "box's and belongs to the self-collision block."
+                ),
+                "max_payload_model_overhang_m": payload_slop.get("max_model_overhang_m"),
+                "voxel_half_diagonal_m": round(voxel_half_diagonal, 6),
+                "admissible_gap_m": round(payload_world_budget, 6),
+                "payload_slop": payload_slop or None,
+            }
+            if attached_bodies
+            else None,
             "self_collision": {
                 "rule": (
                     "an attached-payload self stop (collision_kind 'self', "

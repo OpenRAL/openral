@@ -1053,6 +1053,68 @@ def test_the_hal_budget_is_read_out_of_the_recorded_snapshot() -> None:
     assert validation_matrix.hal_admissible_gap_m(snapshot, world) == pytest.approx(0.08822)
     # A payload self stop has an OBB on both sides and no voxel: its own block.
     assert validation_matrix.hal_admissible_gap_m(snapshot, payload_self) == pytest.approx(0.124555)
+    # A snapshot recorded BEFORE #266's payload-world block still resolves —
+    # to the old top-level number. Absence must read as "this round predates
+    # the block", never as "this stop has no budget", which would turn every
+    # archived payload-world stop `unadjudicated` at a stroke.
+    payload_world = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_1",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, payload_world) == pytest.approx(0.08822)
+
+
+def test_a_payload_world_stop_is_charged_the_payload_not_the_link() -> None:
+    """#266. The class that is 97 % of the 15 mm A/B's stops, finally its own budget.
+
+    A payload-vs-world stop is one payload model against one voxel cube — the
+    robot's links are not a party to it. Routing it to the top-level block
+    charged it `corner_slop(worst LINK) + voxel_half_diagonal`, a composition
+    for a pair the stop does not involve, and on the 2026-08-23 rounds that was
+    88.22 mm (``panda_link4``) where the payload's own model needs ~31 mm.
+
+    An over-large budget does not fail loudly; it silently excuses. That is the
+    direction that hides a real defect, which is why this is a fix and not a
+    refinement.
+    """
+    from openral_core import ValidationStopEvidence
+
+    snapshot = {
+        "adjudication_budget": {
+            "admissible_gap_m": 0.08822,  # the LINK composition, still right for an arm stop
+            "payload_world_voxel": {
+                "max_payload_model_overhang_m": 0.01018,
+                "voxel_half_diagonal_m": 0.021651,
+                "admissible_gap_m": 0.031831,
+                "payload_slop": {"max_corner_slop_m": 0.03488},
+            },
+        }
+    }
+    payload_world = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_9",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    arm_world = ValidationStopEvidence(
+        kind="world",
+        party_a="panda_link4",
+        party_b="voxel_9",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, payload_world) == pytest.approx(
+        0.031831
+    )
+    # The arm's own stops are untouched: they really are link-vs-voxel.
+    assert validation_matrix.hal_admissible_gap_m(snapshot, arm_world) == pytest.approx(0.08822)
+    # And the payload's budget is the MODEL's, not the box's — charging the box
+    # would have handed this stop 24.7 mm the kernel's model does not use.
+    assert 0.031831 < 0.03488 + 0.021651
 
 
 def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:

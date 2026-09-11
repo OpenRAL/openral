@@ -41,11 +41,19 @@ mujoco = pytest.importorskip("mujoco")
 # where the producer actually creates it, not a uniform inflation.
 _R = 0.03
 _OCTAHEDRON_VERTS = f"{_R} 0 0  {-_R} 0 0  0 {_R} 0  0 {-_R} 0  0 0 {_R}  0 0 {-_R}"
+_TETRA_VERTS = f"{_R} 0 0  0 {_R} 0  0 0 {_R}  {-_R * 0.2} {-_R * 0.2} {-_R * 0.2}"
 _MJCF = f"""
 <mujoco model="estop_payload_slop">
   <option gravity="0 0 0"/>
   <asset>
     <mesh name="octahedron" vertex="{_OCTAHEDRON_VERTS}"/>
+    <!-- A SKEW tetrahedron, deliberately: a regular one inscribed in the cube
+         has its four faces on the DOP's own corner axes, so its refinement is
+         exact and it would test the same thing the octahedron already does.
+         This one's faces lie on no DOP axis, so the tangent slabs bound it
+         strictly loosely — a real positive overhang, strictly inside the
+         box's corner slop, which is the case the budget exists for. -->
+    <mesh name="tetra" vertex="{_TETRA_VERTS}"/>
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="5 5 0.1"/>
@@ -56,6 +64,10 @@ _MJCF = f"""
     <body name="mesh_payload" pos="0.5 0 0.5">
       <freejoint name="mesh_payload_free"/>
       <geom name="mesh_payload_g0" type="mesh" mesh="octahedron"/>
+    </body>
+    <body name="tetra_payload" pos="0.5 -0.4 0.5">
+      <freejoint name="tetra_payload_free"/>
+      <geom name="tetra_payload_g0" type="mesh" mesh="tetra"/>
     </body>
     <body name="box_payload" pos="0.5 0.4 0.5">
       <freejoint name="box_payload_free"/>
@@ -200,3 +212,102 @@ def test_the_probe_window_widens_to_the_self_collision_budget() -> None:
     used = float(budget["probe_distmax_used_m"])  # type: ignore[arg-type]
     assert used == pytest.approx((_R + 1e-4) * math.sqrt(2.0), abs=5e-5)
     assert used > 0.001, "the window widened to the budget, it did not narrow"
+
+
+def test_the_world_voxel_budget_is_the_models_overhang_not_the_boxs() -> None:
+    """#266's missing budget. A payload-vs-world stop has no robot link in it.
+
+    Until this, ``hal_admissible_gap_m`` routed that class to the top-level
+    block — worst LINK corner slop plus the cell half-diagonal — a budget for a
+    pair the stop does not involve, and that class is **97 %** of the
+    2026-09-10 A/B's 15 mm stops and 79 % of its 25 mm ones.
+
+    The right term is how far the solid the kernel *actually checks* reaches
+    past the real mesh: the refinement's DOP where one ships, the box
+    otherwise. Both are convex, so the maximum of a convex distance over them
+    is at a vertex — the box's eight corners, or the DOP's.
+
+    The octahedron pins it exactly: it **is** a 26-DOP (its eight faces are the
+    DOP's four corner axes, both signs), so the refinement bounds it with zero
+    slack while its AABB stands ``R*sqrt(2)`` proud at the corners.
+    """
+    model, data = _compiled()
+    slop = attached_payload_mesh_slop(
+        model,
+        data,
+        attached_body_ids=frozenset(
+            {_body(model, n) for n in ("mesh_payload", "tetra_payload", "box_payload")}
+        ),
+    )
+    objects = slop["objects"]
+    assert isinstance(objects, dict)
+
+    octa = objects["mesh_payload"]
+    assert octa["corner_slop_m"] == pytest.approx(_R * math.sqrt(2.0), abs=3e-4)
+    assert octa["model_overhang_m"] == pytest.approx(0.0, abs=1e-9), (
+        "an octahedron is exactly a 26-DOP; the refinement overhangs it by nothing"
+    )
+
+    # The skew tetrahedron is not a DOP, so its overhang is real — 18.25 mm
+    # against the box's 32.55 mm. Charging the box would hand this stop 14 mm
+    # of budget the kernel's own model does not use, which is how a real defect
+    # hides behind a generous gap.
+    tetra = objects["tetra_payload"]
+    assert tetra["model_overhang_m"] == pytest.approx(0.018249, abs=1e-5)
+    assert tetra["corner_slop_m"] == pytest.approx(0.032545, abs=1e-5)
+    assert 0.0 < tetra["model_overhang_m"] < tetra["corner_slop_m"]
+
+    # A box geom lowers exactly and carries no refinement, so the two terms
+    # agree: the model IS the box, and the budget does not change for it.
+    box = objects["box_payload"]
+    assert box["n_stage2_primitives"] == 0
+    assert box["model_overhang_m"] == pytest.approx(box["corner_slop_m"], abs=1e-9)
+
+    assert slop["max_model_overhang_m"] == pytest.approx(
+        max(float(o["model_overhang_m"]) for o in objects.values()),  # type: ignore[index]
+        abs=1e-9,
+    )
+
+
+def test_the_payload_world_budget_rides_with_a_payload_stop() -> None:
+    """The block itself, composed and carried on the snapshot.
+
+    One model and one voxel, so the composition is the payload's own overhang
+    plus the cell half-diagonal — never the link term beside it, and never
+    ``max_payload_corner_slop_m``, which is the box's and belongs to the
+    self-collision block.
+    """
+    model, data = _compiled()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        attached_body_ids=frozenset({_body(model, "tetra_payload")}),
+        base_frame_body="robot0_base",
+        description=None,
+    )
+    budget = snapshot["adjudication_budget"]
+    assert isinstance(budget, dict)
+    block = budget["payload_world_voxel"]
+    assert isinstance(block, dict)
+    overhang = float(block["max_payload_model_overhang_m"])  # type: ignore[arg-type]
+    half = float(block["voxel_half_diagonal_m"])  # type: ignore[arg-type]
+    assert block["admissible_gap_m"] == pytest.approx(overhang + half, abs=1e-6)
+    # Strictly tighter than charging the box would have been.
+    payload_slop = block["payload_slop"]
+    assert isinstance(payload_slop, dict)
+    assert overhang < float(payload_slop["max_corner_slop_m"])  # type: ignore[arg-type]
+
+
+def test_a_payloadless_stop_carries_no_payload_world_block() -> None:
+    """Nothing carried, nothing to charge a payload budget to."""
+    model, data = _compiled()
+    snapshot = estop_ground_truth_snapshot(
+        model,
+        data,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body="robot0_base",
+    )
+    budget = snapshot["adjudication_budget"]
+    assert isinstance(budget, dict)
+    assert budget["payload_world_voxel"] is None

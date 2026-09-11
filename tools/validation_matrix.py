@@ -579,18 +579,57 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
         self_block = budget.get("self_collision")
         if isinstance(self_block, dict):
             return _as_float(self_block.get("admissible_gap_m"))
+    if stop.kind != "self" and stop.involves_payload:
+        payload_gap = _payload_world_gap_m(budget)
+        if payload_gap is not None:
+            return payload_gap
     if stop.kind == "self" and not stop.involves_payload:
-        # Link vs link (#216). Two OBBs, no voxel and no payload — or, since
-        # #202, two exact HULLS. Which one the kernel used is stated by the
-        # kernel rather than guessed: `depth_is_box_bound` (#213) means the
-        # reported depth is the OBB's bound, so the box term applies.
-        link_block = budget.get("link_link")
-        if not isinstance(link_block, dict):
-            return None
-        if stop.depth_is_box_bound:
-            return _as_float(link_block.get("admissible_gap_box_m"))
-        return _link_link_hull_gap_m(budget, stop)
+        return _link_link_gap_m(budget, stop)
+    # Arm link vs world voxel: one link OBB, one cell.
     return _as_float(budget.get("admissible_gap_m"))
+
+
+def _link_link_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
+    """The link-vs-link half of ``hal_admissible_gap_m`` (#216).
+
+    Two OBBs, no voxel and no payload — or, since #202, two exact HULLS. Which
+    one the kernel used is stated by the kernel rather than guessed:
+    ``depth_is_box_bound`` (#213) means the reported depth is the OBB's bound,
+    so the box term applies.
+    """
+    link_block = budget.get("link_link")
+    if not isinstance(link_block, dict):
+        return None
+    if stop.depth_is_box_bound:
+        return _as_float(link_block.get("admissible_gap_box_m"))
+    return _link_link_hull_gap_m(budget, stop)
+
+
+def _payload_world_gap_m(budget: Mapping[str, Any]) -> float | None:
+    """The payload-vs-world-voxel half of ``hal_admissible_gap_m`` (#266).
+
+    A payload-vs-world stop has ONE model and one voxel, and **no robot link**.
+    The top-level block composes the worst LINK corner slop with the cell
+    half-diagonal, so routing this class there charged it a budget for a pair
+    the stop does not involve — and that class is **97 %** of the 2026-09-10
+    A/B's 15 mm stops and 79 % of its 25 mm ones.
+
+    The right composition is the payload's own ``model_overhang`` (measured over
+    whichever solid the kernel checks: the #266 refinement's DOP where one
+    ships, the box otherwise) plus the cell half-diagonal. Deliberately not
+    ``max_payload_corner_slop_m`` — that is the box's term and belongs to the
+    self-collision block, and charging it here over-budgets a refined primitive
+    by exactly what the refinement recovered.
+
+    Returns:
+        The gap, or ``None`` for a snapshot recorded before the block existed —
+        which falls through to the pre-#266 behaviour rather than losing its
+        budget entirely.
+    """
+    block = budget.get("payload_world_voxel")
+    if not isinstance(block, dict):
+        return None
+    return _as_float(block.get("admissible_gap_m"))
 
 
 def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
