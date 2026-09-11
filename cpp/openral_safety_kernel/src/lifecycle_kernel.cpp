@@ -111,6 +111,37 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
 /// (ADR-0098) so both interpret the same wire shape identically. Returns
 /// false (fail-closed) on an unknown SHAPE_* tag or too few dimensions for
 /// the tag given.
+/// Copy a primitive's optional stage-2 refinement off the wire (#266).
+///
+/// Shape only — nothing here is trusted. `ingest_attached_objects` proves
+/// containment against the primitive's own box before any of it is used, and
+/// silently drops what it cannot prove. A malformed refinement therefore leaves
+/// `has_tight` false and the primitive is checked as the plain box: a producer
+/// cannot widen the kernel's window by publishing nonsense, only fail to
+/// narrow it.
+void decode_tight_geometry(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
+                           AttachedPrimitiveInput& out) {
+  out.has_tight = false;
+  out.hull_vertices.clear();
+  if (prim.tight_dop_lo.size() != static_cast<std::size_t>(kDopAxes) ||
+      prim.tight_dop_hi.size() != static_cast<std::size_t>(kDopAxes) ||
+      prim.tight_hull_vertices.size() % 3 != 0) {
+    return;
+  }
+  for (int i = 0; i < kDopAxes; ++i) {
+    out.dop_lo[i] = prim.tight_dop_lo[static_cast<std::size_t>(i)];
+    out.dop_hi[i] = prim.tight_dop_hi[static_cast<std::size_t>(i)];
+  }
+  const std::size_t n = prim.tight_hull_vertices.size() / 3;
+  out.hull_vertices.reserve(n);
+  for (std::size_t v = 0; v < n; ++v) {
+    out.hull_vertices.push_back(Vec3{prim.tight_hull_vertices[3 * v],
+                                     prim.tight_hull_vertices[3 * v + 1],
+                                     prim.tight_hull_vertices[3 * v + 2]});
+  }
+  out.has_tight = true;
+}
+
 bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
                                AttachedPrimitiveInput& out) {
   const std::size_t n_dims = prim.shape_dimensions.size();
@@ -145,6 +176,7 @@ bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimiti
       prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
       prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
       prim.pose_in_object.orientation.w);
+  decode_tight_geometry(prim, out);
   return true;
 }
 
@@ -1719,6 +1751,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
   attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
   attached_model_.touch_links.assign(attached_max_touch_links_, 0);
+  // Stage-2 store for carried payloads (#266). Pre-sized to the worst case —
+  // every primitive refined, each with a full-budget hull — so the ingest path
+  // fills it in place and the hot path never allocates, the same contract the
+  // fixed link hulls are under. 16 primitives x 320 vertices x 24 B is ~123 kB.
+  attached_model_.hulls.assign(attached_max_primitives_, LinkHull{});
+  attached_model_.hull_vertices.assign(
+      attached_max_primitives_ * static_cast<std::size_t>(kMaxTightHullVertices), Vec3{});
   attached_labels_.assign(attached_max_objects_, std::string{});
   attached_ingest_scratch_.clear();
   attached_ingest_scratch_.reserve(attached_max_objects_);

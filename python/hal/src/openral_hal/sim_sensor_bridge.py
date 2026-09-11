@@ -877,7 +877,7 @@ def _payload_collision_points(model: Any, data: Any, root_body_id: int) -> Any:
     """
     import numpy as np
 
-    from openral_hal._sim_attachment_evidence import _body_subtree
+    from openral_hal._sim_attachment_evidence import _body_subtree, geom_surface_points
 
     subtree = _body_subtree(model, root_body_id)
     root_rot = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
@@ -890,62 +890,10 @@ def _payload_collision_points(model: Any, data: Any, root_body_id: int) -> Any:
             continue
         rot = root_rot.T @ np.asarray(data.geom_xmat[geom], dtype=np.float64).reshape(3, 3)
         pos = root_rot.T @ (np.asarray(data.geom_xpos[geom], dtype=np.float64) - root_pos)
-        local = _geom_surface_points(model, geom)
+        local = geom_surface_points(model, geom)
         if local.shape[0]:
             chunks.append((local @ rot.T) + pos)
     return np.vstack(chunks) if chunks else np.zeros((0, 3))
-
-
-def _geom_surface_points(model: Any, geom: int) -> Any:
-    """Points lying on one geom's own surface, in the geom's local frame."""
-    import mujoco  # reason: optional sim dep
-    import numpy as np
-
-    kind = int(model.geom_type[geom])
-    size = np.asarray(model.geom_size[geom], dtype=np.float64)
-    if kind == int(mujoco.mjtGeom.mjGEOM_MESH):
-        mesh = int(model.geom_dataid[geom])
-        start = int(model.mesh_vertadr[mesh])
-        count = int(model.mesh_vertnum[mesh])
-        return np.asarray(model.mesh_vert[start : start + count], dtype=np.float64).reshape(-1, 3)
-    if kind == int(mujoco.mjtGeom.mjGEOM_BOX):
-        return np.array(
-            [
-                [sx * size[0], sy * size[1], sz * size[2]]
-                for sx in (-1.0, 1.0)
-                for sy in (-1.0, 1.0)
-                for sz in (-1.0, 1.0)
-            ],
-            dtype=np.float64,
-        )
-    if kind == int(mujoco.mjtGeom.mjGEOM_SPHERE):
-        r = float(size[0])
-        return np.array(
-            [[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]],
-            dtype=np.float64,
-        )
-    if kind in {int(mujoco.mjtGeom.mjGEOM_CAPSULE), int(mujoco.mjtGeom.mjGEOM_CYLINDER)}:
-        r = float(size[0])
-        half = float(size[1])
-        # A cylinder's rim is on its surface; a capsule's pole sits r beyond
-        # the segment end. Use the shape's own extent so neither is overstated.
-        pole = half + r if kind == int(mujoco.mjtGeom.mjGEOM_CAPSULE) else half
-        return np.array(
-            [
-                [r, 0, -half],
-                [-r, 0, -half],
-                [0, r, -half],
-                [0, -r, -half],
-                [r, 0, half],
-                [-r, 0, half],
-                [0, r, half],
-                [0, -r, half],
-                [0, 0, pole],
-                [0, 0, -pole],
-            ],
-            dtype=np.float64,
-        )
-    return np.zeros((0, 3))
 
 
 def attached_payload_mesh_slop(
@@ -1057,6 +1005,16 @@ def attached_payload_mesh_slop(
             "n_box_primitives": boxes,
             "corner_slop_m": round(corner_slop, 6),
             "collision_points_sampled": int(points.shape[0]),
+            # #266 disclosure, the payload twin of `has_stage2_hull` (#260):
+            # how many of those boxes the kernel does NOT check as boxes in the
+            # world-voxel sweep, because they carry a proved-contained
+            # refinement. `corner_slop_m` above is still the right budget for an
+            # attached-payload SELF stop — that path is box-vs-box either way —
+            # but charging it to a world-voxel payload stop over-budgets a
+            # refined primitive by the whole amount the refinement recovered,
+            # which is how a real defect hides. Stated rather than left to be
+            # inferred from the round's date.
+            "n_stage2_primitives": sum(1 for prim in prims if prim.tight_geometry is not None),
         }
     return {
         "objects": objects,
@@ -1068,7 +1026,9 @@ def attached_payload_mesh_slop(
             "publishes (mesh geoms lower to their local AABB; clustering above "
             "the primitive cap inflates further; sphere/box geoms lower "
             "exactly and contribute 0). The payload's share of the "
-            "attached-payload self-collision budget."
+            "attached-payload self-collision budget; a world-voxel payload "
+            "stop needs its own term whenever n_stage2_primitives > 0, since "
+            "the kernel checked the refinement there, not this box (#266)."
         ),
     }
 

@@ -292,7 +292,7 @@ Two call sites, both gated on a manifest declaring `tight_geometry`:
 
 | surface | keeps the primitive path because |
 |---|---|
-| **attached payloads** (`check_attached_voxel_collision`, `check_attached_world_collision`, `check_attached_self_collision`) | §6. Extending here would engage hazard-log Entry 012's lockstep on both sides at once, and there is no measured motivation |
+| ~~**attached payloads**~~ | **Reversed 2026-09-11 by [#266](https://github.com/OpenRAL/openral/issues/266) — `check_attached_voxel_collision` now runs the staged path.** The original reason ("no measured motivation") was true when written and stopped being true: the 25→15 mm resolution A/B ([#253](https://github.com/OpenRAL/openral/issues/253)) returned a null *because the voxel term is the small one*, and 424 samples across 4 scenes put the payload box's corners a median **50.78 mm** (max 88.22 mm) proud of the mesh — 2.3–3.9× the whole quantisation term — while payload-vs-world rose from 27/34 (79 %) of stops at 25 mm to 36/37 (97 %) at 15 mm. §10. `check_attached_world_collision` and `check_attached_self_collision` are still the primitive path |
 | **world-capsule obstacles** (`check_world_collision`) | out of scope; not voxel geometry |
 | **capsule-lowered robots** (`h1`, `rizon4`, every MJCF-lowered model) | tight geometry refines a `BoxShape`; a capsule has no box to state the containment proof against, and the schema refuses it |
 | **the broad-phase window** | §4.2 — this is the one thing that must not move |
@@ -301,10 +301,11 @@ Two call sites, both gated on a manifest declaring `tight_geometry`:
 
 > `check_self_collision` was in this table as "out of the asked scope" until
 > #191, on the reasoning that leaving it untouched kept
-> `check_attached_self_collision`'s conservatism unchanged. That is still true —
-> the attached path is untouched — but the self path is no longer, because the
-> ACM exemption it was propping up turned out to be the more expensive of the
-> two positions. §9.
+> `check_attached_self_collision`'s conservatism unchanged. That reasoning has
+> now been overtaken twice: #191 moved the self path (§9), and #266 moved the
+> attached **world-voxel** path (§10). `check_attached_self_collision` itself is
+> still box↔box — it is 3 % of the measured stops, and its adjudication budget
+> (`attached_payload_mesh_slop`) is stated against exactly that box.
 
 `box_box_distance` itself is **not deprecated**. It remains the narrow phase for
 every link without tight geometry, the fold in §4.2, and the routine every other
@@ -651,6 +652,188 @@ robosuite's Panda at every node of the `(joint6, joint7)` grid, comparing
 `kernel_predicates.box_box_distance` on the shipped OBBs against `conv(mesh)` for
 the same poses. The benchmark inlines the manifest's boxes, hulls and ACM into a
 standalone `main` linked against `collision.cpp` at `-O3`.
+
+---
+
+## 10. The attached-payload extension (issue #266)
+
+`check_attached_voxel_collision` now runs the same staged narrow phase for a
+carried payload primitive that declares a proved-contained refinement. The box
+stays the broad phase and the fallback; a primitive with no refinement — every
+pre-#266 publisher, and every sphere/box/capsule geom, which lower exactly — is
+bit-for-bit unchanged.
+
+### 10.1 Why — the term that was left standing
+
+Robot links got stage 2 in #166. Attached payloads never did:
+`extract_body_primitives` lowered a carried **mesh** geom to its local AABB, and
+that was not a fallback after a failed refinement — it was the only lowering a
+carried mesh had.
+
+Measured across all 80 rounds of the 2026-09-10 resolution A/B (424 samples, 4
+scenes), identical in every scene:
+
+| payload box corner slop | value |
+| --- | ---: |
+| median | **50.78 mm** |
+| max | **88.22 mm** |
+
+For scale, the world-voxel half-diagonal that [#253](https://github.com/OpenRAL/openral/issues/253)
+proposed to shrink is **21.65 mm** at 25 mm cells and **12.99 mm** at 15 mm. The
+payload box contributed **2.3–3.9× the entire quantisation term** — which is why
+that A/B ran clean (80 rounds, 79 valid, 0 bond teardowns, pairing exact) and
+returned a null:
+
+```
+same-party paired shift   +5.9 mm   95% CI [-5.7, +17.7]
+predicted                 -8.66 mm  → OUTSIDE the interval, 2.6 se away
+sign test                 11 neg / 12 pos,  p = 1.000
+```
+
+Stop composition says the same thing from the other side: payload-vs-world was
+**27/34 (79 %)** of stops at 25 mm and **36/37 (97 %)** at 15 mm. And roughly
+half of those stops were not contacts at all — true certified clearance at the
+moment the kernel stopped was **>10 mm** for 9 of 19 payload stops at 25 mm and
+16 of 32 at 15 mm, median true gap 9.6 mm in both arms. Exactly what a 50 mm box
+bound predicts.
+
+**The check stays.** The ≤2 mm bucket contains real interpenetration (−7.7,
+−1.7, −1.5, −1.3 mm) — the check catching a carried object already in contact.
+Deleting payload-vs-world would recover most of the gate-off/gate-on ceiling gap
+*and* let those through. The fix is fidelity, not removal.
+
+### 10.2 What changed
+
+| | robot link (#166) | carried payload (#266) |
+|---|---|---|
+| producer | `tools/generate_tight_geometry.py`, offline, once per robot release | `_sim_attachment_evidence._tight_geometry_from_points`, online, at every grasp |
+| over the vertex budget | `refine_dop_to_budget` (a loop of halfspace intersections) | stage 1 only — that search is not affordable per grasp |
+| carrier | `RobotDescription` manifest | `openral_msgs/AttachedCollisionPrimitive.tight_dop_lo` / `tight_dop_hi` / `tight_hull_vertices` |
+| proof | `validate_tight_geometry` at `on_configure`, **fail-closed** | `ingest_attached_objects` per message, **fail-down** |
+| store | `CollisionModel::box_hull` / `hulls` / `hull_vertices`, fixed | `AttachedPrimitive::hull_index` / `AttachedModel::hulls` / `hull_vertices`, refilled in place |
+| scope | arm-link↔world-voxel, and self-collision when both links declare | payload↔world-voxel only |
+
+Both sides share `validate_tight_hull` (the kernel) and
+`openral_core.check_tight_geometry_fits_box` (the schema), so a payload hull is
+never held to a weaker standard than a link's.
+
+**Fail-down, not fail-closed, and why.** A robot's hulls are fixed, shipped and
+validated once; a payload's arrive on every world-state message from a live
+producer. Refusing the whole attachment over an unprovable refinement would drop
+the payload's geometry entirely — the *unsafe* direction. Dropping only the
+refinement leaves the primitive checked as the plain box, i.e. exactly the
+pre-#266 behaviour. An over-budget hull is refused **whole**, never truncated to
+the first `kMaxTightHullVertices`, because a truncated hull no longer contains
+its mesh.
+
+### 10.3 The safety case
+
+Identical in shape to §4, with one extra link at the top because the payload's
+geometry is derived online rather than shipped:
+
+```
+mesh  ⊆  hull = conv(surface points)  ⊆  26-DOP  ⊆  local AABB (the box)
+```
+
+Every link is definitional, not fitted. The slabs are tangent halfspaces
+`u·x ≤ max over the same points of u·x`; the hull is the convex hull of those
+points; the box is the points' own AABB grown by 1e-4 m. No optimiser tolerance
+appears anywhere, so the broad-phase window — sized from the box alone — never
+moves.
+
+Conservatism, stated in the right direction: every stage is a **lower bound** on
+the true mesh-to-cell clearance, and the kernel takes the max of the ones it
+computed. A max of lower bounds is a lower bound. So the refinement can only
+ever **raise** the reported clearance, and therefore only ever **remove** a stop,
+never add one. `AttachedVoxelTightGeometry.RefiningAPayloadOnlyEverRemovesStops`
+pins that through the shipped entry point over a sweep of single-cell grids.
+
+No convex-hull solver runs. The kernel's stage 2 is a support-function scan, and
+the support of `conv(V)` is the support of `V`, so the **deduplicated surface
+points** are already a correct stage-2 representation — a true hull would only
+drop interior points, a cost reduction rather than a correctness one. It is not
+worth computing here: MuJoCo compiles a collision mesh to its convex hull
+already, so measured across all four A/B scenes every real payload mesh has *n*
+hull vertices for *n* vertices (749–3319 of them) and SciPy returns the input
+unchanged, at 4–17 ms per call against 0.4 ms for the whole rest of the
+lowering — paid, on this producer, at world-state rate. The deduplicating sort
+is bounded for the same reason (`_HULL_DEDUP_CEILING`): it exists to bring a
+*nearly* fitting point set under the ceiling, and a set already twice over will
+not get there.
+
+### 10.4 What actually fires, measured
+
+Re-lowering every free payload in the four A/B scenes with the shipped producer:
+
+| scene | payload | primitives | stage-2 vertices | wire | box corner slop | box support excess (max) | hull support excess |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CounterToCabinet | `obj_main` | 1 | 98 | 2.6 kB | 19.58 mm | 13.91 mm | ≤ −0.77 mm |
+| CounterToCabinet | `distr_cab_main` | 7 | 474 | 12.8 kB | 13.56 mm | 8.66 mm | ≤ −0.00 mm |
+| CounterToDrawer | `distr_main` | 16 | 750 | 21.3 kB | 15.35 mm | 8.89 mm | ≤ −0.48 mm |
+| CounterToSink | `obj_main` | 2 | **0** | 0.4 kB | 22.22 mm | 12.32 mm | stage 1 |
+| CounterToSink | `distr_counter_main` | 5 | 147 | 4.6 kB | 21.29 mm | 13.95 mm | ≤ −1.86 mm |
+| CounterToSink | `distr_sink_main` | 5 | **0** | 1.0 kB | 23.00 mm | 11.80 mm | stage 1 |
+| FridgeShelfToDrawer | `obj_main` | 2 | 438 | 10.9 kB | 20.00 mm | 7.97 mm | ≤ −1.28 mm |
+| FridgeShelfToDrawer | `distr_main` | 2 | **0** | 0.4 kB | 20.15 mm | 0.36 mm | stage 1 |
+
+Support excess is the max over 4 000 random unit directions of
+`support(model, u) − support(payload surface, u)`, measured against the payload's
+whole surface point cloud in each primitive's own box frame; corner slop is
+`attached_payload_mesh_slop`'s own metric. A negative hull figure is the
+multi-primitive artefact of that shared point cloud, not a containment failure —
+containment is proved separately, by construction and again at ingest.
+
+Three things this says plainly:
+
+1. **Stage 1 does the work.** A real RoboCasa collision mesh carries 749–3319
+   vertices and is already convex, so three of these eight payloads are over
+   `MAX_TIGHT_HULL_VERTICES` and ship the DOP alone — the same representation,
+   for the same reason, that `panda_link1` ships. Stage 2 fires for the small
+   meshes. The DOP is the uncapped stage, and it is **tangent to the real
+   surface along all 13 axes**, which is exactly where the corner slop lives.
+2. **13–23 mm of corner slop, and 8–14 mm of worst-direction support excess, is
+   what the box was adding in these scenes.** These are the shipped scenes at
+   seed 1, not the A/B's own payload set (median 50.78 mm) — those rounds are
+   gitignored on q-laptop, and re-scoring them is §10.6's owed work.
+3. **The wire costs 0.4–21 kB per payload**, and the producer went 0.37–0.44 ms
+   → 0.51–1.10 ms per lowering.
+
+### 10.5 What is deliberately untouched
+
+* **ADR-0098's place-target adjudication.** Its `target_distance ≤ d + allowance`
+  bound keeps reading the **shipped box** distance. That bound is calibrated
+  against the box model the declaration's geometry is adjudicated on; letting a
+  tighter payload widen it would hand the receptacle branch relief nothing in
+  ADR-0098 measured. #266 removes stops *outside* that branch and changes
+  nothing inside it.
+* **`check_attached_self_collision`** (payload OBB ↔ link OBB) and
+  **`check_attached_world_collision`** (payload ↔ world capsule). 3 % of the
+  measured stops, and `attached_payload_mesh_slop`'s budget is stated against
+  exactly the box those still use.
+* **`support_witness_still_in_contact`.** The witness *exempts* cells, so a
+  tighter payload would shorten the exemption's life. Left on the box, which is
+  today's behaviour.
+
+### 10.6 Adjudicating a round after this change
+
+`attached_payload_mesh_slop` now publishes **`n_stage2_primitives`** per object.
+`corner_slop_m` remains the right budget for an attached-payload **self** stop.
+Charging it to a **world-voxel** payload stop over-budgets a refined primitive by
+exactly what the refinement recovered — which is how a real defect hides behind a
+generous gap. This is the `has_stage2_hull` lesson of
+[#260](https://github.com/OpenRAL/openral/issues/260), on the payload side: the
+fact is published rather than inferred from the round's date.
+
+**Still owed:** a world-voxel payload term measured against the *refinement*
+rather than the box. The DOP's overhang past the mesh has no vertex-set closed
+form the way the corner slop does (it is a face-sampling question, like
+`hull_overhang_m`), and nothing needs it until an archived round is re-scored.
+
+### 10.7 Relationship to the other open items
+
+* **[#253](https://github.com/OpenRAL/openral/issues/253)** (25 → 15 mm voxels) — orthogonal, and this is the larger lever. #266 does not need that ruling.
+* **[#259](https://github.com/OpenRAL/openral/issues/259)** (place-allowance scope) — reaches the 33 *placing* stops. #266 reaches all 53 stops with a payload grasped, regardless of phase.
+* **[#264](https://github.com/OpenRAL/openral/issues/264)** (`has_stage2_hull` as a kernel-side disclosure) — §10.6 is the payload half of it.
 
 ---
 

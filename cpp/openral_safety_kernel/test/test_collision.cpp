@@ -5280,3 +5280,233 @@ TEST(SelfCollisionHull, TheReportedHitCarriesTheDisclosure) {
   const auto clear_hit = osk::check_self_collision(clear, cs, 0.0);
   EXPECT_FALSE(clear_hit.depth_is_box_bound);
 }
+
+// --- Attached-payload stage-2 geometry (#266) --------------------------------
+//
+// Robot links got the staged 26-DOP -> exact-hull narrow phase in #166.
+// Attached payloads never did: `extract_body_primitives` lowers a carried MESH
+// geom to its local AABB, and across the 2026-09-10 resolution A/B (424
+// samples, 4 scenes) those corners stood a median 50.78 mm proud of the mesh --
+// 2.3-3.9x the whole world-voxel quantisation term, while 97% of the 15 mm
+// arm's stops were payload-vs-world and roughly half fired with the payload a
+// centimetre or more clear of anything.
+//
+// Fixture: an octahedron with vertices at +-`r` on each axis, lowered exactly
+// as the producer lowers it -- box half-extents `r` (its AABB), refined by the
+// mesh's own 26-DOP and its 6-vertex exact hull. The AABB corner (r,r,r) is
+// `r*sqrt(2)` from the nearest surface point, which is the entire defect,
+// reproduced at a size a single test grid can resolve.
+namespace {
+
+// The octahedron's own DOP slabs: tangent halfspaces u.x <= max over its
+// vertices of u.x, exactly as `_tight_geometry_from_points` builds them.
+osk::LinkHull octahedron_hull(double r, int vertex_first, bool with_stage2) {
+  osk::LinkHull h;
+  h.vertex_first = vertex_first;
+  h.vertex_count = with_stage2 ? 6 : 0;
+  const double verts[6][3] = {{r, 0, 0}, {-r, 0, 0}, {0, r, 0}, {0, -r, 0}, {0, 0, r}, {0, 0, -r}};
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = -std::numeric_limits<double>::infinity();
+    for (const auto& v : verts) {
+      const double s =
+          osk::kDopAxis[i][0] * v[0] + osk::kDopAxis[i][1] * v[1] + osk::kDopAxis[i][2] * v[2];
+      lo = std::min(lo, s);
+      hi = std::max(hi, s);
+    }
+    h.dop_lo[i] = lo;
+    h.dop_hi[i] = hi;
+  }
+  return h;
+}
+
+std::vector<osk::Vec3> octahedron_vertices(double r) {
+  return {osk::Vec3{r, 0, 0},  osk::Vec3{-r, 0, 0}, osk::Vec3{0, r, 0},
+          osk::Vec3{0, -r, 0}, osk::Vec3{0, 0, r},  osk::Vec3{0, 0, -r}};
+}
+
+osk::AttachedPrimitive octahedron_box_prim(double r, const osk::Transform& pose_in_object,
+                                           int hull_index) {
+  osk::AttachedPrimitive p;
+  p.kind = osk::AttachedShapeKind::kBox;
+  p.half_extents = osk::Vec3{r, r, r};
+  p.pose_in_object = pose_in_object;
+  p.hull_index = hull_index;
+  return p;
+}
+
+}  // namespace
+
+TEST(AttachedVoxelTightGeometry, RefiningAPayloadOnlyEverRemovesStops) {
+  // The behavioural guarantee the safety case rests on, through the shipped
+  // entry point over a sweep of single-cell grids. A payload refinement may
+  // only ever recover clearance the box was hiding; inventing a stop would be
+  // a regression even though it is a safe one, since the whole reason to touch
+  // this path is that the box over-reports proximity.
+  const double r = 0.1;
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  osk::AttachedModel box_only;
+  append_object(box_only, 1, identity(), {octahedron_box_prim(r, identity(), -1)});
+
+  osk::AttachedModel refined;
+  append_object(refined, 1, identity(), {octahedron_box_prim(r, identity(), 0)});
+  refined.hulls = {octahedron_hull(r, 0, true)};
+  refined.hull_vertices = octahedron_vertices(r);
+  ASSERT_EQ(osk::validate_tight_hull(refined.hulls[0], refined.primitives[0].half_extents,
+                                     refined.hull_vertices),
+            osk::TightGeometryStatus::kOk);
+
+  std::vector<std::uint8_t> occ(125, 0);
+  int recovered = 0;
+  for (int iz = 0; iz < 5; ++iz) {
+    for (int iy = 0; iy < 5; ++iy) {
+      for (int ix = 0; ix < 5; ++ix) {
+        const std::size_t idx = static_cast<std::size_t>(voxel_index(ix, iy, iz));
+        occ[idx] = 1;
+        const auto a = osk::check_attached_voxel_collision(m, box_only, s, make_grid(occ), 0.0);
+        const auto b = osk::check_attached_voxel_collision(m, refined, s, make_grid(occ), 0.0);
+        occ[idx] = 0;
+        if (b.hit) {
+          ASSERT_TRUE(a.hit) << "the refinement invented a stop at cell " << ix << "," << iy << ","
+                             << iz;
+          ASSERT_GE(b.min_distance, a.min_distance - 1e-12)
+              << "the reported depth may only ever shrink";
+        } else if (a.hit) {
+          ++recovered;
+        }
+      }
+    }
+  }
+  EXPECT_GT(recovered, 0) << "the AABB should be stopping on cells the octahedron clears -- if "
+                             "not, the fixture stopped exercising anything";
+}
+
+TEST(AttachedVoxelTightGeometry, TheCornerCellIsExactlyWhatTheBoxWasInventing) {
+  // Names the defect rather than sampling it. The (+x,+y,+z) corner cell is
+  // diagonally clear of the octahedron and flush against its AABB, so the box
+  // stops and the refined payload does not -- the 50.78 mm class, at 100 mm.
+  const double r = 0.1;
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(3, 3, 3))] = 1;  // centre (0.1, 0.1, 0.1)
+
+  osk::AttachedModel box_only;
+  append_object(box_only, 1, identity(), {octahedron_box_prim(r, identity(), -1)});
+  const auto boxed = osk::check_attached_voxel_collision(m, box_only, s, make_grid(occ), 0.0);
+  EXPECT_TRUE(boxed.hit) << "the AABB corner touches this cell -- that is the false stop";
+
+  // Stage 1 alone (the 26-DOP, no hull) already clears it: the octahedron's
+  // corner slab is tangent to the (1,1,1)/sqrt(3) face, well inside the box.
+  osk::AttachedModel dop_only;
+  append_object(dop_only, 1, identity(), {octahedron_box_prim(r, identity(), 0)});
+  dop_only.hulls = {octahedron_hull(r, 0, false)};
+  const auto staged1 = osk::check_attached_voxel_collision(m, dop_only, s, make_grid(occ), 0.0);
+  EXPECT_FALSE(staged1.hit) << "stage 1 alone must already recover the corner";
+
+  osk::AttachedModel refined;
+  append_object(refined, 1, identity(), {octahedron_box_prim(r, identity(), 0)});
+  refined.hulls = {octahedron_hull(r, 0, true)};
+  refined.hull_vertices = octahedron_vertices(r);
+  const auto staged2 = osk::check_attached_voxel_collision(m, refined, s, make_grid(occ), 0.0);
+  EXPECT_FALSE(staged2.hit);
+  // True octahedron-to-cell-corner clearance: the cell's near corner is
+  // (0.05, 0.05, 0.05) and the face plane x+y+z = r puts it 0.05*sqrt(3) - ...
+  // beyond it. The kernel reports a LOWER bound; it must be positive and it
+  // must not exceed the truth.
+  EXPECT_GT(staged2.min_distance, 0.0);
+  EXPECT_LT(staged2.min_distance, 0.05 * std::sqrt(3.0));
+}
+
+TEST(AttachedVoxelTightGeometry, ARealContactStillStops) {
+  // The check must stay (#266): the >=2 mm bucket of the A/B contains real
+  // interpenetration. A cell the octahedron genuinely occupies trips whether or
+  // not the payload is refined.
+  const double r = 0.1;
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;  // the payload's own centre cell
+
+  osk::AttachedModel refined;
+  append_object(refined, 1, identity(), {octahedron_box_prim(r, identity(), 0)});
+  refined.hulls = {octahedron_hull(r, 0, true)};
+  refined.hull_vertices = octahedron_vertices(r);
+  const auto hit = osk::check_attached_voxel_collision(m, refined, s, make_grid(occ), 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_LT(hit.min_distance, 0.0);
+}
+
+TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
+  // Fail-DOWN, and why. A payload's refinement arrives on every world-state
+  // message from a live producer, so refusing the attachment outright would
+  // drop the payload's geometry -- the unsafe direction. Dropping only the
+  // refinement leaves the primitive checked as the plain box, i.e. exactly the
+  // pre-#266 behaviour.
+  osk::AttachedModel out;
+  out.objects.assign(2, osk::AttachedObject{});
+  out.primitives.assign(4, osk::AttachedPrimitive{});
+  out.touch_links.assign(4, 0);
+  out.hulls.assign(4, osk::LinkHull{});
+  out.hull_vertices.assign(4 * static_cast<std::size_t>(osk::kMaxTightHullVertices), osk::Vec3{});
+
+  const double r = 0.1;
+  osk::AttachedObjectInput in;
+  in.attach_link = "hand";
+  osk::AttachedPrimitiveInput honest;
+  honest.kind = osk::AttachedShapeKind::kBox;
+  honest.half_extents = osk::Vec3{r, r, r};
+  honest.has_tight = true;
+  const osk::LinkHull good = octahedron_hull(r, 0, true);
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    honest.dop_lo[i] = good.dop_lo[i];
+    honest.dop_hi[i] = good.dop_hi[i];
+  }
+  honest.hull_vertices = octahedron_vertices(r);
+
+  // Same primitive, but with a slab reaching outside the box it refines. That
+  // is the one failure that could make the broad-phase window skip a cell.
+  osk::AttachedPrimitiveInput escaping = honest;
+  escaping.dop_hi[0] = r * 2.0;
+
+  // ... and one whose hull vertex sits outside its own slabs: the containment
+  // chain hull <= DOP <= box broken at the other link.
+  osk::AttachedPrimitiveInput escaping_hull = honest;
+  escaping_hull.hull_vertices[0] = osk::Vec3{r * 0.99, r * 0.99, 0.0};
+
+  in.primitives = {honest, escaping};
+  ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
+            osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(out.primitives[0].hull_index, 0) << "a proved refinement is loaded";
+  EXPECT_EQ(out.primitives[1].hull_index, -1) << "an escaping slab is dropped, not obeyed";
+
+  in.primitives = {escaping_hull};
+  ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
+            osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(out.primitives[0].hull_index, -1) << "a hull outside its own DOP is dropped";
+
+  // An over-budget hull is refused WHOLE, never truncated to the first
+  // kMaxTightHullVertices -- a truncated hull no longer contains its mesh.
+  osk::AttachedPrimitiveInput over_budget = honest;
+  over_budget.hull_vertices.assign(static_cast<std::size_t>(osk::kMaxTightHullVertices) + 1,
+                                   osk::Vec3{0.0, 0.0, 0.0});
+  in.primitives = {over_budget};
+  ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
+            osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(out.primitives[0].hull_index, -1);
+
+  // And a publisher that ships nothing keeps the shipped path.
+  osk::AttachedPrimitiveInput plain = honest;
+  plain.has_tight = false;
+  in.primitives = {plain};
+  ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
+            osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(out.primitives[0].hull_index, -1);
+}

@@ -29,6 +29,11 @@ from openral_core import (
     SupportContactWitness,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import (
+    DOP_AXES,
+    MAX_TIGHT_HULL_VERTICES,
+    TightCollisionGeometry,
+)
 
 _LOGGER = structlog.get_logger(__name__)
 
@@ -353,6 +358,193 @@ def _resolve_robot_bodies(
     return bodies
 
 
+def geom_surface_points(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    geom: int,
+) -> NDArray[np.float64]:
+    """Points lying on one geom's own surface, in the geom's local frame.
+
+    A mesh contributes every vertex; an analytic geom contributes the
+    extrema that are genuinely ON its surface (box corners, sphere axis
+    poles, capsule cap poles + rim). Deliberately not a bounding cube, which
+    would overstate the geometry: both callers measure how far a lowered box
+    reaches PAST the real surface, and an overstated surface understates
+    that gap. Empty for geometry with no enumerable surface (plane,
+    heightfield, SDF), which both callers read as "nothing to refine".
+    """
+    import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+    kind = int(model.geom_type[geom])
+    size = np.asarray(model.geom_size[geom], dtype=np.float64)
+    if kind == int(mujoco.mjtGeom.mjGEOM_MESH):
+        mesh = int(model.geom_dataid[geom])
+        start = int(model.mesh_vertadr[mesh])
+        count = int(model.mesh_vertnum[mesh])
+        return np.asarray(model.mesh_vert[start : start + count], dtype=np.float64).reshape(-1, 3)
+    if kind == int(mujoco.mjtGeom.mjGEOM_BOX):
+        return np.array(
+            [
+                [sx * size[0], sy * size[1], sz * size[2]]
+                for sx in (-1.0, 1.0)
+                for sy in (-1.0, 1.0)
+                for sz in (-1.0, 1.0)
+            ],
+            dtype=np.float64,
+        )
+    if kind == int(mujoco.mjtGeom.mjGEOM_SPHERE):
+        r = float(size[0])
+        return np.array(
+            [[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]],
+            dtype=np.float64,
+        )
+    if kind in {int(mujoco.mjtGeom.mjGEOM_CAPSULE), int(mujoco.mjtGeom.mjGEOM_CYLINDER)}:
+        r = float(size[0])
+        half = float(size[1])
+        # A cylinder's rim is on its surface; a capsule's pole sits r beyond
+        # the segment end. Use the shape's own extent so neither is overstated.
+        pole = half + r if kind == int(mujoco.mjtGeom.mjGEOM_CAPSULE) else half
+        return np.array(
+            [
+                [r, 0, -half],
+                [-r, 0, -half],
+                [0, r, -half],
+                [0, -r, -half],
+                [r, 0, half],
+                [-r, 0, half],
+                [0, r, half],
+                [0, -r, half],
+                [0, 0, pole],
+                [0, 0, -pole],
+            ],
+            dtype=np.float64,
+        )
+    return np.zeros((0, 3))
+
+
+_HULL_DEDUP_CEILING = 2 * MAX_TIGHT_HULL_VERTICES
+"""Point count past which a payload primitive skips straight to stage 1.
+
+Not a safety bound — stage 1 (the 26-DOP) is a containing solid on its own, so
+this can only cost fidelity, never conservatism. It is a cost bound on the
+producer, which runs online at world-state rate while a payload is carried: the
+only expensive step in `_tight_geometry_from_points` is the deduplicating sort,
+and deduplication exists to bring a *nearly* fitting point set under
+`MAX_TIGHT_HULL_VERTICES`. A set already twice over will not get there — a real
+RoboCasa collision mesh carries 749-3319 vertices, all of them distinct and all
+of them on the hull, because MuJoCo compiles collision meshes to their convex
+hull. Measured: 3.00 -> 1.10 ms for the worst payload in the four A/B scenes,
+against 0.46 ms for the whole rest of the lowering.
+
+ponytail: a flat point-count ceiling. If a payload class ever turns up whose
+mesh is genuinely non-convex and just over it, the principled upgrade is the
+offline tool's `refine_dop_to_budget` (a greedy halfspace refinement toward the
+hull), moved behind a per-grasp cache so its cost is paid once per carry.
+"""
+
+
+def _tight_geometry_from_points(
+    points: NDArray[np.float64],
+    half_extents: NDArray[np.float64],
+) -> TightCollisionGeometry | None:
+    """Refine one payload box into the kernel's staged 26-DOP + exact hull.
+
+    The payload-side twin of ``tools/generate_tight_geometry.derive_tight_geometry``
+    — same two stages, same containment argument, same vertex ceiling — but run
+    **online**, at attach, because a carried object's geometry is not known
+    until something is carried. That is also why it stops at the exact hull
+    where the offline tool would go on to refine the DOP toward it
+    (``refine_dop_to_budget``): that search is a loop of halfspace
+    intersections, affordable once per robot release and not once per grasp.
+
+    Why it exists at all: ``_primitive_from_geom`` lowers a *mesh* geom to its
+    local AABB, which is the only lowering a carried mesh has ever had. Across
+    the 2026-09-10 resolution A/B (424 samples, 4 scenes) those box corners
+    stood a median 50.78 mm (max 88.22 mm) proud of the mesh — 2.3-3.9x the
+    entire world-voxel quantisation term — and 97 % of the 15 mm arm's safety
+    stops were payload-vs-world, roughly half of them with the payload a
+    centimetre or more clear of anything (issue #266).
+
+    Containment, which is the whole safety argument, is definitional rather
+    than fitted at every link of the chain: the slabs are tangent halfspaces
+    ``u·x <= max over the points of u·x``; the hull is ``conv(points)``; and
+    the box the caller built is the points' own AABB grown by 1e-4 m. So
+    ``mesh ⊆ hull ⊆ DOP ⊆ box`` holds by construction, with no optimiser
+    tolerance anywhere, and the kernel's broad-phase window (sized from the box
+    alone) never moves.
+
+    In practice stage 1 does the work. Measured across all four scenes of the
+    2026-09-10 A/B, a real RoboCasa payload mesh carries 749-3319 vertices and
+    is **already convex** (MuJoCo compiles collision meshes to their hull), so
+    it is over ``MAX_TIGHT_HULL_VERTICES`` and ships the DOP alone — the same
+    representation, for the same reason, that ``panda_link1`` ships. Stage 2
+    fires for the small meshes. The DOP is the uncapped stage and is tangent to
+    the real surface along all 13 axes, which is where the corner slop lives.
+
+    Args:
+        points: Surface points of the source geometry, already expressed in the
+            box's own local frame.
+        half_extents: The box being refined, same frame.
+
+    Returns:
+        The refinement, or ``None`` when there is nothing to refine: fewer than
+        four surface points, i.e. geometry with no enumerable surface. ``None``
+        is the honest answer — the primitive is then checked as the plain box,
+        exactly as before — never a hull that was not actually built.
+
+    Example:
+        >>> import numpy as np
+        >>> cube = np.array(
+        ...     [(x, y, z) for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)]
+        ... )
+        >>> tight = _tight_geometry_from_points(cube, np.full(3, 1.0001))
+        >>> len(tight.hull_vertices_m)
+        8
+    """
+    if points.shape[0] < 4:  # noqa: PLR2004  # reason: a hull needs a tetrahedron
+        return None
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    projected = points @ axes.T
+    dop_lo = projected.min(axis=0)
+    dop_hi = projected.max(axis=0)
+    # A slab that already reaches the box buys nothing and risks tripping the
+    # containment check on a float; the AABB the caller grew by 1e-4 leaves
+    # exactly that much room, so clamp rather than emit an escaping slab.
+    dop_lo[:3] = np.maximum(dop_lo[:3], -half_extents)
+    dop_hi[:3] = np.minimum(dop_hi[:3], half_extents)
+    # Stage 2, when it fits. The kernel's stage 2 is a support-function scan,
+    # and the support of `conv(V)` is the support of `V` — so the deduplicated
+    # point set IS a correct stage-2 representation, and computing the true
+    # convex hull would only drop interior points, a cost reduction rather than
+    # a correctness one. Deliberately not done here: MuJoCo compiles a
+    # collision mesh to its convex hull already, so measured on all four
+    # RoboCasa A/B scenes every payload mesh has n hull vertices for n vertices
+    # (749-3319 of them) and a SciPy hull returns the input unchanged, at 4-17 ms
+    # per call against 0.4 ms for the whole rest of the lowering. Paying that to
+    # discard the answer is the shape of waste this runs too often to afford.
+    #
+    # The deduplication is bounded for the same reason: it exists to bring a
+    # *nearly* fitting point set under the ceiling, and a set already several
+    # times over will not get there — the sort is the one expensive step in
+    # this function, and skipping it is what keeps a 3319-vertex payload at
+    # ~1 ms instead of ~3.
+    hull_vertices: NDArray[np.float64] = (
+        np.unique(points, axis=0) if points.shape[0] <= _HULL_DEDUP_CEILING else np.zeros((0, 3))
+    )
+    if len(hull_vertices) > MAX_TIGHT_HULL_VERTICES:
+        # Over the kernel's stage-2 cost budget — the common case for a real
+        # RoboCasa payload. Stage 1 only, which is the same representation
+        # `panda_link1` ships for the same reason: the DOP is a containing
+        # solid on its own and still a strict tightening of the box. Disclosed
+        # by the empty vertex tuple, never by a silently truncated hull, which
+        # would no longer contain its mesh.
+        hull_vertices = np.zeros((0, 3))
+    return TightCollisionGeometry(
+        dop_lo_m=tuple(float(value) for value in dop_lo),
+        dop_hi_m=tuple(float(value) for value in dop_hi),
+        hull_vertices_m=tuple((float(v[0]), float(v[1]), float(v[2])) for v in hull_vertices),
+    )
+
+
 def _primitive_from_geom(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
@@ -373,6 +565,9 @@ def _primitive_from_geom(
     )
     geom_type = int(model.geom_type[geom_id])
     size = np.asarray(model.geom_size[geom_id], dtype=np.float64)
+    # An analytic geom lowers exactly — there is no representation gap to
+    # refine, and the kernel checks it as the sphere/capsule/box it is.
+    tight: TightCollisionGeometry | None = None
     if geom_type == int(mujoco.mjtGeom.mjGEOM_SPHERE):
         shape: CollisionShape = SphereShape(radius_m=float(size[0]))
     elif geom_type in {
@@ -383,10 +578,18 @@ def _primitive_from_geom(
     elif geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
         shape = BoxShape(half_extents_m=tuple(float(value) for value in size[:3]))
     else:
+        # A mesh (or heightfield, or SDF) has no analytic lowering, so the box
+        # IS the model here — and its corners stand a median 50.78 mm proud of
+        # the mesh (#266). `tight_geometry` is what closes that gap; the box
+        # stays the broad-phase bound and the containment proof either way.
         center = np.asarray(model.geom_aabb[geom_id, :3], dtype=np.float64)
         half_extents = np.asarray(model.geom_aabb[geom_id, 3:], dtype=np.float64) + 1e-4
         translation = translation + rotation @ center
         shape = BoxShape(half_extents_m=tuple(float(value) for value in half_extents))
+        tight = _tight_geometry_from_points(
+            geom_surface_points(model, geom_id) - center,
+            half_extents,
+        )
     return AttachedCollisionPrimitive(
         shape=shape,
         pose_in_object=Pose6D(
@@ -394,7 +597,40 @@ def _primitive_from_geom(
             quat_xyzw=_matrix_to_quat_xyzw(rotation),
             frame_id=object_id,
         ),
+        tight_geometry=tight,
     )
+
+
+def _geom_frame_in_root(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    geom_id: int,
+    root_body_id: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """One geom's live pose as ``(rotation, translation)`` in the root's frame."""
+    root_rotation = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
+    geom_rotation_world = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+    rotation = root_rotation.T @ geom_rotation_world
+    translation = root_rotation.T @ (
+        np.asarray(data.geom_xpos[geom_id], dtype=np.float64)
+        - np.asarray(data.xpos[root_body_id], dtype=np.float64)
+    )
+    return rotation, translation
+
+
+def _geom_surface_points_in_root(
+    model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+    *,
+    geom_id: int,
+    root_body_id: int,
+) -> NDArray[np.float64]:
+    """One geom's own surface points, placed in the root frame."""
+    rotation, translation = _geom_frame_in_root(
+        model, data, geom_id=geom_id, root_body_id=root_body_id
+    )
+    return geom_surface_points(model, geom_id) @ rotation.T + translation
 
 
 def _geom_corners_in_root(
@@ -405,12 +641,8 @@ def _geom_corners_in_root(
     root_body_id: int,
 ) -> NDArray[np.float64]:
     """Return one geom's conservative local-AABB corners in the root frame."""
-    root_rotation = np.asarray(data.xmat[root_body_id], dtype=np.float64).reshape(3, 3)
-    geom_rotation_world = np.asarray(data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
-    rotation = root_rotation.T @ geom_rotation_world
-    translation = root_rotation.T @ (
-        np.asarray(data.geom_xpos[geom_id], dtype=np.float64)
-        - np.asarray(data.xpos[root_body_id], dtype=np.float64)
+    rotation, translation = _geom_frame_in_root(
+        model, data, geom_id=geom_id, root_body_id=root_body_id
     )
     local_center = np.asarray(model.geom_aabb[geom_id, :3], dtype=np.float64)
     half_extents = np.asarray(model.geom_aabb[geom_id, 3:], dtype=np.float64) + 1e-4
@@ -440,9 +672,26 @@ def _clustered_box_primitives(
     object_id: str,
     max_primitives: int,
 ) -> list[AttachedCollisionPrimitive]:
-    """Conservatively reduce many collision geoms into bounded local AABBs."""
+    """Conservatively reduce many collision geoms into bounded local AABBs.
+
+    This is the *looser* of the two lowerings — a cluster box bounds several
+    geoms at once, so it inflates past the merged AABB as well as past each
+    mesh — and it is the one a real RoboCasa payload takes: the ``baguette``
+    lowers to 16 primitives. Each cluster therefore carries the same
+    ``tight_geometry`` refinement a single mesh geom gets, built from the real
+    surface points of every geom in the cluster (#266).
+    """
     corners_by_geom = [
         _geom_corners_in_root(
+            model,
+            data,
+            geom_id=geom_id,
+            root_body_id=root_body_id,
+        )
+        for geom_id in geom_ids
+    ]
+    surface_by_geom = [
+        _geom_surface_points_in_root(
             model,
             data,
             geom_id=geom_id,
@@ -463,6 +712,10 @@ def _clustered_box_primitives(
         upper = cluster_corners.max(axis=0)
         center = 0.5 * (lower + upper)
         half_extents = 0.5 * (upper - lower) + 1e-4
+        cluster_surface = np.concatenate(
+            [surface_by_geom[int(index)] for index in cluster] + [np.zeros((0, 3))],
+            axis=0,
+        )
         primitives.append(
             AttachedCollisionPrimitive(
                 shape=BoxShape(
@@ -477,6 +730,7 @@ def _clustered_box_primitives(
                     quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                     frame_id=object_id,
                 ),
+                tight_geometry=_tight_geometry_from_points(cluster_surface - center, half_extents),
             )
         )
     return primitives

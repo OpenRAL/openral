@@ -925,10 +925,65 @@ cells. Its 26-DOP still cuts the link's support excess from 53.27 mm to 25.69 mm
 `panda_link5` (152-vertex, 45.20 mm) and `panda_link7` (102-vertex, 28.25 mm) —
 added for the self-collision path below.
 
-Everything else keeps the primitive path unchanged: attached payloads,
-world-capsule obstacles, capsule-lowered robots, and every link that declares no
-tight geometry. Hazard-log Entry 012's lockstep is **not engaged** —
-`check_attached_self_collision` still reads the same link boxes it always did.
+Everything else keeps the primitive path unchanged: world-capsule obstacles,
+capsule-lowered robots, and every link that declares no tight geometry. Hazard-log
+Entry 012's lockstep is **not engaged** — `check_attached_self_collision` still
+reads the same link boxes it always did. Carried payloads got their own staged
+path in #266, below.
+
+## The same stages for a carried payload (issue #266)
+
+`check_attached_voxel_collision` runs the identical staged path for a payload
+primitive that arrives with a proved-contained refinement. The box stays the
+broad phase and the fallback; a primitive that ships none — every pre-#266
+publisher, and every sphere/box/capsule sim geom, which lower **exactly** — is
+bit-for-bit unchanged.
+
+It is there because a carried **mesh** geom had no lowering but its local AABB.
+Across the 2026-09-10 resolution A/B (424 samples, 4 scenes, identical in every
+scene) those corners stood a median **50.78 mm** (max 88.22 mm) proud of the
+mesh — against a world-voxel half-diagonal of 21.65 mm at 25 mm cells and
+12.99 mm at 15 mm, so the payload box was **2.3–3.9× the entire quantisation
+term**. Payload-vs-world was 27/34 (79 %) of stops at 25 mm and 36/37 (97 %) at
+15 mm, and roughly half of those fired with the payload >10 mm clear of
+anything. The 25 → 15 mm A/B returned a null for exactly this reason: it was
+shrinking the small term.
+
+The check itself stays. The ≤2 mm bucket holds real interpenetration (−7.7,
+−1.7, −1.5, −1.3 mm) — a carried object already in contact. The fix is
+fidelity, not removal.
+
+Two things differ from a robot link's hulls, both because a payload's geometry
+is not known until something is carried:
+
+* **The producer runs online.** `_sim_attachment_evidence._tight_geometry_from_points`
+  builds the DOP and the exact hull at attach, and stops there — the offline
+  tool's `refine_dop_to_budget` is a loop of halfspace intersections, affordable
+  once per robot release and not once per grasp. Over `kMaxTightHullVertices`
+  the payload runs stage 1 only.
+* **Ingest fails DOWN, not closed.** The refinement arrives on every world-state
+  message from a live producer. One that cannot be proved contained
+  (`validate_tight_hull` — the same predicate `validate_tight_geometry` uses,
+  extracted so a payload hull is never held to a weaker standard) is **dropped**,
+  and the primitive is checked as the plain box. Refusing the whole attachment
+  would drop the payload's geometry, which is the unsafe direction. An
+  over-budget hull is refused whole, never truncated — a truncated hull no
+  longer contains its mesh.
+
+Untouched on purpose: **ADR-0098's place-target adjudication**, whose
+`target_distance ≤ d + allowance` bound keeps reading the shipped box distance
+(that bound is calibrated against the box model the declaration is adjudicated
+on); `check_attached_self_collision` and `check_attached_world_collision`, which
+are 3 % of measured stops and whose adjudication budget
+(`attached_payload_mesh_slop`) is stated against exactly that box; and the
+support-witness liveness probe, where a tighter payload would *shorten* an
+exemption.
+
+`attached_payload_mesh_slop` now publishes `n_stage2_primitives` per object, so
+an offline adjudicator can tell a refined payload from a boxed one instead of
+inferring it from the round's date — the `has_stage2_hull` lesson of #260, on
+the payload side. Full measurements and the safety case:
+[`docs/reference/collision-hull-narrow-phase.md`](../../docs/reference/collision-hull-narrow-phase.md) §10.
 
 ## The same hulls for self-collision (issue #191)
 

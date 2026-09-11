@@ -1633,6 +1633,61 @@ class TightCollisionGeometry(BaseModel):
         return self
 
 
+def check_tight_geometry_fits_box(
+    shape: CollisionShape,
+    tight: TightCollisionGeometry,
+    owner: str,
+) -> None:
+    """Prove a stage-2 refinement stays inside the box it refines.
+
+    The kernel's broad-phase window is sized from ``half_extents_m`` alone, so
+    a tight representation that reached *outside* that box would make the
+    kernel skip cells it should visit — a missed collision, not a lost
+    conservatism. That is why this is checked at the manifest/producer
+    boundary rather than deferred to the kernel, and why both owners of a
+    ``TightCollisionGeometry`` (a robot link and a carried payload primitive)
+    run the same check rather than two hand-copied ones.
+
+    It is cheap because the DOP's first three axes are the box's own: a 26-DOP
+    lies inside its own first three slabs, so those three bounds prove
+    containment for the entire polytope.
+
+    Args:
+        shape: The primitive ``tight`` refines. Must be a ``BoxShape``.
+        tight: The refinement.
+        owner: How to name the offender in the error — ``"link 'panda_link1'"``
+            or ``"attached primitive 3"``.
+
+    Raises:
+        ValueError: ``shape`` is not a box, or a slab reaches outside it. No
+            slack is allowed; the shipped boxes carry a real 0.055-0.132 mm
+            inward margin.
+
+    Example:
+        >>> check_tight_geometry_fits_box(
+        ...     BoxShape(half_extents_m=(0.1, 0.1, 0.1)),
+        ...     TightCollisionGeometry(dop_lo_m=(-0.05,) * 13, dop_hi_m=(0.05,) * 13),
+        ...     "link 'demo'",
+        ... )
+    """
+    if not isinstance(shape, BoxShape):
+        msg = (
+            f"{owner} declares tight_geometry on a {type(shape).__name__}; it refines a "
+            "BoxShape only, because the box is the broad-phase bound the containment "
+            "proof is stated against"
+        )
+        raise ValueError(msg)
+    for k, half in enumerate(shape.half_extents_m):
+        if tight.dop_lo_m[k] < -half or tight.dop_hi_m[k] > half:
+            msg = (
+                f"{owner} tight_geometry escapes its box on axis {k}: "
+                f"slab [{tight.dop_lo_m[k]}, {tight.dop_hi_m[k]}] is not inside "
+                f"[{-half}, {half}]; a tight representation that reaches outside the box "
+                "would make the kernel's broad phase skip cells it must visit"
+            )
+            raise ValueError(msg)
+
+
 class LinkCollisionGeometry(BaseModel):
     """One convex collision volume rigidly attached to a robot link.
 
@@ -1681,37 +1736,11 @@ class LinkCollisionGeometry(BaseModel):
 
     @model_validator(mode="after")
     def _tight_geometry_fits_inside_the_box(self) -> Self:
-        """Prove the DOP is inside the box it refines, at the manifest boundary.
-
-        The kernel's broad-phase window is sized from ``half_extents_m`` alone.
-        A tight representation that reached *outside* that box would make the
-        kernel skip cells it should visit — a missed collision, not a lost
-        conservatism — so this is the one check that must not be deferred.
-
-        It is cheap because the DOP's first three axes are the box's own: a
-        26-DOP lies inside its own first three slabs, so those three bounds
-        prove containment for the entire polytope. No slack is allowed here;
-        the shipped boxes carry a real 0.055-0.132 mm inward margin.
-        """
-        tight = self.tight_geometry
-        if tight is None:
-            return self
-        if not isinstance(self.shape, BoxShape):
-            msg = (
-                f"link {self.link_name!r} declares tight_geometry on a "
-                f"{type(self.shape).__name__}; it refines a BoxShape only, because the box is "
-                "the broad-phase bound the containment proof is stated against"
+        """Prove the DOP is inside the box it refines, at the manifest boundary."""
+        if self.tight_geometry is not None:
+            check_tight_geometry_fits_box(
+                self.shape, self.tight_geometry, f"link {self.link_name!r}"
             )
-            raise ValueError(msg)
-        for k, half in enumerate(self.shape.half_extents_m):
-            if tight.dop_lo_m[k] < -half or tight.dop_hi_m[k] > half:
-                msg = (
-                    f"link {self.link_name!r} tight_geometry escapes its box on axis {k}: "
-                    f"slab [{tight.dop_lo_m[k]}, {tight.dop_hi_m[k]}] is not inside "
-                    f"[{-half}, {half}]; a tight representation that reaches outside the box "
-                    "would make the kernel's broad phase skip cells it must visit"
-                )
-                raise ValueError(msg)
         return self
 
 
@@ -3030,13 +3059,91 @@ class ContactForceWitness(BaseModel):
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
 
 
+def _tight_geometry_from_idl(msg: object) -> TightCollisionGeometry | None:
+    """Decode a duck-typed primitive's optional stage-2 refinement.
+
+    ``None`` whenever the wire carries no slabs — the pre-#266 message, and
+    every primitive whose sim geom lowered exactly and has nothing to refine.
+    A *partial* refinement is an error rather than a silent drop: the slabs and
+    the hull are one containment chain, and half of one is not a bound.
+
+    Raises:
+        ValueError: The slab arity is wrong, or the hull coordinate count is
+            not a multiple of three.
+    """
+    dop_lo = [float(value) for value in getattr(msg, "tight_dop_lo", ())]
+    dop_hi = [float(value) for value in getattr(msg, "tight_dop_hi", ())]
+    if not dop_lo and not dop_hi:
+        return None
+    if len(dop_lo) != len(DOP_AXES) or len(dop_hi) != len(DOP_AXES):
+        msg_text = (
+            f"Attached primitive tight geometry needs {len(DOP_AXES)} slab bounds per side, "
+            f"got {len(dop_lo)} lo / {len(dop_hi)} hi"
+        )
+        raise ValueError(msg_text)
+    flat = [float(value) for value in getattr(msg, "tight_hull_vertices", ())]
+    if len(flat) % 3 != 0:
+        msg_text = (
+            f"Attached primitive hull carries {len(flat)} coordinates, not a whole number "
+            "of xyz vertices"
+        )
+        raise ValueError(msg_text)
+    return TightCollisionGeometry(
+        dop_lo_m=tuple(dop_lo),
+        dop_hi_m=tuple(dop_hi),
+        hull_vertices_m=tuple((flat[i], flat[i + 1], flat[i + 2]) for i in range(0, len(flat), 3)),
+    )
+
+
 class AttachedCollisionPrimitive(BaseModel):
-    """One bounded payload primitive positioned in its object frame."""
+    """One bounded payload primitive positioned in its object frame.
+
+    Attributes:
+        shape: The convex primitive (capsule, sphere, or box).
+        pose_in_object: Pose of the primitive in the owning object's frame.
+        tight_geometry: Optional tighter convex geometry the safety kernel uses
+            *in place of* ``shape`` in the payload-vs-world-voxel check — the
+            same staged 26-DOP → exact-hull narrow phase a robot link gets from
+            ``LinkCollisionGeometry.tight_geometry``, and the same containment
+            rule: only valid on a ``BoxShape``, and only when it fits inside
+            it. ``shape`` stays the broad-phase bound and the geometry every
+            other check uses.
+
+            ``None`` is not a defect — a sphere/box/capsule sim geom lowers
+            *exactly* and has nothing to refine. It is only a mesh geom, whose
+            lowering is its local AABB, that leaves a real gap: measured across
+            the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried
+            payload's box corners stand a median 50.78 mm proud of the mesh,
+            2.3-3.9x the entire world-voxel quantisation term, and 97 % of
+            15 mm-arm stops were payload-vs-world (issue #266).
+
+    Example:
+        >>> p = AttachedCollisionPrimitive(
+        ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),
+        ...     pose_in_object=Pose6D(
+        ...         xyz=(0.0, 0.0, 0.0),
+        ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...         frame_id="sim:obj_main",
+        ...     ),
+        ... )
+        >>> p.tight_geometry is None
+        True
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     shape: CollisionShape
     pose_in_object: Pose6D
+    tight_geometry: TightCollisionGeometry | None = None
+
+    @model_validator(mode="after")
+    def _tight_geometry_fits_inside_the_box(self) -> Self:
+        """Prove the refinement is inside the box, at the producer boundary."""
+        if self.tight_geometry is not None:
+            check_tight_geometry_fits_box(
+                self.shape, self.tight_geometry, "attached collision primitive"
+            )
+        return self
 
     @classmethod
     def from_idl(cls, msg: object, *, object_id: str) -> Self:
@@ -3074,6 +3181,7 @@ class AttachedCollisionPrimitive(BaseModel):
                 ),
                 frame_id=object_id,
             ),
+            tight_geometry=_tight_geometry_from_idl(msg),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -3123,6 +3231,14 @@ class AttachedCollisionPrimitive(BaseModel):
             pose.orientation.z,
             pose.orientation.w,
         ) = self.pose_in_object.quat_xyzw
+        tight = self.tight_geometry
+        msg.tight_dop_lo = [] if tight is None else list(tight.dop_lo_m)  # type: ignore[attr-defined]
+        msg.tight_dop_hi = [] if tight is None else list(tight.dop_hi_m)  # type: ignore[attr-defined]
+        msg.tight_hull_vertices = (  # type: ignore[attr-defined]
+            []
+            if tight is None
+            else [coordinate for vertex in tight.hull_vertices_m for coordinate in vertex]
+        )
 
 
 class AttachedCollisionObject(BaseModel):

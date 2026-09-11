@@ -371,6 +371,49 @@ double box_box_distance(const Transform& a, const Vec3& a_half, const Transform&
 // window in `check_voxel_collision` is untouched.
 // ---------------------------------------------------------------------------
 
+TightGeometryStatus validate_tight_hull(const LinkHull& hull, const Vec3& half_extents,
+                                        const std::vector<Vec3>& vertices) noexcept {
+  const double hev[3] = {half_extents.x, half_extents.y, half_extents.z};
+  for (int i = 0; i < kDopAxes; ++i) {
+    if (!std::isfinite(hull.dop_lo[i]) || !std::isfinite(hull.dop_hi[i]) ||
+        hull.dop_lo[i] > hull.dop_hi[i]) {
+      return TightGeometryStatus::kDegenerate;
+    }
+  }
+  // A 26-DOP lies inside its own first three slabs, and those three axes ARE
+  // the box's axes, so this proves DOP ⊆ shipped OBB for the whole polytope.
+  for (int k = 0; k < 3; ++k) {
+    if (hull.dop_lo[k] < -hev[k] || hull.dop_hi[k] > hev[k]) {
+      return TightGeometryStatus::kEscapesBox;
+    }
+  }
+  if (hull.vertex_count == 0) {
+    return TightGeometryStatus::kOk;  // stage 1 only
+  }
+  if (hull.vertex_count < 0 || hull.vertex_count > kMaxTightHullVertices) {
+    return TightGeometryStatus::kTooManyVertices;
+  }
+  if (hull.vertex_first < 0 ||
+      static_cast<std::size_t>(hull.vertex_first) + static_cast<std::size_t>(hull.vertex_count) >
+          vertices.size()) {
+    return TightGeometryStatus::kBadArity;
+  }
+  for (int v = 0; v < hull.vertex_count; ++v) {
+    const Vec3& p = vertices[static_cast<std::size_t>(hull.vertex_first + v)];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      return TightGeometryStatus::kDegenerate;
+    }
+    for (int i = 0; i < kDopAxes; ++i) {
+      const double s = kDopAxis[i][0] * p.x + kDopAxis[i][1] * p.y + kDopAxis[i][2] * p.z;
+      if (s > hull.dop_hi[i] + kTightContainmentEpsilonM ||
+          s < hull.dop_lo[i] - kTightContainmentEpsilonM) {
+        return TightGeometryStatus::kHullEscapesDop;
+      }
+    }
+  }
+  return TightGeometryStatus::kOk;
+}
+
 TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
                                             std::size_t& offending_box) noexcept {
   offending_box = 0;
@@ -389,45 +432,10 @@ TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
     if (static_cast<std::size_t>(h) >= model.hulls.size()) {
       return TightGeometryStatus::kBadArity;
     }
-    const LinkHull& hull = model.hulls[static_cast<std::size_t>(h)];
-    const Vec3& he = model.boxes[b].half_extents;
-    const double hev[3] = {he.x, he.y, he.z};
-    for (int i = 0; i < kDopAxes; ++i) {
-      if (!std::isfinite(hull.dop_lo[i]) || !std::isfinite(hull.dop_hi[i]) ||
-          hull.dop_lo[i] > hull.dop_hi[i]) {
-        return TightGeometryStatus::kDegenerate;
-      }
-    }
-    // A 26-DOP lies inside its own first three slabs, and those three axes ARE
-    // the box's axes, so this proves DOP ⊆ shipped OBB for the whole polytope.
-    for (int k = 0; k < 3; ++k) {
-      if (hull.dop_lo[k] < -hev[k] || hull.dop_hi[k] > hev[k]) {
-        return TightGeometryStatus::kEscapesBox;
-      }
-    }
-    if (hull.vertex_count == 0) {
-      continue;  // stage 1 only
-    }
-    if (hull.vertex_count < 0 || hull.vertex_count > kMaxTightHullVertices) {
-      return TightGeometryStatus::kTooManyVertices;
-    }
-    if (hull.vertex_first < 0 ||
-        static_cast<std::size_t>(hull.vertex_first) + static_cast<std::size_t>(hull.vertex_count) >
-            model.hull_vertices.size()) {
-      return TightGeometryStatus::kBadArity;
-    }
-    for (int v = 0; v < hull.vertex_count; ++v) {
-      const Vec3& p = model.hull_vertices[static_cast<std::size_t>(hull.vertex_first + v)];
-      if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
-        return TightGeometryStatus::kDegenerate;
-      }
-      for (int i = 0; i < kDopAxes; ++i) {
-        const double s = kDopAxis[i][0] * p.x + kDopAxis[i][1] * p.y + kDopAxis[i][2] * p.z;
-        if (s > hull.dop_hi[i] + kTightContainmentEpsilonM ||
-            s < hull.dop_lo[i] - kTightContainmentEpsilonM) {
-          return TightGeometryStatus::kHullEscapesDop;
-        }
-      }
+    const TightGeometryStatus status = validate_tight_hull(
+        model.hulls[static_cast<std::size_t>(h)], model.boxes[b].half_extents, model.hull_vertices);
+    if (status != TightGeometryStatus::kOk) {
+      return status;
     }
   }
   offending_box = 0;
@@ -1556,6 +1564,56 @@ bool support_witness_still_in_contact(const AttachedModel& attached, const Attac
 
 }  // namespace
 
+namespace {
+
+// Copy one wire refinement into `out`'s hull store IF it proves contained in
+// the primitive's own box, returning the hull index or -1.
+//
+// Fail-DOWN rather than fail-closed, and deliberately: unlike a robot's link
+// hulls — fixed, shipped, and validated once at configure time — a payload's
+// arrives on every world-state message from a live producer. Refusing the
+// whole attachment over an unprovable refinement would drop the payload's
+// geometry entirely, which is the UNSAFE direction; dropping only the
+// refinement leaves the primitive checked as the plain box, i.e. exactly
+// today's behaviour. The one thing never done is to load geometry whose
+// containment is unproven, because the broad-phase window is sized from the
+// box alone.
+//
+// `slot` is the primitive's own index, so a hull's storage is a pure function
+// of the slot it refines: the two buffers are pre-sized to the primitive cap
+// at configure time and no cursor can outrun them.
+int accept_tight(AttachedModel& out, const AttachedPrimitiveInput& pin, std::size_t slot) noexcept {
+  if (!pin.has_tight || pin.kind != AttachedShapeKind::kBox || slot >= out.hulls.size()) {
+    return -1;
+  }
+  const std::size_t budget = static_cast<std::size_t>(kMaxTightHullVertices);
+  const std::size_t first = slot * budget;
+  const std::size_t count = pin.hull_vertices.size();
+  // No hull store configured, or a hull over the kernel's stage-2 cost budget.
+  // Either way the refinement is refused WHOLE — never truncated to the first
+  // `budget` vertices, which would be a hull that no longer contains its mesh.
+  if (first + budget > out.hull_vertices.size() || count > budget) {
+    return -1;
+  }
+  LinkHull hull;
+  hull.vertex_first = static_cast<int>(first);
+  hull.vertex_count = static_cast<int>(count);
+  for (int i = 0; i < kDopAxes; ++i) {
+    hull.dop_lo[i] = pin.dop_lo[i];
+    hull.dop_hi[i] = pin.dop_hi[i];
+  }
+  for (std::size_t v = 0; v < count; ++v) {
+    out.hull_vertices[first + v] = pin.hull_vertices[v];
+  }
+  if (validate_tight_hull(hull, pin.half_extents, out.hull_vertices) != TightGeometryStatus::kOk) {
+    return -1;
+  }
+  out.hulls[slot] = hull;
+  return static_cast<int>(slot);
+}
+
+}  // namespace
+
 AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
                                            const std::vector<std::string>& link_names,
                                            std::size_t max_objects, std::size_t max_primitives,
@@ -1670,12 +1728,14 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
           return AttachIngestStatus::kMalformed;
         }
       }
-      AttachedPrimitive& op = out.primitives[prim_cursor++];
+      const std::size_t slot = prim_cursor++;
+      AttachedPrimitive& op = out.primitives[slot];
       op.kind = pin.kind;
       op.radius = pin.radius;
       op.half_length = pin.half_length;
       op.half_extents = pin.half_extents;
       op.pose_in_object = pin.pose_in_object;
+      op.hull_index = accept_tight(out, pin, slot);
     }
     for (std::size_t t = 0; t < n_touch; ++t) {
       const int tl = resolve(in.touch_links[t]);
@@ -1732,6 +1792,12 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
   const double half_side = grid.resolution * 0.5;
   const Vec3 voxel_half{half_side, half_side, half_side};
   const Transform grid_from_base = inverse_rigid(grid.pose);
+  // Bounded across every payload primitive in this call, exactly as the
+  // arm-link sweep bounds its own: stage 2's cost is set by how many cells
+  // stage 1 cannot clear, a property of the map rather than of the payload.
+  // Exhausting it drops back to stage 1 and then to the shipped box bound —
+  // today's answer or better, never worse.
+  int stage2_budget = kMaxStage2PerCheck;
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
@@ -1742,6 +1808,18 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
       // The cell distance runs in the grid's axes; the place region and the
       // support attestation are declared in `base_frame` and keep that centre.
       const Transform prim_g = compose(grid_from_base, prim_xf);
+      // Stage-2 pose for a primitive that carries a proved-contained
+      // refinement (#266). Built in the GRID's axes, which the staged path
+      // requires rather than merely prefers: its cells must be axis-aligned
+      // cubes. -1 (no refinement) leaves every line below on the shipped path.
+      const int hull_index = prim.hull_index;
+      TightPose tight;
+      GjkWitness witness;
+      if (hull_index >= 0 && static_cast<std::size_t>(hull_index) < attached.hulls.size()) {
+        tight_pose_init(attached.hulls[static_cast<std::size_t>(hull_index)],
+                        attached.hull_vertices.empty() ? nullptr : attached.hull_vertices.data(),
+                        prim_g, half_side, tight);
+      }
       // ADR-0098 (survey Path B): the declared target's own geometry, measured
       // once per payload primitive rather than once per cell — the receptacle
       // does not move between cells of the same sweep. `+infinity` whenever the
@@ -1759,8 +1837,28 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             const Vec3 center = voxel_center(grid, ix, iy, iz);
             Transform voxel;
             voxel.t = voxel_center_local(grid, ix, iy, iz);
-            const double d_cell =
-                attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
+            const double d_box = attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
+            // Tighten the payload's own side of the pair (#266). Every stage is
+            // a LOWER bound on the true mesh-to-cell clearance
+            // (mesh ⊆ hull ⊆ DOP ⊆ box, proved at ingest), so the max of them
+            // is still a lower bound: this can only ever RAISE the reported
+            // clearance, and therefore only ever remove a stop, never add one.
+            // Skipped outright on a cell the box already clears, which is
+            // almost all of them — refining a cell nothing was going to stop on
+            // buys nothing and costs a GJK.
+            double d_cell = d_box;
+            if (hull_index >= 0 && d_box <= margin) {
+              Vec3 seed;
+              double staged = dop_cell_lower_bound(tight, voxel.t, half_side, &seed);
+              if (staged <= margin && tight.n_vertices > 0 && stage2_budget > 0) {
+                --stage2_budget;
+                staged =
+                    hull_cell_distance(tight, voxel.t, half_side, seed, margin, staged, witness);
+              }
+              if (staged > d_cell) {
+                d_cell = staged;
+              }
+            }
             // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
             // amendment): inside the declared target's region this payload's
             // margin — and only this payload's, and only for cells in that
@@ -1812,7 +1910,13 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             //
             // Outside the branch (no geometry, or a model past that bound)
             // nothing changes.
-            if (allowance > 0.0 && target_distance <= d_cell + allowance) {
+            // Deliberately `d_box`, not the #266-tightened `d_cell`: this
+            // bound is ADR-0098's own, calibrated against the box model the
+            // declaration's geometry is adjudicated on. Letting a tighter
+            // payload widen it would hand the receptacle branch relief that
+            // nothing in ADR-0098 measured. #266 removes stops outside this
+            // branch; inside it, behaviour is unchanged bit for bit.
+            if (allowance > 0.0 && target_distance <= d_box + allowance) {
               d = target_distance;
               cell_margin = kGateTieEpsilonM;
               adjudicated = true;
