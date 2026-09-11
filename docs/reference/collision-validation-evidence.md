@@ -3173,15 +3173,31 @@ the null observed. Filed as **#266**.
 So 15 mm makes the concentration *worse*, and costs the dense grid 0.6 MB →
 2.8 MB republished at 10 Hz — 28 MB/s over DDS against 6.
 
-**Phase: this is a carrying problem, not a placing or picking one.** Of 59
-stops, **53 have the payload already grasped** and **0** occur while reaching
-for an ungrasped object. Of those 53, only **9 hit the fixture they were
-dispatched to**; **44 hit transit scenery** — the counter being crossed, a
-cabinet door, the fridge body. `sink_cup` hit the island counter 15 times and
-the sink itself **once**. (`PLAN.md` §5's earlier *11 placing / 7 carrying*
-census is a labelling difference, not a conflict: it counts "descending toward
-the drop point but clipping the counter beside it" as placing. Reconcile before
-citing either.)
+**Phase, reconciled with `PLAN.md` §5.** Two orthogonal axes were being
+called the same thing, and both are real:
+
+- **Phase** — was a place declaration live at the stop (`world_state.attached_objects.updated place_region=`)? **33 placing / 20 carrying / 6 pre-grasp.** This is what §5's earlier *11 placing / 7 carrying* census measured, and it was right.
+- **Obstacle identity** — was the thing it hit the declared target? **9 target / 44 surrounding scenery.**
+
+Crossed, over the 53 stops with a payload grasped:
+
+| | hit the declared target | hit scenery |
+| --- | ---: | ---: |
+| **placing** (declaration live) | 5 | **28** |
+| **carrying** (in transit) | 4 | 16 |
+
+The 28 is the headline: the payload is **approaching its declared drop point and
+clipping the occupancy beside it** — the counter next to the sink, the shelf
+next to the slot. That is exactly the pattern #259 describes, now measured at
+scale. By scene, `utensil` is 20/20 carrying while `baguette`, `fridge` and
+`sink_cup` are placing — matching §5's split precisely.
+
+**0 stops occur while reaching for an ungrasped object**, so picking is
+untouched either way.
+
+This maps the levers cleanly: **#259** (widen the place-allowance scope)
+reaches the **33 placing** stops and nothing else; **#266** (tighter payload
+geometry) reaches all **53** regardless of phase.
 
 **The stops are about half spurious and about a fifth real.** True certified
 clearance at the moment of the stop, per payload stop:
