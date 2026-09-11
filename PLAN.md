@@ -999,11 +999,16 @@ In order, each chosen because it is unblocked and its answer changes the next on
    stops go 79 % → 97 % of all stops, and the grid goes 0.6 → 2.8 MB at 10 Hz
    (28 MB/s of DDS against 6).
 
-   **The stops are a carrying problem.** 53 of 59 have the payload already
-   grasped, 0 occur while reaching for an ungrasped object, and only 9 of the
-   53 hit the fixture they were dispatched to — 44 hit transit scenery. This
-   re-labels the *11 placing / 7 carrying* census in §5 above; reconcile the
-   two definitions before either is cited again.
+   **Phase, reconciled — the §5 census above was right.** Two orthogonal axes
+   were being called the same thing. On **phase** (was a place declaration
+   live) it is **33 placing / 20 carrying / 6 pre-grasp**, which is what §5
+   measured; `utensil` is 20/20 carrying, the other three scenes placing. On
+   **obstacle identity** it is **9 hit the declared target / 44 hit surrounding
+   scenery**. Crossing them, **28 of 53** payload stops are *placing phase,
+   scenery obstacle* — approaching the drop point and clipping what sits beside
+   it, exactly the pattern #259 names. **0** stops occur while reaching for an
+   ungrasped object. So #259 reaches the 33 placing stops; **#266** reaches all
+   53 regardless of phase.
 
    Re-ask the resolution question **after #266**, not before: at n=16 same-party
    pairs (sd 22.2 mm) this excludes an effect the size of −8.66 mm but could not
