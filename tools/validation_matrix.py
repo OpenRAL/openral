@@ -555,7 +555,11 @@ def probe_is_distance_certified(snapshot: Mapping[str, Any]) -> bool:
     )
 
 
-def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
+def hal_admissible_gap_m(
+    snapshot: Mapping[str, Any],
+    stop: ValidationStopEvidence,
+    grid_resolution_m: float | None = None,
+) -> float | None:
     """The HAL's own kernel-vs-probe budget for this stop, when it recorded one.
 
     The kernel measures OBB-to-voxel, probes measure mesh-to-mesh; a correct stop's gap is the
@@ -579,10 +583,18 @@ def hal_admissible_gap_m(snapshot: Mapping[str, Any], stop: ValidationStopEviden
         self_block = budget.get("self_collision")
         if isinstance(self_block, dict):
             return _as_float(self_block.get("admissible_gap_m"))
-    if stop.kind != "self" and stop.involves_payload:
-        payload_gap = _payload_world_gap_m(budget)
-        if payload_gap is not None:
-            return payload_gap
+    if (
+        stop.kind != "self"
+        and stop.involves_payload
+        and isinstance(budget.get("payload_world_voxel"), dict)
+    ):
+        # Block PRESENT: its answer stands, `None` included. Falling through to
+        # the top-level block on an unusable payload budget would hand this
+        # stop the worst LINK's corner slop — the very wrong-pair budget #266
+        # exists to stop charging. Only a snapshot with NO block at all (one
+        # recorded before #266) falls through, and for that the old number is
+        # the right answer because it is the only one that round has.
+        return _payload_world_gap_m(budget, grid_resolution_m)
     if stop.kind == "self" and not stop.involves_payload:
         return _link_link_gap_m(budget, stop)
     # Arm link vs world voxel: one link OBB, one cell.
@@ -605,7 +617,10 @@ def _link_link_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) ->
     return _link_link_hull_gap_m(budget, stop)
 
 
-def _payload_world_gap_m(budget: Mapping[str, Any]) -> float | None:
+def _payload_world_gap_m(
+    budget: Mapping[str, Any],
+    grid_resolution_m: float | None,
+) -> float | None:
     """The payload-vs-world-voxel half of ``hal_admissible_gap_m`` (#266).
 
     A payload-vs-world stop has ONE model and one voxel, and **no robot link**.
@@ -618,18 +633,42 @@ def _payload_world_gap_m(budget: Mapping[str, Any]) -> float | None:
     whichever solid the kernel checks: the #266 refinement's DOP where one
     ships, the box otherwise) plus the cell half-diagonal. Deliberately not
     ``max_payload_corner_slop_m`` — that is the box's term and belongs to the
-    self-collision block, and charging it here over-budgets a refined primitive
-    by exactly what the refinement recovered.
+    self-collision block.
+
+    **The voxel term is re-derived here when the snapshot's is zero**, and that
+    is not belt-and-braces. ``estop_ground_truth_snapshot`` can only fill it
+    from an ``evidence_voxel`` it was handed, and a round whose monitor never
+    delivered one publishes ``voxel_half_diagonal_m: 0.0``. On the top-level
+    block that omission hides behind a 45–88 mm link term; on this one the
+    payload's overhang is 8.9–19.9 mm, the *same order* as the 21.65 mm being
+    dropped, so composing with zero halves the budget and manufactures
+    ``false-positive`` verdicts out of correct stops. Measured: the first
+    2026-09-11 A/B run flagged 6 of 16 hull-arm stops that way, every one of
+    them within budget once the term was restored.
+
+    With no resolution to re-derive from, the budget is ``None`` — the
+    adjudicator then says ``unadjudicated`` ("I cannot judge this") rather than
+    ``false-positive`` ("the kernel was wrong"). An under-stated budget cries
+    wolf, which is the one direction an adjudicator must not fail in.
 
     Returns:
         The gap, or ``None`` for a snapshot recorded before the block existed —
         which falls through to the pre-#266 behaviour rather than losing its
-        budget entirely.
+        budget entirely — or for one with no voxel term and no resolution to
+        supply it.
     """
     block = budget.get("payload_world_voxel")
     if not isinstance(block, dict):
         return None
-    return _as_float(block.get("admissible_gap_m"))
+    overhang = _as_float(block.get("max_payload_model_overhang_m"))
+    if overhang is None:
+        return None
+    half_diagonal = _as_float(block.get("voxel_half_diagonal_m")) or 0.0
+    if half_diagonal <= 0.0:
+        if grid_resolution_m is None:
+            return None
+        half_diagonal = quantization_budget_m(grid_resolution_m)
+    return overhang + half_diagonal
 
 
 def _link_link_hull_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:
@@ -831,7 +870,7 @@ def adjudicate_ground_truth(
     probed = coverage.get("probed_pairs")
 
     quantization = None if grid_resolution_m is None else quantization_budget_m(grid_resolution_m)
-    hal_gap = hal_admissible_gap_m(snapshot, stop)
+    hal_gap = hal_admissible_gap_m(snapshot, stop, grid_resolution_m)
     # Grid-quantization fallback is a VOXEL term; a link-vs-link self stop has no voxel on either
     # side, so falling back there would charge a budget the stop never made (same error class as
     # scoring against world geometry, #208). No HAL budget means no budget.

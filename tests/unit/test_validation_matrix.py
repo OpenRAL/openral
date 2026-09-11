@@ -1117,6 +1117,56 @@ def test_a_payload_world_stop_is_charged_the_payload_not_the_link() -> None:
     assert 0.031831 < 0.03488 + 0.021651
 
 
+def test_a_zero_voxel_term_is_rederived_not_composed_with() -> None:
+    """The bug the first 2026-09-11 A/B run exposed, in this budget itself.
+
+    ``estop_ground_truth_snapshot`` fills ``voxel_half_diagonal_m`` only from an
+    ``evidence_voxel`` it was handed; a round whose monitor never delivered one
+    publishes ``0.0``. On the top-level block that omission hides behind a
+    45-88 mm link term. On the payload block it does not: the payload's own
+    overhang is 8.9-19.9 mm, the **same order** as the 21.65 mm being dropped,
+    so composing with zero roughly halves the budget.
+
+    Measured consequence: the first A/B run flagged **6 of 16** hull-arm stops
+    ``false-positive``, every one of them inside budget once the term was
+    restored (6 -> 1, which is the base arm's own count). An under-stated budget
+    cries wolf, the one direction an adjudicator must not fail in, so the term
+    is re-derived from the round's known grid resolution — and with no
+    resolution to re-derive from the budget is ``None`` (``unadjudicated``: "I
+    cannot judge this") rather than a number that convicts.
+    """
+    from openral_core import ValidationStopEvidence
+
+    snapshot = {
+        "adjudication_budget": {
+            "admissible_gap_m": 0.08822,
+            "payload_world_voxel": {
+                "max_payload_model_overhang_m": 0.008907,
+                "voxel_half_diagonal_m": 0.0,  # the deaf-monitor round
+                "admissible_gap_m": 0.008907,
+            },
+        }
+    }
+    stop = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_3",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, stop, 0.025) == pytest.approx(
+        0.008907 + validation_matrix.quantization_budget_m(0.025)
+    )
+    # A utensil round's 18.30 mm discrepancy sits INSIDE the restored budget and
+    # outside the zero-composed 8.907 mm -- the exact flip the bug produced.
+    utensil_discrepancy_m = 0.01830
+    zero_composed_m = 0.008907
+    assert zero_composed_m < utensil_discrepancy_m
+    assert utensil_discrepancy_m < zero_composed_m + validation_matrix.quantization_budget_m(0.025)
+    # No resolution to re-derive from: no budget, rather than a convicting one.
+    assert validation_matrix.hal_admissible_gap_m(snapshot, stop, None) is None
+
+
 def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:
     """The producer-side defect, in the recorded evidence that exposed it.
 

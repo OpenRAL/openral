@@ -821,7 +821,7 @@ Three things this says plainly:
 2. **13–23 mm of corner slop, and 8–14 mm of worst-direction support excess, is
    what the box was adding in these scenes.** These are the shipped scenes at
    seed 1, not the A/B's own payload set (median 50.78 mm) — those rounds are
-   gitignored on q-laptop, and re-scoring them is §10.7's owed work.
+   gitignored on q-laptop, and re-scoring them is §10.8's owed work.
 3. **The wire costs 0.4–21 kB per payload**, and the producer went 0.37–0.44 ms
    → 0.51–1.10 ms per lowering.
 
@@ -863,7 +863,7 @@ Three things worth reading off it:
 **What this is not.** One occupied cell is not a kitchen, and a carriage is not
 a policy. It measures the size of the conservatism removed, not how often that
 conservatism was costing a task. The stop-rate and completion-rate questions
-are still §10.7's owed work.
+are still §10.8's owed work.
 
 Reproduce (one-shot analysis, not checked in — §7's rule): dump a payload's
 lowered primitives with `extract_body_primitives` against a RoboCasa scene,
@@ -876,7 +876,72 @@ a geometric one (assert `FailureTrigger.KIND_COLLISION`, never a bare refusal);
 and the kernel **latches** on refusal, so a reset is only evidence the latch is
 gone once a known-safe chunk is accepted again.
 
-### 10.6 What is deliberately untouched
+### 10.6 The live A/B, and why it answered nothing
+
+Run 2026-09-11 on q-laptop: 4 scenes x 5 rounds x 2 arms, gate ON, 25 mm,
+one graph at a time with the arms alternating round by round. **Arms are two
+worktrees, not an env var** — #266 changes the producer, the wire, the kernel
+*and* the adjudication budget, so a flag could only switch a fraction of it and
+would quietly attribute the rest to nothing. Nothing was added to the product to
+make the experiment possible.
+
+**Primary endpoint (paired over-approximation shift): null.**
+
+```
+median  -2.83 mm    mean  -6.91 mm
+95% CI  [-22.09, +8.26] mm
+sign test  6 negative / 5 positive        n = 11 pairs
+```
+
+**It is a null that proves nothing, and the fault is the experiment's.** The
+paired difference has sd = 25.7 mm, so at n = 11 the power is **0.20** against
+the DOP-only recovery and 0.63 against the hull's. Detecting 8.75 mm at 80 %
+would need ~68 pairs, i.e. ~250 rounds, ~14 h. `tools/resolution_ab.sh` warns in
+its own header against running an endpoint that can only report a null; this
+run did it anyway.
+
+**The deeper problem is the pairing, and more rounds would not fix it.** #253's
+two arms ran the *same code* and differed by one env var, so the same policy
+produced closely-matched trajectories and the pairing was real. Here the arms
+are different code: the refinement changes *when* the kernel stops, which
+changes the trajectory from that moment on, so `base r03` and `hull r03` are not
+the same event. Pairing by round index buys almost nothing, which is exactly why
+sd is 25.7 mm against a 9-18 mm effect.
+
+**The right instrument is replay, not a battery** — identical inputs through
+both kernels, which is what §10.5's carriage sweep is: same payload, same cell,
+same pose, box vs refined, zero policy noise, 17.65 mm median and never negative
+in 32 of 32. A live battery adds stochasticity that swamps the very quantity it
+is trying to measure. Extending §10.5 to replay *recorded field poses* would
+scale that instrument to the field without inheriting the noise.
+
+What the battery **did** establish, none of it needing the paired endpoint:
+
+| | base (`f06ac63`) | hull (`438516d`) |
+|---|---:|---:|
+| rounds / stops / payload stops | 20 / 18 / 12 | 20 / 16 / 12 |
+| budget charged, median | 88.22 mm | **34.45 mm** |
+| verdicts (wq / fp / rc / unadj) | 12 / 1 / 2 / 3 | 9 / 1 / 3 / 3 |
+
+The budget column is §10.7's fix working on live rounds: 88.22 mm was
+`panda_link4`'s corner slop being charged to stops no robot link is party to.
+Verdict counts are otherwise comparable — the tighter budget did not make the
+rounds less adjudicable.
+
+**And it earned its cost by finding a bug in that fix.** The first scoring pass
+flagged **6 of 16** hull-arm stops `false-positive`. Every one was an artifact:
+`estop_ground_truth_snapshot` fills `voxel_half_diagonal_m` only from an
+`evidence_voxel` it was handed, and these rounds' monitor delivered none, so the
+payload budget composed as `overhang + 0`. On the top-level block that omission
+hides behind a 45-88 mm link term; on the payload block the overhang is
+8.9-19.9 mm, the *same order* as the 21.65 mm dropped, so the budget roughly
+halved and convicted correct stops. The term is now re-derived from the round's
+known resolution (6 `false-positive` -> 1, the base arm's own count), and with
+no resolution to re-derive from the budget is `None` — `unadjudicated` ("I
+cannot judge this") rather than a number that convicts. No unit test had caught
+it; the live round did.
+
+### 10.7 What is deliberately untouched
 
 * **ADR-0098's place-target adjudication.** Its `target_distance ≤ d + allowance`
   bound keeps reading the **shipped box** distance. That bound is calibrated
@@ -892,7 +957,7 @@ gone once a known-safe chunk is accepted again.
   tighter payload would shorten the exemption's life. Left on the box, which is
   today's behaviour.
 
-### 10.7 Adjudicating a round after this change
+### 10.8 Adjudicating a round after this change
 
 `attached_payload_mesh_slop` now publishes **`n_stage2_primitives`** per object.
 `corner_slop_m` remains the right budget for an attached-payload **self** stop.
@@ -944,11 +1009,11 @@ rather than losing its budget — absence must read as "this round predates the
 block", never as "this stop has no budget", which would turn every archived
 payload-world stop `unadjudicated` at a stroke (#260's lesson, again).
 
-### 10.8 Relationship to the other open items
+### 10.9 Relationship to the other open items
 
 * **[#253](https://github.com/OpenRAL/openral/issues/253)** (25 → 15 mm voxels) — orthogonal, and this is the larger lever. #266 does not need that ruling.
 * **[#259](https://github.com/OpenRAL/openral/issues/259)** (place-allowance scope) — reaches the 33 *placing* stops. #266 reaches all 53 stops with a payload grasped, regardless of phase.
-* **[#264](https://github.com/OpenRAL/openral/issues/264)** (`has_stage2_hull` as a kernel-side disclosure) — §10.7 is the payload half of it.
+* **[#264](https://github.com/OpenRAL/openral/issues/264)** (`has_stage2_hull` as a kernel-side disclosure) — §10.8 is the payload half of it.
 
 ---
 
