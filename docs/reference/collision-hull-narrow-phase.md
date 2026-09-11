@@ -589,7 +589,7 @@ visited and only their minimum is reported. Here the answer **is** the reported
 `sweep_min_distance`, and the early exit was measured returning 4.2 mm for a pair
 genuinely 60.0 mm apart: sound, but it would crawl the arm past a clear pose.
 
-More consequentially, the self-collision check's `sweep_min_distance` is **no
+More consequently, the self-collision check's `sweep_min_distance` is **no
 longer folded into the graded band's slack at all**. A robot's tightest self-pair
 is a property of how it is built, not of where it is going: over all 14 641
 poses, `panda_link5`↔`panda_link7` never opens past **22.72 mm**, and **zero**

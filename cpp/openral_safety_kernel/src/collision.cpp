@@ -805,8 +805,8 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
   return lower > fallback ? lower : fallback;
 }
 
-double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
-                          double fallback, bool* depth_is_box_bound) noexcept {
+double hull_hull_distance(const TightPose& a, const TightPose& b, double margin, double fallback,
+                          bool* depth_is_box_bound) noexcept {
   if (depth_is_box_bound != nullptr) {
     *depth_is_box_bound = false;
   }
@@ -1023,8 +1023,7 @@ namespace {
 // advisory one at any depth; within one severity, deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
                bool allowance_active = false, bool advisory = false,
-               bool place_target_adjudicated = false,
-               bool depth_is_box_bound = false) noexcept {
+               bool place_target_adjudicated = false, bool depth_is_box_bound = false) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -1284,9 +1283,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t c = 0; c < n_caps; ++c) {
     const int li = model.capsule_link[c];
-    const Transform cap = compose(
-        grid_from_base,
-        compose(scratch.link_world[static_cast<std::size_t>(li)], model.capsules[c].origin));
+    const Transform cap =
+        compose(grid_from_base, compose(scratch.link_world[static_cast<std::size_t>(li)],
+                                        model.capsules[c].origin));
     Vec3 p0;
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
@@ -1539,8 +1538,8 @@ bool support_witness_still_in_contact(const AttachedModel& attached, const Attac
           if (grid.occupancy[idx] == 0) {
             continue;
           }
-          if (!support_contact_exempts(obj, obj_xf, voxel_center(grid, ix, iy, iz),
-                                       grid.resolution, grid.attached_contact_tolerance)) {
+          if (!support_contact_exempts(obj, obj_xf, voxel_center(grid, ix, iy, iz), grid.resolution,
+                                       grid.attached_contact_tolerance)) {
             continue;
           }
           Transform voxel;
@@ -1760,7 +1759,8 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
             const Vec3 center = voxel_center(grid, ix, iy, iz);
             Transform voxel;
             voxel.t = voxel_center_local(grid, ix, iy, iz);
-            const double d_cell = attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
+            const double d_cell =
+                attached_primitive_voxel_distance(prim, prim_g, voxel, voxel_half);
             // Declaration-scoped approach allowance (ADR-0097's 2026-08-14
             // amendment): inside the declared target's region this payload's
             // margin — and only this payload's, and only for cells in that
@@ -1887,9 +1887,8 @@ ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) n
       gate.threshold_n > kMaxContactForceThresholdN) {
     return out;
   }
-  const std::size_t count = attached.n_objects < attached.objects.size()
-                                ? attached.n_objects
-                                : attached.objects.size();
+  const std::size_t count =
+      attached.n_objects < attached.objects.size() ? attached.n_objects : attached.objects.size();
   for (std::size_t i = 0; i < count && i < 8; ++i) {
     // Condition 2: the gate follows the DECLARED payload. A second object the
     // robot happens to be carrying is outside the declaration and outside this.
@@ -2057,12 +2056,11 @@ double place_target_distance(const PlaceApproachRegion& region, const AttachedPr
     // Both operands are already base-frame, so this is the same certified
     // primitive-pair arithmetic every other check in this file runs — no coal,
     // no EPA, no hot-path allocation (survey §4.1).
-    const double d =
-        target.kind == AttachedShapeKind::kBox
-            ? attached_primitive_voxel_distance(prim, prim_xf, target.pose_in_object,
-                                                target.half_extents)
-            : attached_primitive_capsule_distance(prim, prim_xf, target.pose_in_object,
-                                                  target.radius, target.half_length);
+    const double d = target.kind == AttachedShapeKind::kBox
+                         ? attached_primitive_voxel_distance(prim, prim_xf, target.pose_in_object,
+                                                             target.half_extents)
+                         : attached_primitive_capsule_distance(prim, prim_xf, target.pose_in_object,
+                                                               target.radius, target.half_length);
     minimum = std::min(minimum, d);
   }
   return minimum;

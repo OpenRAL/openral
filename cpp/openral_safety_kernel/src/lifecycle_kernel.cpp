@@ -1057,9 +1057,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const bool contact_constrained_prediction =
               is_cartesian && attached_contact_active_ && step >= 0 && support_witness_live_ == 0;
           if (world_voxel_enabled_ && !contact_constrained_prediction) {
-            const auto hit = check_attached_voxel_collision(
-                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin,
-                collision_scale_proximity_m_);
+            const auto hit = check_attached_voxel_collision(collision_model_, attached_model_,
+                                                            collision_scratch_, voxel_grid_,
+                                                            amargin, collision_scale_proximity_m_);
             note_slack(hit, amargin);
             if (hit.hit) {
               // ADR-0098: when declared target geometry adjudicated the pair,
@@ -1109,8 +1109,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                          "safety.contact_force_gate object=%s target=%s magnitude_n=%g "
                          "threshold_n=%g step=%d",
                          attached_label(force.object_index).c_str(),
-                         place_declaration_target_.c_str(), force.magnitude_n,
-                         force.threshold_n, step);
+                         place_declaration_target_.c_str(), force.magnitude_n, force.threshold_n,
+                         step);
             report("world", attached_label(force.object_index),
                    "force:" + place_declaration_target_, step, fhit);
             return true;
@@ -1235,9 +1235,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     const bool rate_shaped = mode == ControlMode::kJointVelocity ||
                              mode == ControlMode::kCartesianDelta ||
                              mode == ControlMode::kCartesianTwist;
-    const double scale = (geom_enabled && rate_shaped)
-                             ? velocity_scale_for(collision_min_slack_m)
-                             : 1.0;
+    const double scale =
+        (geom_enabled && rate_shaped) ? velocity_scale_for(collision_min_slack_m) : 1.0;
     if (scale < 1.0) {
       // Scaling DOWN a rate keeps every envelope bound it already satisfied
       // (|s·v| <= |v| for s in [0,1]), so the scaled chunk needs no
@@ -1247,9 +1246,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const std::size_t stride = view.n_dof;
       // A Cartesian row is a 6-vector twist [vx,vy,vz,wx,wy,wz] inside a row of
       // `n_dof`; a velocity row is velocities all the way across.
-      const std::size_t scalable = (mode == ControlMode::kJointVelocity)
-                                       ? stride
-                                       : std::min<std::size_t>(stride, 6);
+      const std::size_t scalable =
+          (mode == ControlMode::kJointVelocity) ? stride : std::min<std::size_t>(stride, 6);
       // A NORMALIZED Cartesian chunk must be clamped before it is scaled.
       // Native OSC controllers apply `clamp(raw, -1, 1) * per_axis_range`, and
       // the validator deliberately puts no per-axis bound on CARTESIAN_DELTA,
@@ -1465,8 +1463,8 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   std::string place_region_state{"-"};
   if (place_region_.valid) {
     place_region_state = (place_declaration_live() ? "live:" : "expired:") +
-                         place_declaration_target_ + ":geom=" +
-                         std::to_string(place_region_.n_geometry);
+                         place_declaration_target_ +
+                         ":geom=" + std::to_string(place_region_.n_geometry);
   } else if (!place_region_refusal_reason_.empty()) {
     place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
   }
@@ -1990,9 +1988,9 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_overflow_ = false;
   std::copy(msg->occupancy.begin(), msg->occupancy.end(), voxel_occupancy_.begin());
   voxel_grid_.occupancy = voxel_occupancy_.data();
-  voxel_grid_.pose = transform_from_translation_quat(
-      msg->origin.x, msg->origin.y, msg->origin.z, msg->orientation.x, msg->orientation.y,
-      msg->orientation.z, msg->orientation.w);
+  voxel_grid_.pose = transform_from_translation_quat(msg->origin.x, msg->origin.y, msg->origin.z,
+                                                     msg->orientation.x, msg->orientation.y,
+                                                     msg->orientation.z, msg->orientation.w);
   voxel_grid_.resolution = msg->resolution;
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
@@ -2366,7 +2364,8 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       place_geometry_scratch_.push_back(pin);
     }
     if (status == PlaceRegionStatus::kOk) {
-      status = ingest_place_target_geometry(place_geometry_scratch_, place_geometry_, place_region_);
+      status =
+          ingest_place_target_geometry(place_geometry_scratch_, place_geometry_, place_region_);
     }
     if (status != PlaceRegionStatus::kOk) {
       place_region_ = PlaceApproachRegion{};

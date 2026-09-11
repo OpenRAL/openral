@@ -1733,8 +1733,7 @@ osk::Transform voxel_transform_at(const osk::VoxelGrid& grid, int linear_index) 
   // grid would need `pose.r` applied to that offset — see
   // `OrientedGrid.*` below, which builds its expectations that way.
   osk::Transform t;
-  t.t = {grid.pose.t.x + (ix + 0.5) * grid.resolution,
-         grid.pose.t.y + (iy + 0.5) * grid.resolution,
+  t.t = {grid.pose.t.x + (ix + 0.5) * grid.resolution, grid.pose.t.y + (iy + 0.5) * grid.resolution,
          grid.pose.t.z + (iz + 0.5) * grid.resolution};
   return t;
 }
@@ -3742,7 +3741,8 @@ TEST(PlaceTargetGeometry, NoDeclarationAndNoGeometryBothMeasureInfinity) {
   EXPECT_TRUE(
       std::isinf(osk::place_target_distance(osk::PlaceApproachRegion{}, payload, identity())))
       << "no declaration at all";
-  EXPECT_TRUE(std::isinf(osk::place_target_distance(declared_cabinet_region(), payload, identity())))
+  EXPECT_TRUE(
+      std::isinf(osk::place_target_distance(declared_cabinet_region(), payload, identity())))
       << "a declaration whose producer measured a box but no geometry";
 
   std::vector<osk::AttachedPrimitive> store(osk::kMaxPlaceTargetPrimitives);

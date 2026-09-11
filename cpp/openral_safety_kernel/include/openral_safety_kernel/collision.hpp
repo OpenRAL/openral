@@ -356,13 +356,13 @@ struct PlaceApproachRegion {
 /// bounds warnings per run, none describing a bound.
 enum class PlaceRegionStatus : std::uint8_t {
   kOk = 0,
-  kNoObject = 1,        ///< empty object_mask — the declared payload is not carried
-  kBadPose = 2,         ///< non-finite region pose
-  kBadExtents = 3,      ///< non-finite half-extent
-  kDegenerate = 4,      ///< half-extent <= 0: a box with no interior licenses nothing
-  kOversize = 5,        ///< a side past kMaxPlaceRegionHalfExtentM
-  kOversizeVolume = 6,  ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
-  kBadGeometry = 7,     ///< a declared-target primitive with a malformed shape (ADR-0098)
+  kNoObject = 1,          ///< empty object_mask — the declared payload is not carried
+  kBadPose = 2,           ///< non-finite region pose
+  kBadExtents = 3,        ///< non-finite half-extent
+  kDegenerate = 4,        ///< half-extent <= 0: a box with no interior licenses nothing
+  kOversize = 5,          ///< a side past kMaxPlaceRegionHalfExtentM
+  kOversizeVolume = 6,    ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
+  kBadGeometry = 7,       ///< a declared-target primitive with a malformed shape (ADR-0098)
   kGeometryOverflow = 8,  ///< more target primitives than kMaxPlaceTargetPrimitives
 };
 
@@ -567,9 +567,9 @@ struct PlaceForceGate {
 /// turns a refusal into an accept, widens a margin, or creates an exemption.
 struct ContactForceGateResult {
   bool tripped{false};
-  int object_index{-1};    ///< attached object whose witness tripped, or -1
-  double magnitude_n{0.0}; ///< the calibrated magnitude judged
-  double threshold_n{0.0}; ///< the declaration bound it was judged against
+  int object_index{-1};     ///< attached object whose witness tripped, or -1
+  double magnitude_n{0.0};  ///< the calibrated magnitude judged
+  double threshold_n{0.0};  ///< the declaration bound it was judged against
 };
 
 struct AttachedModel {
@@ -601,13 +601,13 @@ struct AttachedObjectInput {
   std::vector<AttachedPrimitiveInput> primitives;  ///< one or more owned primitives
   bool has_support_witness{false};                 ///< wire `support_contact_valid`
   Vec3 support_point{};                            ///< attested contact point, object frame
-  Vec3 support_normal{};                ///< outward support normal, object frame (normalised)
-  double support_patch_radius{0.0};     ///< lateral patch radius (m)
-  double support_max_penetration{0.0};  ///< attested physical contact depth bound (m)
-  bool has_contact_force_witness{false};    ///< wire `contact_force_valid` (ADR-0100)
-  bool contact_force_calibrated{false};     ///< witness `magnitude_calibrated`
-  bool contact_force_target_matches{false}; ///< witness `target_id` names the declared target
-  double contact_force_magnitude{0.0};      ///< Newtons ONLY when calibrated
+  Vec3 support_normal{};                     ///< outward support normal, object frame (normalised)
+  double support_patch_radius{0.0};          ///< lateral patch radius (m)
+  double support_max_penetration{0.0};       ///< attested physical contact depth bound (m)
+  bool has_contact_force_witness{false};     ///< wire `contact_force_valid` (ADR-0100)
+  bool contact_force_calibrated{false};      ///< witness `magnitude_calibrated`
+  bool contact_force_target_matches{false};  ///< witness `target_id` names the declared target
+  double contact_force_magnitude{0.0};       ///< Newtons ONLY when calibrated
 };
 
 /// Outcome of an attachment-ingest attempt. Anything other than `kOk` is
@@ -820,8 +820,8 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
 /// lever is a DOP-vs-DOP stage 1 in front of the GJK (same shape as
 /// dop_cell_lower_bound), not a looser support function — see
 /// kMaxTightHullVertices for why the scan stays exhaustive.
-double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
-                          double fallback, bool* depth_is_box_bound = nullptr) noexcept;
+double hull_hull_distance(const TightPose& a, const TightPose& b, double margin, double fallback,
+                          bool* depth_is_box_bound = nullptr) noexcept;
 
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
