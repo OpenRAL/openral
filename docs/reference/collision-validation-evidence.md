@@ -3191,3 +3191,90 @@ Resolution moves host memory by kilobytes.
 **Consequence for the rerun.** It goes at `WORKERS=2`, and it must be a full
 A/B rather than a top-up of the failures: `sink_cup`'s arms were never
 interleaved, so its runs are not exchangeable with `baguette`'s.
+
+### 2026-09-11 — the 25 → 15 mm resolution lever, measured: null, and the reason it is null
+
+The measurement #253 asked for, on the third attempt. The first two were voided
+by instrument defects (the leaked octomap pair, then host contention — both in
+the entries above). This one is clean: **80 rounds, 79 valid, 0 bond teardowns**,
+both arms verified against their own observed `resolution_m`, and every round
+paired with its partner at a median separation of **0 s**.
+
+**The prediction is refuted, not merely unconfirmed.** Comparing only rounds
+where both arms produced an adjudicable stop **on the same party** — mixing
+parties compares different collision events, not resolutions:
+
+| | |
+| --- | ---: |
+| same-party paired shift | **+5.9 mm** |
+| 95 % CI (bootstrap, 20 000 resamples) | **[−5.7, +17.7]** |
+| predicted | **−8.66 mm** — *outside* the interval, 2.6 se away |
+| sign test | 11 negative / 12 positive, `p = 1.000` |
+
+The point estimate has the **wrong sign**. Secondary counts lean the same way —
+15 mm produced more stops (37 vs 34) and fewer completions (3 vs 6) — but that
+endpoint is under-powered by design and is not evidence on its own.
+
+**Do not quote the report's own PRIMARY line.** It prints `−1.6 mm`, which
+looks like a weak confirmation and is an artifact: it pools pairs where the
+25 mm arm stopped on `panda_link7` (excess 77–89 mm) against pairs where the
+15 mm arm stopped on the payload. Different events. The same-party figure is
+the one that answers the question.
+
+**Why it is null: the voxel term was never the big one.** The carried payload
+is lowered to a **local AABB** — `extract_body_primitives` reduces a mesh geom
+to its bounding box, and no hull path exists for payloads at all. Measured over
+this battery's 424 samples:
+
+| payload box corner slop | |
+| --- | ---: |
+| median | **50.78 mm** |
+| max | **88.22 mm** |
+
+Against a voxel half-diagonal of 21.65 mm at 25 mm and 12.99 mm at 15 mm. **The
+box is 2.3–3.9× the entire quantisation term.** Shrinking the cell removes
+8.66 mm of envelope and leaves ~50 mm untouched beside it, which is precisely
+the null observed. Filed as **#266**.
+
+**The error has moved almost entirely onto the payload:**
+
+| | 25 mm | 15 mm |
+| --- | ---: | ---: |
+| stops that are payload-vs-world | 27/34 (**79 %**) | 36/37 (**97 %**) |
+
+So 15 mm makes the concentration *worse*, and costs the dense grid 0.6 MB →
+2.8 MB republished at 10 Hz — 28 MB/s over DDS against 6.
+
+**Phase: this is a carrying problem, not a placing or picking one.** Of 59
+stops, **53 have the payload already grasped** and **0** occur while reaching
+for an ungrasped object. Of those 53, only **9 hit the fixture they were
+dispatched to**; **44 hit transit scenery** — the counter being crossed, a
+cabinet door, the fridge body. `sink_cup` hit the island counter 15 times and
+the sink itself **once**. (`PLAN.md` §5's earlier *11 placing / 7 carrying*
+census is a labelling difference, not a conflict: it counts "descending toward
+the drop point but clipping the counter beside it" as placing. Reconcile before
+citing either.)
+
+**The stops are about half spurious and about a fifth real.** True certified
+clearance at the moment of the stop, per payload stop:
+
+| true gap at stop | 25 mm | 15 mm |
+| --- | ---: | ---: |
+| touching / penetrating (≤2 mm) | 4 | 7 |
+| close (2–10 mm) | 6 | 9 |
+| genuinely clear (>10 mm) | 9 | 16 |
+
+Median true gap **9.6 mm** in both arms. The ≤2 mm bucket carries real
+interpenetration (`−7.7`, `−1.7`, `−1.5`, `−1.3` mm), so **removing the
+payload-vs-world check is not on the table** even though it would recover most
+of the gate-off/gate-on ceiling gap — it is 79–97 % of all stops. The fix is
+fidelity, not removal.
+
+**Standing caveat.** n = 16 same-party pairs, sd 22.2 mm. This excludes an
+effect as large as the predicted −8.66 mm; it could not resolve a −3 mm one.
+The claim is "the predicted effect is not there", not "resolution does
+nothing". The right time to re-ask is after #266 lands, when the voxel term is
+no longer the small one.
+
+Data: `outputs/resolution-ab/2026-09-10-serial` on q-laptop (`outputs/` is
+gitignored); per-stop rows in its `report.json`.

@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -128,3 +129,45 @@ def test_a_failing_round_is_counted_not_swallowed(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "RESOLUTION_AB_DONE (8 round(s) non-zero) ===" in proc.stdout, proc.stdout[-500:]
+
+
+def test_the_sidecar_boot_wait_never_falls_between_an_arm_pair(
+    tmp_path: Path, round_recorder: Path
+) -> None:
+    """The one-off XR-1 boot wait belongs between rounds, not inside one.
+
+    When it sat inside the arm loop it separated `baguette` r01's two arms by
+    SIDECAR_BOOT_S — 210 s in the real battery — and the report correctly
+    flagged that pair unpaired. Pairing is a within-round property, so the wait
+    is free between rounds and corrupting inside one.
+    """
+    round_log = tmp_path / "rounds.log"
+    env = {
+        **os.environ,
+        "ROUNDS": "2",
+        "SIDECAR_BOOT_S": "2",  # long enough to show up in the timings
+        "OUT": str(tmp_path / "ab"),
+        "RUN_ROUND_CMD": str(round_recorder),
+        "ROUND_LOG": str(round_log),
+        "LIVE_DIR": str(tmp_path / "live.lock"),
+    }
+    started = time.monotonic()
+    marks: list[float] = []
+    proc = subprocess.Popen(["bash", str(SCRIPT)], env=env, stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if "@ 0.015 m" in line or "@ 0.025 m" in line:
+            marks.append(time.monotonic() - started)
+    assert proc.wait(timeout=300) == 0
+
+    # marks: r01@25, r01@15, r02@25, r02@15 (first scene). The boot wait must
+    # land between r01@15 and r02@25, never between r01@25 and r01@15.
+    assert len(marks) >= 4, marks
+    within_first_pair = marks[1] - marks[0]
+    between_rounds = marks[2] - marks[1]
+    assert within_first_pair < 1.5, (
+        f"the boot wait fell inside r01's pair ({within_first_pair:.1f}s apart)"
+    )
+    assert between_rounds >= 1.5, (
+        f"the boot wait did not happen at all ({between_rounds:.1f}s between rounds)"
+    )

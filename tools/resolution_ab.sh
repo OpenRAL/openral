@@ -95,12 +95,15 @@ for scene in "${SCENES[@]}"; do
       if run_round "$scene" "$res" "$n"; then echo "ok"; else
         echo "NON-ZERO"; fail=$((fail + 1))
       fi
-      if [ "$booted" -eq 0 ]; then
-        # The first round boots the XR-1 sidecar the whole battery then shares.
-        sleep "$SIDECAR_BOOT_S"
-        booted=1
-      fi
     done
+    if [ "$booted" -eq 0 ]; then
+      # The first PAIR boots the XR-1 sidecar the whole battery then shares.
+      # This wait must not fall BETWEEN the two arms of a round: when it did,
+      # baguette r01's arms were 210 s apart and the report flagged that pair
+      # unpaired. Between rounds it costs nothing — pairing is within a round.
+      sleep "$SIDECAR_BOOT_S"
+      booted=1
+    fi
   done
   echo "--- ${scene}: both arms done"
 done
