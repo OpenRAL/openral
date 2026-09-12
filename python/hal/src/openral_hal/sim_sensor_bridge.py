@@ -1717,6 +1717,15 @@ def preattach_verdict(
     ``voxel_backing_record``'s ``attached_payload`` verdict says only that the
     payload is in the cell NOW.
 
+    **``preexisting`` is not a finding on its own, and reading it alone inverts
+    what it means.** A cell backed by world geometry is ALWAYS pre-existing --
+    the counter was there before the grasp -- so counting how many stops report
+    True answers nothing. The payload-authored case is the *conjunction*:
+    ``voxel_backing_record``'s verdict is ``attached_payload`` (no ``solid_world``
+    in the cell at all) AND this says the cell predates the attach. Measured
+    2026-09-12, a 4-round `fridge` battery produced three stops all reporting
+    ``preexisting: True`` of which exactly one was payload-authored.
+
     ``within_one_cell`` is reported beside the exact hit as the cheap guard on
     the keying itself: the key quantises a float centre, and if the published
     lattice ever drifts relative to the resolution the same physical cell lands

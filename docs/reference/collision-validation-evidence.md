@@ -2523,11 +2523,78 @@ The `attached_payload` six are `fridge` r01/r05/r06/r08, `sink_cup` r09 and
 wrote this cell" from "something else wrote it and the payload has since moved
 into it" — the point `voxel_backing_record`'s docstring makes about
 `self_occupancy_suspect`, which applies here too. Settling it needs grid
-*history*, which no artifact in this battery carries; `preattach_verdict` and
+*history*, which no artifact in that battery carries; `preattach_verdict` and
 `occupied_cell_keys` (#272) are the instrument that supplies it, by freezing the
 occupied-cell set at the masking attach so a stop can report whether its cell
-predates the grasp. **Unrun as of this entry** — the field exists, no battery has
-produced one yet.
+predates the grasp.
+
+**Measured 2026-09-12 — the cell predates the grasp.** One `fridge` / gate-ON
+round on `q-laptop`, real deploy graph, on `master` with #267 and #269 already
+merged:
+
+```
+sim.preattach_occupancy_frozen  cells=7912  resolution_m=0.015  truncated=false  revision=1
+safety.collision  a=attached:sim:obj_main  b=voxel_1033835  min_distance_m=-0.01989
+
+evidence_voxel_backing.verdict   attached_payload
+evidence_voxel_backing.classes   ['attached_payload']      <- no solid_world at all
+evidence_voxel_backing.preattach preexisting: true, within_one_cell: true,
+                                 cell_key [273, -50, 61], preattach_cells 7912
+```
+
+The carried payload stopped on a cell **already occupied at the instant of its
+own grasp**, whose only backing geometry is `obj_main`'s own `obj_g0` / `obj_g3`.
+The authorship question the census above left open is answered for this stop: the
+payload's own pre-grasp footprint.
+
+Two riders. **It reproduces at 15 mm**, so the geometry work does not touch this
+class — as the census predicted, and the reason #272 is now the largest remaining
+one. And this stop's **certified true gap is 0.00 mm** to
+`fridgesidebyside_main_group_1_g25`: the outcome was *correct*, the payload really
+was touching the shelf, while the evidence that produced it was a cell the payload
+authored. Right answer, wrong evidence — which is the case that should worry a
+reader most, because the same mechanism at a different pose has no reason to be
+right.
+
+**The other three rounds of the same battery**, all `fridge` / gate-ON on the
+same build:
+
+| round | kernel | certified true gap | cell verdict | classes |
+| --- | ---: | ---: | --- | --- |
+| r01 | −19.89 mm | **+0.00 mm** | **`attached_payload`** | `['attached_payload']` |
+| r02 | −5.26 mm | +2.62 mm | `solid_world` | `['attached_payload', 'solid_world']` |
+| r03 | −32.82 mm | +3.49 mm | `solid_world` | `['solid_world']` |
+| r04 | — | — | no stop | **task succeeded** |
+
+**One of three stops is payload-authored, not three.** All three report
+`preattach.preexisting: true`, and that number on its own is worthless: a cell
+backed by world geometry is *always* pre-existing, because the fixture was there
+before the grasp. The payload-authored case is the **conjunction** — verdict
+`attached_payload` (no `solid_world` in the cell at all) *and* the cell predates
+the attach. Only r01 is that. Anyone quoting "3 of 3 pre-existing" has measured
+the furniture.
+
+**r04 completed the task with the gate ON.** The 2026-09-09 battery's `fridge`
+gate-ON arm was 0 of 5. This is the first recorded gate-ON `fridge` completion —
+**and n is 4, so it is an observation and not a rate.** Fisher against 0/5 is
+`p ≈ 0.44`; nothing here establishes that the gate's cost has moved.
+
+**r03 does not fit the geometry story.** −32.82 mm reported against a +3.49 mm
+certified gap is **36.3 mm of excess** on a `solid_world` cell, at 15 mm cells,
+with the attached-payload tight hull already in. It is neither #272 nor #266 box
+overhang. Unexplained, n=1, recorded here rather than chased.
+
+**Reading note for the next battery — two traps, both of which caught me first:**
+
+1. The backing record lands on whichever line wins the race —
+   `sim.estop_ground_truth_snapshot` when the kernel's evidence is already fresh,
+   `sim.estop_ground_truth_evidence` when it is late. The 2026-09-09 battery put
+   it on the late line 26 times of 27; r01 above put it on the snapshot line.
+   **Grep both**, or a present record reads as absent.
+2. The certified gap lives **only** on the snapshot line. A stop whose backing
+   arrived late has its backing and its ground truth on two different lines, so
+   the two must be **joined on `stop_seq`** — reading either alone silently drops
+   half of every such stop.
 
 **Two `solid_world` stops are not conservatism artefacts either.** `sink_cup/r04`
 (+44.96 mm) and `baguette/r05` (+48.53 mm) exceed certified truth by **50.87 mm**
