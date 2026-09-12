@@ -1754,7 +1754,7 @@ measures **p99 1.7 ms on 7 427 cells** against a 33 ms ceiling.
 
 **A correction to an earlier draft of this entry, kept rather than silently
 edited.** It first said the backing record was "present on only 8 of 91 stops".
-That was wrong: the record is
+That was wrong, and the way it was wrong is worth recording. The record is
 present on **82** stops — the 8 in `run_gt_snapshot.json` (the in-snapshot path)
 plus 74 more in `run_gt_evidence.json`, which is #177's *late* path. But the
 late path is not usable on this battery:
@@ -2223,6 +2223,268 @@ this ray-sampling gap), and every one of them made the stack look *worse* than i
 is rather than hiding a real contact.
 
 
+### 2026-09-08 — the producer half of the resolution lever, and the cell count the un-strike got wrong
+
+`PLAN.md` §5 un-struck the 25 → 15 mm lever on 2026-09-07 after measuring the
+kernel *consuming* a finer grid, and named the other half as unmeasured: the
+bridge has to **build** the grid on every publish, and since the published
+lattice IS the octree's, a finer kernel grid means a finer **tree**. Measured in
+`test_octree_to_grid.cpp::RasterizationCostAcrossTreeResolutions`, real octree,
+real rasterizer, 10 calls each:
+
+| tree resolution | grid cells | occupied | rasterize |
+| ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 512 000 | 825 | **0.88 ms** |
+| 20 mm | 1 000 000 | 1 380 | 1.29 ms |
+| 15 mm | 2 406 104 | 3 936 | **1.60 ms** |
+| 12.5 mm | — | — | **refused** |
+
+**The producer is not the obstacle.** 1.60 ms at 15 mm against a 100 ms publish
+period, and the curve is nearly flat — cells ×4.7 for time ×1.8 — because the
+marking loop iterates occupied leaves, which are a *surface*, while only the
+dense buffer's allocation scales with volume. The same shape that made the
+consumer cheap makes the producer cheap.
+
+**12.5 mm is refused outright**, and correctly: `octree_to_grid.cpp`'s
+`kMaxCells = 4 000 000` allocation guard is crossed at 4 096 000 cells for this
+ball. Fail-closed is the right behaviour, but it means 12.5 mm is unreachable
+without raising that guard — a decision, not a manifest edit.
+
+**A correction to the un-strike, which was mine.** It claimed "15 mm needs no
+change to `world_voxel_max_cells`; it is 376 680 cells against the shipped
+614 125", and dismissed §5's 2.8 M figure as "a whole-kitchen grid, not the
+arm-neighbourhood window". That was wrong in both halves. The coverage ball is
+sized by the **arm's reach** — `deploy_e2e.launch.py::_octomap_coverage_radius`
+measures the kernel-checked links at 1016 mm and ships 1.05 m — so at 15 mm it
+needs **141³ = 2 803 221** cells. §5's original 2.8 M was right. The measurement
+above lands at 2 406 104 for a slightly smaller 1.0 m test ball, which is the
+same number.
+
+The cap consequence is therefore real and was not avoided: a kernel still
+reserving 614 125 rejects every grid it is sent, which reads as "no world" and
+is a **fail-open on the world check**. That is why `_world_voxel_max_cells` now
+derives the cap from the resolution rather than carrying it as a hand-kept
+constant — the fix landed in the same commit that made the resolution
+configurable, before this measurement was taken.
+
+**What is still unmeasured on this lever.** Message size. 2.8 M cells is a
+2.8 MB dense `uint8[]` on every publish at 10 Hz — 28 MB/s over DDS, against
+0.6 MB and 6 MB/s today. Neither the transport cost nor its effect on the
+kernel's own deadline has been measured, and it is now the only unquantified
+term left between here and a 15 mm manifest edit.
+
+
+### 2026-09-08 — the wire, the third cost on the resolution lever, and the one that binds
+
+Both compute halves of the 25 → 15 mm lever are measured and cheap: the kernel
+consuming a 15 mm grid is p99 **0.825 ms**, and the bridge producing one is
+**1.60 ms** against a 100 ms period. The term neither of those touches is the
+message. `OccupancyVoxels.occupancy` is a **dense** `uint8[]`, so the same change
+takes one publish from 0.61 MB to 2.80 MB, ten times a second.
+
+Measured with `tools/voxel_transport_probe.py` — two processes over real DDS,
+real `openral_msgs`, at the deployed 10 Hz, under the kernel's own QoS for
+`/openral/world_voxels` (`RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`), grid sizes from
+the shipped 1.05 m coverage radius. Two runs on `q-laptop`, Fast-DDS:
+
+| resolution | MB | delivered | latency p50 | latency p99 |
+| ---: | ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 0.61 | 30/30, 35/35 | ~14 ms | **19–23 ms** |
+| 20 mm | 1.19 | 30/30, 35/35 | ~20–25 ms | 36–43 ms |
+| **15 mm** | 2.80 | 30/30, 35/35 | ~28–30 ms | **68–83 ms** |
+
+**Nothing is dropped and the rate holds.** `RELIABLE` delivered every message at
+every size, and the achieved rate is ~8.6–8.9 Hz at all three — the shortfall is
+the probe's own sleep loop, identical across resolutions, not backpressure. The
+naive failure mode this was expected to find is not there.
+
+**What is there is staleness.** That latency is the age of the world when the
+kernel reads it, and it roughly triples at 15 mm: **+15 ms at the median, +50 to
++60 ms at p99.** Age is also millimetres. The lever buys 8.66 mm of static
+quantisation (21.65 → 12.99 mm half-diagonal) and pays for it in map age, so the
+two are directly comparable:
+
+| | extra staleness | break-even end-effector speed |
+| --- | ---: | ---: |
+| median | ~15 ms | **0.58 m/s** |
+| p99 | ~55 ms | **0.16 m/s** |
+
+Above those speeds the finer grid is a **net loss in the same units it was meant
+to improve** — the map is older by more millimetres of arm travel than the
+smaller cell saves. Those break-evens sit inside the arm's kinematic range
+(`panda_mobile`'s joint 1 alone is limited at 2.175 rad/s), so this is not a
+corner case.
+
+**This does not re-strike the lever, and it must not be read as doing so.** It
+converts it from a free win into a **trade**, and the trade is settled by one
+number nobody has measured: the actual end-effector speed during the carry phase,
+where 71 % of the stops happen. If the policy creeps at 0.1 m/s the lever is
+still worth pulling; at 0.5 m/s it is not. Measuring that from the battery's
+recorded joint states is the next step, and — given this programme's record —
+it should be measured rather than assumed.
+
+**Scope.** Fast-DDS on one shared laptop over localhost. Transport-specific and
+host-specific: Cyclone, a real network, or SHM tuning could all move it, and the
+probe reports which RMW it measured for that reason.
+
+
+### 2026-09-08 — the arm is slow, so the resolution lever's staleness barely costs anything
+
+The wire measurement above turned the 25 → 15 mm lever from a free win into a
+trade: **+8.66 mm** of static quantisation against **+15 ms median / +50–60 ms
+p99** of map age. Age is millimetres too, at `speed × staleness`, so the trade is
+settled by one number — how fast the arm is actually moving when the kernel stops
+it. Measured with `tools/stop_ee_speed.py` from each round's own
+`robot_joint_state`, pushed through the real Panda body Jacobian at `link7`, the
+body the payload attaches to:
+
+| stop class | n | median | max |
+| --- | ---: | ---: | ---: |
+| **carry phase** (`attached_payload`) | 5 | **0.051 m/s** | **0.265 m/s** |
+| **start state** (`robot_world`) | 7 | **0.000 m/s** | **0.000 m/s** |
+
+The mobile base contributes at most **0.0013 m/s** at any of these stops, so arm
+speed is world speed here and the two do not need separating.
+
+**The start-state class is free.** All seven are at exactly zero: the arm is
+stopped at reset, before it has moved. Staleness costs nothing at a stationary
+arm, so those stops take the full 8.66 mm with no offset at all. That is 43 % of
+the battery's stops.
+
+**The carry class is net positive at every measured speed but one corner:**
+
+| | median stop (0.051 m/s) | fastest stop (0.265 m/s) |
+| --- | ---: | ---: |
+| median staleness (+15 ms) | **+7.89 mm** | **+4.68 mm** |
+| p99 staleness (+55 ms) | **+5.84 mm** | **−5.93 mm** |
+
+Three of four corners favour the finer grid, and the median case favours it by
+almost the whole 8.66 mm. Only the worst-case combination — the fastest stop
+observed *and* a p99-latency grid — is adverse, and it is adverse by 5.9 mm.
+
+**So the lever is worth pulling, and this is the first time that has been said
+about it on evidence rather than on an estimate.** Every one of the three cost
+terms is now measured: kernel 0.825 ms, rasterize 1.60 ms, wire +15/+55 ms — and
+the arm is slow enough that the last one does not eat the gain.
+
+**What would change this.** A faster policy. These speeds are what the XR-1
+checkpoint does on these scenes; a policy that carries at 0.3 m/s or more moves
+the p99 corner from marginal to routine. The break-even is 0.16 m/s at p99
+staleness and 0.58 m/s at the median, so the margin is roughly 3× at the median
+stop and gone at the fastest. **n = 5 carry-phase stops**, which is thin — this
+is the measurement to widen before a manifest edit, not the one to skip.
+
+
+### 2026-09-08 — the battery's carry-phase yield is 18–27 %, which is what every payload measurement really costs
+
+Across all 26 rounds on disk, counted by where the round actually ends:
+
+| scene | rounds | never grasped | stopped at reset | **reached carry** | completed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fridge` | 11 | 7 (64 %) | 2 (18 %) | **2 (18 %)** | 1 |
+| `utensil` | 15 | 6 (40 %) | 5 (33 %) | **4 (27 %)** | 0 |
+
+**Only one round in four reaches the phase the programme is about.** The carry
+phase holds 71 % of stops and every stop ADR-0101 targets, and a round arrives
+there only after the policy grasps *and* the arm clears its own start pose.
+
+This is a **measurement-cost** finding, not a collision one, and it explains why
+`n` has stayed thin through every battery on this page. Sizing follows directly:
+`utensil` yields **4 payload stops per 15 rounds**, so the ~10 payload stops
+ADR-0101's live-map re-derivation needs is **≈38 rounds**, about 6 hours of wall
+clock at ~10 min each. Budgeting that battery by round count rather than by
+yield is how it ends up underpowered.
+
+Three consequences worth separating:
+
+* **The start-state class is cheap to measure** — 18–33 % of rounds produce one,
+  against 18–27 % for carry. Anything testable against start-state stops should
+  be measured there first.
+* **`deadline-no-grasp` is the largest lever on measurement throughput**, and it
+  is a *policy* property, not a kernel one. 40–64 % of rounds spend ~7 minutes
+  each to tell us nothing about collision. Nothing in the collision programme
+  can reduce it, and no collision change will be observed in those rounds.
+* **`fridge` grasps worse than `utensil` (36 % vs 60 %) but completes better**
+  (1 vs 0). Neither scene is a good instrument on its own; `utensil` is the one
+  that reaches the carry phase most often and is where carry-phase batteries
+  should be weighted.
+
+
+### 2026-09-09 — ADR-0101's 94 % re-derived from the live map: 86 %, and the clearances are half
+
+Thirty-six `utensil` rounds on **`spark`** at `448818c4`, the sha carrying both
+backing-probe fixes — the condition the re-derivation required and which no
+round on `q-laptop` had ever met. Run through `tools/adr0101_recovery.py`:
+
+| | offline (certified truth) | **live map, re-derived** |
+| --- | ---: | ---: |
+| payload-vs-`voxel_` stops | 51 | **28** |
+| would be recovered | 48 (**94 %**) | **24 (86 %)** |
+| would still stop | 3 | 4 |
+| **median recovered clearance** | **16.2 mm** | **8.56 mm** |
+| minimum recovered clearance | 0.1 mm | **1.84 mm** |
+
+**The rates agree.** 24/28 against 48/51 is Fisher two-sided **p = 0.237** — no
+evidence they differ. ADR-0101's headline survives its own re-derivation, which
+is what the plan asked and what the ADR needed before implementation leans on it.
+
+**The clearances do not, and this is the finding.** The median recovered stop sits
+at **8.56 mm of real air, not 16.2 mm** — half. The mechanism would be
+suppressing cells whose true surface is twice as close as the offline analysis
+implied, so its own modelling error (pose, fit, and on hardware the perception
+residual) eats a correspondingly larger share of the budget. The one number that
+moved the *other* way is the minimum, 1.84 mm against 0.1 mm — the offline
+battery's single scariest stop has no counterpart here.
+
+The four that correctly still stop are −5.79, −0.09, −0.09 and −0.01 mm against
+`counter_2_right_group_main`, `counter_main_main_group_main` and
+`stack_2_right_group_2_door_main`. Two of them are inside a tenth of a
+millimetre of the surface, which is exactly the class the suppression step must
+never let through.
+
+By fixture the recoverable stops are again dominated by one counter
+(`counter_2_right_group_main` ×14 of 24), reproducing §3's shape on a different
+scene seed set.
+
+**The decomposition, now on n = 28 instead of n = 4:**
+
+| class | n | median excess | beyond voxel | |
+| --- | ---: | ---: | ---: | --- |
+| payload | 28 | +11.73 mm | **−9.93 mm** | no geometry headroom |
+| link | 7 | +25.93 mm | **+4.28 mm** | a little left |
+
+The exhaustion conclusion held at n=4 and holds harder at n=28: the payload class
+has nothing a tighter envelope can recover, and the link class has ~4 mm.
+
+### 2026-09-09 — correction: the "18–27 % carry-phase yield" was q-laptop's load, not the policy
+
+The 2026-09-08 entry above measured, across 26 `q-laptop` rounds, that only
+18–27 % of rounds reach the carry phase and 40–64 % end `deadline-no-grasp`. It
+read that as a property of the policy and sized future batteries from it.
+
+**Thirty-six rounds on `spark` refute it:**
+
+| outcome | n |
+| --- | ---: |
+| `estop-collision-within-quantization` | 29 |
+| `estop-collision-real` | 4 |
+| `estop-collision-false-positive` | 1 |
+| `estop-initial-configuration` | 1 |
+| `completed` | 1 |
+| **`deadline-no-grasp`** | **0** |
+
+**Zero rounds failed to grasp**, against 40 % on `q-laptop`, and 28 of 36 (78 %)
+produced a payload stop against 27 %. The policy is the same; the host is not.
+`deadline-no-grasp` is what a 420 s deadline does on a machine at load 19 with a
+shared GPU — it is a *host* measurement that was recorded as a policy one.
+
+Two things follow. The battery-sizing advice in that entry is wrong for an idle
+host: 36 rounds yielded 28 payload stops, not the ~10 the q-laptop yield
+predicted. And **`deadline-no-grasp` should be read as a load symptom first**,
+not as evidence about the policy — which also means the ceiling battery's own
+policy-free exclusions deserve re-reading in that light.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
@@ -2346,9 +2608,9 @@ themselves rather than inferred:
     and the one true contact (−2.32 mm) is preserved.
 
     This inverts the single measurement the collision programme exists to make.
-    It is also self-limiting: it can only ever turn a false positive into an
-    apparent real contact, never the reverse, so nothing was ever wrongly
-    *cleared*. Verdicts are re-derivable offline —
+    It is also self-limiting in one respect worth stating plainly: it can only
+    ever turn a false positive into an apparent real contact, never the reverse,
+    so nothing was ever wrongly *cleared*. Verdicts are re-derivable offline —
     `validation_matrix.py verdicts <round>` — so affected rounds should be
     re-adjudicated rather than re-run.
 
@@ -2689,6 +2951,64 @@ monitor file, so grid resolution comes back `None` and the budget falls back to
 the 88.2 mm max *link* corner slop — the wrong yardstick for a payload stop. The
 figures above compare against certified geometry directly and need no budget.
 
+**The gate-OFF arm's own kernel stops, and the scoring gap they exposed.** With
+the world check off, seven of 32 valid gate-OFF runs still carry a kernel stop —
+envelope or self-collision, no voxel in the path. An earlier draft of this entry
+called them false positives; that was wrong, and it was made by comparing the
+kernel's depth against certified mesh truth **without charging the pair its
+budget** — the error `hal_admissible_gap_m` exists to prevent. Through the
+shipped adjudicator, every one that scores at all scores `within-quantization`.
+The three `panda_link5`↔`panda_link7` stops are the kernel finding its hulls
+genuinely overlapping and reporting the loose OBB bound (it runs no
+expanding-polytope step; `collision.cpp` names this pair in its own comment),
+disclosed via `depth_is_box_bound` and budgeted at 176.4 mm.
+
+What is real is that **two of the seven cannot be scored at all**: `panda_link1`
+ships no stage-2 hull by decision (#191 withdrew its refined envelope for moving
+its own stops by 0.0003 mm), and the adjudicator read the deliberately-clear
+`depth_is_box_bound` as "measured at hull fidelity", charged a hull budget, and
+found no overhang to charge it with. Every self-pair naming `link1` was
+permanently `unadjudicated`. Filed as **#260**; `PLAN.md` §5 carries the table.
+
+**Corrected 2026-09-10 — 30 % of the runs never got a policy, and both rates are
+floors again (#263).** The same battery's goal logs carry **6
+`ConnectivityException`** (the TF tree still two disjoint trees when the goal was
+dispatched) and **17 `ROSConfigError: XR-1 expected camera …`** across 78 logs.
+Each returns in ~0.4 s having delivered **zero action chunks**, and each was
+scored as the policy failing — because the graph survives, prints
+`sim.task_success_final` at teardown, and reads as an ordinary non-completion.
+**21 of the 69 valid runs delivered zero chunks.** Excluding them:
+
+| | as published | policy-free | **corrected** |
+| --- | ---: | ---: | ---: |
+| gate **OFF** | 20/32 = 62.5 % | 7 | **20/25 = 80.0 %** |
+| gate **ON** | 1/37 = 2.7 % | 14 | **1/23 = 4.3 %** |
+| gap | 59.8 pts | | **75.7 pts**, Fisher `p = 5.5e-08` |
+
+Per scene, and this is the sharper picture: once the policy actually acts,
+`fridge` is **7/7** and `utensil` **9/9** with the gate off, against 0/5 and 0/8
+with it on.
+
+| scene | OFF | ON | p |
+| --- | ---: | ---: | ---: |
+| `utensil` | **9/9 (100 %)** | 0/8 | 0.00002 |
+| `fridge` | **7/7 (100 %)** | 0/5 | 0.0013 |
+| `sink_cup` | 3/6 (50 %) | 1/5 (20 %) | 0.35 |
+| `baguette` | 1/3 (33 %) | 0/5 | 0.38 |
+
+**The cause is a fixed readiness wait**, not load in general: the harness waits
+for the action server, sleeps **5 s**, and dispatches. That is enough on an idle
+host and not under contention. Fixed in #263 by re-dispatching, bounded and
+recorded, while the only thing wrong is that the graph is not assembled yet.
+
+**This is the third time the same mistake has been made on this page**, and it
+was mine each time: a bucket defined by absence read as a policy property. #256
+found it for `deadline-no-grasp`, #257's own entry warned "read `latest_chunk`
+on every record before believing any rate" — and then published a rate without
+doing so. The stop census and the class split are unaffected: **0 of the 22
+gate-ON stops occurred in a zero-chunk run**, since a stop requires the arm to
+have moved.
+
 **What is owed.** A concurrent GPU job on the host during the opening lanes
 cost **11 runs** — `baguette-off` 7, `baguette-on` 3, `sink_cup-off` 1; the
 `fridge`, `utensil` and `sink_cup-on` lanes lost none. The symptom is the sim
@@ -2871,3 +3191,154 @@ Resolution moves host memory by kilobytes.
 **Consequence for the rerun.** It goes at `WORKERS=2`, and it must be a full
 A/B rather than a top-up of the failures: `sink_cup`'s arms were never
 interleaved, so its runs are not exchangeable with `baguette`'s.
+
+### 2026-09-11 — the 25 → 15 mm resolution lever, measured: null, and the reason it is null
+
+The measurement #253 asked for, on the third attempt. The first two were voided
+by instrument defects (the leaked octomap pair, then host contention — both in
+the entries above). This one is clean: **80 rounds, 79 valid, 0 bond teardowns**,
+both arms verified against their own observed `resolution_m`, and every round
+paired with its partner at a median separation of **0 s**.
+
+**The prediction is refuted, not merely unconfirmed.** Comparing only rounds
+where both arms produced an adjudicable stop **on the same party** — mixing
+parties compares different collision events, not resolutions:
+
+| | |
+| --- | ---: |
+| same-party paired shift | **+5.9 mm** |
+| 95 % CI (bootstrap, 20 000 resamples) | **[−5.7, +17.7]** |
+| predicted | **−8.66 mm** — *outside* the interval, 2.6 se away |
+| sign test | 11 negative / 12 positive, `p = 1.000` |
+
+The point estimate has the **wrong sign**. Secondary counts lean the same way —
+15 mm produced more stops (37 vs 34) and fewer completions (3 vs 6) — but that
+endpoint is under-powered by design and is not evidence on its own.
+
+**Do not quote the report's own PRIMARY line.** It prints `−1.6 mm`, which
+looks like a weak confirmation and is an artifact: it pools pairs where the
+25 mm arm stopped on `panda_link7` (excess 77–89 mm) against pairs where the
+15 mm arm stopped on the payload. Different events. The same-party figure is
+the one that answers the question.
+
+**Why it is null: the voxel term was never the big one.** The carried payload
+is lowered to a **local AABB** — `extract_body_primitives` reduces a mesh geom
+to its bounding box, and no hull path exists for payloads at all. Measured over
+this battery's 424 samples:
+
+| payload box corner slop | |
+| --- | ---: |
+| median | **50.78 mm** |
+| max | **88.22 mm** |
+
+Against a voxel half-diagonal of 21.65 mm at 25 mm and 12.99 mm at 15 mm. **The
+box is 2.3–3.9× the entire quantisation term.** Shrinking the cell removes
+8.66 mm of envelope and leaves ~50 mm untouched beside it, which is precisely
+the null observed. Filed as **#266**.
+
+### Amended 2026-09-12: the null was conditional on the box payload
+
+The paragraph above is right about what it measured and **wrong about what it
+implies**. "The voxel term was never the big one" reads as *shrinking the cell
+cannot matter*. It cannot matter **while the payload is a box** — which is a
+different claim, and #266 has since landed.
+
+The two terms **add**. A stop happens when
+
+    true clearance  ≤  payload overhang  +  cell reach
+
+so removing 8.66 mm from a ~50 mm sum leaves almost every stop on the same side
+of the threshold; that is the null. Once #266 takes the payload overhang from
+~29-35 mm to ~9-10 mm, the *same* 8.66 mm decides the outcome.
+
+Measured by replay on 2026-09-12 — the real kernel, identical payload poses
+through every condition, no policy in the loop (`docs/reference/collision-hull-narrow-phase.md`
+§10.5 for the method). `PickPlaceCounterToSink`, the **DOP-only** payload (its
+hull is over `kMaxTightHullVertices`, so it ships stage 1 alone — the
+field-typical case), 189 poses spanning -4.7 to 53.7 mm of certified clearance,
+182 of them genuinely clear:
+
+| condition | false stops (of 182) | real contacts caught (of 7) |
+| --- | ---: | ---: |
+| box @ 25 mm | 154 (84.6 %) | 7 |
+| refined @ 25 mm | 136 (**12 % fewer**) | 7 |
+| box @ 15 mm | 138 (**10 % fewer**) | 7 |
+| **refined @ 15 mm** | **15 (90 % fewer)** | **7** |
+
+**Neither lever alone is worth much; together they are worth 90 %.** #253 alone
+is 10 %, which is the null this section recorded. #253 **after #266** is 89 %.
+The lever did not change — the term beside it did.
+
+Every real contact is still caught in every condition, including the tightest,
+which is the property the payload check exists for.
+
+Second scene, `PickPlaceCounterToCabinet`, whose payload *does* carry a
+98-vertex hull: box 66 of 192 false stops → refined **0**, at both resolutions.
+There #266 alone suffices. The two scenes disagree because their poses sit
+differently relative to the thresholds, which is why a single-scene reading of
+either lever is unsafe.
+
+**What this does to the #253 ruling.** The question the WG is being asked is no
+longer "is 8.66 mm of quantisation worth the staleness cost" against a null. On
+the merged tree it is worth 89 % of the remaining false payload stops in the
+field-typical case. The staleness cost is unchanged and still has to be weighed;
+what has changed is that there is now something on the other side of the scale.
+
+**The error has moved almost entirely onto the payload:**
+
+| | 25 mm | 15 mm |
+| --- | ---: | ---: |
+| stops that are payload-vs-world | 27/34 (**79 %**) | 36/37 (**97 %**) |
+
+So 15 mm makes the concentration *worse*, and costs the dense grid 0.6 MB →
+2.8 MB republished at 10 Hz — 28 MB/s over DDS against 6.
+
+**Phase, reconciled with `PLAN.md` §5.** Two orthogonal axes were being
+called the same thing, and both are real:
+
+- **Phase** — was a place declaration live at the stop (`world_state.attached_objects.updated place_region=`)? **33 placing / 20 carrying / 6 pre-grasp.** This is what §5's earlier *11 placing / 7 carrying* census measured, and it was right.
+- **Obstacle identity** — was the thing it hit the declared target? **9 target / 44 surrounding scenery.**
+
+Crossed, over the 53 stops with a payload grasped:
+
+| | hit the declared target | hit scenery |
+| --- | ---: | ---: |
+| **placing** (declaration live) | 5 | **28** |
+| **carrying** (in transit) | 4 | 16 |
+
+The 28 is the headline: the payload is **approaching its declared drop point and
+clipping the occupancy beside it** — the counter next to the sink, the shelf
+next to the slot. That is exactly the pattern #259 describes, now measured at
+scale. By scene, `utensil` is 20/20 carrying while `baguette`, `fridge` and
+`sink_cup` are placing — matching §5's split precisely.
+
+**0 stops occur while reaching for an ungrasped object**, so picking is
+untouched either way.
+
+This maps the levers cleanly: **#259** (widen the place-allowance scope)
+reaches the **33 placing** stops and nothing else; **#266** (tighter payload
+geometry) reaches all **53** regardless of phase.
+
+**The stops are about half spurious and about a fifth real.** True certified
+clearance at the moment of the stop, per payload stop:
+
+| true gap at stop | 25 mm | 15 mm |
+| --- | ---: | ---: |
+| touching / penetrating (≤2 mm) | 4 | 7 |
+| close (2–10 mm) | 6 | 9 |
+| genuinely clear (>10 mm) | 9 | 16 |
+
+Median true gap **9.6 mm** in both arms. The ≤2 mm bucket carries real
+interpenetration (`−7.7`, `−1.7`, `−1.5`, `−1.3` mm), so **removing the
+payload-vs-world check is not on the table** even though it would recover most
+of the gate-off/gate-on ceiling gap — it is 79–97 % of all stops. The fix is
+fidelity, not removal.
+
+**Standing caveat.** n = 16 same-party pairs, sd 22.2 mm. This excludes an
+effect as large as the predicted −8.66 mm; it could not resolve a −3 mm one.
+The claim is "the predicted effect is not there", not "resolution does
+nothing". The right time to re-ask is after #266 lands, when the voxel term is
+no longer the small one.
+
+Data: `outputs/resolution-ab/2026-09-10-serial` on q-laptop (`outputs/` is
+gitignored); per-stop rows in its `report.json`.

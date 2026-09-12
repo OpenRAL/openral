@@ -175,7 +175,15 @@ jobs:
       - name: Install native runtime libs (torchcodec + MuJoCo OSMesa + just)
         if: steps.select.outputs.any == 'true'
         run: |
-          sudo apt-get update -qq
+          # `apt-get update` exits non-zero on ANY broken index, including the
+          # runner image's preinstalled third-party lists. dl.google.com's
+          # chrome repo returns a hash-sum mismatch every time Google
+          # republishes it and its mirrors have not caught up, which fails this
+          # job for a repo none of the packages below come from. The install is
+          # the real gate: anything that genuinely cannot be fetched still
+          # fails loudly on the next line.
+          sudo apt-get update -qq \
+            || echo "::warning::apt-get update reported errors; the install below is the gate"
           sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6 just
           just --version
 
