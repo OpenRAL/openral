@@ -924,12 +924,11 @@ The auto-install prompts fire from the benchmark runner's path too —
   `SceneEnvironment` to `SimScene` and later split it into the
   three-tier `DeployScene ⊆ SimScene ⊆ BenchmarkScene` hierarchy (with
   per-tier loader strictness) that also underlies the `openral sim run`
-  vs `openral benchmark run` split. RoboCasa was added as a free-axis
-  MuJoCo backend with custom robots + tasks — rolling out in five PRs per
-  [issue #88](https://github.com/OpenRAL/openral/issues/88);
-  the Pydantic `RoboCasaBackendOptions` validator and the
-  `[dependency-groups].robocasa` extras group already ship today, the
-  adapter and a Level-6 procedural-kitchen walkthrough land in later
-  PRs.
+  vs `openral benchmark run` split. RoboCasa arrived as a MuJoCo backend
+  with custom tasks over five PRs per
+  [issue #88](https://github.com/OpenRAL/openral/issues/88); all of it has
+  landed — the `RoboCasaBackendOptions` validator, the
+  `[dependency-groups].robocasa` extras group, the adapter itself, and the
+  procedural-kitchen walkthrough in §7.
 - The public-symbol inventory for the sim layer:
   [`docs/METHODS.md`](../../METHODS.md), section **Eval (sim)**.
