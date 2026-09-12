@@ -2485,6 +2485,187 @@ not as evidence about the policy — which also means the ceiling battery's own
 policy-free exclusions deserve re-reading in that light.
 
 
+### 2026-09-12 — every gate-ON stop of the 2026-09-09 battery, classified by what backed its cell
+
+The 2026-09-09 ceiling battery's 20 gate-ON E-stops, read through their own
+`evidence_voxel_backing` records. **Those records are on the
+`sim.estop_ground_truth_evidence` line, not the snapshot line** — the snapshot
+only carries one when the kernel's evidence was already fresh, and it usually is
+not (`_late_voxel_backing`). 26 of 27 stops carry a record; reading only the
+snapshot line finds `null` on all of them and invites the conclusion that the
+instrument is missing. It is not, and that error was published in #272's first
+draft and retracted.
+
+| verdict | n | true gap span | what it means |
+| --- | ---: | --- | --- |
+| `solid_world` | 12 | −0.12 .. +61.16 mm | real geometry explains the cell |
+| ~~`attached_payload`~~ | ~~6~~ | −0.22 .. +8.48 mm | **RETRACTED — an artefact of this very verdict, see the correction entry below. Do not cite it.** |
+| `unbacked` | 1 | +4.41 mm | a genuine phantom cell |
+| no evidence line | 1 | +14.78 mm | not adjudicable |
+
+The `attached_payload` six are `fridge` r01/r05/r06/r08, `sink_cup` r09 and
+`utensil` r04. Four facts about them:
+
+1. **The exclusion was live at the stop.** `obj_main` is classifiable as
+   `attached_payload` only from `attached_body_ids`, i.e. `read_attached_body_ids()`
+   returned it; the gripper is `self_occupancy_suspect`, so it is in
+   `_depth_self_bodies` (`robot_bodies=21` in the battery's own bridge log).
+2. All five of the placing-phase ones fire **5–6 s after the grasp**:
+   `+5.90, +5.49, +6.05, +5.48, +4.99 s` from the `automatic sim attachment
+   revision` marker.
+3. All four `fridge` runs trip on **the same cell index, 233816**.
+4. Rebuilt at the battery's own `layout_id=47 style_id=32`, that cell centre
+   (`[4.0875, −0.7375, 0.9375]`) is **89 mm** from the payload's start pose
+   (`[4.0237, −0.6771, 0.9209]`), with the payload's own geom bounds reaching
+   within 37 mm of it.
+
+**Not established: authorship.** A single snapshot cannot separate "the payload
+wrote this cell" from "something else wrote it and the payload has since moved
+into it" — the point `voxel_backing_record`'s docstring makes about
+`self_occupancy_suspect`, which applies here too. Settling it needs grid
+*history*, which no artifact in that battery carries; `preattach_verdict` and
+`occupied_cell_keys` (#272) are the instrument that supplies it, by freezing the
+occupied-cell set at the masking attach so a stop can report whether its cell
+predates the grasp.
+
+**Measured 2026-09-12 — the cell predates the grasp.** One `fridge` / gate-ON
+round on `q-laptop`, real deploy graph, on `master` with #267 and #269 already
+merged:
+
+```
+sim.preattach_occupancy_frozen  cells=7912  resolution_m=0.015  truncated=false  revision=1
+safety.collision  a=attached:sim:obj_main  b=voxel_1033835  min_distance_m=-0.01989
+
+evidence_voxel_backing.verdict   attached_payload
+evidence_voxel_backing.classes   ['attached_payload']      <- no solid_world at all
+evidence_voxel_backing.preattach preexisting: true, within_one_cell: true,
+                                 cell_key [273, -50, 61], preattach_cells 7912
+```
+
+The carried payload stopped on a cell **already occupied at the instant of its
+own grasp**, whose only backing geometry is `obj_main`'s own `obj_g0` / `obj_g3`.
+The authorship question the census above left open is answered for this stop: the
+payload's own pre-grasp footprint.
+
+Two riders. **It reproduces at 15 mm**, so the geometry work does not touch this
+class — as the census predicted, and the reason #272 is now the largest remaining
+one. And this stop's **certified true gap is 0.00 mm** to
+`fridgesidebyside_main_group_1_g25`: the outcome was *correct*, the payload really
+was touching the shelf, while the evidence that produced it was a cell the payload
+authored. Right answer, wrong evidence — which is the case that should worry a
+reader most, because the same mechanism at a different pose has no reason to be
+right.
+
+**The other three rounds of the same battery**, all `fridge` / gate-ON on the
+same build:
+
+| round | kernel | certified true gap | cell verdict | classes |
+| --- | ---: | ---: | --- | --- |
+| r01 | −19.89 mm | **+0.00 mm** | **`attached_payload`** | `['attached_payload']` |
+| r02 | −5.26 mm | +2.62 mm | `solid_world` | `['attached_payload', 'solid_world']` |
+| r03 | −32.82 mm | +3.49 mm | `solid_world` | `['solid_world']` |
+| r04 | — | — | no stop | **task succeeded** |
+
+**One of three stops is payload-authored, not three.** All three report
+`preattach.preexisting: true`, and that number on its own is worthless: a cell
+backed by world geometry is *always* pre-existing, because the fixture was there
+before the grasp. The payload-authored case is the **conjunction** — verdict
+`attached_payload` (no `solid_world` in the cell at all) *and* the cell predates
+the attach. Only r01 is that. Anyone quoting "3 of 3 pre-existing" has measured
+the furniture.
+
+**r04 completed the task with the gate ON.** The 2026-09-09 battery's `fridge`
+gate-ON arm was 0 of 5. This is the first recorded gate-ON `fridge` completion —
+**and n is 4, so it is an observation and not a rate.** Fisher against 0/5 is
+`p ≈ 0.44`; nothing here establishes that the gate's cost has moved.
+
+**r03 does not fit the geometry story.** −32.82 mm reported against a +3.49 mm
+certified gap is **36.3 mm of excess** on a `solid_world` cell, at 15 mm cells,
+with the attached-payload tight hull already in. It is neither #272 nor #266 box
+overhang. Unexplained, n=1, recorded here rather than chased.
+
+**Reading note for the next battery — two traps, both of which caught me first:**
+
+1. The backing record lands on whichever line wins the race —
+   `sim.estop_ground_truth_snapshot` when the kernel's evidence is already fresh,
+   `sim.estop_ground_truth_evidence` when it is late. The 2026-09-09 battery put
+   it on the late line 26 times of 27; r01 above put it on the snapshot line.
+   **Grep both**, or a present record reads as absent.
+2. The certified gap lives **only** on the snapshot line. A stop whose backing
+   arrived late has its backing and its ground truth on two different lines, so
+   the two must be **joined on `stop_seq`** — reading either alone silently drops
+   half of every such stop.
+
+**Two `solid_world` stops are not conservatism artefacts either.** `sink_cup/r04`
+(+44.96 mm) and `baguette/r05` (+48.53 mm) exceed certified truth by **50.87 mm**
+and **56.61 mm**, against #266's measured median payload box term of 50.8 mm.
+They are the plain #266 defect and #267 removes them. An earlier reading of these
+two as phantom occupancy was wrong: it transferred the #268 replay's `box@25`
+clearance threshold, and that sweep moves the payload's **position only, at its
+home orientation** (`replay_poses.py`), while box overhang is
+orientation-dependent and the payload is grasped and tilted at the stop.
+**The #268 thresholds are not transferable across orientations.**
+
+Two leftovers, neither chased: `utensil/r02` is a true `unbacked` phantom 4.4 mm
+from real geometry, and `sink_cup/r08` is a `panda_link7` stop **61.16 mm** clear
+of anything, which no budget on this page explains.
+
+
+### 2026-09-12 (later) — the `attached_payload` verdict was largely an instrument artefact
+
+The census above rests on `voxel_backing_record`'s `attached_payload` verdict.
+**That verdict was wrong on the normal case**, and the correction removes most
+of what the 2026-09-09 census attributed to a payload leak.
+
+`voxel_backing_record` runs a coincident-shell sweep — the second look that
+finds a collidable slab hiding behind a decoration shell, which is every
+RoboCasa counter and shelf. It is consulted only when the ray fans found no
+collidable **world** geometry, and the condition implementing that excluded
+`robot_body_ids` alone. **An attached payload is in neither the world nor the
+robot**, so a collidable payload geom suppressed the sweep exactly as a world
+geom would, while satisfying none of the reasoning that makes suppression safe:
+"a cell whose world backing the rays already found is left alone" is not true of
+a cell whose only collidable hit is the object the robot is holding.
+
+The result is a false `attached_payload` on a payload resting on its support —
+both in one cell, which is the *normal* configuration at a pick or a place.
+
+**Measured**, `fridge` gate-ON, 6 rounds each arm, same build otherwise:
+
+| | stops | `attached_payload` | `solid_world` |
+| --- | ---: | ---: | ---: |
+| before the fix | 6 | **3** | 3 |
+| after the fix | 4 | **0** | 4 |
+
+Two post-fix stops report `['attached_payload', 'solid_world']` — payload and
+shelf both in the cell, real geometry correctly outranking.
+
+**The baseline was self-contradictory on its face**, which is the part that
+should have been caught without a battery: two of its three `attached_payload`
+stops had certified true gaps of **−2.30 mm and −4.27 mm**, i.e. the payload was
+*inside* real geometry while its cell reportedly held only the payload.
+
+Fisher on 3/6 vs 0/4 is `p ≈ 0.2` and these are different stops under policy
+noise — the comparison alone would not carry this. What carries it is the
+mechanism, pinned directly against compiled MuJoCo in
+`test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it`, which
+fails before the change and passes after.
+
+**What this does to #272.** Its premise does not survive. The payload leak is
+not established; `preexisting: true` still holds but means little once the cell
+legitimately contains the support surface — that is an ordinary correct stop
+near a support, not a map defect.
+
+**Three attempts at an offline paired re-adjudication failed**, and the last
+failure is a fact about the record rather than the harness: the cube's world
+axes were not stored, only its centre, and at 25 mm cells a geom centred ~44 mm
+out (`fridge-on/r06`) reaches inside on one orientation and not another. The
+record now carries `cube_rot_world`. Until a replay-style offline adjudicator
+is built on it, **a live battery cannot answer a geometry question at this
+effect size** — 6 rounds an arm cannot separate 3/6 from 0/4, where the #268
+replay separated 154 from 15 on 182 poses.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts
