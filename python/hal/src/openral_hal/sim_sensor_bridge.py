@@ -4038,6 +4038,11 @@ class SimSensorBridge:
         self._last_voxel_occupancy = None
         self._preattach_cells = None
         self._preattach_truncated = False
+        # Cleared with the set, not left behind: a stale revision or stamp
+        # reported beside ``available: False`` reads as provenance for a
+        # snapshot that no longer exists.
+        self._preattach_stamp_ns = 0
+        self._preattach_revision = -1
         self._candidate_chunks.clear()
         self._last_collision_evidence = None
         self._last_collision_evidence_ns = 0
