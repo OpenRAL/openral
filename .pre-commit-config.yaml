@@ -61,9 +61,13 @@ repos:
           #     ("collecting childrens toys"); the benchmark matches on the
           #     exact string, so fixing the grammar would break task lookup.
           #   froms           — plural of Docker's `FROM` keyword.
+          #   sroll           — the SENSOR-prefixed unpacking of a static
+          #     transform (`sx, sy, sz, sroll, spitch, syaw`) in
+          #     deploy_e2e.launch.py. An identifier, not prose; "scroll" would
+          #     break the tuple it destructures.
           #   unparseable / overrideable / re-use / re-declaring — accepted
           #     variant spellings already used consistently in the tree.
-          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers,ot,mis,ans,childrens,froms,unparseable,overrideable,re-use,re-declaring"
+          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers,ot,mis,ans,childrens,froms,unparseable,overrideable,re-use,re-declaring,sroll"
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.4.0
     hooks:
