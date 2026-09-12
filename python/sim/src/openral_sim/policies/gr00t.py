@@ -68,6 +68,7 @@ from openral_rskill._vla_core import (
     resolve_rskill_repo_revision,
 )
 
+from openral_sim._quantization import resolve_quant_plan
 from openral_sim.policies._policy_loading import lazy_import_lerobot, load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
@@ -420,9 +421,11 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     """Load the in-process lerobot ``GrootPolicy`` (GR00T N1.7) backend.
 
     YAML knobs (via ``vla.extra``): ``device``, ``embodiment_tag``,
-    ``quantization`` (``nf4`` default / ``none``), ``camera_keys``.
+    ``camera_keys``. Quantization is declared on the manifest
+    (``quantization.dtype``, plus ``quantization.extra.quantize_scope``) and
+    resolved by ``openral_sim._quantization.resolve_quant_plan``.
     Environment overrides: ``OPENRAL_GR00T_EMBODIMENT_TAG``,
-    ``OPENRAL_GR00T_QUANTIZATION``.
+    ``OPENRAL_QUANTIZATION_DTYPE`` (all families).
     """
     spec = env_cfg.vla
     device = resolve_device(spec)
@@ -464,16 +467,18 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     )
     state_dim = int(getattr(manifest.state_contract, "dim", 0) or _GR00T_LIBERO_STATE_DIM)
     action_dim = int(getattr(manifest.action_contract, "dim", 0) or _GR00T_LIBERO_ACTION_DIM)
-    quantization = str(
-        os.environ.get("OPENRAL_GR00T_QUANTIZATION") or extra.get("quantization", "nf4")
-    ).lower()
-    quantize = quantization not in {"none", "", "fp16", "bf16", "fp32"}
+    # One resolver for every policy family (openral_sim._quantization):
+    # $OPENRAL_QUANTIZATION_DTYPE > spec.extra["dtype"] >
+    # manifest.quantization.dtype > this adapter's nf4 default. It logs the
+    # source it resolved from, and warns when that disagrees with the
+    # manifest's declared dtype.
+    plan = resolve_quant_plan(spec, manifest, default="nf4", manifest_dtype_is_storage=True)
+    quantization = plan.dtype or "nf4"
+    quantize = plan.quantize
     # How much of the model to pack to NF4 — "backbone" (default; LIBERO fits
     # 8 GB) or "model" (backbone + DiT head; needed for heavier-head checkpoints
     # like SO-101 fruit that overshoot 8 GB when the head stays bf16).
-    quantize_scope = str(
-        os.environ.get("OPENRAL_GR00T_QUANTIZE_SCOPE") or extra.get("quantize_scope", "backbone")
-    ).lower()
+    quantize_scope = str(plan.extra.get("quantize_scope", "backbone")).lower()
 
     ip = resolve_image_preprocessing(manifest, spec.extra)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
