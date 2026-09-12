@@ -217,9 +217,28 @@ def _octomap_resolution(hal_mode: str) -> float:
 
     **A finer grid is LESS conservative**, not more: the cell half-diagonal is
     the kernel's quantisation term, so shrinking it makes the kernel stop later
-    and nearer. That is the point of the experiment and the reason this is an
-    override rather than a new default -- it needs the measurement in §5 plus a
-    safety-WG ruling before any value but the shipped one ships.
+    and nearer. Sim ships **15 mm** as of #253's ruling; real hardware stays at
+    50 mm.
+
+    Why sim moved and real did not. The evidence is entirely sim: replayed on
+    the real kernel over identical payload poses, `PickPlaceCounterToSink` (the
+    DOP-only, field-typical payload) goes from **154** false stops of 182
+    genuinely-clear poses at 25 mm with a box-lowered payload to **15** at
+    15 mm with #266's refinement -- 90% fewer, with all 7 real contacts still
+    caught. Neither lever alone is worth much (12% and 10%); the terms ADD, so
+    both have to move. See `docs/reference/collision-validation-evidence.md`
+    and hazard-log Entry 027.
+
+    None of that measures a real map. Sim rasterises a kitchen's own solid
+    geometry; a real map comes from a depth camera and is dilated by the
+    octree->grid bridge, and its error budget is larger, not smaller
+    (`docs/reference/world-map-fidelity.md`). Taking 50 mm down on sim evidence
+    would be shipping a reduction in conservatism where none was measured.
+
+    15 mm is also the finest value that ships without touching
+    `octree_to_grid.cpp`'s `kMaxCells`: 141 cells/axis is 2 803 221 against the
+    4 000 000 guard (70% of it), where 12.5 mm needs 4 826 809 and is refused
+    outright.
     """
     override = os.environ.get("OPENRAL_OCTOMAP_RESOLUTION_M", "").strip()
     if override:
@@ -231,7 +250,7 @@ def _octomap_resolution(hal_mode: str) -> float:
         # silently empty grid. Fall through to the shipped default.
         if 0.001 <= value <= 0.5:
             return value
-    return 0.025 if hal_mode == "sim" else 0.05
+    return 0.015 if hal_mode == "sim" else 0.05
 
 
 def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
@@ -1128,7 +1147,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # deploy keeps 2 cm.
             "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
             # Derived from the coverage ball and the octree resolution rather
-            # than pinned: 85^3 = 614 125 at the shipped 25 mm, 141^3 at 15 mm.
+            # than pinned: 141^3 = 2 803 221 at the shipped sim 15 mm, 85^3 at 25 mm.
             # See `_world_voxel_max_cells` for why a hand-kept derived constant
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
