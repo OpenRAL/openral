@@ -598,7 +598,47 @@ def hal_admissible_gap_m(
     if stop.kind == "self" and not stop.involves_payload:
         return _link_link_gap_m(budget, stop)
     # Arm link vs world voxel: one link OBB, one cell.
-    return _as_float(budget.get("admissible_gap_m"))
+    return _arm_world_gap_m(budget, grid_resolution_m)
+
+
+def _arm_world_gap_m(
+    budget: Mapping[str, Any],
+    grid_resolution_m: float | None,
+) -> float | None:
+    """The arm-link-vs-world-voxel half of ``hal_admissible_gap_m``.
+
+    ``corner_slop(worst link) + voxel_half_diagonal``, and it re-derives the
+    second term for the same reason ``_payload_world_gap_m`` does:
+    ``estop_ground_truth_snapshot`` can only fill ``voxel_half_diagonal_m`` from
+    an ``evidence_voxel`` it was handed, and a round whose monitor delivered none
+    publishes ``0.0``. The published ``admissible_gap_m`` is then the link term
+    alone, understated by 21.65 mm at 25 mm cells — 25–48 % of it on the Panda,
+    whose links run 45–88 mm.
+
+    The direction matters: an **under**-stated budget turns a conservative,
+    correct stop into ``false-positive``. It cries wolf, which is the one
+    direction an adjudicator must not fail in, and it is the same defect #266
+    found one block over — there the payload's 8.9–19.9 mm overhang made it
+    impossible to miss, here the large link term hid it.
+
+    Measured on the 2026-09-11 A/B: every round's snapshot reported
+    ``voxel_half_diagonal_m: 0.0``, so every arm-stop budget was 88.22 mm where
+    it should have been 109.87 mm. No verdict on that battery flips (its one
+    ``false-positive`` sits at 232.65 mm, outside both), so this corrects the
+    number without re-writing the conclusion — which is exactly the state a fix
+    to a latent defect should be in.
+
+    Falls back to the published composition when the slop term is absent, so a
+    snapshot shaped differently keeps whatever budget it does carry.
+    """
+    published = _as_float(budget.get("admissible_gap_m"))
+    half_diagonal = _as_float(budget.get("voxel_half_diagonal_m"))
+    if half_diagonal is not None and half_diagonal > 0.0:
+        return published
+    slop = _as_float(budget.get("max_corner_slop_m"))
+    if slop is None or grid_resolution_m is None:
+        return published
+    return slop + quantization_budget_m(grid_resolution_m)
 
 
 def _link_link_gap_m(budget: Mapping[str, Any], stop: ValidationStopEvidence) -> float | None:

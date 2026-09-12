@@ -1117,6 +1117,55 @@ def test_a_payload_world_stop_is_charged_the_payload_not_the_link() -> None:
     assert 0.031831 < 0.03488 + 0.021651
 
 
+def test_the_arm_world_budget_rederives_its_voxel_term_too() -> None:
+    """The same defect one block over, found by #266 and fixed with it.
+
+    Every snapshot in the 2026-09-11 A/B published ``voxel_half_diagonal_m:
+    0.0`` — the monitor handed ``estop_ground_truth_snapshot`` no
+    ``evidence_voxel`` — so every ARM-stop budget was the link term alone:
+    88.22 mm where it should have been 109.87 mm. Understated by 21.65 mm, which
+    is 25-48 % of a Panda link's 45-88 mm slop.
+
+    It hid here precisely because the link term is large; on the payload block
+    the 8.9-19.9 mm overhang made the same omission impossible to miss. The
+    direction is the one that matters: an under-stated budget convicts a
+    conservative, correct stop.
+    """
+    from openral_core import ValidationStopEvidence
+
+    arm = ValidationStopEvidence(
+        kind="world",
+        party_a="panda_link4",
+        party_b="voxel_7",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    deaf = {
+        "adjudication_budget": {
+            "max_corner_slop_m": 0.08822,
+            "voxel_half_diagonal_m": 0.0,
+            "admissible_gap_m": 0.08822,  # the link term alone
+        }
+    }
+    assert validation_matrix.hal_admissible_gap_m(deaf, arm, 0.025) == pytest.approx(
+        0.08822 + validation_matrix.quantization_budget_m(0.025)
+    )
+    # A round whose monitor DID deliver a voxel keeps its published number.
+    heard = {
+        "adjudication_budget": {
+            "max_corner_slop_m": 0.08822,
+            "voxel_half_diagonal_m": 0.021651,
+            "admissible_gap_m": 0.109871,
+        }
+    }
+    assert validation_matrix.hal_admissible_gap_m(heard, arm, 0.025) == pytest.approx(0.109871)
+    # No slop term to compose with, or no resolution: the published number
+    # stands rather than being replaced by a guess.
+    bare = {"adjudication_budget": {"admissible_gap_m": 0.08822}}
+    assert validation_matrix.hal_admissible_gap_m(bare, arm, 0.025) == pytest.approx(0.08822)
+    assert validation_matrix.hal_admissible_gap_m(deaf, arm, None) == pytest.approx(0.08822)
+
+
 def test_a_zero_voxel_term_is_rederived_not_composed_with() -> None:
     """The bug the first 2026-09-11 A/B run exposed, in this budget itself.
 
