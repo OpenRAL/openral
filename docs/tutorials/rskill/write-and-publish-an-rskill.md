@@ -197,10 +197,19 @@ Two things to know:
 Anyone (including you, on another host) can now install it like a model:
 
 ```bash
-openral rskill search pick-cube          # discover it on the OpenRAL Hub org
-openral rskill install <owner>/rskill-pi05-pick-cube   # always org-qualified
+openral rskill search pick_cube          # discover it on the OpenRAL Hub org
+openral rskill install <owner>/rskill-pi05-franka_panda-pick_cube-bf16
 openral rskill list                      # see it in the local registry
 ```
+
+Note the two different identifiers. `pi05-pick-cube` was only ever the **local
+directory** under `rskills/` — a convenience name you chose in §1. What you
+install is the **Hub repo id**, which is the manifest's `name` field and must be
+canonical: `<owner>/rskill-<model>-<robot>-<task>-<quant>`, with hyphens as the
+only separators and underscores inside each token
+([Naming convention](#naming-convention)). For the running example that is
+`rskill-pi05-franka_panda-pick_cube-bf16`, not `rskill-pi05-pick-cube` — the
+latter parses as a four-segment ROS-wrapper name and drops the embodiment.
 
 `rskill install` needs the full `owner/name` id — a bare name fails fast with an
 `OpenRAL/…` suggestion. Use `rskill search [QUERY] [--kind/--role/--embodiment/--license]`
