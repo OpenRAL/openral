@@ -348,6 +348,83 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         # Adjacent, so the neighbourhood guard fires -- which is what makes a
         # lattice that drifts show up as an adjacent hit instead of silence.
         assert neighbour_preattach["within_one_cell"] is True
+
+        # --- #275: the index decodes against the grid the KERNEL held --------
+        #
+        # The published window is snapped to the octree's cell boundaries, so
+        # a base drift across one boundary shifts the whole window by a cell
+        # and the same index names the cell one over in the next message. The
+        # kernel's evidence carries the index and a stamp, nothing else; if the
+        # bridge decodes against whatever grid arrived LAST, every `world_xyz`
+        # after such a shift is one full cell wrong and nothing says so.
+        #
+        # Manufacture exactly that: grid A, then grid B shifted one cell in x,
+        # then evidence stamped BETWEEN them. The decode must use A, and the
+        # record must show that a newer grid existed and was not used.
+        shifted = OccupancyVoxels()
+        shifted.header.frame_id = "base_link"
+        shifted.origin.x = _GRID_ORIGIN[0] - _GRID_RES
+        shifted.origin.y, shifted.origin.z = _GRID_ORIGIN[1], _GRID_ORIGIN[2]
+        shifted.resolution = _GRID_RES
+        shifted.size_x, shifted.size_y, shifted.size_z = _GRID_DIMS
+        shifted.occupancy = bytes(occupied)
+
+        stamp_a = peer.get_clock().now()
+        grid.header.stamp = stamp_a.to_msg()
+        voxel_pub.publish(grid)
+        assert _wait_until(
+            lambda: (
+                bridge._voxel_grid_history
+                and int(bridge._voxel_grid_history[-1]["stamp_ns"]) == stamp_a.nanoseconds
+            )
+        )
+        between = stamp_a.nanoseconds + 1_000_000  # 1 ms after A
+        time.sleep(0.01)
+        shifted.header.stamp = peer.get_clock().now().to_msg()
+        voxel_pub.publish(shifted)
+        assert _wait_until(
+            lambda: (
+                bridge._last_voxel_grid is not None
+                and bridge._last_voxel_grid["origin"][0] == pytest.approx(shifted.origin.x)
+            )
+        ), "the shifted grid must be the LATEST one the bridge holds"
+
+        trigger.evidence_json = CollisionEvidence(
+            collision_kind="world",
+            horizon_step=-1,
+            link_a="panda_link1",
+            link_b_or_object=f"voxel_{_EVIDENCE_INDEX}",
+            min_distance_m=-0.0172764,
+        ).model_dump_json()
+        time.sleep(_ESTOP_EVIDENCE_WINDOW_NS / 1e9 + 0.1)
+        capfd.readouterr()
+        estop_pub.publish(Empty())
+        assert _wait_until(lambda: bridge._estop_awaiting_evidence)
+        capfd.readouterr()
+        trigger.header.stamp.sec = between // 1_000_000_000
+        trigger.header.stamp.nanosec = between % 1_000_000_000
+        failure_pub.publish(trigger)
+        assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
+        matched = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+        backing_m = matched["evidence_voxel_backing"]
+
+        # Decoded against A (the unshifted origin), not against the latest.
+        assert tuple(backing_m["base_xyz"]) == pytest.approx(_EVIDENCE_BASE_XYZ), (
+            "decoded against the grid current at the evidence stamp, not the newest"
+        )
+        decode = backing_m["grid_decode"]
+        assert decode["decode_is_latest"] is False
+        assert decode["fallback_to_latest"] is False
+        assert decode["decode_grid_stamp_ns"] == stamp_a.nanoseconds
+        assert decode["latest_grid_stamp_ns"] > stamp_a.nanoseconds
+        # And the record states the size of the error the old decode would
+        # have made: exactly one cell in x.
+        dx = decode["latest_origin"][0] - decode["decode_origin"][0]
+        assert dx == pytest.approx(-_GRID_RES, abs=1e-9)
+        # And that the window moved at all is stated outright -- the one fact
+        # that rules the hazard in or out for a stop without knowing which of
+        # the cached grids the kernel held.
+        assert decode["distinct_origins_in_history"] >= 2
     finally:
         with suppress(Exception):
             node.trigger_deactivate()

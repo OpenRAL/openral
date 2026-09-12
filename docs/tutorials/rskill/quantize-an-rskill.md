@@ -86,8 +86,8 @@ quantization:
     quantize_scope: "model"  # whole model, not just the VLM backbone
 ```
 
-`rskills/gr00t-n17-so101-fruit` uses `model` to reach 5.8 GiB peak on an 8 GB
-card.
+`rskills/gr00t-n17-b1k-turning-on-radio` uses `model` (plus a lowered
+`nf4_min_params`) so the BEHAVIOR checkpoint's action head is packed too.
 
 ### Declared dtype: storage or runtime?
 

@@ -41,7 +41,6 @@ _SHIPPED: list[tuple[str, bool, str | None, str]] = [
     # GR00T publishes bf16 weights and NF4-packs them at load, so the declared
     # dtype is storage and the adapter default decides.
     ("gr00t-n17-libero", True, "nf4", "nf4"),
-    ("gr00t-n17-so101-fruit", True, "nf4", "nf4"),
     ("gr00t-n17-b1k-turning-on-radio", True, "nf4", "nf4"),
     # RLDX declares int4, which normalises onto the sidecar's `nf4` token.
     ("rldx1-ft-libero-nf4", True, "nf4", "nf4"),
@@ -141,9 +140,6 @@ def test_unset_is_distinct_from_none() -> None:
 
 def test_packing_knobs_live_on_the_manifest() -> None:
     """quantize_scope / nf4_min_params read from quantization.extra."""
-    fruit = load_rskill_manifest("rskills/gr00t-n17-so101-fruit")
-    assert quantization_extra(fruit)["quantize_scope"] == "model"
-
     b1k = load_rskill_manifest("rskills/gr00t-n17-b1k-turning-on-radio")
     assert quantization_extra(b1k) == {"quantize_scope": "model", "nf4_min_params": 1000000}
 
