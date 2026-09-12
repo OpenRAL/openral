@@ -118,8 +118,12 @@ ManiSkill3 legitimately span tasks with different step budgets.
 ### The rSkill must have been trained for the task
 
 A suite is auto-filtered to the tasks the rSkill declares in
-`evaluated_tasks`. Pick a task explicitly with `--task` that the manifest does
-not cover and you get a typed `ROSCapabilityMismatch`, not a rollout:
+`evaluated_tasks`; scenes it does not cover are skipped with a logged
+`benchmark_suite_task_filter` summary. Pick a task explicitly with `--task`
+that the manifest does not cover and the filter leaves nothing to run, so you
+get a typed `ROSCapabilityMismatch` instead of a rollout. `benchmark scene`
+applies the same gate to its single scene, and its message says why the gate
+exists:
 
 > the checkpoint was trained/validated for a different task; running it here
 > yields a plausible-looking rollout that cannot succeed

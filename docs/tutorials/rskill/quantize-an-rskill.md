@@ -50,8 +50,8 @@ An empty set skips the check, so a host whose probe returned nothing is
 permissive rather than blocked.
 
 An `nf4` manifest also needs `bitsandbytes` present — it ships in the `sim`,
-`libero`, `metaworld` and `robocasa` groups. Without it the load raises rather
-than silently running at full precision.
+`libero` and `robocasa` groups (not `metaworld` or `maniskill3`). Without it the
+load raises rather than silently running at full precision.
 
 ---
 
@@ -137,7 +137,10 @@ HF_TOKEN=<token> uv run python tools/quantize_rskill.py \
 
 Two things to expect: the upload is bandwidth-bound (roughly 15–30 minutes for
 a ~2 GiB nf4 bundle on home broadband), and this is a one-shot Hub-mutating
-tool that is deliberately **not** part of CI.
+tool that is deliberately **not** part of CI. To exercise the quantization
+without a token or an upload, pass `--skip-upload`; `--scheme` defaults to
+`nf4`, and `--min-params` is the same 4M-element threshold the on-line path
+uses.
 
 Then point your manifest's `weights_uri` at the new repo and set
 `quantization.dtype` to match. The naming convention puts the dtype in the

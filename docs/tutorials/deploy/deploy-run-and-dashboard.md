@@ -25,10 +25,12 @@ The in-tree manifests are:
 
 | Class | `robot_id` |
 | --- | --- |
-| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `google_robot` |
+| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `galaxea_a1` |
 | Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2` |
-| Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `galaxea_a1`, `r1pro` |
+| Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro` |
 | Humanoid | `g1`, `h1`, `gr1` |
+
+(Class is each manifest's `embodiment_kind`.)
 
 (`pusht_2d` is a sim-only scene-pseudo-robot and has no hardware path.)
 
