@@ -23,17 +23,20 @@ shape consumed by `openral sim run`. Adding `metadata: {paper, honest_scope}`
 `task:` block turns it into a **`DeployScene`** that `openral deploy sim`
 accepts. Per-tier loaders refuse wrong-tier YAMLs at parse time.
 
-It covers six things, in increasing depth:
+It covers eight things, in increasing depth:
 
 1. The `openral sim run` flag surface and what is registry-resolved (i.e. **not**
    hardcoded).
 2. Authoring a `SimScene` YAML for an **existing** robot, scene, task,
    and pairing it with an rSkill.
 3. Bringing a **new** robot manifest (`robots/<id>/robot.yaml`) into sim.
-4. Writing a **new scene adapter** (a new task suite or simulator wrapper)
+4. Deciding when the registered scene catalogue is not enough.
+5. Writing a **new scene adapter** (a new task suite or simulator wrapper)
    in Python, for cases that need custom robot, task, or physics behavior.
-5. Writing a **new policy adapter** (a new VLA backend) and matching it to an
+6. Writing a **new policy adapter** (a new VLA backend) and matching it to an
    rSkill.
+7. Driving a custom MuJoCo kitchen through the **RoboCasa** backend.
+8. Driving the **GR-1 humanoid** tabletop tasks (the RoboCasa GR1 fork).
 
 The companion cookbook is [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md).
 
@@ -77,7 +80,7 @@ runtime path.
 --task  ID                   Override task.id (e.g. libero_spatial/3).
 --instruction TEXT           Override the natural-language task instruction.
                              Wins over a scene's per-episode language (a
-                             RoboCasa sampled-object string) — see §4.
+                             RoboCasa sampled-object string) — see §7.
 --max-steps  N               Override task.max_steps.
 --n-episodes N               Override SimScene.n_episodes.
 --seed       N               Override the global seed.
@@ -375,13 +378,13 @@ print(robot.name, len(robot.joints))
 Every scene adapter expects a specific embodiment. LIBERO assumes a 7-DoF arm
 with a parallel gripper; MetaWorld assumes the Sawyer. For your new robot to
 run end-to-end you also need either (a) a scene adapter that knows how to drive
-it, or (b) the `mock` scene, which accepts any action dimensionality (see §4).
+it, or (b) the `mock` scene, which accepts any action dimensionality (see §5).
 
 ---
 
 ## 4. When the existing scene adapters are **not** enough
 
-Reach for the Python adapter path (Section 5) when the registered scene
+Reach for the Python adapter path (§5) when the registered scene
 catalogue cannot express the task you need. Common reasons:
 
 - You want a completely different arena (no LIBERO floor / table).
@@ -601,7 +604,7 @@ def _build(env_cfg: "SimEnvironment") -> _MyPolicy:
     return _MyPolicy(spec=env_cfg.vla, device=env_cfg.vla.device)
 ```
 
-Wire it in via the same `policies/__init__.py` import pattern as §4.
+Wire it in via the same `policies/__init__.py` import pattern as §5.
 
 ### Pair it with an rSkill manifest
 
@@ -661,7 +664,7 @@ fails loud on mismatches.)
 
 ---
 
-## Level 6: a custom MuJoCo environment via RoboCasa
+## 7. A custom MuJoCo environment via RoboCasa
 
 **RoboCasa** is a `openral sim` backend so you can run kitchen
 scenarios with custom robots, tasks, and rSkills against real MuJoCo
@@ -804,7 +807,7 @@ prebuilt-vs-procedural XOR.
 
 ---
 
-## Level 7: NVIDIA GR-1 tabletop tasks (RoboCasa GR1 fork)
+## 8. NVIDIA GR-1 tabletop tasks (RoboCasa GR1 fork)
 
 The [RoboCasa GR1 Tabletop Tasks](https://github.com/robocasa/robocasa-gr1-tabletop-tasks)
 fork — a soft fork of robocasa that NVIDIA shipped alongside the
