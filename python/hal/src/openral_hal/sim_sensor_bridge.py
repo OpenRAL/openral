@@ -111,10 +111,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SimSensorBridge",
+    "attached_model_slip",
     "candidate_chunk_digest",
     "collision_model_mesh_slop",
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
+    "grid_current_at",
     "initial_configuration_stop_record",
     "kernel_checked_body_ids",
     "occupied_cell_keys",
@@ -1633,6 +1635,138 @@ def voxel_backing_record(
     return record
 
 
+def _grid_stamp_ns(entry: Mapping[str, object]) -> int:
+    """The header stamp a cached grid geometry was published with, or -1."""
+    stamp = entry.get("stamp_ns")
+    return stamp if isinstance(stamp, int) else -1
+
+
+def grid_current_at(
+    history: Sequence[Mapping[str, object]], stamp_ns: int
+) -> Mapping[str, object] | None:
+    """The newest grid geometry whose header stamp is not after ``stamp_ns``.
+
+    A ``safety.collision`` line names its cell as an index into the grid the
+    KERNEL held when it tripped, and the kernel does not say which grid that
+    was. Decoding that index against the latest grid the bridge has received
+    is only right while the two are the same message — and they are not, as
+    soon as the base drifts across one lattice boundary: the published window
+    is snapped to the octree's cell boundaries (``build_lattice``), so a drift
+    that crosses one shifts the whole window by a cell and every index in the
+    newer grid names the cell one over. One cell is the whole grid resolution.
+
+    Picks by stamp, never by arrival: the grid current at ``stamp_ns`` is the
+    newest one stamped at or before it. ``None`` when nothing in ``history``
+    is old enough — the caller then has no grid it can honestly decode against
+    and must say so rather than fall back to a newer one.
+    """
+    best: Mapping[str, object] | None = None
+    for entry in history:
+        st = _grid_stamp_ns(entry)
+        if st < 0 or st > stamp_ns:
+            continue
+        if best is None or st > _grid_stamp_ns(best):
+            best = entry
+    return best
+
+
+def attached_model_slip(
+    model: Any,
+    data: Any,
+    *,
+    description: Any,
+    attached_objects: Sequence[Any],
+) -> list[dict[str, object]]:
+    """Where the KERNEL thinks each carried payload is, against where it is.
+
+    The kernel never sees the payload. It sees ``attach_link`` and a
+    ``pose_in_link`` fixed at the attach, and places the payload by forward
+    kinematics from there on every check. The simulator meanwhile moves the
+    real body -- and a payload can slip in the gripper, settle, or be pushed,
+    after which the kernel is checking a model that is no longer where the
+    object is. Every millimetre of that is charged as collision depth against
+    cells the real object is nowhere near (#275: stops reporting 31-36 mm
+    against certified gaps of ~0 mm, on a cell the mesh only touches, with the
+    payload's own DOP overhang measured at <= 6.4 mm -- nothing about the
+    geometry could explain it, which leaves the pose).
+
+    Computed the way the kernel computes it, from the same ``pose_in_link``,
+    composed onto the attach link's live simulated pose, and compared with the
+    attached body's live simulated pose. Pure: no rclpy. One record per
+    attached object; an object whose attach link or body cannot be resolved is
+    reported with ``resolved: False`` rather than dropped, so a missing number
+    is a stated fact and never a silent zero.
+
+    Returns:
+        ``[{object_id, attach_link, resolved, kernel_world_xyz, sim_world_xyz,
+        slip_m}]`` -- ``slip_m`` is the straight-line distance between the two
+        placements, in metres.
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    link_bodies = kernel_checked_link_bodies(model, description) if description is not None else {}
+    out: list[dict[str, object]] = []
+    for obj in attached_objects:
+        object_id = str(getattr(obj, "object_id", ""))
+        attach_link = str(getattr(obj, "attach_link", ""))
+        rec: dict[str, object] = {
+            "object_id": object_id,
+            "attach_link": attach_link,
+            "resolved": False,
+        }
+        body_name = object_id.split(":", 1)[-1]
+        body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+        link_id = link_bodies.get(attach_link, -1)
+        if link_id < 0:
+            link_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, attach_link))
+        pose = getattr(obj, "pose_in_link", None)
+        if body_id < 0 or link_id < 0 or pose is None:
+            rec["reason"] = "attach link, payload body or pose_in_link unresolved"
+            out.append(rec)
+            continue
+        link_rot = np.asarray(data.xmat[link_id], dtype=np.float64).reshape(3, 3)
+        link_pos = np.asarray(data.xpos[link_id], dtype=np.float64)
+        rel = _rot_from_quat_xyzw(tuple(float(v) for v in pose.quat_xyzw))
+        if rel is None:
+            rec["reason"] = "pose_in_link quaternion is not unit"
+            out.append(rec)
+            continue
+        kernel_pos = link_pos + link_rot @ np.asarray(pose.xyz, dtype=np.float64)
+        sim_pos = np.asarray(data.xpos[body_id], dtype=np.float64)
+        # Orientation too. A translation-only slip understates a payload that
+        # PIVOTS in the gripper: the origin barely moves while the far end of a
+        # 42 mm half-extent object sweeps tens of millimetres. The bound on how
+        # far ANY point of the kernel's model is from the body is the
+        # translation plus the chord the rotation sweeps at the body's radius.
+        kernel_rot = link_rot @ rel
+        sim_rot = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+        cos_theta = (np.trace(kernel_rot.T @ sim_rot) - 1.0) / 2.0
+        theta = float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+        radius = 0.0
+        for geom in range(int(model.ngeom)):
+            if int(model.geom_bodyid[geom]) != body_id:
+                continue
+            reach = float(np.linalg.norm(np.asarray(model.geom_pos[geom]))) + float(
+                model.geom_rbound[geom]
+            )
+            radius = max(radius, reach)
+        translation = float(np.linalg.norm(kernel_pos - sim_pos))
+        rec.update(
+            {
+                "resolved": True,
+                "kernel_world_xyz": [round(float(v), 6) for v in kernel_pos],
+                "sim_world_xyz": [round(float(v), 6) for v in sim_pos],
+                "slip_m": round(translation, 6),
+                "rotation_deg": round(float(np.degrees(theta)), 3),
+                "body_radius_m": round(radius, 6),
+                "max_point_slip_m": round(translation + 2.0 * np.sin(theta / 2.0) * radius, 6),
+            }
+        )
+        out.append(rec)
+    return out
+
+
 def occupied_cell_keys(
     *,
     occupancy: Sequence[int] | Any,
@@ -2465,6 +2599,13 @@ class SimSensorBridge:
         # Geometry (not occupancy) of the last /openral/world_voxels grid, so a
         # `b=voxel_<n>` evidence line can be located in space at the stop.
         self._last_voxel_grid: dict[str, object] | None = None
+        # Recent grid geometries WITH their header stamps (#275). The kernel's
+        # evidence names a cell by index into the grid the kernel held; the
+        # grid current at the evidence stamp is what that index decodes
+        # against, and it is not always the latest one received. 32 at 10 Hz
+        # is ~3 s, well past the 500 ms evidence window.
+        self._voxel_grid_history: deque[dict[str, object]] = deque(maxlen=32)
+        self._last_grid_decode: dict[str, object] | None = None
         # #272: the occupancy of the last grid, kept ONLY so the next masking
         # attach can freeze it. A stop then asks whether its cell predates the
         # grasp -- the difference between a payload tripping on occupancy it
@@ -3956,10 +4097,11 @@ class SimSensorBridge:
         }
         # Retained for one masking attach only (#272), never for the record.
         self._last_voxel_occupancy = msg.occupancy  # type: ignore[attr-defined]  # reason: ROS subscription type
-        if self._attachment_voxel_updates_remaining <= 0:
-            return
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
         source_stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+        self._voxel_grid_history.append({**self._last_voxel_grid, "stamp_ns": source_stamp_ns})
+        if self._attachment_voxel_updates_remaining <= 0:
+            return
         transparent_stamp_ns = self._attachment_transparent_depth_stamp_ns
         if transparent_stamp_ns is None or source_stamp_ns <= transparent_stamp_ns:
             return
@@ -4063,6 +4205,8 @@ class SimSensorBridge:
         self._candidate_action_sub = None
         self._safety_failure_sub = None
         self._last_voxel_grid = None
+        self._voxel_grid_history.clear()
+        self._last_grid_decode = None
         self._last_voxel_occupancy = None
         self._preattach_cells = None
         self._preattach_truncated = False
@@ -4228,6 +4372,14 @@ class SimSensorBridge:
                     "stamp_ns": now_ns,
                     "attachment_revision": self._attachment_revision,
                     **snapshot,
+                    # Where the kernel's model of each payload is against where
+                    # the body is, at this instant (#275).
+                    "payload_model_slip": attached_model_slip(
+                        model,
+                        data,
+                        description=self._description,
+                        attached_objects=getattr(self._hal, "read_attached_objects", list)(),
+                    ),
                     "candidate_action_chunks": list(self._candidate_chunks),
                     "collision_evidence": evidence if fresh else None,
                 },
@@ -4273,8 +4425,8 @@ class SimSensorBridge:
         has been seen, or when the evidence is too old to attribute.
         """
         evidence = self._last_collision_evidence
-        grid = self._last_voxel_grid
-        if evidence is None or grid is None:
+        latest = self._last_voxel_grid
+        if evidence is None or latest is None:
             return None
         name = evidence.get("link_b_or_object")
         if not isinstance(name, str) or not name.startswith("voxel_"):
@@ -4282,7 +4434,56 @@ class SimSensorBridge:
         index = name.removeprefix("voxel_")
         if not index.isdigit():
             return None
-        return {"index": int(index), **grid}
+        # The grid the KERNEL held is the one current at the evidence stamp,
+        # not the newest one here (#275). Both decodes are recorded so a
+        # divergence is a visible fact on the record rather than a silent
+        # one-cell error in every `world_xyz` (`grid_decode` in the backing).
+        from typing import cast
+
+        evidence_stamp = _grid_stamp_ns(evidence)
+        matched = grid_current_at(self._voxel_grid_history, evidence_stamp)
+        latest_stamp = (
+            _grid_stamp_ns(self._voxel_grid_history[-1]) if self._voxel_grid_history else None
+        )
+        chosen: Mapping[str, object] = matched if matched is not None else latest
+        matched_stamp = None if matched is None else _grid_stamp_ns(matched)
+        # The origin tuples are built by `_on_attachment_world_voxels` in this
+        # module, three floats each; the cast states that rather than widening
+        # the cache's type for one read.
+        self._last_grid_decode = {
+            "evidence_stamp_ns": evidence_stamp,
+            "decode_grid_stamp_ns": matched_stamp,
+            "latest_grid_stamp_ns": latest_stamp,
+            "decode_is_latest": matched_stamp is None
+            or latest_stamp is None
+            or matched_stamp == latest_stamp,
+            "decode_origin": list(cast("tuple[float, float, float]", chosen["origin"])),
+            "latest_origin": list(cast("tuple[float, float, float]", latest["origin"])),
+            "resolution_m": float(cast("float", chosen["resolution"])),
+            "fallback_to_latest": matched is None,
+            # How many distinct base-frame origins the cached history holds.
+            # NOT a count of window shifts: the lattice is world-fixed and the
+            # origin is its corner expressed in the moving base frame, so this
+            # changes whenever the base moves at all (measured 2026-09-12:
+            # fractional-cell steps of 0.05-0.43 on consecutive frames, i.e.
+            # base wobble). A real window remap is a WHOLE-cell jump -- read
+            # `recent_origins` for that. Zero still rules the hazard out.
+            "distinct_origins_in_history": len(
+                {
+                    tuple(cast("tuple[float, float, float]", g["origin"]))
+                    for g in self._voxel_grid_history
+                }
+            ),
+            # The trail itself, newest last, so the per-frame window shift is a
+            # number in cells rather than a count. Measured 2026-09-12: the
+            # window moved on 24 of 32 frames during a fridge place, so which
+            # grid the kernel held inside one publish period decides the cell.
+            "recent_origins": [
+                [_grid_stamp_ns(g), *cast("tuple[float, float, float]", g["origin"])]
+                for g in list(self._voxel_grid_history)[-6:]
+            ],
+        }
+        return {"index": int(index), **{k: v for k, v in chosen.items() if k != "stamp_ns"}}
 
     def _late_voxel_backing(self) -> dict[str, object] | None:
         """What backs the tripping cell, probed when the evidence arrived late.
@@ -4422,6 +4623,8 @@ class SimSensorBridge:
         verdict["attach_revision"] = self._preattach_revision
         verdict["frozen_stamp_ns"] = self._preattach_stamp_ns
         backing["preattach"] = verdict
+        if self._last_grid_decode is not None:
+            backing["grid_decode"] = dict(self._last_grid_decode)
         return backing
 
     def _depth_excluded_body_ids(self) -> frozenset[int]:
