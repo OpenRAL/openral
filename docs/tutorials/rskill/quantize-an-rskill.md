@@ -75,16 +75,53 @@ bias terms stay in the compute dtype for numerical safety.
 
 ### Partial scopes
 
-Some adapters quantize only part of the tree. GR00T takes a
-`policy_extras.quantize_scope`, defaulting to `backbone`:
+Some adapters quantize only part of the tree. GR00T reads `quantize_scope` from
+the manifest's `quantization.extra`, defaulting to `backbone`:
 
 ```yaml
-policy_extras:
-  quantize_scope: "model"     # whole model, not just the VLM backbone
+quantization:
+  dtype: "bf16"              # what the checkpoint ships as
+  backend: "pytorch"
+  extra:
+    quantize_scope: "model"  # whole model, not just the VLM backbone
 ```
 
 `rskills/gr00t-n17-so101-fruit` uses `model` to reach 5.8 GiB peak on an 8 GB
-card. Override at runtime with `OPENRAL_GR00T_QUANTIZE_SCOPE`.
+card.
+
+### Declared dtype: storage or runtime?
+
+The two are not the same, and the manifest field means different things per
+family:
+
+- **pi05 / MolmoAct2 / OpenVLA** — `quantization.dtype` *is* the runtime dtype.
+  Declare `int8` and it loads at int8.
+- **GR00T / RLDX / BEHAVIOR** — the checkpoint ships `bf16` (and the rSkill is
+  *named* `…-bf16`), and the adapter NF4-packs it on load. Here the declared
+  dtype describes storage, so a plain precision does not switch packing off;
+  only a declared packing token (`int4` / `int8`) pins the runtime.
+
+Either way an explicit override wins, which is what the next section is for.
+
+### One override for every family
+
+```bash
+OPENRAL_QUANTIZATION_DTYPE=bf16 openral sim run --config … --rskill …
+```
+
+Resolution order is `$OPENRAL_QUANTIZATION_DTYPE` → `spec.extra["dtype"]` →
+`quantization.dtype` → the adapter's default. Set it to `bf16` / `fp16` /
+`fp32` / `none` to turn packing off on a bigger card, or to `nf4` / `int8` to
+force it on.
+
+Every load logs which source won. When the resolved dtype differs from the
+manifest's declared one you get a **WARNING** naming both, because the
+package's recorded `benchmarks:` numbers describe the declared dtype, not what
+you just ran.
+
+> This replaced the per-family `OPENRAL_GR00T_QUANTIZATION` /
+> `OPENRAL_RLDX_QUANTIZATION`, which only ever covered the two sidecar
+> adapters.
 
 ---
 

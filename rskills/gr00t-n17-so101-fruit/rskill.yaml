@@ -14,7 +14,7 @@
 # 8 GB VRAM: model ships bf16, in-process `gr00t` adapter NF4-quantizes on
 # load. This checkpoint's DiT action head is 32 layers (LIBERO's is 16), so
 # unlike gr00t-n17-libero's backbone-only NF4, it needs whole-model NF4
-# (policy_extras.quantize_scope: "model"; 4M-param threshold spares the
+# (quantization.extra.quantize_scope: "model"; 4M-param threshold spares the
 # TimestepEncoder). GPU-verified 5.8 GiB peak on an 8 GB RTX 4070; no
 # pre-packed NF4 artifact exists, quantization is a runtime knob.
 #
@@ -45,10 +45,6 @@ policy_extras:
   # resolved camera_keys). The adapter writes observation.images.front / .wrist.
   image_modality_keys: ["front", "wrist"]
   # This checkpoint's DiT action head is 32 layers (LIBERO's is 16); leaving it
-  # bf16 overshoots 8 GB by ~300 MiB. Quantize the whole model (backbone + head)
-  # to NF4 — the 4M-param threshold spares the small TimestepEncoder. GPU-
-  # verified to fit the 8 GB RTX 4070.
-  quantize_scope: "model"
 
 # so101_fruit records front (fixed) + wrist (in-hand) RGB at 640×480. GR00T
 # resizes internally (image_target_size 256²); these are minimum source sizes.
@@ -75,6 +71,11 @@ runtime: "pytorch"
 quantization:
   dtype: "bf16"
   backend: "pytorch"
+  extra:
+    # bf16 overshoots 8 GB by ~300 MiB. Quantize the whole model (backbone +
+    # head) to NF4 — the 4M-param threshold spares the small TimestepEncoder.
+    # GPU-verified to fit the 8 GB RTX 4070.
+    quantize_scope: "model"
 min_vram_gb:
   bf16: 12.0
   int4: 6.0  # measured 5.8 GiB peak (whole-model NF4) on an 8 GB RTX 4070

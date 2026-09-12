@@ -25,8 +25,10 @@ def test_behavior_groot_rskill_manifest_loads() -> None:
     assert manifest.action_contract is not None
     assert manifest.action_contract.dim == 23
     assert manifest.policy_extras["implementation"] == "behavior_b1k_sidecar"
-    assert manifest.policy_extras["quantization"] == "nf4"
-    assert manifest.policy_extras["nf4_min_params"] == 1_000_000
+    # Packing knobs live under `quantization.extra`, not `policy_extras`: one
+    # home shared with the GR00T and RLDX families.
+    assert manifest.quantization.extra["quantize_scope"] == "model"
+    assert manifest.quantization.extra["nf4_min_params"] == 1_000_000
 
 
 def test_behavior_wire_observation_preserves_official_payload() -> None:

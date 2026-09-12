@@ -62,8 +62,17 @@ actuators_required:
 
 runtime: "pytorch"
 quantization:
+  # bf16 is the STORED checkpoint (and what this rSkill's name records); the
+  # sidecar NF4-packs it on load, like every other GR00T skill. The packing
+  # knobs below used to sit in policy_extras alongside unrelated settings.
   dtype: "bf16"
   backend: "pytorch"
+  extra:
+    # Whole model (backbone + DiT head), not backbone-only.
+    quantize_scope: "model"
+    # Lower than the 4M default: this checkpoint's head needs the smaller
+    # Linears packed too.
+    nf4_min_params: 1000000
 weights_uri: "local://checkpoints/behavior-groot-turning-on-radio"
 
 policy_extras:
@@ -71,9 +80,6 @@ policy_extras:
   task: "turning_on_radio"
   instruction: "turn on the radio"
   control_mode: "temporal_ensemble"
-  quantization: "nf4"
-  quantize_scope: "model"
-  nf4_min_params: 1000000
   source_revision: "ace36d935b376fbf25cd56371e23877b95407c40"
   use_world_state_policy_state: true
 

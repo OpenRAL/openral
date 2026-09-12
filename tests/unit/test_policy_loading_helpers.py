@@ -127,11 +127,18 @@ class TestManifestDtype:
         spec = VLASpec(id="pi05", weights_uri="")
         assert manifest_dtype(spec, manifest=None) is None
 
-    def test_rldx_libero_resolves_to_int4(self) -> None:
-        """Cross-adapter sanity: rldx1-ft-libero-nf4 pins int4 too."""
+    def test_rldx_libero_int4_normalises_to_the_nf4_token(self) -> None:
+        """rldx1-ft-libero-nf4 pins the schema's `int4`; callers get `nf4`.
+
+        The resolver returns the canonical token rather than the enum value
+        because the sidecar CLIs constrain it: `tools/behavior_groot_sidecar.py`
+        declares `choices=("none", "nf4", "int8")`, so `int4` would be rejected
+        by argparse. The in-process adapters accept both spellings.
+        """
         manifest = load_rskill_manifest(str(_RLDX_LIBERO))
         spec = VLASpec(id="rldx", weights_uri=str(_RLDX_LIBERO))
-        assert manifest_dtype(spec, manifest=manifest) == "int4"
+        assert manifest.quantization.dtype.value == "int4"
+        assert manifest_dtype(spec, manifest=manifest) == "nf4"
 
 
 # ── torch dtype mapping ───────────────────────────────────────────────────────

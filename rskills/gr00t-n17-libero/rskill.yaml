@@ -61,7 +61,8 @@ quantization:
 # repo root (sharded model-0000X-of-00002.safetensors + experiment_cfg +
 # statistics.json + processor_config.json) so lerobot's `GrootPolicy.from_pretrained`
 # loads it directly. The gr00t adapter then NF4-quantizes the Qwen3-VL backbone
-# in place on load (~5.2 GiB peak VRAM; OPENRAL_GR00T_QUANTIZATION default nf4).
+# in place on load (~5.2 GiB peak VRAM; nf4 by default — override for any
+# family with OPENRAL_QUANTIZATION_DTYPE).
 weights_uri: "hf://OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16"
 
 # GR00T checkpoints carry their own normalization metadata (experiment_cfg +

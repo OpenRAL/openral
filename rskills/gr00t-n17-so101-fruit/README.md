@@ -105,7 +105,7 @@ manifest. SO-101 frames are recorded upright, so no 180° flip is applied
 | `embodiment_tags` | `so101_follower` |
 | `policy_extras.embodiment_tag` | `new_embodiment` |
 | `runtime` | `pytorch` (in-process lerobot `GrootPolicy`) |
-| `quantization.dtype` | `bf16` shipped; whole-model NF4 on load (`quantize_scope: model`) |
+| `quantization.dtype` | `bf16` shipped; whole-model NF4 on load (`quantization.extra.quantize_scope: model`) |
 | `min_vram_gb` | `bf16: 12.0`, `int4: 6.0` (measured 5.8 GiB peak) |
 | `weights_uri` | `hf://aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking` |
 | `chunk_size` | 16 |
@@ -118,13 +118,13 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 
 GR00T N1.7-3B (bf16, ~6 GB weights) plus the Cosmos-Reason VLM does not co-fit
 an 8 GB GPU. The in-process `gr00t` adapter NF4-quantizes it on load
-(`OPENRAL_GR00T_QUANTIZATION` default `nf4`). This checkpoint's DiT action head
+(nf4 by default). This checkpoint's DiT action head
 is **32 layers** (LIBERO's is 16), so leaving it bf16 (backbone-only NF4)
-overshoots 8 GB; the manifest sets `policy_extras.quantize_scope: model` to pack
+overshoots 8 GB; the manifest sets `quantization.extra.quantize_scope: model` to pack
 the whole model — the 4M-param threshold spares the small `TimestepEncoder`, so
 the historical DiT uint8 bug cannot recur. **GPU-verified: 5.8 GiB peak on an
 8 GB RTX 4070** (`tests/sim/test_so101_groot_fruit.py`, real weights + NF4 +
-processors). A ≥ 16 GB GPU can run bf16 directly (`OPENRAL_GR00T_QUANTIZATION=none`).
+processors). A ≥ 16 GB GPU can run bf16 directly (`OPENRAL_QUANTIZATION_DTYPE=bf16`).
 
 > **Runtime status.** The in-process `gr00t` adapter
 > (`openral_sim.policies.gr00t`) reads the state/action width, GR00T video
