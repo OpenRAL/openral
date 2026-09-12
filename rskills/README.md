@@ -77,6 +77,12 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `diffusion-pusht` | diffusion | pusht |
 | `3d-diffuser-actor-rlbench` | diffuser_actor | franka_panda |
 | `gr00t-n17-libero` | gr00t | franka_panda |
+| `gr00t-n17-b1k-turning-on-radio` | gr00t | r1pro |
+| `gr00t-n17-so101-fruit` | gr00t | so101_follower |
+| `rskill-internvla_n1-mobile_base-vln-nf4` | internvla_n1 | mobile_base |
+| `lingbot-va-galaxea-a1-fruit-placement` | lingbot_va_a1 | galaxea_a1 |
+| `lingbot-vla-4b-robotwin` | lingbot_vla | aloha_agilex |
+| `lingbot-vla2-robotwin` | lingbot_vla2 | aloha_agilex |
 | `molmoact2-libero-nf4` | molmoact2 | franka_panda |
 | `molmoact2-so101-nf4` | molmoact2 | so100/so101_follower |
 | `openvla-oft-simpler-widowx-nf4` | openvla | widowx |
@@ -109,11 +115,43 @@ embodiment-agnostic.**
 | `rtdetr-coco-r18` | detector (ONNX, `local://`) |
 | `qwen35-4b-nf4` | vlm |
 | `robometer-4b` / `topreward-qwen3vl-4b-nf4` | reward |
-| `rskill-moveit-multi-eef_pose` / `rskill-moveit-multi-joints` / `rskill-moveit-multi-look_at` | ros_action (MoveIt) |
-| `rskill-nav2-mobile_base-navigate_to_pose` | ros_action (Nav2) |
+| `rskill-sam2_1-any-grasped_object_mask-bf16` | segmenter (SAM 2.1) |
+| `rskill-moveit-eef-pose` / `rskill-moveit-joints` / `rskill-moveit-look-at` | ros_action (MoveIt) |
+| `rskill-nav2-navigate-to-pose` | ros_action (Nav2) |
+| `clarify-ambiguity` / `decompose-mission` / `find-object` / `preflight-reach` / `stage-for-manipulation` / `verify-outcome` | playbook (S2 reasoner) |
 
 > The full, verified scene↔rSkill compatibility matrix lives in the team's
 > `sim_rskill_matches.xlsx` tracker.
+
+### Not on the Hub yet
+
+Eight in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
+invisible to `openral rskill search` and cannot be installed by repo id (loading
+them by in-tree name still works wherever their weights resolve). Six of the
+eight need only the wrapper repo published — their weights are third-party public
+checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
+
+| in-tree skill | weights | to publish |
+| --- | --- | --- |
+| `act-so101-pen` | `gabrycina/so101-passing-pen-policy` | wrapper only |
+| `gr00t-n17-so101-fruit` | `aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking` | wrapper only |
+| `lingbot-vla-4b-robotwin` | `robbyant/lingbot-vla-4b-posttrain-robotwin` | wrapper only |
+| `lingbot-vla2-robotwin` | `robbyant/lingbot-vla-v2-6b` | wrapper only |
+| `rskill-internvla_n1-mobile_base-vln-nf4` | `InternRobotics/InternVLA-N1-DualVLN` | wrapper only |
+| `rskill-sam2_1-any-grasped_object_mask-bf16` | `facebook/sam2.1-hiera-small` | wrapper only |
+| `rskill-pi05-openarm-restock_shelf-bf16` | none — `weights_uri` points at its own unpublished repo | **weights upload** |
+| `smolvla-so101-pen` | upstream `sapanostic/so_101_smolvla_pen_placement` is **gone** | unpublishable as-is |
+
+`smolvla-so101-pen` is the one genuine duplicate in this directory — same family,
+embodiment and task as `smolvla-so101-pick-place-pen`, whose weights are published
+and live. With its upstream deleted it cannot be loaded or republished, so it is
+the one entry worth dropping rather than publishing.
+
+Two OpenRAL-hosted NF4 prequant mirrors are also unpublished
+(`lingbot-vla-4b-robotwin-nf4`, `lingbot-vla-v2-6b-nf4`). Both LingBot manifests
+now point at the fp32 upstreams instead and pack NF4 at load, which is the path
+their sidecar falls back to anyway; republishing the mirrors is a download-size
+win and needs only a `weights_uri` repoint.
 
 ## Add your own rSkill
 

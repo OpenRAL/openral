@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/lingbot-vla-v2-6b-nf4@773051f96656efe886a4405dca63b88062cc6b50
+  weights_uri: hf://robbyant/lingbot-vla-v2-6b
   source_repo: hf://robbyant/lingbot-vla-v2-6b
   paper_url: https://huggingface.co/papers/2607.06403
 ---
