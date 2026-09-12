@@ -6,7 +6,8 @@ rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducibl
 
 ```bash
 openral rskill search aloha                    # discover skills on the OpenRAL Hub org
-openral rskill search --kind detector          # …filter by kind/role/embodiment/license
+openral rskill search --kind detector --license apache-2.0   # facet filters
+openral rskill search --family pi05 --json     # programmatic / scriptable output
 openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 openral rskill list                # list installed rSkills
 openral rskill check               # which installed rSkills run on this host?
@@ -14,9 +15,20 @@ openral rskill check               # which installed rSkills run on this host?
 
 `rskill install` expects an `org/name` Hub id. A bare name (e.g. `rskill-smolvla-franka_panda-libero_spatial-bf16`)
 fails fast with the canonical `OpenRAL/…` suggestion rather than a raw Hub 404 — use
-`rskill search` if you don't know the id. `rskill search` queries the OpenRAL HF Hub org
-(`HfApi.list_models`), validates each candidate's `rskill.yaml`, and prints a paste-able
-`repo_id` table.
+`rskill search` if you don't know the id. `rskill search` makes one server-side
+Hub call to list the `OpenRAL` org filtered on the `rskill` model-card tag (every
+published rSkill card carries `OpenRAL` + `rskill` from the publisher), fetches
+each hit's `rskill.yaml` concurrently, and matches `QUERY` locally and
+case-insensitively — every whitespace-separated token must appear in the repo
+id, manifest name, description, model family, kind, role, embodiment tags, or
+Hub tags (so `rskill search pick place` and `rskill search so101 pen` both
+work). Facet flags (`--kind`/`--role`/`--embodiment`/`--license`/`--family`)
+narrow further; `--limit` caps the number of rows *shown* (not the number of
+repos inspected). Results are sorted by repo id and print a paste-able
+`repo_id` table with a `local` column: `in-tree` (a matching manifest exists
+under `rskills/`), `installed` (present in the local rSkill registry), or `—`.
+The same lookup is available programmatically as
+`openral_rskill.search_hub_rskills(...) -> HubRSkillSearchResult`.
 
 ## Discovery views (`SKILL.md`)
 

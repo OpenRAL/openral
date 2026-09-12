@@ -5,6 +5,7 @@ Terms as used in OpenRAL.
 - **VLA** — Vision-Language-Action model. Maps `(images, language, state) → action[chunk]`. Examples: π0, GR00T N1.x, SmolVLA, OpenVLA-OFT.
 - **WAM** — World Action Model. Generative simulator used for mental rollouts and failure anticipation. Examples: Cosmos Predict, Genie 3, IRASim, UnifoLM-WMA-0.
 - **rSkill** — A packaged, capability-tagged unit of robot behavior (sigstore signing planned, not yet implemented). One HF Hub repo. Loaded by `rSkill.from_pretrained(...)`.
+- **rSkill catalog** — The `OpenRAL` org on the Hugging Face Hub, tagged `rskill`; `openral rskill search` is how you find one — `rskills/` in this repo is only the worked-examples/fixtures subset, not the catalog.
 - **HAL** — Hardware Abstraction Layer. The `openral_hal.HAL` Protocol; Python adapters live in `python/hal/`, per-robot ROS lifecycle nodes in `packages/openral_hal_<robot>/`.
 - **WorldState** — A typed snapshot consumed by Skills and the Reasoner. Backed by tf2 + sensor topics.
 - **Reasoner / S2** — The slow planning loop (LLM → typed tool calls).

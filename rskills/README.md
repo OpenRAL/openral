@@ -1,18 +1,52 @@
-# `rskills/` — the OpenRAL rSkill catalog
+# `rskills/` — OpenRAL rSkill worked examples
 
-This directory holds the **manifests** for the rSkills OpenRAL ships as
-worked examples. Each subdirectory is one rSkill: a `rskill.yaml` manifest
-plus `README.md`, a discovery-only `SKILL.md`, and an `eval/` folder. The
-subdirectories do **not** contain model weights — the manifest's
-`weights_uri` points at a Hugging Face repo under
-[`OpenRAL`](https://huggingface.co/OpenRAL), and the weights are pulled on
-first load.
+This directory holds the **manifests** for a curated set of rSkills OpenRAL
+ships as worked examples and test fixtures — the ones exercised by this
+repo's tests, `openral deploy sim` scenes, and the docs. It is **not** the
+catalog. The catalog is the [`OpenRAL` org on the Hugging Face
+Hub](https://huggingface.co/OpenRAL); nothing needs to be added here to use
+a skill that's published there. Each in-tree subdirectory is one rSkill: a
+`rskill.yaml` manifest plus `README.md`, a discovery-only `SKILL.md`, and an
+`eval/` folder. The subdirectories do **not** contain model weights — the
+manifest's `weights_uri` points at the corresponding Hub repo, and the
+weights are pulled on first load.
 
 > **One rSkill ⇄ one HF repo.** Every entry below maps 1:1 to an
 > `OpenRAL/rskill-<name>` repo on the Hub. The in-tree manifest is the
 > source of truth; `tools/generate_rskill_skillmd.py` mirrors the
 > discovery `SKILL.md` to each HF repo, and the org card counts are
 > derived from this directory.
+
+## Find rSkills on the Hub
+
+`openral rskill search` is how you find an rSkill — it queries the `OpenRAL`
+Hub org (server-side, filtered on the `rskill` model-card tag), fetches each
+hit's manifest concurrently, and matches your query locally and
+case-insensitively against the repo id, manifest name/description, family,
+kind, role, embodiment tags, and Hub tags:
+
+```bash
+openral rskill search libero                                   # any field mentioning "libero"
+openral rskill search --embodiment so101_follower               # facet filter, no query
+openral rskill search --kind detector --license apache-2.0      # combine facets
+openral rskill search --family pi05 --json                      # scriptable output
+```
+
+Each row's `local` column tells you what's already on this machine:
+`in-tree` (a manifest with that name lives under `rskills/`), `installed`
+(present in the local rSkill registry after `openral rskill install`), or
+`—` (Hub-only — install it to use it). Then install and run it like any
+other skill, in-tree or not:
+
+```bash
+openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+openral sim run --config scenes/sim/libero_spatial.yaml \
+  --rskill OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+```
+
+`--rskill` accepts a bare in-tree name, an `rskills/<id>` path, or a Hub
+repo id interchangeably — a skill you found on the Hub does not need a
+local manifest to run.
 
 ## How an rSkill resolves its weights
 
@@ -97,3 +131,10 @@ Then edit `rskills/my-skill/rskill.yaml`, `README.md`, and `SKILL.md`
 (the publish validator rejects leftover `TEMPLATE_ID` / `TODO:` markers),
 and publish with `tools/rskill_publisher.py`. See
 [`template/README.md`](template/README.md) for the per-field walkthrough.
+
+Publishing to the Hub — and making the repo public — is what makes a skill
+discoverable: the publisher stamps the `OpenRAL` + `rskill` tags into the
+model-card front matter, and `openral rskill search` lists the org filtered
+on that `rskill` tag. There is no separate "list it in the catalog" step;
+adding it to this directory is optional and only worth doing if the skill
+should also serve as an in-tree test fixture or `deploy sim` example.
