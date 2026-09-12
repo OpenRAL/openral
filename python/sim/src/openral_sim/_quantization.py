@@ -41,8 +41,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 from openral_core.exceptions import ROSConfigError
@@ -647,29 +648,196 @@ def normalise_manifest_dtype(manifest: Any) -> str | None:
     return str(getattr(dtype, "value", dtype))
 
 
+#: Per-run dtype override, honoured by every policy family.
+#:
+#: Replaces the per-family ``OPENRAL_GR00T_QUANTIZATION`` /
+#: ``OPENRAL_RLDX_QUANTIZATION`` vars, which covered only the two sidecar
+#: adapters and left the in-process ones (pi05 / molmoact2 / openvla) with no
+#: per-run lever at all after the ``--vla-extra`` flag was removed.
+QUANTIZATION_DTYPE_ENV = "OPENRAL_QUANTIZATION_DTYPE"
+
+#: Tokens that name a *packing* format rather than a plain compute precision.
+#: ``resolve_quant_plan`` sets ``quantize`` when the resolved dtype is one of
+#: these, which is the single definition of "does this load rewrite Linears".
+_PACKING_TOKENS: frozenset[str] = frozenset({"nf4", "int8"})
+
+#: Canonical spelling per accepted alias. The rSkill schema's enum value for
+#: 4-bit is ``int4``, but every consumer downstream — the pi05 / molmoact2 /
+#: openvla dispatch, ``tools/rldx_sidecar.py``, and the argparse ``choices`` on
+#: ``tools/behavior_groot_sidecar.py`` — spells it ``nf4``. Normalising here is
+#: what lets one resolved value feed all of them.
+_QUANT_TOKEN_ALIASES: dict[str, str] = {
+    "int4": "nf4",
+    "4bit": "nf4",
+    "nf4": "nf4",
+    "int8": "int8",
+    "bf16": "bf16",
+    "bfloat16": "bf16",
+    "fp16": "fp16",
+    "float16": "fp16",
+    "half": "fp16",
+    "fp32": "fp32",
+    "float32": "fp32",
+    "none": "none",
+    "": "none",
+}
+
+
+def canonical_quant_token(raw: object) -> str | None:
+    """Normalise a dtype spelling to the token every consumer understands.
+
+    Maps the schema's ``int4`` (and the legacy ``4bit``) onto ``nf4``, folds
+    the float aliases, and passes an unknown token through lowercased so a new
+    format surfaces at the adapter rather than being silently dropped here.
+
+    Returns ``None`` for ``None`` so callers can distinguish "unset" from the
+    explicit ``"none"`` (which means *do not quantize*).
+
+    Example:
+        >>> canonical_quant_token("int4")
+        'nf4'
+        >>> canonical_quant_token("BF16")
+        'bf16'
+        >>> canonical_quant_token(None) is None
+        True
+    """
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    return _QUANT_TOKEN_ALIASES.get(token, token)
+
+
+class QuantPlan(NamedTuple):
+    """How one policy load should be quantized, resolved from all sources.
+
+    Attributes:
+        dtype: Canonical token (``nf4`` / ``int8`` / ``bf16`` / ``fp16`` /
+            ``fp32`` / ``none``), or ``None`` when nothing declared one and
+            the caller passed no default.
+        quantize: ``True`` when ``dtype`` names a packing format, so the load
+            rewrites Linears. ``False`` for a plain precision and for
+            ``none``.
+        source: Which input won — ``env`` / ``spec_extra`` / ``manifest`` /
+            ``default`` / ``unset``. Carried so the adapter can log it.
+        extra: The manifest's ``quantization.extra`` knobs (``quantize_scope``,
+            ``nf4_min_params``, …), empty when the manifest declares none.
+    """
+
+    dtype: str | None
+    quantize: bool
+    source: str
+    extra: Mapping[str, Any]
+
+
+def quantization_extra(manifest: Any | None) -> Mapping[str, Any]:
+    """Return the manifest's ``quantization.extra`` knob map, or ``{}``.
+
+    This is the one home for the per-family packing knobs (``quantize_scope``
+    on GR00T, ``nf4_min_params`` on the BEHAVIOR sidecar). They used to live in
+    ``policy_extras`` next to unrelated adapter settings, which is why each
+    family grew its own reader.
+    """
+    quant = getattr(manifest, "quantization", None)
+    extra = getattr(quant, "extra", None) if quant is not None else None
+    return dict(extra) if isinstance(extra, dict) else {}
+
+
+def resolve_quant_plan(
+    spec: Any,
+    manifest: Any | None = None,
+    *,
+    default: str | None = None,
+    manifest_dtype_is_storage: bool = False,
+) -> QuantPlan:
+    """Resolve one load's quantization from every source, in one place.
+
+    Precedence, first hit wins:
+
+    1. ``$OPENRAL_QUANTIZATION_DTYPE`` — the per-run override, honoured
+       identically by every family.
+    2. ``spec.extra["dtype"]`` — a programmatic ``VLASpec``, or a scene that
+       pins the dtype for one pairing.
+    3. ``manifest.quantization.dtype`` — the rSkill's declared dtype, the
+       normal case.
+    4. ``default`` — the adapter's own fallback, for families that quantize
+       unless told otherwise.
+
+    Every resolution is logged; a resolved dtype that *differs* from the
+    manifest's declared one is logged at WARNING naming both, because the
+    package's recorded ``benchmarks:`` numbers then no longer describe what is
+    about to run (CLAUDE.md §1.4 — quantization is never silent).
+
+    Args:
+        spec: The ``VLASpec`` for this run; its ``extra`` is read.
+        manifest: The resolved ``RSkillManifest``, when the caller has one.
+        default: Fallback token when no source declares a dtype.
+        manifest_dtype_is_storage: Set by families whose manifests use
+            ``quantization.dtype`` to describe the *stored* checkpoint rather
+            than the runtime load. Every GR00T rSkill is published ``bf16``
+            (and named ``…-bf16``) while the adapter NF4-packs it on load, so
+            for those a plain-precision declaration must not veto the packing
+            ``default``. A declared *packing* token (``nf4`` / ``int8``) still
+            wins, and an explicit override always wins — including ``bf16`` or
+            ``none`` to turn packing off.
+
+    Returns:
+        A :class:`QuantPlan`.
+    """
+    declared = normalise_manifest_dtype(manifest) if manifest is not None else None
+    declared_token = canonical_quant_token(declared)
+    # Storage-dtype families: only a packing declaration pins the runtime.
+    manifest_token = declared_token
+    if manifest_dtype_is_storage and manifest_token not in _PACKING_TOKENS:
+        manifest_token = None
+
+    env_raw = os.environ.get(QUANTIZATION_DTYPE_ENV)
+    spec_raw = spec.extra.get("dtype") if hasattr(spec, "extra") and spec.extra else None
+
+    if env_raw:
+        token, source = canonical_quant_token(env_raw), "env"
+    elif spec_raw:
+        token, source = canonical_quant_token(spec_raw), "spec_extra"
+    elif manifest_token:
+        token, source = manifest_token, "manifest"
+    elif default:
+        token, source = canonical_quant_token(default), "default"
+    else:
+        token, source = None, "unset"
+
+    quantize = token in _PACKING_TOKENS
+    expected = declared_token if manifest_token is not None else None
+    if token is not None and expected is not None and token != expected:
+        log.warning(
+            "quantization.override",
+            resolved=token,
+            declared=expected,
+            source=source,
+            skill=getattr(manifest, "name", None),
+            note=(
+                "running at a dtype the manifest does not declare; its "
+                "benchmarks / eval results describe the declared one"
+            ),
+        )
+    else:
+        log.info("quantization.resolved", dtype=token, source=source, quantize=quantize)
+
+    return QuantPlan(
+        dtype=token, quantize=quantize, source=source, extra=quantization_extra(manifest)
+    )
+
+
 def manifest_dtype(spec: Any, manifest: Any | None = None) -> str | None:
     """Return the dtype the adapter should load with, if any.
 
-    Resolution order (first hit wins):
+    Thin wrapper over :func:`resolve_quant_plan` kept for the in-process
+    adapters (pi05 / molmoact2 / openvla) that only need the token. See that
+    function for the full precedence, including the
+    ``$OPENRAL_QUANTIZATION_DTYPE`` per-run override.
 
-    1. ``spec.extra["dtype"]`` — a per-run override (``openral sim run
-       --vla-extra dtype=int8`` or a programmatic VLASpec). Lets the
-       operator pick a dtype without editing the rSkill manifest.
-    2. ``manifest.quantization.dtype`` — the rSkill's pinned dtype,
-       when an rSkill manifest is in hand. Mapped through
-       ``normalise_manifest_dtype`` so the enum value (``"int4"``,
-       ``"int8"``, ``"bf16"`` ...) lands as a string the adapter's own
-       dispatch already understands.
-
-    Returns ``None`` when neither source supplies a dtype, leaving
-    ``default_dtype_for_device`` to pick a CUDA-aware default.
+    Returns ``None`` when no source supplies a dtype, leaving
+    ``default_dtype_for_device`` to pick a CUDA-aware default at the call site.
     """
-    raw = spec.extra.get("dtype") if hasattr(spec, "extra") else None
-    if raw:
-        return str(raw)
-    if manifest is not None:
-        return normalise_manifest_dtype(manifest)
-    return None
+    return resolve_quant_plan(spec, manifest).dtype
 
 
 def torch_dtype_for(torch: Any, dtype_str: str | None, device: str) -> Any:

@@ -264,7 +264,7 @@ just sync --all-packages --group lingbot --inexact
 
 # the sidecar auto-clones github.com/robbyant/lingbot-vla-v2 @ 69729b4 and builds
 # its torch-2.9 venv on first use; the RoboTwin 5-task suite (needs a ≥12 GB GPU):
-openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin
+openral benchmark run --suite robotwin --rskill rskills/lingbot-vla2-robotwin
 ```
 
 ## Evaluation
@@ -278,7 +278,7 @@ rendering has no CPU fallback. Producing `eval/robotwin.json` therefore needs a
 writes `reproduced_locally: true`:
 
 ```bash
-openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin
+openral benchmark run --suite robotwin --rskill rskills/lingbot-vla2-robotwin
 ```
 
 What *was* verified live on 8 GB: the model path (see

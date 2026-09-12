@@ -263,7 +263,7 @@ openral rskill list              # list installed rSkills
 openral rskill new <id>          # scaffold a new local rSkill from rskills/template/
 openral sensor list              # browse the sensor catalog
 openral sensor show <id>         # resolve a catalog entry to a SensorSpec/Bundle
-openral benchmark run --suite S --vla V  # run a benchmark suite (canonical eval producer)
+openral benchmark run --suite S --rskill R  # run a benchmark suite (canonical eval producer)
 openral benchmark report         # aggregate rskills/<id>/eval/*.json benchmark blocks
 openral sim run --config FILE    # run a SimScene YAML end-to-end
 ```

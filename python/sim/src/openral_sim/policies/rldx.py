@@ -85,6 +85,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
 
+from openral_sim._quantization import resolve_quant_plan
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies.gr00t import _env_bool
 from openral_sim.registry import POLICIES
@@ -1730,7 +1731,8 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
                             to answer ``ping`` (default 900 — the first
                             boot includes the upstream ``git clone`` +
                             ``uv sync`` of RLDX-1, several minutes).
-        quantization     -- backbone quantization scheme for the spawned
+        quantization     -- declared on the manifest as ``quantization.dtype``
+                            (not ``policy_extras``); backbone scheme for the spawned
                             sidecar (default ``nf4``; ``int8`` or
                             ``none`` also accepted — see
                             ``tools/rldx_sidecar.py --quantization``).
@@ -1743,9 +1745,9 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
 
     Environment overrides (ergonomic; no YAML edit required):
         OPENRAL_RLDX_HOST, OPENRAL_RLDX_PORT, OPENRAL_RLDX_AUTO_SPAWN,
-        OPENRAL_RLDX_BOOT_TIMEOUT_S, OPENRAL_RLDX_QUANTIZATION,
-        OPENRAL_RLDX_EMBODIMENT_TAG, OPENRAL_RLDX_MODEL_ID,
-        OPENRAL_RLDX_SIDECAR_SCRIPT.
+        OPENRAL_RLDX_BOOT_TIMEOUT_S, OPENRAL_RLDX_EMBODIMENT_TAG,
+        OPENRAL_RLDX_MODEL_ID, OPENRAL_RLDX_SIDECAR_SCRIPT, and the
+        all-family OPENRAL_QUANTIZATION_DTYPE.
     """
     spec = env_cfg.vla
     extra = dict(spec.extra or {})
@@ -1793,8 +1795,13 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     boot_timeout_s = float(
         os.environ.get("OPENRAL_RLDX_BOOT_TIMEOUT_S") or extra.get("boot_timeout_s", 900.0)
     )
-    quantization = str(
-        os.environ.get("OPENRAL_RLDX_QUANTIZATION") or extra.get("quantization", "nf4")
+    # Shared resolver (openral_sim._quantization): $OPENRAL_QUANTIZATION_DTYPE
+    # > spec.extra["dtype"] > manifest.quantization.dtype > this adapter's nf4
+    # default. Normalises the schema's `int4` onto the `nf4` token the sidecar
+    # CLI expects, logs the source, and warns on a declared/resolved mismatch.
+    quantization = (
+        resolve_quant_plan(spec, _manifest, default="nf4", manifest_dtype_is_storage=True).dtype
+        or "nf4"
     )
     embodiment_tag = str(
         os.environ.get("OPENRAL_RLDX_EMBODIMENT_TAG")

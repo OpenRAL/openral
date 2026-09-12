@@ -13,14 +13,48 @@ against a digital twin, then runs it on hardware with the live dashboard.
 just bootstrap && just sync   # always `just sync`, never bare `uv sync` —
                               # see docs/contributing/toolchain.md
 openral install ros           # the ROS 2 graph deploy run launches
-openral doctor                # confirm ROS 2, GPU, and USB are visible
+uv run openral doctor         # confirm ROS 2, GPU, USB and the reasoner
 ```
 
 You need a `RobotDescription` for your robot under
-[`robots/<robot_id>/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/)
-(the in-tree manifests cover SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm,
-Rizon 4, H1, G1, panda_mobile), and an installed rSkill (see
+[`robots/<robot_id>/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/),
+and an installed rSkill (see
 [Write an rSkill](../rskill/write-and-publish-an-rskill.md)).
+
+The in-tree manifests are:
+
+| Class | `robot_id` |
+| --- | --- |
+| Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `google_robot` |
+| Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2` |
+| Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `galaxea_a1`, `r1pro` |
+| Humanoid | `g1`, `h1`, `gr1` |
+
+(`pusht_2d` is a sim-only scene-pseudo-robot and has no hardware path.)
+
+### Set a reasoner model — the graph will not plan without one
+
+`deploy run` boots the S2 reasoner, and the reasoner has **no hidden default
+model** by design. Set a curated one before launching:
+
+```bash
+export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or gpt-5.5 / gpt-5.6 / cosmos3-edge
+export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
+```
+
+| Model | Hosting | Auth |
+| --- | --- | --- |
+| `claude-opus-4-8` | Anthropic cloud | required |
+| `gpt-5.5`, `gpt-5.6` | OpenRouter cloud | required |
+| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none |
+
+`cosmos3-edge` is the on-device option — no key, no cloud. `openral doctor`
+reports the resolved model, endpoint and whether a key is set as its
+`Reasoner LLM` row; an unset model shows `absent`. An uncurated raw model id
+also works but needs an explicit `OPENRAL_REASONER_ENDPOINT` and
+`OPENRAL_REASONER_DIALECT`, and is warned about at every layer. Full matrix:
+[`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
+and the [reasoner reference](../../reference/reasoner.md).
 
 ## 1. Write a `DeployScene` config
 
@@ -204,6 +238,38 @@ in-tree `rskills/` palette at `on_configure`, embodiment-filtered.
 This is the safe place to shake out manifest, sensor, and rSkill-compatibility
 errors.
 
+### Two cheaper checks before that
+
+`deploy sim --dry-run` resolves the scene, the HAL params and the launch argv
+and prints them without shelling out to `ros2 launch`:
+
+```bash
+openral deploy sim --config scenes/deploy/so100_pick_cube.yaml --dry-run
+```
+
+`openral deploy validate` is the readiness check for **real** hardware — no
+ROS launch, no robot required. It catches exactly the gaps that otherwise fail
+late, at HAL configure or on the first sensor read:
+
+```bash
+openral deploy validate --config scenes/deploy/so100_pick_cube.yaml
+```
+
+It checks three things:
+
+- **HAL transport** — a serial `port` is declared, and that device exists now.
+- **Calibration** — a serial HAL with `calibrate_on_connect: false` has an `id`
+  and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
+  Missing, and every `send_action` fails with "has no calibration registered".
+- **Camera bindings** — each scene sensor has a `deploy_binding` (without one
+  it is never published, and a camera VLA silently gets an empty observation),
+  and any `/dev/*` path exists now.
+
+It separates **ERROR** (committed data is missing — exits non-zero) from
+**WARN** (the device just is not plugged in right now), and resolves HAL
+params with the same precedence `deploy run` uses: `--hal` > scene `hal` >
+`robot.yaml`.
+
 ### RoboCasa scenes — let the HAL provision the backend
 
 RoboCasa kitchen scenes (e.g. `scenes/deploy/robocasa_navigate.yaml`) need the
@@ -281,6 +347,47 @@ logged, not a silent skip. For the SO-101 NVMM camera path, either install
 the OpenRAL Pro plugin or disable NVMM for the relevant cameras in the
 deploy scene.
 
+### Give the robot a task
+
+The reasoner selects *which* rSkill to run, but it needs a goal. Without one it
+comes up idle and waits. Three ways to give it one:
+
+**At launch**, with `--initial-task`:
+
+```bash
+openral deploy run --config scenes/deploy/so101_bench.yaml \
+  --initial-task "pick the bowl and place it on the plate, then push the mug back"
+```
+
+A multi-step goal is decomposed into an ordered `MissionState` queue via the
+reasoner's `decompose_mission` tool, and the queue only advances when the
+active task passes the reward gate.
+
+**While it runs**, from another terminal:
+
+```bash
+openral prompt "put the pen back in the cup"
+```
+
+This publishes one `PromptStamped` on `/openral/prompt_in/cli`; the
+prompt-router fans it out to `/openral/prompt` for the reasoner. It needs a
+sourced ROS 2 install.
+
+By default a prompt arriving mid-mission is treated as **conversational
+context** — an answer to a reasoner question, or a hint — and does *not*
+rebuild the task queue. To replace the current mission outright:
+
+```bash
+openral prompt --new-goal "stop that, clear the table instead"
+```
+
+On a cold-booted graph the router may not have discovered the publisher yet;
+`--discovery-wait-s 15` covers the stale-shared-memory case the 5 s default
+does not.
+
+**From the dashboard**, using the prompt box on the live pane, which posts to
+the same path as the CLI.
+
 ### Optional reward monitor
 
 `deploy run` can bring up the same reward/progress monitor as `deploy sim`:
@@ -326,4 +433,7 @@ mode).
 
 - [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) — DeployScene / SimScene / BenchmarkScene tiers.
 - [`openral dashboard` quickstart](../../quickstart/dashboard.md).
+- [Reasoner (S2) reference](../../reference/reasoner.md) — tool palette, bounded
+  replanning, missions and memory.
+- [Your first sim rollout](../sim/first-rollout.md) — the no-hardware path.
 - `openral detect` — auto-generate `robot.yaml` by probing USB devices and sensors.
