@@ -393,8 +393,8 @@ class TestManifestWiring:
 # ── ADR-0102 slot groups ──────────────────────────────────────────────────────
 
 
-def _restock_slot_group(tick: int = 1) -> list[Action]:
-    """The four actions `_dispatch_slots` emits for the restock contract.
+def _bimanual_slot_group(tick: int = 1) -> list[Action]:
+    """The four actions `_dispatch_slots` emits for the bimanual contract.
 
     Mirrors `rskill_runner_node._dispatch_slots` exactly: arm slots are padded
     to full dof with zeros at joints they do not own and carry the manifest's
@@ -440,7 +440,7 @@ def _restock_slot_group(tick: int = 1) -> list[Action]:
 class TestSlotGroupDispatch:
     """A slot-dispatched tick must reach all four controllers, correctly sliced.
 
-    This is the contract `rskill-pi05-openarm-restock_shelf-bf16` needs: four
+    This is the contract a bimanual OpenArm policy needs: four
     typed actions per tick, none of which is a whole-robot command, reassembled
     into the one 16-DoF vector the bimanual bringup is driven by.
     """
@@ -449,7 +449,7 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _restock_slot_group():
+        for action in _bimanual_slot_group():
             hal.send_action(action)
         left_arm, left_grip, right_arm, right_grip = hal.command_topics()
         assert recorder.by_topic(left_arm)["joint_targets"] == [[0.0, 1, 2, 3, 4, 5, 6]]
@@ -463,7 +463,7 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _restock_slot_group()[:3]:
+        for action in _bimanual_slot_group()[:3]:
             hal.send_action(action)
         assert recorder.sent == []
 
@@ -472,8 +472,8 @@ class TestSlotGroupDispatch:
         # `slots:` block is reordered must land identically.
         forward, reverse = _Recorder(), _Recorder()
         for recorder, group in (
-            (forward, _restock_slot_group()),
-            (reverse, list(reversed(_restock_slot_group()))),
+            (forward, _bimanual_slot_group()),
+            (reverse, list(reversed(_bimanual_slot_group()))),
         ):
             hal = OpenArmRealHAL(publish_fn=recorder)
             hal.connect()
@@ -486,10 +486,10 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _restock_slot_group(tick=1)[:2]:
+        for action in _bimanual_slot_group(tick=1)[:2]:
             hal.send_action(action)
         with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
-            hal.send_action(_restock_slot_group(tick=2)[0])
+            hal.send_action(_bimanual_slot_group(tick=2)[0])
         assert recorder.sent == []
 
     def test_a_dropped_slot_costs_one_tick_not_the_run(self, both_buses_up: Path) -> None:
@@ -501,9 +501,9 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _restock_slot_group(tick=1)[:2]:
+        for action in _bimanual_slot_group(tick=1)[:2]:
             hal.send_action(action)
-        tick2 = _restock_slot_group(tick=2)
+        tick2 = _bimanual_slot_group(tick=2)
         with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
             hal.send_action(tick2[0])
         for action in tick2[1:]:
@@ -522,12 +522,12 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _restock_slot_group(tick=1)[:2]:
+        for action in _bimanual_slot_group(tick=1)[:2]:
             hal.send_action(action)
         with pytest.raises(ROSEStopRequested):
             hal.estop()
         hal.connect()
-        for action in _restock_slot_group(tick=2):
+        for action in _bimanual_slot_group(tick=2):
             hal.send_action(action)  # no incomplete-group raise
         assert recorder.by_topic(hal.command_topics()[1])["joint_targets"] == [[7.0]]
 
@@ -537,7 +537,7 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        group = _restock_slot_group()
+        group = _bimanual_slot_group()
         group[0] = group[0].model_copy(update={"joint_names": None})
         with pytest.raises(ROSConfigError, match="no joint_names"):
             for action in group:
@@ -548,7 +548,7 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        group = _restock_slot_group()
+        group = _bimanual_slot_group()
         # Drop the right arm from its slot's declared names: the group now
         # covers 9 of 16 joints, so publishing would strand the rest.
         group[2] = group[2].model_copy(update={"joint_names": ["right_joint1"]})

@@ -5,10 +5,9 @@
 # (real SO-101 "pass the pen" teleop, ~22.4k frames), two cameras: arm-mounted
 # ("wrist") and front/overview ("front").
 #
-# Sibling rskills/smolvla-so101-pen wraps a SmolVLA checkpoint on the same
-# task; this ACT policy (resnet18 backbone, VAE, chunk_size=100) is a smaller,
-# faster, ONNX/TRT-friendly alternative — plain CNN+transformer, no
-# VLM/flow-matching, exports whole-model to a single ONNX graph (see
+# This ACT policy (resnet18 backbone, VAE, chunk_size=100) is a small,
+# fast, ONNX/TRT-friendly plain CNN+transformer, no VLM/flow-matching,
+# exports whole-model to a single ONNX graph (see
 # rskills/act-so101-pen/README.md, "ONNX / TensorRT").
 #
 # UNITS — degrees: trained on LeRobot SO-101 teleop in joint DEGREES
@@ -127,9 +126,9 @@ description: >
   ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a
   real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec,
   latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in
-  joint degrees) from two RGB views (front/overview + wrist). A smaller,
-  faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101-pen-bf16; the
-  whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
+  joint degrees) from two RGB views (front/overview + wrist). A small, fast,
+  ONNX/TensorRT-friendly plain CNN+transformer policy; the whole model
+  exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
 
 # Action vocabulary for the reasoner LLM tool palette.
 actions:

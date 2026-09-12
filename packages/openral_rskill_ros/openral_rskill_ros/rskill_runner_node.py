@@ -2740,7 +2740,7 @@ def _slot_joint_names(slot: Any) -> list[str] | None:
     it. Carrying the manifest's own ``ActionSlot.joint_names` through onto the
     ``Action`` (and across the wire) makes a sub-slot chunk self-describing,
     which is what lets a consumer route two SAME-MODE joint slots — the shape
-    the OpenArm v2 bimanual restock contract and ``gr00t-n17-b1k`` both have.
+    the OpenArm v2 bimanual contract and ``gr00t-n17-b1k`` both have.
 
     ``None`` (slot declared no names) preserves the pre-0102 meaning: a
     whole-vector action in ``RobotDescription.joints`` order.

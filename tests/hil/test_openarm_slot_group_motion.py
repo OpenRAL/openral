@@ -38,11 +38,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.hil.conftest import _can_links_up
+from tests.hil.conftest import _can_links_up, _installed_slot_rskill
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-RSKILL = REPO_ROOT / "rskills" / "rskill-pi05-openarm-restock_shelf-bf16" / "rskill.yaml"
+RSKILL = _installed_slot_rskill("openarm")
 
 _CAN_LINKS = ("openarm_left", "openarm_right")
 
@@ -80,12 +80,21 @@ requires_attended = pytest.mark.skipif(
         "physically at the E-stop"
     ),
 )
+requires_rskill = pytest.mark.skipif(
+    RSKILL is None,
+    reason=(
+        "no installed rSkill declares the openarm embodiment with a slot action "
+        "contract — the cell's policy is installed from its own Hub repo "
+        "(`openral rskill install <repo-id>`), not shipped in rskills/"
+    ),
+)
 
 
 @requires_can
 @requires_rclpy
 @requires_motion_optin
 @requires_attended
+@requires_rskill
 @pytest.mark.parametrize(
     "joint_index,joint_label",
     [
@@ -104,7 +113,7 @@ def test_one_slot_dispatched_tick_moves_only_the_joint_it_addresses(
     """Command measured-pose + delta on one joint; prove only that joint moved.
 
     Drives the production path end to end — `_dispatch_slots` over the
-    committed manifest, into `OpenArmRealHAL`, out through four real
+    installed manifest, into `OpenArmRealHAL`, out through four real
     `JointTrajectory` publishers to `openarm_bringup`'s controllers — and then
     reads the physical result back off `/joint_states`.
     """
@@ -120,6 +129,7 @@ def test_one_slot_dispatched_tick_moves_only_the_joint_it_addresses(
     pytest.importorskip("openral_rskill_ros", reason="needs the built ROS overlay")
     from openral_rskill_ros.rskill_runner_node import _dispatch_slots
 
+    assert RSKILL is not None  # narrowed by requires_rskill
     robot = RobotDescription.from_yaml(str(ROBOT))
     manifest = RSkillManifest.from_yaml(str(RSKILL))
 

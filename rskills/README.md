@@ -87,7 +87,6 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `molmoact2-so101-nf4` | molmoact2 | so100/so101_follower |
 | `openvla-oft-simpler-widowx-nf4` | openvla | widowx |
 | `pi05-libero-int8` | pi05 | franka_panda |
-| `rskill-pi05-openarm-restock_shelf-bf16` | pi05 | openarm |
 | `rldx1-ft-gr1-nf4` | rldx | gr1 |
 | `rldx1-ft-libero-nf4` | rldx | franka_panda |
 | `rldx1-ft-rc365-nf4` | rldx | panda_mobile |
@@ -99,8 +98,6 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `smolvla-maniskill-franka` | smolvla | franka_panda |
 | `smolvla-metaworld` | smolvla | sawyer |
 | `smolvla-robotwin` | smolvla | aloha_agilex |
-| `smolvla-so101-pen` | smolvla | so101_follower |
-| `smolvla-so101-pick-place-pen` | smolvla | so101_follower |
 | `rskill-smolvla-so101-eraser_place-bf16` | smolvla | so101_follower |
 | `smolvla-vlabench` | smolvla | franka_panda |
 | `xvla-libero` | xvla | franka_panda |
@@ -125,10 +122,10 @@ embodiment-agnostic.**
 
 ### Not on the Hub yet
 
-Eight in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
+Six in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
 invisible to `openral rskill search` and cannot be installed by repo id (loading
-them by in-tree name still works wherever their weights resolve). Six of the
-eight need only the wrapper repo published — their weights are third-party public
+them by in-tree name still works wherever their weights resolve). Each needs
+only the wrapper repo published — their weights are third-party public
 checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
 
 | in-tree skill | weights | to publish |
@@ -139,13 +136,6 @@ checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
 | `lingbot-vla2-robotwin` | `robbyant/lingbot-vla-v2-6b` | wrapper only |
 | `rskill-internvla_n1-mobile_base-vln-nf4` | `InternRobotics/InternVLA-N1-DualVLN` | wrapper only |
 | `rskill-sam2_1-any-grasped_object_mask-bf16` | `facebook/sam2.1-hiera-small` | wrapper only |
-| `rskill-pi05-openarm-restock_shelf-bf16` | none — `weights_uri` points at its own unpublished repo | **weights upload** |
-| `smolvla-so101-pen` | upstream `sapanostic/so_101_smolvla_pen_placement` is **gone** | unpublishable as-is |
-
-`smolvla-so101-pen` is the one genuine duplicate in this directory — same family,
-embodiment and task as `smolvla-so101-pick-place-pen`, whose weights are published
-and live. With its upstream deleted it cannot be loaded or republished, so it is
-the one entry worth dropping rather than publishing.
 
 Two OpenRAL-hosted NF4 prequant mirrors are also unpublished
 (`lingbot-vla-4b-robotwin-nf4`, `lingbot-vla-v2-6b-nf4`). Both LingBot manifests

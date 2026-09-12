@@ -1187,6 +1187,9 @@ class TestExpectedRepoName:
 
         # No evaluated_tasks/benchmarks → the name-tail author slug is recovered,
         # keeping two otherwise-identical skills distinct.
+        # Both ids are inline literals, not a load of the (now-removed) rskills/
+        # directories — kept as the regression case for the name-tail
+        # author-slug rule even though both skills have been removed from the tree.
         pen = self._vla(
             "openral/rskill-smolvla-so101-pen-bf16",
             embodiment_tags=["so101_follower"],
