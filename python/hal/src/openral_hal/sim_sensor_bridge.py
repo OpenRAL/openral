@@ -115,6 +115,7 @@ __all__ = [
     "collision_model_mesh_slop",
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
+    "grid_current_at",
     "initial_configuration_stop_record",
     "kernel_checked_body_ids",
     "occupied_cell_keys",
@@ -1633,6 +1634,41 @@ def voxel_backing_record(
     return record
 
 
+def _grid_stamp_ns(entry: Mapping[str, object]) -> int:
+    """The header stamp a cached grid geometry was published with, or -1."""
+    stamp = entry.get("stamp_ns")
+    return stamp if isinstance(stamp, int) else -1
+
+
+def grid_current_at(
+    history: Sequence[Mapping[str, object]], stamp_ns: int
+) -> Mapping[str, object] | None:
+    """The newest grid geometry whose header stamp is not after ``stamp_ns``.
+
+    A ``safety.collision`` line names its cell as an index into the grid the
+    KERNEL held when it tripped, and the kernel does not say which grid that
+    was. Decoding that index against the latest grid the bridge has received
+    is only right while the two are the same message — and they are not, as
+    soon as the base drifts across one lattice boundary: the published window
+    is snapped to the octree's cell boundaries (``build_lattice``), so a drift
+    that crosses one shifts the whole window by a cell and every index in the
+    newer grid names the cell one over. One cell is the whole grid resolution.
+
+    Picks by stamp, never by arrival: the grid current at ``stamp_ns`` is the
+    newest one stamped at or before it. ``None`` when nothing in ``history``
+    is old enough — the caller then has no grid it can honestly decode against
+    and must say so rather than fall back to a newer one.
+    """
+    best: Mapping[str, object] | None = None
+    for entry in history:
+        st = _grid_stamp_ns(entry)
+        if st < 0 or st > stamp_ns:
+            continue
+        if best is None or st > _grid_stamp_ns(best):
+            best = entry
+    return best
+
+
 def occupied_cell_keys(
     *,
     occupancy: Sequence[int] | Any,
@@ -2465,6 +2501,13 @@ class SimSensorBridge:
         # Geometry (not occupancy) of the last /openral/world_voxels grid, so a
         # `b=voxel_<n>` evidence line can be located in space at the stop.
         self._last_voxel_grid: dict[str, object] | None = None
+        # Recent grid geometries WITH their header stamps (#275). The kernel's
+        # evidence names a cell by index into the grid the kernel held; the
+        # grid current at the evidence stamp is what that index decodes
+        # against, and it is not always the latest one received. 32 at 10 Hz
+        # is ~3 s, well past the 500 ms evidence window.
+        self._voxel_grid_history: deque[dict[str, object]] = deque(maxlen=32)
+        self._last_grid_decode: dict[str, object] | None = None
         # #272: the occupancy of the last grid, kept ONLY so the next masking
         # attach can freeze it. A stop then asks whether its cell predates the
         # grasp -- the difference between a payload tripping on occupancy it
@@ -3956,10 +3999,11 @@ class SimSensorBridge:
         }
         # Retained for one masking attach only (#272), never for the record.
         self._last_voxel_occupancy = msg.occupancy  # type: ignore[attr-defined]  # reason: ROS subscription type
-        if self._attachment_voxel_updates_remaining <= 0:
-            return
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
         source_stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+        self._voxel_grid_history.append({**self._last_voxel_grid, "stamp_ns": source_stamp_ns})
+        if self._attachment_voxel_updates_remaining <= 0:
+            return
         transparent_stamp_ns = self._attachment_transparent_depth_stamp_ns
         if transparent_stamp_ns is None or source_stamp_ns <= transparent_stamp_ns:
             return
@@ -4063,6 +4107,8 @@ class SimSensorBridge:
         self._candidate_action_sub = None
         self._safety_failure_sub = None
         self._last_voxel_grid = None
+        self._voxel_grid_history.clear()
+        self._last_grid_decode = None
         self._last_voxel_occupancy = None
         self._preattach_cells = None
         self._preattach_truncated = False
@@ -4273,8 +4319,8 @@ class SimSensorBridge:
         has been seen, or when the evidence is too old to attribute.
         """
         evidence = self._last_collision_evidence
-        grid = self._last_voxel_grid
-        if evidence is None or grid is None:
+        latest = self._last_voxel_grid
+        if evidence is None or latest is None:
             return None
         name = evidence.get("link_b_or_object")
         if not isinstance(name, str) or not name.startswith("voxel_"):
@@ -4282,7 +4328,35 @@ class SimSensorBridge:
         index = name.removeprefix("voxel_")
         if not index.isdigit():
             return None
-        return {"index": int(index), **grid}
+        # The grid the KERNEL held is the one current at the evidence stamp,
+        # not the newest one here (#275). Both decodes are recorded so a
+        # divergence is a visible fact on the record rather than a silent
+        # one-cell error in every `world_xyz` (`grid_decode` in the backing).
+        from typing import cast
+
+        evidence_stamp = _grid_stamp_ns(evidence)
+        matched = grid_current_at(self._voxel_grid_history, evidence_stamp)
+        latest_stamp = (
+            _grid_stamp_ns(self._voxel_grid_history[-1]) if self._voxel_grid_history else None
+        )
+        chosen: Mapping[str, object] = matched if matched is not None else latest
+        matched_stamp = None if matched is None else _grid_stamp_ns(matched)
+        # The origin tuples are built by `_on_attachment_world_voxels` in this
+        # module, three floats each; the cast states that rather than widening
+        # the cache's type for one read.
+        self._last_grid_decode = {
+            "evidence_stamp_ns": evidence_stamp,
+            "decode_grid_stamp_ns": matched_stamp,
+            "latest_grid_stamp_ns": latest_stamp,
+            "decode_is_latest": matched_stamp is None
+            or latest_stamp is None
+            or matched_stamp == latest_stamp,
+            "decode_origin": list(cast("tuple[float, float, float]", chosen["origin"])),
+            "latest_origin": list(cast("tuple[float, float, float]", latest["origin"])),
+            "resolution_m": float(cast("float", chosen["resolution"])),
+            "fallback_to_latest": matched is None,
+        }
+        return {"index": int(index), **{k: v for k, v in chosen.items() if k != "stamp_ns"}}
 
     def _late_voxel_backing(self) -> dict[str, object] | None:
         """What backs the tripping cell, probed when the evidence arrived late.
@@ -4422,6 +4496,8 @@ class SimSensorBridge:
         verdict["attach_revision"] = self._preattach_revision
         verdict["frozen_stamp_ns"] = self._preattach_stamp_ns
         backing["preattach"] = verdict
+        if self._last_grid_decode is not None:
+            backing["grid_decode"] = dict(self._last_grid_decode)
         return backing
 
     def _depth_excluded_body_ids(self) -> frozenset[int]:

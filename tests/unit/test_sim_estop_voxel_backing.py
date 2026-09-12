@@ -32,6 +32,7 @@ from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
     collision_model_mesh_slop,
     estop_ground_truth_snapshot,
+    grid_current_at,
     occupied_cell_keys,
     preattach_verdict,
     voxel_backing_for_cell,
@@ -888,3 +889,62 @@ def test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it() -> No
     assert record["verdict"] == "solid_world", (
         "real geometry outranks the payload: this cell is explained by the counter"
     )
+
+
+# --- #275: decode the kernel's index against the grid the KERNEL held --------
+
+
+def test_the_decode_grid_is_chosen_by_stamp_not_by_arrival() -> None:
+    """Newest grid at or before the evidence stamp — never a later one.
+
+    The published window is snapped to the octree's cell boundaries, so a
+    base drift across one boundary shifts the whole window by a cell and the
+    same index names a different cell in the next message. Decoding against
+    the latest grid is then one full cell wrong, silently, on every record.
+    """
+    hist = [
+        {"stamp_ns": 100, "origin": (0.0, 0.0, 0.0)},
+        {"stamp_ns": 200, "origin": (0.0, 0.0, 0.0)},
+        {"stamp_ns": 300, "origin": (-0.05, 0.0, 0.0)},  # window shifted one cell
+    ]
+    assert grid_current_at(hist, 250)["stamp_ns"] == 200
+    assert grid_current_at(hist, 200)["stamp_ns"] == 200, "at-or-before, inclusive"
+    assert grid_current_at(hist, 999)["stamp_ns"] == 300
+    assert grid_current_at(hist, 50) is None, "nothing old enough: say so, do not use a newer one"
+    assert grid_current_at([], 250) is None
+    # Out-of-order arrival must not matter: stamp decides.
+    assert grid_current_at(list(reversed(hist)), 250)["stamp_ns"] == 200
+
+
+def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() -> None:
+    """The arithmetic the whole hazard rests on, pinned once.
+
+    Same index, two grids whose origins differ by one resolution in x: the
+    decoded world positions differ by exactly that. That is the error every
+    `world_xyz` carries when the wrong grid is used, and it is one whole cell.
+    """
+    model, data = _model_data()
+    index = _index_at((0.3, 0.0, 0.145))
+    shifted = (_GRID_ORIGIN[0] - _GRID_RES, _GRID_ORIGIN[1], _GRID_ORIGIN[2])
+    a = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    b = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=shifted,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    delta = [b["world_xyz"][k] - a["world_xyz"][k] for k in range(3)]  # type: ignore[index]
+    assert delta == pytest.approx([-_GRID_RES, 0.0, 0.0], abs=1e-9)
