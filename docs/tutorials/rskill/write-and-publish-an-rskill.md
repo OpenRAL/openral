@@ -62,7 +62,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 | `embodiment_tags` | Must match a robot's `RobotCapabilities.embodiment_tags`. |
 | `sensors_required` | Modality + `vla_feature_key` + min resolution per camera. |
 | `actuators_required` | Each entry needs `control_mode_semantics` (e.g. `mode: absolute`). |
-| `runtime` / `quantization` | `pytorch` / `onnx` / `tensorrt`; `dtype` + `min_vram_gb`. |
+| `runtime` / `quantization` | `pytorch` / `onnx` / `tensorrt`; `dtype` + `min_vram_gb`. See [Quantize an rSkill](quantize-an-rskill.md). |
 | `weights_uri` | `hf://<owner>/<repo>` — the rSkill does **not** copy weights. |
 | `chunk_size` / `n_action_steps` | Action-chunk size and replan cadence. |
 | `latency_budget.per_chunk_ms` | Contractual — enforced by sim-tier latency tests. |
