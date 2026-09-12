@@ -10291,6 +10291,17 @@ class CollisionEvidence(_FailureEvidenceBase):
             kernel never checked. Empty only on a record emitted before the field
             existed: a kernel that reports a collision has a collision model by
             construction, and its FK buffer is always ``n_dof`` long.
+        world_grid_origin_m: Base-frame position of voxel ``(0,0,0)``'s minimum
+            corner in the occupancy grid **this check ran against**, when the
+            other party is a world voxel; ``None`` otherwise and on any
+            producer that predates the field. The kernel names its cell only
+            as ``voxel_<n>``, an index into a grid it does not republish, so a
+            consumer has to pair that index with a grid of its own — and the
+            published window is snapped to the source lattice, so a base drift
+            across one cell boundary shifts the whole window and the same index
+            names a different cell. Matching on a stamp cannot separate two
+            grids inside one clock tick (`/clock` quantises every stamp in the
+            graph to the tick); matching on this origin is exact.
     """
 
     #: Sentinel ``horizon_step`` for a reactive (measured-state) collision.
@@ -10303,6 +10314,7 @@ class CollisionEvidence(_FailureEvidenceBase):
     horizon_step: int = Field(ge=REACTIVE_HORIZON_STEP)
     min_distance_m: float
     joint_positions_rad: list[float] = Field(default_factory=list)
+    world_grid_origin_m: tuple[float, float, float] | None = None
 
     @property
     def is_reactive(self) -> bool:
