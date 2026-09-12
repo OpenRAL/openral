@@ -10,14 +10,16 @@ MEAN_STD sidecars, applied by the ACT adapter): the graph takes already-normaliz
 images + state and emits normalized actions. Parity checked in
 ``tests/integration/test_act_onnx.py``.
 
-Inputs ordered by ``config.image_features`` (so101-passing-pen: ``[wrist, front]``)
-plus 6-D state. gabrycina/so101-passing-pen-policy trains at 480x640.
+Inputs ordered by ``config.image_features`` (checkpoint-dependent — two RGB
+streams for libero-test-act) plus the checkpoint's declared state dim (8-D
+for libero-test-act, per ``rskills/act-libero/rskill.yaml``). Deepkar/libero-test-act
+trains at 256x256.
 
 Usage (project venv; already has torch + lerobot + onnx):
 
     uv run python tools/export_act_onnx.py \
-        --repo-id gabrycina/so101-passing-pen-policy \
-        --out rskills/act-so101-pen/model.onnx
+        --repo-id Deepkar/libero-test-act \
+        --out rskills/act-libero/model.onnx
 """
 
 from __future__ import annotations
@@ -201,7 +203,7 @@ def export(out_path: Path, repo_id: str, *, device: str = "cpu", preprocess: str
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo-id", default="gabrycina/so101-passing-pen-policy")
+    ap.add_argument("--repo-id", default="Deepkar/libero-test-act")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--device", default="cpu")
     ap.add_argument(
