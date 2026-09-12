@@ -4450,6 +4450,14 @@ class SimSensorBridge:
                     for g in self._voxel_grid_history
                 }
             ),
+            # The trail itself, newest last, so the per-frame window shift is a
+            # number in cells rather than a count. Measured 2026-09-12: the
+            # window moved on 24 of 32 frames during a fridge place, so which
+            # grid the kernel held inside one publish period decides the cell.
+            "recent_origins": [
+                [_grid_stamp_ns(g), *cast("tuple[float, float, float]", g["origin"])]
+                for g in list(self._voxel_grid_history)[-6:]
+            ],
         }
         return {"index": int(index), **{k: v for k, v in chosen.items() if k != "stamp_ns"}}
 
