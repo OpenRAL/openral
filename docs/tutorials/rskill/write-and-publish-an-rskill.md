@@ -148,18 +148,39 @@ every in-tree and installed rSkill.
 
 ## 5. (Optional) Produce reproducible eval results
 
-If your skill ships `eval/<benchmark>.json`, the canonical producer is a sim
-run against a paired scene config:
+`eval/<benchmark>.json` is written by the **benchmark** tier, not by
+`openral sim run`. `sim run` is a single ad-hoc rollout: it prints a summary
+and writes one to `--save-dir`, but it never touches your rSkill package.
+Use it to smoke-test the pairing, then produce the number with one of:
 
 ```bash
-openral sim run \
-  --config scenes/<your-config>.yaml \
+# Multi-scene suite (the canonical producer) — writes
+# rskills/<dir>/eval/<suite_id>.json.
+openral benchmark run --suite libero_spatial --rskill rskills/pi05-pick-cube
+
+# Single paper-protocol scene — writes
+# rskills/<dir>/eval/scene_<scene_id>.json.
+openral benchmark scene --config scenes/benchmark/<your-scene>.yaml \
   --rskill rskills/pi05-pick-cube
 ```
 
-Results validate against `openral_core.SkillEvalResult`. Paper-cited numbers
-you haven't reproduced locally are allowed with `reproduced_locally: false`
-plus a `reproduction_cli` so others can rerun them.
+Both also write the resulting `avg_success_rate` back into your manifest at
+`benchmarks.<id>` (a surgical, comment-preserving edit). Two opt-outs:
+
+- `--no-update-manifest` — still write the eval JSON, leave the manifest alone.
+  Use it for read-only paper-number runs.
+- `--no-write-eval` (`benchmark scene` only) — fully non-mutating: the rollout
+  runs and prints its score, nothing is written to the package. Implies
+  `--no-update-manifest`.
+
+Results validate against
+[`openral_core.RSkillEvalResult`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
+(search for `class RSkillEvalResult`). Locally-produced results carry
+`reproduced_locally: true` and a `trace_id` deep-linking to the rollout's
+trace. Paper-cited numbers you haven't reproduced locally are allowed with
+`reproduced_locally: false` plus a `reproduction_cli` so others can rerun them.
+
+Roll every skill's results up with `openral benchmark report [--json]`.
 
 ## 6. Publish to the Hub
 
