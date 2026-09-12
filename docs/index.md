@@ -25,7 +25,17 @@ just test               # run the test suite
 **Get started**
 
 - [Quickstart — `openral doctor`](quickstart/index.md)
+- [Your first sim rollout](tutorials/sim/first-rollout.md) — a real policy driving a simulated robot, no GPU needed
 - [Development setup](contributing/development.md)
+
+**Tutorials**
+
+- [Your first sim rollout](tutorials/sim/first-rollout.md) — start here
+- [Create a sim environment](tutorials/sim/create-a-sim-environment.md) — author a scene, robot or adapter
+- [Run a benchmark](tutorials/benchmark/run-a-benchmark.md) — reproducible numbers, and what publishing one commits you to
+- [Write & publish an rSkill](tutorials/rskill/write-and-publish-an-rskill.md) — package a policy
+- [Quantize an rSkill](tutorials/rskill/quantize-an-rskill.md) — fit a VLA on an 8 GB card
+- [Deploy on a robot & open the dashboard](tutorials/deploy/deploy-run-and-dashboard.md) — real hardware
 
 **Understand the system**
 
