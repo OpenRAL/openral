@@ -75,17 +75,37 @@ def test_an_unusable_resolution_falls_back_to_the_shipped_default(
     """
     for bad in ("", "   ", "not-a-number", "0", "-0.015", "1.5"):
         monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", bad)
-        assert launch_module._octomap_resolution("sim") == 0.025, bad
+        assert launch_module._octomap_resolution("sim") == 0.015, bad
         assert launch_module._octomap_resolution("real") == 0.05, bad
 
 
-def test_without_the_override_the_shipped_defaults_are_unchanged(
+def test_the_shipped_defaults_are_15_mm_in_sim_and_50_mm_on_hardware(
     launch_module: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """#253's ruling, and the half of it that deliberately did NOT move.
+
+    Sim ships 15 mm: replayed on the real kernel over identical payload poses,
+    the DOP-only field-typical payload goes from 154 false stops of 182
+    genuinely-clear poses (box @ 25 mm) to 15 (refined @ 15 mm), every real
+    contact still caught. The terms ADD, so this only pays alongside #266 --
+    15 mm alone was 10%.
+
+    Real hardware stays at 50 mm because none of that evidence is about a real
+    map: sim rasterises a kitchen's own solid geometry, a real map comes from a
+    depth camera and is dilated by the octree->grid bridge, and its error
+    budget is larger. Moving it on sim evidence would be a reduction in
+    conservatism nobody measured. That asymmetry is the point of this test, so
+    a later edit cannot quietly bring the two into line.
+    """
     monkeypatch.delenv("OPENRAL_OCTOMAP_RESOLUTION_M", raising=False)
-    assert launch_module._octomap_resolution("sim") == 0.025
+    assert launch_module._octomap_resolution("sim") == 0.015
     assert launch_module._octomap_resolution("real") == 0.05
+    # 15 mm is the finest value that ships without touching `kMaxCells`:
+    # 141/axis is 2 803 221 against the 4 000 000 guard, where 12.5 mm needs
+    # 4 826 809 and is refused outright.
+    assert launch_module._world_voxel_max_cells(0.015) == 2803221
+    assert launch_module._world_voxel_max_cells(0.015) < 4_000_000
 
 
 def _load_tool(name: str) -> object:
