@@ -1,15 +1,12 @@
 # Your first sim rollout
 
-Get a real policy driving a real simulated robot, in one command, on a laptop
-with no GPU. This is the shortest path from a fresh clone to a rollout you can
-watch, measure and replay.
+A trained policy driving a simulated robot, in one command, on a laptop with
+no GPU.
 
-It uses **Diffusion Policy × PushT** deliberately: gym-pusht is a 2-D `pymunk`
-rigid-body environment with no MuJoCo render context to configure, the
-checkpoint runs on CPU, and both ship in the `sim` dependency group. Nothing
-here is a mock — it is the real
-[Diffusion Policy](https://arxiv.org/abs/2303.04137) checkpoint from the
-LeRobot Hub against the real benchmark environment.
+The pairing is [Diffusion Policy](https://arxiv.org/abs/2303.04137) × PushT,
+picked because it asks the least of your machine: gym-pusht is 2-D `pymunk`
+with no MuJoCo render context to configure, the checkpoint runs on CPU, and
+both ship in the `sim` dependency group.
 
 Already have a GPU and want the flagship pairing instead? Skip to
 [Step 6](#6-where-to-go-next).
@@ -247,7 +244,7 @@ config). Prefer the recipe.
 > versions, and `[tool.uv].conflicts` refuses the mix. Swap with
 > `just sync --group libero` / `just sync --group robocasa` per task.
 
-### Then
+### Further reading
 
 - **[Create a sim environment](create-a-sim-environment.md)** — author your own
   `SimScene` YAML, add a robot manifest, or write a scene / policy adapter.

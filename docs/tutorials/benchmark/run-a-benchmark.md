@@ -4,9 +4,6 @@
 answers "how well, under a protocol someone else can repeat?" — and it is the
 only tier that writes a result back into an rSkill package.
 
-This page covers the three benchmark commands, what each writes, and the
-guardrails that stop a number from being quietly wrong.
-
 Prerequisite: you can already complete
 [your first sim rollout](../sim/first-rollout.md).
 
@@ -122,17 +119,15 @@ A suite is auto-filtered to the tasks the rSkill declares in
 `benchmark_suite_task_filter` summary. Pick a task explicitly with `--task`
 that the manifest does not cover and the filter leaves nothing to run, so you
 get a typed `ROSCapabilityMismatch` instead of a rollout. `benchmark scene`
-applies the same gate to its single scene, and its message says why the gate
-exists:
+applies the same gate to its single scene, and its message says why:
 
 > the checkpoint was trained/validated for a different task; running it here
 > yields a plausible-looking rollout that cannot succeed
 
-This is the failure mode the gate exists for. A policy pointed at the wrong
-task still emits smooth, confident actions — it simply can never satisfy the
-success condition, and the resulting 0% reads like a bad model rather than a
-mispairing. If the checkpoint genuinely covers the task, add it to
-`evaluated_tasks` in the manifest.
+A policy pointed at the wrong task still emits smooth, confident actions. It
+simply can never satisfy the success condition, so the resulting 0% reads like
+a bad model rather than a mispairing. If the checkpoint genuinely covers the
+task, add it to `evaluated_tasks` in the manifest.
 
 A manifest with an **empty** `evaluated_tasks` skips the gate and logs
 `rskill_task_compat_undeclared`. Declare the field.

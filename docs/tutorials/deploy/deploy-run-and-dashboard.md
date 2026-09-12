@@ -30,9 +30,8 @@ The in-tree manifests are:
 | Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro` |
 | Humanoid | `g1`, `h1`, `gr1` |
 
-(Class is each manifest's `embodiment_kind`.)
-
-(`pusht_2d` is a sim-only scene-pseudo-robot and has no hardware path.)
+Class is each manifest's `embodiment_kind`. `pusht_2d` is omitted: it is a
+sim-only scene-pseudo-robot with no hardware path.
 
 ### Set a reasoner model — the graph will not plan without one
 
@@ -53,8 +52,8 @@ export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs 
 `cosmos3-edge` is the on-device option — no key, no cloud. `openral doctor`
 reports the resolved model, endpoint and whether a key is set as its
 `Reasoner LLM` row; an unset model shows `absent`. An uncurated raw model id
-also works but needs an explicit `OPENRAL_REASONER_ENDPOINT` and
-`OPENRAL_REASONER_DIALECT`, and is warned about at every layer. Full matrix:
+works too, but needs an explicit `OPENRAL_REASONER_ENDPOINT` and
+`OPENRAL_REASONER_DIALECT`, and warns on every tick. Full matrix:
 [`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
 and the [reasoner reference](../../reference/reasoner.md).
 

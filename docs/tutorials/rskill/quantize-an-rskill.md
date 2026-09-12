@@ -1,9 +1,7 @@
 # Quantize an rSkill to fit your GPU
 
 Most VLA checkpoints are published at bf16 or fp32 and assume a datacentre
-card. Quantization is how OpenRAL runs them on 8 GB-class hardware. This page
-covers what the manifest's `quantization` block means, the two ways weights get
-quantized, and how to publish a pre-quantized checkpoint of your own.
+card. Quantization is how OpenRAL runs them on 8 GB-class hardware.
 
 Quantization is never silent: it is declared in the manifest, reported in logs
 and traces, and gated by the host's capabilities
