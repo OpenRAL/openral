@@ -93,9 +93,35 @@ runtime path.
                              <scene>_<rskill>_<success|fail>.mp4 + videos.json
                              (for website hero clips; overlays drawn by the page).
 --video-size INT             Square edge (px) for --video-style world (default 1024).
---view / --no-view           Open a passive mujoco.viewer.
---verbose / -v               DEBUG logging.
+--n-action-steps N           Override the chunk-replay cadence. Precedence:
+                             spec_extra > manifest > checkpoint chunk_size.
+--dataset-out DIR            Write a LeRobotDataset v3.0 as the run proceeds.
+                             Every episode (success or failure) becomes rows;
+                             meta/info.json carries the success rate. The path
+                             MUST NOT pre-exist — lerobot v3 refuses to write
+                             into a populated root. See §6.
+--dataset-repo-id ID         Repo id stamped into the produced dataset's
+                             meta/info.json (default openral/dataset-<robot_id>).
+                             Not pushed — `openral dataset push` owns publishing.
+--dataset-license SPDX       License for the produced dataset (default CC-BY-4.0).
+--dashboard                  Boot `openral dashboard` as a child process, point
+                             OTel at it, and shut it down on exit.
+--dashboard-port N           Port for that spawned dashboard (default 4318).
+--dry-run                    Resolve the config + rSkill, run the embodiment /
+                             sensor compatibility gate, print the planned run,
+                             and exit — no sim built, no weights fetched.
+                             Non-zero exit if the pairing is incompatible.
+--view / --no-view           Passive mujoco.viewer window. Tri-state: unset =
+                             on when a display exists and the scene is
+                             MuJoCo-backed, else auto-off with a WARNING;
+                             --view requires a window (errors loud if
+                             unsupported); --no-view forces offscreen.
+                             Incompatible with MUJOCO_GL=egl.
+--verbose / -v               Verbose logging.
 ```
+
+`--dry-run` is the cheapest way to check a (scene, rSkill) pairing — it runs the
+same embodiment / sensor gate a real run does, without downloading weights.
 
 ### Canonical invocation
 
@@ -113,8 +139,8 @@ path; supply the scene + task in the YAML.
 
 Beyond the two required flags, the remaining options — `--robot` (only
 on free-axis scenes), `--task`, `--instruction`, `--max-steps`,
-`--n-episodes`, `--seed`, `--device`, `--save-dir`, `--save-video` —
-**overlay** the loaded config (see `_load_or_build_env` in
+`--n-episodes`, `--n-action-steps`, `--seed`, `--device`, `--save-dir`,
+`--save-video` — **overlay** the loaded config (see `_load_or_build_env` in
 [`cli.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/cli.py)),
 so a single YAML can drive an entire task suite:
 
