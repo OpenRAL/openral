@@ -2611,6 +2611,61 @@ from real geometry, and `sink_cup/r08` is a `panda_link7` stop **61.16 mm** clea
 of anything, which no budget on this page explains.
 
 
+### 2026-09-12 (later) — the `attached_payload` verdict was largely an instrument artefact
+
+The census above rests on `voxel_backing_record`'s `attached_payload` verdict.
+**That verdict was wrong on the normal case**, and the correction removes most
+of what the 2026-09-09 census attributed to a payload leak.
+
+`voxel_backing_record` runs a coincident-shell sweep — the second look that
+finds a collidable slab hiding behind a decoration shell, which is every
+RoboCasa counter and shelf. It is consulted only when the ray fans found no
+collidable **world** geometry, and the condition implementing that excluded
+`robot_body_ids` alone. **An attached payload is in neither the world nor the
+robot**, so a collidable payload geom suppressed the sweep exactly as a world
+geom would, while satisfying none of the reasoning that makes suppression safe:
+"a cell whose world backing the rays already found is left alone" is not true of
+a cell whose only collidable hit is the object the robot is holding.
+
+The result is a false `attached_payload` on a payload resting on its support —
+both in one cell, which is the *normal* configuration at a pick or a place.
+
+**Measured**, `fridge` gate-ON, 6 rounds each arm, same build otherwise:
+
+| | stops | `attached_payload` | `solid_world` |
+| --- | ---: | ---: | ---: |
+| before the fix | 6 | **3** | 3 |
+| after the fix | 4 | **0** | 4 |
+
+Two post-fix stops report `['attached_payload', 'solid_world']` — payload and
+shelf both in the cell, real geometry correctly outranking.
+
+**The baseline was self-contradictory on its face**, which is the part that
+should have been caught without a battery: two of its three `attached_payload`
+stops had certified true gaps of **−2.30 mm and −4.27 mm**, i.e. the payload was
+*inside* real geometry while its cell reportedly held only the payload.
+
+Fisher on 3/6 vs 0/4 is `p ≈ 0.2` and these are different stops under policy
+noise — the comparison alone would not carry this. What carries it is the
+mechanism, pinned directly against compiled MuJoCo in
+`test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it`, which
+fails before the change and passes after.
+
+**What this does to #272.** Its premise does not survive. The payload leak is
+not established; `preexisting: true` still holds but means little once the cell
+legitimately contains the support surface — that is an ordinary correct stop
+near a support, not a map defect.
+
+**Three attempts at an offline paired re-adjudication failed**, and the last
+failure is a fact about the record rather than the harness: the cube's world
+axes were not stored, only its centre, and at 25 mm cells a geom centred ~44 mm
+out (`fridge-on/r06`) reaches inside on one orientation and not another. The
+record now carries `cube_rot_world`. Until a replay-style offline adjudicator
+is built on it, **a live battery cannot answer a geometry question at this
+effect size** — 6 rounds an arm cannot separate 3/6 from 0/4, where the #268
+replay separated 154 from 15 on 182 poses.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts

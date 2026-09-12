@@ -849,3 +849,42 @@ def test_a_non_unit_grid_quaternion_yields_no_set_rather_than_identity() -> None
     )
     assert keys == frozenset()
     assert truncated is False
+
+
+def test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it() -> None:
+    """A carried payload is neither world nor robot, and the sweep must know it.
+
+    The coincident-shell sweep runs only when the ray fans found no collidable
+    **world** geometry, because a cell whose world backing the rays already
+    found needs no second look. The condition that implements that excludes
+    ``robot_body_ids`` — and an attached payload is in neither set, so a
+    collidable payload geom suppressed the sweep exactly as a world geom would,
+    while satisfying none of the reasoning that makes suppression safe.
+
+    The consequence is a **false** ``attached_payload`` verdict: the cell reads
+    as holding only the carried object when it also holds a counter slab the
+    fans cannot see through its own visual shell. That is the verdict #272 is
+    built on, so it has to mean what it says — a payload resting on a surface
+    is the *normal* case, not a corner one, and it is exactly when both are in
+    one cell.
+    """
+    model, data = _model_data()
+    cup_body = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "carried_cup"))
+    adr = int(model.jnt_qposadr[int(model.body_jntadr[cup_body])])
+    # Into the cell that holds `counter_2_right_group`'s coincident
+    # visual-plus-collidable pair — the shape the sweep exists for.
+    cell_base = (0.625, 0.025, 0.225)
+    data.qpos[adr : adr + 3] = [cell_base[0], cell_base[1], cell_base[2] + 0.18]
+    mujoco.mj_forward(model, data)
+
+    record = _backing(model, data, cell_base, attached=frozenset({cup_body}))
+    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[index,union-attr]
+
+    assert "cup_body" in names, "the payload really is in this cell"
+    assert record["collidable_overlap_swept"] is True, (
+        "a payload is not world geometry, so its presence must not suppress the sweep"
+    )
+    assert "counter2_top_0" in names, "the collidable slab sharing the cell must be found"
+    assert record["verdict"] == "solid_world", (
+        "real geometry outranks the payload: this cell is explained by the counter"
+    )

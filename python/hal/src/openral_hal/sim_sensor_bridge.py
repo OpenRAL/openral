@@ -1550,6 +1550,15 @@ def voxel_backing_record(
     record["voxel_ijk"] = [int(ix), int(iy), int(iz)]
     record["base_xyz"] = [round(float(v), 6) for v in centre_base]
     record["world_xyz"] = [round(float(v), 6) for v in centre_world]
+    # The cube's world AXES, not just its centre. A centre alone does not
+    # reproduce the cube: at 25 mm cells the half-diagonal is 21.65 mm, and a
+    # geom whose centre sits ~44 mm out (measured, 2026-09-12 `fridge-on/r06`)
+    # reaches inside on one orientation and not on another. Re-adjudicating a
+    # recorded stop offline — replaying the state and asking the cube again,
+    # which is how a verdict gets checked after the fact — was impossible
+    # without this, so a fix to the classifier could only ever be compared
+    # across DIFFERENT stops.
+    record["cube_rot_world"] = [[round(float(v), 9) for v in row] for row in cube_rot]
 
     hits, cast, hit_count = _voxel_cube_hits(
         model,
@@ -1565,16 +1574,26 @@ def voxel_backing_record(
     # The rays cannot see a collidable geom coincident with a decoration shell
     # (every RoboCasa counter top). Consulted only when they found no
     # collidable **world** geometry — covering (1) nothing solid at all (the
-    # coincident-shell case this was added for), and (2) solid geometry that
-    # is all ROBOT — the `self_occupancy_suspect` signature, genuinely
-    # ambiguous on 27 rays between "the cell holds the robot" and "the cell
-    # holds the robot *and* a world surface the fans missed" (2026-09-07,
-    # `fridge-s2`: 15 of 27 rays, `robot0_link2_collision`, no world geom
-    # found — no way to tell which). A cell whose world backing the rays
-    # already found is left alone, so this cannot change a verdict the ray
-    # pass got right.
+    # coincident-shell case this was added for), (2) solid geometry that is all
+    # ROBOT — the `self_occupancy_suspect` signature, genuinely ambiguous on 27
+    # rays between "the cell holds the robot" and "the cell holds the robot
+    # *and* a world surface the fans missed" (2026-09-07, `fridge-s2`: 15 of 27
+    # rays, `robot0_link2_collision`, no world geom found — no way to tell
+    # which) — and (3) solid geometry that is all CARRIED PAYLOAD, for the same
+    # reason and found the same way (#272).
+    #
+    # An attached payload is in neither the world nor the robot, and leaving it
+    # out of this condition suppressed the sweep exactly as a world geom would
+    # while satisfying none of the reasoning that makes suppression safe: "a
+    # cell whose world backing the rays already found is left alone" is not true
+    # of a cell whose only collidable hit is the object the robot is holding.
+    # The result was a FALSE `attached_payload` verdict on the normal case — a
+    # payload resting on a surface, both in one cell — which is the verdict
+    # #272's whole census is built on.
     swept = not any(
-        _geom_is_collidable(model, geom) and int(model.geom_bodyid[geom]) not in robot_body_ids
+        _geom_is_collidable(model, geom)
+        and int(model.geom_bodyid[geom]) not in robot_body_ids
+        and int(model.geom_bodyid[geom]) not in attached_body_ids
         for geom in hits
     )
     record["collidable_overlap_swept"] = swept
