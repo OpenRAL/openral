@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
+    attached_model_slip,
     collision_model_mesh_slop,
     estop_ground_truth_snapshot,
     grid_current_at,
@@ -948,3 +949,77 @@ def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() ->
     )
     delta = [b["world_xyz"][k] - a["world_xyz"][k] for k in range(3)]  # type: ignore[index]
     assert delta == pytest.approx([-_GRID_RES, 0.0, 0.0], abs=1e-9)
+
+
+# --- #275: the kernel's payload placement against the real one --------------
+
+
+def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -> None:
+    """Attach the cup to a link with a pose_in_link that matches, then move the
+    cup 30 mm without telling the kernel: the record must say 30 mm.
+
+    The kernel places a payload by FK from `attach_link` and a fixed
+    `pose_in_link`; nothing in its inputs changes when the real body moves in
+    the gripper. That gap is charged as collision depth against cells the body
+    is not in, and until now no record carried it.
+    """
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        CapsuleShape,
+        Pose6D,
+    )
+
+    model, data = _model_data()
+    link = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "robot0_link2"))
+    cup = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "carried_cup"))
+    mujoco.mj_forward(model, data)
+    link_rot = data.xmat[link].reshape(3, 3)
+    rel = link_rot.T @ (data.xpos[cup] - data.xpos[link])
+
+    def _prim(object_id: str) -> AttachedCollisionPrimitive:
+        # The primitive's frame must name its owner: the schema refuses a mismatch.
+        return AttachedCollisionPrimitive(
+            shape=CapsuleShape(radius_m=0.03, length_m=0.01),
+            pose_in_object=Pose6D(
+                frame_id=object_id, xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)
+            ),
+        )
+
+    obj = AttachedCollisionObject(
+        object_id="sim:carried_cup",
+        attach_link="robot0_link2",
+        touch_links=["robot0_link2"],
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        stamp_ns=1,
+        pose_in_link=Pose6D(
+            frame_id="robot0_link2",
+            xyz=tuple(float(v) for v in rel),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ),
+        primitives=[_prim("sim:carried_cup")],
+    )
+    exact = attached_model_slip(model, data, description=None, attached_objects=[obj])
+    assert exact[0]["resolved"] is True
+    assert exact[0]["slip_m"] == pytest.approx(0.0, abs=1e-9)
+
+    adr = int(model.jnt_qposadr[int(model.body_jntadr[cup])])
+    data.qpos[adr] += 0.03
+    mujoco.mj_forward(model, data)
+    slipped = attached_model_slip(model, data, description=None, attached_objects=[obj])
+    assert slipped[0]["slip_m"] == pytest.approx(0.03, abs=1e-6)
+
+    ghost = AttachedCollisionObject(
+        object_id="sim:no_such_body",
+        attach_link="robot0_link2",
+        touch_links=["robot0_link2"],
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        stamp_ns=1,
+        pose_in_link=obj.pose_in_link,
+        primitives=[_prim("sim:no_such_body")],
+    )
+    unresolved = attached_model_slip(model, data, description=None, attached_objects=[ghost])
+    assert unresolved[0]["resolved"] is False, "a missing number is stated, never a silent zero"

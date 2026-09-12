@@ -111,6 +111,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SimSensorBridge",
+    "attached_model_slip",
     "candidate_chunk_digest",
     "collision_model_mesh_slop",
     "constant_scan_no_hit_ranges",
@@ -1667,6 +1668,82 @@ def grid_current_at(
         if best is None or st > _grid_stamp_ns(best):
             best = entry
     return best
+
+
+def attached_model_slip(
+    model: Any,
+    data: Any,
+    *,
+    description: Any,
+    attached_objects: Sequence[Any],
+) -> list[dict[str, object]]:
+    """Where the KERNEL thinks each carried payload is, against where it is.
+
+    The kernel never sees the payload. It sees ``attach_link`` and a
+    ``pose_in_link`` fixed at the attach, and places the payload by forward
+    kinematics from there on every check. The simulator meanwhile moves the
+    real body -- and a payload can slip in the gripper, settle, or be pushed,
+    after which the kernel is checking a model that is no longer where the
+    object is. Every millimetre of that is charged as collision depth against
+    cells the real object is nowhere near (#275: stops reporting 31-36 mm
+    against certified gaps of ~0 mm, on a cell the mesh only touches, with the
+    payload's own DOP overhang measured at <= 6.4 mm -- nothing about the
+    geometry could explain it, which leaves the pose).
+
+    Computed the way the kernel computes it, from the same ``pose_in_link``,
+    composed onto the attach link's live simulated pose, and compared with the
+    attached body's live simulated pose. Pure: no rclpy. One record per
+    attached object; an object whose attach link or body cannot be resolved is
+    reported with ``resolved: False`` rather than dropped, so a missing number
+    is a stated fact and never a silent zero.
+
+    Returns:
+        ``[{object_id, attach_link, resolved, kernel_world_xyz, sim_world_xyz,
+        slip_m}]`` -- ``slip_m`` is the straight-line distance between the two
+        placements, in metres.
+    """
+    import mujoco  # reason: optional sim dep
+    import numpy as np
+
+    link_bodies = kernel_checked_link_bodies(model, description) if description is not None else {}
+    out: list[dict[str, object]] = []
+    for obj in attached_objects:
+        object_id = str(getattr(obj, "object_id", ""))
+        attach_link = str(getattr(obj, "attach_link", ""))
+        rec: dict[str, object] = {
+            "object_id": object_id,
+            "attach_link": attach_link,
+            "resolved": False,
+        }
+        body_name = object_id.split(":", 1)[-1]
+        body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+        link_id = link_bodies.get(attach_link, -1)
+        if link_id < 0:
+            link_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, attach_link))
+        pose = getattr(obj, "pose_in_link", None)
+        if body_id < 0 or link_id < 0 or pose is None:
+            rec["reason"] = "attach link, payload body or pose_in_link unresolved"
+            out.append(rec)
+            continue
+        link_rot = np.asarray(data.xmat[link_id], dtype=np.float64).reshape(3, 3)
+        link_pos = np.asarray(data.xpos[link_id], dtype=np.float64)
+        rel = _rot_from_quat_xyzw(tuple(float(v) for v in pose.quat_xyzw))
+        if rel is None:
+            rec["reason"] = "pose_in_link quaternion is not unit"
+            out.append(rec)
+            continue
+        kernel_pos = link_pos + link_rot @ np.asarray(pose.xyz, dtype=np.float64)
+        sim_pos = np.asarray(data.xpos[body_id], dtype=np.float64)
+        rec.update(
+            {
+                "resolved": True,
+                "kernel_world_xyz": [round(float(v), 6) for v in kernel_pos],
+                "sim_world_xyz": [round(float(v), 6) for v in sim_pos],
+                "slip_m": round(float(np.linalg.norm(kernel_pos - sim_pos)), 6),
+            }
+        )
+        out.append(rec)
+    return out
 
 
 def occupied_cell_keys(
@@ -4274,6 +4351,14 @@ class SimSensorBridge:
                     "stamp_ns": now_ns,
                     "attachment_revision": self._attachment_revision,
                     **snapshot,
+                    # Where the kernel's model of each payload is against where
+                    # the body is, at this instant (#275).
+                    "payload_model_slip": attached_model_slip(
+                        model,
+                        data,
+                        description=self._description,
+                        attached_objects=getattr(self._hal, "read_attached_objects", list)(),
+                    ),
                     "candidate_action_chunks": list(self._candidate_chunks),
                     "collision_evidence": evidence if fresh else None,
                 },
