@@ -421,6 +421,10 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         # have made: exactly one cell in x.
         dx = decode["latest_origin"][0] - decode["decode_origin"][0]
         assert dx == pytest.approx(-_GRID_RES, abs=1e-9)
+        # And that the window moved at all is stated outright -- the one fact
+        # that rules the hazard in or out for a stop without knowing which of
+        # the cached grids the kernel held.
+        assert decode["distinct_origins_in_history"] >= 2
     finally:
         with suppress(Exception):
             node.trigger_deactivate()

@@ -4355,6 +4355,16 @@ class SimSensorBridge:
             "latest_origin": list(cast("tuple[float, float, float]", latest["origin"])),
             "resolution_m": float(cast("float", chosen["resolution"])),
             "fallback_to_latest": matched is None,
+            # Whether the window moved AT ALL across the cached history. Zero
+            # rules the stale-grid hazard out for this stop outright, whichever
+            # of the cached grids the kernel actually held -- the proxy above
+            # cannot see inside one publish period, this can.
+            "distinct_origins_in_history": len(
+                {
+                    tuple(cast("tuple[float, float, float]", g["origin"]))
+                    for g in self._voxel_grid_history
+                }
+            ),
         }
         return {"index": int(index), **{k: v for k, v in chosen.items() if k != "stamp_ns"}}
 
