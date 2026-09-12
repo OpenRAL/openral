@@ -995,7 +995,23 @@ In order, each chosen because it is unblocked and its answer changes the next on
    its box reaches a median **50.78 mm** (max 88.22 mm) beyond the mesh,
    against a 21.65 mm half-diagonal at 25 mm and 12.99 mm at 15 mm — **2.3–3.9×
    the whole quantisation term**. Filed as **#266**, which is now the lever
-   this line used to be. 15 mm also makes the concentration worse: payload
+   this line used to be.
+
+   **Amended 2026-09-12, and the amendment matters more than the null.** "The
+   voxel term was never the big one" reads as *shrinking the cell cannot
+   matter*. It cannot matter **while the payload is a box**. The two terms
+   ADD — a stop needs `true clearance ≤ payload overhang + cell reach` — so
+   taking 8.66 mm off a ~50 mm sum leaves nearly every stop on the same side of
+   the threshold. #266 has since landed and takes the payload overhang to
+   ~9–10 mm, and at that point the same 8.66 mm decides the outcome. Measured by
+   replay on the real kernel, identical poses through every condition,
+   `PickPlaceCounterToSink` (the DOP-only, field-typical payload), 182 clear
+   poses: box @ 25 mm **154** false stops → refined @ 25 mm **136** (12 %
+   fewer) → box @ 15 mm **138** (10 % fewer) → **refined @ 15 mm 15 (90 %
+   fewer)**. All 7 real contacts caught in every condition. **Neither lever
+   alone is worth much; together they are worth 90 %.** So #253 is not a
+   closed question — it is a question whose answer changed when the term beside
+   it moved. 15 mm also makes the concentration worse: payload
    stops go 79 % → 97 % of all stops, and the grid goes 0.6 → 2.8 MB at 10 Hz
    (28 MB/s of DDS against 6).
 

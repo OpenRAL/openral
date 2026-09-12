@@ -3236,6 +3236,54 @@ box is 2.3–3.9× the entire quantisation term.** Shrinking the cell removes
 8.66 mm of envelope and leaves ~50 mm untouched beside it, which is precisely
 the null observed. Filed as **#266**.
 
+### Amended 2026-09-12: the null was conditional on the box payload
+
+The paragraph above is right about what it measured and **wrong about what it
+implies**. "The voxel term was never the big one" reads as *shrinking the cell
+cannot matter*. It cannot matter **while the payload is a box** — which is a
+different claim, and #266 has since landed.
+
+The two terms **add**. A stop happens when
+
+    true clearance  ≤  payload overhang  +  cell reach
+
+so removing 8.66 mm from a ~50 mm sum leaves almost every stop on the same side
+of the threshold; that is the null. Once #266 takes the payload overhang from
+~29-35 mm to ~9-10 mm, the *same* 8.66 mm decides the outcome.
+
+Measured by replay on 2026-09-12 — the real kernel, identical payload poses
+through every condition, no policy in the loop (`docs/reference/collision-hull-narrow-phase.md`
+§10.5 for the method). `PickPlaceCounterToSink`, the **DOP-only** payload (its
+hull is over `kMaxTightHullVertices`, so it ships stage 1 alone — the
+field-typical case), 189 poses spanning -4.7 to 53.7 mm of certified clearance,
+182 of them genuinely clear:
+
+| condition | false stops (of 182) | real contacts caught (of 7) |
+| --- | ---: | ---: |
+| box @ 25 mm | 154 (84.6 %) | 7 |
+| refined @ 25 mm | 136 (**12 % fewer**) | 7 |
+| box @ 15 mm | 138 (**10 % fewer**) | 7 |
+| **refined @ 15 mm** | **15 (90 % fewer)** | **7** |
+
+**Neither lever alone is worth much; together they are worth 90 %.** #253 alone
+is 10 %, which is the null this section recorded. #253 **after #266** is 89 %.
+The lever did not change — the term beside it did.
+
+Every real contact is still caught in every condition, including the tightest,
+which is the property the payload check exists for.
+
+Second scene, `PickPlaceCounterToCabinet`, whose payload *does* carry a
+98-vertex hull: box 66 of 192 false stops → refined **0**, at both resolutions.
+There #266 alone suffices. The two scenes disagree because their poses sit
+differently relative to the thresholds, which is why a single-scene reading of
+either lever is unsafe.
+
+**What this does to the #253 ruling.** The question the WG is being asked is no
+longer "is 8.66 mm of quantisation worth the staleness cost" against a null. On
+the merged tree it is worth 89 % of the remaining false payload stops in the
+field-typical case. The staleness cost is unchanged and still has to be weighed;
+what has changed is that there is now something on the other side of the scale.
+
 **The error has moved almost entirely onto the payload:**
 
 | | 25 mm | 15 mm |
