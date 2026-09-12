@@ -752,9 +752,9 @@ def test_safety_loss_aborts_ungrouped_dispatch_instead_of_the_deadline() -> None
 def _make_starting_pose_skill() -> Any:
     """The constant skill carrying a REAL rSkill manifest with a ``starting_pose``.
 
-    ``rskills/smolvla-so101-pen`` is an in-tree manifest whose 6-D
-    ``starting_pose`` matches the harness's so100 6-DoF description, which is
-    what makes the runner run its starting-pose preamble at all
+    ``rskills/rskill-smolvla-so101-eraser_place-bf16`` is an in-tree manifest
+    whose 6-D ``starting_pose`` matches the harness's so100 6-DoF description,
+    which is what makes the runner run its starting-pose preamble at all
     (``resolve_starting_pose_action`` needs a pose to act on). Real fixture, real
     ``RSkillManifest`` — no hand-built placeholder (CLAUDE.md §1.11).
     """
@@ -762,7 +762,9 @@ def _make_starting_pose_skill() -> Any:
 
     repo_root = Path(__file__).resolve().parents[3]
     skill = _make_constant_skill()
-    skill.manifest = load_rskill_manifest(str(repo_root / "rskills" / "smolvla-so101-pen"))
+    skill.manifest = load_rskill_manifest(
+        str(repo_root / "rskills" / "rskill-smolvla-so101-eraser_place-bf16")
+    )
     return skill
 
 

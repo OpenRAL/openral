@@ -28,10 +28,9 @@ with a `rskill.yaml` manifest that adds capability checking, license surfacing,
 latency budgets, the joint-units contract, a paired reward monitor, and local
 registry integration. It does **not** copy the model weights.
 
-It is the smaller, faster, ONNX/TensorRT-friendly sibling of
-[`smolvla-so101-pen`](../smolvla-so101-pen): same task and embodiment, but a
-plain CNN+transformer (ResNet-18 + VAE, ~52 M params) instead of a
-VLM+flow-matching policy — so the **whole model exports to a single ONNX graph**
+It is a plain CNN+transformer policy (ResNet-18 + VAE, ~52 M params) rather than
+a VLM+flow-matching one, which is what makes it small, fast, and
+ONNX/TensorRT-friendly — the **whole model exports to a single ONNX graph**
 (see *ONNX / TensorRT* below).
 
 ## Quick start

@@ -79,7 +79,7 @@ _VIOLATION_ATTRS = {
     "safety.drop_reason": "collision",
     "safety.collision_mode": 0,
     "safety.violation_value": -0.0841,
-    "rskill.id": "OpenRAL/rskill-smolvla-so101-pen-bf16",
+    "rskill.id": "OpenRAL/rskill-smolvla-so101-eraser_place-bf16",
 }
 
 
@@ -91,7 +91,7 @@ def test_violation_populates_persistent_slot(
     lv = store.snapshot()["topics"]["safety"]["last_violation"]
     assert lv["drop_reason"] == "collision"
     assert lv["violation_value"] == -0.0841
-    assert lv["rskill_id"] == "OpenRAL/rskill-smolvla-so101-pen-bf16"
+    assert lv["rskill_id"] == "OpenRAL/rskill-smolvla-so101-eraser_place-bf16"
 
 
 def test_violation_emits_error_event_and_counter(

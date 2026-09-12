@@ -270,11 +270,11 @@ standard (`rskills/README.md` — *"One rSkill ⇄ one HF repo"*). The
 against the upstream LFS digest before upload — and the URI is pinned to a
 commit SHA so loads are reproducible (CLAUDE.md §1.8).
 
-This isn't ceremony. The sibling
-[`rskill-smolvla-so101-pen-bf16`](../smolvla-so101-pen/) points at a
-third-party repo that went **gated after packaging**; it now needs
-`HF_HUB_OFFLINE=1` and a warm cache to deploy at all. Mirroring removes that
-failure mode.
+This isn't ceremony. A since-removed sibling so101 SmolVLA skill pointed at a
+third-party repo that went **gated after packaging** — needing
+`HF_HUB_OFFLINE=1` and a warm cache to deploy at all — and another pointed at
+an upstream repo that was later **deleted outright**, making it unloadable.
+Mirroring removes that failure mode.
 
 The mirror carries only the **7 root inference files**, not the 20
 `checkpoints/<step>/` training snapshots (≈ 21 GB with optimizer state) that
@@ -346,6 +346,6 @@ dataset. Commercial use is allowed.
 
 - [`robots/so101_follower/robot.yaml`](../../robots/so101_follower/) — RobotDescription manifest.
 - [`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml) — paired real-hardware deploy scene.
-- [`rskills/smolvla-so101-pen`](../smolvla-so101-pen/) / [`rskills/smolvla-so101-pick-place-pen`](../smolvla-so101-pick-place-pen/) — sibling SO-101 SmolVLA skills.
+- [`rskills/act-so101-pen`](../act-so101-pen/) — sibling SO-101 policy skill (ACT, not SmolVLA).
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.
 - [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

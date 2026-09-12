@@ -215,6 +215,11 @@ Two things to know:
   `*.pt` weights are treated as untrusted pickle and need
   `OPENRAL_ALLOW_UNSAFE_PICKLE=1` to load — prefer `model.safetensors`. Do not
   describe your skill as "signed" or "verified" until the control exists.
+- **Publishing is what makes it discoverable.** The publisher stamps the
+  `OpenRAL` + `rskill` tags into the model card front matter; `openral rskill
+  search` lists the `OpenRAL` org filtered on the `rskill` tag, so a repo
+  only shows up in search results once it carries that tag *and* is public
+  on the Hub (flip it public per the point above).
 
 ## 7. Install and use it
 
@@ -236,8 +241,13 @@ only separators and underscores inside each token
 latter parses as a four-segment ROS-wrapper name and drops the embodiment.
 
 `rskill install` needs the full `owner/name` id — a bare name fails fast with an
-`OpenRAL/…` suggestion. Use `rskill search [QUERY] [--kind/--role/--embodiment/--license]`
-when you don't already know the id.
+`OpenRAL/…` suggestion. Use
+`rskill search [QUERY] [--kind/--role/--embodiment/--license/--family/--limit/--json]`
+when you don't already know the id — `QUERY` is matched locally and
+case-insensitively (every whitespace-separated token must appear somewhere
+in the repo id, manifest name/description, family, kind, role, embodiment
+tags, or Hub tags), so `rskill search pick cube` and `rskill search
+pi05-pick-cube` both work.
 
 Run it by passing the bare rSkill reference to `--rskill` on the CLI — scene YAMLs
 reject a `vla:` block (`_reject_legacy_vla_block` raises `ROSConfigError`); policy

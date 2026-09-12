@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
+from huggingface_hub.errors import EntryNotFoundError
 from openral_cli.main import app
 from openral_rskill.loader import InstalledRSkillEntry, rSkill
 from typer.testing import CliRunner
@@ -255,19 +256,35 @@ class TestSkillSearch:
     """Tests for ``openral rskill search``.
 
     The HF network boundary is the only thing doubled: a *recorded* set of
-    ``OpenRAL/*`` repo ids stands in for ``HfApi.list_models`` and each hit's
-    manifest is resolved to a *real* in-tree ``rskills/<id>/rskill.yaml`` fixture
-    (CLAUDE.md §1.11 — recorded responses + real fixtures, no placeholders).
+    ``OpenRAL/*`` repo ids stands in for
+    ``HfApi.list_models(author="OpenRAL", filter="rskill")`` and each hit's
+    manifest is resolved to a *real* in-tree ``rskills/<id>/rskill.yaml``
+    fixture (CLAUDE.md §1.11 — recorded responses + real fixtures, no
+    placeholders). Query/facet matching happens locally in
+    ``openral_rskill.hub_search.search_hub_rskills``, so these tests exercise
+    the real matching code, not a fake's approximation of it. The local
+    rSkill registry (for the ``installed`` marker) is isolated per test via
+    ``tmp_path``, following the same pattern as ``TestSkillList``.
     """
 
     REPO_ROOT: ClassVar[Path] = Path(__file__).resolve().parents[2]
 
-    # Recorded OpenRAL org listing — mirrors real in-tree skills. The third repo
-    # has no rskill.yaml on the Hub and must be excluded from results.
+    # A fourth id whose manifest is a copy of act-aloha's with a renamed
+    # `name:` field — matches no real `rskills/<dir>` manifest, so it
+    # exercises the `local=None` ("not available locally") branch without
+    # inventing a placeholder fixture (CLAUDE.md §1.11).
+    _NOT_IN_TREE_ID: ClassVar[str] = "OpenRAL/rskill-act-aloha-not-in-tree"
+
+    # Has no rskill.yaml on the Hub and must be excluded from `hits` (but
+    # named explicitly in the skip notice — CLAUDE.md §1.4).
+    _BROKEN_ID: ClassVar[str] = "OpenRAL/rskill-broken-no-manifest"
+
+    # Recorded OpenRAL org listing — mirrors real in-tree skills.
     _RECORDED_IDS: ClassVar[list[str]] = [
         "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32",
         "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
-        "OpenRAL/rskill-broken-no-manifest",
+        _NOT_IN_TREE_ID,
+        _BROKEN_ID,
     ]
     _MANIFEST_FIXTURES: ClassVar[dict[str, str]] = {
         "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32": "rskills/act-aloha/rskill.yaml",
@@ -277,19 +294,31 @@ class TestSkillSearch:
     def _run_search(
         self,
         *args: str,
+        tmp_path: Path,
         recorded_ids: list[str] | None = None,
         capture: dict[str, object] | None = None,
     ) -> CliRunner.Result:
         recorded = recorded_ids if recorded_ids is not None else self._RECORDED_IDS
         cap = capture if capture is not None else {}
 
+        not_in_tree_dir = tmp_path / "not-in-tree"
+        not_in_tree_dir.mkdir(exist_ok=True)
+        src = (self.REPO_ROOT / "rskills/act-aloha/rskill.yaml").read_text(encoding="utf-8")
+        (not_in_tree_dir / "rskill.yaml").write_text(
+            src.replace(
+                'name: "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32"',
+                f'name: "{self._NOT_IN_TREE_ID}"',
+            ),
+            encoding="utf-8",
+        )
+
         def fake_list_models(
-            *, author: str, search: str | None = None, limit: int | None = None, **_: object
+            *, author: str, filter: str | None = None, limit: int | None = None, **_: object
         ) -> list[SimpleNamespace]:
             cap["author"] = author
-            cap["search"] = search
+            cap["filter"] = filter
             cap["limit"] = limit
-            return [SimpleNamespace(id=i) for i in recorded]
+            return [SimpleNamespace(id=i, tags=["OpenRAL", "rskill"]) for i in recorded]
 
         class _FakeHfApi:
             """Records the org listing query the way ``HfApi`` would answer it."""
@@ -298,65 +327,133 @@ class TestSkillSearch:
                 self,
                 *,
                 author: str,
-                search: str | None = None,
+                filter: str | None = None,
                 limit: int | None = None,
                 **_: object,
             ) -> list[SimpleNamespace]:
-                return fake_list_models(author=author, search=search, limit=limit)
+                return fake_list_models(author=author, filter=filter, limit=limit)
 
         def fake_download(*, repo_id: str, filename: str, **_: object) -> str:
+            if repo_id == self._NOT_IN_TREE_ID:
+                return str(not_in_tree_dir / filename)
             rel = self._MANIFEST_FIXTURES.get(repo_id)
             if rel is None:
-                raise RuntimeError(f"404: no {filename} for {repo_id}")
+                raise EntryNotFoundError(f"no {filename} for {repo_id}")
             return str(self.REPO_ROOT / rel)
 
+        reg = tmp_path / "rskills.json"
         with (
             patch("huggingface_hub.HfApi", return_value=_FakeHfApi()),
             patch("huggingface_hub.hf_hub_download", side_effect=fake_download),
+            patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", reg),
             # Widen the Rich console so long repo ids render unwrapped in the table.
             patch.dict(os.environ, {"COLUMNS": "200"}),
         ):
             return runner.invoke(app, ["rskill", "search", *args], catch_exceptions=False)
 
-    def test_lists_valid_skills_with_install_hint(self) -> None:
-        result = self._run_search("aloha")
+    def test_lists_valid_skills_with_install_hint(self, tmp_path: Path) -> None:
+        """A query token present in both repo ids must surface both, plus the hint."""
+        result = self._run_search("fp", tmp_path=tmp_path)
         assert result.exit_code == 0
         assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
         assert "rskill-omdet_turbo-any-locator-fp16" in result.output
         assert "rskill install" in result.output
 
-    def test_searches_openral_org(self) -> None:
+    def test_searches_openral_org_by_tag_no_hub_search(self, tmp_path: Path) -> None:
+        """The org is listed via the ``rskill`` tag; no Hub-side ``search=`` is sent."""
         cap: dict[str, object] = {}
-        result = self._run_search("aloha", capture=cap)
+        result = self._run_search(tmp_path=tmp_path, capture=cap)
         assert result.exit_code == 0
         assert cap["author"] == "OpenRAL"
-        assert cap["search"] == "aloha"
+        assert cap["filter"] == "rskill"
+        assert cap["limit"] is None
 
-    def test_manifestless_repo_excluded_and_skip_surfaced(self) -> None:
-        result = self._run_search()
-        assert result.exit_code == 0
-        assert "broken-no-manifest" not in result.output
-        assert "skipped" in result.output.lower()
+    def test_query_matches_description_only_word(self, tmp_path: Path) -> None:
+        """Multi-token query matching words that appear ONLY in the description.
 
-    def test_kind_filter_narrows_results(self) -> None:
-        result = self._run_search("--kind", "detector")
-        assert result.exit_code == 0
-        assert "rskill-omdet_turbo-any-locator-fp16" in result.output
-        assert "rskill-act-aloha-aloha_transfer_cube-fp32" not in result.output
-
-    def test_license_filter_narrows_results(self) -> None:
-        result = self._run_search("--license", "mit")
+        Neither "bimanual" nor "chunks" appears in the act-aloha repo id,
+        manifest name, kind, role, or embodiment tags — only in its
+        ``description`` — so this proves matching is not repo-id-only.
+        """
+        result = self._run_search("bimanual chunks", tmp_path=tmp_path)
         assert result.exit_code == 0
         assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
         assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
 
-    def test_no_results_is_friendly(self) -> None:
-        result = self._run_search("nonesuch", recorded_ids=[])
+    def test_unquoted_multi_word_query_matches_like_quoted(self, tmp_path: Path) -> None:
+        """``search pick place`` (two argv tokens, no quotes) must behave the same
+        as ``search "pick place"`` — QUERY is variadic and re-joined with spaces."""
+        result = self._run_search("bimanual", "chunks", tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
+
+    def test_manifestless_repo_excluded_and_skip_surfaced(self, tmp_path: Path) -> None:
+        """The broken repo must not appear as a hit, but its id IS named in the
+        skip notice (CLAUDE.md §1.4 — explicit, not just a bare count)."""
+        result = self._run_search(tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "skipped" in result.output.lower()
+        assert self._BROKEN_ID in result.output
+
+    def test_kind_filter_narrows_results(self, tmp_path: Path) -> None:
+        result = self._run_search("--kind", "detector", tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-omdet_turbo-any-locator-fp16" in result.output
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" not in result.output
+
+    def test_license_filter_narrows_results(self, tmp_path: Path) -> None:
+        result = self._run_search("--license", "mit", tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
+
+    def test_family_filter_narrows_results(self, tmp_path: Path) -> None:
+        """``--family act`` must keep the ACT policy and drop the (family-less) detector."""
+        result = self._run_search("--family", "act", tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
+
+    def test_limit_caps_rows_after_sorting(self, tmp_path: Path) -> None:
+        """``--limit 1`` must keep only the first hit in repo_id sort order."""
+        result = self._run_search("--limit", "1", tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
+
+    def test_default_limit_is_unlimited(self, tmp_path: Path) -> None:
+        """The default (no ``--limit``) must show every match, not just the first 50."""
+        result = self._run_search(tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" in result.output
+
+    def test_results_sorted_by_repo_id(self, tmp_path: Path) -> None:
+        """Rows must appear in ascending ``repo_id`` order regardless of Hub listing order."""
+        result = self._run_search(tmp_path=tmp_path)
+        assert result.exit_code == 0
+        act_pos = result.output.index("rskill-act-aloha-aloha_transfer_cube-fp32")
+        omdet_pos = result.output.index("rskill-omdet_turbo-any-locator-fp16")
+        assert act_pos < omdet_pos
+
+    def test_local_column_shows_in_tree_and_missing(self, tmp_path: Path) -> None:
+        """The ``local`` column: ``in-tree`` for a real in-tree manifest, ``—`` otherwise."""
+        recorded = [self._RECORDED_IDS[0], self._NOT_IN_TREE_ID]
+        result = self._run_search("act-aloha", recorded_ids=recorded, tmp_path=tmp_path)
+        assert result.exit_code == 0
+        assert "in-tree" in result.output
+        assert "—" in result.output
+
+    def test_no_results_is_friendly(self, tmp_path: Path) -> None:
+        result = self._run_search("nonesuch", recorded_ids=[], tmp_path=tmp_path)
         assert result.exit_code == 0
         assert "No rSkills" in result.output
 
-    def test_json_output_is_valid(self) -> None:
-        result = self._run_search("--json")
+    def test_json_output_is_valid(self, tmp_path: Path) -> None:
+        result = self._run_search(
+            "--json", recorded_ids=list(self._MANIFEST_FIXTURES), tmp_path=tmp_path
+        )
         assert result.exit_code == 0
         payload = json.loads(result.output)
         ids = {row["repo_id"] for row in payload}
@@ -365,4 +462,25 @@ class TestSkillSearch:
             "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
         }
         for row in payload:
-            assert {"repo_id", "kind", "role", "license"} <= row.keys()
+            assert {"repo_id", "kind", "role", "license", "local", "model_family"} <= row.keys()
+        by_id = {row["repo_id"]: row for row in payload}
+        act = by_id["OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32"]
+        assert act["local"] == "in-tree"
+        assert act["model_family"] == "act"
+
+    def test_json_output_parseable_with_a_skipped_repo_present(self, tmp_path: Path) -> None:
+        """A manifest-less repo in the recorded org listing must never leak into
+        stdout as anything but valid JSON — no debug/skip line before or after
+        the array (CLAUDE.md §1.4: structlog's default PrintLogger, unconfigured
+        by the CLI, would otherwise write straight to stdout and break
+        ``openral rskill search --json | jq``)."""
+        recorded = [*self._MANIFEST_FIXTURES, self._BROKEN_ID]
+        result = self._run_search("--json", recorded_ids=recorded, tmp_path=tmp_path)
+        assert result.exit_code == 0
+        payload = json.loads(result.output)  # raises if anything but the array hit stdout
+        ids = {row["repo_id"] for row in payload}
+        assert ids == {
+            "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32",
+            "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
+        }
+        assert self._BROKEN_ID not in ids

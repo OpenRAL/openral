@@ -326,10 +326,10 @@ What happens:
 
 ### SO-101 SmolVLA TensorRT fast path (OpenRAL Pro)
 
-For the public SO-101 pen-pick skill, the real deploy scene and rSkill are:
+For the public SO-101 SmolVLA skill, the real deploy scene and rSkill are:
 
 ```bash
-openral rskill install OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16
+openral rskill install OpenRAL/rskill-smolvla-so101-eraser_place-bf16
 openral deploy run \
   --config scenes/deploy/so101_bench.yaml
 ```

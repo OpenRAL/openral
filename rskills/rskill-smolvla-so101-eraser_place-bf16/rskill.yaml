@@ -18,15 +18,14 @@
 #
 # UNITS — degrees (normalizer state/action stats span ~[-103.8, +103.4],
 # MEAN_STD; radians would be ±3.14). Runner converts deg<->rad at the HAL
-# boundary; declared explicitly to skip the stats-magnitude heuristic. Same
-# posture as sibling SO-101 SmolVLA skills (…-pen-bf16 / -pick_place_pen-bf16).
+# boundary; declared explicitly to skip the stats-magnitude heuristic.
 #
 # PROVENANCE — weights mirrored at OpenRAL/rskill-smolvla-so101-eraser_place-bf16,
 # byte-identical to upstream (model.safetensors sha256
 # 58d656e494a3143c00b19261a14f2b312656751cedd98253ab8a5f3fbcc73609, verified
-# pre-upload); catalog standard (one rSkill <-> one HF repo) — sibling
-# …-pen-bf16 points at a repo that went GATED post-packaging and now needs
-# HF_HUB_OFFLINE=1 + a warm cache. `weights_uri` pins the mirror's commit SHA
+# pre-upload); catalog standard (one rSkill <-> one HF repo) — a since-removed
+# sibling so101 SmolVLA skill pointed at a repo that went GATED post-packaging
+# and needed HF_HUB_OFFLINE=1 + a warm cache. `weights_uri` pins the mirror's commit SHA
 # (CLAUDE.md §1.8). Mirror holds only the 7 root inference files (not the ~21 GB
 # of `checkpoints/<step>/` training snapshots); fetched per-file via
 # `hf_hub_download`, never `snapshot_download`.

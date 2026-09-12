@@ -11,9 +11,6 @@ tags:
 - nf4
 - 4-bit
 - aloha_agilex
-base_model:
-- robbyant/lingbot-vla-4b-posttrain-robotwin
-base_model_relation: quantized
 inference: false
 ---
 
@@ -129,7 +126,7 @@ cameras are aligned positionally onto the model's `cam_high` / `cam_left_wrist` 
 | `min_vram_gb` | fp32 16.8 / bf16 8.4 / **int4 4.5** |
 | `chunk_size` / `n_action_steps` | 50 / 25 |
 | `latency_budget.per_chunk_ms` | 1000 (measured ~570 ms steady) |
-| `weights_uri` | NF4 mirror (prequant pack) — see below |
+| `weights_uri` | fp32 upstream post-train; NF4 packed at load — see below |
 
 ## Quick start
 

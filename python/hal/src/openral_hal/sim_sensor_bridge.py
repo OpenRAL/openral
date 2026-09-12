@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,11 @@ from openral_hal.mobile_base_bridge import describes_mobile_base
 _THUMB_INTERVAL_NS = 1_000_000_000
 _IMAGE_DIM = 3  # HWC ndarray
 _RGB_CHANNELS = 3
+# Cap on the pre-attach occupancy snapshot (#272). A partial set would answer
+# "not pre-existing" for cells it never looked at, so an over-large grid is
+# refused and reported truncated instead of sampled.
+_MAX_PREATTACH_CELLS = 2_000_000
+
 # Below this a quaternion carries no usable direction; keep the identity
 # rotation rather than dividing by ~0.
 _DEGENERATE_QUAT_NORM = 1e-12
@@ -111,6 +117,8 @@ __all__ = [
     "estop_ground_truth_snapshot",
     "initial_configuration_stop_record",
     "kernel_checked_body_ids",
+    "occupied_cell_keys",
+    "preattach_verdict",
     "should_idle_step",
     "voxel_backing_record",
 ]
@@ -1542,6 +1550,15 @@ def voxel_backing_record(
     record["voxel_ijk"] = [int(ix), int(iy), int(iz)]
     record["base_xyz"] = [round(float(v), 6) for v in centre_base]
     record["world_xyz"] = [round(float(v), 6) for v in centre_world]
+    # The cube's world AXES, not just its centre. A centre alone does not
+    # reproduce the cube: at 25 mm cells the half-diagonal is 21.65 mm, and a
+    # geom whose centre sits ~44 mm out (measured, 2026-09-12 `fridge-on/r06`)
+    # reaches inside on one orientation and not on another. Re-adjudicating a
+    # recorded stop offline — replaying the state and asking the cube again,
+    # which is how a verdict gets checked after the fact — was impossible
+    # without this, so a fix to the classifier could only ever be compared
+    # across DIFFERENT stops.
+    record["cube_rot_world"] = [[round(float(v), 9) for v in row] for row in cube_rot]
 
     hits, cast, hit_count = _voxel_cube_hits(
         model,
@@ -1557,16 +1574,26 @@ def voxel_backing_record(
     # The rays cannot see a collidable geom coincident with a decoration shell
     # (every RoboCasa counter top). Consulted only when they found no
     # collidable **world** geometry — covering (1) nothing solid at all (the
-    # coincident-shell case this was added for), and (2) solid geometry that
-    # is all ROBOT — the `self_occupancy_suspect` signature, genuinely
-    # ambiguous on 27 rays between "the cell holds the robot" and "the cell
-    # holds the robot *and* a world surface the fans missed" (2026-09-07,
-    # `fridge-s2`: 15 of 27 rays, `robot0_link2_collision`, no world geom
-    # found — no way to tell which). A cell whose world backing the rays
-    # already found is left alone, so this cannot change a verdict the ray
-    # pass got right.
+    # coincident-shell case this was added for), (2) solid geometry that is all
+    # ROBOT — the `self_occupancy_suspect` signature, genuinely ambiguous on 27
+    # rays between "the cell holds the robot" and "the cell holds the robot
+    # *and* a world surface the fans missed" (2026-09-07, `fridge-s2`: 15 of 27
+    # rays, `robot0_link2_collision`, no world geom found — no way to tell
+    # which) — and (3) solid geometry that is all CARRIED PAYLOAD, for the same
+    # reason and found the same way (#272).
+    #
+    # An attached payload is in neither the world nor the robot, and leaving it
+    # out of this condition suppressed the sweep exactly as a world geom would
+    # while satisfying none of the reasoning that makes suppression safe: "a
+    # cell whose world backing the rays already found is left alone" is not true
+    # of a cell whose only collidable hit is the object the robot is holding.
+    # The result was a FALSE `attached_payload` verdict on the normal case — a
+    # payload resting on a surface, both in one cell — which is the verdict
+    # #272's whole census is built on.
     swept = not any(
-        _geom_is_collidable(model, geom) and int(model.geom_bodyid[geom]) not in robot_body_ids
+        _geom_is_collidable(model, geom)
+        and int(model.geom_bodyid[geom]) not in robot_body_ids
+        and int(model.geom_bodyid[geom]) not in attached_body_ids
         for geom in hits
     )
     record["collidable_overlap_swept"] = swept
@@ -1604,6 +1631,152 @@ def voxel_backing_record(
     else:
         record["verdict"] = "unbacked"
     return record
+
+
+def occupied_cell_keys(
+    *,
+    occupancy: Sequence[int] | Any,
+    grid_origin: Sequence[float],
+    grid_resolution: float,
+    grid_size: Sequence[int],
+    grid_orientation_xyzw: Sequence[float],
+    base_rot: Any,
+    base_offset: Any,
+    max_cells: int = _MAX_PREATTACH_CELLS,
+) -> tuple[frozenset[tuple[int, int, int]], bool]:
+    """Every occupied cell of one published grid, as world-lattice integer keys.
+
+    The published lattice is the source map's, fixed in map/odom, so a cell's
+    WORLD centre is stable across messages even as the base-frame ``origin``
+    slides with the robot. Quantising that centre by the resolution therefore
+    gives a key that names the same physical cell in any later message, which
+    is what lets a stop ask whether its cell predates an event.
+
+    Keys are ``floor(centre_world / resolution)`` — which cell of the world
+    lattice the centre falls in, NOT the nearest lattice node. Rounding is the
+    wrong operator and fails in the ordinary case: when the grid origin is a
+    multiple of the resolution every cell centre sits exactly on a rounding
+    boundary, so ``rint`` and ``round`` disagree on all of them and the same
+    physical cell keys two ways. Under ``floor`` a centre sits half a cell from
+    either edge, the furthest it can be from a boundary.
+
+    The lattice need not align with multiples of the resolution for this to be
+    a bijection — only to be consistent, which it is, because every message
+    comes from the one map. ``preattach_verdict`` still compares over a
+    one-cell neighbourhood, so a lattice that does drift shows up as an
+    adjacent hit rather than a silent miss.
+
+    Args:
+        occupancy: the message's ``occupancy`` bytes; non-zero is occupied.
+        grid_origin: base-frame position of voxel ``(0,0,0)``'s minimum corner.
+        grid_resolution: cell size in metres.
+        grid_size: ``(size_x, size_y, size_z)``.
+        grid_orientation_xyzw: the grid's own rotation (``OccupancyVoxels
+            .orientation``). A non-unit quaternion yields an empty set, never
+            an identity assumption — same posture as ``voxel_backing_record``.
+        base_rot: 3x3 world rotation of the grid's ``header.frame_id`` body.
+        base_offset: world position of that body.
+        max_cells: refuse to build a set larger than this, reporting the
+            truncation rather than silently sampling part of the grid.
+
+    Returns:
+        ``(keys, truncated)``. ``truncated`` is True when the occupied count
+        exceeded ``max_cells``, in which case ``keys`` is empty — a partial set
+        would answer "not pre-existing" for cells it simply never looked at,
+        which is the one wrong answer this record must not give.
+    """
+    import numpy as np
+
+    size = [int(v) for v in grid_size]
+    resolution = float(grid_resolution)
+    total = size[0] * size[1] * size[2] if len(size) == _XYZ else 0
+    # A non-unit quaternion is refused rather than read as identity, same as
+    # ``voxel_backing_record``: a confident set about the wrong lattice is worse
+    # than no set.
+    grid_rot = (
+        _rot_from_quat_xyzw(grid_orientation_xyzw) if total > 0 and resolution > 0.0 else None
+    )
+    if grid_rot is None:
+        return frozenset(), False
+    occ = np.asarray(occupancy, dtype=np.uint8).reshape(-1)
+    if occ.size < total:
+        return frozenset(), False
+    flat = np.flatnonzero(occ[:total])
+    if flat.size > int(max_cells):
+        return frozenset(), True
+    if flat.size == 0:
+        return frozenset(), False
+    ix = flat % size[0]
+    iy = (flat // size[0]) % size[1]
+    iz = flat // (size[0] * size[1])
+    local = (np.stack([ix, iy, iz], axis=1).astype(np.float64) + 0.5) * resolution
+    centre_base = (
+        np.asarray(list(grid_origin), dtype=np.float64)
+        + local @ np.asarray(grid_rot, dtype=np.float64).T
+    )
+    centre_world = centre_base @ np.asarray(base_rot, dtype=np.float64).T + np.asarray(
+        base_offset, dtype=np.float64
+    )
+    keys = np.floor(centre_world / resolution).astype(np.int64)
+    return frozenset(map(tuple, keys.tolist())), False
+
+
+def preattach_verdict(
+    *,
+    world_xyz: Sequence[float],
+    resolution: float,
+    preattach_keys: frozenset[tuple[int, int, int]] | None,
+) -> dict[str, object]:
+    """Did the cell at ``world_xyz`` already exist when the payload was masked?
+
+    The question #272 turns on. A carried payload stopping on a cell that
+    predates its own grasp is stopping on occupancy it authored while it was
+    still world geometry; one that postdates the grasp is a live map defect
+    with a different cause. A single stop snapshot cannot tell those apart --
+    ``voxel_backing_record``'s ``attached_payload`` verdict says only that the
+    payload is in the cell NOW.
+
+    **``preexisting`` is not a finding on its own, and reading it alone inverts
+    what it means.** A cell backed by world geometry is ALWAYS pre-existing --
+    the counter was there before the grasp -- so counting how many stops report
+    True answers nothing. The payload-authored case is the *conjunction*:
+    ``voxel_backing_record``'s verdict is ``attached_payload`` (no ``solid_world``
+    in the cell at all) AND this says the cell predates the attach. Measured
+    2026-09-12, a 4-round `fridge` battery produced three stops all reporting
+    ``preexisting: True`` of which exactly one was payload-authored.
+
+    ``within_one_cell`` is reported beside the exact hit as the cheap guard on
+    the keying itself: the key quantises a float centre, and if the published
+    lattice ever drifts relative to the resolution the same physical cell lands
+    one key over. A neighbourhood hit makes that visible instead of silently
+    answering "no".
+
+    Returns:
+        A JSON-safe dict, or ``{"available": False, ...}`` when no pre-attach
+        snapshot was taken -- never a bare False, which would read as "the cell
+        is new" when the truth is "nobody looked".
+    """
+    if preattach_keys is None:
+        return {"available": False, "reason": "no pre-attach grid snapshot"}
+    if not preattach_keys:
+        return {"available": False, "reason": "pre-attach grid snapshot was empty or truncated"}
+    res = float(resolution)
+    if res <= 0.0:
+        return {"available": False, "reason": "grid resolution is not positive"}
+    key = tuple(math.floor(float(v) / res) for v in world_xyz)
+    neighbourhood = any(
+        (key[0] + dx, key[1] + dy, key[2] + dz) in preattach_keys
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+    )
+    return {
+        "available": True,
+        "preexisting": key in preattach_keys,
+        "within_one_cell": neighbourhood,
+        "cell_key": list(key),
+        "preattach_cells": len(preattach_keys),
+    }
 
 
 def voxel_backing_for_cell(
@@ -2292,6 +2465,15 @@ class SimSensorBridge:
         # Geometry (not occupancy) of the last /openral/world_voxels grid, so a
         # `b=voxel_<n>` evidence line can be located in space at the stop.
         self._last_voxel_grid: dict[str, object] | None = None
+        # #272: the occupancy of the last grid, kept ONLY so the next masking
+        # attach can freeze it. A stop then asks whether its cell predates the
+        # grasp -- the difference between a payload tripping on occupancy it
+        # authored itself and a live map defect with another cause.
+        self._last_voxel_occupancy: Any = None
+        self._preattach_cells: frozenset[tuple[int, int, int]] | None = None
+        self._preattach_stamp_ns: int = 0
+        self._preattach_revision: int = -1
+        self._preattach_truncated: bool = False
         self._last_collision_evidence_ns: int = 0
         self._collision_evidence_warned: bool = False
         self._estop_seq: int = 0
@@ -3296,6 +3478,7 @@ class SimSensorBridge:
             self._attachment_applied_revision = revision
             self._attachment_pending = None
             if masks_new_geometry:
+                self._freeze_preattach_occupancy(revision)
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
                     self._node.count_publishers("/openral/world_voxels") > 0
@@ -3771,6 +3954,8 @@ class SimSensorBridge:
                 int(msg.size_z),  # type: ignore[attr-defined]  # reason: ROS subscription type
             ),
         }
+        # Retained for one masking attach only (#272), never for the record.
+        self._last_voxel_occupancy = msg.occupancy  # type: ignore[attr-defined]  # reason: ROS subscription type
         if self._attachment_voxel_updates_remaining <= 0:
             return
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
@@ -3878,6 +4063,14 @@ class SimSensorBridge:
         self._candidate_action_sub = None
         self._safety_failure_sub = None
         self._last_voxel_grid = None
+        self._last_voxel_occupancy = None
+        self._preattach_cells = None
+        self._preattach_truncated = False
+        # Cleared with the set, not left behind: a stale revision or stamp
+        # reported beside ``available: False`` reads as provenance for a
+        # snapshot that no longer exists.
+        self._preattach_stamp_ns = 0
+        self._preattach_revision = -1
         self._candidate_chunks.clear()
         self._last_collision_evidence = None
         self._last_collision_evidence_ns = 0
@@ -4019,6 +4212,11 @@ class SimSensorBridge:
             description=self._description,
             evidence_voxel=self._evidence_voxel() if fresh else None,
         )
+        # The snapshot's own backing record (only built when the evidence was
+        # already fresh); the late path annotates its own copy.
+        backing = snapshot.get("evidence_voxel_backing")
+        if isinstance(backing, dict):
+            self._annotate_preattach(backing)
         self._estop_seq += 1
         self._estop_stamp_ns = now_ns
         self._estop_awaiting_evidence = not fresh
@@ -4113,13 +4311,15 @@ class SimSensorBridge:
         if handles is None:
             return None
         model, data = handles
-        return voxel_backing_for_cell(
-            model,
-            data,
-            evidence_voxel,
-            robot_body_ids=self._depth_self_bodies,
-            attached_body_ids=self._depth_excluded_body_ids() - self._depth_self_bodies,
-            base_frame_body=self._base_frame_body,
+        return self._annotate_preattach(
+            voxel_backing_for_cell(
+                model,
+                data,
+                evidence_voxel,
+                robot_body_ids=self._depth_self_bodies,
+                attached_body_ids=self._depth_excluded_body_ids() - self._depth_self_bodies,
+                base_frame_body=self._base_frame_body,
+            )
         )
 
     def _read_joint_state(self) -> Any:
@@ -4139,6 +4339,90 @@ class SimSensorBridge:
         except ROSError as exc:  # reason: a stop record must survive a HAL read fault
             self._node.get_logger().warning(f"e-stop snapshot has no joint state: {exc}")
             return None
+
+    def _freeze_preattach_occupancy(self, revision: int) -> None:
+        """Snapshot the occupied cells at the instant a payload becomes masked.
+
+        Taken on the masking transition rather than continuously: the question
+        (#272) is whether a stop's cell predates THIS grasp, and one frozen set
+        answers it without carrying per-cell history for the whole run.
+
+        The snapshot is deliberately taken from the last grid received BEFORE
+        the mask is applied, which is the state the payload itself was still
+        writing into. A failure here is recorded and never raised -- this is
+        diagnostics, and no perception barrier or actuation depends on it.
+        """
+        grid = self._last_voxel_grid
+        occupancy = self._last_voxel_occupancy
+        if grid is None or occupancy is None:
+            self._preattach_cells = None
+            self._preattach_truncated = False
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            self._preattach_cells = None
+            return
+        model, data = handles
+        import mujoco  # reason: optional sim dep
+        import numpy as np
+
+        rot = np.eye(3, dtype=np.float64)
+        offset: Any = np.zeros(3, dtype=np.float64)
+        if self._base_frame_body is not None:
+            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self._base_frame_body))
+            if body_id >= 0:
+                rot = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+                offset = np.asarray(data.xpos[body_id], dtype=np.float64)
+        try:
+            keys, truncated = occupied_cell_keys(
+                occupancy=occupancy,
+                grid_origin=grid["origin"],  # type: ignore[arg-type]  # reason: heterogeneous cache
+                grid_resolution=float(grid["resolution"]),  # type: ignore[arg-type]  # reason: ditto
+                grid_size=grid["size"],  # type: ignore[arg-type]  # reason: ditto
+                grid_orientation_xyzw=grid["orientation"],  # type: ignore[arg-type]  # reason: ditto
+                base_rot=rot,
+                base_offset=offset,
+            )
+        except (ValueError, TypeError) as exc:
+            self._preattach_cells = None
+            self._node.get_logger().warning(f"pre-attach occupancy snapshot failed: {exc}")
+            return
+        self._preattach_cells = keys
+        self._preattach_truncated = truncated
+        self._preattach_stamp_ns = int(self._node.get_clock().now().nanoseconds)
+        self._preattach_revision = int(revision)
+        self._node.get_logger().info(
+            "sim.preattach_occupancy_frozen "
+            + json.dumps(
+                {
+                    "revision": int(revision),
+                    "cells": len(keys),
+                    "truncated": truncated,
+                    "resolution_m": float(grid["resolution"]),  # type: ignore[arg-type]  # reason: ditto
+                    "stamp_ns": self._preattach_stamp_ns,
+                },
+                sort_keys=True,
+            )
+        )
+
+    def _annotate_preattach(self, backing: dict[str, object] | None) -> dict[str, object] | None:
+        """Add the pre-attach provenance to a backing record, in place."""
+        if backing is None:
+            return None
+        world_xyz = backing.get("world_xyz")
+        resolution = backing.get("resolution_m")
+        if not isinstance(world_xyz, list) or not isinstance(resolution, (int, float)):
+            return backing
+        verdict = preattach_verdict(
+            world_xyz=world_xyz,
+            resolution=float(resolution),
+            preattach_keys=self._preattach_cells,
+        )
+        verdict["truncated"] = self._preattach_truncated
+        verdict["attach_revision"] = self._preattach_revision
+        verdict["frozen_stamp_ns"] = self._preattach_stamp_ns
+        backing["preattach"] = verdict
+        return backing
 
     def _depth_excluded_body_ids(self) -> frozenset[int]:
         """Robot and attached-payload bodies excluded from world perception."""

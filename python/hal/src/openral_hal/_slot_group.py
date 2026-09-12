@@ -2,7 +2,7 @@
 
 ADR-0102. ``rskill_runner_node._dispatch_slots`` splits a policy's flat action
 vector into **one typed** ``Action`` **per
-non-discard slot** — four for the OpenArm v2 bimanual restock contract (left
+non-discard slot** — four for the OpenArm v2 bimanual contract (left
 arm, left gripper, right arm, right gripper) — each carrying the tick's shared
 ``tick_index`` / ``tick_group_size`` and each published separately through the
 safety kernel.

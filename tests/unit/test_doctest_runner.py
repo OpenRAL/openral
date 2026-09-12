@@ -44,6 +44,7 @@ DOCTEST_TARGETS: list[str] = [
     "python/rskill/src/openral_rskill/backend_registry.py",
     "python/rskill/src/openral_rskill/base.py",
     "python/rskill/src/openral_rskill/engine_cache.py",
+    "python/rskill/src/openral_rskill/hub_search.py",
     "python/rskill/src/openral_rskill/loader.py",
     "python/rskill/src/openral_rskill/quantization.py",
     "python/rskill/src/openral_rskill/runtime.py",
