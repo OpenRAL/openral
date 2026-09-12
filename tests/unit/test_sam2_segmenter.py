@@ -30,7 +30,7 @@ from openral_runner.backends.gstreamer.segmenter_factory import build_manifest_s
 
 _RSKILL = Path("rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml")
 _WRIST_FRAME = Path("rskills/rskill-smolvla-so101-eraser_place-bf16/media/wrist_mid.png")
-_FRONT_FRAME = Path("rskills/gr00t-n17-so101-fruit/assets/so101_fruit_ep100_front.png")
+_FRONT_FRAME = Path("rskills/rskill-smolvla-so101-eraser_place-bf16/media/front_mid.png")
 
 # The prompt convention the design used: a point at (0.52*W, 0.68*H), standing in
 # for the TF-projected tool center point on a wrist view.
