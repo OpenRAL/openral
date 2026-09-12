@@ -100,21 +100,32 @@ def test_scene_supplies_every_feature_key_the_policy_requires() -> None:
 
 
 def test_every_scene_camera_has_a_deploy_binding() -> None:
-    # A sensor with no binding is a camera the deploy cannot open.
-    from openral_core.schemas import DeployScene
+    # A sensor with no binding is a camera the deploy cannot open. WHAT it must
+    # name depends on the backend: one that opens a device node needs a
+    # `device`, while `ros2_image` subscribes to a driver's output and needs a
+    # `topic` — the cell's `top` slot is the ZED, whose rectified left image
+    # exists only because zed_wrapper computed it and which no /dev/video read
+    # can reach.
+    from openral_core.schemas import DeployScene, SensorReaderBackend
 
     for s in DeployScene.from_yaml(str(SCENE)).sensors:
         assert s.deploy_binding is not None, f"{s.name} has no deploy_binding"
-        assert s.deploy_binding.backend_params.get("device"), f"{s.name} names no device"
+        key = "topic" if s.deploy_binding.backend is SensorReaderBackend.ROS2_IMAGE else "device"
+        assert s.deploy_binding.backend_params.get(key), (
+            f"{s.name} binds {s.deploy_binding.backend.value} and names no {key}"
+        )
 
 
 def test_bindings_use_stable_device_paths() -> None:
     # A raw /dev/videoN is assigned in USB enumeration order and silently
     # renumbers on replug or reboot — the binding would then point at a
-    # different camera, or at nothing.
-    from openral_core.schemas import DeployScene
+    # different camera, or at nothing. Only device-opening backends have a node
+    # to be unstable.
+    from openral_core.schemas import DeployScene, SensorReaderBackend
 
     for s in DeployScene.from_yaml(str(SCENE)).sensors:
+        if s.deploy_binding.backend is SensorReaderBackend.ROS2_IMAGE:
+            continue
         device = str(s.deploy_binding.backend_params["device"])
         assert not device.removeprefix("/dev/video").isdigit(), (
             f"{s.name} binds the unstable node {device}; use a /dev/camera_* "

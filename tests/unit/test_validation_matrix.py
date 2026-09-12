@@ -1053,6 +1053,167 @@ def test_the_hal_budget_is_read_out_of_the_recorded_snapshot() -> None:
     assert validation_matrix.hal_admissible_gap_m(snapshot, world) == pytest.approx(0.08822)
     # A payload self stop has an OBB on both sides and no voxel: its own block.
     assert validation_matrix.hal_admissible_gap_m(snapshot, payload_self) == pytest.approx(0.124555)
+    # A snapshot recorded BEFORE #266's payload-world block still resolves —
+    # to the old top-level number. Absence must read as "this round predates
+    # the block", never as "this stop has no budget", which would turn every
+    # archived payload-world stop `unadjudicated` at a stroke.
+    payload_world = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_1",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, payload_world) == pytest.approx(0.08822)
+
+
+def test_a_payload_world_stop_is_charged_the_payload_not_the_link() -> None:
+    """#266. The class that is 97 % of the 15 mm A/B's stops, finally its own budget.
+
+    A payload-vs-world stop is one payload model against one voxel cube — the
+    robot's links are not a party to it. Routing it to the top-level block
+    charged it `corner_slop(worst LINK) + voxel_half_diagonal`, a composition
+    for a pair the stop does not involve, and on the 2026-08-23 rounds that was
+    88.22 mm (``panda_link4``) where the payload's own model needs ~31 mm.
+
+    An over-large budget does not fail loudly; it silently excuses. That is the
+    direction that hides a real defect, which is why this is a fix and not a
+    refinement.
+    """
+    from openral_core import ValidationStopEvidence
+
+    snapshot = {
+        "adjudication_budget": {
+            "admissible_gap_m": 0.08822,  # the LINK composition, still right for an arm stop
+            "payload_world_voxel": {
+                "max_payload_model_overhang_m": 0.01018,
+                "voxel_half_diagonal_m": 0.021651,
+                "admissible_gap_m": 0.031831,
+                "payload_slop": {"max_corner_slop_m": 0.03488},
+            },
+        }
+    }
+    payload_world = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_9",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    arm_world = ValidationStopEvidence(
+        kind="world",
+        party_a="panda_link4",
+        party_b="voxel_9",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, payload_world) == pytest.approx(
+        0.031831
+    )
+    # The arm's own stops are untouched: they really are link-vs-voxel.
+    assert validation_matrix.hal_admissible_gap_m(snapshot, arm_world) == pytest.approx(0.08822)
+    # And the payload's budget is the MODEL's, not the box's — charging the box
+    # would have handed this stop 24.7 mm the kernel's model does not use.
+    assert 0.031831 < 0.03488 + 0.021651
+
+
+def test_the_arm_world_budget_rederives_its_voxel_term_too() -> None:
+    """The same defect one block over, found by #266 and fixed with it.
+
+    Every snapshot in the 2026-09-11 A/B published ``voxel_half_diagonal_m:
+    0.0`` — the monitor handed ``estop_ground_truth_snapshot`` no
+    ``evidence_voxel`` — so every ARM-stop budget was the link term alone:
+    88.22 mm where it should have been 109.87 mm. Understated by 21.65 mm, which
+    is 25-48 % of a Panda link's 45-88 mm slop.
+
+    It hid here precisely because the link term is large; on the payload block
+    the 8.9-19.9 mm overhang made the same omission impossible to miss. The
+    direction is the one that matters: an under-stated budget convicts a
+    conservative, correct stop.
+    """
+    from openral_core import ValidationStopEvidence
+
+    arm = ValidationStopEvidence(
+        kind="world",
+        party_a="panda_link4",
+        party_b="voxel_7",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    deaf = {
+        "adjudication_budget": {
+            "max_corner_slop_m": 0.08822,
+            "voxel_half_diagonal_m": 0.0,
+            "admissible_gap_m": 0.08822,  # the link term alone
+        }
+    }
+    assert validation_matrix.hal_admissible_gap_m(deaf, arm, 0.025) == pytest.approx(
+        0.08822 + validation_matrix.quantization_budget_m(0.025)
+    )
+    # A round whose monitor DID deliver a voxel keeps its published number.
+    heard = {
+        "adjudication_budget": {
+            "max_corner_slop_m": 0.08822,
+            "voxel_half_diagonal_m": 0.021651,
+            "admissible_gap_m": 0.109871,
+        }
+    }
+    assert validation_matrix.hal_admissible_gap_m(heard, arm, 0.025) == pytest.approx(0.109871)
+    # No slop term to compose with, or no resolution: the published number
+    # stands rather than being replaced by a guess.
+    bare = {"adjudication_budget": {"admissible_gap_m": 0.08822}}
+    assert validation_matrix.hal_admissible_gap_m(bare, arm, 0.025) == pytest.approx(0.08822)
+    assert validation_matrix.hal_admissible_gap_m(deaf, arm, None) == pytest.approx(0.08822)
+
+
+def test_a_zero_voxel_term_is_rederived_not_composed_with() -> None:
+    """The bug the first 2026-09-11 A/B run exposed, in this budget itself.
+
+    ``estop_ground_truth_snapshot`` fills ``voxel_half_diagonal_m`` only from an
+    ``evidence_voxel`` it was handed; a round whose monitor never delivered one
+    publishes ``0.0``. On the top-level block that omission hides behind a
+    45-88 mm link term. On the payload block it does not: the payload's own
+    overhang is 8.9-19.9 mm, the **same order** as the 21.65 mm being dropped,
+    so composing with zero roughly halves the budget.
+
+    Measured consequence: the first A/B run flagged **6 of 16** hull-arm stops
+    ``false-positive``, every one of them inside budget once the term was
+    restored (6 -> 1, which is the base arm's own count). An under-stated budget
+    cries wolf, the one direction an adjudicator must not fail in, so the term
+    is re-derived from the round's known grid resolution — and with no
+    resolution to re-derive from the budget is ``None`` (``unadjudicated``: "I
+    cannot judge this") rather than a number that convicts.
+    """
+    from openral_core import ValidationStopEvidence
+
+    snapshot = {
+        "adjudication_budget": {
+            "admissible_gap_m": 0.08822,
+            "payload_world_voxel": {
+                "max_payload_model_overhang_m": 0.008907,
+                "voxel_half_diagonal_m": 0.0,  # the deaf-monitor round
+                "admissible_gap_m": 0.008907,
+            },
+        }
+    }
+    stop = ValidationStopEvidence(
+        kind="world",
+        party_a="attached:sim:obj_main",
+        party_b="voxel_3",
+        horizon_step=0,
+        min_distance_m=-0.01,
+    )
+    assert validation_matrix.hal_admissible_gap_m(snapshot, stop, 0.025) == pytest.approx(
+        0.008907 + validation_matrix.quantization_budget_m(0.025)
+    )
+    # A utensil round's 18.30 mm discrepancy sits INSIDE the restored budget and
+    # outside the zero-composed 8.907 mm -- the exact flip the bug produced.
+    utensil_discrepancy_m = 0.01830
+    zero_composed_m = 0.008907
+    assert zero_composed_m < utensil_discrepancy_m
+    assert utensil_discrepancy_m < zero_composed_m + validation_matrix.quantization_budget_m(0.025)
+    # No resolution to re-derive from: no budget, rather than a convicting one.
+    assert validation_matrix.hal_admissible_gap_m(snapshot, stop, None) is None
 
 
 def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:

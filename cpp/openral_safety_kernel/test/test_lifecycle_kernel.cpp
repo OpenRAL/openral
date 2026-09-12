@@ -2188,12 +2188,10 @@ openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
 // 100 mm box whose -x face (the one approached) sits there. Cell spans x in
 // [0.140, 0.165], so a face at 0.155 is a shelf the 25 mm lattice over-states
 // by 15 mm — the quantisation error the blanket allowance was guessing at.
-openral_msgs::msg::WorldStateStamped declared_carry_state(std::int64_t attachment_stamp_ns,
-                                                          std::int64_t declaration_stamp_ns,
-                                                          double timeout_s, bool carrying = true,
-                                                          std::uint64_t revision = 1,
-                                                          double payload_x = 0.10,
-                                                          double target_face_x = 0.0) {
+openral_msgs::msg::WorldStateStamped
+declared_carry_state(std::int64_t attachment_stamp_ns, std::int64_t declaration_stamp_ns,
+                     double timeout_s, bool carrying = true, std::uint64_t revision = 1,
+                     double payload_x = 0.10, double target_face_x = 0.0) {
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = attachment_stamp_ns;
   msg.attachment_revision = revision;
@@ -2867,9 +2865,8 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   EXPECT_FALSE(node->fault_latched())
       << "an arrived place inside its own declared region must not latch:\n"
       << logs.joined();
-  EXPECT_EQ(estop_count.load(), estops_before)
-      << "and must not assert /openral/estop:\n"
-      << logs.joined();
+  EXPECT_EQ(estop_count.load(), estops_before) << "and must not assert /openral/estop:\n"
+                                               << logs.joined();
   EXPECT_GE(logs.count("safety.collision_advisory"), 1U)
       << "the refusal is announced as advisory, with its own reason:\n"
       << logs.joined();
@@ -3090,9 +3087,8 @@ TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
   // Three refusals inside the cap: still no latch.
   for (int i = 0; i < 3; ++i) {
     offer_one_chunk(exec, arrived_inputs, publish_chunk);
-    EXPECT_FALSE(node->fault_latched())
-        << "refusal " << (i + 1) << " of 3 is inside the cap:\n"
-        << logs.joined();
+    EXPECT_FALSE(node->fault_latched()) << "refusal " << (i + 1) << " of 3 is inside the cap:\n"
+                                        << logs.joined();
   }
 
   // The fourth is over it, and is an ordinary stop.
@@ -3352,8 +3348,8 @@ TEST_F(LifecycleKernelTest, GradedScalingIgnoresTheRobotsOwnSelfClearance) {
   // 0.10 m band: the self pair's 0.05 m clearance is well inside it, the voxel
   // cell's 0.15 m is outside. If the self term counted, the scale would be
   // exp(20·(0.05 − 0.10)) = 0.368.
-  const auto out = run_one_chunk("kernel_scale_selfpair",
-                                 scale_band_with_self_pair_params(0.10), velocity_chunk(1.0));
+  const auto out = run_one_chunk("kernel_scale_selfpair", scale_band_with_self_pair_params(0.10),
+                                 velocity_chunk(1.0));
   ASSERT_TRUE(out.published) << "a 50 mm self clearance is not a collision — it must be ACCEPTED";
   EXPECT_FALSE(out.latched);
   ASSERT_EQ(out.flat.size(), 1U);

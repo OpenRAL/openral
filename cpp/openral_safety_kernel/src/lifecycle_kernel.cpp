@@ -111,6 +111,51 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
 /// (ADR-0098) so both interpret the same wire shape identically. Returns
 /// false (fail-closed) on an unknown SHAPE_* tag or too few dimensions for
 /// the tag given.
+/// Copy a primitive's optional stage-2 refinement off the wire (#266).
+///
+/// Shape only — nothing here is interpreted. `ingest_attached_objects` proves
+/// the refinement is inside the primitive's own box before any of it is used,
+/// and silently drops what it cannot prove. A malformed refinement therefore
+/// leaves `has_tight` false and the primitive is checked as the plain box, so
+/// a producer publishing nonsense cannot make the kernel's broad-phase window
+/// skip a cell.
+///
+/// It cannot prove the refinement bounds the real payload — the kernel never
+/// sees a mesh — but that is not a trust this decode adds: `shape_dimensions`
+/// is producer-supplied on the same message under the same trust, so a
+/// producer able to lie here could already lie there. See `accept_tight`.
+void decode_tight_geometry(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
+                           AttachedPrimitiveInput& out) {
+  out.has_tight = false;
+  out.hull_vertices.clear();
+  if (prim.tight_dop_lo.size() != static_cast<std::size_t>(kDopAxes) ||
+      prim.tight_dop_hi.size() != static_cast<std::size_t>(kDopAxes) ||
+      prim.tight_hull_vertices.size() % 3 != 0) {
+    return;
+  }
+  for (int i = 0; i < kDopAxes; ++i) {
+    out.dop_lo[i] = prim.tight_dop_lo[static_cast<std::size_t>(i)];
+    out.dop_hi[i] = prim.tight_dop_hi[static_cast<std::size_t>(i)];
+  }
+  // Bounded before a byte is reserved: `tight_hull_vertices` is an unbounded
+  // `float64[]` and this runs inside the safety node's subscriber. Past the
+  // budget the vertices are worthless anyway (`accept_tight` keeps the slabs
+  // and runs stage 1), so decoding them would be an unbounded allocation in
+  // exchange for nothing.
+  const std::size_t n = prim.tight_hull_vertices.size() / 3;
+  if (n > static_cast<std::size_t>(kMaxTightHullVertices)) {
+    out.has_tight = true;  // the slabs above still stand; stage 1 only
+    return;
+  }
+  out.hull_vertices.reserve(n);
+  for (std::size_t v = 0; v < n; ++v) {
+    out.hull_vertices.push_back(Vec3{prim.tight_hull_vertices[3 * v],
+                                     prim.tight_hull_vertices[3 * v + 1],
+                                     prim.tight_hull_vertices[3 * v + 2]});
+  }
+  out.has_tight = true;
+}
+
 bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimitive& prim,
                                AttachedPrimitiveInput& out) {
   const std::size_t n_dims = prim.shape_dimensions.size();
@@ -145,6 +190,7 @@ bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimiti
       prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
       prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
       prim.pose_in_object.orientation.w);
+  decode_tight_geometry(prim, out);
   return true;
 }
 
@@ -1057,9 +1103,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const bool contact_constrained_prediction =
               is_cartesian && attached_contact_active_ && step >= 0 && support_witness_live_ == 0;
           if (world_voxel_enabled_ && !contact_constrained_prediction) {
-            const auto hit = check_attached_voxel_collision(
-                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin,
-                collision_scale_proximity_m_);
+            const auto hit = check_attached_voxel_collision(collision_model_, attached_model_,
+                                                            collision_scratch_, voxel_grid_,
+                                                            amargin, collision_scale_proximity_m_);
             note_slack(hit, amargin);
             if (hit.hit) {
               // ADR-0098: when declared target geometry adjudicated the pair,
@@ -1109,8 +1155,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                          "safety.contact_force_gate object=%s target=%s magnitude_n=%g "
                          "threshold_n=%g step=%d",
                          attached_label(force.object_index).c_str(),
-                         place_declaration_target_.c_str(), force.magnitude_n,
-                         force.threshold_n, step);
+                         place_declaration_target_.c_str(), force.magnitude_n, force.threshold_n,
+                         step);
             report("world", attached_label(force.object_index),
                    "force:" + place_declaration_target_, step, fhit);
             return true;
@@ -1235,9 +1281,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     const bool rate_shaped = mode == ControlMode::kJointVelocity ||
                              mode == ControlMode::kCartesianDelta ||
                              mode == ControlMode::kCartesianTwist;
-    const double scale = (geom_enabled && rate_shaped)
-                             ? velocity_scale_for(collision_min_slack_m)
-                             : 1.0;
+    const double scale =
+        (geom_enabled && rate_shaped) ? velocity_scale_for(collision_min_slack_m) : 1.0;
     if (scale < 1.0) {
       // Scaling DOWN a rate keeps every envelope bound it already satisfied
       // (|s·v| <= |v| for s in [0,1]), so the scaled chunk needs no
@@ -1247,9 +1292,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const std::size_t stride = view.n_dof;
       // A Cartesian row is a 6-vector twist [vx,vy,vz,wx,wy,wz] inside a row of
       // `n_dof`; a velocity row is velocities all the way across.
-      const std::size_t scalable = (mode == ControlMode::kJointVelocity)
-                                       ? stride
-                                       : std::min<std::size_t>(stride, 6);
+      const std::size_t scalable =
+          (mode == ControlMode::kJointVelocity) ? stride : std::min<std::size_t>(stride, 6);
       // A NORMALIZED Cartesian chunk must be clamped before it is scaled.
       // Native OSC controllers apply `clamp(raw, -1, 1) * per_axis_range`, and
       // the validator deliberately puts no per-axis bound on CARTESIAN_DELTA,
@@ -1465,8 +1509,8 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   std::string place_region_state{"-"};
   if (place_region_.valid) {
     place_region_state = (place_declaration_live() ? "live:" : "expired:") +
-                         place_declaration_target_ + ":geom=" +
-                         std::to_string(place_region_.n_geometry);
+                         place_declaration_target_ +
+                         ":geom=" + std::to_string(place_region_.n_geometry);
   } else if (!place_region_refusal_reason_.empty()) {
     place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
   }
@@ -1721,6 +1765,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
   attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
   attached_model_.touch_links.assign(attached_max_touch_links_, 0);
+  // Stage-2 store for carried payloads (#266). Pre-sized to the worst case —
+  // every primitive refined, each with a full-budget hull — so the ingest path
+  // fills it in place and the hot path never allocates, the same contract the
+  // fixed link hulls are under. 16 primitives x 320 vertices x 24 B is ~123 kB.
+  attached_model_.hulls.assign(attached_max_primitives_, LinkHull{});
+  attached_model_.hull_vertices.assign(
+      attached_max_primitives_ * static_cast<std::size_t>(kMaxTightHullVertices), Vec3{});
   attached_labels_.assign(attached_max_objects_, std::string{});
   attached_ingest_scratch_.clear();
   attached_ingest_scratch_.reserve(attached_max_objects_);
@@ -1990,9 +2041,9 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_overflow_ = false;
   std::copy(msg->occupancy.begin(), msg->occupancy.end(), voxel_occupancy_.begin());
   voxel_grid_.occupancy = voxel_occupancy_.data();
-  voxel_grid_.pose = transform_from_translation_quat(
-      msg->origin.x, msg->origin.y, msg->origin.z, msg->orientation.x, msg->orientation.y,
-      msg->orientation.z, msg->orientation.w);
+  voxel_grid_.pose = transform_from_translation_quat(msg->origin.x, msg->origin.y, msg->origin.z,
+                                                     msg->orientation.x, msg->orientation.y,
+                                                     msg->orientation.z, msg->orientation.w);
   voxel_grid_.resolution = msg->resolution;
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
@@ -2140,7 +2191,11 @@ void SafetyKernelLifecycleNode::on_world_state(
         fail_closed();
         return;
       }
-      in.primitives.push_back(pin);
+      // Moved, not copied: `AttachedPrimitiveInput` now owns a vertex vector,
+      // and a copy duplicates up to kMaxTightHullVertices Vec3 per primitive
+      // (~123 kB for a fully refined object) on every world-state message, in
+      // a node whose whole contract is allocation discipline.
+      in.primitives.push_back(std::move(pin));
     }
     attached_ingest_scratch_.push_back(std::move(in));
   }
@@ -2366,7 +2421,8 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       place_geometry_scratch_.push_back(pin);
     }
     if (status == PlaceRegionStatus::kOk) {
-      status = ingest_place_target_geometry(place_geometry_scratch_, place_geometry_, place_region_);
+      status =
+          ingest_place_target_geometry(place_geometry_scratch_, place_geometry_, place_region_);
     }
     if (status != PlaceRegionStatus::kOk) {
       place_region_ = PlaceApproachRegion{};

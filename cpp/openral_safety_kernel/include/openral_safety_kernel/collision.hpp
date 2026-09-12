@@ -356,13 +356,13 @@ struct PlaceApproachRegion {
 /// bounds warnings per run, none describing a bound.
 enum class PlaceRegionStatus : std::uint8_t {
   kOk = 0,
-  kNoObject = 1,        ///< empty object_mask — the declared payload is not carried
-  kBadPose = 2,         ///< non-finite region pose
-  kBadExtents = 3,      ///< non-finite half-extent
-  kDegenerate = 4,      ///< half-extent <= 0: a box with no interior licenses nothing
-  kOversize = 5,        ///< a side past kMaxPlaceRegionHalfExtentM
-  kOversizeVolume = 6,  ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
-  kBadGeometry = 7,     ///< a declared-target primitive with a malformed shape (ADR-0098)
+  kNoObject = 1,          ///< empty object_mask — the declared payload is not carried
+  kBadPose = 2,           ///< non-finite region pose
+  kBadExtents = 3,        ///< non-finite half-extent
+  kDegenerate = 4,        ///< half-extent <= 0: a box with no interior licenses nothing
+  kOversize = 5,          ///< a side past kMaxPlaceRegionHalfExtentM
+  kOversizeVolume = 6,    ///< a box past kMaxPlaceRegionVolumeM3 — a room, not a receptacle
+  kBadGeometry = 7,       ///< a declared-target primitive with a malformed shape (ADR-0098)
   kGeometryOverflow = 8,  ///< more target primitives than kMaxPlaceTargetPrimitives
 };
 
@@ -485,6 +485,22 @@ struct AttachedPrimitive {
   double half_length{0.0};     ///< capsule half-length (0 for a sphere)
   Vec3 half_extents{};         ///< box half-extents
   Transform pose_in_object{};  ///< primitive pose in the owning object's frame
+  /// Index into `AttachedModel::hulls` of the stage-2 geometry refining this
+  /// primitive's box in the payload-vs-world-voxel check, or -1 for none.
+  ///
+  /// The payload-side twin of `CollisionModel::box_hull`, and it exists for
+  /// the same reason: a carried MESH geom's only lowering is its local AABB,
+  /// whose corners stood a median 50.78 mm (max 88.22 mm) proud of the mesh
+  /// across the 2026-09-10 resolution A/B — 2.3-3.9x the entire world-voxel
+  /// quantisation term, while 97% of the 15 mm arm's stops were
+  /// payload-vs-world and roughly half of those fired with the payload a
+  /// centimetre or more clear of anything (issue #266).
+  ///
+  /// -1 is the pre-#266 behaviour and the honest answer for everything that
+  /// needs no refinement: a sphere/capsule/box geom lowers exactly, and a
+  /// producer that shipped no refinement (or shipped one that failed the
+  /// containment proof at ingest) is checked as the plain box.
+  int hull_index{-1};
 };
 
 /// One collision object rigidly attached to a robot link (a grasped payload).
@@ -567,9 +583,9 @@ struct PlaceForceGate {
 /// turns a refusal into an accept, widens a margin, or creates an exemption.
 struct ContactForceGateResult {
   bool tripped{false};
-  int object_index{-1};    ///< attached object whose witness tripped, or -1
-  double magnitude_n{0.0}; ///< the calibrated magnitude judged
-  double threshold_n{0.0}; ///< the declaration bound it was judged against
+  int object_index{-1};     ///< attached object whose witness tripped, or -1
+  double magnitude_n{0.0};  ///< the calibrated magnitude judged
+  double threshold_n{0.0};  ///< the declaration bound it was judged against
 };
 
 struct AttachedModel {
@@ -579,6 +595,15 @@ struct AttachedModel {
   std::vector<AttachedPrimitive> primitives;  ///< flattened, capacity = max primitives
   std::vector<int> touch_links;               ///< flattened touch-link indices, capacity = cap
   PlaceForceGate force_gate{};                ///< live declaration's force bound, if any
+  /// Stage-2 geometry for the primitives that carry it, parallel to
+  /// `primitives` (entry p refines primitive p; `AttachedPrimitive::hull_index`
+  /// is the live cross-reference and is -1 when the entry is unused). Unlike a
+  /// robot's, a payload's hull arrives on the wire and changes whenever the
+  /// grasp does, so both buffers are sized to their caps at configure time and
+  /// refilled in place by `ingest_attached_objects` — the hot path never
+  /// allocates, exactly as for the fixed link hulls.
+  std::vector<LinkHull> hulls;
+  std::vector<Vec3> hull_vertices;  ///< CSR-packed stage-2 vertices, primitive-box-local
 };
 
 /// Parsed, still-by-name primitive record produced by the ROS ingest callback
@@ -589,6 +614,15 @@ struct AttachedPrimitiveInput {
   double half_length{0.0};
   Vec3 half_extents{};
   Transform pose_in_object{};
+  /// Wire stage-2 refinement, still UNVALIDATED. `has_tight` false (the
+  /// default, and every pre-#266 publisher) means the box is the model.
+  /// `ingest_attached_objects` proves containment before any of this reaches
+  /// `AttachedModel`; a refinement that fails is dropped and the primitive is
+  /// checked as the plain box, which is strictly the conservative direction.
+  bool has_tight{false};
+  double dop_lo[kDopAxes]{};
+  double dop_hi[kDopAxes]{};
+  std::vector<Vec3> hull_vertices;  ///< exact hull, box-local; empty = stage 1 only
 };
 
 /// Parsed, still-by-name attached-object record produced by the ROS ingest
@@ -601,13 +635,13 @@ struct AttachedObjectInput {
   std::vector<AttachedPrimitiveInput> primitives;  ///< one or more owned primitives
   bool has_support_witness{false};                 ///< wire `support_contact_valid`
   Vec3 support_point{};                            ///< attested contact point, object frame
-  Vec3 support_normal{};                ///< outward support normal, object frame (normalised)
-  double support_patch_radius{0.0};     ///< lateral patch radius (m)
-  double support_max_penetration{0.0};  ///< attested physical contact depth bound (m)
-  bool has_contact_force_witness{false};    ///< wire `contact_force_valid` (ADR-0100)
-  bool contact_force_calibrated{false};     ///< witness `magnitude_calibrated`
-  bool contact_force_target_matches{false}; ///< witness `target_id` names the declared target
-  double contact_force_magnitude{0.0};      ///< Newtons ONLY when calibrated
+  Vec3 support_normal{};                     ///< outward support normal, object frame (normalised)
+  double support_patch_radius{0.0};          ///< lateral patch radius (m)
+  double support_max_penetration{0.0};       ///< attested physical contact depth bound (m)
+  bool has_contact_force_witness{false};     ///< wire `contact_force_valid` (ADR-0100)
+  bool contact_force_calibrated{false};      ///< witness `magnitude_calibrated`
+  bool contact_force_target_matches{false};  ///< witness `target_id` names the declared target
+  double contact_force_magnitude{0.0};       ///< Newtons ONLY when calibrated
 };
 
 /// Outcome of an attachment-ingest attempt. Anything other than `kOk` is
@@ -667,6 +701,22 @@ enum class TightGeometryStatus : std::uint8_t {
   kTooManyVertices = 4,  ///< stage-2 hull over kMaxTightHullVertices
   kDegenerate = 5,       ///< non-finite or inverted slab
 };
+
+/// The containment proof for ONE tight representation against ONE box, shared
+/// by the robot's configure-time check and the payload's per-message ingest so
+/// a link hull and a carried-payload hull can never be held to two different
+/// standards.
+///
+/// Chain checked: hull vertices ⊆ 26-DOP ⊆ the box, both links definitional
+/// rather than fitted:
+/// * a stage-2 vertex must satisfy every one of the 26 slab constraints;
+/// * the DOP's first three axes ARE the box's axes, and a 26-DOP lies inside
+///   its own first three slabs, so -half_extents[k] <= dop_lo[k] <= dop_hi[k]
+///   <= half_extents[k] proves the whole polytope is inside the box.
+///
+/// `vertices` is the buffer `hull.vertex_first` indexes. Allocation-free.
+TightGeometryStatus validate_tight_hull(const LinkHull& hull, const Vec3& half_extents,
+                                        const std::vector<Vec3>& vertices) noexcept;
 
 /// Proves, at configure time, that every declared tight representation is a
 /// subset of the shipped OBB it refines — the assertion that keeps the
@@ -820,8 +870,8 @@ double hull_cell_distance(const TightPose& pose, const Vec3& center, double half
 /// lever is a DOP-vs-DOP stage 1 in front of the GJK (same shape as
 /// dop_cell_lower_bound), not a looser support function — see
 /// kMaxTightHullVertices for why the scan stays exhaustive.
-double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
-                          double fallback, bool* depth_is_box_bound = nullptr) noexcept;
+double hull_hull_distance(const TightPose& a, const TightPose& b, double margin, double fallback,
+                          bool* depth_is_box_bound = nullptr) noexcept;
 
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
