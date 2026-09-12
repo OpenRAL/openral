@@ -6,7 +6,8 @@ rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducibl
 
 ```bash
 openral rskill search aloha                    # discover skills on the OpenRAL Hub org
-openral rskill search --kind detector          # …filter by kind/role/embodiment/license
+openral rskill search --kind detector --license apache-2.0   # facet filters
+openral rskill search --family pi05 --json     # programmatic / scriptable output
 openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 openral rskill list                # list installed rSkills
 openral rskill check               # which installed rSkills run on this host?
@@ -14,9 +15,20 @@ openral rskill check               # which installed rSkills run on this host?
 
 `rskill install` expects an `org/name` Hub id. A bare name (e.g. `rskill-smolvla-franka_panda-libero_spatial-bf16`)
 fails fast with the canonical `OpenRAL/…` suggestion rather than a raw Hub 404 — use
-`rskill search` if you don't know the id. `rskill search` queries the OpenRAL HF Hub org
-(`HfApi.list_models`), validates each candidate's `rskill.yaml`, and prints a paste-able
-`repo_id` table.
+`rskill search` if you don't know the id. `rskill search` makes one server-side
+Hub call to list the `OpenRAL` org filtered on the `rskill` model-card tag (every
+published rSkill card carries `OpenRAL` + `rskill` from the publisher), fetches
+each hit's `rskill.yaml` concurrently, and matches `QUERY` locally and
+case-insensitively — every whitespace-separated token must appear in the repo
+id, manifest name, description, model family, kind, role, embodiment tags, or
+Hub tags (so `rskill search pick place` and `rskill search so101 pen` both
+work). Facet flags (`--kind`/`--role`/`--embodiment`/`--license`/`--family`)
+narrow further; `--limit` caps the number of rows *shown* (not the number of
+repos inspected). Results are sorted by repo id and print a paste-able
+`repo_id` table with a `local` column: `in-tree` (a matching manifest exists
+under `rskills/`), `installed` (present in the local rSkill registry), or `—`.
+The same lookup is available programmatically as
+`openral_rskill.search_hub_rskills(...) -> HubRSkillSearchResult`.
 
 ## Discovery views (`SKILL.md`)
 
@@ -65,8 +77,6 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`gr00t-n17-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — in-process lerobot 0.6.0 `GrootPolicy`, backbone-only NF4 |
 | [`gr00t-n17-so101-fruit`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-so101-fruit/) | GR00T N1.7 (3B) SO-101 fruit pick-and-place (`new_embodiment`, 6-D) | `so101_follower` | NVIDIA Open Model License (commercial OK) — in-process `GrootPolicy` whole-model NF4 (`quantize_scope: model`); GPU-verified 5.8 GiB peak on 8 GB |
 | [`gr00t-n17-b1k-turning-on-radio`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-b1k-turning-on-radio/) | Official 2026 BEHAVIOR-1K GR00T N1.7 `turning_on_radio` checkpoint | `r1pro` | License unknown for the organizer Drive artifact; evaluator bridge + deploy-sim, pinned Isaac-GR00T Python 3.10 sidecar, 61-D state / atomic 23-D mixed action |
-| [`smolvla-so101-pen`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-so101-pen/) | SmolVLA SO-101 pen checkpoint | `so101_follower` | Apache-2.0 |
-| [`smolvla-so101-pick-place-pen`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-so101-pick-place-pen/) | SmolVLA SO-101 pick/place pen checkpoint; optional split ONNX/TensorRT fast path | `so101_follower` | Apache-2.0 |
 | [`rskill-smolvla-so101-eraser_place-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-smolvla-so101-eraser_place-bf16/) | SmolVLA SO-101 "place the erase on the blue square" checkpoint (makermods, 25 real teleop episodes) | `so101_follower` | Apache-2.0 — weights stay upstream; chunk verified against the training data |
 | [`smolvla-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-robotwin/) | SmolVLA finetuned on RoboTwin 2.0 (50 bimanual SAPIEN tasks) | `aloha_agilex` | Apache-2.0 — py3.10 SAPIEN sidecar |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |

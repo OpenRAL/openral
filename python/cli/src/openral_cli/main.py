@@ -78,9 +78,9 @@ if TYPE_CHECKING:
         SensorSpec,
         VLASpec,
     )
-    from openral_core.schemas import RSkillManifest
     from openral_detect import CompatibilityReport, DetectionReport, RSkillCompatRow
     from openral_detect.report import GpuProbeResult
+    from openral_rskill.hub_search import HubRSkillSearchResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
 
@@ -1852,41 +1852,12 @@ def rskill_install(
 _RSKILL_SEARCH_DESC_MAX: Final[int] = 60
 
 
-def _load_hub_rskill_manifest(repo_id: str) -> RSkillManifest | None:
-    """Fetch + validate one Hub repo's ``rskill.yaml``; ``None`` if absent/invalid.
-
-    A repo with no manifest (or one that fails schema validation) is not an
-    rSkill — the caller counts and surfaces these rather than failing the search.
-    """
-    from huggingface_hub import hf_hub_download
-    from openral_core.schemas import RSkillManifest
-
-    try:
-        path = hf_hub_download(repo_id=repo_id, filename="rskill.yaml")
-        return RSkillManifest.from_yaml(path)
-    except Exception:  # reason: not an rSkill repo / invalid manifest — skip (counted by caller)
-        return None
-
-
-def _rskill_matches_filters(
-    m: RSkillManifest, *, kind: str, role: str, embodiment: str, license_: str
-) -> bool:
-    """Return whether a manifest passes every non-empty facet filter."""
-    if kind and m.kind != kind:
-        return False
-    if role and m.role != role:
-        return False
-    if embodiment and embodiment not in m.embodiment_tags:
-        return False
-    return not (license_ and m.license.value != license_)
-
-
-def _render_rskill_search_results(
-    rows: list[tuple[str, RSkillManifest]], skipped: int, query: str
-) -> None:
+def _render_rskill_search_results(result: HubRSkillSearchResult, query: str) -> None:
     """Print the human-readable `rskill search` table (or a no-results notice)."""
-    if not rows:
-        suffix = f" ({skipped} repo(s) skipped — no valid manifest)" if skipped else ""
+    if not result.hits:
+        suffix = (
+            f" ({result.skipped} repo(s) skipped — no valid manifest)" if result.skipped else ""
+        )
         console.print(
             f"[dim]No rSkills found in {_DEFAULT_RSKILL_ORG}/ for query "
             f"{query!r} with the given filters.{suffix}[/dim]"
@@ -1895,9 +1866,10 @@ def _render_rskill_search_results(
 
     _permissive = {"apache-2.0", "mit", "bsd"}
     table = Table(title=f"rSkills on the Hub — {_DEFAULT_RSKILL_ORG}/")
-    for col in ("repo_id", "kind", "role", "license", "embodiment_tags", "description"):
+    for col in ("repo_id", "local", "kind", "role", "license", "embodiment_tags", "description"):
         table.add_column(col, style="cyan bold" if col == "repo_id" else None)
-    for repo_id, m in rows:
+    for hit in result.hits:
+        m = hit.manifest
         lic = m.license.value
         lic_color = "green" if lic in _permissive else "yellow"
         desc = (
@@ -1906,7 +1878,8 @@ def _render_rskill_search_results(
             else m.description[:_RSKILL_SEARCH_DESC_MAX] + "…"
         )
         table.add_row(
-            repo_id,
+            hit.repo_id,
+            hit.local or "—",
             m.kind,
             m.role,
             f"[{lic_color}]{lic}[/{lic_color}]",
@@ -1914,19 +1887,22 @@ def _render_rskill_search_results(
             desc,
         )
     console.print(table)
-    if skipped:
+    if result.skipped:
+        ids = ", ".join(result.skipped_repo_ids)
         console.print(
-            f"[dim]{skipped} {_DEFAULT_RSKILL_ORG} repo(s) skipped — no valid rskill.yaml.[/dim]"
+            f"[dim]{result.skipped} {_DEFAULT_RSKILL_ORG} repo(s) skipped — "
+            f"no valid rskill.yaml: {ids}[/dim]"
         )
     console.print("[dim]Install one with:[/dim] [cyan]openral rskill install <repo_id>[/cyan]")
 
 
 @rskill_app.command("search")
 def rskill_search(
-    query: str = typer.Argument(
-        "",
-        metavar="[QUERY]",
-        help="Free-text query matched against rSkill repo ids on the Hub.",
+    query: list[str] | None = typer.Argument(
+        None,
+        metavar="[QUERY]...",
+        help="Free-text query words; every word must match (case-insensitive) the repo "
+        "id, manifest name/description, family, kind, role, embodiment or Hub tags.",
     ),
     kind: str = typer.Option(
         "", "--kind", help="Filter by manifest kind (vla, ros_action, detector, …)."
@@ -1938,16 +1914,22 @@ def rskill_search(
     license_: str = typer.Option(
         "", "--license", help="Filter by license posture (e.g. apache-2.0)."
     ),
-    limit: int = typer.Option(50, "--limit", help="Max OpenRAL repos to inspect."),
+    family: str = typer.Option("", "--family", help="Filter by manifest model_family."),
+    limit: int = typer.Option(
+        0, "--limit", help="Max results shown, after sorting by repo_id. 0 = unlimited."
+    ),
     json: bool = typer.Option(False, "--json", help="Output machine-readable JSON."),
 ) -> None:
     """Search the OpenRAL HF Hub org for installable rSkills.
 
-    Lists every ``OpenRAL/*`` repo whose ``rskill.yaml`` manifest validates and
-    matches the optional facet filters, so the printed ids are paste-able into
-    ``openral rskill install <repo_id>``. The HF Hub is the index — there is no
-    bespoke catalog service. Repos without a valid manifest are skipped and the
-    count surfaced.
+    Lists every ``OpenRAL/*`` repo tagged ``rskill`` whose ``rskill.yaml``
+    manifest validates and matches ``QUERY`` (every whitespace-split token
+    substring-matched, case-insensitively, against the repo id, manifest
+    name/description/model_family/kind/role/embodiment tags, and Hub tags)
+    plus the optional facet filters — so the printed ids are paste-able into
+    ``openral rskill install <repo_id>``. The HF Hub is the index — there is
+    no bespoke catalog service. Repos without a valid manifest are skipped
+    and the count surfaced.
 
     Example:
         >>> # openral rskill search aloha
@@ -1955,52 +1937,51 @@ def rskill_search(
     """
     import json as _json_mod
 
+    from openral_rskill.hub_search import search_hub_rskills
+
+    query_str = " ".join(query or [])
+
     try:
-        from huggingface_hub import HfApi
+        result = search_hub_rskills(
+            query_str,
+            kind=kind,
+            role=role,
+            embodiment=embodiment,
+            license=license_,
+            family=family,
+            org=_DEFAULT_RSKILL_ORG,
+            limit=limit or None,
+        )
     except ImportError as exc:
         console.print(f"[red]Missing dependency:[/red] {exc}")
         raise typer.Exit(code=1)  # noqa: B904
-
-    try:
-        models = list(
-            HfApi().list_models(author=_DEFAULT_RSKILL_ORG, search=query or None, limit=limit)
-        )
     except Exception as exc:  # reason: surface Hub/network errors to the user
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1)  # noqa: B904
-
-    rows: list[tuple[str, RSkillManifest]] = []
-    skipped = 0
-    for model in models:
-        manifest = _load_hub_rskill_manifest(model.id)
-        if manifest is None:
-            skipped += 1
-        elif _rskill_matches_filters(
-            manifest, kind=kind, role=role, embodiment=embodiment, license_=license_
-        ):
-            rows.append((model.id, manifest))
 
     if json:
         console.print_json(
             _json_mod.dumps(
                 [
                     {
-                        "repo_id": repo_id,
-                        "name": m.name,
-                        "version": m.version,
-                        "kind": m.kind,
-                        "role": m.role,
-                        "license": m.license.value,
-                        "embodiment_tags": list(m.embodiment_tags),
-                        "description": m.description,
+                        "repo_id": hit.repo_id,
+                        "name": hit.manifest.name,
+                        "version": hit.manifest.version,
+                        "kind": hit.manifest.kind,
+                        "role": hit.manifest.role,
+                        "license": hit.manifest.license.value,
+                        "model_family": hit.manifest.model_family,
+                        "embodiment_tags": list(hit.manifest.embodiment_tags),
+                        "description": hit.manifest.description,
+                        "local": hit.local,
                     }
-                    for repo_id, m in rows
+                    for hit in result.hits
                 ]
             )
         )
         return
 
-    _render_rskill_search_results(rows, skipped, query)
+    _render_rskill_search_results(result, query_str)
 
 
 @rskill_app.command("list")

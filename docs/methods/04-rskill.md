@@ -96,6 +96,19 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
 - `resolve_rskill_to_hf(uri) -> str` — Resolve a skill reference to either the underlying HF Hub repo id (`hf://...`) or an absolute local path (`local://...`); both forms are accepted by `from_pretrained` helpers. (L1081)
 - `resolve_rskill_to_hf_with_revision(uri) -> tuple[str, str | None]` — Like `resolve_rskill_to_hf` but splits the optional `@<branch-or-sha>` pin off an `hf://` `weights_uri` into a separate `revision` so loaders can pass it to `from_pretrained`/`snapshot_download` instead of gluing it onto the repo id where HF drops it (security audit 2026-06, H4). (L1115)
 
+### `python/rskill/src/openral_rskill/hub_search.py`
+_Free-text + facet search over an HF Hub org's rSkills — backs `openral rskill search`._
+
+- `class HubRSkillHit(BaseModel)` [frozen] — One matching Hub repo. (L43)
+  fields: `repo_id, manifest: RSkillManifest, local: Literal["in-tree","installed"] | None, hub_tags: tuple[str, ...]`. `local == "in-tree"` compares the Hub `repo_id` against the `name` declared by a real `rskills/<dir>/rskill.yaml` — never against the fetched (possibly stale) remote manifest's own `name` field.
+- `class HubRSkillSearchResult(BaseModel)` — `hits: list[HubRSkillHit]` (sorted by `repo_id`), `skipped: int`, `skipped_repo_ids: tuple[str, ...]` (sorted; `skipped == len(skipped_repo_ids)` — the explicit record of which repos were dropped, since this module never logs a per-repo skip itself), `inspected: int`. (L82)
+- `search_hub_rskills(query='', *, kind='', role='', embodiment='', license='', family='', org='OpenRAL', limit=None, max_workers=8) -> HubRSkillSearchResult` — Lists every repo the org tagged `rskill` in one `HfApi.list_models(author=org, filter="rskill")` call (no Hub-side `search=`), fetches each candidate's `rskill.yaml` concurrently (`ThreadPoolExecutor`), then matches `query` locally — case-insensitive, every whitespace-split token substring-matched against repo id / manifest name / description / model_family / kind / role / embodiment tags / Hub tags — and applies the facet filters. `limit` caps hits AFTER sorting by `repo_id` (`None` = unlimited). (L207)
+- `_manifest_haystack(repo_id, manifest, hub_tags) -> str` — Build the lower-cased blob `_matches_query` searches. (L112)
+- `_matches_query(query, haystack) -> bool` — Every whitespace-split token must substring-match. (L127)
+- `_matches_facets(m, *, kind, role, embodiment, license_, family) -> bool` — Whether a manifest passes every non-empty facet filter. (L133)
+- `_fetch_one(model) -> tuple[str, RSkillManifest | None, tuple[str, ...], str]` — Worker-thread fetch + validate of one repo's `rskill.yaml`; narrow-catches `OSError`/`ValueError`/`ROSConfigError`/`HfHubHTTPError`/`EntryNotFoundError` so one bad repo never fails the whole search. The skip reason is the 4th element and is NOT logged (structlog is unconfigured by the CLI, so a per-repo log record would hit stdout and corrupt `--json | jq`) — `search_hub_rskills` surfaces only the repo id, via `HubRSkillSearchResult.skipped_repo_ids`. (L148)
+- `_local_markers() -> tuple[frozenset[str], frozenset[str]]` — `(in_tree_names, installed_repo_ids)` for the `local` marker. A corrupt registry (`ROSConfigError`) or a row failing `InstalledRSkillEntry` validation (`ValueError`) is treated as no installed entries but `log.warning("rskill.hub_search.registry_unreadable", ...)` — CLAUDE.md §1.4, never silently swallowed. (L182)
+
 ### `python/rskill/src/openral_rskill/gpu_passthrough.py`
 _GpuPassthroughSkill — minimal rSkill whose per-step image processing provably runs on GPU (M8 PR I/10)._
 

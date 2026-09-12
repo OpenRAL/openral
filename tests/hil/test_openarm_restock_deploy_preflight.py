@@ -26,12 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.hil.conftest import _can_links_up
+from tests.hil.conftest import _can_links_up, _installed_slot_rskill
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE = REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml"
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-RSKILL = REPO_ROOT / "rskills" / "rskill-pi05-openarm-restock_shelf-bf16" / "rskill.yaml"
+RSKILL = _installed_slot_rskill("openarm")
 
 _CAN_LINKS = ("openarm_left", "openarm_right")
 _CAMERA_NODES = (
@@ -52,12 +52,22 @@ requires_cameras = pytest.mark.skipif(
     not _cameras_present(),
     reason="rig camera udev symlinks absent (/dev/camera_*) — not on the cell",
 )
+requires_rskill = pytest.mark.skipif(
+    RSKILL is None,
+    reason=(
+        "no installed rSkill declares the openarm embodiment with a slot action "
+        "contract — the cell's policy is installed from its own Hub repo "
+        "(`openral rskill install <repo-id>`), not shipped in rskills/"
+    ),
+)
 
 
 # ── Manifest graph ────────────────────────────────────────────────────────────
 
 
+@requires_rskill
 def test_scene_robot_and_rskill_all_resolve() -> None:
+    assert RSKILL is not None  # narrowed by requires_rskill
     from openral_core.schemas import DeployScene, RobotDescription, RSkillManifest
 
     scene = DeployScene.from_yaml(str(SCENE))
@@ -68,7 +78,9 @@ def test_scene_robot_and_rskill_all_resolve() -> None:
     assert skill.embodiment_tags == ["openarm"]
 
 
+@requires_rskill
 def test_rskill_is_compatible_with_the_robot() -> None:
+    assert RSKILL is not None  # narrowed by requires_rskill
     # The umbrella check: embodiment tags + capability flags + sensor
     # requirements, against the manifest the deploy actually loads.
     from openral_core.schemas import RobotDescription, RSkillManifest
@@ -89,7 +101,9 @@ def test_rskill_is_compatible_with_the_robot() -> None:
     rSkill.check_compatibility(skill, robot)  # raises on any mismatch
 
 
+@requires_rskill
 def test_scene_supplies_every_feature_key_the_policy_requires() -> None:
+    assert RSKILL is not None  # narrowed by requires_rskill
     from openral_core.schemas import DeployScene, RSkillManifest
 
     scene = DeployScene.from_yaml(str(SCENE))
@@ -186,6 +200,9 @@ def _slot_actions_from_the_real_manifest(tick: int = 1) -> list:  # pragma: no c
     from openral_core.schemas import RobotDescription, RSkillManifest
     from openral_rskill_ros.rskill_runner_node import _dispatch_slots
 
+    # Every caller is marked @requires_rskill, so this always runs with a
+    # resolved manifest; narrowed explicitly for mypy --strict.
+    assert RSKILL is not None
     manifest = RSkillManifest.from_yaml(str(RSKILL))
     robot = RobotDescription.from_yaml(str(ROBOT))
     vector = np.arange(16, dtype=np.float32)
@@ -198,10 +215,11 @@ def _slot_actions_from_the_real_manifest(tick: int = 1) -> list:  # pragma: no c
 
 
 @requires_can
+@requires_rskill
 def test_the_policys_flat_vector_reaches_the_four_controllers_intact() -> None:  # pragma: no cover
     """The whole ADR-0102 path on the real cell: policy vector → four messages.
 
-    This is the contract `rskill-pi05-openarm-restock_shelf-bf16` needs and the
+    This is the contract a bimanual OpenArm policy needs and the
     one that silently did not hold before ADR-0102: the OpenArm could not
     declare `gripper_position`, so `send_action` returned early on
     `joint_targets is None` and **discarded the gripper command** — arms moving,
@@ -264,6 +282,7 @@ def test_the_policys_flat_vector_reaches_the_four_controllers_intact() -> None: 
 
 
 @requires_can
+@requires_rskill
 def test_slot_arrival_order_does_not_change_what_the_controllers_get() -> None:  # pragma: no cover
     """ADR-0102's point: addressing is by name, not by arrival order.
 
@@ -302,6 +321,7 @@ def test_slot_arrival_order_does_not_change_what_the_controllers_get() -> None: 
 
 
 @requires_can
+@requires_rskill
 def test_a_standalone_gripper_action_raises_instead_of_vanishing() -> None:  # pragma: no cover
     """The exact silent failure ADR-0102 exists to end, checked on the cell.
 

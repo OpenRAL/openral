@@ -33,6 +33,6 @@ uint16 tick_group_size
 # is a legal joint target, so it never can. `ee_name` disambiguates
 # gripper/Cartesian slots; this does the same for JOINT_* slots, which is
 # the case two committed rSkills already hit (the OpenArm v2 bimanual
-# restock contract and gr00t-n17-b1k). When non-empty this is
+# bimanual contract and gr00t-n17-b1k). When non-empty this is
 # AUTHORITATIVE over slot arrival order.
 string[] joint_names

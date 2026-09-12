@@ -120,7 +120,8 @@ scenes:
 action_contract:
   dim: 6
   # 5 arm joints + 1 gripper, absolute joint positions. LeRobot SO-101 teleop is
-  # recorded in DEGREES (same convention as smolvla-so101-pen / molmoact2-so101);
-  # a MuJoCo (radian) scene must convert deg↔rad at the policy boundary.
+  # recorded in DEGREES (same convention as rskill-smolvla-so101-eraser_place-bf16
+  # / molmoact2-so101); a MuJoCo (radian) scene must convert deg↔rad at the
+  # policy boundary.
   representation: "joint_positions"
   joint_units: "degrees"

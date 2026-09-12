@@ -162,5 +162,5 @@ action_contract:
   # DEGREES (verified from norm_stats.json metadata_by_tag/so100_so101_molmoact2:
   # state_stats span −270…+250, q99≈185 — far outside radians). The runner
   # converts deg↔rad at the policy boundary; see the header UNITS note. Same
-  # convention as the smolvla-so101-pen reference.
+  # convention as the rskill-smolvla-so101-eraser_place-bf16 reference.
   joint_units: "degrees"

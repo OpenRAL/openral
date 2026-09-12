@@ -11,6 +11,8 @@ Public surface
 - ``DEFAULT_CACHE_DIR``: Default cache directory path.
 - ``rSkill``: HF Hub rSkill loader (manifest + weights + license guard).
 - ``InstalledRSkillEntry``: Local registry entry schema.
+- ``search_hub_rskills``: Free-text + facet search over an HF Hub org's
+  rSkills (``HubRSkillHit``, ``HubRSkillSearchResult``).
 - ``resolve_runtime_backend``: Name -> ``Runtime`` class, built-in or via the
   ``openral.runtime_backends`` entry-point group (the OpenRAL Pro extraction seam).
 - ``maybe_attach_pro_hooks``: Generic OpenRAL Pro policy-attach-hook lookup
@@ -34,6 +36,7 @@ from importlib.metadata import version as _pkg_version
 from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runtime_backend
 from openral_rskill.base import rSkillBase
 from openral_rskill.engine_cache import DEFAULT_CACHE_DIR, EngineCache
+from openral_rskill.hub_search import HubRSkillHit, HubRSkillSearchResult, search_hub_rskills
 from openral_rskill.loader import (
     DEFAULT_REGISTRY_PATH,
     InstalledRSkillEntry,
@@ -48,6 +51,8 @@ __all__ = [
     "DEFAULT_REGISTRY_PATH",
     "QUANT_PRESETS",
     "EngineCache",
+    "HubRSkillHit",
+    "HubRSkillSearchResult",
     "InstalledRSkillEntry",
     "NullRuntime",
     "Runtime",
@@ -57,5 +62,6 @@ __all__ = [
     "rSkill",
     "rSkillBase",
     "resolve_runtime_backend",
+    "search_hub_rskills",
 ]
 __version__ = _pkg_version("openral-rskill")
