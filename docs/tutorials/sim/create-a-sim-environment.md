@@ -1,5 +1,10 @@
 # Create a sim environment
 
+> **New here?** This page is the *authoring* guide — it assumes you have
+> already run a rollout. If you have not, start with
+> [Your first sim rollout](first-rollout.md), which gets a real policy driving
+> a simulated robot in one command on a CPU-only host.
+
 This tutorial walks you through authoring a **`SimScene` YAML** — the
 on-disk `(robot × scene × task)` tuple — that `openral sim run` consumes
 together with an rSkill (`--rskill rskills/<id>`), so you can test a VLA /

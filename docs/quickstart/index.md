@@ -156,6 +156,7 @@ and the [reasoner reference](../reference/reasoner.md).
 
 ## 5. Next steps
 
+- [Run your first sim rollout](../tutorials/sim/first-rollout.md) — a real policy driving a simulated robot in one command, no GPU needed.
 - [OpenRAL dashboard](dashboard.md) — live debugging UI over the OTel stream.
 - [Write & publish an rSkill](../tutorials/rskill/write-and-publish-an-rskill.md) — package a policy as an installable skill.
 - [Deploy on a robot](../tutorials/deploy/deploy-run-and-dashboard.md) — the real-hardware graph.
