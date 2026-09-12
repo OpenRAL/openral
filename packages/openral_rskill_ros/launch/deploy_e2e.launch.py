@@ -220,25 +220,33 @@ def _octomap_resolution(hal_mode: str) -> float:
     and nearer. Sim ships **15 mm** as of #253's ruling; real hardware stays at
     50 mm.
 
-    Why sim moved and real did not. The evidence is entirely sim: replayed on
-    the real kernel over identical payload poses, `PickPlaceCounterToSink` (the
-    DOP-only, field-typical payload) goes from **154** false stops of 182
-    genuinely-clear poses at 25 mm with a box-lowered payload to **15** at
-    15 mm with #266's refinement -- 90% fewer, with all 7 real contacts still
-    caught. Neither lever alone is worth much (12% and 10%); the terms ADD, so
-    both have to move. See `docs/reference/collision-validation-evidence.md`
-    and hazard-log Entry 027.
+    The sim evidence: replayed on the real kernel over identical payload poses,
+    `PickPlaceCounterToSink` (the DOP-only, field-typical payload) goes from
+    **154** false stops of 182 genuinely-clear poses at 25 mm with a
+    box-lowered payload to **15** at 15 mm with #266's refinement -- 90% fewer,
+    with all 7 real contacts still caught. Neither lever alone is worth much
+    (12% and 10%); the terms ADD, so both have to move. See
+    `docs/reference/collision-validation-evidence.md` and hazard-log Entry 027.
 
-    None of that measures a real map. Sim rasterises a kitchen's own solid
-    geometry; a real map comes from a depth camera and is dilated by the
-    octree->grid bridge, and its error budget is larger, not smaller
-    (`docs/reference/world-map-fidelity.md`). Taking 50 mm down on sim evidence
-    would be shipping a reduction in conservatism where none was measured.
+    **Real hardware ships 20 mm on that same sim evidence, and nothing else.**
+    No real map has been measured at any resolution. Sim rasterises a kitchen's
+    own solid geometry; a real map comes from a depth camera and is dilated by
+    the octree->grid bridge, and `docs/reference/world-map-fidelity.md` is
+    explicit that the live map stops MORE often than the rasterised one, never
+    less. The quantisation term is also not the only thing between the payload
+    and reality on hardware -- depth noise, extrinsics and the octree dilation
+    sit beside it, and 50 -> 20 mm removes 25.98 mm of guaranteed margin while
+    leaving those untouched. Recorded as a deliberate reduction in
+    conservatism, gated on the safety-WG, in its own hazard-log entry. It
+    should be re-measured on a real map before it is relied on.
 
-    15 mm is also the finest value that ships without touching
-    `octree_to_grid.cpp`'s `kMaxCells`: 141 cells/axis is 2 803 221 against the
-    4 000 000 guard (70% of it), where 12.5 mm needs 4 826 809 and is refused
-    outright.
+    20 mm on hardware and 15 mm in sim, not one value, because the two maps
+    have different error budgets and the sim one is the only one with numbers.
+
+    Cell counts against `octree_to_grid.cpp`'s `kMaxCells` (4 000 000): sim
+    15 mm is 141/axis = 2 803 221 (70% of the guard, and the finest value that
+    ships without raising it -- 12.5 mm needs 4 826 809 and is refused); real
+    20 mm is 106/axis = 1 191 016.
     """
     override = os.environ.get("OPENRAL_OCTOMAP_RESOLUTION_M", "").strip()
     if override:
@@ -250,7 +258,7 @@ def _octomap_resolution(hal_mode: str) -> float:
         # silently empty grid. Fall through to the shipped default.
         if 0.001 <= value <= 0.5:
             return value
-    return 0.015 if hal_mode == "sim" else 0.05
+    return 0.015 if hal_mode == "sim" else 0.02
 
 
 def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
