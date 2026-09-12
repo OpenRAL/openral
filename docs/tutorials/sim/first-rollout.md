@@ -100,10 +100,9 @@ uv run openral sim run \
   --rskill rskills/diffusion-pusht
 ```
 
-The first run downloads the checkpoint from the Hub into your HF cache;
-later runs start from cache. The run prints a resolved header, then one line
-per episode, then the success rate. The shape, with the per-run values
-elided:
+The first run downloads the checkpoint (~1 GB) from the Hub into your HF
+cache; later runs start from cache. The run prints a resolved header, then one
+line per episode, then the success rate:
 
 ```
 ============================================================
@@ -115,10 +114,13 @@ elided:
   seed  : 0  episodes=1
 ============================================================
 
-  ep0: success=<bool> steps=<n> reward=<f> mean_lat=<f>ms budget_viol=<n>
+  ep0: success=False steps=16 reward=4.474 mean_lat=6684.2ms budget_viol=2
 
-  success_rate: <k>/<n> = <p>%
+  success_rate: 0/1 = 0%
 ```
+
+That episode line is a real CPU run capped at `--max-steps 16` — short enough
+to fail, which is what makes it worth reading.
 
 Reading that output:
 
@@ -130,22 +132,32 @@ Reading that output:
 - **`mean_lat`** is mean per-step latency. Diffusion Policy runs 100 DDPM
   denoising steps per chunk, so it is the slowest adapter in the tree by
   design: the manifest records 1756 ms for a warm full chunk on its
-  reference host (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10). Expect
-  meaningfully worse on CPU.
+  reference host (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10). The 6684 ms
+  above is the same work on CPU only.
 - **`budget_viol`** counts steps that blew the manifest's
   `latency_budget.per_chunk_ms`. Expect violations on CPU; the budget is
   pinned to a GPU reference host.
 - The exit code is **not** gated on success rate. A failed episode still
   exits `0` — you decide the threshold.
 
-Slow on CPU? Cut the episode short rather than waiting:
+### Budget your patience on CPU
+
+The scene's default episode is 300 steps. At the CPU latency above that is
+roughly half an hour for one episode — fine to leave running, surprising if you
+are watching it. Cap it while you are finding your feet:
 
 ```bash
 uv run openral sim run --config scenes/sim/pusht.yaml \
-  --rskill rskills/diffusion-pusht --max-steps 30
+  --rskill rskills/diffusion-pusht --max-steps 16
 ```
 
-With a GPU, add `--device cuda:0`.
+That took about two minutes end to end on a 20-core laptop CPU, including a
+~10 s policy load from a warm cache. With a GPU, add `--device cuda:0` and use
+the full episode.
+
+You will also see a `rskill.unpinned_weights` warning: this rSkill's
+`weights_uri` names a branch rather than a commit, so the load is not
+byte-reproducible. Harmless here, worth pinning for anything you publish.
 
 ---
 
