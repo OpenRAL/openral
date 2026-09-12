@@ -1734,12 +1734,33 @@ def attached_model_slip(
             continue
         kernel_pos = link_pos + link_rot @ np.asarray(pose.xyz, dtype=np.float64)
         sim_pos = np.asarray(data.xpos[body_id], dtype=np.float64)
+        # Orientation too. A translation-only slip understates a payload that
+        # PIVOTS in the gripper: the origin barely moves while the far end of a
+        # 42 mm half-extent object sweeps tens of millimetres. The bound on how
+        # far ANY point of the kernel's model is from the body is the
+        # translation plus the chord the rotation sweeps at the body's radius.
+        kernel_rot = link_rot @ rel
+        sim_rot = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+        cos_theta = (np.trace(kernel_rot.T @ sim_rot) - 1.0) / 2.0
+        theta = float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+        radius = 0.0
+        for geom in range(int(model.ngeom)):
+            if int(model.geom_bodyid[geom]) != body_id:
+                continue
+            reach = float(np.linalg.norm(np.asarray(model.geom_pos[geom]))) + float(
+                model.geom_rbound[geom]
+            )
+            radius = max(radius, reach)
+        translation = float(np.linalg.norm(kernel_pos - sim_pos))
         rec.update(
             {
                 "resolved": True,
                 "kernel_world_xyz": [round(float(v), 6) for v in kernel_pos],
                 "sim_world_xyz": [round(float(v), 6) for v in sim_pos],
-                "slip_m": round(float(np.linalg.norm(kernel_pos - sim_pos)), 6),
+                "slip_m": round(translation, 6),
+                "rotation_deg": round(float(np.degrees(theta)), 3),
+                "body_radius_m": round(radius, 6),
+                "max_point_slip_m": round(translation + 2.0 * np.sin(theta / 2.0) * radius, 6),
             }
         )
         out.append(rec)
@@ -4440,10 +4461,13 @@ class SimSensorBridge:
             "latest_origin": list(cast("tuple[float, float, float]", latest["origin"])),
             "resolution_m": float(cast("float", chosen["resolution"])),
             "fallback_to_latest": matched is None,
-            # Whether the window moved AT ALL across the cached history. Zero
-            # rules the stale-grid hazard out for this stop outright, whichever
-            # of the cached grids the kernel actually held -- the proxy above
-            # cannot see inside one publish period, this can.
+            # How many distinct base-frame origins the cached history holds.
+            # NOT a count of window shifts: the lattice is world-fixed and the
+            # origin is its corner expressed in the moving base frame, so this
+            # changes whenever the base moves at all (measured 2026-09-12:
+            # fractional-cell steps of 0.05-0.43 on consecutive frames, i.e.
+            # base wobble). A real window remap is a WHOLE-cell jump -- read
+            # `recent_origins` for that. Zero still rules the hazard out.
             "distinct_origins_in_history": len(
                 {
                     tuple(cast("tuple[float, float, float]", g["origin"]))

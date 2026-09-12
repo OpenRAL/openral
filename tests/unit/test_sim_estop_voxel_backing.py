@@ -1023,3 +1023,20 @@ def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -
     )
     unresolved = attached_model_slip(model, data, description=None, attached_objects=[ghost])
     assert unresolved[0]["resolved"] is False, "a missing number is stated, never a silent zero"
+
+    # A payload that PIVOTS in the gripper: origin put back, body rotated 30
+    # degrees about z. Translation slip reads ~0; the point bound must not.
+    data.qpos[adr] -= 0.03
+    half = math.radians(30.0) / 2.0
+    data.qpos[adr + 3 : adr + 7] = [math.cos(half), 0.0, 0.0, math.sin(half)]  # wxyz
+    mujoco.mj_forward(model, data)
+    pivoted = attached_model_slip(model, data, description=None, attached_objects=[obj])[0]
+    assert pivoted["slip_m"] == pytest.approx(0.0, abs=1e-6)
+    assert pivoted["rotation_deg"] == pytest.approx(30.0, abs=1e-6)
+    # The record rounds to micrometres; compare at that precision.
+    assert pivoted["max_point_slip_m"] == pytest.approx(
+        2.0 * math.sin(half) * pivoted["body_radius_m"], abs=1e-6
+    )
+    assert pivoted["max_point_slip_m"] > 0.0, (
+        "a pure rotation is still a slip of every surface point"
+    )
