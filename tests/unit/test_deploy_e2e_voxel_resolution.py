@@ -76,10 +76,10 @@ def test_an_unusable_resolution_falls_back_to_the_shipped_default(
     for bad in ("", "   ", "not-a-number", "0", "-0.015", "1.5"):
         monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", bad)
         assert launch_module._octomap_resolution("sim") == 0.015, bad
-        assert launch_module._octomap_resolution("real") == 0.05, bad
+        assert launch_module._octomap_resolution("real") == 0.02, bad
 
 
-def test_the_shipped_defaults_are_15_mm_in_sim_and_50_mm_on_hardware(
+def test_the_shipped_defaults_are_15_mm_in_sim_and_20_mm_on_hardware(
     launch_module: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,16 +91,23 @@ def test_the_shipped_defaults_are_15_mm_in_sim_and_50_mm_on_hardware(
     contact still caught. The terms ADD, so this only pays alongside #266 --
     15 mm alone was 10%.
 
-    Real hardware stays at 50 mm because none of that evidence is about a real
-    map: sim rasterises a kitchen's own solid geometry, a real map comes from a
-    depth camera and is dilated by the octree->grid bridge, and its error
-    budget is larger. Moving it on sim evidence would be a reduction in
-    conservatism nobody measured. That asymmetry is the point of this test, so
-    a later edit cannot quietly bring the two into line.
+    Real hardware ships 20 mm -- finer than the 50 mm it replaces, coarser than
+    sim's 15 mm, and on sim evidence alone. No real map has been measured at
+    any resolution: sim rasterises a kitchen's own solid geometry, a real map
+    is depth-camera derived and dilated by the octree->grid bridge, and its
+    error budget is larger, with depth noise and extrinsics sitting beside the
+    quantisation term this shrinks.
+
+    The two values stay DIFFERENT on purpose, which is the point of this test:
+    a later edit that collapses them to one number would be asserting the two
+    maps have the same error budget, and nothing has shown that.
     """
     monkeypatch.delenv("OPENRAL_OCTOMAP_RESOLUTION_M", raising=False)
     assert launch_module._octomap_resolution("sim") == 0.015
-    assert launch_module._octomap_resolution("real") == 0.05
+    assert launch_module._octomap_resolution("real") == 0.02
+    assert launch_module._octomap_resolution("sim") != launch_module._octomap_resolution("real")
+    # Both inside `kMaxCells` (4 000 000), with the real grid the roomier one.
+    assert launch_module._world_voxel_max_cells(0.02) == 1191016
     # 15 mm is the finest value that ships without touching `kMaxCells`:
     # 141/axis is 2 803 221 against the 4 000 000 guard, where 12.5 mm needs
     # 4 826 809 and is refused outright.
