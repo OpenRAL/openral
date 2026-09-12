@@ -181,6 +181,9 @@ trace. Paper-cited numbers you haven't reproduced locally are allowed with
 `reproduced_locally: false` plus a `reproduction_cli` so others can rerun them.
 
 Roll every skill's results up with `openral benchmark report [--json]`.
+The full walkthrough — suite invariants, the `evaluated_tasks` gate, and what
+`reproduced_locally` commits you to — is in
+[Run a benchmark](../benchmark/run-a-benchmark.md).
 
 ## 6. Publish to the Hub
 

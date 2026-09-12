@@ -75,6 +75,7 @@ nav:
   - Tutorials:
     - Your first sim rollout: tutorials/sim/first-rollout.md
     - Create a sim environment: tutorials/sim/create-a-sim-environment.md
+    - Run a benchmark: tutorials/benchmark/run-a-benchmark.md
     - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
     - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
   - Architecture:
