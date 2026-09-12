@@ -2485,6 +2485,65 @@ not as evidence about the policy — which also means the ceiling battery's own
 policy-free exclusions deserve re-reading in that light.
 
 
+### 2026-09-12 — every gate-ON stop of the 2026-09-09 battery, classified by what backed its cell
+
+The 2026-09-09 ceiling battery's 20 gate-ON E-stops, read through their own
+`evidence_voxel_backing` records. **Those records are on the
+`sim.estop_ground_truth_evidence` line, not the snapshot line** — the snapshot
+only carries one when the kernel's evidence was already fresh, and it usually is
+not (`_late_voxel_backing`). 26 of 27 stops carry a record; reading only the
+snapshot line finds `null` on all of them and invites the conclusion that the
+instrument is missing. It is not, and that error was published in #272's first
+draft and retracted.
+
+| verdict | n | true gap span | what it means |
+| --- | ---: | --- | --- |
+| `solid_world` | 12 | −0.12 .. +61.16 mm | real geometry explains the cell |
+| **`attached_payload`** | **6** | −0.22 .. +8.48 mm | **the cell holds the carried payload** |
+| `unbacked` | 1 | +4.41 mm | a genuine phantom cell |
+| no evidence line | 1 | +14.78 mm | not adjudicable |
+
+The `attached_payload` six are `fridge` r01/r05/r06/r08, `sink_cup` r09 and
+`utensil` r04. Four facts about them:
+
+1. **The exclusion was live at the stop.** `obj_main` is classifiable as
+   `attached_payload` only from `attached_body_ids`, i.e. `read_attached_body_ids()`
+   returned it; the gripper is `self_occupancy_suspect`, so it is in
+   `_depth_self_bodies` (`robot_bodies=21` in the battery's own bridge log).
+2. All five of the placing-phase ones fire **5–6 s after the grasp**:
+   `+5.90, +5.49, +6.05, +5.48, +4.99 s` from the `automatic sim attachment
+   revision` marker.
+3. All four `fridge` runs trip on **the same cell index, 233816**.
+4. Rebuilt at the battery's own `layout_id=47 style_id=32`, that cell centre
+   (`[4.0875, −0.7375, 0.9375]`) is **89 mm** from the payload's start pose
+   (`[4.0237, −0.6771, 0.9209]`), with the payload's own geom bounds reaching
+   within 37 mm of it.
+
+**Not established: authorship.** A single snapshot cannot separate "the payload
+wrote this cell" from "something else wrote it and the payload has since moved
+into it" — the point `voxel_backing_record`'s docstring makes about
+`self_occupancy_suspect`, which applies here too. Settling it needs grid
+*history*, which no artifact in this battery carries; `preattach_verdict` and
+`occupied_cell_keys` (#272) are the instrument that supplies it, by freezing the
+occupied-cell set at the masking attach so a stop can report whether its cell
+predates the grasp. **Unrun as of this entry** — the field exists, no battery has
+produced one yet.
+
+**Two `solid_world` stops are not conservatism artefacts either.** `sink_cup/r04`
+(+44.96 mm) and `baguette/r05` (+48.53 mm) exceed certified truth by **50.87 mm**
+and **56.61 mm**, against #266's measured median payload box term of 50.8 mm.
+They are the plain #266 defect and #267 removes them. An earlier reading of these
+two as phantom occupancy was wrong: it transferred the #268 replay's `box@25`
+clearance threshold, and that sweep moves the payload's **position only, at its
+home orientation** (`replay_poses.py`), while box overhang is
+orientation-dependent and the payload is grasped and tilted at the stop.
+**The #268 thresholds are not transferable across orientations.**
+
+Two leftovers, neither chased: `utensil/r02` is a true `unbacked` phantom 4.4 mm
+from real geometry, and `sink_cup/r08` is a `panda_link7` stop **61.16 mm** clear
+of anything, which no budget on this page explains.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts

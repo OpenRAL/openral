@@ -32,6 +32,8 @@ from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
     collision_model_mesh_slop,
     estop_ground_truth_snapshot,
+    occupied_cell_keys,
+    preattach_verdict,
     voxel_backing_for_cell,
     voxel_backing_record,
 )
@@ -691,3 +693,159 @@ def test_a_cell_holding_only_robot_geometry_is_swept_for_world_geometry_too() ->
             "a cell backed only by the robot must be swept for world geometry, "
             "or `self_occupancy_suspect` cannot be told from an unsampled world"
         )
+
+
+# --- #272: did the cell predate the grasp? -----------------------------------
+# `voxel_backing_record`'s `attached_payload` verdict says the payload is in the
+# cell NOW. It cannot say whether the payload put it there while it was still
+# world geometry, or whether the map gained the cell after the grasp for some
+# other reason -- and those have different causes and different fixes. These pin
+# the frozen pre-attach set that separates them.
+
+
+def _occupancy_at(*base_points: tuple[float, float, float]) -> list[int]:
+    """A grid whose only occupied cells contain the given base-frame points."""
+    occ = [0] * (_GRID_SIZE[0] * _GRID_SIZE[1] * _GRID_SIZE[2])
+    for point in base_points:
+        occ[_index_at(point)] = 1
+    return occ
+
+
+def _keys(model: Any, data: Any, occupancy: list[int]) -> Any:
+    import numpy as np
+
+    body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, _BASE_BODY))
+    return occupied_cell_keys(
+        occupancy=occupancy,
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        grid_orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        base_rot=np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3),
+        base_offset=np.asarray(data.xpos[body_id], dtype=np.float64),
+    )
+
+
+def test_a_cell_frozen_before_the_grasp_is_recognised_after_it() -> None:
+    """The whole point: the same physical cell, matched across the attach."""
+    model, data = _model_data()
+    cell = (0.3, 0.0, 0.145)
+    keys, truncated = _keys(model, data, _occupancy_at(cell))
+    assert not truncated
+    record = _backing(model, data, cell)
+
+    verdict = preattach_verdict(
+        world_xyz=record["world_xyz"],  # type: ignore[arg-type]
+        resolution=_GRID_RES,
+        preattach_keys=keys,
+    )
+    assert verdict["available"] is True
+    assert verdict["preexisting"] is True
+    assert verdict["preattach_cells"] == 1
+
+
+def test_a_cell_absent_before_the_grasp_is_not_claimed_as_preexisting() -> None:
+    """A cell the frozen set never held must read as new, not as unknown."""
+    model, data = _model_data()
+    keys, _ = _keys(model, data, _occupancy_at((0.3, 0.0, 0.145)))
+    elsewhere = _backing(model, data, (-0.3, 0.3, 0.145))
+
+    verdict = preattach_verdict(
+        world_xyz=elsewhere["world_xyz"],  # type: ignore[arg-type]
+        resolution=_GRID_RES,
+        preattach_keys=keys,
+    )
+    assert verdict["preexisting"] is False
+    assert verdict["within_one_cell"] is False
+
+
+def test_the_frozen_set_survives_the_base_driving_away() -> None:
+    """The key must name a WORLD cell, not a grid index.
+
+    The published lattice is the source map's, fixed in map/odom; only the
+    base-frame ``origin`` slides as the robot moves. An implementation that
+    keyed on the voxel index would pass every other test here and then answer
+    "not pre-existing" for the very same physical cell the moment the base
+    moved -- which is exactly the window a carried payload is stopped in.
+    """
+    model, data = _model_data()
+    world_cell = (0.3, 0.0, 0.145)
+    keys, _ = _keys(model, data, _occupancy_at(world_cell))
+    before = _backing(model, data, world_cell)
+
+    # Drive the base 0.25 m forward; the same physical point is now a different
+    # base-frame position, hence a different grid index.
+    data.qpos[0] = 0.25
+    mujoco.mj_forward(model, data)
+    after = _backing(model, data, (world_cell[0] - 0.25, world_cell[1], world_cell[2]))
+
+    assert after["world_xyz"] == pytest.approx(before["world_xyz"], abs=1e-9)
+    assert after["voxel_index"] != before["voxel_index"]
+    verdict = preattach_verdict(
+        world_xyz=after["world_xyz"],  # type: ignore[arg-type]
+        resolution=_GRID_RES,
+        preattach_keys=keys,
+    )
+    assert verdict["preexisting"] is True
+
+
+def test_no_snapshot_reads_as_unavailable_never_as_a_new_cell() -> None:
+    """ "Nobody looked" must not be reported as "the cell is new".
+
+    Collapsing those would let a run with no frozen set read as evidence that
+    every stop's cell postdates the grasp -- the exact wrong conclusion, drawn
+    from an absence.
+    """
+    model, data = _model_data()
+    record = _backing(model, data, (0.3, 0.0, 0.145))
+    for missing in (None, frozenset()):
+        verdict = preattach_verdict(
+            world_xyz=record["world_xyz"],  # type: ignore[arg-type]
+            resolution=_GRID_RES,
+            preattach_keys=missing,  # type: ignore[arg-type]
+        )
+        assert verdict["available"] is False
+        assert "preexisting" not in verdict
+
+
+def test_an_oversized_grid_is_refused_rather_than_partially_sampled() -> None:
+    """A truncated set would answer "new" for cells it never looked at."""
+    model, data = _model_data()
+    import numpy as np
+
+    body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, _BASE_BODY))
+    keys, truncated = occupied_cell_keys(
+        occupancy=[1] * (_GRID_SIZE[0] * _GRID_SIZE[1] * _GRID_SIZE[2]),
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        grid_orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        base_rot=np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3),
+        base_offset=np.asarray(data.xpos[body_id], dtype=np.float64),
+        max_cells=16,
+    )
+    assert truncated is True
+    assert keys == frozenset()
+    verdict = preattach_verdict(
+        world_xyz=[0.0, 0.0, 0.0], resolution=_GRID_RES, preattach_keys=keys
+    )
+    assert verdict["available"] is False
+
+
+def test_a_non_unit_grid_quaternion_yields_no_set_rather_than_identity() -> None:
+    """Same posture as ``voxel_backing_record``: refuse, never assume identity."""
+    model, data = _model_data()
+    import numpy as np
+
+    body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, _BASE_BODY))
+    keys, truncated = occupied_cell_keys(
+        occupancy=_occupancy_at((0.3, 0.0, 0.145)),
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        grid_orientation_xyzw=(0.0, 0.0, 0.0, 0.0),
+        base_rot=np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3),
+        base_offset=np.asarray(data.xpos[body_id], dtype=np.float64),
+    )
+    assert keys == frozenset()
+    assert truncated is False
