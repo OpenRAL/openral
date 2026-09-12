@@ -255,6 +255,95 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         # How stale the probe is, so a reader can discount a backing body that
         # could have moved between the stop and the probe.
         assert int(late["backing_after_snapshot_ns"]) >= 0
+        # Nothing was frozen, so the record must say "nobody looked" rather
+        # than "the cell is new" -- the distinction #272 turns on.
+        assert backing["preattach"] == {
+            "available": False,
+            "reason": "no pre-attach grid snapshot",
+            "truncated": False,
+            "attach_revision": -1,
+            "frozen_stamp_ns": 0,
+        }
+
+        # --- #272: did the cell predate the grasp? ------------------------
+        #
+        # ``verdict: attached_payload`` says the payload is in the cell NOW.
+        # Only a set frozen at the masking attach can say whether the payload
+        # put it there while it was still world geometry -- the difference
+        # between a payload tripping on occupancy it authored and a live map
+        # defect with another cause. 6 of the 20 gate-ON stops in the
+        # 2026-09-09 battery carry that verdict and none of them can be
+        # resolved without this.
+        #
+        # The unit tests pin the keying against compiled ``MjModel``s. What
+        # only a live graph pins is the path: a real ``OccupancyVoxels`` on the
+        # wire -> retained occupancy -> a frozen world-cell set built through
+        # the node's OWN base frame -> the annotation surviving onto the late
+        # line. (The call SITE -- ``masks_new_geometry`` in
+        # ``_on_attachment_state_applied`` -- needs a real grasp and is not
+        # covered here; this covers everything it calls.)
+        occupied = bytearray(_GRID_DIMS[0] * _GRID_DIMS[1] * _GRID_DIMS[2])
+        occupied[_EVIDENCE_INDEX] = 1
+        grid.header.stamp = peer.get_clock().now().to_msg()
+        grid.occupancy = bytes(occupied)
+        voxel_pub.publish(grid)
+        assert _wait_until(
+            lambda: (
+                bridge._last_voxel_occupancy is not None
+                and bytes(bridge._last_voxel_occupancy)[_EVIDENCE_INDEX] == 1
+            )
+        ), "the occupancy bytes must be retained, not just the grid geometry"
+
+        bridge._freeze_preattach_occupancy(revision=7)
+        assert bridge._preattach_cells is not None
+        assert len(bridge._preattach_cells) == 1, "one occupied cell, one key"
+        assert bridge._preattach_truncated is False
+
+        time.sleep(_ESTOP_EVIDENCE_WINDOW_NS / 1e9 + 0.1)
+        capfd.readouterr()
+        estop_pub.publish(Empty())
+        assert _wait_until(lambda: bridge._estop_awaiting_evidence)
+        capfd.readouterr()
+        trigger.header.stamp = peer.get_clock().now().to_msg()
+        failure_pub.publish(trigger)
+        assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
+        frozen = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+
+        preattach = frozen["evidence_voxel_backing"]["preattach"]
+        assert preattach["available"] is True
+        assert preattach["preexisting"] is True, (
+            "the stop's own cell was occupied in the frozen set and must be recognised"
+        )
+        assert preattach["within_one_cell"] is True
+        assert preattach["attach_revision"] == 7
+        assert int(preattach["frozen_stamp_ns"]) > 0
+
+        # And a stop on a cell the frozen set never held must read as new --
+        # otherwise every stop would look pre-existing and the field would be
+        # decoration. One lattice step in x is a different cell.
+        trigger.evidence_json = CollisionEvidence(
+            collision_kind="world",
+            horizon_step=-1,
+            link_a="panda_link1",
+            link_b_or_object=f"voxel_{_EVIDENCE_INDEX + 1}",
+            min_distance_m=-0.0172764,
+        ).model_dump_json()
+        time.sleep(_ESTOP_EVIDENCE_WINDOW_NS / 1e9 + 0.1)
+        capfd.readouterr()
+        estop_pub.publish(Empty())
+        assert _wait_until(lambda: bridge._estop_awaiting_evidence)
+        capfd.readouterr()
+        trigger.header.stamp = peer.get_clock().now().to_msg()
+        failure_pub.publish(trigger)
+        assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
+        neighbour = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+
+        neighbour_preattach = neighbour["evidence_voxel_backing"]["preattach"]
+        assert neighbour_preattach["available"] is True
+        assert neighbour_preattach["preexisting"] is False
+        # Adjacent, so the neighbourhood guard fires -- which is what makes a
+        # lattice that drifts show up as an adjacent hit instead of silence.
+        assert neighbour_preattach["within_one_cell"] is True
     finally:
         with suppress(Exception):
             node.trigger_deactivate()
