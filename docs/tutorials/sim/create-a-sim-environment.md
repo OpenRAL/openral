@@ -55,15 +55,19 @@ runtime through one of three registries (no hardcoded IDs):
 | `POLICIES` | same | `@POLICIES.register("<id>")` decorators in `policies/*.py` |
 | `ROBOTS` | same | Auto-discovered from `robots/<id>/robot.yaml` at import time |
 
-List everything that is currently registered on your install:
+Two sibling subcommands print the paste-able halves of an invocation, and
+neither touches OTel, the GPU, or the runtime path:
 
 ```bash
-openral sim list
+openral sim list        # every scenes/**/*.yaml — paste into --config
+openral rskill list     # in-tree + installed rSkills — paste into --rskill
 ```
 
-`openral sim list` is a sibling subcommand to `openral sim run`; it prints the three
-registries (scenes / policies / robots) and exits without touching OTel or the
-runtime path.
+`openral sim list` is a filesystem walk over `scenes/`, so it is safe on any
+host. It lists **config paths**, not registry ids — the `SCENES` / `POLICIES` /
+`ROBOTS` tables above are populated by import-time decorators and are not
+printed by any command. To inspect them, import the registry from Python
+(see §3).
 
 ### Flags (`openral sim run`)
 
@@ -388,12 +392,8 @@ $EDITOR robots/my_arm/README.md         # pair the manifest with adapter notes
 
 ### Verify it registered
 
-```bash
-openral sim list | grep "robots:"
-# should now include `my_arm`
-```
-
-You can also confirm the manifest loads cleanly from Python:
+`openral sim list` will not show it — that command lists scene configs, not
+robots. Confirm the manifest registered by loading it from Python:
 
 ```python
 from openral_sim import ROBOTS
@@ -521,7 +521,12 @@ The simplest way is a one-line import in
 from . import my_scene  # noqa: F401  # reason: register-by-import
 ```
 
-Confirm it shows up in `openral sim list` under **scenes:**.
+Confirm it registered by resolving it from Python:
+
+```python
+from openral_sim import SCENES
+print("my_scene" in SCENES.names())
+```
 
 ### Optional: `mujoco_handles` for `openral sim run --view`
 
@@ -917,7 +922,8 @@ The auto-install prompts fire from the benchmark runner's path too —
 
 ## Where to go next
 
-- The full list of registered IDs on your machine: `openral sim list`.
+- Paste-able scene configs: `openral sim list`. Paste-able rSkills:
+  `openral rskill list`.
 - The cookbook of existing configs and a per-backend ID table:
   [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md).
 - Design background: the original scene/eval design renamed
