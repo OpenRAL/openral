@@ -2499,7 +2499,7 @@ draft and retracted.
 | verdict | n | true gap span | what it means |
 | --- | ---: | --- | --- |
 | `solid_world` | 12 | −0.12 .. +61.16 mm | real geometry explains the cell |
-| **`attached_payload`** | **6** | −0.22 .. +8.48 mm | **the cell holds the carried payload** |
+| ~~`attached_payload`~~ | ~~6~~ | −0.22 .. +8.48 mm | **RETRACTED — an artefact of this very verdict, see the correction entry below. Do not cite it.** |
 | `unbacked` | 1 | +4.41 mm | a genuine phantom cell |
 | no evidence line | 1 | +14.78 mm | not adjudicable |
 

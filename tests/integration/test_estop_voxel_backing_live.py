@@ -271,9 +271,13 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         # Only a set frozen at the masking attach can say whether the payload
         # put it there while it was still world geometry -- the difference
         # between a payload tripping on occupancy it authored and a live map
-        # defect with another cause. 6 of the 20 gate-ON stops in the
-        # 2026-09-09 battery carry that verdict and none of them can be
-        # resolved without this.
+        # defect with another cause -- neither of which a single stop
+        # snapshot can tell apart. (The 2026-09-09 census that first
+        # motivated this was itself an artefact of the verdict: the
+        # coincident-shell sweep was suppressed by the carried payload, so a
+        # payload resting on its support read as a cell holding only the
+        # payload. #272 closed on that. The frozen set outlives the
+        # retraction because the question is still unanswerable without it.)
         #
         # The unit tests pin the keying against compiled ``MjModel``s. What
         # only a live graph pins is the path: a real ``OccupancyVoxels`` on the
