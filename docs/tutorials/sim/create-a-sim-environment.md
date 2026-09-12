@@ -781,8 +781,9 @@ asset helper does in a subprocess `-c` wrapper.
 
 ### Authoring a procedural kitchen
 
-For free-axis authoring, pass `--scene robocasa` (no slash) plus a
-procedural `backend_options` block:
+For procedural authoring, set `scene.id` to the bare `robocasa` (no slash)
+plus a procedural `backend_options` block. There is no `--scene` flag —
+the scene travels in the YAML, like every other axis except the rSkill:
 
 ```yaml
 scene:
@@ -804,6 +805,11 @@ scene:
 `PickPlaceCounterToCabinet`); the remaining keys are validated by
 `RoboCasaBackendOptions`'s `model_validator` to enforce the
 prebuilt-vs-procedural XOR.
+
+"Procedural" is the *kitchen* axis, not the robot axis: the bare `robocasa`
+scene is registered `fixed_robot="panda_mobile"` exactly like the prebuilt
+`robocasa/<Task>` ids, so `--robot` is still rejected here (§2). What varies
+is the style / layout / fixture / object draw.
 
 ### Known constraints
 
