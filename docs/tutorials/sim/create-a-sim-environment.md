@@ -183,10 +183,11 @@ See [GH-134](https://github.com/OpenRAL/openral/issues/134).
 ## 2. Author a SimScene YAML
 
 The on-disk shape is a [`SimScene`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-— `(robot × scene × task)` — defined at `python/core/src/openral_core/schemas.py:6652`.
+— `(robot × scene × task)` — defined in `python/core/src/openral_core/schemas.py`
+(search for `class SimScene`).
 At runtime the CLI composes it with the rSkill manifest (`--rskill`) into a
 [`SimEnvironment`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-(`schemas.py:6425`) that adapter factories consume. Loading a YAML that
+(`schemas.py` — search for `class SimEnvironment`) that adapter factories consume. Loading a YAML that
 carries a `vla:` block raises `ROSConfigError` — policy *always* travels
 on the CLI, not in the YAML.
 
@@ -245,8 +246,8 @@ vice versa.
 
 | Block | Schema | Required keys |
 |---|---|---|
-| `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:6109`) | `id`; `backend` defaults to `mujoco` |
-| `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:6327`) | `id`, `scene_id` (must equal `scene.id`) |
+| `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class SceneSpec`) | `id`; `backend` defaults to `mujoco` |
+| `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class TaskSpec`) | `id`, `scene_id` (must equal `scene.id`) |
 | `robot_id` | string, key into `ROBOTS` | Only on **free-axis** scenes — and only if you want to bake the robot into the YAML rather than passing `--robot`. Forbidden on `fixed_robot` scenes (LIBERO/MetaWorld/RoboCasa). |
 
 Policy is **not** a YAML block; it is supplied at the CLI as
@@ -272,7 +273,8 @@ the reasoner select policy at runtime.
 
 Robots are auto-registered from `robots/<id>/robot.yaml` at import time — no
 Python edit required. The discovery loop lives at
-[`python/sim/src/openral_sim/policies/robots.py:71-125`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py).
+[`python/sim/src/openral_sim/policies/robots.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py)
+(`_discover_robot_ids` → `_resolve_manifest` → `_make_factory`).
 The search path is, in order:
 
 1. `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` (if the env var is set)
