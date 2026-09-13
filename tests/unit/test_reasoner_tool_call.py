@@ -189,6 +189,30 @@ def test_unknown_tool_kind_is_rejected() -> None:
         ADAPTER.validate_json(payload)
 
 
+def test_a_malformed_payload_reports_only_its_own_variant() -> None:
+    """The union discriminates, so an operator reads one error, not thirteen.
+
+    A live `lfm2.5` tick emitted `emit_prompt` with `target_topic="#operations"`
+    (a Slack channel, not a ROS topic). Before the union declared its
+    discriminator, Pydantic tried all thirteen variants and the reasoner logged
+    50 errors, burying the one that mattered.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        ADAPTER.validate_python(
+            {"tool": "emit_prompt", "target_topic": "#operations", "text": "blocked"}
+        )
+    errors = excinfo.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("emit_prompt", "target_topic")
+
+
+def test_an_unknown_discriminator_is_named_as_such() -> None:
+    """`union_tag_invalid` says the tag is wrong; a literal_error pile does not."""
+    with pytest.raises(ValidationError) as excinfo:
+        ADAPTER.validate_python({"tool": "drive_to_bar"})
+    assert excinfo.value.errors()[0]["type"] == "union_tag_invalid"
+
+
 def test_variants_are_frozen() -> None:
     """Every variant is frozen=True so the LLM can't mutate routed calls."""
     src = EmitPromptTool(target_topic="/openral/prompt", text="x")
