@@ -63,6 +63,14 @@ struct EnvelopeIntersection {
   WorkspaceBox workspace_box;
   double max_ee_speed_m_s{kPosInfinity};
   double max_ee_accel_m_s2{kPosInfinity};
+  // CARTESIAN_TWIST angular bound, paired with max_ee_speed_m_s above (the
+  // linear bound). Default kPosInfinity = "no bound declared" -- see the
+  // research repo's docs on the CARTESIAN_TWIST angular-speed fix for why
+  // this was previously declared on manifests (e.g. panda_mobile) but
+  // enforced nowhere: the C++ kernel only ever checked linear speed, and
+  // the Python supervisor that implements the angular check is never
+  // launched by deploy_e2e.launch.py.
+  double max_ee_angular_speed_rad_s{kPosInfinity};
 
   // Force / torque caps applied across all joints + cartesian.
   double max_force_n{kPosInfinity};

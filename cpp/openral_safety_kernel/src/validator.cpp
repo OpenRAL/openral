@@ -202,7 +202,8 @@ Result<void, Violation> validate(const ChunkView& chunk,
   }
   case ControlMode::kCartesianTwist: {
     // Each step encodes (vx, vy, vz, wx, wy, wz). Bound linear speed
-    // against max_ee_speed_m_s.
+    // against max_ee_speed_m_s and angular speed against
+    // max_ee_angular_speed_rad_s.
     const std::size_t per_step = envelope.n_dof;
     if (per_step < 6) {
       Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "cartesian_twist");
@@ -219,6 +220,17 @@ Result<void, Violation> validate(const ChunkView& chunk,
         viol.offending_value = linear_speed;
         viol.limit_value = envelope.max_ee_speed_m_s;
         viol.set_field("ee_speed");
+        return Result<void, Violation>::err(viol);
+      }
+      const double angular_speed = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+      if (angular_speed > envelope.max_ee_angular_speed_rad_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = angular_speed;
+        viol.limit_value = envelope.max_ee_angular_speed_rad_s;
+        viol.set_field("ee_angular_speed");
         return Result<void, Violation>::err(viol);
       }
     }

@@ -227,6 +227,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<double>>("workspace_box_max_xyz", std::vector<double>{});
   this->declare_parameter<double>("max_ee_speed_m_s", kPosInfinity);
   this->declare_parameter<double>("max_ee_accel_m_s2", kPosInfinity);
+  this->declare_parameter<double>("max_ee_angular_speed_rad_s", kPosInfinity);
   this->declare_parameter<double>("max_force_n", kPosInfinity);
   this->declare_parameter<double>("max_torque_nm", kPosInfinity);
   this->declare_parameter<double>("contact_force_threshold_n", kPosInfinity);
