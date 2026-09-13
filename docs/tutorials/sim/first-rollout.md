@@ -132,8 +132,9 @@ Reading that output:
   reference host (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10). The 6684 ms
   above is the same work on CPU only.
 - **`budget_viol`** counts steps that blew the manifest's
-  `latency_budget.per_chunk_ms`. Expect violations on CPU; the budget is
-  pinned to a GPU reference host.
+  `latency_budget.per_chunk_ms`. Expect some on any host: the first chunk of an
+  episode pays warm-up, so a 137-step GPU rollout still logged 18. They are a
+  signal to read, not a failure.
 - The exit code is **not** gated on success rate. A failed episode still
   exits `0` — you decide the threshold.
 
@@ -183,10 +184,13 @@ uv run openral sim run --config scenes/sim/pusht.yaml \
   --rskill rskills/diffusion-pusht --save-video example_videos
 ```
 
-The default `--video-style debug` writes a 3-panel montage per episode: what
-the policy saw, the rollout view, and a joint-position plot. Passing the flag
-also switches on per-step frame capture. Use `--video-style world` for a clean
-single-view render instead.
+The default `--video-style debug` stacks two bands per episode: an image band
+on top, and an `observation state` line plot underneath. The top band shows the
+policy's stitched camera grid when the policy has more than one input camera;
+otherwise, as on PushT, the rollout and policy views are the same picture and it
+is labelled `rollout / policy view`. Passing the flag also switches on per-step
+frame capture. Use `--video-style world` for a clean single-view render
+instead.
 
 ### A live dashboard
 

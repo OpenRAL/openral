@@ -168,8 +168,10 @@ shape:
 }
 ```
 
-Locally-produced results also carry a `trace_id`, so a reviewer can deep-link
-from the number straight to its trace tree in Jaeger or Tempo.
+`RSkillEvalResult` also declares a `trace_id` for deep-linking a number to its
+trace tree, but nothing populates it today — it is `null` on a fresh run, with
+or without `--dashboard`, and on all 31 eval files in the tree. Treat it as
+reserved, and find the run in Jaeger or Tempo by timestamp instead.
 
 Never hand-edit a success rate into a manifest or an eval JSON. The commands
 write both, and the number is meant to be reproducible from the trace alone.
