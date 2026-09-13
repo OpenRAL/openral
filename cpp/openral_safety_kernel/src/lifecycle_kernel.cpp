@@ -1979,7 +1979,20 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
     }
     oss << joint_positions[i];
   }
-  oss << "]}";
+  oss << ']';
+  // WHICH grid this index addresses (#275). The cell is named only as
+  // `voxel_<n>`, an index into a grid the kernel does not republish, and the
+  // published window is snapped to the source lattice -- so a base drift
+  // across one cell boundary shifts the whole window and the same index names
+  // a different cell downstream. A consumer matching on stamps cannot separate
+  // two grids inside one `/clock` tick, which quantises every stamp in the
+  // graph; the origin is exact. Disclosure only: nothing here gates, and the
+  // value is the grid the check above actually ran against.
+  if (link_b.rfind("voxel_", 0) == 0) {
+    oss << R"(,"world_grid_origin_m":[)" << voxel_grid_.pose.t.x << ',' << voxel_grid_.pose.t.y
+        << ',' << voxel_grid_.pose.t.z << ']';
+  }
+  oss << '}';
   trigger.evidence_json = oss.str();
   failure_pub_->publish(trigger);
 }

@@ -117,6 +117,7 @@ __all__ = [
     "constant_scan_no_hit_ranges",
     "estop_ground_truth_snapshot",
     "grid_current_at",
+    "grid_with_origin",
     "initial_configuration_stop_record",
     "kernel_checked_body_ids",
     "occupied_cell_keys",
@@ -1639,6 +1640,39 @@ def _grid_stamp_ns(entry: Mapping[str, object]) -> int:
     """The header stamp a cached grid geometry was published with, or -1."""
     stamp = entry.get("stamp_ns")
     return stamp if isinstance(stamp, int) else -1
+
+
+def grid_with_origin(
+    history: Sequence[Mapping[str, object]], origin: Sequence[float], *, tol_m: float = 1e-9
+) -> Mapping[str, object] | None:
+    """The cached grid whose published origin is the one the kernel discloses.
+
+    Exact where the stamp proxy is structural guesswork. ``CollisionEvidence
+    .world_grid_origin_m`` (#275) names the grid the check actually ran
+    against, so the index decodes against that grid and no other. The stamp
+    proxy cannot do this: the graph runs on ``/clock`` and every stamp in it
+    quantises to the same tick, so two grids published inside one tick are
+    indistinguishable by stamp while naming different cells.
+
+    Newest match wins, so a window that returns to an earlier origin resolves
+    to the most recent occurrence. ``None`` when the kernel disclosed nothing
+    or no cached grid matches -- the caller then falls back to the stamp proxy
+    and records that it did, rather than silently decoding against a grid the
+    kernel never held.
+    """
+    if origin is None or len(tuple(origin)) != _XYZ:
+        return None
+    want = tuple(float(v) for v in origin)
+    best: Mapping[str, object] | None = None
+    for entry in history:
+        cached = entry.get("origin")
+        if not isinstance(cached, tuple) or len(cached) != _XYZ:
+            continue
+        if any(abs(float(a) - b) > tol_m for a, b in zip(cached, want, strict=True)):
+            continue
+        if best is None or _grid_stamp_ns(entry) >= _grid_stamp_ns(best):
+            best = entry
+    return best
 
 
 def grid_current_at(
@@ -4441,7 +4475,16 @@ class SimSensorBridge:
         from typing import cast
 
         evidence_stamp = _grid_stamp_ns(evidence)
-        matched = grid_current_at(self._voxel_grid_history, evidence_stamp)
+        # The kernel's own disclosure first (#275). It names the grid the check
+        # ran against, which the stamp proxy can only approximate -- and cannot
+        # approximate at all inside one `/clock` tick.
+        disclosed = evidence.get("world_grid_origin_m")
+        by_origin = (
+            grid_with_origin(self._voxel_grid_history, disclosed)
+            if isinstance(disclosed, (list, tuple))
+            else None
+        )
+        matched = by_origin or grid_current_at(self._voxel_grid_history, evidence_stamp)
         latest_stamp = (
             _grid_stamp_ns(self._voxel_grid_history[-1]) if self._voxel_grid_history else None
         )
@@ -4461,6 +4504,17 @@ class SimSensorBridge:
             "latest_origin": list(cast("tuple[float, float, float]", latest["origin"])),
             "resolution_m": float(cast("float", chosen["resolution"])),
             "fallback_to_latest": matched is None,
+            # How the grid was chosen. "origin" is the kernel's own disclosure
+            # and is exact; "stamp" is the proxy and cannot separate two grids
+            # inside one clock tick; "latest" is neither and is a fallback.
+            "decode_source": (
+                "origin"
+                if by_origin is not None
+                else ("stamp" if matched is not None else "latest")
+            ),
+            "kernel_disclosed_origin": list(disclosed)
+            if isinstance(disclosed, (list, tuple))
+            else None,
             # How many distinct base-frame origins the cached history holds.
             # NOT a count of window shifts: the lattice is world-fixed and the
             # origin is its corner expressed in the moving base frame, so this
