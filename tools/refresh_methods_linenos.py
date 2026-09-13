@@ -172,10 +172,14 @@ def _resolve_inline_path(rel: str, base_dir: Path | None) -> Path | None:
     # only when it is unique.
     skip = {".git", ".venv", "build", "install", "log", "site", "__pycache__", ".claude"}
     suffix = tuple(Path(rel).parts)
+    # Match the skip set against the path *below* the repo root: a git
+    # worktree lives under `.claude/worktrees/<branch>/`, so testing the
+    # absolute parts skipped every file in the checkout and resolved nothing.
     hits = [
         candidate
         for candidate in REPO_ROOT.rglob(Path(rel).name)
-        if not skip & set(candidate.parts) and candidate.parts[-len(suffix) :] == suffix
+        if not skip & set(candidate.relative_to(REPO_ROOT).parts)
+        and candidate.parts[-len(suffix) :] == suffix
     ]
     return hits[0] if len(hits) == 1 else None
 
