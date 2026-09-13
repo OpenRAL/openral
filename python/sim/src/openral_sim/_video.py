@@ -66,7 +66,7 @@ def save_episode_mp4(
     fps: int = 20,
     title: str | None = None,
 ) -> Path:
-    """Write a 3-panel debug MP4 for one ``EpisodeResult``.
+    """Write a two-band debug MP4 for one ``EpisodeResult``.
 
     Args:
         result: An ``EpisodeResult`` produced by ``SimRunner`` with

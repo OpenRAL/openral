@@ -97,7 +97,7 @@ printed by any command. To inspect them, import the registry from Python
                              Torch device for the policy.
 --save-dir   DIR             Where to write the JSON summary.
 --save-video [PATH]          Write a per-episode MP4 (also enables frame capture).
---video-style {debug,world}  debug (default) = 3-panel montage; world = clean
+--video-style {debug,world}  debug (default) = two-band montage; world = clean
                              single-view world render named
                              <scene>_<rskill>_<success|fail>.mp4 + videos.json
                              (for website hero clips; overlays drawn by the page).

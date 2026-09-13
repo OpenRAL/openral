@@ -1,6 +1,6 @@
 """Clean single-view MP4 helper for website hero videos.
 
-Unlike ``openral_sim._video`` (the 3-panel *debug* montage), this writes
+Unlike ``openral_sim._video`` (the two-band *debug* montage), this writes
 *only* the world/viewer render — the frame an operator sees in the MuJoCo
 viewer — with no VLA-input panel, no joint plot, and no burned-in overlays.
 
