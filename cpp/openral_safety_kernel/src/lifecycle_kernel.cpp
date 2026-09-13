@@ -230,6 +230,8 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("max_force_n", kPosInfinity);
   this->declare_parameter<double>("max_torque_nm", kPosInfinity);
   this->declare_parameter<double>("contact_force_threshold_n", kPosInfinity);
+  this->declare_parameter<double>("max_base_linear_speed_m_s", kPosInfinity);
+  this->declare_parameter<double>("max_base_angular_speed_rad_s", kPosInfinity);
   this->declare_parameter<bool>("deadman_required", false);
 
   // Self-collision model. Disabled unless the launch emits a

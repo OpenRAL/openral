@@ -224,17 +224,56 @@ Result<void, Violation> validate(const ChunkView& chunk,
     }
     break;
   }
+  case ControlMode::kBodyTwist: {
+    // Each step encodes (vx, vy, vz, wx, wy, wz) for the mobile base.
+    // Bound linear speed against max_base_linear_speed_m_s and angular
+    // speed against max_base_angular_speed_rad_s. Both default to
+    // kPosInfinity (no bound declared) so a robot.yaml that never sets
+    // them behaves exactly as before this check existed.
+    const std::size_t per_step = envelope.n_dof;
+    if (per_step < 6) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "body_twist");
+      return Result<void, Violation>::err(v);
+    }
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double* p = chunk.flat_data + s * per_step;
+      const double linear_speed = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+      if (linear_speed > envelope.max_base_linear_speed_m_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;  // speed-induced
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = linear_speed;
+        viol.limit_value = envelope.max_base_linear_speed_m_s;
+        viol.set_field("base_linear_speed");
+        return Result<void, Violation>::err(viol);
+      }
+      const double angular_speed = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+      if (angular_speed > envelope.max_base_angular_speed_rad_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = angular_speed;
+        viol.limit_value = envelope.max_base_angular_speed_rad_s;
+        viol.set_field("base_angular_speed");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
   case ControlMode::kJointTrajectory:
   case ControlMode::kCartesianDelta:
-  case ControlMode::kBodyTwist:
   case ControlMode::kGripperBinary:
   case ControlMode::kGripperPosition:
   case ControlMode::kCompositeMode: {
     // Per-mode chunks. The C++ kernel intentionally delegates per-axis
     // bound enforcement to the Python openral_safety/supervisor_node.py,
     // which knows the per-mode bounds on the robot manifest
-    // (max_cartesian_step_m, max_base_linear_speed_m_s,
-    // max_base_angular_speed_rad_s, gripper_min/max, ...). The kernel
+    // (max_cartesian_step_m, gripper_min/max, ...). BODY_TWIST used to be
+    // grouped here too, but its bounds (max_base_linear_speed_m_s,
+    // max_base_angular_speed_rad_s) are now enforced above in C++ — see
+    // the research repo's docs/f12_body_twist_envelope_fix.md. The kernel
     // already ran shape + NaN checks above, so routing unrejected lets the
     // supervisor do its job before the HAL applies; without this case
     // per-mode chunks hit the default branch and estop before the

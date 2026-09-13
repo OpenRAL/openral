@@ -69,6 +69,14 @@ struct EnvelopeIntersection {
   double max_torque_nm{kPosInfinity};
   double contact_force_threshold_n{kPosInfinity};
 
+  // BODY_TWIST bounds (mobile-base linear/angular speed). Default
+  // kPosInfinity = "no bound declared" (today's behaviour for any robot
+  // that doesn't set these on its manifest, e.g. a fixed-base arm) --
+  // matches `openral_safety.envelope_loader`'s None -> inf resolution so
+  // the loader never has to special-case an absent bound either.
+  double max_base_linear_speed_m_s{kPosInfinity};
+  double max_base_angular_speed_rad_s{kPosInfinity};
+
   bool deadman_required{false};
 };
 

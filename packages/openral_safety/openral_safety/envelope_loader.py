@@ -82,6 +82,17 @@ class EnvelopeIntersection:
         max_force_n: External force cap (Newtons).
         max_torque_nm: External torque cap (Nm).
         contact_force_threshold_n: Below this, no contact; above, contact.
+        max_base_linear_speed_m_s: BODY_TWIST linear-speed cap (Euclidean
+            over vx,vy,vz), enforced by the C++ kernel's ``kBodyTwist``
+            validator case. ``SafetyEnvelope.max_base_linear_speed_m_s`` is
+            optional (``None`` = "no robot declares this bound"); resolved
+            to ``math.inf`` here, the same "unbounded" sentinel
+            ``kPosInfinity`` is on the C++ side, so this field is always a
+            concrete float and the kernel never has to special-case an
+            absent bound.
+        max_base_angular_speed_rad_s: BODY_TWIST angular-speed cap
+            (Euclidean over wx,wy,wz); same optional-to-``inf`` resolution
+            as ``max_base_linear_speed_m_s``.
         deadman_required: Logical OR of the two manifests.
     """
 
@@ -100,6 +111,8 @@ class EnvelopeIntersection:
     max_force_n: float
     max_torque_nm: float
     contact_force_threshold_n: float
+    max_base_linear_speed_m_s: float
+    max_base_angular_speed_rad_s: float
     deadman_required: bool
 
 
@@ -208,6 +221,17 @@ def _check_scalar_not_loosened(
         )
 
 
+def _resolve_optional_bound(value: float | None) -> float:
+    """``None`` (SafetyEnvelope's "no bound declared") -> ``math.inf``.
+
+    The same "unbounded" sentinel the C++ kernel's ``kPosInfinity`` uses, so
+    every consumer of a per-control-mode bound (``max_base_linear_speed_m_s``,
+    ``max_base_angular_speed_rad_s``, and any future optional bound) works
+    with a plain float and never has to special-case ``None``.
+    """
+    return math.inf if value is None else float(value)
+
+
 def _validate_envelope_tightens(
     ceiling: SafetyEnvelope,
     candidate: SafetyEnvelope,
@@ -234,6 +258,18 @@ def _validate_envelope_tightens(
         if field in explicit_fields:
             _check_scalar_not_loosened(
                 field, getattr(candidate, field), getattr(ceiling, field), label=label
+            )
+    # Optional (None-able) per-control-mode bounds: resolved through the same
+    # None -> inf sentinel compute_intersection/kernel_params_from_envelope
+    # use, so a skill genuinely cannot loosen a robot-declared base-speed
+    # ceiling (an unset skill field stays inf, which never loosens anything).
+    for field in ("max_base_linear_speed_m_s", "max_base_angular_speed_rad_s"):
+        if field in explicit_fields:
+            _check_scalar_not_loosened(
+                field,
+                _resolve_optional_bound(getattr(candidate, field)),
+                _resolve_optional_bound(getattr(ceiling, field)),
+                label=label,
             )
     if (
         "deadman_required" in explicit_fields
@@ -345,6 +381,19 @@ def compute_intersection(
             return float(r)
         return float(min(r, getattr(skill_env, field)))
 
+    def _pick_min_optional(field: str) -> float:
+        """Like ``_pick_min``, for a ``float | None`` SafetyEnvelope field.
+
+        ``None`` (no bound declared) resolves to ``math.inf`` before the
+        min, so "robot declares no bound, skill declares 0.3" still picks
+        the skill's tighter 0.3, and "neither declares a bound" correctly
+        stays unbounded.
+        """
+        r = _resolve_optional_bound(getattr(merged_env, field))
+        if skill_env is None or field not in skill_set:
+            return r
+        return min(r, _resolve_optional_bound(getattr(skill_env, field)))
+
     # Workspace AABB: ``robot/deploy ∩ skill`` axis-by-axis when both corners are
     # explicitly set on the skill; otherwise use the deploy-tightened robot box.
     skill_set_box = (
@@ -392,6 +441,8 @@ def compute_intersection(
         max_force_n=_pick_min("max_force_n"),
         max_torque_nm=_pick_min("max_torque_nm"),
         contact_force_threshold_n=_pick_min("contact_force_threshold_n"),
+        max_base_linear_speed_m_s=_pick_min_optional("max_base_linear_speed_m_s"),
+        max_base_angular_speed_rad_s=_pick_min_optional("max_base_angular_speed_rad_s"),
         deadman_required=deadman_required,
     )
 
@@ -432,6 +483,8 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
             envelope.max_force_n,
             envelope.max_torque_nm,
             envelope.contact_force_threshold_n,
+            envelope.max_base_linear_speed_m_s,
+            envelope.max_base_angular_speed_rad_s,
         )
     ):
         raise ValueError(f"NaN scalar in envelope: {envelope!r}")
@@ -450,6 +503,12 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
         "max_force_n": float(envelope.max_force_n),
         "max_torque_nm": float(envelope.max_torque_nm),
         "contact_force_threshold_n": float(envelope.contact_force_threshold_n),
+        # F12 fix (2026-09-13): these two were never forwarded before, so the
+        # C++ kernel had no parameter to read even though robots have
+        # declared these bounds since before this fork existed -- see the
+        # research repo's docs/f12_body_twist_envelope_fix.md.
+        "max_base_linear_speed_m_s": float(envelope.max_base_linear_speed_m_s),
+        "max_base_angular_speed_rad_s": float(envelope.max_base_angular_speed_rad_s),
         "deadman_required": bool(envelope.deadman_required),
     }
     if envelope.workspace_box_min_xyz is not None:
