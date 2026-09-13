@@ -1,7 +1,7 @@
 ---
 name: pi05-libero-int8
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. π0.5 (PaliGemma 3B + flow-matching) fine-tuned on LIBERO v0.44, LLM.int8-packed at load so 8 GB GPUs can run it at all — bf16 peaks at 8.1 GB and will not load there. int8 is a memory fit, not a free one: over 300 LIBERO-Spatial episodes it scores 62% vs bf16's 95%, task-dependent (22-82%), and is ~2.6x slower per step. With >9 GB prefer `--vla-extra dtype=bf16`, or openral-pro's TensorRT FP8; see the README. PI permissive-research weights: commercial use needs a vendor agreement. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. π0.5 (PaliGemma 3B + flow-matching) fine-tuned on LIBERO v0.44, LLM.int8-packed at load so 8 GB GPUs can run it at all — bf16 peaks at 8.1 GB and will not load there. int8 is a memory fit, not a free one: over 300 LIBERO-Spatial episodes it scores 62% vs bf16's 95%, task-dependent (22-82%), and is ~2.6x slower per step. With >9 GB prefer bf16 via `policy_extras.dtype`, or openral-pro's TensorRT FP8; see the README. PI permissive-research weights: commercial use needs a vendor agreement. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -41,7 +41,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). π0.5 (PaliGemma 3B + flow-matching) fine-tuned on LIBERO v0.44, LLM.int8-packed at load so 8 GB GPUs can run it at all — bf16 peaks at 8.1 GB and will not load there. int8 is a memory fit, not a free one: over 300 LIBERO-Spatial episodes it scores 62% vs bf16's 95%, task-dependent (22-82%), and is ~2.6x slower per step. With >9 GB prefer `--vla-extra dtype=bf16`, or openral-pro's TensorRT FP8; see the README. PI permissive-research weights: commercial use needs a vendor agreement.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). π0.5 (PaliGemma 3B + flow-matching) fine-tuned on LIBERO v0.44, LLM.int8-packed at load so 8 GB GPUs can run it at all — bf16 peaks at 8.1 GB and will not load there. int8 is a memory fit, not a free one: over 300 LIBERO-Spatial episodes it scores 62% vs bf16's 95%, task-dependent (22-82%), and is ~2.6x slower per step. With >9 GB prefer bf16 via `policy_extras.dtype`, or openral-pro's TensorRT FP8; see the README. PI permissive-research weights: commercial use needs a vendor agreement.
 
 ## Capabilities
 

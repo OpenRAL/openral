@@ -62,7 +62,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 | `embodiment_tags` | Must match a robot's `RobotCapabilities.embodiment_tags`. |
 | `sensors_required` | Modality + `vla_feature_key` + min resolution per camera. |
 | `actuators_required` | Each entry needs `control_mode_semantics` (e.g. `mode: absolute`). |
-| `runtime` / `quantization` | `pytorch` / `onnx` / `tensorrt`; `dtype` + `min_vram_gb`. |
+| `runtime` / `quantization` | `pytorch` / `onnx` / `tensorrt`; `dtype` + `min_vram_gb`. See [Quantize an rSkill](quantize-an-rskill.md). |
 | `weights_uri` | `hf://<owner>/<repo>` — the rSkill does **not** copy weights. |
 | `chunk_size` / `n_action_steps` | Action-chunk size and replan cadence. |
 | `latency_budget.per_chunk_ms` | Contractual — enforced by sim-tier latency tests. |
@@ -148,18 +148,42 @@ every in-tree and installed rSkill.
 
 ## 5. (Optional) Produce reproducible eval results
 
-If your skill ships `eval/<benchmark>.json`, the canonical producer is a sim
-run against a paired scene config:
+`eval/<benchmark>.json` is written by the **benchmark** tier, not by
+`openral sim run`. `sim run` is a single ad-hoc rollout: it prints a summary
+and writes one to `--save-dir`, but it never touches your rSkill package.
+Use it to smoke-test the pairing, then produce the number with one of:
 
 ```bash
-openral sim run \
-  --config scenes/<your-config>.yaml \
+# Multi-scene suite (the canonical producer) — writes
+# rskills/<dir>/eval/<suite_id>.json.
+openral benchmark run --suite libero_spatial --rskill rskills/pi05-pick-cube
+
+# Single paper-protocol scene — writes
+# rskills/<dir>/eval/scene_<scene_id>.json.
+openral benchmark scene --config scenes/benchmark/<your-scene>.yaml \
   --rskill rskills/pi05-pick-cube
 ```
 
-Results validate against `openral_core.SkillEvalResult`. Paper-cited numbers
-you haven't reproduced locally are allowed with `reproduced_locally: false`
-plus a `reproduction_cli` so others can rerun them.
+Both also write the resulting `avg_success_rate` back into your manifest at
+`benchmarks.<id>` (a surgical, comment-preserving edit). Two opt-outs:
+
+- `--no-update-manifest` — still write the eval JSON, leave the manifest alone.
+  Use it for read-only paper-number runs.
+- `--no-write-eval` (`benchmark scene` only) — fully non-mutating: the rollout
+  runs and prints its score, nothing is written to the package. Implies
+  `--no-update-manifest`.
+
+Results validate against
+[`openral_core.RSkillEvalResult`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
+(search for `class RSkillEvalResult`). Locally-produced results carry
+`reproduced_locally: true` and a `trace_id` deep-linking to the rollout's
+trace. Paper-cited numbers you haven't reproduced locally are allowed with
+`reproduced_locally: false` plus a `reproduction_cli` so others can rerun them.
+
+Roll every skill's results up with `openral benchmark report [--json]`.
+The full walkthrough — suite invariants, the `evaluated_tasks` gate, and what
+`reproduced_locally` commits you to — is in
+[Run a benchmark](../benchmark/run-a-benchmark.md).
 
 ## 6. Publish to the Hub
 
@@ -202,10 +226,19 @@ Two things to know:
 Anyone (including you, on another host) can now install it like a model:
 
 ```bash
-openral rskill search pick-cube          # discover it on the OpenRAL Hub org
-openral rskill install <owner>/rskill-pi05-pick-cube   # always org-qualified
+openral rskill search pick_cube          # discover it on the OpenRAL Hub org
+openral rskill install <owner>/rskill-pi05-franka_panda-pick_cube-bf16
 openral rskill list                      # see it in the local registry
 ```
+
+Note the two different identifiers. `pi05-pick-cube` was only ever the **local
+directory** under `rskills/` — a convenience name you chose in §1. What you
+install is the **Hub repo id**, which is the manifest's `name` field and must be
+canonical: `<owner>/rskill-<model>-<robot>-<task>-<quant>`, with hyphens as the
+only separators and underscores inside each token
+([Naming convention](#naming-convention)). For the running example that is
+`rskill-pi05-franka_panda-pick_cube-bf16`, not `rskill-pi05-pick-cube` — the
+latter parses as a four-segment ROS-wrapper name and drops the embodiment.
 
 `rskill install` needs the full `owner/name` id — a bare name fails fast with an
 `OpenRAL/…` suggestion. Use
