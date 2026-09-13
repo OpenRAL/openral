@@ -25,6 +25,7 @@ from openral_core import DeadlineOverrunPolicy, RunResult, TickResult
 from openral_core.exceptions import ROSDeadlineMissed
 from openral_observability import metrics as ral_metrics
 from openral_observability import rskill_span, semconv
+from openral_observability.propagation import current_trace_id
 from openral_observability.tracing_lttng import TP_RUNNER_TICK, lttng_tracepoint
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
@@ -334,7 +335,7 @@ class InferenceRunnerBase(ABC):
         deadline = time.perf_counter()
         results: list[TickResult] = []
         budget_violations = 0
-        trace_id = self._current_trace_id()
+        trace_id = current_trace_id()
 
         try:
             while self._active and (max_ticks is None or self._tick_idx < max_ticks):
@@ -363,17 +364,6 @@ class InferenceRunnerBase(ABC):
         )
 
     # ── Internal ────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _current_trace_id() -> str | None:
-        """Return the active OTel trace id (hex) or ``None`` when no span is active."""
-        span = trace.get_current_span()
-        if span is None:
-            return None
-        ctx = span.get_span_context()
-        if not ctx.is_valid:
-            return None
-        return f"{ctx.trace_id:032x}"
 
     def _deadline_log_due(self, tick_ms: float) -> tuple[bool, int, float]:
         """Rate-limit the deadline-miss WARN to one line per period.

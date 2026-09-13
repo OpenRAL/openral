@@ -168,10 +168,14 @@ shape:
 }
 ```
 
-`RSkillEvalResult` also declares a `trace_id` for deep-linking a number to its
-trace tree, but nothing populates it today — it is `null` on a fresh run, with
-or without `--dashboard`, and on all 31 eval files in the tree. Treat it as
-reserved, and find the run in Jaeger or Tempo by timestamp instead.
+`RSkillEvalResult` also carries a `trace_id` that deep-links a number to the
+trace that produced it — paste it into the dashboard's `/api/spans/<id>`, or
+into Jaeger or Tempo. It is the id of the run's `cli.command` root span, so it
+resolves to the whole tree, `sim.run` and every tick underneath. A run with
+nowhere to send spans has no trace to point at and leaves it `null`, so ask
+for one: `--dashboard`, or an `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at your
+own collector. The 31 eval files committed today predate this and carry
+`null`.
 
 Never hand-edit a success rate into a manifest or an eval JSON. The commands
 write both, and the number is meant to be reproducible from the trace alone.

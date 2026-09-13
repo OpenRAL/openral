@@ -282,11 +282,19 @@ def _sim_run_callback(
     # cli.command export.
     # attached_dashboard is a no-op when enabled=False (no spawn, no
     # FastAPI/uvicorn imports) so we wrap unconditionally. The helper
-    # handles spawn → re-configure_observability → shutdown drain →
-    # SIGINT child as one ``with`` block.
+    # handles spawn → re-configure_observability → re-open cli.command →
+    # shutdown drain → SIGINT child as one ``with`` block. The root span
+    # is re-opened because _root's copy was created before the dashboard
+    # child existed, so it records nothing.
+    from openral_observability import semconv
     from openral_observability.dashboard import attached_dashboard
 
-    with attached_dashboard(enabled=dashboard, port=dashboard_port):
+    with attached_dashboard(
+        enabled=dashboard,
+        port=dashboard_port,
+        subcommand="sim run",
+        mode=semconv.RUN_MODE_SIM,
+    ):
         rc = _run(args)
     raise typer.Exit(code=rc)
 

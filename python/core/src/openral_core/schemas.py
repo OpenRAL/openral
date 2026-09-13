@@ -8054,11 +8054,16 @@ class RSkillEvalResult(BaseModel):
         results: Free-form per-task / per-suite success rates.
         baselines: Optional free-form comparison numbers from prior work.
         trace_id: Hex OTel trace id (32 chars) for the rollout that
-            produced this result. Set by ``openral benchmark run`` from the
-            ``cli.command`` root span so reviewers can deep-link from
+            produced this result. Set by ``openral benchmark run`` /
+            ``benchmark scene`` from the ``cli.command`` root span so
+            reviewers can deep-link from
             ``rskills/<id>/eval/<benchmark>.json`` straight to the
-            trace tree in Jaeger / Tempo. Optional — paper-cited
-            numbers (``reproduced_locally: false``) leave it ``None``.
+            trace tree in Jaeger / Tempo. ``None`` when there is no trace
+            to point at: paper-cited numbers
+            (``reproduced_locally: false``), and local runs with no OTLP
+            endpoint configured (no ``--dashboard``, no
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``), where observability is in
+            no-op mode.
 
     Example:
         >>> # RSkillEvalResult.model_validate_json(

@@ -176,8 +176,9 @@ Both also write the resulting `avg_success_rate` back into your manifest at
 Results validate against
 [`openral_core.RSkillEvalResult`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
 (search for `class RSkillEvalResult`). Locally-produced results carry
-`reproduced_locally: true` and a `trace_id` deep-linking to the rollout's
-trace. Paper-cited numbers you haven't reproduced locally are allowed with
+`reproduced_locally: true`, and a `trace_id` deep-linking to the rollout's
+trace when the run had somewhere to export spans (`--dashboard` or
+`OTEL_EXPORTER_OTLP_ENDPOINT`). Paper-cited numbers you haven't reproduced locally are allowed with
 `reproduced_locally: false` plus a `reproduction_cli` so others can rerun them.
 
 Roll every skill's results up with `openral benchmark report [--json]`.

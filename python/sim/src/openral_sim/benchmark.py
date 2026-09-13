@@ -370,6 +370,7 @@ def _aggregate_results(
         RSkillEvalResult,
         RSkillEvalSource,
     )
+    from openral_observability.propagation import current_trace_id
 
     per_task_rate = {tid: (sum(r) / len(r) if r else 0.0) for tid, r in per_task.items()}
     avg = (sum(per_task_rate.values()) / len(per_task_rate)) if per_task_rate else 0.0
@@ -453,6 +454,7 @@ def _aggregate_results(
             "weights_uri": vla.weights_uri,
         },
         results=results,
+        trace_id=current_trace_id(),
     )
 
 
@@ -619,6 +621,7 @@ def _aggregate_scene_results(
         RSkillEvalResult,
         RSkillEvalSource,
     )
+    from openral_observability.propagation import current_trace_id
 
     # BenchmarkScene-level invariants asserted in run_benchmark_scene().
     assert scene.robot_id is not None
@@ -689,6 +692,7 @@ def _aggregate_scene_results(
             "weights_uri": vla.weights_uri,
         },
         results=results,
+        trace_id=current_trace_id(),
     )
 
 

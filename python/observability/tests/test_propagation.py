@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openral_observability import rskill_span
 from openral_observability.propagation import (
+    current_trace_id,
     current_traceparent,
     extract_traceparent,
     inject_traceparent,
@@ -28,6 +29,24 @@ def test_current_traceparent_inside_span(memory_exporter: InMemorySpanExporter) 
 
 def test_current_traceparent_without_span() -> None:
     assert current_traceparent() is None
+
+
+def test_current_trace_id_is_the_id_half_of_the_traceparent(
+    memory_exporter: InMemorySpanExporter,
+) -> None:
+    """``RSkillEvalResult.trace_id`` must be queryable as-is in Jaeger / Tempo."""
+    with rskill_span("rskill.execute", rskill_id="demo"):
+        trace_id = current_trace_id()
+        traceparent = current_traceparent()
+    assert trace_id is not None
+    assert traceparent is not None
+    assert len(trace_id) == 32
+    assert traceparent.split("-")[1] == trace_id
+
+
+def test_current_trace_id_without_span() -> None:
+    """No-op observability mode: the ambient span id is all zeros, not a pointer."""
+    assert current_trace_id() is None
 
 
 def test_inject_then_extract_links_child_to_parent(memory_exporter: InMemorySpanExporter) -> None:
