@@ -22,7 +22,12 @@
     backend: mujoco
     observation_height: 96
     observation_width: 96
-    cameras: ["top"]
+    # No `cameras:` override. The PushT backend publishes its topdown stream
+    # under `scene.cameras[0]`, falling back to `camera1` — which is the key
+    # the Diffusion Policy adapter reads (`policies/diffusion.py`, image_key
+    # default). Naming it `top` here made the suite's own documented command
+    # fail with `KeyError: 'observation.image'`. The sibling single-scene
+    # config `scenes/benchmark/pusht.yaml` has never set it.
   task:
     id: pusht/0
     scene_id: pusht
