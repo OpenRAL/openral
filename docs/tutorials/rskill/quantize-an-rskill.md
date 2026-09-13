@@ -37,8 +37,11 @@ co-residency preflight read to warn you before a run, so fill it in honestly.
 
 `rSkill.check_quantization_dtype` compares the manifest's `dtype` against the
 host's `gpu_supported_dtypes` and raises `ROSCapabilityMismatch` if it is not
-in the set. That set is derived from your GPU's compute capability — Ada and
-Ampere give you `int4`, Turing drops `bf16`, Volta drops both. Check yours:
+in the set. That set is derived from your GPU's compute capability: Blackwell
+adds `fp4_nvfp4`, Hopper through Ampere stop at `int4`, Turing drops `bf16`,
+and Volta drops both. `fp8` appears in no row — it reaches hardware as Q/DQ
+nodes baked into a TensorRT engine rather than as a runtime cast, so an `fp8`
+manifest fails this check on every probed host. Check yours:
 
 ```bash
 uv run openral doctor        # the `ComputeSpec (local) / dtypes` row
