@@ -184,6 +184,32 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 |---|---|---|---|---|---|---|---|---|
 | Organizer GR00T N1.7 `turning_on_radio` checkpoint ([baseline](https://behavior.stanford.edu/challenge/baselines.html)) | OmniGibson / Isaac Sim | `r1pro` | **61-D** official R1Pro proprio order | 224² RGB under the official `DefaultWrapper` (`RGBDFullResWrapper` crashes at boot on the pinned OmniGibson build — it reads joint state before the physics views exist) | **23-D** base velocity (3) + torso (4) + arms (7+7) + symmetric grippers (1+1) | `rskills/gr00t-n17-b1k-turning-on-radio` | **Unknown** for the organizer Drive artifact | Runs through `openral behavior serve`, `openral sim run`, `openral benchmark run --suite behavior`, or the full `openral deploy sim` graph. Deploy preserves the 61-D state and commits all six safety-approved typed slots as one simulator step. |
 
+### 3.12 OpenArm v2 (bimanual, real cell)
+
+`rskills/` ships no OpenArm policy: the cell's own checkpoint is not
+distributable and is installed from its own Hub repo, so the lab-gated OpenArm
+tests resolve a policy through the local install registry
+(`tests/hil/conftest._installed_slot_rskill("openarm")`). The rows below are
+the **public** candidates inspected for an in-tree fixture, measured against
+what `robots/openarm/robot.yaml` and `scenes/deploy/openarm_restock_shelf.yaml`
+require: a 16-D state and a 16-D action over `left_joint1..7`, `left_gripper`,
+`right_joint1..7`, `right_gripper` in radians, three RGB views, and an action
+contract whose four slots are that joint list split 7 / 1 / 7 / 1.
+
+| VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Action dim | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `yangjq713/openarm_water_bottle_grasp_policy` | real cell | `openarm` | **16** ✓ | `base_0_rgb`, `left_wrist_0_rgb`, `right_wrist_0_rgb`, all 224² ✓ | **16** ✓ | — | Apache-2.0 | **Closest structural match.** `pi0` (not π0.5) LoRA adapter over `lerobot/pi0_base` — `adapter_config.json` targets the gemma expert q/v plus `state_proj`/`action_in_proj`/`action_out_proj`/`action_time_mlp_*`, so the base weights must be fetched separately (adapter is 5.6 MB). `chunk_size` 50, `n_action_steps` 50, fp32, MEAN_STD state/action normalization. The three views map 1:1 onto the deploy scene's `context` / `wrist_left` / `wrist_right`. **Channel order unverified**: its dataset `openarm/water_bottle_grasp` is not public, so nothing confirms the 16 channels are ordered left-arm-then-right-arm. That ordering is what the slot block asserts, and a swap would drive the wrong arm. |
+| `playercc7/pi05_openarm_pick_cup` | real cell | `openarm` | **66** ✗ | `left_cam`, `right_cam` (720×1280), `head_camera` (360×640) | **16** ✓ | — | Apache-2.0 | π0.5 with full weights (7.4 GB safetensors) and processor safetensors in the repo. Action dim matches, but the 66-D state is far richer than the 16 joint positions the HAL reports, so it would need a state assembler before the contract holds. Three views, but at native 720p/360p rather than 224². |
+| `AiSaurabhPatil/openarm-pi05-finetuned` | Isaac Sim | `openarm` | **16** ✓ (from `norm_stats.json`) | not declared in the checkpoint metadata | 16 (presumed) | — | Apache-2.0 | π0.5 bimanual, but an **openpi/Orbax** checkpoint (`params/` with ocdbt shards, `_CHECKPOINT_METADATA`), not a lerobot `model.safetensors`. OpenRAL's π0.5 path goes through lerobot's policy class, so this needs an openpi→lerobot conversion before it is loadable here. |
+| `puppet-robotics/openarm_tile-flip_2026-01-10` | real cell | — | **8** ✗ | `wrist` (480×640), `ego` (720×1280) | **8** ✗ | — | Apache-2.0 | π0.5, single-arm (7 joints + gripper). Does not fit the bimanual contract; a candidate only for a future single-arm OpenArm scene. |
+
+What a manifest still cannot claim from checkpoint inspection alone: the
+action channel order (above), a latency budget, and any eval result. All three
+need one run on the cell. The slot block itself is mechanical — it is the
+robot description's 16 joints split 7 / 1 / 7 / 1 — so once the channel order
+is confirmed against the training dataset, a wrapper for the first row is a
+manifest plus a measured `eval/` entry.
+
 ---
 
 ## 4. Sim Environment Reference
