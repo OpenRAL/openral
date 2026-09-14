@@ -1109,16 +1109,25 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             "pick a viewpoint; empty uses the default camera. No actuation."
         )
         # When several on-demand locators are in the graph, let the LLM
-        # choose one by alias via the 'detector' field (empty = the default).
+        # choose one by alias via the 'detector' field. "empty = the default"
+        # reads as an instruction to type the word "default" — observed live
+        # with an uncurated model, which then routed to a service literally
+        # named /openral/perception/default/locate_in_view that never
+        # existed. Spelled out unambiguously as "leave blank" instead; the
+        # dispatcher (reasoner_node._dispatch_locate_in_view) also treats any
+        # unrecognised alias as blank, so this wording fix reduces the
+        # frequency of the mistake rather than being the only thing standing
+        # between it and a stalled mission.
         if palette.on_demand_detectors:
             options = "; ".join(
                 f"{d.alias} ({d.description})" if d.description else d.alias
                 for d in palette.on_demand_detectors
             )
             description += (
-                " Choose a locator with the optional 'detector' field (empty = default): "
-                f"{options}. Prefer a light real-time locator for simple 'find X' and a "
-                "grounding VLM for complex / attribute-qualified referring expressions."
+                " Choose a locator by its alias in the optional 'detector' field, or leave it "
+                f"blank to use the deployment's default: {options}. Prefer a light real-time "
+                "locator for simple 'find X' and a grounding VLM for complex / "
+                "attribute-qualified referring expressions."
             )
         # When continuous background detectors are running, tell the LLM
         # what they already cover so it reserves this on-demand locator for the long

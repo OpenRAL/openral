@@ -44,6 +44,7 @@ __all__ = [
     "detector_alias",
     "detector_service_segment",
     "locate_in_view_service",
+    "resolve_locate_in_view_detector",
     "task_space_disagreement",
 ]
 
@@ -156,6 +157,44 @@ def detector_service_segment(alias: str) -> str:
     ``/openral/perception/<segment>/locate_in_view``.
     """
     return alias.replace("-", "_")
+
+
+def resolve_locate_in_view_detector(detector: str, *, known_aliases: Iterable[str]) -> str:
+    """Normalize an LLM-supplied ``detector`` alias to ``""`` when it names no configured locator.
+
+    ``LocateInViewTool.detector`` is a bare ``str`` — not constrained to the graph's actual
+    on-demand locator aliases, since the palette (and therefore the valid set) can change between
+    ticks. A value that names none of them is treated exactly like an empty one: falling back to
+    the deployment default rather than being forwarded verbatim to :func:`locate_in_view_service`,
+    which resolves ANY non-empty string to a namespaced service whether or not one exists.
+
+    Observed live with an uncurated model (gpt-oss:120b): the tool description's old "empty = the
+    default" phrasing read as an instruction to type the literal word ``"default"``, which then
+    routed every call to ``/openral/perception/default/locate_in_view`` — a service that has never
+    existed on any graph — because :func:`locate_in_view_service` only falls back on an empty
+    string, not an unrecognised one. The tool description no longer invites that specific mistake
+    (``tool_use.py``), but this is the defense-in-depth half: any future hallucinated alias,
+    from any model, degrades to the default instead of a dead service and a stalled mission.
+
+    Args:
+        detector: The raw ``LocateInViewTool.detector`` value from the LLM.
+        known_aliases: The on-demand locator aliases actually in the graph
+            (``{d.alias for d in palette.on_demand_detectors}``).
+
+    Returns:
+        ``detector`` unchanged if it names a known locator; ``""`` otherwise (including when it
+        was already empty).
+
+    Example:
+        >>> aliases = {"omdet-turbo-locator"}
+        >>> resolve_locate_in_view_detector("default", known_aliases=aliases)
+        ''
+        >>> resolve_locate_in_view_detector("omdet-turbo-locator", known_aliases=aliases)
+        'omdet-turbo-locator'
+        >>> resolve_locate_in_view_detector("", known_aliases=aliases)
+        ''
+    """
+    return detector if detector in known_aliases else ""
 
 
 def locate_in_view_service(detector: str, *, default: str = "") -> str:

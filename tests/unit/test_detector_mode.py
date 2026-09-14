@@ -24,6 +24,7 @@ from openral_reasoner.palette import (
     detector_alias,
     detector_service_segment,
     locate_in_view_service,
+    resolve_locate_in_view_detector,
 )
 from openral_reasoner.tool_use import _tool_palette_to_anthropic_tools
 
@@ -121,6 +122,37 @@ def test_detector_alias_and_service_routing() -> None:
     )
     # Empty selector + no default → legacy single-detector service (back-compat).
     assert locate_in_view_service("") == "/openral/perception/locate_in_view"
+
+
+def test_resolve_locate_in_view_detector_falls_back_on_an_unrecognised_alias() -> None:
+    """The bug reproduced live: gpt-oss:120b passed the literal word 'default'.
+
+    ``locate_in_view_service`` only falls back to the deployment default on an
+    *empty* string — a non-empty value it has never heard of (e.g. the word
+    "default", read off the old "empty = the default" tool-description
+    wording) resolves to a namespaced service that has never existed. The
+    caller must normalise an unrecognised alias to empty first.
+    """
+    aliases = {"omdet-turbo-locator", "locateanything-3b-nf4"}
+    assert resolve_locate_in_view_detector("default", known_aliases=aliases) == ""
+    assert resolve_locate_in_view_detector("omdet-turbo-locator", known_aliases=aliases) == (
+        "omdet-turbo-locator"
+    )
+    assert resolve_locate_in_view_detector("", known_aliases=aliases) == ""
+
+
+def test_resolve_locate_in_view_detector_composes_with_the_service_resolver() -> None:
+    """End-to-end: an unrecognised alias must resolve to the DEFAULT's service, not a dead one."""
+    aliases = {"omdet-turbo-locator"}
+    detector = resolve_locate_in_view_detector("default", known_aliases=aliases)
+    service = locate_in_view_service(detector, default="omdet-turbo-locator")
+    assert service == "/openral/perception/omdet_turbo_locator/locate_in_view"
+    # Without the fallback, the same call would have resolved here instead —
+    # the exact dead service observed live.
+    assert (
+        locate_in_view_service("default", default="omdet-turbo-locator")
+        == "/openral/perception/default/locate_in_view"
+    )
 
 
 def test_locate_in_view_description_lists_locator_options() -> None:
