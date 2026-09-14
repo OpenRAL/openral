@@ -226,8 +226,15 @@ def build_behavior_groot_policy(
     # manifest.quantization.dtype > nf4. The sidecar's argparse only accepts
     # ("none", "nf4", "int8"), which is why the resolver normalises the
     # schema's `int4` onto `nf4` rather than passing the enum value through.
+    # An explicit override can still resolve to a plain precision (`bf16` /
+    # `fp16` / `fp32`) to turn packing off — the sidecar has no dtype token
+    # for that, only "none" (load unquantized), so anything that isn't a
+    # packing format collapses to "none" rather than crashing the sidecar's
+    # argparse.
     plan = resolve_quant_plan(spec, manifest, default="nf4", manifest_dtype_is_storage=True)
     quantization = plan.dtype or "nf4"
+    if quantization not in ("none", "nf4", "int8"):
+        quantization = "none"
     nf4_min_params = _opt_int(plan.extra.get("nf4_min_params"), 4_000_000)
     host = os.environ.get(_HOST_ENV, str(extra.get("host", _DEFAULT_HOST)))
     checkpoint = _checkpoint_path(manifest)
