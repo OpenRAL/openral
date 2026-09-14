@@ -32,6 +32,7 @@ TARGETS=(
     tests/integration/test_reasoner_vram_pair_refusal.py
     tests/integration/test_reasoner_vram_eviction.py
     tests/integration/test_reasoner_palette_primes_vram_gate.py
+    tests/integration/test_reasoner_palette_preserves_detector_coverage.py
     tests/integration/test_critic_producer_node.py
     # Declaration-scoped place-approach allowance against the real
     # safety_kernel_node; needs the colcon kernel binary + openral_msgs
