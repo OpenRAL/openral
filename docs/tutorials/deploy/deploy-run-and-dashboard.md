@@ -47,15 +47,17 @@ export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs 
 | --- | --- | --- |
 | `claude-opus-4-8` | Anthropic cloud | required |
 | `gpt-5.5`, `gpt-5.6` | OpenRouter cloud | required |
-| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none — **aarch64 only today** |
+| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none — needs ~8 GB of *free* VRAM |
 
-`cosmos3-edge` is the on-device option — no key, no cloud — but check your
-architecture before reaching for it. The sidecar lock resolves to a different
-vLLM per platform: aarch64 gets 0.28.0 and works; x86_64 pins 0.24.0, whose
-Transformers fallback crashes in `cosmos3_edge.get_rope_index` on the *first*
-request, every time. That is an upstream bug, not an OpenRAL one, and
-`openral doctor` cannot see it — the row reports `ok` because the model
-resolves; only a live tick fails. Details and current status:
+`cosmos3-edge` is the on-device option — no key, no cloud. Budget the whole
+GPU for it: the checkpoint is 8.6 GB on disk (a 6.3 GB reasoner tower plus a
+934 MB vision encoder; the VAE is not served), so on an 8 GB card it fits only
+with the card to itself — `--kv-cache-dtype fp8` and the default
+`--enforce-eager` are what make the 8192-token window fit at all. A co-resident
+job holding even 2 GB is enough to make the boot fail. `openral doctor` cannot
+see any of this — the `Reasoner LLM` row reports `ok` because the *model
+resolves*; only a live tick exercises the sidecar. Sizing, platform status and
+the live-validation record:
 [`docs/reference/cosmos3-edge-reasoner.md`](../../reference/cosmos3-edge-reasoner.md).
 
 `openral doctor` reports the resolved model, endpoint and whether a key is set

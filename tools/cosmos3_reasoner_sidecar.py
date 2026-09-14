@@ -95,9 +95,18 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     def _install(uv: str, py: Path) -> None:
         # Pure PyPI, no --torch-backend (see _LOCK comment). No --require-hashes
         # — uv still verifies the recorded hashes for everything it installs.
+        #
+        # ``--no-config`` for the same reason the lock is compiled with it: run
+        # from a checkout, uv applies the WORKSPACE's
+        # ``[tool.uv] constraint-dependencies`` — including
+        # ``torchcodec<0.10`` on x86_64 linux, which pairs torchcodec's ABI with
+        # the main env's torch 2.9.1. This venv exists to be isolated from that
+        # torch, so the constraint does not belong here; without the flag a
+        # correct lock still fails to install on x86 with "you require
+        # torchcodec==0.16.0 and torchcodec{x86_64}<0.10 ... unsatisfiable".
         run_cmd(
             "cosmos3-sidecar",
-            [uv, "pip", "install", "--python", str(py), "-r", str(_LOCK)],
+            [uv, "pip", "install", "--no-config", "--python", str(py), "-r", str(_LOCK)],
         )
         # SHA-pinned git overlay (see _TRANSFORMERS_EDGE_SHA); runs inside the
         # same ensure_pip_venv sentinel, so it happens exactly once per venv.
@@ -107,6 +116,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
                 uv,
                 "pip",
                 "install",
+                "--no-config",
                 "--python",
                 str(py),
                 "transformers @ git+https://github.com/huggingface/transformers.git"

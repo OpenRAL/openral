@@ -6,8 +6,25 @@
 # venv is isolated from the lerobot-pinned openral runtime.
 # Pure-PyPI resolution (no --torch-backend): vLLM's torch dependency ships the
 # CUDA runtime in its PyPI wheels, so no PyTorch index redirect is needed.
+# ``--no-config`` is load-bearing, not tidiness. Without it uv applies the
+# WORKSPACE's `[tool.uv] constraint-dependencies` from the repo root
+# pyproject.toml — including `torchcodec<0.10` on x86_64 linux, which exists
+# to keep torchcodec's ABI paired with the main env's torch 2.9.1. That
+# constraint has no business here: this venv is isolated precisely so vLLM can
+# bring its own torch. Leaked in, it capped x86_64 at vllm 0.24.0 (which
+# predates the native Cosmos3 Edge model, vllm#48291) while aarch64 resolved
+# 0.28.0 — so `cosmos3-edge` fell back to vLLM's Transformers path on x86 and
+# crashed in `cosmos3_edge.get_rope_index` on every request. Same command
+# without the flag silently reintroduces it.
+#
 # Regenerate the lock with:
 #   uv pip compile tools/sidecar_requirements/cosmos3_reasoner.in \
-#     --universal --generate-hashes --python-version 3.12 \
+#     --universal --generate-hashes --python-version 3.12 --no-config \
 #     -o tools/sidecar_requirements/cosmos3_reasoner.lock
-vllm>=0.23.0
+#
+# Pinned rather than floored: 0.28.0 is the release the aarch64 live tool call
+# was validated on, and resolving it universally reproduces that exact
+# environment (torch 2.13.0 + torchcodec 0.16.0) on every platform instead of
+# floating x86 onto an untested newer vLLM. Raise it deliberately, with a
+# live tick to back the bump.
+vllm==0.28.0
