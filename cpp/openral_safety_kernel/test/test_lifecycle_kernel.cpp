@@ -1713,6 +1713,15 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   EXPECT_NE(evidence.find(R"("kind":"collision")"), std::string::npos) << evidence;
   EXPECT_NE(evidence.find(R"("collision_kind":"world")"), std::string::npos) << evidence;
   EXPECT_NE(evidence.find(R"("link_a":"ee")"), std::string::npos) << evidence;
+  // #275: WHICH grid this cell index addresses. The kernel names the cell only
+  // as `voxel_<n>`, an index into a grid it does not republish, and the
+  // published window is snapped to the source lattice -- so a consumer pairing
+  // that index with a grid of its own decodes against the wrong cell as soon as
+  // a base drift shifts the window. Stamps cannot separate two grids inside one
+  // `/clock` tick; this origin is exact, and it is the grid THIS check ran
+  // against. Matches `vox.origin` published above.
+  EXPECT_NE(evidence.find(R"("world_grid_origin_m":[0,0,-0.14999999999999999])"), std::string::npos)
+      << "a world-voxel stop must disclose the grid its index addresses: " << evidence;
   EXPECT_NE(evidence.find(R"("horizon_step":-1)"), std::string::npos)
       << "the reactive (measured-state) check must report the -1 sentinel, not a "
          "predicted-horizon index: "

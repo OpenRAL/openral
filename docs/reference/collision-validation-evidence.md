@@ -2666,6 +2666,163 @@ effect size** — 6 rounds an arm cannot separate 3/6 from 0/4, where the #268
 replay separated 154 from 15 on 182 poses.
 
 
+### 2026-09-12 (later still) — #275: the 31–36 mm excess, decomposed on the record, and what it is NOT
+
+Six `fridge` gate-ON rounds on `investigate/275-unexplained-excess` (master +
+the stamp-matched decode, origin trail and payload-slip instruments). **3 stops,
+3 completions.**
+
+| round | kernel | certified | verdict | decode = latest | origins | slip (translation) |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| r01 | −34.67 mm | −0.25 mm | `attached_payload` (sweep ran, 14 hits) | yes | — | — |
+| r03 | −33.65 mm | +2.07 mm | `solid_world` | yes | 24 | **6.43 mm** |
+| r05 | −7.54 mm | −5.21 mm | `attached_payload` | yes | 13 | 0.45 mm |
+| r02, r04, r06 | — | — | no stop, **task completed** | | | |
+
+r01 and r03 are the #275 signature (34.4 / 35.7 mm of excess); r05 is an
+ordinary tight stop (2.3 mm).
+
+**Ruled out, with the measurement that rules each out:**
+
+- **The payload model.** Lowering `obj_main` as the bridge does: box overhang
+  median 12.86 / max 23.47 mm, **26-DOP median 1.71 / max 6.40 mm**, hull
+  *0 vertices* — the 1983-vertex RoboCasa mesh is over `_HULL_DEDUP_CEILING`
+  (640), so every RoboCasa payload ships DOP-only and #267's hull never engages
+  in sim. The DOP is what delivered #266's benefit, and it is tight.
+- **A cell inside the payload.** r01's cell is at the payload *surface*: mesh
+  penetrates it 4.73 mm, 1 of 8 cube corners inside. r03's cell the mesh is
+  **9.11 mm clear of**, 0 corners inside — while the kernel reports −33.65 mm
+  into it.
+- **Decoding the index against the wrong grid.** Real as a mechanism
+  (`test_estop_voxel_backing_live` manufactures a one-cell window shift and the
+  old decode is one cell wrong) but **not observed** on any of the three stops:
+  every one decoded against the same grid the bridge held, and the origin trail
+  shows only fractional-cell base wobble (0.05–0.43 cells per 50 ms frame),
+  never the whole-cell jump a remap would leave.
+- **Translation slip of the payload in the gripper.** Measured for the first
+  time: 6.43 mm on r03, 0.45 mm on r05. Real, and far too small.
+
+**What remains, and it is one thing.** For r03, geometry puts the kernel's DOP
+at worst +2.7 mm from the recorded cell (mesh +9.11, DOP overhang ≤ 6.4) and
+translation slip adds 6.4 mm; the kernel reports −33.65. About **30 mm** sits
+between the kernel's model and the real body *at that cell*, and only two
+things can put it there: the pose the kernel holds for the payload, or the
+cell the kernel checked. The translation half of the pose is now measured and
+small; **the rotation half is not yet measured on any stop** — the pivot term
+was added after r06 launched — and a payload that rotates in the gripper
+moves the far end of a 42 mm half-extent object tens of millimetres while its
+origin barely moves. That is the open candidate, and the instrument for it
+(`payload_model_slip.rotation_deg`, `max_point_slip_m`) is in place for the
+next battery.
+
+**The cell half cannot be closed from the bridge.** The graph runs on `/clock`
+(`use_sim_time`), every stamp on every record is a multiple of 50 ms, and grid
+stamps and trigger stamps quantise to the *same tick* — the stamp proxy cannot
+tell two grids apart within one. The trails make a remap look unlikely; only
+the kernel disclosing the grid it checked, by origin, settles it (§3 change,
+not in this branch).
+
+**Corrections carried in this entry:**
+
+- The "MODEL term +40 mm" decomposition posted earlier on #275 was an
+  instrument error: deepest-*vertex* sampling is not a valid penetration
+  measure against a cube (it produced DOP→cube +0.91 mm beside mesh→cube
+  −4.73 mm, impossible under containment). Retracted there; recorded here.
+- "The window moved on 24 of 32 frames" was wrong: `distinct_origins_in_history`
+  counts base motion in the grid's base-frame expression, not window remaps.
+  Withdrawn in code, docs and here.
+- The two 272c stops this issue was opened from are gone — deleted with the
+  worktree that held them (`git worktree remove --force` on a gitignored
+  `outputs/`). Their headline numbers survive on #275; the raw logs do not.
+
+**Not claimed:** that 3/6 completions means anything. This branch is
+diagnostics only and changes no gating; two 6-round arms on the same scene
+earlier today went 0/6 and 2/6. n is far too small and nothing here touched the
+kernel's decisions.
+
+
+### 2026-09-13 — #275 across 27 rounds: the payload-vs-voxel excess is **bimodal**
+
+Three batteries on `fridge` gate-ON, 27 rounds, every payload-vs-voxel stop,
+sorted by excess (certified mesh→world truth minus the kernel's reported depth):
+
+| run | kernel | certified | **excess** | verdict | rotation | max-slip |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| r05′ | −7.54 | −5.21 | 2.32 | `attached_payload` | — | — |
+| r05 | −0.28 | +5.09 | 5.37 | `solid_world` | 3.69° | 4.28 |
+| r22 | −6.34 | −0.54 | 5.80 | `attached_payload` | 0.51° | 1.11 |
+| r10 | −12.42 | +0.47 | 12.89 | `attached_payload` | 0.655° | 2.79 |
+| r20 | −17.58 | +0.53 | 18.11 | `attached_payload` | 0.047° | 1.03 |
+| r11 | −15.99 | +4.32 | 20.31 | `solid_world` | 2.8° | 4.81 |
+| **r24** | −31.22 | +1.06 | **32.28** | `solid_world` | **16.72°** | **26.70** |
+| r01′ | −34.67 | −0.25 | 34.42 | `attached_payload` | — | — |
+| r03′ | −33.65 | +2.07 | 35.72 | `solid_world` | — | — |
+| **r25** | −32.64 | **+12.64** | **45.29** | `solid_world` | 0.79° | 1.59 |
+
+(′ = the earlier battery, which predates the slip instrument.)
+
+**Six stops at 2–20 mm all close** inside the known budget: DOP overhang
+(≤ 6.40 mm, measured by support functions over 4096 directions) + payload slip +
+the 12.99 mm cell half-diagonal. **Four at 32–45 mm do not.** The deep mode is
+**4 of 10 stops**, not an outlier, and it costs ~30 mm of standoff on stops where
+the payload is demonstrably clear.
+
+### Eliminated, each by measurement
+
+- **Payload model.** Box overhang median 12.86 / max 23.47 mm; **26-DOP median
+  1.71 / max 6.40 mm**. The hull ships **0 vertices** for any RoboCasa mesh
+  (1983 verts against `_HULL_DEDUP_CEILING` 640), so #267's benefit in sim is
+  delivered entirely by the DOP and the convex hull never engages.
+- **A cell inside the payload.** r03′'s mesh is **9.11 mm clear** of the cell the
+  kernel reports −33.65 mm into; 0 of 8 cube corners inside the payload hull.
+- **The predicted step.** Every stop is `step=0` (predictive), so the snapshot's
+  measured state is one action-step behind. Re-running the reconstruction with
+  the kernel's **own `joint_positions_rad`** changes nothing on r25.
+- **Rotational slip.** r24 has 16.72° / 26.7 mm, which accounts for essentially
+  its whole 32 mm — but **r25, the deepest at 45.29 mm, has 0.79° / 1.59 mm**.
+  Rotation explains one of the four and no more. *It was declared "confirmed" on
+  r24 alone and refuted by the next round; that claim is withdrawn.*
+
+### What the deepest stop leaves
+
+Decomposing r25, the cleanest deep instance:
+
+| | |
+| --- | --- |
+| kernel reported (DOP→cube) | −32.64 mm |
+| reconstructed at the recorded pose, using the kernel's own joints | **+8.38 mm** |
+| → discrepancy | **41.02 mm** |
+| `payload_model_slip` | translation **0.75 mm**, rotation **0.79°** |
+| certified mesh→world | **+12.64 mm** — the payload is nowhere near anything |
+
+The kernel's model is within 0.75 mm of the body and the configuration is the
+kernel's own, so the *pose* cannot carry a 41 mm error. Searching cells near the
+recorded one, an offset of **(0, +2, +2) cells** reproduces −29.61 mm against the
+kernel's −32.64 mm.
+
+**That indicts the cell, not the geometry.** `decode_is_latest: true` — true on
+every stop in these batteries — was read too strongly: it says the bridge used
+the newest grid it **held**, not that this is the grid the kernel **checked**,
+and inside one `/clock` tick (every stamp in the graph quantises to 50 ms)
+nothing downstream can distinguish them. That is the gap the kernel's grid
+disclosure closes (#281, hazard-log Entry 030), which is therefore **on** #275's
+critical path rather than beside it — a reversal of what this page said earlier.
+
+### Standing caveats on this entry
+
+- The reconstruction is a **separating-axis lower bound** over the cube's axes
+  plus 13 canonical directions — exact only when a face normal separates.
+  Millimetre values carry error bars; the tens-of-millimetres discrepancy does
+  not.
+- The nearby-cell search examined **729 candidates**; one matching by chance is
+  expected. It is corroboration, **not** proof.
+- **#275's cause has been wrongly identified four times** — phantom occupancy,
+  payload leak, rotation, and "the decode is not the problem" — twice on a single
+  data point. The decode hypothesis above is the fifth and is **unconfirmed**.
+  The test that settles it is a battery on master with `decode_source: origin`,
+  which names the cell exactly.
+
+
 ## Standing caveats
 
 Eleven things a reader should carry away, all of them stated by the artifacts

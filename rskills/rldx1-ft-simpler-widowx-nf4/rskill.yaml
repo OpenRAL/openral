@@ -28,7 +28,7 @@ embodiment_tags:
 # _resize_to_hw. A square 256x256 floor under-declared the width by 64px;
 # min_width/min_height are a resize target floor here (rldx resizes down to
 # this shape, so any camera >= these minima works), not an exact-match gate
-# like ACT's (see rskills/act-so101-pen/rskill.yaml).
+# like ACT's (see rskills/act-libero/rskill.yaml).
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"

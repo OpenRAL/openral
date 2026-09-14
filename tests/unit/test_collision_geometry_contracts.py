@@ -399,3 +399,33 @@ def test_robot_description_without_collision_geometry_still_loads() -> None:
     assert minimal.collision_geometry == []
     assert minimal.allowed_collision_pairs == []
     assert minimal.assets.srdf is None
+
+
+def test_collision_evidence_without_a_grid_origin_is_still_valid() -> None:
+    """The disclosure is optional, and every pre-#275 producer stays valid.
+
+    `world_grid_origin_m` names the occupancy grid a world-voxel check ran
+    against, so a consumer can decode the cell index against that grid and no
+    other. It is additive: a kernel that predates it emits nothing, and the
+    checked-in fixtures — real captured payloads from before the field existed
+    — must keep validating unchanged. A required field here would have
+    invalidated every recorded stop in the ledger at a stroke.
+    """
+    from openral_core import CollisionEvidence
+
+    older = CollisionEvidence(
+        collision_kind="world",
+        link_a="ee",
+        link_b_or_object="voxel_189",
+        horizon_step=-1,
+        min_distance_m=-0.05,
+        joint_positions_rad=[0.0, 0.0],
+    )
+    assert older.world_grid_origin_m is None
+
+    disclosed = older.model_copy(update={"world_grid_origin_m": (0.0, 0.0, -0.15)})
+    assert disclosed.world_grid_origin_m == (0.0, 0.0, -0.15)
+    # Round-trips through the wire form the kernel actually emits.
+    assert CollisionEvidence.model_validate_json(
+        disclosed.model_dump_json()
+    ).world_grid_origin_m == (0.0, 0.0, -0.15)

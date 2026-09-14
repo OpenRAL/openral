@@ -73,12 +73,10 @@ runtime it depends on as an OpenRAL Pro plugin.
 | --- | --- | --- |
 | `act-aloha` / `act-aloha-insertion` | act | aloha |
 | `act-libero` | act | franka_panda |
-| `act-so101-pen` | act | so101_follower |
 | `diffusion-pusht` | diffusion | pusht |
 | `3d-diffuser-actor-rlbench` | diffuser_actor | franka_panda |
 | `gr00t-n17-libero` | gr00t | franka_panda |
 | `gr00t-n17-b1k-turning-on-radio` | gr00t | r1pro |
-| `gr00t-n17-so101-fruit` | gr00t | so101_follower |
 | `rskill-internvla_n1-mobile_base-vln-nf4` | internvla_n1 | mobile_base |
 | `lingbot-va-galaxea-a1-fruit-placement` | lingbot_va_a1 | galaxea_a1 |
 | `lingbot-vla-4b-robotwin` | lingbot_vla | aloha_agilex |
@@ -122,7 +120,7 @@ embodiment-agnostic.**
 
 ### Not on the Hub yet
 
-Six in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
+Four in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
 invisible to `openral rskill search` and cannot be installed by repo id (loading
 them by in-tree name still works wherever their weights resolve). Each needs
 only the wrapper repo published — their weights are third-party public
@@ -130,8 +128,6 @@ checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
 
 | in-tree skill | weights | to publish |
 | --- | --- | --- |
-| `act-so101-pen` | `gabrycina/so101-passing-pen-policy` | wrapper only |
-| `gr00t-n17-so101-fruit` | `aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking` | wrapper only |
 | `lingbot-vla-4b-robotwin` | `robbyant/lingbot-vla-4b-posttrain-robotwin` | wrapper only |
 | `lingbot-vla2-robotwin` | `robbyant/lingbot-vla-v2-6b` | wrapper only |
 | `rskill-internvla_n1-mobile_base-vln-nf4` | `InternRobotics/InternVLA-N1-DualVLN` | wrapper only |

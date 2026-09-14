@@ -688,11 +688,12 @@ validation-matrix-import round_dir *args:
 # regression is one command away instead of a bisect. Real weights, real
 # device; pass any in-tree rSkill:
 #
-#   just profile-load rskills/act-so101-pen
+#   just profile-load rskills/act-libero
 #   just profile-load rskills/smolvla-libero --device cpu
 #
-# Measured on an RTX 4070 (act-so101-pen, warm cache): imports 4.6 s (54%),
-# snapshot 0.3 s, from_pretrained 0.7 s, to_device 0.0 s, 8.5 s end-to-end.
+# Measured on an RTX 4070 (a small ACT policy, warm cache): imports 4.6 s
+# (54%), snapshot 0.3 s, from_pretrained 0.7 s, to_device 0.0 s, 8.5 s
+# end-to-end.
 #
 # HF_HUB_OFFLINE=1 additionally skips the per-file HEAD revalidation inside
 # lerobot/transformers that `_hf_download_cached_first` cannot wrap — worth

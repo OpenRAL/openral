@@ -114,11 +114,11 @@ rskills/rtdetr-coco-r18/onnx_tmp/
 rskills/rtdetr-v2-r50vd/model.onnx
 rskills/rtdetr-v2-r50vd/model.onnx.data
 rskills/rtdetr-v2-r50vd/onnx_tmp/
-# ACT so101-pen whole-model ONNX (host + device engines), reproduced via
-# tools/export_act_onnx.py [--preprocess host|device] and published to HF
-# (act_onnx_uri / act_device_onnx_uri in rskill.yaml); provenance in README.
-rskills/act-so101-pen/model.onnx
-rskills/act-so101-pen/model_device.onnx
+# ACT whole-model ONNX (host + device engines), reproduced via
+# tools/export_act_onnx.py [--preprocess host|device]; the tool's documented
+# default output lands here. Generated locally, never committed.
+rskills/act-libero/model.onnx
+rskills/act-libero/model_device.onnx
 
 # rSkill NF4 weights and upstream custom-code sidecars generated locally for
 # private HF publication. The committed package records provenance and

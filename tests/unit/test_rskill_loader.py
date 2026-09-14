@@ -959,36 +959,6 @@ class TestCheckCompatibility:
         with pytest.raises(ROSCapabilityMismatch, match="vla_feature_key"):
             rSkill.check_compatibility(m, robot)
 
-    def test_act_so101_pen_declares_its_real_training_resolution(self) -> None:
-        """The ACT pen rSkill must declare the resolution its backbone truly needs.
-
-        ACT performs no resize (lerobot's ``modeling_act.py``, no resize stage in
-        ``policy_preprocessor.json``), so the ResNet-18 backbone sees native
-        resolution. Trained at 640x480 for both views; a 224x224 floor
-        under-declared the overhead view ~3x and let an OOD camera clear the gate.
-        ``camera2`` stays pinned to the wrist rig's actual 256x256, not 640 —
-        raising it to 640 would fail the sensor gate on this rSkill's own robot.
-        """
-        repo = Path(__file__).resolve().parents[2]
-        m = RSkillManifest.from_yaml(str(repo / "rskills" / "act-so101-pen" / "rskill.yaml"))
-        robot = RobotDescription.from_yaml(str(repo / "robots" / "so101_follower" / "robot.yaml"))
-
-        by_key = {r.vla_feature_key: r for r in m.sensors_required}
-        cam1 = by_key["observation.images.camera1"]
-        assert (cam1.min_width, cam1.min_height) == (640, 480)
-
-        # camera2 is pinned to the wrist rig's declared intrinsics, not the
-        # 640x480 it was trained at — see the manifest comment.
-        cam2 = by_key["observation.images.camera2"]
-        wrist = next(s for s in robot.sensors if s.vla_feature_key == cam2.vla_feature_key)
-        assert wrist.intrinsics is not None
-        assert (cam2.min_width, cam2.min_height) == (
-            wrist.intrinsics.width,
-            wrist.intrinsics.height,
-        )
-
-        rSkill.check_compatibility(m, robot)  # must not raise
-
     def test_rldx1_simpler_widowx_declares_its_real_non_square_resolution(self) -> None:
         """The RLDX-1 SIMPLER-WidowX rSkill must declare its true 320x256 input.
 

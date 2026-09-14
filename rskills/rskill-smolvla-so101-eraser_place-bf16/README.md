@@ -346,6 +346,6 @@ dataset. Commercial use is allowed.
 
 - [`robots/so101_follower/robot.yaml`](../../robots/so101_follower/) — RobotDescription manifest.
 - [`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml) — paired real-hardware deploy scene.
-- [`rskills/act-so101-pen`](../act-so101-pen/) — sibling SO-101 policy skill (ACT, not SmolVLA).
+- [`rskills/molmoact2-so101-nf4`](../molmoact2-so101-nf4/) — sibling SO-101 policy skill (MolmoAct2, not SmolVLA).
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.
 - [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

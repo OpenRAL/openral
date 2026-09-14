@@ -30,8 +30,10 @@ from typing import Any
 import pytest
 from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import (
+    attached_model_slip,
     collision_model_mesh_slop,
     estop_ground_truth_snapshot,
+    grid_current_at,
     occupied_cell_keys,
     preattach_verdict,
     voxel_backing_for_cell,
@@ -887,4 +889,154 @@ def test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it() -> No
     assert "counter2_top_0" in names, "the collidable slab sharing the cell must be found"
     assert record["verdict"] == "solid_world", (
         "real geometry outranks the payload: this cell is explained by the counter"
+    )
+
+
+# --- #275: decode the kernel's index against the grid the KERNEL held --------
+
+
+def test_the_decode_grid_is_chosen_by_stamp_not_by_arrival() -> None:
+    """Newest grid at or before the evidence stamp — never a later one.
+
+    The published window is snapped to the octree's cell boundaries, so a
+    base drift across one boundary shifts the whole window by a cell and the
+    same index names a different cell in the next message. Decoding against
+    the latest grid is then one full cell wrong, silently, on every record.
+    """
+    hist = [
+        {"stamp_ns": 100, "origin": (0.0, 0.0, 0.0)},
+        {"stamp_ns": 200, "origin": (0.0, 0.0, 0.0)},
+        {"stamp_ns": 300, "origin": (-0.05, 0.0, 0.0)},  # window shifted one cell
+    ]
+    assert grid_current_at(hist, 250)["stamp_ns"] == 200
+    assert grid_current_at(hist, 200)["stamp_ns"] == 200, "at-or-before, inclusive"
+    assert grid_current_at(hist, 999)["stamp_ns"] == 300
+    assert grid_current_at(hist, 50) is None, "nothing old enough: say so, do not use a newer one"
+    assert grid_current_at([], 250) is None
+    # Out-of-order arrival must not matter: stamp decides.
+    assert grid_current_at(list(reversed(hist)), 250)["stamp_ns"] == 200
+
+
+def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() -> None:
+    """The arithmetic the whole hazard rests on, pinned once.
+
+    Same index, two grids whose origins differ by one resolution in x: the
+    decoded world positions differ by exactly that. That is the error every
+    `world_xyz` carries when the wrong grid is used, and it is one whole cell.
+    """
+    model, data = _model_data()
+    index = _index_at((0.3, 0.0, 0.145))
+    shifted = (_GRID_ORIGIN[0] - _GRID_RES, _GRID_ORIGIN[1], _GRID_ORIGIN[2])
+    a = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=_GRID_ORIGIN,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    b = voxel_backing_record(
+        model,
+        data,
+        voxel_index=index,
+        grid_origin=shifted,
+        grid_resolution=_GRID_RES,
+        grid_size=_GRID_SIZE,
+        robot_body_ids=_robot_bodies(model),
+        base_frame_body=_BASE_BODY,
+    )
+    delta = [b["world_xyz"][k] - a["world_xyz"][k] for k in range(3)]  # type: ignore[index]
+    assert delta == pytest.approx([-_GRID_RES, 0.0, 0.0], abs=1e-9)
+
+
+# --- #275: the kernel's payload placement against the real one --------------
+
+
+def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -> None:
+    """Attach the cup to a link with a pose_in_link that matches, then move the
+    cup 30 mm without telling the kernel: the record must say 30 mm.
+
+    The kernel places a payload by FK from `attach_link` and a fixed
+    `pose_in_link`; nothing in its inputs changes when the real body moves in
+    the gripper. That gap is charged as collision depth against cells the body
+    is not in, and until now no record carried it.
+    """
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        CapsuleShape,
+        Pose6D,
+    )
+
+    model, data = _model_data()
+    link = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "robot0_link2"))
+    cup = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "carried_cup"))
+    mujoco.mj_forward(model, data)
+    link_rot = data.xmat[link].reshape(3, 3)
+    rel = link_rot.T @ (data.xpos[cup] - data.xpos[link])
+
+    def _prim(object_id: str) -> AttachedCollisionPrimitive:
+        # The primitive's frame must name its owner: the schema refuses a mismatch.
+        return AttachedCollisionPrimitive(
+            shape=CapsuleShape(radius_m=0.03, length_m=0.01),
+            pose_in_object=Pose6D(
+                frame_id=object_id, xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)
+            ),
+        )
+
+    obj = AttachedCollisionObject(
+        object_id="sim:carried_cup",
+        attach_link="robot0_link2",
+        touch_links=["robot0_link2"],
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        stamp_ns=1,
+        pose_in_link=Pose6D(
+            frame_id="robot0_link2",
+            xyz=tuple(float(v) for v in rel),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ),
+        primitives=[_prim("sim:carried_cup")],
+    )
+    exact = attached_model_slip(model, data, description=None, attached_objects=[obj])
+    assert exact[0]["resolved"] is True
+    assert exact[0]["slip_m"] == pytest.approx(0.0, abs=1e-9)
+
+    adr = int(model.jnt_qposadr[int(model.body_jntadr[cup])])
+    data.qpos[adr] += 0.03
+    mujoco.mj_forward(model, data)
+    slipped = attached_model_slip(model, data, description=None, attached_objects=[obj])
+    assert slipped[0]["slip_m"] == pytest.approx(0.03, abs=1e-6)
+
+    ghost = AttachedCollisionObject(
+        object_id="sim:no_such_body",
+        attach_link="robot0_link2",
+        touch_links=["robot0_link2"],
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        stamp_ns=1,
+        pose_in_link=obj.pose_in_link,
+        primitives=[_prim("sim:no_such_body")],
+    )
+    unresolved = attached_model_slip(model, data, description=None, attached_objects=[ghost])
+    assert unresolved[0]["resolved"] is False, "a missing number is stated, never a silent zero"
+
+    # A payload that PIVOTS in the gripper: origin put back, body rotated 30
+    # degrees about z. Translation slip reads ~0; the point bound must not.
+    data.qpos[adr] -= 0.03
+    half = math.radians(30.0) / 2.0
+    data.qpos[adr + 3 : adr + 7] = [math.cos(half), 0.0, 0.0, math.sin(half)]  # wxyz
+    mujoco.mj_forward(model, data)
+    pivoted = attached_model_slip(model, data, description=None, attached_objects=[obj])[0]
+    assert pivoted["slip_m"] == pytest.approx(0.0, abs=1e-6)
+    assert pivoted["rotation_deg"] == pytest.approx(30.0, abs=1e-6)
+    # The record rounds to micrometres; compare at that precision.
+    assert pivoted["max_point_slip_m"] == pytest.approx(
+        2.0 * math.sin(half) * pivoted["body_radius_m"], abs=1e-6
+    )
+    assert pivoted["max_point_slip_m"] > 0.0, (
+        "a pure rotation is still a slip of every surface point"
     )
