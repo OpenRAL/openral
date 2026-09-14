@@ -34,6 +34,7 @@ def _clear_reasoner_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENRAL_REASONER_DIALECT",
         "OPENRAL_REASONER_MAX_TOKENS",
         "OPENRAL_REASONER_TIMEOUT_S",
+        "OPENRAL_REASONER_TOOL_CHOICE",
         "OPENRAL_REASONER_LLM_PROVIDER",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -71,6 +72,33 @@ def test_huggingface_preset_keeps_auto_tool_choice(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "Qwen/Qwen3-8B")
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "huggingface")
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "hf-test")
+
+    client = build_tool_use_client_from_env()
+
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "auto"
+
+
+def test_bare_url_defaults_to_required_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unchanged default: nothing overriding it still means "required"."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+
+    client = build_tool_use_client_from_env()
+
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "required"
+
+
+def test_bare_url_tool_choice_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway fronting a thinking-mode model (B3 live-testing, DeepSeek-V4.1-Flash
+    on a third-party OpenAI-compatible gateway) 400s on tool_choice="required" —
+    OPENRAL_REASONER_TOOL_CHOICE is the escape hatch's escape hatch."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "auto")
 
     client = build_tool_use_client_from_env()
 

@@ -571,6 +571,14 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+# Escape hatch for the uncurated bare-URL path only (openai dialect): some
+# OpenAI-compatible gateways front a "thinking mode" model that rejects
+# ``tool_choice: "required"`` outright (HTTP 400, "Thinking mode does not
+# support this tool_choice") -- DeepSeek-V4.1-Flash on one such gateway is
+# the case that surfaced this (B3 live-testing). Named endpoints already
+# carry their own correct ``tool_choice`` via their preset and are
+# unaffected by this var.
+REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"
 
 
 def _prompt_tokens(response: object) -> int | None:
@@ -647,6 +655,11 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       named endpoint already knows its wire format.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
+    * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only, openai dialect) —
+      overrides the uncurated bare-URL path's default ``tool_choice:
+      "required"`` (e.g. ``"auto"``). Some gateways front a thinking-mode
+      model that rejects ``"required"`` outright. Ignored for a named
+      endpoint or a curated model — both already carry the correct value.
 
     A raw model id that is not in the registry takes the escape hatch: it
     requires ``OPENRAL_REASONER_ENDPOINT`` + ``OPENRAL_REASONER_DIALECT`` and
@@ -907,12 +920,15 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             max_tokens=max_tokens or 1024,
             timeout_s=timeout_s,
         )
+    tool_choice_override = os.environ.get(REASONER_TOOL_CHOICE_ENV, "").strip()
     return OpenAICompatibleToolUseClient(
         model_id=model_key,
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
-        tool_choice=preset.tool_choice if preset is not None else "required",
+        tool_choice=(
+            preset.tool_choice if preset is not None else (tool_choice_override or "required")
+        ),
         max_tokens=max_tokens,
     )
 
