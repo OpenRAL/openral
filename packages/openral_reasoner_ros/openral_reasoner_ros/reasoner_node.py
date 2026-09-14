@@ -2500,6 +2500,28 @@ class ReasonerNode(LifecycleNode):
             # both `memory_md_path` and `rskill_search_paths`.
             memory_available=self._memory_store is not None,
         )
+        # ``importable`` descends from ``capability_matched_ids``
+        # (``capability_palette.execute_rskill_ids``), which by design never contains a
+        # ``kind: detector``/``segmenter`` manifest — they are perception producers, not
+        # ExecuteRskill-dispatchable (``build_tool_palette`` docstring). So the ``new_palette``
+        # just built from ``importable`` always has EMPTY ``continuous_detectors`` /
+        # ``on_demand_detectors``, regardless of what is actually on this robot's manifest set:
+        # the correctly embodiment-filtered versions were computed above, on the full
+        # ``manifests`` list, purely to derive ``capability_matched_ids`` — then discarded.
+        #
+        # Observed live: with `--object-detector-locator rskills/omdet-turbo-locator/rskill.yaml`
+        # on a franka_panda deploy, `detector_available` (a separate bool, correctly threaded
+        # through above) offered the `locate_in_view` tool, but its `known_aliases` was always
+        # empty — the LLM had a real, active locator to route to and no way to name it, and
+        # `locate_in_view(detector="")` still worked only because there happened to be exactly
+        # one locator for `resolve_locate_in_view_detector`'s empty-string default path to land
+        # on; a second locator would have been permanently unreachable.
+        new_palette = new_palette.model_copy(
+            update={
+                "continuous_detectors": capability_palette.continuous_detectors,
+                "on_demand_detectors": capability_palette.on_demand_detectors,
+            }
+        )
         self._palette = new_palette
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
