@@ -1264,13 +1264,30 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
-    # Offer the read-only locate_in_view tool to the LLM when an object
-    # detector is in the graph (it exposes /openral/perception/locate_in_view).
-    # locate_in_view is served by BOTH the continuous detector AND any on-demand
-    # locator (each exposes /openral/perception/<alias>/locate_in_view), so offer
-    # the tool when either is present — a lean ``--no-object-detector`` deploy still
-    # grounds via the locator (otherwise the reasoner can never see objects).
-    reasoner_params["detector_available"] = enable_object_detector or bool(locator_specs)
+    # Offer the read-only locate_in_view tool to the LLM only when an on-demand
+    # locator (``--object-detector-locator``) is actually in the graph.
+    # ``detector_node_wiring`` (detector_factory.py) makes the two detector
+    # modes mutually exclusive at the node: a continuous detector
+    # (``--object-detector``; the always-on RT-DETR/omdet background producer
+    # feeding WorldState) runs with ``serve_on_demand=False`` and never
+    # constructs the LocateInView service at all — it streams
+    # ``/openral/perception/objects`` and nothing else, on any path, under any
+    # alias. Only ``on_demand`` mode (an ``--object-detector-locator`` entry)
+    # sets ``serve_on_demand=True`` and advertises
+    # /openral/perception/<alias>/locate_in_view.
+    #
+    # This composite used to be `enable_object_detector or bool(locator_specs)`
+    # on the false claim (this comment, pre-fix) that both modes served the
+    # service. `--object-detector` alone surfaced the tool to the LLM with no
+    # backing service and no `default_on_demand_detector` to route to:
+    # reproduced live (openral deploy sim --config scenes/deploy/libero_pnp.yaml
+    # --object-detector --initial-task "..."), the reasoner correctly called
+    # locate_in_view per its own system prompt, got
+    # "/openral/perception/default/locate_in_view not on graph; skipping" on
+    # every tick, and the mission stalled — a phantom capability, not a live
+    # one. A lean ``--no-object-detector`` deploy with a locator still grounds
+    # fine; only the composite with the continuous leg was ever wrong.
+    reasoner_params["detector_available"] = bool(locator_specs)
     # Offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
