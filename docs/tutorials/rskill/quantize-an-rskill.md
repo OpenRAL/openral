@@ -84,8 +84,10 @@ policy_extras:
   quantize_scope: "model"     # whole model, not just the VLM backbone
 ```
 
-`rskills/gr00t-n17-so101-fruit` uses `model` to reach 5.8 GiB peak on an 8 GB
-card. Override at runtime with `OPENRAL_GR00T_QUANTIZE_SCOPE`.
+`rskills/gr00t-n17-b1k-turning-on-radio` uses `model` as one of two measures
+that fit it on an 8 GB host (the other is dropping the Qwen3-VL `lm_head`,
+which its wrapper never reads). Override at runtime with
+`OPENRAL_GR00T_QUANTIZE_SCOPE`.
 
 ---
 
