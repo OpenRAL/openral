@@ -28,8 +28,74 @@ import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _LAUNCH = _ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
-_SCENE = _ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml"
 _MANIFEST = _ROOT / "robots" / "openarm" / "robot.yaml"
+
+# A synthetic real-cell override for the two tests below: the manifest's `top`
+# is a MuJoCo render with no `deploy_binding`, and no in-tree scene currently
+# overrides OpenArm's cameras for a real deploy — so these bind all three rig
+# cameras directly, the same shape a real deploy scene would carry, without
+# depending on one being committed.
+_SCENE_YAML = {
+    "scene": {"id": "test_cell"},
+    "robot_id": "openarm",
+    "sensors": [
+        {
+            "name": "top",
+            "modality": "rgb",
+            "frame_id": "openarm_head_camera_optical_frame",
+            "parent_frame": "openarm_base",
+            "rate_hz": 30.0,
+            "encoding": "bgr8",
+            "vla_feature_key": "observation.images.context",
+            "intrinsics": {"width": 672, "height": 376, "fx": 336.0, "fy": 336.0},
+            "vendor": "StereoLabs",
+            "model": "ZED Mini",
+            "deploy_binding": {
+                "backend": "ros2_image",
+                "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
+            },
+        },
+        {
+            "name": "wrist_left",
+            "modality": "rgb",
+            "frame_id": "openarm_left_ee_base_link",
+            "parent_frame": "openarm_base",
+            "rate_hz": 30.0,
+            "encoding": "bgr8",
+            "vla_feature_key": "observation.images.wrist_left",
+            "intrinsics": {"width": 960, "height": 600, "fx": 685.5, "fy": 685.5},
+            "vendor": "Arducam",
+            "model": "B0495",
+            "deploy_binding": {
+                "backend": "opencv_thread",
+                "backend_params": {"device": "/dev/camera_wrist_left"},
+            },
+        },
+        {
+            "name": "wrist_right",
+            "modality": "rgb",
+            "frame_id": "openarm_right_ee_base_link",
+            "parent_frame": "openarm_base",
+            "rate_hz": 30.0,
+            "encoding": "bgr8",
+            "vla_feature_key": "observation.images.wrist_right",
+            "intrinsics": {"width": 960, "height": 600, "fx": 685.5, "fy": 685.5},
+            "vendor": "Arducam",
+            "model": "B0495",
+            "deploy_binding": {
+                "backend": "opencv_thread",
+                "backend_params": {"device": "/dev/camera_wrist_right"},
+            },
+        },
+    ],
+}
+
+
+@pytest.fixture
+def _scene(tmp_path: pathlib.Path) -> pathlib.Path:
+    scene_path = tmp_path / "scene.yaml"
+    scene_path.write_text(yaml.safe_dump(_SCENE_YAML), encoding="utf-8")
+    return scene_path
 
 
 def _rgb_sensors(doc: dict[str, object]) -> list[dict[str, object]]:
@@ -47,18 +113,18 @@ def test_the_deploy_launch_spawns_the_bucket2_converter() -> None:
     )
 
 
-def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
+def test_every_rgb_camera_the_real_deploy_declares_is_also_bound(_scene: pathlib.Path) -> None:
     """A declared-but-unbound RGB slot is a panel that can never fill.
 
     The manifest's `top` is the SIM overhead camera — a MuJoCo render with no
-    `deploy_binding` — so on the real cell `/openral/cameras/top/image` had
-    zero publishers while the bridge still advertised the channel (its
+    `deploy_binding` — so on a real deploy `/openral/cameras/top/image` would
+    have zero publishers while the bridge still advertised the channel (its
     allowlist is the pattern `/openral/cameras/.*/image`). In the viewer that
-    is indistinguishable from a dead camera. The scene now overrides `top`
-    with the ZED head camera, so every slot this deploy surfaces has a
-    publisher behind it.
+    is indistinguishable from a dead camera. A real deploy scene must override
+    `top` with a bound camera, so every slot it surfaces has a publisher
+    behind it.
     """
-    scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
 
     bound = {s["name"] for s in _rgb_sensors(scene) if s.get("deploy_binding")}
@@ -77,18 +143,20 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
     )
 
 
-def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on() -> None:
+def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on(
+    _scene: pathlib.Path,
+) -> None:
     """Renaming the slot must not rename the policy's input.
 
-    The scene's `top` overrides the manifest's `top` field-wise, and the
-    manifest's is the sim overhead camera carrying
+    A real deploy scene's `top` overrides the manifest's `top` field-wise,
+    and the manifest's is the sim overhead camera carrying
     `observation.images.base`. The policy reads by `vla_feature_key`, not by
     sensor name, and was trained with the ZED on
     `observation.images.context` — so letting the manifest's key survive the
     merge would hand it an OOD base stream and an empty context stream, with
     every node healthy and no error anywhere.
     """
-    scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
 
     scene_top = next(s for s in _rgb_sensors(scene) if s["name"] == "top")

@@ -2,44 +2,98 @@
 """A deploy scene brings up the vendor drivers its sensor bindings read from.
 
 A `SensorDeployBinding` with a `ros2_*` backend *subscribes* to a topic — it
-names the topic but not who publishes it. For the OpenArm cell that publisher is
-`zed_wrapper`, and until `DeployScene.drivers` existed an operator had to start
-it by hand in a second terminal. Forgetting is not an error: subscribing to an
-unpublished topic is perfectly legal, so the camera panel is simply empty and
-the octomap/voxel chain downstream of it produces nothing, with every node
-reporting healthy.
+names the topic but not who publishes it. Until `DeployScene.drivers` existed
+an operator had to start the publisher by hand in a second terminal.
+Forgetting is not an error: subscribing to an unpublished topic is perfectly
+legal, so the camera panel is simply empty and the octomap/voxel chain
+downstream of it produces nothing, with every node reporting healthy.
 
 The driver's own config travels with the scene rather than living in a home
 directory, so a committed scene works on more than one machine.
+
+No in-tree scene currently declares `drivers:` (it is a real-hardware-only
+field — see `DeployScene.drivers`), so these tests write their own
+`zed_wrapper`-shaped fixture rather than depending on one. The shape (a
+`ros2_image` sensor binding paired with a `zed_wrapper` driver entry pinning
+positional tracking off) is real — it is the pairing that `deploy_e2e.launch.py`
+resolves on any workcell wiring a ZED into the octomap leg.
 """
 
 from __future__ import annotations
 
 import pathlib
+from typing import NamedTuple
 
 import pytest
 import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
-_SCENE = _ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml"
 _LAUNCH = _ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
+_OVERRIDE_YAML = """\
+/**:
+    ros__parameters:
+        pos_tracking:
+            pos_tracking_enabled: false
+        depth:
+            depth_mode: 'NEURAL_LIGHT'
+            depth_stabilization: 0
+"""
 
-def _scene() -> dict[str, object]:
-    doc = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
-    assert isinstance(doc, dict)
-    return doc
+
+class _Scene(NamedTuple):
+    doc: dict[str, object]
+    path: pathlib.Path
 
 
-def test_the_scene_declares_the_driver_that_publishes_its_ros2_binding() -> None:
+@pytest.fixture
+def _scene(tmp_path: pathlib.Path) -> _Scene:
+    """A synthetic workcell scene pairing a `ros2_image` binding with its driver."""
+    override_path = tmp_path / "zedm_override.yaml"
+    override_path.write_text(_OVERRIDE_YAML, encoding="utf-8")
+    doc: dict[str, object] = {
+        "scene": {"id": "test_cell"},
+        "robot_id": "openarm",
+        "drivers": [
+            {
+                "package": "zed_wrapper",
+                "launch_file": "zed_camera.launch.py",
+                "args": {
+                    "camera_model": "zedm",
+                    "ros_params_override_path": "zedm_override.yaml",
+                },
+            }
+        ],
+        "sensors": [
+            {
+                "name": "top",
+                "modality": "rgb",
+                "vla_feature_key": "observation.images.context",
+                "deploy_binding": {
+                    "backend": "ros2_image",
+                    "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
+                },
+            }
+        ],
+    }
+    scene_path = tmp_path / "scene.yaml"
+    scene_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    # Round-trip through disk so the path-resolution assertions below are
+    # checking the same thing they would check against a committed scene.
+    parsed = yaml.safe_load(scene_path.read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return _Scene(doc=parsed, path=scene_path)
+
+
+def test_the_scene_declares_the_driver_that_publishes_its_ros2_binding(_scene: _Scene) -> None:
     """Every `ros2_*` sensor binding needs a declared publisher.
 
-    This is the pairing that was missing: the `context` camera reads
-    `/zed/zed_node/...` and nothing in the graph produced it.
+    This is the pairing `DeployScene.drivers` exists to close: a camera bound
+    via `ros2_image` reads a topic like `/zed/zed_node/...` and nothing in the
+    graph produces it unless the scene also declares the driver.
     """
-    doc = _scene()
-    drivers = doc.get("drivers") or []
-    sensors = doc.get("sensors") or []
+    drivers = _scene.doc.get("drivers") or []
+    sensors = _scene.doc.get("sensors") or []
     assert isinstance(drivers, list) and isinstance(sensors, list)
 
     ros2_bound = [
@@ -56,10 +110,9 @@ def test_the_scene_declares_the_driver_that_publishes_its_ros2_binding() -> None
     assert any(d.get("package") == "zed_wrapper" for d in drivers)
 
 
-def test_the_driver_config_travels_with_the_scene() -> None:
+def test_the_driver_config_travels_with_the_scene(_scene: _Scene) -> None:
     """A committed scene must not carry someone's home directory."""
-    doc = _scene()
-    for driver in doc.get("drivers") or []:
+    for driver in _scene.doc.get("drivers") or []:
         for key, value in (driver.get("args") or {}).items():
             if not key.endswith("_path"):
                 continue
@@ -67,31 +120,31 @@ def test_the_driver_config_travels_with_the_scene() -> None:
                 f"{key}={value} is absolute; a committed scene must reference driver "
                 "config relative to itself so it works on more than one host"
             )
-            assert (_SCENE.parent / str(value)).is_file(), (
-                f"{key}={value} does not resolve against {_SCENE.parent}"
+            assert (_scene.path.parent / str(value)).is_file(), (
+                f"{key}={value} does not resolve against {_scene.path.parent}"
             )
 
 
-def test_the_zed_override_keeps_positional_tracking_off() -> None:
+def test_the_zed_override_keeps_positional_tracking_off(_scene: _Scene) -> None:
     """With it on, `zed_camera_link` gets a second TF parent.
 
-    The manifest already parents that frame to `openarm_base`; the wrapper's
-    visual odometry would parent it again. A frame with two parents is not a
-    tree — lookups go order-dependent and octomap_server drops clouds silently,
-    which is the failure this override exists to prevent.
+    A ZED bolted to a robot is normally parented to the robot's own base
+    frame in the manifest; the wrapper's visual odometry would parent it
+    again. A frame with two parents is not a tree — lookups go
+    order-dependent and octomap_server drops clouds silently, which is the
+    failure this override exists to prevent.
     """
-    doc = _scene()
     override = next(
-        (d["args"]["ros_params_override_path"] for d in doc["drivers"] if "args" in d),  # type: ignore[index]  # reason: shape asserted above
+        (d["args"]["ros_params_override_path"] for d in _scene.doc["drivers"] if "args" in d),  # type: ignore[index]  # reason: shape asserted above
         None,
     )
     assert override is not None, "the ZED driver must pin its parameter override"
-    cfg = yaml.safe_load((_SCENE.parent / str(override)).read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((_scene.path.parent / str(override)).read_text(encoding="utf-8"))
     params = cfg["/**"]["ros__parameters"]
     assert params["pos_tracking"]["pos_tracking_enabled"] is False
     # …and the setting has to actually hold. The SDK force-enables positional
     # tracking whenever depth stabilization is on, which silently defeated the
-    # flag above until this was pinned — observed live on the cell as
+    # flag above until this was pinned — observed live on a real cell as
     # "POSITIONAL TRACKING disabled in the parameters, but forced to ENABLE".
     assert params["depth"]["depth_stabilization"] == 0
 

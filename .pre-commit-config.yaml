@@ -67,7 +67,10 @@ repos:
           #     break the tuple it destructures.
           #   unparseable / overrideable / re-use / re-declaring — accepted
           #     variant spellings already used consistently in the tree.
-          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers,ot,mis,ans,childrens,froms,unparseable,overrideable,re-use,re-declaring,sroll"
+          #   cann            — SocketCAN's `canN` interface-name placeholder
+          #     (can0, can1, ...) in robots/openarm/robot.yaml; not a typo of
+          #     "can".
+          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers,ot,mis,ans,childrens,froms,unparseable,overrideable,re-use,re-declaring,sroll,cann"
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.4.0
     hooks:

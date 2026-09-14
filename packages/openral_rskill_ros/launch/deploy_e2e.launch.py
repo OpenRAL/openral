@@ -1382,10 +1382,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # publishers while the Foxglove bridge still advertises the channel (its
     # allowlist is the pattern `/openral/cameras/.*/image`), and the panel reads
     # "Image topic does not exist", indistinguishable from a broken camera. A
-    # deploy scene fixes that by binding the slot to real hardware, as
-    # `openarm_restock_shelf.yaml` does for `top`. The Foxglove layout is
-    # generated from this list rather than a hardcoded default, which cannot
-    # know the scene (see `_write_foxglove_layout`).
+    # deploy scene fixes that by binding the slot to real hardware. The
+    # Foxglove layout is generated from this list rather than a hardcoded
+    # default, which cannot know the scene (see `_write_foxglove_layout`).
     bound_rgb_camera_names = [
         s.name
         for s in (*description.sensors, *scene_sensors)
@@ -1712,8 +1711,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     #
     # Manifest sensors UNION DeployScene sensors, scene winning on a name clash
     # (`merge_deploy_sensors`'s own rule): iterating only the manifest would silently drop the
-    # mount publish for a workcell-mounted camera (e.g. every camera on the OpenArm restock
-    # cell, declared entirely at scene level).
+    # mount publish for a workcell-mounted camera declared entirely at scene level.
     from openral_rskill_ros.sensor_leg import merge_deploy_sensors
 
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):

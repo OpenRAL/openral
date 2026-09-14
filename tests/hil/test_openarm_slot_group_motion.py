@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """HIL: one slot-dispatched tick actually MOVES the joint it addresses.
 
-Last unclosed gate on ADR-0102. ``test_openarm_restock_deploy_preflight.py`` proves the
-composed 16-DoF vector reaches the four controllers correctly named and sliced — but never
-publishes, so it can't prove the values arrive somewhere physical. A sign flip, scale error,
-or silently-ignored joint is invisible to it. This closes that; the only test in the tree
+Last unclosed gate on ADR-0102. ``TestSlotGroupDispatch`` in
+``tests/unit/test_openarm_real_hal.py`` proves — off-rig, no hardware — that the composed
+16-DoF vector reaches the four controllers correctly named and sliced, but never publishes,
+so it can't prove the values arrive somewhere physical. A sign flip, scale error, or
+silently-ignored joint is invisible to it. This closes that; the only test in the tree
 that commands a real OpenArm to move.
 
 Requires a person at the E-stop. Two independent gates, both explicit:

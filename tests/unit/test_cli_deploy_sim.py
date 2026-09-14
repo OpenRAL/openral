@@ -2597,7 +2597,7 @@ def test_bh_head_cam_wired_into_the_shared_preflight(monkeypatch: pytest.MonkeyP
 
 
 def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
-    """The real OpenArm restock scene with its ``runtime`` octomap block edited.
+    """The committed OpenArm tabletop scene with its ``runtime`` octomap block edited.
 
     Anchors on the indented runtime keys, which appear once each; the same
     words also occur in the scene's comment header and must stay untouched.
@@ -2611,9 +2611,7 @@ def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
     "unpinned" case inherited the scene's pin — failing a test about the
     resolver for a reason that had nothing to do with the resolver.
     """
-    text = (_REPO_ROOT / "scenes" / "deploy" / "openarm_restock_shelf.yaml").read_text(
-        encoding="utf-8"
-    )
+    text = (_REPO_ROOT / "scenes" / "deploy" / "openarm_tabletop.yaml").read_text(encoding="utf-8")
     text = re.sub(r"\n  octomap_cloud_topic:[^\n]*\n", "\n", text)
     text = re.sub(
         r"\n  enable_octomap: (?:true|false)\n", f"\n  enable_octomap: true\n{extra}", text

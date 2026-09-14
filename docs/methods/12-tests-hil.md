@@ -30,24 +30,6 @@ it is a fact about the bench and not about the code. The round-trip is
 read-only by construction: it queries motor state and never calls
 `enable_all()`, so it cannot energise or move the arm.
 
-`tests/hil/test_openarm_restock_deploy_preflight.py` is the cell-level gate
-for the restocking deploy: the committed scene / robot manifest / rSkill, the
-CAN links, the three physical cameras, and — since ADR-0102 — the
-slot-dispatched 16-DoF vector. That last tier drives the **production**
-dispatcher (`rskill_runner_node._dispatch_slots`) over the committed
-manifest's `slots:` block into a real `OpenArmRealHAL` that has passed its bus
-preflight, then checks the four controller messages reconstruct the policy's
-own vector, that arrival order does not change them, and that a standalone
-gripper action raises instead of vanishing. A policy value equal to its joint
-index makes a misroute or side swap read as a mismatch rather than as a
-plausible pose. It cannot move the arm whether or not the arm is powered:
-`openarm_bringup`'s `ros2_control` stack is the only path from those topics to
-`openarm_can`, and these tests never publish to ROS at all — the messages are
-collected in-process through the adapter's own `publish_fn` seam. What it
-therefore does **not** cover is command→motion: that the composed vector moves
-the right joints by the right amount, and that the gripper physically
-actuates, still needs a powered run.
-
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 
@@ -74,7 +56,7 @@ _`OpenArmRealHAL`'s controller/joint table vs `openarm_bringup`'s own YAML — n
 ### `tests/hil/test_openarm_slot_group_motion.py`
 _The one test in the tree that commands a real OpenArm to move._
 
-- Closes the last ADR-0102 gate: `test_openarm_restock_deploy_preflight.py` proves the composed 16-DoF vector reaches the four controllers correctly named and sliced, but never publishes, so it cannot see a sign flip, a scale error, or a joint the controller ignores. This one commands measured-pose + `0.02 rad` on **one** joint, holds the other fifteen at their measured values, and reads the physical result back off `/joint_states` — asserting the addressed joint arrived and every other joint stayed put.
+- Closes the last ADR-0102 gate: `TestSlotGroupDispatch` in `tests/unit/test_openarm_real_hal.py` proves — off-rig, no hardware — that the composed 16-DoF vector reaches the four controllers correctly named and sliced, but never publishes, so it cannot see a sign flip, a scale error, or a joint the controller ignores. This one commands measured-pose + `0.02 rad` on **one** joint, holds the other fifteen at their measured values, and reads the physical result back off `/joint_states` — asserting the addressed joint arrived and every other joint stayed put.
 - Two independent gates, both explicit: `OPENRAL_OPENARM_ALLOW_MOTION=1` (this bench can move) and `OPENRAL_OPENARM_ATTENDED=1` (someone is at the E-stop right now). Separate on purpose, so a rig that leaves the first exported does not thereby become a rig that moves unattended.
 - Why a small number is not by itself a small motion: the wire format is an **absolute** position with a deadline, so travel is `(target - measured) / time_from_start` — set by how wrong the command is, which is the quantity under test. The bounds that do work are the measured-pose baseline, the 0.8 s window, and the refusal to start until all 16 joints have appeared on `/joint_states` (a partial state zero-fills into a plausible pose, and "measured + delta" on top of that is a command to slew the cell home).
 - Cases run gripper-first (1-DoF, lowest inertia, and the actuator ADR-0102 exists for) then the most distal arm joint, and each restores the measured pose before returning, so the suite is idempotent.
