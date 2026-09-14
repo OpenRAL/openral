@@ -25,8 +25,10 @@ def test_behavior_groot_rskill_manifest_loads() -> None:
     assert manifest.action_contract is not None
     assert manifest.action_contract.dim == 23
     assert manifest.policy_extras["implementation"] == "behavior_b1k_sidecar"
-    assert manifest.policy_extras["quantization"] == "nf4"
-    assert manifest.policy_extras["nf4_min_params"] == 1_000_000
+    # Packing knobs live under `quantization.extra`, not `policy_extras`: one
+    # home shared with the GR00T and RLDX families.
+    assert manifest.quantization.extra["quantize_scope"] == "model"
+    assert manifest.quantization.extra["nf4_min_params"] == 1_000_000
 
 
 def test_behavior_wire_observation_preserves_official_payload() -> None:
@@ -123,6 +125,48 @@ def test_gr00t_factory_reports_missing_organizer_checkpoint(
     )
     with pytest.raises(ROSConfigError, match="checkpoint not found"):
         gr00t._build_gr00t(env)
+
+
+def test_plain_precision_override_collapses_to_none_for_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`OPENRAL_QUANTIZATION_DTYPE=bf16` must not crash the sidecar's argparse.
+
+    The resolver's contract is that an explicit override always wins,
+    including a plain precision to turn packing off — but the sidecar CLI
+    only accepts ("none", "nf4", "int8"). A raw "bf16" reaching argparse is
+    a `SystemExit(2)`, so the adapter must collapse it to "none" first.
+    """
+    from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
+
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    sidecar_python = tmp_path / "python"
+    sidecar_python.touch()
+    monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(checkpoint))
+    monkeypatch.setenv(behavior_groot._SIDECAR_PYTHON_ENV, str(sidecar_python))
+    monkeypatch.setenv(behavior_groot._AUTO_SPAWN_ENV, "1")
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+
+    captured: dict[str, object] = {}
+
+    class _StubClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def connect(self) -> None:
+            pass
+
+    monkeypatch.setattr(behavior_groot, "SidecarClient", _StubClient)
+
+    manifest = load_rskill_manifest(str(_RSKILL))
+    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t", weights_uri=str(_RSKILL)))
+    behavior_groot.build_behavior_groot_policy(env_cfg, manifest, {})
+
+    assert "--quantization" in captured["launch_argv"]  # type: ignore[operator]
+    argv = list(captured["launch_argv"])  # type: ignore[arg-type]
+    assert argv[argv.index("--quantization") + 1] == "none"
 
 
 def test_sidecar_parses_int8_quantization() -> None:
