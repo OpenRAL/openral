@@ -19,7 +19,7 @@
 # task 1 nearly fails; the variance is the real hazard.
 #
 # int8 exists only to buy the 1.7 GB an 8 GB card needs; 62% beats not running.
-# On >=9 GB prefer bf16 (`--vla-extra dtype=bf16`, no manifest edit). TensorRT
+# On >=9 GB prefer bf16 (set `policy_extras.dtype: bf16` below). TensorRT
 # FP8 (openral-pro, OPENRAL_PI05_TRT=1, OPENRAL_PI05_TRT_PRECISION=fp8_bf16_attn)
 # is better again: 78.9 ms/call vs bf16 eager's 190 ms, bf16-identical success.
 # Older "0.5-0.7 at n=10" figure (still in eval/scene_libero_spatial.json) is
@@ -140,8 +140,8 @@ description: >
   LLM.int8-packed at load so 8 GB GPUs can run it at all — bf16 peaks at
   8.1 GB and will not load there. int8 is a memory fit, not a free one: over
   300 LIBERO-Spatial episodes it scores 62% vs bf16's 95%, task-dependent
-  (22-82%), and is ~2.6x slower per step. With >9 GB prefer
-  `--vla-extra dtype=bf16`, or openral-pro's TensorRT FP8; see the README. PI
+  (22-82%), and is ~2.6x slower per step. With >9 GB prefer bf16 via
+  `policy_extras.dtype`, or openral-pro's TensorRT FP8; see the README. PI
   permissive-research weights: commercial use needs a vendor agreement.
 
 # Action vocabulary surfaced to the reasoner LLM tool

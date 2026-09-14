@@ -30,6 +30,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 
 __all__ = [
     "attach_traceparent_from_env",
+    "current_trace_id",
     "current_traceparent",
     "extract_traceparent",
     "inject_traceparent",
@@ -63,6 +64,24 @@ def current_traceparent() -> str | None:
         return None
     # W3C v0 traceparent: ``<version>-<trace_id>-<parent_id>-<flags>``.
     return f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{ctx.trace_flags:02x}"
+
+
+def current_trace_id() -> str | None:
+    """Return the active span's 32-char hex trace id, or ``None``.
+
+    The id half of :func:`current_traceparent`, for the places that store a
+    bare pointer into the trace tree rather than propagate context —
+    ``RunResult.trace_id``, ``RSkillEvalResult.trace_id``. ``None`` in no-op
+    observability mode (no OTLP endpoint configured), where the ambient span
+    is the invalid one and its id is all zeros.
+
+    Example:
+        >>> from openral_observability.propagation import current_trace_id
+        >>> current_trace_id() is None  # no span in scope
+        True
+    """
+    ctx = trace.get_current_span().get_span_context()
+    return f"{ctx.trace_id:032x}" if ctx.is_valid else None
 
 
 def inject_traceparent(carrier: MutableMapping[str, str] | None = None) -> dict[str, str]:

@@ -151,8 +151,9 @@ supplied at the CLI via `--rskill <name>`.
 | Custom SO-101       | `so101_box` (100 × 61.5 × 75 cm box arena + OAK-D Pro overhead RGB-D + wrist camera + tube-insertion task — geometry/sensors/spawn ranges configurable via `BoxSceneOptions`)                                                                                                               | `python/sim/.../backends/so101_box/env.py`|
 | Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`; SO-101 sim YAML pins pi0.5-style degree reset pose + top/front/wrist camera routing)                                                                                                                        | `python/sim/.../backends/tabletop_push/env.py` |
 
-`openral sim list` walks both subdirectories and prints every scene + every
-in-tree rSkill (paste-able `--rskill` tokens).
+`openral sim list` walks every subdirectory here and prints each scene YAML
+path — paste one straight into `--config`. The `--rskill` half comes from
+`openral rskill list`.
 
 ## Scene-fixed robots
 
@@ -292,7 +293,10 @@ win. For evaluations (`--n-episodes >= 2`, or long episodes) it is pure win.
 
 ## Discovering paste-able `--rskill` strings
 
-`openral sim list` prints scenes, paste-able `--rskill` strings, and robots.
-The listing's `rskills:` line is generated from `rskills/<dir>/rskill.yaml`
-files in the repo; copy any token straight into `--rskill` (e.g.
-`--rskill pi05-libero-int8`).
+`openral rskill list` prints every rSkill — in-tree (`rskills/<dir>/rskill.yaml`)
+and HF-Hub-installed — with a `source` column so you can tell which are
+paste-able right now. Copy any name straight into `--rskill` (e.g.
+`--rskill pi05-libero-int8`). Add `--json` for a machine-readable form.
+
+(`openral sim list` is the other half: it prints scene config paths for
+`--config`, not rSkills.)

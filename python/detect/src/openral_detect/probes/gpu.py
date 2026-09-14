@@ -98,7 +98,10 @@ DTYPES_BY_COMPUTE_CAPABILITY: tuple[tuple[tuple[int, int], tuple[QuantizationDty
             QuantizationDtype.FP4_NVFP4,
         ),
     ),
-    # Hopper (H100/H200): adds FP8.
+    # Hopper (H100/H200): same set as Ampere. The FP8 tensor cores are
+    # not listed — FP8 reaches hardware only as Q/DQ nodes inside a
+    # TensorRT engine, never as a runtime cast, so it is a property of
+    # the engine rather than of the accelerator this table describes.
     (
         (9, 0),
         (
@@ -109,7 +112,8 @@ DTYPES_BY_COMPUTE_CAPABILITY: tuple[tuple[tuple[int, int], tuple[QuantizationDty
             QuantizationDtype.INT4,
         ),
     ),
-    # Ada Lovelace (RTX 40, L40): adds FP8.
+    # Ada Lovelace (RTX 40, L40): same set as Ampere; see the Hopper note
+    # above for why FP8 is absent.
     (
         (8, 9),
         (

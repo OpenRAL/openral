@@ -68,7 +68,7 @@ Read only the context needed for the task:
 
 6. Validate docs and evals.
    - Fill every README section from `rskills/template/README.md`; template sentinels are publish-blocking.
-   - Add real `eval/<benchmark>.json` artifacts when available and ensure they validate as `SkillEvalResult`.
+   - Add real `eval/<benchmark>.json` artifacts when available and ensure they validate as `RSkillEvalResult`.
    - Paper-cited values must be labeled as not locally reproduced and include a reproduction command.
 
 7. Publish safely.

@@ -20,9 +20,9 @@ Typical usage::
 
 CLI::
 
-    openral sim run --config scenes/benchmark/libero_spatial.yaml \
+    openral sim run --config scenes/sim/libero_spatial.yaml \
             --rskill smolvla-libero
-    openral sim run --robot franka_panda --scene libero_spatial \
+    openral sim run --config scenes/sim/libero_spatial.yaml \
             --task libero_spatial/0 \
             --rskill smolvla-libero
     openral benchmark run --suite libero_spatial \

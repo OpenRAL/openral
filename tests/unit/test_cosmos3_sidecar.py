@@ -52,6 +52,48 @@ def test_build_serve_argv_core_flags() -> None:
     assert "--enforce-eager" in argv
 
 
+def test_build_serve_argv_defaults_fit_an_8gb_card() -> None:
+    """Both flags are what let an 8 GB card serve at all — each fixes a real OOM.
+
+    Observed live on an otherwise idle RTX 5070 8 GB, after the model itself
+    loaded at 4.66 GiB: vLLM's own ``max_num_seqs`` default of 256 exhausts the
+    card warming the sampler ("CUDA out of memory occurred when warming up
+    sampler with 256 dummy requests"), and left uncapped the profiler sizes the
+    encoder cache for a max-resolution *video* (24300 tokens) and OOMs in the
+    SigLIP2 tower. The reasoner has one request in flight at 0.2 Hz and sends at
+    most one camera frame, so neither default describes this workload.
+    """
+    argv = sidecar.build_serve_argv(
+        vllm_bin=Path("/venv/bin/vllm"),
+        model="/local/view",
+        host="127.0.0.1",
+        port=8901,
+        tool_call_parser="hermes",
+        max_model_len=12288,
+        gpu_memory_utilization=0.97,
+        enforce_eager=True,
+    )
+    assert argv[argv.index("--max-num-seqs") + 1] == "4"
+    limit = argv[argv.index("--limit-mm-per-prompt") + 1]
+    assert json.loads(limit) == {"video": 0, "image": 1}
+
+
+def test_build_serve_argv_limit_mm_can_be_disabled() -> None:
+    """An empty string hands multimodal limits back to vLLM (bigger GPUs)."""
+    argv = sidecar.build_serve_argv(
+        vllm_bin=Path("/venv/bin/vllm"),
+        model="/local/view",
+        host="127.0.0.1",
+        port=8901,
+        tool_call_parser="hermes",
+        max_model_len=8192,
+        gpu_memory_utilization=0.90,
+        enforce_eager=True,
+        limit_mm_per_prompt="",
+    )
+    assert "--limit-mm-per-prompt" not in argv
+
+
 def test_build_serve_argv_no_enforce_eager_omits_flag() -> None:
     argv = sidecar.build_serve_argv(
         vllm_bin=Path("/venv/bin/vllm"),

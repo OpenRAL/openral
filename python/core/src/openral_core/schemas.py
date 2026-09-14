@@ -8054,11 +8054,16 @@ class RSkillEvalResult(BaseModel):
         results: Free-form per-task / per-suite success rates.
         baselines: Optional free-form comparison numbers from prior work.
         trace_id: Hex OTel trace id (32 chars) for the rollout that
-            produced this result. Set by ``openral benchmark run`` from the
-            ``cli.command`` root span so reviewers can deep-link from
+            produced this result. Set by ``openral benchmark run`` /
+            ``benchmark scene`` from the ``cli.command`` root span so
+            reviewers can deep-link from
             ``rskills/<id>/eval/<benchmark>.json`` straight to the
-            trace tree in Jaeger / Tempo. Optional — paper-cited
-            numbers (``reproduced_locally: false``) leave it ``None``.
+            trace tree in Jaeger / Tempo. ``None`` when there is no trace
+            to point at: paper-cited numbers
+            (``reproduced_locally: false``), and local runs with no OTLP
+            endpoint configured (no ``--dashboard``, no
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``), where observability is in
+            no-op mode.
 
     Example:
         >>> # RSkillEvalResult.model_validate_json(
@@ -11309,7 +11314,7 @@ class WaitTool(_ReasonerToolBase):
     tool: Literal["wait"] = "wait"
 
 
-ReasonerToolCall: TypeAlias = (
+ReasonerToolCall: TypeAlias = Annotated[
     ExecuteRskillTool
     | ReloadGstPipelineTool
     | LifecycleTransitionTool
@@ -11322,12 +11327,19 @@ ReasonerToolCall: TypeAlias = (
     | QueryTaskProgressTool
     | MemoryWriteTool
     | MemorySearchTool
-    | DecomposeMissionTool
-)
+    | DecomposeMissionTool,
+    Field(discriminator="tool"),
+]
 """Discriminated union over the reasoner tool variants.
 
 The discriminator field is ``tool`` (a string ``Literal`` on each
-variant). Consumers decode an LLM tool-use payload with::
+variant), and it is declared as one: a malformed payload reports only
+the errors of the variant it tagged itself as, instead of every
+variant's. The caller always sets ``tool`` from the provider's function
+name before validating (``openral_reasoner.tool_use``), so an untagged
+payload is a bug in the caller, not a shape to guess at.
+
+Consumers decode an LLM tool-use payload with::
 
     from pydantic import TypeAdapter
     from openral_core import ReasonerToolCall

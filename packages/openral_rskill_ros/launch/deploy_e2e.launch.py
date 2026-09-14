@@ -1264,13 +1264,30 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
-    # Offer the read-only locate_in_view tool to the LLM when an object
-    # detector is in the graph (it exposes /openral/perception/locate_in_view).
-    # locate_in_view is served by BOTH the continuous detector AND any on-demand
-    # locator (each exposes /openral/perception/<alias>/locate_in_view), so offer
-    # the tool when either is present — a lean ``--no-object-detector`` deploy still
-    # grounds via the locator (otherwise the reasoner can never see objects).
-    reasoner_params["detector_available"] = enable_object_detector or bool(locator_specs)
+    # Offer the read-only locate_in_view tool to the LLM only when an on-demand
+    # locator (``--object-detector-locator``) is actually in the graph.
+    # ``detector_node_wiring`` (detector_factory.py) makes the two detector
+    # modes mutually exclusive at the node: a continuous detector
+    # (``--object-detector``; the always-on RT-DETR/omdet background producer
+    # feeding WorldState) runs with ``serve_on_demand=False`` and never
+    # constructs the LocateInView service at all — it streams
+    # ``/openral/perception/objects`` and nothing else, on any path, under any
+    # alias. Only ``on_demand`` mode (an ``--object-detector-locator`` entry)
+    # sets ``serve_on_demand=True`` and advertises
+    # /openral/perception/<alias>/locate_in_view.
+    #
+    # This composite used to be `enable_object_detector or bool(locator_specs)`
+    # on the false claim (this comment, pre-fix) that both modes served the
+    # service. `--object-detector` alone surfaced the tool to the LLM with no
+    # backing service and no `default_on_demand_detector` to route to:
+    # reproduced live (openral deploy sim --config scenes/deploy/libero_pnp.yaml
+    # --object-detector --initial-task "..."), the reasoner correctly called
+    # locate_in_view per its own system prompt, got
+    # "/openral/perception/default/locate_in_view not on graph; skipping" on
+    # every tick, and the mission stalled — a phantom capability, not a live
+    # one. A lean ``--no-object-detector`` deploy with a locator still grounds
+    # fine; only the composite with the continuous leg was ever wrong.
+    reasoner_params["detector_available"] = bool(locator_specs)
     # Offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
@@ -1479,16 +1496,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             output="log",
         )
     )
-    # Reasoner uses the robust script-based autostart (tools/lifecycle_autostart.py), not
-    # _autostart_lifecycle's launch_ros event handlers — same Jazzy race as HAL/slam_toolbox
-    # below. Under a heavy graph (reward monitor + critic loading concurrently with the
-    # reasoner's configure) the OnStateTransition(configuring → inactive) handler can miss the
-    # transition_event, silently dropping ACTIVATE so the reasoner sits in INACTIVE forever
-    # (launch_ros logs "Abandoning wait for /openral_reasoner/change_state"; the deploy never
-    # reaches the tick loop). The script polls the node's state and drives CONFIGURE→ACTIVATE
-    # with a generous timeout, immune to the race. The reasoner is never runtime-deactivated
-    # (VRAM eviction only evicts the detectors), so a one-shot drive to active is
-    # behaviour-preserving — same as the HAL block below.
+    # Reasoner AND prompt_router both use the robust script-based autostart
+    # (tools/lifecycle_autostart.py), not _autostart_lifecycle's launch_ros
+    # event handlers — same Jazzy race as HAL/slam_toolbox below. Under a
+    # heavy graph (reward monitor + critic loading concurrently with the
+    # reasoner's configure) the OnStateTransition(configuring → inactive)
+    # handler can miss the transition_event, silently dropping ACTIVATE so
+    # the node sits in INACTIVE forever (launch_ros logs "Abandoning wait
+    # for /<node>/change_state"; the deploy never reaches the tick loop /
+    # the startup prompt never publishes). The script polls the node's
+    # state and drives CONFIGURE→ACTIVATE with a generous timeout, immune
+    # to the race. Neither node is ever runtime-deactivated, so a one-shot
+    # drive to active is behaviour-preserving — same as the HAL block below.
+    #
+    # prompt_router was on the racy path until a live `--object-detector`
+    # deploy (heavier graph than the reasoner-only case the race was first
+    # caught on) reproduced it: the reasoner reached ACTIVE via its poll
+    # script, but prompt_router's OnStateTransition handler silently missed
+    # its own transition_event and stuck in INACTIVE, so `--initial-task`
+    # was accepted by the CLI, threaded through `initial_task_prompt`, and
+    # then never published — the reasoner ticked at 0.2 Hz with an empty
+    # mission and no diagnostic anywhere named the stall.
     _reasoner_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
     if enable_reasoner:
         autostart.append(
@@ -1508,7 +1536,23 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 output="log",
             )
         )
-        autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
+        autostart.append(
+            ExecuteProcess(
+                cmd=[
+                    sys.executable,
+                    _reasoner_autostart_path,
+                    "--node",
+                    "/openral_prompt_router",
+                    "--target",
+                    "active",
+                    "--service-timeout-s",
+                    "60.0",
+                    "--transition-timeout-s",
+                    "120.0",
+                ],
+                output="log",
+            )
+        )
     # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather than
     # ``_autostart_lifecycle`` because launch_ros's ``lifecycle_event_manager`` race on Jazzy
     # (same one as slam_toolbox below) silently swallows ACTIVATE on robocasa-kitchen

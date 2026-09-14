@@ -74,12 +74,26 @@ nearly non-functional. That variance is the real hazard — more than the averag
 What int8 buys is **1.7 GB**, and on an 8 GB card that is decisive: bf16 will
 not load at all, and 62% beats not running.
 
-**On any host with ≳9 GB of VRAM, use bf16.** No manifest edit is needed:
+**On any host with ≳9 GB of VRAM, use bf16.** The dtype resolves from
+`policy_extras.dtype` first and falls back to `quantization.dtype`, so add the
+override to this manifest:
+
+```yaml
+# rskills/pi05-libero-int8/rskill.yaml
+policy_extras:
+  dtype: bf16
+```
 
 ```bash
 openral sim run --config scenes/sim/libero_spatial.yaml \
-    --rskill rskills/pi05-libero-int8 --vla-extra dtype=bf16
+    --rskill rskills/pi05-libero-int8
 ```
+
+There is no per-run CLI override: `--vla-extra` went away with the old
+`--scene / --task / --vla` form. Since the dtype is a segment of the canonical
+name (`…-libero_spatial-int8`), a host that wants bf16 permanently is better
+served by a bf16-named sibling package than by an edited int8 one — this
+package's `benchmarks:` block and `eval/*.json` describe the int8 numbers.
 
 Faster still on NVIDIA hardware with TensorRT: an FP8 engine reaches **78.9 ms**
 per policy call against bf16 eager's 190 ms and scores **49/50 — identical to

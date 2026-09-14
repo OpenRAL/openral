@@ -141,8 +141,9 @@ def _sim_run_callback(
         None,
         "--save-video",
         help=(
-            "Write a 3-panel debug MP4 after each episode (rSkill input | "
-            "rollout view | joint positions plot). Pass a directory, a "
+            "Write a two-band debug MP4 after each episode (policy input "
+            "or rollout view on top, observation-state plot underneath). "
+            "Pass a directory, a "
             "filename ending in .mp4, or the empty string to default to "
             "'example_videos/<config-stem>[_ep<i>].mp4'. Setting this flag "
             "also enables per-step frame capture for the run."
@@ -153,7 +154,7 @@ def _sim_run_callback(
         "--video-style",
         help=(
             "Style of the --save-video output. 'debug' (default) writes the "
-            "3-panel montage (rSkill input | rollout | joint plot). 'world' "
+            "two-band montage (image band | observation-state plot). 'world' "
             "writes a clean single-view MP4 of just the simulated viewer "
             "(world render), named <scene>_<rskill>_<success|fail>.mp4 and "
             "logged to videos.json — for website hero clips where overlays "
@@ -281,11 +282,19 @@ def _sim_run_callback(
     # cli.command export.
     # attached_dashboard is a no-op when enabled=False (no spawn, no
     # FastAPI/uvicorn imports) so we wrap unconditionally. The helper
-    # handles spawn → re-configure_observability → shutdown drain →
-    # SIGINT child as one ``with`` block.
+    # handles spawn → re-configure_observability → re-open cli.command →
+    # shutdown drain → SIGINT child as one ``with`` block. The root span
+    # is re-opened because _root's copy was created before the dashboard
+    # child existed, so it records nothing.
+    from openral_observability import semconv
     from openral_observability.dashboard import attached_dashboard
 
-    with attached_dashboard(enabled=dashboard, port=dashboard_port):
+    with attached_dashboard(
+        enabled=dashboard,
+        port=dashboard_port,
+        subcommand="sim run",
+        mode=semconv.RUN_MODE_SIM,
+    ):
         rc = _run(args)
     raise typer.Exit(code=rc)
 
@@ -836,7 +845,7 @@ def _write_debug_videos(
     results: list[Any],
     env_cfg: SimEnvironment,
 ) -> None:
-    """Write one 3-panel debug MP4 per episode under ``args.save_video``.
+    """Write one two-band debug MP4 per episode under ``args.save_video``.
 
     Resolution rules:
       * filename ending in ``.mp4`` → exact path (single episode only).

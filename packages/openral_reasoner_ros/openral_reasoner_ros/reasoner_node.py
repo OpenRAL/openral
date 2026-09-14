@@ -130,6 +130,7 @@ from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
     locate_in_view_service,
+    resolve_locate_in_view_detector,
     task_space_disagreement,
 )
 from openral_reasoner.persistence import (
@@ -2499,6 +2500,28 @@ class ReasonerNode(LifecycleNode):
             # both `memory_md_path` and `rskill_search_paths`.
             memory_available=self._memory_store is not None,
         )
+        # ``importable`` descends from ``capability_matched_ids``
+        # (``capability_palette.execute_rskill_ids``), which by design never contains a
+        # ``kind: detector``/``segmenter`` manifest — they are perception producers, not
+        # ExecuteRskill-dispatchable (``build_tool_palette`` docstring). So the ``new_palette``
+        # just built from ``importable`` always has EMPTY ``continuous_detectors`` /
+        # ``on_demand_detectors``, regardless of what is actually on this robot's manifest set:
+        # the correctly embodiment-filtered versions were computed above, on the full
+        # ``manifests`` list, purely to derive ``capability_matched_ids`` — then discarded.
+        #
+        # Observed live: with `--object-detector-locator rskills/omdet-turbo-locator/rskill.yaml`
+        # on a franka_panda deploy, `detector_available` (a separate bool, correctly threaded
+        # through above) offered the `locate_in_view` tool, but its `known_aliases` was always
+        # empty — the LLM had a real, active locator to route to and no way to name it, and
+        # `locate_in_view(detector="")` still worked only because there happened to be exactly
+        # one locator for `resolve_locate_in_view_detector`'s empty-string default path to land
+        # on; a second locator would have been permanently unreachable.
+        new_palette = new_palette.model_copy(
+            update={
+                "continuous_detectors": capability_palette.continuous_detectors,
+                "on_demand_detectors": capability_palette.on_demand_detectors,
+            }
+        )
         self._palette = new_palette
         self.get_logger().info(
             f"palette seeded from {len(manifest_paths)} manifest(s) "
@@ -3205,7 +3228,27 @@ class ReasonerNode(LifecycleNode):
         # On-demand detectors as prompt-able reasoner tools — route to the chosen on-demand
         # locator's namespaced service; empty ``detector`` falls back to the deployment default (or
         # the legacy single-detector service). One cached client per resolved service name.
-        service = locate_in_view_service(call.detector, default=self._default_on_demand_detector)
+        #
+        # ``call.detector`` is LLM-supplied and not schema-constrained to the known aliases
+        # (``LocateInViewTool.detector`` is a bare ``str``), so a value that names no configured
+        # on-demand locator is treated the same as empty rather than forwarded verbatim. Observed
+        # live with an uncurated model (gpt-oss:120b): the tool description's "empty = default"
+        # phrasing (tool_use.py) reads as an instruction to type the word "default", and
+        # ``locate_in_view_service("default", default=<real alias>)`` resolves to
+        # ``/openral/perception/default/locate_in_view`` — a service that has never existed on any
+        # graph — because ``or`` only falls back on an empty string, not an unrecognised one. Every
+        # tick then hit "not on graph; skipping" and the mission stalled on a tool the reasoner
+        # believed it had just used correctly. Read-only dispatch, so the safe failure mode is a
+        # graceful substitution, not a hard reject that would burn the model's tool-call budget.
+        known_aliases = {d.alias for d in self._palette.on_demand_detectors}
+        detector = resolve_locate_in_view_detector(call.detector, known_aliases=known_aliases)
+        if call.detector and not detector:
+            self.get_logger().warning(
+                f"dispatch: locate_in_view — detector={call.detector!r} is not a configured "
+                f"on-demand locator (known: {sorted(known_aliases)!r}); falling back to the "
+                "deployment default instead of dispatching to a service that isn't on the graph.",
+            )
+        service = locate_in_view_service(detector, default=self._default_on_demand_detector)
         client = self._locate_in_view_clients.get(service)
         if client is None:
             client = self.create_client(LocateInView, service)
@@ -3215,13 +3258,13 @@ class ReasonerNode(LifecycleNode):
         ):
             self.get_logger().warning(
                 f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r} "
-                f"detector={call.detector!r} — {service} not on graph; skipping",
+                f"detector={detector!r} — {service} not on graph; skipping",
             )
             return
         req = LocateInView.Request()
         req.query = call.query
         req.camera = call.camera
-        req.detector = call.detector
+        req.detector = detector
         future = client.call_async(req)
         future.add_done_callback(
             lambda fut: self._on_locate_in_view_response(call, fut, traceparent=traceparent),

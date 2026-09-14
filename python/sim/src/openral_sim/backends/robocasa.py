@@ -103,7 +103,7 @@ def _arm_part_config(controller_name: str) -> dict[str, Any]:
 # robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
 #
 # Keep this list curated so `openral sim list` stays legible; any other task
-# is still reachable via `--scene robocasa/<task>` (the adapter resolves any
+# is still reachable via `scene.id: robocasa/<task>` (the adapter resolves any
 # robosuite-registered env_name) -- promote it here when it becomes a
 # benchmark/integration target.
 _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
@@ -1941,7 +1941,7 @@ def _make_prebuilt_factory(scene_id: str) -> Any:
 # robocasa env (the upstream catalogue includes hundreds when you count
 # composite tasks); the curated tuple covers the atomic benchmarks that
 # would appear on a roadmap leaderboard. Users authoring a different
-# `robocasa/<TaskName>` via `--scene` get a clean adapter-level error
+# `robocasa/<TaskName>` via `scene.id` get a clean adapter-level error
 # from `_resolve_env_name` (and can patch the tuple in their fork).
 for _task in _CURATED_PREBUILT_TASKS:
     _scene = f"{_PREBUILT_SCENE_PREFIX}/{_task}"

@@ -2910,8 +2910,16 @@ def benchmark_run(
     from openral_sim.benchmark import run_benchmark
 
     # attached_dashboard is a no-op when enabled=False — wrap
-    # unconditionally so the run_benchmark call is un-duplicated.
-    with attached_dashboard(enabled=dashboard, port=dashboard_port):
+    # unconditionally so the run_benchmark call is un-duplicated. It
+    # re-opens the cli.command root span: _root's copy predates the
+    # exporters the dashboard child provides, so without this the eval
+    # JSON has no trace to point at.
+    with attached_dashboard(
+        enabled=dashboard,
+        port=dashboard_port,
+        subcommand="benchmark run",
+        mode=semconv.RUN_MODE_BENCHMARK,
+    ):
         result, episodes = run_benchmark(
             scenes,
             suite_id=suite_id,
@@ -3314,7 +3322,12 @@ def benchmark_scene(
     from openral_observability.dashboard import attached_dashboard
     from openral_sim.benchmark import run_benchmark_scene
 
-    with attached_dashboard(enabled=dashboard, port=dashboard_port):
+    with attached_dashboard(
+        enabled=dashboard,
+        port=dashboard_port,
+        subcommand="benchmark scene",
+        mode=semconv.RUN_MODE_BENCHMARK,
+    ):
         result, episodes = run_benchmark_scene(
             scene,
             vla_spec,

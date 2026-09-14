@@ -98,7 +98,7 @@ openral benchmark scene \
   --rskill rskills/smolvla-robotwin
 
 # the 5-task suite
-openral benchmark run --suite robotwin --vla smolvla:rskills/smolvla-robotwin
+openral benchmark run --suite robotwin --rskill rskills/smolvla-robotwin
 ```
 
 The SAPIEN+RoboTwin sidecar provisioning recipe uses

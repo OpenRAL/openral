@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 __all__ = ["attached_dashboard", "spawn_dashboard"]
 
@@ -130,13 +130,22 @@ def spawn_dashboard(
 
 
 @contextmanager
-def attached_dashboard(*, enabled: bool, port: int = 4318) -> Iterator[bool]:
+def attached_dashboard(
+    *,
+    enabled: bool,
+    port: int = 4318,
+    subcommand: str | None = None,
+    mode: str | None = None,
+) -> Iterator[bool]:
     """Convenience wrapper for CLI commands that gate dashboard attach on a flag.
 
     Pattern at call sites (``openral sim run``, ``openral deploy run``,
     ``openral benchmark run``):
 
-        with attached_dashboard(enabled=dashboard, port=dashboard_port):
+        with attached_dashboard(
+            enabled=dashboard, port=dashboard_port,
+            subcommand="benchmark run", mode=semconv.RUN_MODE_BENCHMARK,
+        ):
             rc = _run(args)
 
     Behaviour:
@@ -152,6 +161,20 @@ def attached_dashboard(*, enabled: bool, port: int = 4318) -> Iterator[bool]:
       last span/metric batch lands instead of churning on
       ``Connection refused`` after the receiver is gone.
 
+    Args:
+        enabled: Whether the caller asked for ``--dashboard``.
+        port: Port for the spawned dashboard.
+        subcommand: Re-open the ``cli.command`` root span under this name
+            once the exporters are bound. The one ``openral_cli.main:_root``
+            opened is a no-op span: with ``--dashboard`` the endpoint only
+            exists after the child is healthy, which is *after* the callback
+            ran, so that span records nothing and every workload span below
+            it becomes its own orphan root. Pass the subcommand to get a real
+            root back — and with it ``RunResult.trace_id`` /
+            ``RSkillEvalResult.trace_id``, which read the ambient trace.
+            ``None`` keeps the orphan-root behaviour.
+        mode: ``openral.run.mode`` for that span (``semconv.RUN_MODE_*``).
+
     Yields ``True`` iff a dashboard was actually attached.
     """
     if not enabled:
@@ -165,13 +188,19 @@ def attached_dashboard(*, enabled: bool, port: int = 4318) -> Iterator[bool]:
     )
 
     with spawn_dashboard(port=port) as attached:
-        if attached is not None:
-            configure_observability(service_name="ral")
+        if attached is None:
+            yield False
+            return
+        configure_observability(service_name="ral")
         try:
-            yield attached is not None
+            with ExitStack() as stack:
+                if subcommand is not None:
+                    from openral_observability.cli import cli_command_span
+
+                    stack.enter_context(cli_command_span(subcommand, mode=mode))
+                yield True
         finally:
-            if attached is not None:
-                shutdown_observability()
+            shutdown_observability()
 
 
 def _wait_healthy(healthz_url: str, child: subprocess.Popen[bytes], *, timeout_s: float) -> bool:

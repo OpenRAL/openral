@@ -18,7 +18,7 @@
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Telemetry](docs/reference/telemetry.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
+[Quick start](#quick-start) · [Tutorials](docs/tutorials/sim/first-rollout.md) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Telemetry](docs/reference/telemetry.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
 
 </div>
 
@@ -80,7 +80,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Safety kernel | C++ deny-by-default validator — joint position/velocity/torque + global cap, Cartesian workspace + EE-speed, NaN/Inf, self/world/voxel collision; deadman + hardware E-stop watchdogs | `cpp/openral_safety_kernel/`, `packages/openral_safety/` |
 | rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX adapters (engine cache), async action chunks; Pro runtimes attach through entry-point hooks | `python/rskill/`, `rskills/` |
 | Inference runtimes | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy`; open-core runners are PyTorch / ONNX | `python/runner/`, `python/rskill/`, `python/sim/` |
-| Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
+| Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `RSkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
 | Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, BEHAVIOR-1K/OmniGibson, RLBench/CoppeliaSim | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `behavior`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
@@ -159,6 +159,11 @@ For contributors (full clone + ROS 2 + `colcon`):
 git clone https://github.com/OpenRAL/openral && cd openral
 just quickstart         # bootstrap → uv sync → ros2-build → openral REPL
 ```
+
+New to OpenRAL? [**Your first sim rollout**](docs/tutorials/sim/first-rollout.md)
+goes from this clone to a real policy driving a simulated robot in one command,
+on a CPU-only host. The rest of the tutorials are listed in the
+[docs](https://openral.github.io/openral/).
 
 Or step-by-step:
 
@@ -313,7 +318,8 @@ uv run openral rskill list                   # list installed rSkills
 uv run openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 uv run openral benchmark report              # aggregate eval/*.json results
 
-# Simulated rollouts — see docs/reference/sim-environments.md
+# Simulated rollouts — walkthrough: docs/tutorials/sim/first-rollout.md
+#                     catalogue: docs/reference/sim-environments.md
 just sim-libero                              # SmolVLA × LIBERO
 just sim-pi05-libero                         # π0.5 × LIBERO (≥8 GB VRAM)
 just sim-act-aloha                           # ACT × gym-aloha bimanual
