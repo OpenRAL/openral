@@ -6,11 +6,11 @@ into an existing frame. That loop iterated ``description.sensors`` only (the rob
 manifest), so a camera declared in ``DeployScene.sensors`` could never get its mount
 published.
 
-Not hypothetical: every camera on the OpenArm restock cell is declared at scene level
-(``scenes/deploy/openarm_restock_shelf.yaml``, three entries with ``parent_frame:
-openarm_base``), as is any ZED feeding the octomap leg. Same silent failure the loop exists
-to prevent: `octomap_server` can't resolve the cloud's frame, drops every message, and the
-map stays empty while the graph reports healthy.
+Not hypothetical: any real workcell camera declared at scene level (``parent_frame:
+openarm_base`` and a ``static_transform_xyz_rpy``, the shape any ZED feeding the octomap leg
+needs) hit exactly this gap before the loop covered ``DeployScene.sensors``. Same silent
+failure the loop exists to prevent: `octomap_server` can't resolve the cloud's frame, drops
+every message, and the map stays empty while the graph reports healthy.
 
 Per CLAUDE.md §1.11: real ``RobotDescription``, real ``DeployScene``, real
 ``LaunchContext``, real ``compose_runtime_graph``. No mocks.

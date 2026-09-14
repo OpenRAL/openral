@@ -63,8 +63,16 @@ Then, with people clear of the arms (activation enables the motors and returns
 them toward zero), `openral deploy run` starts this graph itself:
 
 ```bash
-openral deploy run --config scenes/deploy/openarm_restock_shelf.yaml
+openral deploy run --config scenes/deploy/<your-cell>.yaml
 ```
+
+This repo ships no committed real-hardware OpenArm scene — one is inherently
+host-specific (CAN interface names, camera udev paths, calibration), so it
+was never meant to be portable. Write your own modeled on
+`scenes/deploy/so101_bench.yaml` or `scenes/deploy/galaxea_a1_bench.yaml`
+(the `hal:` binding + per-camera `sensors[].deploy_binding` shape) and, for a
+vendor camera driver like `zed_wrapper`, the `drivers:` pairing covered by
+`tests/unit/test_scene_drivers.py`.
 
 `deploy_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
 `hal_mode:=real` and the HAL package ships that file — the file name *is* the

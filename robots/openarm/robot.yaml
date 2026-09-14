@@ -419,7 +419,7 @@ sensors:
   # 0.20 m above the shoulder midpoint (= `openarm_base`, since both arm
   # mounts sit at (0,+/-0.031,0)), pitched 45deg down. fx/fy from StereoLabs'
   # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
-  # same basis as `context` in scenes/deploy/openarm_restock_shelf.yaml). Good
+  # same basis a real deploy scene's `context` override would use). Good
   # enough to prove the pipeline; run `openral calibrate camera` before
   # projecting anything geometric.
   #

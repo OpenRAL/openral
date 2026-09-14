@@ -93,14 +93,15 @@ class TestRos2ArgvHead:
 
 
 class TestLaunchInvocationArgv:
-    def test_openarm_real_invocation_uses_the_venv_interpreter(self) -> None:
-        """The real OpenArm deploy scene resolves to a venv-interpreter argv.
+    def test_real_hardware_invocation_uses_the_venv_interpreter(self) -> None:
+        """A real-hardware deploy scene resolves to a venv-interpreter argv.
 
-        Uses the committed ``scenes/deploy/openarm_restock_shelf.yaml`` fixture
-        — the bimanual cell whose launch the pandas ABI abort was found on.
+        Uses the committed ``scenes/deploy/so101_bench.yaml`` fixture — a
+        real ``hal_mode:=real`` scene, the same shape as the bimanual cell
+        the pandas ABI abort was originally found on.
         """
         inv = resolve_launch_invocation(
-            config=Path("scenes/deploy/openarm_restock_shelf.yaml"),
+            config=Path("scenes/deploy/so101_bench.yaml"),
             robot_override=None,
             dashboard_port=4318,
             reset_to_pose_service=None,
@@ -127,7 +128,7 @@ class TestLaunchInvocationArgv:
             sys.path.pop(0)
 
         inv = resolve_launch_invocation(
-            config=Path("scenes/deploy/openarm_restock_shelf.yaml"),
+            config=Path("scenes/deploy/so101_bench.yaml"),
             robot_override=None,
             dashboard_port=4318,
             reset_to_pose_service=None,
@@ -136,4 +137,4 @@ class TestLaunchInvocationArgv:
         echoed = f"  argv: {shlex.join(inv.argv_template)}"
         parsed = parse_launch_argv([echoed])
         assert parsed == inv.argv_template
-        assert robot_facts_from_launch_argv(parsed)["robot_id"] == "openarm"
+        assert robot_facts_from_launch_argv(parsed)["robot_id"] == "so101_follower"
