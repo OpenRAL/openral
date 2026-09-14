@@ -47,11 +47,19 @@ export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs 
 | --- | --- | --- |
 | `claude-opus-4-8` | Anthropic cloud | required |
 | `gpt-5.5`, `gpt-5.6` | OpenRouter cloud | required |
-| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none |
+| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none — **aarch64 only today** |
 
-`cosmos3-edge` is the on-device option — no key, no cloud. `openral doctor`
-reports the resolved model, endpoint and whether a key is set as its
-`Reasoner LLM` row; an unset model shows `absent`. An uncurated raw model id
+`cosmos3-edge` is the on-device option — no key, no cloud — but check your
+architecture before reaching for it. The sidecar lock resolves to a different
+vLLM per platform: aarch64 gets 0.28.0 and works; x86_64 pins 0.24.0, whose
+Transformers fallback crashes in `cosmos3_edge.get_rope_index` on the *first*
+request, every time. That is an upstream bug, not an OpenRAL one, and
+`openral doctor` cannot see it — the row reports `ok` because the model
+resolves; only a live tick fails. Details and current status:
+[`docs/reference/cosmos3-edge-reasoner.md`](../../reference/cosmos3-edge-reasoner.md).
+
+`openral doctor` reports the resolved model, endpoint and whether a key is set
+as its `Reasoner LLM` row; an unset model shows `absent`. An uncurated raw model id
 works too, but needs an explicit `OPENRAL_REASONER_ENDPOINT` and
 `OPENRAL_REASONER_DIALECT`, and warns on every tick. Full matrix:
 [`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
