@@ -83,6 +83,10 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::Lifecycle
   out.max_base_linear_speed_m_s = node.get_parameter("max_base_linear_speed_m_s").as_double();
   out.max_base_angular_speed_rad_s =
       node.get_parameter("max_base_angular_speed_rad_s").as_double();
+  out.max_cartesian_step_m = node.get_parameter("max_cartesian_step_m").as_double();
+  out.max_cartesian_step_rad = node.get_parameter("max_cartesian_step_rad").as_double();
+  out.gripper_min = node.get_parameter("gripper_min").as_double();
+  out.gripper_max = node.get_parameter("gripper_max").as_double();
   out.deadman_required = node.get_parameter("deadman_required").as_bool();
 
   return EnvelopeLoadStatus::kOk;

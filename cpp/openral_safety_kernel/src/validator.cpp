@@ -4,6 +4,7 @@
 
 #include "openral_safety_kernel/validator.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -107,7 +108,16 @@ Result<void, Violation> validate(const ChunkView& chunk,
   // 6. Per-step / per-joint enforcement keyed off control_mode.
 
   switch (mode) {
-  case ControlMode::kJointPosition: {
+  case ControlMode::kJointPosition:
+  case ControlMode::kJointTrajectory: {
+    // JOINT_TRAJECTORY shares JOINT_POSITION's wire shape exactly (a
+    // [horizon][n_dof] matrix of per-joint position targets --
+    // ROSPublishingHAL._flatten_action_payload and
+    // ManifestHALLifecycleNode._on_safe_action both already treat the two
+    // modes identically) and the same per-joint position envelope applies
+    // per waypoint. Previously delegated to the Python supervisor stub
+    // (item 9, execution_plan.md §8.3) alongside CARTESIAN_DELTA/
+    // GRIPPER_POSITION/COMPOSITE_MODE below.
     for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
       for (std::size_t j = 0; j < envelope.n_dof; ++j) {
         const double v = chunk.flat_data[s * envelope.n_dof + j];
@@ -274,26 +284,127 @@ Result<void, Violation> validate(const ChunkView& chunk,
     }
     break;
   }
-  case ControlMode::kJointTrajectory:
-  case ControlMode::kCartesianDelta:
-  case ControlMode::kGripperBinary:
-  case ControlMode::kGripperPosition:
-  case ControlMode::kCompositeMode: {
-    // Per-mode chunks. The C++ kernel intentionally delegates per-axis
-    // bound enforcement to the Python openral_safety/supervisor_node.py,
-    // which knows the per-mode bounds on the robot manifest
-    // (max_cartesian_step_m, gripper_min/max, ...). BODY_TWIST used to be
-    // grouped here too, but its bounds (max_base_linear_speed_m_s,
-    // max_base_angular_speed_rad_s) are now enforced above in C++ — see
-    // the research repo's docs/f12_body_twist_envelope_fix.md. The kernel
-    // already ran shape + NaN checks above, so routing unrejected lets the
-    // supervisor do its job before the HAL applies; without this case
-    // per-mode chunks hit the default branch and estop before the
-    // supervisor sees them. Net safety strictly improves vs pre-change:
-    // "reject every per-mode chunk" -> "structural-validate then delegate".
+  case ControlMode::kCartesianDelta: {
+    // Each step encodes (dx, dy, dz, rx, ry, rz): a per-step Cartesian
+    // translation delta + axis-angle rotation delta. Bound the Euclidean
+    // magnitude of each triplet against max_cartesian_step_m /
+    // max_cartesian_step_rad (item 9) -- mirrors
+    // openral_safety.supervisor_node._envelope_violation_cartesian_delta
+    // (the Python stub deploy_e2e.launch.py never launches) exactly,
+    // including its clip(raw, -1, 1) * scale physical-unit derivation when
+    // cartesian_delta_scale is set (step 4 above already validated its
+    // shape/positivity) -- the same formula lifecycle_kernel.cpp's apply
+    // path already uses, so the magnitude checked here matches what
+    // actually reaches the HAL.
     //
-    // kCompositeMode carries a single robosuite-specific multiplexer flag
-    // in [-1, +1] (sim-only); no per-joint/workspace bound applies.
+    // NOTE: uses per_row (== chunk.n_dof for a non-joint mode, already
+    // computed above) as the per-step stride, NOT envelope.n_dof (the
+    // robot's total joint count) -- see the research repo's F35 for why
+    // envelope.n_dof would misindex a horizon > 1 chunk here.
+    const std::size_t per_step = per_row;
+    if (per_step < 6) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "cartesian_delta");
+      return Result<void, Violation>::err(v);
+    }
+    const bool scaled = chunk.cartesian_delta_scale_size > 0;
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double* p = chunk.flat_data + s * per_step;
+      double d[6];
+      for (std::size_t i = 0; i < 6; ++i) {
+        const double raw = p[i];
+        d[i] = scaled ? std::clamp(raw, -1.0, 1.0) * chunk.cartesian_delta_scale[i] : raw;
+      }
+      const double mag_xyz = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+      if (mag_xyz > envelope.max_cartesian_step_m) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = mag_xyz;
+        viol.limit_value = envelope.max_cartesian_step_m;
+        viol.set_field("cartesian_step");
+        return Result<void, Violation>::err(viol);
+      }
+      const double mag_rot = std::sqrt(d[3] * d[3] + d[4] * d[4] + d[5] * d[5]);
+      if (mag_rot > envelope.max_cartesian_step_rad) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = mag_rot;
+        viol.limit_value = envelope.max_cartesian_step_rad;
+        viol.set_field("cartesian_step_rot");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
+  case ControlMode::kGripperPosition: {
+    // Single scalar per step: the normalised jaw-fraction width. Bound
+    // against gripper_min/gripper_max (item 9), sourced from the robot's
+    // gripper-role joint's position_limits -- mirrors
+    // openral_safety.supervisor_node._envelope_violation_gripper. NOT
+    // applied to kGripperBinary: a strict 0.0/1.0 binary command has no
+    // meaningful "out of range" case the same way a continuous width
+    // does, and it was out of this item's scope (still delegates below).
+    const std::size_t per_step = per_row;  // == chunk.n_dof (a non-joint mode); see F35.
+    if (per_step < 1) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "gripper_position");
+      return Result<void, Violation>::err(v);
+    }
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double w = chunk.flat_data[s * per_step];
+      if (w < envelope.gripper_min || w > envelope.gripper_max) {
+        Violation viol{};
+        viol.kind = ViolationKind::kWorkspace;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = w;
+        viol.limit_value = (w < envelope.gripper_min) ? envelope.gripper_min : envelope.gripper_max;
+        viol.set_field("gripper_range");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
+  case ControlMode::kCompositeMode: {
+    // Single scalar per step: a robosuite-specific multiplexer flag,
+    // fixed protocol contract [-1, +1] (sim-only) -- not a manifest-
+    // derived bound like the others in this switch, so there is no
+    // envelope field to read; an out-of-range flag would silently
+    // confuse the downstream robosuite controller instead of being
+    // caught here (item 9).
+    const std::size_t per_step = per_row;  // == chunk.n_dof (a non-joint mode); see F35.
+    if (per_step < 1) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "composite_mode");
+      return Result<void, Violation>::err(v);
+    }
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double flag = chunk.flat_data[s * per_step];
+      if (flag < -1.0 || flag > 1.0) {
+        Violation viol{};
+        viol.kind = ViolationKind::kWorkspace;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = flag;
+        viol.limit_value = (flag < -1.0) ? -1.0 : 1.0;
+        viol.set_field("composite_mode_range");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
+  case ControlMode::kGripperBinary: {
+    // Per-mode chunk. The C++ kernel intentionally delegates this one
+    // mode's bound enforcement to the Python openral_safety/
+    // supervisor_node.py, out of item 9's scope (a strict binary open/
+    // close command has no continuous-width "out of range" case the way
+    // GRIPPER_POSITION does; see that case's comment above). The kernel
+    // already ran shape + NaN checks above, so routing unrejected lets
+    // the supervisor do its job before the HAL applies -- without this
+    // case the chunk would hit the default branch and estop before the
+    // supervisor sees it. Net safety strictly improves vs pre-change:
+    // "reject every per-mode chunk" -> "structural-validate then delegate".
     break;
   }
   case ControlMode::kFootPlacement:

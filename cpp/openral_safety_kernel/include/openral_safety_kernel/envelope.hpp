@@ -85,6 +85,22 @@ struct EnvelopeIntersection {
   double max_base_linear_speed_m_s{kPosInfinity};
   double max_base_angular_speed_rad_s{kPosInfinity};
 
+  // CARTESIAN_DELTA per-step bounds (item 9, execution_plan.md §8.3): the
+  // Euclidean magnitude of the xyz translation delta and the axis-angle
+  // rotation delta, mirroring `openral_safety.supervisor_node`'s
+  // `_envelope_violation_cartesian_delta` (the Python stub deploy_e2e.launch.py
+  // never launches). Default kPosInfinity -- same "no bound declared"
+  // sentinel as every other optional magnitude field here.
+  double max_cartesian_step_m{kPosInfinity};
+  double max_cartesian_step_rad{kPosInfinity};
+
+  // GRIPPER_POSITION/GRIPPER_BINARY width bound (item 9): sourced from the
+  // robot's gripper-role joint's `position_limits`, mirroring
+  // `supervisor_node._envelope_violation_gripper`. kNegInfinity/kPosInfinity
+  // = "no gripper-role joint declared" (unbounded, today's behaviour).
+  double gripper_min{kNegInfinity};
+  double gripper_max{kPosInfinity};
+
   bool deadman_required{false};
 };
 

@@ -392,3 +392,117 @@ class TestKernelParamsFromEnvelope:
         params = kernel_params_from_envelope(intersection)
         assert "workspace_box_min_xyz" not in params
         assert "workspace_box_max_xyz" not in params
+
+    def test_cartesian_step_bounds_pass_through(self) -> None:
+        """item 9 (execution_plan.md §8.3): max_cartesian_step_m/_rad now
+        reach the kernel params — the same class of gap F12/F16 closed
+        for the base/EE-twist bounds (declared on SafetyEnvelope, never
+        forwarded before)."""
+        robot = _toy_robot()
+        robot.safety.max_cartesian_step_m = 0.05
+        robot.safety.max_cartesian_step_rad = 0.2
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert params["max_cartesian_step_m"] == 0.05
+        assert params["max_cartesian_step_rad"] == 0.2
+
+    def test_cartesian_step_bounds_default_to_unbounded(self) -> None:
+        robot = _toy_robot()  # no max_cartesian_step_* declared
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert math.isinf(params["max_cartesian_step_m"])  # type: ignore[arg-type]
+        assert math.isinf(params["max_cartesian_step_rad"])  # type: ignore[arg-type]
+
+
+# ── item 9: gripper-role joint limits ────────────────────────────────────────
+
+
+def _robot_with_gripper(
+    *, gripper_limits: tuple[float, float] | None = (0.0, 1.0), n_gripper_joints: int = 1
+) -> RobotDescription:
+    """A toy robot with one arm joint plus ``n_gripper_joints`` gripper-role joints."""
+    arm_joint = JointSpec(
+        name="arm_j0",
+        joint_type=JointType.REVOLUTE,
+        parent_link="base",
+        child_link="link_0",
+        position_limits=(-1.0, 1.0),
+        velocity_limit=4.5,
+        effort_limit=5.0,
+        actuator_kind="servo",
+    )
+    gripper_joints = [
+        JointSpec(
+            name=f"gripper_j{i}",
+            joint_type=JointType.REVOLUTE,
+            parent_link="link_0",
+            child_link=f"gripper_link_{i}",
+            position_limits=gripper_limits,
+            velocity_limit=1.0,
+            effort_limit=1.0,
+            actuator_kind="servo",
+            role="gripper",
+        )
+        for i in range(n_gripper_joints)
+    ]
+    return RobotDescription(
+        name="toy_robot_with_gripper",
+        embodiment_kind=EmbodimentKind.MANIPULATOR,
+        joints=[arm_joint, *gripper_joints],
+        capabilities=RobotCapabilities(
+            supported_control_modes=[ControlMode.JOINT_POSITION, ControlMode.GRIPPER_POSITION],
+            embodiment_tags=["toy"],
+        ),
+        safety=SafetyEnvelope(max_force_n=10.0, max_ee_speed_m_s=0.5, deadman_required=True),
+    )
+
+
+class TestGripperLimits:
+    """``gripper_min``/``gripper_max`` sourced from the robot's gripper-role
+    joint(s) (item 9 — GRIPPER_POSITION's kernel-side width bound)."""
+
+    def test_single_gripper_joint_limits_pass_through(self) -> None:
+        robot = _robot_with_gripper(gripper_limits=(0.0, 1.0))
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert params["gripper_min"] == 0.0
+        assert params["gripper_max"] == 1.0
+
+    def test_multiple_gripper_joints_take_the_tightest_intersection(self) -> None:
+        """Two gripper-role joints declaring (0.0, 1.0) and (0.1, 0.9) —
+        widths must intersect (0.1, 0.9), the SAFER combination, not pick
+        one arbitrarily (CLAUDE.md §1.1: envelope ceiling never loosens)."""
+        robot = _robot_with_gripper(n_gripper_joints=1)
+        robot.joints.append(
+            JointSpec(
+                name="gripper_j1",
+                joint_type=JointType.REVOLUTE,
+                parent_link="link_0",
+                child_link="gripper_link_1",
+                position_limits=(0.1, 0.9),
+                velocity_limit=1.0,
+                effort_limit=1.0,
+                actuator_kind="servo",
+                role="gripper",
+            )
+        )
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert params["gripper_min"] == 0.1
+        assert params["gripper_max"] == 0.9
+
+    def test_no_gripper_role_joint_is_unbounded(self) -> None:
+        """A robot with no gripper-role joint (e.g. an arm-only manifest)
+        keeps today's behaviour: unbounded GRIPPER_POSITION width."""
+        robot = _toy_robot()  # no joint declares role="gripper"
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert math.isinf(params["gripper_min"]) and params["gripper_min"] < 0  # type: ignore[operator]
+        assert math.isinf(params["gripper_max"]) and params["gripper_max"] > 0  # type: ignore[operator]
+
+    def test_gripper_role_joint_without_position_limits_is_unbounded(self) -> None:
+        robot = _robot_with_gripper(gripper_limits=None)
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert math.isinf(params["gripper_min"]) and params["gripper_min"] < 0  # type: ignore[operator]
+        assert math.isinf(params["gripper_max"]) and params["gripper_max"] > 0  # type: ignore[operator]
