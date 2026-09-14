@@ -1197,6 +1197,53 @@ TEST(AttachedVoxelCollision, PayloadVsOccupiedVoxelIsRejected) {
   EXPECT_LT(hit.min_distance, 0.0);
 }
 
+// #275: a payload with STAGE-2 geometry, demonstrably clear of the one occupied
+// cell, must report that clearance -- not a deep penetration.
+//
+// Every field stop in the 31-45 mm class has this shape and none of its inputs
+// explain it. On `275rot/r25` the kernel reported -32.64 mm while the payload
+// was +12.64 mm clear of all real geometry, with the kernel's own model within
+// 0.75 mm of the body, its own `joint_positions_rad` used for the FK, and the
+// cell confirmed correct to 1.2 mm by decoding the index against every grid in
+// the recorded history. Pose, cell and geometry are each independently
+// eliminated, which leaves the staged narrow phase itself.
+//
+// This is the closed-form version of that configuration: one axis-aligned box
+// payload with the 26-DOP its shape implies, one occupied cell, a gap that is
+// arithmetic rather than a probe. If the kernel returns the gap, the staged
+// path is sound and #275's residual is somewhere this test does not reach. If
+// it returns a deep negative, the defect is reproduced with no simulator, no
+// perception and no policy in the loop.
+TEST(AttachedVoxelCollision, ClearPayloadWithStage2GeometryReportsTheGapNotAPenetration) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  // Cell (2,2,2) spans [-0.05, +0.05] on every axis (grid origin -0.25,
+  // 0.1 m cells), so its +x face is at x = +0.05.
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+
+  // A 40 mm half-box whose -x face sits at x = 0.11 - 0.04 = 0.07.
+  // Gap to the cell's +x face: 0.07 - 0.05 = 0.02 m, exactly -- close enough
+  // that the cell is inside the primitive's search box, so the kernel actually
+  // evaluates it. (At 0.16 m it returns +inf, correctly: cells that far out are
+  // never examined, and a test that ignores that measures nothing.)
+  std::vector<osk::Vec3> tight_verts;
+  osk::AttachedModel att;
+  att.hulls = {axis_aligned_box_hull(osk::Vec3{0.04, 0.04, 0.04}, tight_verts)};
+  att.hull_vertices = tight_verts;
+  osk::AttachedPrimitive prim = sphere_prim(0.04);
+  prim.hull_index = 0;  // stage 2 engaged, as it is on every stop in the class
+  append_object(att, 1, translate(0.11, 0.0, 0.0), {prim});
+
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
+
+  EXPECT_FALSE(hit.hit) << "a payload 20 mm clear of the only occupied cell must not stop";
+  EXPECT_NEAR(hit.min_distance, 0.02, 1e-6)
+      << "reported " << hit.min_distance << " m against an exact 0.02 m gap";
+}
+
 TEST(AttachedVoxelCollision, FreeGridNeverHits) {
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
