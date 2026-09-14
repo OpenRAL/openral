@@ -51,10 +51,19 @@ export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs 
 
 `cosmos3-edge` is the on-device option — no key, no cloud. Budget the whole
 GPU for it: the checkpoint is 8.6 GB on disk (a 6.3 GB reasoner tower plus a
-934 MB vision encoder; the VAE is not served), so on an 8 GB card it fits only
-with the card to itself — `--kv-cache-dtype fp8` and the default
-`--enforce-eager` are what make the 8192-token window fit at all. A co-resident
-job holding even 2 GB is enough to make the boot fail. `openral doctor` cannot
+934 MB vision encoder; the VAE is not served) and loads at 4.66 GiB, so on an
+8 GB card it fits only with the card to itself — a co-resident job holding even
+2 GB makes the boot fail. The sidecar's defaults are also too small for a real
+palette: the reasoner's prompt measures 10K tokens for a 4-skill embodiment and
+20K for a 14-skill one, against a `--max-model-len` default of 8192. What works
+on 8 GB, verified end to end:
+
+```bash
+python tools/cosmos3_reasoner_sidecar.py --port 8901 \
+  --kv-cache-dtype fp8 --gpu-memory-utilization 0.97 --max-model-len 12288
+```
+
+That serves the small palette with room for the reply, and not the large one. `openral doctor` cannot
 see any of this — the `Reasoner LLM` row reports `ok` because the *model
 resolves*; only a live tick exercises the sidecar. Sizing, platform status and
 the live-validation record:

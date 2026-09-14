@@ -135,11 +135,34 @@ end-to-end tick). The aarch64 rows are from a **Jetson AGX Thor**
 (JetPack 7, 122 GiB unified) on 2026-09-07, where cosmos3-edge now serves
 and tool-calls for real.
 
-**Read the two platforms separately.** The x86 and aarch64 branches of the
-same lock resolve to *different vLLM releases* (0.24.0 vs 0.28.0), and only
-the latter carries the native Edge model — so a ❌ in an x86 row says
-nothing about a Jetson, and vice versa. That is why the sidecar probes the
-serving venv's `ModelRegistry` at boot instead of assuming.
+**Superseded on 2026-09-14 — x86_64 now serves natively too.** The split
+below was never upstream: the sidecar lock was compiled from a checkout, so
+uv applied the *workspace's* `[tool.uv] constraint-dependencies`
+(`torchcodec<0.10` on x86, which pairs torchcodec's ABI with the main env's
+torch 2.9.1) to a venv that exists precisely to be isolated from that torch.
+That capped x86 at vLLM 0.24.0 — below #48291 — while aarch64 resolved
+0.28.0. Compiling *and installing* with `--no-config` removes it; the lock now
+pins `vllm==0.28.0` universally, reproducing the aarch64-validated environment
+(torch 2.13.0, torchcodec 0.16.0) on every platform. Verified live on an
+RTX 5070 8 GB x86_64 host: `vllm_has_native_edge_model()` → `True`,
+`Resolved architecture: Cosmos3EdgeForConditionalGeneration`, and **4/4
+`select_tool` ticks through the real `Cosmos3ToolUseClient` returned a
+validated `ReasonerToolCall`**. The x86 ❌ rows below are kept as the
+historical record of the pinned-0.24.0 configuration; they no longer describe
+the shipped one.
+
+**Sizing, measured on that 8 GB card.** The reasoner's prompt is much larger
+than this page previously implied: the system prompt alone tokenizes to
+**2,804** tokens, and the per-skill tool schemas add **7,154** for a 4-skill
+`so100_follower` palette (~10.2 K total in flight) or **17,248** for a
+14-skill `franka_panda` one (~20 K). The sidecar's `--max-model-len` default
+of 8192 therefore 400s on *any* real palette. A working 8 GB recipe is
+`--max-model-len 12288 --gpu-memory-utilization 0.97 --kv-cache-dtype fp8`
+(13,568 KV tokens), which fits the small palette with room for the reply but
+not the 14-skill one. The defaults are deliberately left alone: 12288 at the
+default 0.90 utilisation refuses to start ("0.66 GiB KV cache is needed …
+available 0.2 GiB"), and raising utilisation by default would be hostile to a
+GPU that also drives a display.
 
 | Item | Status |
 |---|---|

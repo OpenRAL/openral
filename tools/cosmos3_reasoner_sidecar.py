@@ -81,6 +81,15 @@ _LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "cosmos3_reas
 # `transformers>=<that version>` in cosmos3_reasoner.in, recompile the lock.
 _TRANSFORMERS_EDGE_SHA = "cbf4d720ec734edb77d25452b2790c7e4be2f8d7"
 
+#: vLLM warms the sampler with this many dummy requests; its own default is 256,
+#: which is ~64x the 0.2 Hz reasoner's one-in-flight request and exhausts an 8 GB
+#: card before serving. See ``build_serve_argv``.
+_DEFAULT_MAX_NUM_SEQS: int = 4
+#: The reasoner sends text plus at most one camera frame, never video. Left
+#: unset, vLLM sizes the encoder cache for a max-resolution video and OOMs in
+#: the vision tower. See ``build_serve_argv``.
+_DEFAULT_LIMIT_MM_PER_PROMPT: str = '{"video":0,"image":1}'
+
 
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """Return the sidecar venv python, creating + populating it if needed.
@@ -285,15 +294,41 @@ def build_serve_argv(
     enforce_eager: bool,
     served_model_name: str | None = None,
     kv_cache_dtype: str = "auto",
+    max_num_seqs: int = _DEFAULT_MAX_NUM_SEQS,
+    limit_mm_per_prompt: str = _DEFAULT_LIMIT_MM_PER_PROMPT,
 ) -> list[str]:
     """Build the ``vllm serve`` argv (split out for unit-testability).
 
     ``--enable-auto-tool-choice`` + ``--tool-call-parser`` turn on OpenAI tool
     calling (the reasoner sends ``tool_choice="required"``). ``--max-model-len``
     caps the KV cache: Cosmos 3 supports up to 256K tokens, far beyond an
-    8-32 GB edge GPU; the default 8192 covers the system prompt + tool
-    schemas (~4-5K tokens). ``served_model_name`` keeps the public id stable
-    when serving a local view dir (see ``resolve_served_model``).
+    8-32 GB edge GPU. **The 8192 default does not fit OpenRAL's own reasoner
+    prompt** — measured against this model's tokenizer, the system prompt is
+    2804 tokens and the per-skill tool schemas add 7154 (4-skill
+    ``so100_follower``) to 17248 (14-skill ``franka_panda``), so a real tick
+    is 10-20K and 8192 returns a 400. An 8 GB card serves the small palette at
+    ``--max-model-len 12288 --gpu-memory-utilization 0.97 --kv-cache-dtype
+    fp8``; the default is left at 8192 because 12288 at the default 0.90
+    utilisation refuses to start. ``served_model_name`` keeps the public id
+    stable when serving a local view dir (see ``resolve_served_model``).
+
+    ``--max-num-seqs`` and ``--limit-mm-per-prompt`` are what make an 8 GB card
+    work, and both default to the S2 reasoner's actual shape rather than
+    vLLM's. Without them the boot OOMs *after* loading the model (4.67 GiB of
+    the card), for two independent reasons, each observed live on an otherwise
+    idle RTX 5070 8 GB:
+
+    * vLLM warms the sampler with ``max_num_seqs`` dummy requests — 256 by
+      default, each a full vocab-width row — and the warm-up alone exhausts
+      the card ("CUDA out of memory occurred when warming up sampler with 256
+      dummy requests"). The reasoner has one request in flight at 0.2 Hz.
+    * The profiler then sizes the encoder cache from the *largest* multimodal
+      item the model accepts — a max-resolution **video**, 24300 encoder
+      tokens — and OOMs in the SigLIP2 tower. Capping the prompt at one image
+      drops that budget to 16384.
+
+    With both, the same card lands at 10,432 KV-cache tokens and serves. Raise
+    them deliberately on a bigger GPU.
     """
     argv = [
         str(vllm_bin),
@@ -318,6 +353,9 @@ def build_serve_argv(
         argv += ["--served-model-name", served_model_name]
     if kv_cache_dtype != "auto":
         argv += ["--kv-cache-dtype", kv_cache_dtype]
+    argv += ["--max-num-seqs", str(max_num_seqs)]
+    if limit_mm_per_prompt:
+        argv += ["--limit-mm-per-prompt", limit_mm_per_prompt]
     return argv
 
 
@@ -346,6 +384,22 @@ def main() -> int:
         "card's VRAM and adds minutes to startup; the 0.2 Hz reasoner doesn't need it).",
     )
     p.set_defaults(enforce_eager=True)
+    p.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=int(os.environ.get("OPENRAL_COSMOS3_MAX_NUM_SEQS", _DEFAULT_MAX_NUM_SEQS)),
+        help=f"vLLM max concurrent sequences (default {_DEFAULT_MAX_NUM_SEQS}, or "
+        "$OPENRAL_COSMOS3_MAX_NUM_SEQS). vLLM's own default of 256 OOMs the sampler "
+        "warm-up on an 8 GB card; the 0.2 Hz reasoner needs one.",
+    )
+    p.add_argument(
+        "--limit-mm-per-prompt",
+        default=os.environ.get("OPENRAL_COSMOS3_LIMIT_MM_PER_PROMPT", _DEFAULT_LIMIT_MM_PER_PROMPT),
+        help="vLLM --limit-mm-per-prompt JSON (default "
+        f"{_DEFAULT_LIMIT_MM_PER_PROMPT}). Unset, vLLM profiles a max-resolution "
+        "video and OOMs in the vision tower; the reasoner only ever sends one "
+        "camera frame. Pass '' to leave it to vLLM.",
+    )
     p.add_argument(
         "--kv-cache-dtype",
         default="auto",
@@ -400,6 +454,8 @@ def main() -> int:
         enforce_eager=args.enforce_eager,
         served_model_name=served_name,
         kv_cache_dtype=args.kv_cache_dtype,
+        max_num_seqs=args.max_num_seqs,
+        limit_mm_per_prompt=args.limit_mm_per_prompt,
     )
     if "edge" in args.model.lower() and not native_edge:
         # Only true without the native Edge model (see module docstring):
