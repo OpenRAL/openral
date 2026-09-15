@@ -19,7 +19,7 @@ openral/                      ← THIS monorepo
 │  ├─ runner/       (openral_runner)      ← `InferenceRunner` Protocol + `DeployRunner` + `GStreamerSensorReader` + `NullSafetyClient` ✓
 │  ├─ reasoner/     (openral_reasoner)    ← S2 LLM reasoner/supervisor core — `ReasonerCore`, `ReasonerToolCall` palette, bounded replanning ladder ✓
 │  ├─ dataset/      (openral_dataset)     ← rosbag2 ↔ LeRobotDataset v3 bridge ✓
-│  ├─ wam/          (openral_wam)         ← World Action Model layer (mental-simulation gating) — scaffold ◐
+│  ├─ wam/          (openral_wam)         ← World Action Model protocol (mental-simulation gating) — optional, not one of the seven core layers — scaffold ◐
 │  └─ observability/ (openral_observability) ← OTel SDK + OTLP exporter, span helpers, structlog↔OTel bridge ✓
 │  Planned: dispatcher (edge/cloud/split)
 ├─ packages/                      ← ROS 2 packages (colcon build)

@@ -137,7 +137,7 @@
 
     /* Flow strip */
     .flow {
-      display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
+      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 0; align-items: stretch; padding: 14px;
       background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
       position: relative;
@@ -349,16 +349,11 @@
       </div>
       <div class="step dot-yellow">
         <div class="num">L5</div>
-        <div class="nm">WAM (opt.)</div>
-        <div class="hz">mental rollout</div>
-      </div>
-      <div class="step dot-yellow">
-        <div class="num">L6</div>
         <div class="nm">Safety</div>
         <div class="hz">C++, deny-by-default</div>
       </div>
       <div class="step dot-green">
-        <div class="num">L7</div>
+        <div class="num">L6</div>
         <div class="nm">Observability</div>
         <div class="hz">OTel + LeRobotDataset</div>
       </div>
@@ -401,7 +396,7 @@
 
 <footer>
   Sources: <span class="mono">CLAUDE.md §2 (repo map)</span>, <span class="mono">README.md</span>, <span class="mono">docs/architecture/overview.md</span>, and the actual contents of <span class="mono">python/</span>, <span class="mono">packages/</span>, <span class="mono">cpp/</span>, <span class="mono">tools/</span>, <span class="mono">examples/</span>, <span class="mono">rskills/</span>, <span class="mono">tests/</span> as of branch HEAD.
-  Status pills are evidence-based: a module is <b>working</b> only if it has source files <i>and</i> tests; <b>in dev</b> if source exists but the layer responsibility is partially covered; <b>planned</b> if the directory does not yet exist; <b>cancelled</b> if CLAUDE.md explicitly says we will not build it.
+  Status pills are evidence-based: a module is <b>working</b> only if it has source files <i>and</i> tests; <b>in dev</b> if source exists but the layer responsibility is partially covered; <b>planned</b> if the directory does not yet exist, or if the code + test harness exist but there is no physical robot in hand to validate against; <b>cancelled</b> if CLAUDE.md explicitly says we will not build it.
 </footer>
 
 <script>
@@ -680,8 +675,8 @@ const LAYERS = [
       {
         title: "HAL · Enactic OpenArm v2 (real-HW)",
         pkg: "python/hal · openarm_real.py",
-        status: "yellow",
-        desc: "OpenArmRealHAL: RosControlHAL subclass driving the physical arm, sharing OPENARM_DESCRIPTION with the twin so a Skill moves sim → hardware unchanged. Actuation goes through openarm_bringup's ros2_control stack, never Python-side CAN: the loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++ (Action → four command topics → controller_manager → openarm_hardware SystemInterface → openarm_can → SocketCAN → Damiao motors). The bimanual bringup spawns four controllers (per-side arm + gripper), so one 16-DoF action is sliced across four topics — all four messages built before any is published, so a rejected action cannot half-command the robot. /joint_states is read by ros2_control joint name (sourced from each JointSpec.sim_joint_name) and returned in manifest order, because four controllers publish into that topic independently with no ordering guarantee. connect() refuses a CAN link that is missing, is not a CAN device, or is down. sdk_kind: open — openarm_can and openarm_ros2 are both Apache-2.0. Status yellow until a powered-arm HIL run: tests/hil/test_openarm_can_live.py currently passes its four transport gates on the lab Jetson and skips the motor round-trip (buses ERROR-PASSIVE = motors unpowered).",
+        status: "blue",
+        desc: "OpenArmRealHAL: RosControlHAL subclass driving the physical arm, sharing OPENARM_DESCRIPTION with the twin so a Skill moves sim → hardware unchanged. Actuation goes through openarm_bringup's ros2_control stack, never Python-side CAN: the loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++ (Action → four command topics → controller_manager → openarm_hardware SystemInterface → openarm_can → SocketCAN → Damiao motors). The bimanual bringup spawns four controllers (per-side arm + gripper), so one 16-DoF action is sliced across four topics — all four messages built before any is published, so a rejected action cannot half-command the robot. /joint_states is read by ros2_control joint name (sourced from each JointSpec.sim_joint_name) and returned in manifest order, because four controllers publish into that topic independently with no ordering guarantee. connect() refuses a CAN link that is missing, is not a CAN device, or is down. sdk_kind: open — openarm_can and openarm_ros2 are both Apache-2.0. Code + transport plumbing exist and tests/hil/test_openarm_can_live.py passes its four transport gates on the lab Jetson, but there is no powered arm to validate against right now (buses ERROR-PASSIVE = motors unpowered) — status planned pending real hardware access.",
         inputs: ["Action (16-D)"],
         outputs: ["JointState (16-D)", "trajectory_msgs/JointTrajectory ×4"],
         schemas: ["RobotDescription", "JointState", "Action", "HALHealthReport"],
@@ -725,8 +720,8 @@ const LAYERS = [
       {
         title: "HAL · Franka Panda (real-HW)",
         pkg: "python/hal · franka_panda_real.py",
-        status: "yellow",
-        desc: "FrankaPandaRealHAL wraps RosControlHAL for franka_ros2 / libfranka / FCI (closed-with-api per CLAUDE.md §7.4). Unit-tested in tests/unit/test_franka_panda_real.py against a real SimTransport (no mocks); HIL test at tests/hil/test_franka_panda.py is gated by [self-hosted, lab-franka] runner labels and drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport). Issues #56 / #62.",
+        status: "blue",
+        desc: "FrankaPandaRealHAL wraps RosControlHAL for franka_ros2 / libfranka / FCI (closed-with-api per CLAUDE.md §7.4). Unit-tested in tests/unit/test_franka_panda_real.py against a real SimTransport (no mocks); HIL test at tests/hil/test_franka_panda.py is gated by [self-hosted, lab-franka] runner labels, but no such runner is registered and there is no physical Franka to validate against — status planned pending real hardware access. Issues #56 / #62.",
         inputs: ["Action", "/joint_states"],
         outputs: ["JointTrajectory", "/error_recovery/goal"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -743,8 +738,8 @@ const LAYERS = [
       {
         title: "HAL · Sawyer (real-HW)",
         pkg: "python/hal · sawyer_real.py",
-        status: "yellow",
-        desc: "SawyerRealHAL wraps RosControlHAL for the community sawyer_robot fork (intera_sdk lineage; original Rethink Robotics dissolved in 2018). Eval-layer manifest at robots/sawyer/robot.yaml mirrors the in-code SAWYER_DESCRIPTION; the MetaWorld MuJoCo path is owned by openral_sim.backends.metaworld and is not affected. Unit + HIL tests at tests/unit/test_sawyer_real.py and tests/hil/test_sawyer.py; the HIL fixture drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport) pinned to /robot/joint_states. Issues #57 / #62.",
+        status: "blue",
+        desc: "SawyerRealHAL wraps RosControlHAL for the community sawyer_robot fork (intera_sdk lineage; original Rethink Robotics dissolved in 2018). Eval-layer manifest at robots/sawyer/robot.yaml mirrors the in-code SAWYER_DESCRIPTION; the MetaWorld MuJoCo path is owned by openral_sim.backends.metaworld and is not affected. Unit + HIL tests at tests/unit/test_sawyer_real.py and tests/hil/test_sawyer.py exist, but there is no physical Sawyer to validate against — status planned pending real hardware access. Issues #57 / #62.",
         inputs: ["Action", "/robot/joint_states"],
         outputs: ["JointTrajectory", "/robot/set_super_stop"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -752,8 +747,8 @@ const LAYERS = [
       {
         title: "HAL · ALOHA bimanual (real-HW)",
         pkg: "python/hal · aloha.py",
-        status: "yellow",
-        desc: "AlohaHAL drives 2 × ViperX 300 + 2 grippers via 4 ros2_control controllers from the Trossen Interbotix XS SDK. Splits a single 14-D Action across left/right arm + left/right gripper controllers; 14-D state aggregated via /joint_states. Eval-layer manifest at robots/aloha_bimanual/robot.yaml mirrors ALOHA_DESCRIPTION. Unit + HIL tests at tests/unit/test_aloha.py and tests/hil/test_aloha.py; the HIL fixture drives a live rclpy bridge via tests/hil/_aloha_ros_transport.py (AlohaHILTransport — 4-way fan-out, all four publishers use trajectory_msgs/JointTrajectory). Issues #58 / #62.",
+        status: "blue",
+        desc: "AlohaHAL drives 2 × ViperX 300 + 2 grippers via 4 ros2_control controllers from the Trossen Interbotix XS SDK. Splits a single 14-D Action across left/right arm + left/right gripper controllers; 14-D state aggregated via /joint_states. Eval-layer manifest at robots/aloha_bimanual/robot.yaml mirrors ALOHA_DESCRIPTION. Unit + HIL tests at tests/unit/test_aloha.py and tests/hil/test_aloha.py exist, and the HIL fixture drives a live rclpy bridge via tests/hil/_aloha_ros_transport.py (AlohaHILTransport — 4-way fan-out, all four publishers use trajectory_msgs/JointTrajectory), but there is no physical ALOHA rig to validate against — status planned pending real hardware access. Issues #58 / #62.",
         inputs: ["Action (14-D)", "/joint_states"],
         outputs: ["4 × JointTrajectory", "/aloha/estop"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -1313,41 +1308,6 @@ const LAYERS = [
 
   {
     ix: "L5",
-    name: "World Action Model (optional)",
-    desc: "Generative simulator for mental rollouts, failure anticipation, replanning. Cosmos / IRASim / UnifoLM-WMA. Needs Thor-class compute.",
-    blocks: [
-      {
-        title: "WorldModel Protocol + nullop",
-        pkg: "python/wam · openral_wam",
-        status: "yellow",
-        desc: "v0.2 ships only the Protocol and a no-op default — landed (2026-05-18). WorldModel Protocol with rollout(world_state, action_chunk, horizon) → Rollout; Rollout Pydantic schema (predicted states + horizon + latency + confidence); NullWorldModel identity stub replaying input state for `horizon` steps. Three integration patterns from CLAUDE.md §6.3 (gating, failure anticipation, replanning) all consume this same surface; concrete adapters land in v0.3+.",
-        inputs: ["WorldState", "Action chunk", "horizon"],
-        outputs: ["Rollout"],
-        schemas: ["Rollout"],
-      },
-      {
-        title: "Cosmos Predict adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target. NVIDIA Cosmos Predict 2.5 / Reason 2.",
-      },
-      {
-        title: "UnifoLM-WMA-0 adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target. Apache-2.0; pairs naturally with the Unitree G1 HAL.",
-      },
-      {
-        title: "IRASim adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target.",
-      },
-    ],
-  },
-
-  {
-    ix: "L6",
     name: "Safety",
     desc: "Separate C++ process, deny-by-default, certifiable. Python proposes, C++ disposes. ROSSafetyViolation never silently caught.",
     blocks: [
@@ -1419,7 +1379,7 @@ const LAYERS = [
   },
 
   {
-    ix: "L7",
+    ix: "L6",
     name: "Observability",
     desc: "OpenTelemetry traces + metrics + structlog→OTLP log bridge + W3C TraceContext propagation. Every motor command is parented to a single cli.command root span and replayable from the trace alone.",
     blocks: [

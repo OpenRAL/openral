@@ -26,7 +26,6 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | Reasoner (S2 LLM supervisor) | ✅ shipped — `openral_reasoner` core + `openral_reasoner_ros` node + `openral_prompt_router`; provider-selected LLM, typed tool dispatch, event-driven ticks; bounded-retry replanning live (full substitute/replan ladder partial) |
 | Deploy ROS graph | ✅ shipped — `openral deploy {run,sim}` with HAL + safety + reasoner + world_state; dynamic skill dispatch + `/clock` publisher |
 | Navigation stack (SLAM + Nav2) | ✅ shipped — `openral_slam_bringup` (slam_toolbox) + `openral_nav2_bringup` as reasoner-managed background services; `cmd_vel` → mobile-base HAL |
-| World Action Model (WAM) | 🟡 protocol shipped — `WorldModel` Protocol + `NullWorldModel`; Cosmos / UnifoLM-WMA-0 / IRASim adapters planned (v0.3) |
 | Object detection + spatial lift | ✅ shipped — `RosImageObjectDetectorNode`, 2D→3D object lift, RT-DETR + OmDet-Turbo detector rSkills, GStreamer perception bus; LocateAnything-3B wired via VLM sidecar + `locate_in_view` on-demand tool; scene-VLM `kind:vlm` |
 | Geometric safety + watchdog | 🟡 in flight — chunk-rate safety pass-through + envelope checks (✅), deadman/E-stop forwarders + human-estop (✅ `openral_safety_watchdog` / `openral_human_estop`); self/world/voxel collision + OctoMap→voxel bridge in dev |
 | C++ safety kernel | 🟡 in flight — deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; sim/HIL gate + LTTng pending |
@@ -40,7 +39,7 @@ Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
 
 - **M2** — Unitree G1 real-HW HAL (`unitree_sdk2`) + cerebellar (S0) C++ controller; `rt_bridge` shared-memory ring.
 - **M3** — HIL bring-up on lab runners: UR5e/UR10e/Franka/Sawyer/ALOHA real-HW adapters + D435 smoke test (adapters landed; runners not yet registered).
-- **v0.3** — WAM adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim) behind the `WorldModel` Protocol; spatial-memory ROS feeder + sqlite-vec persistence.
+- **v0.3** — spatial-memory ROS feeder + sqlite-vec persistence.
 - **v1.0** — Failure-anticipation as first-class; C++ safety-kernel sim/HIL hardening + LTTng; certifiable build.
 
 See [repo state map](../architecture/repo-state-map.html) for detailed per-module status and cross-layer dependencies.

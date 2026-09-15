@@ -36,7 +36,7 @@ rationale, alternatives considered, or history behind a specific piece of
 behavior can ask by opening an issue in this repo, quoting the identifier.
 
 The decision discipline is unchanged: adding, removing, renaming, or moving
-a responsibility between the eight architecture layers (§3 of
+a responsibility between the seven architecture layers (§3 of
 [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md))
 requires recording a decision in the private log, written before the code
 that implements it.
